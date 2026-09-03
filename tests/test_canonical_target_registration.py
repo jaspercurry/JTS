@@ -18,12 +18,11 @@ crossover-v2 measurement path used to declare its own reference (#2929); wave
 6d stopped that swap ducking, and 6e removed the parameter — so this guard now
 covers every ducking swap in the tree rather than all-but-one.
 
-**Two reasons now live in this table.** Every row but the last is here
-because its daemon SWAPS the graph and its swap duck needs a canonical
-release target. `jasper/cli/aec_tune.py` is here because it WRITES the
-fader and wave 5b routed those writes through the process owner, which
-the same call registers. A future reader trimming this table by asking
-'does this daemon swap?' would delete that row and break the CLI.
+**Two reasons live in this table.** Most rows are here because the daemon
+SWAPS the graph and its swap duck needs a canonical release target. Some are
+here because the daemon WRITES the fader through the process owner, which the
+same call registers. A future reader trimming this table by asking 'does this
+daemon swap?' would delete those rows and break those CLIs.
 
 This is a lost-edit guard in the sense of `test_web_main_imports.py`: the
 registration is one line at the top of a daemon's `main()`, deleting it
@@ -85,19 +84,12 @@ _ENTRY_POINTS = {
     # set below sees nothing new when a caller like this one is added; only
     # this table catches it.
     "jasper/cli/active_speaker.py": "main",
-    # `jasper-aec-tune` — the ONE entry here that registers for the OWNER
-    # rather than for a graph swap: it ducks the main fader for its noise
-    # test and restores it after, and wave 5b routed both writes through
-    # `volume_owner()`. Without the registration `volume_owner()` answers
-    # None and `_camilla_set_volume` refuses, so this row is load-bearing
-    # for a different reason than every row above it.
-    "jasper/cli/aec_tune.py": "main",
-    # `jasper-aec-commission` — the second owner-reason row, and the one that
-    # shows why the reason matters: it swaps nothing, but its
-    # `prepare_volume`/`restore_volume` pair writes the fader through
-    # `aec_tune._camilla_set_volume`, so it needs the same registration. This
-    # is the plan's "uncounted 19th writer" (§3 wave 5), routed by the same
-    # change that routed W18 and reachable only because it registers here.
+    # `jasper-aec-commission` — an OWNER-reason row rather than a graph-swap
+    # one, and the one that shows why the reason matters: it swaps nothing,
+    # but its `prepare_volume`/`restore_volume` pair writes the fader through
+    # `camilla.declare_main_volume_db`. Without the registration
+    # `volume_owner()` answers None and that helper refuses, so this row is
+    # load-bearing for a different reason than the swap rows above it.
     "jasper/cli/aec_commission.py": "main",
     # `jasper-audition` — swaps the running graph down to the baseline layer
     # and back (jasper/active_speaker/audition.py). Unlike every other

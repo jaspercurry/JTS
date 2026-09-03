@@ -6,8 +6,7 @@ now the bridge's only reference source, and the aloop tap itself is deleted
 later in the same arc (P9). This file pins the three halves of that
 retirement so none of them can quietly come back:
 
-  1. the bridge (and the tuning tool beside it) has no ALSA reference
-     reader left,
+  1. the bridge has no ALSA reference reader left,
   2. a live box still carrying the retired value converges instead of
      going deaf, while a genuinely unknown value still fails loudly, and
   3. `jasper-aec-reconcile` — the single writer of that env var — never
@@ -28,7 +27,6 @@ from jasper.cli import aec_bridge
 
 REPO = Path(__file__).resolve().parents[1]
 BRIDGE_SOURCE = REPO / "jasper" / "cli" / "aec_bridge.py"
-AEC_TUNE = REPO / "jasper" / "cli" / "aec_tune.py"
 RECONCILE = REPO / "deploy" / "bin" / "jasper-aec-reconcile"
 
 RETIRED = "alsa"
@@ -94,47 +92,6 @@ def test_the_bridge_module_has_no_alsa_reference_reader():
     )
 
 
-def test_the_tuning_tool_has_no_raw_dsnoop_reference_reader():
-    """The same retirement, one tool over (U4 / P7-2): `jasper/cli/aec_tune.py`
-    used to open the summed program's dsnoop tap RAW to record its AEC
-    reference, which made it a second declarer of the fan-in lane width — a raw
-    open cannot absorb a format move. It reads outputd's UDP speaker monitor
-    now, and the tap's PCM definition is gone from asound.conf entirely.
-
-    AST-walked over *values* only, exactly as the bridge guard above: the
-    tool's own prose names the retired tap to explain the retirement, and must
-    neither satisfy nor trip the guard against it.
-    """
-    tree = ast.parse(AEC_TUNE.read_text())
-    docstrings = _docstring_node_ids(tree)
-    # Positive control FIRST — the assertion below is an ABSENCE, so a reader
-    # that found nothing would satisfy it vacuously.
-    assert any(
-        isinstance(node, ast.Constant)
-        and isinstance(node.value, str)
-        and "jasper_capture" in node.value
-        and id(node) in docstrings
-        for node in ast.walk(tree)
-    ), (
-        "aec_tune's own docstrings should still explain the retirement — if "
-        "that prose is gone, this guard is no longer reading what it thinks"
-    )
-    offenders = sorted(
-        f"{AEC_TUNE.name}:{node.lineno}: {node.value!r}"
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Constant)
-        and isinstance(node.value, str)
-        and ("jasper_capture" in node.value or "jasper_ref" in node.value)
-        and id(node) not in docstrings
-    )
-    assert not offenders, (
-        "jasper/cli/aec_tune.py must not name the aloop dsnoop tap — it moved "
-        "to jasper-outputd's UDP speaker monitor in U4/P7-2, and re-opening "
-        "the raw tap would make it a width declarer again:\n"
-        + "\n".join(offenders)
-    )
-
-
 def test_the_bridge_never_imports_alsaaudio():
     """`alsaaudio` existed in this module only for the retired ref reader.
 
@@ -155,6 +112,27 @@ def test_the_bridge_never_imports_alsaaudio():
     assert "alsaaudio" not in imported, (
         "the bridge reads its reference over UDP; an alsaaudio import means "
         "an ALSA reference reader came back"
+    )
+
+
+def test_the_reference_geometry_matches_outputd_the_producer():
+    """48 kHz stereo is jasper-outputd's fact, not the bridge's free parameter.
+
+    Cross-language pin against the producer's own source. Asserting the
+    constants against each other would be self-referential — moving one would
+    move both sides and stay green — so they are checked against
+    `rust/jasper-outputd/src/types.rs`, where the value is fixed and
+    `Config::from_env` refuses any other rate.
+    """
+    types_rs = (REPO / "rust" / "jasper-outputd" / "src" / "types.rs").read_text()
+
+    assert f"pub const SAMPLE_RATE: u32 = {aec_bridge.REF_RATE:_};" in types_rs, (
+        "aec_bridge.REF_RATE must equal jasper-outputd's core sample rate; "
+        "the reference datagrams are that daemon's playout periods"
+    )
+    assert f"pub const CHANNELS: u16 = {aec_bridge.REF_CHANNELS};" in types_rs, (
+        "aec_bridge.REF_CHANNELS must equal jasper-outputd's channel count; "
+        "the reference is stereo whatever the sink's width"
     )
 
 

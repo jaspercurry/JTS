@@ -29,7 +29,11 @@ from jasper.active_speaker.volume_latch import fader_matches
 from jasper.atomic_io import atomic_write_json
 from jasper.audio_hardware import dac as dac_registry
 from jasper.audio_measurement.correction_lane import run_correction_play
-from jasper.camilla import MAIN_VOLUME_RAMP_SETTLE_S
+from jasper.camilla import (
+    MAIN_VOLUME_RAMP_SETTLE_S,
+    declare_main_volume_db,
+    read_main_volume_db,
+)
 from jasper.chip_aec_alignment import (
     ARTIFACT_PATH,
     AlignmentArtifact,
@@ -56,7 +60,6 @@ from jasper.chip_aec_alignment import (
 from jasper.chip_aec_policy import STATUS_APPROVED, static_dac_qualification
 from jasper.chip_aec_shipped_alignment import render_entry
 from jasper.cli import aec_init
-from jasper.cli.aec_tune import _camilla_get_volume, _camilla_set_volume
 from jasper.env_load import merged_env_files
 from jasper.log_event import log_event
 from jasper.mics import xvf3800
@@ -611,25 +614,25 @@ class SystemIO:
         return Hardware(profile.variant_id, profile.alsa_card_name, profile.chip_beam_plan)
 
     def set_volume(self, db: float) -> None:
-        _camilla_set_volume(db)
-        if not fader_matches(_camilla_get_volume(), db):
+        declare_main_volume_db(db)
+        if not fader_matches(read_main_volume_db(), db):
             raise CommissioningError("commissioning volume did not verify")
         # No capture may start inside CamillaDSP's own volume ramp.
         time.sleep(MAIN_VOLUME_RAMP_SETTLE_S)
 
     def prepare_volume(self) -> float:
         self.assert_audio_idle()
-        original = _camilla_get_volume()
+        original = read_main_volume_db()
         try:
             self.set_volume(MEASUREMENT_VOLUME_DB)
         except BaseException:  # noqa: BLE001 - restore household volume on interrupt
-            _camilla_set_volume(original)
+            declare_main_volume_db(original)
             raise
         return original
 
     def restore_volume(self, original: float) -> None:
-        if not fader_matches(_camilla_get_volume(), original):
-            _camilla_set_volume(original)
+        if not fader_matches(read_main_volume_db(), original):
+            declare_main_volume_db(original)
 
     def stop_services(self) -> None:
         _run(("systemctl", "stop", *STOP_UNITS))
@@ -834,8 +837,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         level=logging.INFO, format="%(asctime)s aec-commission %(levelname)s %(message)s"
     )
     # `prepare_volume`/`restore_volume` write the main fader through
-    # `aec_tune._camilla_set_volume`, which declares through the process owner
-    # since wave 5b. Registered AFTER the `--emit-class-entry` early exit: that
+    # `camilla.declare_main_volume_db`, which declares through the process
+    # owner. Registered AFTER the `--emit-class-entry` early exit: that
     # path prints a registry row and touches no hardware, so it should not
     # build a Camilla controller. See tests/test_canonical_target_registration.py.
     from jasper.volume_coordinator import install_env_canonical_target_provider
