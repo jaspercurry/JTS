@@ -239,9 +239,11 @@ what the household is told and whether another attempt can help — nothing more
 Its `TEMPLATE_HARD_STOP` screen and a `retry_budget` of `0` mean "no extra
 attempt can help", a statement about the condition, and they end an attempt or a
 session, never a graph that is already playing. What removes an applied graph is
-`commissioning_apply.py`'s restore path — a failed mutation, and a candidate
-apply still pending when the box restarts, both go back to the exact predecessor
-graph — driven by the adoption table on a measured delta (§3). Said here because
+`commissioning_apply.py`'s restore path — a failed mutation goes back to the
+exact predecessor graph, driven by the adoption table on a measured delta (§3);
+a candidate apply still pending when the box restarts is disclosed by the
+commissioning status as `restore_required` and restored by the operator, not
+automatically (ADR-0230). Said here because
 the registry is the surface a reviewer reaches first, and two things wearing one
 name in one file is how it gets read as a list of stops. **A hard stop is a
 member of the list above and nothing else** — in the CLAMP / INTEGRITY /
