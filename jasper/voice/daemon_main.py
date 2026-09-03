@@ -729,6 +729,7 @@ async def run() -> None:
         default_lat=cfg.weather_default_lat,
         default_lon=cfg.weather_default_lon,
         default_name=cfg.weather_default_display_name,
+        setup_url=f"http://{cfg.hostname}/weather",
     )
     # Transit (subway / bus / Citi Bike today; future city packs add more).
     # One call builds every provider in the household's ENABLED city packs
