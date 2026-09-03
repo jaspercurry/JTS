@@ -966,6 +966,14 @@ park_low_memory_build_units() {
         _record_low_memory_parked_unit "${unit}"
     done
 
+    # jasper-fanin must stop before park_audio_clients_for_core_graph_restart
+    # stops jasper-outputd below: with outputd gone and CamillaDSP
+    # free-running, fanin's mixer loop loses its downstream pacer and its RT
+    # thread trips RLIMIT_RTTIME (SIGKILL) within ~1s. fanin is a restart
+    # target (JASPER_CORE_GRAPH_RESTART_TARGETS), not parked here, so it is
+    # stopped explicitly rather than reordered into either park list.
+    systemctl stop jasper-fanin.service 2>/dev/null || true
+    systemctl reset-failed jasper-fanin.service 2>/dev/null || true
     park_audio_clients_for_core_graph_restart
     for unit in "${JASPER_LOW_MEMORY_BUILD_PARK_UNITS[@]}"; do
         systemctl stop "${unit}" 2>/dev/null || true
