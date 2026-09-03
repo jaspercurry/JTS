@@ -60,6 +60,20 @@ def test_manifest_entries_are_no_loss():
         }
 
 
+def test_no_tool_enum_declares_empty_string():
+    """Gemini's Live API closes the connection (error 1007) if any
+    function_declarations[...].parameters.properties[...].enum contains "".
+    Optional fields must be expressed by omitting them (not required), never
+    by an empty-string enum member."""
+    for entry in _full_registry().to_manifest():
+        for prop_name, prop_schema in entry["input_schema"].get(
+            "properties", {},
+        ).items():
+            enum = prop_schema.get("enum")
+            if enum is not None:
+                assert "" not in enum, f"{entry['name']}.{prop_name}"
+
+
 def test_manifest_uses_short_model_descriptions_for_selected_real_tools():
     reg = _full_registry()
     by_name = {e["name"]: e for e in reg.to_manifest()}
