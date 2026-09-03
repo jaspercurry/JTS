@@ -400,6 +400,7 @@ outputd_dac_buffer_frames() {
             "$(env_file_value "$file" JASPER_OUTPUTD_DAC_BUFFER_FRAMES || true)")"
         if [[ -n "$value" && "$value" -gt 0 ]]; then
             printf '%s\n' "$value"
+            return
         fi
         break
     done
