@@ -750,11 +750,8 @@ def test_the_active_shape_is_selected_by_the_marker_not_by_the_observed_device()
     written by a different owner, which is what gives the comparison something to
     disagree with.
     """
-    from jasper.audio_runtime_plan import (
-        TRANSPORT_SHM_RING,
-        TRANSPORT_SHM_RING_ACTIVE,
-        transport_topology_for_coupling,
-    )
+    from jasper.audio_runtime_plan import TRANSPORT_SHM_RING, TRANSPORT_SHM_RING_ACTIVE
+    from jasper.transport_coherence import transport_topology_for_coupling
 
     stereo = transport_topology_for_coupling("shm_ring", outputd_env={})
     assert stereo.name == TRANSPORT_SHM_RING
@@ -784,10 +781,8 @@ def test_every_declared_transport_shape_is_reachable_and_vice_versa():
     and a reachable-but-undeclared one is the unhandled case the design claims
     cannot exist.
     """
-    from jasper.audio_runtime_plan import (
-        TRANSPORT_SHAPES,
-        transport_topology_for_coupling,
-    )
+    from jasper.audio_runtime_plan import TRANSPORT_SHAPES
+    from jasper.transport_coherence import transport_topology_for_coupling
 
     from jasper.multiroom.dac_content_ring import DAC_CONTENT_LANE_ENV
 
@@ -824,7 +819,7 @@ def test_a_crossed_ring_path_is_the_first_arm_waypoint_not_a_refusal():
     only refuse-or-proceed see: it must be CLEAN here, or the reconciler still
     exits 78.
     """
-    from jasper.audio_runtime_plan import (
+    from jasper.transport_coherence import (
         transport_coherence_errors,
         transport_coherence_report,
     )
@@ -858,7 +853,7 @@ def test_a_ring_device_under_a_loopback_plan_is_reported_not_ignored():
       documented ladder's step 1 creates on purpose; reporting it as an error
       deadlocked the ladder on jts3 (2026-08-11, exit 78).
     """
-    from jasper.audio_runtime_plan import (
+    from jasper.transport_coherence import (
         transport_coherence_errors,
         transport_coherence_report,
     )
@@ -2654,7 +2649,7 @@ def test_the_arm_sequence_completes_from_an_unarmed_roleful_box(monkeypatch):
 
 
 def _coherence_errors(*, coupling, capture, playback, outputd_env=None):
-    from jasper.audio_runtime_plan import transport_coherence_errors
+    from jasper.transport_coherence import transport_coherence_errors
 
     env = {
         "JASPER_OUTPUTD_ACTIVE_LANE": "1",
@@ -3401,8 +3396,8 @@ def test_the_crossed_pair_is_unreachable_from_the_reconciler():
     reconciler cannot emit that pair for any input text, checked here against
     the PR's own Python-side coherence twin rather than by re-stating the rule.
     """
-    from jasper.audio_runtime_plan import (
-        TRANSPORT_SHM_RING_ACTIVE,
+    from jasper.audio_runtime_plan import TRANSPORT_SHM_RING_ACTIVE
+    from jasper.transport_coherence import (
         transport_coherence_errors,
         transport_coherence_report,
         transport_topology_for_coupling,

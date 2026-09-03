@@ -62,16 +62,17 @@ _OUT_OF_CREDIT_MARKERS = (
     "credit", "quota", "billing", "spending limit", "payment",
 )
 
-# RFC 6455 close codes that mean the server refused what we sent, not
-# that the link failed: 1002 protocol error, 1003 unsupported data,
-# 1007 invalid frame payload. A provider rejects a malformed `setup`
-# message with one of these.
+# RFC 6455 close codes that mean the peer refused what we sent, not that
+# the link failed: 1002 protocol error, 1003 unsupported data, 1007
+# invalid frame payload. A provider rejects a malformed `setup` message
+# with one of these — but `is_transient` also runs on every mid-session
+# reconnect failure, so anything added here rules those terminal too.
 #
 # 1008 (policy violation) is deliberately excluded: Gemini uses it for
 # a benign, self-healing case, an expired session-resumption handle,
 # which gemini_session.py already handles by dropping the handle and
 # reconnecting.
-_SETUP_REJECTION_CLOSE_CODES = frozenset({1002, 1003, 1007})
+_PROVIDER_REJECTION_CLOSE_CODES = frozenset({1002, 1003, 1007})
 
 # Cap on the cause string stored and logged. Comfortably fits a provider's
 # JSON error body; short enough that an HTML error page cannot flood the
@@ -152,6 +153,18 @@ def provider_code(exc: BaseException) -> int | None:
     return None
 
 
+def peer_initiated_close(exc: BaseException) -> bool:
+    """Whether the peer, not us, sent the close frame carrying the code.
+
+    RFC 6455 makes the receiver echo a close code back, so a code our own
+    client chose — 1007 for a truncated text frame from the provider's
+    edge, say — arrives on ``.rcvd`` indistinguishable from a rejection.
+    websockets records who moved first in ``.rcvd_then_sent``; ``False``
+    means we did. Any other value, the flag being absent included,
+    cannot rule the close ours."""
+    return getattr(exc, "rcvd_then_sent", None) is not False
+
+
 def is_transient(exc: BaseException) -> bool:
     """Whether retrying this failure can plausibly fix it.
 
@@ -173,7 +186,7 @@ def is_transient(exc: BaseException) -> bool:
         return True
     code = provider_code(exc)
     if code is not None:
-        if code in _SETUP_REJECTION_CLOSE_CODES:
+        if code in _PROVIDER_REJECTION_CLOSE_CODES and peer_initiated_close(exc):
             return False
         if 400 <= code < 500 and code != 429 and code != 409:
             return False

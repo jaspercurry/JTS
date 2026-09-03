@@ -663,18 +663,11 @@ def main(argv: list[str] | None = None) -> int:
         description="Install the optional enhanced WebRTC AEC3 engine.",
     )
     parser.add_argument("--json", action="store_true", help="print JSON result")
-    parser.add_argument(
-        "--check-profile",
-        action="store_true",
-        help="exit successfully only when this install has a voice/AEC brain",
-    )
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    if args.check_profile:
-        return 0 if install_profile_supports_enhanced_aec() else 1
     try:
         result = install()
     except SourceChanged as exc:

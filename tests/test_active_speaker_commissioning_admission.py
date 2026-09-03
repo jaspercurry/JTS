@@ -512,7 +512,7 @@ def test_driver_capture_playback_timeout_derives_from_sweep_duration(
     kernel's phase-closure rounding can land on either side of the request.
 
     A budget derived from the artifact's own ``SweepMeta.duration_s`` (like
-    the sibling call sites at ``_play_capture_sweep``/``play_sweep``) cannot
+    the sibling call site at ``play_sweep``) cannot
     go negative-margin this way; a hardcoded literal decoupled from the
     generated duration always can.
     """

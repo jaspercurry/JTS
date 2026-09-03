@@ -27,12 +27,10 @@ from jasper.active_speaker.baseline_profile import (
 from jasper.active_speaker.commissioning_apply import (
     CommissioningApplyError,
     apply_measured_candidate,
-    restore_pending_candidate_apply,
 )
 from jasper.active_speaker.commissioning_run import CommissioningRunStore
 from jasper.active_speaker.commissioning_runtime import (
     CommissioningRuntimePort,
-    snapshot_exact_dsp_state,
 )
 from jasper.active_speaker.commissioning_service import CommissioningServiceError
 from jasper.active_speaker.runtime_contract import GraphSafety
@@ -535,7 +533,7 @@ async def test_ambiguous_retained_sidecar_write_reopens_exact_persisted_proof(
     assert mutation is not None and mutation.status == "retained"
 
 
-async def test_restart_after_proved_restore_finishes_without_mutating_dsp_again(
+async def test_crash_after_proved_restore_discloses_finalization_required(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -574,23 +572,7 @@ async def test_restart_after_proved_restore_finishes_without_mutating_dsp_again(
     status = harness.service.status()
     assert status["status"] == "restore_finalization_required"
     assert "already restored" in status["detail"]
-
-    result = await restore_pending_candidate_apply(
-        run=harness.plan.authority.run,
-        run_store=harness.run_store,
-        store=harness.evidence_store,
-        runtime_port=port,
-        load_config_path=load,
-        config_path=tmp_path / "candidate.yml",
-    )
-
-    assert result["status"] == "rolled_back"
-    assert state == {
-        "raw": predecessor,
-        "path": "/etc/camilladsp/predecessor.yml",
-        "volume": -36.0,
-    }
-    assert calls == 2
+    assert calls == 1
 
 
 async def test_applied_profile_change_keeps_preapply_plan_for_status_and_retry(
@@ -830,120 +812,6 @@ async def test_repeated_cancellation_preserves_exact_restore_outcome(
         assert shared_state["rollback_succeeded"] is False
     assert len(mutation_tasks) == 3
     assert len({id(owner) for owner in mutation_tasks}) == 1
-
-
-@pytest.mark.parametrize("cancel_before_writer", [False, True])
-async def test_restart_with_pending_mutation_performs_live_exact_restore(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    cancel_before_writer: bool,
-) -> None:
-    dsp_state_path = tmp_path / "dsp-apply-state.json"
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(dsp_state_path))
-    harness, current, candidate = _candidate_harness(tmp_path, monkeypatch)
-    candidate_text = yaml.safe_dump(
-        {
-            "devices": {"volume_limit": -12.0},
-            "filters": {"candidate": {"type": "Gain"}},
-        },
-        sort_keys=True,
-    )
-    predecessor_text, issues = recompose_applied_baseline_yaml(
-        current.authority.topology,
-        applied_profile=current.authority.applied_profile,
-    )
-    assert predecessor_text is not None and issues == []
-    port, load, state, predecessor_text = _runtime(
-        candidate_text,
-        predecessor_text=predecessor_text,
-    )
-    predecessor = await snapshot_exact_dsp_state(port)
-    run = harness.plan.authority.run
-    target_plan = harness.service._required_target_plan(current)
-    operation = apply_module._operation_fingerprint(
-        run=run,
-        candidate=candidate,
-        target_plan=target_plan,
-        safety_profile_fingerprint=(
-            harness.plan.authority.protected_safety_profile_fingerprint
-        ),
-    )
-    issuance = harness.run_store.issue_live_mutation(
-        run,
-        purpose=apply_module.APPLY_PURPOSE,
-        operation_fingerprint=operation,
-    )
-    predecessor_artifact = harness.evidence_store.publish_json_artifact(
-        apply_module._source_path(
-            run,
-            issuance.issuance_id,
-            "predecessor.json",
-        ),
-        predecessor.to_dict(),
-    )
-    harness.run_store.record_live_mutation_intent(
-        run,
-        issuance,
-        rollback_artifact_path=predecessor_artifact.relative_path,
-        rollback_artifact_fingerprint=predecessor_artifact.fingerprint,
-    )
-    state.update(
-        {
-            "raw": candidate_text,
-            "path": str(tmp_path / "candidate.yml"),
-            "volume": -18.0,
-        }
-    )
-
-    assert harness.service.status()["status"] == "restore_required"
-    restore = restore_pending_candidate_apply(
-        run=run,
-        run_store=harness.run_store,
-        store=harness.evidence_store,
-        runtime_port=port,
-        load_config_path=load,
-        config_path=tmp_path / "candidate.yml",
-    )
-    if cancel_before_writer:
-        writer_waiting = asyncio.Event()
-        admit_writer = asyncio.Event()
-
-        @asynccontextmanager
-        async def delayed_writer(*_args, **_kwargs):
-            writer_waiting.set()
-            await admit_writer.wait()
-            yield
-
-        monkeypatch.setattr(apply_module, "dsp_writer_lock", delayed_writer)
-        task = asyncio.create_task(restore)
-        await wait_signalled(writer_waiting, "writer lock wait began", producer=task)
-        task.cancel()
-        await asyncio.sleep(0)
-        assert not task.done()
-        admit_writer.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-    else:
-        result = await restore
-        assert result["status"] == "rolled_back"
-    assert state == {
-        "raw": predecessor_text,
-        "path": "/etc/camilladsp/predecessor.yml",
-        "volume": -36.0,
-    }
-    mutation = harness.run_store.current_live_mutation(run)
-    assert mutation is not None and mutation.status == "aborted"
-    shared_state = last_dsp_apply_state(state_path=dsp_state_path)
-    assert shared_state is not None
-    assert shared_state["source"] == (
-        f"{apply_module.APPLY_SOURCE}_recovery"
-    )
-    assert shared_state["result"] == (
-        "active_wrapper_restart_recovery_rolled_back"
-    )
-    assert shared_state["active_config_path"] == (
-        "/etc/camilladsp/predecessor.yml"
-    )
 
 
 async def test_writer_lock_timeout_leaves_candidate_ready_and_retryable(

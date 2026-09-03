@@ -70,7 +70,6 @@ from .commissioning_run import (
 if TYPE_CHECKING:
     from .commissioning_evidence import RegionEvidencePlan
 
-POST_APPLY_CAPTURE_SOURCE = "active_speaker_post_apply_verification"
 _PASS_VERDICT = "blend_ok"
 _FAIL_VERDICT = "polarity_or_delay_problem"
 logger = logging.getLogger(__name__)

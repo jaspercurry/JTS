@@ -17,9 +17,10 @@ import asyncio
 import errno
 import socket
 import warnings
-from types import SimpleNamespace
 
 import pytest
+from websockets.exceptions import ConnectionClosedError
+from websockets.frames import Close
 
 from jasper.voice._supervisor import (
     NEEDS_ATTENTION_CUE_SLUG,
@@ -68,31 +69,30 @@ class _Coded:
         self.code = code
 
 
-class _Closed(Exception):
-    """The shape of a real ``websockets.exceptions.ConnectionClosed``: the
-    RFC 6455 code is on ``.rcvd.code`` (``.rcvd`` is ``None`` for an
-    abnormal closure with no close frame received). ``.code`` mirrors the
-    real deprecated backwards-compatibility property: it warns on every
-    read and synthesizes 1006 instead of reporting absence."""
-
-    def __init__(self, code: int | None) -> None:
-        super().__init__(f"connection closed: {code}")
-        self.rcvd = SimpleNamespace(code=code) if code is not None else None
-
-    @property
-    def code(self) -> int:
-        warnings.warn(
-            "ConnectionClosed.code is deprecated; "
-            "use Protocol.close_code or ConnectionClosed.rcvd.code",
-            DeprecationWarning,
-        )
-        return self.rcvd.code if self.rcvd is not None else 1006
-
-
 class _StatusAndCode(_Coded):
     def __init__(self, status_code: int, code: int) -> None:
         super().__init__(code)
         self.status_code = status_code
+
+
+def _provider_closed(code: int) -> ConnectionClosedError:
+    """A real close the provider opened: it sent ``code``, we echoed it."""
+    close = Close(code, "")
+    return ConnectionClosedError(close, close, rcvd_then_sent=True)
+
+
+def _we_closed(code: int) -> ConnectionClosedError:
+    """A real close OUR client opened — a truncated text frame from the
+    provider's edge rejected with 1007, say — which the server echoed
+    back as RFC 6455 requires. Both frames carry the same code, so
+    ``.rcvd.code`` alone cannot tell this apart from a rejection."""
+    close = Close(code, "")
+    return ConnectionClosedError(close, close, rcvd_then_sent=False)
+
+
+def _closed_abnormally() -> ConnectionClosedError:
+    """A real close that exchanged no close frame in either direction."""
+    return ConnectionClosedError(None, None, rcvd_then_sent=None)
 
 
 # Captured verbatim from the live xAI 403 that motivated ADR-0215.
@@ -137,9 +137,11 @@ def _wrapped(inner: BaseException) -> Exception:
         (_Coded(1003), False),
         (_Coded(1007), False),
         (_Coded(1008), True),
-        (_Closed(1007), False),
-        (_Closed(1006), True),
-        (_Closed(None), True),
+        (_provider_closed(1007), False),
+        (_we_closed(1007), True),
+        (_we_closed(1002), True),
+        (_provider_closed(1011), True),
+        (_closed_abnormally(), True),
         (_Coded(400), False),
         (_Coded(409), True),
         (_Coded(429), True),
@@ -161,8 +163,8 @@ def test_is_transient_never_reads_the_deprecated_close_code() -> None:
     classify without ever touching it."""
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)
-        assert is_transient(_Closed(1007)) is False
-        assert is_transient(_Closed(None)) is True
+        assert is_transient(_provider_closed(1007)) is False
+        assert is_transient(_closed_abnormally()) is True
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +227,8 @@ def test_is_network_down_only_for_a_missing_link(
         (OSError("network blip"), None),
         (_dns(), NETWORK_DOWN_CUE_SLUG),
         (ValueError("bad config"), NEEDS_ATTENTION_CUE_SLUG),
+        (_provider_closed(1007), NEEDS_ATTENTION_CUE_SLUG),
+        (_we_closed(1007), None),
     ],
     ids=[
         "rejected-no-body",
@@ -234,6 +238,8 @@ def test_is_network_down_only_for_a_missing_link(
         "network-blip",
         "network-down",
         "local-config",
+        "provider-refused-our-setup",
+        "our-own-close-echoed-back",
     ],
 )
 def test_outage_cue_names_the_remedy(

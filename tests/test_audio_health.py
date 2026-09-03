@@ -333,7 +333,7 @@ def _plan_for(coupling: str, outputd_env: dict[str, str] | None = None):
     """
     from types import SimpleNamespace
 
-    from jasper.audio_runtime_plan import transport_topology_for_coupling
+    from jasper.transport_coherence import transport_topology_for_coupling
     from jasper.fanin_coupling import COUPLING_ENV_VAR
 
     def setting(key: str):

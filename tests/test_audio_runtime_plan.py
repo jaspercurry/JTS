@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from jasper import audio_runtime_plan as audio_plan
+from jasper import transport_coherence
 from jasper.audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID,
     HIFIBERRY_DAC8X_ID,
@@ -50,6 +51,8 @@ from jasper.audio_runtime_plan import (
     route_owned_env_actions,
     TRANSPORT_OFF_RING,
     TRANSPORT_SHM_RING,
+)
+from jasper.transport_coherence import (
     transport_coherence_errors,
     transport_topology_for_coupling,
 )
@@ -1940,7 +1943,7 @@ def test_a_ring_plan_over_a_direct_bridge_is_a_contradiction(
         **bridge_lines,
     }
 
-    report = audio_plan.transport_coherence_report(
+    report = transport_coherence.transport_coherence_report(
         coupling="shm_ring", outputd_env=outputd_env
     )
 
@@ -1952,7 +1955,7 @@ def test_a_ring_plan_over_a_direct_bridge_is_a_contradiction(
     # off it, so no ring endpoint pair is published for a hop outputd is not
     # taking.
     assert (
-        audio_plan.transport_topology_for_coupling(
+        transport_coherence.transport_topology_for_coupling(
             "shm_ring", outputd_env=outputd_env
         ).name
         == TRANSPORT_OFF_RING
@@ -1977,7 +1980,7 @@ def test_a_bonded_member_resolves_its_own_shape_and_declares_no_ring_b():
         DAC_CONTENT_RING_PCM,
     )
 
-    topology = audio_plan.transport_topology_for_coupling(
+    topology = transport_coherence.transport_topology_for_coupling(
         "shm_ring", outputd_env=_MARKER_ARMED_ENV
     )
 
@@ -1989,7 +1992,7 @@ def test_a_bonded_member_resolves_its_own_shape_and_declares_no_ring_b():
     # Ring A is UNCHANGED on this box: fan-in serves it here like anywhere else.
     assert (
         topology.fanin_to_camilla["camilla_capture_device"]
-        == audio_plan.transport_topology_for_coupling(
+        == transport_coherence.transport_topology_for_coupling(
             "shm_ring", outputd_env={}
         ).fanin_to_camilla["camilla_capture_device"]
     )
@@ -2007,7 +2010,7 @@ def test_a_bonded_member_keeps_ring_a_checked_and_claims_no_post_dsp_pair():
     """
     from jasper.fanin_coupling import RING_CAPTURE_DEVICE
 
-    healthy = audio_plan.transport_coherence_report(
+    healthy = transport_coherence.transport_coherence_report(
         coupling="shm_ring",
         outputd_env=_MARKER_ARMED_ENV,
         camilla_devices={
@@ -2020,7 +2023,7 @@ def test_a_bonded_member_keeps_ring_a_checked_and_claims_no_post_dsp_pair():
 
     # The SAME call with only the capture device changed: the one error is
     # produced by that difference and nothing else.
-    stranded = audio_plan.transport_coherence_report(
+    stranded = transport_coherence.transport_coherence_report(
         coupling="shm_ring",
         outputd_env=_MARKER_ARMED_ENV,
         camilla_devices={
@@ -2044,7 +2047,7 @@ def test_the_marker_beside_a_declared_bridge_is_a_coherence_error():
     It also must NOT resolve the served shape: a topology saying "bonded member,
     all well" would send every consumer past a daemon that cannot start.
     """
-    report = audio_plan.transport_coherence_report(
+    report = transport_coherence.transport_coherence_report(
         coupling="shm_ring", outputd_env=_CONTRADICTED_ENV
     )
 
@@ -2054,7 +2057,7 @@ def test_the_marker_beside_a_declared_bridge_is_a_coherence_error():
     # ring here would let /state and the doctor describe a daemon that cannot
     # start as the healthy Ring A + Ring B pair.
     assert (
-        audio_plan.transport_topology_for_coupling(
+        transport_coherence.transport_topology_for_coupling(
             "shm_ring", outputd_env=_CONTRADICTED_ENV
         ).name
         == audio_plan.TRANSPORT_OFF_RING
@@ -2094,7 +2097,7 @@ def test_an_undeclared_bridge_under_a_ring_plan_is_coherent(marker):
     transport as split, which on the doctor's split-transport check called a
     demonstrably playing speaker SILENT.
     """
-    report = audio_plan.transport_coherence_report(
+    report = transport_coherence.transport_coherence_report(
         coupling="shm_ring",
         outputd_env={
             "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT": marker,

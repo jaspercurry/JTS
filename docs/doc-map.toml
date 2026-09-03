@@ -675,6 +675,7 @@ title = "Audio-latency foundation / lean File-capture lane"
 safety = "boot-risk"
 code = [
   "jasper/audio_runtime_plan.py",
+  "jasper/transport_coherence.py",
   "jasper/mux.py",
   "jasper/camilla_config_contract.py",
   "jasper/sound/camilla_yaml.py",

@@ -35,7 +35,6 @@ import dataclasses
 import json
 import logging
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -589,47 +588,6 @@ async def test_the_re_emit_seams_forward_the_derived_endpoint(
 
     assert spy.call_args is not None, f"{seam} never reached the recomposer"
     assert spy.call_args.kwargs.get("playback_device") == sentinel_device
-
-
-async def test_the_measurement_sweep_graph_follows_the_live_endpoint(
-    applied_box, tmp_path, monkeypatch,
-):
-    """#2344: an ARMED box's sweep excites the RING on BOTH halves, and the
-    emitted file is byte-identical to the snapshot-default recompose.
-
-    This seam loads the graph it re-emits to play the excitation, so an
-    inherited snapshot lane swept the tap fan-in stops feeding under
-    ``shm_ring`` — a device nobody reads, recorded as silence.
-    """
-    from jasper import dsp_apply
-    from jasper.active_speaker import web_commissioning
-
-    topology, applied = applied_box
-    _point_statefile_at(
-        tmp_path,
-        monkeypatch,
-        _graph_for(topology, applied, RING_ACTIVE_PLAYBACK_DEVICE),
-        name="loaded.yml",
-    )
-    target = tmp_path / "summed_measurement.yml"
-    monkeypatch.setenv(web_commissioning.AUTOMATIC_SUMMED_CONFIG_PATH_ENV, str(target))
-    # CamillaDSP's own syntax check needs a binary; accept any emitted graph.
-    monkeypatch.setattr(
-        dsp_apply,
-        "validate_camilla_config",
-        lambda path: SimpleNamespace(ok_to_apply=True, to_dict=lambda: {"path": path}),
-    )
-    camilla = _FakeCamilla(str(tmp_path / "normal.yml"))
-
-    payload = await web_commissioning._load_applied_summed_measurement_config(
-        topology=topology, camilla_factory=lambda: camilla
-    )
-
-    assert payload["load"]["status"] == "loaded", payload
-    assert camilla.loaded_path == str(target)
-    emitted = target.read_text(encoding="utf-8")
-    assert _both_halves(emitted) == (RING_CAPTURE_DEVICE, RING_ACTIVE_PLAYBACK_DEVICE)
-    assert emitted == _graph_for(topology, applied, None)
 
 
 # --------------------------------------------------------------------------
