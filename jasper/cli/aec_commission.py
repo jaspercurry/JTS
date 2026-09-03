@@ -29,7 +29,11 @@ from jasper.active_speaker.volume_latch import fader_matches
 from jasper.atomic_io import atomic_write_json
 from jasper.audio_hardware import dac as dac_registry
 from jasper.audio_measurement.correction_lane import run_correction_play
-from jasper.camilla import MAIN_VOLUME_RAMP_SETTLE_S
+from jasper.camilla import (
+    MAIN_VOLUME_RAMP_SETTLE_S,
+    declare_main_volume_db,
+    read_main_volume_db,
+)
 from jasper.chip_aec_alignment import (
     ARTIFACT_PATH,
     AlignmentArtifact,
@@ -56,7 +60,6 @@ from jasper.chip_aec_alignment import (
 from jasper.chip_aec_policy import STATUS_APPROVED, static_dac_qualification
 from jasper.chip_aec_shipped_alignment import render_entry
 from jasper.cli import aec_init
-from jasper.camilla import declare_main_volume_db, read_main_volume_db
 from jasper.env_load import merged_env_files
 from jasper.log_event import log_event
 from jasper.mics import xvf3800

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sys
 import types
 from contextlib import nullcontext
@@ -810,17 +811,21 @@ def test_sandboxed_unit_keeps_the_reconciler_leg_env_path_writable() -> None:
         )
 
 
-def _stateful_camilladsp(monkeypatch, *, level_db: float) -> dict[str, float]:
+def _stateful_camilladsp(
+    monkeypatch, *, level_db: float, freeze_readback: bool = False
+) -> dict[str, float]:
     """Install a fake `camilladsp` whose main volume remembers what was set.
 
     Returned so a test can read what actually LANDED at the fake hardware —
     the clamped value, when a caller asks above the ceiling.
+    ``freeze_readback`` pins what `main_volume` reports regardless of writes,
+    which is how a readback that never agrees is simulated.
     """
     state = {"db": level_db}
     client = types.SimpleNamespace(
         volume=types.SimpleNamespace(
             set_main_volume=lambda db: state.__setitem__("db", db),
-            main_volume=lambda: state["db"],
+            main_volume=lambda: level_db if freeze_readback else state["db"],
         ),
         connect=lambda: None,
         disconnect=lambda: None,
@@ -890,3 +895,34 @@ def test_a_commissioning_volume_above_the_ceiling_lands_clamped_and_refuses(
         io.set_volume(6.0)
 
     assert state["db"] == 0.0
+
+
+def test_a_non_finite_commissioning_fader_value_is_refused(monkeypatch) -> None:
+    """No commissioning capture may start against a fader nobody can name.
+
+    All three of the helpers' refusals, which is one behaviour at one
+    altitude: the READ that comes back non-finite, the REQUEST that is
+    non-finite, and the READBACK that stays non-finite after a write. Each
+    raises rather than letting a run proceed at an unknown level.
+    """
+    from jasper.camilla import (
+        CamillaVolumeError,
+        declare_main_volume_db,
+        read_main_volume_db,
+    )
+
+    _stateful_camilladsp(monkeypatch, level_db=math.nan, freeze_readback=True)
+    io = _commissioning_io(monkeypatch)
+
+    # The READ: what `prepare_volume` calls to learn the household level.
+    with pytest.raises(CamillaVolumeError):
+        read_main_volume_db()
+
+    # The REQUEST: a caller asking for a level that is not a number.
+    with pytest.raises(CamillaVolumeError):
+        declare_main_volume_db(math.nan)
+
+    # The READBACK, through the commissioning path: the write is accepted but
+    # the fader never reports a level anyone can name.
+    with pytest.raises(CamillaVolumeError):
+        io.set_volume(-20.0)

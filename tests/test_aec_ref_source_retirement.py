@@ -115,6 +115,27 @@ def test_the_bridge_never_imports_alsaaudio():
     )
 
 
+def test_the_reference_geometry_matches_outputd_the_producer():
+    """48 kHz stereo is jasper-outputd's fact, not the bridge's free parameter.
+
+    Cross-language pin against the producer's own source. Asserting the
+    constants against each other would be self-referential — moving one would
+    move both sides and stay green — so they are checked against
+    `rust/jasper-outputd/src/types.rs`, where the value is fixed and
+    `Config::from_env` refuses any other rate.
+    """
+    types_rs = (REPO / "rust" / "jasper-outputd" / "src" / "types.rs").read_text()
+
+    assert f"pub const SAMPLE_RATE: u32 = {aec_bridge.REF_RATE:_};" in types_rs, (
+        "aec_bridge.REF_RATE must equal jasper-outputd's core sample rate; "
+        "the reference datagrams are that daemon's playout periods"
+    )
+    assert f"pub const CHANNELS: u16 = {aec_bridge.REF_CHANNELS};" in types_rs, (
+        "aec_bridge.REF_CHANNELS must equal jasper-outputd's channel count; "
+        "the reference is stereo whatever the sink's width"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 2. A retired value converges; an unknown one still fails loudly.
 # ---------------------------------------------------------------------------
