@@ -22,10 +22,13 @@ RuntimeDirectoryMode=0755
 # systemd resolves escapes inside single quotes.
 # No `+`: usb_mic.env is 0644 in /var/lib/jasper 0770 root:jasper, which
 # User=jasper-usbmic reads through its primary group.
+# %%s, not %s: systemd expands %s (the user-shell specifier) at unit
+# load, which turns the printf format into a literal path and drops
+# the value being tested. Every %% in this line must stay doubled.
 # `timeout 2` on is-active mirrors the replaced _ready()'s subprocess
 # timeout=2.0: a wedged system bus fails closed (aec_bridge_inactive)
 # instead of stalling this gate past RestartSec=2.
-ExecCondition=/bin/sh -c 'intent=/var/lib/jasper/usb_mic.env; chmask=/sys/kernel/config/usb_gadget/jts-usb-audio/functions/uac2.usb0/p_chmask; q=$$(printf "\\47\\42"); line=$$(grep -E "^[[:space:]]*JASPER_USB_MIC[[:space:]]*=" "$$intent" 2>/dev/null | tail -n 1); if ! printf "%s" "$$line" | grep -qE "^[[:space:]]*JASPER_USB_MIC[[:space:]]*=[[:space:]]*[$$q]*enabled[$$q]*[[:space:]]*$$"; then reason=intent_off_or_invalid; elif ! mask=$$(cat "$$chmask" 2>/dev/null); then reason=uac2_missing; elif [ "$$mask" != "1" ]; then reason="p_chmask_$${mask:-missing}"; elif timeout 2 systemctl is-active --quiet jasper-aec-bridge.service; then exit 0; else reason=aec_bridge_inactive; fi; echo "event=usb_mic.skip reason=$$reason" >&2; exit 1'
+ExecCondition=/bin/sh -c 'intent=/var/lib/jasper/usb_mic.env; chmask=/sys/kernel/config/usb_gadget/jts-usb-audio/functions/uac2.usb0/p_chmask; q=$$(printf "\\47\\42"); line=$$(grep -E "^[[:space:]]*JASPER_USB_MIC[[:space:]]*=" "$$intent" 2>/dev/null | tail -n 1); if ! printf "%%s" "$$line" | grep -qE "^[[:space:]]*JASPER_USB_MIC[[:space:]]*=[[:space:]]*[$$q]*enabled[$$q]*[[:space:]]*$$"; then reason=intent_off_or_invalid; elif ! mask=$$(cat "$$chmask" 2>/dev/null); then reason=uac2_missing; elif [ "$$mask" != "1" ]; then reason="p_chmask_$${mask:-missing}"; elif timeout 2 systemctl is-active --quiet jasper-aec-bridge.service; then exit 0; else reason=aec_bridge_inactive; fi; echo "event=usb_mic.skip reason=$$reason" >&2; exit 1'
 ExecStart=/opt/jasper/.venv/bin/jasper-usbmic
 Restart=on-failure
 RestartSec=2
