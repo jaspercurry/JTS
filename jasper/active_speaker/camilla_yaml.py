@@ -103,10 +103,9 @@ if TYPE_CHECKING:
     # it, so a cut-only emit never pulls numpy (see branch_chain's docstring).
     from .branch_chain import CrossoverSection
 
-ACTIVE_STARTUP_CONFIG_NAME = "active_speaker_startup.yml"
-# The PARKED graph's on-disk name + internal vocabulary — the same class of
-# artifact as the startup config: a generated, topology-derived, all-muted boot
-# graph. See emit_active_speaker_parked_config for what parked means.
+# The PARKED graph's on-disk name + internal vocabulary — a generated,
+# topology-derived, all-muted boot graph. See emit_active_speaker_parked_config
+# for what parked means.
 PARKED_CONFIG_NAME = "active_speaker_parked.yml"
 PARKED_SILENCE_MIXER = "parked_silence"
 # The parked graph's sink: a ``File`` playback, never a DAC — no DAC attached

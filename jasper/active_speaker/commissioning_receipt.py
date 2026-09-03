@@ -4,18 +4,11 @@
 
 """Strict Active-owned commissioning receipt for downstream Room gating.
 
-This is an inert authority model.  A later Active integration shell will derive
-the exact target plan from the current topology, mint applied-graph, read-back,
-and protection proof, and persist the receipt.  Nothing here reads files,
-mutates CamillaDSP, or changes the current Room gate.
-
-The current Active measurement bundles are intentionally fail-soft historical
-evidence and are **not** commissioning authority.  Wave 2 must create this
-separate fail-closed authority chain for a fresh production commissioning
-session. Historical bundles are permanently non-admitted: no migration,
-backfill, marker copy, or synthesized admission artifact may promote them.
-Merely deserializing a legacy bundle into one of these types is never
-sufficient.
+Pure value types: nothing here reads files, mutates CamillaDSP, or moves the
+Room gate — the apply and verification services own those effects.  Fail-soft
+historical measurement bundles are permanently non-admitted: no migration,
+backfill, marker copy, or synthesized admission artifact promotes one, and
+deserializing a legacy bundle into these types is never sufficient.
 """
 
 from __future__ import annotations

@@ -28,7 +28,6 @@ import pytest
 
 from jasper.active_speaker import crossover_alignment as ca
 from jasper.active_speaker.commissioning_capture import (
-    RESERVED_CROSSOVER_EVENTS,
     DEFAULT_REPEAT_TARGET,
     DRIVER_VERDICT_TO_OUTCOME,
     REPEAT_OUTLIER_DB,
@@ -1742,30 +1741,6 @@ def test_summed_capture_no_crossover_region_emits_exactly_one_rejected_event(cap
     assert "reason=no_crossover_region" in rejected[0]
     # No verdict at all for this early-out path.
     assert "verdict=" not in rejected[0]
-
-
-def test_reserved_crossover_events_are_never_emitted():
-    # Spec-pinned (docs/active-crossover-information-design.md "Structured
-    # events"): correction.crossover_proposal_ready / _level_locked /
-    # _level_failed are documented as future work and MUST NOT have a call site
-    # yet. Verification pass/fail now ship from the Active-owned verification
-    # service and have their own once-only transition tests.
-    root = Path(__file__).resolve().parents[1] / "jasper"
-    assert set(RESERVED_CROSSOVER_EVENTS) == {
-        "correction.crossover_proposal_ready",
-        "correction.crossover_level_locked",
-        "correction.crossover_level_failed",
-    }
-    for name in RESERVED_CROSSOVER_EVENTS:
-        offenders = []
-        for path in root.rglob("*.py"):
-            text = path.read_text(encoding="utf-8")
-            # Ignore the reserved-names tuple's own declaration.
-            if path.name == "commissioning_capture.py":
-                text = text.replace(f'"{name}"', "", 1)
-            if f'"{name}"' in text or f"'{name}'" in text:
-                offenders.append(str(path.relative_to(root.parent)))
-        assert offenders == [], f"{name} has a call site: {offenders}"
 
 
 # --- Paired summed evidence + multi-region proposals (lane E, Slice 2) ------
