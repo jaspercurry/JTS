@@ -72,6 +72,11 @@ def read(path: str | None = None) -> dict[str, Any]:
     p = Path(path or DEFAULT_PATH)
     try:
         return parse(p.read_text())
+    except FileNotFoundError:
+        # Absent until Spotify first plays; volume_observers polls this at
+        # 1 Hz, so logging here is pure spam on every speaker that hasn't
+        # used Spotify yet.
+        return {}
     except OSError as e:
         logger.debug("librespot state read failed (%s): %s", p, e)
         return {}

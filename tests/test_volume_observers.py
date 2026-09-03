@@ -159,13 +159,16 @@ async def test_read_spotify_percent_maps_raw_to_pct(tmp_path):
     assert pct == 50
 
 
-async def test_read_spotify_percent_handles_missing_state_file(tmp_path):
-    """No state file (librespot hasn't fired any event yet) → None."""
+async def test_read_spotify_percent_handles_missing_state_file(tmp_path, caplog):
+    """No state file (librespot hasn't fired any event yet) → None.
+    Expected until first Spotify play, and polled at 1 Hz — must not log."""
     obs = VolumeObserver(
         _FakeCoordinator(),
         librespot_state_path=str(tmp_path / "missing.env"),
     )
-    assert await obs._read_spotify_percent() is None
+    with caplog.at_level("DEBUG", logger="jasper.librespot_state"):
+        assert await obs._read_spotify_percent() is None
+    assert caplog.records == []
 
 
 async def test_read_spotify_percent_handles_missing_volume_key(tmp_path):
