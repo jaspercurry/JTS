@@ -4,71 +4,35 @@
 
 """The acoustic context one measurement capture was actually taken under.
 
-**Why this exists — the config label is not the graph.** A CHECK/MEASURE
-program is played through a transient per-driver ROUTING graph
-(:func:`jasper.active_speaker.camilla_yaml.emit_active_speaker_program_config`
-— each program channel straight to its driver's physical output, crossover /
-delay / linearization deliberately OMITTED), loaded INLINE with
-``SetConfig`` and unloaded again the moment the sweep ends. That loader
-"deliberately leaves the persisted ``config_file_path`` unchanged" — the
-words are :meth:`jasper.camilla.CamillaController.get_active_config_raw`'s
-own — so a capture taken through the routing graph and a capture taken
-through the standing applied graph report the **same** ``config_path`` while
-going through radically different transfer functions. On 2026-08-19 a forensic
-session on jts3 compared levels across those two graphs for hours with nothing
-on disk able to tell them apart (that session reported a +7…+15 dB per-branch
-difference; the number is its observation, not a property this module
-measures), and reconstructed the night's −27.5 dB fader out of the journal
-because no capture recorded it either.
+**The config label is not the graph.** A CHECK/MEASURE program plays through a
+transient per-driver ROUTING graph (each program channel straight to its
+driver's physical output, crossover / delay / linearization OMITTED) loaded
+INLINE with ``SetConfig``, and that loader leaves the persisted
+``config_file_path`` unchanged -- so a capture taken through the routing graph
+and one taken through the standing applied graph report the SAME
+``config_path`` through radically different transfer functions.
+``graph.config_path`` is recorded precisely BECAUSE it is the misleading label:
+beside ``kind`` and ``fingerprint`` it shows what the statefile claimed versus
+what was running. ``kind`` is the only field that can never read ``null`` -- it
+is structural knowledge held by the branch that loaded (or did not load) the
+graph, not a probe that can fail. ``graph.fingerprint`` compares to OTHER
+capture provenance and to nothing else; it is not a round receipt's
+``entry_graph_fingerprint``.
 
-So a retained capture records, read from the ONE live owner of each fact at
-the instant the stimulus is emitted:
+Every field is read from the ONE live owner of that fact at the instant the
+stimulus is emitted. :func:`volume_fields_agree` compares ``main_volume_db``
+against ``session_volume_db`` (#2925 T1-2: an overnight campaign carried the
+two fields two lines apart disagreeing by 8.712 dB, found five days later by fitting
+the banked curves) and is a DISCLOSURE, not a gate -- nothing here may break a
+capture. It runs only on records this module observes, which is not every
+capture: observation is bought only while capture retention is on, and
+:func:`observe_capture_provenance` logs the WARN when a retained record
+self-contradicts. The fail-CLOSED half is the playback path's volume hold, which shares
+one tolerance with this comparison so the two cannot disagree about "agree".
 
-=========================  ====================================================
-field                      live owner
-=========================  ====================================================
-``main_volume_db``         :meth:`jasper.camilla.CamillaController.get_volume_db`
-``session_volume_db``      :attr:`~jasper.active_speaker.session_volume_plan.SessionVolumePlan.measurement_volume_db`
-``graph.kind``             the playback branch that performed (or skipped) the swap
-``graph.config_path``      :meth:`~jasper.camilla.CamillaController.get_config_file_path`
-``graph.fingerprint``      :func:`~jasper.active_speaker.commissioning_admission.running_graph_fingerprint` over :meth:`~jasper.camilla.CamillaController.get_active_config_raw`
-``stimulus.*``             the :class:`~jasper.audio_measurement.program.ExcitationProgram` and its published WAV artifact
-=========================  ====================================================
-
-``main_volume_db`` and ``session_volume_db`` are recorded for the same reason
-``graph.config_path`` is, and on 2026-08-24 they proved it: across an entire
-overnight campaign every MEASURE-phase capture carried those two fields two
-lines apart disagreeing by 8.712 dB — the live fader sat at the household
-volume while the plan declared the measurement one — and no reader compared
-them, so the split was found five days later by fitting the banked curves.
-:func:`volume_fields_agree` is that comparison, run on every record this
-module OBSERVES — which is not every capture, because observation is bought
-only while capture retention is on; :func:`observe_capture_provenance` logs a
-WARN when a retained record self-contradicts. It is a disclosure and not a
-gate BY THIS MODULE'S CONTRACT — nothing here may break a capture. The
-fail-CLOSED half is the one that runs on every capture: the playback path's
-volume hold
-(:meth:`jasper.active_speaker.session_volume_plan.SessionVolumePlan.hold_measurement_volume`,
-over :func:`jasper.active_speaker.volume_latch.hold_fader_at`) proves the
-declared volume before the stimulus and refuses rather than records. The two
-share one tolerance so they cannot disagree about what "agree" means.
-
-``graph.config_path`` is recorded precisely BECAUSE it is the misleading
-label: side by side with ``kind`` and ``fingerprint`` it shows what the
-statefile claimed versus what was running. ``kind`` is the only field that
-can never read ``null`` — it is structural knowledge held by the branch that
-loaded (or did not load) the graph, not a probe that can fail.
-
-``graph.fingerprint`` compares to OTHER capture provenance and to nothing
-else. It is not the same quantity as a round receipt's
-``entry_graph_fingerprint``, which is the applied profile record's
-``candidate_fingerprint`` (``correction_crossover_v2._active_graph_fingerprint``)
-— a different namespace answering a different question.
-
-Nothing here may ever break a capture. Every read is individually guarded, and
-:func:`record_capture_provenance` wraps the lot in a blind belt; an unreadable
-surface leaves its field ``None`` and contributes its name to one WARN
-``event=active_speaker.capture_provenance`` line.
+Every read is individually guarded and :func:`record_capture_provenance` wraps
+the lot in a blind belt; an unreadable surface leaves its field ``None`` and
+contributes its name to one WARN ``event=active_speaker.capture_provenance``.
 """
 
 from __future__ import annotations
@@ -85,18 +49,16 @@ from .volume_latch import fader_matches
 logger = logging.getLogger(__name__)
 
 # The two values ``CaptureProvenance.graph_kind`` takes. Unrelated to
-# ``commissioning_host.CommissioningGraphKind`` ("normal"/"reverse"/"delay"),
-# which names a commissioning attempt's polarity, not a capture's topology.
+# ``commissioning_host.CommissioningGraphKind``, which names a commissioning
+# attempt's polarity, not a capture's topology.
 
 #: The transient per-driver routing graph a CHECK/MEASURE program is played
-#: through — one program channel to one driver's physical output, with the
-#: crossover, delays and linearization left OUT. Loaded under the DSP writer
-#: lock for the length of one sweep and restored after.
+#: through, with the crossover, delays and linearization left OUT. Loaded under
+#: the DSP writer lock for the length of one sweep and restored after.
 GRAPH_KIND_PROGRAM_ROUTING = "program_routing"
 
 #: No graph was loaded: the standing graph on the speaker IS the system under
-#: test. Every summed-sweep phase (entry baseline, verify, and both cloud
-#: position groups) plays this way.
+#: test. Every summed-sweep phase plays this way.
 GRAPH_KIND_APPLIED = "applied"
 
 
@@ -115,8 +77,7 @@ class CaptureProvenance:
     stimulus_peak_dbfs: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """The sidecar block, written under one ``provenance`` key so that
-        nothing the sidecar already carries moves or changes."""
+        """The sidecar block, written under one ``provenance`` key."""
         return {
             "main_volume_db": self.main_volume_db,
             "session_volume_db": self.session_volume_db,
@@ -137,19 +98,12 @@ class CaptureProvenance:
 class CaptureProvenanceRecorder:
     """The one-capture handoff from the play seam to the retention seam.
 
-    The two seams are different closures on different call stacks — the host
-    emits the stimulus, the phone uploads its recording some seconds later and
-    the analyze seam retains it — and the flow's ``play`` seam returns ``None``,
-    so the fact cannot be handed back through it. One recorder per measurement
-    session bridges the gap, exactly as ``PlaybackStartSignal`` already bridges
-    "audio starts now" from the same play seam to the relay runner.
+    The two seams are different closures on different call stacks and the play
+    seam returns ``None``, so the fact cannot be handed back through it.
 
-    :meth:`take` CONSUMES. The plan runner arms and plays each capture before
-    consuming it (``on_armed`` → the play seam, then ``consume_capture`` → the
-    analyze seam), so a second read with no play in between is not a second
-    capture of the same stimulus — it is a capture this recorder cannot speak
-    for, and it gets ``None`` rather than the previous capture's context. Stale
-    provenance on a forensic clip is worse than absent: absent is visibly absent.
+    :meth:`take` CONSUMES. A second read with no play in between is a capture
+    this recorder cannot speak for, and gets ``None`` rather than the previous
+    capture's context: stale provenance on a forensic clip is worse than absent.
     """
 
     def __init__(self) -> None:
@@ -169,16 +123,12 @@ class CaptureProvenanceRecorder:
 def volume_fields_agree(provenance: CaptureProvenance) -> bool:
     """Do this record's two volume fields tell the same story? (#2925 T1-2)
 
-    ``True`` when the live fader read (``main_volume_db``) matches the volume
-    the session declared (``session_volume_db``) within the shared readback
-    tolerance — the same tolerance
-    :meth:`~jasper.active_speaker.session_volume_plan.SessionVolumePlan.open`
-    confirmed that volume under, so a wider disagreement means the capture is
-    at a level the session never confirmed.
-
-    ``True`` also when ``session_volume_db`` is ``None``: no measurement volume
-    was open, so the record makes no claim these fields could contradict. A
-    ``None`` ``main_volume_db`` against a declared volume IS a disagreement —
+    ``True`` when the live fader read matches the volume the session declared,
+    within the same readback tolerance ``SessionVolumePlan.open`` confirmed that
+    volume under, so a wider disagreement means the capture is at a level the
+    session never confirmed. ``True`` also when ``session_volume_db`` is
+    ``None``: no measurement volume was open, so the record makes no claim. A
+    ``None`` ``main_volume_db`` against a declared volume IS a disagreement --
     the record claims a level it could not read.
     """
     if provenance.session_volume_db is None:
@@ -186,31 +136,24 @@ def volume_fields_agree(provenance: CaptureProvenance) -> bool:
     return fader_matches(provenance.main_volume_db, provenance.session_volume_db)
 
 
-#: What a guarded provenance read is allowed to swallow. Deliberately a named
-#: tuple of concrete types rather than a blind ``except Exception``: the
-#: CamillaDSP surface is already closed (``CamillaController._call`` converts
-#: everything it can hit into ``CamillaUnavailable``, and ``best_effort=True``
-#: turns that into ``None``), so what remains is a fingerprint helper's
-#: ``RuntimeError`` and the shape errors a test double or a future caller can
-#: produce. A genuinely unexpected exception type SHOULD fall through to
-#: ``record_capture_provenance``'s blind belt rather than be absorbed here,
-#: where absorbing it would silently null one field and hide the reason.
+#: What a guarded provenance read may swallow. A named tuple of concrete types
+#: rather than a blind ``except Exception``: the CamillaDSP surface is already
+#: closed, so what remains is a fingerprint helper's ``RuntimeError`` and the
+#: shape errors a test double can produce. A genuinely unexpected type SHOULD
+#: fall through to ``record_capture_provenance``'s blind belt rather than be
+#: absorbed here, where it would silently null one field and hide the reason.
 _READ_ERRORS = (OSError, RuntimeError, TypeError, ValueError, AttributeError)
 
 
 def _stimulus_peak_dbfs(program: Any) -> float | None:
     """The loudest stimulus segment's declared digital peak, in dBFS.
 
-    ``ProgramSegment.gain_db`` is "the digital gain applied to the unit-peak
-    stimulus" (the composer's own words), so for a unit-peak stimulus it IS
-    that segment's peak dBFS in the rendered WAV — the same quantity
-    ``program_admission._channel_declared_peak_dbfs`` reads for its
-    per-channel manifest check. Scoped to ``stimulus_segments()`` for that
-    function's stated reason: the courtesy prelude is derived never to exceed
-    its channel's loudest stimulus, so including it could only mask a
-    render bug.
-
-    Session volume is NOT folded in — it is its own field, from its own owner.
+    ``ProgramSegment.gain_db`` is the digital gain applied to the unit-peak
+    stimulus, so for a unit-peak stimulus it IS that segment's peak dBFS in the
+    rendered WAV. Scoped to ``stimulus_segments()``: the courtesy prelude is
+    derived never to exceed its channel's loudest stimulus, so including it
+    could only mask a render bug. Session volume is NOT folded in -- it is its
+    own field, from its own owner.
     """
     segments = program.stimulus_segments()
     peaks = [float(segment.gain_db) for segment in segments]
@@ -229,29 +172,16 @@ async def record_capture_provenance(
 ) -> None:
     """Observe, and hand the result to ``recorder``. The never-break-a-capture belt.
 
-    The entry point a playback path should call. :func:`observe_capture_provenance`
-    guards each read against the types it can actually meet; THIS is the outer
-    belt, and it is deliberately blind, because the contract it enforces is not
-    "handle the known failures" but "a forensic sidecar for an
-    operator-enabled ring may never cost a household its measurement" — and an
-    exception type nobody predicted is exactly the case that promise is for.
-    ``BaseException`` still passes: a cancelled measurement must stay cancelled.
+    The entry point a playback path should call. Deliberately BLIND, because the
+    contract it enforces is not "handle the known failures" but "a forensic
+    sidecar for an operator-enabled ring may never cost a household its
+    measurement". ``BaseException`` still passes: a cancelled measurement must
+    stay cancelled. A ``None`` recorder is one more thing it absorbs, so no
+    playback branch has to remember a pre-check.
 
-    Living here rather than at the call site keeps that one promise in one
-    place, however many playback branches come to record through it. A ``None``
-    recorder is one more thing it absorbs: "there is nothing to record into" is
-    a state the seams genuinely have (every caller that passes no recorder), and
-    the belt owning it is what keeps the optionality from becoming a pre-check
-    each playback branch must remember — a forgotten one would otherwise land
-    here as an ``AttributeError`` logged as a provenance FAILURE.
-
-    The controller and the volume plan arrive as ZERO-ARGUMENT RESOLVERS rather
-    than as objects, so that obtaining them happens inside the belt too. Passed
-    as values, they would be evaluated in the caller's argument list — outside
-    the try, on the play path — and a raise there would take the measurement
-    down with it. Neither resolver can raise in production today; the point is
-    that the docstring above says "never", and an argument list is the one
-    place that word would not have covered.
+    The controller and the volume plan arrive as ZERO-ARGUMENT RESOLVERS so that
+    obtaining them happens inside the belt too: passed as values they would be
+    evaluated in the caller's argument list, outside the try, on the play path.
     """
     if recorder is None:
         return
@@ -290,16 +220,13 @@ async def observe_capture_provenance(
 ) -> CaptureProvenance:
     """Read the live context for the stimulus that is about to play.
 
-    Call this as late as possible — for the program branch that means AFTER
-    the routing graph is loaded and inside the same writer lock, because
-    ``get_active_config_raw`` is what distinguishes the two graphs and it
-    answers the applied graph right up until the load lands.
-
-    Each read is guarded on its own, so one dead surface cannot blank the rest,
-    and the names of whatever could not be read are collected into a single
-    WARN rather than one line per field. Those guards name the types a read can
-    actually meet; :func:`record_capture_provenance` is the blind outer belt,
-    and is what a playback path should call.
+    Call this as late as possible -- for the program branch, AFTER the routing
+    graph is loaded and inside the same writer lock, because
+    ``get_active_config_raw`` is what distinguishes the two graphs and it answers
+    the applied graph right up until the load lands. Each read is guarded on its
+    own and the unreadable names are collected into a single WARN;
+    :func:`record_capture_provenance` is the blind outer belt a playback path
+    should call.
     """
     unreadable: list[str] = []
 
@@ -341,9 +268,7 @@ async def observe_capture_provenance(
 
     # ``phase`` is the CAPTURE's phase, passed in, never ``program.phase``:
     # ``programs.program_for_phase`` answers several phases with one composed
-    # object by identity (every GROUP_SUMMED_SWEEP_PHASES position, the
-    # compared VERIFY/baseline pair, MEASURE and a lateral pose), so the
-    # object's own phase names only one of the phases that play it.
+    # object by identity, so the object's own phase names only one of them.
     program_id: str | None = None
     peak_dbfs: float | None = None
     try:
@@ -355,9 +280,8 @@ async def observe_capture_provenance(
     except _READ_ERRORS:
         unreadable.append("stimulus.peak_dbfs")
 
-    # The published program WAV's own content hash — the identity the evidence
-    # bundle already minted for these exact bytes. Absent on a caller that has
-    # no published artifact; that is not a failure worth naming.
+    # The published program WAV's own content hash. Absent on a caller with no
+    # published artifact; that is not a failure worth naming.
     sha = getattr(artifact, "sha256", None)
     wav_sha256 = sha if isinstance(sha, str) and sha else None
 
@@ -382,14 +306,12 @@ async def observe_capture_provenance(
         stimulus_peak_dbfs=peak_dbfs,
     )
     if not volume_fields_agree(observed):
-        # The tripwire, on the two fields that printed the 2026-08-24 defect
-        # from its first capture (#2925 T1-2). TWO ways to reach it, and the
-        # second is the ordinary one: either the fader moved between the play
-        # path's hold proving it and this read, or the hold PROVED NOTHING
-        # because the plan owned no volume to hold (its own WARN,
-        # ``crossover_v2_capture_volume_unheld``, is the companion line). So
-        # this names both values rather than only the delta — a forensic reader
-        # months later needs to know WHICH of the two is the surprise.
+        # The tripwire on the two fields that printed the 2026-08-24 defect from
+        # its first capture (#2925 T1-2). TWO ways to reach it: the fader moved
+        # between the play path's hold proving it and this read, or the hold
+        # PROVED NOTHING because the plan owned no volume to hold (its companion
+        # WARN is ``crossover_v2_capture_volume_unheld``). So name both values,
+        # not only the delta.
         log_event(
             logger,
             "active_speaker.capture_provenance",
@@ -397,12 +319,11 @@ async def observe_capture_provenance(
             result="volume_disagreement",
             graph_kind=graph_kind,
             phase=phase,
-            # ``repr``, not a float format: this branch is reached precisely
-            # BECAUSE a value failed the numeric agreement test, so it may not
-            # be a number at all — and formatting it as one would raise inside
-            # the observation, where ``record_capture_provenance``'s blind belt
-            # would swallow the whole record and report a provenance failure
-            # instead of the disagreement this line exists to name.
+            # ``repr``, not a float format: this branch is reached BECAUSE a
+            # value failed the numeric agreement test, so it may not be a number
+            # at all -- formatting it as one would raise inside the observation,
+            # where the blind belt would report a provenance failure instead of
+            # the disagreement this line exists to name.
             main_volume_db=repr(main_volume_db),
             session_volume_db=repr(session_volume_db),
         )

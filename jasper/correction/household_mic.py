@@ -237,14 +237,6 @@ def write_household_mic(
     )
 
 
-def clear_household_mic(*, path: Path = DEFAULT_HOUSEHOLD_MIC_PATH) -> None:
-    """Forget the household mic record, if one exists."""
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
-
-
 def resolve_household_mic_calibration(
     record: HouseholdMicRecord,
     *,

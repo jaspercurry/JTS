@@ -5,7 +5,7 @@
 > that spine into [`tuning-operator-runbook.md`](../tuning-operator-runbook.md),
 > whose architecture, contracts-and-invariants and file-map sections then moved
 > on to
-> [`crossover-v2-engine-design.md`](../crossover-v2-engine-design.md) — so a
+> [`crossover-v2-engine-design.md`](crossover-v2-engine-design.md) — so a
 > claim annotated here now lives in one of those two files.
 > Each entry records what one pass re-derived against code and — the load-bearing
 > half — what it deliberately did **not**. Section names quoted below are the

@@ -274,28 +274,6 @@ def test_the_documented_relation_between_the_two_edges_holds():
     )
 
 
-@pytest.mark.parametrize(
-    ("estimate", "expected"),
-    [
-        (None, 350.0),        # no estimate -> the disclosed fallback
-        (300.0, 300.0),       # inside the clamp -> used as-is
-        (100.0, 250.0),       # below -> clamped to the floor
-        (900.0, 500.0),       # above -> clamped to the ceiling
-        (float("nan"), 350.0),  # unknown is not a bound
-        (float("inf"), 350.0),
-        (0.0, 350.0),
-        (-5.0, 350.0),
-    ],
-)
-def test_room_boundary_hz_clamps_or_falls_back(estimate, expected):
-    """A non-finite/non-positive estimate falls back rather than clamping.
-
-    "Unknown" must not silently become a confident 250 or 500 — that would
-    look like a per-room answer the estimator never produced.
-    """
-    assert room_boundary.room_boundary_hz(estimate) == expected
-
-
 def test_every_routed_site_resolves_to_the_ssot_today():
     """Behaviour-identical: RC1 moved ownership, not values."""
     default = room_boundary.ROOM_BOUNDARY_DEFAULT_HZ

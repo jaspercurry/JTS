@@ -8,9 +8,7 @@ Room keeps its historical cache and ALSA defaults here:
 
     WAV -> correction_substream -> jasper-fanin -> CamillaDSP -> outputd
 
-The shared leaf owns only process/tone mechanics.  Existing Room and temporary
-cross-feature imports keep their signatures, paths, and exception behavior while
-feature owners migrate to explicit neutral arguments.
+The shared leaf owns only process and tone mechanics.
 """
 
 from __future__ import annotations
@@ -35,16 +33,11 @@ from jasper.audio_measurement.playback import (
 
 DEFAULT_TONE_DIR = Path("/var/lib/jasper/correction/tones")
 
-# The lane device stopped being a constant at P6c-ii: it is this box's
-# armed-vs-unarmed transport, resolved per call by correction_play_device()
-# (jasper.audio_measurement.correction_lane — the lane's one reader). This
-# module's play surfaces below default their `alsa_device` to None and
-# resolve through that reader at call time, because a def-time default would
-# freeze the device at import and ignore an arm. The historical
-# DEFAULT_ALSA_DEVICE re-export dissolved with it (its one consumer,
-# jasper.active_speaker.commissioning_host, now calls the reader);
-# CORRECTION_SUBSTREAM above remains the lane-NAME SSOT re-export — the
-# unarmed device's name is still a constant, the ACTIVE device is not.
+# The lane device is not a constant: it is this box's armed-vs-unarmed
+# transport, resolved per call by correction_play_device()
+# (jasper.audio_measurement.correction_lane). The play surfaces below default
+# `alsa_device` to None and resolve through that reader at call time, because a
+# def-time default would freeze the device at import and ignore an arm.
 
 
 def _raise_legacy_error(error: PlaybackError, *, missing_label: str) -> None:
@@ -103,10 +96,8 @@ def _ensure_tone_wav(
 class TonePlayer(_SharedTonePlayer):
     """Room-compatible continuous player defaulting to the lane's transport.
 
-    ``alsa_device=None`` resolves the lane's current transport AT
-    CONSTRUCTION (one answer per player instance — the tone plays on the
-    transport the box was on when the player was made, matching how each
-    one-shot spawn resolves once per operation).
+    ``alsa_device=None`` resolves the lane's current transport AT CONSTRUCTION,
+    one answer per player instance.
     """
 
     def __init__(

@@ -1,13 +1,13 @@
 """The crossover geometry Sound DECLARES, and the change one candidate asks for.
 
-Two speakers, one fact. ``/sound``'s design draft declares a crossover as
-``manual_settings.crossover_candidates[]`` — ``frequency_hz``,
-``filter_type``, ``slope_db_per_octave``. A measured candidate carries the
-:class:`~jasper.active_speaker.profile.ActiveSpeakerPreset` it was *measured
-against*, whose :class:`~jasper.active_speaker.profile.CrossoverRegion` spells
-the same fact as ``fc_hz`` / ``target_type`` / ``order``. This module is the
-one place those two spellings are compared, and the one place the difference
-between them becomes an instruction.
+``/sound``'s design draft spells a crossover as ``frequency_hz`` /
+``filter_type`` / ``slope_db_per_octave``; a measured candidate's
+:class:`~jasper.active_speaker.profile.CrossoverRegion` spells the same fact as
+``fc_hz`` / ``target_type`` / ``order``. This is the one place the two are
+compared, and the one place their difference becomes an instruction. The change
+is derived from the candidate, never from an advisory selection record, so the
+declaration and the emitted graph cannot disagree. Nothing here writes:
+``sound_setup`` owns the single durable writer in both directions.
 
 **Why the comparison has to exist at all.**
 ``baseline_profile``'s ``measured_candidate_preset_mismatch`` guard is a whole-
@@ -29,13 +29,6 @@ may render, and not a gate it was never able to keep honest.
 
 **Nothing here writes.** This module derives and refuses; ``sound_setup`` owns
 the single durable writer, in both directions.
-
-Not to be confused with the ``jasper/correction/crossover_declaration.py`` that
-``docs/correction-ux-wave3/w3.1-declaration-and-gating.md`` designs and nothing
-has built: that one is about whether a household has DECLARED its speaker
-active or passive. Same word, different subject, different package — which the
-repo already does elsewhere (``jasper/sound/camilla_yaml.py`` beside
-``jasper/active_speaker/camilla_yaml.py``).
 """
 
 from __future__ import annotations
@@ -70,9 +63,8 @@ __all__ = [
     "preset_crossover_geometry",
 ]
 
-#: Frequencies this close are the same declared corner. The tolerance the apply
-#: path and the declaration writer already used, named once so the derivation,
-#: the writer's compare-and-swap, and the tests cannot pick three numbers.
+#: Frequencies this close are the same declared corner. Named once so the
+#: derivation, the writer's compare-and-swap and the tests share one number.
 FC_SAME_HZ_TOL = 0.05
 
 #: Slopes this close are the same declared slope. Tighter than the frequency
@@ -81,10 +73,9 @@ FC_SAME_HZ_TOL = 0.05
 #: could call two slopes the same that compile to different orders.
 SLOPE_SAME_DB_TOL = 0.005
 
-#: The role whose declared protection floor bounds a crossover corner. Spelled
-#: the same way its three sibling gates spell it (``camilla_yaml``'s emit gate,
-#: ``path_safety``'s load gate, ``test_signal_plan``'s protective clamp) —
-#: there is no shared role constant in this package to point at instead.
+#: The role whose declared protection floor bounds a crossover corner, spelled
+#: as its three sibling gates spell it (``camilla_yaml``'s emit gate,
+#: ``path_safety``'s load gate, ``test_signal_plan``'s protective clamp).
 _PROTECTED_ROLE = "tweeter"
 
 #: ``reason=`` slug of the apply path's below-floor refusal. Machine-readable
@@ -92,26 +83,20 @@ _PROTECTED_ROLE = "tweeter"
 #: this may not.
 CROSSOVER_BELOW_DECLARED_FLOOR = "crossover_below_declared_protection_floor"
 
-#: The document version :func:`change_to_record` answers, mirroring
-#: :data:`~.crossover_v2.driver_prescription.DRIVER_PRESCRIPTION_SCHEMA_VERSION`'s
-#: envelope. A record naming a version this build does not speak reads as no
-#: change to reverse, on this module's own tolerant-read rule — see
+#: The document version :func:`change_to_record` answers. A record naming a
+#: version this build does not speak reads as no change to reverse — see
 #: :func:`change_from_record`.
 CROSSOVER_DECLARATION_CHANGE_SCHEMA_VERSION = 1
 
-#: The ``kind`` discriminator, mirroring
-#: :data:`~.crossover_v2.driver_prescription.DRIVER_PRESCRIPTION_KIND`: this
-#: record is the Undo inverse of a Sound-declaration write, not a prescription,
-#: and its own string says so.
+#: The ``kind`` discriminator: this record is the Undo inverse of a
+#: Sound-declaration write, not a prescription.
 CROSSOVER_DECLARATION_CHANGE_KIND = "jts_crossover_declaration_change"
 
 
 class CrossoverBelowDeclaredFloor(ValueError):
     """A crossover corner sits below the protected driver's declared floor.
 
-    Carries :attr:`reason` (the stable slug) beside the household sentence, so
-    a caller can log the machine-readable fact and render the prose without
-    parsing one out of the other.
+    Carries :attr:`reason` (the stable slug) beside the household sentence.
     """
 
     def __init__(self, message: str) -> None:
@@ -125,8 +110,8 @@ class CrossoverGeometry:
 
     ``filter_type`` and ``slope_db_per_octave`` are the *declared* spellings
     (``"Linkwitz-Riley"``, ``24.0``), never the preset's compiled ones
-    (``"LinkwitzRiley"``, ``order=4``): this value is what gets written back
-    into ``/sound``, so it speaks the language of the file it lands in.
+    (``"LinkwitzRiley"``, ``order=4``): this value is written back into
+    ``/sound``.
     """
 
     fc_hz: float
@@ -160,9 +145,8 @@ class CrossoverDeclarationChange:
     """What one candidate asks ``/sound`` to declare, and what it declares now.
 
     ``configured`` is read from the live draft and is what the writer's
-    compare-and-swap checks; ``selected`` is read off the candidate's own
-    preset. Undo is this value with the two swapped — the same write run
-    backwards, which is why they are one type and not two.
+    compare-and-swap checks; ``selected`` is read off the candidate's preset.
+    Undo is this value with the two swapped.
     """
 
     between_roles: tuple[str, str]
@@ -196,13 +180,10 @@ def preset_crossover_geometry(
 ) -> tuple[tuple[str, str], CrossoverGeometry] | None:
     """The single crossover a preset declares, in the declaration's vocabulary.
 
-    ``None`` — meaning "this preset cannot be reconciled against a declaration
-    entry" — for anything that is not exactly one region compiled from exactly
-    one declared filter: no regions, two or more regions (a three-way's
-    declaration has two entries and this seam writes one), or a region whose
-    ``target_type`` / ``order`` no declared spelling compiles to. Every one of
-    those is a real refusal, not a defect: the alternative is guessing what
-    Sound should say.
+    ``None`` for anything that is not exactly one region compiled from exactly
+    one declared filter: no regions, two or more (a three-way declares two
+    entries and this seam writes one), or a region no declared spelling
+    compiles to. Each is a real refusal — the alternative is guessing.
     """
 
     from .staging import declaration_filter_type, declaration_slope_db_per_octave
@@ -228,10 +209,8 @@ def matching_declared_candidate_index(
 ) -> int | None:
     """Index of the ONE declared crossover entry for ``between_roles``.
 
-    ``None`` when it is missing or ambiguous. One matcher, shared by the
-    derivation here and the writer in ``sound_setup``, so a declaration the
-    derivation read cannot be a different entry from the one the write lands
-    on.
+    ``None`` when it is missing or ambiguous. One matcher, shared with the
+    writer in ``sound_setup``, so the entry read is the entry written.
     """
 
     matches = [
@@ -249,10 +228,9 @@ def declared_crossover_geometry(
     """What ``/sound`` declares for ``between_roles`` right now, or ``None``.
 
     ``None`` when the draft has no manual settings, no unambiguous entry for
-    these roles, or an entry that omits any of the three fields. That last case
-    is not an error to repair here: ``design_draft`` drops empty fields on
-    save, so an entry with no declared slope is one this seam must leave alone
-    rather than complete with a number nobody declared.
+    these roles, or an entry omitting any of the three fields. ``design_draft``
+    drops empty fields on save, so an entry with no declared slope must be left
+    alone rather than completed with a number nobody declared.
     """
 
     manual = design_draft.get("manual_settings") if isinstance(design_draft, Mapping) else None
@@ -279,12 +257,10 @@ def declaration_change_for_candidate(
 ) -> CrossoverDeclarationChange | None:
     """The declaration change this candidate needs, or ``None`` for none.
 
-    ``None`` is the ordinary answer and the safe one: it means this apply
-    writes nothing to ``/sound`` — either because the candidate was measured at
-    exactly the declared crossover (every shipped session today), or because
-    the two cannot be reconciled at all (:func:`preset_crossover_geometry` and
-    :func:`declared_crossover_geometry` each say why). A caller that gets
-    ``None`` must behave exactly as it did before this seam existed.
+    ``None`` means this apply writes nothing to ``/sound``: the candidate was
+    measured at exactly the declared crossover, or the two cannot be reconciled
+    at all (:func:`preset_crossover_geometry` and
+    :func:`declared_crossover_geometry` each say why).
     """
 
     resolved = preset_crossover_geometry(source_preset)
@@ -303,9 +279,7 @@ def change_to_record(change: CrossoverDeclarationChange) -> dict[str, Any]:
     """One change as the plain JSON the review state persists.
 
     ``applied_*`` is what the accept put into ``/sound``; ``previous_*`` is what
-    it displaced. Undo reads this back and runs the write with the two swapped,
-    which is why the round trip lives here beside the type rather than in the
-    handler that happens to store it.
+    it displaced. Undo reads this back and runs the write with the two swapped.
     """
 
     return {
@@ -324,28 +298,14 @@ def change_to_record(change: CrossoverDeclarationChange) -> dict[str, Any]:
 def change_from_record(record: Any) -> CrossoverDeclarationChange | None:
     """:func:`change_to_record` run backwards, or ``None`` for a bad record.
 
-    Every field is required, and a record missing any of them reads as ``None``
-    — "there is no declaration write to reverse" — rather than as a partial
-    change completed with a guess, and inventing a slope to write into
-    ``/sound`` would be a number no accept ever chose. That strictness DOES
-    have an older shape to be tolerant of, though: the accept branch that
-    writes this record's shape shipped in the same PR as this module (#2743),
-    so a deployed speaker can already hold a record from before ``kind``/
-    ``artifact_schema_version`` existed — see the envelope paragraph below
-    for how that shape is read.
+    Every field is required; a record missing any reads as ``None`` rather than
+    as a partial change completed with a guess.
 
-    ``kind`` and ``artifact_schema_version`` are checked on the same terms as
-    every other field, with ONE exception: a record naming NEITHER is exactly
-    the pre-envelope shape #2743's own shipped builds wrote, and such records
-    are carried unconditionally across a deploy for as long as the applied
-    graph is (``correction_crossover_v2.observe_apply_success`` /
-    ``persist_conductor_state``) — so refusing it outright would strand a
-    reader against a record an older build legitimately wrote. That one shape
-    reads as this module's own kind and version 1 rather than raising. A
-    record naming EITHER field, even if the other is missing or wrong, is NOT
-    that legacy shape — it tried to speak the envelope and got it wrong — and
-    reads as ``None`` under both postures, exactly like the seven fields
-    beside it.
+    One exception: a record naming NEITHER ``kind`` nor
+    ``artifact_schema_version`` is the pre-envelope shape a deployed speaker may
+    still hold, and reads as this module's own kind at version 1. A record
+    naming EITHER, with the other missing or wrong, tried to speak the envelope
+    and got it wrong, so it reads as ``None``.
     """
 
     if not isinstance(record, Mapping):
@@ -399,25 +359,15 @@ def change_from_record(record: Any) -> CrossoverDeclarationChange | None:
 def assert_crossover_honours_declared_floor(preset: Any) -> None:
     """Refuse a preset whose crossover is below the protected driver's floor.
 
-    The apply path's BOUNDARY re-check, and deliberately the same condition the
-    L0 emit gate (``camilla_yaml._assert_tweeter_crossover_honours_declared_
-    floor``) and the startup-load gate (``path_safety._tweeter_protection_
-    floor_verdict``) refuse. All three read the two numbers from their owners
-    (``test_signal_plan``) and compare them with the shared rule
-    (``driver_protection.protection_highpass_floor_satisfied``), so no layer
-    can drift on the boundary case: *at* the floor is legal, below it is
-    refused, an undeclared floor is honoured unchanged, and a declared floor
-    with no readable corner is refused rather than waved through.
+    The apply path's BOUNDARY re-check, on the same condition the emit gate and
+    the startup-load gate refuse, through the shared rule
+    ``driver_protection.protection_highpass_floor_satisfied``: *at* the floor is
+    legal, below it is refused, an undeclared floor is honoured unchanged, and a
+    declared floor with no readable corner is refused.
 
-    **Why a third layer, when the emit gate already refuses.** Ordering. The
-    apply transaction saves the Sound declaration BEFORE it composes and emits
-    the graph, because ``baseline_profile``'s staleness guard demands the
-    declaration already carry the candidate's crossover. An emit-time refusal
-    therefore arrives one durable write too late: the graph is correctly
-    refused, but ``/sound`` is left declaring a crossover the speaker is not
-    playing and cannot be made to play. Running the same rule here — before the
-    write — means a refused apply changes nothing at all. A gate that only runs
-    downstream of a commit is a gate the commit has already escaped.
+    It runs here, not only at emit, because the apply transaction saves the
+    Sound declaration BEFORE it emits the graph, so an emit-time refusal leaves
+    ``/sound`` declaring a crossover the speaker cannot be made to play.
     """
 
     floor_hz = declared_protection_floor_hz(preset, _PROTECTED_ROLE)

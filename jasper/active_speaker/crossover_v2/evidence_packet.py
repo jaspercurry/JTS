@@ -4,121 +4,16 @@
 
 """One round's banked evidence, gathered into one document a reader can answer.
 
-The crossover domain's sibling of
-:func:`jasper.correction.evidence.build_evidence_packet`, which does exactly
-this job for room correction and has done since the calibration advisor
-shipped.  Same shape, same posture, same privacy vocabulary; different domain,
-different artifacts, and deliberately no import in either direction — the two
-domains bank to different roots in different formats, and a shared
-implementation would have to be told which one it was reading on every field.
+Grades nothing and writes nothing. Its one impurity is reading JSON files
+under a directory: no clock, no network, no CamillaDSP handle, no session. It
+DERIVES exactly two things — :func:`_cross_seat_sigma_block`'s per-bin spread
+across seats, and :func:`_reflections_block`'s tau-to-path-length multiply.
 
-**Why it exists.**  A round already banks everything a reader needs: the
-receipt's verdicts and axes, the cloud's curve and per-position evidence, the
-spec's per-band honesty, the capture integrity per position, the identity of
-the speaker and the microphone.  What it does not have is ONE document.  Every
-session that wanted to reason about a round has re-walked that tree by hand —
-most recently 635 lines of throwaway glue in a captures directory, which
-recovered the mic angle by regex over a log file and hardcoded a measured
-delay as a literal.  This module is the promotion of the *reading* half of
-that glue: it grades nothing and writes nothing.
-
-**It computes exactly one statistic, and the boundary is worth stating.**
-:func:`_cross_seat_sigma_block` reduces the member curves already in the packet
-to their per-bin spread across seats.  That is a REDUCTION over data the packet
-already carries — no capture is re-read, no curve re-smoothed, no threshold
-applied, and no verdict reached — and it is here rather than copied from
-upstream because nothing upstream publishes it: see that function for what the
-combiner does with its own per-bin array, where the octave-band reduction of it
-IS banked, and why that reduction is a different statistic on a different grid
-either way.  Anything that needs a new measurement, or that decides what a
-number MEANS, still belongs somewhere else.
-
-**It also performs exactly one unit conversion, which is not a second
-statistic.**  :func:`_reflections_block` multiplies the interference-null
-ladder's already-banked ``tau_ladder_us`` by the speed of sound, so the excess
-path length a reader was doing by hand is in the document.  No sample is
-touched, no spread is taken and no threshold is applied — the arithmetic is one
-multiply by a constant this module imports rather than restates.  It is called
-out here rather than folded into the paragraph above because the two are
-different sizes of claim, and a reader auditing what this module DERIVES is
-owed both.
-
-**Its one impurity, named.**  It reads JSON files under a directory, and
-that is the whole of it: no clock, no network, no CamillaDSP handle, no
-session.
-
-**The packet's first duty is to say what is NOT in it.**  Copying the honest
-fields verbatim is necessary and not sufficient — a reader also has to know
-which questions this round cannot answer at all.  Three examples this survey
-found on the shipped corpus, each carried as a ``not_evaluated`` entry rather
-than omitted.  TWO of the three have since gained the instrument they were
-waiting for, and both entries narrowed rather than disappearing — the survey
-is kept whole because the pattern is the lesson, and because each one records
-what its entry now means:
-
-* **the microphone's angle at a CLOUD position** used to be the first example,
-  on the grounds that a cloud position was a floor-plan seat carrying only a
-  coarse ``role`` (``onax``/``offax``) and no bearing anywhere in the banked
-  tree.  It is banked now — the 2026-08-24 geometry ruling made
-  :func:`~.spatial.cloud_position_record` stamp ``position_deg`` /
-  ``position_axis`` / ``mark_distance_m`` on every retained seat, and
-  :func:`_angle_deg_block` carries what it filed — so the entry survives only
-  for a round banked before that writer, or for seats that commanded no
-  bearing at all, and says so about THAT round rather than about the record
-  shape.  What has not changed is why the entry exists: a packet that quietly
-  emitted ``role`` alone would let a reader assume the angle was simply not
-  interesting.  The bearings a LATERAL walk banks stay a separate block, since
-  a walk pose and a graded seat are different captures.
-* **per-branch verify claims** come back ``not_evaluated`` with the reason
-  ``no_per_branch_verify_capture``.  That string is copied through untouched.
-  Flattening it to a ``null`` — or worse, to a zero — would turn "we did not
-  look" into "we looked and found nothing".
-* **harmonic distortion** used to be the third example, on the grounds that it
-  was computable and never banked.  It is banked now — :mod:`.harmonic_evidence`
-  reads H2/H3 out of a round's MEASURE captures and files them, and the
-  ``harmonics`` block carries what it filed — so the entry survives only for a
-  round nobody ran that instrument over, and says so about THAT round rather
-  than about the corpus.
-
-**Absence has two flavours and they are never merged.**  ``source_absent``
-means the artifact was not handed to this builder; ``field_null`` means it was,
-and the field inside it is null.  The glue could not tell those apart (its
-``or {}`` chains collapsed both), and they send a reader to different places —
-"pass the state file too" versus "that stage did not run".
-
-**Redaction is an allowlist, and it reports what it dropped.**  Same mechanism
-as :func:`jasper.calibration_agent.advisor_context.build_advisor_context`:
-copy named fields, and publish the names of the fields that were withheld so
-the packet cannot quietly become a different document than the tree it came
-from.  Absolute filesystem paths, raw WAV bytes, and household-authored prose
-never enter.  Operator-authored prose does, in exactly one fenced block — see
-the three layers below, which is the whole of the exception.
-
-**Three layers reach the reader, and each arrives at a deliberate moment.**
-The owner's information model for a tuning session, recorded here because this
-document is where the three meet and nowhere else enforces the split:
-
-===========  ==========================================  =========================================
-Layer        What                                        Reaches the LLM via
-===========  ==========================================  =========================================
-Reality      hard bands, passbands, caps, models, the     ``drivers`` + the prescription gates'
-             confirmation stamp                          refusals
-Intent       the declared corner; the pinned topology     ``incumbent`` + the prescription
-                                                         round-trip
-Context      operator prose: waveguide or horn, the       ``operator_notes`` — and nothing else
-             enclosure story, why it was built this way
-===========  ==========================================  =========================================
-
-Reality and intent are *checked*: a declared band is refused when it fails
-policy, and a corner is compiled.  Context is neither, and mixing it into
-either is the failure this split exists to prevent — "this is a 110°
-constant-directivity waveguide" is what tells a grading reader whether a
-symmetric top-octave droop off-axis is expected physics or a defect, and it is
-also a sentence nothing can verify.  So it travels in exactly one block, under
-its own artifact kind (:data:`~.operator_notes.OPERATOR_NOTES_KIND`), labelled
-operator-declared and unverified, **and no code path in JTS reads it for a
-decision** — see :func:`_operator_notes_block`.  ``privacy`` names that block
-so a reader meets the quarantine before the prose.
+Absence has two never-merged flavours: ``source_absent`` (the artifact was not
+handed to this builder) and ``field_null`` (it was, and the field is null).
+Redaction is an allowlist that publishes the names it withheld. Operator prose
+enters in exactly one block, quarantined and named in ``privacy`` — see
+:func:`_operator_notes_block`.
 """
 
 from __future__ import annotations
@@ -147,11 +42,8 @@ from .contracts import POSITION_EVIDENCE_KIND
 from .journey import PHASE_ENTRY_BASELINE, PHASE_LATERAL
 from .record_index import Measurement, bundle_measurements
 # The MODULE, not the function: ``position_cycle`` owns the accept rule, and
-# resolving it through the module on every call is what makes that ownership
-# real rather than a copy taken once at import. A gate round proved the
-# difference — a behaviour-identical duplicate defined here satisfied a test
-# that patched this module's own binding, because the binding was all the test
-# could see.
+# resolving it through the module on every call is what keeps that ownership
+# real rather than a copy taken once at import.
 from . import position_cycle
 from .blend_prescription import prescription_response_format
 from . import handoff_doors as doors
@@ -192,27 +84,18 @@ __all__ = [
     "round_program_dir",
 ]
 
-#: Bumped when a reader that understood the previous version would misread this
-#: one — never merely because the document grew. Added blocks, and a widened
-#: block whose existing fields are untouched, leave every v1 field saying what
-#: it said, so they stay at 1; that rule is pinned by
-#: ``test_added_packet_blocks_do_not_bump_the_packet_schema_version``.
-#:
-#: It is the EVIDENCE document's version and nothing else. A prescription
-#: answering this packet carries its own separate
-#: :data:`~.blend_prescription.PRESCRIPTION_SCHEMA_VERSION`, and THAT is the
-#: number :func:`~.blend_prescription.read_blend_prescription` refuses an
-#: unknown value of.
+#: Bumped when a reader that understood the previous version would misread
+#: this one — never merely because the document grew (pinned by
+#: ``test_added_packet_blocks_do_not_bump_the_packet_schema_version``). The
+#: EVIDENCE document's version only: a prescription answering this packet
+#: carries its own :data:`~.blend_prescription.PRESCRIPTION_SCHEMA_VERSION`.
 PACKET_SCHEMA_VERSION = 1
 
 PACKET_KIND = "jts_crossover_v2_evidence_packet"
 
 #: The one block that carries operator prose. Named in ``privacy`` so the
-#: document points at its own quarantine rather than making a reader find it,
-#: and asserted to RESOLVE — ``test_the_packet_points_at_its_own_quarantine``
-#: follows the pointer and checks the block it lands on is the artifact, which
-#: is a stronger guard than sharing a string constant with the dict key would
-#: be: a shared constant survives the block being renamed out from under it.
+#: document points at its own quarantine, and asserted to RESOLVE by
+#: ``test_the_packet_points_at_its_own_quarantine``.
 OPERATOR_NOTES_BLOCK = "operator_notes"
 
 GENERATED_BY = (
@@ -221,18 +104,14 @@ GENERATED_BY = (
 )
 
 #: Where a session bundle keeps its round artifacts. The ``<cap-id>`` directory
-#: under it is the relay session id, which is NOT the bundle's own
-#: ``session_id`` — the two namespaces are distinct on disk and conflating them
-#: is how a reader ends up joining the wrong round to the wrong bundle.
+#: under it is the relay session id, NOT the bundle's own ``session_id`` — two
+#: distinct namespaces on disk.
 _EVIDENCE_GLOB = f"{EVIDENCE_ROOT}/artifacts/crossover_v2/*"
 
 #: :func:`round_artifact_dir`'s reason when no
 #: ``evidence/v1/artifacts/crossover_v2/<relay>/`` directory exists under the
-#: given path at all. Named so a caller can distinguish this specific
-#: refusal from "bundle carries more than one round" without parsing prose —
-#: :mod:`jasper.cli.classify_features` appends shape guidance only here,
-#: never on the two-round refusal, where "point at a different shape" is not
-#: the fix.
+#: given path at all. Named so a caller can tell this refusal from "bundle
+#: carries more than one round" without parsing prose.
 NO_ROUND_ARTIFACTS_REASON = "no crossover_v2 round artifacts under evidence/v1"
 
 #: Position fields copied verbatim. ``wav_path`` is deliberately absent — it is
@@ -244,15 +123,11 @@ _POSITION_FIELDS = (
     "attempt",
     "role",
     # WHERE the capture was taken, copied through from the same
-    # ``_RECORD_FIELDS`` join every other per-position scalar rides. Before
-    # these existed the ``angle_deg`` block below said a cloud position "carries
-    # no bearing at all"; that was a claim about the RECORD SHAPE and the
-    # 2026-08-24 writer falsified it, so the block is now conditional on what
-    # the rows actually carry (:func:`_angle_deg_block`).
+    # ``_RECORD_FIELDS`` join every other per-position scalar rides;
+    # :func:`_angle_deg_block` is conditional on what the rows actually carry.
     "position_deg",
     "position_axis",
-    # The elevation half of the same WHERE. Rides the allowlist beside the
-    # bearing rather than instead of it: the two are orthogonal, and a seat
+    # The elevation half of the same WHERE, orthogonal to the bearing: a seat
     # raised above mark height states both.
     "vertical_deg",
     "mark_distance_m",
@@ -261,14 +136,13 @@ _POSITION_FIELDS = (
     "validity_floor_hz",
     "gate_disclosure",
     "gate_floor_source",
-    # The two NUMBERS the sentence above narrates (ticket 1.5). Copied beside
-    # it rather than instead of it: the sentence is what makes a small
-    # ``gate_moved_rms_db`` readable, and the number is what makes the sentence
-    # usable without parsing English.
+    # The two NUMBERS ``gate_disclosure`` narrates, beside it rather than
+    # instead of it: the sentence makes a small ``gate_moved_rms_db``
+    # readable, the number makes the sentence usable without parsing English.
     "gate_moved_rms_db",
     "gate_reflection_delay_ms",
-    # The ROOM's floor at this seat and where it came from — always as a pair,
-    # because the number is unreadable without its provenance (#3502).
+    # The ROOM's floor at this seat and where it came from — always a pair,
+    # because the number is unreadable without its provenance.
     "gate_entanglement_floor_hz",
     "gate_entanglement_floor_source",
     "gate_window_ms",
@@ -293,68 +167,39 @@ _IDENTITY_FIELDS = (
 )
 
 #: Where a round's banked feature classification lives, if one was banked.
-#:
-#: :mod:`.feature_classifier` writes it — one name shared by the instrument
-#: that produces a classification, the packet that reads it and the gate that
-#: acts on it, so none of the three can invent its own spelling. No stage of a
-#: round writes it AUTOMATICALLY: the instrument is an offline run over a
-#: round's banked captures (``jasper-classify-features``), so the file is
-#: present when somebody classified the round and absent otherwise. An
-#: operator's own banked lab result carrying this name is read identically.
-#: Its absence is an ordinary ``source_absent`` and is reported, never papered
-#: over.
+#: One name shared by the instrument that writes it (:mod:`.feature_classifier`
+#: via ``jasper-classify-features``), this packet, and the gate that acts on
+#: it. No stage of a round writes it automatically — it is an offline run — so
+#: its absence is an ordinary reported ``source_absent``.
 CLASSIFICATION_ARTIFACT = "feature_classification.json"
 
 #: The round's banked harmonic-distortion reading, beside the classification.
-#:
-#: Same posture as :data:`CLASSIFICATION_ARTIFACT` in every respect, and named
-#: here for the same reason: the instrument that writes it
-#: (``jasper-read-distortion``, over :mod:`.harmonic_evidence`), this packet
-#: that reads it, and the runbook that documents it all resolve one spelling.
-#: No stage of a round writes it automatically — it is an offline run over the
-#: round's banked MEASURE captures — so it is present when somebody read the
-#: round for distortion and absent otherwise, and its absence is an ordinary
-#: reported absence rather than a gap papered over.
-#:
-#: Defined HERE rather than in :mod:`.harmonic_evidence` because that module
-#: imports this one (for :data:`RING_SIDECAR_GLOB`), and a name owned by the
-#: writer would have to travel back the other way. The packet owns the names of
-#: the artifacts it reads; :mod:`.feature_classifier` takes the same direction.
+#: Same posture as :data:`CLASSIFICATION_ARTIFACT`; written offline by
+#: ``jasper-read-distortion`` over :mod:`.harmonic_evidence`. Defined HERE
+#: rather than in that module because it imports this one (for
+#: :data:`RING_SIDECAR_GLOB`): the packet owns the names of what it reads.
 HARMONICS_ARTIFACT = "harmonic_distortion.json"
 
 #: Where a round banks one JSON record per accepted take, INSIDE the round
-#: directory :func:`round_artifact_dir` returns.
-#:
+#: directory :func:`round_artifact_dir` returns:
 #: :meth:`~.record_store.BankedRecordStore.bank` publishes
-#: ``crossover_v2/{relay}/positions/{take_id}.json`` and the evidence store
-#: prefixes ``{EVIDENCE_ROOT}/artifacts/``, so the record lands one level below
-#: the relay directory this module already resolves. :mod:`.position_cycle`
-#: reaches the same files from the BANKED ROUND root — a different starting
-#: point for the same tree — which is why the accept rule is imported from
-#: there rather than restated here.
+#: ``crossover_v2/{relay}/positions/{take_id}.json`` under
+#: ``{EVIDENCE_ROOT}/artifacts/``. :mod:`.position_cycle` reaches the same
+#: files from the BANKED ROUND root, which is why the accept rule is imported
+#: from there rather than restated here.
 _POSITIONS_SUBDIR = "positions"
 
-#: How a capture ring's sidecars are found under the ring root, on
-#: :func:`round_program_dir`'s rule that a location fact has ONE owner.
+#: How a capture ring's sidecars are found under the ring root. No round
+#: writes this layout on the Pi any more; the rings that reach the two readers
+#: are corpora pulled off a Pi before the retention seam died and rings
+#: :func:`~.ring_projection.project_ring` re-projects laptop-side.
 #:
-#: The SPEAKER-side producer of this layout died with the retention seam, so
-#: no round writes one on the Pi any more. Two kinds of ring reach the readers
-#: below instead: corpora pulled off a Pi before that, and rings
-#: :func:`~.ring_projection.project_ring` re-projects laptop-side out of a
-#: banked round — the bundle carries the capture WAVs and the per-take records,
-#: and what it does not carry is this layout. That is why the two readers below
-#: survive while this packet's own reader did not: the packet wanted a number
-#: the take record now carries, and they want a WAV.
-#:
-#: ``**/`` because the pull split the speaker's flat ring into
-#: ``dumps/wav/`` + ``dumps/sidecar/`` and a per-phase nesting of that shape
-#: exists too, so the ring ROOT is what a caller passes and the pattern finds
-#: the sidecars wherever inside it they sit.
-#: :func:`~.feature_classifier.load_round_captures` and
-#: :func:`~.harmonic_evidence.read_round_harmonics` are the two readers, and
-#: both consume this constant, so ``jasper-classify-features --dumps`` and
-#: ``jasper-read-distortion --dumps`` cannot come to mean two different
-#: directories.
+#: ``**/`` because a pull splits the speaker's flat ring into ``dumps/wav/`` +
+#: ``dumps/sidecar/``, with a per-phase nesting of that shape too, so a caller
+#: passes the ring ROOT and the pattern finds the sidecars inside it. Both
+#: readers (:func:`~.feature_classifier.load_round_captures` and
+#: :func:`~.harmonic_evidence.read_round_harmonics`) consume this constant, so
+#: ``--dumps`` cannot mean two different directories.
 RING_SIDECAR_GLOB = "**/sidecar/*.json"
 
 #: What :func:`_capture_snr_block` reads off one banked take: the two
@@ -367,37 +212,23 @@ _TAKE_DIAGNOSTIC_FIELDS = (
 )
 
 #: The substring that identifies a signal-to-noise field in a banked take's
-#: flat ``diagnostic`` block.
-#:
-#: A substring rather than a name list because the producer
+#: flat ``diagnostic`` block. A substring rather than a name list because the
+#: producer
 #: (:func:`~jasper.audio_measurement.program_analysis.analysis_diagnostic_summary`)
-#: composes most of them onto a ROLE the packet cannot know — the roles are
-#: "whatever the program declared", read off each entry at the analyze seam —
-#: so ``woofer_snr_db`` and ``tweeter_alignment_snr_verdict`` are names no
-#: allowlist here could enumerate. Every SNR field that producer writes is
-#: spelled with this substring, and a name list would have to be kept equal to
-#: a set it cannot see; selecting by the substring instead cannot go stale when
-#: the producer adds another one.
+#: composes most names onto a ROLE the packet cannot know, so no allowlist here
+#: could enumerate them.
 _DIAGNOSTIC_SNR_MARKER = "snr"
 
 #: Why each published SNR field is NOT an uncertainty — one entry per SHAPE,
-#: and the block reports any published field this does not cover.
+#: and the block reports any published field this does not cover. Keyed by
+#: SHAPE because the role half is not knowable here. The entries point at the
+#: policy for their thresholds rather than restating them: the floors live on a
+#: ``QualityModel`` (``snr_ok_db`` / ``alignment_snr_ok_db``).
 #:
-#: Keyed by SHAPE rather than by name because the role half is not knowable
-#: here: the producer composes these onto roles read off the analysis. The
-#: entries point at the policy for their thresholds instead of restating them —
-#: the floors live on a ``QualityModel`` (``snr_ok_db`` /
-#: ``alignment_snr_ok_db``), each capture carries that policy's own verdict
-#: beside its number, and a decibel figure copied here would be a second place
-#: for one to drift.
-#:
-#: **``<role>`` is not one vocabulary.** The six driver families take a DRIVER
-#: role off ``analysis.driver_responses`` (``woofer``, ``tweeter``); the pilot
-#: family takes a PILOT role off ``analysis.pilots``, which includes ``summed``
-#: — a name no driver has. They are described separately for that reason: an
-#: earlier version of this table carried the driver description alone and its
-#: "the band it came from is ``<role>_snr_band``" sentence was simply false for
-#: a pilot, which publishes no band and no verdict of its own.
+#: ``<role>`` is not one vocabulary: the six driver families take a DRIVER role
+#: off ``analysis.driver_responses``, the pilot family a PILOT role off
+#: ``analysis.pilots``, which includes ``summed`` and publishes no band or
+#: verdict of its own.
 _SNR_NOT_AN_UNCERTAINTY: dict[str, str] = {
     "<role>_snr_db": (
         "the worst per-band signal-to-noise ratio over the bands that decide "
@@ -461,10 +292,8 @@ _SNR_NOT_AN_UNCERTAINTY: dict[str, str] = {
 }
 
 #: The shapes above whose name is composed onto a role, longest suffix first.
-#:
 #: Order is load-bearing: ``woofer_alignment_snr_db`` ends with ``_snr_db``
-#: too, so a shortest-first walk would file it under the magnitude family and
-#: report the alignment shape as covered when it is not.
+#: too, so a shortest-first walk would file it under the magnitude family.
 _SNR_ROLE_SUFFIXES: tuple[tuple[str, str], ...] = tuple(
     sorted(
         (
@@ -481,13 +310,8 @@ _SNR_ROLE_SUFFIXES: tuple[tuple[str, str], ...] = tuple(
 def _snr_shape(column: str) -> str | None:
     """Which declared shape ``column`` is an instance of, or ``None``.
 
-    ``None`` is what makes the enrichment rule checkable rather than merely
-    claimed: a published field whose shape nothing declares is named in the
-    block's ``undeclared_fields`` instead of quietly travelling as a figure no
-    reader was told the kind of. The producer composes these names on the fly
-    from roles read off the analysis, so a static list of NAMES could never
-    have covered them and a list of SHAPES has to be matched rather than
-    looked up.
+    ``None`` names the field in the block's ``undeclared_fields`` rather than
+    letting it travel as a figure no reader was told the kind of.
     """
     if column in _SNR_NOT_AN_UNCERTAINTY:
         return column
@@ -496,17 +320,13 @@ def _snr_shape(column: str) -> str | None:
             return shape
     return None
 
+
 #: Verify-claim and state fields the packet carries. ``household_findings`` is
-#: NOT among them and never will be: it is household-authored prose, and the
-#: one privacy-sensitive field in the tree.
-#:
-#: It is no longer the only human-authored string a reader can meet — since
-#: #2871 the operator's own declaration prose travels in
-#: :data:`OPERATOR_NOTES_BLOCK`, deliberately, because the tuning LLM needs it.
-#: The two are still opposite decisions and the difference is the WRITER: this
-#: is copy a household typed into a correction carve-out, with no bearing on a
-#: crossover round; that is a commissioning declaration about the hardware
-#: being graded. Only the second is fenced, labelled and carried.
+#: NOT among them and never will be: it is household-authored prose, the one
+#: privacy-sensitive field in the tree. The operator prose in
+#: :data:`OPERATOR_NOTES_BLOCK` is the opposite decision, and the difference is
+#: the WRITER: a commissioning declaration about the hardware being graded,
+#: not copy a household typed into a correction carve-out.
 _STATE_WITHHELD = ("household_findings",)
 
 
@@ -534,19 +354,11 @@ def _applied_profile_source(path: Path | None) -> tuple[dict[str, Any] | None, s
     """The applied-profile SSOT, and why there is none when there is none.
 
     One owner for "what is this speaker playing":
-    :func:`~jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state`,
-    the same reader ``correction_crossover_v2._applied_graph_boosts`` asks. It
-    collapses every failure into ``None``, so the REASON is read separately and
-    only on that path — this packet's rule that an artifact which never arrived
-    and one that arrived unreadable are different facts.
-
-    A file that parsed but the loader rejected has its own three causes — a
-    document of some other kind, a schema version this install does not read,
-    and a state carrying only a staged candidate — and they send an operator
-    somewhere different. Rather than re-derive that verdict here (the accept
-    rule has one owner and a second copy is only a place for the two to drift),
-    the reason ECHOES the document's own three self-describing fields and lets
-    the reader see which one is wrong.
+    :func:`~jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state`.
+    It collapses every failure into ``None``, so the REASON is read separately
+    on that path. A file that parsed but the loader rejected has three causes,
+    and rather than re-derive that verdict here the reason ECHOES the
+    document's own three self-describing fields.
     """
     from jasper.active_speaker.baseline_profile import (
         load_applied_baseline_profile_state,
@@ -576,13 +388,10 @@ def _mapping(value: Any) -> dict[str, Any]:
 def _declared_geometry_block(path: Path | None) -> dict[str, Any]:
     """The household's own tape measure, in metres, or WHICH absence this is.
 
-    Read from the path the CALLER resolved -- a banked round's frozen sibling,
-    or the live speaker's own SSOT file -- on the same terms as the four
-    documents beside it. ``None`` is a round that banked no declaration.
-
-    A household that never declared one (most of them) and a declaration this
-    install could not read are two different facts about the round, kept apart
-    on exactly the terms the sibling blocks state them.
+    Read from the path the CALLER resolved — a banked round's frozen sibling,
+    or the live speaker's own SSOT file. ``None`` is a round that banked no
+    declaration, which is a different fact from one this install could not
+    read.
     """
     from jasper.audio_measurement.measurement_geometry import (
         load_declared_geometry,
@@ -626,10 +435,9 @@ def _copy_allowed(
 ) -> tuple[dict[str, Any], list[str]]:
     """Named fields through, and the names of everything held back.
 
-    The allowlist mechanism from ``advisor_context._copy_allowed``, reproduced
-    for this domain's records. Reporting the withheld NAMES is the part that
-    matters: a packet that silently narrowed its source would be a different
-    document wearing the same schema version.
+    Reporting the withheld NAMES is the part that matters: a packet that
+    silently narrowed its source would be a different document wearing the same
+    schema version.
     """
     if not isinstance(raw, dict):
         return {}, []
@@ -641,67 +449,28 @@ def _copy_allowed(
 def _exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
     """One copied value as exact JSON, naming any column that was not.
 
-    Two inputs to this packet legitimately carry ``NaN``. A classification row
-    is one: the instrument writes one for ``z_local`` when a feature's
-    neighbourhood scatter is zero, for ``frac_of_nmp`` when the control scale
-    is, and into ``excess_loss_vs_null`` when a gate's reference reading is —
-    and ``jasper-classify-features`` banks the artifact with a plain
-    ``json.dumps``, which writes ``NaN`` verbatim and reads it back as a float.
-    A dump-ring sidecar is the other, written the same plain way.
-    :func:`~jasper.audio_measurement.evidence_identity.json_fingerprint` refuses
-    a non-finite number, so copying one through would leave a round that
-    classified perfectly well with NO packet at all: this module's one hard
-    failure, thrown for a value that is merely absent.
+    Two inputs legitimately carry ``NaN``: a classification row (the instrument
+    writes one for ``z_local``, ``frac_of_nmp`` and ``excess_loss_vs_null``
+    when the underlying scale is zero) and a dump-ring sidecar. Both are banked
+    with a plain ``json.dumps``, which writes ``NaN`` verbatim, and
+    :func:`~jasper.audio_measurement.evidence_identity.json_fingerprint`
+    refuses a non-finite number — so copying one through would cost the round
+    its whole packet.
 
-    So a non-finite number becomes ``null`` — the same answer
-    :func:`~.feature_classification.read_feature_verdicts` already gives for one
-    — and its COLUMN is named in the block's ``non_finite_fields``, because
-    "not computable" and "not carried" are different facts and the packet's
-    rule is that neither is silently the other. Recursive because three
-    classification columns are per-gate tables and one is a list, not scalars.
+    A non-finite number therefore becomes ``null`` and its COLUMN is named in
+    the block's ``non_finite_fields``: "not computable" and "not carried" are
+    different facts. Recursive because three classification columns are
+    per-gate tables and one is a list.
 
-    The four branches are exactly what ``json.loads`` can produce that
-    ``_freeze_json`` cares about, and no more. There is deliberately no ``bool``
-    guard: ``bool`` subclasses ``int``, never ``float``, so a boolean column
-    (``clean``, ``is_dip``, ``controls_ok``, ``gain_plan_snr_floor_ok``) falls
-    through to the passthrough already — unlike in
-    :func:`~jasper.json_fields.finite_float`, which needs one because its
-    check includes ``int``.
+    No ``bool`` guard is needed: ``bool`` subclasses ``int``, never ``float``,
+    so a boolean column falls through to the passthrough already.
 
-    Scoped to the two blocks whose sources are written with a plain
-    ``json.dumps``, and the rest of the exposure is real but NARROW and was
-    measured rather than assumed: the receipt, the cloud evidence and the
-    finding set are banked
-    through :func:`~jasper.active_speaker.commissioning_evidence_store._canonical_json`,
-    which passes ``allow_nan=False`` and refuses a non-finite value at write
-    time, so they structurally cannot carry one here. The two further inputs
-    that were once unguarded now carry the same ``allow_nan=False`` at their
-    own writers (#2839): ``save_v2_state``
-    (:mod:`jasper.web.correction_crossover_v2`) for the flow state, whose two
-    fields this packet copies — ``verify.claims`` and ``evidence.calibration``
-    — and :func:`~jasper.active_speaker.design_draft.save_design_draft`, whose
-    ``driver_safety_profile.confirmation`` is copied whole. The draft's
-    passbands never needed it, because
-    :func:`~.driver_prescription.driver_passbands_from_safety_profile` already
-    drops a non-finite bound.
-
-    The ``incumbent`` block's filters are the exception, and it is stated
-    rather than implied: they come from the applied-profile SSOT, which
-    ``persist_applied_baseline_profile`` writes with a plain ``json.dumps``. A
-    non-finite gain there would reach ``_fingerprint``, and the failure is a
-    HARD one rather than a degraded block — no packet for the round, and
-    :func:`~.round_views.load_banked_round` refusing the whole banked
-    directory. Nothing has ever written one — the fit produces finite gains,
-    and ``save_v2_state`` would already have refused to record the apply that
-    made the profile — so this ships as a disclosed exposure rather than as a
-    guard, per ``AGENTS.md``'s rule against defending hypotheticals. Routing
-    the block through this function is the fix if one is ever observed.
-
-    That retires neither this branch nor its argument: the two inputs at the
-    top of this docstring are the ones it exists for, and the classifier still
-    writes a ``NaN`` for a feature whose neighbourhood scatter is zero. What
-    those two writers change is only that a THIRD and FOURTH input can no
-    longer join them.
+    Scoped to those two blocks. Every other input is written with
+    ``allow_nan=False`` and structurally cannot carry one, except the
+    ``incumbent`` block's filters, which come from the applied-profile SSOT's
+    plain ``json.dumps``: a non-finite gain there would reach
+    :func:`_fingerprint` and cost the packet. Disclosed rather than guarded —
+    routing that block through this function is the fix if one is observed.
     """
     if isinstance(value, float):
         if math.isfinite(value):
@@ -721,10 +490,9 @@ def _exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
 def round_artifact_dir(session_dir: Path) -> tuple[Path | None, str]:
     """The one round-artifact directory in a bundle, or ``(None, why)``.
 
-    Public because a bundle's round directory is now WRITTEN as well as read:
-    :mod:`.feature_classifier` files :data:`CLASSIFICATION_ARTIFACT` there, and
-    a producer that located that directory by its own glob could file an
-    artifact where this reader does not look. One rule, both directions.
+    Public because the directory is WRITTEN as well as read —
+    :mod:`.feature_classifier` files :data:`CLASSIFICATION_ARTIFACT` there —
+    and one rule has to serve both directions.
     """
     matches = sorted(
         path for path in session_dir.glob(_EVIDENCE_GLOB) if path.is_dir()
@@ -743,27 +511,16 @@ def round_artifact_dir(session_dir: Path) -> tuple[Path | None, str]:
 def round_program_dir(
     session_dir: Path, round_dir: Path, phases: Iterable[str]
 ) -> Path:
-    """Where this round's ``<phase>_program.wav`` files actually live, for
-    the given ``phases``.
+    """Where this round's ``<phase>_program.wav`` files live, for ``phases``.
 
-    Two shapes, tried in order and chosen by structure alone, never a flag.
-    ``round_dir`` (:func:`round_artifact_dir`'s own return value) is tried
-    first and wins whenever it holds ANY of ``phases``' program WAVs — so a
-    round genuinely missing one of them still gets its own honest refusal
-    from whichever caller asked, rather than being quietly rescued by an
-    unrelated directory that happens to sit beside it.
-
-    That "beside" directory is not hypothetical: the product's OWN sole
-    producer of these files (``_play`` in
-    :mod:`jasper.web.correction_crossover_v2`) writes every one of them to
-    ``<session_dir>/crossover_v2/<relay>/`` — a SIBLING of ``evidence/``,
-    never inside it. A tree-wide sweep of a real banked round confirms
-    ``evidence/v1/artifacts/`` never carries a single ``*_program.wav``; the
-    shape ``round_dir`` alone was built to read is one this instrument's own
-    fixtures assumed but the product has never actually produced. Both
-    :mod:`jasper.cli.classify_features` and
-    :func:`~.round_views._find_program_wav` share this one rule so the
-    location fact cannot drift between them again.
+    Two shapes, chosen by structure alone, never a flag. ``round_dir``
+    (:func:`round_artifact_dir`'s return value) wins whenever it holds ANY of
+    ``phases``' program WAVs. Otherwise the sibling
+    ``<session_dir>/crossover_v2/<relay>/``, which is where the product's sole
+    producer (``_play`` in :mod:`jasper.web.correction_crossover_v2`) actually
+    writes them — ``evidence/v1/artifacts/`` carries no ``*_program.wav``.
+    Shared with :mod:`jasper.cli.classify_features` and
+    :func:`~.round_views._find_program_wav` so the location fact has one owner.
     """
     phases = tuple(phases)
     if any((round_dir / f"{phase}_program.wav").is_file() for phase in phases):
@@ -774,21 +531,16 @@ def round_program_dir(
     return round_dir
 
 
-#: Decimal places the cross-seat spread is published to.
-#:
-#: Four, because the member curves it is taken over are themselves rounded to
-#: four by :func:`~jasper.attribution.position_evidence._sample_onto`. A spread
-#: carrying more digits than its own inputs would be false precision, and this
-#: document is content-fingerprinted, so digits that are only arithmetic noise
-#: are a fingerprint that moves for a reason no reader could point at.
+#: Decimal places the cross-seat spread is published to. Four, matching the
+#: member curves it is taken over
+#: (:func:`~jasper.attribution.position_evidence._sample_onto`): more digits
+#: than its own inputs would be false precision, and this document is
+#: content-fingerprinted.
 _SIGMA_DECIMALS = 4
 
-#: The cross-seat spread, declared as the enrichment rule requires — and the
-#: honest declaration is that it is not ONE kind.
-#:
-#: Entry shape is :data:`~.feature_classification.LAB_ROW_UNCERTAINTY`'s
-#: (``kind`` + ``of``) so a reader meets one shape wherever the packet declares
-#: an uncertainty; what differs is the LIST it is published under, because
+#: The cross-seat spread, declared as the enrichment rule requires. Entry
+#: shape is :data:`~.feature_classification.LAB_ROW_UNCERTAINTY`'s (``kind`` +
+#: ``of``); what differs is the LIST it publishes under, because
 #: :data:`~.feature_classification.UNCERTAINTY_UNSEPARATED` is deliberately not
 #: a member of the closed kind set.
 _CROSS_SEAT_SIGMA_UNCERTAINTY: dict[str, dict[str, str]] = {
@@ -812,11 +564,8 @@ _CROSS_SEAT_SIGMA_UNCERTAINTY: dict[str, dict[str, str]] = {
     },
 }
 
-#: Fields of the cross-seat block that are not spreads, and why they are here.
-#:
-#: ``n_seats`` is the load-bearing one. The classification block can state that
-#: it "does not publish n" and so cannot be used to form a standard error; this
-#: block DOES publish n, deliberately, and therefore has to say what the obvious
+#: Fields of the cross-seat block that are not spreads. ``n_seats`` is the
+#: load-bearing one: this block publishes n, so it has to say what the obvious
 #: quotient would and would not mean.
 _CROSS_SEAT_SIGMA_NOT_AN_UNCERTAINTY: dict[str, str] = {
     "n_seats": (
@@ -846,16 +595,9 @@ _CROSS_SEAT_SIGMA_NOT_AN_UNCERTAINTY: dict[str, str] = {
 def _member_curve(values: Any, n_bins: int) -> list[float] | None:
     """One member curve as ``n_bins`` real numbers, or ``None``.
 
-    All-or-nothing per row, and that is the point: a curve admitted for the bins
-    it could supply would make its seat present in some bins and absent in
-    others, so the block's single ``n_seats`` would not be the count the spread
-    was actually taken over in every bin. Refusing the whole row keeps one n for
-    the whole curve — and the row is counted, never dropped silently.
-
-    :func:`~jasper.json_fields.finite_float` does the per-sample work
-    rather than a second copy of its three traps (``bool`` is an ``int``,
-    ``float("1037")`` succeeds, an arbitrary-precision ``int`` raises on
-    ``float()``).
+    All-or-nothing per row: a curve admitted for only the bins it could supply
+    would make ``n_seats`` not the count the spread was taken over in every
+    bin. The row is counted, never dropped silently.
     """
     if not isinstance(values, list) or len(values) != n_bins:
         return None
@@ -875,69 +617,34 @@ def _cross_seat_sigma_block(
 
     The sample standard deviation (``ddof=1``) across the member curves, per
     bin, index-aligned with ``curve_grid.freqs_hz``. Taken over the rows THIS
-    packet publishes rather than over the artifact behind them, so a reader can
-    reproduce the figure from the packet alone.
+    packet publishes, so a reader can reproduce the figure from the packet
+    alone. Nothing upstream publishes it: the combiner forms the same array in
+    :func:`~jasper.audio_measurement.spatial_combine._band_spread` and reduces
+    it to two figures per octave band without letting the array out.
 
-    **Why the packet computes it instead of copying one.** The combiner already
-    forms this exact array —
-    :func:`~jasper.audio_measurement.spatial_combine._band_spread` computes it
-    as its ``per_bin_sigma``, ``np.std(stacked, axis=0, ddof=1)`` — and then
-    never lets the ARRAY out: it is reduced inside that function to two figures
-    per octave band
-    (:class:`~jasper.audio_measurement.spatial_combine.BandSpread`), and no
-    caller ever sees the per-bin values.
+    It would be a different statistic if it did. The combiner's runs over
+    ``per_position_db``, raw and unsmoothed on a LINEAR grid; the member curves
+    here are ``per_position_diag_db``, smoothed at the diagnostic fraction and
+    resampled onto a LOG 1/12-octave grid whose floor is the round's validity
+    floor when it has a usable one and 20 Hz otherwise
+    (``curve_grid.floor_source`` says which). Hence the name ``per_bin_sigma``
+    rather than ``sigma_db`` or ``max_sigma_db``, which already mean the
+    combiner's own reductions.
 
-    The reduction does get banked, and stating that precisely matters because
-    "nothing carries a cross-position spread" would be false. It is banked in
-    ONE place: ``candidate.json``'s ``exclusion_evidence``
-    (:func:`~.planning.exclusion_evidence_json`), which the packet does not
-    read, describes the ``cloud_measure`` group rather than the ``cloud_verify``
-    curves this block runs over, and is empty on any candidate whose fit saw no
-    cloud evidence. What the packet DOES read — the cloud evidence artifact —
-    carries no spread at all: the round's close stashes ``band_spread`` for
-    comparison and keeps it out of the published group result deliberately
-    ("comparison input, not a disclosure the household reads", at
-    ``crossover_v2_flow``'s cloud close).
+    It lives inside the positions block, beside the grid it is on: a reader
+    must not be able to pair a spread with a grid it was not taken over.
 
-    **And it would be a different statistic if there were.** The combiner's runs
-    over ``per_position_db`` — raw and unsmoothed, on its own shared LINEAR
-    grid. The member curves here are ``per_position_diag_db``, smoothed at the
-    diagnostic fraction and resampled onto a LOG 1/12-octave grid whose floor is
-    the round's validity floor when it has a usable one and a 20 Hz default
-    otherwise (``curve_grid.floor_source`` says which). Same estimator;
-    different curves, different
-    grid, different reduction — which is why the published array takes the name
-    of the combiner's own intermediate for this estimator (``per_bin_sigma``)
-    rather than ``sigma_db`` or ``max_sigma_db``, two words that already mean
-    the combiner's two per-octave-band reductions.
-
-    **It lives inside the positions block**, beside the grid it is on and the
-    curves it came from, on that block's own rule: a reader must not be able to
-    pair a spread with a grid it was not taken over.
-
-    **Below two usable seats it refuses, and does not publish 0.0.** A sample
+    Below two usable seats it refuses and does not publish 0.0 — a sample
     standard deviation is undefined at n=1, and a zero would say the seats
-    agreed. The classification block's ``excursion_sd_us`` does publish 0.0 at
-    one capture — that is the instrument's own convention, copied through
-    verbatim as everything in that block is. This is a new field with no
-    convention to inherit, so it takes the honest one.
+    agreed.
 
-    ``statistics.stdev`` rather than numpy for two reasons that both matter
-    here: it RAISES at n < 2 instead of returning a silent ``NaN``, so the
-    ``len(curves) < 2`` guard below cannot fail open the way the ``# GUARD:``
-    comment above
-    :func:`~jasper.active_speaker.linearization_envelope.compute_sigma_curve`'s
-    own ``return`` warns ``np.std(..., ddof=1)`` does (that function's DOCSTRING
-    carries a different NaN sentence, about ``np.mean`` on an empty slice, which
-    a reader looking for this one will false-match); and it computes in exact
-    arithmetic, so a spread too large for a float is an ``OverflowError``
-    rather than an ``inf`` that would reach the fingerprint. Do not weaken
-    either the guard or the ``except`` on the strength of them being unlikely.
-
-    Exact arithmetic is slower, and the cost was measured rather than waved at:
-    1.8 ms for the shipped shape (4 seats over the 89-bin 1/12-octave grid of a
-    real banked round) and 54 ms for a deliberately pessimistic 12 x 2048, on a
-    laptop. The packet is built by an offline CLI, never on an audio path.
+    ``statistics.stdev`` rather than numpy: it RAISES at n < 2 instead of
+    returning a silent ``NaN``, and computes in exact arithmetic, so a spread
+    too large for a float is an ``OverflowError`` rather than an ``inf`` that
+    would reach the fingerprint. Do not weaken the guard or the ``except``.
+    Exact arithmetic costs 1.8 ms for the shipped shape (4 seats over an
+    89-bin grid) and 54 ms for a pessimistic 12 x 2048; the packet is built by
+    an offline CLI, never on an audio path.
     """
     n_bins = len(freqs_hz) if isinstance(freqs_hz, list) else 0
     if not n_bins:
@@ -981,12 +688,9 @@ def _cross_seat_sigma_block(
             for index in range(n_bins)
         ]
     except OverflowError:
-        # Reachable, not defensive: ``statistics.stdev`` computes in exact
-        # arithmetic and raises rather than returning ``inf`` when the result
-        # will not fit a float, which a hand-edited member curve near the float
-        # ceiling does. Letting it out would kill the whole packet over one bad
-        # sample, and this module's rule is that a bad artifact is a fact it
-        # reports.
+        # Reachable: ``statistics.stdev`` raises rather than returning ``inf``
+        # when the exact result will not fit a float, which a hand-edited
+        # member curve near the float ceiling does.
         return {
             "available": False,
             "status": "not_evaluated",
@@ -1047,16 +751,10 @@ def _positions_block(cloud: dict[str, Any]) -> dict[str, Any]:
     """Per-position curves and capture integrity, copied rather than derived.
 
     The grid, the curves and the flat reference all come from ONE artifact, so
-    a reader (and :func:`~.blend_prescription.positional_support`) cannot end
-    up comparing a curve from one evaluation against a reference from another.
-    No re-smoothing and no re-derivation: the lab's own per-position readers
-    held that invariant and it is why their numbers could be trusted beside the
-    round's.
-
-    The one DERIVED thing in it is ``cross_seat_sigma``, which reduces the
-    member curves this block publishes to their per-bin spread. It sits here
-    rather than beside the block because a spread and the grid it was taken over
-    must not be separable — see :func:`_cross_seat_sigma_block`.
+    a reader (and :func:`~.blend_prescription.positional_support`) cannot
+    compare a curve from one evaluation against a reference from another. The
+    one DERIVED field is ``cross_seat_sigma``, which sits here so a spread and
+    the grid it was taken over are not separable.
     """
     positions = _mapping(cloud.get("positions"))
     grid = _mapping(positions.get("curve_grid"))
@@ -1097,27 +795,15 @@ def _positions_block(cloud: dict[str, Any]) -> dict[str, Any]:
 def _angle_deg_block(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """The cloud seats' own bearings, or the reason this round banks none.
 
-    **This block used to be an unconditional ``not_evaluated``** whose reason
-    said a cloud position's "banked record carries no bearing at all". That was
-    a claim about the RECORD SHAPE, and the 2026-08-24 owner ruling falsified
-    it — :func:`~.spatial.cloud_position_record` now stamps ``position_deg`` /
+    :func:`~.spatial.cloud_position_record` stamps ``position_deg`` /
     ``position_axis`` / ``mark_distance_m`` on every retained cloud position,
-    for the reason the ruling gives: prose cannot be diffed, and the campaign
-    that prompted it had read a rotation out of a prompt sentence as a sideways
-    carry. Printing the old sentence beside rows carrying degrees would be the
-    opposite of the honesty this block exists for.
+    so the absence branch states only the NARROW fact: THIS round's rows carry
+    no bearing. It names ``position_axis`` and ``role`` as the fields that
+    separate the ways that happens — a vertical seat and a geometry-retake seat
+    both legitimately bank no degree.
 
-    So what survives is the NARROW statement, and only for a round banked
-    before that writer: THIS round's rows carry no bearing. It names
-    ``position_axis`` and ``role`` as the fields that separate the ways that
-    happens, exactly as :func:`_gate_numbers_reason` names
-    ``gate_floor_source`` — a vertical seat and a geometry-retake seat both
-    legitimately bank no degree, and a reason that asserted "banked too early"
-    alone would be a claim this cannot make.
-
-    ``bool`` subclasses ``int``, so this applies the guard
-    :func:`_lateral_poses_block` already does: a ``true`` in the field would
-    otherwise publish 1 as a bearing.
+    ``bool`` subclasses ``int``, so a ``true`` in the field would otherwise
+    publish 1 as a bearing.
     """
     angles = sorted({
         row["position_deg"] for row in rows
@@ -1158,9 +844,7 @@ def _angle_deg_block(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 def _read_take_diagnostic(path: Path) -> dict[str, Any] | None:
     """One banked take narrowed to its identity and its analysis, or ``None``.
 
-    :func:`~.position_cycle.read_lateral_take`'s shape on the phase question
-    its two siblings answer for one phase each — this one takes every phase,
-    because an SNR is an SNR whichever capture produced it.
+    Takes every phase, because an SNR is an SNR whichever capture produced it.
     """
     raw, _ = _read_json(path)
     if not isinstance(raw, dict):
@@ -1179,15 +863,10 @@ def _banked_takes(
     """Every banked take of one ``phase``, narrowed by its own accept rule.
 
     ``rows`` is the bundle's measurement index, scanned ONCE per packet
-    (:func:`~.record_index.bundle_measurements` rescans the take files on every
-    call) and narrowed here rather than re-selected per block.
-
-    ``phase`` of ``None`` takes every take the round banked.
-
-    ``read`` still OPENS each selected file and may reject it. The index
-    narrows the candidates; the record decides. The bundle holds one round —
-    :func:`round_artifact_dir` refuses a bundle carrying two — so every row is
-    this round's.
+    (:func:`~.record_index.bundle_measurements` rescans on every call).
+    ``phase`` of ``None`` takes every take the round banked. ``read`` still
+    OPENS each selected file and may reject it: the index narrows the
+    candidates, the record decides.
     """
     artifacts = session_dir / EVIDENCE_ROOT / "artifacts"
     takes = [
@@ -1214,28 +893,20 @@ def _lateral_poses_block(
 ) -> dict[str, Any]:
     """The signed bearings a lateral walk banked, one row per accepted take.
 
-    Read from the round's own ``positions/{take_id}.json`` sidecars through
-    :func:`~.position_cycle.read_lateral_take`, which is the accept rule
-    :func:`~.position_cycle.position_cycle_document` uses for the same files —
-    one vocabulary for "what is a lateral take", reached from two different
-    starting directories.
+    Read through :func:`~.position_cycle.read_lateral_take`, the same accept
+    rule :func:`~.position_cycle.position_cycle_document` uses for these files.
 
-    **Beside the ``positions`` block, never merged into it.** These are not the
-    same captures: a cloud position is a summed sweep at a floor-plan seat,
-    judged by gating and ripple; a lateral pose is a per-driver measurement at
-    a bearing on the design axis. They share a ``take_id`` convention and
-    nothing else, and a merged list would invite a reader to compare a curve
-    from one against a curve from the other.
+    Beside the ``positions`` block, never merged into it: a cloud position is a
+    summed sweep at a floor-plan seat judged by gating and ripple, a lateral
+    pose is a per-driver measurement at a bearing on the design axis.
 
     ``position_deg`` is the SIGNED whole-degree bearing, negative LEFT of the
     design axis, stamped by :func:`~.spatial.lateral_pose_record` at take time.
-    It is a commanded pose recorded verbatim, not a measurement with a spread,
-    so this block publishes no uncertainty — the walk's own pointing error is
-    unmeasured rather than quantified here.
+    A commanded pose recorded verbatim, not a measurement with a spread, so
+    this block publishes no uncertainty.
 
     Both survivors and superseded takes are listed, because the speaker keeps
-    both on disk deliberately and an index that hid one would be a third
-    opinion about which take counted.
+    both on disk deliberately.
     """
     takes = _banked_takes(
         session_dir, rows, PHASE_LATERAL, position_cycle.read_lateral_take,
@@ -1253,9 +924,7 @@ def _lateral_poses_block(
             "n_takes": 0,
         }
     # Coerced rather than cast: a hand-edited sidecar with a non-numeric index
-    # sorts first instead of raising. The packet's rule is that a bad artifact
-    # is a fact it reports, never a reason to have no packet — and this block
-    # publishes what the record carried either way.
+    # sorts first instead of raising.
     takes.sort(key=lambda take: (_ordinal(take["index"]), _ordinal(take["attempt"])))
     return {
         "available": True,
@@ -1288,12 +957,9 @@ def _candidates_block(rows: Sequence[Measurement]) -> dict[str, Any]:
     """Which candidates this round played, and at which poses.
 
     Selected on the take index's ``candidate_id`` column across EVERY phase:
-    the engine's own capture record (``session._record``) carries a candidate
-    id and no phase at all, so a phase-narrowed selection would miss exactly
-    the takes a candidate cycle banks.
-
-    An INVENTORY, not a verdict: which candidate is ADOPTED stays
-    :func:`~.verification.decide_adoption`'s question over the round's own axes.
+    the engine's own capture record carries a candidate id and no phase at all,
+    so a phase-narrowed selection would miss the takes a candidate cycle banks.
+    An INVENTORY, not a verdict.
     """
     labelled = [row for row in rows if row.candidate_id]
     if not labelled:
@@ -1341,24 +1007,13 @@ def _entry_baseline_block(
 ) -> dict[str, Any]:
     """The round's measured "before", read from the take that banked it.
 
-    The receipt already names this capture — ``n_bins``, ``n_excluded``, the
-    program id — and deliberately carries no curve, because a receipt is
-    *"identities, not payloads."* Until the curve rode the retained take, the
-    receipt's digest was the only thing about the before that outlived the
-    round: the arrays lived in the flow state file, which the next persist
-    rewrites. So a banked round could name its before and never re-grade it.
+    The receipt names this capture but carries no curve, so this block is the
+    durable copy — the flow state file's arrays are rewritten by the next
+    persist. With it, ``verification.evaluate_benefit`` can be re-run over a
+    banked round by an analysis that did not exist when it was captured.
 
-    This block is the curve itself, from
-    :func:`~.position_cycle.read_entry_baseline_take` — the same directory and
-    the same accept-rule shape as ``lateral_poses``, on the phase that is not a
-    group member. With it, ``verification.evaluate_benefit`` can be re-run over
-    a banked round by an analysis that did not exist when it was captured,
-    which is what makes ruling S3's offline promise keepable.
-
-    A round with no readable take is a fact this block reports, exactly as its
-    neighbours do: the round ran no entry baseline, its capture was refused, or
-    evidence retention failed at take time — retention is fail-soft and never
-    costs the household a retake, so a missing take is not a defect here.
+    A round with no readable take is an ordinary reported absence: retention is
+    fail-soft and never costs the household a retake.
     """
     takes = _banked_takes(
         session_dir, rows, PHASE_ENTRY_BASELINE,
@@ -1374,10 +1029,9 @@ def _entry_baseline_block(
                 "was refused, or evidence retention failed at take time"
             ),
         }
-    # The last accepted take is the "before": the entry baseline is captured at
-    # the mark IMMEDIATELY before the household applies, and a retake supersedes
-    # the attempt it followed. Sorting by take_id orders by index then attempt,
-    # because the id is built from both in that order.
+    # The last accepted take is the "before": a retake supersedes the attempt
+    # it followed. Sorting by take_id orders by index then attempt, because the
+    # id is built from both in that order.
     take = max(takes, key=lambda t: str(t.get("artifact_ref") or ""))
     return {
         "available": True,
@@ -1400,27 +1054,15 @@ def _capture_snr_block(
 ) -> dict[str, Any]:
     """Per-capture signal-to-noise, off the round's own banked takes.
 
-    Every accepted take carries the analysis's flat ``diagnostic`` block —
-    :func:`~jasper.audio_measurement.program_analysis.analysis_diagnostic_summary`'s
-    own output, written onto the record by ``bind_position_retention``. This
-    block publishes the SNR columns out of it, one row per take that carried
-    one.
+    Every accepted take carries the analysis's flat ``diagnostic`` block
+    (:func:`~jasper.audio_measurement.program_analysis.analysis_diagnostic_summary`'s
+    output, written on by ``bind_position_retention``); this publishes the SNR
+    columns out of it, one row per take that carried one.
 
-    **Read from the bundle, so there is nothing to attribute.** This used to
-    read the operator capture-retention ring, a rolling buffer outside the
-    bundle that could hold an earlier round's captures — so the block spent
-    three counters and a banked session identity deciding which sidecars were
-    even this round's. A take under this bundle's own artifacts root is this
-    bundle's by construction, and the whole attribution question goes with the
-    ring.
-
-    A capture is named by its ``take_id`` and its ``wav_sha256``, both of them
-    identities the ``lateral_poses`` and ``positions`` rows already carry, so a
-    reader that wants to know which pose a row belongs to can join them.
-
-    A round banked before the take carried its analysis carries no diagnostic
-    at all, and that is an ordinary reported absence — the same one every
-    neighbouring block gives for an artifact its round never wrote.
+    Read from the BUNDLE, so there is nothing to attribute: a take under this
+    bundle's own artifacts root is this bundle's by construction. Each capture
+    is named by ``take_id`` and ``wav_sha256``, the identities the
+    ``lateral_poses`` and ``positions`` rows carry, so a reader can join them.
     """
     captures: list[dict[str, Any]] = []
     non_finite: set[str] = set()
@@ -1442,9 +1084,8 @@ def _capture_snr_block(
             else:
                 declared_as[column] = shape
             snr[column] = _exact_json_value(value, column, non_finite)
-        # A take whose analysis reported no SNR at all still gets its row, with
-        # an empty ``snr``. Dropping it would be a silent omission in a block
-        # whose whole posture is that what it does not publish, it counts.
+        # A take whose analysis reported no SNR still gets its row, with an
+        # empty ``snr``: what this block does not publish, it counts.
         captures.append({
             "take_id": take.get("take_id"),
             "wav_sha256": take.get("wav_sha256"),
@@ -1474,12 +1115,10 @@ def _capture_snr_block(
         "uncertainty": {
             "fields": {},
             "not_uncertainties": dict(sorted(_SNR_NOT_AN_UNCERTAINTY.items())),
-            # Which declaration explains each column actually published, so a
-            # reader looks the reason up instead of doing suffix arithmetic —
-            # and so the mapping is a stated fact rather than an internal
-            # detail. ``woofer_alignment_snr_db`` ends with ``_snr_db`` as well
-            # as ``_alignment_snr_db``, and only one of those is the truth
-            # about it.
+            # Which declaration explains each published column, so a reader
+            # looks the reason up instead of doing suffix arithmetic:
+            # ``woofer_alignment_snr_db`` ends with ``_snr_db`` as well as
+            # ``_alignment_snr_db``, and only one is the truth about it.
             "declared_as": dict(sorted(declared_as.items())),
             "note": (
                 "no field in this block is an uncertainty, which is why the "
@@ -1503,13 +1142,10 @@ def _capture_snr_block(
     }
 
 
-#: Which harmonics-row columns ARE uncertainties, and of what.
-#:
-#: ``{order}`` is substituted per published order, because the row columns are
-#: composed names (``h2_…``, ``h3_…``) and a table keyed by the composed spelling
-#: would have to be re-edited to publish a third order. The block expands this
-#: over the orders the artifact actually carries, so the declaration and the
-#: data cannot disagree about which orders exist.
+#: Which harmonics-row columns ARE uncertainties, and of what. ``{order}`` is
+#: substituted per published order and expanded over the orders the artifact
+#: actually carries, so the declaration and the data cannot disagree about
+#: which orders exist.
 _HARMONICS_UNCERTAINTY: dict[str, dict[str, str]] = {
     "h{order}_repeat_spread_db": {
         "kind": UNCERTAINTY_RANDOM,
@@ -1534,12 +1170,9 @@ _HARMONICS_UNCERTAINTY: dict[str, dict[str, str]] = {
     },
 }
 
-#: Harmonics fields shaped like an uncertainty, or shaped like a claim about
-#: precision, that are NOT uncertainties — and why not.
-#:
-#: The floor is why this list is long. It reads exactly like an error bar and it
-#: is not one, and the capture_snr block already had to say the same thing about
-#: an SNR for the same reason.
+#: Harmonics fields shaped like an uncertainty, or like a claim about
+#: precision, that are NOT uncertainties — and why not. The floor is why this
+#: list is long: it reads exactly like an error bar and is not one.
 _HARMONICS_NOT_AN_UNCERTAINTY: dict[str, str] = {
     "h{order}_below_fundamental_db": (
         "this order's level MINUS the fundamental's at the same EXCITATION "
@@ -1597,14 +1230,11 @@ _HARMONICS_NOT_AN_UNCERTAINTY: dict[str, str] = {
 }
 
 
-#: The role block's own fields — the level the rows sit inside.
-#:
-#: Declared separately from the row columns above because they answer a
-#: different question: a row says what was measured AT one frequency, these say
-#: what the whole reading was taken THROUGH. None is an uncertainty, and the
-#: three that decide whether a row may be believed at all (``sweep``, ``drive``,
-#: ``worst_clearance_s``) are the reason this second table exists rather than
-#: being left as self-evident structure.
+#: The role block's own fields — the level the rows sit inside. Separate from
+#: the row columns above because a row says what was measured AT one
+#: frequency, these say what the whole reading was taken THROUGH. None is an
+#: uncertainty; three of them (``sweep``, ``drive``, ``worst_clearance_s``)
+#: decide whether a row may be believed at all.
 _HARMONICS_ROLE_NOT_AN_UNCERTAINTY: dict[str, str] = {
     "role": "which driver's own sweep this block reads. A label",
     "wav_sha256_12": (
@@ -1676,11 +1306,8 @@ _HARMONICS_ROLE_NOT_AN_UNCERTAINTY: dict[str, str] = {
 def _harmonics_uncertainty(orders: Iterable[int]) -> dict[str, Any]:
     """The two declaration tables, expanded over the orders actually published.
 
-    The composed row names (``h2_…``) are generated from the same order list the
-    rows were built from, so a document carrying a third order declares its
-    third order's columns and one carrying two declares two. A declaration
-    table that had to be hand-edited alongside the data is a declaration table
-    that goes stale.
+    Generated from the same order list the rows were built from, so a
+    declaration table cannot go stale against its data.
     """
     orders = [int(order) for order in orders]
     fields: dict[str, dict[str, str]] = {}
@@ -1697,8 +1324,6 @@ def _harmonics_uncertainty(orders: Iterable[int]) -> dict[str, Any]:
     return {
         "fields": dict(sorted(fields.items())),
         "not_uncertainties": dict(sorted(not_uncertainties.items())),
-        # The block above the rows, declared apart from them because it answers
-        # "what was this taken through" rather than "what was measured here".
         "role_fields": dict(sorted(_HARMONICS_ROLE_NOT_AN_UNCERTAINTY.items())),
         "note": (
             "one spread is published and it is RANDOM, which is a rarer answer "
@@ -1720,36 +1345,22 @@ def _harmonics_uncertainty(orders: Iterable[int]) -> dict[str, Any]:
 def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
     """The round's banked H2/H3 reading, copied through with its declarations.
 
-    Verbatim, like the classification block and for the same reason: the
-    instrument that produced it (``jasper-read-distortion``, over
-    :mod:`.harmonic_evidence`) is the owner of what the numbers mean, and a
-    packet that re-pooled or re-rounded them would be a second opinion nobody
-    asked for. What this adds is the uncertainty declarations the enrichment
-    rule requires and the artifact does not carry.
+    Verbatim: the instrument that produced it (``jasper-read-distortion``, over
+    :mod:`.harmonic_evidence`) owns what the numbers mean. What this adds is
+    the uncertainty declarations the artifact does not carry.
 
-    **Why the packet does not compute this itself**, when it does compute the
-    cross-seat spread: that spread is a REDUCTION over member curves the packet
-    already carries, and this is an audio job. Reading H2/H3 means re-opening
-    every banked capture WAV and re-deconvolving it at a pre-guard wide enough
-    for the harmonic images to exist — a second or more per capture — and this
-    module publishes ``privacy.raw_audio_excluded`` and is built inside the
-    prescription gates. So the audio stays in the instrument, the reading stays
-    here, and the join is a file on disk.
-
-    Absence is ordinary and reported: the instrument is an offline run nobody is
-    obliged to have made, so a round without the artifact is the common case
-    rather than a broken one.
+    The packet does not compute it, unlike the cross-seat spread: reading H2/H3
+    means re-opening every banked capture WAV and re-deconvolving it at a
+    pre-guard wide enough for the harmonic images to exist, and this module
+    publishes ``privacy.raw_audio_excluded``. Absence is ordinary and reported.
     """
     if not isinstance(raw, dict):
         return {
             "available": False,
             "status": "not_evaluated",
-            # NEVER the bare read reason. A file that is absent or unreadable
-            # carries one, but a file that PARSED into something that is not an
-            # object carries the empty string — the read succeeded — and the
-            # honest list drops any entry whose reason is falsy. That would be a
-            # silent gap in the one block whose whole job is to have none, so
-            # the reason is constructed here rather than passed through.
+            # NEVER the bare read reason: a file that PARSED into a non-object
+            # carries the empty string, and the honest list drops any entry
+            # whose reason is falsy.
             "reason": reason or (
                 f"the {HARMONICS_ARTIFACT} banked for this round parsed as "
                 f"{type(raw).__name__}, not as a JSON object, so there is no "
@@ -1780,11 +1391,9 @@ def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
     if not orders:
         # The declarations are generated FROM this list, so an artifact that
         # names no order would publish h2_/h3_ columns with nothing declaring
-        # them — the one way this block could quietly break the rule it exists
-        # to keep. An artifact claiming no orders carries no harmonic reading by
-        # its own account, so it is refused rather than published under-declared.
-        # ``bool`` is excluded above because it is an ``int`` in Python and a
-        # ``true`` here would otherwise declare an "h1" nothing publishes.
+        # them. Refused rather than published under-declared. ``bool`` is
+        # excluded above because a ``true`` would declare an "h1" nothing
+        # publishes.
         return {
             "available": False,
             "status": "not_evaluated",
@@ -1830,42 +1439,32 @@ def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
     }
 
 
-#: The air temperature :data:`DEFAULT_SOUND_SPEED_M_S` is the conventional figure
-#: for, in degrees Celsius.
-#:
-#: Published beside the distance rather than left implicit, because it is the
-#: ASSUMPTION the conversion rests on and nothing in this corpus measures the
-#: room's air temperature. Dry air's speed of sound is ``331.3 + 0.606*T`` m/s
-#: with ``T`` in Celsius, so 343.0 is the figure at 19.3 °C and 20 °C is the
-#: round number it is conventionally quoted for — the 0.4 m/s between them is
-#: itself smaller than a 1 K error in the assumption.
+#: The air temperature :data:`DEFAULT_SOUND_SPEED_M_S` is the conventional
+#: figure for, in degrees Celsius. Published beside the distance because it is
+#: the ASSUMPTION the conversion rests on and nothing here measures room
+#: temperature. Dry air's speed of sound is ``331.3 + 0.606*T`` m/s with ``T``
+#: in Celsius, so 343.0 is the figure at 19.3 °C and 20 °C the round number it
+#: is quoted for — the 0.4 m/s between them is smaller than a 1 K error.
 _SPEED_OF_SOUND_AIR_TEMPERATURE_C = 20.0
 
-#: The two numbers a capture's gate now banks beside the sentence that used to
-#: be their only copy (ticket 1.5), as they are spelled on a POSITION row.
-#:
-#: :func:`~.spatial.cloud_position_record` writes them and
-#: :data:`_POSITION_FIELDS` copies them through; this set exists so
+#: The two numbers a capture's gate banks beside ``gate_disclosure``, as they
+#: are spelled on a POSITION row. This set exists so
 #: :func:`_gate_numbers_reason` can ask whether a round's records carry the
-#: fields at all — which is a different question from whether their values are
-#: null, and the two send a reader to different places.
+#: fields at all, which is a different question from whether their values are
+#: null.
 #:
-#: ``gate_entanglement_floor_hz`` is deliberately NOT here (#3502). This set is
-#: what the accuracy budget's ``gate_leakage.available`` is decided on, and
-#: that component's subject is what the gate DID to the spectrum. The room's
-#: floor survives a capture that gated nothing at all, so counting it would let
-#: ``gate_leakage`` report available on a round carrying no leakage reading.
+#: ``gate_entanglement_floor_hz`` is deliberately NOT here: this set decides
+#: the accuracy budget's ``gate_leakage.available``, whose subject is what the
+#: gate DID to the spectrum, and the room's floor survives a capture that gated
+#: nothing at all.
 _POSITION_GATE_NUMBER_FIELDS = frozenset({
     "gate_moved_rms_db",
     "gate_reflection_delay_ms",
 })
 
 #: The same two facts as :data:`_POSITION_GATE_NUMBER_FIELDS`, as
-#: :func:`~.capture_dispatch._gate_record` spells them inside ``verify.gate``.
-#:
-#: The ``gate_`` prefix is dropped there because the block is already the gate —
-#: the convention ``gate_disclosure`` / ``gate.disclosure`` and
-#: ``gate_floor_source`` / ``gate.reflection_measured`` already follow.
+#: :func:`~.capture_dispatch._gate_record` spells them inside ``verify.gate``:
+#: the ``gate_`` prefix is dropped because the block is already the gate.
 _VERIFY_GATE_NUMBER_FIELDS = frozenset({
     "moved_rms_db",
     "reflection_delay_ms",
@@ -1874,26 +1473,18 @@ _VERIFY_GATE_NUMBER_FIELDS = frozenset({
 #: Where the reflector-path conversion reads its delay from.
 _REFLECTOR_PATH_SOURCE = "cloud_verify.json -> null_registry.tau_ladder_us"
 
-#: Decimal places the reflector path length is published to — millimetres.
-#:
-#: Three, for the reason :data:`_SIGMA_DECIMALS` is four. A millimetre of excess
-#: path is 2.9 us of delay, already finer than anything this number
-#: supports: the fitted ladder tau and the directly measured arrival tau
-#: disagree by up to 7.5 % on the S0 corpus (about 22 us, or 8 mm, at the
-#: ~300 us those taus were), and the assumed speed of sound moves the answer
-#: 1.8 % over a 10 K room. Digits past the millimetre are arithmetic noise, and
-#: this document is
-#: content-fingerprinted, so noise digits are a fingerprint that moves for a
-#: reason no reader could point at.
+#: Decimal places the reflector path length is published to — millimetres. A
+#: millimetre of excess path is 2.9 us of delay, already finer than anything
+#: this number supports: the fitted ladder tau and the directly measured
+#: arrival tau disagree by up to 7.5 % on the S0 corpus (about 22 us, or 8 mm,
+#: at the ~300 us those taus were), and the assumed speed of sound moves the
+#: answer 1.8 % over a 10 K room.
 _REFLECTOR_PATH_DECIMALS = 3
 
 #: Everything the ``reflections`` block publishes, and why none of it is an
-#: uncertainty — including the six per-capture gate numbers, which live on the
-#: ``positions`` rows and inside ``verify.gate`` and are declared HERE because
-#: this is the block that owns the subject. A field published in one place and
-#: declared in none is exactly what the enrichment rule forbids, and giving the
-#: ``positions`` block a declaration table of its own would leave every OTHER
-#: column in it undeclared beside these two.
+#: uncertainty — the six per-capture gate numbers included, which live on the
+#: ``positions`` rows and inside ``verify.gate`` but are declared HERE because
+#: this is the block that owns the subject.
 _REFLECTIONS_NOT_AN_UNCERTAINTY: dict[str, str] = {
     "reflector_path_distance_m": (
         "how much FURTHER the delayed copy travelled than the direct sound — "
@@ -2001,12 +1592,10 @@ _REFLECTIONS_NOT_AN_UNCERTAINTY: dict[str, str] = {
 def _reflections_uncertainty() -> dict[str, Any]:
     """This block's declaration table — no uncertainties, and why that is honest.
 
-    ``fields`` is empty and stays empty until something banks a spread on one
-    of these numbers. That is a finding rather than an omission: every figure
-    here is a reading or an assumed constant, and the one place an uncertainty
-    could legitimately be computed — a sigma on the ladder's fitted tau — is
-    not banked by the instrument that fits it. Publishing a made-up error bar
-    beside a distance would be worse than publishing none.
+    ``fields`` stays empty until something banks a spread on one of these
+    numbers: every figure here is a reading or an assumed constant, and the one
+    place an uncertainty could legitimately be computed — a sigma on the
+    ladder's fitted tau — is not banked by the instrument that fits it.
     """
     return {
         "fields": {},
@@ -2048,24 +1637,16 @@ def _gate_numbers_reason(
 ) -> str:
     """Why this round carries no gate numbers, or ``""`` when it does.
 
-    Presence is :func:`_gate_numbers_present`'s call; what this function owns
-    is the sentence, and the two carriers' different absence rules are why it
-    hedges. ``verify.gate`` is :func:`~.capture_dispatch._gate_record`'s dict, which
-    always spells both keys once the writer shipped, null or not; a position row
-    is filtered by :data:`~jasper.attribution.position_evidence._RECORD_FIELDS`,
-    which drops a key whose value is ``None``, so an all-ungateable round could
-    legitimately carry neither.
+    The sentence names both readings because the two carriers have different
+    absence rules: ``verify.gate`` always spells both keys, null or not, while
+    a position row is filtered by
+    :data:`~jasper.attribution.position_evidence._RECORD_FIELDS`, which drops a
+    ``None``. So it states what is checkable and names ``gate_floor_source`` as
+    the field separating "banked before the writers existed" from "every
+    capture was ungateable".
 
-    **That is why the sentence this returns names both readings.** It states
-    what is checkable — no record carries either number — and names
-    ``gate_floor_source`` as the field that separates "banked before the
-    writers existed" from "every capture in this round was ungateable". A
-    reason that asserted only the first would be a claim this function cannot
-    make.
-
-    Silent when there is nothing that COULD have carried them — a round with
-    no position rows and no verify gate has already reported those absences,
-    and a second sentence about a third thing they imply would be noise.
+    Silent when nothing COULD have carried them: those absences are already
+    reported by their own blocks.
     """
     rows = [row for row in positions.get("positions") or [] if isinstance(row, dict)]
     gate = verify.get("gate")
@@ -2088,26 +1669,21 @@ def _gate_numbers_reason(
 def _reflections_block(cloud: dict[str, Any], reason: str) -> dict[str, Any]:
     """How far the delayed copy travelled — the ladder's tau, converted.
 
-    ``reflector_path_distance_m = tau_ladder_us * 1e-6 * c``. The whole
-    computation, and the reason it is here rather than in an instrument: tau is
-    ALREADY banked (``honesty_mask.null_registry.tau_ladder_us``, written by
-    ``.verification._null_registry_to_dict``) and what was missing was the
-    multiply, not the measurement. This is a unit conversion of a number the
-    packet already carries, not a second statistic — see this module's own
-    boundary paragraph, which names the one statistic it does compute.
+    ``reflector_path_distance_m = tau_ladder_us * 1e-6 * c``, the whole
+    computation: tau is ALREADY banked as
+    ``honesty_mask.null_registry.tau_ladder_us``, and what was missing was the
+    multiply.
 
-    **The LADDER's tau, not the arrival's.** ``arrival_tau_us`` sits beside it
-    on the same registry and is deliberately not converted: on a
-    ``no_corroborating_arrivals`` refusal it still carries whatever the
-    sub-minimum cluster held, so a distance built from it could be published
-    from evidence the gate itself refused. The ladder's tau exists only after
-    two independent estimators — one frequency-domain, one time-domain — agreed
-    within :data:`~jasper.audio_measurement.interference_nulls.LADDER_ARRIVAL_TOLERANCE`,
-    which is the corroboration that makes a distance worth printing.
+    The LADDER's tau, not the arrival's: ``arrival_tau_us`` sits beside it on
+    the same registry and still carries whatever a sub-minimum cluster held on
+    a ``no_corroborating_arrivals`` refusal, so a distance built from it could
+    be published from evidence the gate refused. The ladder's tau exists only
+    after a frequency-domain and a time-domain estimator agreed within
+    :data:`~jasper.audio_measurement.interference_nulls.LADDER_ARRIVAL_TOLERANCE`.
 
-    Refuses BY NAME rather than publishing a zero. ``tau_ladder_us`` is 0.0
-    when no ladder was fitted — a sentinel, not a measurement — and 0.0 metres
-    is a claim that the reflector is at the microphone.
+    Refuses BY NAME rather than publishing a zero: ``tau_ladder_us`` is 0.0
+    when no ladder was fitted, and 0.0 metres would put the reflector at the
+    microphone.
     """
     registry = _mapping(cloud.get("null_registry"))
     constants: dict[str, Any] = {
@@ -2173,15 +1749,11 @@ def _reflections_block(cloud: dict[str, Any], reason: str) -> dict[str, Any]:
 def _read_candidate(round_dir: Path) -> dict[str, Any]:
     """One round's own ``candidate.json``, as a plain mapping, or ``{}``.
 
-    Read the same light way every other banked artifact in this module is —
-    JSON in, fields taken out by name — never through
-    ``MeasuredCrossoverCandidate.from_mapping``'s full validation and
-    fingerprint recompute. This packet does not re-verify an artifact's own
-    integrity; a tampered candidate would still misreport an EQ, which is a
-    different door's problem (``candidate_bank.load_candidate_artifact`` is
-    where that check lives), not a reason to withhold a receipt-derived
-    reading here the way ``round_receipt.json`` and ``cloud_verify.json``
-    already are not re-verified either.
+    Read the light way every other banked artifact here is — JSON in, fields
+    by name — never through ``MeasuredCrossoverCandidate.from_mapping``'s
+    validation and fingerprint recompute. This packet re-verifies no
+    artifact's integrity; that check lives in
+    ``candidate_bank.load_candidate_artifact``.
     """
     raw, _reason = _read_json(round_dir / "candidate.json")
     return _mapping(raw)
@@ -2283,16 +1855,11 @@ def _repeat_floor_component(
     }
 
 
-#: Ticket 6.5's own bound: the components this block juxtaposes, and why
-#: neither of the two policy constants below is restated as a new table.
-#: :mod:`~jasper.active_speaker.linearization_envelope` is the ONE place the
-#: mic-tier trust ceiling is defined (design doc "Cold-start priors"); a
-#: second copy here is exactly the duplication the house rule against a
-#: second implementation of one concern forbids. The table is imported
-#: privately rather than promoted to a public name because this is the one
-#: reader outside that module that needs the raw breakpoints rather than the
-#: composed per-bin curve :func:`~.linearization_envelope.mic_trust_limit`
-#: returns.
+# :mod:`~jasper.active_speaker.linearization_envelope` is the ONE place the
+# mic-tier trust ceiling is defined, so it is imported rather than restated.
+# The table is private there because this is the only reader outside that
+# module needing the raw breakpoints rather than the composed per-bin curve
+# :func:`~.linearization_envelope.mic_trust_limit` returns.
 def _accuracy_budget_block(
     *,
     positions: dict[str, Any],
@@ -2304,35 +1871,22 @@ def _accuracy_budget_block(
 ) -> dict[str, Any]:
     """Random beside systematic (ADR-0202) — juxtaposed, never pooled.
 
-    Assembled from fields the packet/bundle already carries: nothing here
-    measures anything new, and no two figures are ever added together —
-    the whole point is that a round's own RANDOM terms (this round's repeat
-    scatter) and the standing SYSTEMATIC bounds (mic-cal tier, gate leakage)
-    answer different questions, so a 0.04 dB repeat floor can never again
-    read as accuracy beside a systematic bound that dwarfs it.
+    Assembled from fields the packet/bundle already carries: nothing measured
+    fresh, and no two figures ever added together, so a 0.04 dB repeat floor
+    cannot read as accuracy beside a systematic bound that dwarfs it.
 
-    Four components, each labelled its own kind (the substrate rule — every
-    entry says random / systematic / unseparated) and each honest about
-    absence rather than defaulted:
+    Four components, each labelled its own kind and each honest about absence:
 
-    * ``cross_seat_position_spread`` — UNSEPARATED. Points at
-      ``positions.cross_seat_sigma`` rather than re-embedding its per-bin
-      array (this block adds no second copy of a figure already published).
-    * ``in_capture_repeat_floor`` — RANDOM, read from the banked repeat
-      floor (:mod:`jasper.active_speaker.repeat_floor`) when the rig has one
-      and honestly ``available=False`` when it has not. Its ``thresholds``
-      name their own source: the floor's own derivation, or the two
-      ``round_evidence`` constants that self-describe as assumptions.
-      Unmeasured, never defaulted to 0.0.
-    * ``gate_leakage`` — SYSTEMATIC (a bias a single capture's window bakes
-      in; more captures at the SAME pose do not shrink it). Points at the
-      reflections/positions/verify gate-disclosure numbers ticket 1.5
-      already banks, rather than re-deriving them.
-    * ``mic_calibration_tier`` — SYSTEMATIC. This round's own tier PER ROLE,
-      read off its banked candidate (``candidate.json``'s
-      ``linearization[*].mic_tier``), beside each named tier's trust-ceiling
-      breakpoints. Roles fitted under different tiers are published as the
-      disagreement they are, never collapsed to one entry's answer.
+    * ``cross_seat_position_spread`` — UNSEPARATED, pointing at
+      ``positions.cross_seat_sigma`` rather than re-embedding its array.
+    * ``in_capture_repeat_floor`` — RANDOM, from the banked repeat floor
+      (:mod:`jasper.active_speaker.repeat_floor`), ``available=False`` when
+      the rig has none. Unmeasured, never defaulted to 0.0.
+    * ``gate_leakage`` — SYSTEMATIC: a bias one capture's window bakes in, so
+      more captures at the SAME pose do not shrink it.
+    * ``mic_calibration_tier`` — SYSTEMATIC, PER ROLE off ``candidate.json``'s
+      ``linearization[*].mic_tier``. Roles fitted under different tiers are
+      published as the disagreement they are.
 
     No score, no recommendation, no verdict: this juxtaposes, an LLM judges.
     """
@@ -2422,30 +1976,22 @@ def _accuracy_budget_block(
     }
 
 
-#: Ticket 6.6's own bound: "recent per-round history... bounded, N~=8".
+#: How many rounds of structural history are carried.
 STRUCTURAL_HISTORY_MAX_ROUNDS = 8
 
-#: How many of the household's recent bundles :func:`_structural_history_block`
-#: looks at before it stops trying to find
-#: :data:`STRUCTURAL_HISTORY_MAX_ROUNDS` rounds that banked a candidate. Wider
-#: than the round count itself: a household's recent bundles are not all
-#: crossover_v2 tournament rounds (commissioning and calibration bundles carry
-#: no candidate.json at all) and a bundle without one is silently skipped
-#: rather than counted against the round budget.
+#: How many recent bundles :func:`_structural_history_block` looks at before
+#: giving up on finding :data:`STRUCTURAL_HISTORY_MAX_ROUNDS` rounds that
+#: banked a candidate. Wider than the round count: commissioning and
+#: calibration bundles carry no ``candidate.json`` and are skipped rather than
+#: counted against the budget.
 _STRUCTURAL_HISTORY_BUNDLE_SCAN_LIMIT = 32
 
 #: EVERY structural axis a round re-derives, in report order — the axes the
 #: three prescription classes exist to pin (:mod:`.driver_prescription`'s
 #: ``pinned_trim_db``, :mod:`.alignment_prescription`'s ``delay_us`` and
-#: ``polarity``, :mod:`.topology_prescription`'s corner).
-#:
-#: **Declared once so the history below is a LOOP** (#3484). It used to be the
-#: trim alone, and the asymmetry was the defect: the trim's per-round values
-#: were lined up here — which is how a 7 dB and a 9.8 dB runaway were caught on
-#: 2026-09-01 — while a candidate that re-derived the POLARITY into the other
-#: basin between two rounds, at an essentially unchanged delay, read identically
-#: to one that held it. An axis named here appears on every row; an axis left
-#: out of it is exactly the silent re-derivation this block exists to end.
+#: ``polarity``, :mod:`.topology_prescription`'s corner). Declared once so the
+#: history below is a loop: an axis named here appears on every row, and an
+#: axis left out is a silent re-derivation.
 STRUCTURAL_HISTORY_AXES: tuple[str, ...] = (
     "trim_db",
     "delay_us",
@@ -2457,21 +2003,16 @@ STRUCTURAL_HISTORY_AXES: tuple[str, ...] = (
 def _structural_axes_of(candidate: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     """One candidate's committed value for each :data:`STRUCTURAL_HISTORY_AXES`.
 
-    Every axis answers with the same two keys — ``value`` (what the round
-    committed) and ``pinned`` (whether an operator held it, ``None`` where the
-    candidate banks no such bit) — so a reader walks the axes rather than
-    learning a shape per axis.
+    Every axis answers with the same two keys — ``value`` and ``pinned``
+    (``None`` where the candidate banks no such bit) — so a reader walks the
+    axes rather than learning a shape per axis.
 
-    **One frame per axis, and never across artifacts.** Each value is read off
-    ``candidate.json`` and compared only against another round's ``candidate
-    .json``, so ``polarity`` stays the candidate's own action word — a flip
-    RELATIVE to the declared ``upper_polarity``
-    (``measured_crossover_candidate.effective_preset``) — throughout. Reading
-    the applied profile's ABSOLUTE per-role ``inverted`` flags into this column
-    would put two rows in two frames on any speaker whose draft declares an
-    inverted branch; that conversion has exactly one owner
-    (``commanded.profile_graph_summation``'s required ``draft_inverted_by_role``)
-    and it is not re-implemented here.
+    ONE frame per axis, never across artifacts: every value is read off
+    ``candidate.json``, so ``polarity`` stays the candidate's own action word,
+    a flip RELATIVE to the declared ``upper_polarity``. The applied profile's
+    ABSOLUTE per-role ``inverted`` flags would put two rows in two frames on
+    any speaker whose draft declares an inverted branch; that conversion's one
+    owner is ``commanded.profile_graph_summation``.
     """
     linearization = _mapping(candidate.get("linearization"))
     alignment = _mapping(candidate.get("alignment"))
@@ -2517,47 +2058,26 @@ def _structural_axes_of(candidate: Mapping[str, Any]) -> dict[str, dict[str, Any
 
 
 def _structural_history_block(session_dir: Path) -> dict[str, Any]:
-    """Every structural axis's recent per-round history (6.6, #3484).
+    """Every structural axis's recent per-round history.
 
-    **Where it is durably banked, investigated.** Neither
-    ``round_receipt.json`` nor the durable conductor-state document
-    (:mod:`.durable_state`) carries a candidate across rounds:
-    ``round_receipt.json``'s ``round_axes`` is the four ADOPTION-verdict axes
-    (trust/safety/quality/headroom), not an alignment axis, and
-    ``durable_state``'s document is ONE overwritten CURRENT snapshot
-    (``candidate`` is session-scoped there — "a previous session's answer
-    says nothing about this one"), never a log. ``round_anchor`` names
-    nothing in this tree. What DOES durably bank them, write-once, one file per
-    round directory, retained for as long as the bundle is: ``candidate.json``
-    — its ``role_attenuations_db``, its ``alignment`` and its own preset's
-    corner, which are the values the round actually committed, pin-substituted
-    where a prescription pinned one (``crossover_v2.planning``'s trim-pin fold,
-    disclosed per role as ``linearization[role].trim_pinned`` — the same bit
-    ``durable_state._candidate_pinned_trims`` reads off the identical
-    candidate for the household's own /state projection).
+    ``candidate.json`` is what durably banks these values — write-once, one
+    file per round directory, retained as long as the bundle. Neither
+    ``round_receipt.json`` (whose ``round_axes`` is the four ADOPTION verdicts)
+    nor :mod:`.durable_state` (ONE overwritten current snapshot) carries a
+    candidate across rounds.
 
-    So this reads the FIRST branch the ticket names, not the second: no
-    change to the round-receipt writer, only a reader here.
+    A round is admitted when its candidate names ANY declared axis, because a
+    round whose structure can have moved is a row whether or not it re-solved a
+    trim.
 
-    **Every axis, on one rule** (#3484). Which axes, and why the trim alone was
-    the defect, is :data:`STRUCTURAL_HISTORY_AXES`; how one round's row is read
-    is :func:`_structural_axes_of`. A round is admitted when its candidate
-    names ANY of them, because a round whose structure can have moved is a row
-    whether or not it re-solved a trim.
+    Across BUNDLES, not across round directories inside one: a bundle carries
+    at most one round directory, and a household's rounds are siblings under
+    ``session_dir``'s parent, newest first by ``started_at``
+    (:func:`~jasper.active_speaker.bundles.list_bundles` — bundle DIRECTORY
+    name order is a random uuid4 and is not chronological). A bundle with no
+    round directory, or none carrying a candidate, is silently skipped.
 
-    **Across bundles, not across round directories inside one.** A bundle
-    carries at most one round directory (:func:`round_artifact_dir` refuses
-    a second) — a household's rounds are siblings under ``session_dir``'s own
-    parent, newest first by ``started_at``
-    (:func:`~jasper.active_speaker.bundles.list_bundles`, the shipped
-    chronological lister; bundle DIRECTORY name order is a random uuid4 and
-    is explicitly not chronological, per :mod:`.candidate_bank`'s own
-    docstring). A bundle with no round directory, or none carrying a
-    candidate, is silently skipped: a best-effort scan across many bundles
-    must not fail the whole packet over one malformed or unrelated neighbour.
-
-    Values only, oldest first so a monotonic walk reads left to right; no
-    drift verdict — reading one is the LLM's job.
+    Values only, oldest first; no drift verdict — reading one is the LLM's job.
     """
     from jasper.active_speaker.bundles import list_bundles
 
@@ -2577,10 +2097,8 @@ def _structural_history_block(session_dir: Path) -> dict[str, Any]:
         if round_dir is None:
             continue
         axes = _structural_axes_of(_read_candidate(round_dir))
-        # Admitted when the candidate names ANY declared axis. Emptiness, not
-        # falsiness: a committed delay of exactly 0.0 µs and a polarity of
-        # ``keep`` are both readings, and dropping either would make this
-        # surface silent about the rounds that held their structure.
+        # Emptiness, not falsiness: a committed delay of exactly 0.0 µs and a
+        # polarity of ``keep`` are both readings.
         if all(
             entry["value"] is None or entry["value"] == {}
             for entry in axes.values()
@@ -2656,44 +2174,33 @@ def _incumbent_block(
 ) -> dict[str, Any]:
     """What the speaker is PLAYING — three records, two questions.
 
-    The BLEND correction is recorded in two places, deliberately reported side
-    by side rather than reconciled here: the receipt's
+    The BLEND correction is recorded in two places and reported side by side
+    rather than reconciled: the receipt's
     ``round_measurements.blend.incumbent`` (what the round said it derived
-    from) and the applied profile's own ``blend_correction`` (what the graph
-    actually carried). They should agree, and a packet that silently preferred
-    one would hide the round where they did not. Reconciling them is a
-    judgement, and this module makes none.
+    from) and the applied profile's ``blend_correction`` (what the graph
+    carried). They should agree, and reconciling them is a judgement this
+    module does not make.
 
-    ``linearization`` is the SAME question asked of the other prescription
-    class, and it is here rather than beside ``drivers`` because "what is the
-    graph already carrying" has one owner in this document. The receipt has no
-    second record of it to report alongside — ``_round_measurements`` banks the
-    blend region and nothing per-driver — so this half carries the applied
-    profile's copy alone, read through
+    ``linearization`` is the same question asked of the other prescription
+    class, read through
     :func:`~jasper.active_speaker.baseline_profile.profile_linearization`,
     which owns WHICH copy of that field is authoritative.
 
-    **The applied-profile SSOT answers both halves; the flow state does
-    not.** What the flow state records about the previous apply names the
-    graph live BEFORE the last v2 apply, so reading it here is one apply
-    behind after any v2 apply, and arbitrarily behind after an apply through
-    a door that never touches v2 state (``/sound/setup``'s is one). Issue
-    #2859.
+    The applied-profile SSOT answers both halves and the flow state does not:
+    what the flow state records names the graph live BEFORE the last v2 apply,
+    so it is one apply behind after any v2 apply and arbitrarily behind after
+    an apply through a door that never touches v2 state.
 
-    ``identity`` says WHICH profile the answer describes, so a reader can catch
-    the next drift of this kind. ``config.path`` is not among its fields — the
-    packet excludes absolute paths, and ``config.sha256`` names the same graph.
+    That is load-bearing because a per-driver prescription is a TOTAL for every
+    role it names, so a role's incumbent filters are DELETED by any document
+    that names the role and does not repeat them.
 
-    Why it is load-bearing: a per-driver prescription is a total for every role
-    it names (:class:`~.driver_prescription.DriverPrescription`), so a role's
-    incumbent filters are DELETED by any document that names the role and does
-    not repeat them — a prescriber shown a stale incumbent silently deletes the
-    filters it was never shown (issue #2863).
+    ``identity`` says WHICH profile the answer describes. ``config.path`` is
+    not among its fields — the packet excludes absolute paths, and
+    ``config.sha256`` names the same graph.
 
-    ``trim`` is a fourth record, LEVEL rather than shape: the per-driver trim
-    re-solves every round, and :func:`_incumbent_trim_block` is what makes the
-    size of that re-solve visible before a prescriber decides whether to pin
-    it, not only after (on the receipt's own ``delta_db``).
+    ``trim`` is a fourth record, LEVEL rather than shape: see
+    :func:`_incumbent_trim_block`.
     """
     from jasper.active_speaker.baseline_profile import (
         profile_blend_correction,
@@ -2749,15 +2256,11 @@ def _incumbent_block(
             "correction the next round should apply, incumbent included"
         ),
         "linearization": {
-            # Keyed on the PROFILE and not on what it holds: a profile whose
-            # linearization is empty says the branches carry nothing, which is
-            # a report rather than an absence, and only a missing profile
-            # leaves the question unanswered.
-            # Each filter copied VERBATIM rather than field-reduced, and the
-            # cost was measured rather than assumed: the whole record is 1716
-            # bytes of a 36411-byte packet on the shipped two-way. The profile
-            # already stores exactly `{biquad_type, freq, q, gain}`, so there
-            # is nothing to drop, and rounding the floats would cost a reader
+            # Keyed on the PROFILE, not on what it holds: an empty
+            # linearization says the branches carry nothing, and only a
+            # missing profile leaves the question unanswered. Filters are
+            # copied VERBATIM — the profile stores exactly
+            # `{biquad_type, freq, q, gain}`, and rounding would cost a reader
             # the ability to reproduce the cascade the speaker is playing.
             "from_applied_profile": (
                 {
@@ -2842,12 +2345,8 @@ def _finite_or_none(value: Any) -> float | None:
 def _verify_block(state: dict[str, Any], reason: str) -> dict[str, Any]:
     """Per-claim verdicts, copied verbatim including their ``not_evaluated``.
 
-    These live only in the flow state, never in the bundle — the receipt's own
-    ``verification`` block is a different, coarser record. The per-claim
-    ``status``/``reason`` pairs are the honest ones (``not_evaluated`` +
-    ``no_per_branch_verify_capture`` is the shipped answer for both per-branch
-    claims on every round in the corpus), and they are passed through
-    untouched.
+    These live only in the flow state, never in the bundle — the receipt's
+    ``verification`` block is a different, coarser record.
     """
     verify = state.get("verify")
     absent = _absence(reason, isinstance(verify, dict), "verify")
@@ -2867,17 +2366,15 @@ def _verify_block(state: dict[str, Any], reason: str) -> dict[str, Any]:
 def _drivers_block(draft: dict[str, Any], reason: str) -> dict[str, Any]:
     """Each role's own declared band — the bound a per-driver filter sits inside.
 
-    Read from the design draft's confirmed ``driver_safety_profile``, which is
-    where a speaker's per-driver declarations already live and are already
-    gated. Composed by :func:`~.driver_prescription.driver_passbands_from_safety_profile`
-    rather than here, so the packet reports a band it does not also define — the
-    same split every other block in this module keeps.
+    Read from the design draft's confirmed ``driver_safety_profile`` and
+    composed by
+    :func:`~.driver_prescription.driver_passbands_from_safety_profile`, so the
+    packet reports a band it does not also define.
 
-    Deliberately NOT derived from the crossover: ``branch_chain.
-    radiating_band_hz`` would give the band this driver is within 3 dB of full
-    output over, which is the bound on a LIFT and is narrower than the driver.
-    The owner's directive is that the whole driver be correctable, and a cut
-    past the handoff is ordinary useful work.
+    Deliberately NOT derived from the crossover:
+    ``branch_chain.radiating_band_hz`` is the band this driver is within 3 dB
+    of full output over — the bound on a LIFT, narrower than the driver — and
+    the whole driver is meant to be correctable.
     """
     profile = _mapping(draft.get("driver_safety_profile"))
     passbands = driver_passbands_from_safety_profile(profile)
@@ -2905,40 +2402,24 @@ def _drivers_block(draft: dict[str, Any], reason: str) -> dict[str, Any]:
 def _operator_notes_block(draft: dict[str, Any], reason: str) -> dict[str, Any]:
     """The operator's own words, passed through and read by nobody in code.
 
-    The CONTEXT layer of this module's reality/intent/context model, and the
-    only block in this document that is neither measured nor gated. Composed by
-    :func:`~.operator_notes.build_operator_notes` rather than here — the same
-    report-don't-define split :func:`_drivers_block` keeps — and embedded whole,
-    with its own ``kind`` and its own schema version, so a reader can lift the
+    The only block in this document that is neither measured nor gated.
+    Composed by :func:`~.operator_notes.build_operator_notes` and embedded
+    whole, with its own ``kind`` and schema version, so a reader can lift the
     prose out by kind and no evidence field ever carries a sentence.
 
-    **Nothing in JTS reads these strings for a decision.** No gate parses them,
-    no bound is derived from them, no refusal quotes them, and no branch
-    anywhere tests them; the block is assembled here and consumed only by the
-    LLM reading this packet. That is a property of the code, not a promise
-    about it, and three tests hold it from three directions:
-    ``test_the_prose_gatherer_has_exactly_one_production_caller`` walks the
-    import graph, ``test_no_shipped_module_reads_the_packets_operator_notes_block``
-    greps for the other route in, and the behavioural one named below proves
-    the result. It is why the strings can be carried verbatim without a length
-    or content policy of their own.
+    NOTHING in JTS reads these strings for a decision — no gate parses them, no
+    bound derives from them, no branch tests them — which is why they can be
+    carried verbatim with no length or content policy. Three tests hold that
+    from three directions:
+    ``test_the_prose_gatherer_has_exactly_one_production_caller``,
+    ``test_no_shipped_module_reads_the_packets_operator_notes_block``, and
+    ``test_prose_changes_nothing_in_the_packet_but_the_prose``.
 
-    **The one thing the prose does move is ``packet_fingerprint``**, and that
-    is not a reading of it. :func:`_fingerprint` is a content hash of the whole
-    document, so editing a build note produces a different briefing and a
-    prescription written against the old one no longer matches — which is the
-    same thing that happens when any other field of this document changes, and
-    is the honest outcome rather than a bound derived from a sentence. Pinned
-    from the other side by
-    ``test_prose_changes_nothing_in_the_packet_but_the_prose``, which excludes
-    exactly that one field and asserts every other one holds still.
+    The one thing the prose does move is ``packet_fingerprint``, which is a
+    content hash of the whole document rather than a reading of the prose.
 
-    Absence is the packet's ordinary two flavours: no draft was handed to the
-    builder (``source_absent``), or one was and it carries no prose at all
-    (``field_null``). The second is the ordinary case on a speaker whose
-    operator typed nothing, and it is reported rather than hidden, because a
-    reader who cannot find a waveguide's coverage angle needs to know whether
-    nobody wrote one down or nobody passed the draft.
+    Absence takes the packet's ordinary two flavours; ``field_null`` is the
+    ordinary case on a speaker whose operator typed nothing.
     """
     artifact = build_operator_notes(draft)
     absent = _absence(
@@ -2952,39 +2433,27 @@ def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
 
     TWO views of one artifact, side by side and deliberately not joined.
 
-    ``verdicts`` is the gate's: copied through
-    :func:`~.feature_classification.read_feature_verdicts`, which drops a row it
-    cannot type rather than admitting it as ``ambiguous`` — so the count this
-    block reports is the count a gate can actually use, and a half-readable
-    artifact cannot look fuller than it is. ``n_rows_banked`` beside it is the
-    raw count, because a denominator that moved silently is a different
-    measurement wearing the same number.
+    ``verdicts`` is the gate's, copied through
+    :func:`~.feature_classification.read_feature_verdicts`, which drops a row
+    it cannot type rather than admitting it as ``ambiguous``; ``n_rows_banked``
+    beside it is the raw count.
 
-    ``lab_rows`` is the artifact's own: every banked row object, copied field by
-    field through :data:`~.feature_classification.LAB_ROW_FIELDS` on this
-    module's ordinary allowlist rule, with the names of anything held back
-    published as ``redacted_fields`` and of any column that was not exact JSON
-    as ``non_finite_fields``. It carries the working a gate must not
-    act on but a READER of this packet needs to audit a verdict — how far the
-    excursion sat from a real cancellation's scale, what each shorter gate did
-    to the feature, which gates resolved it. Rows the typed reader dropped keep
-    their working here, which is how a reader sees WHY one was dropped; they
-    reach no gate, because no gate reads this key.
+    ``lab_rows`` is the artifact's own: every banked row, copied through
+    :data:`~.feature_classification.LAB_ROW_FIELDS` with anything held back
+    named in ``redacted_fields`` and any inexact column in
+    ``non_finite_fields``. It carries the working a gate must not act on but a
+    READER needs to audit a verdict. Rows the typed reader dropped keep their
+    working here; they reach no gate, because no gate reads this key.
 
-    Not joined into one list per feature on purpose: the typed reader drops
-    rows, so the two lists do not line up by index, and pairing them by
-    frequency is a judgement about which row a verdict came from that this
-    module does not make. The same doctrine is why the two can disagree on a
-    COLUMN: an artifact banked before 2026-08-22 spells its confidence
-    ``med``, so ``verdicts[]`` shows the normalised ``medium`` its typed
-    reader produces while ``lab_rows[]`` still shows ``med``, the artifact's
-    own word. That is the split working, not drift.
+    Not joined into one list per feature: the typed reader drops rows, so the
+    two do not line up by index, and pairing them by frequency is a judgement
+    this module does not make. That is also why the two can disagree on a
+    COLUMN — an artifact banked before the confidence vocabulary was
+    normalised spells ``med`` where ``verdicts[]`` shows ``medium``.
 
-    ``uncertainty`` labels every spread the rows publish. Each is ``random`` or
-    ``systematic`` and says what it is a spread of, and the two columns that
-    merely LOOK like uncertainties say why they are not — ``gate_slack`` most of
-    all, since it is a dB figure sitting beside a dB reading and is the bar that
-    reading is tested against, not an error bar on it.
+    ``uncertainty`` labels every spread the rows publish, and says why the two
+    columns that merely LOOK like uncertainties are not — ``gate_slack`` most
+    of all, a dB bar beside a dB reading rather than an error bar on it.
     """
     absent = _absence(reason, raw is not None, CLASSIFICATION_ARTIFACT)
     if absent:
@@ -3065,27 +2534,15 @@ def _not_evaluated(
 ) -> list[dict[str, Any]]:
     """Everything this packet could not answer, and why — one honest list.
 
-    A reader that scans only the fields present will draw conclusions from a
-    shape it cannot see the edges of. This block is the edges. Entries whose
-    absence is a property of the CORPUS (nothing banks a distortion reading)
-    are stated whether or not this particular session was complete.
+    Entries whose absence is a property of the CORPUS are stated whether or not
+    this particular session was complete.
     """
     entries: list[dict[str, Any]] = [
-        # The one place the PRESCRIPTION PATH states this geometry — the remote
-        # tier's own disclosures (``crossover_v2_flow.REMOTE_VERTICAL_DISCLOSURE``,
-        # ``crossover_envelope_v2._REMOTE_VERTICAL_NUDGE``) carry theirs, about
-        # their own artifacts. It is a property of the CORPUS — nothing in the
-        # package ANALYSES an elevation, whoever wrote the artifact — so it
-        # belongs here rather than as a per-row flag two producers spell
-        # differently (#2783). It DISCLOSES; it refuses nothing: the owner's
-        # 2026-08-21 ruling opened the boost door on exactly this risk, which is
-        # a correction that may not generalise off-axis vertically — reversible
-        # and measurable — and not a component-safety one.
-        #
-        # The claim is about what this packet READS, never about what a round
-        # banked: a pose records the elevation it was raised to, so a shape
-        # claim would go stale the first time one is. Every number here is a
-        # horizontal-plane number whether or not a seat was raised.
+        # A property of the CORPUS — nothing in the package ANALYSES an
+        # elevation, whoever wrote the artifact — so it belongs here rather
+        # than as a per-row flag two producers spell differently. It
+        # DISCLOSES and refuses nothing. The claim is about what this packet
+        # READS, never about what a round banked.
         {
             "field": "vertical_plane_response",
             "reason": (
@@ -3101,19 +2558,10 @@ def _not_evaluated(
         },
     ]
     if not lateral_poses_available:
-        # Was an unconditional "no numeric microphone angle is banked" until the
-        # packet read the positions/ sidecars. That claim was about the CORPUS
-        # and it was false: a lateral walk banks a signed whole-degree bearing
-        # per pose. What remains true, and only when this round banked no walk,
-        # is that no LATERAL pose in it carries one. Printing the old sentence
-        # beside a lateral_poses block full of angles would be the opposite of
-        # the honesty this block exists for.
-        #
-        # It also used to close with "A cloud position never does", which the
-        # 2026-08-24 geometry ruling falsified in the same way: a retained cloud
-        # position now stamps its own ``position_deg``. So this entry stopped
-        # speaking for the cloud at all and points at the block that does —
-        # which is CONDITIONAL there too, and therefore cannot go stale here.
+        # Narrow by construction: a lateral walk banks a signed whole-degree
+        # bearing per pose, so the only true claim is about THIS round. It
+        # speaks for no cloud seat either — those stamp their own
+        # ``position_deg`` — and points at the block that does.
         entries.append({
             "field": "lateral_poses[].position_deg",
             "reason": (
@@ -3133,17 +2581,9 @@ def _not_evaluated(
             ),
         })
     if gate_numbers_reason:
-        # Was the unconditional "the reflection time is narrated inside
-        # verify.gate.disclosure prose and is not banked as a number anywhere in
-        # a round's artifacts". That was a claim about the CORPUS and ticket 1.5
-        # falsified it: ``spatial.cloud_position_record`` and
-        # ``capture_dispatch._gate_record`` now bank both numbers beside the
-        # sentence. Printing the old sentence beside a positions row carrying
-        # gate_reflection_delay_ms would be the opposite of the honesty this
-        # block exists for, so what remains — and only for a round banked before
-        # those writers gained the fields — is the narrow statement about THIS
-        # round's records. It names both numbers rather than only the reflection
-        # time: they were banked together and they are missing together.
+        # Names both numbers rather than only the reflection time: they are
+        # banked together by ``spatial.cloud_position_record`` and
+        # ``capture_dispatch._gate_record``, and they go missing together.
         entries.append({
             "field": "positions[].gate_reflection_delay_ms",
             "reason": gate_numbers_reason,
@@ -3164,23 +2604,11 @@ def _not_evaluated(
             "reason": cross_seat_sigma_reason,
         })
     if harmonics_reason:
-        # Was the unconditional "H2/H3 are computable from banked captures but
-        # no round writes them; there is no distortion record to carry". Both
-        # halves of that sentence were about the CORPUS, and the second half is
-        # no longer true: ``jasper-read-distortion`` writes one. Printing it
-        # beside a harmonics block full of rows would be the opposite of the
-        # honesty this block exists for, so what remains — and only when this
-        # round has no artifact — is the narrow statement that THIS round
-        # carries no reading, with the reason it does not.
         entries.append({
             "field": "harmonics",
             "reason": harmonics_reason,
         })
     if not classification_available:
-        # Was unconditional until a round could carry banked verdicts. Stating
-        # it while the packet carries verdicts would be the opposite of the
-        # honesty this block exists for: "we did not look" printed beside the
-        # thing we looked at.
         entries.append({
             "field": "per_bin_minimum_phase_class",
             "reason": (
@@ -3252,49 +2680,32 @@ def build_crossover_evidence_packet(
     holding the round receipt, the cloud evidence, the finding set and the
     per-position records.
 
-    ``state_path`` is the flow state file (``jts_crossover_v2_flow_state``),
-    which is banked separately because the bundle does not contain it. It is
-    OPTIONAL and its absence is reported rather than papered over — but a
-    packet without it cannot carry the per-claim verify verdicts or the Fc
-    selection, and says so in the packet's ``not_evaluated`` block.
+    Every other path is OPTIONAL and INJECTED rather than resolved here — this
+    packet is rebuilt by every reader, and a path resolved here would make a
+    banked round's answer, and its ``packet_fingerprint``, depend on whatever
+    the READING machine happens to have. Each absence is reported in the
+    ``not_evaluated`` block rather than papered over, and each costs the packet
+    something specific:
 
-    ``applied_profile_path`` is the applied-baseline-profile SSOT
-    (``active_speaker_baseline_profile.json``), which answers "what is this
-    speaker playing" for the ``incumbent`` block. Same posture, same reason:
-    OPTIONAL, absence reported. A packet without it can name neither the
-    per-driver correction nor the blend correction the graph already carries,
-    so a per-driver prescription's displacement is ``unknown`` rather than
-    guessed — see :func:`_incumbent_block` for why the flow state cannot stand
-    in for this file.
-
-    ``driver_draft_path`` is the active-speaker design draft
-    (``active_speaker_design_draft.json``), which carries the confirmed
-    driver-safety profile and is likewise banked outside the bundle. Same
-    posture and same reason: OPTIONAL, absence reported. A packet without it
-    cannot say where each driver's own band starts and ends, so the per-driver
-    prescription class has no bound to be checked against and refuses by name.
-
-    ``repeat_floor_path`` is the banked repeat floor
-    (``active_speaker_repeat_floor.json``), the measured random noise the
-    accuracy budget's ``in_capture_repeat_floor`` reports and derives the
-    stopping plateau/benefit margin from. Same posture, same reason: OPTIONAL,
-    absence reported. A packet without it says the floor is unmeasured and
-    falls back to the two codified assumptions, naming which it used.
-
-    ``declared_geometry_path`` is the household's declared rig geometry
-    (``measurement_geometry.json``), the only viable source for the room's
-    entanglement floor. Same posture, same reason: OPTIONAL, absence reported.
-    It is INJECTED rather than defaulted to the on-box SSOT path for the
-    reason ``state_path`` is: this packet is rebuilt by every reader, and a
-    path resolved here would make a banked round's room — and its
-    ``packet_fingerprint`` — depend on whatever the READING machine happens to
-    have declared. ``None`` is "this round banked none", which is the
-    ``source_absent`` absence.
+    * ``state_path`` — the flow state file (``jts_crossover_v2_flow_state``),
+      banked outside the bundle; without it, no per-claim verify verdicts and
+      no Fc selection.
+    * ``applied_profile_path`` — the applied-baseline-profile SSOT, which
+      answers "what is this speaker playing" for ``incumbent``; without it a
+      per-driver prescription's displacement is ``unknown`` rather than
+      guessed. See :func:`_incumbent_block` for why the flow state cannot
+      stand in for it.
+    * ``driver_draft_path`` — the design draft carrying the confirmed
+      driver-safety profile; without it the per-driver prescription class has
+      no bound to check against and refuses by name.
+    * ``repeat_floor_path`` — the banked repeat floor; without it the floor is
+      unmeasured and the two codified assumptions are used, named.
+    * ``declared_geometry_path`` — the household's declared rig geometry, the
+      only viable source for the room's entanglement floor.
 
     Raises :class:`CrossoverEvidencePacketError` only when ``session_dir`` is
-    not a crossover-v2 session bundle at all. Every other missing or
-    unreadable artifact is reported inside the packet, because a partially
-    banked round is a normal thing to want to read.
+    not a crossover-v2 session bundle at all: a partially banked round is a
+    normal thing to want to read.
     """
     if not session_dir.is_dir():
         raise CrossoverEvidencePacketError(f"not a directory: {session_dir}")
@@ -3464,21 +2875,13 @@ def build_crossover_evidence_packet(
             "field_descriptions": _mapping(findings.get("field_descriptions")),
         },
         "verify": verify,
-        # No ``fc_selection`` block: the corner selector that produced one is
-        # retired (``docs/tuning-master-plan.md`` ticket 2.4), so the field is
-        # absent from this version of the packet rather than published as a
-        # permanent ``not_evaluated`` — which would read to the operator as an
-        # evaluation this round skipped rather than one no round makes.
         # The round's reflection geometry as NUMBERS, and the one place the
         # per-capture gate numbers on the positions rows and inside
-        # verify.gate are declared. Top-level rather than inside honesty_mask
-        # because that block is copied verbatim from the cloud artifact and a
-        # derived field does not belong inside a verbatim copy.
+        # verify.gate are declared. Top-level rather than inside honesty_mask,
+        # which is copied verbatim from the cloud artifact.
         "reflections": reflections,
-        # Ticket 6.5: this round's RANDOM terms beside the standing
-        # SYSTEMATIC bounds (ADR-0202) — juxtaposed only, never pooled and
-        # never a score. Reads fields already assembled above
-        # (positions/reflections/verify) plus this round's own candidate.
+        # This round's RANDOM terms beside the standing SYSTEMATIC bounds
+        # (ADR-0202) — juxtaposed only, never pooled and never a score.
         "accuracy_budget": _accuracy_budget_block(
             positions=positions,
             reflections=reflections,
@@ -3487,10 +2890,10 @@ def build_crossover_evidence_packet(
             repeat_floor=repeat_floor,
             repeat_floor_reason=repeat_floor_reason,
         ),
-        # Ticket 6.6, widened by #3484: every structural axis's recent
-        # per-round history, so a monotonic walk (a re-solved trim drifting
-        # round over round) and a basin flip (opposite polarity at an unchanged
-        # delay) are both readable evidence. Values only; no drift verdict.
+        # Every structural axis's recent per-round history, so a monotonic
+        # walk (a re-solved trim drifting round over round) and a basin flip
+        # (opposite polarity at an unchanged delay) are both readable
+        # evidence. Values only; no drift verdict.
         "structural_history": _structural_history_block(session_dir),
         # The two per-DRIVER evidence blocks. They travel together because a
         # per-driver prescription needs both to be checked at all: the band
@@ -3528,9 +2931,8 @@ def build_crossover_evidence_packet(
         # block would need an owner that is neither gate.
         "response_format": prescription_response_format(),
         "driver_response_format": driver_prescription_response_format(),
-        # …and the doors this one does NOT open (#2773): the other two arrive
-        # as session-open request-body keys, not something ``stage`` can act
-        # on, so they are named apart from the two contracts above.
+        # …and the doors this one does NOT open: the other two arrive as
+        # session-open request-body keys, not something ``stage`` can act on.
         "request_time_prescriptions": doors.request_time_prescriptions(no_crossover, _absence),
     }
     packet["packet_fingerprint"] = _fingerprint(packet)
@@ -3541,10 +2943,8 @@ def _fingerprint(packet: dict[str, Any]) -> str:
     """The content hash a prescription must echo back.
 
     Through :func:`~jasper.audio_measurement.evidence_identity.json_fingerprint`
-    — this repository's one content hash — over the packet MINUS the
-    fingerprint field itself, which does not exist yet at this point. A
-    prescription naming this digest can only have been written against this
-    exact evidence.
+    over the packet MINUS the fingerprint field itself, which does not exist
+    yet at this point.
     """
     try:
         return json_fingerprint(packet, field_name="evidence_packet")
@@ -3554,9 +2954,7 @@ def _fingerprint(packet: dict[str, Any]) -> str:
         ) from exc
 
 
-# --------------------------------------------------------------------------- #
-# the two readers the gate uses — named here so the packet owns its own shape
-# --------------------------------------------------------------------------- #
+# --- the readers the gate uses, so the packet owns its own shape ---
 
 
 def packet_region_band_hz(packet: Any) -> tuple[float, float] | None:
@@ -3622,29 +3020,20 @@ def packet_incumbent_linearization(
 ) -> dict[str, tuple[dict[str, Any], ...]] | None:
     """The per-driver correction the graph is already carrying, or ``None``.
 
-    A reader rather than an attribute access, on
-    :func:`packet_driver_passbands_hz`'s rule: the packet owns its own layout
-    and :mod:`.driver_prescription` asks it questions.
+    A reader rather than an attribute access: the packet owns its own layout.
 
-    ``None`` — "this packet does not say" — and ``{}`` — "it says the graph
-    carries none" — are DIFFERENT and both callers must keep them apart, on
-    :func:`~.blend_correction.blend_filters_from_mapping`'s rule for exactly
-    this quantity: an unreadable incumbent and an empty one have different
-    consequences, and a document that replaces a role it cannot see is the
-    defect this reader exists to expose (#2863).
+    ``None`` ("this packet does not say") and ``{}`` ("it says the graph
+    carries none") are DIFFERENT and both callers must keep them apart — a
+    document that replaces a role it cannot see is the defect this reader
+    exists to expose.
 
-    **Strict, and it fails the WHOLE map rather than a filter.** A record that
-    is not one this system wrote means the profile copy cannot be vouched for,
-    and a partial read would understate the displacement — which is the one
-    direction this number must never err in. The permitted biquad types are the
-    emitter's own set (``camilla_yaml.LINEARIZATION_BIQUAD_TYPES``), consumed
-    rather than restated, because "would the emitter accept this record" is the
-    question being asked and it has one owner.
+    Strict, and it fails the WHOLE map rather than a filter: a partial read
+    would understate the displacement, the one direction this number must never
+    err in. Permitted biquad types are the emitter's own
+    ``camilla_yaml.LINEARIZATION_BIQUAD_TYPES``, consumed rather than restated.
 
     Entries come back in the reduced ``{biquad_type, freq, q, gain}`` shape
-    :func:`~jasper.active_speaker.branch_chain.chain_response` takes, which is
-    the shape the profile already stores them in — so the caller evaluates the
-    incumbent through the same one biquad evaluator as everything else.
+    :func:`~jasper.active_speaker.branch_chain.chain_response` takes.
     """
     from jasper.active_speaker.camilla_yaml import LINEARIZATION_BIQUAD_TYPES
 

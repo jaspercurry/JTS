@@ -66,7 +66,7 @@ mic calibration (**recommended, not required** — plan §7.1: "an uncalibrated
 mic gets `mic_uncalibrated` WARN and blocks nothing"). **Do not add a
 Room-before-Bass gate here.** Room completion is not a wave-4 precondition —
 only the applied active baseline is. A future bass entry receipt (see
-[`correction-journey-design.md`](../correction-journey-design.md) §9, "Bass
+`correction-journey-design.md` §9, "Bass
 entry receipt") may add one later; until that ships, the UI must not invent
 the gate.
 
@@ -351,7 +351,7 @@ externalized for translation, no idioms; localized numeric units.
 
 - **Shared "conductor shell" refactor across Crossover/Room/Bass.** Violates
   two written non-goals —
-  [`correction-journey-design.md`](../correction-journey-design.md) §2 ("No
+  `correction-journey-design.md` §2 ("No
   shared wizard/session framework") and
   [`room-correction-information-design.md`](../room-correction-information-design.md)
   "Non-goals" ("A generic tab, session, envelope, graph, or wizard

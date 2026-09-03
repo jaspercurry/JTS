@@ -5,7 +5,7 @@
 #
 # WHY: bonded-leader AirPlay lip-sync hinges on the sender's negotiated
 # budget vs. the leader's hidden downstream delay
-# (~150 ms pipeline + the Snapcast buffer_ms). The sender CHOOSES that
+# (~160 ms pipeline + the Snapcast buffer_ms). The sender CHOOSES that
 # budget live, per session, and shairport already logs it — so this
 # probe is READ-ONLY: no config change, no restart. Needs log_verbosity
 # >= 1 for the latency line and >= 2 for the stream type. The template
@@ -118,13 +118,13 @@ if grep -qiE 'Stream-specified latency is' "$tmp"; then
         echo "    ${line}  -> ~${secs}s total scheduled latency"
     done
     echo "TIGHT-REGIME CHECK  : shairport drops the offset (audio plays late) when"
-    echo "    the budget < 150 ms + buffer_ms + shairport's 0.045 s backend buffer"
-    echo "    (default buffer_ms 400 => need ~0.55 s => threshold ~0.595 s). Below"
+    echo "    the budget < 160 ms + buffer_ms + shairport's 0.045 s backend buffer"
+    echo "    (default buffer_ms 400 => need ~0.56 s => threshold ~0.605 s). Below"
     echo "    that, expect bounded residual lip-sync lag (~the full need) when bonded."
 elif [[ -n "$stream" ]]; then
     echo "Negotiated latency  : DEFAULT (no 'Stream-specified latency' line)"
     echo "    => 77175 frames (~1.75 s) + 11025 = exactly 2.0 s budget. With the"
-    echo "    default buffer_ms (400) that clears the ~0.595 s threshold with ~1.41 s"
+    echo "    default buffer_ms (400) that clears the ~0.605 s threshold with ~1.40 s"
     echo "    to spare (FREE regime). NB: a buffer_ms above 1795 would be tight even"
     echo "    at this default budget — check jasper-doctor / /state if you raised it."
 elif (( blind )); then

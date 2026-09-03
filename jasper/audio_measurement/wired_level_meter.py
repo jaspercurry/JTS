@@ -2,17 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Live RMS/peak meter over a wired measurement mic — the level ramp's feed.
+"""Live RMS/peak meter over a wired measurement mic -- the level ramp's feed.
 
-:mod:`jasper.audio_measurement.wired_capture` answers "what did the mic capture
-during that excitation". This answers "what is the mic hearing right now", which
-is what a closed-loop level ramp needs. Same device, same PCM seam, same
-loud-failure contract — a second consumption shape, not a second owner: the ALSA
-open, the S32_LE format facts, and the bounded-wait constants all come from that
-module rather than being restated here.
-
-Output is :class:`jasper.audio_measurement.ramp.LevelSample` batches, so the
-level-match kernel consumes a wired mic exactly as it consumes the phone relay.
+:mod:`jasper.audio_measurement.wired_capture` answers what the mic captured
+during an excitation; this answers what it is hearing right now, which is what
+a closed-loop level ramp needs. Same device, same PCM seam, same loud-failure
+contract -- the ALSA open, the S32_LE format facts, and the bounded-wait
+constants all come from that module. Output is
+:class:`jasper.audio_measurement.ramp.LevelSample` batches.
 """
 
 from __future__ import annotations
@@ -53,13 +50,11 @@ def _counts_to_dbfs(counts: float) -> float:
 
 
 class WiredLevelMeter:
-    """Live RMS/peak meter over a wired measurement mic — the ramp's mic feed.
+    """Live RMS/peak meter over a wired measurement mic -- the ramp's mic feed.
 
-    Produces :class:`jasper.audio_measurement.ramp.LevelSample` batches so the
-    level-match kernel consumes a wired mic exactly as it consumes the phone
-    relay. ``agc_frozen=True`` is a statement of fact, not a default: an ALSA
-    capture has no browser gain control in the path, so the kernel's empirical
-    AGC-slope machinery stays off — which is precisely why a wired ramp needs
+    ``agc_frozen=True`` is a statement of fact, not a default: an ALSA capture
+    has no browser gain control in the path, so the kernel's empirical AGC-slope
+    machinery stays off -- which is precisely why a wired ramp needs
     :func:`jasper.active_speaker.seat_level_ramp.mic_is_not_observing` for its
     "is the mic responding at all" evidence.
 
@@ -67,10 +62,9 @@ class WiredLevelMeter:
     carries its capsule on one channel and near-silence on the other, and taking
     the max can only over-report, never hide a loud room.
 
-    Lifecycle mirrors the recorder: ``start()`` blocks until real audio arrives
-    (so a caller never ramps into a dead mic), ``drain()`` takes everything
-    measured since the last call, ``stop()`` is idempotent and safe on every
-    path. ``pcm_factory`` is the test seam.
+    ``start()`` blocks until real audio arrives (so a caller never ramps into a
+    dead mic), ``drain()`` takes everything measured since the last call,
+    ``stop()`` is idempotent. ``pcm_factory`` is the test seam.
     """
 
     def __init__(
@@ -106,12 +100,9 @@ class WiredLevelMeter:
         self._seq = 0
         self._reader_error: WiredCaptureError | None = None
         #: Only a reader death BEFORE the mic ever proves itself alive fails
-        #: start(). Set by the reader thread strictly before it calls
-        #: _first_chunk.set(), never after, so start()'s read of it once
-        #: _first_chunk.wait() returns is race-free without self._lock — a
-        #: death on chunk 2 that beats start() to the check must not turn a
-        #: momentarily-healthy mic into "the microphone is gone" (that death
-        #: still reaches drain() via _reader_error, unchanged).
+        #: start(). Set by the reader thread strictly before _first_chunk.set(),
+        #: never after, so start()'s read of it is race-free without self._lock;
+        #: a later death still reaches drain() via _reader_error.
         self._startup_error: WiredCaptureError | None = None
 
     def _measure(self, data: bytes, length: int) -> tuple[float, float, bool]:

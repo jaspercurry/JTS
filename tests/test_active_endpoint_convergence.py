@@ -13,7 +13,6 @@ and is the applied record still what the speaker is playing.
 
 from __future__ import annotations
 
-import inspect
 from pathlib import Path
 
 import pytest
@@ -280,45 +279,77 @@ def test_a_refused_reemit_does_not_kick(box):
     assert box.kicks == []
 
 
-def test_no_automated_path_can_pass_force():
+def test_no_automated_path_can_pass_force(monkeypatch):
     """The safety here is an ABSENCE.
 
     ``_reemit_staged_startup_anchor`` refuses while a per-driver commissioning
     load is active, because moving the anchor mid-load re-points the operator's
-    own stop control. This caller's safety IS that refusal, so a future edit
-    that threads ``--force`` through has to come past this assertion.
+    own stop control. This caller's safety IS that refusal, so ``--force`` is
+    not threaded through.
     """
-    source = inspect.getsource(converge._reemit_graph_at_ring)
-    argv = source.split("argv = [", 1)[1].split("]", 1)[0]
+    seen: list[list[str]] = []
+    monkeypatch.setattr(
+        "jasper.cli.active_speaker.main", lambda argv: seen.append(list(argv)) or 0
+    )
 
-    assert "force" not in argv
-    assert '"--endpoint", "ring"' in argv
-
-
-def test_the_reemit_is_the_cli_itself_not_a_second_implementation():
-    """One emitter, so what this publishes is byte-identical to what an
-    operator's ``baseline-reemit`` publishes."""
-    source = inspect.getsource(converge._reemit_graph_at_ring)
-
-    assert "from jasper.cli import active_speaker as cli" in source
-    assert "cli.main(argv)" in source
+    assert _REAL_REEMIT() == (True, "")
+    (argv,) = seen
+    assert argv[:3] == ["baseline-reemit", "--endpoint", "ring"]
+    assert not any("force" in arg for arg in argv)
 
 
-def test_the_explicit_operator_arm_is_untouched():
+@pytest.mark.parametrize(
+    "auto,no_apply", [(False, False), (False, True), (True, True)]
+)
+def test_the_explicit_operator_arm_is_untouched(monkeypatch, auto, no_apply):
     """SCOPE PIN. Convergence rides the UNATTENDED pass only: an operator
     already typing the CLI sees no change in behaviour and no change in ladder.
     """
+    import types
+
+    from jasper.fanin import converge as cv
     from jasper.fanin import coupling_reconcile as cr
 
-    source = inspect.getsource(cr._run_entry_verb)
-    guard = [
-        line.strip()
-        for line in source.splitlines()
-        if "converge_active_endpoint(" in line and "import" not in line
-    ]
+    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    converged: list[str] = []
+    monkeypatch.setattr(
+        cv,
+        "converge_active_endpoint",
+        lambda **k: converged.append(k.get("reason", "")) or "converged",
+    )
+    monkeypatch.setattr(
+        cr,
+        "reconcile_auto",
+        lambda **k: types.SimpleNamespace(
+            gadget_present=False,
+            usb_intent_enabled=False,
+            combo_armed=False,
+            usb_combo_changed=False,
+            restarted_fanin_for_combo=False,
+            ok=True,
+            reason="",
+            detail="",
+        ),
+    )
+    monkeypatch.setattr(
+        cr,
+        "reconcile_coupling",
+        lambda **k: types.SimpleNamespace(
+            ok=True,
+            changed=False,
+            restarted_outputd=False,
+            restarted_fanin=False,
+            reconciled_camilla=False,
+            detail="",
+        ),
+    )
+    args = types.SimpleNamespace(
+        auto=auto, no_apply=no_apply, coupling=None, reason="test"
+    )
 
-    assert "if args.auto and not args.no_apply:" in source
-    assert guard == ["converge_active_endpoint(reason=args.reason)"]
+    cr._run_entry_verb(args)
+
+    assert converged == []
 
 
 def test_a_convergence_that_raises_costs_the_box_its_convergence_not_its_reconcile(

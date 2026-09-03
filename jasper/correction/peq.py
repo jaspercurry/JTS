@@ -4,32 +4,12 @@
 
 """Greedy peak-fit parametric-EQ designer for the modal range.
 
-Defaults match Jasper's known-good REW workflow:
-  - Match range:        20 Hz – the room-correction ceiling (modal-range
-                        only — Toole-aligned). The ceiling is owned by
-                        jasper.audio_measurement.room_boundary, 350 Hz today.
-  - Max filters:        5
-  - Mode:               cuts only (Floyd Toole's "first do no harm")
-  - Max cut:            -10 dB (anything deeper means the room needs
-                                acoustic treatment, not EQ)
-  - Max boost:          +3 dB (when cuts_only=False; per-filter cap)
-  - Overall max boost:  0 dB (preserve digital headroom; enforced by
-                              cuts_only=True, which is the default)
-  - Q range:            1.0–8.0
-
-Algorithm — greedy peak-fit:
-  1. Compute residual(f) = measured(f) − target(f) inside the band.
-  2. Find the largest peak in the residual.
-  3. Estimate Q from the -3 dB width around the peak.
-  4. Add a peaking-EQ that cancels the peak (cuts_only ⇒ skip dips).
-  5. Subtract the bell-curve response from residual.
-  6. Repeat until max_filters reached OR residual RMS within
-     flatness_target_db.
-
-Each peaking-EQ maps directly to a CamillaDSP `Biquad { type:
-Peaking, freq, q, gain }` filter; the live apply path emits those
-through jasper.sound.camilla_yaml. We don't generate biquad
-coefficients here; CamillaDSP does that at config-load time.
+Defaults follow the known-good REW workflow: 20 Hz to the room-correction
+ceiling (owned by jasper.audio_measurement.room_boundary, 350 Hz today), at
+most 5 filters, cuts only, -10 dB max cut, +3 dB per-filter boost when
+``cuts_only=False``, Q in [1.0, 8.0]. Each filter maps 1:1 to a CamillaDSP
+``Biquad {type: Peaking, freq, q, gain}``; biquad coefficients are CamillaDSP's
+job at config-load time, not this module's.
 """
 from __future__ import annotations
 
@@ -61,24 +41,11 @@ def _bell_response_db(
 ) -> np.ndarray:
     """Approximate magnitude response of a peaking bell, in dB.
 
-    Used by the greedy iteration to update its residual estimate
-    after adding a filter. We do NOT use this for actually
-    generating the filter on the speaker — CamillaDSP does that
-    from (freq, q, gain). We just need a shape that's close enough
-    that the next greedy iteration picks a sensible second peak.
-
-    The shape is a Lorentzian peak in log-frequency: magnitude_db(f) ≈
-    gain_db / (1 + (Δoct / bw)²) where Δoct = log2(f / fc) and `bw` is
-    the half-bandwidth in OCTAVES at which the response falls to
-    gain_db/2. For a CamillaDSP/RBJ peaking biquad of quality Q that
-    half-bandwidth is bw = asinh(1/(2Q)) / ln(2) — so the model's
-    half-gain width matches the biquad CamillaDSP will actually realize
-    from (freq, q, gain). (The earlier bw = 1/Q was ~1.4× too wide,
-    which made predicted_response and the greedy residual over-subtract
-    into neighbouring bands — a pessimistic prediction, not a wrong
-    filter.) The far skirts are still a Lorentzian approximation, but the
-    half-width — what the greedy residual subtraction needs to pick a
-    sensible NEXT peak — is now correct.
+    A Lorentzian in log-frequency: ``gain_db / (1 + (delta_oct / bw)**2)`` with
+    ``bw = asinh(1/(2Q)) / ln(2)``, the RBJ peaking half-bandwidth in octaves,
+    so the model's half-gain width matches the biquad CamillaDSP realizes. The
+    far skirts stay an approximation; the half-width is what the greedy
+    residual subtraction needs to pick a sensible next peak.
     """
     if fc <= 0:
         return np.zeros_like(eval_freqs)
@@ -86,8 +53,7 @@ def _bell_response_db(
     # Avoid log of 0 / negative
     safe = np.where(omega > 0, omega, 1.0)
     delta_oct = np.log2(safe)
-    # RBJ peaking-EQ half-bandwidth (octaves) for this Q; the max() keeps
-    # the q→0 guard the prior 1/Q form had.
+    # RBJ peaking-EQ half-bandwidth (octaves) for this Q; max() guards q -> 0.
     bw = math.asinh(1.0 / (2.0 * max(q, 1e-3))) / math.log(2.0)
     response = gain_db / (1.0 + (delta_oct / bw) ** 2)
     response[omega <= 0] = 0.0
@@ -104,21 +70,16 @@ def _estimate_q(
 ) -> float:
     """Estimate Q from the -3 dB width around a peak.
 
-    Walks outward from peak_idx until the residual drops below
-    |peak| - 3 dB on each side. Q = fc / bandwidth. If the peak is
-    too small (|peak| < 3 dB) for the -3 dB rule, return Q=2.0 as a
-    sensible default (~half-octave wide).
+    ``Q = fc / bandwidth``. Returns 2.0 (~half-octave) when the peak is under
+    3 dB and the -3 dB rule does not apply.
     """
     peak_db = band_residual_db[peak_idx]
     abs_peak = abs(peak_db)
     if abs_peak < 3.0:
-        # NOTE: the only return path that does NOT clip to [q_min, q_max].
-        # Inert while every caller's floor is below 2.0 (the linearization
-        # fit's is 1.0), but a floor raised above 2.0 would be silently
-        # violated here — and since #1967 that floor bounds a safety
-        # property, not just a shape. Caught by
-        # `test_no_emitted_boost_is_broader_than_the_pinned_q_floor`'s
-        # relative assertion if it ever happens.
+        # The only return path that does NOT clip to [q_min, q_max]. Inert
+        # while every caller's floor is below 2.0, but a floor raised above 2.0
+        # would be silently violated here, and since #1967 that floor bounds a
+        # safety property.
         return 2.0
 
     threshold = abs_peak - 3.0
@@ -159,35 +120,16 @@ def design_peq(
 ) -> list[PEQ]:
     """Greedy peak-fit PEQ designer.
 
-    Args:
-      measured_db: smoothed magnitude response, in dB, on `freqs`.
-      target_db: target curve, in dB, on the same `freqs`.
-      freqs: frequency grid (Hz). Must be strictly increasing.
-      f_low / f_high: design band. Outside this range no filters are
-        placed even if there's residual error.
-      max_filters: hard cap on PEQs in the result.
-      max_cut_db: per-filter cut limit (dB), either a single scalar
-        (the v1 shape — every candidate peak clamps to the same floor)
-        or an array on `freqs` (the Layer-1a linearization shape —
-        jasper.active_speaker.linearization_fit's per-bin correction-
-        envelope ceiling). An array is interpolated (`np.interp`) at
-        each candidate peak's frequency, so it need not share `freqs`'s
-        exact grid. Existing scalar callers are byte-identical (pinned
-        by a test) — the array path is new, additive behavior.
-      max_boost_db: per-filter boost limit (dB); always a scalar (no
-        per-bin boost cap exists today).
-      cuts_only: when True, only fit filters with negative gain.
-        This is the v1 default — Toole's "first do no harm".
-      flatness_target_db: stop when residual RMS in the design band
-        drops below this.
-      q_min / q_max: Q clamp for stability + audibility.
-      min_filter_gain_db: don't add a filter whose absolute gain
-        would be below this — they're cosmetic and waste filter
-        slots.
+    ``measured_db`` / ``target_db`` are dB on the strictly increasing ``freqs``
+    grid; no filter is placed outside ``[f_low, f_high]``. ``max_cut_db`` is
+    either a scalar per-filter floor or an array on ``freqs`` (the per-bin
+    linearization envelope), interpolated at each candidate peak so it need not
+    share the grid; ``max_boost_db`` is always a scalar. ``cuts_only`` fits
+    only negative gains. Design stops at ``max_filters`` or when residual RMS
+    in band drops below ``flatness_target_db``, and a filter whose absolute
+    gain would fall below ``min_filter_gain_db`` is not added.
 
-    Returns:
-      List of PEQ in the order they were added (largest impact
-      first).
+    Returns the PEQs in the order they were added (largest impact first).
     """
     if len(measured_db) != len(target_db) or len(measured_db) != len(freqs):
         raise ValueError(
@@ -216,8 +158,7 @@ def design_peq(
     for _ in range(max_filters):
         band_residual = residual[band_mask]
 
-        # Pick the peak. cuts_only ⇒ only consider positive
-        # excursions (where measured > target); else absolute peak.
+        # cuts_only -> consider only positive excursions; else absolute peak.
         if cuts_only:
             search = np.where(band_residual > 0, band_residual, 0.0)
         else:
@@ -225,17 +166,12 @@ def design_peq(
         peak_idx = int(np.argmax(search))
         peak_db = float(band_residual[peak_idx])
 
-        # Stop early if the response is flat ENOUGH — both the
-        # band RMS is low AND no narrow peaks remain. RMS-only
-        # would miss a sharp narrow mode (RMS low because it's
-        # narrow, peak high because it's tall) — a real audible
-        # mode is exactly the kind of thing we should fix. Both
-        # conditions must be met to stop.
+        # Stop early only when BOTH the band RMS is low and no narrow peak
+        # remains: RMS alone would miss a sharp narrow mode.
         rms = float(np.sqrt(np.mean(band_residual ** 2)))
         if rms < flatness_target_db and abs(peak_db) < flatness_target_db * 2:
             break
 
-        # No peak left to fit? Stop.
         if cuts_only and peak_db <= 0:
             break
         if abs(peak_db) < min_filter_gain_db:
@@ -247,15 +183,13 @@ def design_peq(
             q_min=q_min, q_max=q_max,
         )
 
-        # Per-bin cap: interpolate the array at this candidate peak's
-        # frequency; a scalar cap applies unchanged (byte-identical to the
-        # pre-array-support behavior).
+        # Per-bin cap: interpolate the array at this peak's frequency; a scalar
+        # cap applies unchanged.
         cut_floor = (
             float(np.interp(peak_freq, freqs, max_cut_db))
             if max_cut_is_array else max_cut_db
         )
 
-        # Gain to cancel the peak. Clamp to per-filter limits.
         proposed = -peak_db
         if cuts_only:
             gain_db = float(np.clip(proposed, cut_floor, 0.0))
@@ -268,9 +202,8 @@ def design_peq(
         peq = PEQ(freq=peak_freq, q=q_est, gain=gain_db)
         peqs.append(peq)
 
-        # Update residual: a peaking filter with `gain_db` adds
-        # `bell(f, gain_db)` to the response, so the new residual is
-        # old_residual + bell.
+        # A peaking filter adds `bell(f, gain_db)` to the response, so the new
+        # residual is old_residual + bell.
         bell = _bell_response_db(freqs, peak_freq, q_est, gain_db)
         residual = residual + bell
 
@@ -280,13 +213,9 @@ def design_peq(
 def total_max_boost_db(peqs: list[PEQ]) -> float:
     """Worst-case additive boost across the PEQ set, in dB.
 
-    Used to verify the 'overall max boost = 0 dB' headroom rule when
-    cuts_only=False. Boost stacking is the load-bearing concern: a
-    single +3 dB filter is fine, two +3 dB filters at adjacent
-    frequencies summing to +6 dB is not.
-
-    Delegates to the canonical contract helper so the design-time boost
-    cap and the emit-time room-headroom trim share one definition.
+    Boost stacking is the load-bearing concern: one +3 dB filter is fine, two
+    at adjacent frequencies summing to +6 dB is not. Delegates to the canonical
+    contract helper so design-time and emit-time share one definition.
     """
     return total_positive_boost_db(peqs)
 
@@ -295,11 +224,7 @@ def predicted_response(
     peqs: list[PEQ],
     freqs: np.ndarray,
 ) -> np.ndarray:
-    """The dB shift the PEQ chain applies at each frequency.
-
-    Sum of bell responses. Used by the frontend to overlay the
-    predicted post-correction curve before the user taps Apply.
-    """
+    """The dB shift the PEQ chain applies at each frequency (sum of bells)."""
     if not peqs:
         return np.zeros_like(freqs, dtype=np.float64)
     out = np.zeros_like(freqs, dtype=np.float64)

@@ -25,7 +25,6 @@ from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverAlignment,
     MeasuredCrossoverCandidate,
     MeasuredCrossoverCandidateError,
-    build_and_prove_candidate_config,
     compile_candidate_config,
     driver_corrections,
     effective_preset,
@@ -993,13 +992,15 @@ def test_prove_candidate_config_passes_for_a_correctly_compiled_graph():
             delay_us=340.0, delay_role="tweeter", polarity="invert"
         )
     )
-    yaml_text = build_and_prove_candidate_config(candidate, playback_device="hw:ActiveDAC")
+    yaml_text = compile_candidate_config(candidate, playback_device="hw:ActiveDAC")
+    prove_candidate_config(candidate, yaml_text)
     assert "as_tweeter_delay" in yaml_text
 
 
 def test_prove_candidate_config_passes_for_trims_only_candidate():
     candidate = _candidate()
-    yaml_text = build_and_prove_candidate_config(candidate, playback_device="hw:ActiveDAC")
+    yaml_text = compile_candidate_config(candidate, playback_device="hw:ActiveDAC")
+    prove_candidate_config(candidate, yaml_text)
     assert "as_tweeter_delay" in yaml_text
 
 
@@ -1027,7 +1028,8 @@ def test_high_precision_delay_round_trips_the_proof():
             delay_us=11382.15006948647, delay_role="tweeter", polarity="keep"
         )
     )
-    yaml_text = build_and_prove_candidate_config(candidate, playback_device="hw:ActiveDAC")
+    yaml_text = compile_candidate_config(candidate, playback_device="hw:ActiveDAC")
+    prove_candidate_config(candidate, yaml_text)
     assert "as_tweeter_delay" in yaml_text
 
 
@@ -1046,7 +1048,8 @@ def test_randomized_delay_sweep_never_trips_the_proof():
                 polarity="keep",
             )
         )
-        build_and_prove_candidate_config(candidate, playback_device="hw:ActiveDAC")
+        yaml_text = compile_candidate_config(candidate, playback_device="hw:ActiveDAC")
+        prove_candidate_config(candidate, yaml_text)
 
 
 def test_prove_candidate_config_rejects_unprotected_tweeter():

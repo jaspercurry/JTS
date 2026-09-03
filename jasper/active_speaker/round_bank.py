@@ -4,12 +4,9 @@
 
 """Bank one live commissioning session into the on-box campaign home.
 
-``scripts/bank-crossover-round.sh`` banks a round onto a LAPTOP: every artifact
-it assembles is pulled over ssh. This is the same tree, assembled on the box
-itself, so a round outlives session retention with no laptop in the loop
-(#3498, #2882).
-
-The tree is exactly the one
+The same tree ``scripts/bank-crossover-round.sh`` assembles on a laptop, built
+on the box itself so a round outlives session retention (#3498, #2882). It is
+exactly the tree
 :func:`~jasper.active_speaker.crossover_v2.round_views.load_banked_round`
 reads::
 
@@ -22,20 +19,15 @@ reads::
       declared-geometry.json     declared rig geometry SSOT (optional)
       provenance.json            when it was banked, off which build
 
-``provenance.json``'s key set is owned here, and the two banking paths agree
-on the shared one: ``banked_at_utc`` is spelled and formatted as
-``scripts/bank-crossover-round.sh`` writes it. Each path then adds only what it
-alone knows — ``session_id``, ``source``, ``installed_sha``, ``git_absent`` and
-``missing`` here; ``pi_host``, ``pi_user`` and ``script_commit`` there.
+``provenance.json``'s key set is owned here: ``banked_at_utc`` is spelled and
+formatted as ``scripts/bank-crossover-round.sh`` writes it, and each path adds
+only what it alone knows. Nothing here evicts — the campaign store is
+operator-pruned.
 
-**Nothing here evicts.** The campaign store is operator-pruned and has no
-enforced budget, so the tuning plan's retention rule (eviction never crosses
-an active round's boundary, docs/tuning-master-plan.md) holds trivially.
-
-The banked names and their SSOT paths are the reader's own
-(:mod:`~jasper.active_speaker.crossover_v2.round_inputs`), imported inside the
-function that needs them along with the round-artifact reader, so importing
-this module for :data:`DEFAULT_CAMPAIGN_ROOT` alone stays cheap.
+The banked names and their SSOT paths belong to the reader
+(:mod:`~jasper.active_speaker.crossover_v2.round_inputs`) and are imported
+inside the function that needs them, so importing this module for
+:data:`DEFAULT_CAMPAIGN_ROOT` alone stays cheap.
 """
 
 from __future__ import annotations
@@ -49,9 +41,8 @@ from pathlib import Path
 from typing import Any, Mapping, NamedTuple
 
 from .bundles import _UNFINISHED_STATES, _detect_build_sha
-# Reused rather than a third package-local identifier regex (commissioning_run
-# and commissioning_evidence each have one already); its first-char class
-# excludes ".", so it already rejects ".", ".." and any "/"-carrying token.
+# Reused rather than a third package-local identifier regex; its first-char
+# class excludes ".", so it rejects ".", ".." and any "/"-carrying token.
 from .commissioning_run import _IDENTIFIER_RE as _ROUND_ID_RE
 
 __all__ = [
@@ -101,9 +92,8 @@ def _ssot_documents(
     """``(banked filename, source path)`` for the five documents beside the
     bundle, defaulting to each document's own on-box SSOT constant.
 
-    Both halves are taken from ``round_inputs``, the reader that opens them, so
-    writer and reader cannot drift apart silently;
-    ``tests/test_round_bank.py`` round-trips an assembled tree through it.
+    Both halves come from ``round_inputs``, the reader that opens them, so
+    writer and reader cannot drift apart silently.
     """
     from .crossover_v2 import round_inputs as reader
 
@@ -153,11 +143,10 @@ def _link_or_copy(source: str, destination: str) -> None:
 def _round_id(session_dir: Path, session_id: str) -> str:
     """The bundle's own ``round_id`` when it banked a receipt, else its session id.
 
-    The receipt is located with ``round_artifact_dir`` — the same public reader
-    every other producer and consumer of that directory uses — so the receipt a
-    packet would be built from is the one read here. A ``round_id`` that is not
-    a plain :data:`_ROUND_ID_RE` token falls back to the session id rather than
-    banking outside the store.
+    Located with the public ``round_artifact_dir``, so the receipt a packet
+    would be built from is the one read here. A ``round_id`` that is not a plain
+    :data:`_ROUND_ID_RE` token falls back to the session id rather than banking
+    outside the store.
     """
     from .crossover_v2.evidence_packet import round_artifact_dir
 
@@ -196,20 +185,16 @@ def bank_round(
     and the installed build's SHA (``None`` with ``git_absent`` when the box
     records none).
 
-    Raises :class:`RoundBankError` with ``reason`` :data:`REASON_NOT_A_BUNDLE`
-    (nothing at that path reads as a bundle),
-    :data:`REASON_SESSION_UNFINISHED` (the session is still
-    ``open``/``proposal_ready``: banking it would claim
-    its round id mid-flight, and the id is never re-banked) or
-    :data:`REASON_ALREADY_BANKED` — a banked round is never overwritten. An
+    Raises :class:`RoundBankError` with ``reason`` :data:`REASON_NOT_A_BUNDLE`,
+    :data:`REASON_SESSION_UNFINISHED` (banking an ``open``/``proposal_ready``
+    session would claim its round id mid-flight, and an id is never re-banked)
+    or :data:`REASON_ALREADY_BANKED` — a banked round is never overwritten. An
     absent SSOT document is skipped and named in ``provenance.json``'s
-    ``missing``, because a partially banked round is a normal thing to want to
-    read (``build_crossover_evidence_packet``'s own posture).
+    ``missing``: a partially banked round is a normal thing to read.
 
-    A filesystem failure (an unreadable ``info.json``, a copy that cannot be
-    written) is not a refusal: the :class:`OSError` propagates, so the CLI
-    exits on its filesystem-failure code rather than telling the operator this
-    was not a bundle.
+    A filesystem failure is not a refusal: the :class:`OSError` propagates, so
+    the CLI exits on its filesystem-failure code rather than telling the
+    operator this was not a bundle.
     """
     session_dir = Path(session_dir)
     try:

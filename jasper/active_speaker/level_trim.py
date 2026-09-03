@@ -10,12 +10,9 @@ import math
 from collections.abc import Sequence
 
 
-#: Floor for any single per-driver attenuation, in dB -- the bound this module's
-#: chain solver clamps to and rejects below. Exported so the modules that solve,
-#: persist, or re-validate one of those trims check it against the same number
-#: the solver used instead of a literal of their own: a banked artifact
-#: validated against a second copy of this floor could be accepted at a depth
-#: the solver would never have produced.
+#: Floor for any single per-driver attenuation, in dB: the bound this module's
+#: chain solver clamps to and rejects below. Exported so anything that solves,
+#: persists or re-validates a trim checks the same number the solver used.
 MAX_ATTENUATION_DB = -60.0
 
 

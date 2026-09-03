@@ -4,66 +4,14 @@
 
 """The two measurements one correction round compares, and the margin (#2291).
 
-#2291 Phase 3c's half of the honest loop that is neither a verdict nor a
-capture: turning **one summed capture** into one side of a before→after
-comparison, and holding the one number that says how big a difference has to
-be before the round is allowed to call it a change.
-
-The defect this closes is stated in the issue as a missing measurement, not a
-missing verdict. The 2026-08-10 jts3 round retained CHECK/MEASURE, the lateral
-candidate-selection walk, VERIFY, and five post-apply cloud positions — and
-still could not say whether the speaker got better, because none of that
-evidence was *the same summed acoustic question, at the same program and level,
-before and after the graph change*. So Phase 3c adds exactly one capture
-(``PHASE_ENTRY_BASELINE``, at the measurement mark, immediately before apply,
-replaying the VERIFY program) and this module is what makes that capture and
-the post-apply VERIFY comparable to each other.
-
-**What this module does, and the one decision it makes.** It reduces a
-:class:`~jasper.audio_measurement.program_analysis.ProgramAnalysis` to a
-:class:`~.verification.MeasurementComparand` — the shape
-:func:`~.verification.evaluate_benefit` grades — and, when it holds both sides,
-it **unions their exclusion masks**. That union is the one judgement call here,
-and :func:`~.verification.evaluate_benefit` names it as the caller's to make:
-equal masks mean equal graded bins by construction, so the residual cannot fall
-merely because the honesty screen grew. Union rather than intersection because
-a bin either capture could not trust is a bin neither comparison should be
-graded on.
-
-Everything else is deferred:
-
-* **comparability** is the evaluator's, and it is answered by ``program_id``
-  equality — a SHA-256 over the whole excitation schedule including every
-  segment's ``gain_db`` and ``effective_peak_dbfs``
-  (:func:`jasper.audio_measurement.program._program_id`). Two captures that
-  share it share the program *and* the level, cryptographically. That is why
-  the entry baseline must be built by the VERIFY program builder rather than by
-  a lookalike: equality of that id is the whole comparability check.
-* **the curve reduction** is the shipped owners', in the shipped order
-  (:func:`~jasper.audio_measurement.spatial_combine.decimate_curve_to_analysis_grid`
-  then :func:`~jasper.audio_measurement.analysis.smooth_fractional_octave` at
-  the spec fraction) — the same two steps, same owners,
-  ``crossover_v2_flow.spec_report_for_predicted_sum`` already applies to put one
-  curve in front of :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec`.
-* **the verdict** is :mod:`.verification`'s. Nothing here decides improved,
-  regressed, or indeterminate.
-
-**What the mask here is, and is not.** It is this capture's own
-gate-validity clamp — bins below ``DriverResponse.validity_floor_hz``, which
-are an artifact of a truncated gate window rather than a measurement. It is
-*not* the spatial cloud's interference screen
-(:func:`~jasper.audio_measurement.interference_nulls.identify_interference_nulls`
-over a combined group), because a single at-the-mark capture is not a group and
-there is nothing to screen across. So a residual computed here is optimistic
-against the cloud's absolute spec verdict. That does not weaken the *difference*
-this module exists to support: both sides are screened the same way and then
-share one union, and the difference of two same-frame residuals is the claim.
-The absolute spec answer stays the cloud's, which is exactly the separation
-:func:`~.verification.evaluate_spec` and :func:`~.verification.evaluate_benefit`
-keep apart.
-
-No ``jasper.web`` import, no filesystem, no clock: the host supplies the graph
-fingerprint, the mark, and the timestamp, and the host persists the record.
+Reduces one summed capture (a ``ProgramAnalysis``) to a
+:class:`~.verification.MeasurementComparand`, and — holding both sides — UNIONS
+their exclusion masks. That union is the one judgement here: equal masks mean
+equal graded bins by construction, so the residual cannot fall merely because
+the honesty screen grew. Comparability (``program_id`` equality), the curve
+reduction and the verdict stay with their shipped owners. The mask is this
+capture's own gate-validity clamp, never the cloud's interference screen, so the
+absolute spec answer stays the cloud's. No web import, no filesystem, no clock.
 """
 
 from __future__ import annotations
@@ -99,8 +47,7 @@ from .verification import FlatnessObjectives, MeasurementComparand, Verdict
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     # Same rule as :mod:`.verification`: ``program_analysis`` is a 5,500-line
-    # scipy-backed module, and a reduction helper should not drag it into every
-    # import of the package. Only three attributes are read at runtime.
+    # scipy-backed module and should not be dragged into every package import.
     from jasper.audio_measurement.program_analysis import ProgramAnalysis
 
     from .blend_correction import BlendCorrection
@@ -125,118 +72,44 @@ __all__ = [
 # the margin
 # --------------------------------------------------------------------------
 
-#: How much flatter the speaker must measure before the round may say so.
+#: dB. How much flatter the speaker must measure before the round may say so.
 #:
-#: **Provisionally equal to
-#: :func:`~jasper.active_speaker.attempts_loop.material_improvement_db`
-#: (0.5 dB), and deliberately NOT that constant.** They answer different
-#: questions and only happen to agree today:
-#:
-#: * ``material_improvement_db`` is model-vs-hardware error — "the gap between
-#:   what the correction model predicts and what the hardware realizes on
-#:   JTS3", in its own words. It bounds a *prediction*.
-#: * this bounds two *measurements* of the same speaker taken minutes apart
-#:   through the same program, mic, and analyzer. That is capture
-#:   repeatability, and it is a strictly different quantity — it could be much
-#:   smaller (same graph, same room, same mic, one program apart) or much
-#:   larger (a mic nudged between the two captures).
-#:
-#: Inheriting the model number silently would have been the cheaper edit and
-#: the dishonest one: the margin decides whether a measured regression is
-#: "clear" enough to pull a graph off a household's speaker, and a threshold
-#: whose justification is about something else is a threshold nobody can
-#: defend when it fires.
-#:
-#: **What the repository HAS measured, and what it has not.** The 2026-07-31
-#: fixed-mic repeat study on jts3 is a real capture-to-capture study of exactly
-#: the right shape — one unchanged applied profile, the UMIK-2 bolted in place
-#: and never moved, sixteen back-to-back captures at the shipped operating
-#: point, pushed through the production analyzer. Its numbers are banked
-#: in-repo at ``tests/test_active_speaker_attempts_loop.py`` (``BANKED_P95_DB``
-#: 0.08508, ``BANKED_MEDIAN_DB`` 0.05183) and summarized in
-#: :mod:`~jasper.active_speaker.attempts_loop`'s header. Two things follow:
-#:
-#: * **It grades a different metric.** Those are consecutive-pair deviations of
-#:   ``max_db_notch_excluded``, not of the pooled spec residual this margin
-#:   bounds — the same mismatch
-#:   :func:`~jasper.active_speaker.attempts_loop.decide_next` refuses a
-#:   comparison over (``REASON_FLOOR_METRIC_MISMATCH``). The replay CLI that
-#:   adopts floors says so in as many words: *no repeat study has measured a
-#:   floor for this metric.*
-#: * **The nearest pooled numbers say 0.5 dB is conservative, not calibrated.**
-#:   Two back-to-back post-apply pairs about a minute apart agreed on the
-#:   pooled scalar to 0.040 dB and 0.006 dB, against a per-bin floor of roughly
-#:   0.15 dB rms. So this margin sits an order of magnitude above the noise it
-#:   is guarding against — which errs the safe way (a real small improvement is
-#:   called :attr:`~.contracts.BenefitStatus.INDETERMINATE` rather than noise
-#:   being called an improvement) but does mean the round will decline to claim
-#:   wins it could honestly claim. The house rule for turning a measured p95
-#:   into a claim floor is
-#:   :data:`~jasper.active_speaker.attempts_loop.CLAIM_FLOOR_P95_MULTIPLE`
-#:   (2×); applied to that study's pooled-rms arm it would land near 0.05 dB.
-#:
-#: **This is the fallback.** When a rig has banked a repeat floor
-#: (:mod:`jasper.active_speaker.repeat_floor`),
-#: :func:`~jasper.active_speaker.repeat_floor.stopping_thresholds` derives the
-#: margin from its measured p95 through that same house rule and the packet
-#: reports which source it used. Until then this value is an assumption
-#: wearing its own name, which is the point of the name.
+#: Provisionally equal to
+#: :func:`~jasper.active_speaker.attempts_loop.material_improvement_db` (0.5 dB)
+#: and deliberately NOT that constant: that one bounds a PREDICTION's
+#: model-vs-hardware error, this one bounds two MEASUREMENTS of the same speaker
+#: minutes apart through the same program, mic and analyzer — capture
+#: repeatability, a different quantity. No repeat study has measured a floor for
+#: this metric (the 2026-07-31 jts3 study grades ``max_db_notch_excluded``, not
+#: the pooled spec residual); the nearest pooled pairs agreed to 0.040 dB and
+#: 0.006 dB, so 0.5 dB is conservative rather than calibrated. THE FALLBACK: a
+#: rig with a banked repeat floor takes the margin from
+#: :func:`~jasper.active_speaker.repeat_floor.stopping_thresholds` instead.
 MEASURED_BENEFIT_MARGIN_DB = 0.5
 
-#: How much the flattening series must still be moving to be worth a round.
-#:
-#: The owner's ruling (#2602, 2026-08-16) states it as "~0.25 dB/round
-#: movement", and this is that number with no arithmetic applied to it. It is
-#: read TWICE by :func:`~.verification.evaluate_iteration_headroom`, and one
-#: constant covers both because they are the same judgement asked at two
-#: distances: a round that would move the objectives less than this is not
-#: worth running, and an objective already inside this is not worth chasing.
-#: Splitting it into a movement bar and a distance bar would invent a second
-#: number nothing measured.
-#:
-#: **Half the benefit margin above, and that relationship is load-bearing.**
-#: A round only reaches :attr:`~.contracts.QualityStatus.PASSED` by improving
-#: past :data:`MEASURED_BENEFIT_MARGIN_DB` (0.5 dB), so a plateau bar at or
-#: above that could never fire on the passing row it exists for. It is set
-#: below the margin deliberately, not coincidentally — but note that both
-#: numbers are still assumptions wearing their own names, and the same
-#: hardware run that calibrates the margin is what should calibrate this.
-#:
-#: **This is the fallback.** A banked repeat floor
-#: (:mod:`jasper.active_speaker.repeat_floor`) supplies the measured plateau —
-#: its aggregate pairwise p95 — through the same
-#: :func:`~jasper.active_speaker.repeat_floor.stopping_thresholds` that derives
-#: the margin, so the halving above survives by construction. Until then,
-#: 0.25 dB is the ruling's figure and nothing more.
+#: dB/round. How much the flattening series must still be moving to be worth a
+#: round — the owner's #2602 ruling figure, with no arithmetic applied. Read
+#: TWICE by :func:`~.verification.evaluate_iteration_headroom`: the same
+#: judgement at two distances. Half :data:`MEASURED_BENEFIT_MARGIN_DB`, and that
+#: is load-bearing — a plateau bar at or above the margin could never fire on
+#: the passing row it exists for. THE FALLBACK, as above: a banked repeat floor
+#: supplies the measured plateau through the same ``stopping_thresholds``.
 ITERATION_PLATEAU_DB = 0.25
 
-#: How many measurement+correction rounds one series may run.
-#:
-#: The owner's ruling (#2602): "up to three". A hard budget rather than a
-#: guide, and the FIRST stop
-#: :func:`~.verification.evaluate_iteration_headroom` checks, because no amount
-#: of remaining headroom creates a fourth round to spend it on.
-#:
-#: Deliberately NOT reusing
+#: How many measurement+correction rounds one series may run — the owner's
+#: #2602 ruling ("up to three"). A hard budget, and the FIRST stop
+#: :func:`~.verification.evaluate_iteration_headroom` checks. Deliberately NOT
 #: :attr:`~jasper.active_speaker.attempts_loop.AttemptBudget.target_attempts`,
-#: which is also 3: that budget counts fitting ATTEMPTS inside one correction,
-#: and this counts measure-and-correct ROUNDS across a series. Two quantities
-#: that happen to share a value today, and folding them together would make a
-#: change to either silently move the other.
+#: also 3: that counts fitting ATTEMPTS inside one correction, this counts
+#: measure-and-correct ROUNDS across a series.
 ROUND_SERIES_CAP = 3
 
-#: Resolution of both sides of the benefit comparison.
-#:
-#: The entry baseline crosses the durable stage bridge (stage 1 captures it,
-#: stage 2 grades against it), so it is bounded like every other curve that
-#: does — this is the same 512 the host applies to ``verify_priors.
-#: predicted_sum`` and ``verify_priors.commanded_delta``, and for the same
-#: reason. It is named here rather than imported because
+#: Resolution of BOTH sides of the benefit comparison — the same 512 the host
+#: applies to ``verify_priors.predicted_sum``, since the entry baseline crosses
+#: the durable stage bridge. Named here rather than imported because
 #: :mod:`jasper.web.correction_crossover_v2` is the wrong direction for this
-#: package to import, and because this ceiling governs *both* sides of a
-#: comparison rather than one side's persistence budget: the post-apply curve
-#: is reduced to it too, so the two land on one grid by construction instead of
-#: by luck.
+#: package, and because governing both sides puts them on one grid by
+#: construction rather than by luck.
 BENEFIT_CURVE_MAX_BINS = 512
 
 #: ``kind`` stamped on the persisted record, matching the package's convention.
@@ -254,8 +127,7 @@ class MeasuredResponse:
 
     Deliberately not a :class:`~.verification.MeasurementComparand` yet: a
     comparand carries the mask it will be *graded* on, and that mask is not
-    known until both sides are in hand (see :func:`benefit_comparands`). This
-    type carries the capture's OWN screen, which is the input to that union.
+    known until both sides are in hand (:func:`benefit_comparands`).
     """
 
     program_id: str
@@ -270,18 +142,13 @@ def measured_response_from_analysis(
     """Reduce one VERIFY-program analysis to a comparison side, or ``None``.
 
     ``None`` for every honest "there is nothing here to compare": no analysis,
-    no summed response, a degenerate curve. The evaluator turns a ``None`` side
-    into :attr:`~.contracts.BenefitStatus.INDETERMINATE` with a reason naming
-    which side was missing, which is the answer — a comparison with one side is
-    not a comparison.
+    no summed response, a degenerate curve.
 
     The two reduction steps and their order are
-    ``crossover_v2_flow.spec_report_for_predicted_sum``'s, not this module's:
-    block-average onto the analysis grid first (the smoother is an
-    O(bins x window) Python loop and a raw grid costs seconds on a Pi), then
-    1/3-octave smooth. Doing it in the other order, or with a different
-    smoothing fraction, would produce a curve
-    :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec` grades
+    ``crossover_v2_flow.spec_report_for_predicted_sum``'s: block-average onto
+    the analysis grid first (the smoother is an O(bins x window) Python loop and
+    a raw grid costs seconds on a Pi), then 1/3-octave smooth. Another order or
+    fraction produces a curve ``flat_spec.evaluate_flat_spec`` grades
     differently from every other curve in this subsystem.
     """
 
@@ -308,8 +175,7 @@ def measured_response_from_analysis(
     except (ValueError, TypeError, IndexError, AttributeError,
             CrossoverV2ContractError):
         # A malformed or non-finite capture is a "cannot compare this", not a
-        # crash to propagate into a household decision — the same bounded
-        # family, for the same reason, as ``spec_report_for_predicted_sum``.
+        # crash to propagate into a household decision.
         return None
     return MeasuredResponse(
         program_id=program_id,
@@ -323,11 +189,9 @@ def _validity_clamp(grid: np.ndarray, validity_floor_hz: Any) -> tuple[bool, ...
     """Bins below this capture's own reflection gate, as a per-bin flag.
 
     The same clamp ``assemble_cloud_group_result`` unions into its spec mask:
-    below ``gating.f_valid_floor_hz`` the response is an artifact of a
-    truncated gate window, so those bins must not decide a verdict either way.
-    An absent or non-finite floor screens nothing — "no evidence of a floor" is
-    not "the floor is at zero", and over-screening would shrink the graded
-    denominator this comparison depends on.
+    below ``gating.f_valid_floor_hz`` the response is an artifact of a truncated
+    gate window. An absent or non-finite floor screens nothing — "no evidence of
+    a floor" is not "the floor is at zero".
     """
 
     floor = validity_floor_hz
@@ -348,22 +212,16 @@ def _validity_clamp(grid: np.ndarray, validity_floor_hz: Any) -> tuple[bool, ...
 class EntryBaseline:
     """The pre-apply side of the round, and the graph it was measured on.
 
-    Persisted by the host between stage 1 (which captures it, immediately
-    before the household applies) and stage 2 (which grades against it), so it
-    is JSON-shaped by construction. The graph fingerprint travels with it
-    because the receipt's whole job is to let a *later* round bind the
-    currently-active profile as its own entry graph: a baseline curve with no
-    record of which graph produced it cannot do that.
+    Persisted by the host between stage 1 (which captures it) and stage 2 (which
+    grades against it), so it is JSON-shaped by construction. The graph
+    fingerprint travels with it because a later round binds the currently-active
+    profile as its own entry graph, which a curve with no record of its graph
+    cannot support.
 
-    **The flow state file's copy is the ROUND's channel, not the durable one.**
-    ``verify_priors`` is rebuilt from the conductor on every persist, so those
-    arrays live exactly as long as the round does — and a fresh measuring
-    session writing its own honest absence over them is deliberate, not a leak.
-    The copy that outlives the round is the write-once retained take
-    (``spatial.entry_baseline_record``), read back by
-    :func:`~.position_cycle.read_entry_baseline_take` into this same shape.
-    Both are written from one ``MeasuredResponse`` at capture time; neither is
-    derived from the other.
+    The flow state file's copy lives exactly as long as the round; the copy that
+    outlives it is the write-once retained take
+    (``spatial.entry_baseline_record``). Both are written from one
+    :class:`MeasuredResponse`; neither is derived from the other.
     """
 
     program_id: str
@@ -420,14 +278,13 @@ class EntryBaseline:
     def from_dict(cls, record: Any) -> "EntryBaseline | None":
         """Rehydrate, or ``None`` for anything this build did not write.
 
-        ``None`` rather than a raise, and rather than a partially-trusted
-        record: a state file from a build before this key shipped, a truncated
-        write, and a hand-edited file all mean the same thing to the round —
-        there is no comparable baseline — and that already has an honest
-        verdict (:data:`~.verification.BENEFIT_BASELINE_UNAVAILABLE`). Length
-        agreement between the two curve arrays and the mask is checked here
-        because :class:`~.verification.MeasurementComparand` would otherwise
-        raise on it inside a verdict computation.
+        ``None`` rather than a raise or a partially-trusted record: a pre-key
+        state file, a truncated write and a hand-edited file all mean "there is
+        no comparable baseline", which already has an honest verdict
+        (:data:`~.verification.BENEFIT_BASELINE_UNAVAILABLE`). Curve/mask length
+        agreement is checked here because
+        :class:`~.verification.MeasurementComparand` would otherwise raise
+        inside a verdict computation.
         """
 
         if not isinstance(record, Mapping):
@@ -478,18 +335,14 @@ def benefit_comparands(
     """The two sides :func:`~.verification.evaluate_benefit` grades.
 
     The union of the two per-capture screens, applied to both sides — the
-    assembly decision :func:`~.verification.evaluate_benefit` explicitly leaves
-    to its caller, taken here once so no other surface may take it differently.
-    A bin either capture could not trust is dropped from both, which keeps the
-    denominators identical and the residual difference honest.
+    assembly decision the evaluator explicitly leaves to its caller, taken here
+    once. A bin either capture could not trust is dropped from both, which keeps
+    the denominators identical.
 
-    Comparability is NOT decided here. A program, mark, or grid disagreement is
-    passed straight through to the evaluator, which names which one broke; a
-    caller that silently resampled one side onto the other's grid would be
-    manufacturing the comparability the round is supposed to be checking. So
-    when the grids differ the two per-capture masks ride unchanged and the
-    evaluator returns
-    :data:`~.verification.BENEFIT_GRID_MISMATCH`.
+    Comparability is NOT decided here: a program, mark or grid disagreement is
+    passed through to the evaluator, since a caller that silently resampled one
+    side onto the other's grid would manufacture the comparability the round is
+    checking. On differing grids the two per-capture masks ride unchanged.
     """
 
     if baseline is None or post is None:
@@ -528,10 +381,9 @@ class RoundEvaluation:
     """Four verdicts, the contract they compose into, and what to do.
 
     The four :class:`~.verification.Verdict` objects are kept alongside the
-    collapsed :class:`~.contracts.VerificationResult` on purpose: the contract
-    carries the four *statuses*, and the verdicts carry the numbers each one
-    was read from. The host logs the verdicts (so a support read can see WHY,
-    not only WHAT) and puts the contract on the receipt.
+    collapsed :class:`~.contracts.VerificationResult`: the contract carries the
+    four statuses, the verdicts carry the numbers each was read from. The host
+    logs the verdicts and puts the contract on the receipt.
     """
 
     capture: Verdict[CaptureValidity]
@@ -539,51 +391,32 @@ class RoundEvaluation:
     benefit: Verdict[BenefitStatus]
     spec: Verdict[SpecStatus]
     result: VerificationResult
-    #: The first three axes :func:`~.verification.decide_adoption` read
-    #: (#2537; #2602 added the fourth below),
-    #: kept beside the four verdicts they compose for exactly the same reason:
-    #: the adoption decision carries the row and the deciding axis's reason,
-    #: and these carry the numbers all three were read from.
+    #: The first three axes :func:`~.verification.decide_adoption` reads (#2537;
+    #: #2602 added the fourth below), kept beside the verdicts they compose
+    #: because the decision keeps only the row and the deciding axis's reason.
     trust: Verdict[EvidenceTrust]
     safety: Verdict[SafetyStatus]
     quality: Verdict[QualityStatus]
     #: #2602's fourth axis — whether a flatter result is still reachable, and
-    #: the numbers (both objectives, this round's and the previous one's) it
-    #: was read from. Carried like the other three: the decision keeps only the
-    #: reason, and a support read needs to see the tilt that produced it.
+    #: the objectives it was read from.
     headroom: Verdict[IterationHeadroom]
     adoption: AdoptionDecision
-    #: The post-apply pooled spec residual, lower-is-better, or ``None``.
-    #: Separated out so the round's own pooled number is legible without
-    #: re-deriving it from the curve. It IS the benefit axis's own reduction —
-    #: :func:`~.verification.pooled_residual` over the post side of
-    #: :func:`benefit_comparands` — so this number and the one that axis
-    #: graded cannot disagree about what "the post-apply residual" is, and it
-    #: is computed even when that axis cannot grade.
-    #:
-    #: **Its readership is the round's journal line, and that is the whole
-    #: list.** Earlier text here claimed a second consumer — that
-    #: :func:`~jasper.active_speaker.attempts_loop.decide_next` differences it
-    #: across attempts — which is false and was checked: that function takes
-    #: no residual argument at all, and the attempts ledger's ``grade_db`` is
-    #: read from ``analysis.verify_tracking``'s ``max_db_notch_excluded`` by
-    #: ``crossover_v2_flow.attempt_record_from_verify``, never from here. The
-    #: claim is corrected rather than deleted because it is the kind a reader
-    #: would otherwise re-invent (the design brief's §4.2 loose end).
-    #:
-    #: Nor is it the same-named ``post_residual_db`` KEY on
-    #: :func:`~.verification.evaluate_region_benefit`'s evidence: that is a
+    #: The post-apply pooled spec residual, lower-is-better, or ``None``. It IS
+    #: the benefit axis's own reduction — :func:`~.verification.pooled_residual`
+    #: over the post side of :func:`benefit_comparands` — so the two cannot
+    #: disagree, and it is computed even when that axis cannot grade. Its
+    #: readership is the round's journal line, and that is the whole list; it is
+    #: NOT the same-named ``post_residual_db`` key on
+    #: :func:`~.verification.evaluate_region_benefit`'s evidence, which is a
     #: different instrument's number over a different band.
     post_residual_db: float | None = None
     post_residual_bins: int | None = None
-    #: Decision 10's blend-region prescription for the NEXT round, and the
-    #: reading it was derived from. Never an adoption input: the contract
-    #: changes who may act in this region, not what may stop a round.
+    #: Decision 10's blend-region prescription for the NEXT round. Never an
+    #: adoption input: it changes who may act, not what may stop a round.
     blend: "BlendCorrection | None" = None
     #: The benefit claim restricted to the blend region — a SECOND reported
-    #: claim beside the pooled one, for the reason
-    #: :func:`~.verification.evaluate_region_benefit` states: a win confined to
-    #: two octaves cannot show itself in a residual pooled over six.
+    #: claim beside the pooled one: a win confined to two octaves cannot show
+    #: itself in a residual pooled over six.
     region_benefit: Verdict[BenefitStatus] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -609,10 +442,8 @@ class RoundEvaluation:
     def axes(self) -> dict[str, Any]:
         """The four adoption axes alone, for the receipt's ``round_axes``.
 
-        Separated from :meth:`to_dict` because the receipt carries these and
-        not the four verdicts underneath them: the verdicts already ride on the
-        receipt's ``verification`` field, and a receipt with both would state
-        the same statuses twice.
+        Separated from :meth:`to_dict` because the verdicts underneath them
+        already ride on the receipt's ``verification`` field.
         """
 
         return {
@@ -648,86 +479,39 @@ def evaluate_round(
 ) -> RoundEvaluation:
     """Grade one round: the four questions, the four axes, then the table.
 
-    The composition #2291 Phase 3b left for its caller, taken here once so
-    every surface that grades a round grades it the same way. It decides
-    nothing the evaluators do not — the table is
-    :func:`~.verification.decide_adoption`'s, the four answers are the four
-    functions', and this adds only the ordering between them.
+    Decides nothing the evaluators do not — the table is
+    :func:`~.verification.decide_adoption`'s and the four answers are the four
+    functions'; this adds only the ordering between them.
 
-    **An unusable capture short-circuits, rather than being graded and then
-    overwritten.** :func:`~.verification.verification_result` already collapses
-    the other three statuses when the capture is unusable — but computing them
-    first and discarding them would leave the *logged* evidence claiming a
-    benefit that no usable capture supports. So the other three are not
-    computed at all: they return their no-evidence verdicts carrying the
-    capture's own reason, and what is logged is what was actually decided.
+    An unusable capture SHORT-CIRCUITS rather than being graded and then
+    overwritten: the other three return their no-evidence verdicts carrying the
+    capture's own reason, so the logged evidence cannot claim a benefit no
+    usable capture supports.
 
-    ``spec_report`` is the post-apply spatial cloud's report when the tier
-    produced one, and ``None`` otherwise (#2160's honest wire: the failure
-    that used to be disclosure-only is now the SPEC verdict's input). It
-    **cannot change the adoption** — spec is "any" in every row of #2291's
-    table, and #2537 kept it that way for a second reason as well (the
-    trusted-floor intersection; see
-    :func:`~.verification.evaluate_round_quality`). What #2537 added is that
-    each failing band rides into the receipt as a next-round target, which is
-    disclosure and not a gate.
-
-    Args:
-      post_analysis: the post-apply VERIFY capture's analysis.
-      entry_baseline: the pre-apply capture, rehydrated across the stage
-        bridge. ``None`` means the round has no comparable "before" and the
-        benefit is :attr:`~.contracts.BenefitStatus.INDETERMINATE` — which is
-        what every round before this one silently was.
-      tracking: ``ProgramAnalysis.verify_tracking``, the realization
-        comparator's home.
-      realization_tolerance_db: ``.contracts.VERIFY_TOLERANCE_DB``.
-        Passed rather than imported so this module holds no threshold
-        another one owns.
-      reference_mark: the position identity both captures were taken at.
-      boosted / rollback_available / restore_failed: the adoption modifiers;
-        see :func:`~.verification.decide_adoption` for each one's scope.
-      delta_probe: the round's
-        :class:`~jasper.active_speaker.delta_probe.DeltaProbeMap`, or ``None``
-        when the session never ran one (#2537). It is an *optional* input and
-        an absent one is not a hazard: see
-        :func:`~.verification.evaluate_applied_safety` for why an ungraded
-        probe reports no finding rather than an unsafe one, and
-        :func:`~.verification.evaluate_round_quality` for why an ungraded probe
-        still cannot let a round call itself PASSED.
-      margin_db: defaults to this module's own
-        :data:`MEASURED_BENEFIT_MARGIN_DB` — the owner supplying its own
-        constant, so there is no call site free to pass a different bar.
-      previous_objectives: what the PREVIOUS round of this series measured on
-        #2602's two objectives, carried forward on the durable receipt.
-        ``None`` is the first round — no movement to judge yet, which the
-        headroom axis reads as "the plateau stop cannot fire", not as "it did
-        not move".
-      trusted_floor_hz / previous_trusted_floor_hz: the frames those two sets
-        of objectives were graded in (#2609 SF5), carried forward beside them.
-        ``None`` on either side means the frame is unknown, which
-        :func:`~.verification._floors_comparable` reads as "no evidence the
-        frame moved" rather than as a refusal — see there for the direction.
-      round_ordinal: 1-based position in the series. Defaults to the first
-        round, which is the safe default in the direction that matters: an
-        ordinal that is too LOW can only offer another round, never suppress a
-        stop the evidence asked for. The host supplies the real one.
-      round_cap / plateau_db: series policy, same defaulted-from-this-module
-        rule as ``margin_db`` above and the same reason — one definition, no
-        call site free to pass a different budget.
-      graded_spec: the post-apply spatial cloud's flat-spec evaluation with its
-        graded curve and MERGED honesty mask, or ``None`` on a tier that walks
-        no cloud. The blend correction's evidence, and it must be the cloud's:
-        the merged mask is the only structural protection against prescribing
-        a cut at an interference null, and #2600 item 1 records that the null
-        detector is uncalibrated across the entire blend window of any
-        crossover below 4 kHz. ``None`` means no blend correction is
-        prescribed — never one prescribed from thinner evidence.
-      applied_blend_correction: the blend correction the post-apply capture
-        actually rode, read off the APPLIED candidate. ``None`` means it could
-        not be established (a restored graph, a hand-applied config, a profile
-        from before decision 10) and the round refuses to prescribe rather than
-        assuming zero — #2653's condition applied to this quantity. ``()`` is
-        the ordinary "it rode none", which every first round honestly is.
+    Constraints on individual inputs, not a full parameter list.
+    ``entry_baseline`` ``None`` means the round has no comparable "before" and
+    the benefit is :attr:`~.contracts.BenefitStatus.INDETERMINATE`.
+    ``spec_report`` cannot change the adoption — spec is "any" in every row of
+    #2291's table — but each failing band rides into the receipt as a next-round
+    target. ``realization_tolerance_db`` is ``.contracts.VERIFY_TOLERANCE_DB``,
+    passed rather than imported so this module holds no threshold another owns.
+    An absent ``delta_probe`` (#2537) reports no finding rather than an unsafe
+    one, and still cannot let a round call itself PASSED. ``margin_db``,
+    ``round_cap`` and ``plateau_db`` default from this module's own constants,
+    and no call site passes them. ``previous_objectives`` ``None`` is the first
+    round, read by the headroom axis as "the plateau stop cannot fire";
+    ``trusted_floor_hz`` / ``previous_trusted_floor_hz`` are the frames those
+    objectives were graded in (#2609 SF5), and ``None`` on either side means the
+    frame is unknown, read as "no evidence the frame moved". ``round_ordinal``
+    is 1-based, and its default of 1 can only offer another round, never
+    suppress a stop the evidence asked for. ``graded_spec`` must be the CLOUD's
+    evaluation — its merged honesty mask is the only structural protection
+    against prescribing a cut at an interference null, and #2600 item 1 records
+    the null detector as uncalibrated across the blend window of any crossover
+    below 4 kHz — with ``None`` meaning no blend correction is prescribed.
+    ``applied_blend_correction`` is read off the APPLIED candidate: ``None``
+    means it could not be established and the round refuses to prescribe rather
+    than assuming zero, while ``()`` is the ordinary "it rode none".
     """
 
     from .blend_correction import solve_blend_correction
@@ -759,9 +543,7 @@ def evaluate_round(
         spec: Any = Verdict(SpecStatus.UNEVALUABLE, capture.reason, capture.evidence)
         post_residual: tuple[float, int] | None = None
         # An unusable capture prescribes nothing, on the same rule the three
-        # verdicts above follow: what is logged must be what was decided, and a
-        # correction derived from a capture the round refuses to trust would be
-        # a prescription nothing supports.
+        # verdicts above follow: what is logged must be what was decided.
         blend: Any = None
         region_benefit: Any = None
     else:
@@ -782,16 +564,12 @@ def evaluate_round(
         )
         spec = evaluate_spec(spec_report)
         post_residual = None if after is None else pooled_residual(after)
-        # The band is the VERIFY absolute claim's own — which is
-        # ``comparison_bands.crossover_region_band_hz``'s output, reached
-        # through that function's existing production consumer rather than
-        # re-derived here. Two things follow and both are the point: the region
-        # corrected over is byte-identically the one the household is shown on
-        # the done screen, and every ``not_evaluated`` arm of that claim
-        # (no Fc, no crossover target, no trusted region) becomes "no band"
-        # for free instead of needing its own translation.
-        # The second half says, when there is no band, whether the speaker HAS
-        # no region or this round failed to establish the one it has.
+        # The band is the VERIFY absolute claim's own — the output of
+        # ``comparison_bands.crossover_region_band_hz``, reached through that
+        # function's existing consumer rather than re-derived, so the region
+        # corrected over is byte-identically the one the done screen shows. The
+        # second half says whether the speaker HAS no region or this round
+        # failed to establish the one it has.
         band_hz, no_crossover = _crossover_region(post_analysis)
         blend = solve_blend_correction(
             graded=graded_spec,
@@ -808,21 +586,18 @@ def evaluate_round(
     result = verification_result(
         capture=capture, realization=realization, benefit=benefit, spec=spec
     )
-    # The axes are composed from the FOUR VERDICT OBJECTS, not from
-    # ``result``'s collapsed statuses (#2537): a row's reason is the deciding
-    # axis's reason, and ``result`` keeps only the statuses plus one joined
-    # string. Reading it here would force the axes to re-derive a cause the
-    # verdicts already carry.
+    # The axes are composed from the FOUR VERDICT OBJECTS, not from ``result``'s
+    # collapsed statuses (#2537): a row's reason is the deciding axis's reason,
+    # and ``result`` keeps only the statuses plus one joined string.
     trust = evaluate_evidence_trust(capture=capture, realization=realization)
     safety = evaluate_applied_safety(probe=delta_probe, integrity=integrity)
     quality = evaluate_round_quality(
         realization=realization, benefit=benefit, spec=spec,
         probe=delta_probe, spec_report=spec_report,
     )
-    # #2602's axis. Read from the SAME ``spec_report`` the spec verdict is —
-    # one report, two questions ("is it in tolerance" and "could it get
-    # flatter") — so the screen can never say a round passed a report the
-    # headroom axis graded from different evidence.
+    # #2602's axis, read from the SAME ``spec_report`` the spec verdict is — one
+    # report, two questions — so the screen can never say a round passed a
+    # report the headroom axis graded from different evidence.
     headroom = evaluate_iteration_headroom(
         objectives=flatness_objectives(spec_report),
         previous=previous_objectives,
@@ -864,28 +639,16 @@ def _crossover_region(
 ) -> tuple[tuple[float, float] | None, str | None]:
     """``(band_hz, no_crossover_reason)``, both read off the VERIFY absolute claim.
 
-    **The band's owner is
+    The band's owner is
     :func:`~jasper.audio_measurement.comparison_bands.crossover_region_band_hz`,
-    and this reads its output rather than calling it a second time.** That
-    function is deliberately NOT ``overlap_band_hz``: the latter clamps the
-    lower edge UP to the tweeter's own sweep floor because its consumers read a
-    single branch, which below that floor is deconvolution noise from a driver
-    that was never excited. A summed capture has no such problem, and the null
-    a two-way blends into lands exactly in the span the per-branch clamp would
-    remove — on jts3 that clamp is 1600 Hz and the series-1 dip sat at
-    1921–1938 Hz, so the per-branch band would amputate the bottom half of the
-    thing this correction exists to address.
+    and this reads its output rather than calling it again. That function is
+    deliberately NOT ``overlap_band_hz``, which clamps the lower edge UP to the
+    tweeter's own sweep floor for single-branch consumers: on jts3 that clamp is
+    1600 Hz while the series-1 dip sat at 1921-1938 Hz, so a per-branch band
+    would amputate the bottom half of what this correction addresses. Reading it
+    also means this module holds no copy of the corner.
 
-    Reading it here rather than re-calling it buys two properties a second call
-    could not: the region corrected over is byte-identically the one rendered
-    on the done screen (``crossover_envelope_v2``'s "crossover blend … over
-    lo–hi Hz"), and this module needs neither Fc nor the radiated band threaded
-    into it — so it holds no copy of the corner, and moves with it for free
-    when the declared driver limits change.
-
-    A ``None`` band for every ``not_evaluated`` arm of that claim, which is the
-    honest "there is no region to grade" and the reason the solver's
-    ``no_trusted_band`` refusal needs no separate translation. The reason is
+    A ``None`` band for every ``not_evaluated`` arm. The reason is
     :data:`ABSOLUTE_NO_CROSSOVER_TOPOLOGY` on that claim's ONE arm saying the
     speaker HAS no region — a different next action from every other arm.
     """
@@ -928,40 +691,18 @@ def build_round_receipt(
 ) -> RoundReceipt:
     """Assemble #2291's immutable round receipt from the round's own facts.
 
-    A named assembler rather than a host-side literal, for the reason the
-    contract exists at all: a receipt built by hand at a call site is a
-    receipt whose field set can quietly diverge from the issue's list.
-
     **Identities, not payloads.** ``entry_baseline`` on the receipt is the
-    baseline's *identity* — program, mark, graph fingerprint, when, and the
-    retained artifact it can be re-read from — not its 512-point curve. The
-    curve already lives in two places that outlive this record (the retained
-    capture and the durable ``verify_priors``), and copying it here would make
-    the receipt large, make its fingerprint move with a decimation change, and
-    give the curve a third owner. Same rule for ``post_measurement``.
+    baseline's identity — program, mark, graph fingerprint, when, and the
+    retained artifact it can be re-read from — not its 512-point curve, which
+    already lives in two places that outlive this record. Same rule for
+    ``post_measurement``. The commanded delta and the applied candidate's
+    fingerprint ride in ``evidence_identities``.
 
-    The commanded delta has no field of its own on
-    :class:`~.contracts.RoundReceipt`; its identity rides in
-    ``evidence_identities``, which is where the issue's "evidence/version
-    identities" belong.  So does the applied candidate's fingerprint, since
-    #2392 moved ``proposal_fingerprint`` off it: the caller puts it there, and
-    the reason it must is that the receipt would otherwise carry no candidate
-    identity at all once the proposal took that field over.
-
-    ``proposal_fingerprint_kind`` is passed through unvalidated on purpose —
-    :class:`~.contracts.RoundReceipt` owns the closed vocabulary
-    (:data:`~.contracts.PROPOSAL_FINGERPRINT_KINDS`) and re-checking it here
-    would be a second owner of the same rule.
-
-    ``round_measurements`` is the round's own measured numbers that no verdict
-    collapsed — the band-resolved realization and the per-position residual.
-    Defaulted because a round can honestly produce neither (a tier that walks
-    no post-apply cloud and ran no probe), and an absent mapping and an empty
-    one mean the same thing to every reader: nothing was measured to bank. It
-    is the one field here whose absence costs the NEXT round rather than this
-    one, which is why it is passed through rather than derived: the caller
-    holds the instruments, and deriving it here would give those numbers a
-    second owner.
+    ``proposal_fingerprint_kind`` is passed through unvalidated on purpose:
+    :class:`~.contracts.RoundReceipt` owns the closed vocabulary.
+    ``round_measurements`` is the round's own uncollapsed numbers, defaulted
+    because a round can honestly produce neither; it is passed through rather
+    than derived because the caller holds the instruments.
     """
 
     return RoundReceipt(
@@ -977,9 +718,8 @@ def build_round_receipt(
         post_measurement=post_measurement,
         verification=evaluation.result,
         adoption=evaluation.adoption,
-        # The axes the row was read off (#2537, #2602) — banked with the
-        # decision, because a receipt saying "keep, and here is what to fix"
-        # is only actionable to the NEXT round if the targets travel with it.
+        # The axes the row was read off (#2537, #2602), banked with the decision
+        # so a receipt's targets travel to the NEXT round.
         round_axes=evaluation.axes(),
         restore_result=restore_result,
         round_measurements=round_measurements,

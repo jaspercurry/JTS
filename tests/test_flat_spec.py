@@ -564,8 +564,7 @@ def test_from_dict_round_trips_and_field_count_is_pinned():
     among them) needs one owner for this round trip rather than a private
     per-caller rehydration -- the trap that motivated `from_dict` existing at
     all was two independent copies of this exact logic already living in the
-    repo (`scripts/render-metric-views.py` and a crossover-v2 module), each
-    one more chance to drift from `to_dict`'s actual shape.
+    repo, each one more chance to drift from `to_dict`'s actual shape.
 
     Two tripwires, not one: the field COUNT of each dataclass is pinned, so
     a field added to `BandResult` or `FlatSpecReport` without a matching

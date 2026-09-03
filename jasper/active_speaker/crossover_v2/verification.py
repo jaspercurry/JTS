@@ -239,21 +239,15 @@ def evaluate_capture_validity(
 #: ``ProgramAnalysis.verify_tracking``.
 TRACKING_COMPARATOR_KEY = "max_db_notch_excluded"
 
-#: WHAT the comparator above compares the measured VERIFY sum AGAINST (#3483):
+#: WHAT the comparator above compares the measured VERIFY sum AGAINST:
 #: ``MeasurementPriors.predicted_sum``, the applied candidate's own predicted
-#: summed magnitude at its committed trim and delay. An ABSOLUTE curve-against-
-#: curve claim.
+#: summed magnitude at its committed trim and delay — an ABSOLUTE
+#: curve-against-curve claim.
 #:
-#: It is on the record because the receipt carries a second realization number
-#: measured against something else entirely — the delta probe's per-band
-#: realized/commanded ratios, whose comparand is the COMMANDED DELTA (ADR-0209
-#: names those verdict classes). The two disagree routinely and neither
-#: impeaches the other: on 2026-09-01 two rounds returned ``matched`` beside
-#: band ratios of 0.4877 and 2.4309, and with no comparand on the record a
-#: reader who trusted the word and a reader who read the ratios reached
-#: opposite conclusions about the same round. Band-pooled ratios are also
-#: near-meaningless across a mixed-sign commanded set, where signed deltas
-#: cancel; this axis is unaffected because it never differences two commands.
+#: On the record because the receipt carries a SECOND realization number
+#: measured against something else: the delta probe's per-band
+#: realized/commanded ratios, whose comparand is the COMMANDED DELTA
+#: (ADR-0209). The two disagree routinely and neither impeaches the other.
 REALIZATION_COMPARAND = "applied_candidate_predicted_sum"
 
 REALIZATION_NO_TRACKING = "tracking_unavailable"
@@ -271,20 +265,13 @@ def evaluate_realization(
 
     Grades ``ProgramAnalysis.verify_tracking``'s
     :data:`TRACKING_COMPARATOR_KEY` against ``tolerance_db`` — the same number,
-    from the same key, as the deployed VERIFY gate.
+    from the same key, as the deployed VERIFY gate. The verdict names its
+    COMPARAND (:data:`REALIZATION_COMPARAND`), which is not the comparator.
 
-    **The verdict names its COMPARAND** (:data:`REALIZATION_COMPARAND`, #3483),
-    which is not the same fact as the comparator: this axis grades the measured
-    VERIFY sum against the applied candidate's own predicted sum, while the
-    delta probe's per-band ratios on the same receipt grade realized against
-    COMMANDED delta. Neither impeaches the other, and until the record said so
-    a reader could not tell which question the word ``matched`` answered.
-
-    **Absent evidence is not a failure.** A missing mapping, or a
+    Absent evidence is not a failure: a missing mapping, or a
     missing/non-numeric/non-finite comparator, is
-    :attr:`~.contracts.RealizationStatus.UNAVAILABLE`, not
-    :attr:`~.contracts.RealizationStatus.FAILED`: ``failed`` restores and
-    ``unavailable`` does not claim success, so they must not be one answer.
+    :attr:`~.contracts.RealizationStatus.UNAVAILABLE` rather than
+    :attr:`~.contracts.RealizationStatus.FAILED`, because ``failed`` restores.
     ``bool`` is rejected as a comparator because ``True`` is an ``int`` and
     would silently grade as 1.0 dB.
 
@@ -352,20 +339,18 @@ class MeasurementComparand:
 
     ``program_id`` is a SHA-256 over the whole excitation schedule — phase,
     sample rate, channels, and every segment including its ``gain_db`` and
-    ``effective_peak_dbfs`` — so equal ids are a cryptographic guarantee of the
-    same program **and** the same level. ``reference_mark`` is the
-    position/mark identity, which the program id does not cover: a capture
-    taken a metre away is the same program.
+    ``effective_peak_dbfs`` — so equal ids guarantee the same program AND the
+    same level. ``reference_mark`` is the position identity the program id does
+    not cover.
 
-    **Calibration and analyzer version are not checkable here**: neither is
-    carried on ``ProgramAnalysis``. A caller must not re-calibrate between the
-    two captures of one round; nothing in this type can catch it if it does.
+    Calibration and analyzer version are NOT checkable here: neither is carried
+    on ``ProgramAnalysis``, so a caller must not re-calibrate between a round's
+    two captures.
 
     ``curve`` is the spatially-combined, 1/3-octave-smoothed magnitude
-    :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec` consumes — this
-    module does not smooth, combine, or screen for interference — and
-    ``exclusion_mask`` is that evaluator's per-bin interference screen, one flag
-    per curve point.
+    :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec` consumes;
+    ``exclusion_mask`` is that evaluator's per-bin interference screen, one
+    flag per curve point.
     """
 
     program_id: str
@@ -416,18 +401,15 @@ def evaluate_benefit(
     side and differenced: ``improvement_db = baseline.rms_db - post.rms_db``
     (lower is flatter, so a positive difference is an improvement).
 
-    **Comparability is checked, never assumed.** Missing either side, or any
-    mismatch in program, reference mark, frequency grid, or exclusion mask,
-    yields :attr:`~.contracts.BenefitStatus.INDETERMINATE` with the reason
-    naming which comparability broke; a caller passes ``None`` for a side it
-    cannot compare. The two masks must be *identical*, because a residual that
-    fell only because the mask grew is the same speaker graded on fewer bins. A
-    caller wanting the union of two per-capture screens computes that union and
-    passes it on both sides.
+    Comparability is checked, never assumed: a missing side, or any mismatch in
+    program, reference mark, frequency grid or exclusion mask, is
+    :attr:`~.contracts.BenefitStatus.INDETERMINATE` with the reason naming
+    which broke. The two masks must be IDENTICAL, because a residual that fell
+    only because the mask grew is the same speaker graded on fewer bins; a
+    caller wanting the union of two screens computes it and passes it on both
+    sides.
 
-    ``margin_db`` is required and positive, and the band is symmetric — an
-    improvement smaller than the margin is
-    :attr:`~.contracts.BenefitStatus.INDETERMINATE`, not a small win — so a
+    ``margin_db`` is required and positive, and the band is symmetric, so a
     difference this instrument cannot resolve never becomes a claim.
     """
 
@@ -491,14 +473,12 @@ def identity_mismatch(
     """Are two captures the same PROGRAM at the same MARK?
 
     The identity half of :func:`_comparability_mismatch`, shared with the delta
-    probe's pre-apply anchor: a curve from another program or another mic
-    position subtracts a different room from this one, bin by bin, and cancels a
-    real finding as readily as a phantom. Ordered most-identifying first, so the
-    reason names the root difference; ``None`` when both match.
+    probe's pre-apply anchor. Ordered most-identifying first, so the reason
+    names the root difference; ``None`` when both match.
 
-    The GRID and the MASK are deliberately not here: they are the *arithmetic's*
-    to answer, and each caller does that its own way (the benefit axis refuses;
-    the probe interpolates onto its own grid and NaNs the excluded bins).
+    The GRID and the MASK are deliberately not here: they are the arithmetic's
+    to answer, and each caller does that its own way — the benefit axis
+    refuses, the probe interpolates onto its own grid.
     """
 
     if program_id != other_program_id:
@@ -538,14 +518,11 @@ def pooled_residual(
     """``(rms_db, n_bins)`` from the shipped evaluator, or ``None``.
 
     ``evaluate_flat_spec`` raises on a degenerate curve — a non-ascending axis,
-    a reference band with no surviving bins. Those are honest "cannot grade
-    this" answers to a verdict function, not crashes to propagate into a
-    household decision, so they become ``None`` here and
+    a reference band with no surviving bins — which become ``None`` here and
     :data:`BENEFIT_RESIDUAL_UNEVALUABLE` above.
 
-    Not to be confused with
-    :func:`~jasper.active_speaker.flat_spec_views.log_pooled_residual`, which
-    re-pools a FINISHED report by octave; this one grades a curve.
+    Not :func:`~jasper.active_speaker.flat_spec_views.log_pooled_residual`,
+    which re-pools a FINISHED report by octave; this one grades a curve.
     """
 
     try:
@@ -578,31 +555,25 @@ def evaluate_region_benefit(
 ) -> Verdict[BenefitStatus]:
     """The benefit claim again, restricted to the crossover blend region.
 
-    :func:`evaluate_benefit` pools its residual across all three ``SPEC_BANDS``
-    — 250 Hz to the graded ceiling — so a win confined to a two-octave blend
-    region is diluted across that span and lands inside the margin. This asks
-    the narrow question instead.
+    :func:`evaluate_benefit` pools across all three ``SPEC_BANDS`` — 250 Hz to
+    the graded ceiling — so a win confined to a two-octave blend region is
+    diluted across that span and lands inside the margin.
 
-    **A second reported claim, never a second gate.** The pooled verdict stays
-    the adoption input; a localized claim adds no safety class and no hard stop.
+    A second REPORTED claim, never a second gate: the pooled verdict stays the
+    adoption input. Everything except the band is unchanged, the margin
+    included — narrowing the band does not sharpen the instrument.
 
-    Everything except the band is unchanged, including the margin: it is this
-    model's own measured tracking error on jts3, and narrowing the band does
-    not sharpen the instrument.
-
-    Narrowing the mask re-routes ``evaluate_flat_spec``'s own centering — a
-    region-masked evaluation is referenced to the REGION's surviving bins rather
-    than to the low-mid band, so the verdict is blind to a level change. That is
-    the right frame for grading a SHAPE and the wrong one for prescribing a cut,
-    which is why the blend solver does not use it; see
-    :func:`~.blend_correction.solve_blend_correction`.
-
-    The narrowing is applied to BOTH sides identically, so
-    :func:`_comparability_mismatch`'s identical-mask guarantee is preserved.
+    Narrowing the mask re-routes ``evaluate_flat_spec``'s own centering: a
+    region-masked evaluation is referenced to the REGION's surviving bins
+    rather than to the low-mid band, so the verdict is blind to a level change.
+    The right frame for grading a SHAPE and the wrong one for prescribing a
+    cut, which is why :func:`~.blend_correction.solve_blend_correction` does
+    not use it. Applied to BOTH sides identically, so
+    :func:`_comparability_mismatch`'s identical-mask guarantee holds.
 
     ``no_crossover_reason`` (a 1-way main) is reported ahead of
     :data:`BENEFIT_NO_REGION_BAND`, which says a round could not establish the
-    region its speaker does have — two facts with two remedies (#3480).
+    region its speaker does have — two facts with two remedies.
     """
 
     if no_crossover_reason is not None:
@@ -651,11 +622,8 @@ SPEC_IN_TOLERANCE = "all_bands_in_tolerance"
 def evaluate_spec(report: FlatSpecReport | None) -> Verdict[SpecStatus]:
     """Is the resulting speaker inside the target envelope?
 
-    Classifies; it does not re-grade. The pass answer is
-    :attr:`~jasper.active_speaker.flat_spec.FlatSpecReport.overall_passed`
-    verbatim, and the split *below* a pass reads each band's own
-    ``evaluable``/``passed``. Nothing here recomputes a deviation, a band
-    membership, or a tolerance.
+    Classifies; it does not re-grade. Nothing here recomputes a deviation, a
+    band membership, or a tolerance.
 
     ``overall_passed`` is ``False`` both for a band that measured out of
     tolerance and for a band nothing could be measured in, so the split is
@@ -663,9 +631,7 @@ def evaluate_spec(report: FlatSpecReport | None) -> Verdict[SpecStatus]:
 
     * some evaluable band failed on its merits → :attr:`~.contracts.SpecStatus.FAILED`;
     * nothing was evaluable, or coverage was partial →
-      :attr:`~.contracts.SpecStatus.UNEVALUABLE` — a clean bill of health is
-      not issued for a spectrum that was not fully measured, and a partial
-      one is not called a failure either;
+      :attr:`~.contracts.SpecStatus.UNEVALUABLE`;
     * every band evaluable and passing → :attr:`~.contracts.SpecStatus.PASSED`.
 
     A ``FAILED`` band outranks partial coverage: a measured exceedance is a
@@ -676,9 +642,8 @@ def evaluate_spec(report: FlatSpecReport | None) -> Verdict[SpecStatus]:
     if report is None:
         return Verdict(SpecStatus.UNEVALUABLE, SPEC_NO_REPORT, {})
     evidence = spec_flatness_gauge(report).to_dict()
-    # The gauge names ONE band. A driver deciding whether to run another round
-    # needs every band and the graded span they were read over. Same rows the
-    # quality axis's misses come from, so the two cannot disagree.
+    # The gauge names ONE band; these are every band and the graded span they
+    # were read over. Same rows the quality axis's misses come from.
     evidence["bands"] = spec_band_rows(report)
     evidence["graded_band_hz"] = list(report.graded_band_hz)
     evidence["trusted_ceiling_hz"] = report.trusted_ceiling_hz
@@ -706,10 +671,8 @@ def verification_result(
     """The four verdicts as one :class:`~.contracts.VerificationResult`.
 
     An unusable capture collapses the other three to their no-evidence values
-    and carries the capture's reason: a capture that could not be graded cannot
-    have produced a graded answer, whatever a stale mapping might still say.
-    Otherwise the reason joins all four into one string; the richer per-verdict
-    evidence stays on the :class:`Verdict` objects.
+    and carries the capture's reason. Otherwise the reason joins all four into
+    one string; the per-verdict evidence stays on the :class:`Verdict` objects.
     """
 
     if capture.status is CaptureValidity.UNUSABLE:
@@ -747,20 +710,16 @@ def evaluate_evidence_trust(
 ) -> Verdict[EvidenceTrust]:
     """Could this round measure the state it applied?
 
-    The first axis of the adoption table, and a *composition* rather than a
-    fifth measurement: it reports the first of the two evidence verdicts that
-    says no, carrying that verdict's own reason so the row names the actual
-    absence.
+    A composition rather than a fifth measurement: the first of the two
+    evidence verdicts that says no, carrying that verdict's own reason.
 
-    * an **unusable capture** — integrity checks failed, or no integrity record
-      at all — means there is no post-apply measurement;
-    * an **unavailable realization** means the VERIFY comparator produced no
-      number, so the round cannot say the applied graph did what it commanded.
+    * an unusable capture — failed integrity checks, or no record at all —
+      means there is no post-apply measurement;
+    * an unavailable realization means the VERIFY comparator produced no
+      number.
 
-    **A benefit that came out indeterminate is deliberately NOT here.** It means
-    the round could not compare the applied state to a BEFORE; the post-apply
-    capture itself is fine. An unprovable improvement is a QUALITY unknown — it
-    becomes a next-round target — not a reason to discard the measurement.
+    An indeterminate BENEFIT is deliberately not here: the post-apply capture
+    itself is fine, and an unprovable improvement is a QUALITY unknown.
     """
 
     if capture.status is CaptureValidity.UNUSABLE:
@@ -798,17 +757,13 @@ SAFETY_CLIPPED_CAPTURE = "clipped_capture"
 #: Nothing in the evidence available says this state is unsafe, **and the
 #: realized-energy check was one of the instruments that looked.**
 SAFETY_NO_FINDING = "no_unsafe_finding"
-#: Nothing says this state is unsafe, and the realized-energy check **did not
-#: run** — there was no pre-apply capture to difference this one against, so
-#: the only instrument that can see energy in a driver the graph did not
-#: declare was not able to look. A first-ever round reaches this by
-#: construction, as does any round whose crossover corner moved out from under
-#: the applied profile, and every capture whose quiet bins are too few to
-#: anchor.
-#:
-#: The STATUS stays :attr:`~.contracts.SafetyStatus.SAFE` and the adoption row
-#: is unchanged: refusing on an absent measurement would revert every
-#: first-ever round. What changes is what the receipt and the journal SAY.
+#: Nothing says this state is unsafe, and the realized-energy check did NOT
+#: run — no pre-apply capture to difference this one against. A first-ever
+#: round reaches this by construction, as does one whose crossover corner
+#: moved out from under the applied profile, and every capture whose quiet bins
+#: are too few to anchor. The STATUS stays
+#: :attr:`~.contracts.SafetyStatus.SAFE` and the adoption row is unchanged;
+#: what changes is what the receipt and the journal SAY.
 SAFETY_NO_FINDING_UNMEASURED = "no_unsafe_finding_realized_energy_unmeasured"
 
 #: The integrity check name a clipped stimulus segment fails. A copy of
@@ -824,56 +779,40 @@ def evaluate_applied_safety(
 ) -> Verdict[SafetyStatus]:
     """Is the applied state safe to leave on a household's speaker?
 
-    The adoption table's hard stop, and the only axis that can pull a *measured*
+    The adoption table's hard stop, and the only axis that pulls a MEASURED
     graph off for something other than the absence of evidence. Three findings,
-    each read from a shipped instrument and none of them re-derived here:
+    each read from a shipped instrument and none re-derived here:
 
-    * a **boost realized above the probe's tolerance**
+    * a boost realized above the probe's tolerance
       (:attr:`~jasper.active_speaker.delta_probe.DeltaProbeMap.boost_over_declared_bound`)
       — energy in a driver the graph did not declare;
-    * an uncommanded level shift measured **LOUDER** than declared
+    * an uncommanded level shift measured LOUDER than declared
       (:data:`~jasper.active_speaker.delta_probe.VERDICT_LEVEL_MISMATCH` with a
       positive residual past its own tolerance);
-    * a **clipped** stimulus segment in the post-apply capture.
+    * a clipped stimulus segment in the post-apply capture.
 
-    All three are measurements of the SPEAKER: the first is the anchored excess
-    — measured post minus measured pre, with the apply's own commanded change
-    and declared level move removed — so a standing model error cancels and
-    delivered energy does not. The model's own departure travels in ``evidence``
-    as a next-round target instead.
+    The first is the anchored excess — measured post minus measured pre, with
+    the apply's commanded change and declared level move removed — so a
+    standing model error cancels and delivered energy does not. It cannot be
+    measured without a pre-apply capture, and ``safety_anchored`` in
+    ``evidence`` says whether that half ran. With no anchor the LEVEL rule
+    still holds (``residual_offset_db`` is gated on quiet bins, not an anchor)
+    and the CLIPPED check needs no probe; only the ``safety_only`` path drops
+    the level rule, where ``residual_offset_db`` is ``None`` by construction.
 
-    **The FIRST finding cannot be measured without a pre-apply capture, and the
-    axis says so rather than passing.** ``safety_anchored`` in ``evidence`` is
-    the probe's own answer to whether that half ran, and it is False on an
-    unanchored map and on the ``safety_only`` path. With no anchor the **level**
-    rule still holds — ``residual_offset_db`` is gated on having quiet bins, not
-    on having an anchor — and the **clipped** check needs no probe at all. Only
-    the ``safety_only`` path drops the level rule too, because there
-    ``residual_offset_db`` is ``None`` by construction.
-
-    **Direction is the discriminator, and it is load-bearing.** The same
-    magnitude of uncommanded level shift is a hard stop in one direction and a
-    learning signal in the other: quieter-than-declared costs a household some
-    output and reaches :class:`~.contracts.QualityStatus.MISSED`, while
-    louder-than-declared is energy nobody asked for and reaches
+    DIRECTION is the discriminator: quieter-than-declared costs output and
+    reaches :class:`~.contracts.QualityStatus.MISSED`, louder-than-declared is
+    energy nobody asked for and reaches
     :class:`~.contracts.SafetyStatus.UNSAFE`. A band-scoped level claim narrows
-    only WHERE the level was measured, never whether it happened, so a positive
-    shift measured in a sliver is still unsafe.
+    only WHERE the level was measured, so a positive shift in a sliver is still
+    unsafe.
 
-    **What "safe" does and does not claim.** :data:`SAFETY_NO_FINDING` means no
-    instrument that ran reported a hazard — it is not a warrant that none
-    exists. An absent or ungraded probe reports no finding rather than a hazard,
-    matching :data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_ROLLBACK_VERDICTS`,
-    which excludes ``unavailable``; ``probe_graded`` in ``evidence`` lets a
-    reader tell "safe because nothing was found" from "safe because nothing
-    looked".
+    :data:`SAFETY_NO_FINDING` means no instrument that RAN reported a hazard,
+    not that none exists; ``probe_graded`` lets a reader tell "safe because
+    nothing was found" from "safe because nothing looked". ``seam_deferred``
+    carries the probe's own deferral reason and changes no status.
 
-    ``evidence`` also carries ``seam_deferred``, the probe's own deferral reason
-    from :func:`~jasper.active_speaker.delta_probe.seam_rollback_deferral`, so a
-    restore the probe's seam declined is on the receipt. It changes no status.
-
-    Duck-typed on both inputs, exactly like :func:`evaluate_capture_validity`,
-    so a host that never ran a probe passes ``None``.
+    Duck-typed on both inputs, so a host that never ran a probe passes ``None``.
     """
 
     clipped = (
@@ -892,9 +831,8 @@ def evaluate_applied_safety(
     evidence: dict[str, Any] = {
         # Which instruments actually looked, so "safe" can be read honestly.
         "probe_graded": bool(verdict),
-        # ...and HOW MUCH of the probe looked. A ``safety_only`` map grades the
-        # MODEL's departure and no more, so the shape half never ran and
-        # ``probe_graded`` alone cannot say so.
+        # ...and HOW MUCH of the probe looked: a ``safety_only`` map grades
+        # the MODEL's departure and no more, so the shape half never ran.
         "probe_shape_graded": bool(verdict) and verdict != VERDICT_SAFETY_ONLY,
         "probe_verdict": verdict,
         "probe_reason": (
@@ -911,11 +849,10 @@ def evaluate_applied_safety(
             if isinstance(residual_tolerance, (int, float))
             and not isinstance(residual_tolerance, bool) else None
         ),
-        # Did the hearing half run at all? The two directional findings below
-        # are measurements of the speaker only when a pre-apply capture anchored
-        # them, so ``False`` here means they are absences rather than passes.
-        # Read off the probe, never inferred from the findings being False —
-        # those are also False on a round that measured and found nothing.
+        # Did the hearing half run at all? ``False`` means the two directional
+        # findings below are absences rather than passes. Read off the probe,
+        # never inferred from those findings being False — they are also False
+        # on a round that measured and found nothing.
         "safety_anchored": (
             bool(getattr(probe, "safety_anchored", False))
             if probe is not None else False
@@ -924,19 +861,18 @@ def evaluate_applied_safety(
         "boost_overshoot_db": (
             getattr(probe, "boost_overshoot_db", None) if probe is not None else None
         ),
-        # WHICH WAY the graded bins missed, and whether the probe's own seam
-        # therefore handed its rollback to this table instead of restoring on
-        # it. On the SAFETY axis because the basis is a safety-direction fact:
-        # nothing realized louder than commanded. ``seam_deferred`` of ``""``
-        # means no deferral, which a reader must be able to tell from a restore.
+        # WHICH WAY the graded bins missed, and whether the probe's seam
+        # therefore handed its rollback to this table. On the SAFETY axis
+        # because the basis is a safety-direction fact. ``seam_deferred`` of
+        # ``""`` means no deferral, which must be distinguishable from a
+        # restore.
         "realized_louder_than_commanded": (
             bool(getattr(probe, "realized_louder_than_commanded", False))
             if probe is not None else False
         ),
         # The MODEL's own upward departure — a different instrument on a
-        # different reference, which belongs to the next round rather than to
-        # this decision. It rides here because this is the block the round
-        # receipt renders.
+        # different reference, belonging to the next round rather than this
+        # decision. Here because this is the block the receipt renders.
         "model_departure_over_tolerance": (
             bool(getattr(probe, "model_departure_over_tolerance", False))
             if probe is not None else False
@@ -980,15 +916,13 @@ def evaluate_applied_safety(
 
 ADOPTION_MEASURED_REGRESSION = "measured_regression"
 #: The delta probe measured the emitted filters not doing what the fit's model
-#: of them says, in one of the classes the project reverts. Distinct from
-#: :data:`ADOPTION_MEASURED_REGRESSION`: that one is the before/after summed
-#: comparison, this one is realized-vs-commanded.
+#: of them says, in one of the classes the project reverts — realized-vs-
+#: commanded, where :data:`ADOPTION_MEASURED_REGRESSION` is before/after.
 #:
-#: **The cause carries the CLASS, as ``<prefix>:<verdict>``.** The three
+#: The cause carries the CLASS as ``<prefix>:<verdict>``, because the three
 #: rollback classes have three different household sentences
-#: (:data:`~.refusal_copy.DELTA_PROBE_REASON_BY_VERDICT`), which
-#: :func:`~.refusal_copy.round_restore_reason` reads back off the cause; a bare
-#: prefix would collapse all three into one generic restore sentence.
+#: (:data:`~.refusal_copy.DELTA_PROBE_REASON_BY_VERDICT`) that
+#: :func:`~.refusal_copy.round_restore_reason` reads back off it.
 ADOPTION_PROBE_ROLLBACK_CLASS = "delta_probe_rollback_class"
 ADOPTION_REALIZED_AND_IMPROVED = "realized_and_improved"
 ADOPTION_REALIZATION_FAILED = "realization_failed"
@@ -998,16 +932,13 @@ ADOPTION_UNPROVEN = "benefit_unproven"
 #: applied is why. A receipt saying "benefit unproven" there would be false.
 ADOPTION_REALIZATION_UNAVAILABLE = "realization_unavailable"
 
-#: The nine ``(realization, benefit)`` cells and the cause each reports.
-#:
-#: All nine pairs exist here so a combination cannot fall through to a default,
-#: and a new enum member fails the exhaustiveness test rather than silently
-#: landing on one. ``any | regressed`` is the only quality answer that restores,
-#: and all three of those cells carry the regression as their cause rather than
-#: the realization failure, because the regression is what takes the graph off.
-#: ``unavailable | improved`` is MISSED rather than PASSED: the speaker measured
-#: better, but with no realization evidence the round cannot say the graph it
-#: applied is why.
+#: The nine ``(realization, benefit)`` cells and the cause each reports. All
+#: nine exist so a combination cannot fall through to a default.
+#: ``any | regressed`` is the only quality answer that restores, and all three
+#: of those cells carry the regression as the cause rather than the realization
+#: failure. ``unavailable | improved`` is MISSED rather than PASSED: the
+#: speaker measured better, but with no realization evidence the round cannot
+#: say the graph it applied is why.
 _QUALITY_TABLE: Mapping[
     tuple[RealizationStatus, BenefitStatus], tuple[QualityStatus, str]
 ] = {
@@ -1055,17 +986,12 @@ def evaluate_round_quality(
     A probe verdict in
     :data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_ROLLBACK_VERDICTS`
     that the probe's own seam did not defer overrides it to
-    :attr:`~.contracts.QualityStatus.REGRESSED`, the one quality answer that
-    restores, so :func:`decide_adoption` stays the single decider.
+    :attr:`~.contracts.QualityStatus.REGRESSED`.
 
-    **The TARGETS are disclosure and move no status.** Spec verdicts, each
-    failing spec band, the delta probe's own reason, and the room's upward
-    departure from the two-branch model ride in ``evidence`` for the next round
-    to chase. Spec is an outcome, not a proxy for benefit — every row of the
-    table reads "any" for spec — and :func:`decide_adoption` never reads a
-    :class:`~.contracts.SpecStatus` on any axis. So a round can be PASSED with
-    targets outstanding: the status answers what this round did, the targets
-    answer what the next one should chase.
+    The TARGETS are disclosure and move no status. Spec is an outcome, not a
+    proxy for benefit — every row reads "any" for spec, and
+    :func:`decide_adoption` never reads a :class:`~.contracts.SpecStatus` — so
+    a round can be PASSED with targets outstanding.
     """
 
     quality, reason = _QUALITY_TABLE[(realization.status, benefit.status)]
@@ -1090,7 +1016,7 @@ def evaluate_round_quality(
     return Verdict(quality, reason, {
         "targets": targets,
         "spec_bands": _failing_spec_bands(spec_report),
-        # WHICH probe class escalated, or ``""``. Named rather than left to be
+        # WHICH probe class escalated, or ``""``. Named rather than
         # re-derived from ``targets``: the row's reason is a constant.
         "probe_rollback_class": probe_rollback,
     })
@@ -1105,19 +1031,17 @@ QUALITY_MODEL_DEPARTURE = "model_departure"
 def _model_departure_target(probe: Any | None) -> list[str]:
     """The model's upward departure as a next-round target, or nothing.
 
-    The amount is the unanchored ``max_signed_error_db``, and whether it cleared
-    tolerance is the probe's own answer against its own per-bin tolerance curve
-    — read rather than re-derived here against a scalar, because this module
-    owns no tolerance of its own and does not gain one for a target.
+    The amount is the unanchored ``max_signed_error_db``; whether it cleared
+    tolerance is the probe's own answer against its own per-bin tolerance
+    curve, read rather than re-derived, because this module owns no tolerance.
 
-    **The frequency is ``max_signed_error_hz``, never ``worst_hz``.** They are
-    two reductions over two bin sets — worst ABSOLUTE error over the graded
-    bins, worst POSITIVE departure over the safety bins — so quoting one bin's
-    dB at the other bin's frequency sends the next round after the wrong
-    feature.
+    The frequency is ``max_signed_error_hz``, never ``worst_hz``: they are two
+    reductions over two bin sets — worst ABSOLUTE error over the graded bins,
+    worst POSITIVE departure over the safety bins — so quoting one bin's dB at
+    the other's frequency sends the next round after the wrong feature.
 
     Nothing for an absent probe, an unmeasured departure, or one inside
-    tolerance: a line that fires on every round is a line nobody reads.
+    tolerance.
     """
 
     if probe is None:
@@ -1139,8 +1063,7 @@ def _probe_rollback_class(probe: Any | None, verdict: str) -> str:
     :data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_ROLLBACK_VERDICTS`
     for which classes restore, and
     :func:`~jasper.active_speaker.delta_probe.seam_rollback_deferral` for the
-    ones that are spared — a realized-vs-commanded miss pointing entirely
-    quieter than commanded is a quality miss the series keeps and learns from.
+    ones that are spared.
     """
 
     if not verdict or verdict not in DELTA_PROBE_ROLLBACK_VERDICTS:
@@ -1213,25 +1136,18 @@ HEADROOM_REACHABLE = "flatter_result_reachable"
 class FlatnessObjectives:
     """The two graded flatness objectives, as one round measured them.
 
-    Both are **frame-invariant**, which is the property that lets them be
-    differenced across rounds at all: ``ripple_db`` is each band's deviation
-    from its OWN level and ``tilt_db`` is a difference of two levels, so the
-    spec's across-band reference cancels out of both.
+    Both are FRAME-INVARIANT, which is what lets them be differenced across
+    rounds: ``ripple_db`` is each band's deviation from its OWN level and
+    ``tilt_db`` a difference of two levels, so the spec's across-band reference
+    cancels out of both. ``None`` means "this round could not grade it", never
+    zero.
 
-    ``None`` on either field means "this round could not grade it", never
-    "zero": a report with fewer than two levelled bands has no tilt, and
-    inventing 0 dB would read as perfect alignment.
-
-    **Frame-invariance is necessary for cross-round differencing but not
-    sufficient, and the missing half is the graded BAND.** Neither number is
-    invariant to which BINS were graded, and the session's trusted floor sets
-    each band's ``graded_lo_hz``: measured on an UNCHANGED curve, a 7↔10 ms gate
-    change alone produces ±0.518 dB of spurious movement here, 2.1×
-    :data:`~.round_evidence.ITERATION_PLATEAU_DB` — enough to mask a plateau or
-    invent one. So the floor is banked beside these numbers
-    (``trusted_floor_hz`` in :func:`evaluate_iteration_headroom`'s evidence) and
-    a round whose floor differs from the previous round's refuses the movement
-    comparison rather than reading a gate-length artefact as progress.
+    Neither is invariant to which BINS were graded, and the session's trusted
+    floor sets each band's ``graded_lo_hz``: on an UNCHANGED curve a 7↔10 ms
+    gate change alone produces ±0.518 dB of spurious movement here, 2.1×
+    :data:`~.round_evidence.ITERATION_PLATEAU_DB`. So the floor is banked
+    beside these numbers and a round whose floor differs from the previous
+    round's refuses the movement comparison.
     """
 
     #: Largest level step between two graded bands.
@@ -1243,9 +1159,8 @@ class FlatnessObjectives:
     def worst_db(self) -> float | None:
         """The larger of the two, or ``None`` when neither graded.
 
-        A MAX rather than a sum or an RMS: the two objectives are different
-        misses in the same speaker, and the series is done only when BOTH are
-        small. Pooling them would let a large tilt hide behind flat bands.
+        A MAX rather than a sum or an RMS: the series is done only when BOTH
+        are small, and pooling would let a large tilt hide behind flat bands.
         """
 
         graded = [
@@ -1297,13 +1212,11 @@ def _floors_comparable(
 ) -> bool:
     """May two rounds' objectives be differenced?
 
-    ``True`` unless there is POSITIVE evidence of a floor change, and the
-    direction is the whole point. An unknown or non-finite floor on either side
-    is not evidence that the frame moved, and refusing on it would disable the
-    plateau stop on every round until every path threads a floor. Two KNOWN
-    floors that disagree by more than :data:`FLOOR_COMPARABILITY_RTOL` is the
-    one case that refuses, because the movement between them then contains a
-    gate-length term no round controls.
+    ``True`` unless there is POSITIVE evidence of a floor change: an unknown or
+    non-finite floor is not evidence that the frame moved, and refusing on it
+    would disable the plateau stop until every path threads a floor. Two KNOWN
+    floors disagreeing by more than :data:`FLOOR_COMPARABILITY_RTOL` is the one
+    case that refuses.
     """
 
     if this_floor_hz is None or previous_floor_hz is None:
@@ -1330,49 +1243,38 @@ def evaluate_iteration_headroom(
 ) -> Verdict[IterationHeadroom]:
     """Should the series run another round?
 
-    Quality grades **what this round did**; this grades **what a next one could
-    still get**. Three ways a series is over, checked most-binding first so the
-    reason names the fact that actually ended it:
+    Quality grades what this round DID; this grades what a next one could still
+    get. Three ways a series is over, checked most-binding first so the reason
+    names the fact that actually ended it:
 
-    1. **The round cap.** At ``round_ordinal >= round_cap`` there is no next
-       round to have headroom for, however much is left on the table. Naming a
-       plateau here would imply more rounds would not have helped, which the
-       measurement did not say.
-    2. **Already flat enough.** Both objectives inside ``plateau_db`` — a
-       different answer from "we stopped improving", so it gets its own reason.
-    3. **Plateaued.** The objectives moved less than ``plateau_db`` since the
-       previous round. Measured on the OBJECTIVES rather than on the pooled
-       residual: a round only reaches
+    1. The round cap. At ``round_ordinal >= round_cap`` there is no next round
+       to have headroom for; naming a plateau here would imply more rounds
+       would not have helped, which the measurement did not say.
+    2. Already flat enough — both objectives inside ``plateau_db``.
+    3. Plateaued: the objectives moved less than ``plateau_db`` since the
+       previous round. Measured on the OBJECTIVES rather than the pooled
+       residual, because a round only reaches
        :attr:`~.contracts.QualityStatus.PASSED` by improving past
-       :data:`~.round_evidence.MEASURED_BENEFIT_MARGIN_DB`, which is wider than
-       this bar, so a plateau read off the benefit verdict could never fire on
-       the row that needs it.
+       :data:`~.round_evidence.MEASURED_BENEFIT_MARGIN_DB`, a wider bar.
 
-    **Ungradable objectives are NOT a fourth stop.** They resolve to
+    Ungradable objectives are NOT a fourth stop: they resolve to
     :attr:`~.contracts.IterationHeadroom.REACHABLE` under
-    :data:`HEADROOM_NO_OBJECTIVES`, because a round that could not grade how
-    flat the result is has not shown that a flatter one is out of reach. Another
-    round is only ever *offered*, and the graph is untouched either way.
-
-    ``previous is None`` is the first round of a series: there is no movement to
-    judge yet, so the plateau stop cannot fire and the answer rests on distance
-    alone. That is also why the cap is checked independently rather than
-    inferred from the absence of history.
+    :data:`HEADROOM_NO_OBJECTIVES`. ``previous is None`` is the first round,
+    where the plateau stop cannot fire and the answer rests on distance alone —
+    which is why the cap is checked independently rather than inferred from
+    absent history.
 
     Args:
       objectives: this round's :func:`flatness_objectives`.
-      previous: the previous round's, carried forward on the durable receipt,
-        or ``None`` for the first round of a series.
+      previous: the previous round's, off the durable receipt, or ``None``.
       round_ordinal: 1-based position of this round in the series.
-      round_cap / plateau_db: the series policy, passed rather than imported for
-        the same reason :func:`evaluate_benefit` takes ``margin_db``.
+      round_cap / plateau_db: the series policy, passed rather than imported.
         ``plateau_db`` must be positive; both are defined in
         :mod:`.round_evidence` beside the benefit margin.
       trusted_floor_hz: the floor ``objectives`` were graded against, and
-        ``previous_trusted_floor_hz`` the one the previous round's were. Banked
-        in the evidence whether or not they decide anything here, because the
-        NEXT round is what reads them back. See :func:`_floors_comparable` for
-        the one case that refuses the movement comparison.
+        ``previous_trusted_floor_hz`` the previous round's. Banked in the
+        evidence whether or not they decide anything here, because the NEXT
+        round reads them back. See :func:`_floors_comparable`.
     """
 
     cap = int(round_cap)
@@ -1425,10 +1327,8 @@ def evaluate_iteration_headroom(
 def _finite_or_none(value: float | None) -> float | None:
     """A finite number, or ``None`` — the same unknown-vs-zero rule as elsewhere.
 
-    A non-finite trusted floor is an unreadable one, and banking a NaN would
-    give the next round a number that compares false against everything: a
-    silent permanent refusal rather than an honest absence. ``bool`` is rejected
-    the way it is everywhere else in this module.
+    Banking a NaN would give the next round a number that compares false
+    against everything: a silent permanent refusal rather than an absence.
     """
 
     if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -1468,14 +1368,11 @@ _QUALITY_ROWS: Mapping[QualityStatus, tuple[AdoptionOutcome, str]] = {
 #: Where the table's one PASSED cell splits, by the fourth axis: whether that
 #: keep is TERMINAL.
 #:
-#: Only the passing cell consults the headroom STATUS. A MISSED round keeps
-#: iterating however flat the axis says the result is (it has outstanding
-#: targets by construction), and a REGRESSED one restores before this table is
-#: ever reached. The one fact that crosses to the missing cell is the spent
-#: BUDGET, and it crosses as the axis's reason rather than as its status — see
-#: :func:`decide_adoption`.
-#:
-#: A second MAPPING for the same reason the first one is one.
+#: Only the passing cell consults the headroom STATUS: a MISSED round keeps
+#: iterating however flat the axis says the result is, and a REGRESSED one
+#: restores before this table is reached. The one fact that crosses to the
+#: missing cell is the spent BUDGET, as the axis's reason rather than its
+#: status — see :func:`decide_adoption`.
 _PASSED_ROWS: Mapping[IterationHeadroom, tuple[AdoptionOutcome, str]] = {
     IterationHeadroom.EXHAUSTED: (AdoptionOutcome.KEEP, ADOPTION_ROW_KEEP),
     IterationHeadroom.REACHABLE: (
@@ -1496,15 +1393,12 @@ def decide_adoption(
 ) -> AdoptionDecision:
     """Keep, keep-and-iterate, restore, or escalate — the adoption table.
 
-    **Headroom can never keep a graph the other axes said to take off**: it is
-    read only on the branch trust, safety and quality all passed, where it
-    splits the passing cell (:data:`_PASSED_ROWS`) into "passed, series over"
-    and :data:`~.contracts.ADOPTION_ROW_KEEP_ITERATING`. One further fact
-    crosses to the MISSED cell — the spent round budget — **keyed on the axis's
-    REASON, not its status**, so the plateau stops do not cross and a MISSED
-    round still iterates below the cap. :data:`HEADROOM_CAP_REACHED` is minted
-    in exactly one place; re-deriving ``ordinal >= cap`` here would make this a
-    second enforcer of a rule that has one owner.
+    Headroom can NEVER keep a graph the other axes said to take off: it is read
+    only on the branch trust, safety and quality all passed, where it splits
+    the passing cell (:data:`_PASSED_ROWS`). One further fact crosses to the
+    MISSED cell — the spent round budget — keyed on the axis's REASON, not its
+    status, so the plateau stops do not cross and a MISSED round still iterates
+    below the cap. :data:`HEADROOM_CAP_REACHED` is minted in exactly one place.
 
     The seven rows, by their :data:`~.contracts.ADOPTION_ROWS` identifiers:
 
@@ -1521,44 +1415,36 @@ def decide_adoption(
     ========================================== ============================
 
     Args:
-      trust / safety / quality / headroom: the four axis verdicts. **Verdicts,
-        not bare statuses**: the reason a row fires under IS the deciding axis's
-        own reason, so minting a parallel cause vocabulary here would put a
-        second owner on every one of them. This function decides nothing an
-        evaluator did not; it selects which axis speaks — on both passing rows
-        that axis is **headroom**, because the receipt has to carry which ending
-        it was. A verdict of the wrong type raises
+      trust / safety / quality / headroom: the four axis verdicts. VERDICTS,
+        not bare statuses: the reason a row fires under IS the deciding axis's
+        own reason. This function decides nothing an evaluator did not; it
+        selects which axis speaks, and on both passing rows that axis is
+        headroom. A verdict of the wrong type raises
         :class:`~.contracts.CrossoverV2ContractError`.
       boosted: does the applied intervention contain a boost? Computed by the
-        host with the shipped predicate
-        (``camilla_yaml.linearization_has_boost``). Read **only** on the
+        host with ``camilla_yaml.linearization_has_boost``. Read ONLY on the
         untrusted row — see :data:`ADOPTION_UNPROVEN_BOOST`.
-      rollback_available: can the host actually restore the entry graph? The
-        parameter exists so the decision *sees* seam presence rather than
-        assuming it: a host that binds no rollback must get a different answer,
-        not a restore instruction nothing can carry out.
+      rollback_available: can the host actually restore the entry graph? A host
+        that binds no rollback must get a different answer, not a restore
+        instruction nothing can carry out.
       restore_failed: a restore was attempted and did not complete.
 
-    Ordering, stated plainly because this decides whether a graph stays on a
-    speaker:
+    Ordering, stated because this decides whether a graph stays on a speaker:
 
-    * **A failed restore outranks everything.** Checked first: the speaker is
-      then in neither the entry graph nor the intended one.
-    * **Safety is checked BEFORE trust.** Both rows restore, so the order only
-      decides which name the receipt carries — and naming the hazard beats
+    * A failed restore outranks everything, checked first: the speaker is then
+      in neither the entry graph nor the intended one.
+    * Safety is checked BEFORE trust. Both rows restore, so the order only
+      decides which name the receipt carries, and naming the hazard beats
       naming the absence when both are true (a clipped capture is both).
-    * **A measured regression still restores**: the previous state's own
-      measurement is exactly the evidence, so going back is going back to a
-      measured tune. **An unmeasured applied state never stays** either, even
-      though nothing accuses the graph.
-    * **A spec band out of tolerance is not a restore trigger** — see
+    * A measured regression still restores — going back is going back to a
+      measured tune — and an unmeasured applied state never stays either.
+    * A spec band out of tolerance is not a restore trigger; see
       :func:`evaluate_round_quality`.
-    * **A restore we cannot perform is not a restore.** With no rollback anchor
-      the answer is ``recovery_required`` — a loud operator path — never a
-      ``restore`` the host has no way to execute and never a ``keep``.
-    * **The fourth axis chooses the sentence, never the graph.** ``KEEP`` and
-      ``KEEP_FOR_ITERATION`` leave the speaker in the same state, differing only
-      in whether another round is coming.
+    * A restore we cannot perform is not a restore: with no rollback anchor the
+      answer is ``recovery_required``, never a ``restore`` the host cannot
+      execute and never a ``keep``.
+    * The fourth axis chooses the sentence, never the graph: ``KEEP`` and
+      ``KEEP_FOR_ITERATION`` leave the speaker in the same state.
     """
 
     for name, value, kind in (
@@ -1619,10 +1505,9 @@ def _restore_or_recover(
 ) -> AdoptionDecision:
     """A restore the host can run, or the escalation when it cannot.
 
-    The branch is taken before the attempt rather than after it, because a
-    decision to restore with no anchor to restore *to* is not a decision the
-    host can carry out. The ROW is the same either way: the rule fired, and only
-    its execution was impossible.
+    The branch is taken before the attempt: a decision to restore with no
+    anchor to restore TO is not one the host can carry out. The ROW is the same
+    either way — the rule fired, and only its execution was impossible.
     """
 
     if rollback_available:
@@ -1641,14 +1526,14 @@ def _restore_or_recover(
 # --------------------------------------------------------------------------
 
 #: What the household is told a graded round came to. The domain owns these
-#: four even though the web host picks one: the renderer that turns a graded
-#: round into screen copy (:mod:`jasper.active_speaker.crossover_envelope_v2`)
-#: may not import :mod:`jasper.web`, so both sides import the symbol from here.
+#: four even though the web host picks one: the renderer
+#: (:mod:`jasper.active_speaker.crossover_envelope_v2`) may not import
+#: :mod:`jasper.web`, so both sides import the symbol from here.
 #:
-#: **These are not** :class:`~.contracts.AdoptionOutcome`. That enum decides
-#: what happens to the GRAPH for one round; these four name what a whole
-#: commission's post-apply grade came to for a PERSON, and a session can grade
-#: ``RESULT_KEEP_PREVIOUS`` off inputs no single round's adoption decision saw.
+#: NOT :class:`~.contracts.AdoptionOutcome`, which decides what happens to the
+#: GRAPH for one round; these name what a whole commission's post-apply grade
+#: came to for a PERSON, and a session can grade ``RESULT_KEEP_PREVIOUS`` off
+#: inputs no single round's adoption decision saw.
 RESULT_VERIFIED_TARGET = "verified_target"
 RESULT_VERIFIED_BEST_EVALUATED = "verified_best_evaluated"
 RESULT_KEEP_PREVIOUS = "keep_previous"
@@ -1674,21 +1559,20 @@ def _band_edge(band: Any, index: int) -> float | None:
         return None
     edge = band[index]
     return float(edge) if isinstance(edge, (int, float)) else None
+
+
 def _flatness_tilt_log_field(flatness: Any) -> str:
-    """The band-to-band level step as one logfmt token — a frame-free reading,
-    beside a ``flatness_max_db`` that is not.
+    """The band-to-band level step as one logfmt token — a frame-free reading.
 
-    ``flatness_max_db`` and ``flatness_bands`` are both distances from a
-    reference pooled ACROSS bands, so a uniformly-off band drags that zero and
-    inflates the others. A step BETWEEN two band levels cannot be moved by the
-    frame -- the reference cancels in the subtraction.
+    ``flatness_max_db`` and ``flatness_bands`` are distances from a reference
+    pooled ACROSS bands, so a uniformly-off band drags that zero. A step
+    BETWEEN two band levels cannot be moved by the frame.
 
-    Shape: ``<step>dB:<lo>-<hi>Hz><lo>-<hi>Hz``, the higher-sitting band first,
-    no space or bracket for logfmt to quote. ``""`` (never a fabricated reading)
-    when the gauge carried no tilt -- fewer than two bands with a measured
-    level, or a persisted block without one. Copied from
-    :func:`~jasper.active_speaker.flat_spec.spec_band_tilt`'s own output;
-    nothing here is recomputed and no verdict moves.
+    Shape: ``<step>dB:<lo>-<hi>Hz><lo>-<hi>Hz``, higher-sitting band first, no
+    space or bracket for logfmt to quote. ``""`` when the gauge carried no
+    tilt. Copied from
+    :func:`~jasper.active_speaker.flat_spec.spec_band_tilt`; nothing is
+    recomputed and no verdict moves.
     """
     if not isinstance(flatness, Mapping):
         return ""
@@ -1713,24 +1597,19 @@ def _flatness_tilt_log_field(flatness: Any) -> str:
 
 
 def _per_band_flatness_log_field(bands: Any) -> str:
-    """One compact token per graded spec band, its own worst deviation from
-    the SAME reference ``flatness_max_db`` above is stated against (issue
-    #1857) -- so a log reader is never limited to the single band the gauge
-    happened to flag as worst. A uniformly-off band drags the shared
-    reference toward itself and can make an unrelated band's ordinary
-    ripple read as the LARGER deviation; this is what let a #1857 corpus
-    session's worst-band pointer read the woofer while the tweeter sat
-    uniformly ~5 dB dark across its own passband, undetected by the single
-    logged point. Same disclosure, and the same "unevaluable is not a
-    fabricated verdict" skip rule, as
-    ``crossover_envelope_v2._per_band_flatness_lines`` (the household-facing
-    prose reading of the identical numbers) -- shaped for one logfmt token
-    (``lo-hiHz:+dev.ddB:pass|fail``, semicolon-joined, no bracket or space
-    for logfmt to quote) rather than a sentence. Disclosure only: every
-    figure is copied from the SAME :class:`~jasper.active_speaker.flat_spec.FlatSpecReport`
-    ``flatness_max_db`` reads, nothing is recomputed, and no verdict moves.
-    ``""`` (never a fabricated reading) when ``bands`` is absent or no band
-    survives to be measured.
+    """One compact token per graded spec band, each band's own worst deviation
+    from the SAME reference ``flatness_max_db`` is stated against.
+
+    A uniformly-off band drags the shared reference toward itself and can make
+    an unrelated band's ordinary ripple read as the LARGER deviation, so a log
+    reader must not be limited to the single band the gauge flagged as worst.
+
+    Shape: ``lo-hiHz:+dev.ddB:pass|fail``, semicolon-joined, no bracket or
+    space for logfmt to quote. ``""`` when ``bands`` is absent or no band
+    survives. Disclosure only: every figure is copied from the same
+    :class:`~jasper.active_speaker.flat_spec.FlatSpecReport`, nothing is
+    recomputed, and no verdict moves. Same skip rule as
+    ``crossover_envelope_v2._per_band_flatness_lines``.
     """
     if not isinstance(bands, list):
         return ""
@@ -1760,34 +1639,25 @@ def verify_absolute_tolerance_db(band_hz: Sequence[float]) -> float | None:
     """How far the realized sum may sit from the candidate's own crossover
     target across ``band_hz``, in dB — or ``None``, no tolerance to apply.
 
-    **Derived, never chosen.** The product already promises an absolute
-    magnitude tolerance over this frequency range — ``flat_spec.SPEC_BANDS``,
-    the adopted spec table — so this returns the LOOSEST entry the region
-    overlaps and a crossover-region result is never held to a tighter bar than
-    the speaker's own spec applies somewhere inside it. For the shipped 2 kHz
-    two-way: ``max(1.5 [250–2k], 2.0 [2k–8k]) = 2.0 dB``. It inherits that
-    table's S0-contingent status rather than restating a literal.
+    DERIVED, never chosen: returns the LOOSEST ``flat_spec.SPEC_BANDS`` entry
+    the region overlaps, so a crossover-region result is never held to a
+    tighter bar than the speaker's own spec applies somewhere inside it. For
+    the shipped 2 kHz two-way, ``max(1.5 [250–2k], 2.0 [2k–8k]) = 2.0 dB``.
 
-    Deliberately NOT :data:`VERIFY_TOLERANCE_DB`, which bounds
-    measured-vs-MODEL; this bounds measured-vs-DESIGN. Same units, different
-    question.
+    NOT :data:`VERIFY_TOLERANCE_DB`, which bounds measured-vs-MODEL; this
+    bounds measured-vs-DESIGN. Same units, different question.
 
-    Known contributor, not corrected for: rung P1 measured a frame tilt
-    between VERIFY's in-room curve and its on-axis model, and part of that
-    frame lands in this residual too. It is DISCLOSED beside the number
-    (``_verify_frame_lines``) rather than removed, following the flow's
-    standing rule that a measured tilt is evidence, not permission to re-grade.
+    Known contributor, not corrected for: a frame tilt between VERIFY's in-room
+    curve and its on-axis model lands partly in this residual. DISCLOSED beside
+    the number (``_verify_frame_lines``) rather than removed — a measured tilt
+    is evidence, not permission to re-grade.
 
-    ``None`` when the region overlaps no specced band (a crossover high enough
-    that the region is entirely ``flat_spec.BEST_EFFORT_ABOVE_HZ``, where the
-    table itself declines): the caller records the claim not-evaluated rather
-    than inventing a bar.
+    ``None`` when the region overlaps no specced band, so the caller records
+    the claim not-evaluated rather than inventing a bar.
 
-    Reads the NOMINAL table, deliberately, so this gate does not move with a
-    session's microphone-trust ceiling. The consequence is stated rather than
-    left to be found: on a session trusted past 16 kHz the spec now grades a
-    region this claim still declines. Widening the claim is a separate ruling
-    about a separate mechanism, not a side effect of the spec's own span.
+    Reads the NOMINAL table, so this gate does not move with a session's
+    microphone-trust ceiling: on a session trusted past 16 kHz the spec grades
+    a region this claim still declines.
     """
     if len(band_hz) != 2:
         return None
@@ -1795,20 +1665,17 @@ def verify_absolute_tolerance_db(band_hz: Sequence[float]) -> float | None:
     overlapping = [tol for f_lo, f_hi, tol in SPEC_BANDS if f_lo < hi and lo < f_hi]
     return max(overlapping) if overlapping else None
 
+
 def _verify_evidence_from_tracking(
     tracking: Mapping[str, Any],
 ) -> dict[str, Any] | None:
-    """The verify_fail expert-disclosure numbers (#1605): the notch-excluded
-    max the tolerance gates on, the RMS, and the tolerance itself. Returns
-    None when the gated max is not a real number — nothing meaningful to show
-    behind the disclosure.
+    """The verify_fail expert-disclosure numbers: the notch-excluded max the
+    tolerance gates on, the RMS, and the tolerance itself.
 
-    **The graded band is NOT here** — it moved to
-    :func:`_verify_graded_band_from_tracking` (issue #1868). It used to ride
-    this block, which is persisted only for a NON-pass outcome, so the one
-    fact that bounds what "Verified." actually means was visible on exactly
-    the screens where the verdict had already failed. One owner, one place:
-    the band is a property of the comparison, not of its failure.
+    ``None`` when the gated max is not a real number. The graded band is NOT
+    here — it belongs to :func:`_verify_graded_band_from_tracking`, because
+    this block is persisted only for a NON-pass outcome and the band is a
+    property of the comparison rather than of its failure.
     """
     max_db = tracking.get("max_db_notch_excluded")
     if not isinstance(max_db, (int, float)):
@@ -1827,18 +1694,13 @@ def _verify_graded_band_from_tracking(
     """The frequency span VERIFY's tracking comparison actually graded.
 
     ``[lo, hi]``, or ``None`` when this capture never reached a tracking
-    comparison (an early locate/level/gate refusal) — absent means "nothing
-    was graded", never "graded everywhere".
+    comparison — absent means "nothing was graded", never "graded everywhere".
 
-    **Why it is disclosed on a PASS too** (issue #1868, panel item O5): the
-    band is not the nominal Fc±1 octave. ``overlap_band_hz`` clamps its lower
-    edge UP to the tweeter's actual MEASURE sweep floor, and
-    ``_analyze_verify`` clamps it up again to the capture's own gate-derived
-    validity floor. On the 2026-07-30 corpus that landed at
-    ``[2000, 4000] Hz`` while the crossover-region defect the forensics
-    locate sits at 1919 Hz — 81 Hz below the floor, structurally ungradeable.
-    A "Verified." badge over an unstated band reads as "verified everywhere";
-    stating the band makes the claim exactly as wide as the measurement.
+    Disclosed on a PASS too, because the band is not the nominal Fc±1 octave:
+    ``overlap_band_hz`` clamps its lower edge UP to the tweeter's actual
+    MEASURE sweep floor, and ``_analyze_verify`` clamps it up again to the
+    capture's own gate-derived validity floor. A "Verified." badge over an
+    unstated band reads as "verified everywhere".
     """
     band = tracking.get("tracking_band_hz")
     if not isinstance(band, (list, tuple)) or len(band) != 2:
@@ -1849,11 +1711,10 @@ def _verify_graded_band_from_tracking(
     return [float(lo), float(hi)]
 
 
-#: Why the two per-branch claims are never graded today: a VERIFY program plays
-#: ONE mono summed sweep (``build_verify_program``'s ``KIND_SUMMED_SWEEP``), so
-#: the capture holds no woofer-alone or HF-alone response to compare with its
-#: candidate branch. Widening the capture plan is out of R18's ratified scope;
-#: naming the gap rather than silently claiming it is what R18 owes.
+#: Why the two per-branch claims are never graded today: a VERIFY program
+#: plays ONE mono summed sweep (``build_verify_program``'s
+#: ``KIND_SUMMED_SWEEP``), so the capture holds no woofer-alone or HF-alone
+#: response to compare with its candidate branch.
 CLAIM_NO_PER_BRANCH_CAPTURE = "no_per_branch_verify_capture"
 #: A crossover-region band exists but ``flat_spec.SPEC_BANDS`` sets no
 #: tolerance across it — see :func:`verify_absolute_tolerance_db`.
@@ -1865,14 +1726,11 @@ def _verify_claims(
 ) -> dict[str, Any]:
     """The plan §7 claim record for one VERIFY capture — ONE producer.
 
-    Four entries for §7's three claims: its third is two questions in one
-    sentence ("the measured sum tracks the candidate **and** does not merely
-    reproduce a model-predicted crossover null"), so ``integration`` is the
-    tracking half and ``absolute`` the other. Every number is LIFTED from the
-    record its own owner already computed — nothing re-graded — so a screen and
-    a gate cannot quote different figures. The kernel supplies the absolute
-    band and scalars; the tolerance and both verdicts are this module's,
-    mirroring where ``VERIFY_TOLERANCE_DB`` already lives.
+    Four entries for three claims: the third is two questions in one sentence,
+    so ``integration`` is the tracking half and ``absolute`` the other. Every
+    number is LIFTED from the record its owner already computed, so a screen
+    and a gate cannot quote different figures. The kernel supplies the absolute
+    band and scalars; the tolerance and both verdicts are this module's.
     """
     tracking_max = tracking.get("max_db_notch_excluded")
     band = (absolute or {}).get("band_hz")
@@ -1923,40 +1781,36 @@ def _verify_frame_from_tracking(
 ) -> dict[str, Any] | None:
     """The FRAME VERIFY's comparison spanned, and the residual both ways.
 
-    Rung P1. VERIFY differences an ON-AXIS two-branch model against an IN-ROOM
-    gated measurement — two instruments, and on the 2026-07-29 corpus a single
-    −0.79 dB/octave tilt between them was 84 % of the flow's reported
-    prediction error. ``program_analysis._analyze_verify`` fits that frame and
-    reports the residual with it removed beside the raw one; this lifts both
-    for the durable record. **Nothing is recomputed here** — every value is one
-    of that analysis's own, exactly like :func:`_verify_evidence_from_tracking`
-    beside it.
+    VERIFY differences an ON-AXIS two-branch model against an IN-ROOM gated
+    measurement — two instruments, and on the 2026-07-29 corpus a single
+    −0.79 dB/octave tilt between them was 84 % of the reported prediction
+    error. ``program_analysis._analyze_verify`` fits that frame; nothing is
+    recomputed here.
 
-    Rendered on EVERY outcome, like :func:`_verify_graded_band_from_tracking`
-    and for the same class of reason: a PASS is exactly the case where an
-    unstated tilt lets a reader take instrument agreement for model agreement.
+    Rendered on EVERY outcome: a PASS is exactly the case where an unstated
+    tilt lets a reader take instrument agreement for model agreement.
 
-    ``None`` when no tracking comparison ran, or when it ran and the frame
-    could not be fitted — absent means "no frame was measured", never "the
-    frames matched". The tilt-removed keys are omitted individually rather than
-    defaulted to their raw twins: a beside-number equal to its raw twin would
-    read as "removing the frame changed nothing", which is a measurement, not
-    an absence.
+    ``None`` means no frame was measured, never that the frames matched.
+    Tilt-removed keys are omitted individually rather than defaulted to their
+    raw twins (a beside-number equal to its twin would read as a measurement).
+    ``pivot_hz``/``n_bins``/``band_hz`` travel because a two-parameter fit over
+    few bins is ill-conditioned and ``frame_fit`` reports the span instead of a
+    confidence policy.
+
+    ``None`` when no tracking comparison ran, or when the frame could not be
+    fitted. The tilt-removed keys are omitted individually rather than
+    defaulted to their raw twins, because a beside-number equal to its twin
+    would read as "removing the frame changed nothing".
 
     ``max_db_tilt_removed`` is the twin of the NOTCH-EXCLUDED max, matching
-    what :func:`_verify_evidence_from_tracking` already calls ``max_db`` on
-    this same surface — on a household-facing record "the level error" has one
-    meaning, the one the tolerance gates on, and a second spelling for it here
-    would invite a reader to compare two numbers taken over different bin sets.
+    what :func:`_verify_evidence_from_tracking` calls ``max_db``: a second
+    spelling would invite comparing two numbers over different bin sets.
 
-    **``pivot_hz``/``n_bins``/``band_hz`` travel too.** They are not decoration:
-    a two-parameter fit over few bins or a narrow span is ill-conditioned, and
-    :mod:`jasper.audio_measurement.frame_fit` deliberately reports that span
-    rather than inventing a confidence policy — so a record that dropped them
-    would state a tilt with no way to judge it. They also disclose WHICH bins
-    the frame was estimated from: the span is the notch-excluded, validity-floor
-    clamped set, narrower than the graded band whenever the prediction has a
-    deep notch in it.
+    ``pivot_hz``/``n_bins``/``band_hz`` travel too, because a two-parameter fit
+    over few bins or a narrow span is ill-conditioned and
+    :mod:`jasper.audio_measurement.frame_fit` reports that span rather than
+    inventing a confidence policy. They also disclose WHICH bins the frame was
+    estimated from — the notch-excluded, validity-floor-clamped set.
     """
     frame = tracking.get("frame")
     if not isinstance(frame, Mapping):
@@ -1991,11 +1845,10 @@ def _verify_frame_from_tracking(
             value = tilt_removed.get(source)
             if isinstance(value, (int, float)):
                 out[key] = float(value)
-    # The RAW pair the tilt-removed numbers sit beside (should-fix 1). Carried
-    # here because the durable ``verify.evidence`` block — the other place these
-    # live — is persisted only on a NON-pass outcome, so a passing screen would
-    # otherwise render the frame-removed half of a comparison with nothing to
-    # compare it to: the flattering number alone.
+    # The RAW pair the tilt-removed numbers sit beside. Carried here because
+    # the durable ``verify.evidence`` block is persisted only on a NON-pass
+    # outcome, so a passing screen would otherwise render the frame-removed
+    # half of a comparison with nothing to compare it to.
     raw = frame.get("raw")
     if isinstance(raw, Mapping):
         for key, source in (("rms_db_raw", "rms_db"), ("max_db_raw", "max_db")):
@@ -2006,36 +1859,28 @@ def _verify_frame_from_tracking(
 
 
 # The contract-derived echo/null analysis band's LOWER edge must not drift
-# below this floor. A six-band sweep of the JTS3 cdhorn corpus, measuring how
-# far the detector's signal-presence screen clears the band-below-passband
-# condition:
-#
-#   band            residue deficit    screen catches it?
-#   (5000, 19000)   40.43-41.98 dB     yes  (the module default)
-#   (4000, 20000)   35.46-35.58 dB     yes, by 10.46 dB -- comfortable
-#   (3000, 19000)   26.53-27.05 dB     yes, by only 1.53 dB -- thin
-#   (2000, 19000)   18.21-18.23 dB     NO -- a false negative, not a
-#                                      narrowed gap (this speaker's crossover
-#                                      sits at 2 kHz; the woofer's own
-#                                      passband is inside the analysed band)
-#
-# 4000 Hz is the lowest edge in that table with comfortable headroom.
+# below this floor. Measured on the JTS3 cdhorn corpus as how far the
+# detector's signal-presence screen clears the band-below-passband condition:
+# (5000, 19000) clears by 40.43-41.98 dB, (4000, 20000) by 35.46-35.58 dB,
+# (3000, 19000) by only 1.53 dB, and (2000, 19000) not at all — a false
+# negative at 18.21-18.23 dB, because
+# that speaker's 2 kHz crossover puts the woofer's own passband inside the
+# analysed band. 4000 Hz is the lowest edge with comfortable headroom.
 #
 # A declared contract whose derived echo band dips below this floor is CLAMPED
-# up to it, and the clamp is disclosed (event + payload) so nobody reads the
-# clamped band as a declaration: disclosure alone does not keep a session
-# inside a calibrated regime. The two quantities kept apart here are the
-# driver's declared operating/measurement WINDOW (excitation + SNR scoring,
-# owned by measurement_band_hz) and the echo/null ANALYSIS band (a
-# detector-calibration concern, owned by this floor).
+# up to it, and the clamp is disclosed (event + payload). Kept apart here: the
+# driver's declared measurement WINDOW (owned by measurement_band_hz) and the
+# echo/null ANALYSIS band (a detector-calibration concern, owned by this
+# floor).
 #
 # Clamping costs no cross-session comparability: the detector's quefrency step
 # is 1e6 / BANDWIDTH, so the clamped JTS3 band (4000, 18000) resolves at
-# 1e6 / 14000 = 71.4 us -- identical to the module default (5000, 19000), also
-# 14 kHz wide.
+# 71.4 us — identical to the module default (5000, 19000), also 14 kHz wide.
 #
 # See _derive_cloud_echo_band_hz.
 ECHO_BAND_HF_REGIME_FLOOR_HZ = 4000.0
+
+
 def _null_registry_to_dict(report: Any) -> dict[str, Any]:
     """``InterferenceNullReport`` -> a plain JSON dict, mirroring
     ``FlatSpecReport.to_dict``'s shape so the two persisted reports read
@@ -2118,10 +1963,9 @@ def _crossover_region_null_registry(
     if region_lo_hz <= 0.0 or region_lo_hz >= gating_hi_hz:
         return None
 
-    # The SAME upper edge as the gating band, lowered to reach the region.
-    # Extending rather than carving a narrow window keeps the detector's width
-    # constraints satisfied (its quefrency step is 1e6 / bandwidth), so this is
-    # not a differently-resolved instrument reporting in the same units.
+    # The SAME upper edge as the gating band, lowered to reach the region:
+    # extending rather than carving a narrow window keeps the detector's
+    # quefrency step (1e6 / bandwidth) comparable.
     band_hz = (region_lo_hz, gating_hi_hz)
     try:
         report = identify(combined, band_hz=band_hz)

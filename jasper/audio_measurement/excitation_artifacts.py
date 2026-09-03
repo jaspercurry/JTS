@@ -29,7 +29,7 @@ import tempfile
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Any, NoReturn
+from typing import Any
 
 from jasper.atomic_io import fsync_directory
 from jasper.log_event import log_event
@@ -60,7 +60,6 @@ logger = logging.getLogger(__name__)
 class AdmissionArtifactErrorCode(StrEnum):
     """Stable failures for authority creation, persistence, and resolution."""
 
-    HISTORICAL_EVIDENCE_NOT_ADMITTED = "historical_evidence_not_admitted"
     AUTHORITY_PARENT_INVALID = "admission_authority_parent_invalid"
     AUTHORITY_ALREADY_EXISTS = "admission_authority_already_exists"
     AUTHORITY_MISSING = "admission_authority_missing"
@@ -86,16 +85,6 @@ class AdmissionArtifactError(RuntimeError):
         super().__init__(detail)
         self.code = code
         self.detail = detail
-
-
-@dataclass(frozen=True, slots=True)
-class HistoricalExcitationEvidence:
-    """Diagnostic evidence which predates production admission authority."""
-
-    evidence_fingerprint: str
-
-    def __post_init__(self) -> None:
-        _sha256(self.evidence_fingerprint, field="evidence_fingerprint")
 
 
 @dataclass(frozen=True, slots=True)
@@ -713,24 +702,6 @@ def _persist_error(
         level=logging.WARNING,
     )
     return AdmissionArtifactError(code, detail)
-
-
-def refuse_historical_evidence(evidence: HistoricalExcitationEvidence) -> NoReturn:
-    """Explicitly refuse evidence which predates this authority contract."""
-
-    if not isinstance(evidence, HistoricalExcitationEvidence):
-        raise ValueError("evidence must be HistoricalExcitationEvidence")
-    log_event(
-        logger,
-        "audio_measurement.excitation_admission",
-        boundary="authority",
-        result=AdmissionArtifactErrorCode.HISTORICAL_EVIDENCE_NOT_ADMITTED.value,
-        evidence_fingerprint=evidence.evidence_fingerprint,
-    )
-    raise AdmissionArtifactError(
-        AdmissionArtifactErrorCode.HISTORICAL_EVIDENCE_NOT_ADMITTED,
-        "historical evidence predates the production admission API",
-    )
 
 
 def _read_admission(

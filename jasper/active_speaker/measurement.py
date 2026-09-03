@@ -429,23 +429,6 @@ def _normalise_state(raw: Any, path: Path) -> dict[str, Any]:
     return state
 
 
-def clear_active_comparison_set(
-    topology: OutputTopology,
-    *,
-    state_path: str | Path | None = None,
-) -> dict[str, Any]:
-    """Invalidate prior automatic evidence before a new level run starts."""
-
-    path = measurement_state_path(state_path)
-    state = load_measurement_state(topology, state_path=path)
-    persisted = _normalise_state(state, path)
-    persisted["active_comparison_set"] = None
-    persisted["updated_at"] = _utc_now()
-    out = _with_summary(topology, persisted)
-    _write_state(path, out)
-    return out
-
-
 def start_active_comparison_set(
     topology: OutputTopology,
     *,

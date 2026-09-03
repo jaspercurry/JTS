@@ -2,58 +2,21 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""What a capture-consuming phase DECIDES about one take (#2291 Phase 5a-iv).
+"""What a capture-consuming phase DECIDES about one take: is it evidence, what
+does it record, and does the group want another one.
 
-A sibling of :mod:`.programs` and :mod:`.priors`.  Those two answer
-"what does this phase play, and how loud" and "what is the analyzer told about
-what came back"; this one answers the question immediately after — **is this
-take evidence, what does it record, and does the group want another one**.  In
-``consume_capture`` the three are consecutive steps of one capture.
+Serves the phases that consume a take without prescribing anything from it —
+the two position clouds, the lateral walk, and the entry baseline. Each ladder's
+content is its ORDER and the gates it deliberately DROPS, both stated at the
+ladder.
 
-The phases it serves are the ones that consume a take without prescribing
-anything from it: the two position clouds, the R16 lateral walk, and #2291's
-entry baseline.  They were three separate method families on the conductor with
-one shape between them — *run shipped gates in a documented order, and if they
-all pass, reduce the take to a record* — and the interesting content of all
-three is the ORDER and the DROPPED GATES, not the arithmetic.
-
-**Every screen here is a decision about which shipped gate does NOT apply, and
-that is why they are worth their own module.**  A cloud position drops VERIFY's
-gate-comparability and G3 pilot-transfer steps because the mic MOVED; a lateral
-pose drops the three gates that judge the alignment solve because §4.4 forbids
-re-running it; an entry baseline drops the tracking comparison because nothing
-is applied yet.  Each of those is a sentence that must survive refactoring, and
-each is a sentence that dies silently if the ladder it describes gets reordered
-by someone reading only the code.  Having one owner is what keeps the sentence
-and the ladder in the same place.
-
-**Inputs are stated, never reached for** — the rule :mod:`.priors` established
-and the behavioural difference between this module and the methods it replaced.
-The conductor's screens called module-level predicates
-(``_stimulus_locate_ok`` and friends) that also serve MEASURE and VERIFY, whose
-verdicts stay on the session; rather than give those predicates a second
-owner, the caller EVALUATES them and states the results in a
-:class:`CaptureScreens`.  The predicates are total and side-effect-free, so
-stating them eagerly is exact — see :class:`CaptureScreens` for the one
-consequence that has (a rejected take now evaluates every predicate rather than
-short-circuiting) and why it is safe.
-
-**No household vocabulary**, the rule :mod:`.coordinator` established: a refusal
-leaves as a *kind* from :data:`SCREEN_KINDS`, and something else maps it to the
-``REASON_REGISTRY`` code whose copy the household reads.  That registry is
-:mod:`.refusal_copy`'s since #2291 Phase 5c-ii; the rule here is unchanged, only
-the owner's name is.  This module still does not import it — the mapping is
-built there, over the kinds declared here.
-
-**Side-effect-free**, unlike :mod:`.coordinator` — deliberately, because that
-module's docstring asserts it is the package's only exception and an assertion
-is worth keeping true.  :func:`boost_excluded_bands_hz` has a journal line in
-the shipped flow, so it returns its log fields as data
-(:attr:`BoostExclusion.diagnostics`) and the flow emits them under the event
-name it already owns.
-
-Dependency direction, as for every module here: no ``jasper.web`` import and
-nothing from :mod:`jasper.active_speaker.crossover_v2_flow`.
+Three rules this module keeps: inputs are STATED, never reached for (the caller
+evaluates the shared predicates into a :class:`CaptureScreens`); no household
+vocabulary — a refusal leaves as a kind from :data:`SCREEN_KINDS` and
+:mod:`.refusal_copy` maps it; and side-effect-free, so
+:func:`boost_excluded_bands_hz` returns its log fields as data
+(:attr:`BoostExclusion.diagnostics`) rather than journalling them. No
+``jasper.web`` import and nothing from :mod:`..crossover_v2_flow`.
 """
 
 from __future__ import annotations
@@ -180,31 +143,16 @@ CLOUD_CLOSE_RUNNING = "running"
 # How many wider-spread RETAKES of the group's last position the
 # geometry-locked check may ask for, once per group.
 #
-# Retakes rather than appended positions for ONE reason, and it is the protocol
-# rather than the physics: the relay runner completes a set at exactly
-# ``capture_target`` accepted captures with ``index == accepted_count + 1``, so
-# rejecting a capture is the only lever that keeps a plan alive at the same
-# index — appending would need a variable-length plan the shipped runner cannot
-# express.
-#
-# A "replacing is better physics" argument was made and WITHDRAWN under review
-# (2026-07-26): the reviewer computed the power-mean counterexample, where
-# APPENDING a wide position to a clustered cloud fills a −15 dB null further
-# than replacing does (−6.1 dB vs −7.7 dB) and lowers ``clustered_fraction``
-# more besides. Replacing is what the protocol permits, not what the estimator
-# prefers; if the runner ever grows variable-length sets, appending is the
-# better answer.
+# Retakes rather than appended positions because of the PROTOCOL, not the
+# physics: the relay runner completes a set at exactly ``capture_target``
+# accepted captures with ``index == accepted_count + 1``, so rejecting a capture
+# is the only lever that keeps a plan alive at the same index. Appending is the
+# better estimator if the runner ever grows variable-length sets.
 #
 # Bounded on purpose: `geometry.locked` is a "spread the mic further" hint, not
-# a failure, and an unbounded loop against a genuinely position-invariant
-# defect (S0's source-fixed horn-rim comb — see the plan doc's "S0 executed"
-# §b) would never terminate, because no amount of mic movement decorrelates a
-# source-fixed null. Two retakes, then proceed and RECORD the verdict — it
-# lands in the journal and the durable v2 state's `cloud` block. PR-4 carries
-# it further: `_geometry_guidance_copy`'s plain-language guidance rides the
-# envelope's own `cloud` key and `/state`'s compact projection
-# (`crossover_v2_status_block`) — but no household-facing surface renders it
-# yet (zero JS/asset changes in PR-4). PR-7 renders it.
+# a failure, and no amount of mic movement decorrelates a source-fixed null, so
+# an unbounded loop would never terminate. Two retakes, then proceed and RECORD
+# the verdict.
 GEOMETRY_RETRY_POSITIONS = 2
 
 
@@ -224,10 +172,8 @@ SCREEN_CAPTURE_GLITCH = "capture_glitch"
 SCREEN_CLIPPED = "clipped"
 
 #: Every kind above, so the flow's mapping can be CHECKED for completeness
-#: rather than trusted.  The same discipline :data:`.coordinator.REFUSAL_KINDS`
-#: keeps, and for the same reason: a kind added here without an arm there is a
-#: wiring defect, and a silent ``else`` is how a new kind ships wearing another
-#: kind's household sentence.
+#: rather than trusted: a kind added here without an arm there is a wiring
+#: defect.
 SCREEN_KINDS = frozenset({
     SCREEN_LOCATE_FAILED,
     SCREEN_PILOT_LEVEL_COLLAPSE,
@@ -241,42 +187,17 @@ SCREEN_KINDS = frozenset({
 class CaptureScreens:
     """The shipped capture-integrity predicates, EVALUATED, for one take.
 
-    Every field is a fact the caller computed with a shared module-level
-    predicate — the same ones MEASURE's and VERIFY's verdicts use.  Those
-    predicates live in :mod:`.capture_dispatch` since #2291 Phase 5c-ii, and
-    still do not live *here* on purpose: they serve verdicts this module does
-    not own, and a shared predicate with two owners is worse than one stated
-    argument.  They arrive as arguments either way.
-
-    **Stating them eagerly is exact, and that is checkable rather than
-    asserted.**  The ladders below short-circuit, so on a rejected take the
-    shipped code never called the later predicates.  Each of them
-    (``_stimulus_locate_ok``, ``_sweep_locate_confidence_ok``,
-    ``_sweep_schedule_ok``, ``_any_sweep_clipped``) reads only
-    ``analysis.locations``, returns a bool, and **never raises on no input** —
-    they are total and side-effect-free — so evaluating one whose verdict is
-    then discarded costs a list comprehension and changes nothing observable.
-    What it buys is that the ORDER lives in exactly one place, as data rather
-    than as control flow spread across a call site.
+    Every field is computed by the caller with the shared predicates in
+    :mod:`.capture_dispatch`, which are total and side-effect-free, so stating
+    them eagerly is exact even though the ladders below short-circuit.
 
     ``pilot_snr_ok`` and ``linearity_ok`` are tri-state (``None`` = not
-    evaluated) exactly as they are on ``ProgramAnalysis``, because the ladders
-    below branch on ``is False`` rather than on falsiness: an unevaluated screen
-    is not a failed one.
+    evaluated), and the ladders branch on ``is False``: an unevaluated screen is
+    not a failed one.
 
-    **Every field is required, and the four that a shorter ladder does not read
-    are required for the same reason as the three it does.**  An earlier
-    revision defaulted ``glitch_detected``/``sweep_locate_confidence_ok``/
-    ``sweep_schedule_ok``/``any_sweep_clipped`` permissively, so
-    :func:`cloud_position_screens`' call site stated three of seven and inherited
-    four passes.  That reads as covered from either end while being a promise
-    nobody made: the day a rung is added to the cloud ladder reading one of
-    them, it would silently never fire — the caller was never asked, so the
-    default answers for a capture it has not looked at.  A default that is only
-    correct because the current ladder ignores the field is a defect waiting for
-    the ladder to change.  Requiring all seven costs each caller four pure,
-    total predicate calls and makes "what this capture was" a stated fact rather
-    than a partly-assumed one.
+    Every field is required, including the four a shorter ladder does not read:
+    a permissive default would silently answer for a capture the caller never
+    looked at the day a rung is added that reads it.
     """
 
     stimulus_located: bool
@@ -298,41 +219,27 @@ def cloud_position_screens(
 ) -> str | None:
     """One prompted cloud position: the light per-capture QC, or a refusal kind.
 
-    **Per-position work is deliberately light** (the PR-3b design contract): the
-    same locate/linearity screens every phase runs, plus "did this capture yield
-    a usable summed response".  The group analyses — combine, null
-    identification, spec evaluation — run ONCE per group, not once per position,
-    so their cost is paid once instead of N times.
+    Per-position work is deliberately light — the group analyses (combine, null
+    identification, spec evaluation) run ONCE per group. On the S0 ten-position
+    corpus the combine is 2.7-2.8 s and everything layered on it totals
+    0.02-0.04 s, so running the set per position would multiply the dominant
+    cost by N.
 
-    Measured 2026-07-27 on the S0 ten-position corpus (a laptop; a Pi 5 is
-    slower — ``combine_cloud_positions`` states the 3-6 s across-hosts regime):
-    the **combine is 2.7-2.8 s and dominates completely**, while everything
-    layered on it — the null gate, the spec evaluation, the carve-out assembly —
-    totals **0.02-0.04 s**.  Running the set per position would multiply that by
-    N instead of paying it once.
+    Two VERIFY gates are deliberately NOT applied, because both assume a
+    stationary mic replaying the identical program: gate-comparability (a cloud
+    position's gate legitimately differs from the anchor's, since the nearest
+    boundary moves with the mic) and the G3 pilot-transfer step (moving the mic
+    changes the acoustic transfer by design, so it says nothing about chain
+    drift).
 
-    Two VERIFY gates are deliberately NOT applied here, because both assume a
-    stationary mic replaying the identical program:
-
-    * gate-comparability (a shorter gate than MEASURE's ⇒ inconclusive) — a
-      cloud position's gate legitimately differs from the anchor's, since the
-      nearest boundary changes when the mic moves.  That is the measurement, not
-      a defect.
-    * the G3 pilot-transfer step — the reference it compares against is "the
-      same chain measuring the same thing"; moving the mic changes the acoustic
-      transfer by design, so a step here carries no information about the
-      recording chain drifting.
-
-    ``has_summed_response`` is the last screen and its own kind of refusal: the
-    stimulus located but no summed response came back, so the capture carries no
-    curve to combine and is not evidence.
+    ``has_summed_response`` is the last screen: the stimulus located but no
+    summed response came back, so there is no curve to combine.
     """
     if not screens.stimulus_located:
         return SCREEN_LOCATE_FAILED
     if screens.pilot_snr_ok is False:
-        # Issue #1810, the same ordering rule as the other two ladders: the
-        # room/level discriminator runs before the linearity branch so a
-        # collapsed pilot pair is never reported as the phone's fault.
+        # The room/level discriminator runs before the linearity branch so a
+        # collapsed pilot pair is never reported as the phone's fault (#1810).
         return SCREEN_PILOT_LEVEL_COLLAPSE
     if screens.linearity_ok is False:
         return SCREEN_LINEARITY_FAILED
@@ -342,28 +249,20 @@ def cloud_position_screens(
 
 
 def lateral_pose_screens(screens: CaptureScreens) -> str | None:
-    """One pose of the R16 lateral walk (plan §4.4), or a refusal kind.
+    """One pose of the lateral walk, or a refusal kind.
 
-    The screens are MEASURE's own capture-integrity gates, in MEASURE's order,
-    because a pose replays MEASURE's program: a pose that did not record cleanly
-    is not evidence, wherever the microphone was standing.
+    MEASURE's own capture-integrity gates, in MEASURE's order, because a pose
+    replays MEASURE's program. Three MEASURE gates are deliberately NOT applied
+    — the delay-search status, the GCC trust floor and the plausibility backstop
+    — because all three judge the ALIGNMENT SOLVE, whose search window is a
+    geometry prior about the MARK: a microphone 40 cm to the side legitimately
+    fails it, and refusing there would keep only the poses that align like the
+    anchor.
 
-    Three MEASURE gates are deliberately NOT applied — the delay-search status,
-    the GCC trust floor and the plausibility backstop — because all three judge
-    the ALIGNMENT SOLVE, which §4.4 forbids re-running here.  The search window
-    is a geometry prior about the MARK, so a microphone 40 cm to the side
-    legitimately fails it; refusing on those would quietly keep only the poses
-    that happen to align like the anchor, which is precisely the off-axis
-    consequence these samples exist to expose.
+    A rejected pose does not re-arm MEASURE with a level backoff either: the
+    pose must be measured at the ANCHOR'S level or its curve is not comparable.
 
-    Nor does a rejected pose re-arm MEASURE with a level backoff: the pose must
-    be measured at the ANCHOR'S level or its curve is not comparable to the
-    anchor's, and a quieter retake would answer a different question.  That is
-    the caller's concern, stated here because it is the reason this ladder ends
-    in a plain refusal rather than in a re-arm.
-
-    The walk's LAST rung is :func:`lateral_curves_sufficient`, and it is a
-    separate call for a stated reason — see that function.
+    The walk's last rung is :func:`lateral_curves_sufficient`.
     """
     if not screens.stimulus_located:
         return SCREEN_LOCATE_FAILED
@@ -385,21 +284,13 @@ def lateral_pose_screens(screens: CaptureScreens) -> str | None:
 def lateral_curves_sufficient(n_curves: int) -> str | None:
     """The lateral walk's last rung: did this pose yield BOTH branches?
 
-    A pose that yielded fewer than two curves cannot answer any of §4.4's
-    questions — every one of them is a woofer-versus-HF comparison.  It reuses
-    the locate kind rather than minting one, because the household action
-    ("measure this spot again") is identical.
+    Fewer than two curves cannot answer a woofer-versus-HF question. Reuses the
+    locate kind because the household action is identical.
 
-    **Why this is a second call rather than an ``n_curves`` argument to
-    :func:`lateral_pose_screens`.**  Counting the curves means BUILDING them,
-    and the builder (``lateral_pose_curve``) resamples a driver response onto a
-    fixed grid by indexing its own frequency axis — on a degenerate response
-    with an empty axis that is an ``IndexError``, not a zero-length curve.  The
-    shipped ladder never reaches the builder on a capture the screens rejected,
-    and folding the count into the ladder above would have inverted that: the
-    build would run first, so a capture whose stimulus was never located could
-    raise where it used to refuse cleanly, turning a household retry screen into
-    a terminal internal error.  Two calls keep the shipped short-circuit exact.
+    A second call rather than an argument to :func:`lateral_pose_screens`
+    because counting the curves means BUILDING them, and ``lateral_pose_curve``
+    raises ``IndexError`` on a degenerate response with an empty frequency axis.
+    Two calls keep the ladder's short-circuit ahead of the builder.
     """
     return SCREEN_LOCATE_FAILED if n_curves < 2 else None
 
@@ -426,71 +317,29 @@ def entry_baseline_screens(
     stimulus_located: bool,
     reference_mark: str,
 ) -> EntryBaselineScreen:
-    """#2291's "before" capture: screen it, and reduce it when it passes.
+    """The "before" capture: screen it, and reduce it when it passes.
 
-    **The accept rule reuses shipped gates; it invents none.**  Which of
-    VERIFY's this mirrors, and which it drops:
+    Reuses VERIFY's shipped gates — stimulus locate, ``pilot_snr_ok`` (ahead of
+    everything but locate, so a room/level problem is never reported as
+    something else, #1810), capture integrity through
+    :func:`~.verification.evaluate_capture_validity`, and ``linearity_ok``. One
+    deliberate difference: an ABSENT integrity record is UNUSABLE here where
+    VERIFY treats it as no-evidence-and-continue, because a before-side nobody
+    graded cannot carry a before→after claim.
 
-    * stimulus locate — **reused**.  A capture whose stimulus was never located
-      is not evidence about the speaker, whatever is being asked of it.
-    * ``pilot_snr_ok is False`` — **reused**, and ahead of everything but the
-      locate check, for issue #1810's reason: a pilot pair that never cleared
-      the room floor is a room/level problem, and reporting it as anything else
-      sends the household to fix the wrong thing.
-    * capture integrity — **reused**, through
-      :func:`~.verification.evaluate_capture_validity`, which is the shipped
-      comparability rule and the same function the post-apply side is graded by.
-      One difference from VERIFY's verdict, deliberate: an **absent** integrity
-      record is UNUSABLE here where VERIFY treats it as
-      no-evidence-and-continue.  That evaluator owns the "``None`` means no
-      evidence, never clean" convention, and this capture exists only to be
-      compared — a before-side nobody graded cannot carry a before→after claim,
-      so it fails closed rather than seeding one.
-    * ``linearity_ok is False`` — **reused**.  AGC in the recording chain bends
-      the curve this capture exists to measure.
-    * gate-comparability, §5.2 (VERIFY's gate shorter than MEASURE's ⇒
-      inconclusive) — **dropped**.  It protects an OVERLAY of the measured
-      summed response against MEASURE's per-driver model, and this capture makes
-      no such overlay.  Its partner is stage 2's VERIFY, which is still graded
-      against MEASURE's window by that rule; adding a second,
-      differently-motivated refusal here would cost retakes without protecting a
-      claim.
-    * the G3 pilot-transfer step — **dropped**.  G3 asks whether the recording
-      chain moved BETWEEN two replays of the identical program within one
-      session's lifetime, and it exists to protect the tracking comparison it
-      immediately precedes.  There is no tracking comparison here, and stage 1
-      runs exactly one summed capture, so the gate could only ever record a
-      reference that stage 2's own fresh session is forbidden to inherit
-      (#1927).
-    * the tracking-max tolerance comparison — **dropped**, structurally:
-      :func:`~.priors.entry_baseline_priors` withholds ``predicted_sum``, so
-      ``analysis.verify_tracking`` is ``None`` and there is nothing to grade.
+    Three VERIFY gates are dropped: gate-comparability (it protects an overlay
+    this capture never makes), the G3 pilot-transfer step (it protects a
+    tracking comparison that does not exist here, and stage 2 may not inherit
+    its reference, #1927), and the tracking-max comparison, structurally —
+    :func:`~.priors.entry_baseline_priors` withholds ``predicted_sum``.
 
-    One more refusal that is this phase's own: the reduction
+    One refusal is this phase's own: the reduction
     (:func:`~.round_evidence.measured_response_from_analysis`) must produce a
-    side.  It returns ``None`` for a missing summed response or a degenerate
-    curve — the same "located, but carries no curve" condition
-    :func:`cloud_position_screens` already answers with the locate kind, and
-    this reuses that kind rather than minting one.
+    side, and ``None`` reuses the locate kind.
 
-    Every refusal is an ordinary kind the flow renders with a shipped
-    ``REASON_*``, so the slot's normal retry budget and household copy apply
-    with no new machinery.
-
-    ``analysis`` arrives whole here, unlike the other two ladders' stated
-    screens, because two of this ladder's steps CONSUME it rather than test it:
-    the shipped comparability evaluator reads the integrity record, and the
-    reduction reads the summed response.  Handing over a
-    :class:`CaptureScreens` and then the analysis as well would state one fact
-    twice.
-
-    ``stimulus_located`` is nonetheless a separate argument, and the split is
-    the same one :class:`CaptureScreens` makes: it is the answer of a flow-side
-    PREDICATE (``_stimulus_locate_ok``, which also serves MEASURE's and
-    VERIFY's verdicts and so keeps its owner there), whereas ``pilot_snr_ok``
-    and ``linearity_ok`` are plain attributes of the analysis this function was
-    handed.  Reading a field off an argument is not reaching; importing the
-    predicate would be.
+    ``analysis`` arrives whole because two steps CONSUME it rather than test it;
+    ``stimulus_located`` stays a separate argument because it is a flow-side
+    predicate's answer, not an attribute of the analysis.
     """
     if not stimulus_located:
         return EntryBaselineScreen(SCREEN_LOCATE_FAILED)
@@ -503,12 +352,10 @@ def entry_baseline_screens(
             {"capture_integrity": integrity.to_dict()}
             if integrity is not None else {"capture_integrity": None}
         )
-        # The same two-code split VERIFY's verdict makes from the same evidence:
-        # a sweep nobody could hear is a level/mic problem, and a spliced or
-        # clipped timeline is the transient capture-glitch class (#1838 §5.2).
-        # An ABSENT record takes the glitch kind's silent auto-retry, which is
-        # the right household action for "we could not tell" — nothing for them
-        # to fix, worth one more try.
+        # The same two-code split VERIFY's verdict makes: a sweep nobody could
+        # hear is a level/mic problem, a spliced or clipped timeline is the
+        # transient glitch class. An ABSENT record takes the glitch kind's
+        # silent auto-retry.
         if integrity is not None and INTEGRITY_CHECK_SWEEP_HEARD in integrity.failed:
             return EntryBaselineScreen(SCREEN_LOCATE_FAILED, integrity_payload=payload)
         return EntryBaselineScreen(SCREEN_CAPTURE_GLITCH, integrity_payload=payload)
@@ -529,38 +376,27 @@ def entry_baseline_screens(
 
 # The fewest RESOLVED positions a cloud group can close with and still produce a
 # usable claim, so a position the flow gives up on degrades the group instead of
-# ending the session (ruling item 3: "continue the phase if it can proceed with
-# the positions it has").
+# ending the session.
 #
-# MEASURED, not chosen: the group close itself has no position floor at all
-# (``_close_cloud_group`` never compares ``len(positions)`` to anything), and
-# ``combine_cloud_positions`` tolerates any non-empty group. The binding
-# constraint is downstream, in the fit —
-# ``linearization_envelope.position_stability_limit`` raises ``ValueError`` for
-# ``n_positions < 2``, because a cross-position spread across fewer than two
-# positions is undefined. So two is where "can proceed" genuinely stops.
+# DERIVED, not chosen: ``linearization_envelope.position_stability_limit``
+# raises ``ValueError`` for ``n_positions < 2``, because a cross-position spread
+# across fewer than two positions is undefined.
 #
-# Deliberately NOT ``MIN_CLOUD_MEASURE_POSITIONS`` / ``MIN_CLOUD_VERIFY_POSITIONS``
-# (6 / 5): those are PLAN-DECLARATION floors — how many positions the household
-# is asked to walk — enforced once by ``_validated_cloud_counts`` before any
-# capture happens. Reusing them at runtime would have killed the 2026-08-03
-# verify, which was running usefully at 4 positions of the 6 that tier declared
-# then. Between this floor and the declared one the claim is degraded, and
-# degradation is DISCLOSED (the geometry verdict's ``n_positions`` /
-# ``thin_evidence`` already ride the envelope), not gated.
+# Deliberately NOT ``MIN_CLOUD_MEASURE_POSITIONS`` /
+# ``MIN_CLOUD_VERIFY_POSITIONS``: those are PLAN-DECLARATION floors, enforced
+# before any capture happens. Between this floor and the declared one the claim
+# is degraded, and degradation is DISCLOSED (the geometry verdict's
+# ``n_positions`` / ``thin_evidence``), not gated.
 MIN_RESOLVED_CLOUD_POSITIONS = 2
 
 
 def group_position_floor(phase: str) -> int:
     """How few resolved positions still lets a group stand.
 
-    A cloud is an AVERAGE: below :data:`MIN_RESOLVED_CLOUD_POSITIONS` there is
-    nothing to combine, so the session ends honestly.  The lateral walk is not —
-    §4.4: "side evidence owns robustness, not the target".  The coefficients are
-    the anchor's and already in hand, so a pose nobody could capture costs a
-    robustness sample and nothing else.  Floor ZERO: drop it, record why, keep
-    walking, and let the consumer disclose that it decided on fewer positions
-    than planned.
+    A cloud is an AVERAGE, so below :data:`MIN_RESOLVED_CLOUD_POSITIONS` there
+    is nothing to combine. The lateral walk is not: its coefficients are the
+    anchor's, so a pose nobody could capture costs a robustness sample and
+    nothing else — floor ZERO, and the consumer discloses the shortfall.
     """
     return 0 if phase == PHASE_LATERAL else MIN_RESOLVED_CLOUD_POSITIONS
 
@@ -570,9 +406,8 @@ class GeometryRetake:
     """A warranted geometry retake: which rung to show, and which take it drops.
 
     ``rung`` indexes the caller's prompt ladder; ``retries_after`` is the
-    counter's new value.  Both are computed here rather than at the call site so
-    "how many have been spent" and "which sentence the household reads" cannot
-    drift apart.
+    counter's new value. Both are computed here so the count spent and the
+    sentence shown cannot drift apart.
     """
 
     rung: int
@@ -590,31 +425,21 @@ def geometry_retake(
 ) -> GeometryRetake | None:
     """Whether this group close asks the household to walk two more positions.
 
-    Four conjuncts, and none of them is obvious:
+    Five conjuncts, none obvious:
 
-    * ``locked`` — the combine could not separate the room's arrivals, which is
-      the only condition a retake can improve.
-    * ``thin_evidence`` is NOT set — the flag marks a verdict resting on the
-      bare minimum number of usable echo estimates (a cliff, not a gradient).
-      Asking an operator to walk two more positions on that basis spends real
-      session minutes on a verdict the instrument itself qualifies, so a thin
-      lock is disclosed and accepted rather than retried.
+    * ``locked`` — the combine could not separate the room's arrivals, the only
+      condition a retake can improve.
+    * ``thin_evidence`` is NOT set — it marks a verdict resting on the bare
+      minimum of usable echo estimates, which the instrument already qualifies;
+      a thin lock is disclosed and accepted rather than retried.
     * the budget is not spent.
-    * ``group_already_closed`` is False.  A VOLUNTARY retake (§2.6) re-enters
-      the close with the group already closed, and the retry branch DROPS the
-      take at this index — which, on a voluntary retake, is the only copy (the
-      retention replaced the original in place).  Dropping it would leave the
-      household with LESS evidence than before they chose to redo a spot, which
-      is the one thing the retake contract promises can never happen.  So:
-      re-combine, keep the verdict honest with the new take, and accept.
-
-    ``have_take_to_replace`` is the fifth condition and the reason this returns
-    an object rather than a bool.  A group can close because its last position
-    was SETTLED without a curve, and then there is no take: the retake lever
-    works by REJECTING the take at this index, so asking would re-open the slot
-    whose tries are exactly what just ran out.  Carrying the narrowing in the
-    return value rather than in a second conjunct at the call site keeps "which
-    take gets dropped" and "is a drop warranted" the same fact.
+    * ``group_already_closed`` is False. A voluntary retake re-enters the close
+      with the group closed, and the retry branch DROPS the take at this index —
+      on a voluntary retake the only copy, since the retention replaced the
+      original in place.
+    * ``have_take_to_replace``, which is why this returns an object rather than
+      a bool: a group can close with its last position SETTLED without a curve,
+      and rejecting nothing would re-open the slot whose tries just ran out.
     """
     warranted = (
         locked is True
@@ -627,14 +452,13 @@ def geometry_retake(
     return GeometryRetake(rung=retries_used, retries_after=retries_used + 1)
 
 
-# --- R16 lateral evidence (plan §4.4) --------------------------------------- #
+# --- lateral evidence ------------------------------------------------------- #
 #
-# One fixed log-spaced basis for every retained pose curve. Fixed rather than
+# One fixed log-spaced basis for every retained pose curve: fixed rather than
 # per-role so both branches land on the SAME frequencies and a consumer can sum
-# them without resampling either; log-spaced because a crossover argument is a
-# per-octave one. 1/12 octave is ~118 Hz at 2 kHz, which resolves a handoff
-# region the plan itself calls a COARSE gate ("lateral samples remain a coarse
-# gate", #1968) — this is not a polar measurement and must not be read as one.
+# them without resampling; log-spaced because a crossover argument is a
+# per-octave one. 1/12 octave is ~118 Hz at 2 kHz — a COARSE gate, never a polar
+# measurement (#1968).
 LATERAL_EVIDENCE_BAND_HZ = (20.0, 20_000.0)
 LATERAL_EVIDENCE_POINTS_PER_OCTAVE = 12
 
@@ -644,16 +468,14 @@ class LateralPoseCurve:
     """One driver's NEUTRAL response at one pose, on the shared log basis.
 
     ``complex_tf`` holds ``M = plant * P`` — polarity-free, with NO
-    configured-crossover composition applied (see
-    ``CrossoverV2Session._lateral_priors``). §4.2's
-    ``S_c = sign_c * M * C_c / P`` is the consumer's step, once per candidate.
+    configured-crossover composition applied; ``S_c = sign_c * M * C_c / P`` is
+    the consumer's step, once per candidate.
 
     Values are SAMPLED at the nearest native bin, never interpolated or
-    averaged: an interpolated complex value is a number no microphone produced,
-    and a phase interpolated across a wrap is simply wrong. The frequencies
-    actually sampled ride along for the same reason. ``band_hz`` is the role's
-    driven sweep band — outside it there was no stimulus, so the samples are
-    noise and a consumer must bound itself with this.
+    averaged: a phase interpolated across a wrap is simply wrong. The
+    frequencies actually sampled ride along. ``band_hz`` is the role's driven
+    sweep band — outside it the samples are noise and a consumer must bound
+    itself with this.
     """
 
     role: str
@@ -666,16 +488,13 @@ class LateralPoseCurve:
 class LateralPose:
     """One accepted pose in the lateral walk.
 
-    Carries NO trim, delay, polarity or fit. That absence is the §4.4 contract
-    ("re-solve trim or delay independently at every pose" is forbidden), and it
-    is structural rather than a convention: there is no field here for a second
-    solution to be written to.
+    Carries NO trim, delay, polarity or fit, structurally: re-solving any of
+    them per pose is forbidden, and there is no field here to write one to.
 
-    ``pose_id`` is the canonical key for a POSE on every surface — this record,
-    ``event=correction.crossover_v2_lateral_pose``, and the accepted capture's
-    verdict payload. ``position_id`` / ``position_index`` answer the other
-    question, WHICH SLOT OF A WALK, and are not synonyms for it: a consumer
-    joining takes on ``position_id`` silently mixes poses into the seat table.
+    ``pose_id`` is the canonical key for a POSE on every surface.
+    ``position_id`` / ``position_index`` answer a different question — which
+    slot of a walk — and joining takes on ``position_id`` mixes poses into the
+    seat table.
     """
 
     pose_id: str
@@ -697,13 +516,10 @@ class LateralPose:
 def _primary_sweep_bands(program: Any) -> dict[str, tuple[float, float]]:
     """Each role's PRIMARY sweep band, read off the program that played.
 
-    ``kind == KIND_SWEEP`` matters because a v2 MEASURE program OPENS with a
-    leading pilot pair, and a pilot carries a role and a band too — so a
-    role-only match would take the pilot's, not the sweep's. Today those two
-    bands are EQUAL (both derive from the same intersected ``RoleBand``), so
-    this is not a live bug; it names which segment the retained curve's band
-    describes, so the answer stays right if that coupling ever moves. Pinned by
-    ``test_the_retained_band_reads_the_sweep_segment_not_a_pilot``.
+    ``kind == KIND_SWEEP`` matters because a MEASURE program opens with a
+    leading pilot pair that carries a role and a band too, so a role-only match
+    would take the pilot's. The two bands are equal today; this names which
+    segment the retained curve's band describes if that coupling moves.
     """
     bands: dict[str, tuple[float, float]] = {}
     for segment in program.segments:
@@ -718,13 +534,9 @@ def _primary_sweep_bands(program: Any) -> dict[str, tuple[float, float]]:
 def _summed_sweep_band_hz(program: Any) -> tuple[float, float] | None:
     """The band a SUMMED sweep drove — the one segment the map above cannot key.
 
-    Sibling of :func:`_primary_sweep_bands`, separate because it answers a
-    different question: a summed sweep declares ``role=None`` (every driver is
-    sounding), so there is no key to file it under and a caller identifies it
-    by holding ``ProgramAnalysis.summed_response`` rather than by a role word.
-    ``None`` for a program that plays no summed sweep — a MEASURE program is
-    exactly that, and it is the reason this returns an option rather than
-    raising.
+    A summed sweep declares ``role=None``, so there is no key to file it under
+    in :func:`_primary_sweep_bands`. ``None`` for a program that plays no summed
+    sweep, which a MEASURE program is.
     """
     for segment in program.segments:
         if segment.kind != KIND_SUMMED_SWEEP:
@@ -752,7 +564,7 @@ def lateral_pose_curve(
     tf = np.asarray(response.complex_tf, dtype=np.complex128)
     # ``searchsorted`` + a one-step comparison is the nearest native bin on a
     # monotonically increasing rfft grid, without materialising an N x M
-    # distance matrix (the analysis grid is hundreds of thousands of bins).
+    # distance matrix: the analysis grid is hundreds of thousands of bins.
     grid = lateral_evidence_grid_hz()
     right = np.searchsorted(freqs, grid).clip(1, freqs.size - 1)
     left = right - 1
@@ -772,28 +584,20 @@ def lateral_pose_curve(
 # --------------------------------------------------------------------------- #
 
 
-#: A pose whose stated displacement from the mark lies in the HORIZONTAL plane
-#: — the microphone is moved around the speaker rather than raised or lowered.
-#: On a rig with a measurement arm that motion is the arm's own: a ROTATION
-#: about the rig's vertical axis.  The word is
-#: :data:`~jasper.active_speaker.crossover_v2_flow.REMOTE_VERTICAL_DISCLOSURE`'s
-#: own ("Measured on the horizontal axis only"), reused rather than re-minted.
-#:
-#: It names where the pose's STATED offset lies, not a promise that nothing
-#: else moved: the second geometry-retake rung asks for a sideways move AND a
-#: rise, and records that rise only in its ``prompt``.
+#: A pose whose stated displacement from the mark lies in the HORIZONTAL plane.
+#: It names where the pose's STATED offset lies, not a promise that nothing else
+#: moved: the second geometry-retake rung asks for a sideways move AND a rise,
+#: and records that rise only in its ``prompt``.
 POSITION_AXIS_HORIZONTAL = "horizontal"
 
-#: A pose stated as a move ABOVE or BELOW mark height.  Nothing on this rig
-#: rotates in elevation — the prompts ask for a raise or a lower, and a person
-#: performs it — so a pose on this axis commands no horizontal bearing
+#: A pose stated as a move ABOVE or BELOW mark height. Nothing rotates in
+#: elevation, so such a pose commands no horizontal bearing
 #: (:attr:`PositionGeometry.degrees` is ``None``), which is a different fact
-#: from "0°" and must never read as one.  WHERE it was raised to is
+#: from "0°". Where it was raised to is
 #: :attr:`PositionGeometry.vertical_deg`.
 POSITION_AXIS_VERTICAL = "vertical"
 
-#: Every axis a pose can be stated on, so a reader can CHECK the value rather
-#: than trust it.
+#: Every axis a pose can be stated on, so a reader can CHECK the value.
 POSITION_AXES = (POSITION_AXIS_HORIZONTAL, POSITION_AXIS_VERTICAL)
 
 
@@ -801,53 +605,24 @@ POSITION_AXES = (POSITION_AXIS_HORIZONTAL, POSITION_AXIS_VERTICAL)
 class PositionGeometry:
     """WHERE a prompted capture was taken, as numbers instead of a sentence.
 
-    The facts a pose record owes a reader: **bearing, elevation, axis, and
-    distance** — an owner ruling named the first, third and fourth as the
-    minimum and a later one added elevation beside them.  Before it, a cloud
-    position's only statement of place was the household ``prompt`` string, and
-    the 2026-08 new-horn campaign read that prose as a mic being carried
-    sideways when the rig had rotated — a misreading prose cannot rule out,
-    cannot be diffed, and cannot be compared across rounds.
+    The frame, stated once: ``degrees`` is the signed whole-degree HORIZONTAL
+    bearing measured from the speaker, negative LEFT of the design axis as seen
+    from the microphone looking at the speaker; ``vertical_deg`` is the signed
+    whole-degree ELEVATION above mark height, negative BELOW; ``axis`` is which
+    of :data:`POSITION_AXES` the stated move was on; ``mark_distance_m`` is the
+    speaker-to-MARK distance both angles are DERIVED AGAINST — a reference
+    length, never a surveyed capsule distance.
 
-    **The frame, stated once so nothing downstream has to restate it.**
-    ``degrees`` is the signed whole-degree HORIZONTAL bearing of the pose
-    measured from the speaker, negative LEFT of the design axis as seen from the
-    microphone looking at the speaker; ``vertical_deg`` is the signed
-    whole-degree ELEVATION of the pose above mark height, in the same frame and
-    derived against the same length, negative BELOW; ``axis`` is which of
-    :data:`POSITION_AXES` the pose's stated move was on; ``mark_distance_m`` is
-    the speaker-to-MARK distance both angles are DERIVED AGAINST.  That last one
-    is a reference length, never a surveyed capsule distance: nothing in a round
-    measures how far the microphone actually ended up, so a reader gets the
-    angles and the length they were taken against, and neither is a claim about
-    the other.
+    The two angles default differently. ``degrees`` is ``None`` wherever no
+    signed bearing was commanded (a vertical pose, or a horizontal one whose
+    record declares no side), because ``0`` would read as "on the design axis".
+    ``vertical_deg`` has no such case: a pose nobody raised is genuinely at mark
+    height. A compound pose states both.
 
-    **The two angles are ORTHOGONAL and default differently, which is a fact
-    rather than an inconsistency to iron out.**  ``degrees`` is ``None``
-    wherever no signed bearing was commanded — on
-    :data:`POSITION_AXIS_VERTICAL`, where the operator raises or lowers the
-    microphone rather than swinging it, and on the horizontal axis for a pose
-    whose RECORD declares no side (both geometry-locked retake rungs).  ``None``
-    is the honest answer in both; 0 would be a lie that reads as "on the design
-    axis".  ``vertical_deg`` has no such case and so needs no ``None``: a pose
-    nobody raised is genuinely AT mark height, and 0 states that truly.  A
-    compound pose — sideways *and* raised — therefore states both numbers, which
-    is the move a single axis-plus-value pair could only describe half of.
-
-    Whole degrees, for the reason the derivation that produces them gives: the
-    poses come from tape-measure offsets to a mark placed "about" 1 m out, and
-    a tenth of a degree would claim a precision the placement never had.
-
-    **No combination of axis and angle is refused here.**  A vertical walk is
-    performed BY HAND, so the values this carries are the operator's to state
-    and this type's to record faithfully; the automation that genuinely cannot
-    swing in elevation refuses at its own seam
-    (``capture_plan.position_angle_deg``), where the refusal is about a
-    positioner rather than about a pose.
-
-    Derived by ``crossover_v2_flow.position_geometry``, which owns the pose
-    table and both sign conventions and names each ``None`` case; carried here
-    because this module owns what a retained take RECORDS.
+    Whole degrees, because the poses come from tape-measure offsets to a mark
+    placed "about" 1 m out. No combination of axis and angle is refused here —
+    a vertical walk is performed by hand, and the automation that cannot swing
+    in elevation refuses at ``capture_plan.position_angle_deg``.
     """
 
     axis: str
@@ -860,7 +635,7 @@ class PositionGeometry:
             raise ValueError(
                 f"a pose axis must be one of {POSITION_AXES}, got {self.axis!r}"
             )
-        # Whole degrees, as above. `bool` is an `int` and is never an elevation.
+        # `bool` is an `int` and is never an elevation.
         if isinstance(self.vertical_deg, bool) or not isinstance(
             self.vertical_deg, int
         ):
@@ -873,17 +648,9 @@ class PositionGeometry:
 def take_id_for(position_id: str, attempt: int) -> str:
     """One take's id, as every builder that mints one spells it.
 
-    A geometry retake reuses the position id — same prompted spot, measured
-    again from further out — so the id alone does not identify a take
-    (attribution plan §6's "accepted-attempt <-> position mapping"). Zero-padded
-    so a lexical sort of the bundle is also a chronological one.
-
-    Written here once: this expression stood in every builder below and again
-    at the storage seam, and a copy of an index convention per caller is a
-    place per caller for it to drift. The seam mints nothing now — it reads
-    ``take_id`` off the record and the record store names the artifact from it —
-    because the seam and the record must name the same take or the bundle's
-    path and the session's own evidence disagree.
+    A geometry retake reuses the position id, so the position id alone does not
+    identify a take. Zero-padded so a lexical sort of the bundle is also a
+    chronological one.
     """
     return f"{position_id}_a{int(attempt):02d}"
 
@@ -894,21 +661,17 @@ _ATTEMPT_SUFFIX = re.compile(r"_a\d+$")
 def take_stop_id(take_id: str) -> str:
     """The prompted stop a take measured: its id with the attempt struck.
 
-    :func:`take_id_for`'s inverse, kept beside the mint so the two cannot
-    drift. A retake reuses the position id, so this key is what "latest
-    attempt wins" supersedes ACROSS — takes sharing a stop id are attempts
-    at one prompted spot, and only the newest speaks for it
-    (:func:`~.position_cycle.read_pose_curve_pair`). An id carrying no
-    attempt suffix is its own stop.
+    :func:`take_id_for`'s inverse. Takes sharing a stop id are attempts at one
+    prompted spot and only the newest speaks for it, which is the key "latest
+    attempt wins" supersedes across. An id carrying no attempt suffix is its own
+    stop.
     """
     return _ATTEMPT_SUFFIX.sub("", take_id)
 
 
-#: The graph fingerprints that name no graph.  Both spellings reach a record —
-#: ``""`` from a host that could not name its graph at all, and
-#: :data:`~.contracts.ENTRY_GRAPH_FINGERPRINT_UNKNOWN` from
-#: ``coordinator.entry_graph_fingerprint`` when no applied profile was found —
-#: and neither can classify a take.
+#: The graph fingerprints that name no graph: ``""`` from a host that could not
+#: name its graph, and :data:`~.contracts.ENTRY_GRAPH_FINGERPRINT_UNKNOWN` when
+#: no applied profile was found. Neither can classify a take.
 _UNNAMED_GRAPHS = frozenset({"", ENTRY_GRAPH_FINGERPRINT_UNKNOWN})
 
 #: The phases whose captures are a re-measure AFTER an apply.  Used only to
@@ -922,28 +685,17 @@ def take_kind(
 ) -> str:
     """Which of :data:`~.contracts.MEASURE_KINDS` a take is, or ``""``.
 
-    **Derived from the GRAPH, never from the phase.**  A phase → kind map is not
-    merely imprecise, it is not well defined: :data:`~.journey.PHASE_LATERAL` is
-    a per-driver walk that is a ``baseline`` **or** a ``candidate`` check
-    depending on which candidate was applied under it, and the cloud phases
-    split by which side of the apply they sit on.  Only the graph the take
-    played through tells those apart, which is why #3130 put
-    ``graph_fingerprint`` on the pose record in the first place.
-
-    The rule: equal to the round's pre-apply fingerprint → ``baseline``; a
-    post-apply re-measure phase → ``verify``; anything else played through a
-    graph that is not the "before" → ``candidate``.
+    Derived from the GRAPH, never from the phase: a phase → kind map is not well
+    defined, since a lateral walk is a ``baseline`` or a ``candidate`` check
+    depending on what was applied under it (#3130). The rule: equal to the
+    round's pre-apply fingerprint → ``baseline``; a post-apply re-measure phase
+    → ``verify``; otherwise ``candidate``.
 
     ``graph_fingerprint`` is the applied profile's ``candidate_fingerprint``
     (:func:`~.coordinator.entry_graph_fingerprint`'s namespace), deliberately
-    NOT the running-config hash ``provenance.graph.fingerprint`` carries — see
-    :func:`lateral_pose_record` for why the running hash cannot separate two
-    walks.  ``baseline_fingerprint`` is the same quantity for the round's own
-    "before", so the two are comparable.
-
-    **Unresolvable is ``""``, never a guess.**  Either fingerprint unnamed and
-    this returns empty: an honest fact about the capture, exactly as
-    ``baseline_record_id`` is ``""`` where the prior baselined no such pose.
+    NOT the running-config hash. ``baseline_fingerprint`` is the same quantity
+    for the round's "before", so the two are comparable. Either one unnamed
+    returns ``""`` rather than a guess.
     """
     if graph_fingerprint in _UNNAMED_GRAPHS or baseline_fingerprint in _UNNAMED_GRAPHS:
         return ""
@@ -958,42 +710,23 @@ def take_kind(
 class TakeClaim:
     """What the SESSION claimed around one take, on every record it banks.
 
-    The engine's own fields (``session.TuningSession._record``), carried at the
-    builders so a flow-banked take and an engine-banked take are one record
-    shape rather than two.  Offline re-analysis (ruling S3) reads the bank, and
-    a reader that had to ask which of two shapes it was holding could not.
-
-    Every field defaults empty because most flow call sites do not state them
-    yet — the unprompted-phase take states ``baseline_fingerprint`` once a
-    round has a baseline to compare against, and the rest still do not — and an empty field here is an honest fact about the capture,
-    never a refusal to bank it.  The wave that lifts retention states them.
+    Carried at the builders so a flow-banked take and an engine-banked take are
+    one record shape. Every field defaults empty because an unstated field is an
+    honest fact about the capture, never a refusal to bank it.
 
     ``baseline_fingerprint`` is the round's pre-apply graph, the comparand
-    :func:`take_kind` needs; the take's OWN graph stays a separate builder
-    keyword because it is a fact about the take, not about the claim.
+    :func:`take_kind` needs; the take's OWN graph is a separate builder keyword.
 
-    ``level_db`` is the PROVEN fader level — the reading
-    ``VolumeClaim.prove`` returned and the session re-checked against the level
-    it declared — and ``stimulus_dbfs`` is the ladder rung the stimulus played
-    at.  Two different quantities on purpose: a ladder moves the stimulus, never
-    the claim, and the 8.712 dB incident is what one field saying both costs.
+    ``level_db`` is the PROVEN fader level and ``stimulus_dbfs`` is the ladder
+    rung the stimulus played at — two quantities on purpose, since a ladder
+    moves the stimulus and never the claim. ``level_db`` is optional here where
+    an engine-banked record's is not: the flow's retention sites hold no volume
+    claim, so ``None`` says exactly that rather than inviting an invented
+    number. ``stimulus_dbfs`` is ``None`` when no ladder was asked for.
 
-    **``level_db`` is optional HERE and never optional on an engine-banked
-    record, and that difference is a fact rather than a mismatch to iron out.**
-    The engine banks a stimulus only once its level proved, so its own field is
-    always a number; the flow's retention sites hold no volume claim at all,
-    so a take retained there has no proven level to state and ``None`` says
-    exactly that.  Narrowing this to ``float`` would force those callers
-    to invent a number, which is the failure ``_proven_level`` exists to stop.
-    ``stimulus_dbfs`` is optional on BOTH sides for a different reason and
-    needs no such note: ``None`` is the single stimulus a program declares when
-    no ladder was asked for.
-
-    ``wav_path`` is the record → capture pointer, bundle-relative.  It is NOT
-    derivable from ``take_id``: ``bundles.capture_artifact_relpath`` appends a
-    ``uuid4`` hex, and its caller mints the path BEFORE the write precisely so
-    the record can carry it.  Without it a banked record names a capture nothing
-    can reach, which is what leaves offline analysis with no inputs.
+    ``wav_path`` is the record → capture pointer, bundle-relative, and is NOT
+    derivable from ``take_id`` (``bundles.capture_artifact_relpath`` appends a
+    ``uuid4`` hex).
     """
 
     baseline_fingerprint: str = ""
@@ -1001,12 +734,9 @@ class TakeClaim:
     candidate_id: str = ""
     polarity: str = ""
     #: Whether the graph this take played through carried the box's own
-    #: per-driver level match, and by how much.  Beside ``polarity`` and for
-    #: its reason: both are facts about the measurement branch, and a
-    #: reverse-null pair is only comparable to a reader who knows whether the
-    #: branches were levelled before they were summed.  ``False``/``None`` on
-    #: every take that declared none, which is what a record banked before
-    #: this existed reads back as.
+    #: per-driver level match, and by how much: a reverse-null pair is only
+    #: comparable to a reader who knows whether the branches were levelled
+    #: before they were summed. ``False``/``None`` on a take that declared none.
     level_matched: bool = False
     level_match_trims_db: Mapping[str, float] | None = None
     level_db: float | None = None
@@ -1028,40 +758,21 @@ def _take_identity(
 ) -> dict[str, Any]:
     """The identity block every retained take carries, whatever kind it is.
 
-    The COMMON CORE of every builder below. What each of them adds on top
-    is its own — a graded seat and a walk pose are different captures and their
-    grading columns are never meaningful for each other
-    (see :func:`lateral_pose_record`) — so this is a shared core plus a
-    role-tagged extension, never one shape with half its columns null.
+    The common core; each builder adds its own role-tagged extension rather than
+    sharing one shape with half its columns null. Deliberately NOT emitted here:
+    the id key itself — a cloud position calls it ``position_id`` and a pose
+    calls it ``pose_id``, which are two questions.
 
-    Deliberately NOT emitted here: the id key itself. A cloud position and an
-    entry baseline call it ``position_id``, a pose calls it ``pose_id``, and
-    collapsing those two words would be minting one vocabulary for two
-    questions.
+    ``wav_sha256`` is the capture's content digest: the VERIFIER for a replay,
+    never the index. Recorded whether or not any store retained the bytes.
+    ``claim.wav_path`` is its pointer sibling.
 
-    ``wav_sha256`` is the capture's content digest — the VERIFIER for a replay,
-    never the index (§6's rule that "content hashing stays the verifier; it must
-    stop being the index"). Recorded whether or not any store retained the
-    bytes, because it is what lets a laptop-side WAV be matched back to this
-    take at all. ``claim.wav_path`` is its POINTER sibling: the digest says
-    whether bytes are the right ones, the path says where they are.
-
-    ``graph_fingerprint`` and the :class:`TakeClaim` fields are here rather than
-    in the builders because they belong to EVERY take whatever its kind —
-    one edit, every record. The measure kind is derived here for the same
-    reason, and from the graph rather than from ``phase``: see :func:`take_kind`.
-
-    **It is spelled ``measure_kind`` and not ``kind``, which the engine's own
-    record uses, because :func:`take_kind` can honestly answer ``""``** — a
-    take whose graph names neither fingerprint is unresolved, never guessed.
-    :meth:`~.record_store.BankedRecordStore.bank` accepts the measurement kind
-    under EITHER spelling and always writes it back under this one, so the two
-    are interchangeable everywhere except at that empty value: ``kind`` is read
-    by MEMBERSHIP in :data:`~.contracts.MEASURE_KINDS`, which ``""`` fails,
-    while ``measure_kind`` is read by the KEY's PRESENCE, which carries an
-    unresolved take through. A ``""`` written here as ``kind`` would leave the
-    record with no route at all. The two words converge on one when an
-    unresolved take stops being expressible; delete this spelling then.
+    Spelled ``measure_kind`` rather than the engine record's ``kind`` because
+    :func:`take_kind` can honestly answer ``""``: ``kind`` is read by MEMBERSHIP
+    in :data:`~.contracts.MEASURE_KINDS`, which ``""`` fails, while
+    ``measure_kind`` is read by the key's PRESENCE, which carries an unresolved
+    take through. :meth:`~.record_store.BankedRecordStore.bank` accepts either
+    spelling and writes back this one.
     """
     return {
         "phase": phase,
@@ -1080,9 +791,8 @@ def _take_identity(
         "candidate_id": claim.candidate_id,
         "polarity": claim.polarity,
         "level_matched": claim.level_matched,
-        # The numbers only when there ARE numbers, exactly as the engine's own
-        # record states them: an absent key reads as the un-matched take every
-        # record banked before this existed was, so no schema version moves.
+        # The numbers only when there ARE numbers: an absent key reads as an
+        # un-matched take, so no schema version moves.
         **(
             {"level_match_trims_db": dict(claim.level_match_trims_db)}
             if claim.level_matched and claim.level_match_trims_db
@@ -1126,91 +836,48 @@ def cloud_position_record(
 ) -> dict[str, Any]:
     """One retained cloud position, as the record two consumers read.
 
-    **WO-1 moved this assembly ahead of the retention seam's own early return**,
-    so it is built whether or not a retention seam is bound.  That is
-    deliberate: the metadata has two consumers.  The seam is one; the group
-    close is the other — the cloud pipeline reads these records to serialize the
-    per-position members — and the close happens on every session, including the
-    offline/test configurations that bind no retention seam at all.  Building it
-    only when a storage seam existed would have made the per-position evidence
-    silently depend on operator retention being wired.
+    Built whether or not a retention seam is bound: the group close reads these
+    records to serialize the per-position members, and that happens on every
+    session including the ones that bind no seam. ``take_id`` is minted here so
+    the session's evidence and the bundle's sidecar path name the same take.
 
-    ``take_id`` is minted HERE rather than only at the storage seam, so the
-    session's own evidence and the bundle's sidecar path name the same take.
-    A geometry retake reuses the position id, so the id alone does not identify
-    a take (attribution plan §6's "accepted-attempt ↔ position mapping").
+    ``gate_floor_source`` records WHY the gate window is what it is (#1966);
+    ``gating_applied`` alone cannot distinguish a window that stops at a found
+    reflection from one capped at the search bound. ``gate_disclosure`` is the
+    same fact as a sentence.
 
-    ``gate_floor_source`` records WHY the gate window is what it is (issue
-    #1966).  ``gating_applied`` only says a window was applied at all; it cannot
-    distinguish a window that stops at a found reflection from one capped at the
-    search bound because none was found.  Every position of the 2026-07-30
-    corpus was the second, and this record could not say so.
-    ``gate_disclosure`` is the same fact as a sentence, so a reader does not
-    have to know the enum's vocabulary to read the record honestly.
-
-    ``gate_moved_rms_db`` and ``gate_reflection_delay_ms`` are the two NUMBERS
-    that sentence narrates (ticket 1.5), banked beside it because prose was
-    their only copy: the evidence packet's ``not_evaluated`` block used to say
-    the reflection time "is narrated inside verify.gate.disclosure prose and is
-    not banked as a number anywhere in a round's artifacts", and a reader is
-    owed the figure without regex over English.  Both come from
-    :mod:`~jasper.audio_measurement.gate_disclosure`'s one typed record, so the
-    digits here and the digits in the sentence are the same derivation.  Both
-    are ``None`` on an ungateable capture, and the delay is ``None`` — never
-    0.0 — on a window capped at the search ceiling, where no reflection was
-    found to time.  The delay is RELATIVE to the direct arrival, not the gating
-    block's absolute ``first_reflection_ms``: see
-    :attr:`~jasper.audio_measurement.gate_disclosure.GateDisclosure.reflection_delay_ms`
-    for why the absolute time is meaningless to a reader.
+    ``gate_moved_rms_db`` and ``gate_reflection_delay_ms`` are the two numbers
+    that sentence narrates, from the same
+    :mod:`~jasper.audio_measurement.gate_disclosure` record, so digits and
+    prose share a derivation. Both are ``None`` on an ungateable capture, and
+    the delay is ``None`` — never 0.0 — on a window capped at the search
+    ceiling. The delay is RELATIVE to the direct arrival, not the gating block's
+    absolute ``first_reflection_ms``.
 
     ``gate_entanglement_floor_hz`` is the ROOM's floor at THIS seat and
-    ``gate_entanglement_floor_source`` is which of
-    :data:`~jasper.audio_measurement.gating.ENTANGLEMENT_SOURCES` it came
-    from — never one without the other, because the number is unreadable
-    without knowing whether a reflection timed it or the operator's tape
-    measure did (#3502).  It is banked per SEAT rather than once per rig
-    because it is derived at the seat's own ``mark_distance_m``, which is why
-    :func:`cloud_entanglement_floor_hz` pools the seats rather than reading one
-    rig fact — though every pose a round walks declares the same distance
-    today, so the pooled seats currently agree; see
-    :meth:`~jasper.audio_measurement.measurement_geometry.DeclaredGeometry.first_bounce_s`.
-    ``unknown`` with a null floor is the ordinary
-    state on a rig whose first bounce lands while the direct sound is still
-    decaying — the reflection finder structurally never fires there and no
-    geometry was declared.
-
-    The identity half — phase, index, attempt, ``take_id``, ``session_id``, the
-    ``wav_sha256`` verifier and the engine's own :class:`TakeClaim` fields — is
-    :func:`_take_identity`, shared with the other two builders.
+    ``gate_entanglement_floor_source`` says which of
+    :data:`~jasper.audio_measurement.gating.ENTANGLEMENT_SOURCES` timed it —
+    never one without the other (#3502). Banked per SEAT because it is derived
+    at the seat's own ``mark_distance_m``, which is why
+    :func:`cloud_entanglement_floor_hz` pools the seats. ``unknown`` with a null
+    floor is ordinary on a rig whose first bounce lands while the direct sound
+    is still decaying.
 
     ``regime`` is WHAT PLAYED, in the walk seam's vocabulary
-    (:data:`LATERAL_POSE_REGIME` is the other word in it), and is ``""`` here
-    until a caller states it. **That vocabulary is not
-    :data:`~.contracts.MEASURE_REGIMES`'** ``reference_axis``/``near_field``
-    pair, which the engine's own record spells under the same key — two
-    vocabularies, one key name, and converging them is the retention lift's,
-    not this builder's. Stating a guessed word here would make the collision
-    harder to find, not easier.
+    (:data:`LATERAL_POSE_REGIME` is the other word in it), ``""`` until a caller
+    states it. That vocabulary is NOT :data:`~.contracts.MEASURE_REGIMES`',
+    which the engine's record spells under the same key — two vocabularies, one
+    key name.
 
-    ``geometry`` is WHERE the microphone was, as fields rather than as English
-    (owner ruling, 2026-08-24).  Until it existed this record carried no
-    geometry at all — the ``prompt`` sentence was the only statement of place,
-    and the 2026-08 new-horn campaign read a rotation out of it as a sideways
-    carry.  The four keys it lands (``position_deg``, ``position_axis``,
-    ``vertical_deg``, ``mark_distance_m``) are stamped from the pose the
-    operator was actually given; ``prompt`` stays beside them as the human
-    instruction and stops being the source of truth.  ``position_deg``
-    deliberately spells the same word :func:`lateral_pose_record` already does
-    — one vocabulary for one question — and is ``None`` wherever no bearing was
-    commanded.  ``vertical_deg`` is absent from records banked before it
-    existed, and a reader takes that absence as 0 — the pose was at mark
-    height, which is what every pose this record shape had until then was.  See
-    :class:`PositionGeometry` for the frame all four sit in.
+    ``geometry`` is WHERE the microphone was, as fields rather than English:
+    ``position_deg`` (``None`` where no bearing was commanded),
+    ``position_axis``, ``vertical_deg`` and ``mark_distance_m``, stamped from
+    the pose the operator was given, with ``prompt`` beside them as the human
+    instruction rather than the source of truth. ``vertical_deg`` is absent from
+    older records and a reader takes that absence as 0. See
+    :class:`PositionGeometry` for the frame.
 
-    ``curves`` is WHAT WAS MEASURED, in :func:`pose_curve_record`'s shape and
-    under the key :func:`lateral_pose_record` already spells — see
-    :func:`analysis_curve_records`.  Empty for a caller that supplied none, and
-    absent entirely from records banked before it existed.
+    ``curves`` is WHAT WAS MEASURED, in :func:`pose_curve_record`'s shape.
     """
     return {
         "position_id": position_id,
@@ -1222,9 +889,8 @@ def cloud_position_record(
         "prompt": prompt,
         "regime": regime,
         "wide": wide,
-        # The position's named question (attribution-stage plan §5's promotion
-        # queue item 1). The prompt string alone cannot be parsed back into a
-        # role, so the label rides the record explicitly.
+        # The position's named question: the prompt string alone cannot be
+        # parsed back into a role, so the label rides the record explicitly.
         "role": role,
         "position_deg": geometry.degrees,
         "position_axis": geometry.axis,
@@ -1246,42 +912,32 @@ def cloud_position_record(
     }
 
 
-#: What every :data:`~.journey.PHASE_LATERAL` pose plays -- ``program_for_phase``
-#: hands them all the anchor's interleaved per-driver MEASURE object.
-#:
-#: A literal copy of :data:`jasper.active_speaker.angle_capture.REGIME_PER_DRIVER`
-#: because importing it would close a cycle (that module imports the flow, the
-#: flow imports this one).  Pinned equal by
-#: ``test_the_pose_record_states_the_seams_own_regime_word``.
+#: What every :data:`~.journey.PHASE_LATERAL` pose plays: the anchor's
+#: interleaved per-driver MEASURE object. A literal copy of
+#: :data:`jasper.active_speaker.angle_capture.REGIME_PER_DRIVER` because
+#: importing it would close a cycle; pinned equal by test.
 LATERAL_POSE_REGIME = "per_driver"
 
 #: Deep-null floor applied before the log, so a bin that cancelled to exactly
-#: zero banks a number instead of ``-inf``, which is not JSON.  The same 1e-12
-#: :func:`~jasper.audio_measurement.deconv.magnitude_response` applies, for the
-#: same reason and at the same place in the arithmetic.
+#: zero banks a number instead of ``-inf``, which is not JSON. The same 1e-12
+#: :func:`~jasper.audio_measurement.deconv.magnitude_response` applies.
 _POSE_MAGNITUDE_FLOOR = 1e-12
 
 
 def pose_curve_record(curve: LateralPoseCurve) -> dict[str, Any]:
-    """One measured curve, banked as magnitude AND phase (ruling S3).
+    """One measured curve, banked as magnitude AND phase.
 
-    The ONE serializer ``complex_tf`` has, for every banked kind that measures
-    one -- :func:`analysis_curve_records` is how the other three reach it.  The
-    pair banked here reconstructs the transfer function exactly --
-    ``10 ** (magnitude_db / 20) * exp(1j * radians(phase_deg))`` -- which is
-    what makes the ruling's *"just save the information"* true of phase and not
-    only of magnitude.  Without it every offline re-analysis re-derives phase
-    from the WAVs and the forward model cannot run from the bank at all.
+    The ONE serializer ``complex_tf`` has. The pair reconstructs the transfer
+    function exactly: ``10 ** (magnitude_db / 20) * exp(1j * radians(phase_deg))``.
 
     ``phase_deg`` is WRAPPED to (-180, 180], the value :func:`numpy.angle`
-    produces.  An unwrapped phase is a derived VIEW with a choice of branch in
-    it; the wrapped value is what the transform computed, and a consumer that
-    wants the unwrapped one can take it without this record having guessed.
+    produces — unwrapping is a derived view with a branch choice in it, left to
+    the consumer.
 
     Absolute phase carries the microphone's own uncorrected response, since mic
-    calibration here is magnitude-only -- common-mode across the roles of one
-    capture, and so self-cancelling for the relative cross-driver work this
-    curve exists for.  It is not a claim about the driver's absolute phase.
+    calibration here is magnitude-only: common-mode across the roles of one
+    capture, so self-cancelling for relative cross-driver work. Not a claim
+    about the driver's absolute phase.
     """
     tf = np.asarray(curve.complex_tf, dtype=np.complex128)
     magnitude = np.maximum(np.abs(tf), _POSE_MAGNITUDE_FLOOR)
@@ -1297,40 +953,20 @@ def pose_curve_record(curve: LateralPoseCurve) -> dict[str, Any]:
 def analysis_curve_records(analysis: Any, program: Any) -> list[dict[str, Any]]:
     """One analysis's PRIMARY complex responses, in the banked curve shape.
 
-    Ruling S3's *"just save the information"* for the three retained kinds that
-    are not a lateral pose.  The walk builds :class:`LateralPoseCurve` objects
-    of its own because its candidate fit consumes them in-process; the other
-    three kinds only ever needed the RECORD, so they take the same two steps
-    (:func:`lateral_pose_curve` then :func:`pose_curve_record`) straight
-    through and bank the identical shape under the identical key.  One SHAPE
-    for all four kinds, so the reader the cutover's reader-flip row builds has
-    one thing to parse rather than four.  Nothing in the tree reads ``curves``
-    yet -- see :func:`lateral_pose_record`, which says so and says why.
+    One shape for every retained kind, so a reader has one thing to parse.
 
     BOTH response fields are read, because
     :mod:`~jasper.audio_measurement.program_analysis` fills them on different
-    paths: a per-driver analysis fills ``driver_responses`` (one curve per
-    role) and a summed-sweep analysis fills ``summed_response`` (one curve,
-    role ``"summed"``).  Written as a union rather than a branch so an analysis
-    that grows the other half starts banking it instead of silently dropping
-    it.  CHECK fills neither -- it solves gains off pilots and computes no
-    transfer function at all.
+    paths: a per-driver analysis fills ``driver_responses``, a summed-sweep
+    analysis fills ``summed_response``. A union rather than a branch, so an
+    analysis that grows the other half starts banking it. CHECK fills neither.
 
-    **PRIMARY responses only, which is fewer than the analysis computed.** A
-    MEASURE analysis additionally deconvolves each role's repeat occurrences
-    and hangs them off the primary as ``DriverResponse.repeat_responses``; they
-    are diagnostic evidence for the primary and feed no candidate/trim/
-    alignment math, so they are banked no more than the walk banks them.  The
-    ``repeat_index`` filter below is the walk's own, kept verbatim: inert on
-    today's ``driver_responses`` (a tuple of primaries) and correct if that
-    tuple ever carries a repeat directly.
-
-    A role whose band the program does not declare is SKIPPED rather than
-    banked on a guessed band -- outside the driven band the samples are noise,
-    and :func:`pose_curve_record`'s ``band_hz`` is what tells a consumer where
-    to stop reading.  An empty list therefore means NO CURVE WAS BANKED, never
-    "this capture was clean": CHECK reaches it by measuring none, and the
-    caller's guard reaches it by failing loudly at WARN.
+    PRIMARY responses only: a MEASURE analysis also deconvolves each role's
+    repeat occurrences, which are diagnostic and feed no candidate/trim/
+    alignment math. A role whose band the program does not declare is SKIPPED
+    rather than banked on a guessed band, since outside the driven band the
+    samples are noise. An empty list therefore means NO CURVE WAS BANKED, never
+    "this capture was clean".
     """
     bands = _primary_sweep_bands(program)
     records = [
@@ -1359,54 +995,28 @@ def lateral_pose_record(
 ) -> dict[str, Any]:
     """One retained lateral pose, as the evidence bundle's sidecar carries it.
 
-    Takes: the accepted :class:`LateralPose`, plus the six facts it does not
-    carry.  ``position_deg`` is the SIGNED whole-degree bearing (negative LEFT
-    of the design axis), derived by the flow's ``position_angle_deg`` and
-    stated here rather than re-derived.  ``lateral_consumer`` is one of
+    ``position_deg`` is the SIGNED whole-degree bearing (negative LEFT of the
+    design axis), derived by ``capture_plan.position_angle_deg`` and stated
+    rather than re-derived. ``lateral_consumer`` is one of
     :data:`~.journey.LATERAL_CONSUMERS`.
 
     ``graph_fingerprint`` is WHICH CANDIDATE WAS APPLIED while this pose was
-    taken, in :func:`~.coordinator.entry_graph_fingerprint`'s namespace (the
-    applied profile record's ``candidate_fingerprint``, or
-    :data:`~.contracts.ENTRY_GRAPH_FINGERPRINT_UNKNOWN`).  Deliberately NOT the
-    running-config hash a capture's ``provenance.graph.fingerprint`` carries:
-    a pose is a ``per_driver`` capture, played through the transient routing
-    graph that omits crossover, delay and linearization, so the running hash is
-    the SAME before and after a candidate is applied and cannot tell two walks
-    apart.  The applied candidate can, which is what makes a banked walk
-    classifiable as a baseline or a candidate check without reading the
-    capture-retention ring.  :func:`take_kind` is that classification, and it
-    is stamped on the record here rather than left for a reader to redo.
+    taken, in :func:`~.coordinator.entry_graph_fingerprint`'s namespace —
+    deliberately NOT the running-config hash, because a pose plays through the
+    transient routing graph that omits crossover, delay and linearization, so
+    that hash is the same before and after an apply and cannot tell two walks
+    apart. :func:`take_kind` is the classification that buys, stamped here.
 
-    ``position_axis`` is horizontal by construction, and stays so even for a
-    RAISED pose: :data:`POSITION_AXIS_VERTICAL` is the pose that commands NO
-    horizontal bearing (see :class:`PositionGeometry`), and every pose reaching
-    this builder commands one.
+    ``position_axis`` is horizontal by construction, even for a RAISED pose:
+    :data:`POSITION_AXIS_VERTICAL` is the pose commanding no horizontal bearing,
+    and every pose reaching this builder commands one. ``vertical_deg`` is the
+    signed elevation above mark height against the same :data:`MARK_DISTANCE_M`;
+    0 is true of a pose nobody raised. ``captured_at`` is minted at retention
+    because a :class:`LateralPose` holds no clock.
 
-    ``vertical_deg`` is the signed whole-degree ELEVATION above mark height,
-    negative BELOW, against the same :data:`MARK_DISTANCE_M` as
-    ``position_deg``.  0 is TRUE of a pose nobody raised.
-
-    ``captured_at`` is minted at retention, not carried on the pose, for the
-    reason :func:`entry_baseline_record` mints its own: a
-    :class:`LateralPose` holds no clock.
-
-    Guarantees: WHERE the microphone was (``position_deg`` + ``offset_cm`` +
-    ``at_mark``), WHAT played (``regime``), WHO the walk was for
-    (``lateral_consumer``), the identity/verifier pair (``take_id``,
-    ``wav_sha256``) a replay needs, and WHAT WAS MEASURED --- ``curves``, one
-    :func:`pose_curve_record` per driver, on the shared log basis
-    :func:`lateral_evidence_grid_hz` names.  Refuses nothing.
-
-    ``curves`` is empty for a pose that carried none.  That shape is reachable
-    only through a direct construction: the walk's own
-    :func:`lateral_curves_sufficient` floor rejects a capture that produced
-    fewer than two before any record is built.
-
-    Nothing in the tree READS ``curves`` yet, and that is ruling S3's whole
-    point --- *"right now, let's just save the information"*.  The forward
-    model already consumes this exact quantity in-process every round; what it
-    could never do was run from the bank.
+    Refuses nothing. ``curves`` is empty only for a directly constructed pose —
+    :func:`lateral_curves_sufficient` rejects a thin capture before any record
+    is built.
 
     Separate from :func:`cloud_position_record` rather than a widened one: a
     cloud position is a summed sweep judged by gating and ripple, and those
@@ -1449,46 +1059,24 @@ def phase_capture_record(
 ) -> dict[str, Any]:
     """One banked take for a phase that prompts no spot: CHECK, MEASURE, VERIFY.
 
-    These three play from wherever the microphone already is — there is no
-    table row and no instruction — so what a take of one records is the
-    CAPTURE: its bytes' digest, the identity that finds it again, and
-    ``curves`` — WHAT WAS MEASURED, in :func:`pose_curve_record`'s shape and
-    under the key :func:`lateral_pose_record` already spells (see
-    :func:`analysis_curve_records`).
+    These play from wherever the microphone already is, so a take records the
+    CAPTURE: its digest, the identity that finds it again, and ``curves``.
 
-    **The curves are the only part of the analysis this record keeps**, and
-    ruling S3 is why: a round's VERDICTS live where the phase puts them
-    (``_measure_analysis``, ``_verify_analysis``, the gain plan CHECK
-    publishes) and are rewritten inside the round, but the complex responses
-    they were drawn from land in no file at all unless they land here. MEASURE
-    is the kind that matters most — its per-driver phase is what cross-driver
-    timing is measured from — and CHECK banks an empty list because it
-    computes no transfer function at all. An empty list is "no curve banked"
-    and never "this capture was clean"; :func:`analysis_curve_records` names
-    the two ways it is reached. Absent entirely from records banked before
-    this field existed.
+    The curves are the only part of the analysis this record keeps: a round's
+    verdicts are rewritten inside the round, but the complex responses they were
+    drawn from land in no file unless they land here. CHECK banks an empty list
+    because it computes no transfer function; an empty list is "no curve banked"
+    and never "this capture was clean".
 
-    **The take id follows the entry baseline's convention rather than inventing
-    a second one.** That phase had the same problem first — a retained capture
-    with no prompted spot — and solved it by minting the position id from the
-    phase and the index, so the position id IS the take id once
-    :func:`take_id_for` has qualified it by attempt. One convention, four
-    phases; a reader who can parse one banked take can parse all of them.
+    The take id follows the entry baseline's convention — the position id is
+    minted from phase and index, so it IS the take id once :func:`take_id_for`
+    qualifies it by attempt.
 
-    **The pose is the design axis**, for the reason
-    :func:`entry_baseline_record` already gives about its own unprompted
-    capture: a capture with no prompted move is :data:`~.contracts.DESIGN_AXIS_DEG`
-    on the horizontal axis, which is the same reading
-    ``session.TuningSession._bearings`` gives a spec that names no position, so
-    one pose is one record on both sides. Stating it is not inventing a
-    bearing — it is declining to make this the one banked kind whose pose a
-    reader has to special-case, and it keeps the four builders one shape for
-    the index W1-d builds on ``_record()``'s fields.
-
-    ``prompt`` is ``""`` because no instruction was issued, which is a
-    different fact from an unknown one; ``regime`` defaults empty for the same
-    reason it does on the entry baseline — the caller states it or it is
-    honestly unstated, and no builder guesses it from the phase.
+    The pose is :data:`~.contracts.DESIGN_AXIS_DEG` on the horizontal axis,
+    which is the reading ``session.TuningSession._bearings`` gives a spec naming
+    no position, so one pose is one record on both sides. ``prompt`` is ``""``
+    because no instruction was issued, a different fact from an unknown one;
+    ``regime`` is the caller's to state and is never guessed from the phase.
     """
     identity = _take_identity(
         position_id=f"{phase}_{index:02d}",
@@ -1497,8 +1085,7 @@ def phase_capture_record(
         graph_fingerprint=graph_fingerprint, claim=claim,
     )
     return {
-        # Same coincidence the entry baseline records: no prompted spot of its
-        # own, so this take's position id IS its take id.
+        # No prompted spot of its own, so the position id IS the take id.
         "position_id": identity["take_id"],
         **identity,
         "captured_at": captured_at,
@@ -1536,47 +1123,31 @@ def entry_baseline_record(
     """The entry baseline's retained record — a cloud position's shape, minus
     the group, plus the curve.
 
-    Structurally a cloud-position record: same take-id convention, same
-    gate/ripple/digest scalars, handed to the same retention seam so an entry
-    baseline lands in ``refs["position_artifacts"]`` beside every other retained
-    take and one replay path covers both.  It is NOT a group member, which is
-    exactly why the retention call is explicit at its call site — nothing in the
-    group bookkeeping would make it.
+    Structurally a cloud-position record, handed to the same retention seam so
+    it lands in ``refs["position_artifacts"]`` beside every other retained take.
+    It is NOT a group member, which is why the retention call is explicit at its
+    call site.
 
-    The three fields a cloud position has no use for are the three that make
-    THIS capture comparable to the post-apply one, and they are the reason it is
-    a separate builder rather than a keyword on the other: WHAT was played
-    (``program_id``), WHERE it was played from (``reference_mark``), and WHICH
-    graph it went through (``graph_fingerprint``).  A before→after claim is only
-    as good as those three matching on both sides.
+    Three fields a cloud position has no use for make THIS capture comparable to
+    the post-apply one, and are why it is a separate builder: WHAT was played
+    (``program_id``), WHERE from (``reference_mark``), and WHICH graph it went
+    through (``graph_fingerprint``).
 
-    **The reduced curve rides here, and that is what makes this the DURABLE
-    copy** (fragment ``02``'s duplication #2, plan row 2a).  It is bounded at
-    ``round_evidence.BENEFIT_CURVE_MAX_BINS`` upstream, so a take carries a few
-    KB of JSON beside a WAV.  A retained take is write-once and keyed by
-    ``take_id``; the flow state file that also holds these arrays is rewritten
-    on every persist, which is why a banked round could never be re-graded once
-    the next round started.  Same three arrays as
-    ``round_evidence.EntryBaseline.to_dict``, under the same names, so one
-    reader covers both — see
-    :func:`~.position_cycle.read_entry_baseline_take`.
+    The reduced curve rides here, which is what makes this the DURABLE copy:
+    a retained take is write-once and keyed by ``take_id``, while the flow state
+    file holding the same arrays is rewritten on every persist. Bounded at
+    ``round_evidence.BENEFIT_CURVE_MAX_BINS`` upstream. Same three arrays and
+    names as ``round_evidence.EntryBaseline.to_dict``, so one reader covers both.
 
-    **``curves`` is a SECOND curve on a second basis, not a copy of that one.**
-    The three arrays above are the GRADED side — decimated to the benefit
-    curve's bins, magnitude only, carrying the ``excluded`` mask the round's
-    before→after claim is drawn over.  ``curves`` is the MEASURED side, in
-    :func:`pose_curve_record`'s shape on the shared log basis and with the
-    phase that side has never carried (see :func:`analysis_curve_records`).
-    Neither is derivable from the other, which is why both ride.  Absent
-    entirely from records banked before it existed.
+    ``curves`` is a SECOND curve on a second basis, not a copy: the three arrays
+    are the GRADED side (decimated, magnitude only, carrying the ``excluded``
+    mask), ``curves`` is the MEASURED side on the shared log basis with phase.
+    Neither is derivable from the other.
 
-    **The pose is the design axis**, not a missing fact: this capture has no
-    prompted spot, and a capture with no prompted move is
-    :data:`~.contracts.DESIGN_AXIS_DEG` on the horizontal axis — the same
-    reading ``session.TuningSession._bearings`` gives a spec that names no
-    position, so one pose is one record on both sides. ``reference_mark`` still
-    says WHERE that axis was measured from; ``prompt`` is ``""`` because no
-    instruction was issued, which is a different fact from an unknown one.
+    The pose is :data:`~.contracts.DESIGN_AXIS_DEG` on the horizontal axis, as
+    for every capture with no prompted move. ``reference_mark`` says where that
+    axis was measured from; ``prompt`` is ``""`` because no instruction was
+    issued.
     """
     identity = _take_identity(
         position_id=f"{PHASE_ENTRY_BASELINE}_{index:02d}",
@@ -1585,8 +1156,7 @@ def entry_baseline_record(
         graph_fingerprint=graph_fingerprint, claim=claim,
     )
     return {
-        # The entry baseline has no prompted spot of its own, so its position
-        # id IS its take id — the one kind where the two coincide.
+        # No prompted spot of its own, so the position id IS the take id.
         "position_id": identity["take_id"],
         **identity,
         "program_id": program_id,
@@ -1618,10 +1188,8 @@ class BoostExclusion:
     """:func:`boost_excluded_bands_hz`'s answer, plus the line it justifies.
 
     ``diagnostics`` carries the journal fields the flow emits under
-    ``event=correction.crossover_v2_boost_evidence``.  They travel as data
-    rather than as a log call because this module is side-effect-free (see the
-    module docstring); the event NAME and the ``session_id`` stay with the flow,
-    which owns both.
+    ``event=correction.crossover_v2_boost_evidence``, as data rather than a log
+    call because this module is side-effect-free.
     """
 
     bands: tuple[tuple[float, float], ...]
@@ -1638,64 +1206,33 @@ def boost_excluded_bands_hz(
     disagree about a dip — so boosting one corrects nothing any listener hears
     (#1967).
 
-    **The hole this fills.**  Boost permission is granted on ``cloud is not
-    None`` (see the boost gate in
-    :func:`~.intervention.plan_linearization`), whose stated meaning is that
-    "null-exclusion stays a measured, registry-gated fact".  The registry's
-    analysis band is floored at 4 kHz, so below that edge the registry
+    The registry's analysis band is floored at 4 kHz, so below that edge it
     contributes no exclusions — not because it was uncertain but because it was
-    never asked — and the gate's claim is satisfied in form without being
-    satisfied in substance.  On the 2026-07-30 JTS3 session the registry
-    returned ``insufficient_evidence`` / ``no_corroborating_arrivals`` with zero
-    exclusions (re-derived from that session's own ``cloud_measure.json``),
-    while its largest prescribed boost was **+8.06 dB at 3633.6 Hz** — 366 Hz
-    under the floor.  That boost figure is the owner's, from the offline replay
-    recorded on issue #1967; it is quoted here rather than re-derived, and no
-    test pins it.
-
-    **What this does and, more importantly, what it does not.**  It runs
+    never asked — while a round's largest prescribed boost can sit under that
+    floor. This runs
     :func:`~jasper.audio_measurement.interference_nulls.classify_dip_position_variance`
-    over the blind span and hands the dips the cloud's own positions DISAGREE
-    about to the fit vocabulary, which refuses a lift whose realized cascade
-    would put significant gain in one.  It cannot grant boost anywhere — the
-    bound is monotone by construction (see
-    :func:`~jasper.active_speaker.linearization_fit._lift_stage`) and a
-    ``position_invariant`` dip is left exactly as the gate already had it.  That
-    asymmetry is deliberate and is not this module's call to make —
-    ``interference_nulls``' module docstring ("position-invariance says *this is
-    real*; it does not say *this is correctable*"),
-    ``docs/historical/attribution-stage-plan.md`` §5 (a finding supported only by position
-    variance stays ``unsure``, adjudicated by rotating the speaker), and
-    :mod:`jasper.attribution.promotion` (which routes ``position_invariant`` to
-    ``carve``) all refuse to read stationarity as a driver property.  So this
-    narrows the gate where the evidence decides against a boost and leaves it
-    open otherwise, which is the owner's ruling ("do not trade a blind gate for
-    a blunt one") applied rather than overridden.
+    over the blind span and hands the dips the positions DISAGREE about to the
+    fit vocabulary, which refuses a lift whose realized cascade would put
+    significant gain in one.
 
-    The residual is therefore real and named: a dip that every position sees may
-    still be a source-fixed interference null rather than a driver deficit, and
-    separating those needs the post-apply arm to ask "did this help" rather than
-    "did this match the model" (#1868).
+    It cannot GRANT boost anywhere: the bound is monotone by construction, and a
+    ``position_invariant`` dip is left exactly as the gate had it, because
+    position-invariance says a dip is real and not that it is correctable. The
+    residual is named: such a dip may still be a source-fixed interference null
+    rather than a driver deficit, and separating those needs the post-apply arm
+    (#1868).
 
-    **Know what one band costs before adding to this list.**  The fit drops any
-    boost filter whose own action region overlaps a band here — per filter, so
-    siblings working elsewhere survive, and a whole-lift refusal
-    (``lift_suppressed_reason="boost_excluded_band"``) only when EVERY boost was
-    aimed.  Skirt spill from a surviving filter is kept and disclosed rather
-    than refused.  Even so, each band here can cost a real correction, which is
-    why this returns only the positively-contradicted class and never a "we were
-    unsure here" list.
+    Each band costs a real correction — the fit drops any boost filter whose
+    action region overlaps one, per filter, with a whole-lift refusal
+    (``lift_suppressed_reason="boost_excluded_band"``) only when every boost was
+    aimed — which is why this returns only the positively-contradicted class and
+    never a "we were unsure here" list.
 
-    **Fails OPEN**, disclosed.  A span too narrow to analyse, a cloud that never
-    retained per-position curves, or an unexpected numeric failure all yield no
-    exclusions — i.e. exactly the permission the gate grants today.  Failing
-    closed would blanket-ban boost below 4 kHz on a computation hiccup, which is
-    the blunt outcome this whole function exists to avoid.
-
-    ``variance_check_failed`` is the one arm the caller must still act on: it is
-    reported in :attr:`BoostExclusion.diagnostics` so the flow can raise the
-    journal line's level, because an unexpected numeric failure is worth seeing
-    even though it is answered by failing open.
+    Fails OPEN, disclosed: a span too narrow to analyse, a cloud with no
+    per-position curves, or a numeric failure all yield no exclusions.
+    ``variance_check_failed`` is reported in
+    :attr:`BoostExclusion.diagnostics` so the flow can raise the journal line's
+    level.
     """
     from jasper.audio_measurement.interference_nulls import (
         CLASSIFICATION_POSITION_DEPENDENT,
@@ -1706,9 +1243,8 @@ def boost_excluded_bands_hz(
     n_dependent = 0
     floor_hz = float(echo_band_hz[0])
     grid = np.asarray(getattr(combined, "freqs_hz", ()), dtype=float)
-    # The cloud's own gated validity floor is the honest lower edge: below it
-    # every position's curve is a truncated-window artifact, which is the same
-    # bound the spec band already clamps to.
+    # The cloud's gated validity floor is the honest lower edge: below it every
+    # position's curve is a truncated-window artifact.
     validity_floor_hz = result.get("validity_floor_hz")
     lo_hz = float(validity_floor_hz) if validity_floor_hz else 0.0
     if grid.size:
@@ -1739,8 +1275,8 @@ def boost_excluded_bands_hz(
     return BoostExclusion(
         bands=bands,
         diagnostics={
-            # The band the corroborating registry actually adjudicated, and the
-            # span below it where it structurally could not.
+            # The band the registry adjudicated, and the span below it where
+            # it structurally could not.
             "registry_band_hz": [round(v, 3) for v in echo_band_hz],
             "registry_classification": str(registry.get("classification") or ""),
             "registry_reason": str(registry.get("reason") or ""),
@@ -1764,54 +1300,45 @@ def boost_excluded_bands_hz(
 # the cloud group: one position, and the capture it becomes
 # --------------------------------------------------------------------------- #
 
-# The named question each prompted position answers (McCarthy's mic-position
-# vocabulary, attribution-stage plan §5 promotion queue item 1). Persisted with
-# the position so the attribution stage can consume a labelled sample instead
-# of an anonymous member of an average; profile-independent, so both listening
-# profiles read the same labels.
+# The named question each prompted position answers. Persisted with the
+# position so the attribution stage consumes a labelled sample rather than an
+# anonymous member of an average; profile-independent.
 #
 #   ONAX  — inside the design-axis window (lateral offset < WIDE_OFFSET_MIN_CM)
 #   OFFAX — out at the coverage edge (lateral offset >= WIDE_OFFSET_MIN_CM)
-#   XOVR  — vertical offset: the axis the woofer/tweeter crossover lobes on,
-#           which is the mechanism M8 needs a labelled sample of
+#   XOVR  — vertical offset: the axis the woofer/tweeter crossover lobes on
 #
-# WHAT A CONSUMER MUST NOT ASSUME: a cloud carries every role. Roles come from
-# the walked PREFIX of the table, so the Full tier's 8 prompted positions
-# sample all three, but EXPRESS's 4 sample {onax, offax} ONLY — its walk stops
-# before the first vertical move. That is by design (express is the shorter
-# instrument, §1.3), so an attribution consumer reads the roles a group
-# actually has and reports the absent one as unsampled, never as null evidence.
+# A CONSUMER MUST NOT ASSUME a cloud carries every role: roles come from the
+# walked PREFIX of the table, and a short walk stops before the first vertical
+# move. An absent role is unsampled, never null evidence.
 POSITION_ROLE_ONAX = "onax"
 POSITION_ROLE_OFFAX = "offax"
 POSITION_ROLE_XOVR = "xovr"
 POSITION_ROLES = (POSITION_ROLE_ONAX, POSITION_ROLE_OFFAX, POSITION_ROLE_XOVR)
-#
+
 # The mark distance the CHECK screen asks for ("about 1 m in front of the
-# speaker"). It is the reference length that turns this flow's lateral OFFSETS
-# into the BEARINGS a positioner can act on, so it lives beside them rather than
-# only inside that sentence.
+# speaker") — the reference length that turns this flow's lateral OFFSETS into
+# the BEARINGS a positioner can act on.
 MARK_DISTANCE_M = 1.0
-#: The pose a capture with no prompted move of its own was taken at — every
-#: one of them (CHECK, MEASURE, the entry baseline, stage 2's anchor) is a
-#: design-axis capture, which is the same fact :func:`_entry_policy` states to
-#: the position gate when it is handed no prompt.
+
+#: The pose a capture with no prompted move of its own was taken at.
 _DESIGN_AXIS_GEOMETRY = PositionGeometry(
     axis=POSITION_AXIS_HORIZONTAL,
     degrees=0,
     mark_distance_m=MARK_DISTANCE_M,
 )
+
+
 @dataclass(frozen=True)
 class _CloudPosition:
     """One accepted position inside a group, retained for the group-end combine.
 
-    ``response`` is the capture's ``ProgramAnalysis.summed_response`` — a
-    ``program_analysis.DriverResponse`` carrying the calibrated, reflection-gated
-    magnitude on a linear (rfftfreq) grid plus the matching complex TF. Holding
-    the response rather than a pre-built
-    :class:`~jasper.audio_measurement.spatial_combine.PositionCapture` is
-    deliberate: PR-4 needs the same object for the per-position work the null
-    gate and the spec curve do, and re-deriving it from a lossy intermediate
-    would be the drift this seam exists to prevent.
+    ``response`` is the capture's ``ProgramAnalysis.summed_response``, carrying
+    the calibrated, reflection-gated magnitude on a linear (rfftfreq) grid plus
+    the matching complex TF. Held as the response rather than a pre-built
+    :class:`~jasper.audio_measurement.spatial_combine.PositionCapture` because
+    the per-position work the null gate and the spec curve do needs the same
+    object, and re-deriving it from a lossy intermediate would drift.
     """
 
     position_id: str
@@ -1823,58 +1350,37 @@ class _CloudPosition:
     response: Any
     sample_rate_hz: int
     # The named question this position answers (:data:`POSITION_ROLES`), copied
-    # off the prompt the operator was actually given. Persisted with the
-    # position so the attribution stage reads a labelled sample rather than an
-    # anonymous member of an average (attribution-stage plan §5 promotion queue
-    # item 1). Defaulted so every construction site that predates roles — the
-    # corpus and unit fixtures — stays valid unchanged.
+    # off the prompt the operator was given. Defaulted so construction sites
+    # that predate roles stay valid.
     role: str = POSITION_ROLE_ONAX
     # WHERE the microphone was, carried off the SAME prompt ``role`` and
-    # ``wide`` come from (owner ruling, 2026-08-24). Held on the position
-    # rather than re-derived at retention: a geometry retake shows a different
-    # prompt than the table's, and a second derivation from the index would
-    # state the spot the operator was told to abandon.
-    #
-    # Defaulted to the design axis so every construction site that predates it
-    # — the corpus and unit fixtures — stays valid unchanged, exactly as
-    # ``role`` above is. That default is the honest one for a fixture: a
-    # position built without a pose is one nobody moved.
+    # ``wide`` come from. Held on the position rather than re-derived at
+    # retention: a geometry retake shows a different prompt than the table's,
+    # and a derivation from the index would state the spot the operator was
+    # told to abandon. Defaulted to the design axis, which is honest for a
+    # fixture: a position built without a pose is one nobody moved.
     geometry: PositionGeometry = _DESIGN_AXIS_GEOMETRY
-    # PR-4: the contract-derived analysis bands this position's GROUP should be
-    # combined/searched with — spatial_combine.combine_positions's own
-    # ``echo_band_hz`` / ``signal_band_hz`` kwargs, echoed here rather than
-    # threaded as a separate call-site argument. Carrying them on the position
-    # (every position in one group shares the same session-derived values —
-    # see ``CrossoverV2Session.__init__``) is what lets
-    # :func:`combine_cloud_positions` derive the right bands from
-    # ``positions`` alone, with no caller (``_close_cloud_group``'s single
-    # combine, ``cloud_geometry_verdict``'s convenience wrapper) needing to
-    # pass them explicitly or risk two call sites drifting apart.
-    # ``None`` means "use the module defaults" — the pre-PR-4 behaviour, still
-    # exercised by every corpus/unit test that builds a ``_CloudPosition``
-    # without these two kwargs.
+    # The contract-derived analysis bands this position's GROUP is
+    # combined/searched with — ``spatial_combine.combine_positions``' own
+    # kwargs. Every position in one group shares the same session-derived
+    # values, so carrying them here lets :func:`combine_cloud_positions` derive
+    # the bands from ``positions`` alone and no two call sites can drift.
+    # ``None`` means the module defaults.
     echo_band_hz: tuple[float, float] | None = None
     signal_band_hz: tuple[float, float] | None = None
+
+
 def cloud_position_capture(position: _CloudPosition) -> Any:
     """One retained position → a :class:`spatial_combine.PositionCapture`.
 
-    **The PR-4 seam.** PR-3b calls the combiner for one thing — the geometry
-    verdict — but the input assembly is the whole assembly, so PR-4's wider
-    pipeline (``identify_interference_nulls`` → ``evaluate_flat_spec``) extends
-    the consumer, never this builder.
-
     Regime of the ``ir`` field, stated exactly because ``detect_echo``'s answer
-    depends on it: it is the inverse rFFT of the response's **gated, calibrated**
-    complex transfer function — i.e. the impulse response AFTER
-    ``deconv.direct_arrival_window`` and the adaptive reflection gate that
-    ``program_analysis._driver_response`` applies, not the raw deconvolved IR.
-    The direct arrival is therefore present (the window places it at a fixed
-    pre-offset) and early secondary arrivals inside the gate survive, which is
-    the region ``detect_echo`` windows itself down to; LATE room reflections
-    beyond the gate are gone by construction. The S0 forensics ran the detector
-    on the ungated IR instead — ``tests/test_crossover_v2_cloud_geometry_corpus.py``
-    is the measurement that the two agree on the S0 corpus's geometry verdict,
-    rather than an assumption that they must.
+    depends on it: it is the inverse rFFT of the response's GATED, CALIBRATED
+    complex transfer function — the impulse response after
+    ``deconv.direct_arrival_window`` and the adaptive reflection gate, not the
+    raw deconvolved IR. The direct arrival is present and early secondary
+    arrivals inside the gate survive; late room reflections beyond the gate are
+    gone by construction. ``tests/test_crossover_v2_cloud_geometry_corpus.py``
+    measures that this agrees with the ungated IR on the S0 corpus's verdict.
     """
     from jasper.audio_measurement.spatial_combine import PositionCapture
 
@@ -1883,8 +1389,8 @@ def cloud_position_capture(position: _CloudPosition) -> Any:
     magnitude = np.asarray(response.magnitude_db, dtype=float)
     complex_tf = np.asarray(response.complex_tf)
     # ``program_analysis._n_fft_for`` always returns a power of two (>= 8192),
-    # so the analysis grid is an even-length rfft and ``n = 2*(bins-1)``
-    # inverts it exactly rather than approximately.
+    # so the analysis grid is an even-length rfft and ``n = 2*(bins-1)`` inverts
+    # it exactly.
     ir = np.fft.irfft(complex_tf, n=2 * (complex_tf.size - 1))
     return PositionCapture(
         position_id=position.position_id,
@@ -1892,13 +1398,9 @@ def cloud_position_capture(position: _CloudPosition) -> Any:
         magnitude_db=magnitude,
         sample_rate=int(position.sample_rate_hz),
         ir=ir,
-        # §4.2's one line. The role was written to the position RECORD and the
-        # persisted row and read by nothing analytical — the combiner's only
-        # per-position struct dropped it here, so nothing that decides or
-        # remembers a round ever saw a position's KIND. Carrying it changes no
-        # combination (the reduction stays unweighted; see
-        # ``PositionCapture.role``) and is what lets the per-position residual
-        # say "on-axis" rather than "position 3".
+        # Carrying the role changes no combination (the reduction stays
+        # unweighted) and is what lets the per-position residual say "on-axis"
+        # rather than "position 3".
         role=str(position.role or ""),
     )
 
@@ -1908,15 +1410,10 @@ def _geometry_verdict_from_combined(
 ) -> dict[str, Any]:
     """The geometry-verdict dict from an ALREADY-COMBINED result.
 
-    Split out of :func:`cloud_geometry_verdict` (S3 review finding,
-    2026-07-26) so :meth:`CrossoverV2Session._close_cloud_group` can
-    combine a group's positions exactly ONCE and derive both the retry-gating
-    verdict and the honest-instrument pipeline from that ONE object, rather
-    than each deriving its own combine. A plain JSON-native dict, because the
-    host persists it verbatim into the durable v2 state. ``locked`` is
-    ``False`` on every degraded path — but the ``reason`` says WHICH degraded
-    path, so "no credible echo estimates" never reads the same as "the cloud
-    combined and its nulls move".
+    Separate from :func:`cloud_geometry_verdict` so a caller can combine a
+    group exactly ONCE and derive both the retry gate and the pipeline from that
+    one object. A plain JSON-native dict, because the host persists it verbatim.
+    ``locked`` is ``False`` on every degraded path, and ``reason`` says which.
     """
     if combined is None:
         return {
@@ -1941,11 +1438,9 @@ class CloudCombine:
     """:func:`combine_cloud_positions`'s answer, plus the line a failure earns.
 
     ``diagnostics`` carries the journal fields the flow emits under
-    ``event=correction.crossover_v2_cloud_combine_failed``, and is ``None``
-    when there was nothing to say.  They travel as data rather than as a log
-    call because this module is side-effect-free (see the module docstring);
-    the event NAME and the ``session_id`` stay with the flow, which owns both.
-    Same shape as :class:`BoostExclusion`, for the same reason.
+    ``event=correction.crossover_v2_cloud_combine_failed``, ``None`` when there
+    was nothing to say, as data rather than a log call because this module is
+    side-effect-free.
     """
 
     combined: Any | None
@@ -1966,32 +1461,20 @@ class CloudVerdict:
 
 
 def combine_cloud_positions(positions: Sequence[_CloudPosition]) -> CloudCombine:
-    """Assemble a closed group and combine it — the whole PR-4 seam.
+    """Assemble a closed group and combine it.
 
     ``CloudCombine.combined`` is a
     :class:`~jasper.audio_measurement.spatial_combine.CombinedResponse`, or
-    ``None`` when the group cannot be combined (no positions, or a malformed
-    one).  Called exactly ONCE per group-close event, from
-    ``CrossoverV2Session._close_cloud_group``: PR-3b reads one field off the
-    result (``geometry``, via :func:`_geometry_verdict_from_combined`); PR-4's
-    pipeline (``assemble_cloud_group_result``) reads the rest of the SAME
-    object.  Never a second combine — see S3 review finding (2026-07-26): an
-    earlier revision of this wiring called this function TWICE per close
-    attempt (once through :func:`cloud_geometry_verdict` for the retry gate,
-    once more from the pipeline) — measured seconds-per-combine (3-6 s across
-    runs/hosts on the S0 ten-position corpus; interpreter-bound
-    ``smooth_fractional_octave``, worse on a Pi 5 — N2 review finding,
-    2026-07-27: an earlier "5.6-6.2 s" point figure did not reproduce across
-    hosts, so this states the regime instead of a false-precision number).
-    :data:`GEOMETRY_RETRY_POSITIONS` allows up to 3 close attempts per group
-    (2 retries + the accepting close), so the pre-fix worst case was 3 × 2 =
-    6 combines, not the earlier "4x" claim — real operator seconds for a
-    claim (byte-for-byte determinism) that was true but not worth paying for.
+    ``None`` when the group cannot be combined. Call it exactly ONCE per
+    group-close event and derive both the geometry verdict and the pipeline from
+    that one object: the combine is 3-6 s across runs and hosts on the S0
+    ten-position corpus (interpreter-bound ``smooth_fractional_octave``, worse
+    on a Pi 5), and :data:`GEOMETRY_RETRY_POSITIONS` allows up to three close
+    attempts per group.
 
-    Never raises.  A group's captures are already-accepted evidence and a
-    combiner failure must not retroactively fail them, so an unusable cloud is
-    a ``None`` the caller turns into an honest "unknown" rather than an
-    exception that would strand the session.
+    Never raises: a group's captures are already-accepted evidence, so an
+    unusable cloud is a ``None`` the caller turns into an honest "unknown"
+    rather than an exception that would strand the session.
     """
     from jasper.audio_measurement.spatial_combine import (
         DEFAULT_ECHO_BAND_HZ,
@@ -2000,12 +1483,9 @@ def combine_cloud_positions(positions: Sequence[_CloudPosition]) -> CloudCombine
 
     if not positions:
         return CloudCombine(None)
-    # Every position in one group carries the SAME session-derived bands
-    # (set once at construction — see ``_CloudPosition``'s docstring), so
-    # reading them off the first position is reading the group's own bands,
-    # not an arbitrary one.  ``None`` (a position built before PR-4, or by a
-    # caller that never declared a driver contract) falls back to the
-    # module's own long-standing default, unchanged from pre-PR-4 behaviour.
+    # Every position in one group carries the SAME session-derived bands, so
+    # reading them off the first is reading the group's own. ``None`` (a caller
+    # that declared no driver contract) falls back to the module default.
     echo_band_hz = positions[0].echo_band_hz or DEFAULT_ECHO_BAND_HZ
     signal_band_hz = positions[0].signal_band_hz
     try:
@@ -2021,27 +1501,16 @@ def combine_cloud_positions(positions: Sequence[_CloudPosition]) -> CloudCombine
 
 
 def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> CloudVerdict:
-    """PR-3b's one use of the combiner: combine, then read ``.geometry``.
+    """Combine, then read ``.geometry``.
 
-    A convenience wrapper around :func:`combine_cloud_positions` +
-    :func:`_geometry_verdict_from_combined` for callers that only have
-    ``positions`` (the corpus acceptance test; any future direct caller) —
-    the session itself does NOT call this (see
-    ``CrossoverV2Session._close_cloud_group``'s own single combine).
+    A convenience wrapper for callers that only have ``positions``; the session
+    does NOT call this, because it combines once and derives both answers.
 
-    **Reason-string divergence, documented not silently left (N4 review
-    finding, 2026-07-27).**  An empty ``positions`` short-circuits HERE with
-    ``reason="no_positions"`` before ever reaching the combiner, while
-    :func:`_geometry_verdict_from_combined` called directly with a
-    ``combined=None`` and ``n_positions=0`` (e.g. because
-    :func:`combine_cloud_positions` was handed an empty group some other way)
-    reports ``reason="combine_failed"`` for the exact same "there were zero
-    positions" fact.  Unreachable through the session today (a group only
-    closes with at least its just-captured position already retained), but
-    the two functions disagree on naming WHICH degraded path a caller hit —
-    the entire point of a ``reason`` field — so this wrapper owns disclosing
-    the split rather than leaving a future reader to discover it by diffing
-    the two bodies.
+    Reason-string divergence, disclosed: an empty ``positions`` short-circuits
+    here with ``reason="no_positions"``, while
+    :func:`_geometry_verdict_from_combined` called directly with
+    ``combined=None`` and ``n_positions=0`` reports ``combine_failed`` for the
+    same fact.
     """
     if not positions:
         return CloudVerdict(
@@ -2058,77 +1527,47 @@ def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> CloudVerdict:
 # THE GROUP CLOSE — what a closed cloud is worth, once
 # --------------------------------------------------------------------------- #
 #
-# Everything above answers "is this ONE take evidence".  This section answers
-# the question the group close asks next: given every retained position, what
-# did the cloud measure, what did the honesty instruments carve out of it, and
-# what is the resulting spec verdict.  It lived in ``crossover_v2_flow`` until
-# wave 3 rank 2; it sits here because its inputs are this module's own
-# ``_CloudPosition`` group and :func:`combine_cloud_positions`' answer, and
-# splitting a reduction from the objects it reduces is what made the flow a god
-# file.
+# Everything above answers "is this ONE take evidence". This section answers
+# what the group close asks next: given every retained position, what did the
+# cloud measure, what did the honesty instruments carve out of it, and what is
+# the resulting spec verdict.
 #
-# **The "no household vocabulary" rule above is about REFUSALS and is intact.**
-# A screen still leaves as a kind from :data:`SCREEN_KINDS` and something else
-# maps it to household copy.  What this section carries is DISCLOSURE copy on a
-# group result — sentences about what an instrument carved out, which have no
-# refusal code to route through and no other owner; they arrived with
-# ``carve_outs_by_band`` and ``assemble_cloud_group_result``, which are their
-# only callers.
-
-# --------------------------------------------------------------------------- #
-# PR-4: contract-derived analysis bands + the live-flow honesty pipeline
-# --------------------------------------------------------------------------- #
+# The "no household vocabulary" rule is about REFUSALS and is intact. What this
+# section carries is DISCLOSURE copy on a group result — sentences about what an
+# instrument carved out, which have no refusal code to route through.
 #
-# docs/historical/linearization-campaign-2026-07.md, PR-4: "The echo/detector
-# band and PR-2's signal_band_hz derive from the declared contract: the
-# summed system's swept band (RoleBand.band as composed) for the passband;
-# the tweeter's usable_frequency_range_hz / measurement_band_hz for the upper
-# echo band -- replacing DEFAULT_ECHO_BAND_HZ's flat constant at the call
-# site." This section is that derivation, plus the single result-assembly
-# function issue #1742 item 4 asks for.
+# The echo/detector band and ``signal_band_hz`` derive from the declared
+# contract: the summed system's swept band for the passband, the tweeter's
+# measurement band for the upper echo band.
 
-# Cloud curves decimated for persistence (bundle cloud.json + the durable v2
-# state's compact cloud block) -- mirrors
-# jasper.web.correction_crossover_v2.MAX_PERSISTED_SUM_POINTS (512), which
-# this module cannot import without a circular dependency (that module
-# imports THIS one). Kept as an independent constant rather than a shared one
-# for that reason; if the two ever need to diverge, they now can.
+# Cloud curves decimated for persistence. Mirrors
+# :data:`~.durable_state.MAX_PERSISTED_SUM_POINTS` as an independent constant,
+# so the two may diverge.
 CLOUD_CURVE_MAX_JSON_POINTS = 512
 
 
 @dataclass(frozen=True)
 class _CloudEchoBand:
     """The echo/null analysis band the pipeline will APPLY, plus how it was
-    derived -- one value, so the band and its provenance cannot be carried
-    (or persisted) apart from each other.
+    derived — one value, so band and provenance cannot be carried apart.
 
-    ``band_hz`` is what the detector actually runs on. ``derived_lo_hz`` is
-    the lower edge the declared contract produced BEFORE the HF-regime clamp
-    (equal to ``band_hz[0]`` whenever no clamp happened), so a reader can
-    always tell a contract-derived band from a clamped one **without** the
-    journal -- the honesty rule issue #1763 turned into a requirement.
-    ``source`` names WHICH derivation path produced the band, because
-    "the module default" means something different when nothing was declared
-    than when a clamp could not produce a usable band:
+    ``band_hz`` is what the detector runs on. ``derived_lo_hz`` is the lower
+    edge the declared contract produced BEFORE the HF-regime clamp, so a reader
+    can tell a contract-derived band from a clamped one without the journal
+    (#1763). ``source`` names which derivation path produced the band:
 
-    * ``declared`` -- the tweeter's declared ``measurement_band_hz``,
-      possibly narrowed by the passband containment clamp, possibly raised
-      by the HF-regime clamp (``hf_regime_clamped`` tells which).
-    * ``undeclared_default`` -- no measurement band was threaded through, so
-      ``DEFAULT_ECHO_BAND_HZ`` stands in (pre-PR-4 behaviour, unchanged).
-    * ``clamp_degenerate_default`` -- the HF clamp would have left a band too
-      narrow for the detector to resolve anything in (see
-      :func:`_min_clamped_echo_band_width_hz`), so ``DEFAULT_ECHO_BAND_HZ``
-      stands in instead.
-    * ``passband_fallback`` -- the declared band sits entirely outside the
-      composed passband, so the passband itself stands in.
+    * ``declared`` — the tweeter's ``measurement_band_hz``, possibly narrowed by
+      the passband containment clamp or raised by the HF-regime clamp
+      (``hf_regime_clamped`` tells which).
+    * ``undeclared_default`` — no measurement band was threaded through, so
+      ``DEFAULT_ECHO_BAND_HZ`` stands in.
+    * ``clamp_degenerate_default`` — the HF clamp would have left a band too
+      narrow to resolve anything in (:func:`_min_clamped_echo_band_width_hz`).
+    * ``passband_fallback`` — the declared band sits entirely outside the
+      composed passband, so the passband stands in.
 
-    ``diagnostics`` carries the journal fields the flow emits, and is ``None``
-    on the ordinary path where there is nothing to say.  They travel as data
-    rather than as a log call because this module is side-effect-free (see the
-    module docstring); the event NAME and its level stay with the flow, which
-    picks them off ``source`` and ``hf_regime_clamped``.  Same shape as
-    :class:`BoostExclusion` and :class:`CloudCombine`, for the same reason.
+    ``diagnostics`` carries the journal fields the flow emits, ``None`` when
+    there is nothing to say, as data because this module is side-effect-free.
     """
 
     band_hz: tuple[float, float]
@@ -2140,9 +1579,8 @@ class _CloudEchoBand:
     def disclosure(self) -> dict[str, Any]:
         """The JSON-native provenance block the pipeline payload carries.
 
-        Deliberately does NOT repeat ``band_hz``: the payload already
-        publishes the applied band as ``echo_band_hz``, and two copies of one
-        pair is how they come to disagree.
+        Deliberately does NOT repeat ``band_hz``: the payload already publishes
+        the applied band as ``echo_band_hz``.
         """
         return {
             "source": self.source,
@@ -2156,35 +1594,17 @@ def _min_clamped_echo_band_width_hz() -> float:
     """The narrowest band the HF-regime clamp may hand the detector, derived
     from the DETECTOR's own constants rather than picked.
 
-    ``detect_echo``'s quefrency step is ``resolution_us = 1e6 / bandwidth``,
-    and two of its gates are multiples of that step: the searched window's
-    edge margin (``WINDOW_EDGE_MARGIN_STEPS``, one step above
-    ``search_us[0]``) and -- independently of the window --
-    ``assess_geometry``'s refusal to cluster any estimate whose ``tau_us``
-    is below ``GEOMETRY_MIN_RESOLUTION_STEPS * resolution_us``. The geometry
-    floor is the binding one, and once it reaches the TOP of the searched
-    window no delay the detector is allowed to look for can be clustered at
-    all, so the band cannot produce a geometry lock however good the room is:
+    ``detect_echo``'s quefrency step is ``resolution_us = 1e6 / bandwidth``, and
+    ``assess_geometry`` refuses to cluster any estimate whose ``tau_us`` is
+    below ``GEOMETRY_MIN_RESOLUTION_STEPS * resolution_us``. Once that floor
+    reaches the TOP of the searched window no delay can be clustered at all:
 
         GEOMETRY_MIN_RESOLUTION_STEPS * 1e6 / DEFAULT_ECHO_SEARCH_US[1]
-          = 3.0 * 1e6 / 800 us
-          = 3750 Hz
+          = 3.0 * 1e6 / 800 us = 3750 Hz
 
-    (The edge margin's own bound is 1.0 * 1e6 / (800 - 120) us => 1470 Hz,
-    i.e. slacker, which is why the geometry floor is the one to read.
-    ``DEFAULT_ECHO_SEARCH_US`` is the right window to read because this
-    program's ``combine_positions`` call passes no ``echo_search_us``, so the
-    default window is the one actually searched.)
-
-    This dominates the detector's other width constraint,
-    ``MIN_ECHO_BAND_BINS`` (16 bins of ``detect_echo``'s own FFT): that FFT
-    is floored at 4096 points, so at this program's 48 kHz the coarsest bin
-    spacing is 11.72 Hz and 16 bins need only 15 * 11.72 = 175.8 Hz -- 21x
-    narrower than the bound above. One rule is therefore enough: a band that
-    clears this floor clears the bin-count refusal too.
-
-    Derived rather than hard-coded so a change to either detector constant
-    moves this bound with it instead of leaving a stale literal behind.
+    The searched window's own edge margin bounds at ~1470 Hz, i.e. slacker, and
+    ``MIN_ECHO_BAND_BINS`` needs only ~176 Hz at 48 kHz, so this floor is the
+    binding one and clearing it clears both.
     """
     from jasper.audio_measurement.spatial_combine import (
         DEFAULT_ECHO_SEARCH_US,
@@ -2198,59 +1618,34 @@ def _derive_cloud_echo_band_hz(
     signal_band_hz: tuple[float, float],
     tweeter_measurement_band_hz: tuple[float, float] | None,
 ) -> _CloudEchoBand:
-    """The contract-derived echo/null analysis band (PR-4): the tweeter's
-    declared ``measurement_band_hz``, replacing ``DEFAULT_ECHO_BAND_HZ``'s
-    flat constant at this call site -- returned WITH its provenance (see
-    :class:`_CloudEchoBand`).
+    """The contract-derived echo/null analysis band: the tweeter's declared
+    ``measurement_band_hz``, returned WITH its provenance
+    (:class:`_CloudEchoBand`).
 
-    Falls back to ``DEFAULT_ECHO_BAND_HZ`` when the tweeter's measurement
-    band was not threaded through (an older/incomplete confirmed profile) --
-    that constant is the module's own long-standing default, not a new
-    invention, and every existing corpus test that validated
-    ``identify_interference_nulls`` against the S0 corpus did so at exactly
-    this band (``S0_BAND_HZ`` in ``tests/test_interference_nulls.py``).
+    Falls back to ``DEFAULT_ECHO_BAND_HZ`` when no tweeter measurement band was
+    threaded through — the band every corpus test validated
+    ``identify_interference_nulls`` at.
 
-    **Containment (inherited PR-2/PR-6a constraint):** clamped to sit INSIDE
-    ``signal_band_hz`` (the derived passband), never wider. A band that
-    neither contains nor sits clear of the analysis band leaves
+    Containment: clamped to sit INSIDE ``signal_band_hz``, never wider. A band
+    that neither contains nor sits clear of the analysis band leaves
     ``detect_echo``'s signal-presence screen uncalibrated
-    (``spatial_combine.BAND_BELOW_PASSBAND_MARGIN_DB``'s docstring: "What is
-    NOT calibrated: a passband narrower than the analysis band, or
-    overlapping it"). Since ``signal_band_hz`` is the union of BOTH roles'
-    excitation bands (always at least as wide as one driver's own
-    measurement window in the ordinary 2-way case -- the woofer's lower edge
-    sits well below the tweeter's, and the tweeter's own excitation ceiling
-    upper edge is never narrower than its measurement band, per
-    ``resolve_driver_excitation_ceilings``'s "Band-edge asymmetry" rule),
-    this clamp is a no-op for every declared contract exercised by this
-    program's tests and only bites a genuinely malformed one.
+    (``spatial_combine.BAND_BELOW_PASSBAND_MARGIN_DB``). Since
+    ``signal_band_hz`` is the union of both roles' excitation bands, the clamp
+    is a no-op for any well-formed 2-way contract.
 
-    **HF regime (issue #1763):** when the contained lower edge sits below
-    :data:`ECHO_BAND_HF_REGIME_FLOOR_HZ`, it is RAISED to that floor and the
-    clamp is disclosed -- the returned provenance, plus the WARNING event the
-    flow emits from ``diagnostics`` (slug suffix
-    ``cloud_echo_band_clamped_to_hf_regime``), so neither a journal reader nor
-    a payload reader has to infer it from the band alone. The contract's
-    upper edge is kept: the floor is a statement about where the detector's
-    calibrations hold, not about how wide the driver's window is. See
-    :data:`ECHO_BAND_HF_REGIME_FLOOR_HZ`'s own comment for the six-band
-    deficit table behind the number, and for why PR-4's disclose-and-proceed
-    design was replaced.
+    HF regime (#1763): a contained lower edge below
+    :data:`ECHO_BAND_HF_REGIME_FLOOR_HZ` is RAISED to that floor and the clamp
+    disclosed, in the provenance and in the WARNING event the flow emits from
+    ``diagnostics``. The contract's upper edge is kept: the floor says where the
+    detector's calibrations hold, not how wide the driver's window is.
 
-    **When the clamp cannot produce a usable band** -- the surviving width
-    ``upper - floor`` is below :func:`_min_clamped_echo_band_width_hz` -- the
-    band falls back to ``DEFAULT_ECHO_BAND_HZ`` with its own disclosure
-    rather than to a stub the detector would refuse everything in. That trade
-    is stated rather than glossed: the default is NOT re-clamped into the
-    passband, so in this corner the band can sit outside a pathologically low
-    passband and leave the signal-presence screen's deficit statistic
-    uncalibrated. That is the lesser loss -- an uncontained band still runs
-    both estimators, whereas a band too narrow to resolve any delay in the
-    searched window makes every number downstream meaningless. It is also
-    unreachable from any plausible contract: it needs
-    ``min(declared_upper, passband_upper)`` below 7750 Hz, i.e. a "tweeter"
-    (or a whole 2-way system) that is not swept into the top three octaves --
-    the same malformed-contract family as the passband fallback below.
+    When the clamp cannot produce a usable band — surviving width below
+    :func:`_min_clamped_echo_band_width_hz` — the band falls back to
+    ``DEFAULT_ECHO_BAND_HZ`` with its own disclosure. That fallback is NOT
+    re-clamped into the passband, so it can leave the signal-presence screen
+    uncalibrated; that is the lesser loss against a band too narrow to resolve
+    any delay, and it needs ``min(declared_upper, passband_upper)`` below
+    7750 Hz to reach at all.
     """
     from jasper.audio_measurement.spatial_combine import DEFAULT_ECHO_BAND_HZ
 
@@ -2259,11 +1654,10 @@ def _derive_cloud_echo_band_hz(
     lo = max(float(band[0]), float(signal_band_hz[0]))
     hi = min(float(band[1]), float(signal_band_hz[1]))
     if lo >= hi:
-        # A genuinely malformed declared contract -- the tweeter's own
-        # measurement band sits entirely outside the composed passband.
-        # Fall back to the passband itself rather than hand a caller an
-        # inverted/degenerate pair that would raise deep inside
-        # combine_positions with no context about why.
+        # A malformed declared contract: the tweeter's measurement band sits
+        # entirely outside the composed passband. Fall back to the passband
+        # rather than hand back an inverted pair that would raise deep inside
+        # combine_positions with no context.
         return _CloudEchoBand(
             band_hz=(float(signal_band_hz[0]), float(signal_band_hz[1])),
             source="passband_fallback",
@@ -2290,8 +1684,7 @@ def _derive_cloud_echo_band_hz(
                 },
             )
         # ``clamped_lo_hz`` equals ``floor_hz`` by construction; both are
-        # logged so a journal reader does not have to know that to read the
-        # line.
+        # logged so a journal reader need not know that.
         return _CloudEchoBand(
             band_hz=(ECHO_BAND_HF_REGIME_FLOOR_HZ, hi),
             source="declared" if declared else "undeclared_default",
@@ -2317,20 +1710,10 @@ def _decimate_curve_for_json(
     """Stride-decimate one combined curve to at most
     :data:`CLOUD_CURVE_MAX_JSON_POINTS`, for disclosure only.
 
-    **No longer the same shape as ``_decimate_sum`` (issue #1858).** Before
-    that fix this mirrored ``jasper.web.correction_crossover_v2._decimate_sum``
-    exactly (floor-division stride, identity when already short enough) so
-    the two persisted curve payloads read the same way to a consumer.
-    ``_decimate_sum`` now block-averages instead, because its input
-    (``conductor.measure_predicted_sum``) is the RAW, unsmoothed prediction
-    and a stride over that aliases below ~500 Hz. This function's input,
-    ``combined.power_mean_spec_db``, has already been through
-    ``smooth_fractional_octave`` inside :func:`combine_positions` before it
-    ever reaches here, so a plain stride over an already-smoothed curve does
-    not reintroduce that failure mode -- the two callers start from
-    differently-prepared curves, which is why one still strides and the
-    other no longer does. ``freqs_hz`` and ``magnitude_db`` remain
-    identity-shaped (floor-division stride) either way.
+    A plain stride is safe here, unlike in ``durable_state._decimate_sum``,
+    because this input (``combined.power_mean_spec_db``) has already been
+    through ``smooth_fractional_octave`` inside :func:`combine_positions`; a
+    stride over a raw unsmoothed prediction aliases below ~500 Hz (#1858).
     """
     n = len(freqs_hz)
     step = max(1, n // CLOUD_CURVE_MAX_JSON_POINTS)
@@ -2341,22 +1724,13 @@ def _decimate_curve_for_json(
 
 
 def _geometry_guidance_copy(geometry: Mapping[str, Any]) -> str:
-    """Plain-language "spread the mic further" guidance from a geometry
-    verdict dict (:func:`cloud_geometry_verdict`'s own shape) -- the
-    household-facing surface issue #1742 item 2 asked for. Recorded since
-    PR-3b (the durable v2 state's ``cloud`` block, ``GEOMETRY_RETRY_POSITIONS``'s
-    own comment). PR-4 carries this copy onto the envelope and `/state`
-    (`crossover_v2_status_block`'s compact projection); no household-facing
-    surface renders it yet (zero JS/asset changes in PR-4) -- PR-7 renders
-    it.
+    """Plain-language "spread the mic further" guidance from a geometry verdict
+    dict (:func:`cloud_geometry_verdict`'s shape).
 
-    Softened, never suppressed, when ``thin_evidence`` -- and the softened
-    copy names the qualitative floor ("the bare minimum of positions"),
-    never a discrete number or a percentage, because thin_evidence is a
-    cliff at an exact confident-estimate count, not a gradient
-    (spatial_combine.GeometryLock's own docstring) -- naming the actual
-    count would read as a gradient the instrument does not claim. Empty
-    string when not locked -- nothing to say.
+    Softened, never suppressed, when ``thin_evidence``, and the softened copy
+    names the qualitative floor rather than a count: ``thin_evidence`` is a
+    cliff at an exact confident-estimate count, so naming it would read as a
+    gradient the instrument does not claim. ``""`` when not locked.
     """
     if not geometry.get("locked"):
         return ""
@@ -2375,37 +1749,24 @@ def _geometry_guidance_copy(geometry: Mapping[str, Any]) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Carve-out disclosure (owner decision 1, 2026-07-25; plan PR-6b)
+# Carve-out disclosure
 #
-# The owner's decision of record: identified interference nulls are excluded
-# from spec evaluation AND from correction, the band's tolerance applies to the
-# SURVIVING envelope, and "the report discloses 'EQ cannot fill these' with the
-# numbers." ``evaluate_flat_spec`` already does the excluding -- the masked bins
-# leave both the reference level and every band's deviation. What it does not
-# do, and must not, is say WHY: it is a pure evaluator that takes a bool mask
-# and holds no product policy (its own module docstring). So the "why" is
-# assembled here, in the wiring layer that already holds the registry and the
-# spec report side by side, next to ``_geometry_guidance_copy`` -- the other
-# household-facing copy derived from a pipeline verdict.
-#
-# **This module owns the carve-out copy strings; PR-7 renders them.** One
-# owner, so a chart callout and the envelope's expert disclosure cannot say
-# different things about the same carved range.
+# Identified interference nulls are excluded from spec evaluation AND from
+# correction, the band's tolerance applies to the SURVIVING envelope, and the
+# report discloses "EQ cannot fill these" with the numbers.
+# ``evaluate_flat_spec`` does the excluding but must not say WHY — it is a pure
+# evaluator holding no product policy — so the "why" is assembled here. This
+# module is the one owner of the carve-out copy strings, so a chart callout and
+# the envelope's expert disclosure cannot disagree about one carved range.
 # --------------------------------------------------------------------------- #
 
-# Which honesty instrument carved a range. Snake_case and self-identifying,
-# mirroring the vocabulary rule interference_nulls.py states for its own slugs.
+# Which honesty instrument carved a range.
 CARVE_OUT_SOURCE_IDENTIFIED_NULL = "identified_null"
 CARVE_OUT_SOURCE_POSITION_SCREEN = "position_screen"
 
 
 def _format_carve_out_hz(hz: float) -> str:
-    """One frequency as household copy — kHz at and above 1 kHz, Hz below.
-
-    Deliberately NOT the ``f"{hz:.0f} Hz"`` form the envelope's flatness lines
-    use: those quote a single worst bin, while these copy strings list several
-    frequencies in one sentence, where five-digit Hz figures read as noise.
-    """
+    """One frequency as household copy — kHz at and above 1 kHz, Hz below."""
     return f"{hz / 1000.0:.1f} kHz" if hz >= 1000.0 else f"{hz:.0f} Hz"
 
 
@@ -2421,21 +1782,16 @@ def _join_carve_out_phrases(parts: Sequence[str]) -> str:
 
 
 def _null_classification_copy(classification: str) -> str:
-    """The classification's own household sentence, or ``""`` for a
-    classification this copy does not cover.
+    """The classification's own household sentence, or ``""`` for one this copy
+    does not cover.
 
-    **The ``position_invariant`` wording is load-bearing and pre-registered**
-    (plan PR-1's classification vocabulary, PR-7's callout copy): a single
-    session cannot separate "travels with the speaker" from "a path in the room
-    that did not change while measuring", and the output must not claim it can
-    — S0 separated them only by MOVING the speaker. So the copy names both and
-    names the experiment that would tell them apart.
+    The ``position_invariant`` wording is load-bearing: a single session cannot
+    separate "travels with the speaker" from "a path in the room that did not
+    change while measuring", so the copy names both and names the experiment
+    that would tell them apart.
 
-    No hardware noun appears here, in either branch. The classification is
-    evidence about how a null behaved across a mic cloud; it is not evidence
-    about what part of a speaker or room produced it, and naming one would be
-    the device-taxonomy guess this program forbids in shipped copy (the JTS3
-    rim-wave attribution is session knowledge, not measured general truth).
+    No hardware noun appears in either branch. The classification is evidence
+    about how a null behaved across a mic cloud, not about what produced it.
     """
     from jasper.audio_measurement.interference_nulls import (
         CLASSIFICATION_POSITION_DEPENDENT,
@@ -2462,21 +1818,16 @@ def _carve_out_records(
 ) -> list[dict[str, Any]]:
     """Every carved range, tagged with the instrument that carved it.
 
-    The two honesty instruments are listed SEPARATELY rather than merged: a
-    merged interval loses which instrument found it, and the registry's rows
-    are the only ones carrying τ/r — the exclusion *reason of record*. Ranges
-    from the two sources may overlap each other; that is reported as two rows
-    (one per instrument's own evidence), not silently collapsed, because "both
+    The two instruments are listed SEPARATELY: only the registry's rows carry
+    τ/r, and overlapping ranges are two rows rather than one, because "both
     instruments flagged this" is a stronger statement than either alone.
-    ``merged_excluded_bands_hz`` remains the merged view for anyone counting.
+    ``merged_excluded_bands_hz`` remains the merged view.
 
-    A registry row's interval is the null's OWN ``f_lo_hz``/``f_hi_hz`` (its
-    half-depth width), unclipped to any spec band — τ and r describe the whole
-    null, so clipping the interval to a band edge would attach the numbers to a
-    fragment of what was measured.
+    A registry row's interval is the null's own ``f_lo_hz``/``f_hi_hz``,
+    unclipped to any spec band, because τ and r describe the whole null.
 
-    Ordered by lower edge, then by source, so two rows starting at the same
-    frequency come out in a stable order rather than an input-order one.
+    Ordered by lower edge then source, so rows starting at the same frequency
+    come out stable rather than in input order.
     """
     records: list[dict[str, Any]] = []
     for null in null_report.nulls:
@@ -2521,15 +1872,10 @@ def _carve_out_records(
 def _carve_out_disclosure_copy(records: Sequence[Mapping[str, Any]]) -> str:
     """The band's household-facing headline — plain language, no τ/r.
 
-    ``""`` when nothing was carved in the band, mirroring
-    :func:`_geometry_guidance_copy`'s "empty string when not locked — nothing
-    to say" rule rather than rendering a "no interference found" sentence a
-    reader could mistake for a measurement.
-
-    The delay is quoted in **milliseconds** here because it is the one number
-    that makes the sentence mean something to a household ("a delayed copy
-    arrives 0.32 ms later"); τ stays in microseconds in the structured record,
-    which is the registry's own unit and the one owner of it.
+    ``""`` when nothing was carved, rather than a "no interference found"
+    sentence a reader could mistake for a measurement. The delay is quoted in
+    MILLISECONDS here; τ stays in microseconds in the structured record, which
+    is the registry's own unit.
     """
     nulls = [r for r in records if r["source"] == CARVE_OUT_SOURCE_IDENTIFIED_NULL]
     screened = [r for r in records if r["source"] == CARVE_OUT_SOURCE_POSITION_SCREEN]
@@ -2538,9 +1884,8 @@ def _carve_out_disclosure_copy(records: Sequence[Mapping[str, Any]]) -> str:
         where = _join_carve_out_phrases(
             [_format_carve_out_hz(float(r["f_center_hz"])) for r in nulls]
         )
-        # One ladder, one τ (IdentifiedNull.tau_us is "the same value on every
-        # rung of one report" — its own docstring), so the first row's delay
-        # describes them all.
+        # One ladder, one τ: ``IdentifiedNull.tau_us`` is the same value on
+        # every rung of one report, so the first row's delay describes them all.
         delay_ms = float(nulls[0]["tau_us"]) / 1000.0
         plural = len(nulls) > 1
         sentences.append(
@@ -2552,8 +1897,8 @@ def _carve_out_disclosure_copy(records: Sequence[Mapping[str, Any]]) -> str:
         )
     if screened:
         plural = len(screened) > 1
-        # "One range" rather than "1 range": this is prose, and the frequency
-        # figures are the numerals a reader should be counting in it.
+        # "One range" rather than "1 range": the frequency figures are the
+        # numerals a reader should be counting in this sentence.
         count = f"{len(screened)}" if plural else "One"
         subject = f"{count} {'further ' if nulls else ''}"
         subject += "ranges are" if plural else "range is"
@@ -2574,16 +1919,10 @@ def _carve_out_disclosure_copy(records: Sequence[Mapping[str, Any]]) -> str:
 def _carve_out_expert_copy(records: Sequence[Mapping[str, Any]]) -> str:
     """The expert-layer line — the same carve-outs WITH τ and r.
 
-    Separated from :func:`_carve_out_disclosure_copy` rather than folded into
-    it because the two registers have different readers and the plan puts τ/r
-    behind a disclosure ("τ/r vocabulary lives in an expert disclosure, not the
-    headline"). Both are produced here so a chart callout and the envelope's
-    ``<details>`` cannot drift into saying different things.
-
-    ``r`` is reported as the pair the registry actually holds — the
-    time-domain and frequency-domain estimates — rather than one averaged
-    figure, because their AGREEMENT is what admitted the null in the first
-    place, and an average would hide it.
+    Separate from :func:`_carve_out_disclosure_copy` because τ/r belong behind
+    a disclosure rather than in the headline. ``r`` is reported as the pair the
+    registry holds — time-domain and frequency-domain — rather than an average,
+    because their AGREEMENT is what admitted the null.
     """
     nulls = [r for r in records if r["source"] == CARVE_OUT_SOURCE_IDENTIFIED_NULL]
     if not nulls:
@@ -2610,46 +1949,29 @@ def carve_outs_by_band(
 ) -> list[dict[str, Any]]:
     """Per spec band: which ranges were carved out, why, and with what numbers.
 
-    Owner decision 1 (2026-07-25) in payload form. One entry per band of
-    ``spec_report``, **always all of them, in the report's own order**, so a
-    consumer can join to ``spec["bands"]`` by index or by ``band_hz`` and can
-    render "nothing carved here" without having to infer it from an absence.
+    One entry per band of ``spec_report``, always all of them in the report's
+    own order, so a consumer joins by index or ``band_hz`` and can render
+    "nothing carved here" without inferring it from an absence.
 
-    A record is included in a band when its interval OVERLAPS the band's
+    A record is included when its interval OVERLAPS the band's
     ``[graded_lo_hz, graded_hi_hz)`` span — the span actually graded, not the
-    nominal row — so a null straddling a band edge appears under both bands it
-    actually carves, and one sitting entirely outside the session's trusted
-    range appears under none, because it removed no bin any verdict was taken
-    from.
+    nominal row — so a null straddling an edge appears under both bands it
+    carves and one outside the trusted range appears under none.
 
-    **What this does NOT include: the gate's trusted-floor clamp.** Bins
-    below the group's ``trusted_floor_hz`` also leave the spec evaluation,
-    but they are not an interference verdict and are deliberately kept out of
-    the honesty instruments' own accounting — the same separation
-    ``_compact_cloud_status`` carries for exactly this reason. Since #2551
-    that separation is structural rather than a convention the reader has to
-    hold: the clamp moves each band's graded EDGE, so a bin outside the
-    trusted range is not in the band to be excluded FROM. A band's
-    ``n_excluded`` is therefore exactly what these records cover, and the
-    clamps show up as the spec report's ``graded_lo_hz``/``graded_hi_hz``
-    beside the nominal ``band_hz`` here rather than hiding inside a count.
+    Deliberately EXCLUDES the gate's trusted-floor clamp: that clamp moves each
+    band's graded EDGE, so a sub-floor bin is not in the band to be excluded
+    from. A band's ``n_excluded`` is therefore exactly what these records cover
+    (#2551).
     """
     records = _carve_out_records(null_report, screen_bands_hz)
     out: list[dict[str, Any]] = []
     for band in spec_report.bands:
         f_lo, f_hi = float(band.f_lo_hz), float(band.f_hi_hz)
-        # Overlap is tested against the edges this band was GRADED between,
-        # not its nominal row: a null outside the trusted range carved nothing
-        # out of this band's grading, because those bins were never in it. The
-        # UPPER edge matters as much as the lower one now that the top band's
-        # follows the microphone-trust ceiling -- testing the nominal 16 kHz
-        # there would drop every carve-out a 20 kHz-trusted session found above
-        # it, leaving `n_excluded` counting bins with no reason attached. That
-        # is what makes the equality claimed above ("n_excluded is exactly
-        # what these records cover") true rather than approximate. `band_hz`
-        # below stays the nominal pair, since it is the join key a consumer
-        # uses against ``spec["bands"]`` — which carries `graded_lo_hz`
-        # itself, so this payload does not copy it and cannot drift from it.
+        # Overlap is tested against the GRADED edges, not the nominal row: a
+        # null outside the trusted range carved nothing out of this band. The
+        # upper edge matters as much as the lower, since the top band's follows
+        # the microphone-trust ceiling. ``band_hz`` below stays the nominal
+        # pair, since it is the join key against ``spec["bands"]``.
         graded_lo = f_lo if band.graded_lo_hz is None else float(band.graded_lo_hz)
         graded_hi = f_hi if band.graded_hi_hz is None else float(band.graded_hi_hz)
         in_band = [
@@ -2672,17 +1994,14 @@ def cloud_validity_floor_hz(positions: Sequence[_CloudPosition]) -> float | None
     """The group's own gated validity floor — the WORST (highest) of its
     positions' floors, or ``None`` when no position reported a usable one.
 
-    Why the worst rather than a mean or the anchor's: the combined curve is a
-    power mean ACROSS these positions, so a bin below any one position's
-    reflection-gate floor is contaminated in the average by that position's
-    truncated-window artifact (``gating.f_valid_floor_hz`` — the same
-    quantity ``_analyze_verify``'s tracking band already clamps up to, W6.9
-    forensics). Taking the highest floor is the only choice under which every
-    graded bin is inside every contributing capture's validity.
+    The worst rather than a mean: the combined curve is a power mean ACROSS
+    these positions, so a bin below any one position's reflection-gate floor is
+    contaminated by that position's truncated-window artifact. The highest floor
+    is the only choice under which every graded bin is inside every contributing
+    capture's validity.
 
-    ``None`` (no position carried a finite, positive floor) means the lower
-    edge could not be verified — NOT that it is zero. Callers disclose it as
-    unknown and clamp nothing; see :func:`assemble_cloud_group_result`.
+    ``None`` means the lower edge could not be verified, NOT that it is zero;
+    callers disclose it as unknown and clamp nothing.
     """
     floors = [
         float(getattr(p.response, "validity_floor_hz", None) or 0.0)
@@ -2693,32 +2012,22 @@ def cloud_validity_floor_hz(positions: Sequence[_CloudPosition]) -> float | None
 
 
 def cloud_trusted_floor_hz(validity_floor_hz: float | None) -> float | None:
-    """The group's TRUSTED floor (``2.5/T``) from its validity floor
-    (``1/T``) — the number the flat spec is graded above (issue #2551).
+    """The group's TRUSTED floor (``2.5/T``) from its validity floor (``1/T``)
+    — the number the flat spec is graded above (#2551).
 
     ``1/T`` is where a reflection-free window of ``T`` has one full cycle of
-    resolution; ``2.5/T`` is where the gated magnitude is actually
-    trustworthy, and the E4 gate-stability sweep is why the distinction is
-    not academic — the 1-4 kHz band moved **2.1 dB** across 3/5/7/10 ms
-    gates purely because part of it sat below the shorter windows' trusted
-    floor, while everything above it held to <=0.006 dB
-    (:data:`~jasper.audio_measurement.gating.TRUSTED_FLOOR_MULTIPLIER`).
-    The gate's own delta probe already prices itself over this floor and
-    refuses to grade below it; before #2551 the spec evaluator did not, so
-    one capture was read by two graders against two honesty floors.
+    resolution; ``2.5/T`` is where the gated magnitude is actually trustworthy.
+    The E4 gate-stability sweep is why the distinction is not academic: the
+    1-4 kHz band moved 2.1 dB across 3/5/7/10 ms gates purely because part of it
+    sat below the shorter windows' trusted floor, while everything above held to
+    <=0.006 dB (:data:`~jasper.audio_measurement.gating.TRUSTED_FLOOR_MULTIPLIER`).
 
-    Derived rather than plumbed, deliberately. Both floors come from the
-    same window — ``f_trusted = 2.5 * f_valid`` exactly
-    (:func:`~jasper.audio_measurement.gating.f_trusted_floor_hz` is that
-    multiply) — and the multiplier is monotonic, so the trusted floor of the
-    group's WORST validity floor is the worst of the positions' trusted
-    floors. One input, one owner, and no caller that passes a validity floor
-    can forget to pass the trusted one and silently grade lower.
+    Derived rather than plumbed: the multiplier is monotonic, so the trusted
+    floor of the group's worst validity floor is the worst of the positions'
+    trusted floors, and no caller passing one floor can forget the other.
 
-    ``None`` in, ``None`` out; likewise for a non-finite or non-positive
-    floor, which is "no floor was established" and never "a floor of zero".
-    Callers clamp nothing then, and say so — see
-    :func:`assemble_cloud_group_result`.
+    ``None`` in, ``None`` out, likewise for a non-finite or non-positive floor,
+    which is "no floor was established" and never "a floor of zero".
     """
     if validity_floor_hz is None:
         return None
@@ -2733,28 +2042,20 @@ def cloud_entanglement_floor_hz(
 ) -> EntanglementFloor:
     """The group's ROOM floor and its provenance — the WORST of its positions'.
 
-    :func:`cloud_trusted_floor_hz`'s "worst of the positions" argument, applied
-    to the floor no window choice can lower (#3495): the combined curve is a
-    power mean ACROSS these seats, so a bin below any one seat's entanglement
-    floor is room-entangled in the average. The MAX is the only floor under
-    which every marked bin is marked at every contributing capture.
+    :func:`cloud_trusted_floor_hz`'s argument applied to the floor no window
+    choice can lower (#3495): the MAX is the only floor under which every marked
+    bin is marked at every contributing capture.
 
-    **One position that does not know its floor un-knows the group's.** A max
-    over the seats that DID know would claim the silent seat is cleaner than
-    the others, which is the one thing nobody measured. Empty in, unknown out,
-    for the same reason.
+    One position that does not know its floor un-knows the group's — a max over
+    the seats that DID know would claim the silent seat is cleaner. Empty in,
+    unknown out.
 
-    **The source is the WEAKEST of the pooled provenances.** A group is
-    ``measured`` only when every seat's floor was timed off its own reflection;
-    a single declared seat makes the aggregate ``declared``, because that is
-    what the reader would have to assume about the pool. Anything outside
-    :data:`~jasper.audio_measurement.gating.ENTANGLEMENT_SOURCES` is unknown —
-    the vocabulary is closed here as it is at every other seam.
-
-    The floor and its provenance travel as one value:
-    :class:`~jasper.audio_measurement.gating.EntanglementFloor` holds the rule
-    binding them, and each seat is read through its lenient door because a
-    seat's pair comes off a persisted position row.
+    The source is the WEAKEST of the pooled provenances: a group is ``measured``
+    only when every seat's floor was timed off its own reflection, and one
+    declared seat makes the aggregate ``declared``. Anything outside
+    :data:`~jasper.audio_measurement.gating.ENTANGLEMENT_SOURCES` is unknown.
+    Each seat is read through the lenient door, because a seat's pair comes off
+    a persisted position row.
     """
     seats = [
         EntanglementFloor.coerce(floor_hz, source) for floor_hz, source in per_position
@@ -2775,11 +2076,8 @@ class CloudGroupResult:
     """:func:`assemble_cloud_group_result`'s payload, plus the line a failure earns.
 
     ``diagnostics`` carries the journal fields the flow emits under
-    ``event=correction.crossover_v2_cloud_pipeline_failed``, and is ``None``
-    when there was nothing to say.  They travel as data rather than as a log
-    call because this module is side-effect-free (see the module docstring);
-    the event NAME stays with the flow, which owns it.  Same shape as
-    :class:`CloudCombine`, for the same reason.
+    ``event=correction.crossover_v2_cloud_pipeline_failed``, ``None`` when there
+    was nothing to say, as data because this module is side-effect-free.
     """
 
     result: dict[str, Any]
@@ -2798,181 +2096,65 @@ def assemble_cloud_group_result(
     crossover_region_hz: tuple[float, float] | None = None,
     graded_spec_sink: Callable[[Any], None] | None = None,
 ) -> CloudGroupResult:
-    """The wiring contract (issue #1742 item 4) -- THE single function that
-    consumes the exclusion mask, ``geometry.locked``, and the null registry
-    TOGETHER. No other code in this program may read
-    ``combined.excluded``/``combined.geometry.locked`` and treat that as the
-    honesty verdict on its own; doing so is reading the mask alone, the hole
-    this item exists to close (see the plan doc's "Architecture" table: "the
-    mask alone is a hole").
+    """THE single function that consumes the exclusion mask,
+    ``geometry.locked`` and the null registry TOGETHER.
 
-    Runs :func:`~jasper.audio_measurement.interference_nulls.identify_interference_nulls`
-    on ``combined`` at ``echo_band_hz``, unions its excluded bins with the
-    combiner's own power-vs-median screen (``combined.excluded``), and
-    evaluates :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec`
-    against the merged mask -- the plan's "merged honesty mask = screen ∪
-    identified nulls" line, made executable.
+    No other code may read ``combined.excluded`` / ``combined.geometry.locked``
+    and treat that as the honesty verdict: the mask alone is a hole. This runs
+    :func:`~jasper.audio_measurement.interference_nulls.identify_interference_nulls`
+    at ``echo_band_hz``, unions its excluded bins with the combiner's own
+    power-vs-median screen, and evaluates
+    :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec` against the
+    merged mask. ``combined`` may be ``None`` — the group could not be combined.
 
-    ``combined`` may be ``None`` (the group could not be combined at all --
-    :func:`combine_cloud_positions`'s own honest "unknown") or a
-    :class:`~jasper.audio_measurement.spatial_combine.CombinedResponse`.
+    The ``spec`` report built here is the SSOT: every spec-facing surface renders
+    :func:`~jasper.active_speaker.flat_spec.spec_flatness_gauge` of this report
+    rather than deriving a number, and nothing downstream re-evaluates the
+    curve. ``carve_outs`` is a third reading of that same evaluation, never a
+    second one — the bins are already gone from ``spec`` and no verdict here can
+    move. The tolerance table is untouched: the decision was to disclose the
+    carve-out, not to re-spec the band.
 
-    **The spec-curve SSOT (plan PR-5).** The ``spec`` report this builds is
-    the ONE construction every spec-facing surface reads -- the flatness
-    gauge, the observe ledger's spec-facing summary, `/state`, and the
-    envelope all render ``flatness`` (:func:`~jasper.active_speaker.flat_spec.spec_flatness_gauge`
-    of that same report) rather than deriving a number of their own. Nothing
-    downstream re-evaluates the curve.
+    ``echo_band_provenance`` is how a payload reader tells a contract-derived
+    band from a clamped one (#1763), since the published ``echo_band_hz`` alone
+    cannot say which. :meth:`_CloudEchoBand.disclosure` supplies the block;
+    ``None`` means "not stated", never "not clamped".
 
-    **The carve-out disclosure (plan PR-6b, owner decision 1).** ``carve_outs``
-    is :func:`carve_outs_by_band` of the SAME registry and the SAME spec report
-    — per band, which ranges left this band's grading, in plain language, with
-    τ/r behind an expert string. It is a third reading of one evaluation, never
-    a second one: the bins are already gone from ``spec`` by the time this runs,
-    and no verdict here can move. The tolerance table is untouched — the 8-16 kHz
-    row still reads ±2.5 dB, applied to whatever survives the carve-out (the
-    owner's decision was to disclose the carve-out, not to re-spec the band).
+    The spec is graded above the group's TRUSTED floor, not its validity floor
+    (#2551): :func:`cloud_trusted_floor_hz` turns the group's ``1/T`` into the
+    ``2.5/T`` the gate's delta probe already refuses to grade below, and
+    ``evaluate_flat_spec`` intersects every band's lower edge with it — the
+    reference band included, since a bin the gate cannot support must not
+    re-centre the target. Both floors are published. Three properties this
+    keeps:
 
-    **``echo_band_provenance`` (issue #1763) is how a payload reader tells a
-    contract-derived band from a clamped one.** ``echo_band_hz`` publishes the
-    band the detector actually ran on, which is necessary but not sufficient:
-    a reader seeing ``[4000, 18000]`` cannot tell whether the driver declared
-    that window or whether the HF-regime clamp raised a declared 2 kHz edge
-    into it, and the difference is exactly the asterisk issue #1763 exists to
-    make visible. :meth:`_CloudEchoBand.disclosure` supplies the block (its
-    ``source`` / ``hf_regime_clamped`` / ``derived_lo_hz`` / ``floor_hz``);
-    the session passes it alongside the band it came from. ``None`` when a
-    caller did not state one — "not stated", never "not clamped", the same
-    unknown-vs-zero rule ``validity_floor_hz`` follows below.
+    * The intersection is a band EDGE, not a mask entry, so ``spec.n_excluded``
+      stays exactly the honesty instruments' count and a gate artifact cannot
+      inflate it. Each band discloses ``graded_lo_hz``/``graded_hi_hz`` beside
+      its nominal row.
+    * A band left entirely outside the trusted range is ``evaluable=False``,
+      never ``passed=False`` — there is no evidence there, which is not a
+      failure. ``overall_passed`` still treats unevaluable as not-passed.
+    * A ``None`` floor or ceiling clamps NOTHING and is reported as ``None``,
+      rather than withholding the evidence above an unverified edge.
 
-    **The spec is graded above the group's TRUSTED floor, not its validity
-    floor** (issue #2551). ``validity_floor_hz`` is the group's own gated
-    ``1/T`` (:func:`cloud_validity_floor_hz`); :func:`cloud_trusted_floor_hz`
-    turns it into the ``2.5/T`` the gate's delta probe already refuses to
-    grade below, and THAT is what
-    :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec` intersects
-    every band's lower edge with -- the reference band's included, since a
-    bin the gate cannot support must not be able to re-centre the target
-    either. Both floors are published: ``validity_floor_hz`` for provenance,
-    ``trusted_floor_hz`` as the number the verdicts were actually taken
-    above. Three properties this deliberately keeps:
+    Clamping is not free and moves the headline in the FLATTERING direction on
+    a corpus whose sub-floor region is loud — on S0 it re-centres the reference
+    by -4.55 dB and flips the 250 Hz-2 kHz band verdict
+    (``test_the_trusted_floor_clamp_costs_the_low_band`` pins the figures). The
+    direction is response-shape dependent, not a property of the clamp: do not
+    generalize the sign. None of it is the speaker improving — it is the same
+    speaker graded on fewer bins, which is what ``n_bins`` keeps visible. One
+    short gate in a group is therefore expensive by design, since the group
+    takes the WORST position's floor; per-position per-bin masking inside
+    ``combine_positions`` would be strictly better and is a
+    ``spatial_combine`` estimator change rather than a wiring one.
 
-    * **The intersection is a band EDGE, not a mask entry.** A sub-floor bin
-      is not in the band at all, so ``spec.n_excluded`` stays exactly the
-      honesty instruments' own count (screen union identified nulls) and a
-      gate artifact can never inflate it. Which edge each band was graded
-      from is disclosed per band as ``graded_lo_hz``, delta-probe style,
-      its upper edge as ``graded_hi_hz``, and the report echoes
-      ``trusted_floor_hz``/``trusted_ceiling_hz``, the clamped
-      ``reference_band_hz`` and the whole ``graded_band_hz`` on its face.
-      ``merged_excluded_bands_hz`` is
-      likewise untouched: ``excluded_interval_count`` on `/state` remains the
-      "how much interference did we find" number.
-    * **A band left entirely outside the trusted range is ``evaluable=False``, never
-      ``passed=False``.** There is no evidence there, which is not a
-      failure; ``graded_lo_hz >= graded_hi_hz`` is the tell that distinguishes
-      it from a band the axis never reached.
-      :attr:`~jasper.active_speaker.flat_spec.FlatSpecReport.overall_passed`
-      still treats unevaluable as not-passed, so nothing is flattered by the
-      distinction.
-    * **A ``None`` floor or ceiling clamps NOTHING and is reported as
-      ``None``.** The alternative -- withholding the whole gauge, which is
-      what the retired per-capture ``_flatness_tracking`` did when a capture
-      had no floor -- would throw away the evidence above an unverified lower
-      edge, or below an unverified upper one.
-
-    Regime, measured on the S0 main leg 2026-07-27, re-derived 2026-08-02
-    (#2045) and re-derived again for #2551: **all ten** of that session's
-    positions gate to a 142.857 Hz validity floor, i.e. a **357.14 Hz**
-    trusted floor, which sits ABOVE the spec table's 250 Hz edge and
-    therefore clamps 987 bins out of the low band. Before #2551 the
-    evaluator was handed the 142.857 Hz number instead, which sits below
-    250 Hz and changed no graded figure at all -- a clamp in name only, on a
-    corpus whose worst deviation bins were beneath the floor its own gate
-    disclosure printed. ``test_flat_spec_ssot`` pins both halves: that the
-    positions no longer collapse a gate, and what intersecting at the
-    trusted floor costs.
-
-    **Clamping is not free, and it moves the headline in the flattering
-    direction.** That is the mechanism's own behaviour and it is stated here
-    rather than discovered later; measured on the S0 corpus at a 1777.8 Hz
-    trusted floor supplied explicitly
-    (``test_flat_spec_ssot.CLAMP_TRUSTED_FLOOR_HZ``, pinned by
-    ``test_the_trusted_floor_clamp_costs_the_low_band``), clamping:
-
-    * moves **987 bins** out of the 250 Hz-2 kHz band;
-    * **re-centres the reference** -24.6035 -> -29.1532 dB (-4.5498 dB),
-      because the reference is a power mean over the non-excluded low-mid
-      band and the clamp removed the loud low end of it;
-    * moves the HEADLINE ``max_db`` -11.5741 -> -7.0243 dB, i.e.
-      **+4.5498 dB in the FLATTERING direction** -- exactly the reference
-      shift, because the worst bin survives the clamp, so its deviation
-      moves one-for-one with the reference. This is the first number the
-      ledger line prints and it moves FURTHER than the RMS does;
-    * takes the pooled RMS 5.7705 -> 2.7474 dB (-3.0231 dB);
-    * **flips the 250 Hz-2 kHz band verdict**, -4.9174 dB (fail) ->
-      -0.3677 dB (pass), since ``BandResult.passed`` is
-      ``abs(max_deviation_db) <= tolerance_db``. Overall stays False here
-      only because the other two bands still fail on their own.
-
-    **The cost grew ~4.3x with the low-mid frame** (ADR-0194), and the
-    mechanism is worth stating: the clamped 250-1777.8 Hz sliver is the same
-    sliver, but it is now a much larger share of a much smaller reference
-    pool (``SPEC_BANDS[0]`` alone rather than 250 Hz-8 kHz), so removing it
-    moves the pooled zero four times as far. Narrowing the frame bought
-    attribution and made this clamp's price higher, not lower.
-
-    Direction is **response-shape dependent, not a property of the clamp**:
-    on THIS corpus the removed region sat above the surviving reference, so
-    dropping it lowered the reference and flattered every surviving
-    deviation. A speaker whose sub-floor region is quiet would move the other
-    way. Do not generalize the sign.
-
-    None of that is the speaker improving -- it is the same speaker graded on
-    fewer bins, which is exactly what the gauge's ``n_bins`` exists to keep
-    visible (``ConvergenceResidual``'s own "a residual that fell because the
-    denominator shrank is not convergence" rule). Its sibling ``n_excluded``
-    reports a different thing and deliberately does not move here: the clamp
-    is an edge, not a mask entry. One short gate in a group is therefore
-    expensive by design, and the group takes the WORST position's floor.
-
-    **Deferred alternative, recorded rather than dismissed:** the honest
-    third option is per-position, per-bin validity masking INSIDE
-    ``combine_positions`` -- mask each position's contribution below that
-    position's OWN floor and combine the survivors, so nine good captures
-    keep contributing at 500 Hz instead of one bad one costing the band. It
-    is strictly better than a group-wide clamp and is out of scope here only
-    because it is a ``spatial_combine`` signature and estimator change (the
-    power mean would need per-bin weights), not a wiring one. Revisit
-    trigger: a real session where one short gate meaningfully shrinks the
-    graded band -- the S0 corpus is that evidence already now that the floor
-    is the trusted one (357.14 Hz clears the table's 250 Hz edge on every
-    position), so this is queued on measured grounds, not speculation.
-
-    **Fail-soft, named, not absolute** (S4 review finding, 2026-07-26 --
-    corrected from an earlier "any exception is caught" overclaim). Catches
-    exactly ``(ValueError, TypeError, IndexError, AttributeError)`` --
-    the documented raise surface of every function this calls
-    (:func:`~jasper.audio_measurement.interference_nulls.identify_interference_nulls`
-    and :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec` both
-    raise only ``ValueError`` on malformed input;
-    :func:`~jasper.audio_measurement.spatial_combine.merged_true_intervals`
-    raises ``ValueError`` via ``zip(strict=True)`` on a length mismatch or
-    ``IndexError`` on an out-of-bounds index; a malformed/incomplete
-    ``combined``-like object raises ``TypeError``/``AttributeError`` reading
-    its fields; :func:`carve_outs_by_band` adds no new family -- it reads
-    already-built records by keys it set itself, and its only external reads
-    are attribute lookups on the two reports and indexing/``float()`` on the
-    screen intervals, i.e. ``AttributeError``/``IndexError``/``TypeError``/
-    ``ValueError``). ``_run_cloud_pipeline`` relies on exactly this bounded set --
-    a downstream DSP failure inside it is diagnostic/disclosure machinery,
-    never a capture-accept gate, so this bounded family is caught and
-    reported as ``available: False`` rather than surfacing to the caller.
-    Any OTHER exception -- ``KeyError``/``RuntimeError``/``OSError`` (none
-    observed on this call surface today; would indicate a genuine bug in a
-    callee) or ``MemoryError``/``KeyboardInterrupt`` -- propagates
-    uncaught, by design: it should reach the caller rather than silently
-    become an honest-looking "unavailable".
+    Fail-soft over a NAMED family: exactly
+    ``(ValueError, TypeError, IndexError, AttributeError)``, the documented
+    raise surface of every callee. A downstream DSP failure here is
+    diagnostic machinery, never a capture-accept gate, so it is reported as
+    ``available: False``. Any other exception propagates uncaught.
     """
     if combined is None:
         return CloudGroupResult({"available": False, "reason": "combine_failed"})
@@ -2997,23 +2179,16 @@ def assemble_cloud_group_result(
         merged_mask = np.asarray(combined.excluded, dtype=bool) | np.asarray(
             null_report.excluded, dtype=bool
         )
-        # NOTE: ``crossover_registry`` is deliberately absent from this union.
-        # See its builder for why classification there may never become
-        # gating.
-        # The mask handed to the evaluator is EXACTLY what the honesty
-        # instruments found. The gate's floor rides beside it as a band-edge
-        # intersection instead (#2551), so ``n_excluded`` cannot conflate an
-        # interference verdict with a short window — see this function's
-        # docstring.
+        # ``crossover_registry`` is deliberately absent from this union: see
+        # its builder for why classification there may never become gating. The
+        # mask handed to the evaluator is EXACTLY what the honesty instruments
+        # found; the gate's floor rides beside it as a band-edge intersection
+        # instead (#2551).
         trusted_floor_hz = cloud_trusted_floor_hz(validity_floor_hz)
-        # The ceiling rides beside the floor for the same reason and from the
-        # same caller: the spec may not grade above where the microphone is
-        # trusted, which is also where the fitter was allowed to command and
-        # the delta probe allowed to grade (#2649).
-        # The ROOM's floor rides beside the window's, pooled from the same
-        # seats the curve was pooled from (#3502). It CLAMPS NOTHING and
-        # changes no grade — it only lets every band say which of its bins no
-        # window could have separated from the room.
+        # The ROOM's floor is pooled from the same seats the curve was pooled
+        # from (#3502). It CLAMPS NOTHING and changes no grade — it only lets
+        # every band say which of its bins no window could have separated from
+        # the room.
         entanglement = cloud_entanglement_floor_hz(
             [
                 (
@@ -3030,21 +2205,17 @@ def assemble_cloud_group_result(
             entanglement_floor_hz=entanglement.hz,
             entanglement_floor_source=entanglement.source,
         )
-        # #2291/#2160: hand the LIVE report to a caller that needs the object
-        # rather than the serialized copy below. ``evaluate_spec`` reads
-        # ``overall_passed`` and each band's ``evaluable``/``passed``, which
-        # ``to_dict`` flattens away, and the round's spec verdict must be the
-        # SAME report this function already built — re-evaluating it from
-        # ``combined`` in the session would be a second owner of the merged
-        # honesty mask, which is exactly what this function exists to prevent.
-        # A sink rather than a second return value because every other caller
-        # (and every test) reads the dict, and widening the return type would
-        # change all of them to serve one consumer.
+        # Hand the LIVE report to a caller that needs the object rather than
+        # the serialized copy below: ``to_dict`` flattens away
+        # ``overall_passed`` and each band's ``evaluable``/``passed``, and
+        # re-evaluating from ``combined`` would be a second owner of the merged
+        # honesty mask. A sink rather than a second return value, because every
+        # other caller reads the dict.
         if graded_spec_sink is not None:
-            # The curve, the mask, and the verdict as ONE record: decision 10's
-            # blend correction reads all three, and this is the only place all
-            # three exist together. Handing them over separately would let a
-            # consumer pair a curve with a mask from a different evaluation.
+            # The curve, the mask and the verdict as ONE record: this is the
+            # only place all three exist together, and handing them over
+            # separately would let a consumer pair a curve with a mask from a
+            # different evaluation.
             graded_spec_sink(GradedSpec(
                 combined.freqs_hz, combined.power_mean_spec_db, merged_mask,
                 spec_report,
@@ -3069,47 +2240,33 @@ def assemble_cloud_group_result(
                 list(b) for b in merged_true_intervals(combined.freqs_hz, merged_mask)
             ],
             "null_registry": _null_registry_to_dict(null_report),
-            # #1967/#1867: the crossover region, ASKED. Classification only —
-            # never unioned into any mask above. ``None`` when there is no
-            # committed crossover to name a region with, or when the gating
-            # band already reached it. See
-            # :func:`_crossover_region_null_registry`.
+            # The crossover region, ASKED. Classification only, never unioned
+            # into any mask above. ``None`` when there is no committed crossover
+            # to name a region with, or when the gating band already reached it.
             "null_registry_crossover_region": crossover_registry,
             "spec": spec_report.to_dict(),
-            # PR-6b: owner decision 1's disclosure half — the SAME registry
-            # and the SAME spec report above, re-read per band as "what was
-            # carved out of this band's grading, and why". Not a second
-            # evaluation: `evaluate_flat_spec` already removed these bins, and
-            # nothing here can change a verdict.
+            # The SAME registry and spec report above, re-read per band. Not a
+            # second evaluation: those bins are already gone.
             "carve_outs": carve_outs_by_band(
                 spec_report, null_report, combined.excluded_bands_hz,
             ),
-            # PR-5: the spec-facing gauge — a pure reduction of the SAME
-            # ``spec`` report above, carried here so no downstream surface
-            # has to (or may) derive its own. Byte-identical wherever it is
-            # rendered, because there is one number, copied.
+            # A pure reduction of the SAME ``spec`` report above, carried here
+            # so no downstream surface derives its own.
             "flatness": spec_flatness_gauge(spec_report).to_dict(),
             "validity_floor_hz": (
                 float(validity_floor_hz)
                 if validity_floor_hz is not None and math.isfinite(validity_floor_hz)
                 else None
             ),
-            # #2551: the floor the spec was actually graded above — 2.5x the
-            # one directly above, and the same number the gate's own delta
-            # probe prices itself over. Published beside its input rather
-            # than in place of it, so a reader can see both the window's
-            # resolution limit and its trust limit.
+            # The floor the spec was graded above — 2.5x the one directly
+            # above. Published beside its input so a reader sees both the
+            # window's resolution limit and its trust limit (#2551).
             "trusted_floor_hz": trusted_floor_hz,
-            # The ceiling beside the floor, at the same level, because the two
-            # are not symmetric in how reliably they are KNOWN: the floor comes
-            # from this group's own gate and is always available, while the
-            # ceiling is read off the bound candidate's mic tier and is
-            # ``None`` on a pre-apply close that has no candidate yet. A
-            # session can therefore grade its MEASURE group to 16 kHz and its
-            # VERIFY group to 20 kHz, and a reader comparing the two `spec`
-            # blocks across phases is comparing different spans. Publishing it
-            # here makes that visible rather than leaving it to be inferred
-            # from inside `spec.trusted_ceiling_hz`.
+            # The floor is always available; the ceiling is read off the bound
+            # candidate's mic tier and is ``None`` on a pre-apply close with no
+            # candidate. A session can therefore grade its MEASURE group and its
+            # VERIFY group over different spans, which publishing this here
+            # makes visible.
             "trusted_ceiling_hz": spec_report.trusted_ceiling_hz,
             "echo_band_hz": list(echo_band_hz),
             "echo_band_provenance": (
@@ -3117,24 +2274,16 @@ def assemble_cloud_group_result(
                 if isinstance(echo_band_provenance, Mapping)
                 else None
             ),
-            # WHICH INSTRUMENT measured this group (flow-simplification §1.2).
-            # ``None`` means unknown, never a guessed default — same
-            # discipline as ``echo_band_provenance`` directly above, and for
-            # the same reason: the two tiers make materially different claims,
-            # so a reader that cannot tell them apart must say so.
+            # WHICH INSTRUMENT measured this group. ``None`` means unknown,
+            # never a guessed default: the tiers make materially different
+            # claims.
             "tier": str(tier) or None,
             "curve": _decimate_curve_for_json(
                 combined.freqs_hz, combined.power_mean_spec_db,
             ),
-            # WO-1 (attribution plan §6, §11.1 A7): the MEMBERS behind every
-            # aggregate above. The combiner has computed each position's
-            # curve and echo diagnostic all along and this function used to
-            # drop them, which is why P2 — the position-variance classifier
-            # §5 calls a free probe — was not actually free, and why
-            # ``clustered_fraction`` was the summary of a distribution nobody
-            # could inspect. Serialization only: no new signal, no threshold,
-            # no verdict. Never raises (see ``position_evidence_block``), so
-            # it cannot turn a good group into a failed one.
+            # The MEMBERS behind every aggregate above — serialization only:
+            # no new signal, no threshold, no verdict. Never raises, so it
+            # cannot turn a good group into a failed one.
             "positions": position_evidence_block(
                 combined,
                 position_records=position_records,

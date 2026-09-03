@@ -2,7 +2,7 @@
 
 > **Status: research.** Verbatim primary source — the first-principles research
 > report behind
-> [crossover-measurement-productization-design.md](crossover-measurement-productization-design.md);
+> [crossover-measurement-productization-design.md](../historical/crossover-measurement-productization-design.md);
 > that design doc's Sections 3–7 are the authoritative synthesis for JTS
 > decisions. This file preserves the reasoning and citations. Reproduced as
 > received; external quotes are short and attributed.

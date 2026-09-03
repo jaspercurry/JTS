@@ -4,14 +4,10 @@
 
 """Shared operator-surface wiring for per-driver commissioning + the Stage-5 ramp.
 
-The ``jasper-active-speaker`` CLI and the ``/sound/`` commission card drive the
-same guarded machinery (``startup_load.load_driver_commissioning_config`` /
-``commission_ramp.ramp_audible_step``). This module owns the small glue both
-need so neither hand-rolls it: the INLINE CamillaController seams, the
-saved-crossover-preview resolution, and fresh path-safety evidence. Living here
-in the ``active_speaker`` layer — not in ``cli/`` or ``web/`` — is what lets a
-third operator surface (for example, a voice tool) land declaration-only
-instead of copying the wiring a third time.
+Owns the glue the ``jasper-active-speaker`` CLI and the ``/sound/`` commission
+card both need for ``startup_load.load_driver_commissioning_config`` /
+``commission_ramp.ramp_audible_step``: the inline CamillaController seams, the
+saved-crossover-preview resolution, and fresh path-safety evidence.
 """
 
 from __future__ import annotations
@@ -45,14 +41,12 @@ class CommissionPresetResolutionError(ValueError):
 
 
 def commission_load_config(cam: Any) -> PathLoader:
-    """The INLINE loader seam: read the candidate file and apply it as the running
-    graph WITHOUT repointing the persisted statefile.
+    """The inline loader seam: apply a candidate file as the running graph.
 
-    ``CamillaController.set_active_config_raw`` is CamillaDSP's ``SetConfig``; it
-    leaves ``config_file_path`` (the outputd statefile boot anchor) untouched,
-    which is what makes crash-recovery-MUTED *structural* — a reboot still comes
-    up on the all-muted staged boot config. Loading via ``set_config_file_path``
-    would repoint the statefile and break that invariant.
+    ``set_active_config_raw`` is CamillaDSP's ``SetConfig``: it leaves
+    ``config_file_path`` (the outputd statefile boot anchor) untouched, so a
+    reboot still comes up on the all-muted staged boot config. Never load via
+    ``set_config_file_path`` here — that repoints the statefile.
     """
 
     async def _load(path: str) -> bool:
@@ -65,8 +59,7 @@ def commission_load_config(cam: Any) -> PathLoader:
 def commission_seams(
     cam: Any,
 ) -> tuple[PathLoader, RunningConfigReader, ConfigPathReader]:
-    """The three inline-transport seams a guarded commission load/ramp needs:
-    ``(load_config, read_running_config, get_current_config_path)``."""
+    """``(load_config, read_running_config, get_current_config_path)``."""
     return (
         commission_load_config(cam),
         lambda: cam.get_active_config_raw(best_effort=False),
@@ -75,12 +68,7 @@ def commission_seams(
 
 
 async def read_current_config_path(cam: Any) -> tuple[str | None, str | None]:
-    """Read the persisted config path, fail-soft: ``(path, error_type_name)``.
-
-    The path binds the path-safety evidence + the active-graph-is-staged
-    precondition; a transient read failure becomes blocked evidence, never a
-    crash.
-    """
+    """Read the persisted config path, fail-soft: ``(path, error_type_name)``."""
     try:
         return (await cam.get_config_file_path(best_effort=False)), None
     except Exception as exc:  # noqa: BLE001
@@ -88,14 +76,10 @@ async def read_current_config_path(cam: Any) -> tuple[str | None, str | None]:
 
 
 def resolve_commission_inputs(preset: Any = None) -> tuple[Any, dict[str, Any] | None]:
-    """Resolve ``(preset, crossover_preview)`` so the per-driver commissioning
-    config matches what protected staging emitted.
+    """Resolve ``(preset, crossover_preview)`` for a per-driver commissioning load.
 
-    Staging compiles from the saved crossover preview, so the per-driver load
-    must use the SAME source or its mask/crossover would not match the active
-    all-muted graph. Default: the saved preview when it is ready for staging, else
-    the bundled-preset fallback (exactly what staging does with no ready preview).
-    An explicit ``preset`` object overrides (bench / preset-fallback work).
+    Staging compiles from the saved crossover preview, so the load must use the
+    SAME source or its mask/crossover would not match the active all-muted graph.
     """
     if preset is not None:
         return preset, None
@@ -109,10 +93,7 @@ def resolve_commission_inputs(preset: Any = None) -> tuple[Any, dict[str, Any] |
 
 
 def _is_passive_mains(topology: Any) -> bool:
-    """Whether this topology's mains carry no inter-driver crossover.
-
-    ``isinstance`` because every caller's parameter is typed ``Any``.
-    """
+    """Whether this topology's mains carry no inter-driver crossover."""
     from jasper.output_topology import OutputTopology, topology_is_passive_mains
 
     return isinstance(topology, OutputTopology) and topology_is_passive_mains(
@@ -138,8 +119,8 @@ def _passive_mains_preset(topology: Any) -> Any:
 def resolve_capture_preset(topology: Any) -> Any:
     """Resolve the protected preset used by every capture-analysis surface.
 
-    The passive arm is answered BEFORE ``resolve_commission_inputs``: a passive
-    box compiles no crossover preview for those reads to reach.
+    The passive arm answers before ``resolve_commission_inputs``: a passive box
+    compiles no crossover preview for those reads to reach.
     """
 
     if _is_passive_mains(topology):
@@ -155,11 +136,9 @@ def resolve_capture_preset(topology: Any) -> Any:
 def commissioning_spl_ceiling_db(topology: Any) -> float:
     """The commissioning SPL hard stop this box declares, in dB SPL at the mic.
 
-    The one reader of ``safety.max_commissioning_level_db_spl``: the ceiling is
-    on the doctrine's closed list, so every surface that bounds a level against
-    it must get the same number from the same resolution. ``ValueError`` when
-    no finite ceiling resolves — the same type ``resolve_capture_preset``
-    already raises when no preset does.
+    The one reader of ``safety.max_commissioning_level_db_spl``: every surface
+    bounding a level against the stop resolves it here. Raises ``ValueError``
+    when no finite ceiling resolves.
     """
 
     preset = resolve_capture_preset(topology)
@@ -175,11 +154,7 @@ def resolve_commission_preset(
     preset: Any = None,
     crossover_preview: dict[str, Any] | None = None,
 ) -> Any:
-    """Resolve explicit, passive-topology, preview-compiled, or fallback preset.
-
-    The passive arm sits before the preview and the bundled fallback here too:
-    this function has its own callers, which arrive with inputs in hand.
-    """
+    """Resolve explicit, passive-topology, preview-compiled, or fallback preset."""
 
     if preset is not None:
         return preset
@@ -212,12 +187,10 @@ def write_commission_path_safety(
     *,
     require_physical_identity: bool = True,
 ) -> str:
-    """Build + persist fresh no-audio startup-load path-safety evidence bound to
-    the current config; return its path.
+    """Persist fresh no-audio path-safety evidence for the current config.
 
-    The per-driver commissioning preflight reuses ``build_startup_load_preflight``,
-    which binds to this evidence to prove the speaker is ready for an active load
-    and the all-muted staged config is a valid rollback anchor.
+    ``build_startup_load_preflight`` binds to this evidence to prove the
+    all-muted staged config is a valid rollback anchor.
     """
     from jasper.active_speaker.calibration_level import load_calibration_level_state
     from jasper.active_speaker.path_safety import (

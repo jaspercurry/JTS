@@ -4,15 +4,14 @@
 
 """Driver-research request and confirmed safety-profile contracts.
 
-This module is deliberately silent.  It turns the current physical active-
-speaker targets plus operator-visible limits into immutable JSON contracts; it
-does not generate a signal, compile a filter, load CamillaDSP, or grant
-playback permission.
+Deliberately silent: it turns the current physical active-speaker targets plus
+operator-visible limits into immutable JSON contracts, and never generates a
+signal, compiles a filter, loads CamillaDSP or grants playback permission.
 
-Research remains advice.  A version-2 research result must echo the exact
-server-authored request and target identities, but only the values visible in
-``manual_settings`` enter the confirmed safety profile.  Downstream audio code
-must additionally perform its own excitation and live-graph admission checks.
+Research remains advice. A version-2 result must echo the exact server-authored
+request and target identities, but only the values visible in
+``manual_settings`` enter the confirmed profile; downstream audio code still
+runs its own excitation and live-graph admission checks.
 """
 
 from __future__ import annotations
@@ -49,11 +48,9 @@ DRIVER_RESEARCH_RESULT_SCHEMA_VERSION = 2
 DRIVER_SAFETY_PROFILE_KIND = "jts_active_speaker_driver_safety_profile"
 DRIVER_SAFETY_PROFILE_SCHEMA_VERSION = 1
 
-#: Field caps for one entry in a profile's ``issues`` list, and the whole
-#: allowed key set. ONE owner because two places need the same numbers: the
-#: shape validator ENFORCES them, and ``_target_low_limit_warnings`` FITS its
-#: rendered message to them. Splitting those is what let a warning grow past the
-#: message cap and take the save down with it -- see that function's docstring.
+#: Field caps for one entry in a profile's ``issues`` list. ONE owner: the shape
+#: validator ENFORCES them and ``_target_low_limit_warnings`` FITS its rendered
+#: message to them, and a warning over the cap takes the whole save down.
 PROFILE_ISSUE_FIELD_MAX_CHARS = {"severity": 20, "code": 160, "message": 320}
 
 SUPPORTED_ENCLOSURE_KINDS = {
@@ -69,12 +66,9 @@ SUPPORTED_FIELD_CONFIDENCE = {"low", "medium", "high", "unknown"}
 MAX_UNKNOWNS = 32
 MAX_PROVENANCE_FIELDS = 32
 MAX_PROVENANCE_SOURCES = 8
-#: Cap for a provenance entry's single free-text ``source`` citation. Deliberately
-#: the same budget as a ``sources[]`` URL (320): the citation slot legitimately
-#: holds a datasheet URL, so any URL the list accepts must be promotable here
-#: verbatim. A tighter cap would refuse a legal source for being long, and the
-#: /sound/ echo-back panel wraps a long citation rather than depending on it
-#: fitting one line.
+#: Cap for a provenance entry's single free-text ``source`` citation. The same
+#: budget as a ``sources[]`` URL, because the citation slot legitimately holds a
+#: datasheet URL and any URL the list accepts must be promotable here verbatim.
 MAX_PROVENANCE_SOURCE_CHARS = 320
 
 _MANUAL_SETTINGS_FIELDS = {"drivers", "crossover_candidates"}
@@ -99,10 +93,8 @@ _MANUAL_DRIVER_FIELDS = {
     "level_duration_limits",
     "cabinet",
     "source",
-    # #1665 component entry -- design_draft.py's own manual-driver allowlist
-    # already accepts these; this allowlist re-validates the SAME normalised
-    # record when build_driver_safety_profile is called with it (design_draft
-    # threads manual_settings straight through), so it must accept them too.
+    # design_draft.py's manual-driver allowlist already accepts these, and this
+    # allowlist re-validates the SAME normalised record, so it must too.
     "driver_class",
     "radiating_diameter_mm",
     "pad",
@@ -128,15 +120,12 @@ class DriverSafetyProfileError(ValueError):
 
 
 class DriverSafetyProfileStaleLowLimitError(DriverSafetyProfileError):
-    """A stored profile predates the one-owner low-limit collapse (#2603).
+    """A stored profile predates the one-owner low-limit collapse.
 
     Its own bands and protective high-pass disagree about where the driver
-    stops, which is what the 2026-08-17 ruling exists to end. Split out from
-    the generic malformed case so the household is told the ACTIONABLE thing --
-    review the driver profile at /sound/ and save it again -- rather than
-    "schema invalid", which reads as corruption and suggests no remedy.
-    Playback is unaffected: the staged CamillaDSP graph is a separate artifact,
-    so the speaker keeps working while the profile waits to be rebuilt.
+    stops. Split out from the generic malformed case so the household is told
+    the ACTIONABLE thing — save the profile again — rather than "schema
+    invalid". Playback is unaffected: the staged graph is a separate artifact.
     """
 
 
@@ -144,16 +133,12 @@ class DriverSafetyProfileStaleLowLimitError(DriverSafetyProfileError):
 class DriverSafetyProfileEvaluation:
     """Fail-closed freshness result for one persisted safety profile.
 
-    ``confirmed_and_current`` means the declaration is schema-valid, its
-    fingerprint is intact, it is bound to the CURRENT hardware targets, and it
-    carries no blocking issues.  It is explicitly not permission to emit audio;
-    excitation and live protected-graph checks remain separate downstream
-    gates.  It is also not a record that a human clicked anything: saving the
-    declaration is declaring it, so every write of structurally sound values
-    lands ``confirmed``.  What still evaluates false is what was always worth
-    failing closed on -- ``missing``, ``malformed``, ``stale`` (the outputs
-    moved underneath it), and ``incomplete`` (the declared values carry
-    blocking issues).
+    ``confirmed_and_current`` means schema-valid, fingerprint intact, bound to
+    the CURRENT hardware targets, and no blocking issues. It is NOT permission
+    to emit audio — excitation and live protected-graph checks stay separate
+    downstream gates — and not a record that a human clicked anything: saving
+    the declaration is declaring it. False for ``missing``, ``malformed``,
+    ``stale`` (the outputs moved underneath it) and ``incomplete``.
     """
 
     status: str
@@ -182,10 +167,8 @@ def _fingerprint(payload: Mapping[str, Any]) -> str:
 def driver_research_targets(topology: OutputTopology) -> list[dict[str, Any]]:
     """Return physical components that the component/research flow describes.
 
-    Active two/three-way targets reuse the measurement contract verbatim. A
-    passive full-range layout has no independently measurable crossover target,
-    but it still has a physical component the user can identify and research.
-    Keep that research-only case here rather than broadening
+    Active two/three-way targets reuse the measurement contract verbatim. The
+    research-only passive full-range case lives here rather than in
     ``measurement.active_driver_targets()``, whose callers require active
     commissioning semantics.
     """
@@ -212,59 +195,22 @@ def driver_protection_policy_view(
     """Return the code-owned protection bounds /sound/ needs to *explain* itself.
 
     Display-only, derived, never persisted-authoritative: every design-draft
-    load that knows the topology re-stamps it, the same way
-    ``driver_safety_profile_evaluation`` is re-stamped, so a saved copy can
-    never be read back as current policy.  (``load_design_draft`` without a
-    topology cannot re-derive either one and returns the disk copy untouched;
-    the /sound/ page always loads with a topology.)
+    load that knows the topology re-stamps it, so a saved copy can never be read
+    back as current policy. It exists because the browser must answer *has this
+    target delegated its level?* before anything is saved, and must not own a
+    second copy of that policy: an absent peak says delegated, and a profile
+    saved under the retired contract carries the class default and means the
+    same, so the page needs ``max_auto_level_dbfs`` to recognise it.
 
-    It exists because the browser has to answer one question before anything is
-    saved, and it is policy the browser must not own a second copy of: *has
-    this target delegated its level?*  Since the 2026-08-23 ruling that is
-    normally answered by the peak being ABSENT, but a profile saved under the
-    retired contract carries the class default itself and means the same thing,
-    so the page still needs that target's ``max_auto_level_dbfs`` to recognise
-    it.  The confirmed safety profile
-    carries the same number in ``code_owned_policy``, but only **after** a
-    save; the echo-back panel renders straight after a paste.
+    The class low limit travels only as ``low_limit_hz`` +
+    ``low_limit_provenance`` + a rendered ``low_limit_summary``, never as a bare
+    ``min_highpass_hz`` beside a declared figure — two unlabelled floats one key
+    apart is the ambiguity this replaced. Resolving that needs the operator's
+    visible values, hence ``manual_settings``; without them every target reports
+    the class fallback, labelled as such.
 
-    It answered a second question until 2026-08-20 — *what bounds the level
-    protection then picks?* — by publishing ``HF_MEASUREMENT_ABS_CEILING_DBFS``.
-    That constant is retired (see the block comment above
-    ``derive_hf_measurement_ceiling_dbfs``): the bound is now the per-driver
-    sensitivity derivation, which this topology-only view cannot compute — it
-    has neither the confirmed caps nor the declared sensitivities.  So the
-    field is gone rather than restated as the global test ceiling, which would
-    have told the household a true but empty number.
-
-    ``role_class`` travels with each target so the page never has to keep its
-    own copy of which roles are high-frequency.
-
-    It published the raw class-table ``min_highpass_hz`` until #2874, on the
-    reasoning that it was the only field that *discriminates* — every
-    high-frequency style shares ``max_auto_level_dbfs = -65``, so it proved the
-    view came from ``driver_protection_profile`` rather than a restated
-    constant.  That is a self-referential reason to keep an AMBIGUITY: on a
-    tweeter declared at B&C's published 1.6 kHz the draft then showed 1600 and
-    2000 side by side with nothing saying which one bounds the corner, and two
-    readers independently took the 2000 for a second floor.  What replaced it
-    resolves that and discriminates just as well, because provenance IS a
-    discriminator: ``low_limit_hz`` with ``low_limit_provenance`` and a rendered
-    ``low_limit_summary`` — "1600 Hz (manufacturer declared)" where the
-    household declared one, "5000 Hz (class fallback; nothing declared)" where
-    nobody did.  So the class figure still travels; it just never travels
-    unlabelled beside a declared one.
-
-    Resolving that needs the operator's visible values, which is why
-    ``manual_settings`` is a parameter.  Without them every target reports the
-    class fallback — honestly labelled as such rather than silently passed off
-    as the declaration.
-
-    ``policy_version`` has no reader on the page yet and is kept deliberately:
-    it is staleness detection on a view whose whole contract is that it gets
-    re-stamped, and without it a copy captured under an older policy is
-    indistinguishable from a current one.  ``role`` had no such property and is
-    not emitted: ``role_class`` answers every question the page asks.
+    ``policy_version`` has no reader yet and is kept as staleness detection on a
+    view whose whole contract is that it gets re-stamped.
     """
 
     manual_by_role = _manual_by_role(manual_settings)
@@ -317,14 +263,10 @@ def _visible_values_for_target(
     """The operator-visible values bound to one physical target, and how.
 
     One owner for the binding rule — target-specific values first, then the
-    legacy per-role entry when that role appears exactly once — because two
-    surfaces now need it: ``_profile_core``, which freezes those values, and
-    ``driver_protection_policy_view``, which must resolve the SAME declaration
-    the freeze will.  A second copy of this rule would let the page explain one
-    number while the profile stored another.
-
-    The second element is ``True`` only for the legacy per-role read, which is
-    what ``target_values_binding`` records.
+    legacy per-role entry when that role appears exactly once — so the page
+    cannot explain one number while the profile stores another. The second
+    element is ``True`` only for the legacy per-role read, which is what
+    ``target_values_binding`` records.
     """
 
     explicit = manual_by_target.get(target_id)
@@ -340,9 +282,7 @@ def _visible_values_for_target(
 def _topology_driver_style(topology: OutputTopology, target_id: str) -> str | None:
     """The topology-owned driver style for one physical target, or None.
 
-    ``target_id`` is ``f"{group.id}:{channel.role}"`` throughout this module;
-    keep that shape here so this stays the same lookup ``_profile_core`` and
-    ``build_driver_research_request`` build inline.
+    ``target_id`` is ``f"{group.id}:{channel.role}"`` throughout this module.
     """
 
     for group in topology.speaker_groups:
@@ -510,14 +450,10 @@ def _normalise_protection_filters(value: Any, field_name: str) -> list[dict[str,
             f"{prefix}.minimum_slope_db_per_octave",
         )
         if cutoff is None or slope is None:
-            # "This filter is required but its numbers are unpublished" has no
-            # encoding here, and deliberately still does not get one: under the
-            # best-estimate contract (see ``build_driver_research_prompt``) the
-            # honest answer to an unpublished protective cutoff is the
-            # researcher's best engineering estimate, declared as one, that an
-            # operator can see and correct -- not a marker that leaves the
-            # driver unprotected-but-declared. The message says that out loud
-            # because the refusal is what the operator reads.
+            # "Required but unpublished" has no encoding here and deliberately
+            # gets none: under the best-estimate contract the honest answer is a
+            # declared engineering estimate an operator can see and correct, not
+            # a marker that leaves the driver unprotected-but-declared.
             raise DriverSafetyProfileError(
                 f"{prefix} requires cutoff_hz and minimum_slope_db_per_octave; "
                 "a required filter whose numbers are unpublished takes a "
@@ -680,24 +616,15 @@ def _normalise_unknowns(value: Any, field_name: str) -> list[str]:
 def _normalise_field_provenance(value: Any, field_name: str) -> dict[str, Any]:
     """Normalize per-field provenance assertions.
 
-    **The provenance contract (owner ruling, issue #2195).**  A value carries
-    three facts: the number itself, whether it is a published figure or the
+    A value carries three facts: the number, whether it is published or the
     researcher's best engineering estimate, and one citation either way.
+    ``source`` is that citation as a short free string (often a name, not a
+    URL), separate from the ``sources`` URL list, and OPTIONAL — an absent key
+    is omitted rather than stored as ``None``, so an entry written before it
+    existed normalises byte-identically and stays canonical.
 
-    ``source`` is that citation, and it is a short *free string* rather than a
-    URL because the honest answer is often a name -- "Dayton CX120-8 datasheet,
-    p.2" -- and for an estimate it is the one fact the estimate leaned on.  It
-    is separate from ``sources`` (a URL list) for that reason, and it is
-    **optional**: this is a tinker box, and a reply that gives a number without
-    a citation must still land rather than be stonewalled.  The absent key is
-    omitted from the output rather than stored as ``None``, so a provenance
-    entry written before this key existed normalises byte-identically and an
-    already-confirmed safety profile stays canonical.
-
-    There is deliberately no ``state`` key.  ``confidence`` is the single
-    writer of "published or estimated"; display derives the badge from it (see
-    ``deploy/assets/sound-profile/js/main.js``, ``driverProvenanceState``).
-    Accepting both would give one fact two owners that can disagree.
+    There is deliberately no ``state`` key: ``confidence`` is the single writer
+    of "published or estimated" and display derives the badge from it.
     """
 
     if value is None:
@@ -785,12 +712,9 @@ def normalise_driver_safety_fields(
     if not isinstance(value, Mapping):
         raise DriverSafetyProfileError(f"{field_name} must be an object")
     out: dict[str, Any] = {}
-    # The OWNER of this driver's low limit (2026-08-17 ruling, #2603) is parsed
-    # here rather than alongside the advisory display fields, because that is
-    # what it is: a safety field, and the one every other low-limit field
-    # derives from. Parsing it at this shared point is what gives it a single
-    # parse site across the design draft, the research result, and the safety
-    # profile's own manual settings.
+    # The OWNER of this driver's low limit is parsed here, with the safety
+    # fields rather than the advisory display ones: one parse site across the
+    # design draft, the research result and the profile's manual settings.
     low_limit_hz = _positive_float(
         value.get("recommended_highpass_hz"),
         f"{field_name}.recommended_highpass_hz",
@@ -1137,10 +1061,8 @@ def validate_driver_research_request(
         if channel.driver_style
     }
     targets: list[dict[str, Any]] = []
-    #: The same targets as ``targets``, except that any retired key the stored
-    #: context still carries is put BACK, verbatim. It reconstructs the core the
-    #: build that wrote this request fingerprinted; see the fingerprint check
-    #: below for why tolerating the allowlist is not enough on its own.
+    #: ``targets`` with any retired key the stored context still carries put
+    #: BACK verbatim, reconstructing the core the writing build fingerprinted.
     legacy_targets: list[dict[str, Any]] = []
     saw_retired_context_field = False
     for index, (raw_target, current) in enumerate(zip(raw_targets, current_targets)):
@@ -1214,13 +1136,10 @@ def validate_driver_research_request(
                 raise DriverSafetyProfileError(
                     f"{field_name}.operator_declared_context must be an object"
                 )
-            # Tolerated, never stored: this context is built by
-            # ``normalise_driver_safety_fields``, so a request PERSISTED in the
-            # draft by an older build carries whatever that build's normaliser
-            # emitted -- and ``design_draft.build_design_draft`` re-validates the
-            # stored request on EVERY save. Refusing here would make an old
-            # draft unsaveable over a key the ask no longer sends. The
-            # normaliser below drops it. See LEGACY_DROPPED_DRIVER_FIELDS.
+            # Tolerated, never stored: a request persisted by an older build
+            # carries that build's normaliser output and is re-validated on
+            # EVERY save, so refusing here would make an old draft unsaveable.
+            # The normaliser below drops it. See LEGACY_DROPPED_DRIVER_FIELDS.
             _reject_unknown_keys(
                 context_raw,
                 f"{field_name}.operator_declared_context",
@@ -1247,11 +1166,9 @@ def validate_driver_research_request(
             )
             if notes:
                 context["operator_notes"] = notes
-        # The retired keys as this request STORED them. Copied verbatim rather
-        # than re-derived: the stored context IS an older
-        # ``normalise_driver_safety_fields`` output, so the stored value is
-        # already in that build's normalised form and copying it reproduces the
-        # fingerprinted bytes exactly, whatever the key's type was.
+        # The retired keys as this request STORED them, copied verbatim rather
+        # than re-derived: the stored value is already in the writing build's
+        # normalised form, so copying reproduces the fingerprinted bytes.
         legacy_context = dict(context)
         if isinstance(context_raw, Mapping):
             for retired in sorted(LEGACY_DROPPED_DRIVER_FIELDS):
@@ -1291,24 +1208,13 @@ def validate_driver_research_request(
     fingerprint = request.get("request_fingerprint")
     current_fingerprint = _fingerprint(core)
     # **Tolerating the retired key in the allowlist is necessary and NOT
-    # sufficient**, because the context is FINGERPRINTED. The build that wrote
-    # this request hashed a core whose context still carried the key; dropping
-    # it here recomputes a different digest, and a request a real box stored
-    # would be refused "fingerprint is invalid" on the deploy that retired the
-    # field -- on the very save the household's remedy copy tells them to make.
-    #
-    # Same posture, and the same sentence, as
-    # ``crossover_v2.topology_prescription._parse_prescription``'s read-back:
-    # a document this repository already wrote must stay readable across the
-    # deploy that retired the field. So a stored digest is accepted when it
-    # matches the core computed WITH the retired context field present.
-    #
-    # TRANSITIONAL by construction: the returned record is re-stamped with
-    # ``current_fingerprint`` below, so the draft that saves it is written in
-    # the new shape and matches on its own terms next time. The re-stamp is also
-    # load-bearing rather than hygiene -- the staleness check immediately below
-    # compares this record against a freshly built one, which carries the
-    # current digest.
+    # sufficient**, because the context is FINGERPRINTED: the writing build
+    # hashed a core whose context still carried the key, so dropping it here
+    # recomputes a different digest and a real box's request would be refused on
+    # the very save its remedy copy asks for. A stored digest is therefore also
+    # accepted when it matches the core computed WITH the retired field present.
+    # Transitional: the record is re-stamped with ``current_fingerprint`` below,
+    # which the staleness check immediately after also depends on.
     if not _is_sha256(fingerprint):
         raise DriverSafetyProfileError("driver_research_request fingerprint is invalid")
     if fingerprint != current_fingerprint:
@@ -1374,37 +1280,28 @@ def validate_research_result_binding(
         )
 
 
-# --- One implausible low limit, two authors, two answers (#2874) -------------
+# --- One implausible low limit, two authors, two answers ---------------------
 #
-# Owner ruling, 2026-08-22: declared values are the only refusing authority;
-# class tables may prefill, disclose, and serve as fallback -- they must never
-# refuse a declaration. The plausibility band is anchored on the class table,
-# so as a BLOCKER over a typed number it was the code overruling its owner with
-# a class guess, on a field where nothing else gets a chaperone (sensitivity,
-# level caps and hard bands all accept typed garbage). It is split by AUTHOR
-# instead, because the two authors are not the same kind of claim:
+# Declared values are the only refusing authority; class tables may prefill,
+# disclose and serve as fallback, never refuse a declaration
+# (docs/measurement-loop-doctrine.md §5). The plausibility band is anchored on
+# the class table, so it is split by AUTHOR:
 #
-#   * a RESEARCH REPLY outside the band is still REFUSED at intake, below. An
-#     LLM misreading a datasheet is not an operator's choice, "ask again with
-#     the datasheet" is the right answer, and refusing at the paste means the
-#     bad number never becomes a value the household has to un-declare;
-#   * an OPERATOR-TYPED value outside the band lands a loud warning that SAVES
-#     (``_target_low_limit_warnings``). The tinker box trusts its owner -- and
-#     says so, concretely, first.
+#   * a RESEARCH REPLY outside the band is REFUSED at intake, below — an LLM
+#     misreading a datasheet is not an operator's choice, and refusing at the
+#     paste keeps the bad number from becoming a declaration;
+#   * an OPERATOR-TYPED value outside it lands a loud warning that SAVES
+#     (``_target_low_limit_warnings``).
 #
-# What actually protects the driver at a low declared figure is unchanged and
-# lives elsewhere: the derived protective high-pass sitting AT that frequency
-# and proved in the emitted graph by ``graph_safety``, the absolute corner
-# floor, the commissioning high-pass at a multiple of the crossover corner, the
-# ``path_safety`` load gate, and the excitation level ceilings.
+# What protects the driver at a low declared figure lives elsewhere: the derived
+# protective high-pass proved in the emitted graph, the absolute corner floor,
+# the ``path_safety`` load gate, and the excitation level ceilings.
 
 
-#: How much of a ``driver_style`` one diagnosis sentence may quote verbatim.
-#: The style is FREE-FORM up to 80 characters (``output_topology`` takes any
-#: safe id), while the longest style this build registers is 23
-#: (``horn_compression_driver``) -- so one more than that ellipsizes only a
-#: value no table here describes, and keeps the rendered sentence a bounded
-#: length whatever the household typed into the picker.
+#: How much of a ``driver_style`` one diagnosis sentence may quote verbatim. The
+#: style is FREE-FORM up to 80 characters while the longest style this build
+#: registers is 23 (``horn_compression_driver``), so one more than that
+#: ellipsizes only a value no table here describes.
 _DIAGNOSIS_STYLE_MAX_CHARS = 24
 
 
@@ -1426,16 +1323,11 @@ def _low_limit_implausibility_diagnosis(
 ) -> str | None:
     """One sentence naming WHY a declared low limit is not believable, or None.
 
-    Shared by both arms of the split above so the refusal and the warning
-    cannot describe the same number differently. Diagnosis only -- each arm
-    appends its own action, because the actions are what differ.
-
-    The interpolated style is ellipsized (:data:`_DIAGNOSIS_STYLE_MAX_CHARS`)
-    because it is operator-supplied free text, not a value from any table here.
-    Quoting it verbatim made the sentence's length an operator input, and the
-    warning arm's message has a schema cap -- so an 80-character style turned a
-    DISCLOSURE into a save that hard-failed, on exactly the out-of-band
-    declaration the disclosure exists to allow.
+    Shared by both arms of the split above, so they cannot describe the same
+    number differently. Diagnosis only — each arm appends its own action. The
+    interpolated style is ellipsized (:data:`_DIAGNOSIS_STYLE_MAX_CHARS`)
+    because it is operator free text, and the warning arm's message has a schema
+    cap an 80-character style would blow.
     """
 
     band = driver_low_limit_plausibility_band_hz(role, driver_style=driver_style)
@@ -1453,10 +1345,8 @@ def _low_limit_implausibility_diagnosis(
     )
     direction = "below" if float(frequency_hz) < band[0] else "above"
     # "(class default N Hz)" rather than a clause: the band already IS that
-    # default divided and multiplied by the factor, so the long form spent ~15
-    # characters restating it -- and those characters are the headroom the
-    # warning arm needs under its message cap once the unknown-style branch is
-    # reachable (both review lenses, #2884).
+    # default divided and multiplied by the factor, and the characters saved are
+    # the headroom the warning arm needs under its message cap.
     return (
         f"declared {float(frequency_hz):g} Hz is more than "
         f"{LOW_LIMIT_PLAUSIBILITY_FACTOR:g}x {direction} the {style} class "
@@ -1470,11 +1360,8 @@ def validate_research_low_limit_plausibility(
 ) -> None:
     """Refuse a research reply whose declared low limit is not believable.
 
-    The REFUSING arm of the author split above, and the only one: this reads
-    the pasted packet, never a saved declaration. An operator who has actually
-    read the datasheet can still enter the same number by hand under Advanced,
-    and the message says so rather than leaving them to guess that a route
-    exists.
+    The REFUSING arm of the author split above, and the only one: this reads the
+    pasted packet, never a saved declaration.
     """
 
     styles = {
@@ -1537,9 +1424,8 @@ _PROMPT_TARGET_KEYS = (
 )
 
 # Keys whose value directly bounds what the speaker is allowed to excite. Only
-# these carry per-field provenance in the ask: demanding confidence + basis +
-# URLs for every field is what turned a data reply into an essay, and the
-# remaining fields are advisory prefill an operator reviews anyway.
+# these carry per-field provenance in the ask; the rest are advisory prefill an
+# operator reviews anyway.
 _PROMPT_PROVENANCE_KEYS = (
     "hard_excitation_band_hz",
     "recommended_highpass_hz",
@@ -1573,22 +1459,11 @@ def _driver_research_prompt_targets(request: Mapping[str, Any]) -> str:
 def _prompt_example_highpass_hz(request: Mapping[str, Any]) -> float:
     """The worked RESULT SHAPE example's tweeter cutoff, in Hz.
 
-    Read from policy for the same reason ``_driver_research_prompt_limits``
-    is: a fixed constant here suits only the styles whose class default it
-    happens to sit near.  A hard-coded 3000 reads as a worked answer to a
-    ribbon (class default 5000) or supertweeter (8000) target whose own LIMITS
-    line one screen above states a plausibility band anchored somewhere else —
-    a worked example arguing with the bounds printed beside it is precisely the
-    deadlock #2186 exists to end.  (Until the 2026-08-17 ruling that mismatch
-    was also REFUSED, as ``tweeter:highpass_below_code_policy``; a sourced
-    figure now wins outright, so the cost is a confusing example rather than a
-    rejected reply.)
-
-    The strictest high-frequency floor among this request's targets is used, so
-    a mixed request cannot teach a cutoff that is illegal for one of its own
-    drivers.  The floor itself is a legal and conservative worked answer; a
-    request with no high-frequency target falls back to the class default for
-    an undeclared tweeter, which is the most conservative entry in the table.
+    Read from policy rather than fixed, so the example cannot argue with the
+    plausibility band the LIMITS section prints beside it. The strictest
+    high-frequency floor among this request's targets is used, so a mixed
+    request cannot teach a cutoff illegal for one of its own drivers; a request
+    with no high-frequency target falls back to the undeclared-tweeter default.
     """
 
     floors = [
@@ -1611,36 +1486,16 @@ def _prompt_example_highpass_hz(request: Mapping[str, Any]) -> float:
 def _driver_research_prompt_limits(request: Mapping[str, Any]) -> list[str]:
     """Return the LIMITS section: its heading, its preamble, and its bounds.
 
-    One gate enforces them, on the one line emitted per target: the low-limit
-    band by :func:`validate_research_low_limit_plausibility` at intake.
+    One gate enforces them — the low-limit band, at intake, by
+    :func:`validate_research_low_limit_plausibility` — and they are read from
+    that band's owner rather than restated as prose, so the ask cannot drift
+    from what the gate refuses. There is deliberately NO level bound: asking for
+    a class figure and then reading the reply's echo as a declaration is what
+    made a code default the operative ceiling
+    (docs/measurement-loop-doctrine.md §5).
 
-    Read from the low-limit band owner rather than restated as prose constants,
-    so the ask cannot drift from what the gate actually refuses.  Naming the
-    bound in the ask is what lets an *estimated* answer land instead of
-    deadlocking: the gate still refuses an out-of-bounds value on its own, so
-    telling the researcher the bound can only raise the chance of an acceptable
-    first reply, never widen it.
-
-    They are bounds, not recommended values.  The prompt says so out loud
-    because a floor stated without that caveat reads as a target, and would
-    talk a researcher *down* from a stricter published requirement.
-
-    **There is no level bound here, and its absence is the point.**  The ask
-    carried ``max_effective_peak_dbfs at or below <class default>`` until
-    2026-08-23, which made a code figure the ceiling a researcher had to clear
-    — for a tweeter, −65 dBFS — and then treated the number that came back as a
-    declaration.  The owner struck it: "There should not be any nannies in our
-    audio pipeline... No limit unless we have no headroom to give."  A level
-    limit is now asked for only where a manufacturer publishes one.
-
-    The heading is emitted only when a bound exists.  Every remaining bound is
-    per-target and optional (a low-frequency role has no low-limit anchor at
-    all), so a request can legitimately have none — and a heading whose two
-    preamble sentences say "these bounds" above an empty list describes a gate
-    that is not there.
-
-    These lines are prompt text only.  ``request`` itself, and therefore
-    ``request_fingerprint``, is untouched.
+    Every bound is per-target and optional, so the heading is emitted only when
+    one exists. Prompt text only: ``request`` and its fingerprint are untouched.
     """
 
     lines: list[str] = []
@@ -1673,89 +1528,43 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
 
     The contract with the assistant is exactly one fenced ``json`` block back,
     so the browser's paste box can recover the object from an ordinary chat
-    reply.  What the prompt embeds is a *projection* of ``request`` — the
-    target identities, models, and operator-declared context — never the whole
-    request: the ``hardware`` block and the physical output/topology labels are
-    server bookkeeping the assistant cannot use, and they were most of the
-    prompt's length.  ``request`` itself stays the single source of truth; it
-    is what the browser posts back and what the server binds against.
+    reply. The prompt embeds a *projection* of ``request`` — target identities,
+    models, operator-declared context — never the whole request; ``request``
+    stays the single source of truth the server binds against. The ask is a
+    strict SUBSET of what the parser accepts, so asking for less cannot
+    invalidate a previously-saved result.
 
-    The ask is deliberately a strict *subset* of what the parser accepts
-    (see ``_V2_RESEARCH_DRIVER_FIELDS``).  Asking for less cannot invalidate a
-    previously-saved or more verbose result; acceptance is unchanged.
+    **The estimate contract.** The ask orders the answer: published value first,
+    then the researcher's best reality-grounded engineering estimate tagged
+    ``confidence: "low"`` with its derivation in ``basis``, and null only for
+    the genuinely unknowable. Fields like ``hard_excitation_band_hz`` appear in
+    essentially no consumer datasheet while ``_target_issues`` requires them, so
+    forbidding estimates deadlocked most real drivers. Safety never lived in a
+    number's timidity: it lives in ``_target_issues``, the per-style
+    plausibility screen on the reply, and the quiet-start ramp, and /sound/
+    echoes every consumed value back with its badge and source before a save.
 
-    **The estimate contract (owner ruling, issue #2186).**  The ask used to
-    forbid estimating and to call null "a correct answer".  Fields like
-    ``hard_excitation_band_hz`` and ``level_duration_limits`` appear in
-    essentially no consumer datasheet, while ``_target_issues`` requires them —
-    so honest research plus a strict gate deadlocked most real drivers, and the
-    only way through was nine hand-typed numbers most people do not have.  The
-    ask now orders the answer: published value first, then an engineering
-    estimate tagged ``confidence: "low"`` with its derivation in ``basis``, and
-    null only for the genuinely unknowable.
-
-    **Best estimate, declared, with a source (owner ruling, issue #2195).**
-    The ask no longer requests a *conservative* estimate.  It asks for the
-    researcher's best reality-grounded number from the driver's published facts
-    and physics, declared as an estimate, with one citation.  Safety never
-    lived in a number's timidity: it lives in ``_target_issues`` (below), the
-    per-style plausibility screen on the reply, and the quiet-start ramp.  A
-    wrong best-estimate degrades a measurement; it cannot
-    blow a driver, while
-    prompt-level lowballing costs real performance — a needlessly high cutoff
-    robs usable range, a needlessly low level under-drives the measurement —
-    and buys nothing the clamps do not already guarantee.  The operator is the
-    arbiter: /sound/ echoes every consumed value back with its published or
-    estimated badge and its source before anything is saved.
-
-    **``max_effective_peak_dbfs`` is asked for as a published fact or not at
-    all (owner ruling, 2026-08-23).**  The ask used to name a class-default
-    ceiling under LIMITS and tell the assistant to "send exactly the ceiling"
-    for a tweeter with no published limit — so the reply's number was a figure
-    this file had injected, and everything downstream then read it as a
-    declaration.  On the new-horn box that round trip pinned a 75 dB SPL seat
-    target at 68.3 dB with ~30 dB of digital headroom unused.  The demand is
-    gone, the key is optional, and the level a measurement runs at comes from
-    the sensitivity derivation instead
+    ``max_effective_peak_dbfs`` is asked for as a published fact or not at all:
+    naming a class-default ceiling and reading the echo back as a declaration
+    pinned a 75 dB SPL seat target at 68.3 dB with ~30 dB of headroom unused.
+    The level a measurement runs at comes from the sensitivity derivation
     (:func:`jasper.active_speaker.driver_protection.derive_hf_measurement_ceiling_dbfs`).
-    A manufacturer-published level limit is still asked for and still binds.
 
-    What did **not** move is the protection itself.  A REPLY that lands outside
-    code policy is still refused by name rather than silently clamped, so an
-    operator sees the bound and decides — band nesting in ``_target_issues``,
-    and the per-style low-limit band in
-    :func:`validate_research_low_limit_plausibility`, which screens the paste
-    before any of it becomes a declaration.  (That last one used to refuse from
-    ``_target_issues`` too, over the SAVED values; #2874 split it by author, and
-    a human-typed value outside the band is now disclosed rather than refused.
-    A researcher reading this ask is unaffected either way: the bound the ask
-    names is the bound the reply must clear.)  The quiet-start commissioning
-    ramp and its acknowledgements are untouched.  Widening the *sourcing* of a
-    proposed number is a different question from widening the *bound* it must
-    clear, and only the first one changed.
+    Protection itself is unmoved: a reply outside code policy is refused by name
+    rather than silently clamped, by ``_target_issues`` and by
+    :func:`validate_research_low_limit_plausibility`.
     """
 
-    # Dropped from the ASK (still accepted, still normalised, still prefilled
-    # when a reply includes them):
-    #   manufacturer          -- display-only; the browser import never copies
-    #                            it into manual_settings, and the one reader
-    #                            (staging._driver_spec_from_preview) has an
-    #                            "Operator research" fallback.
-    #   recommended_lowpass_hz-- no computational consumer; an Advanced field
-    #                            the operator can type.
-    #   gain_offset_db        -- a guessed level that outranks a derived one.
-    #                            The browser tags an imported gain
-    #                            "research_estimate", and baseline_profile's
-    #                            ladder is measured > pinned > ESTIMATE >
-    #                            sensitivity -- so the guess pre-empts the trim
-    #                            that same reply's sensitivities would have
-    #                            produced through a physical model. Level
-    #                            authority is measurement's and the operator's.
+    # Dropped from the ASK (still accepted, normalised and prefilled when a
+    # reply includes them): ``manufacturer`` and ``recommended_lowpass_hz`` have
+    # no computational consumer, and ``gain_offset_db`` is a guessed level that
+    # would outrank the derived trim in baseline_profile's ladder (measured >
+    # pinned > estimate > sensitivity).
+    #
     # The crossover vocabulary the KEY GUIDE states is READ from the compiler,
     # never spelled here: the reply is refused against exactly these sets when
-    # it is saved (design_draft._normalise_candidate), and a prompt that asked
-    # for a vocabulary the saver would reject is a deadlock nobody can see from
-    # either end. Imported inside the call because this module is the research
+    # it is saved, so asking for a vocabulary the saver rejects is an invisible
+    # deadlock. Imported inside the call because this module is the research
     # surface, not an audio-graph consumer.
     from .staging import (
         supported_declaration_filter_types,
@@ -1767,10 +1576,8 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
     target_count = len(request.get("targets", []))
     entries = "entry" if target_count == 1 else "entries"
     # The worked example's own numbers, derived so they are legal for THIS
-    # request's drivers and mutually nested. Round by construction (every
-    # policy floor is a round number and every offset here is a multiple of
-    # 500), because the ask tells the assistant an estimate should look like
-    # one and the example has to model that.
+    # request's drivers and mutually nested. Round by construction (every policy
+    # floor is round and every offset here is a multiple of 500).
     hp = int(_prompt_example_highpass_hz(request))
     hard_low = hp - 500
     return "\n".join(
@@ -1838,14 +1645,10 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             '    "radiating_diameter_mm": 25,',
             '    "unknowns": ["facts that could not be established"],',
             # The high-confidence exemplar is deliberately NOT
-            # recommended_highpass_hz. Every other value in this shape is a
-            # visible placeholder ("echo from TARGETS", "a|b|c", "https://..."),
-            # but that field's example is a concrete number this build COMPUTED
-            # from its own style table -- so badging it high/datasheet modelled
-            # exactly the mistake this prompt forbids two screens up, and is the
-            # shape jts3 shipped: an unpublished 2000 wearing a datasheet badge.
-            # sensitivity_db_2v83_1m carries the published exemplar instead; it
-            # is genuinely a datasheet line, so nothing false is taught.
+            # recommended_highpass_hz: that field's example is a number this
+            # build COMPUTED from its style table, so badging it
+            # high/datasheet would teach the very mistake the prompt forbids.
+            # sensitivity_db_2v83_1m is genuinely a datasheet line.
             '    "field_provenance": {"sensitivity_db_2v83_1m":{"confidence":"high","basis":"datasheet sensitivity line","source":"manufacturer datasheet","sources":["https://..."]},"level_duration_limits":{"confidence":"low","basis":"estimated: protocol default, no published limit","source":"measurement protocol, no published limit","sources":[]}},',
             '    "notes": "one short sentence",',
             '    "sources": ["https://..."]',
@@ -2091,12 +1894,10 @@ def _target_issues(target: Mapping[str, Any]) -> list[str]:
     if not isinstance(measurement, list):
         reasons.append(f"{role}:measurement_band_missing")
     limits = target.get("level_duration_limits")
-    # ``max_effective_peak_dbfs`` is deliberately NOT in this tuple. It is the
-    # one key in the object that would be a datasheet fact, so it is optional:
-    # most makers publish no level limit, and requiring one only ever produced
-    # an invented number. Its absence is how a target says "no published level
-    # limit", which resolve_driver_excitation_ceilings reads as the delegation
-    # the sensitivity derivation answers (owner ruling, 2026-08-23).
+    # ``max_effective_peak_dbfs`` is deliberately NOT required: most makers
+    # publish no level limit, and its ABSENCE is how a target says so —
+    # ``resolve_driver_excitation_ceilings`` reads that as the delegation the
+    # sensitivity derivation answers.
     required_limit_fields = (
         "max_sweep_duration_s",
         "max_repeat_count",
@@ -2128,45 +1929,25 @@ def _target_issues(target: Mapping[str, Any]) -> list[str]:
             cutoff = float(item["cutoff_hz"])
             if not hard[0] <= cutoff <= hard[1]:
                 reasons.append(f"{role}:{item.get('kind')}_cutoff_outside_hard_band")
-    # The style table used to VETO here: a declared high-pass below the class
-    # default landed ``<role>:highpass_below_code_policy`` and the profile
-    # landed incomplete. The 2026-08-17 ruling (#2603) reversed that -- a
-    # sourced manufacturer figure wins outright, and B&C's published 1.6 kHz
-    # for the DE250 is exactly the number the 2 kHz class default was rejecting.
-    # A plausibility BLOCKER survived that reversal here and was itself
-    # reversed by the 2026-08-22 ruling (#2874): a saved declaration is
-    # operator-authored, and refusing one on a class anchor is the same
-    # class-over-declaration inversion one layer down. It is now a loud
-    # warning -- ``_target_low_limit_warnings`` -- and the refusing arm moved
-    # to the research-reply intake, ``validate_research_low_limit_plausibility``.
+    # No class-table veto here: a saved declaration is operator-authored, so an
+    # implausible low limit is a loud warning (``_target_low_limit_warnings``)
+    # and the refusing arm is the research-reply intake,
+    # ``validate_research_low_limit_plausibility``.
     return reasons
 
 
 def _target_low_limit_warnings(target: Mapping[str, Any]) -> list[dict[str, str]]:
     """Non-blocking disclosures for one stored target's declared low limit.
 
-    Pure in the same way :func:`_target_issues` is, and for the same reason:
-    ``evaluate_driver_safety_profile`` re-derives these from the stored targets
-    and checks them against what the profile carries, so a hand-edited artifact
-    cannot quietly drop its own warning. That check compares severity and code,
-    never the sentence — see :func:`_comparable_issue_payload` for why editing
-    warning copy must not un-confirm a box whose declaration never changed.
+    Pure, because ``evaluate_driver_safety_profile`` re-derives these from the
+    stored targets so a hand-edited artifact cannot drop its own warning; that
+    check compares severity and code, never the sentence (see
+    :func:`_comparable_issue_payload`).
 
-    The list holds exactly one warning: a declared low limit outside its
-    style's plausibility band. It teaches rather than merely flagging -- it
-    names the number, the band it missed, the anchor that band came from, and
-    the two things it is most likely to be. A warning that does not say what to
-    check is a nanny that mumbles.
-
-    **The rendered message is FITTED to the schema cap, never merely expected to
-    fit.** An issue message over ``PROFILE_ISSUE_FIELD_MAX_CHARS["message"]``
-    fails shape validation, which lands the whole profile ``malformed`` and
-    makes ``build_driver_safety_profile`` refuse the save outright -- so a
-    length overrun here does not degrade a disclosure, it REFUSES the very
-    out-of-band declaration the disclosure exists to permit, which is the ruling
-    inverted by a rendering concern. The style is ellipsized upstream so the cut
-    lands on operator free text rather than on the guidance, and this final
-    clamp then guarantees the bound for every remaining input.
+    **The rendered message is FITTED to the schema cap**, never merely expected
+    to fit: a message over ``PROFILE_ISSUE_FIELD_MAX_CHARS["message"]`` fails
+    shape validation and refuses the save outright — so an overrun would refuse
+    the very out-of-band declaration the disclosure exists to permit.
     """
 
     role = str(target.get("role") or "")
@@ -2182,19 +1963,13 @@ def _target_low_limit_warnings(target: Mapping[str, Any]) -> list[dict[str, str]
     if diagnosis is None:
         return []
     # A style the table does not describe is judged against the cautious
-    # unknown-tweeter default, which is how a genuinely published 800 Hz on a
-    # large-format horn reads as implausible on a box whose type nobody set.
-    # Naming the picker as the first thing to check keeps that from reading as
-    # an accusation about the datasheet -- the clause the retired JS phrasing
-    # carried.
+    # unknown-tweeter default, so a published 800 Hz on a large-format horn
+    # reads as implausible on a box whose type nobody set; naming the picker
+    # first keeps that from reading as an accusation about the datasheet.
     #
-    # The question is REGISTERED, not empty. An empty style never reaches here
-    # from a saved profile: ``_profile_core`` stamps ``"unspecified"`` and the
-    # shape validator requires the field non-empty, so a test against emptiness
-    # was dead on the shipped path -- a box whose type nobody set shipped the
-    # no-caveat copy. Asking the table also catches what no sentinel list would:
-    # a typo'd or newer-build style that looks declared and is silently judged
-    # against the same fallback.
+    # The question is REGISTERED, not empty: ``_profile_core`` stamps
+    # ``"unspecified"``, so a test against emptiness would be dead — and asking
+    # the table also catches a typo'd or newer-build style that looks declared.
     check_the_type = (
         "and set the driver type above -- unknown types get a cautious default."
         if not driver_style_is_registered(style)
@@ -2283,11 +2058,10 @@ def _profile_core(
                 unknown = f"{field}: operator override has no matching research source"
                 if unknown not in unknowns:
                     unknowns.append(unknown)
-        # One owner, every consumer derives (#2603). The stored target carries
-        # the PROJECTION of this driver's declared low limit, not four
-        # independently-typed numbers -- so the Fc sweep's floor, the
-        # linearization fit band, the protection posture, and the grading bands
-        # cannot disagree about where this driver stops.
+        # One owner, every consumer derives: the stored target carries the
+        # PROJECTION of this driver's declared low limit, not four
+        # independently-typed numbers, so nothing downstream can disagree about
+        # where this driver stops.
         style = driver_styles.get(target_id) or "unspecified"
         low_limit = resolve_driver_low_limit(visible, role=role, driver_style=style)
         derived = apply_driver_low_limit(visible, role=role, driver_style=style)
@@ -2309,14 +2083,10 @@ def _profile_core(
                 if low_limit is not None
                 else f"{field}: derived from the declared driver low limit"
             )
-            # "Derived" alone hides the case that actually costs an operator
-            # something: a value they TYPED, replaced. /sound/ still renders an
-            # editable high-pass cutoff and slope, and the derivation overwrites
-            # both -- so a household that deliberately entered a stricter
-            # number was told only that the field was derived, never that their
-            # own entry had been superseded and by what. Naming it is what
-            # makes the replacement reviewable on the page, where every unknown
-            # is shown before the save that freezes it.
+            # "Derived" alone hides the case that costs an operator something: a
+            # value they TYPED, replaced. /sound/ renders an editable high-pass
+            # cutoff and slope and the derivation overwrites both, so the
+            # replacement is named to stay reviewable before the save.
             replaced = _superseded_typed_highpass(visible, derived) if (
                 field == "required_protection_filters"
             ) else ()
@@ -2351,27 +2121,17 @@ def _profile_core(
             "physical_output_index": physical.get("output_index"),
             "model": visible.get("model"),
             "manufacturer": visible.get("manufacturer"),
-            # The low limit's OWNER travels with its projections (#2603), so a
-            # reader of the confirmed profile can tell the manufacturer's
-            # declaration from what this build derived FROM it. Until #2897 the
-            # target carried only the projections, and the derived
-            # ``required_protection_filters`` high-pass was the only slope on
-            # the record -- a ``max(published, PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE)``
-            # that no reader could unmix, which is how the topology gate came
-            # to refuse a household's order-2 pin against a 24 the datasheet
-            # never printed.
+            # The low limit's OWNER travels with its projections, so a reader
+            # can tell the manufacturer's declaration from what this build
+            # derived FROM it — the derived slope is
+            # ``max(published, PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE)`` and no
+            # reader could unmix the two otherwise.
             #
-            # DECLARED provenance only. ``apply_driver_low_limit`` also fills
-            # these two on an INFERRED limit (one read back out of a stored
-            # protective high-pass), and persisting that would promote a
-            # guess into the field whose whole meaning is "the manufacturer
-            # published this" -- so the inferred case stores neither and a
-            # reader of such a target still finds the limit exactly where it
-            # has always been. The pair travels together because
-            # ``normalise_driver_safety_fields`` refuses a slope with no
-            # frequency to condition, and because a target holding one half
-            # would resolve its own low limit by the inferred path and
-            # disagree with itself.
+            # DECLARED provenance only: ``apply_driver_low_limit`` also fills
+            # these on an INFERRED limit, and persisting that would promote a
+            # guess into a field meaning "the manufacturer published this". The
+            # pair travels together — a slope needs a frequency to condition,
+            # and a target holding one half would disagree with itself.
             "recommended_highpass_hz": (
                 declared_limit.frequency_hz if declared_limit is not None else None
             ),
@@ -2451,27 +2211,17 @@ def _profile_core(
 def _comparable_issue_payload(issues: Any) -> str:
     """The part of an ``issues`` list that re-derivation must reproduce exactly.
 
-    Every entry's ``severity`` and ``code`` — and, for a BLOCKER, its message
-    too, because a blocker's message is mechanically derived from its own code
-    and so cannot drift on its own.
+    Every entry's ``severity`` and ``code``, plus a BLOCKER's message (which is
+    mechanically derived from its own code and so cannot drift on its own).
 
-    A WARNING's message is excluded, and that exclusion is the point. Warning
-    prose is hand-written and interpolates the household's numbers, so putting
-    it inside this check made **editing the copy a breaking change for every
-    profile carrying that warning**: the stored text no longer matched the
-    derived text, the profile read ``malformed``, and ``confirmed_and_current``
-    flipped false on a box whose declared values had not changed by one digit.
-    That was measured, not feared — re-evaluating profiles written one commit
-    earlier flipped both warned cases (#2884 review round, item 4).
-
-    What the check still guarantees is the half that was ever load-bearing: a
-    warning cannot be dropped, invented, re-coded, or downgraded in severity
-    without this mismatching, because all of that moves the severity/code set.
-    Only the sentence can differ, and no gate reads the sentence — every
-    protection decision reads the declared values. The fingerprint never
-    covered ``issues`` at all (verified: it hashes
-    ``artifact_schema_version, kind, topology_id, targets, research, authority,
-    authorizes_playback``), so this loosens nothing the digest was holding.
+    A WARNING's message is excluded, and that exclusion is the point: warning
+    prose is hand-written and interpolates the household's numbers, so including
+    it made editing copy a breaking change — the profile read ``malformed`` and
+    ``confirmed_and_current`` flipped false on a box whose declared values had
+    not changed. What the check still guarantees is the load-bearing half: a
+    warning cannot be dropped, invented, re-coded or downgraded without
+    mismatching, and no gate reads the sentence. The fingerprint never covered
+    ``issues``, so this loosens nothing the digest was holding.
     """
 
     return _canonical_json([
@@ -2496,11 +2246,8 @@ def _profile_issue_payload(
     """The profile's ``issues`` list: every blocker, then every warning.
 
     Warnings arrive already rendered because their copy names numbers a reason
-    CODE cannot carry (see :func:`_target_low_limit_warnings`); blockers keep
-    the mechanical code-to-prose rendering they have always had. Both live in
-    one list because ``severity`` is what separates them and the schema has
-    carried that field since it shipped -- a parallel ``warnings`` key would be
-    a second place to look for the same kind of fact.
+    CODE cannot carry; blockers keep the mechanical code-to-prose rendering.
+    Both live in one list because ``severity`` is what separates them.
     """
 
     return [
@@ -2526,25 +2273,14 @@ def build_driver_safety_profile(
     """Build the immutable profile for the visible current values.
 
     Saving the declaration IS declaring it: every write stamps the confirmation
-    over the values it just wrote, so the only two outcomes are ``incomplete``
-    (the declared values carry blocking issues) and ``confirmed``. There is no
-    separate operator confirm step and no confirmation to preserve across a
-    rebuild -- which is why this takes neither a ``prior_profile`` nor a
-    ``confirm`` flag.
+    over the values it just wrote, so the only outcomes are ``incomplete`` (the
+    declared values carry blocking issues) and ``confirmed``, and this takes
+    neither a ``prior_profile`` nor a ``confirm`` flag.
 
-    Why that is not a dropped safety gate: the confirmation bit never
-    authorized playback (``authorizes_playback`` is unconditionally ``False``),
-    and every physical protection -- the excitation ledger and its permitted
-    bands, the limiters, the output ceiling, the commissioning level stops --
-    reads the declared LIMITS, not the bit. What the bit actually gated was a
-    second human acknowledgement of numbers a human had already typed -- which
-    the crossover-accept seam could not supply for its own machine-measured
-    write. That seam saved with ``confirm=False``, so it could only ever CARRY
-    an existing confirmation forward; wherever there was nothing to carry (a
-    prior profile already stale or malformed, or a driver detail edited between
-    measurements) the machine's own write landed ``needs_confirmation`` and then
-    refused the very measurement loop that produced the value. ``issues`` still
-    blocks, so a garbage or half-declared profile is still fail-closed.
+    Not a dropped safety gate: the confirmation bit never authorized playback
+    (``authorizes_playback`` is unconditionally ``False``) and every physical
+    protection reads the declared LIMITS, not the bit. ``issues`` still blocks,
+    so a garbage or half-declared profile is still fail-closed.
     """
 
     normalised_manual = _normalise_profile_manual_settings(topology, manual_settings)
@@ -2560,11 +2296,8 @@ def build_driver_safety_profile(
                 required=True,
                 max_chars=64,
             ),
-            # The stored literal is unchanged so profiles already on disk stay
-            # canonical, and it stays true: every write of this declaration
-            # originates from an operator action on a page that shows the values
-            # -- the /sound/ save, or Apply on the crossover review screen that
-            # picked the measured candidate. There is no headless writer.
+            # Every write of this declaration originates from an operator action
+            # on a page that shows the values; there is no headless writer.
             "method": "operator_reviewed_visible_values",
         }
     status = "incomplete" if issues else "confirmed"
@@ -2640,10 +2373,8 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
         required=True,
         max_chars=160,
     )
-    # ``needs_confirmation`` is no longer WRITTEN -- the builder emits only
-    # ``incomplete`` or ``confirmed`` -- but stays readable so a box carrying a
-    # profile saved before the confirm step was retired is not reported as
-    # corrupt. ``evaluate_driver_safety_profile`` reads it as current.
+    # ``needs_confirmation`` is no longer WRITTEN but stays readable, so a box
+    # carrying an older profile is not reported as corrupt.
     if profile.get("status") not in {
         "incomplete",
         "needs_confirmation",
@@ -2703,12 +2434,10 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
                 "physical_output_index",
                 "model",
                 "manufacturer",
-                # Optional, not required: a profile stored before #2897 carries
-                # neither, and it is still a sound declaration -- its
-                # projections re-derive from its own protective high-pass by
-                # the legacy path, so it stays confirmed rather than being
-                # invalidated by a deploy. It simply has no published slope to
-                # gate a pinned crossover with until the next /sound/ save.
+                # Optional, not required: an older profile carries neither and
+                # is still a sound declaration — its projections re-derive from
+                # its own protective high-pass by the legacy path. It simply has
+                # no published slope to gate a pinned crossover with.
                 "recommended_highpass_hz",
                 "recommended_highpass_slope_db_per_octave",
                 "hard_excitation_band_hz",
@@ -2830,11 +2559,9 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
             "cabinet",
         }
         # The low limit's OWNER pair is canonicalised with the projections but
-        # is NOT re-derived below, and the split is what keeps a pre-#2897
-        # profile readable: it carries neither owner field, so both sides of
-        # this comparison omit them and agree -- while re-deriving it would
-        # ADD a ``recommended_highpass_hz`` the stored target never had and
-        # report every such profile stale on the deploy that shipped the field.
+        # NOT re-derived below: an older profile carries neither field, so both
+        # sides of this comparison omit them and agree, while re-deriving would
+        # ADD a ``recommended_highpass_hz`` the stored target never had.
         declared_fields = safety_fields | {
             "recommended_highpass_hz",
             "recommended_highpass_slope_db_per_octave",
@@ -2846,10 +2573,9 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
             )
         raw_safety = {key: target[key] for key in safety_fields if key in target}
         # ... and they must still be the PROJECTION of this target's own
-        # declared low limit (#2603). A stored profile whose bands and
-        # protective high-pass disagree about where the driver stops is exactly
-        # the drift this ruling collapsed; it is refused rather than read,
-        # because reading it would pick one of two answers silently.
+        # declared low limit. A stored profile whose bands and protective
+        # high-pass disagree about where the driver stops is refused rather than
+        # read, because reading it would pick one of two answers silently.
         rederived = apply_driver_low_limit(
             normalised_safety,
             role=target.get("role"),
@@ -2948,10 +2674,8 @@ def _superseded_typed_highpass(
 ) -> tuple[tuple[float, float, str], ...]:
     """``(typed, derived, what)`` for each high-pass value the projection replaced.
 
-    Only reports a value that actually MOVED. A declaration whose typed
-    high-pass already equals its derivation -- the ordinary case, including
-    every profile whose low limit was inferred from that same filter -- reports
-    nothing, so the disclosure stays a signal rather than a line on every save.
+    Only reports a value that actually MOVED, so the disclosure stays a signal
+    rather than a line on every save.
     """
 
     def highpass(source: Mapping[str, Any]) -> Mapping[str, Any] | None:
@@ -2988,41 +2712,31 @@ def _superseded_typed_highpass(
 
 
 #: Target field names a stored safety PROFILE may carry that this build has
-#: RETIRED.  ``crossover_search_band_hz`` declared where a driver "may be
-#: crossed"; the 2026-08-22 owner ruling deleted it (#2870) because the only
-#: bounds entitled to refuse a corner are the drivers' declared hard excitation
-#: bands, which it did not narrow toward — it narrowed AWAY from them, refusing
-#: corners both drivers admit.
+#: RETIRED. The only bounds entitled to refuse a corner are the drivers'
+#: declared hard excitation bands.
 #:
-#: **Deliberately not** :data:`~._common.LEGACY_DROPPED_DRIVER_FIELDS`, and the
-#: difference is the question each answers.  That set is "which retired keys may
-#: a stored DRIVER RECORD still carry at a write gate" — tolerated and dropped,
-#: so an old draft stays saveable.  This one is "which retired keys, found on a
-#: stored PROFILE TARGET, mean the profile is stale-but-fixable rather than
-#: corrupt" — reported, never dropped, because the profile is re-derived rather
-#: than edited.  Their memberships differ too: a profile target never carried
-#: ``horn_coverage_deg``.  **Retiring another per-driver field means deciding
-#: for BOTH** — whether a stored record may carry it, and whether a stored
-#: profile carrying it is fixable.
+#: **Deliberately not** :data:`~._common.LEGACY_DROPPED_DRIVER_FIELDS`: that set
+#: answers "may a stored DRIVER RECORD still carry this at a write gate"
+#: (tolerated and dropped), this one answers "does a stored PROFILE TARGET
+#: carrying it read as stale-but-fixable rather than corrupt" (reported, never
+#: dropped, because the profile is re-derived rather than edited). Retiring
+#: another per-driver field means deciding for BOTH.
 _RETIRED_TARGET_FIELDS = frozenset({"crossover_search_band_hz"})
 
 #: A stored profile that is structurally fine except that it names a retired
-#: field.  Reported under its own name rather than the generic schema-invalid
-#: one, on :class:`DriverSafetyProfileStaleLowLimitError`'s rule: the household's
-#: only question is "will saving fix it?", and here the answer is a plain yes.
-#: No auto-migration is written for it — a rebuild re-derives every target from
-#: the values the operator can see, and silently rewriting a confirmed safety
-#: declaration behind their back is the wrong direction for a declaration whose
-#: whole point is that a human made it.
+#: field. Reported under its own name rather than the generic schema-invalid
+#: one, because the household's only question is "will saving fix it?" and the
+#: answer is yes. No auto-migration: silently rewriting a confirmed safety
+#: declaration behind the operator's back is the wrong direction for a
+#: declaration whose whole point is that a human made it.
 DRIVER_SAFETY_PROFILE_RETIRED_FIELD_REASON = "driver_safety_profile_retired_field"
 
 
 def _retired_fields_present(profile: Mapping[str, Any]) -> bool:
     """Whether any stored target still carries a field this build retired.
 
-    Total by construction, like :func:`_stale_low_limit_rebuild_issues` below:
-    it runs inside an except branch whose contract is to REPORT rather than
-    raise, so an unreadable target contributes ``False`` rather than an error.
+    Total by construction: it runs inside an except branch whose contract is to
+    REPORT rather than raise, so an unreadable target contributes ``False``.
     """
     targets = profile.get("targets")
     if not isinstance(targets, list):
@@ -3036,11 +2750,9 @@ def _retired_fields_present(profile: Mapping[str, Any]) -> bool:
 def _stale_low_limit_rebuild_issues(profile: Mapping[str, Any]) -> tuple[str, ...]:
     """The blocking issues a REBUILD of this stale profile would carry.
 
-    Same derivation and same issue vocabulary the rebuild itself uses, applied
-    to the stored targets, so the two cannot disagree about whether confirming
-    is possible. Total by construction: a target this cannot read contributes
-    nothing rather than raising, because this runs inside an except branch
-    whose whole contract is to REPORT instead of raise.
+    Same derivation and vocabulary the rebuild uses, so the two cannot disagree
+    about whether confirming is possible. Total by construction: a target this
+    cannot read contributes nothing rather than raising.
     """
 
     targets = profile.get("targets")
@@ -3080,21 +2792,14 @@ def evaluate_driver_safety_profile(
     except DriverSafetyProfileStaleLowLimitError:
         # Named separately from the generic malformed case so /sound/ can say
         # "save it again" instead of "corrupt". Still a RETURN, never a raise,
-        # so a box carrying a pre-#2603 split declaration reports and waits
-        # rather than crash-looping a daemon.
+        # so a box carrying a split declaration reports rather than crash-looping.
         #
         # The reasons carry MORE than the name, because the name alone cannot
-        # answer the only question the household has: will saving fix it?
-        # Deriving the low limit moves the hard band's lower edge up to it, and
-        # that can leave an already-declared analysis window outside the hard
-        # band it must nest in, or leave the derived limit implausible for the
-        # declared driver type -- at which point the rebuild lands
-        # ``incomplete``, and the save the copy just recommended changes
-        # nothing. Appending the rebuild's own blocking issues lets /sound/
-        # name the field to fix first, instead of sending the household round a
-        # loop. (Until #2870 the commonest such blocker was a declared
-        # crossover-search band pushed under its own hard band; that field is
-        # gone, and the surviving relationships are the ones named above.)
+        # answer "will saving fix it?": deriving the low limit raises the hard
+        # band's lower edge, which can leave the analysis window outside it or
+        # the limit implausible, and the rebuild then lands ``incomplete``.
+        # Appending the rebuild's own blockers lets /sound/ name the field to
+        # fix first instead of sending the household round a loop.
         fingerprint = profile.get("profile_fingerprint")
         return DriverSafetyProfileEvaluation(
             "malformed",
@@ -3108,11 +2813,9 @@ def evaluate_driver_safety_profile(
     except DriverSafetyProfileError:
         fingerprint = profile.get("profile_fingerprint")
         # A profile written before a field was RETIRED is not corrupt, and
-        # saying "JTS could not read these limits" about one sends the
-        # household looking for damage that is not there. Named separately for
-        # the same reason the stale-low-limit case above is: the remedy is
-        # specific (open /sound/setup/ and save the visible values again), and
-        # a name is what lets /sound/ say so.
+        # saying "JTS could not read these limits" sends the household looking
+        # for damage that is not there. Named separately so /sound/ can state
+        # the specific remedy: save the visible values again.
         if _retired_fields_present(profile):
             return DriverSafetyProfileEvaluation(
                 "malformed",
@@ -3234,14 +2937,10 @@ def evaluate_driver_safety_profile(
             tuple(derived_issues),
         )
     if profile.get("status") == "needs_confirmation" and confirmation is None:
-        # A profile written before the confirm step was retired, read under the
-        # CURRENT definition of confirmed: the declared values are structurally
-        # sound and bound to this hardware, which is the whole of what the word
-        # means now. The only thing this artifact is missing is a second human
-        # acknowledgement that no longer exists, so it reads as current here
-        # rather than locking the measurement loop out of an already-deployed
-        # box until somebody re-saves the same numbers. The next save collapses
-        # the stored status; no migration pass is needed.
+        # Read under the CURRENT definition of confirmed: structurally sound and
+        # bound to this hardware is the whole of what the word means now, and
+        # the missing second human acknowledgement no longer exists. The next
+        # save collapses the stored status; no migration pass is needed.
         return DriverSafetyProfileEvaluation("confirmed", True, str(fingerprint), ())
     if (
         profile.get("status") != "confirmed"

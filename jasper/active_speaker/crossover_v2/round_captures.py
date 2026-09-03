@@ -5,18 +5,12 @@
 """A banked round's summed captures, each bound to the program its BYTES were
 played through and deconvolved into an impulse response.
 
-Two verbs read a round this way — the gate sweep (:mod:`.gate_sweep`) and the
-close reference (:mod:`.close_reference`) — so the binding lives here rather
-than once per verb, where the two could drift.
-
-**The phase label is not the program** (#3504). Captures bind by content hash
-(``provenance.stimulus.wav_sha256``), never by ``provenance.stimulus.phase``,
-which declares ``verify`` on five of six captures of the round these
-instruments were built from. **The pose label is not the pose** (#3503):
-:attr:`PoseCapture.pose_key` is the full declared (azimuth, elevation,
-distance) triple, never a seat index at an assumed common height.
-
-Reads only: nothing here plays, writes or decides.
+Two verbs read a round this way — the gate sweep and the close reference — so
+the binding lives here rather than once per verb. **The phase label is not the
+program** (#3504): captures bind by content hash
+(``provenance.stimulus.wav_sha256``), never by ``provenance.stimulus.phase``.
+**The pose label is not the pose** (#3503): :attr:`PoseCapture.pose_key` is the
+full declared (azimuth, elevation, distance) triple, never a seat index.
 """
 
 from __future__ import annotations
@@ -55,19 +49,11 @@ class RoundCapturesRefused(Exception):
 class PoseCapture:
     """One banked capture, its declared pose, and its impulse response.
 
-    Data only. Whatever a reader derives from ``ir`` — curves, references,
-    detrends — is that reader's own, held beside this rather than written back
-    onto it, so two readers of one round can never see each other's scratch.
-
-    The gate-sweep engine (:func:`~.gate_sweep.sweep_features`) computes from
-    five fields only: ``capture_id``, ``radiated_band_hz``, ``sample_rate``,
-    ``ir``, ``peak_idx``. The rest — ``phase``, ``wav``, ``program``,
-    ``program_sha256``, ``azimuth_deg``, ``vertical_deg``,
-    ``mark_distance_m`` — are disclosure: a report echoes them to name the
-    capture it read, and none of them moves a number. A caller holding
-    captures in memory rather than on disk fills them with ``None`` or a
-    placeholder, which is why the two paths are optional and both reporters
-    tolerate their absence.
+    Data only: whatever a reader derives from ``ir`` is held beside this rather
+    than written back onto it. The gate-sweep engine computes from five fields
+    only — ``capture_id``, ``radiated_band_hz``, ``sample_rate``, ``ir``,
+    ``peak_idx``; the rest are disclosure, and a caller holding captures in
+    memory rather than on disk fills the two paths with ``None``.
     """
 
     capture_id: str
@@ -119,10 +105,10 @@ def _pose_field(value: float | None) -> str:
 def _declared_program_sha(doc: Mapping[str, Any], root: Path) -> str | None:
     """The program hash this sidecar declares, or one hashed from its bytes.
 
-    The sidecar's ``provenance.stimulus.wav_sha256`` is the authority. When
-    it is absent the stimulus PATH is hashed from its own bytes instead —
-    still content, never ``provenance.stimulus.phase``, which declares
-    ``verify`` on captures whose played bytes were ``cloud_verify`` (#3504).
+    ``provenance.stimulus.wav_sha256`` is the authority; absent it the stimulus
+    PATH is hashed from its own bytes — still content, never
+    ``provenance.stimulus.phase``, which declares ``verify`` on captures whose
+    played bytes were ``cloud_verify`` (#3504).
     """
     provenance = doc.get("provenance")
     stimulus = provenance.get("stimulus") if isinstance(provenance, Mapping) else None
@@ -146,13 +132,9 @@ def radiated_band_of(doc: Mapping[str, Any]) -> tuple[float, float] | None:
     """The band this capture's DUT actually radiates, from its own curves.
 
     Public because :mod:`.feature_classifier` asks the same question of the
-    sidecars it loads itself, and two readings of one sidecar field would be
-    two answers waiting to disagree.
-
-    Absent yields ``None`` rather than a default span, for the reason
-    :mod:`~jasper.audio_measurement.gate_disclosure`'s header records: the
-    un-intersected band priced a tweeter from 357 Hz where it has no output
-    and over-reported by 3x (E5, #1969).
+    sidecars it loads itself. Absent yields ``None`` rather than a default
+    span: the un-intersected band priced a tweeter from 357 Hz where it has no
+    output and over-reported by 3x (E5, #1969).
     """
     curves = doc.get("curves")
     if not isinstance(curves, Sequence):
@@ -176,19 +158,15 @@ def discover_captures(
 ) -> tuple[PoseCapture, ...]:
     """Every summed capture under ``round_dir``, bound to its own program.
 
-    ``round_dir`` is a banked round directory (the one holding ``bundle/``)
-    or the bundle itself. Raises :class:`RoundCapturesRefused` naming the
-    missing input. How MANY captures a reader needs is the reader's own bar:
-    the sweep wants two poses, a close reference reads one.
+    ``round_dir`` is a banked round directory (the one holding ``bundle/``) or
+    the bundle itself. Raises :class:`RoundCapturesRefused` naming the missing
+    input; how MANY captures a reader needs is the reader's own bar.
 
-    ``select`` is that reader's filter over the parsed sidecar doc, applied
-    BEFORE the WAV is decoded and deconvolved — the expensive half — so a
-    reader that keeps one pose out of a round does not pay for the rest. The
-    program binding is checked for every sidecar either way, because a round
-    whose captures cannot be bound to their bytes is a finding about the
-    round, not about the pose asked for. A doc the filter rejects is neither
-    decoded nor refused on its radiated band, and with a filter an empty
-    result is an ordinary answer rather than the no-captures refusal.
+    ``select`` filters the parsed sidecar doc BEFORE the WAV is decoded and
+    deconvolved. The program binding is checked for every sidecar either way,
+    because a round whose captures cannot be bound to their bytes is a finding
+    about the round. With a filter, an empty result is an ordinary answer
+    rather than the no-captures refusal.
     """
     round_dir = Path(round_dir)
     sidecars = sorted(round_dir.glob("**/summed/summed_*.json"))
@@ -297,10 +275,9 @@ def _number(value: Any) -> float | None:
 # which capture of a round a single-capture reader takes
 # --------------------------------------------------------------------------- #
 
-#: :func:`select_capture`'s own two, named for the reader that owns them so
-#: neither reads as a near-twin of :data:`REFUSE_NO_CAPTURES` above. The
-#: STRINGS keep the close reference's name because they are published: they
-#: are the ``reason`` its report and its CLI's exit code are keyed on.
+#: :func:`select_capture`'s own two. The STRINGS keep the close reference's
+#: name because they are published: they are the ``reason`` its report and its
+#: CLI's exit code are keyed on.
 REFUSE_CLOSE_REFERENCE_UNREADABLE_ROUND = "close_reference_unreadable_round"
 REFUSE_CLOSE_REFERENCE_NO_CAPTURE = "close_reference_no_capture"
 
@@ -312,12 +289,9 @@ def select_capture(
 
     ``capture_id`` selects by the capture's own id or its WAV stem. With none,
     the on-axis capture wins: azimuth 0, elevation 0, first by capture id.
-    Raises :class:`RoundCapturesRefused` rather than guessing.
-
-    The choice is made on each sidecar DOC, through
-    :func:`discover_captures`'s ``select``, so the poses the reader discards
-    are never deconvolved. The predicate records what it
-    was shown, which is what a refusal here has to name.
+    Raises :class:`RoundCapturesRefused` rather than guessing. The choice is
+    made on each sidecar DOC, so the poses the reader discards are never
+    deconvolved.
     """
     root = Path(round_dir)
     if not root.is_dir():
@@ -328,8 +302,8 @@ def select_capture(
             declared = doc.get("position_id")
             seen.append(str(declared) if declared else "")
             # A sidecar that declares no id takes its capture id from its own
-            # file name, which this predicate cannot see; it stays in and the
-            # WAV-stem match below decides.
+            # file name, which this predicate cannot see; the WAV-stem match
+            # below decides.
             return not declared or str(declared) == capture_id
 
         named = [

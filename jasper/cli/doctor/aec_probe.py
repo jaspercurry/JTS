@@ -45,6 +45,49 @@ _PROBE_GATE_OWNER = "doctor-aec-probe"
 
 _PROBE_LOCK_PATH = "/run/jasper/doctor-aec-probe.lock"
 
+# Closed vocabulary for this module's `CheckResult.reason` — same convention
+# as `aec.py`'s `_AEC_REASONS` (a separate tuple because the probe is a
+# distinct, explicitly-invoked check set with its own decision branches).
+REASON_PROBE_LOCK_BUSY = "probe_lock_busy"
+REASON_PROBE_LOCK_ERROR = "probe_lock_error"
+REASON_PROBE_BRIDGE_NOT_RUNNING = "probe_bridge_not_running"
+REASON_PROBE_BRIDGE_RUNNING = "probe_bridge_running"
+REASON_PROBE_ACTIVE_SOURCE_UNKNOWN = "probe_active_source_unknown"
+REASON_PROBE_ACTIVE_SOURCE_BUSY = "probe_active_source_busy"
+REASON_PROBE_RENDERERS_IDLE = "probe_renderers_idle"
+REASON_PROBE_CONTROL_STATE_UNAVAILABLE = "probe_control_state_unavailable"
+REASON_PROBE_ISOLATION_CLEANUP_FAILED = "probe_isolation_cleanup_failed"
+REASON_PROBE_ISOLATION_UNAVAILABLE = "probe_isolation_unavailable"
+REASON_PROBE_SINE_WRITE_FAILED = "probe_sine_write_failed"
+REASON_PROBE_APLAY_FAILED = "probe_aplay_failed"
+REASON_PROBE_APLAY_OK = "probe_aplay_ok"
+REASON_PROBE_JOURNAL_UNREADABLE = "probe_journal_unreadable"
+REASON_PROBE_NO_RMS_WINDOWS = "probe_no_rms_windows"
+REASON_PROBE_REF_HEALTHY = "probe_ref_healthy"
+REASON_PROBE_REF_SILENT_MIC_LOUD = "probe_ref_silent_mic_loud"
+REASON_PROBE_BOTH_SILENT = "probe_both_silent"
+
+_AEC_PROBE_REASONS = (
+    REASON_PROBE_LOCK_BUSY,
+    REASON_PROBE_LOCK_ERROR,
+    REASON_PROBE_BRIDGE_NOT_RUNNING,
+    REASON_PROBE_BRIDGE_RUNNING,
+    REASON_PROBE_ACTIVE_SOURCE_UNKNOWN,
+    REASON_PROBE_ACTIVE_SOURCE_BUSY,
+    REASON_PROBE_RENDERERS_IDLE,
+    REASON_PROBE_CONTROL_STATE_UNAVAILABLE,
+    REASON_PROBE_ISOLATION_CLEANUP_FAILED,
+    REASON_PROBE_ISOLATION_UNAVAILABLE,
+    REASON_PROBE_SINE_WRITE_FAILED,
+    REASON_PROBE_APLAY_FAILED,
+    REASON_PROBE_APLAY_OK,
+    REASON_PROBE_JOURNAL_UNREADABLE,
+    REASON_PROBE_NO_RMS_WINDOWS,
+    REASON_PROBE_REF_HEALTHY,
+    REASON_PROBE_REF_SILENT_MIC_LOUD,
+    REASON_PROBE_BOTH_SILENT,
+)
+
 
 class _ProbeLockError(RuntimeError):
     """The standalone probe's cross-process admission lock failed."""
@@ -111,6 +154,7 @@ def probe_aec_ref_path() -> list[CheckResult]:
                 "probe — exclusive run",
                 "fail",
                 f"{exc}; wait for it to finish, then re-run. No test tone was played.",
+                reason=REASON_PROBE_LOCK_BUSY,
             )
         ]
     except _ProbeLockError as exc:
@@ -120,6 +164,7 @@ def probe_aec_ref_path() -> list[CheckResult]:
                 "fail",
                 f"could not establish the probe process lock ({exc}); check "
                 "/run/jasper permissions. No test tone was played.",
+                reason=REASON_PROBE_LOCK_ERROR,
             )
         ]
 
@@ -137,9 +182,13 @@ def _probe_aec_ref_path_locked() -> list[CheckResult]:
             "probe — bridge running", "fail",
             f"bridge state is '{is_active}'; can't probe a stopped bridge. "
             "`systemctl status jasper-aec-bridge`.",
+            reason=REASON_PROBE_BRIDGE_NOT_RUNNING,
         ))
         return results
-    results.append(CheckResult("probe — bridge running", "ok", "active"))
+    results.append(CheckResult(
+        "probe — bridge running", "ok", "active",
+        reason=REASON_PROBE_BRIDGE_RUNNING,
+    ))
 
     try:
         state = control.get_state(timeout=3)
@@ -150,6 +199,7 @@ def _probe_aec_ref_path_locked() -> list[CheckResult]:
                 "jasper-control /state did not provide a trustworthy "
                 f"active_source ({active!r}); idleness could not be "
                 "established, so no test tone was played.",
+                reason=REASON_PROBE_ACTIVE_SOURCE_UNKNOWN,
             ))
             return results
         if active != "idle":
@@ -158,6 +208,7 @@ def _probe_aec_ref_path_locked() -> list[CheckResult]:
                 f"active_source={active!r}; refuse to play the test sine "
                 "while audio or a voice session may be active. Stop the "
                 "active source and re-run.",
+                reason=REASON_PROBE_ACTIVE_SOURCE_BUSY,
             ))
             return results
         # WHICH LAYERS HOLD THE PROPERTY NOW ("never play a test sine over live
@@ -183,7 +234,8 @@ def _probe_aec_ref_path_locked() -> list[CheckResult]:
         #    inactive->active transition and `/state`'s `active_source` is
         #    derived from mux's `selected_source`/`winner`.
         results.append(CheckResult(
-            "probe — renderers idle", "ok", f"active_source={active!r}"
+            "probe — renderers idle", "ok", f"active_source={active!r}",
+            reason=REASON_PROBE_RENDERERS_IDLE,
         ))
     except (
         control.ControlError,
@@ -194,6 +246,7 @@ def _probe_aec_ref_path_locked() -> list[CheckResult]:
             "probe — renderers idle", "fail",
             f"jasper-control /state unavailable or malformed ({exc}); "
             "idleness could not be established, so no test tone was played.",
+            reason=REASON_PROBE_CONTROL_STATE_UNAVAILABLE,
         ))
         return results
 
@@ -209,6 +262,7 @@ def _probe_aec_ref_path_locked() -> list[CheckResult]:
                 f"but isolation cleanup failed ({exc}). Household audio may "
                 "remain gated until the mux/voice safety leases expire; check "
                 "System status before re-running.",
+                reason=REASON_PROBE_ISOLATION_CLEANUP_FAILED,
             )
         )
     except MeasurementWindowError as exc:
@@ -216,6 +270,7 @@ def _probe_aec_ref_path_locked() -> list[CheckResult]:
             "probe — audio isolation", "fail",
             f"could not establish exclusive music and voice isolation ({exc}); "
             "no test tone was played.",
+            reason=REASON_PROBE_ISOLATION_UNAVAILABLE,
         ))
     return results
 
@@ -290,6 +345,7 @@ def _play_and_assess_probe() -> list[CheckResult]:
         results.append(CheckResult(
             "probe — generate sine", "fail",
             f"could not write {_PROBE_SINE_PATH}: {exc}",
+            reason=REASON_PROBE_SINE_WRITE_FAILED,
         ))
         return results
 
@@ -327,12 +383,14 @@ def _play_and_assess_probe() -> list[CheckResult]:
             "correction lane is armed); if 'Permission denied', run the "
             "doctor as root (its documented contract) — an unprivileged run "
             "cannot open the playback lane.",
+            reason=REASON_PROBE_APLAY_FAILED,
         ))
         return results
     results.append(CheckResult(
         "probe — aplay sine", "ok",
         f"{_PROBE_SINE_DURATION_S:.0f} s of {frequency} Hz sine to "
         f"{correction_play_device()}",
+        reason=REASON_PROBE_APLAY_OK,
     ))
 
     time.sleep(6.0)
@@ -347,6 +405,7 @@ def _play_and_assess_probe() -> list[CheckResult]:
         results.append(CheckResult(
             "probe — bridge journal", "warn",
             f"could not read journal: {journal.stderr.strip()}",
+            reason=REASON_PROBE_JOURNAL_UNREADABLE,
         ))
         return results
 
@@ -366,6 +425,7 @@ def _play_and_assess_probe() -> list[CheckResult]:
             "probe — ref signal observed", "warn",
             "no bridge rms windows since probe start; bridge may have "
             "stalled or the journal is not capturing INFO-level lines.",
+            reason=REASON_PROBE_NO_RMS_WINDOWS,
         ))
         return results
     if max_ref >= _PROBE_REF_PASS_THRESHOLD:
@@ -373,6 +433,7 @@ def _play_and_assess_probe() -> list[CheckResult]:
             "probe — ref signal observed", "ok",
             f"max ref={max_ref} across {window_count} windows (threshold "
             f"≥{_PROBE_REF_PASS_THRESHOLD}); reference chain healthy",
+            reason=REASON_PROBE_REF_HEALTHY,
         ))
     elif max_mic >= _AEC_MIC_MUSIC_THRESHOLD:
         results.append(CheckResult(
@@ -380,6 +441,7 @@ def _play_and_assess_probe() -> list[CheckResult]:
             f"max ref={max_ref} (need ≥{_PROBE_REF_PASS_THRESHOLD}) but max "
             f"mic={max_mic} — speaker is reproducing the test tone (mic hears "
             "it) yet ref path is silent. Reference chain is broken.",
+            reason=REASON_PROBE_REF_SILENT_MIC_LOUD,
         ))
     else:
         results.append(CheckResult(
@@ -388,5 +450,6 @@ def _play_and_assess_probe() -> list[CheckResult]:
             "test tone. Check that the speaker is on (main_volume not muted), "
             "the Apple dongle is plugged in, and the chip mic isn't muted "
             "(`jasper-doctor` mixer check).",
+            reason=REASON_PROBE_BOTH_SILENT,
         ))
     return results

@@ -865,9 +865,8 @@ def summarise_candidate(wizard: WizardClient, trail: Trail) -> str:
     It is not written beside the round: the bank already carries the
     speaker's own write-once ``candidate.json`` under
     ``bundle/<id>/evidence/v1/artifacts/crossover_v2/<sid>/``, and a second
-    copy at the round root answered no question the first could not. It had
-    no reader, and it made ``severed-twin-replay``'s ``rglob`` match a file
-    with none of the siblings that tool needs.
+    copy at the round root answered no question the first could not, and it
+    had no reader.
     """
     block = wizard.v2_block()
     summarise_spec(block, trail)
