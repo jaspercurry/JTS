@@ -1502,13 +1502,13 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     v2 = _v2(status)
     running = str(v2.get("cloud_close") or "") == CLOUD_CLOSE_RUNNING
     held = bool(_mapping(status.get("relay")).get("position_pending"))
-    wired = not running and not held
+    ready = not running and not held
     if running:
         verdict = (
             "JTS is working out your correction from the measurements — this "
             "takes a few seconds."
         )
-    elif wired:
+    elif ready:
         verdict = (
             "All spots measured. Save this measurement, or record the last "
             "spot again."
@@ -1528,14 +1528,14 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "endpoint": "/correction/crossover/v2/complete",
             "body": {},
             "show_during_relay": True,
-        } if wired else None,
+        } if ready else None,
         alternate_actions=[{
             "id": "crossover_v2_retake",
             "label": "Record the last spot again",
             "endpoint": "/correction/crossover/v2/retake",
             "body": {},
             "show_during_relay": True,
-        }] if wired else [],
+        }] if ready else [],
         busy=running,
         status=status,
         # The pre-apply cloud's own flatness/carve-out disclosure is already
