@@ -109,7 +109,6 @@ def test_render_page_no_unfilled_placeholders():
     assert "__STYLE__" not in body
     assert "__HOSTNAME__" not in body
     assert "__REQUIRED_SR__" not in body
-    assert "__CAPTURE_RELAY_ENABLED__" not in body
     assert "__CSRF_META__" not in body
     assert "__CSRF_FETCH_HELPERS__" not in body
     assert "__TARGET_PROFILE_OPTIONS__" not in body

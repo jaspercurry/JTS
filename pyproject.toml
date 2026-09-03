@@ -37,7 +37,6 @@ streambox = [
     "pyudev>=0.24",
     "dbus-next>=0.2.3",
     "zeroconf>=0.151.3,<1.0",
-    "cryptography>=50.0.0",
 ]
 
 full = [
@@ -126,13 +125,6 @@ full = [
     # jasper.peering.discovery so the package is import-cheap when
     # peering is OFF (the default). ~5-8 MB Pss when active.
     "zeroconf>=0.151.3,<1.0",
-    # jasper.capture_relay.crypto: AES-256-GCM decryption of the phone-mic
-    # capture blob the Pi pulls from the relay (the page encrypts with
-    # WebCrypto; the Pi decrypts here before feeding the existing room/
-    # balance/sync/crossover analysis). pyca/cryptography is the standard
-    # AEAD implementation — never roll our own — pinned here because we import
-    # it directly. aarch64 wheels exist for PiOS Trixie, so no Pi-side build.
-    "cryptography>=50.0.0",
 ]
 
 dev = [

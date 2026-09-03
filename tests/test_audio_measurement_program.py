@@ -971,10 +971,9 @@ def test_program_phase_names_stay_disjoint_from_journey_phase_names():
     spelled ``PHASE_CHECK`` / ``PHASE_MEASURE`` / ``PHASE_VERIFY`` — identical
     names AND identical string values for different concepts — so an import
     site could take the wrong family and still typecheck, run, and agree.
-    ``jasper.web.correction_crossover_v2_relay`` is the one production file
-    that imports from BOTH (one stimulus name, ``PROGRAM_PHASE_CHECK``; two
-    journey ones, ``PHASE_APPLYING`` and ``PHASE_DONE``), and is where a wrong
-    pick would have been read first.
+    A production file importing from BOTH families (a stimulus name like
+    ``PROGRAM_PHASE_CHECK`` alongside a journey one like ``PHASE_DONE``) is
+    where a wrong pick would be read first.
 
     **No positive control here, deliberately.** A name-set intersection can
     pass vacuously — if either module moved or lost its constants, both sets

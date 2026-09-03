@@ -194,20 +194,15 @@ def refusal_next_action(exc: BaseException) -> dict[str, Any] | None:
 
 
 class CrossoverV2LocalSeamError(RuntimeError):
-    """A LOCAL play/analyze seam raised ``OSError`` — not a relay-transport death.
+    """A LOCAL play/analyze seam raised ``OSError`` — not a program-family failure.
 
     W6 hardware run 3 finding G: the DSP writer lock's ``os.open`` on a
-    read-only ``config_dir`` (finding F) raised a bare ``OSError`` from inside
-    ``on_armed`` — the exact same exception TYPE
-    ``jasper.capture_relay.session.run_capture_plan``'s transport polling
-    loop raises on a genuine relay-connection failure (``client.status``
-    reaching an unreachable host). ``build_v2_run_and_consume``'s relay-death
-    except arm cannot tell those apart by type alone, so it misclassified a
-    local filesystem fault as ``relay_timeout``. ``on_armed``/``consume``
-    convert a local ``OSError`` to THIS type at the seam boundary before it
-    can reach that arm, so it falls through to the catch-all cleanup arm's
-    honest ``internal_error`` classification instead — a genuine transport
-    ``OSError`` (never wrapped) still hits the relay-death arm unchanged.
+    read-only ``config_dir`` (finding F) raised a bare ``OSError`` from
+    inside ``on_armed``, which the catch-all arm would otherwise misclassify
+    identically to a genuine capture-chain fault. ``on_armed``/``consume``
+    convert a local ``OSError`` to THIS type at the seam boundary, so it
+    reaches the catch-all cleanup arm's honest ``internal_error``
+    classification instead of any program-family code.
     """
 
 
@@ -4012,11 +4007,10 @@ def bind_production_play(
 # what the host hands the capture provider (S1a/S1c)
 # --------------------------------------------------------------------------- #
 #
-# The plan runners themselves are the providers'
-# (jasper.web.correction_crossover_v2_relay, reached where it lives, and
-# jasper.web.correction_crossover_v2_wired). These stay HERE because they are
-# host policy a provider merely drives: the volume lifecycle it is handed, the
-# group-close seam, and the eager-fit starter it calls back into.
+# The plan runner itself is jasper.web.correction_crossover_v2_wired's own
+# (reached where it lives). These stay HERE because they are host policy the
+# provider merely drives: the volume lifecycle it is handed, the group-close
+# seam, and the eager-fit starter it calls back into.
 
 
 @dataclass(frozen=True)
@@ -4587,11 +4581,10 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
 #:
 #: A hold is unbounded as far as the transport is
 #: concerned — the capture page re-posts the same begin every 1.5 s and each
-#: re-post rearms the runner's inactivity deadline
-#: (``capture_relay.session.run_capture_plan``) — so without this budget nothing
-#: below this module would end a hold nobody answers, leaving the speaker
-#: holding its measurement volume, its paused voice and the relay slot
-#: indefinitely.
+#: re-post rearms the runner's inactivity deadline — so without this budget
+#: nothing below this module would end a hold nobody answers, leaving the
+#: speaker holding its measurement volume, its paused voice and the
+#: position slot indefinitely.
 #:
 #: **This is a PER-HOLD bound, and it is not the operative total.** The session's
 #: own wall-clock ceiling

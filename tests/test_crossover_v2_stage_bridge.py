@@ -2071,15 +2071,15 @@ async def test_a_session_that_takes_the_level_but_not_the_graph_keeps_neither(
     v2host.set_volume_plan_for_tests(None)
 
 
-def test_both_runner_volume_arms_classify_a_real_graph_install_failure():
+def test_the_runner_volume_arm_classifies_a_real_graph_install_failure():
     """The note: a real install raises SessionGraphError, not RuntimeError.
 
-    Both runners classify a failed ``volume.open()`` by exception type. A
+    The runner classifies a failed ``volume.open()`` by exception type. A
     ``SessionGraphError`` is a sibling of ``RuntimeError``, not a subclass, so
-    before this it escaped both arms: the give-back still ran (no strand), but
-    ``_purge_best_effort`` was skipped — leaking the relay session to worker
-    TTL, the exact leak that arm exists to prevent — and the terminal failure
-    was never persisted, leaving the wizard's failure view blank.
+    before this it escaped the arm: the give-back still ran (no strand), but
+    ``_purge_best_effort`` was skipped — leaking the session, the exact leak
+    that arm exists to prevent — and the terminal failure was never
+    persisted, leaving the wizard's failure view blank.
 
     A source-text pin because the property is which TYPES the arm names, and a
     type absent from a tuple has no behaviour to observe.
@@ -2087,35 +2087,31 @@ def test_both_runner_volume_arms_classify_a_real_graph_install_failure():
     import ast
     from pathlib import Path as _Path
 
-    for module in (
-        "jasper/web/correction_crossover_v2_relay.py",
-        "jasper/web/correction_crossover_v2_wired.py",
-    ):
-        source = _Path(__file__).resolve().parents[1] / module
-        tree = ast.parse(source.read_text(encoding="utf-8"))
-        caught: set[str] = set()
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Try):
-                continue
-            calls = {
-                getattr(inner.func, "attr", None)
-                for inner in ast.walk(node)
-                if isinstance(inner, ast.Call)
-            }
-            if "open" not in calls:
-                continue
-            for handler in node.handlers:
-                names = handler.type
-                items = names.elts if isinstance(names, ast.Tuple) else [names]
-                caught.update(
-                    getattr(item, "id", "") for item in items if item is not None
-                )
+    module = "jasper/web/correction_crossover_v2_wired.py"
+    source = _Path(__file__).resolve().parents[1] / module
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    caught: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        calls = {
+            getattr(inner.func, "attr", None)
+            for inner in ast.walk(node)
+            if isinstance(inner, ast.Call)
+        }
+        if "open" not in calls:
+            continue
+        for handler in node.handlers:
+            names = handler.type
+            items = names.elts if isinstance(names, ast.Tuple) else [names]
+            caught.update(
+                getattr(item, "id", "") for item in items if item is not None
+            )
 
-        assert "SessionGraphError" in caught, (
-            f"{module}: a real graph install failure escapes the volume arm — "
-            "the relay session leaks to worker TTL and the wizard shows a "
-            "blank failure view"
-        )
+    assert "SessionGraphError" in caught, (
+        f"{module}: a real graph install failure escapes the volume arm — "
+        "the session leaks and the wizard shows a blank failure view"
+    )
 
 
 async def test_a_cancel_inside_the_give_back_still_drains_the_level(monkeypatch):

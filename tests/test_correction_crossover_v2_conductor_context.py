@@ -121,9 +121,6 @@ def _stub_non_topology_inputs(monkeypatch):
     stubbing them here keeps this module focused on the one seam that shipped
     broken and untested.
     """
-    # The preparers' source gate (#2662 W2b S3) asks the relay-configured
-    # question before any bundle opens; this suite models the fleet default.
-    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.test")
     preset = load_active_speaker_preset()  # bundled 2-way default, real object
     monkeypatch.setattr(commission_wiring, "resolve_capture_preset", lambda topo: preset)
     # Same rule as every stub here: this module tests the topology/playback-

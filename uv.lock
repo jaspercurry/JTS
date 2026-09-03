@@ -792,7 +792,6 @@ dev = [
 full = [
     { name = "audioop-lts", marker = "python_full_version >= '3.13'" },
     { name = "camilladsp" },
-    { name = "cryptography" },
     { name = "dbus-next" },
     { name = "evdev", marker = "sys_platform == 'linux'" },
     { name = "google-api-python-client" },
@@ -818,7 +817,6 @@ full = [
 streambox = [
     { name = "audioop-lts", marker = "python_full_version >= '3.13'" },
     { name = "camilladsp" },
-    { name = "cryptography" },
     { name = "dbus-next" },
     { name = "evdev", marker = "sys_platform == 'linux'" },
     { name = "google-api-python-client" },
@@ -862,8 +860,6 @@ requires-dist = [
     { name = "audioop-lts", marker = "python_full_version >= '3.13' and extra == 'streambox'", specifier = ">=0.2" },
     { name = "camilladsp", marker = "extra == 'full'", url = "https://github.com/HEnquist/pycamilladsp/archive/fdc0d163e02dd73206a493402b43c83502ad83d7.tar.gz" },
     { name = "camilladsp", marker = "extra == 'streambox'", url = "https://github.com/HEnquist/pycamilladsp/archive/fdc0d163e02dd73206a493402b43c83502ad83d7.tar.gz" },
-    { name = "cryptography", marker = "extra == 'full'", specifier = ">=50.0.0" },
-    { name = "cryptography", marker = "extra == 'streambox'", specifier = ">=50.0.0" },
     { name = "dbus-next", marker = "extra == 'full'", specifier = ">=0.2.3" },
     { name = "dbus-next", marker = "extra == 'streambox'", specifier = ">=0.2.3" },
     { name = "evdev", marker = "sys_platform == 'linux' and extra == 'full'", specifier = ">=2.0" },

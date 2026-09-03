@@ -65,10 +65,10 @@ import jasper.active_speaker.baseline_profile as baseline_profile_mod
 
 import jasper.capture_protocol as capture_protocol
 from jasper.capture_protocol import MAX_TTL_S
-from jasper.capture_relay.session import CaptureResult
 from jasper.web import correction_crossover_backend
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_status as v2status
+from jasper.web.correction_crossover_v2_wired import WiredCaptureAnswer
 
 from tests.conftest import seat_process_volume_owner
 from tests.crossover_v2_fixtures import (
@@ -442,13 +442,13 @@ def test_position_retention_survives_a_retake_through_the_real_evidence_store(
         "glitch_detected": False,
     }
     bank(
-        CaptureResult(wav=b"first-take"),
+        WiredCaptureAnswer(wav=b"first-take"),
         {**base, "attempt": 10, "take_id": f"{position_id}_a10",
          "prompt": "Move the microphone 10 in (25 cm) to the LEFT of the "
                    "mark, at mark height."},
     )
     bank(
-        CaptureResult(wav=b"wider-retake"),
+        WiredCaptureAnswer(wav=b"wider-retake"),
         {**base, "attempt": 11, "take_id": f"{position_id}_a11",
          "wide": True, "role": "offax",
          "prompt": "Same measurement, wider spot: move the microphone "
@@ -526,7 +526,7 @@ def test_retained_position_is_recorded_in_the_bundle_it_was_written_into(
 
     oversize = b"\x00" * (MAX_CAPTURE_WAV_BYTES + 1)
     bank_id = bank(
-        CaptureResult(wav=oversize),
+        WiredCaptureAnswer(wav=oversize),
         {"position_id": f"{PHASE_CLOUD_MEASURE}_04",
          "take_id": f"{PHASE_CLOUD_MEASURE}_04_a04", "measure_kind": "",
          "phase": PHASE_CLOUD_MEASURE, "index": 4, "attempt": 4,
@@ -626,7 +626,7 @@ def test_an_entry_baseline_banks_under_the_take_id_its_own_record_names(tmp_path
     )
 
     record = _entry_baseline_take()
-    record_id = bank(CaptureResult(wav=b"entry-bytes"), record)
+    record_id = bank(WiredCaptureAnswer(wav=b"entry-bytes"), record)
 
     banked = sorted(
         (bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
@@ -739,7 +739,7 @@ def test_the_banked_take_carries_the_provenance_the_analyze_seam_carried(
         phase=PHASE_ENTRY_BASELINE,
     )
     record = _entry_baseline_take()
-    assert seams.bank_take(CaptureResult(wav=b"entry-bytes"), record)
+    assert seams.bank_take(WiredCaptureAnswer(wav=b"entry-bytes"), record)
 
     banked = json.loads(
         (bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
@@ -817,7 +817,7 @@ def test_a_capture_that_observed_nothing_never_inherits_the_last_one_s_graph(
     # 2. The next capture observes nothing at all, and is accepted.
     _analyze_once()
     accepted = _entry_baseline_take(index=11)
-    assert seams.bank_take(CaptureResult(wav=b"accepted-bytes"), accepted)
+    assert seams.bank_take(WiredCaptureAnswer(wav=b"accepted-bytes"), accepted)
 
     banked = json.loads(
         (bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
@@ -868,11 +868,11 @@ def test_a_take_with_no_play_behind_it_names_no_provenance(
         MeasurementGeometry(),
         phase=PHASE_ENTRY_BASELINE,
     )
-    seams.bank_take(CaptureResult(wav=b"first"), _entry_baseline_take(index=9))
+    seams.bank_take(WiredCaptureAnswer(wav=b"first"), _entry_baseline_take(index=9))
 
     # No play and no analyze — so nothing this second take may claim.
     second = _entry_baseline_take(index=10)
-    assert seams.bank_take(CaptureResult(wav=b"second"), second)
+    assert seams.bank_take(WiredCaptureAnswer(wav=b"second"), second)
 
     banked = json.loads(
         (bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
@@ -971,7 +971,7 @@ def _bank_one_analyzed_take(
         phase=PHASE_MEASURE,
     )
     record = _entry_baseline_take(index=index)
-    assert seams.bank_take(CaptureResult(wav=b"analyzed-bytes"), record)
+    assert seams.bank_take(WiredCaptureAnswer(wav=b"analyzed-bytes"), record)
     banked = json.loads(
         (bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
          / relay / "positions" / f"{record['take_id']}.json").read_text()
@@ -1184,10 +1184,10 @@ def test_a_take_with_no_analyze_behind_it_carries_no_blocks(
         MeasurementGeometry(),
         phase=PHASE_MEASURE,
     )
-    seams.bank_take(CaptureResult(wav=b"first"), _entry_baseline_take(index=9))
+    seams.bank_take(WiredCaptureAnswer(wav=b"first"), _entry_baseline_take(index=9))
 
     second = _entry_baseline_take(index=10)
-    assert seams.bank_take(CaptureResult(wav=b"second"), second)
+    assert seams.bank_take(WiredCaptureAnswer(wav=b"second"), second)
 
     banked = json.loads(
         (bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
@@ -1239,7 +1239,7 @@ def test_an_unprompted_phase_take_reaches_the_real_store(tmp_path, phase):
     )
     assert record["measure_kind"] == ""
 
-    banked_id = bank(CaptureResult(wav=b"unprompted-bytes"), record)
+    banked_id = bank(WiredCaptureAnswer(wav=b"unprompted-bytes"), record)
     assert banked_id, "an unresolved measure kind must still route"
 
     landed = (
@@ -1268,11 +1268,11 @@ def test_a_store_that_refuses_costs_a_warning_and_not_the_capture(
     )
 
     record = _entry_baseline_take()
-    assert bank(CaptureResult(wav=b"entry-bytes"), record)
+    assert bank(WiredCaptureAnswer(wav=b"entry-bytes"), record)
 
     with caplog.at_level(logging.WARNING):
         answer = bank(
-            CaptureResult(wav=b"entry-bytes"),
+            WiredCaptureAnswer(wav=b"entry-bytes"),
             {**record, "summed_ripple_db": 9.0},
         )
 
@@ -8717,7 +8717,6 @@ def _arm_stage_1(monkeypatch) -> None:
     asserts about a decision the preparer takes before any bundle is opened, so
     a bundle opening at all is the failure, not a fixture gap.
     """
-    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.test")
     v2host.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
     monkeypatch.setattr(
         v2host, "reconcile_session_volume_for_new_session", lambda *_a: None,
