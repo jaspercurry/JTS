@@ -2,12 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""jasper-doctor checks — aec domain.
-
-Re-homed verbatim from the original monolithic
-``jasper/cli/doctor.py``; see ``jasper/cli/doctor/__init__.py``
-for the package overview and ``_registry.py`` for how order is
-preserved. No check logic changed in the split."""
+"""jasper-doctor checks — aec domain."""
 from __future__ import annotations
 
 import json
@@ -519,8 +514,7 @@ def check_aec_bridge_running() -> CheckResult:
     any "AEC could be on but isn't" state as a warning (gentle
     nudge), only suppressing it to ok when the operator explicitly
     opted out via JASPER_AEC_MODE=disabled. A silent-disabled bridge
-    (the May 2026 reconciler bug that mis-read Playback Channels: 2
-    as the capture count) shows up as a hard fail."""
+    shows up as a hard fail."""
     if _parked_as_bonded_follower():
         return CheckResult(
             "AEC bridge", "ok",
@@ -998,13 +992,9 @@ def _assess_aec_bridge_output(
         ):
             healthy_windows += 1
 
-    # Failure mode 1 — ref path broken. The 2026-05-15 dsnoop rate-lock
-    # signature: AirPlay was playing, mic was 2000+, ref was 0 across
-    # every window for four days because the dsnoop's 48 kHz declared
-    # rate mismatched shairport's locked 44.1 kHz. We only fail the
-    # check when NO window has ref signal at all; otherwise the silent-
-    # ref windows are mic-only artifacts (room voice, ambient noise)
-    # which is the 2026-05-16 false-positive mode.
+    # Failure mode 1 — ref path broken. Only fail when NO window has ref
+    # signal at all; otherwise the silent-ref windows are mic-only
+    # artifacts (room voice, ambient noise), a false-positive mode.
     if silent_ref_count >= 5 and healthy_ref_windows == 0:
         # Second false-positive guard: if the music chain isn't
         # currently active (no renderer writing the loopback), a
@@ -1056,12 +1046,10 @@ def _assess_aec_bridge_output(
             "jasper-aec-bridge -e",
         )
 
-    # silent_ref bursts with a healthy ref path = the false-positive
-    # mode from 2026-05-16: loud room voice or ambient noise raises mic
-    # above the music threshold while the reference (correctly) carries
-    # no program audio. Surface the diagnosis so an operator who runs
-    # `jasper-doctor` after seeing the old fail can confirm the path
-    # is fine.
+    # silent_ref bursts with a healthy ref path are room/ambient noise,
+    # not a fault: loud room voice raises mic above the music threshold
+    # while the reference (correctly) carries no program audio. Surface
+    # the diagnosis so an operator can confirm the path is fine.
     if silent_ref_count >= 5 and healthy_ref_windows > 0:
         return CheckResult(
             "AEC bridge output", "ok",
@@ -1114,11 +1102,9 @@ def check_aec_bridge_output_health() -> CheckResult:
     """Verify the bridge isn't silently producing garbage. The bare
     `is-active` check passes whenever the process is running — but
     the bridge can be running and STILL be in a degraded state: the
-    AEC reference path is delivering silence (the May 2026 dsnoop
-    rate-lock incident, which went undetected for 4 days because
-    doctor only checked service liveness). That leaves the wake
-    detector consuming an un-cancelled mic with music blasting
-    through it, but `systemctl is-active` says ok.
+    AEC reference path can deliver silence while `systemctl is-active`
+    says ok, leaving the wake detector consuming an un-cancelled mic
+    with music blasting through it.
 
     Exact schema-v4 monotonic stats are authoritative for current
     outputd-UDP receiver progress: a freshness failure returns before
@@ -1221,9 +1207,7 @@ def check_aec_bridge_output_health() -> CheckResult:
     # hasn't reconnected yet. Within 90 s of deploy completion, that
     # transient looks like the broken state we're trying to catch.
     # Looking at the most recent 90 s only avoids the false-positive
-    # while still being long enough to confirm sustained failures
-    # (the 2026-05-15 dsnoop incident produced ref=0 for 4 days, so
-    # 90 s is more than enough to see it).
+    # while still being long enough to confirm sustained failures.
     proc = _run(
         ["journalctl", "-u", "jasper-aec-bridge.service",
          "--since", "90 sec ago", "--no-pager", "--output", "cat"],

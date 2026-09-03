@@ -416,7 +416,6 @@ FIRMWARE_VARIANTS = (
     VARIANT_FLEX_CIRCULAR_6CH,
 )
 VARIANTS_BY_BLD_MSG = {variant.bld_msg: variant for variant in FIRMWARE_VARIANTS}
-VARIANTS_BY_ID = {variant.variant_id: variant for variant in FIRMWARE_VARIANTS}
 
 
 # ---------------------------------------------------------------------
@@ -432,12 +431,6 @@ VARIANTS_BY_ID = {variant.variant_id: variant for variant in FIRMWARE_VARIANTS}
 # on both jts and jts2 chips (2026-05-15). The button-combo
 # procedure on the Seeed wiki is for Safe Mode recovery only —
 # used when the DataPartition is corrupted.
-#
-# When the chip enters DFU during a flash it briefly enumerates as
-# the XMOS bootloader at 20b1:0008, then resets back to its runtime
-# identity after the flash completes: 2886:001a for the legacy square
-# firmware, 2886:0022 for Flex firmware.
-DFU_VID_PID = "20b1:0008"
 
 # Alt 0 is the read-only Factory partition; alt 1 is the Upgrade
 # partition where firmware actually gets written. Writes to alt 0
@@ -870,9 +863,9 @@ def capture_channels() -> int | None:
 
     Pinned to the ^Capture: section — /proc/asound/<card>/stream0
     has Playback first (Channels: 2 for the XVF chip's playback
-    endpoint) then Capture (Channels: 6 on 6-ch firmware). A naive
-    `grep Channels:` returns the Playback value, which was the May
-    2026 reconciler bug that silently disabled software AEC."""
+    endpoint) then Capture (Channels: 6 on 6-ch firmware).
+    `grep Channels:` returns the Playback value, not Capture —
+    reading the wrong one silently disables software AEC."""
     return _capture_channels_for_card(alsa_card_name())
 
 

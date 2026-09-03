@@ -129,29 +129,40 @@ def test_main_forwards_status_and_emits_shell_or_json(monkeypatch, capsys):
     assert "JASPER_CHIP_AEC_DAC_GATE_STATUS=approved" in capsys.readouterr().out
 
 
+def _fold_dac_id(value: str) -> str:
+    # normalize_dac_id's transform: lowercased, hyphens folded to underscores.
+    return value.lower().replace("-", "_")
+
+
+_XVF_UNUSABLE = ["--alignment", chip_aec_health.XVF_UNUSABLE, "--reason", HOSTILE_REASON]
+_DAC_UNCALIBRATED = [
+    "--alignment", chip_aec_health.DAC_UNCALIBRATED, "--reason", HOSTILE_REASON,
+]
+_DAC_GATE_KEY = "JASPER_CHIP_AEC_DAC_GATE_DAC"
+
+
 @pytest.mark.parametrize(
-    "disposition",
-    [chip_aec_health.XVF_UNUSABLE, chip_aec_health.DAC_UNCALIBRATED],
+    ("cli_args", "key", "transform"),
+    [
+        (_XVF_UNUSABLE, chip_aec_health.REASON_KEY, str),
+        (_DAC_UNCALIBRATED, chip_aec_health.REASON_KEY, str),
+        (["--dac-id", HOSTILE_REASON, "--shell-env"], _DAC_GATE_KEY, _fold_dac_id),
+    ],
+    ids=["xvf_unusable", "dac_uncalibrated", "dac_gate_shell_env"],
 )
 def test_shell_measured_free_text_survives_the_reconcilers_eval(
-    disposition: str,
+    cli_args: list[str], key: str, transform,
 ) -> None:
-    """The two dispositions whose reason `deploy/bin/jasper-aec-reconcile`
-    measures itself, driven the way it drives them: this shim's stdout is
+    """Both shell-facing emitters share one quoting helper, driven the way
+    `deploy/bin/jasper-aec-reconcile` drives them: this shim's stdout is
     eval'd by bash.  Free text reaches the record as one collapsed line and
     nothing in it is executed.
     """
     emit = shlex.join(
-        [
-            sys.executable, "-m", "jasper.cli.chip_aec_policy",
-            "--alignment", disposition, "--reason", HOSTILE_REASON,
-        ]
+        [sys.executable, "-m", "jasper.cli.chip_aec_policy", *cli_args]
     )
     result = subprocess.run(
-        [
-            "bash", "-c",
-            f'eval "$({emit})"; printf %s "${chip_aec_health.REASON_KEY}"',
-        ],
+        ["bash", "-c", f'eval "$({emit})"; printf %s "${key}"'],
         capture_output=True,
         text=True,
         check=True,
@@ -159,7 +170,7 @@ def test_shell_measured_free_text_survives_the_reconcilers_eval(
         env={**os.environ, "PYTHONPATH": str(ROOT)},
     )
 
-    assert result.stdout == " ".join(HOSTILE_REASON.split())
+    assert result.stdout == transform(" ".join(HOSTILE_REASON.split()))
 
 
 def test_an_unknown_alignment_token_fails_at_the_parser() -> None:
