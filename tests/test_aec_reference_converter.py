@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""`_ReferenceFrameConverter` still emits the samples scipy used to emit.
+"""`ReferenceFrameConverter` still emits the samples scipy used to emit.
 
 The bridge's far-end reference is what AEC3 subtracts from the mic. A gain,
 delay or band change here does not fail loudly — it quietly stops cancelling
@@ -21,13 +21,12 @@ import sys
 import numpy as np
 import pytest
 
-from jasper.cli.aec_bridge import (
-    FRAME_SAMPLES,
+from jasper.cli.aec_bridge import _usb_resampler
+from jasper.cli.aec_bridge_engines import FRAME_SAMPLES, SAMPLE_RATE
+from jasper.cli.aec_bridge_reference import (
     REF_CHANNELS,
     REF_RATE,
-    SAMPLE_RATE,
-    _ReferenceFrameConverter,
-    _usb_resampler,
+    ReferenceFrameConverter,
 )
 
 REF_BLOCK = FRAME_SAMPLES * (REF_RATE // SAMPLE_RATE)
@@ -86,7 +85,7 @@ def test_reference_frames_match_the_scipy_pipeline(gain_db, kind):
     interleaved = _interleaved(kind)
 
     got = _frames(
-        _ReferenceFrameConverter(ref_gain_db=gain_db, ref_hpf_hz=HPF_HZ)
+        ReferenceFrameConverter(ref_gain_db=gain_db, ref_hpf_hz=HPF_HZ)
         .feed(interleaved)
     )
     want = _scipy_pipeline(interleaved, gain_db)
@@ -110,11 +109,11 @@ def test_reference_frames_are_continuous_across_delivery_boundaries(kind):
     """
     interleaved = _interleaved(kind)
 
-    whole = _frames(
-        _ReferenceFrameConverter(ref_gain_db=0.0, ref_hpf_hz=HPF_HZ)
-        .feed(interleaved)
-    )
-    split = _ReferenceFrameConverter(ref_gain_db=0.0, ref_hpf_hz=HPF_HZ)
+    whole_batch = ReferenceFrameConverter(
+        ref_gain_db=0.0, ref_hpf_hz=HPF_HZ,
+    ).feed(interleaved)
+    whole = _frames(whole_batch)
+    split = ReferenceFrameConverter(ref_gain_db=0.0, ref_hpf_hz=HPF_HZ)
     pieces = []
     step = 2 * REF_CHANNELS * 137
     for start in range(0, interleaved.size, step):
@@ -123,6 +122,8 @@ def test_reference_frames_are_continuous_across_delivery_boundaries(kind):
             pieces.append(_frames(batch))
 
     assert np.array_equal(np.concatenate(pieces), whole)
+    # AEC3 rejects a reference block that is not the mic's own length.
+    assert all(len(f) == FRAME_SAMPLES * 2 for f in whole_batch.frames)
 
 
 def test_reference_frames_report_clipping_without_wrapping():
@@ -130,7 +131,7 @@ def test_reference_frames_report_clipping_without_wrapping():
     interleaved = _interleaved("square", blocks=3)
 
     batch = (
-        _ReferenceFrameConverter(ref_gain_db=6.0, ref_hpf_hz=HPF_HZ)
+        ReferenceFrameConverter(ref_gain_db=6.0, ref_hpf_hz=HPF_HZ)
         .feed(interleaved)
     )
 

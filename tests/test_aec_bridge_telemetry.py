@@ -15,7 +15,10 @@ import os
 import struct
 import time
 
+import pytest
+
 from jasper.cli.aec_bridge_telemetry import (
+    DropLogDebouncer,
     LegEmitter,
     StatsIdentity,
     TimestampedLegEmitter,
@@ -269,3 +272,15 @@ def test_leg_engine_status_reloads_and_clears_on_reset() -> None:
     stats.reset()
 
     assert stats.snapshot()["leg_engines"] == {}
+
+
+def test_drop_log_debouncer_aggregates_one_second_windows():
+    debouncer = DropLogDebouncer()
+
+    assert debouncer.record(10.0) == (1, 1.0)
+    assert debouncer.record(10.25) is None
+    assert debouncer.record(10.50) is None
+
+    drops, window_sec = debouncer.record(11.10)
+    assert drops == 3
+    assert window_sec == pytest.approx(1.1)

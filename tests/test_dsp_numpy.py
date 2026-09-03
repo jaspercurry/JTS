@@ -19,7 +19,7 @@ from jasper.dsp_numpy import butter2_highpass_sos, resample_poly, sosfilt
 
 REF_RATE = 48_000
 MIC_RATE = 16_000
-#: One 20 ms AEC reference block at 48 kHz: what `_ReferenceFrameConverter`
+#: One 20 ms AEC reference block at 48 kHz: what `ReferenceFrameConverter`
 #: resamples in one go (`FRAME_SAMPLES * REF_RATE // SAMPLE_RATE`).
 REF_BLOCK = 960
 
