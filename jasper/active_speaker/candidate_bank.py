@@ -14,12 +14,10 @@ candidate by its own fingerprint so a door can make it live again.
 
 **One owner for the fingerprint SCAN.** The glob below describes the on-disk
 shape
-(``<bundle>/evidence/v1/artifacts/crossover_v2/<relay_session_id>/candidate.json``),
-and :mod:`jasper.correction.applied_speaker_evidence` — which answers the
-neighbouring question, "which banked candidate is the APPLIED one" — reads it
-from here rather than keeping a second copy, because a shape restated in two
-places drifts on the first layout change and both readers then disagree about
-what is missing.
+(``<bundle>/evidence/v1/artifacts/crossover_v2/<relay_session_id>/candidate.json``).
+A second reader of that shape must read it from here rather than keep a copy,
+because a shape restated in two places drifts on the first layout change and
+both readers then disagree about what is missing.
 
 Scoped honestly: this is not the only place production spells that path.
 ``correction_crossover_v2._reopen_candidate_artifact`` builds it too, and is
@@ -47,12 +45,11 @@ bundle id *and* the minting relay session id together. Both ride on
 :mod:`jasper.active_speaker.bundles` and
 :mod:`jasper.active_speaker.measured_crossover_candidate` — are both at this
 level, and importing the ``crossover_v2`` package runs its ``__init__`` →
-``contracts`` → **numpy**. :mod:`jasper.correction.applied_speaker_evidence`
-imports this module at its own module level, and that module is deliberately
-import-light: it lazy-imports the candidate model *inside* its loader rather
-than at the top. Filing the bank under ``crossover_v2/`` made it pull numpy
-(measured, not assumed), spending a budget its consumers never agreed to. Keep
-it out — and note the same rule pointed the other way for
+``contracts`` → **numpy**. Filing the bank under ``crossover_v2/`` made it pull
+numpy (measured, not assumed), spending a budget its consumers never agreed to;
+this module stays import-light for the same reason, lazy-importing the candidate
+model *inside* its loader rather than at the top. Keep it out — and note the
+same rule pointed the other way for
 ``correction_crossover_v2``, which imports this lazily at the call site because
 it is a wizard-hosted module.
 """

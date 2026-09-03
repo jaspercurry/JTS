@@ -33,14 +33,6 @@ that the kernel deliberately does not know about:
     listening position differ ~15–25 dB at the mic for the same played level, so
     one lock reused across geometries blows past the window or starves SNR). The
     store keys on the geometry.
-  * :func:`check_level_drift` — the drift check, computed on **raw
-    (pre-``normalize_to_band``) band magnitudes** because normalization erases
-    exactly the uniform shift the check exists to catch, and split by cause: a
-    *uniform* per-band dB shift at the same geometry means the amp/volume moved
-    (offer re-level); a geometry *change* expects a shift and must not fire that
-    message; a *non-uniform* change at the same geometry is acoustic; a large
-    mean shift with real band scatter is a suspected level shift (never
-    reported as "consistent").
 
 Everything here is host-mediated (docs/extensibility.md §1) and hardware-free:
 inject a fake relay reader + fake clock and the whole path is synthetically
@@ -63,7 +55,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -77,7 +69,6 @@ from jasper.audio_measurement.ramp import (
     RampLockKind,
     RampState,
 )
-from jasper.env_load import bounded_env_float
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -246,168 +237,6 @@ class LevelLockStore:
 
     def snapshot(self) -> dict[str, Any]:
         return {geo: lock.to_dict() for geo, lock in self._locks.items()}
-
-
-# --- drift check (raw band levels; uniform-shift rule) -----------------------
-
-
-class DriftVerdict(str, Enum):
-    OK = "ok"
-    AMP_MOVED = "amp_moved"  # uniform shift at same geometry → offer re-level
-    # Large mean shift WITH real band scatter: probably a level change layered
-    # on an acoustic one — never reported as "consistent" (the review's
-    # fall-through-to-OK hole), but phrased more cautiously than AMP_MOVED.
-    LEVEL_SHIFT_SUSPECTED = "level_shift_suspected"
-    ACOUSTIC = "acoustic"  # non-uniform change at same geometry (not a level drift)
-    GEOMETRY_CHANGED = "geometry_changed"  # expected shift; do NOT flag as drift
-    UNKNOWN = "unknown"  # can't decide (missing / mismatched bands / AGC ref)
-
-
-@dataclass(frozen=True)
-class DriftResult:
-    verdict: DriftVerdict
-    mean_shift_db: float | None
-    max_band_deviation_db: float | None
-    message: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "verdict": self.verdict.value,
-            "mean_shift_db": (
-                round(self.mean_shift_db, 2) if self.mean_shift_db is not None else None
-            ),
-            "max_band_deviation_db": (
-                round(self.max_band_deviation_db, 2)
-                if self.max_band_deviation_db is not None
-                else None
-            ),
-            "message": self.message,
-        }
-
-
-def check_level_drift(
-    reference_band_db: Sequence[float],
-    current_band_db: Sequence[float],
-    *,
-    same_geometry: bool,
-    agc_frozen: bool = True,
-    uniform_shift_db: float | None = None,
-    band_tolerance_db: float | None = None,
-) -> DriftResult:
-    """Classify the level relationship between two RAW per-band magnitude arrays.
-
-    The inputs are **raw** band levels (``raw_magnitude_db`` from the replay
-    artifacts, aggregated to matching bands) — NOT ``normalize_to_band``-ed
-    curves, whose 200–1000 Hz band-mean is forced to 0 dB, erasing exactly the
-    uniform shift this check exists to catch. Both arrays must describe the SAME
-    bands in the same order.
-
-    Rules (§3.1 drift check):
-      * ``same_geometry`` False → a level shift is EXPECTED (near-field vs
-        listening position differ 15–25 dB); return ``GEOMETRY_CHANGED`` and never
-        flag it as an amp move.
-      * ``agc_frozen`` False → the reference came from the degraded manual-lock
-        path; the drift rule is disabled (``UNKNOWN``) — never trust an
-        AGC-compressed level as a reference map.
-      * same geometry, |mean Δ| > ``uniform_shift_db`` AND every band within
-        ``band_tolerance_db`` of the mean → the whole response moved uniformly →
-        ``AMP_MOVED`` (offer re-level).
-      * same geometry, |mean Δ| > ``uniform_shift_db`` with band scatter beyond
-        the tolerance → ``LEVEL_SHIFT_SUSPECTED``: real re-measures carry ≥2 dB
-        scatter, so a genuine amp move rarely reads perfectly uniform — this
-        quadrant must never fall through to an "everything is consistent" OK.
-      * same geometry, a large but non-uniform change with a small mean →
-        ``ACOUSTIC`` (a room / placement change, not a level drift).
-      * otherwise ``OK``.
-
-    Thresholds default to the deploy-time knobs (H1 supplies real numbers).
-    """
-    if uniform_shift_db is None:
-        uniform_shift_db = bounded_env_float(
-            "JASPER_RAMP_DRIFT_UNIFORM_DB", 3.0, lo=0.0, hi=24.0
-        )
-    if band_tolerance_db is None:
-        band_tolerance_db = bounded_env_float(
-            "JASPER_RAMP_DRIFT_BAND_TOL_DB", 2.0, lo=0.0, hi=24.0
-        )
-
-    ref = [float(x) for x in reference_band_db]
-    cur = [float(x) for x in current_band_db]
-    if not ref or len(ref) != len(cur):
-        return DriftResult(
-            verdict=DriftVerdict.UNKNOWN,
-            mean_shift_db=None,
-            max_band_deviation_db=None,
-            message="drift check needs matching raw band arrays",
-        )
-
-    deltas = [c - r for c, r in zip(cur, ref)]
-    mean_shift = sum(deltas) / len(deltas)
-    max_dev = max(abs(dv - mean_shift) for dv in deltas)
-
-    if not agc_frozen:
-        return DriftResult(
-            verdict=DriftVerdict.UNKNOWN,
-            mean_shift_db=mean_shift,
-            max_band_deviation_db=max_dev,
-            message=(
-                "level reference is AGC-compressed (agc_frozen=false); drift "
-                "detection is disabled for this measurement"
-            ),
-        )
-
-    if not same_geometry:
-        return DriftResult(
-            verdict=DriftVerdict.GEOMETRY_CHANGED,
-            mean_shift_db=mean_shift,
-            max_band_deviation_db=max_dev,
-            message=(
-                "mic geometry changed since the reference — a level shift is "
-                "expected and is not an amplifier drift"
-            ),
-        )
-
-    uniform = max_dev <= band_tolerance_db
-    if abs(mean_shift) > uniform_shift_db:
-        if uniform:
-            return DriftResult(
-                verdict=DriftVerdict.AMP_MOVED,
-                mean_shift_db=mean_shift,
-                max_band_deviation_db=max_dev,
-                message=(
-                    f"the whole response shifted {mean_shift:+.1f} dB uniformly "
-                    "— the amplifier or volume likely moved; re-level before "
-                    "trusting this measurement"
-                ),
-            )
-        return DriftResult(
-            verdict=DriftVerdict.LEVEL_SHIFT_SUSPECTED,
-            mean_shift_db=mean_shift,
-            max_band_deviation_db=max_dev,
-            message=(
-                f"the response moved {mean_shift:+.1f} dB overall but not "
-                "uniformly — likely a level change combined with an acoustic "
-                "change; consider re-leveling before trusting comparisons"
-            ),
-        )
-
-    if not uniform:
-        return DriftResult(
-            verdict=DriftVerdict.ACOUSTIC,
-            mean_shift_db=mean_shift,
-            max_band_deviation_db=max_dev,
-            message=(
-                "the response changed shape (not a uniform level shift) — a room "
-                "or placement change, not an amplifier drift"
-            ),
-        )
-
-    return DriftResult(
-        verdict=DriftVerdict.OK,
-        mean_shift_db=mean_shift,
-        max_band_deviation_db=max_dev,
-        message="level is consistent with the reference",
-    )
 
 
 # --- relay feed: batched level samples in, latched ramp control out ----------
