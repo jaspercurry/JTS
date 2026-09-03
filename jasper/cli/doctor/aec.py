@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 from typing import NamedTuple
 from ... import enhanced_aec
+from ...aec_ready import aec_bridge_ready_marker_path, read_aec_bridge_ready
 from ...audio_profile_state import (
     AecIntent,
     MicProbe,
@@ -528,15 +529,31 @@ def check_aec_bridge_running() -> CheckResult:
 
     # An alignment the reconciler could not apply no longer stops the bridge
     # (ADR-0101) — it runs software AEC3 and discloses — so a bridge that is
-    # down here is a bridge that failed, and the remedy below names it. The
-    # disclosure itself reaches the operator through check_audio_profile_runtime,
-    # which carries the reconciler's reason/action verbatim in every state.
+    # down here is a bridge that failed OR one the reconciler never admitted.
+    # The ready marker separates the two (ADR-0224): PID 1 refuses to even
+    # start the unit while it is absent, so a missing verdict is a reconciler
+    # problem and a present one is a bridge problem. The alignment disclosure
+    # itself reaches the operator through check_audio_profile_runtime, which
+    # carries the reconciler's reason/action verbatim in every state.
+    ready = read_aec_bridge_ready()
+    if ready.ready:
+        verdict = (
+            f"ready marker present (reason={ready.reason or 'unknown'}), so the "
+            "reconciler admitted the bridge and the bridge itself is down. "
+            "Run: journalctl -u jasper-aec-bridge -e"
+        )
+    else:
+        verdict = (
+            f"ready marker {aec_bridge_ready_marker_path()} absent, so no "
+            "reconcile pass has admitted the bridge and systemd skips its start "
+            "condition. Run: sudo systemctl start jasper-aec-reconcile && "
+            "journalctl -u jasper-aec-reconcile -e"
+        )
     return CheckResult(
         "AEC bridge service", "fail",
         f"is-active='{is_active}', is-enabled='{is_enabled}'. "
-        f"AEC should be on (mode=auto, 6-ch firmware loaded) but bridge isn't running. "
-        f"Run: sudo systemctl start jasper-aec-reconcile && "
-        f"journalctl -u jasper-aec-bridge -e",
+        "AEC should be on (mode=auto, 6-ch firmware loaded) but the bridge "
+        f"isn't running: {verdict}",
     )
 
 

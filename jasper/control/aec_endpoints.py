@@ -17,6 +17,7 @@ from typing import Any, Iterator
 
 from .. import chip_aec_commission_record as commission_record
 from .. import enhanced_aec
+from ..aec_ready import read_aec_bridge_ready
 from ..audio_profile_state import (
     AecIntent,
     MicProbe,
@@ -687,6 +688,12 @@ def _build_aec_full_status() -> dict:
             "leg_chip_aec_210": state["leg_chip_aec_210"],
         },
         "bridge_active": bridge_active,
+        # The reconciler's published verdict, which is what admits the bridge's
+        # next start (jasper-aec-bridge.service's ConditionPathExists). Read
+        # fresh per call: `ready:false` with `bridge_active:false` is "no
+        # reconcile pass has admitted the bridge", a different diagnosis from a
+        # bridge that was admitted and died.
+        "bridge_ready": read_aec_bridge_ready().as_dict(),
         "bridge_role": _bridge_role(
             effective,
             profile_status=profile_status["audio_profile"],

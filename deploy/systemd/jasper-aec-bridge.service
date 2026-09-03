@@ -28,9 +28,9 @@ Description=AEC bridge — carries XVF mic audio via software AEC3 or chip-AEC
 After=jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-aec-init.service sound.target
 # `Wants=` so init runs whenever bridge starts (init is a one-shot
 # that applies XVF tuning; bridge depends on chip being initialised).
-# The dependency remains soft for explicit custom/software routes. For a
-# managed XVF, ExecCondition additionally requires the reconciler's ready
-# state and a successful active init, so the bridge fails closed.
+# The dependency remains soft for explicit custom/software routes. The
+# ready marker below additionally requires the reconciler to have admitted
+# this bridge, so it fails closed.
 # Camilla is also a SOFT startup dependency. The current bridge reads
 # the XVF mic directly and consumes outputd's final-reference UDP stream
 # as its only reference source, so it has no runtime lifecycle
@@ -40,6 +40,14 @@ After=jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-
 # triggers its 30 s progress watchdog (#1264). jasper-aec-reconcile
 # remains the single owner of whether the bridge should run.
 Wants=jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-aec-init.service
+
+# jasper-aec-reconcile's published "the bridge may run" verdict; it is the
+# single writer and jasper/aec_ready.py owns the path literal. See ADR-0224 for
+# why this is a Condition and not the ExecCondition= probe it replaces.
+# Deliberately NO After=jasper-aec-reconcile.service: that reconciler
+# blocking-restarts this unit from inside its own ExecStart, so an ordering
+# edge would deadlock both jobs until its TimeoutStartSec=120.
+ConditionPathExists=/run/jasper-aec-reconcile/aec-bridge-ready
 
 # Tier 4.5 — escalate to system reboot if the per-service watchdog
 # spiral exceeds 4 restarts in 5 minutes. `reboot` (not `reboot-force`):
@@ -90,10 +98,6 @@ EnvironmentFile=-/var/lib/jasper/usb_mic.env
 # sandboxed web UI can deliberately enable optional bridge outputs
 # (reference / cheap USB / DTLN) without writing to /etc.
 EnvironmentFile=-/var/lib/jasper/wake_corpus_bridge.env
-# Skip cleanly when no profile-managed 6-channel XVF card is ready, or
-# the operator has disabled AEC. The reconciler owns env/service state;
-# this condition keeps manual starts from re-entering a crash loop.
-ExecCondition=/usr/local/sbin/jasper-aec-reconcile --check-aec-ready
 ExecStart=/opt/jasper/.venv/bin/jasper-aec-bridge
 # `Restart=on-failure` covers non-zero exit + signals + watchdog
 # timeouts (per the table in systemd.service(5)). The previous

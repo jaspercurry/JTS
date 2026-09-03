@@ -783,6 +783,34 @@ def test_aec_full_status_with_disabled_aec(aec_mode_file, wake_model_file, monke
     )
 
 
+def test_aec_full_status_surfaces_the_reconciler_bridge_verdict(
+    aec_mode_file, wake_model_file, monkeypatch, tmp_path
+):
+    """A down bridge reads differently depending on whether the reconciler ever
+    admitted it (ADR-0224) — systemd refuses to start the unit at all while the
+    verdict is withheld — so /state carries the marker, not only
+    `bridge_active`."""
+    marker = tmp_path / "aec-bridge-ready"
+    monkeypatch.setenv("JASPER_AEC_BRIDGE_READY_MARKER", str(marker))
+    monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: False)
+    _stub_xvf_runtime(monkeypatch, variant=None, present=False, channels=None)
+    monkeypatch.setattr(aec_endpoints, "_fresh_jasper_env", lambda: {})
+
+    assert server._aec_full_status()["bridge_ready"] == {
+        "ready": False,
+        "reason": "",
+        "marker": str(marker),
+    }
+
+    marker.write_text("reason=systemd\n")
+
+    assert server._aec_full_status()["bridge_ready"] == {
+        "ready": True,
+        "reason": "systemd",
+        "marker": str(marker),
+    }
+
+
 def test_aec_full_status_chip_available_tracks_firmware(
     aec_mode_file, wake_model_file, monkeypatch,
 ):
