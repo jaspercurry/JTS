@@ -23,20 +23,28 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from jasper.cli import aec_bridge, aec_bridge_capture, aec_bridge_reference
+from jasper.cli import (
+    aec_bridge,
+    aec_bridge_capture,
+    aec_bridge_config,
+    aec_bridge_reference,
+)
 from jasper.cli.aec_bridge_reference import REF_CHANNELS, REF_RATE
 
 REPO = Path(__file__).resolve().parents[1]
 BRIDGE_SOURCE = REPO / "jasper" / "cli" / "aec_bridge.py"
 # The reference reader the retirement removed spanned the bridge entry point
-# and the modules cut out of it that open capture devices, so all three are in
-# scope for the guards.
+# and the modules cut out of it that open capture devices or query them, so
+# all four are in scope for the guards.
 BRIDGE_SOURCES = (
     BRIDGE_SOURCE,
     REPO / "jasper" / "cli" / "aec_bridge_capture.py",
+    REPO / "jasper" / "cli" / "aec_bridge_config.py",
     REPO / "jasper" / "cli" / "aec_bridge_reference.py",
 )
-BRIDGE_MODULES = (aec_bridge, aec_bridge_capture, aec_bridge_reference)
+BRIDGE_MODULES = (
+    aec_bridge, aec_bridge_capture, aec_bridge_config, aec_bridge_reference,
+)
 RECONCILE = REPO / "deploy" / "bin" / "jasper-aec-reconcile"
 
 RETIRED = "alsa"
@@ -158,7 +166,7 @@ def test_the_reference_geometry_matches_outputd_the_producer():
 
 def test_the_supported_source_is_returned_untouched():
     config = _config(aec_bridge.REF_SOURCE)
-    assert aec_bridge._resolved_reference_source(config) is config
+    assert aec_bridge.resolved_reference_source(config) is config
 
 
 def test_the_retired_source_warns_and_falls_back_to_outputd_udp(caplog):
@@ -170,7 +178,7 @@ def test_the_retired_source_warns_and_falls_back_to_outputd_udp(caplog):
     bridge converges and says so.
     """
     with caplog.at_level(logging.WARNING, logger="jasper.aec_bridge"):
-        resolved = aec_bridge._resolved_reference_source(_config(RETIRED))
+        resolved = aec_bridge.resolved_reference_source(_config(RETIRED))
 
     assert resolved.ref_source == aec_bridge.REF_SOURCE
     assert "event=aec_ref_source_retired" in caplog.text
@@ -187,7 +195,7 @@ def test_an_unknown_source_is_still_a_hard_failure(value):
     engine on a reference the operator did not ask for.
     """
     with pytest.raises(aec_bridge.UnsupportedReferenceSource) as excinfo:
-        aec_bridge._resolved_reference_source(_config(value))
+        aec_bridge.resolved_reference_source(_config(value))
     assert repr(value) in str(excinfo.value)
 
 
@@ -211,7 +219,7 @@ def test_main_resolves_the_reference_source_before_publishing_provenance():
         node.lineno for node in ast.walk(main)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
-        and node.func.id == "_resolved_reference_source"
+        and node.func.id == "resolved_reference_source"
     )
     reset_line = min(
         node.lineno for node in ast.walk(main)
@@ -315,7 +323,7 @@ def test_chip_aec_refuses_to_start_without_a_chip_reference_producer(
     """
     _arm_chip_aec(monkeypatch, tmp_path, chip_ref_pcm="")
     sd_mod = MagicMock()
-    monkeypatch.setattr(aec_bridge, "sd", sd_mod)
+    monkeypatch.setattr(aec_bridge_config, "sd", sd_mod)
 
     with caplog.at_level(logging.ERROR, logger="jasper.aec_bridge"):
         assert aec_bridge.main() == 1
@@ -339,7 +347,7 @@ def test_the_chip_reference_guard_lets_a_configured_producer_through(
     _arm_chip_aec(monkeypatch, tmp_path, chip_ref_pcm="hw:Array,0")
     sd_mod = MagicMock()
     sd_mod.query_devices.side_effect = ValueError("no such device")
-    monkeypatch.setattr(aec_bridge, "sd", sd_mod)
+    monkeypatch.setattr(aec_bridge_config, "sd", sd_mod)
 
     assert aec_bridge.main() == 1
     sd_mod.query_devices.assert_called_once()

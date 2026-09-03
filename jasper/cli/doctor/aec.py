@@ -1149,7 +1149,7 @@ def check_aec_bridge_output_health() -> CheckResult:
     # enough to demand it: the env states intent, the bridge's own snapshot
     # states what it applied, and the two legitimately diverge on a box parked
     # by a pre-P7-1 reconciler (the retired `alsa` spelling survives on disk
-    # while the bridge converges — `aec_bridge._resolved_reference_source`).
+    # while the bridge converges — `aec_bridge_config.resolved_reference_source`).
     # Gating on the env alone sent exactly that box to the music-conditional
     # journal fallback, which returns OK for a dead reference whenever no
     # snd-aloop renderer lane is open. OR is the fail-closed direction, with
@@ -1279,7 +1279,7 @@ def _applied_reference_source(stats: dict | None) -> str | None:
     """The reference source the running bridge APPLIED, or None if unreadable.
 
     The bridge resolves ``JASPER_AEC_REF_SOURCE`` before anything reads it
-    (``aec_bridge._resolved_reference_source``) and publishes the resolved
+    (``aec_bridge_config.resolved_reference_source``) and publishes the resolved
     value into its stats snapshot, so this is the box's runtime truth where
     the env file is only its intent — and a box parked by a pre-P7-1
     reconciler still carries the retired ``alsa`` spelling in
