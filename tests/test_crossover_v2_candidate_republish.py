@@ -64,10 +64,10 @@ def bank(tmp_path, monkeypatch):
     return root
 
 
-def _publish(root: Path, candidate, *, bundle=BUNDLE, relay=RELAY) -> Path:
+def _publish(root: Path, candidate, *, bundle=BUNDLE, capture=RELAY) -> Path:
     path = (
         root / bundle / "evidence" / "v1" / "artifacts"
-        / "crossover_v2" / relay / "candidate.json"
+        / "crossover_v2" / capture / "candidate.json"
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(candidate.to_dict()), encoding="utf-8")
@@ -278,8 +278,8 @@ def test_two_minting_lineages_for_one_fingerprint_refuse_as_ambiguous(bank):
     and lineage is the path the apply door rebuilds to find the artifact again.
     """
     candidate = _candidate()
-    _publish(bank, candidate, bundle="bundle0000aa", relay="relay-1")
-    _publish(bank, candidate, bundle="bundle0000bb", relay="relay-2")
+    _publish(bank, candidate, bundle="bundle0000aa", capture="relay-1")
+    _publish(bank, candidate, bundle="bundle0000bb", capture="relay-2")
 
     with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
         republish.handle_v2_republish({"fingerprint": candidate.fingerprint})
@@ -292,7 +292,7 @@ def test_the_same_artifact_seen_once_is_not_ambiguous(bank):
     candidate = _candidate()
     _publish(bank, candidate)
     _publish(bank, _candidate(trims={"woofer": -1.0, "tweeter": -4.0}),
-             bundle="bundle0000bb", relay="relay-2")
+             bundle="bundle0000bb", capture="relay-2")
 
     result = republish.handle_v2_republish({"fingerprint": candidate.fingerprint})
 
@@ -360,7 +360,7 @@ def test_republish_emits_its_event_with_fingerprint_and_source_bundle(bank, capl
     )
     assert f"candidate_fingerprint={candidate.fingerprint}" in line
     assert f"bundle_session_id={BUNDLE}" in line
-    assert f"relay_session_id={RELAY}" in line
+    assert f"capture_session_id={RELAY}" in line
 
 
 @pytest.mark.parametrize(
@@ -370,8 +370,8 @@ def test_republish_emits_its_event_with_fingerprint_and_source_bundle(bank, capl
         (lambda root: None, {"fingerprint": "a" * 64}, "not_found"),
         (
             lambda root: (
-                _publish(root, _candidate(), bundle="b1", relay="r1"),
-                _publish(root, _candidate(), bundle="b2", relay="r2"),
+                _publish(root, _candidate(), bundle="b1", capture="r1"),
+                _publish(root, _candidate(), bundle="b2", capture="r2"),
             ),
             None,
             "ambiguous",

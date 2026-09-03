@@ -739,7 +739,7 @@ def _drive(
             bundle_dir=tmp_path,
             identify_artifact=lambda rel: SimpleNamespace(fingerprint="f"),
         ),
-        relay_session_id="drift_probe",
+        capture_session_id="drift_probe",
         topology=object(),
         preset=object(),
         role_channels={"woofer": 0, "tweeter": 1},

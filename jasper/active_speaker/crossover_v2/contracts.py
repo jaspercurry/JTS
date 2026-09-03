@@ -1074,7 +1074,7 @@ class RoundReceipt:
     ``restore_result`` is present only when a restore was attempted, and a
     :attr:`AdoptionOutcome.RECOVERY_REQUIRED` adoption must carry one.
     Persisted as a write-once evidence-bundle artifact at
-    ``crossover_v2/<relay_session_id>/round_receipt.json``.
+    ``crossover_v2/<capture_session_id>/round_receipt.json``.
 
     :attr:`proposal_fingerprint_kind` is REQUIRED rather than defaulted: a
     default would let a caller claim one regime by forgetting to state the

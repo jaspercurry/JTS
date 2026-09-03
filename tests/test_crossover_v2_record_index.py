@@ -50,7 +50,7 @@ def store(tmp_path):
         evidence=CommissioningEvidenceStore.open(
             info["bundle_dir"], expected_session_id=info["session_id"],
         ),
-        relay_session_id=RELAY,
+        capture_session_id=RELAY,
     )
 
 

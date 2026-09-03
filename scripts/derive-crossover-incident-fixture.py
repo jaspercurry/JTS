@@ -61,8 +61,8 @@ DEFAULT_OUT = REPO_ROOT / "tests" / "fixtures" / "crossover_v2_incident_20260810
 # incident's identity: a bundle that does not carry them is a different
 # session, and silently deriving a fixture from it would put another
 # speaker's numbers behind this incident's name.
-STAGE1_RELAY_ID = "cap_OqlWdywQv9ZlWO7RqkZpSQ"
-STAGE2_RELAY_ID = "cap_VlE2sNj8v5ego--UqbNDUQ"
+STAGE1_CAPTURE_ID = "cap_OqlWdywQv9ZlWO7RqkZpSQ"
+STAGE2_CAPTURE_ID = "cap_VlE2sNj8v5ego--UqbNDUQ"
 CANDIDATE_FINGERPRINT = (
     "3df7a4da7f33f5dfaa55866334cfaf7ebdb32bfa76dd0405f41fcc8a79d0941d"
 )
@@ -105,8 +105,8 @@ def _provenance(sources: dict[str, Path], bundle: Path, note: str) -> dict[str, 
         # path here would make the emitted fixture differ per machine and turn
         # ``--check`` into a machine-identity test.
         "bundle_dir_name": bundle.name,
-        "stage1_relay_session_id": STAGE1_RELAY_ID,
-        "stage2_relay_session_id": STAGE2_RELAY_ID,
+        "stage1_capture_session_id": STAGE1_CAPTURE_ID,
+        "stage2_capture_session_id": STAGE2_CAPTURE_ID,
         "candidate_fingerprint": CANDIDATE_FINGERPRINT,
         "speaker_build_sha": BUILD_SHA,
         "derived_by": SCRIPT_NAME,
@@ -158,7 +158,7 @@ def derive(bundle: Path) -> dict[str, dict[str, Any]]:
     """Read the banked bundle; return ``{filename: payload}``."""
     stage1 = bundle / "session_OqlWdywQv9"
     artifacts = (
-        stage1 / "evidence" / "v1" / "artifacts" / "crossover_v2" / STAGE1_RELAY_ID
+        stage1 / "evidence" / "v1" / "artifacts" / "crossover_v2" / STAGE1_CAPTURE_ID
     )
     paths = {
         "candidate.json": artifacts / "candidate.json",
@@ -186,8 +186,8 @@ def derive(bundle: Path) -> dict[str, dict[str, Any]]:
         raise SystemExit(
             f"candidate fingerprint {candidate['fingerprint']} is not this incident's"
         )
-    if state["session_id"] != STAGE2_RELAY_ID:
-        raise SystemExit(f"flow state names relay {state['session_id']}, not this one")
+    if state["session_id"] != STAGE2_CAPTURE_ID:
+        raise SystemExit(f"flow state names capture {state['session_id']}, not this one")
 
     analysis = candidate["analysis"]
     sidecar_path, sidecar = _measure_sidecar(bundle, analysis)

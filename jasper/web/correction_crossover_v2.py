@@ -2829,7 +2829,7 @@ def open_v2_evidence_store(topology: Any) -> tuple[Any, str]:
 
 
 def bind_evidence_publishers(
-    store: Any, relay_session_id: str
+    store: Any, capture_session_id: str
 ) -> tuple[Callable[[Any, Mapping[str, Any]], None], Callable[[Any], None], dict[str, Any]]:
     """Real ``publish_check`` / ``publish_candidate`` seams (§5.6).
 
@@ -2844,11 +2844,11 @@ def bind_evidence_publishers(
 
     def publish_check(gain_plan: Any, ambient_report: Mapping[str, Any]) -> None:
         artifact = store.publish_json_artifact(
-            f"crossover_v2/{relay_session_id}/check.json",
+            f"crossover_v2/{capture_session_id}/check.json",
             {
                 "schema_version": 1,
                 "kind": "jts_crossover_v2_check_evidence",
-                "relay_session_id": relay_session_id,
+                "capture_session_id": capture_session_id,
                 "gain_plan_db": dict(gain_plan.gain_db),
                 "predicted_peak_dbfs": gain_plan.predicted_peak_dbfs,
                 "snr_floor_ok": gain_plan.snr_floor_ok,
@@ -2871,7 +2871,7 @@ def bind_evidence_publishers(
         )
 
         artifact = store.publish_json_artifact(
-            f"crossover_v2/{relay_session_id}/candidate.json",
+            f"crossover_v2/{capture_session_id}/candidate.json",
             candidate.to_dict(),
         )
         reopened_raw = store.reopen_json_artifact(artifact)
@@ -2884,7 +2884,7 @@ def bind_evidence_publishers(
         log_event(
             logger,
             "correction.crossover_v2_candidate_published",
-            relay_session_id=relay_session_id,
+            capture_session_id=capture_session_id,
             candidate_fingerprint=candidate.fingerprint,
             artifact_fingerprint=artifact.fingerprint,
         )
@@ -2893,12 +2893,12 @@ def bind_evidence_publishers(
 
 
 def bind_round_receipt(
-    store: Any, relay_session_id: str, refs: dict[str, Any]
+    store: Any, capture_session_id: str, refs: dict[str, Any]
 ) -> Callable[[Mapping[str, Any]], str]:
     """The conductor's ``publish_round_receipt`` seam (#2291).
 
     Writes ONE immutable receipt per round as a bundle artifact at
-    ``crossover_v2/<relay_session_id>/round_receipt.json``, through
+    ``crossover_v2/<capture_session_id>/round_receipt.json``, through
     :meth:`publish_json_artifact` + reopen-and-compare — the R21 accept-receipt
     pattern verbatim (``commissioning_verification._receipt``). That store is
     write-once, canonical-JSON, fsync'd (file **and** parent directory) and
@@ -2919,7 +2919,7 @@ def bind_round_receipt(
 
     def publish_round_receipt(receipt: Mapping[str, Any]) -> str:
         artifact = store.publish_json_artifact(
-            f"crossover_v2/{relay_session_id}/round_receipt.json", dict(receipt)
+            f"crossover_v2/{capture_session_id}/round_receipt.json", dict(receipt)
         )
         reopened = store.reopen_json_artifact(artifact)
         if reopened != dict(receipt):
@@ -2932,7 +2932,7 @@ def bind_round_receipt(
 
 def bind_position_retention(
     store: Any,
-    relay_session_id: str,
+    capture_session_id: str,
     refs: dict[str, Any],
     run_async: Any,
     *,
@@ -3013,7 +3013,7 @@ def bind_position_retention(
     # constructed twice and never two authorities.
     records = BankedRecordStore(
         evidence=store,
-        relay_session_id=relay_session_id,
+        capture_session_id=capture_session_id,
     )
 
     def bank_take(result: Any, metadata: Mapping[str, Any]) -> str:
@@ -3149,7 +3149,7 @@ def bind_position_retention(
     return bank_take
 
 
-def v2_session_identity(store: Any, relay_session_id: str) -> Any:
+def v2_session_identity(store: Any, capture_session_id: str) -> Any:
     """This v2 session's cross-store identity (attribution plan §6).
 
     The **bundle** session id is canonical, because Q-C's bundle-lifetime
@@ -3163,19 +3163,19 @@ def v2_session_identity(store: Any, relay_session_id: str) -> Any:
     """
 
     from jasper.attribution.session_identity import (
-        ALIAS_RELAY_SESSION_ID,
+        ALIAS_CAPTURE_SESSION_ID,
         SessionIdentity,
     )
 
     return SessionIdentity(
         session_id=str(store.session_id),
-        aliases={ALIAS_RELAY_SESSION_ID: str(relay_session_id)},
+        aliases={ALIAS_CAPTURE_SESSION_ID: str(capture_session_id)},
     )
 
 
 def _publish_findings(
     store: Any,
-    relay_session_id: str,
+    capture_session_id: str,
     phase: str,
     result: Mapping[str, Any],
     cloud_artifact: Any,
@@ -3205,7 +3205,7 @@ def _publish_findings(
     )
 
     try:
-        identity = v2_session_identity(store, relay_session_id)
+        identity = v2_session_identity(store, capture_session_id)
         findings = promote_carve_outs(
             result.get("carve_outs"),
             session=identity,
@@ -3213,7 +3213,7 @@ def _publish_findings(
         )
         artifact = publish_finding_set(
             store,
-            relay_session_id=relay_session_id,
+            capture_session_id=capture_session_id,
             phase=phase,
             finding_set=FindingSet(
                 session=identity,
@@ -3226,7 +3226,7 @@ def _publish_findings(
             logger,
             "correction.crossover_v2_findings_publish_failed",
             level=logging.WARNING,
-            relay_session_id=relay_session_id,
+            capture_session_id=capture_session_id,
             phase=phase,
             exc_info=True,
         )
@@ -3244,14 +3244,14 @@ def _publish_findings(
     log_event(
         logger,
         "correction.crossover_v2_findings_published",
-        relay_session_id=relay_session_id,
+        capture_session_id=capture_session_id,
         phase=phase,
         findings=len(findings),
     )
 
 
 def _bank_household_findings(
-    store: Any, *, relay_session_id: str, phase: str, refs: dict[str, Any],
+    store: Any, *, capture_session_id: str, phase: str, refs: dict[str, Any],
 ) -> None:
     """Reopen the finding set just published and project what a household reads.
 
@@ -3310,14 +3310,14 @@ def _bank_household_findings(
 
     try:
         finding_set = read_finding_set(
-            store, relay_session_id=relay_session_id, phase=phase,
+            store, capture_session_id=capture_session_id, phase=phase,
         )
     except (OSError, RuntimeError, TypeError, ValueError):
         log_event(
             logger,
             "correction.crossover_v2_findings_readback_failed",
             level=logging.WARNING,
-            relay_session_id=relay_session_id,
+            capture_session_id=capture_session_id,
             phase=phase,
             exc_info=True,
         )
@@ -3346,14 +3346,14 @@ def _bank_household_findings(
     log_event(
         logger,
         "correction.crossover_v2_findings_readback",
-        relay_session_id=relay_session_id,
+        capture_session_id=capture_session_id,
         phase=phase,
         findings=len(finding_set.findings),
     )
 
 
 def bind_findings_publisher(
-    store: Any, relay_session_id: str, refs: dict[str, Any]
+    store: Any, capture_session_id: str, refs: dict[str, Any]
 ) -> Callable[[Mapping[str, Any]], None]:
     """The real ``publish_findings`` seam — the #1866 frame-gate finding.
 
@@ -3406,7 +3406,7 @@ def bind_findings_publisher(
         )
 
         try:
-            identity = v2_session_identity(store, relay_session_id)
+            identity = v2_session_identity(store, capture_session_id)
             finding = promote_level_frame_disagreement(
                 record,
                 session=identity,
@@ -3414,7 +3414,7 @@ def bind_findings_publisher(
                     bundle_evidence_ref(
                         store.identify_artifact(
                             f"{EVIDENCE_ROOT}/artifacts/crossover_v2/"
-                            f"{relay_session_id}/candidate.json"
+                            f"{capture_session_id}/candidate.json"
                         ),
                         identity,
                     ),
@@ -3428,7 +3428,7 @@ def bind_findings_publisher(
                 return
             artifact = publish_finding_set(
                 store,
-                relay_session_id=relay_session_id,
+                capture_session_id=capture_session_id,
                 phase=PHASE_MEASURE,
                 finding_set=FindingSet(
                     session=identity,
@@ -3441,7 +3441,7 @@ def bind_findings_publisher(
                 logger,
                 "correction.crossover_v2_findings_publish_failed",
                 level=logging.WARNING,
-                relay_session_id=relay_session_id,
+                capture_session_id=capture_session_id,
                 phase=PHASE_MEASURE,
                 exc_info=True,
             )
@@ -3452,7 +3452,7 @@ def bind_findings_publisher(
         log_event(
             logger,
             "correction.crossover_v2_findings_published",
-            relay_session_id=relay_session_id,
+            capture_session_id=capture_session_id,
             phase=PHASE_MEASURE,
             findings=1,
         )
@@ -3462,7 +3462,7 @@ def bind_findings_publisher(
         # successful publish look like a failed one.
         _bank_household_findings(
             store,
-            relay_session_id=relay_session_id,
+            capture_session_id=capture_session_id,
             phase=PHASE_MEASURE,
             refs=refs,
         )
@@ -3471,7 +3471,7 @@ def bind_findings_publisher(
 
 
 def bind_cloud_publisher(
-    store: Any, relay_session_id: str, refs: dict[str, Any]
+    store: Any, capture_session_id: str, refs: dict[str, Any]
 ) -> Callable[[str, Mapping[str, Any]], None]:
     """The real ``publish_cloud`` seam (flat-linearization plan PR-4).
 
@@ -3504,18 +3504,18 @@ def bind_cloud_publisher(
             {
                 "schema_version": 1,
                 "kind": "jts_crossover_v2_cloud_evidence",
-                "relay_session_id": relay_session_id,
+                "capture_session_id": capture_session_id,
                 "phase": phase,
                 **dict(result),
             },
-            v2_session_identity(store, relay_session_id),
+            v2_session_identity(store, capture_session_id),
         )
         artifact = store.publish_json_artifact(
-            f"crossover_v2/{relay_session_id}/{phase}.json", payload
+            f"crossover_v2/{capture_session_id}/{phase}.json", payload
         )
         cloud_artifacts = refs.setdefault("cloud_artifacts", {})
         cloud_artifacts[phase] = artifact.fingerprint
-        _publish_findings(store, relay_session_id, phase, result, artifact, refs)
+        _publish_findings(store, capture_session_id, phase, result, artifact, refs)
 
     return publish_cloud
 
@@ -3569,7 +3569,7 @@ def bind_production_play(
     run_async: Any,
     camilla_factory: Any,
     evidence_store: Any,
-    relay_session_id: str,
+    capture_session_id: str,
     topology: Any,
     preset: Any,
     role_channels: Mapping[str, int],
@@ -3719,7 +3719,7 @@ def bind_production_play(
 
     def _play(phase: str, program: Any) -> None:
         bundle_dir = evidence_store.bundle_dir
-        wav_rel = f"crossover_v2/{relay_session_id}/{phase}_program.wav"
+        wav_rel = f"crossover_v2/{capture_session_id}/{phase}_program.wav"
         wav_path = Path(bundle_dir) / wav_rel
         wav_path.parent.mkdir(parents=True, exist_ok=True)
         write_program_wav(wav_path, program)
@@ -3765,7 +3765,7 @@ def bind_production_play(
             try:
                 summed_wav_path = (
                     Path(bundle_dir)
-                    / f"crossover_v2/{relay_session_id}/summed_program.wav"
+                    / f"crossover_v2/{capture_session_id}/summed_program.wav"
                 )
                 if not summed_wav_path.exists():
                     write_program_wav(summed_wav_path, program)
@@ -3954,7 +3954,7 @@ def bind_production_play(
         phase = phase_for_measurement(getattr(spec, "kind", ""))
         program = program_for_phase(phase)
         bundle_dir = evidence_store.bundle_dir
-        wav_rel = f"crossover_v2/{relay_session_id}/{phase}_program.wav"
+        wav_rel = f"crossover_v2/{capture_session_id}/{phase}_program.wav"
         wav_path = Path(bundle_dir) / wav_rel
 
         def _render() -> Any:
@@ -5387,7 +5387,7 @@ def bind_v2_engine_seams(
     *,
     session_graph: Any,
     evidence_store: Any,
-    relay_session_id: str,
+    capture_session_id: str,
     compose_stimulus: Any,
     capture_stimulus: Any = None,
     volume_claim: Any = None,
@@ -5426,7 +5426,7 @@ def bind_v2_engine_seams(
         session_graph=session_graph,
         records=BankedRecordStore(
             evidence=evidence_store,
-            relay_session_id=relay_session_id,
+            capture_session_id=capture_session_id,
         ),
         volume_claim=claim,
         session_volume_plan=session_volume_plan(),
@@ -5441,7 +5441,7 @@ def bind_v2_stage_seams(
     *,
     play: Any,
     evidence_store: Any,
-    relay_session_id: str,
+    capture_session_id: str,
     # ``dict``, not ``Mapping``: the four evidence binders below take the
     # MUTABLE refs dict ``bind_evidence_publishers`` returns and write artifact
     # fingerprints into it. Widening this to ``Mapping`` would type-check here
@@ -5491,7 +5491,7 @@ def bind_v2_stage_seams(
     missing = opening.missing
     log_event(
         logger, "correction.crossover_v2_stage_capabilities",
-        stage=capabilities.stage, session_id=relay_session_id,
+        stage=capabilities.stage, session_id=capture_session_id,
         provides=",".join(sorted(capabilities.provides)),
         requires=",".join(sorted(capabilities.requires)),
         missing=",".join(missing),
@@ -5503,7 +5503,7 @@ def bind_v2_stage_seams(
         log_event(
             logger, "correction.crossover_v2_stage_capability_unavailable",
             level=logging.WARNING, stage=capabilities.stage,
-            session_id=relay_session_id, missing=",".join(missing),
+            session_id=capture_session_id, missing=",".join(missing),
         )
     # The one-capture handoff from the analyze seam to the banking seam, in
     # the same type the play seam already uses for its own hop. A second
@@ -5526,19 +5526,19 @@ def bind_v2_stage_seams(
         apply_complete=_applied_gate,
         apply_failed=_apply_failure_gate,
         bank_take=bind_position_retention(
-            evidence_store, relay_session_id, refs, run_async,
+            evidence_store, capture_session_id, refs, run_async,
             provenance=banked_provenance, evidence=banked_evidence,
         ),
-        publish_cloud=bind_cloud_publisher(evidence_store, relay_session_id, refs),
+        publish_cloud=bind_cloud_publisher(evidence_store, capture_session_id, refs),
         # #2291's round receipt. Bound on both stages rather than gated on a
         # capability: only the stage that GRADES a round ever calls it, and a
         # binding that exists everywhere cannot be the reason a receipt went
         # unwritten on the stage that needed it.
         publish_round_receipt=bind_round_receipt(
-            evidence_store, relay_session_id, refs
+            evidence_store, capture_session_id, refs
         ),
         publish_findings=(
-            bind_findings_publisher(evidence_store, relay_session_id, refs)
+            bind_findings_publisher(evidence_store, capture_session_id, refs)
             if CAPABILITY_FINDINGS in capabilities.provides else None
         ),
         rollback=(
@@ -6497,7 +6497,7 @@ def prepare_v2_session(
         rc = _mint_wired_session(wired_device, spec)
         # The conductor + publishers bind to the MINTED provider session id
         # (the seam's identity rule — the wired id rides the same key).
-        relay_session_id = rc.pi_session.session_id
+        capture_session_id = rc.pi_session.session_id
         # Re-arm the walked-away ceiling from THIS stage's own plan, BEFORE the
         # volume opens. The volume plan is process-global, so a preceding
         # session would otherwise leave its ceiling in force in either
@@ -6507,7 +6507,7 @@ def prepare_v2_session(
         # so a caller-configured cloud is covered too.
         session_volume_plan().set_wall_clock_ceiling_s(ceiling_s)
         publish_check, publish_candidate, refs = bind_evidence_publishers(
-            evidence_store, relay_session_id
+            evidence_store, capture_session_id
         )
         # Written by the play seam, read by analyze.
         capture_provenance = CaptureProvenanceRecorder()
@@ -6515,7 +6515,7 @@ def prepare_v2_session(
             run_async=run_async,
             camilla_factory=camilla_factory,
             evidence_store=evidence_store,
-            relay_session_id=relay_session_id,
+            capture_session_id=capture_session_id,
             topology=context.topology,
             preset=context.preset,
             role_channels=context.role_channels,
@@ -6574,7 +6574,7 @@ def prepare_v2_session(
             opening,
             play=play,
             evidence_store=evidence_store,
-            relay_session_id=relay_session_id,
+            capture_session_id=capture_session_id,
             refs=refs,
             publish_check=publish_check,
             publish_candidate=publish_candidate,
@@ -6584,7 +6584,7 @@ def prepare_v2_session(
         )
         if verify_only:
             conductor = CrossoverV2Session(
-                session_id=relay_session_id,
+                session_id=capture_session_id,
                 # The topology the round being graded was MEASURED and APPLIED at
                 # — the pin when the durable state carried one, else the context's
                 # own. Resolved once, above.
@@ -6655,7 +6655,7 @@ def prepare_v2_session(
             )
             conductor = CrossoverV2Session.hydrate(
                 prior_snapshot,
-                session_id=relay_session_id,
+                session_id=capture_session_id,
                 # The PINNED topology when this request carried one, else the
                 # context's own — resolved once, above, so the preset and the
                 # corner can never name two different crossovers.
@@ -6739,11 +6739,11 @@ def prepare_v2_session(
         # the engine banked).
         stimulus_capture = _wired_stimulus_capture(wired_device, evidence_store)
         tuning = TuningSession(
-            session_id=relay_session_id,
+            session_id=capture_session_id,
             seams=bind_v2_engine_seams(
                 session_graph=session_graph,
                 evidence_store=evidence_store,
-                relay_session_id=relay_session_id,
+                capture_session_id=capture_session_id,
                 # The session's own program door, so a stimulus is picked BY
                 # IDENTITY from what this conductor composed rather than
                 # recomposed at a guessed level.

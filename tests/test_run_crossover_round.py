@@ -281,7 +281,7 @@ def checkout(tmp_path: Path):
             printf -v n '%02d' "$i"
             printf '%s' "{\\"schema_version\\":1,
                 \\"kind\\":\\"jts_crossover_v2_position_evidence\\",
-                \\"relay_session_id\\":\\"relay-1\\",\\"phase\\":\\"lateral\\",
+                \\"capture_session_id\\":\\"relay-1\\",\\"phase\\":\\"lateral\\",
                 \\"pose_id\\":\\"lateral_$n\\",\\"index\\":$i,\\"attempt\\":1,
                 \\"take_id\\":\\"lateral_${n}_a01\\",\\"role\\":\\"onax\\",
                 \\"position_deg\\":0,\\"regime\\":\\"per_driver\\",

@@ -463,7 +463,7 @@ def rebuild_measure_program(
     )
 
 
-def _state_relay_session_id(state: Mapping[str, Any]) -> str | None:
+def _state_capture_session_id(state: Mapping[str, Any]) -> str | None:
     """The flow state's own session id — a RELAY id, not the ring's bundle id.
 
     Two namespaces that look alike and are not: this is
@@ -1098,7 +1098,7 @@ def read_round_harmonics(
             # BUNDLE id, this is a RELAY id, and nothing banked maps between them),
             # so it guards nothing at read time — it is here so the one seam
             # `_scope_captures` cannot refuse is at least AUDITABLE afterwards.
-            "state_relay_session_id": _state_relay_session_id(state),
+            "state_capture_session_id": _state_capture_session_id(state),
         },
         "captures": {
             # WHICH captures this reading is of, and by what rule they were chosen.

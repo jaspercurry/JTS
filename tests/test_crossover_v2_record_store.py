@@ -72,7 +72,7 @@ def real_store(tmp_path):
         evidence=CommissioningEvidenceStore.open(
             info["bundle_dir"], expected_session_id=info["session_id"],
         ),
-        relay_session_id=RELAY,
+        capture_session_id=RELAY,
     )
 
 
@@ -442,12 +442,12 @@ async def test_a_receipt_that_changed_on_readback_refuses(real_store):
 async def test_a_record_carrying_a_store_owned_key_refuses(real_store):
     """F2: the strip is only exact while the store is the sole author.
 
-    ``read`` takes ``schema_version``/``relay_session_id`` back off because
+    ``read`` takes ``schema_version``/``capture_session_id`` back off because
     ``bank`` put them on. A record that arrived carrying one would lose it
     silently, so it is refused instead.
     """
     with pytest.raises(ValueError, match="must not carry"):
-        await real_store.bank({**_take(), "relay_session_id": "someone-else"})
+        await real_store.bank({**_take(), "capture_session_id": "someone-else"})
 
 
 async def test_a_take_without_an_id_is_refused(real_store):

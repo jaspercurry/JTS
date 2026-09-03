@@ -44,14 +44,14 @@ from jasper.active_speaker.crossover_v2.harmonic_evidence import (
     _scope_captures,
 )
 from jasper.attribution.session_identity import (
-    ALIAS_RELAY_SESSION_ID,
+    ALIAS_CAPTURE_SESSION_ID,
     read_session_identity,
 )
 from jasper.cli import project_ring as cli
 
 SR = 48000
 BUNDLE_ID = "d0eca8f5a24d"
-RELAY_ID = "wired-DBq7UPOcyyuJwCfWwQVOwA"
+CAPTURE_ID = "wired-DBq7UPOcyyuJwCfWwQVOwA"
 
 #: The fixture's takes: ``(take_id, phase, captured_at)``. The verify and the
 #: measure carry ISO stamps where the cloud positions carry float epochs, which
@@ -85,16 +85,16 @@ def _bundle(
     *,
     takes: tuple[tuple[str, str, object], ...] = _TAKES,
     session_id: str = BUNDLE_ID,
-    relay_id: str = RELAY_ID,
+    capture_id: str = CAPTURE_ID,
     bank_wavs: bool = True,
 ) -> Path:
     """One banked round, in the shape a wired round actually banks."""
     bundle = root / "bundle" / session_id
-    positions = bundle / f"evidence/v1/artifacts/crossover_v2/{relay_id}/positions"
+    positions = bundle / f"evidence/v1/artifacts/crossover_v2/{capture_id}/positions"
     positions.mkdir(parents=True, exist_ok=True)
     (bundle / "info.json").write_text(json.dumps({"session_id": session_id}))
 
-    programs = bundle / "crossover_v2" / relay_id
+    programs = bundle / "crossover_v2" / capture_id
     # One distinct program per phase, and its digest banked on the take the way
     # ``CaptureProvenance`` banks it: the feature reader binds a capture to the
     # program whose BYTES it heard, never to its phase label (#3504).
@@ -115,8 +115,8 @@ def _bundle(
                 "take_id": take_id,
                 "phase": phase,
                 "captured_at": captured_at,
-                "session_id": relay_id,
-                "relay_session_id": relay_id,
+                "session_id": capture_id,
+                "capture_session_id": capture_id,
                 "wav_path": wav_rel,
                 "wav_sha256": f"{index:064x}",
                 "diagnostic": {"epsilon_ppm": 1.0 + index, "linearity_ok": True},
@@ -239,7 +239,7 @@ def test_the_identity_is_the_bundle_id_with_the_relay_id_alongside(projection):
         identity = read_session_identity(json.loads(take.sidecar.read_text()))
         assert identity is not None
         assert identity.session_id == BUNDLE_ID
-        assert identity.aliases[ALIAS_RELAY_SESSION_ID] == RELAY_ID
+        assert identity.aliases[ALIAS_CAPTURE_SESSION_ID] == CAPTURE_ID
 
 
 def test_the_setup_calibration_id_is_stamped_only_when_supplied(tmp_path):
@@ -331,7 +331,7 @@ def test_a_wav_path_leaving_the_bundle_is_refused_not_followed(tmp_path):
     _write_wav(outside, seed=99)
     bundle = _bundle(tmp_path)
     record = next(
-        (bundle / "evidence/v1/artifacts/crossover_v2" / RELAY_ID / "positions").glob(
+        (bundle / "evidence/v1/artifacts/crossover_v2" / CAPTURE_ID / "positions").glob(
             "*.json"
         )
     )
@@ -377,7 +377,7 @@ def test_the_cli_projects_and_reports_json(tmp_path, capsys):
     assert code == cli.EXIT_OK
     payload = json.loads(capsys.readouterr().out)
     assert payload["session_id"] == BUNDLE_ID
-    assert payload["relay_session_id"] == RELAY_ID
+    assert payload["capture_session_id"] == CAPTURE_ID
     assert len(payload["projected"]) == len(_TAKES)
 
 

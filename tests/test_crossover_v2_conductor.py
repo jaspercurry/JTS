@@ -9,7 +9,7 @@ Fake-seam state walk per docs/historical/crossover-measurement-productization-de
 release on apply, session-death volume abandon, the needs_recovery gate (W2
 ruling), resume-skips-accepted-phases, and new-session-invalidates-evidence.
 All seams (playback, analysis, publish, apply gate/failure) are injected
-fakes — no relay, no DSP, no audio.
+fakes — no capture, no DSP, no audio.
 
 Owner ruling (2026-07-20): the conductor no longer waits for a human tap to
 observe apply — ``fakes.apply_done = True`` / ``fakes.apply_failed_code``
@@ -97,7 +97,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_CLOUD_GEOMETRY_LOCKED,
     REASON_LOCATE_FAILED,
     REASON_REGISTRY,
-    REASON_RELAY_TIMEOUT,
+    REASON_CAPTURE_TIMEOUT,
     TRANSIENT_AUTO_RETRY_CODES,
     locate_failed_diagnosis,
 )
@@ -722,7 +722,7 @@ def test_live_seam_refuses_a_claim_against_a_previous_measurement_journey():
             attempt_id="candidate-previous",
             metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
             provenance=PROVENANCE_REALIZED,
-            # A DIFFERENT relay session — the first tune's, not this one's.
+            # A DIFFERENT capture session — the first tune's, not this one's.
             sitting_id="first_tune_verify_session",
             integrity=AttemptIntegrity(comparable=True),
             grade_db=1.0,
@@ -903,7 +903,7 @@ def test_apply_gate_seam_releases_deferred_verify():
 
 def test_apply_failed_seam_refuses_the_deferred_verify_hold():
     """Owner ruling (2026-07-20): a TERMINAL auto-apply failure must not
-    strand the phone on the deferred hold toward a dishonest relay_timeout —
+    strand the phone on the deferred hold toward a dishonest capture_timeout —
     authorize_begin refuses outright with the real reason."""
     fakes = FakeSeams()
     c = _conductor(fakes)
@@ -2948,7 +2948,7 @@ def test_a_group_close_with_no_retained_measure_analysis_fails_honestly():
     MEASURE analysis behind them — the same-session ``hydrate`` branch.
 
     **Production cannot construct it.** ``prepare_v2_session`` hydrates
-    against a freshly MINTED relay session id, so ``snapshot.session_id ==
+    against a freshly MINTED capture session id, so ``snapshot.session_id ==
     session_id`` is never true there and hydrate always takes the
     fresh-start-at-CHECK branch (§5.6). This pins what happens if that ever
     stops being true: an honest raise (the host maps it to
@@ -4258,7 +4258,7 @@ def test_group_combine_failure_degrades_to_an_unknown_verdict(monkeypatch):
 
 def test_cloud_session_phases_and_resume_within_the_same_session():
     """§5.6 unchanged: a cloud group interrupted mid-way resumes only within the
-    SAME relay session. The session's own phase list rides the snapshot so a
+    SAME capture session. The session's own phase list rides the snapshot so a
     reader can tell a cloud session from a verify-only re-arm."""
     fakes = FakeSeams()
     c = _cloud_conductor(fakes)
@@ -4286,7 +4286,7 @@ def test_cloud_session_phases_and_resume_within_the_same_session():
     assert resumed.current_phase == PHASE_DONE
 
 
-def test_a_new_relay_session_invalidates_the_whole_cloud():
+def test_a_new_capture_session_invalidates_the_whole_cloud():
     """Mic position is unverifiable across sessions, so a fresh session restarts
     at CHECK — the cloud is evidence like any other phase, never an exception."""
     fakes = FakeSeams()
@@ -4470,7 +4470,7 @@ def test_capture_plan_index_phase_map_matches_the_emitted_entries():
         PHASE_CLOUD_VERIFY: "cloud_verify",
     }
     for entry in plan.entries:
-        # Entry indexes are 0-based; the relay's own index space is 1-based.
+        # Entry indexes are 0-based; the capture's own index space is 1-based.
         assert entry.kind_label == kind_for_phase[index_phase[entry.index + 1]]
 
 
@@ -8946,7 +8946,7 @@ def test_an_accountability_gate_no_longer_stamps_a_failure_code():
 
     This test used to assert the opposite — that item 1's refusal reached the
     household as ``driver_levels_disagree`` rather than as a manufactured
-    ``relay_timeout``. The realized-level demotion (doctrine deviation (i))
+    ``capture_timeout``. The realized-level demotion (doctrine deviation (i))
     removed the refusal, so the correct assertion is the inverse: the same
     fixture that used to raise now completes with no failure code stamped at
     all. Kept rather than deleted because ``last_failure_code`` staying ``None``
@@ -8977,7 +8977,7 @@ def test_an_accountability_gate_no_longer_stamps_a_failure_code():
         assert c.last_failure_code is None
         _run_phase(c, 2, 2)
     assert c.last_failure_code is None
-    assert c.last_failure_code != REASON_RELAY_TIMEOUT
+    assert c.last_failure_code != REASON_CAPTURE_TIMEOUT
 
 
 def test_the_accountability_reasons_are_gone_from_the_registry():

@@ -497,7 +497,7 @@ def normalized_placement_proof(
     *,
     policy_id: str,
     acknowledgement_binding: str,
-    relay_session_id: str,
+    capture_session_id: str,
     capture_page: Mapping[str, Any] | None,
     speaker_group_id: str,
     role: str,
@@ -513,11 +513,11 @@ def normalized_placement_proof(
         "schema_version": PLACEMENT_PROOF_SCHEMA_VERSION,
         "policy_id": policy_id,
         "accepted": True,
-        "confirmation_source": "relay_begin_capture",
+        "confirmation_source": "capture_begin",
         "acknowledgement_binding_sha256": hashlib.sha256(
             acknowledgement_binding.encode("utf-8")
         ).hexdigest(),
-        "relay_session_id": relay_session_id,
+        "capture_session_id": capture_session_id,
         "capture_protocol_version": page.get("capture_protocol_version"),
         "capture_page_build": page.get("capture_page_build"),
         "speaker_group_id": speaker_group_id,
@@ -592,14 +592,14 @@ def placement_proof_shape_valid(
         and proof.get("schema_version") == PLACEMENT_PROOF_SCHEMA_VERSION
         and proof.get("policy_id") == policy_id
         and proof.get("accepted") is True
-        and proof.get("confirmation_source") == "relay_begin_capture"
+        and proof.get("confirmation_source") == "capture_begin"
         and isinstance(proof.get("acknowledgement_binding_sha256"), str)
         and re.fullmatch(
             r"[0-9a-f]{64}",
             proof["acknowledgement_binding_sha256"],
         )
-        and isinstance(proof.get("relay_session_id"), str)
-        and proof.get("relay_session_id")
+        and isinstance(proof.get("capture_session_id"), str)
+        and proof.get("capture_session_id")
         and proof.get("capture_protocol_version")
         in PLACEMENT_PROOF_ACKNOWLEDGEMENT_CAPABLE_PROTOCOLS
         and isinstance(proof.get("capture_page_build"), str)

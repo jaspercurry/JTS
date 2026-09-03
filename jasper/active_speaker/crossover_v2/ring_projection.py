@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.attribution.session_identity import (
-    ALIAS_RELAY_SESSION_ID,
+    ALIAS_CAPTURE_SESSION_ID,
     SessionIdentity,
     SessionIdentityError,
     stamp_session_identity,
@@ -102,7 +102,7 @@ class RingProjection:
 
     dumps_dir: Path
     session_id: str
-    relay_session_id: str
+    capture_session_id: str
     projected: tuple[ProjectedTake, ...]
     skipped: tuple[SkippedTake, ...]
 
@@ -216,7 +216,7 @@ def project_ring(
                 _sidecar_document(
                     document,
                     session_id=session_id,
-                    relay_session_id=row.session_id,
+                    capture_session_id=row.session_id,
                     setup_calibration_id=setup_calibration_id,
                 ),
                 indent=1,
@@ -239,7 +239,7 @@ def project_ring(
     return RingProjection(
         dumps_dir=dumps_dir,
         session_id=session_id,
-        relay_session_id=round_dir.name,
+        capture_session_id=round_dir.name,
         projected=tuple(projected),
         skipped=tuple(skipped),
     )
@@ -287,7 +287,7 @@ def _sidecar_document(
     document: Mapping[str, Any],
     *,
     session_id: str,
-    relay_session_id: str,
+    capture_session_id: str,
     setup_calibration_id: str | None,
 ) -> dict[str, Any]:
     """The take record, plus the two fields the ring's layout carried.
@@ -298,7 +298,7 @@ def _sidecar_document(
     projected = dict(document)
     identity = SessionIdentity(session_id=session_id)
     try:
-        identity = identity.with_alias(ALIAS_RELAY_SESSION_ID, relay_session_id)
+        identity = identity.with_alias(ALIAS_CAPTURE_SESSION_ID, capture_session_id)
     except SessionIdentityError:
         # A relay id failing the identity charset is dropped rather than taking the
         # projection with it: the alias is an audit join, `session_id` is the scope.

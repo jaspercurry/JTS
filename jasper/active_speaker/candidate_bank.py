@@ -13,7 +13,7 @@ it too, resolving an already-known session id rather than searching.
 
 **One owner for the fingerprint SCAN.** The glob below describes the on-disk
 shape
-(``<bundle>/evidence/v1/artifacts/crossover_v2/<relay_session_id>/candidate.json``).
+(``<bundle>/evidence/v1/artifacts/crossover_v2/<capture_session_id>/candidate.json``).
 A second reader of that shape must read it from here rather than keep a copy,
 because a shape restated in two places drifts on the first layout change and
 both readers then disagree about what is missing.
@@ -99,7 +99,7 @@ class CandidateBankRefusal(LookupError):
 class BankedCandidate:
     """One banked candidate plus the identity needed to re-open it later.
 
-    ``bundle_session_id`` and ``relay_session_id`` together are the ONLY way
+    ``bundle_session_id`` and ``capture_session_id`` together are the ONLY way
     back to this artifact: the apply path rebuilds the path from a state's
     ``evidence.bundle_session_id`` and ``session_id``, so a republish that
     dropped either would publish a candidate whose artifact nothing can find.
@@ -107,7 +107,7 @@ class BankedCandidate:
 
     candidate: Any
     bundle_session_id: str
-    relay_session_id: str
+    capture_session_id: str
     path: Path
 
     @property
@@ -133,16 +133,16 @@ def candidate_artifact_paths(root: Path) -> list[Path]:
 
 
 def _identity_from_path(path: Path) -> tuple[str, str]:
-    """``(bundle_session_id, relay_session_id)`` for one artifact path.
+    """``(bundle_session_id, capture_session_id)`` for one artifact path.
 
     Positional rather than parsed: the glob fixes the depth, so the minting
     relay session is the artifact's own directory and the bundle is five levels
     above it.
     """
     parents = path.parents
-    relay_session_id = parents[0].name
+    capture_session_id = parents[0].name
     bundle_session_id = parents[5].name if len(parents) > 5 else ""
-    return bundle_session_id, relay_session_id
+    return bundle_session_id, capture_session_id
 
 
 def load_candidate_artifact(path: Path) -> Any | None:
@@ -199,15 +199,15 @@ def find_banked_candidate(
         verified += 1
         if str(candidate.fingerprint) != wanted:
             continue
-        bundle_session_id, relay_session_id = _identity_from_path(path)
-        if not bundle_session_id or not relay_session_id:
+        bundle_session_id, capture_session_id = _identity_from_path(path)
+        if not bundle_session_id or not capture_session_id:
             continue
         matches.setdefault(
-            (bundle_session_id, relay_session_id),
+            (bundle_session_id, capture_session_id),
             BankedCandidate(
                 candidate=candidate,
                 bundle_session_id=bundle_session_id,
-                relay_session_id=relay_session_id,
+                capture_session_id=capture_session_id,
                 path=path,
             ),
         )
@@ -233,7 +233,7 @@ def find_banked_candidate(
         "correction.crossover_v2_banked_candidate_found",
         candidate_fingerprint=found.fingerprint,
         bundle_session_id=found.bundle_session_id,
-        relay_session_id=found.relay_session_id,
+        capture_session_id=found.capture_session_id,
         examined=verified,
     )
     return found

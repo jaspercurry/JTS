@@ -557,7 +557,7 @@ def test_retained_position_is_recorded_in_the_bundle_it_was_written_into(
     ).hexdigest()
 
 
-def _retention_bundle(tmp_path, relay_session_id, *, provenance=None):
+def _retention_bundle(tmp_path, capture_session_id, *, provenance=None):
     """A real bundle, a real evidence store, and the seam bound over both."""
     from jasper.active_speaker.bundles import open_bundle
     from jasper.active_speaker.commissioning_evidence_store import (
@@ -578,7 +578,7 @@ def _retention_bundle(tmp_path, relay_session_id, *, provenance=None):
     )
     refs: dict = {}
     bank = v2host.bind_position_retention(
-        store, relay_session_id, refs, asyncio.run, provenance=provenance,
+        store, capture_session_id, refs, asyncio.run, provenance=provenance,
     )
     return bank, refs, bundle_dir, store
 
@@ -642,7 +642,7 @@ def test_an_entry_baseline_banks_under_the_take_id_its_own_record_names(tmp_path
     assert json.loads(banked[0].read_text())["take_id"] == record["take_id"]
 
 
-def _stage_seams_over(store, relay_session_id, refs, recorder):
+def _stage_seams_over(store, capture_session_id, refs, recorder):
     """One stage's REAL seams, bound the way production binds them.
 
     ``bind_v2_stage_seams`` is the single owner of which callable fills which
@@ -659,7 +659,7 @@ def _stage_seams_over(store, relay_session_id, refs, recorder):
         open_stage(STAGE_MEASURE_CAPABILITIES, index_phase_map={}),
         play=lambda *_a, **_kw: None,
         evidence_store=store,
-        relay_session_id=relay_session_id,
+        capture_session_id=capture_session_id,
         refs=refs,
         publish_check=lambda *_a, **_kw: None,
         publish_candidate=lambda *_a, **_kw: None,
@@ -922,7 +922,7 @@ def _analysis_double(epsilon_ppm=1.25):
 
 
 def _bank_one_analyzed_take(
-    tmp_path, monkeypatch, relay, *, report, epsilon_ppm=1.25, index=9,
+    tmp_path, monkeypatch, capture, *, report, epsilon_ppm=1.25, index=9,
 ):
     """Analyze one capture through the REAL seams, then bank it. Returns both.
 
@@ -957,8 +957,8 @@ def _bank_one_analyzed_take(
         pa_mod, "analyze_program_capture", _analyze_program_capture,
     )
 
-    _bank, refs, bundle_dir, store = _retention_bundle(tmp_path, relay)
-    seams = _stage_seams_over(store, relay, refs, CaptureProvenanceRecorder())
+    _bank, refs, bundle_dir, store = _retention_bundle(tmp_path, capture)
+    seams = _stage_seams_over(store, capture, refs, CaptureProvenanceRecorder())
     result = _FakeResult(capture_integrity=report)
     # One quantum short of what the page declared: the host's count is the
     # WAV's own, so the ledger below reconciles two real numbers.
@@ -974,7 +974,7 @@ def _bank_one_analyzed_take(
     assert seams.bank_take(WiredCaptureAnswer(wav=b"analyzed-bytes"), record)
     banked = json.loads(
         (bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
-         / relay / "positions" / f"{record['take_id']}.json").read_text()
+         / capture / "positions" / f"{record['take_id']}.json").read_text()
     )
     return banked, analysis
 
@@ -1357,7 +1357,7 @@ def test_cloud_publisher_writes_one_artifact_per_group_through_the_real_store(
         (artifacts_dir / f"{PHASE_CLOUD_MEASURE}.json").read_text()
     )
     assert measure_on_disk["kind"] == "jts_crossover_v2_cloud_evidence"
-    assert measure_on_disk["relay_session_id"] == "cap_cloud_session"
+    assert measure_on_disk["capture_session_id"] == "cap_cloud_session"
     assert measure_on_disk["phase"] == PHASE_CLOUD_MEASURE
     assert measure_on_disk["geometry"]["locked"] is True
     assert measure_on_disk["null_registry"]["classification"] == "position_invariant"
@@ -5827,7 +5827,7 @@ def _probe_bind_production_play_config_dir(monkeypatch, tmp_path) -> dict[str, A
         run_async=asyncio.run,
         camilla_factory=lambda: object(),
         evidence_store=_FakeEvidenceStore(),
-        relay_session_id="cap_config_dir_probe",
+        capture_session_id="cap_config_dir_probe",
         topology=object(),
         preset=object(),
         role_channels={"woofer": 0, "tweeter": 1},
@@ -5935,7 +5935,7 @@ def test_cloud_measure_play_also_persists_canonical_summed_program_wav(
         run_async=asyncio.run,
         camilla_factory=lambda: object(),
         evidence_store=_FakeEvidenceStore(),
-        relay_session_id="cap_verify_persist_probe",
+        capture_session_id="cap_verify_persist_probe",
         topology=object(),
         preset=object(),
         role_channels={"woofer": 0, "tweeter": 1},
@@ -6001,7 +6001,7 @@ def test_verify_play_does_not_overwrite_existing_summed_program_wav(
         run_async=asyncio.run,
         camilla_factory=lambda: object(),
         evidence_store=_FakeEvidenceStore(),
-        relay_session_id="cap_verify_no_clobber_probe",
+        capture_session_id="cap_verify_no_clobber_probe",
         topology=object(),
         preset=object(),
         role_channels={"woofer": 0, "tweeter": 1},
@@ -6061,7 +6061,7 @@ def test_summed_program_wav_persist_failure_is_best_effort(monkeypatch, tmp_path
         run_async=asyncio.run,
         camilla_factory=lambda: object(),
         evidence_store=_FakeEvidenceStore(),
-        relay_session_id="cap_summed_persist_fails_probe",
+        capture_session_id="cap_summed_persist_fails_probe",
         topology=object(),
         preset=object(),
         role_channels={"woofer": 0, "tweeter": 1},

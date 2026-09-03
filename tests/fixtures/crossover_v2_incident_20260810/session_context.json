@@ -16,8 +16,8 @@
       "measure_sidecar.json": "514a5ae018a9f929e1bc5a2b9699b678cdb13612030f74de3d346623aeb33a11"
     },
     "speaker_build_sha": "9cc41b987",
-    "stage1_relay_session_id": "cap_OqlWdywQv9ZlWO7RqkZpSQ",
-    "stage2_relay_session_id": "cap_VlE2sNj8v5ego--UqbNDUQ"
+    "stage1_capture_session_id": "cap_OqlWdywQv9ZlWO7RqkZpSQ",
+    "stage2_capture_session_id": "cap_VlE2sNj8v5ego--UqbNDUQ"
   },
   "bundle_session_id": "f007c0b191a8",
   "capture_context": {

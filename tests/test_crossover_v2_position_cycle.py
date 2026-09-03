@@ -142,20 +142,20 @@ def _record(
 _BANKED_ARTIFACTS = "evidence/v1/artifacts/crossover_v2"
 
 
-def _bank(root: Path, records, *, relay: str = "relay-1") -> Path:
+def _bank(root: Path, records, *, capture: str = "relay-1") -> Path:
     """A banked round: the bundle tree ``bank-crossover-round.sh`` untars.
 
     ``<round>/bundle/<session>/evidence/v1/artifacts/crossover_v2/<relay>/positions/``
     — the same tree ``test_active_speaker_crossover_v2_round_views``'s
     ``_make_round_dir`` builds, because both model one bank's output.
     """
-    positions = root / "bundle" / "sess-1" / _BANKED_ARTIFACTS / relay / "positions"
+    positions = root / "bundle" / "sess-1" / _BANKED_ARTIFACTS / capture / "positions"
     positions.mkdir(parents=True, exist_ok=True)
     for record in records:
         payload = {
             "schema_version": 1,
             "kind": POSITION_EVIDENCE_KIND,
-            "relay_session_id": relay,
+            "capture_session_id": capture,
             **record,
         }
         (positions / f"{record['take_id']}.json").write_text(json.dumps(payload))
@@ -264,7 +264,7 @@ def test_the_clouds_positions_are_not_takes_of_this_walk(tmp_path):
     positions = tmp_path / "bundle/sess-1" / _BANKED_ARTIFACTS / "relay-1/positions"
     (positions / "cloud_02_a01.json").write_text(json.dumps({
         "schema_version": 1, "kind": POSITION_EVIDENCE_KIND,
-        "relay_session_id": "relay-1", "phase": "cloud_measure",
+        "capture_session_id": "relay-1", "phase": "cloud_measure",
         "index": 2, "attempt": 1, "take_id": "cloud_02_a01",
     }))
 
@@ -313,8 +313,8 @@ def test_one_corrupt_sidecar_does_not_cost_the_index_the_takes_that_are_fine(
 
 
 def test_takes_from_two_relay_sessions_name_both_sources(tmp_path):
-    _bank(tmp_path, [_record(1, 0)], relay="relay-1")
-    _bank(tmp_path, [_record(2, 7)], relay="relay-2")
+    _bank(tmp_path, [_record(1, 0)], capture="relay-1")
+    _bank(tmp_path, [_record(2, 7)], capture="relay-2")
 
     document = position_cycle_document(tmp_path, derived_at=STAMP)
 
@@ -437,7 +437,7 @@ def test_the_glob_matches_a_record_the_REAL_store_wrote(tmp_path):
     So this one publishes through the REAL store, copies the bundle exactly as
     ``bank-crossover-round.sh`` untars it, and derives from the result. If either
     side of the layout moves — the store's root, its ``artifacts/`` namespace, or
-    the ``crossover_v2/{relay}/positions/{take_id}.json`` shape the web host
+    the ``crossover_v2/{capture}/positions/{take_id}.json`` shape the web host
     passes — this fails instead of the derivation silently globbing nothing.
     """
     import shutil
@@ -458,15 +458,15 @@ def test_the_glob_matches_a_record_the_REAL_store_wrote(tmp_path):
         info["bundle_dir"], expected_session_id=info["session_id"],
     )
 
-    relay, record = "cap1", _record(1, 7)
+    capture, record = "cap1", _record(1, 7)
     # The EXACT write ``record_store.BankedRecordStore.bank`` makes for a
     # position take — same relative path expression, same envelope.
     store.publish_json_artifact(
-        f"crossover_v2/{relay}/positions/{record['take_id']}.json",
+        f"crossover_v2/{capture}/positions/{record['take_id']}.json",
         {
             "schema_version": 1,
             "kind": POSITION_EVIDENCE_KIND,
-            "relay_session_id": relay,
+            "capture_session_id": capture,
             **record,
         },
     )
@@ -481,7 +481,7 @@ def test_the_glob_matches_a_record_the_REAL_store_wrote(tmp_path):
     assert [take["take_id"] for take in document["takes"]] == [record["take_id"]]
     assert document["takes"][0]["position_deg"] == 7
     assert document["sources"] == [
-        f"bundle/{bundle_dir.name}/{_BANKED_ARTIFACTS}/{relay}/positions"
+        f"bundle/{bundle_dir.name}/{_BANKED_ARTIFACTS}/{capture}/positions"
     ]
 
 
@@ -516,13 +516,13 @@ def test_the_evidence_packet_finds_a_record_the_REAL_store_wrote(tmp_path):
     store = CommissioningEvidenceStore.open(
         info["bundle_dir"], expected_session_id=info["session_id"],
     )
-    relay, record = "cap1", _record(1, -22)
+    capture, record = "cap1", _record(1, -22)
     store.publish_json_artifact(
-        f"crossover_v2/{relay}/positions/{record['take_id']}.json",
+        f"crossover_v2/{capture}/positions/{record['take_id']}.json",
         {
             "schema_version": 1,
             "kind": POSITION_EVIDENCE_KIND,
-            "relay_session_id": relay,
+            "capture_session_id": capture,
             **record,
         },
     )

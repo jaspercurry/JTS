@@ -896,7 +896,7 @@ one round's bundle and another round's state and the drive comes out several dB
 wrong with 5/5 fidelity, zero refusals and an authoritative-looking scope block —
 the two ids live in different namespaces and no banked artifact maps between
 them. So pass the `--state` from the same round as the `<bundle-dir>`, and if a
-drive figure looks wrong for the box check `program.state_relay_session_id` in
+drive figure looks wrong for the box check `program.state_capture_session_id` in
 the artifact against the round you meant.
 
 **Rows are per (capture, role) and are deliberately not merged.** A MEASURE

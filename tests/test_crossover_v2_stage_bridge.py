@@ -389,7 +389,7 @@ def _production_host_seams(monkeypatch, tmp_path):
 # What the stubbed mint hands back as the session id. Both stages bind their
 # conductor to whatever the mint returned, so this is the id the persist
 # rebinds to — deliberately not the seeded stage-1 one.
-_MINTED_RELAY_SESSION_ID = "cap_minted_by_this_stage"
+_MINTED_CAPTURE_SESSION_ID = "cap_minted_by_this_stage"
 
 
 def _open_prepared(monkeypatch, prepared: Any) -> tuple[Any, dict[str, Any]]:
@@ -406,7 +406,7 @@ def _open_prepared(monkeypatch, prepared: Any) -> tuple[Any, dict[str, Any]]:
 
     def _fake_mint(_device, spec):
         return SimpleNamespace(
-            pi_session=SimpleNamespace(session_id=_MINTED_RELAY_SESSION_ID), spec=spec,
+            pi_session=SimpleNamespace(session_id=_MINTED_CAPTURE_SESSION_ID), spec=spec,
         )
 
     def _fake_runner(conductor, **_kwargs):
@@ -618,7 +618,7 @@ def test_each_stage_binds_its_own_sessions_check_publisher(
     )
 
     (relpath, payload), = store.published
-    assert relpath == f"crossover_v2/{_MINTED_RELAY_SESSION_ID}/check.json"
+    assert relpath == f"crossover_v2/{_MINTED_CAPTURE_SESSION_ID}/check.json"
     assert payload["gain_plan_db"] == {"woofer": -11.0}
 
 
@@ -1879,8 +1879,8 @@ def test_stage_2_persist_does_not_regress_the_stage_1_facts(monkeypatch):
     # The minted id from the relay, not the measuring session's — the rebind
     # is the write this test is about, so name the value rather than assert an
     # inequality the fixture guarantees on its own.
-    assert state["session_id"] == _MINTED_RELAY_SESSION_ID
-    assert seeded["session_id"] != _MINTED_RELAY_SESSION_ID
+    assert state["session_id"] == _MINTED_CAPTURE_SESSION_ID
+    assert seeded["session_id"] != _MINTED_CAPTURE_SESSION_ID
     assert state["applied"] is True
     assert state["candidate"]["fingerprint"] == "fp-stage-1"
     assert state["gain_plan_db"] == {"woofer": -3.0, "tweeter": -6.0}
@@ -2344,7 +2344,7 @@ def test_the_real_preparer_builds_a_session_over_the_five_seams(monkeypatch):
     captured = _session_from_real_open(monkeypatch, fakes)
     session = captured["tuning"]
 
-    assert session.session_id == _MINTED_RELAY_SESSION_ID
+    assert session.session_id == _MINTED_CAPTURE_SESSION_ID
     # ONE declared level, shared with the conductor the same _open() built.
     assert session.measurement_level_db == captured["conductor"]._session_volume_db
     assert session.measurement_level_db < 0.0, "the hearing clamp is never relaxed"

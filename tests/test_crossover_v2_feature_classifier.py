@@ -1418,7 +1418,7 @@ def test_no_lateral_poses_reads_as_not_run(peak_artifact):
 
 def _bank_lateral_pose(
     bundle: Path, *, take_id: str, position_deg: int, curves: list[dict],
-    vertical_deg: int = 0, relay: str = "wired-TEST",
+    vertical_deg: int = 0, capture: str = "wired-TEST",
 ) -> None:
     """Directly write a banked ``positions/<take_id>.json`` -- the exact
     fields :func:`~jasper.active_speaker.crossover_v2.record_index.bundle_measurements`
@@ -1428,7 +1428,7 @@ def _bank_lateral_pose(
     from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 
     positions_dir = (
-        bundle / "evidence/v1/artifacts/crossover_v2" / relay / "positions"
+        bundle / "evidence/v1/artifacts/crossover_v2" / capture / "positions"
     )
     positions_dir.mkdir(parents=True, exist_ok=True)
     (positions_dir / f"{take_id}.json").write_text(

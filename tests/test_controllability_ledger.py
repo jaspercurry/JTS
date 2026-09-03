@@ -59,9 +59,9 @@ def _receipt(
     return receipt
 
 
-def _bank(root: Path, bundle: str, relay: str, receipt: dict | str) -> None:
+def _bank(root: Path, bundle: str, capture: str, receipt: dict | str) -> None:
     """File one receipt where the store puts it."""
-    round_dir = root / bundle / "evidence/v1/artifacts/crossover_v2" / relay
+    round_dir = root / bundle / "evidence/v1/artifacts/crossover_v2" / capture
     round_dir.mkdir(parents=True, exist_ok=True)
     path = round_dir / "round_receipt.json"
     path.write_text(

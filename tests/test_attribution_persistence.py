@@ -136,9 +136,9 @@ def test_a_finding_round_trips_through_the_real_evidence_store(tmp_path: Path) -
     )
 
     publish_finding_set(
-        store, relay_session_id=RELAY, phase=PHASE, finding_set=built
+        store, capture_session_id=RELAY, phase=PHASE, finding_set=built
     )
-    reopened = read_finding_set(store, relay_session_id=RELAY, phase=PHASE)
+    reopened = read_finding_set(store, capture_session_id=RELAY, phase=PHASE)
 
     assert reopened == built
 
@@ -160,7 +160,7 @@ def test_a_finding_does_not_outlive_the_bundle_that_holds_its_evidence(
     identity, cite = _seed_evidence(store)
     publish_finding_set(
         store,
-        relay_session_id=RELAY,
+        capture_session_id=RELAY,
         phase=PHASE,
         finding_set=FindingSet(
             session=identity, produced_by=PRODUCED_BY, findings=(_finding(cite),)
@@ -192,7 +192,7 @@ def test_bundle_eviction_takes_findings_and_evidence_together(
     identity, cite = _seed_evidence(store)
     publish_finding_set(
         store,
-        relay_session_id=RELAY,
+        capture_session_id=RELAY,
         phase=PHASE,
         finding_set=FindingSet(
             session=identity, produced_by=PRODUCED_BY, findings=(_finding(cite),)
@@ -222,7 +222,7 @@ def test_a_finding_may_not_silently_predecease_its_evidence(
     identity, cite = _seed_evidence(store)
     publish_finding_set(
         store,
-        relay_session_id=RELAY,
+        capture_session_id=RELAY,
         phase=PHASE,
         finding_set=FindingSet(
             session=identity, produced_by=PRODUCED_BY, findings=(_finding(cite),)
@@ -232,11 +232,11 @@ def test_a_finding_may_not_silently_predecease_its_evidence(
     (bundle_dir / cite.locator).unlink()
 
     with pytest.raises(FindingEvidenceMissing, match="no longer produce"):
-        read_finding_set(store, relay_session_id=RELAY, phase=PHASE)
+        read_finding_set(store, capture_session_id=RELAY, phase=PHASE)
     # An explicit opt-out still exists for a caller that wants the record
     # without its support — but it has to ask.
     assert read_finding_set(
-        store, relay_session_id=RELAY, phase=PHASE, verify_evidence=False
+        store, capture_session_id=RELAY, phase=PHASE, verify_evidence=False
     ) is not None
 
 
@@ -254,7 +254,7 @@ def test_altered_evidence_is_as_loud_as_missing_evidence(tmp_path: Path) -> None
     )
     publish_finding_set(
         store,
-        relay_session_id=RELAY,
+        capture_session_id=RELAY,
         phase=PHASE,
         finding_set=FindingSet(
             session=identity,
@@ -264,7 +264,7 @@ def test_altered_evidence_is_as_loud_as_missing_evidence(tmp_path: Path) -> None
     )
 
     with pytest.raises(FindingEvidenceMissing, match="but the bundle now holds"):
-        read_finding_set(store, relay_session_id=RELAY, phase=PHASE)
+        read_finding_set(store, capture_session_id=RELAY, phase=PHASE)
 
 
 # --------------------------------------------------------------------------- #
@@ -279,7 +279,7 @@ def test_a_bundle_written_before_attribution_stays_readable(tmp_path: Path) -> N
     store, _ = _open_store(tmp_path)
     _seed_evidence(store)
 
-    assert read_finding_set(store, relay_session_id=RELAY, phase=PHASE) is None
+    assert read_finding_set(store, capture_session_id=RELAY, phase=PHASE) is None
 
 
 def test_ran_and_found_nothing_is_not_the_same_as_nobody_looked(
@@ -292,16 +292,16 @@ def test_ran_and_found_nothing_is_not_the_same_as_nobody_looked(
     store, _ = _open_store(tmp_path)
     identity, _cite = _seed_evidence(store)
 
-    assert read_finding_set(store, relay_session_id=RELAY, phase=PHASE) is None
+    assert read_finding_set(store, capture_session_id=RELAY, phase=PHASE) is None
     publish_finding_set(
         store,
-        relay_session_id=RELAY,
+        capture_session_id=RELAY,
         phase=PHASE,
         finding_set=FindingSet(
             session=identity, produced_by=PRODUCED_BY, findings=()
         ),
     )
-    empty = read_finding_set(store, relay_session_id=RELAY, phase=PHASE)
+    empty = read_finding_set(store, capture_session_id=RELAY, phase=PHASE)
 
     assert empty is not None
     assert empty.findings == ()
@@ -318,7 +318,7 @@ def test_a_corrupt_record_is_a_failure_not_a_legacy_bundle(tmp_path: Path) -> No
     path.write_text('{"schema":"jts_attribution_finding_set/1"}', encoding="utf-8")
 
     with pytest.raises(FindingStorageError):
-        read_finding_set(store, relay_session_id=RELAY, phase=PHASE)
+        read_finding_set(store, capture_session_id=RELAY, phase=PHASE)
 
 
 def test_findings_inherit_the_bundle_s_group_readable_mode(tmp_path: Path) -> None:
@@ -332,7 +332,7 @@ def test_findings_inherit_the_bundle_s_group_readable_mode(tmp_path: Path) -> No
     identity, cite = _seed_evidence(store)
     publish_finding_set(
         store,
-        relay_session_id=RELAY,
+        capture_session_id=RELAY,
         phase=PHASE,
         finding_set=FindingSet(
             session=identity, produced_by=PRODUCED_BY, findings=(_finding(cite),)
@@ -852,9 +852,9 @@ def test_the_cloud_artifact_and_its_findings_share_one_identity(
     cloud_identity = read_session_identity(cloud)
     assert cloud_identity is not None
     assert cloud_identity.session_id == store.session_id
-    assert cloud_identity.aliases["relay_session_id"] == RELAY
+    assert cloud_identity.aliases["capture_session_id"] == RELAY
 
-    findings = read_finding_set(store, relay_session_id=RELAY, phase=PHASE)
+    findings = read_finding_set(store, capture_session_id=RELAY, phase=PHASE)
     assert findings is not None
     assert findings.session == cloud_identity
 
@@ -875,7 +875,7 @@ def test_the_live_seam_promotes_carve_outs_and_cites_the_cloud_artifact(
         PHASE, {"available": True, "carve_outs": _carve_outs()}
     )
 
-    findings = read_finding_set(store, relay_session_id=RELAY, phase=PHASE)
+    findings = read_finding_set(store, capture_session_id=RELAY, phase=PHASE)
     assert findings is not None
     assert [f.mechanism for f in findings.findings] == ["M2"]
     assert findings.findings[0].confidence == "unsure"
@@ -903,7 +903,7 @@ def test_a_findings_failure_never_fails_the_cloud_publish(tmp_path: Path) -> Non
     )
 
     assert refs["cloud_artifacts"][PHASE]
-    empty = read_finding_set(store, relay_session_id=RELAY, phase=PHASE)
+    empty = read_finding_set(store, capture_session_id=RELAY, phase=PHASE)
     assert empty is not None and empty.findings == ()
 
 
@@ -971,7 +971,7 @@ def test_the_banked_frame_finding_lands_in_the_bundle_and_reopens(
     _publish_candidate_artifact(store)
     v2host.bind_findings_publisher(store, RELAY, refs)(_LEVEL_FRAME_RECORD)
 
-    findings = read_finding_set(store, relay_session_id=RELAY, phase="measure")
+    findings = read_finding_set(store, capture_session_id=RELAY, phase="measure")
     assert findings is not None
     assert [f.mechanism for f in findings.findings] == ["M7"]
     finding = findings.findings[0]
@@ -1011,8 +1011,8 @@ def test_the_frame_finding_takes_its_own_phase_so_the_cloud_set_survives(
     _publish_candidate_artifact(store)
     v2host.bind_findings_publisher(store, RELAY, refs)(_LEVEL_FRAME_RECORD)
 
-    cloud_set = read_finding_set(store, relay_session_id=RELAY, phase=PHASE)
-    frame_set = read_finding_set(store, relay_session_id=RELAY, phase="measure")
+    cloud_set = read_finding_set(store, capture_session_id=RELAY, phase=PHASE)
+    frame_set = read_finding_set(store, capture_session_id=RELAY, phase="measure")
     assert cloud_set is not None and frame_set is not None
     assert [f.mechanism for f in cloud_set.findings] == ["M2"]
     assert [f.mechanism for f in frame_set.findings] == ["M7"]
@@ -1040,7 +1040,7 @@ def test_a_frame_finding_failure_never_costs_the_session(tmp_path: Path) -> None
     refs: dict = {}
     # (a) no candidate artifact to cite.
     v2host.bind_findings_publisher(store, RELAY, refs)(_LEVEL_FRAME_RECORD)
-    assert read_finding_set(store, relay_session_id=RELAY, phase="measure") is None
+    assert read_finding_set(store, capture_session_id=RELAY, phase="measure") is None
     assert "finding_artifacts" not in refs
 
     # (b) a record promotion cannot read.
@@ -1048,7 +1048,7 @@ def test_a_frame_finding_failure_never_costs_the_session(tmp_path: Path) -> None
     v2host.bind_findings_publisher(store, RELAY, refs)(
         {**_LEVEL_FRAME_RECORD, "f_hi_hz": None}
     )
-    assert read_finding_set(store, relay_session_id=RELAY, phase="measure") is None
+    assert read_finding_set(store, capture_session_id=RELAY, phase="measure") is None
     assert "finding_artifacts" not in refs
 
 
@@ -1114,7 +1114,7 @@ def test_a_carve_out_set_is_recorded_but_never_projected(tmp_path: Path) -> None
         PHASE, {"available": True, "carve_outs": _carve_outs()}
     )
     # Recorded — the durable finding set exists and reopens.
-    banked = read_finding_set(store, relay_session_id=RELAY, phase=PHASE)
+    banked = read_finding_set(store, capture_session_id=RELAY, phase=PHASE)
     assert banked is not None and [f.mechanism for f in banked.findings] == ["M2"]
     # …and NOT on the household wire.
     assert v2host.FINDING_HOUSEHOLD_REFS_KEY not in refs
@@ -1148,11 +1148,11 @@ def test_a_finding_whose_evidence_vanished_is_never_projected(
         / "evidence" / "v1" / "artifacts" / "crossover_v2" / RELAY / "candidate.json"
     ).unlink()
     with pytest.raises(FindingEvidenceMissing):
-        read_finding_set(store, relay_session_id=RELAY, phase="measure")
+        read_finding_set(store, capture_session_id=RELAY, phase="measure")
 
     fresh: dict = {}
     v2host._bank_household_findings(
-        store, relay_session_id=RELAY, phase="measure", refs=fresh,
+        store, capture_session_id=RELAY, phase="measure", refs=fresh,
     )
     assert fresh == {}
     assert bundle.exists()
@@ -1173,7 +1173,7 @@ def test_a_missing_finding_set_projects_nothing_rather_than_an_empty_claim(
     store, _ = _open_store(tmp_path)
     refs: dict = {}
     v2host._bank_household_findings(
-        store, relay_session_id=RELAY, phase="measure", refs=refs,
+        store, capture_session_id=RELAY, phase="measure", refs=refs,
     )
     assert refs == {}
 

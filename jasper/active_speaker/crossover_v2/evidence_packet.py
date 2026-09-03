@@ -2798,13 +2798,13 @@ def build_crossover_evidence_packet(
         },
         "session": {
             "bundle_session_id": info_raw.get("session_id"),
-            "relay_session_id": round_dir.name,
+            "capture_session_id": round_dir.name,
             "state": info_raw.get("state"),
             "started_at": info_raw.get("started_at"),
             "round_id": receipt.get("round_id"),
             "declared_geometry": _declared_geometry_block(declared_geometry_path),
             "note": (
-                "bundle_session_id and relay_session_id are different id "
+                "bundle_session_id and capture_session_id are different id "
                 "namespaces; the round artifacts are filed under the relay id"
             ),
         },

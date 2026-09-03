@@ -179,7 +179,7 @@ def _open_round(
         Path(str(info["bundle_dir"])), expected_session_id=str(info["session_id"]),
     )
     return round_dir, BankedRecordStore(
-        evidence=store, relay_session_id=_RELAY_SESSION_ID,
+        evidence=store, capture_session_id=_RELAY_SESSION_ID,
     ), str(info["session_id"])
 
 

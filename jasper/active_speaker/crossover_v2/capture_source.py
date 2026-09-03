@@ -45,7 +45,7 @@ accident:
   **bundle** session id stays canonical — the bundle is the retention unit —
   and the provider's id rides as an alias
   (``jasper.web.correction_crossover_v2.v2_session_identity``, alias key
-  ``ALIAS_RELAY_SESSION_ID``).
+  ``ALIAS_CAPTURE_SESSION_ID``).
 * **The host owns the persisted-code mapping.** What crosses the seam when a
   session dies is the flow's own reason vocabulary (``REASON_USER_STOPPED``,
   … — :mod:`.refusal_copy` and the flow's ``REASON_REGISTRY``), never a

@@ -770,7 +770,7 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
                 records=_CaptureAnnotatedStore(
                     inner=BankedRecordStore(
                         evidence=store,
-                        relay_session_id=session_id,
+                        capture_session_id=session_id,
                     ),
                     capture=capture,
                 ),
