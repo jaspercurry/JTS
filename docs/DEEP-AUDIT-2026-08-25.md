@@ -94,7 +94,7 @@ Each item below survived adversarial re-reading; LOC figures are the *verifier's
 > delete either; see merged
 > [PR #2970](https://github.com/jaspercurry/JTS/pull/2970).
 
-Also verified dead but leave-in-place unless already editing: `rust/jasper-host-clock` `ObsMode::Fill` machinery (~150, `rust-misc-0#0`), `wake_fusion.py`'s inert threshold-offset seam (74 lines, has a documented future consumer).
+Also verified dead but leave-in-place unless already editing: `wake_fusion.py`'s inert threshold-offset seam (74 lines, has a documented future consumer). The `rust/jasper-host-clock` `ObsMode::Fill` machinery listed here (`rust-misc-0#0`) has since been deleted.
 
 ### 4.2 Over-engineering — verified right-sizing (~9–12K non-census lines)
 

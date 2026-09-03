@@ -153,30 +153,13 @@ pub const L2_SUSTAIN_TICKS: u32 = 10;
 /// forever. It only bites for `probe_ppm < 200`.
 pub const L2_SLOPE_FLOOR_PPM: f64 = 100.0;
 
-/// Anti-windup threshold on the outer DLL, in FRAMES. When the total commanded
-/// bias is railed at the ±[`MAX_BIAS_PPM`] clamp and the DLL's integrator is
-/// demanding correction in the WRONG direction relative to the current fill
-/// error (a post-transient windup: `z2 + z3` accumulated past the actuator's
-/// authority and now points away from the target), reset the DLL and re-apply
-/// the current error so the first bounded output points back toward target.
-/// Mirrors `jasper_resampler::RateController::is_wound_against_error`
-/// (threshold = half a period there); half of one 256-frame period ≈ 128
-/// frames is the same "the error is genuinely non-trivial" gate.
-pub const ANTI_WINDUP_THRESHOLD_FRAMES: f64 = 128.0;
-
-/// CORRECTION-mode outer-loop integral gain (ppm of command per ppm of smoothed
-/// correction error, per 1 s tick). CORRECTION mode does **not** use the outer
-/// DLL as its control law — the plant is structurally different from FILL mode
-/// and the DLL's constants are wrong for it. In FILL mode the
-/// plant is an INTEGRATOR (a rate command sets the gadget-fill *slope*, so the
-/// error the DLL sees is a slowly-ramping frame count); the DLL's own
-/// integrators plus that plant integrator is the well-behaved cascade the module
-/// docs describe. In CORRECTION mode the plant is instead **near-unity DC gain
-/// through the inner resampler's lag** (a ppm command becomes, after the inner
-/// `RateController` settles, ~the same ppm of correction — ppm→ppm, no
-/// integrator). Driving that unity-gain-plus-lag plant with the FILL-tuned
-/// third-order DLL puts loop gain > 1 past 180° of phase (inner lag at its
-/// 0.016 Hz locked floor τ≈10 s + the 0.3-α estimator + 1 s sampling + host
+/// Outer-loop integral gain (ppm of command per ppm of smoothed correction
+/// error, per 1 s tick). The outer control law is deliberately NOT a DLL: the
+/// plant is **near-unity DC gain through the inner resampler's lag** (a ppm
+/// command becomes, after the inner `RateController` settles, ~the same ppm of
+/// correction — ppm→ppm, no integrator). Driving that unity-gain-plus-lag plant
+/// with a third-order DLL puts loop gain > 1 past 180° of phase (inner lag at
+/// its 0.016 Hz locked floor τ≈10 s + the 0.3-α estimator + 1 s sampling + host
 /// application lag), so it limit-cycles (a compliant Mac at +20 ppm rails
 /// correction ±460 ppm on a ~21 s period).
 ///
@@ -198,21 +181,16 @@ pub const CORRECTION_INTEGRAL_GAIN: f64 = 0.05;
 // strictly positive (a zero/negative gain would freeze or reverse the trim).
 const _: () = assert!(CORRECTION_INTEGRAL_GAIN > 0.0 && CORRECTION_INTEGRAL_GAIN <= 0.1);
 
-/// CORRECTION-mode probe step-phase duration, in seconds — LONGER than FILL
-/// mode's `probe_step_secs` because the observable is slower to respond.
+/// Probe step-phase duration, in seconds.
 ///
-/// The probe reads how far the observable MOVES under a pitch step. In FILL mode
-/// the observable is the gadget-fill slope, which responds within a couple of
-/// seconds (the fill starts diverging the instant the host rate changes). In
-/// CORRECTION mode the observable is the INNER resampler's correction ppm, which
-/// only moves as fast as that inner spa_dll loop can slew — and at its locked
-/// floor (bw = 0.016 Hz, τ ≈ 10 s) that is much slower. Measured against the real
-/// inner loop: a 6 s step window reads a compliant −250 ppm
-/// host at response_ratio ≈ +0.16 (FAIL — the inner correction has only slewed a
-/// fraction of the way), but a 15 s window reads it at +0.84 (PASS), and the mid-
-/// range stays ≥ +0.84 out to ±250 ppm. So the CORRECTION probe holds the step
-/// for this fixed longer window regardless of `probe_step_secs`. FILL mode is
-/// hardware-validated at 6 s. Fixed, not env-tunable.
+/// The probe reads how far the observable MOVES under a pitch step. The
+/// observable is the INNER resampler's correction ppm, which only moves as fast
+/// as that inner spa_dll loop can slew — and at its locked floor (bw = 0.016 Hz,
+/// τ ≈ 10 s) that is slow. Measured against the real inner loop: a 6 s step
+/// window reads a compliant −250 ppm host at response_ratio ≈ +0.16 (FAIL — the
+/// inner correction has only slewed a fraction of the way), but a 15 s window
+/// reads it at +0.84 (PASS), and the mid-range stays ≥ +0.84 out to ±250 ppm.
+/// Fixed, not env-tunable.
 pub const CORRECTION_PROBE_STEP_SECS: u64 = 15;
 
 /// CORRECTION-mode probe: how far the baseline observable must be from zero (in
@@ -234,56 +212,43 @@ pub const CORRECTION_PROBE_STEP_SECS: u64 = 15;
 /// The verdict then normalizes by the SIGNED step actually applied, so compliant
 /// → +1 in either direction. This deadband keeps the default `+probe_ppm` step for
 /// near-zero baselines (the common Mac case) and only flips direction when the
-/// baseline is genuinely near a rail. FILL mode is unaffected (always `+probe_ppm`).
+/// baseline is genuinely near a rail.
 pub const CORRECTION_PROBE_FLIP_DEADBAND_PPM: f64 = 150.0;
 
-// The outer DLL's loop timescale (FILL mode only). `period / rate` is the DLL's
-// per-update timescale in seconds; with a 1 s tick and this period/rate the
-// effective bandwidth is `BW_MIN × (period/rate) / T_tick = 0.016 × 0.1 / 1 =
-// 0.0016 Hz`.
+// The outer DLL's loop timescale. `period / rate` is the DLL's per-update
+// timescale in seconds; with a 1 s tick and this period/rate the effective
+// bandwidth is `BW_MIN × (period/rate) / T_tick = 0.016 × 0.1 / 1 = 0.0016
+// Hz`. The DLL itself is not ticked by the live control law (see
+// `ObsMode::Correction`'s pure-integral outer law below); it remains
+// instantiated for `dll_locked`/`dll_err_frames` diagnostics and as the
+// control-theory contrast documented on `CORRECTION_INTEGRAL_GAIN`.
 const OUTER_DLL_PERIOD: f64 = 4800.0;
 const OUTER_DLL_RATE: f64 = 48000.0;
 
 /// Which observable the probe and the L0 servo run on — a TYPED, per-daemon
-/// choice, never inferred from the data. The two USB clock modes feed
-/// structurally different observables; only [`ObsMode::Correction`] has a live
-/// caller:
+/// choice, never inferred from the data. Carried on [`HostClockConfig`] so each
+/// daemon states its observable explicitly at construction, rather than the
+/// ladder inferring it from the data.
 ///
-/// - [`ObsMode::Fill`] — no rate-matching stage between the gadget ring and
-///   playback, so the gadget FILL slope is a faithful readout of the
-///   host-vs-DAC rate error; the probe reads the fill slope response and the L0
-///   servo drives `fill − target → 0`.
-/// - [`ObsMode::Correction`] — **fan-in combo (USB DIRECT) mode.** The lane
-///   resampler (±500 ppm authority) sits between the gadget ring and the mix and
-///   ABSORBS host-clock drift to hold its fill at the held target. The fill
-///   observable is therefore structurally dead: the resampler flattens the slope
-///   the probe wants to measure and pins the fill by its own action, not by the
-///   pitch commands (hardware-diagnosed on jts.local — the fill-based probe
-///   reliably failed `response_ratio=-0.88` and the ladder parked in
-///   `l2_fallback`). In
-///   this mode the honest observable is the resampler's own live correction ppm
-///   ([`Obs::correction_ppm`]): the probe reads how far the resampler's
-///   correction MOVES in response to the pitch step, and the L0 servo drives
-///   `correction_ppm → 0` (correction ≈ 0 sustained ⇒ the host is truly slaved
-///   and the resampler carries no CLOCK term; while fan-in's cushion decay is
-///   descending, correction ≈ 0 means the ratio equals the decay's commanded
-///   drain demand — the adapter subtracts that published demand before this
-///   observable, #3466 — so the raw `resampler.ratio_ppm` STATUS gauge and
-///   this observable legitimately differ by the demand during a descent).
-///
-/// The mode is carried on [`HostClockConfig`] so each daemon states its
-/// observable explicitly at construction; the ladder branches on it at exactly
-/// two points (the probe response observable and the L0 error signal) and shares
-/// everything else — one servo core, one clamp/deadband/cadence/anti-windup path,
-/// one ladder-demotion machine.
+/// [`ObsMode::Correction`] is the sole live mode — **fan-in combo (USB DIRECT)
+/// mode.** The lane resampler (±500 ppm authority) sits between the gadget ring
+/// and the mix and ABSORBS host-clock drift to hold its fill at the held
+/// target. The gadget FILL slope is therefore structurally dead as an
+/// observable: the resampler flattens the slope a probe would want to measure
+/// and pins the fill by its own action, not by the pitch commands
+/// (hardware-diagnosed on jts.local — a fill-based probe reliably failed
+/// `response_ratio=-0.88` and the ladder parked in `l2_fallback`). The honest
+/// observable is instead the resampler's own live correction ppm
+/// ([`Obs::correction_ppm`]): the probe reads how far the resampler's
+/// correction MOVES in response to the pitch step, and the L0 servo drives
+/// `correction_ppm → 0` (correction ≈ 0 sustained ⇒ the host is truly slaved
+/// and the resampler carries no CLOCK term; while fan-in's cushion decay is
+/// descending, correction ≈ 0 means the ratio equals the decay's commanded
+/// drain demand — the adapter subtracts that published demand before this
+/// observable, #3466 — so the raw `resampler.ratio_ppm` STATUS gauge and this
+/// observable legitimately differ by the demand during a descent).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObsMode {
-    /// Fill-slope observable. No production caller passes this; it survives as
-    /// the control-theory contrast for why [`ObsMode::Correction`] needs a pure
-    /// integral rather than the DLL, and as the servo-sim/test surface. The
-    /// gadget fill directly reads the host-vs-DAC rate error; no rate-matching
-    /// stage flattens it.
-    Fill,
     /// Resampler-correction-ppm observable (fan-in combo). A lane resampler
     /// absorbs drift, so the fill is dead weight; the resampler's live correction
     /// ppm is the honest rate-error readout.
@@ -294,7 +259,6 @@ impl ObsMode {
     /// The lowercase token surfaced in telemetry / logs (pinned by a test).
     pub fn as_str(self) -> &'static str {
         match self {
-            ObsMode::Fill => "fill",
             ObsMode::Correction => "correction",
         }
     }
@@ -502,16 +466,9 @@ pub struct HostClockConfig {
     pub target_fill_frames: f64,
     /// Probe step magnitude in ppm. Default 300 (inside ±1000 with margin).
     pub probe_ppm: f64,
-    /// Fill-mode probe step-phase duration in seconds. Correction mode instead
-    /// uses the fixed 15 s [`CORRECTION_PROBE_STEP_SECS`] after the 4 s
-    /// neutral baseline. A first failed measurement then gets one fixed 10 s
-    /// recovery dwell before the final attempt.
-    pub probe_step_secs: u64,
     /// Which observable the probe + L0 servo run on (see [`ObsMode`]). Fan-in
     /// combo — the sole current consumer — passes [`ObsMode::Correction`].
-    /// TYPED per daemon, never inferred — the ladder
-    /// branches on it at the two observable-specific points and shares
-    /// everything else.
+    /// TYPED per daemon, never inferred.
     pub obs_mode: ObsMode,
     /// The `event=` namespace prefix for this daemon's ladder log lines.
     /// `fanin` is the only value a live caller passes. Static because
@@ -531,10 +488,9 @@ impl HostClockConfig {
             enabled: false,
             target_fill_frames: 384.0,
             probe_ppm: 300.0,
-            probe_step_secs: 6,
             // A disabled ladder never probes or servos, so the observable mode
             // is moot; nothing pins this value.
-            obs_mode: ObsMode::Fill,
+            obs_mode: ObsMode::Correction,
             log_prefix,
         }
     }
@@ -570,12 +526,8 @@ pub struct Obs {
     /// nominal, `(ratio − 1) × 1e6`) — minus any rate demand the caller's own
     /// machinery commands of the resampler on purpose (fan-in subtracts its
     /// cushion decay's published drain demand here, #3466, so a descent does
-    /// not read as clock error). Meaningful ONLY in [`ObsMode::Correction`]:
-    /// it is the honest host-vs-DAC rate-error readout when a rate-matching
-    /// stage sits between the gadget ring and the mix. In [`ObsMode::Fill`]
-    /// there is no such stage, so
-    /// this is `0.0` and never consulted. Sign convention (see
-    /// [`ObsMode::Correction`]): the resampler feeds `error = fill − target`
+    /// not read as clock error). It is the honest host-vs-DAC rate-error
+    /// readout: the resampler feeds `error = fill − target`
     /// (capture-follower), so a host
     /// running FAST fills the ring, driving the resampler's correction ppm
     /// POSITIVE (consume faster to hold fill). Commanding the host +ppm (faster)
@@ -616,10 +568,10 @@ struct SlopeEstimator {
     fill_mean: f64,
     fill_var: f64,
     have_fill: bool,
-    // EW mean of the lane resampler's correction ppm — the CORRECTION-mode probe
-    // observable (dead in FILL mode, where `Obs::correction_ppm` is always 0). It
-    // is smoothed on the SAME alpha as the slope so the two modes' probe windows
-    // have identical memory, and re-armed at the same session boundaries.
+    // EW mean of the lane resampler's correction ppm — the probe observable. It
+    // is smoothed on the SAME alpha as the fill slope (published for diagnostics
+    // only, see `slope_ppm`/`fill_variance`), and re-armed at the same session
+    // boundaries.
     correction_mean_ppm: f64,
     have_correction: bool,
 }
@@ -641,9 +593,9 @@ impl SlopeEstimator {
 
     /// Feed one tick. `divergence = capture − playback` frames (signed),
     /// `fill_frames` the gadget ring fill, `correction_ppm` the lane resampler's
-    /// live correction ppm (0 in FILL mode), `frames_per_tick` the expected
-    /// on-rate frame count over one tick (rate × Δt). Returns the smoothed
-    /// slope in ppm.
+    /// live correction ppm, `frames_per_tick` the expected on-rate frame count
+    /// over one tick (rate × Δt). Returns the smoothed slope in ppm (published
+    /// for diagnostics; the fill slope is not the control-law observable).
     fn update(
         &mut self,
         divergence: i64,
@@ -702,9 +654,8 @@ impl SlopeEstimator {
         }
     }
 
-    /// The smoothed resampler correction ppm (CORRECTION-mode probe/servo signal).
-    /// 0 until the first finite sample (and always 0 in FILL mode, where the input
-    /// is 0).
+    /// The smoothed resampler correction ppm (the probe/servo signal). 0 until
+    /// the first finite sample.
     fn correction_mean_ppm(&self) -> f64 {
         if self.have_correction {
             self.correction_mean_ppm
@@ -750,14 +701,14 @@ pub struct HostClock {
     dll: Dll,
     slope: SlopeEstimator,
     /// The feed-forward bias seeded on L0 entry from the measured baseline
-    /// slope; the outer trim (DLL in FILL mode, integral in CORRECTION mode)
-    /// trims the residual around it.
+    /// slope; the outer trim (the pure integral below) trims the residual
+    /// around it.
     feed_forward_ppm: f64,
-    /// CORRECTION-mode outer-loop integral accumulator, in ppm. The pure-integral
-    /// control law for CORRECTION mode ([`CORRECTION_INTEGRAL_GAIN`]) steps this
-    /// each locked tick by `−Ki · correction_mean`; the DLL is not ticked in that
-    /// mode. Zero in FILL mode (which uses the DLL). Reset to 0 on every L0 entry
-    /// and every session/probe boundary alongside `feed_forward_ppm` and the DLL.
+    /// The pure-integral outer-loop accumulator, in ppm
+    /// ([`CORRECTION_INTEGRAL_GAIN`]): steps each locked tick by
+    /// `−Ki · correction_mean`; the DLL is not ticked. Reset to 0 on every L0
+    /// entry and every session/probe boundary alongside `feed_forward_ppm` and
+    /// the DLL.
     correction_trim_ppm: f64,
     /// Last commanded (clamped) bias — what telemetry reports and what the
     /// suppression epsilon compares against for the NEXT command.
@@ -775,17 +726,15 @@ pub struct HostClock {
     /// AwaitLock wait; `None` until lock is seen (or after it is lost). The probe
     /// leaves AwaitLock once `now_ms − lock_since_ms >= PROBE_SETTLE_SECS`.
     lock_since_ms: Option<u64>,
-    /// The probe's baseline/step observable, recorded at each phase boundary.
-    /// In FILL mode these are the fill SLOPE means; in CORRECTION mode they are
-    /// the resampler-CORRECTION means (whichever observable the mode selects). One
-    /// pair, reused, so the probe-verdict machinery is byte-identical across modes.
+    /// The probe's baseline/step observable, recorded at each phase boundary —
+    /// the resampler-CORRECTION mean.
     probe_baseline_obs_ppm: f64,
     probe_step_obs_ppm: f64,
-    /// The SIGNED pitch step actually applied in the current probe's step phase.
-    /// FILL mode always uses `+probe_ppm`; CORRECTION mode steps AWAY from the
-    /// nearer inner-authority rail (see [`CORRECTION_PROBE_FLIP_DEADBAND_PPM`]), so
-    /// this can be `−probe_ppm`. `finish_probe` normalizes the response by THIS
-    /// signed magnitude so a compliant host reads ≈ +1 in either direction.
+    /// The SIGNED pitch step actually applied in the current probe's step
+    /// phase. Usually `+probe_ppm`; steps AWAY from the nearer inner-authority
+    /// rail instead (see [`CORRECTION_PROBE_FLIP_DEADBAND_PPM`]), so this can
+    /// be `−probe_ppm`. `finish_probe` normalizes the response by THIS signed
+    /// magnitude so a compliant host reads ≈ +1 in either direction.
     probe_step_ppm: f64,
     probe_result: ProbeResult,
     response_ratio: Option<f64>,
@@ -801,9 +750,9 @@ pub struct HostClock {
     /// the status fragment: it is the ONLY signal that the frozen gauges below
     /// are frozen on purpose.
     hold_ticks: u64,
-    /// The most recent smoothed resampler correction ppm — the CORRECTION-mode
-    /// L0 end-state observable (drives to ~0 when the host is truly slaved).
-    /// Surfaced in the status fragment (additive). Always 0 in FILL mode.
+    /// The most recent smoothed resampler correction ppm — the L0 end-state
+    /// observable (drives to ~0 when the host is truly slaved). Surfaced in the
+    /// status fragment (additive).
     last_correction_ppm: f64,
 
     // Session edge detection.
@@ -1104,7 +1053,7 @@ impl HostClock {
                 0
             };
         }
-        // 0 in FILL mode. The L0 servo reads the same value below.
+        // The L0 servo reads the same value below.
         self.last_correction_ppm = self.slope.correction_mean_ppm();
 
         let mut actions = Vec::new();
@@ -1296,23 +1245,16 @@ impl HostClock {
         );
     }
 
-    /// The probe/servo observable for the configured mode: the fill SLOPE
-    /// (FILL) or the resampler CORRECTION mean (CORRECTION). This is the ONE
-    /// observable-specific branch point on the
-    /// measurement side — both values share the same sign property (a compliant
+    /// The probe/servo observable: the resampler CORRECTION mean. A compliant
     /// host commanded +probe_ppm moves the observable +probe_ppm; its neutral
-    /// baseline value is the host's natural excess rate), so the probe verdict and
-    /// feed-forward math below are byte-identical across modes.
+    /// baseline value is the host's natural excess rate.
     fn probe_observable_ppm(&self) -> f64 {
-        match self.cfg.obs_mode {
-            ObsMode::Fill => self.slope.slope_ppm(),
-            ObsMode::Correction => self.slope.correction_mean_ppm(),
-        }
+        self.slope.correction_mean_ppm()
     }
 
     /// Whether the lane is in a SETTLE-ELIGIBLE regime this tick — the gate for
-    /// the pre-probe [`ProbePhase::AwaitLock`] settle window to accrue. Lock-only
-    /// in BOTH modes: [`Obs::playing`] is the whole gate.
+    /// the pre-probe [`ProbePhase::AwaitLock`] settle window to accrue.
+    /// Lock-only: [`Obs::playing`] is the whole gate.
     ///
     /// Lock-only is correct, NOT a missing rail check. A railed CORRECTION-mode
     /// baseline is still measurable and fail-biased, so gating settle on the rail
@@ -1359,14 +1301,9 @@ impl HostClock {
 
         let elapsed_ms = now_ms.saturating_sub(self.probe_started_ms);
         let baseline_ms = PROBE_BASELINE_SECS * 1000;
-        // The step-phase duration is mode-specific: FILL uses the configured
-        // `probe_step_secs` (hardware-validated at 6 s); CORRECTION holds the step
-        // for the longer fixed window because its inner-loop observable is slower
-        // to slew (see CORRECTION_PROBE_STEP_SECS).
-        let step_secs = match self.cfg.obs_mode {
-            ObsMode::Fill => self.cfg.probe_step_secs,
-            ObsMode::Correction => CORRECTION_PROBE_STEP_SECS,
-        };
+        // The step phase holds for the fixed CORRECTION_PROBE_STEP_SECS window
+        // because the inner-loop observable is slow to slew (see its doc).
+        let step_secs = CORRECTION_PROBE_STEP_SECS;
         let step_ms = baseline_ms + step_secs * 1000;
 
         match self.probe_phase {
@@ -1417,11 +1354,10 @@ impl HostClock {
             }
             ProbePhase::Baseline => {
                 if elapsed_ms >= baseline_ms {
-                    // Baseline done: record the natural observable (fill slope OR
-                    // resampler correction, per mode), then command the step. The
-                    // step DIRECTION is mode-specific: FILL always steps +probe_ppm;
-                    // CORRECTION steps AWAY from the nearer inner-authority rail so a
-                    // near-rail host still has room to show a compliant response (see
+                    // Baseline done: record the natural resampler-correction
+                    // observable, then command the step. The step steps AWAY from
+                    // the nearer inner-authority rail so a near-rail host still has
+                    // room to show a compliant response (see
                     // CORRECTION_PROBE_FLIP_DEADBAND_PPM). The signed step is recorded
                     // so finish_probe normalizes the response by the right magnitude.
                     self.probe_baseline_obs_ppm = self.probe_observable_ppm();
@@ -1439,23 +1375,18 @@ impl HostClock {
         }
     }
 
-    /// The signed pitch step to apply for the probe's step phase. FILL mode always
-    /// steps `+probe_ppm`. CORRECTION mode steps `−probe_ppm` when the baseline
-    /// correction is strongly positive (host already near the +rail, so a +step
-    /// would clamp) and `+probe_ppm` otherwise — stepping AWAY from the nearer rail
-    /// so a compliant response always has inner authority to show. The deadband
-    /// (`CORRECTION_PROBE_FLIP_DEADBAND_PPM`) keeps the default `+probe_ppm` for the
-    /// common near-zero-baseline case (a Mac at a small crystal offset).
+    /// The signed pitch step to apply for the probe's step phase: `−probe_ppm`
+    /// when the baseline correction is strongly positive (host already near the
+    /// +rail, so a +step would clamp) and `+probe_ppm` otherwise — stepping
+    /// AWAY from the nearer rail so a compliant response always has inner
+    /// authority to show. The deadband (`CORRECTION_PROBE_FLIP_DEADBAND_PPM`)
+    /// keeps the default `+probe_ppm` for the common near-zero-baseline case (a
+    /// Mac at a small crystal offset).
     fn choose_probe_step_ppm(&self) -> f64 {
-        match self.cfg.obs_mode {
-            ObsMode::Fill => self.cfg.probe_ppm,
-            ObsMode::Correction => {
-                if self.probe_baseline_obs_ppm > CORRECTION_PROBE_FLIP_DEADBAND_PPM {
-                    -self.cfg.probe_ppm
-                } else {
-                    self.cfg.probe_ppm
-                }
-            }
+        if self.probe_baseline_obs_ppm > CORRECTION_PROBE_FLIP_DEADBAND_PPM {
+            -self.cfg.probe_ppm
+        } else {
+            self.cfg.probe_ppm
         }
     }
 
@@ -1480,14 +1411,11 @@ impl HostClock {
         // by the SIGNED step actually applied (`probe_step_ppm`, not the unsigned
         // `probe_ppm`) so a compliant host reads ≈ +1 regardless of step direction.
         //
-        // The observable differs by mode, but the sign property is the SAME, so
-        // this formula and the +1-for-compliant normalization hold for both:
-        // a compliant host commanded `+step` runs faster (or `−step` slower), so
+        // A compliant host commanded `+step` runs faster (or `−step` slower), so
         // the observable moves by ~the same signed step. A host that ignores the
         // step moves the observable ~0 ⇒ ratio ≈ 0 (a NON-compliant near-rail
         // host's natural crystal drift runs OPPOSITE the away-from-rail step ⇒
-        // clearly negative). Same pass band (>= 0.5) and demotion semantics in
-        // both modes.
+        // clearly negative). Pass band is >= 0.5.
         //
         // A degenerate `probe_step_ppm == 0` (never produced — the step is always
         // ±probe_ppm with probe_ppm > 0) would divide by zero; guard it to a fail.
@@ -1503,16 +1431,15 @@ impl HostClock {
             self.response_ratio = Some(ratio);
             self.fallback_reason = FallbackReason::None;
             // Feed-forward: seed the commanded bias to cancel the measured baseline
-            // rate offset so coarse correction is immediate; the slow DLL only trims
-            // the residual. Sign holds across modes: a host running FAST shows a
-            // POSITIVE baseline observable (fill climbing in FILL mode; resampler
-            // consuming faster ⇒ positive correction ppm in CORRECTION mode), and
-            // must be commanded SLOWER ⇒ negative bias.
+            // rate offset so coarse correction is immediate; the slow integral trim
+            // only trims the residual. A host running FAST shows a POSITIVE
+            // baseline observable (resampler consuming faster ⇒ positive
+            // correction ppm), and must be commanded SLOWER ⇒ negative bias.
             self.feed_forward_ppm = clamp_bias(-self.probe_baseline_obs_ppm);
             self.dll.reset();
-            // CORRECTION mode's integral trim starts from 0 on L0 entry — the
-            // feed-forward carries the DC crystal cancel and the integrator only
-            // trims the residual around it (no-op in FILL mode, which uses the DLL).
+            // The integral trim starts from 0 on L0 entry — the feed-forward
+            // carries the DC crystal cancel and the integrator only trims the
+            // residual around it.
             self.correction_trim_ppm = 0.0;
             self.transition_to(Ladder::L0Locked, "probe_pass");
             self.command(self.feed_forward_ppm, true, actions);
@@ -1585,114 +1512,67 @@ impl HostClock {
             self.l2_evidence_ticks = 0;
             return;
         }
-        // The control law AND its error signal are mode-specific (the ONE
-        // observable-specific branch on the servo side). Both signs are chosen so
-        // a POSITIVE error means "host too fast" and the response commands the
-        // host SLOWER (`+error ⇒ trim < 0`) — closed negative feedback in both
-        // modes.
+        // A POSITIVE error means "host too fast" and the response commands the
+        // host SLOWER (`+error ⇒ trim < 0`) — closed negative feedback.
         //
-        //  * FILL: `err = fill − target` (frames), and the outer
-        //    control law is the DLL. Ring too full ⇒ err > 0 ⇒ command slower ⇒
-        //    fill falls to target. The plant is an INTEGRATOR (a rate command sets
-        //    the fill SLOPE), so the DLL's own integrators plus that plant
-        //    integrator is the cascade the module docs describe.
-        //    `RateController` is NOT reused — its consumer-drain sign is inverted
-        //    for this producer-side use, and it hides the bandwidth knobs this
-        //    cascade must pin. The end-state is fill ≈ target.
-        //  * CORRECTION: `err = correction_ppm` (the resampler's
-        //    live correction, EW-smoothed), and the outer control law is a
-        //    PURE INTEGRAL, NOT the DLL. The lane resampler pins the fill by its
-        //    OWN action, so `fill − target` is dead weight; instead we drive the
-        //    resampler's correction to 0. correction > 0 (host faster than DAC, the
-        //    resampler consuming faster to hold fill) ⇒ err > 0 ⇒ command host
-        //    slower ⇒ the host slaves to the DAC and the correction relaxes to ~0.
-        //    The plant here is near-unity DC gain through the inner loop's lag
-        //    (ppm→ppm, no integrator), so the FILL-tuned third-order DLL would
-        //    limit-cycle against it; a single slow integrator
-        //    ([`CORRECTION_INTEGRAL_GAIN`]) around a near-unity plant is
-        //    unconditionally stable at this gain, with the feed-forward carrying
-        //    the DC crystal cancel. The end-state is correction_ppm ≈ 0: the
-        //    resampler carries no CLOCK term and the fill rides its held target
-        //    for free.
-        let err = match self.cfg.obs_mode {
-            ObsMode::Fill => obs.fill_frames - self.cfg.target_fill_frames,
-            ObsMode::Correction => self.slope.correction_mean_ppm(),
-        };
+        // `err = correction_ppm` (the resampler's live correction, EW-smoothed),
+        // and the outer control law is a PURE INTEGRAL, NOT a DLL. The lane
+        // resampler pins the fill by its OWN action, so `fill − target` is dead
+        // weight; instead we drive the resampler's correction to 0.
+        // correction > 0 (host faster than DAC, the resampler consuming faster
+        // to hold fill) ⇒ err > 0 ⇒ command host slower ⇒ the host slaves to the
+        // DAC and the correction relaxes to ~0. The plant here is near-unity DC
+        // gain through the inner loop's lag (ppm→ppm, no integrator); a single
+        // slow integrator ([`CORRECTION_INTEGRAL_GAIN`]) around a near-unity
+        // plant is unconditionally stable at this gain, with the feed-forward
+        // carrying the DC crystal cancel. The end-state is correction_ppm ≈ 0:
+        // the resampler carries no CLOCK term and the fill rides its held target
+        // for free.
+        let err = self.slope.correction_mean_ppm();
 
-        // ---- Outer trim (mode-specific control law) + anti-windup -----------
+        // ---- Outer trim (pure-integral control law) + anti-windup -----------
         // The ±MAX_BIAS_PPM clamp is a SAFETY bound on the ACTUATOR, not a bound
-        // on the loop's internal integrators — the jasper-clock docs call out the
+        // on the loop's internal integrator — the jasper-clock docs call out the
         // clamped-actuator windup regime. A long railed excursion can leave the
         // loop demanding correction in the WRONG direction after the error has
         // crossed back past zero, so the command stays railed the wrong way and
         // drains the fan-in cushion (the inner lane resampler's authority is only
         // ±500 ppm — see rust/jasper-fanin/src/config.rs). The "the error is
-        // genuinely non-trivial" gate that arms anti-windup is mode-scaled: half a
-        // period (128 frames) in FILL, half the probe step in CORRECTION (where
-        // err is a ppm, not a frame count).
-        let anti_windup_threshold = match self.cfg.obs_mode {
-            ObsMode::Fill => ANTI_WINDUP_THRESHOLD_FRAMES,
-            ObsMode::Correction => self.cfg.probe_ppm / 2.0,
-        };
-        let trim_ppm = match self.cfg.obs_mode {
-            ObsMode::Fill => {
-                self.dll.update(err);
-                let mut dll_trim_ppm = self.dll.ratio_ppm();
-                // When the total demand is railed AND the DLL is wound against the
-                // current error, reset the loop and re-apply the error so the
-                // first bounded output points back toward the target. Mirrors
-                // jasper_resampler::RateController::is_wound_against_error
-                // (reset-and-reapply idiom); the SIGN test differs by
-                // construction: there the DLL is fed −error so a wound loop has
-                // raw_ppm.sign == error.sign; here the DLL is fed +error (producer
-                // sign), so normal operation has trim.sign == −err.sign and a
-                // WOUND loop is trim.sign == err.sign.
-                let total_raw = self.feed_forward_ppm + dll_trim_ppm;
-                if total_raw.is_finite()
-                    && total_raw.abs() > MAX_BIAS_PPM
-                    && err.abs() >= anti_windup_threshold
-                    && dll_trim_ppm.signum() == err.signum()
-                {
-                    self.dll.reset();
-                    self.anti_windup_events = self.anti_windup_events.saturating_add(1);
-                    self.dll.update(err);
-                    dll_trim_ppm = self.dll.ratio_ppm();
-                }
-                dll_trim_ppm
+        // genuinely non-trivial" gate that arms anti-windup is half the probe
+        // step (err is a ppm, not a frame count).
+        let anti_windup_threshold = self.cfg.probe_ppm / 2.0;
+        let trim_ppm = {
+            // Pure-integral outer law: `trim += −Ki · err` (negative feedback — a
+            // positive correction error commands the host slower). The DLL is
+            // intentionally not ticked.
+            //
+            // Anti-windup by CONDITIONAL INTEGRATION: a pure integrator has no
+            // hidden `z2+z3` to reset, and the ±MAX_BIAS_PPM clamp is applied to
+            // the OUTPUT (`raw` below), not the accumulator — so left unchecked
+            // the accumulator would wind past the rail and, once the error
+            // reverses, take many ticks to unwind while the command stays
+            // pinned. The standard fix is to skip the integration step whenever
+            // the total command is ALREADY railed and this step would push it
+            // FURTHER into the rail (`step` same sign as the railed total).
+            // Steps that move the total back toward zero always apply, so the
+            // integrator unwinds immediately when the error reverses. Gated on a
+            // non-trivial error (probe_ppm/2) so ordinary near-target jitter
+            // doesn't count as a windup event.
+            let step = -CORRECTION_INTEGRAL_GAIN * err;
+            let candidate = self.correction_trim_ppm + step;
+            let total_raw = self.feed_forward_ppm + candidate;
+            let railed_further = total_raw.is_finite()
+                && total_raw.abs() > MAX_BIAS_PPM
+                && err.abs() >= anti_windup_threshold
+                && total_raw.signum() == step.signum();
+            if railed_further {
+                self.anti_windup_events = self.anti_windup_events.saturating_add(1);
+                // Hold the integrator (do not accumulate further into the rail);
+                // the output clamp below still bounds the command.
+            } else if candidate.is_finite() {
+                self.correction_trim_ppm = candidate;
             }
-            ObsMode::Correction => {
-                // Pure-integral outer law: `trim += −Ki · err` (negative feedback,
-                // matching the FILL sign — a positive correction error commands the
-                // host slower). The DLL is intentionally NOT ticked in this mode.
-                //
-                // Anti-windup by CONDITIONAL INTEGRATION: a pure integrator has no
-                // hidden `z2+z3` to reset, and the ±MAX_BIAS_PPM clamp is applied to
-                // the OUTPUT (`raw` below), not the accumulator — so left unchecked
-                // the accumulator would wind past the rail and, once the error
-                // reverses, take many ticks to unwind while the command stays
-                // pinned. The standard fix is to skip the integration step whenever
-                // the total command is ALREADY railed and this step would push it
-                // FURTHER into the rail (`step` same sign as the railed total).
-                // Steps that move the total back toward zero always apply, so the
-                // integrator unwinds immediately when the error reverses. Gated on a
-                // non-trivial error (probe_ppm/2) so ordinary near-target jitter
-                // doesn't count as a windup event.
-                let step = -CORRECTION_INTEGRAL_GAIN * err;
-                let candidate = self.correction_trim_ppm + step;
-                let total_raw = self.feed_forward_ppm + candidate;
-                let railed_further = total_raw.is_finite()
-                    && total_raw.abs() > MAX_BIAS_PPM
-                    && err.abs() >= anti_windup_threshold
-                    && total_raw.signum() == step.signum();
-                if railed_further {
-                    self.anti_windup_events = self.anti_windup_events.saturating_add(1);
-                    // Hold the integrator (do not accumulate further into the rail);
-                    // the output clamp below still bounds the command.
-                } else if candidate.is_finite() {
-                    self.correction_trim_ppm = candidate;
-                }
-                self.correction_trim_ppm
-            }
+            self.correction_trim_ppm
         };
 
         // Total raw demand = feed-forward seed + outer trim. The clamp bounds the
@@ -1706,10 +1586,7 @@ impl HostClock {
         // max(probe_ppm/2, L2_SLOPE_FLOOR_PPM) — demotion sensitivity is a
         // physical question decoupled from the probe STEP magnitude, so a small
         // probe cannot make demotion hair-trigger nor let a residual wrong-way
-        // drift under a railed command escape it forever. The
-        // observable is mode-specific: the fill SLOPE in FILL mode, the resampler
-        // CORRECTION in CORRECTION mode — both share the "host too fast ⇒ positive"
-        // sign, so the same wrong-way test applies to both.
+        // drift under a railed command escape it forever.
         let saturated = raw.abs() >= MAX_BIAS_PPM;
         let observable = self.probe_observable_ppm();
         let l2_slope_threshold = (self.cfg.probe_ppm / 2.0).max(L2_SLOPE_FLOOR_PPM);
@@ -1975,10 +1852,10 @@ impl HostClock {
         )
     }
 
-    /// The published resampler correction ppm — the CORRECTION-mode L0 end-state
-    /// observable (drives to ~0 when the host is truly slaved). Published only
-    /// while a session is active (0 between sessions, matching the fill/slope
-    /// publishing convention); always 0 in FILL mode, where nothing feeds it.
+    /// The published resampler correction ppm — the L0 end-state observable
+    /// (drives to ~0 when the host is truly slaved). Published only while a
+    /// session is active (0 between sessions, matching the fill/slope
+    /// publishing convention).
     fn published_correction_ppm(&self) -> f64 {
         if self.session_active {
             self.last_correction_ppm
@@ -2169,19 +2046,8 @@ mod tests {
             enabled: true,
             target_fill_frames: 384.0,
             probe_ppm: 300.0,
-            probe_step_secs: 6,
-            obs_mode: ObsMode::Fill,
-            log_prefix: "usbsink_audio",
-        }
-    }
-
-    /// A CORRECTION-mode enabled config (fan-in combo): the L0 servo and the probe
-    /// run on the resampler-correction observable, not the fill slope.
-    fn correction_cfg() -> HostClockConfig {
-        HostClockConfig {
             obs_mode: ObsMode::Correction,
             log_prefix: "fanin",
-            ..enabled_cfg()
         }
     }
 
@@ -2229,8 +2095,8 @@ mod tests {
             fill_frames: fill,
             capture_frames: cap,
             playback_frames: play,
-            // FILL mode has no resampler, so no correction; the CORRECTION-mode
-            // servo-sim tests build Obs directly with a live correction_ppm.
+            // Default no correction; the servo-sim tests build Obs directly
+            // (or override this field) with a live correction_ppm.
             correction_ppm: 0.0,
         }
     }
@@ -2366,7 +2232,7 @@ mod tests {
         noise_amp: f64,
         secs: usize,
     ) -> (HostClock, Vec<f64>, Vec<f64>, Vec<f64>) {
-        let mut hc = HostClock::new(correction_cfg());
+        let mut hc = HostClock::new(enabled_cfg());
         hc.startup_neutralize();
         let mut lane = RealLane::new();
         let mut host = SimHost::new(crystal, compliant, lag_ms);
@@ -2458,13 +2324,310 @@ mod tests {
         );
     }
 
+    /// A capture-device reopen is a new hardware epoch, so an L0 lock measured
+    /// against the old one is void: the ladder drops to a FRESH probe with the
+    /// full attempt budget and forces neutral pitch.
+    #[test]
+    fn capture_generation_change_invalidates_l0_and_forces_fresh_probe() {
+        let mut hc = HostClock::new(enabled_cfg());
+        hc.startup_neutralize();
+        let (cap, play) = drive_to_l0_correction(&mut hc, 100.0);
+        assert_eq!(hc.ladder(), Ladder::L0Locked);
+
+        let actions = hc.tick_with_control(
+            obs_corr(0.0, cap + 48_000, play + 48_000),
+            100_000,
+            ready_control(2),
+        );
+        assert_eq!(hc.ladder(), Ladder::Probing);
+        assert_eq!(hc.probe_attempt(), 1);
+        assert_eq!(hc.probe_retries(), 0);
+        assert_eq!(hc.probe_result(), ProbeResult::None);
+        assert_eq!(hc.fallback_reason(), FallbackReason::None);
+        assert!(matches!(
+            actions.last(),
+            Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0
+        ));
+    }
+
+    /// L2 is a LATCH: a demoted ladder never silently re-probes mid-stream. It
+    /// re-arms — fresh attempt budget, neutral pitch — only on a real epoch
+    /// boundary: the session going idle, or the capture device reopening.
+    #[test]
+    fn l2_latches_and_rearms_only_on_a_real_epoch_boundary() {
+        for rearm_by_idle in [true, false] {
+            let mut hc = HostClock::new(enabled_cfg());
+            hc.startup_neutralize();
+            let mut cap = hc_cap_start();
+            let mut play = cap;
+            let mut t = 1u64;
+            // Non-compliant: the correction never moves with the step, so both
+            // attempts fail and the ladder latches L2.
+            while t < 140 && hc.ladder() != Ladder::L2Fallback {
+                cap += 48_000;
+                play += 48_000;
+                hc.tick_with_control(obs_corr(200.0, cap, play), t * 1000, ready_control(1));
+                t += 1;
+            }
+            assert_eq!(hc.ladder(), Ladder::L2Fallback);
+            assert_eq!(hc.fallback_reason(), FallbackReason::ProbeNoncompliant);
+
+            // Same epoch, still playing: latched, and nothing is commanded.
+            for _ in 0..15 {
+                cap += 48_000;
+                play += 48_000;
+                let actions =
+                    hc.tick_with_control(obs_corr(200.0, cap, play), t * 1000, ready_control(1));
+                assert!(actions.is_empty(), "no mid-stream re-probe or write");
+                assert_eq!(hc.ladder(), Ladder::L2Fallback);
+                t += 1;
+            }
+
+            cap += 48_000;
+            play += 48_000;
+            let mut o = obs_corr(200.0, cap, play);
+            let generation = if rearm_by_idle {
+                o.playing = false;
+                1
+            } else {
+                2
+            };
+            let actions = hc.tick_with_control(o, t * 1000, ready_control(generation));
+            assert_eq!(hc.ladder(), Ladder::Probing);
+            assert_eq!(
+                hc.probe_attempt(),
+                1,
+                "a real epoch boundary resets the attempt budget"
+            );
+            assert_eq!(hc.fallback_reason(), FallbackReason::None);
+            assert!(matches!(
+                actions.last(),
+                Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0
+            ));
+        }
+    }
+
+    /// A crystal offset beyond the ±[`MAX_BIAS_PPM`] actuator authority, so the
+    /// feed-forward seeded on L0 entry rails. This is the ONLY way the total
+    /// command reaches saturation: the pure-integral law's conditional
+    /// integration refuses any step that would push the total past the rail, so
+    /// the trim alone always stops just short of it.
+    const BEYOND_AUTHORITY_OFFSET_PPM: f64 = 1200.0;
+
+    /// Mid-stream loss of authority: the host stops following while the command
+    /// is railed and the correction stays pinned in the uncorrected direction.
+    /// Sustained for `L2_SUSTAIN_TICKS`, that demotes to L2 and forces neutral
+    /// pitch.
+    #[test]
+    fn saturated_unfollowed_host_demotes_to_l2_midstream() {
+        let mut hc = HostClock::new(enabled_cfg());
+        hc.startup_neutralize();
+        let (mut cap, mut play) = drive_to_l0_correction(&mut hc, BEYOND_AUTHORITY_OFFSET_PPM);
+        assert_eq!(hc.ladder(), Ladder::L0Locked);
+        assert_eq!(
+            hc.commanded_ppm(),
+            -MAX_BIAS_PPM,
+            "a beyond-authority host rails the feed-forward"
+        );
+        let demotions_before = hc.demotions();
+
+        let mut neutral_after_demote = false;
+        let mut t = 200u64;
+        for _ in 0..(L2_SUSTAIN_TICKS + 5) {
+            cap += 48_000;
+            play += 48_000;
+            let actions = hc.tick(obs_corr(900.0, cap, play), t * 1000);
+            if hc.ladder() == Ladder::L2Fallback {
+                neutral_after_demote = matches!(
+                    actions.last(),
+                    Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0
+                );
+                break;
+            }
+            t += 1;
+        }
+        assert_eq!(hc.ladder(), Ladder::L2Fallback, "must demote mid-stream");
+        assert_eq!(hc.demotions(), demotions_before + 1, "demotion counted");
+        assert!(neutral_after_demote, "demotion forces neutral pitch");
+    }
+
+    /// Demotion sensitivity is `max(probe_ppm/2, L2_SLOPE_FLOOR_PPM)` — a
+    /// physical question decoupled from the probe STEP magnitude. With a small
+    /// probe the FLOOR governs: the command is railed in BOTH cases, so only
+    /// the floor separates a sub-floor drift (must not hair-trigger a demotion)
+    /// from an above-floor one (must still demote).
+    #[test]
+    fn l2_demotion_threshold_is_floored_independent_of_probe_magnitude() {
+        // probe_ppm/2 = 50 ppm, below the 100 ppm floor.
+        for (drift_ppm, expect_demote) in [(70.0, false), (250.0, true)] {
+            let mut cfg = enabled_cfg();
+            cfg.probe_ppm = 100.0;
+            let mut hc = HostClock::new(cfg);
+            hc.startup_neutralize();
+            // Lock beyond the actuator authority so the feed-forward rails; the
+            // residual left after the railed command is the drift under test.
+            let (mut cap, mut play) = drive_to_l0_correction(&mut hc, MAX_BIAS_PPM + drift_ppm);
+            assert_eq!(hc.ladder(), Ladder::L0Locked);
+            assert_eq!(hc.commanded_ppm(), -MAX_BIAS_PPM, "the command is railed");
+
+            // Settle the EW correction mean onto the drift. The lock transient
+            // decays through the floor FROM ABOVE, so discard the evidence it
+            // accrues on the way down — what is under test is the threshold in
+            // the settled state, not the transient.
+            let mut t = 200u64;
+            for _ in 0..40 {
+                cap += 48_000;
+                play += 48_000;
+                hc.tick(obs_corr(drift_ppm, cap, play), t * 1000);
+                hc.l2_evidence_ticks = 0;
+                t += 1;
+            }
+            assert_eq!(hc.ladder(), Ladder::L0Locked, "still locked and railed");
+
+            for _ in 0..(L2_SUSTAIN_TICKS + 5) {
+                cap += 48_000;
+                play += 48_000;
+                hc.tick(obs_corr(drift_ppm, cap, play), t * 1000);
+                t += 1;
+            }
+            assert_eq!(
+                hc.ladder() == Ladder::L2Fallback,
+                expect_demote,
+                "a {drift_ppm} ppm drift against the {L2_SLOPE_FLOOR_PPM} ppm floor"
+            );
+        }
+    }
+
+    /// A host already slaved (correction ≈ 0) barely moves the command, so the
+    /// epsilon/cadence suppression must keep the ctl write rate near zero.
+    #[test]
+    fn steady_state_suppresses_writes() {
+        let mut hc = HostClock::new(enabled_cfg());
+        hc.startup_neutralize();
+        let (mut cap, mut play) = drive_to_l0_correction(&mut hc, 0.0);
+        assert_eq!(hc.ladder(), Ladder::L0Locked);
+
+        let mut writes = 0usize;
+        let mut t = 200u64;
+        for _ in 0..60 {
+            cap += 48_000;
+            play += 48_000;
+            let actions = hc.tick(obs_corr(0.0, cap, play), t * 1000);
+            writes += actions
+                .iter()
+                .filter(|a| matches!(a, Action::WritePitch { reset: false, .. }))
+                .count();
+            t += 1;
+        }
+        assert!(
+            writes <= 5,
+            "steady state should barely write, got {writes}"
+        );
+    }
+
+    /// A persistent correction BELOW the L2 wrong-way threshold winds the
+    /// integral trim past `L1_WARN_PPM` without ever satisfying the demotion
+    /// evidence: a tracking-but-high loop must WARN (L1), not demote (L2), and
+    /// the command stays inside the clamp throughout.
+    #[test]
+    fn sustained_high_demand_raises_l1_warn_without_demoting() {
+        let mut hc = HostClock::new(enabled_cfg());
+        hc.startup_neutralize();
+        let (mut cap, mut play) = drive_to_l0_correction(&mut hc, 0.0);
+        assert_eq!(hc.ladder(), Ladder::L0Locked);
+
+        let mut saw_l1 = false;
+        let mut t = 200u64;
+        for _ in 0..1200 {
+            cap += 48_000;
+            play += 48_000;
+            hc.tick(obs_corr(100.0, cap, play), t * 1000);
+            if hc.ladder() == Ladder::L1Warn {
+                saw_l1 = true;
+            }
+            assert_ne!(
+                hc.ladder(),
+                Ladder::L2Fallback,
+                "a tracking-but-high loop must warn, not demote"
+            );
+            assert!(hc.commanded_ppm().abs() <= MAX_BIAS_PPM + 1e-6);
+            t += 1;
+        }
+        assert!(saw_l1, "sustained high demand must raise L1_WARN");
+    }
+
+    /// The first failed measurement is not a verdict: it neutralizes the pitch,
+    /// consumes one attempt, and parks in the bounded recovery dwell — still
+    /// Probing, no demotion, no fallback reason.
+    #[test]
+    fn first_probe_failure_is_retryable_neutral_and_nonterminal() {
+        let mut hc = HostClock::new(enabled_cfg());
+        hc.startup_neutralize();
+        let mut cap = hc_cap_start();
+        let mut play = cap;
+        let mut failure_actions = Vec::new();
+        for t in 1u64..60 {
+            cap += 48_000;
+            play += 48_000;
+            let actions = hc.tick(obs_corr(200.0, cap, play), t * 1000);
+            if hc.last_attempt_result == ProbeAttemptResult::RetryableFail {
+                failure_actions = actions;
+                break;
+            }
+        }
+        assert_eq!(hc.ladder(), Ladder::Probing);
+        assert_eq!(hc.probe_phase, ProbePhase::RetryWait);
+        assert_eq!(hc.probe_attempt(), 2);
+        assert_eq!(hc.probe_retries(), 1);
+        assert_eq!(hc.probe_result(), ProbeResult::None);
+        assert_eq!(hc.demotions(), 0);
+        assert_eq!(hc.fallback_reason(), FallbackReason::None);
+        assert!(matches!(
+            failure_actions.last(),
+            Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0
+        ));
+    }
+
+    /// A host that only starts following after the first attempt still locks on
+    /// the second — the retry budget is a real second chance, not bookkeeping.
+    #[test]
+    fn second_attempt_can_pass_after_one_retry() {
+        let mut hc = HostClock::new(enabled_cfg());
+        hc.startup_neutralize();
+        let mut cap = hc_cap_start();
+        let mut play = cap;
+        let mut follow_command = false;
+        for t in 1u64..120 {
+            cap += 48_000;
+            play += 48_000;
+            let corr = 200.0
+                + if follow_command {
+                    hc.commanded_ppm()
+                } else {
+                    0.0
+                };
+            hc.tick(obs_corr(corr, cap, play), t * 1000);
+            if hc.last_attempt_result == ProbeAttemptResult::RetryableFail {
+                follow_command = true;
+            }
+            if hc.probe_result() == ProbeResult::Pass {
+                break;
+            }
+        }
+        assert_eq!(hc.probe_result(), ProbeResult::Pass);
+        assert_eq!(hc.ladder(), Ladder::L0Locked);
+        assert_eq!(hc.probe_attempt(), 2);
+        assert_eq!(hc.probe_retries(), 1);
+        assert_eq!(hc.demotions(), 0);
+    }
+
     /// A declared fill ramp is not a measurement. The CORRECTION-mode L0 law
     /// is a pure integrator (`trim += −Ki · err`), so a held observable would
     /// wind the trim for the whole ramp; the hold must freeze the trim, the EW
     /// means, the pitch command and the L1/L2 evidence, and must not demote.
     #[test]
     fn a_declared_ramp_holds_the_correction_servo_instead_of_winding_it() {
-        let mut hc = HostClock::new(correction_cfg());
+        let mut hc = HostClock::new(enabled_cfg());
         hc.startup_neutralize();
         let (mut cap, mut play) = drive_to_l0_correction(&mut hc, 0.0);
         assert_eq!(hc.ladder(), Ladder::L0Locked, "must lock before the hold");
@@ -2546,7 +2709,7 @@ mod tests {
             ("session_steady", true, true, false, 0),
             ("session_not_steady", true, false, true, 30),
         ] {
-            let mut hc = HostClock::new(correction_cfg());
+            let mut hc = HostClock::new(enabled_cfg());
             hc.startup_neutralize();
             let mut cap = hc_cap_start();
             let mut play = cap;
@@ -2574,7 +2737,7 @@ mod tests {
     /// for.
     #[test]
     fn a_declared_ramp_while_probing_does_not_stall_the_probe() {
-        let mut hc = HostClock::new(correction_cfg());
+        let mut hc = HostClock::new(enabled_cfg());
         hc.startup_neutralize();
         let mut cap = hc_cap_start();
         let mut play = cap;
@@ -2748,7 +2911,7 @@ mod tests {
     fn correction_mode_fragment_carries_obs_mode_and_correction() {
         // The status fragment for a CORRECTION-mode config carries obs_mode
         // "correction" and a correction_ppm field, and parses as JSON.
-        let hc = HostClock::new(correction_cfg());
+        let hc = HostClock::new(enabled_cfg());
         let frag = hc.status_fragment();
         assert!(frag.contains("\"obs_mode\":\"correction\""));
         assert!(frag.contains("\"correction_ppm\":"));
@@ -2759,7 +2922,6 @@ mod tests {
 
     #[test]
     fn obs_mode_tokens_are_stable() {
-        assert_eq!(ObsMode::Fill.as_str(), "fill");
         assert_eq!(ObsMode::Correction.as_str(), "correction");
     }
 
@@ -2778,42 +2940,6 @@ mod tests {
         assert_eq!(hc.target_fill_frames(), 320.0);
     }
 
-    #[test]
-    fn lowering_the_setpoint_shifts_the_locked_error_toward_slower_host() {
-        // Lowering the setpoint below the fill makes `fill − target` positive, so
-        // the loop must command the host SLOWER to drain the ring — the descent
-        // the cushion decay wants, with no re-acquisition.
-        let mut hc = HostClock::new(enabled_cfg());
-        hc.startup_neutralize();
-        drive_to_l0(&mut hc, 0.0);
-        assert_eq!(hc.ladder(), Ladder::L0Locked);
-        // Hold the fill AT the old target so the loop is settled.
-        let mut t = 100_000u64;
-        let mut cap = hc_cap_start();
-        for _ in 0..30 {
-            t += 1000;
-            hc.tick(obs(true, true, 384.0, cap, cap), t);
-            cap += (OUTER_DLL_RATE * 1000.0 / 1000.0) as u64;
-        }
-        // Now lower the setpoint; keep feeding the SAME fill (384). The error is
-        // now +64 (fill above the new 320 target), so the command trends negative
-        // (slow the host) to drain toward the lower setpoint.
-        hc.set_target_fill_frames(320.0);
-        for _ in 0..30 {
-            t += 1000;
-            hc.tick(obs(true, true, 384.0, cap, cap), t);
-            cap += (OUTER_DLL_RATE * 1000.0 / 1000.0) as u64;
-        }
-        assert!(
-            hc.commanded_ppm() < 0.0,
-            "a fill above the lowered setpoint must command the host slower, got {} ppm",
-            hc.commanded_ppm()
-        );
-        // And it stays LOCKED — a setpoint step is a bounded error the loop
-        // handles, not a re-acquisition.
-        assert_eq!(hc.ladder(), Ladder::L0Locked);
-    }
-
     // ---- Pinned constants --------------------------------------------------
 
     #[test]
@@ -2828,7 +2954,6 @@ mod tests {
         assert_eq!(L1_SUSTAIN_TICKS, 30);
         assert_eq!(L2_SUSTAIN_TICKS, 10);
         assert_eq!(L2_SLOPE_FLOOR_PPM, 100.0);
-        assert_eq!(ANTI_WINDUP_THRESHOLD_FRAMES, 128.0);
         assert_eq!(MAX_PROBE_ATTEMPTS, 2);
         assert_eq!(PROBE_RETRY_SETTLE_SECS, 10);
     }
@@ -2886,123 +3011,6 @@ mod tests {
         assert_eq!(hc.ladder(), Ladder::Disabled);
     }
 
-    // ---- Probe pass path ---------------------------------------------------
-
-    /// Drive a COMPLIANT synthetic host through a full session probe → L0.
-    /// The compliant host shifts its delivery rate to follow the commanded
-    /// pitch, so the fill-slope moves ~probe_ppm during the step ⇒ pass.
-    #[test]
-    fn compliant_host_probes_pass_and_locks_l0() {
-        let mut hc = HostClock::new(enabled_cfg());
-        hc.startup_neutralize();
-        let mut cap: u64 = 0;
-        let mut play: u64 = 0;
-        // A COMPLIANT host runs at a +200 ppm crystal offset PLUS the commanded
-        // pitch. Keying on `hc.commanded_ppm()` rather than a hardcoded tick
-        // schedule tracks the ACTUAL step timing regardless of the settle delay.
-        let offset = 200.0;
-        for t in 1u64..=(PROBE_SETTLE_SECS + PROBE_BASELINE_SECS + 6 + 3) {
-            let host_ppm = offset + hc.commanded_ppm();
-            cap += (48000.0 * (1.0 + host_ppm / 1.0e6)) as u64;
-            play += 48000;
-            hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
-        }
-        assert_eq!(hc.probe_result(), ProbeResult::Pass);
-        assert_eq!(hc.ladder(), Ladder::L0Locked);
-        let ratio = hc.response_ratio().unwrap();
-        assert!(ratio >= 0.5, "response_ratio should pass: {ratio}");
-        assert_eq!(hc.probe_attempt(), 1);
-        assert_eq!(hc.probe_retries(), 0);
-    }
-
-    #[test]
-    fn first_probe_failure_is_retryable_neutral_and_nonterminal() {
-        let mut hc = HostClock::new(enabled_cfg());
-        hc.startup_neutralize();
-        let mut cap = 0u64;
-        let mut play = 0u64;
-        let mut failure_actions = Vec::new();
-        for t in 1u64..30 {
-            cap += (48000.0 * (1.0 + 200.0 / 1.0e6)) as u64;
-            play += 48000;
-            let actions = hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
-            if hc.last_attempt_result == ProbeAttemptResult::RetryableFail {
-                failure_actions = actions;
-                break;
-            }
-        }
-        assert_eq!(hc.ladder(), Ladder::Probing);
-        assert_eq!(hc.probe_phase, ProbePhase::RetryWait);
-        assert_eq!(hc.probe_attempt(), 2);
-        assert_eq!(hc.probe_retries(), 1);
-        assert_eq!(hc.probe_result(), ProbeResult::None);
-        assert_eq!(hc.demotions(), 0);
-        assert_eq!(hc.fallback_reason(), FallbackReason::None);
-        assert!(matches!(
-            failure_actions.last(),
-            Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0
-        ));
-    }
-
-    #[test]
-    fn second_attempt_can_pass_after_one_retry() {
-        let mut hc = HostClock::new(enabled_cfg());
-        hc.startup_neutralize();
-        let mut cap = 0u64;
-        let mut play = 0u64;
-        let mut follow_command = false;
-        for t in 1u64..60 {
-            let host_ppm = 200.0
-                + if follow_command {
-                    hc.commanded_ppm()
-                } else {
-                    0.0
-                };
-            cap += (48000.0 * (1.0 + host_ppm / 1.0e6)) as u64;
-            play += 48000;
-            hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
-            if hc.last_attempt_result == ProbeAttemptResult::RetryableFail {
-                follow_command = true;
-            }
-            if hc.probe_result() == ProbeResult::Pass {
-                break;
-            }
-        }
-        assert_eq!(hc.probe_result(), ProbeResult::Pass);
-        assert_eq!(hc.ladder(), Ladder::L0Locked);
-        assert_eq!(hc.probe_attempt(), 2);
-        assert_eq!(hc.probe_retries(), 1);
-        assert_eq!(hc.demotions(), 0);
-        assert_eq!(hc.fallback_reason(), FallbackReason::None);
-    }
-
-    /// A NON-compliant host (ignores the pitch command) fails the probe → L2,
-    /// pitch neutral, demotion counted.
-    #[test]
-    fn noncompliant_host_probes_fail_and_falls_to_l2() {
-        let mut hc = HostClock::new(enabled_cfg());
-        hc.startup_neutralize();
-        let mut cap: u64 = 0;
-        let mut play: u64 = 0;
-        // Host runs +200 ppm the WHOLE time — no response to the step command.
-        let mut last_action_neutral = false;
-        for t in 1u64..40 {
-            cap += (48000.0 * (1.0 + 200.0 / 1.0e6)) as u64;
-            play += 48000;
-            let actions = hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
-            if let Some(Action::WritePitch { ppm, .. }) = actions.last() {
-                last_action_neutral = *ppm == 0.0;
-            }
-        }
-        assert_eq!(hc.probe_result(), ProbeResult::Fail);
-        assert_eq!(hc.ladder(), Ladder::L2Fallback);
-        assert_eq!(hc.demotions(), 1);
-        assert_eq!(hc.probe_attempt(), MAX_PROBE_ATTEMPTS);
-        assert_eq!(hc.probe_retries(), 1);
-        assert_eq!(hc.fallback_reason(), FallbackReason::ProbeNoncompliant);
-        assert!(last_action_neutral, "L2 must command neutral pitch");
-    }
-
     #[test]
     fn actuator_loss_aborts_measurement_without_consuming_attempt_and_recovers() {
         let mut hc = HostClock::new(enabled_cfg());
@@ -3052,107 +3060,6 @@ mod tests {
         assert_eq!(hc.probe_attempt(), 1);
         assert!(matches!(
             recovered.last(),
-            Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0
-        ));
-    }
-
-    /// L2 does NOT re-probe mid-stream; it re-probes only at the idle boundary
-    /// (stream stop), then a fresh session rising edge starts a new probe.
-    #[test]
-    fn l2_repromotes_only_at_idle_boundary() {
-        let mut hc = HostClock::new(enabled_cfg());
-        hc.startup_neutralize();
-        let mut cap: u64 = 0;
-        let mut play: u64 = 0;
-        // Drive to L2 via a failing probe.
-        for t in 1u64..40 {
-            cap += (48000.0 * (1.0 + 200.0 / 1.0e6)) as u64;
-            play += 48000;
-            hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
-        }
-        assert_eq!(hc.ladder(), Ladder::L2Fallback);
-        // Keep the session playing: still L2, no re-probe.
-        for t in 40u64..55 {
-            cap += (48000.0 * (1.0 + 200.0 / 1.0e6)) as u64;
-            play += 48000;
-            hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
-            assert_eq!(hc.ladder(), Ladder::L2Fallback, "no mid-stream re-probe");
-        }
-        // Stream stops (playing=false): idle boundary → Probing (armed).
-        let stop = hc.tick(obs(false, true, 400.0, cap, play), 55_000);
-        assert_eq!(hc.ladder(), Ladder::Probing);
-        assert_eq!(hc.probe_attempt(), 1, "idle resets the attempt budget");
-        assert!(
-            matches!(stop.last(), Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0),
-            "idle boundary forces neutral pitch"
-        );
-    }
-
-    #[test]
-    fn capture_generation_change_invalidates_l0_and_forces_fresh_probe() {
-        let mut hc = HostClock::new(enabled_cfg());
-        hc.startup_neutralize();
-        drive_to_l0(&mut hc, 100.0);
-        assert_eq!(hc.ladder(), Ladder::L0Locked);
-        let cap = hc_cap_start();
-        let actions = hc.tick_with_control(
-            obs(true, true, 400.0, cap + 48_000, cap + 48_000),
-            100_000,
-            ready_control(2),
-        );
-        assert_eq!(hc.ladder(), Ladder::Probing);
-        assert_eq!(hc.probe_attempt(), 1);
-        assert_eq!(hc.probe_retries(), 0);
-        assert_eq!(hc.probe_result(), ProbeResult::None);
-        assert_eq!(hc.fallback_reason(), FallbackReason::None);
-        assert!(matches!(
-            actions.last(),
-            Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0
-        ));
-    }
-
-    #[test]
-    fn terminal_host_l2_stays_latched_but_real_generation_change_rearms() {
-        let mut hc = HostClock::new(enabled_cfg());
-        hc.startup_neutralize();
-        let mut cap = 0u64;
-        let mut play = 0u64;
-        for t in 1u64..40 {
-            cap += (48000.0 * (1.0 + 200.0 / 1.0e6)) as u64;
-            play += 48_000;
-            hc.tick_with_control(
-                obs(true, true, 400.0, cap, play),
-                t * 1000,
-                ready_control(1),
-            );
-        }
-        assert_eq!(hc.ladder(), Ladder::L2Fallback);
-        assert_eq!(hc.fallback_reason(), FallbackReason::ProbeNoncompliant);
-
-        // Same generation and healthy actuator: no periodic re-probe.
-        for t in 40u64..50 {
-            cap += 48_000;
-            play += 48_000;
-            assert!(hc
-                .tick_with_control(
-                    obs(true, true, 400.0, cap, play),
-                    t * 1000,
-                    ready_control(1),
-                )
-                .is_empty());
-            assert_eq!(hc.ladder(), Ladder::L2Fallback);
-        }
-
-        // A real capture reopen is a new hardware epoch and resets the budget.
-        cap += 48_000;
-        play += 48_000;
-        let actions =
-            hc.tick_with_control(obs(true, true, 400.0, cap, play), 50_000, ready_control(2));
-        assert_eq!(hc.ladder(), Ladder::Probing);
-        assert_eq!(hc.probe_attempt(), 1);
-        assert_eq!(hc.fallback_reason(), FallbackReason::None);
-        assert!(matches!(
-            actions.last(),
             Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0
         ));
     }
@@ -3272,52 +3179,6 @@ mod tests {
         );
     }
 
-    /// Once the lane locks, the probe waits PROBE_SETTLE_SECS of CONTINUOUS lock
-    /// before the baseline starts (measured on the tick clock), then runs a clean
-    /// baseline+step over locked, on-rate data → passes and locks L0.
-    #[test]
-    fn probe_starts_after_lock_plus_settle_and_passes() {
-        let mut hc = HostClock::new(enabled_cfg());
-        hc.startup_neutralize();
-        let mut cap: u64 = 0;
-        let mut play: u64 = 0;
-        let mut t = 0u64;
-        // Phase A: 5 s of the lane's warmup ramp. The lane is not playing yet, so
-        // no session exists and the steep ramp slope never reaches a baseline.
-        for _ in 0..5 {
-            t += 1;
-            cap += (48000.0 * (1.0 + 1460.0 / 1.0e6)) as u64;
-            play += 48000;
-            hc.tick(obs(false, true, 400.0, cap, play), t * 1000);
-        }
-        assert!(
-            !hc.probe_waiting_for_lock(),
-            "no session while the lane warms up"
-        );
-        assert_eq!(hc.probe_result(), ProbeResult::None);
-        // Phase B: lane locks; a compliant host at a modest +100 ppm offset that
-        // follows the commanded step. The settle + baseline + step now run over
-        // clean locked data.
-        let offset = 100.0;
-        for _ in 0..(PROBE_SETTLE_SECS + PROBE_BASELINE_SECS + 6 + 3) {
-            t += 1;
-            let host_ppm = offset + hc.commanded_ppm();
-            cap += (48000.0 * (1.0 + host_ppm / 1.0e6)) as u64;
-            play += 48000;
-            hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
-        }
-        assert_eq!(
-            hc.probe_result(),
-            ProbeResult::Pass,
-            "clean locked baseline+step passes"
-        );
-        assert_eq!(hc.ladder(), Ladder::L0Locked);
-        assert!(
-            !hc.probe_waiting_for_lock(),
-            "locked ⇒ no longer waiting for lock"
-        );
-    }
-
     /// The settle timer is on the TICK clock, not wall time: it requires the
     /// accumulated `now_ms` since lock to reach PROBE_SETTLE_SECS, so a lock
     /// younger than the settle window keeps waiting and only crossing the window
@@ -3384,7 +3245,7 @@ mod tests {
     /// verdict, rather than hanging forever.
     #[test]
     fn correction_probe_settle_accrues_at_the_rail() {
-        let mut hc = HostClock::new(correction_cfg());
+        let mut hc = HostClock::new(enabled_cfg());
         hc.startup_neutralize();
         let mut cap: u64 = 1_000_000_000;
         let mut play: u64 = cap;
@@ -3448,7 +3309,7 @@ mod tests {
         // pitch; non-compliant ignores it. Runs long enough for the full settle +
         // baseline + step window plus slack.
         fn run(excess_ppm: f64, compliant: bool) -> HostClock {
-            let mut hc = HostClock::new(correction_cfg());
+            let mut hc = HostClock::new(enabled_cfg());
             hc.startup_neutralize();
             let mut cap: u64 = 1_000_000_000;
             let mut play: u64 = cap;
@@ -3530,7 +3391,7 @@ mod tests {
         // A compliant beyond-authority host: correction = (excess + applied pitch)
         // clamped to ±500. It rails at +500 baseline and unrails under the servo.
         let excess = 600.0;
-        let mut hc = HostClock::new(correction_cfg());
+        let mut hc = HostClock::new(enabled_cfg());
         hc.startup_neutralize();
         let mut cap: u64 = 1_000_000_000;
         let mut play: u64 = cap;
@@ -3611,35 +3472,6 @@ mod tests {
         );
     }
 
-    /// FILL mode settles on LOCK regardless of the `correction_ppm` field, which
-    /// it never consults (there is no resampler in that mode). This feeds a bogus
-    /// railed −500 to prove FILL never reads it.
-    #[test]
-    fn fill_mode_settle_ignores_correction_field() {
-        let mut hc = HostClock::new(enabled_cfg()); // ObsMode::Fill
-        hc.startup_neutralize();
-        let mut cap: u64 = 1_000_000_000;
-        let mut play: u64 = cap;
-        let mut t = 10u64;
-        // Locked, on-rate FILL data, but carry a bogus railed correction_ppm. FILL
-        // mode never consults it, so the settle proceeds after the normal 2 s.
-        for _ in 0..(PROBE_SETTLE_SECS + PROBE_BASELINE_SECS + 6 + 3) {
-            t += 1;
-            let host_ppm = 100.0 + hc.commanded_ppm();
-            cap += (48000.0 * (1.0 + host_ppm / 1.0e6)) as u64;
-            play += 48000;
-            let mut ob = obs(true, true, 400.0, cap, play);
-            ob.correction_ppm = -500.0; // never consulted in FILL mode
-            hc.tick(ob, t * 1000);
-        }
-        assert_eq!(
-            hc.probe_result(),
-            ProbeResult::Pass,
-            "FILL mode settles on lock and passes, ignoring the correction field"
-        );
-        assert_eq!(hc.ladder(), Ladder::L0Locked);
-    }
-
     /// Lock loss DURING the baseline restarts the wait: the in-flight measurement
     /// is contaminated (the lane re-entered its warmup regime), so the ladder
     /// drops back to AwaitLock, commands neutral, and requires a fresh
@@ -3692,45 +3524,6 @@ mod tests {
         );
     }
 
-    /// The settle gate is lock-only (`= playing`), NOT gated on a
-    /// live ring-fill level. This pins the invariant the ladder relies on: with a
-    /// slow host whose gadget ring never reaches the fill target (rides the
-    /// underflow floor under neutral pitch), the probe must still leave AwaitLock
-    /// after the settle and reach a verdict — a fill-level gate here would
-    /// deadlock it forever. We drive `fill_frames` pinned BELOW target the whole
-    /// time and confirm the probe baselines and passes anyway.
-    #[test]
-    fn usbsink_style_settle_only_lock_probes_despite_low_ring() {
-        let mut hc = HostClock::new(enabled_cfg());
-        hc.startup_neutralize();
-        let mut cap: u64 = 1_000_000_000;
-        let mut play: u64 = cap;
-        let mut t = 0u64;
-        // locked = playing (fill is irrelevant to the gate). Model a slow-host
-        // ring stuck at 1 period (256 frames), well below the 384-frame target,
-        // for the ENTIRE session.
-        let ob = |cap: u64, play: u64| -> Obs { obs(true, true, 256.0, cap, play) };
-        // A modest, compliant host at +100 ppm that follows the commanded step.
-        let offset = 100.0;
-        for _ in 0..(PROBE_SETTLE_SECS + PROBE_BASELINE_SECS + 6 + 3) {
-            t += 1;
-            let host_ppm = offset + hc.commanded_ppm();
-            cap += (48000.0 * (1.0 + host_ppm / 1.0e6)) as u64;
-            play += 48000;
-            hc.tick(ob(cap, play), t * 1000);
-        }
-        assert_eq!(
-            hc.probe_result(),
-            ProbeResult::Pass,
-            "settle-only lock probes and passes even with the ring below target"
-        );
-        assert_eq!(hc.ladder(), Ladder::L0Locked);
-        assert!(
-            !hc.probe_waiting_for_lock(),
-            "settle-only ⇒ not stuck in AwaitLock on a low ring"
-        );
-    }
-
     /// The disabled-config fragment carries `probe.waiting_for_lock:false`. Pins
     /// the shape at the accessor level in addition to the byte-exact
     /// `host_clock_fragment_shape_is_stable`.
@@ -3780,355 +3573,7 @@ mod tests {
         );
     }
 
-    // ---- Closed-loop servo -------------------------------------------------
-
-    /// The headline servo test: a host at a constant crystal offset, once
-    /// L0-locked, is steered to hold the ring at target WITHOUT oscillation.
-    /// We simulate a modeled host reaction lag (the host takes ~1-2 ticks to
-    /// act on a new command) and quantized 256-frame fill.
-    #[test]
-    fn locked_servo_settles_without_oscillation() {
-        for offset_ppm in [-200.0, 200.0] {
-            let mut hc = HostClock::new(enabled_cfg());
-            hc.startup_neutralize();
-            // Force into L0 quickly with a clean compliant probe, then hand off
-            // to the closed loop below.
-            drive_to_l0(&mut hc, offset_ppm);
-            assert_eq!(hc.ladder(), Ladder::L0Locked, "must lock before servo test");
-
-            // Closed loop: the host's *effective* delivery rate = its crystal
-            // offset PLUS the commanded bias it is honoring (with a 1-tick lag).
-            // fill integrates (host_rate − dac_rate) frames each tick.
-            let target = 384.0;
-            let mut fill = target;
-            let mut cap: u64 = hc_cap_start();
-            let mut play: u64 = cap; // start aligned
-            let mut commanded_history = vec![0.0f64];
-            let mut fills = Vec::new();
-            let mut t = 100u64;
-            for _ in 0..400 {
-                // Host honors the command from ~1 tick ago (reaction lag).
-                let honored = *commanded_history
-                    .get(commanded_history.len().saturating_sub(2))
-                    .unwrap_or(&0.0);
-                let host_ppm = offset_ppm + honored;
-                let host_frames = 48000.0 * (1.0 + host_ppm / 1.0e6);
-                cap += host_frames as u64;
-                play += 48000;
-                // Quantize fill to whole 256-frame periods (the gadget ring).
-                fill += host_frames - 48000.0;
-                let quantized = (fill / 256.0).round() * 256.0;
-                let actions = hc.tick(obs(true, true, quantized, cap, play), t * 1000);
-                let cmd = match actions.last() {
-                    Some(Action::WritePitch { ppm, .. }) => *ppm,
-                    None => *commanded_history.last().unwrap(),
-                };
-                commanded_history.push(cmd);
-                fills.push(hc.commanded_ppm());
-                t += 1;
-            }
-            // Settled tail: the commanded ppm should converge to ~ −offset (to
-            // cancel the crystal offset) and NOT oscillate. Count sign flips of
-            // the tail's derivative.
-            let tail = &fills[300..];
-            let mean: f64 = tail.iter().sum::<f64>() / tail.len() as f64;
-            // Commanded bias ≈ −offset (feed-forward + trim cancel the offset).
-            assert!(
-                (mean + offset_ppm).abs() < 120.0,
-                "settled command {mean} should ~cancel offset {offset_ppm}"
-            );
-            // Bounded: never leaves the clamp.
-            assert!(tail.iter().all(|c| c.abs() <= MAX_BIAS_PPM + 1e-6));
-            // No sustained oscillation: few sign flips around the mean.
-            let mut flips = 0usize;
-            let mut prev = 0i8;
-            for c in tail {
-                let s = (c - mean).signum() as i8;
-                if s != 0 && prev != 0 && s != prev {
-                    flips += 1;
-                }
-                if s != 0 {
-                    prev = s;
-                }
-            }
-            assert!(
-                flips < 40,
-                "settled command oscillates ({flips} sign flips) for offset {offset_ppm}"
-            );
-        }
-    }
-
-    /// The servo CLAMP: a huge persistent fill error drives the DLL demand well
-    /// past ±MAX_BIAS_PPM, but the commanded bias never leaves the ±1000 ppm
-    /// Windows validity window. Asserted on the FIRST ticks after L0, inside the
-    /// 10-tick L2 mid-stream demotion window, because a railed-and-unfollowed
-    /// host is CORRECTLY demoted shortly after.
-    #[test]
-    fn clamp_holds_under_large_offset() {
-        let mut hc = HostClock::new(enabled_cfg());
-        hc.startup_neutralize();
-        drive_to_l0(&mut hc, 500.0);
-        assert_eq!(hc.ladder(), Ladder::L0Locked);
-        // A huge positive fill error (ring far above target). Feed it for a few
-        // ticks and assert the command rails at the clamp and a saturation is
-        // observable — checked inside the pre-L2 window (< L2_SUSTAIN_TICKS).
-        let mut cap = hc_cap_start();
-        let mut play = cap;
-        let mut railed = false;
-        for i in 0..(L2_SUSTAIN_TICKS - 1) {
-            cap += 48000;
-            play += 48000;
-            hc.tick(obs(true, true, 20000.0, cap, play), (100 + i as u64) * 1000);
-            if hc.commanded_ppm().abs() >= MAX_BIAS_PPM - 1e-6 {
-                railed = true;
-            }
-        }
-        assert!(
-            railed,
-            "command must rail at ±{MAX_BIAS_PPM} ppm under a huge fill error, got {}",
-            hc.commanded_ppm()
-        );
-        // And it never exceeded the clamp on any tick.
-        assert!(hc.commanded_ppm().abs() <= MAX_BIAS_PPM + 1e-6);
-    }
-
-    /// Mid-stream demotion: a locked host that STOPS honoring the command (the
-    /// ring keeps diverging in the uncorrected direction while the command is
-    /// saturated) is demoted to L2 after L2_SUSTAIN_TICKS, pitch → neutral,
-    /// demotion counted.
-    #[test]
-    fn saturated_unfollowed_host_demotes_to_l2_midstream() {
-        let mut hc = HostClock::new(enabled_cfg());
-        hc.startup_neutralize();
-        drive_to_l0(&mut hc, 500.0);
-        assert_eq!(hc.ladder(), Ladder::L0Locked);
-        let demotions_before = hc.demotions();
-        // Host ignores the command: fill pinned huge AND the slope keeps pushing
-        // fill up (capture persistently outruns playback) — the "uncorrected"
-        // condition. Command saturates negative; slope stays strongly positive.
-        let mut cap = hc_cap_start();
-        let mut play = cap;
-        let mut neutral_after_demote = false;
-        for i in 0..(L2_SUSTAIN_TICKS + 5) {
-            // +2000 ppm divergence >> probe_ppm/2, in the uncorrected direction.
-            cap += (48000.0 * (1.0 + 2000.0 / 1.0e6)) as u64;
-            play += 48000;
-            let actions = hc.tick(obs(true, true, 20000.0, cap, play), (100 + i as u64) * 1000);
-            if hc.ladder() == Ladder::L2Fallback && !neutral_after_demote {
-                neutral_after_demote = matches!(
-                    actions.last(),
-                    Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0
-                );
-            }
-        }
-        assert_eq!(hc.ladder(), Ladder::L2Fallback, "must demote mid-stream");
-        assert_eq!(hc.demotions(), demotions_before + 1, "demotion counted");
-        assert!(neutral_after_demote, "demotion forces neutral pitch");
-    }
-
-    // ---- Anti-windup -------------------------------------------------------
-
-    /// After a large transient rails the command, once the fill CROSSES BACK
-    /// past the target the anti-windup reset keeps the DLL from holding the
-    /// command railed the WRONG way. Unguarded, an integrator wound toward "slow
-    /// the host" while the ring was far above target keeps the command pinned
-    /// negative after the ring drops below target, draining the cushion.
-    #[test]
-    fn anti_windup_reset_prevents_wrong_way_rail_after_transient() {
-        let mut hc = HostClock::new(enabled_cfg());
-        hc.startup_neutralize();
-        drive_to_l0(&mut hc, 0.0);
-        assert_eq!(hc.ladder(), Ladder::L0Locked);
-        let target = hc.cfg.target_fill_frames;
-
-        let mut cap = hc_cap_start();
-        let mut play = cap;
-        let mut t = 200u64;
-        // Phase 1: a big POSITIVE fill error (ring far above target). The DLL
-        // integrator winds toward a strongly NEGATIVE command (slow the host).
-        // Keep the divergence slope small so we exercise WINDUP, not the L2
-        // demotion path (which needs a sustained wrong-way slope).
-        for _ in 0..8 {
-            cap += 48000;
-            play += 48000;
-            hc.tick(obs(true, true, target + 5000.0, cap, play), t * 1000);
-            t += 1;
-        }
-        assert!(
-            hc.commanded_ppm() < -MAX_BIAS_PPM + 1.0,
-            "command should rail negative during the high-fill transient, got {}",
-            hc.commanded_ppm()
-        );
-        let windup_before = hc.anti_windup_events();
-        // Phase 2: the ring collapses to FAR BELOW target (error flips sign).
-        // A wound DLL would keep commanding negative for many ticks; the guard
-        // resets it so the command swings positive toward the new error.
-        let mut recovered_positive = false;
-        for _ in 0..8 {
-            cap += 48000;
-            play += 48000;
-            hc.tick(
-                obs(true, true, (target - 5000.0).max(0.0), cap, play),
-                t * 1000,
-            );
-            if hc.commanded_ppm() > 0.0 {
-                recovered_positive = true;
-            }
-            t += 1;
-        }
-        assert!(
-            hc.anti_windup_events() > windup_before,
-            "anti-windup should engage on the sign-flip transient"
-        );
-        assert!(
-            recovered_positive,
-            "after the fill crossed below target the command must point back toward target (positive), not stay railed negative — commanded={}",
-            hc.commanded_ppm()
-        );
-    }
-
-    /// The anti-windup guard must NOT fire in normal locked tracking (small
-    /// on-target errors), or it would needlessly reset the loop every tick.
-    #[test]
-    fn anti_windup_does_not_fire_in_steady_tracking() {
-        let mut hc = HostClock::new(enabled_cfg());
-        hc.startup_neutralize();
-        drive_to_l0(&mut hc, 100.0);
-        let before = hc.anti_windup_events();
-        let mut cap = hc_cap_start();
-        let mut play = cap;
-        for i in 0..60 {
-            cap += 48000;
-            play += 48000;
-            // On-target ring, tiny error — the command is well inside the clamp.
-            hc.tick(obs(true, true, 384.0, cap, play), (300 + i as u64) * 1000);
-        }
-        assert_eq!(
-            hc.anti_windup_events(),
-            before,
-            "anti-windup must not engage while tracking on-target"
-        );
-    }
-
-    /// The L2 slope threshold is DECOUPLED from probe_ppm via the absolute
-    /// floor `max(probe_ppm/2, L2_SLOPE_FLOOR_PPM)`. With a SMALL probe
-    /// (probe_ppm=100 ⇒ probe_ppm/2 = 50) a bare probe_ppm/2 threshold would
-    /// make demotion HAIR-TRIGGER; the floor keeps the operative threshold at
-    /// 100, so a 70-ppm drift — above probe_ppm/2 but below the floor — must NOT
-    /// demote.
-    #[test]
-    fn l2_slope_floor_prevents_hair_trigger_demotion_with_small_probe() {
-        let mut cfg = enabled_cfg();
-        cfg.probe_ppm = 100.0; // probe_ppm/2 = 50, below the 100 ppm floor
-        let mut hc = HostClock::new(cfg);
-        hc.startup_neutralize();
-        drive_to_l0(&mut hc, 100.0); // compliant probe follows +100 step
-        assert_eq!(hc.ladder(), Ladder::L0Locked);
-        // Ring pinned huge (command rails negative) AND a +70 ppm wrong-way
-        // drift — ABOVE probe_ppm/2 (50) but BELOW the floor (100). A pure
-        // probe_ppm/2 threshold would demote; the floor must prevent it.
-        let mut cap = hc_cap_start();
-        let mut play = cap;
-        for i in 0..(L2_SUSTAIN_TICKS + 10) {
-            cap += (48000.0 * (1.0 + 70.0 / 1.0e6)) as u64;
-            play += 48000;
-            hc.tick(obs(true, true, 20000.0, cap, play), (400 + i as u64) * 1000);
-        }
-        assert_ne!(
-            hc.ladder(),
-            Ladder::L2Fallback,
-            "a 70 ppm drift (below the 100 ppm floor) must NOT demote even with \
-             a tiny probe — the floor decouples demotion sensitivity from the \
-             probe-step magnitude"
-        );
-    }
-
-    /// The complement: with the same small probe, a drift ABOVE the floor
-    /// (140 ppm > 100) under a railed command DOES demote — the floor is a
-    /// real threshold, not an unconditional escape hatch.
-    #[test]
-    fn l2_slope_floor_still_demotes_above_floor_with_small_probe() {
-        let mut cfg = enabled_cfg();
-        cfg.probe_ppm = 100.0;
-        let mut hc = HostClock::new(cfg);
-        hc.startup_neutralize();
-        drive_to_l0(&mut hc, 100.0);
-        assert_eq!(hc.ladder(), Ladder::L0Locked);
-        let demotions_before = hc.demotions();
-        let mut cap = hc_cap_start();
-        let mut play = cap;
-        for i in 0..(L2_SUSTAIN_TICKS + 5) {
-            cap += (48000.0 * (1.0 + 140.0 / 1.0e6)) as u64; // > 100 floor
-            play += 48000;
-            hc.tick(obs(true, true, 20000.0, cap, play), (400 + i as u64) * 1000);
-        }
-        assert_eq!(
-            hc.ladder(),
-            Ladder::L2Fallback,
-            "drift above floor must demote"
-        );
-        assert_eq!(hc.demotions(), demotions_before + 1);
-    }
-
-    /// At the DEFAULT probe (probe_ppm=300 ⇒ probe_ppm/2 = 150) the floor (100)
-    /// is BELOW probe_ppm/2, so the operative L2 threshold stays 150 — the
-    /// floor only ever RAISES sensitivity for small probes, never lowers the
-    /// default. A +120 ppm wrong-way drift is below 150, so a railed command
-    /// facing it must NOT demote within the sustain window (it stays locked).
-    #[test]
-    fn default_probe_demotion_threshold_unchanged_by_floor() {
-        let mut hc = HostClock::new(enabled_cfg()); // probe_ppm = 300
-        hc.startup_neutralize();
-        drive_to_l0(&mut hc, 500.0);
-        assert_eq!(hc.ladder(), Ladder::L0Locked);
-        // A +120 ppm wrong-way drift: below probe_ppm/2 (150). Must NOT demote
-        // within the L2 window — the default threshold is unchanged at 150.
-        let mut cap = hc_cap_start();
-        let mut play = cap;
-        for i in 0..(L2_SUSTAIN_TICKS + 5) {
-            cap += (48000.0 * (1.0 + 120.0 / 1.0e6)) as u64;
-            play += 48000;
-            hc.tick(obs(true, true, 20000.0, cap, play), (500 + i as u64) * 1000);
-        }
-        assert_ne!(
-            hc.ladder(),
-            Ladder::L2Fallback,
-            "at default probe (threshold 150) a 120 ppm drift is sub-threshold; \
-             the railed command must NOT demote — the floor must not lower the \
-             default sensitivity"
-        );
-    }
-
     // ---- Write suppression -------------------------------------------------
-
-    /// Steady state within the epsilon produces no repeated writes; and writes
-    /// obey the ≤1 Hz cadence.
-    #[test]
-    fn steady_state_suppresses_writes() {
-        let mut hc = HostClock::new(enabled_cfg());
-        hc.startup_neutralize();
-        drive_to_l0(&mut hc, 100.0);
-        // Now feed a perfectly on-target ring so the command barely changes.
-        let mut cap = hc_cap_start();
-        let mut play = cap;
-        let mut writes = 0usize;
-        let mut t = 100u64;
-        for _ in 0..60 {
-            cap += 48000;
-            play += 48000;
-            let actions = hc.tick(obs(true, true, 384.0, cap, play), t * 1000);
-            writes += actions
-                .iter()
-                .filter(|a| matches!(a, Action::WritePitch { reset: false, .. }))
-                .count();
-            t += 1;
-        }
-        // At most one non-reset write per second, and near-zero once settled.
-        assert!(
-            writes <= 5,
-            "steady state should barely write, got {writes}"
-        );
-    }
 
     #[test]
     fn reset_writes_bypass_suppression() {
@@ -4173,23 +3618,13 @@ mod tests {
             Action::WritePitch { ppm, reset: true } if ppm == 0.0
         ));
 
-        // (c) demotion (probe fail) forces neutral. Latch with `||=` so the
-        // quiet L2 ticks that follow the demotion (which emit no action) can't
-        // clobber the observation from the demotion tick itself.
-        let mut hc = HostClock::new(enabled_cfg());
-        hc.startup_neutralize();
-        let mut cap = 0u64;
-        let mut play = 0u64;
-        let mut demote_neutral = false;
-        for t in 1u64..40 {
-            cap += (48000.0 * (1.0 + 200.0 / 1.0e6)) as u64;
-            play += 48000;
-            let actions = hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
-            if hc.ladder() == Ladder::L2Fallback {
-                demote_neutral |= matches!(actions.last(), Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0);
-            }
-        }
-        assert!(demote_neutral, "demotion forces neutral pitch");
+        // (c) demotion (probe fail) forces neutral. A non-compliant host against
+        // the real inner loop (same simulation as
+        // `correction_mode_noncompliant_host_probes_fail_and_falls_to_l2`) ends
+        // demoted with the command forced neutral.
+        let (hc, ..) = run_correction_real(250.0, false, 200, 0.0, 70);
+        assert_eq!(hc.ladder(), Ladder::L2Fallback);
+        assert_eq!(hc.commanded_ppm(), 0.0, "demotion forces neutral pitch");
 
         // (d) idle boundary forces neutral.
         let mut hc = HostClock::new(enabled_cfg());
@@ -4199,50 +3634,6 @@ mod tests {
         assert!(
             matches!(idle.last(), Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0),
             "idle forces neutral pitch"
-        );
-    }
-
-    // ---- L1 warn -----------------------------------------------------------
-
-    /// L1_WARN (warn surface only): the raw demand is unusually high but the
-    /// loop is still tracking (slope BELOW the L2 uncorrected threshold, so this
-    /// is NOT a demotion). The physical case is a host with a large real crystal
-    /// offset that we can only partially correct through the ±1000 ppm clamp:
-    /// the residual fill error persists, the DLL demand integrates past
-    /// L1_WARN_PPM, yet the fill is only creeping (small slope), so we keep
-    /// commanding (clamped) rather than demoting. The commanded bias stays
-    /// clamped throughout; only the WARN surface changes.
-    #[test]
-    fn sustained_high_demand_raises_l1_warn() {
-        let mut hc = HostClock::new(enabled_cfg());
-        hc.startup_neutralize();
-        drive_to_l0(&mut hc, 100.0);
-        assert_eq!(hc.ladder(), Ladder::L0Locked);
-        // A persistent moderate fill error (err = 1384 - 384 = 1000 frames)
-        // drives the DLL demand well past L1_WARN_PPM within the sustain window,
-        // while a SMALL steady slope (+100 ppm < probe_ppm/2 = 150) keeps the L2
-        // "uncorrected" evidence from firing.
-        let mut cap = hc_cap_start();
-        let mut play = cap;
-        let mut saw_l1 = false;
-        let mut ever_demoted = false;
-        for i in 0..(L1_SUSTAIN_TICKS + 80) {
-            cap += (48000.0 * (1.0 + 100.0 / 1.0e6)) as u64; // +100 ppm slope
-            play += 48000;
-            hc.tick(obs(true, true, 1384.0, cap, play), (100 + i as u64) * 1000);
-            if hc.ladder() == Ladder::L1Warn {
-                saw_l1 = true;
-            }
-            if hc.ladder() == Ladder::L2Fallback {
-                ever_demoted = true;
-            }
-            // The command never leaves the clamp even while warned.
-            assert!(hc.commanded_ppm().abs() <= MAX_BIAS_PPM + 1e-6);
-        }
-        assert!(saw_l1, "sustained high demand must raise L1_WARN");
-        assert!(
-            !ever_demoted,
-            "a tracking-but-high loop must WARN (L1), not demote (L2)"
         );
     }
 
@@ -4262,13 +3653,13 @@ mod tests {
         let fragment = hc.status_fragment();
         assert_eq!(
             fragment,
-            r#"{"enabled":false,"ladder":"disabled","fallback_reason":null,"obs_mode":"fill","pitch_ppm_commanded":0.0,"fill_frames":0,"fill_slope_ppm":0.00,"fill_variance":0.00,"correction_ppm":0.00,"hold":{"active":false,"ticks":0,"reason":null},"dll":{"err_frames":0.00,"locked":false},"actuator":{"ready":false,"capture_generation":0,"control_generation":null,"refreshes":0,"open_failures":0,"write_failures":0,"readback_ctl_value":null},"probe":{"phase":null,"attempt":1,"max_attempts":2,"last_attempt_result":"none","last_attempt_response_ratio":null,"final_result":"none","final_response_ratio":null,"last_result":"none","response_ratio":null,"retries":0,"waiting_for_lock":false},"demotions":0,"transitions":0,"last_transition_reason":"startup"}"#
+            r#"{"enabled":false,"ladder":"disabled","fallback_reason":null,"obs_mode":"correction","pitch_ppm_commanded":0.0,"fill_frames":0,"fill_slope_ppm":0.00,"fill_variance":0.00,"correction_ppm":0.00,"hold":{"active":false,"ticks":0,"reason":null},"dll":{"err_frames":0.00,"locked":false},"actuator":{"ready":false,"capture_generation":0,"control_generation":null,"refreshes":0,"open_failures":0,"write_failures":0,"readback_ctl_value":null},"probe":{"phase":null,"attempt":1,"max_attempts":2,"last_attempt_result":"none","last_attempt_response_ratio":null,"final_result":"none","final_response_ratio":null,"last_result":"none","response_ratio":null,"retries":0,"waiting_for_lock":false},"demotions":0,"transitions":0,"last_transition_reason":"startup"}"#
         );
         // And it parses as valid JSON.
         let parsed: serde_json::Value = serde_json::from_str(&fragment).unwrap();
         assert_eq!(parsed["enabled"].as_bool(), Some(false));
         assert_eq!(parsed["ladder"].as_str(), Some("disabled"));
-        assert_eq!(parsed["obs_mode"].as_str(), Some("fill"));
+        assert_eq!(parsed["obs_mode"].as_str(), Some("correction"));
         assert_eq!(parsed["correction_ppm"].as_f64(), Some(0.0));
         assert!(parsed["probe"]["response_ratio"].is_null());
     }
@@ -4278,20 +3669,15 @@ mod tests {
     /// telemetry; the prefix only namespaces each daemon's `event=` lines.
     #[test]
     fn log_prefix_does_not_alter_wire_fragment() {
-        let usb = {
+        let fragment_for = |prefix: &'static str| {
             let mut cfg = enabled_cfg();
             cfg.enabled = false;
-            cfg.log_prefix = "usbsink_audio";
-            HostClock::new(cfg).status_fragment()
-        };
-        let fanin = {
-            let mut cfg = enabled_cfg();
-            cfg.enabled = false;
-            cfg.log_prefix = "fanin";
+            cfg.log_prefix = prefix;
             HostClock::new(cfg).status_fragment()
         };
         assert_eq!(
-            usb, fanin,
+            fragment_for("fanin"),
+            fragment_for("other_daemon"),
             "the status_fragment wire shape must be identical across daemons; \
              log_prefix only namespaces the event= log lines"
         );
@@ -4395,10 +3781,12 @@ mod tests {
         1_000_000_000
     }
 
-    /// `drive_to_l0`'s CORRECTION-mode twin. The compliant host's resampler
-    /// correction follows the commanded pitch one-for-one
-    /// (`correction = crystal + commanded`), so the probe reads a response ratio
-    /// of ~1 and passes. Returns the counters so the caller can keep stepping.
+    /// Fast-forward a HostClock into L0_LOCKED with a compliant probe at the
+    /// given crystal offset, so servo tests can isolate the locked loop. The
+    /// compliant host's resampler correction follows the commanded pitch
+    /// one-for-one (`correction = crystal + commanded`), so the probe reads a
+    /// response ratio of ~1 and passes. Returns the counters so the caller can
+    /// keep stepping.
     fn drive_to_l0_correction(hc: &mut HostClock, offset_ppm: f64) -> (u64, u64) {
         let mut cap: u64 = hc_cap_start();
         let mut play: u64 = cap;
@@ -4411,23 +3799,5 @@ mod tests {
             hc.tick(o, t * 1000);
         }
         (cap, play)
-    }
-
-    /// Fast-forward a HostClock into L0_LOCKED with a compliant probe at the
-    /// given crystal offset, so servo tests can isolate the locked loop. The
-    /// compliant host's effective rate is `offset + commanded`, so during the
-    /// +probe_ppm step the divergence slope moves ~probe_ppm ⇒ a passing
-    /// response_ratio. Keying the host rate on `hc.commanded_ppm()` rather than a
-    /// hardcoded tick schedule keeps this robust to phase-timing shifts.
-    fn drive_to_l0(hc: &mut HostClock, offset_ppm: f64) {
-        let mut cap: u64 = 0;
-        let mut play: u64 = 0;
-        // settle (2) + baseline (4) + step (6) + slack. The rising edge is tick 1.
-        for t in 1u64..=(PROBE_SETTLE_SECS + PROBE_BASELINE_SECS + 6 + 3) {
-            let host_ppm = offset_ppm + hc.commanded_ppm();
-            cap += (48000.0 * (1.0 + host_ppm / 1.0e6)) as u64;
-            play += 48000;
-            hc.tick(obs(true, true, 384.0, cap, play), t * 1000);
-        }
     }
 }
