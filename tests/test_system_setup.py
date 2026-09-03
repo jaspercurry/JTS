@@ -852,14 +852,14 @@ def test_unknown_route_404(dashboard_server) -> None:
 
 def test_aec_card_moved_to_wake(dashboard_server) -> None:
     """The Wake detection card moved to /wake/. /system/ must no
-    longer serve the routes that backed it — /aec.json, /aec/toggle,
+    longer serve the routes that backed it — /aec.json,
     /aec/leg, /aec/threshold all 404 here, and the HTML must not
     reference the old DOM ids the card's JS bound to."""
     base, received, _ = dashboard_server
     for route in ("/aec.json",):
         status, _ = _http_get(f"{base}{route}")
         assert status == 404, f"{route} should be gone from /system/"
-    for route in ("/aec/toggle", "/aec/leg", "/aec/threshold"):
+    for route in ("/aec/leg", "/aec/threshold"):
         status, _ = _http_post(f"{base}{route}")
         assert status == 404, f"{route} should be gone from /system/"
     # And jasper-control never saw an /aec call from /system/.

@@ -5,10 +5,10 @@ Description=Re-measure XVF3800 chip-AEC alignment (audible sweeps)
 Type=oneshot
 EnvironmentFile=/etc/jasper/jasper.env
 ExecStart=/opt/jasper/.venv/bin/jasper-aec-commission
-# The CLI's own per-step ceilings (reconciler waits, service stops, the XVF
-# reset, three 30 s reference-queue windows, 24 timing captures, the 120 s
-# adaptation playback) sum to under 10 minutes; 15 keeps scheduling headroom
-# without letting a hang camp on the audio stack.
+# The CLI's own step ceilings (reconciler-idle wait, service stop, XVF
+# reset, the bounded capture/adaptation sweeps, cleanup reconcile) each
+# cap at 30s or less and sum to a few minutes worst case; 15 keeps
+# scheduling headroom without letting a hang camp on the audio stack.
 TimeoutStartSec=15min
 
 # Root: it stops/starts the audio services, resets the XVF over USB, and
