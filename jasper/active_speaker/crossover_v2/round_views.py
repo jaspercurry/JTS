@@ -28,7 +28,9 @@ from jasper.active_speaker import flat_spec
 from jasper.active_speaker.flat_spec import REFERENCE_BAND_HZ, FlatSpecReport, evaluate_flat_spec
 from jasper.audio_measurement.gating import ENTANGLEMENT_SOURCE_UNKNOWN
 from jasper.active_speaker.flat_spec_views import (
+    DirectivityTable,
     PositionCurve,
+    directivity_table,
     role_split_flatness,
     _evaluate_position,
     _exclusion_mask,
@@ -95,6 +97,7 @@ __all__ = [
     "agreement_table",
     "audibility_co_metrics",
     "default_agreement_lo_hz",
+    "directivity_view",
     "entry_state_grade",
     "forward_model_verify_delta",
     "frozen_reference_grade",
@@ -1482,4 +1485,29 @@ def audibility_co_metrics(
         pooled_window=pooled_metrics,
         pooled_window_reason=pooled_reason,
         pooled_window_bearings_deg=bearings,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Measured per-angle directivity (#3865)
+# --------------------------------------------------------------------------- #
+
+
+def directivity_view(banked: BankedRound) -> DirectivityTable:
+    """This round's cloud seats as departures from their on-axis reference.
+
+    Per graded band each seat's difference splits into a level offset (the
+    band's directivity index, which a trim can remove) and the shape residual
+    it cannot — the arithmetic is
+    :func:`~jasper.active_speaker.flat_spec_views.directivity_table`'s.
+    **Observed only: no grade moves.**
+
+    A round banked before the seat bearings were written still answers, as a
+    table with ``angles_recorded`` false and every ``degrees`` ``None``:
+    role-labelled directivity is a narrower reading, not an unreadable round.
+    """
+    return directivity_table(
+        banked.graded_report,
+        banked.graded_positions,
+        reference_role=DEFAULT_PRIMARY_ROLE,
     )
