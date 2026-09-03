@@ -20,7 +20,6 @@ TRAVEL_ROUTES_TOOL_PARAMETERS = {
         "travel_mode": {
             "type": "string",
             "enum": [
-                "",
                 "transit",
                 "public transit",
                 "train",
@@ -37,7 +36,7 @@ TRAVEL_ROUTES_TOOL_PARAMETERS = {
                 "cycling",
             ],
             "description": (
-                "Leave empty to use the speaker's saved default. Set only "
+                "Omit to use the speaker's saved default. Set only "
                 "when the user explicitly asks for a mode."
             ),
         },
@@ -67,7 +66,7 @@ Args:
   destination: Required. Pass the complete spoken destination text, preserving
     qualifiers and names such as "30 Rock", "JFK Terminal 4", "Brooklyn
     Museum", or "125th and Lenox".
-  travel_mode: Optional. Leave empty unless the user explicitly names a mode.
+  travel_mode: Optional. Omit unless the user explicitly names a mode.
     Map "drive/driving/car" to drive, "walk/walking" to walk, "bike/bicycle"
     to bicycle, and "train/subway/bus/public transit" to transit.
   max_routes: Use 1 when the user asks only "how long" / ETA. Use 2 when the
@@ -101,7 +100,7 @@ I get to...", "how can I get to...", including explicit mode requests like
 "drive", "walk", "bike", "train", "subway", "bus", or "public transit".
 
 destination is required and should preserve the complete spoken place text.
-Leave travel_mode empty unless the user explicitly names a mode. Use max_routes
+Omit travel_mode unless the user explicitly names a mode. Use max_routes
 1 for simple ETA questions and 2 for "options" / "how can I get there" route
 overview questions.
 
