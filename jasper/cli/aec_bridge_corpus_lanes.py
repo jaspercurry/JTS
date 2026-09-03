@@ -35,12 +35,12 @@ from jasper.aec_sweep import (
 from jasper.log_event import log_event
 from jasper.cli.aec_bridge import (
     BridgeConfig,
-    LegEmitter,
     _add_loop_emitter,
     _bridge_stats,
     _env_bool,
     logger,
 )
+from jasper.cli.aec_bridge_telemetry import LegEmitter
 
 
 class Aec3Engine(Protocol):
