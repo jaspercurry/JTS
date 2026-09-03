@@ -15,11 +15,23 @@ raising.
 from __future__ import annotations
 
 import json
+import os
+import shlex
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
+from jasper import chip_aec_health
 from jasper.chip_aec_policy import ChipAecGate
 from jasper.cli import chip_aec_policy
+
+ROOT = Path(__file__).resolve().parents[1]
+# Everything an operator-supplied park reason can carry that shell would
+# otherwise act on: an apostrophe, a command substitution, a backquote, a
+# double quote, and the line break that would split the assignment in two.
+HOSTILE_REASON = "it's a $(rm -rf /) `whoami` \"6-ch\" mic\nsecond line"
 
 
 def test_query_outputd_status_empty_path_short_circuits():
@@ -115,3 +127,47 @@ def test_main_forwards_status_and_emits_shell_or_json(monkeypatch, capsys):
         "--dac-id", "apple_usb_c_dongle", "--shell-env",
     ]) == 0
     assert "JASPER_CHIP_AEC_DAC_GATE_STATUS=approved" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "disposition",
+    [chip_aec_health.XVF_UNUSABLE, chip_aec_health.DAC_UNCALIBRATED],
+)
+def test_shell_measured_free_text_survives_the_reconcilers_eval(
+    disposition: str,
+) -> None:
+    """The two dispositions whose reason `deploy/bin/jasper-aec-reconcile`
+    measures itself, driven the way it drives them: this shim's stdout is
+    eval'd by bash.  Free text reaches the record as one collapsed line and
+    nothing in it is executed.
+    """
+    emit = shlex.join(
+        [
+            sys.executable, "-m", "jasper.cli.chip_aec_policy",
+            "--alignment", disposition, "--reason", HOSTILE_REASON,
+        ]
+    )
+    result = subprocess.run(
+        [
+            "bash", "-c",
+            f'eval "$({emit})"; printf %s "${chip_aec_health.REASON_KEY}"',
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=ROOT,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
+    )
+
+    assert result.stdout == " ".join(HOSTILE_REASON.split())
+
+
+def test_an_unknown_alignment_token_fails_at_the_parser() -> None:
+    """The shell call sites are `|| true`, so a typo that only raised inside
+    `alignment_health` would print nothing and silently leave the last record
+    standing.  argparse's closed vocabulary makes it a CI-visible exit 2.
+    """
+    with pytest.raises(SystemExit) as exit_info:
+        chip_aec_policy.main(["--alignment", "half_applied"])
+
+    assert exit_info.value.code == 2

@@ -17,6 +17,7 @@ truth. That classification should not live in one HTTP handler.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping
 
 from .chip_aec_health import (
@@ -27,6 +28,10 @@ from .chip_aec_policy import (
     ACTION_USE_SOFTWARE_OR_TEST, STATUS_TESTING, permits_selection,
 )
 
+
+# The operator's audio-input selection, written by the /aec wizard and read
+# back by every consumer of the vocabulary below.
+DEFAULT_AEC_MODE_PATH = Path("/var/lib/jasper/aec_mode.env")
 
 PROFILE_AUTO = "auto"
 PROFILE_XVF_CHIP_AEC = "xvf_chip_aec"

@@ -1727,7 +1727,9 @@ park_to_reference_leg() {
 # xvf_*-only branch tests it directly, the rest inherit it from
 # managed_xvf_policy_applies — so a custom profile never writes these keys AND
 # never clears them, and the stamp is never `custom`. That is what leaves a
-# leftover for a consumer with no stamp to check.
+# leftover for a consumer with no stamp to check. A mode file predating
+# JASPER_AUDIO_INPUT_PROFILE reaches those guards already stamped — see
+# ensure_mode_file's backfill, which runs before any of this.
 # jasper.chip_aec_policy's module docstring owns the reading rule, for this
 # record and the DAC one alike; jasper.audio_profile_state applies it here.
 #
@@ -1747,6 +1749,18 @@ commit_alignment_record() {
     set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_ALIGNMENT_SELECTION "${JASPER_AEC_CHIP_AEC_ALIGNMENT_SELECTION:-}"
 }
 
+# Load one record's shell assignments and commit them. A payload with no STATUS
+# key, or one `eval` rejects, leaves the last record standing and reports it: a
+# half-eval'd payload must never reach commit_alignment_record, and every caller
+# runs this from a condition, where errexit is suspended and a failed `eval`
+# would otherwise fall through to a commit of whatever the previous pass set.
+_apply_alignment_payload() {
+    local payload="$1"
+    [[ "$payload" == *"JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS="* ]] || return 1
+    eval "$payload" || return 1
+    commit_alignment_record
+}
+
 # Publish jasper.chip_aec_health's record for a disposition token, plus
 # --reason/--action for the dispositions whose text this script measured itself.
 # ADR-0101: an unresolvable vocabulary is unmeasured, not a demotion — with no
@@ -1759,24 +1773,21 @@ publish_alignment_record() {
         payload="$("$MIC_PROFILE_PYTHON" -m jasper.cli.chip_aec_policy \
             --alignment "$@" --selection "$AUDIO_INPUT_PROFILE" || true)"
     fi
-    if [[ "$payload" != *"JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS="* ]]; then
-        log "chip-AEC alignment vocabulary unavailable at ${MIC_PROFILE_PYTHON}; carrying the last record"
-        return 1
-    fi
-    eval "$payload"
-    commit_alignment_record
+    _apply_alignment_payload "$payload" && return 0
+    log "chip-AEC alignment vocabulary unavailable at ${MIC_PROFILE_PYTHON}; carrying the last record"
+    return 1
 }
 
 # The record jasper-aec-init published for the pass that just ran. Bounded read
-# of the four keys it owns; anything else in the file is not this contract.
+# of exactly the four keys it owns; anything else in the file is not this
+# contract.
 publish_init_alignment_record() {
     local payload
     [[ -r "$ALIGNMENT_RECORD_FILE" ]] || return 1
     payload="$(head -c 4096 "$ALIGNMENT_RECORD_FILE" \
-        | grep -E "^JASPER_AEC_CHIP_AEC_ALIGNMENT_[A-Z]+=" || true)"
-    [[ "$payload" == *"JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS="* ]] || return 1
-    eval "$payload"
-    commit_alignment_record
+        | grep -E "^JASPER_AEC_CHIP_AEC_ALIGNMENT_(STATUS|REASON|ACTION|SELECTION)=" \
+        || true)"
+    _apply_alignment_payload "$payload"
 }
 
 # ADR-0101: a chip-AEC path that cannot be armed leaves the box running and
@@ -1884,6 +1895,13 @@ activate_managed_chip_aec() {
     run_systemctl enable jasper-aec-init.service jasper-aec-bridge.service
     set_voice_bridge_want on
     reset_failed_units jasper-aec-init.service jasper-aec-bridge.service
+    # aec-init writes AND unlinks this record from one `finally`, which a
+    # SIGKILL, an OOM kill or an unmet `Requires=` never reaches. Clear it here
+    # so absence means "this pass reached no verdict" rather than "the pass
+    # before it did": a shipped box's steady-state record is `disclosed_stale`,
+    # and a killed init reading back as that would send the household to the
+    # commissioner for a failure the fault branch below is what describes.
+    rm -f "$ALIGNMENT_RECORD_FILE"
     if "$SYSTEMCTL" restart jasper-aec-init.service; then
         # A zero exit that published no record applied its alignment cleanly.
         publish_init_alignment_record || publish_alignment_record applied || true
@@ -1914,7 +1932,7 @@ activate_managed_chip_aec() {
     # remedy the record names. Anything else, a run that published nothing
     # included, is a fault.
     if publish_init_alignment_record \
-        && [[ "$JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS" == "disclosed_stale" ]]; then
+        && [[ "${JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS:-}" == "disclosed_stale" ]]; then
         disclose_stale_chip_aec
         return 0
     fi

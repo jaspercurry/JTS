@@ -97,6 +97,11 @@ _DISPOSITIONS = {
     DISCLOSED: (STATUS_DISCLOSED_STALE, None, None),
 }
 
+# The closed vocabulary `alignment_health` accepts, so a caller that takes a
+# disposition from an operator or a shell argument can reject a typo at its own
+# edge instead of raising here.
+DISPOSITIONS = tuple(sorted((*_DISPOSITIONS, APPLIED)))
+
 STATUS_KEY = "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS"
 REASON_KEY = "JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON"
 ACTION_KEY = "JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION"

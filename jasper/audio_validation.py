@@ -29,6 +29,7 @@ from typing import Any, Mapping
 
 from .atomic_io import atomic_write_text
 from .audio_profile_state import (
+    DEFAULT_AEC_MODE_PATH,
     AecIntent,
     MicProbe,
     RuntimeAecEnv,
@@ -69,7 +70,6 @@ MAX_SHORT_HARDWARE_OBSERVE_SECONDS = 120.0
 LONG_HARDWARE_OBSERVE_SECONDS = 1800.0
 MAX_LONG_HARDWARE_OBSERVE_SECONDS = 1800.0
 DEFAULT_CHIP_POLL_INTERVAL_SECONDS = 5.0
-DEFAULT_AEC_MODE_PATH = Path("/var/lib/jasper/aec_mode.env")
 DEFAULT_SYSTEM_ENV_PATH = Path("/etc/jasper/jasper.env")
 DEFAULT_BUILD_MANIFEST_PATH = Path("/var/lib/jasper/build.txt")
 DEFAULT_BRIDGE_STATS_PATH = Path("/run/jasper/aec_bridge_stats.json")

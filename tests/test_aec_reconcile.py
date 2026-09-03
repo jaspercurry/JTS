@@ -627,6 +627,40 @@ def test_a_unit_that_will_not_come_up_faults_and_parks(
         assert "restart jasper-aec-bridge.service" not in commands
 
 
+def test_a_killed_init_faults_rather_than_reading_back_the_previous_pass(
+    tmp_path: Path,
+) -> None:
+    """aec-init writes AND unlinks its record from one `finally` a SIGKILL, an
+    OOM kill or an unmet `Requires=` never reaches, and a shipped box's
+    steady-state record is `disclosed_stale`. So the reconciler clears the
+    record before every init restart: a pass that published nothing is a fault,
+    not an inherited "run the commissioner".
+    """
+    env_file = _stage(tmp_path, "Array", mode="auto", channels=6)
+    _publish_record(
+        tmp_path,
+        alignment_health(
+            chip_aec_health.COMMISSION_REQUIRED, selection="xvf_chip_aec"
+        ),
+    )
+
+    result = _run_reconcile(
+        tmp_path,
+        "--reason",
+        "test",
+        extra_env={
+            "JASPER_SYSTEMCTL": str(
+                _systemctl_failing(tmp_path, "jasper-aec-init.service")
+            )
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    published = parse_env_file(str(env_file))
+    assert published[chip_aec_health.STATUS_KEY] == chip_aec_health.STATUS_FAULT
+    assert not _alignment_record(tmp_path).exists()
+
+
 def _failed_init_systemctl(
     tmp_path: Path, disposition: str, *, bridge: str = "active"
 ) -> Path:
@@ -683,8 +717,9 @@ def test_an_unappliable_alignment_runs_software_aec3_and_discloses(
     tmp_path: Path, disposition: str
 ) -> None:
     # ADR-0101: neither disposition says anything observably broke, so the box
-    # keeps hearing on the software AEC3 leg and carries the reason/action to
-    # the doctor and /state instead of going silently deaf.
+    # keeps hearing on the software AEC3 leg instead of going silently deaf.
+    # What the record itself says is
+    # test_every_published_record_is_the_one_chip_aec_health_writes' subject.
     env_file = _stage(tmp_path, "Array", mode="auto", channels=6)
     fake = _failed_init_systemctl(tmp_path, disposition)
 
@@ -694,11 +729,6 @@ def test_an_unappliable_alignment_runs_software_aec3_and_discloses(
 
     assert result.returncode == 0, result.stderr
     body = env_file.read_text()
-    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=disclosed_stale" in body
-    assert (
-        f"JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION="
-        f"{shlex.quote(alignment_health(disposition).action)}"
-    ) in body
     # The software-AEC3 leg shape: chip beams off, the raw leg and outputd's
     # far-end reference on, and the bridge's own UDP carrier still the mic.
     assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
@@ -2202,8 +2232,15 @@ def test_resolver_down_carries_routable_selections_and_demotes_the_rest(
     carries only a name the vocabulary itself has. A carried name still routes
     through managed profile policy; anything else is `custom`, which keeps that
     policy off and the operator's legs as written.
+
+    The alignment record is carried the same way (ADR-0101): with no
+    interpreter this pass measured nothing, so the last record must stand
+    rather than be overwritten with a blank or a guess.
     """
-    _write_env(tmp_path, "Array")
+    stale = alignment_health(
+        chip_aec_health.COMMISSION_REQUIRED, selection="xvf_chip_aec"
+    )
+    env_file = _write_env(tmp_path, "Array", extra=stale.to_shell())
     (tmp_path / "aec_mode.env").write_text(
         f"JASPER_AUDIO_INPUT_PROFILE={selection}\n"
         "JASPER_AEC_MODE=auto\n"
@@ -2223,7 +2260,9 @@ def test_resolver_down_carries_routable_selections_and_demotes_the_rest(
     )
 
     assert result.returncode == 0, result.stderr
-    values = _env_assignments(tmp_path / "jasper.env")
+    values = _env_assignments(env_file)
+    record = parse_env_file(str(env_file))
+    assert {key: record.get(key) for key in chip_aec_health.ENV_KEYS} == stale.to_env()
     if carried:
         # Managed policy overrode the operator's legs onto software AEC3.
         assert values["JASPER_MIC_DEVICE_RAW"] == _RAW_PORT

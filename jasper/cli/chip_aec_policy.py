@@ -17,7 +17,7 @@ import shlex
 import sys
 from typing import Any
 
-from ..chip_aec_health import alignment_health
+from ..chip_aec_health import DISPOSITIONS, alignment_health
 from ..chip_aec_policy import resolve_chip_aec_dac_gate
 from ..route_latency.status_socket import DEFAULT_STATUS_TIMEOUT_SECONDS, read_status_socket
 
@@ -48,30 +48,30 @@ def _shell_assignments(gate, *, testing_requested: bool) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dac-id")
+    # The two questions this shim answers, one per call. Both callers are
+    # `|| true` shell, so an unanswerable call must fail at the parser where CI
+    # sees it, not print an empty record the reconciler then treats as a
+    # missing interpreter.
+    question = parser.add_mutually_exclusive_group(required=True)
+    question.add_argument("--dac-id")
+    question.add_argument("--alignment", choices=DISPOSITIONS)
     parser.add_argument("--outputd-socket", default="")
     parser.add_argument("--testing-requested", action="store_true")
     parser.add_argument("--shell-env", action="store_true")
-    parser.add_argument("--alignment")
     parser.add_argument("--selection", default="")
     parser.add_argument("--reason", default="")
     parser.add_argument("--action", default="")
     args = parser.parse_args(argv)
 
     if args.alignment:
-        try:
-            health = alignment_health(
-                args.alignment,
-                selection=args.selection,
-                reason=args.reason,
-                action=args.action,
-            )
-        except ValueError as exc:
-            parser.error(str(exc))
+        health = alignment_health(
+            args.alignment,
+            selection=args.selection,
+            reason=args.reason,
+            action=args.action,
+        )
         print(health.to_shell(), end="")
         return 0
-    if not args.dac_id:
-        parser.error("--dac-id is required")
 
     outputd_status = None
     outputd_error = ""

@@ -28,8 +28,11 @@ from jasper import chip_aec_shipped_alignment as shipped_alignment
 from jasper import output_hardware
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_hardware import dac as dac_registry
-from jasper.audio_profile_state import PROFILE_CUSTOM, normalize_audio_input_profile
-from jasper.audio_validation import DEFAULT_AEC_MODE_PATH
+from jasper.audio_profile_state import (
+    DEFAULT_AEC_MODE_PATH,
+    PROFILE_CUSTOM,
+    normalize_audio_input_profile,
+)
 from jasper.env_load import parse_env_file
 
 # The declaration outputd loads through `EnvironmentFile=` (its runtime output
@@ -61,8 +64,10 @@ COMMISSION_REQUIRED_EXIT = 2
 # Where this run publishes its `jasper.chip_aec_health` verdict, as the shell
 # assignments jasper-aec-reconcile evals and copies into /etc/jasper/jasper.env.
 # Absent means this run reached no verdict (a bypass/corpus run, or one killed
-# before it finished); the reconciler reads that as a fully applied alignment,
-# which is what a zero exit without a record means.
+# before its `finally` — a SIGKILL, an OOM kill, an unmet `Requires=`). The
+# reconciler clears it before every restart and pairs absence with the exit
+# status: a zero exit without a record is a fully applied alignment, a non-zero
+# one is a fault.
 ALIGNMENT_RECORD_PATH = "/run/jasper-aec-init/alignment"
 OUTPUTD_ENV_STALE_EXIT = 3
 OUTPUTD_UNIT = "jasper-outputd.service"
