@@ -778,30 +778,44 @@ def test_staleness_reports_an_outputd_older_than_its_own_declaration(
     assert "jasper-outputd.service started 10.0s before" in reason
 
 
-def test_staleness_accepts_an_outputd_started_after_its_declaration(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    ("start_offset_sec", "expect_stale"),
+    [
+        (2.0, False),
+        (0.0, True),
+        (None, False),
+        (-600.0, True),
+    ],
+    ids=[
+        "started-after-declaration-accepted",
+        "tie-fails-closed",
+        "never-started-is-inert",
+        "stopped-before-write-is-stale",
+    ],
+)
+def test_staleness_verdict_from_start_instant(
+    tmp_path, monkeypatch, start_offset_sec, expect_stale
 ) -> None:
+    """`outputd_env_staleness` compares the recorded outputd start instant
+    against the env-declaration mtime: an absent start (never ran this boot)
+    is inert, a start strictly after the declaration is accepted, and a
+    start at or before the declaration — including a tie (systemd reads
+    EnvironmentFile= just before forking, so a tie is not proof of loading
+    either way, and --timestamp=unix truncation makes ties reachable in the
+    field) and a stopped unit's instant retained from before the write —
+    fails closed as stale."""
     _outputd_env(tmp_path, monkeypatch)
-    _stub_start_instant(monkeypatch, _ENV_WRITTEN_AT + 2.0)
-
-    assert aec_init.outputd_env_staleness() == ""
-
-
-def test_staleness_fails_closed_when_the_two_instants_tie(
-    tmp_path, monkeypatch
-) -> None:
-    # Direction of the boundary, chosen deliberately: a declaration stamped at
-    # exactly the recorded start instant reads as STALE. systemd reads
-    # EnvironmentFile= just before forking the main process, so a write that ties
-    # the fork instant landed after the read — and a tie is not proof of loading
-    # either way. --timestamp=unix also truncates the start to whole seconds, so
-    # ties are reachable in the field, not just here.
-    _outputd_env(tmp_path, monkeypatch)
-    _stub_start_instant(monkeypatch, _ENV_WRITTEN_AT)
-
-    assert "has not loaded the current output declaration" in (
-        aec_init.outputd_env_staleness()
+    start_instant = (
+        None if start_offset_sec is None else _ENV_WRITTEN_AT + start_offset_sec
     )
+    _stub_start_instant(monkeypatch, start_instant)
+
+    reason = aec_init.outputd_env_staleness()
+
+    if expect_stale:
+        assert "has not loaded the current output declaration" in reason
+    else:
+        assert reason == ""
 
 
 @pytest.mark.parametrize(
@@ -872,38 +886,6 @@ def test_staleness_is_inert_without_a_declaration_on_this_box(
 
     assert aec_init.outputd_env_staleness() == ""
     assert calls == []
-
-
-def test_staleness_is_inert_when_outputd_never_started_this_boot(
-    tmp_path, monkeypatch
-) -> None:
-    # An absent start instant means only: never started this boot, unparseable,
-    # or systemctl failed. It does NOT mean "stopped" — systemd RETAINS
-    # ExecMainStartTimestamp after a unit stops, so a stopped outputd that ran
-    # this boot still reports its old instant and is caught by the stale branch
-    # (see the test below). Nothing has run, so there is nothing to be stale
-    # against, and collect_reference_queue's writer-not-ready path owns the
-    # diagnosis.
-    _outputd_env(tmp_path, monkeypatch)
-    _stub_start_instant(monkeypatch, None)
-
-    assert aec_init.outputd_env_staleness() == ""
-
-
-def test_staleness_catches_a_stopped_outputd_that_ran_before_the_env_write(
-    tmp_path, monkeypatch
-) -> None:
-    # NIT4 from the gate, probed on jts3: systemd keeps ExecMainStartTimestamp
-    # after a unit stops (an inactive oneshot that ran this boot still reports a
-    # non-zero instant; only a never-run unit reports zero). So a stopped outputd
-    # whose last run predates the declaration reads as STALE, not as unknown.
-    # That is stricter than passing it through, and it is the safe direction.
-    _outputd_env(tmp_path, monkeypatch)
-    _stub_start_instant(monkeypatch, _ENV_WRITTEN_AT - 600.0)
-
-    assert "has not loaded the current output declaration" in (
-        aec_init.outputd_env_staleness()
-    )
 
 
 def test_require_outputd_env_loaded_hands_the_staleness_reason_to_the_caller(

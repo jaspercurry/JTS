@@ -593,64 +593,60 @@ def _assess_reference_stats(stats: dict, *, now_monotonic: float = 1_000.0):
     )
 
 
-def test_assess_reference_input_recent_receiver_is_ok():
-    assessed = _assess_reference_stats(_reference_input_stats())
-
-    assert assessed is not None
-    result, startup_grace = assessed
-    assert result.status == "ok"
-    assert startup_grace is False
-    assert result.reason == doctor.aec.REASON_REF_RECEIVER_CURRENT
-
-
-def test_assess_reference_input_no_frame_after_startup_grace_fails():
-    assessed = _assess_reference_stats(
-        _reference_input_stats(
-            frames_enqueued=0,
-            last_frame_age_ms=None,
-        )
-    )
-
-    assert assessed is not None
-    result, startup_grace = assessed
-    assert result.status == "fail"
-    assert startup_grace is False
-    assert result.reason == doctor.aec.REASON_REF_ZERO_FRAMES_AFTER_GRACE
-
-
 @pytest.mark.parametrize(
-    ("source", "endpoint"),
+    ("stats_kwargs", "expected_status", "expected_startup_grace", "expected_reason"),
     [
-        ("alsa", "jasper_ref"),
-        ("outputd_udp", "127.0.0.1:9999"),
+        ({}, "ok", False, "REASON_REF_RECEIVER_CURRENT"),
+        (
+            {"frames_enqueued": 0, "last_frame_age_ms": None},
+            "fail", False, "REASON_REF_ZERO_FRAMES_AFTER_GRACE",
+        ),
+        (
+            {"source": "alsa", "endpoint": "jasper_ref"},
+            "fail", False, "REASON_REF_ROUTE_MISMATCH",
+        ),
+        (
+            {"source": "outputd_udp", "endpoint": "127.0.0.1:9999"},
+            "fail", False, "REASON_REF_ROUTE_MISMATCH",
+        ),
+        (
+            {"frames_enqueued": 55_000, "last_frame_age_ms": 5_100},
+            "fail", False, "REASON_REF_RECEIVER_STALE",
+        ),
+        (
+            {
+                "process_age_sec": 9.9,
+                "frames_enqueued": 0,
+                "last_frame_age_ms": None,
+            },
+            "ok", True, "REASON_REF_STARTUP_GRACE",
+        ),
+    ],
+    ids=[
+        "recent-receiver-ok",
+        "zero-frames-after-grace-fails",
+        "route-mismatch-alsa",
+        "route-mismatch-wrong-udp-endpoint",
+        "formerly-nonzero-now-frozen-fails",
+        "young-process-explicit-grace",
     ],
 )
-def test_assess_reference_input_runtime_identity_mismatch_fails(
-    source,
-    endpoint,
+def test_assess_reference_input_status_and_grace(
+    stats_kwargs, expected_status, expected_startup_grace, expected_reason,
 ):
-    assessed = _assess_reference_stats(
-        _reference_input_stats(source=source, endpoint=endpoint)
-    )
+    """`_assess_aec_reference_input_from_stats` derives (status, startup_grace,
+    reason) from the reference-input fields against a fixed baseline
+    snapshot: a fresh receiver is ok, a route mismatch or a receiver stuck
+    since before its last frame both fail, zero frames past the startup
+    grace fails, and a young process inside the grace window is ok with
+    startup_grace=True."""
+    assessed = _assess_reference_stats(_reference_input_stats(**stats_kwargs))
 
     assert assessed is not None
-    result, _startup_grace = assessed
-    assert result.status == "fail"
-    assert result.reason == doctor.aec.REASON_REF_ROUTE_MISMATCH
-
-
-def test_assess_reference_input_formerly_nonzero_but_frozen_fails():
-    assessed = _assess_reference_stats(
-        _reference_input_stats(
-            frames_enqueued=55_000,
-            last_frame_age_ms=5_100,
-        )
-    )
-
-    assert assessed is not None
-    result, _startup_grace = assessed
-    assert result.status == "fail"
-    assert result.reason == doctor.aec.REASON_REF_RECEIVER_STALE
+    result, startup_grace = assessed
+    assert result.status == expected_status
+    assert startup_grace is expected_startup_grace
+    assert result.reason == getattr(doctor.aec, expected_reason)
 
 
 @pytest.mark.parametrize(
@@ -773,22 +769,6 @@ def test_assess_reference_input_ignores_wall_clock_jumps(
     assert fresh[0].reason == doctor.aec.REASON_REF_RECEIVER_CURRENT
     assert startup[0].reason == doctor.aec.REASON_REF_STARTUP_GRACE
     assert stale[0].reason == doctor.aec.REASON_REF_RECEIVER_STALE
-
-
-def test_assess_reference_input_young_process_gets_explicit_grace():
-    assessed = _assess_reference_stats(
-        _reference_input_stats(
-            process_age_sec=9.9,
-            frames_enqueued=0,
-            last_frame_age_ms=None,
-        )
-    )
-
-    assert assessed is not None
-    result, startup_grace = assessed
-    assert result.status == "ok"
-    assert startup_grace is True
-    assert result.reason == doctor.aec.REASON_REF_STARTUP_GRACE
 
 
 def test_assess_reference_input_sender_active_is_not_receiver_proof():
@@ -919,70 +899,88 @@ def _install_reference_health_check_fakes(
     return calls
 
 
-def test_check_reference_freshness_fails_with_usb_invisible_to_loopback(
+@pytest.mark.parametrize(
+    (
+        "stats_kwargs", "journal", "loopback_active", "expected_status",
+        "expected_reason", "journalctl_called", "outputd_status_calls",
+        "expected_detail_substr",
+    ),
+    [
+        (
+            {"last_frame_age_ms": 8_000}, "", False,
+            "fail", "REASON_REF_RECEIVER_STALE", False, 1, None,
+        ),
+        (
+            {"last_frame_age_ms": 8_000}, _healthy_journal(8), False,
+            "fail", "REASON_REF_RECEIVER_STALE", False, 1,
+            "historical RMS cannot prove current receiver progress",
+        ),
+        (
+            {"schema_version": 3}, "", False,
+            "warn", "REASON_BRIDGE_OUTPUT_NO_WINDOWS", True, 0, None,
+        ),
+        (
+            {"schema_version": 5}, "", False,
+            "warn", "REASON_BRIDGE_OUTPUT_NO_WINDOWS", True, 0, None,
+        ),
+        (
+            {"last_frame_age_ms": 100}, _silent_ref_journal(5), True,
+            "fail", "REASON_BRIDGE_OUTPUT_REF_SILENT", True, 1, None,
+        ),
+        (
+            {"last_frame_age_ms": 100},
+            _silent_ref_journal(5) + "\n" + _rms_log_line(
+                ref=900, mic=2_500, aec=180, attn_db=-22.8
+            ),
+            True,
+            "ok", "REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY", True, 0, None,
+        ),
+    ],
+    ids=[
+        "usb-invisible-to-loopback",
+        "rms-cannot-override-stale-receiver",
+        "undeclared-schema-old",
+        "undeclared-schema-future",
+        "fresh-receiver-silent-content-fails",
+        "fresh-receiver-one-healthy-window-ok",
+    ],
+)
+def test_check_reference_freshness_and_content(
     monkeypatch,
     tmp_path: Path,
+    stats_kwargs,
+    journal,
+    loopback_active,
+    expected_status,
+    expected_reason,
+    journalctl_called,
+    outputd_status_calls,
+    expected_detail_substr,
 ):
+    """The exact-v4 stats contract short-circuits journal content entirely
+    and can never be overridden by healthy RMS history (a stale receiver
+    fails even facing 8 healthy windows); an undeclared schema falls back to
+    the journal; and a fresh receiver still runs journal-content checks,
+    where a silent reference fails even with sustained mic activity but one
+    healthy window proves the reference chain works."""
     calls = _install_reference_health_check_fakes(
         monkeypatch,
         tmp_path,
-        stats=_reference_input_stats(last_frame_age_ms=8_000),
-        journal="",
+        stats=_reference_input_stats(**stats_kwargs),
+        journal=journal,
     )
-    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: False)
-
-    result = doctor.aec.check_aec_bridge_output_health()
-
-    assert result.status == "fail"
-    assert result.reason == doctor.aec.REASON_REF_RECEIVER_STALE
-    assert not any(command[0] == "journalctl" for command in calls)
-    assert sum(command[0] == "outputd-status" for command in calls) == 1
-
-
-def test_check_reference_freshness_failure_cannot_be_overridden_by_rms(
-    monkeypatch,
-    tmp_path: Path,
-):
-    healthy_rms = "\n".join(
-        _rms_log_line(ref=1_200, mic=2_400, aec=150, attn_db=-24.1)
-        for _ in range(8)
-    )
-    calls = _install_reference_health_check_fakes(
-        monkeypatch,
-        tmp_path,
-        stats=_reference_input_stats(last_frame_age_ms=8_000),
-        journal=healthy_rms,
+    monkeypatch.setattr(
+        doctor.aec, "_loopback_playback_active", lambda: loopback_active
     )
 
     result = doctor.aec.check_aec_bridge_output_health()
 
-    assert result.status == "fail"
-    assert result.reason == doctor.aec.REASON_REF_RECEIVER_STALE
-    assert "historical RMS cannot prove current receiver progress" in result.detail
-    assert not any(command[0] == "journalctl" for command in calls)
-    assert sum(command[0] == "outputd-status" for command in calls) == 1
-
-
-@pytest.mark.parametrize("schema_version", [3, 5])
-def test_check_undeclared_reference_stats_fall_back_to_journal(
-    monkeypatch,
-    tmp_path: Path,
-    schema_version,
-):
-    calls = _install_reference_health_check_fakes(
-        monkeypatch,
-        tmp_path,
-        stats=_reference_input_stats(schema_version=schema_version),
-        journal="",
-    )
-    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: False)
-
-    result = doctor.aec.check_aec_bridge_output_health()
-
-    assert result.status == "warn"
-    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_NO_WINDOWS
-    assert any(command[0] == "journalctl" for command in calls)
-    assert not any(command[0] == "outputd-status" for command in calls)
+    assert result.status == expected_status
+    assert result.reason == getattr(doctor.aec, expected_reason)
+    assert any(c[0] == "journalctl" for c in calls) == journalctl_called
+    assert sum(c[0] == "outputd-status" for c in calls) == outputd_status_calls
+    if expected_detail_substr:
+        assert expected_detail_substr in result.detail
 
 
 @pytest.mark.parametrize(
@@ -1269,30 +1267,6 @@ def test_neither_route_outputd_keeps_the_journal_fallback(
     assert not any(command[0] == "outputd-status" for command in calls)
 
 
-def test_check_fresh_receiver_still_fails_silent_reference_content(
-    monkeypatch,
-    tmp_path: Path,
-):
-    silent_ref = "\n".join(
-        _rms_log_line(ref=0, mic=2_500, aec=2_400, attn_db=-0.4)
-        for _ in range(5)
-    )
-    calls = _install_reference_health_check_fakes(
-        monkeypatch,
-        tmp_path,
-        stats=_reference_input_stats(last_frame_age_ms=100),
-        journal=silent_ref,
-    )
-    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: True)
-
-    result = doctor.aec.check_aec_bridge_output_health()
-
-    assert result.status == "fail"
-    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_REF_SILENT
-    assert any(command[0] == "journalctl" for command in calls)
-    assert sum(command[0] == "outputd-status" for command in calls) == 1
-
-
 @pytest.mark.parametrize(
     "updated_epoch_sec",
     [10**12, -(10**12)],
@@ -1391,34 +1365,6 @@ def test_check_legacy_non_outputd_fallback_skips_status(
     assert result.status == "fail"
     assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_REF_SILENT
     assert "cannot safely name the failed hop" in result.detail
-    assert not any(command[0] == "outputd-status" for command in calls)
-
-
-def test_check_fresh_receiver_and_one_healthy_rms_window_is_ok(
-    monkeypatch,
-    tmp_path: Path,
-):
-    journal = "\n".join(
-        [
-            *(
-                _rms_log_line(ref=0, mic=2_500, aec=2_400, attn_db=-0.4)
-                for _ in range(5)
-            ),
-            _rms_log_line(ref=900, mic=2_500, aec=180, attn_db=-22.8),
-        ]
-    )
-    calls = _install_reference_health_check_fakes(
-        monkeypatch,
-        tmp_path,
-        stats=_reference_input_stats(last_frame_age_ms=100),
-        journal=journal,
-    )
-    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: True)
-
-    result = doctor.aec.check_aec_bridge_output_health()
-
-    assert result.status == "ok"
-    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY
     assert not any(command[0] == "outputd-status" for command in calls)
 
 
