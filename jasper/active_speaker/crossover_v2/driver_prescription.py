@@ -4,47 +4,12 @@
 
 """ONE driver's full-band shape correction, prescribed from outside.
 
-The per-driver intake for the prescriber loop, whose only other door reaches
-the SUMMED blend region. It rides the blend gate's lifecycle — same posture,
-same shared exception type, same packet-fingerprint anchoring, same one-owner
-response format, same fail-closed never-clamped rule, same spool. What differs
-is what a proposal may say and what it is measured against.
-
-Three rules govern this door.
-
-* The route is fixed: a prescription of this class lands in
-  :data:`LINEARIZATION_CANDIDATE_FIELD` and nowhere else
-  (``docs/active-speaker-tuning-layers-design.md`` stage P3 rule 3).
-* MERGE BY ROLE: a document's named roles replace those roles, unnamed roles
-  are untouched. The field has two producers — the Layer-1a fit writes every
-  eligible role — so this is a real question the blend class never had.
-* Every admission bar is SHAPE. The classification vouch is DISCLOSED, never
-  refused (#2863): a vouch is a prediction about whether a filter will help,
-  and the measurement decides. A hard bound here is for hearing or hardware
-  and nothing else, which is why the cut depth ceilings and the POLICY min-Q
-  floor are gone (ADR-0207) — a cut cannot clip, and the round's own measured
-  verify with auto-restore is the net. What still bounds a cut's width is the
-  evaluator's own :data:`~jasper.sound.profile.EVALUABLE_Q_MIN`/``_MAX``.
-
-A boost's whole cost is MAXIMUM SPL: it is charged by
-``camilla_yaml.linearization_headroom_db`` and absorbed by
-``active_baseline_headroom``, which attenuates the program before the split, so
-a boosted graph delivers no more absolute level than an unboosted one.
-:data:`DRIVER_MAX_COMPOSED_BOOST_DB` on the evaluated per-role cascade is what
-sizes the class, bounding that spend at :data:`MAX_SPL_SPEND_BOUND_DB` = 13.0
-dB. The emitter's 12 dB rail, the per-driver soft-clip limiters and the runtime
-contract's re-proof are unchanged and are not this class's to weaken.
-
-Every bound with a source is RESTATED here rather than imported, on
-``camilla_yaml``'s lockstep rule: this gate independently re-validates a
-document the fit engine did not write, so inheriting the engine's policy
-constant would let a change there move what an outside reader may propose.
-``tests/test_crossover_v2_driver_prescription.py`` pins each pair numerically.
-
-The band a filter must sit in is the DRIVER's own declared band — not the
-crossover region and not the radiating band — because a cut past the handoff
-still reaches the sum and spends no headroom (#2523). See
-:func:`driver_passbands_from_safety_profile`.
+The per-driver intake for the prescriber loop; :mod:`.blend_prescription`
+owns the sibling door onto the SUMMED region — same lifecycle, exception
+type, packet-fingerprint anchoring, spool. Every admission bar is SHAPE: the
+classification vouch DISCLOSES, never refuses (#2863). The band is the
+DRIVER's declared band (:func:`driver_passbands_from_safety_profile`), not
+the crossover region — a cut past the handoff still spends no headroom (#2523).
 """
 
 from __future__ import annotations
@@ -218,7 +183,7 @@ DRIVER_MIN_CUT_DB = 0.5
 #: the rail the fit engine emits up to, restated on this module's lockstep rule.
 #: A prescription at this ceiling is therefore emittable rather than accepted
 #: here and refused downstream. Equal to
-#: :data:`DRIVER_MAX_COMPOSED_BOOST_DB` (ruling R8), so two boost filters both
+#: :data:`DRIVER_MAX_COMPOSED_BOOST_DB` (ADR-0207), so two boost filters both
 #: at this rail can never clear the composed cap — each alone reads 12.0 there
 #: and skirt overlap only adds (two Q-8 boosts a third of an octave apart still
 #: compose to 12.7802). The composed cap binds every multi-filter boost; this
@@ -226,7 +191,7 @@ DRIVER_MIN_CUT_DB = 0.5
 DRIVER_MAX_FILTER_BOOST_DB = 12.0
 
 #: Ceiling on the COMPOSED boost's peak over one role's passband, dB. POLICY
-#: (ruling R8) — the one bound here restored from no neighbour, since the fit
+#: (ADR-0207) — the one bound here restored from no neighbour, since the fit
 #: engine leaves total boost deliberately unbounded.
 #:
 #: It sizes the whole class's cost, and carries that weight ONLY because
@@ -286,7 +251,7 @@ MAX_SPL_SPEND_BOUND_DB = DRIVER_MAX_COMPOSED_BOOST_DB + HEADROOM_MARGIN_DB
 
 #: Slack on the COMPOSED BOOST comparison alone, dB, so the evaluator's own
 #: double-precision residue cannot decide a policy question. Needed only
-#: because ruling R8 made :data:`DRIVER_MAX_FILTER_BOOST_DB` and
+#: because ADR-0207 made :data:`DRIVER_MAX_FILTER_BOOST_DB` and
 #: :data:`DRIVER_MAX_COMPOSED_BOOST_DB` the SAME number: a single filter at the
 #: rail composes to it exactly in arithmetic, and the biquad evaluates it to a
 #: residue whose SIGN depends on centre frequency and Q. Swept over 4,000
@@ -840,8 +805,8 @@ def _check_bounds(
     Returns ``"boost"`` when any gain is positive, else ``"cut"`` — the one
     producer of the receipt's class field. A document may mix signs; the class
     names what it is capable of, and each filter is bounded by its OWN sign,
-    magnitude ceiling and width. Neither sign has a magnitude FLOOR:
-    :func:`_subaudible_filters` counts what used to be refused.
+    magnitude ceiling and width. Neither sign has a magnitude FLOOR: a
+    sub-threshold filter is counted, not refused, by :func:`_subaudible_filters`.
     """
     for position, entry in enumerate(filters):
         role = str(entry["role"])

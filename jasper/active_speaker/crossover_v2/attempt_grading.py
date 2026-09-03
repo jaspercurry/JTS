@@ -22,11 +22,10 @@ ATTEMPT_REASON_NO_FLOOR = "ungraded_no_floor"
 
 # dB of pooled spec residual (`flat_spec.spec_convergence_residual`), RAW
 # pre-fit against LINEARIZED predicted sum; 0.5 is the model's own measured
-# VERIFY tracking error on JTS3 (`crossover_v2.intervention.plan_linearization`).
-# A ledger boundary like its sibling below, never a refusal.
+# VERIFY tracking error on JTS3. A ledger boundary, never a refusal. See
+# ADR-0227 #4.
 PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB = 0.5
 
-#: dB. Non-worsening bar for PRESCRIBED branches (PR-B, conductor ruling
-#: 2026-08-20); a ledger boundary between ``improved`` and
-#: ``not_an_improvement``, never a refusal.
+#: dB. Non-worsening bar for PRESCRIBED branches; a ledger boundary between
+#: ``improved`` and ``not_an_improvement``, never a refusal. See ADR-0227 #4.
 PRESCRIBED_NON_WORSENING_DB: float = 0.0
