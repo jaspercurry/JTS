@@ -17,8 +17,10 @@ import pytest
 from jasper.active_speaker.baseline_profile import (
     BASELINE_PROFILE_KIND,
     SCHEMA_VERSION,
-    STATE_PATH_ENV,
     baseline_candidate_fingerprint,
+)
+from jasper.active_speaker.state_paths import (
+    BASELINE_PROFILE_STATE_ENV as STATE_PATH_ENV,
 )
 from jasper.cli import basic_profile as cli
 

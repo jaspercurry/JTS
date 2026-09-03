@@ -4,10 +4,10 @@
 
 """What the conductor decides about a VERIFY capture, and how it says so.
 
-**Re-housed, not rewritten** (``docs/REFACTOR-TUNING-2026-08.md`` §3 wave 2c).
-Every pin here came verbatim out of ``tests/test_crossover_v2_conductor.py``,
-where the verify region sat as five consecutive sections inside a 12,800-line
-suite. Ruling S1 renames what they cover — VERIFY is ``measure`` with
+**Re-housed, not rewritten.** Every pin here came verbatim out of
+``tests/test_crossover_v2_conductor.py``, where the verify region sat as five
+consecutive sections inside a 12,800-line suite. Ruling S1 (ADR-0228) renames
+what they cover — VERIFY is ``measure`` with
 :data:`~jasper.active_speaker.crossover_v2.contracts.MEASURE_KIND_VERIFY` plus
 ``analyze`` — and the strangler moves the region's production half after this.
 These pins are what that move has to keep true, so they now live in a file named

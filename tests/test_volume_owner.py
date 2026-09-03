@@ -4,8 +4,7 @@
 
 """One owner arbitrates the main fader; 18 writers had nothing between them.
 
-The subject is ``jasper.volume_owner`` — wave 5a of
-``docs/REFACTOR-TUNING-2026-08.md`` §3. What is pinned here is the arbitration
+The subject is ``jasper.volume_owner``. What is pinned here is the arbitration
 a fader with 18 writers never had: which claim wins, what a release lands on,
 and when a level counts as proven. The 0 dB ceiling is deliberately NOT pinned
 here — it belongs to ``jasper.camilla._coerce_main_volume_db`` and its own

@@ -4,8 +4,8 @@
 
 """What a test says the speaker IS, before it says anything about measuring it.
 
-The twin's first module (``docs/REFACTOR-TUNING-2026-08.md`` §3 wave 1), and
-the cheapest one: a two-way speaker's declarations as plain values.
+The twin's first module, and the cheapest one: a two-way speaker's declarations
+as plain values.
 
 **It imports nothing.** Not the engine, not ``numpy``, not another test module.
 That is the whole point of it being its own file: a test that needs to name the

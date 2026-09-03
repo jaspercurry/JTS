@@ -1283,9 +1283,9 @@ def validate_research_result_binding(
 # --- One implausible low limit, two authors, two answers ---------------------
 #
 # Declared values are the only refusing authority; class tables may prefill,
-# disclose and serve as fallback, never refuse a declaration
-# (docs/measurement-loop-doctrine.md §5). The plausibility band is anchored on
-# the class table, so it is split by AUTHOR:
+# disclose and serve as fallback, never refuse a declaration (ADR-0227 §1).
+# The plausibility band is anchored on the class table, so it is split by
+# AUTHOR:
 #
 #   * a RESEARCH REPLY outside the band is REFUSED at intake, below — an LLM
 #     misreading a datasheet is not an operator's choice, and refusing at the
@@ -1491,8 +1491,7 @@ def _driver_research_prompt_limits(request: Mapping[str, Any]) -> list[str]:
     that band's owner rather than restated as prose, so the ask cannot drift
     from what the gate refuses. There is deliberately NO level bound: asking for
     a class figure and then reading the reply's echo as a declaration is what
-    made a code default the operative ceiling
-    (docs/measurement-loop-doctrine.md §5).
+    made a code default the operative ceiling (ADR-0227 §1).
 
     Every bound is per-target and optional, so the heading is emitted only when
     one exists. Prompt text only: ``request`` and its fingerprint are untouched.

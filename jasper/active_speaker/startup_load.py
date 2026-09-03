@@ -25,7 +25,6 @@ import asyncio
 import json
 import logging
 import math
-import os
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -76,6 +75,12 @@ from .startup_hold import (
 )
 from ..fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
 from .safe_playback import load_safe_playback_state
+from .state_paths import (  # noqa: F401  ENV names re-exported for the package façade
+    COMMISSION_LOAD_STATE_ENV,
+    STARTUP_LOAD_STATE_ENV,
+    commission_load_state_path,
+    startup_load_state_path,
+)
 from .staging import (
     COMMISSIONING_TRANSPORT_GATE_ID,
     SUMMED_COMMISSION_TARGET_ROLE,
@@ -89,18 +94,10 @@ logger = logging.getLogger(__name__)
 STARTUP_LOAD_SCHEMA_VERSION = 1
 STARTUP_LOAD_PREFLIGHT_KIND = "jts_active_speaker_startup_load_preflight"
 STARTUP_LOAD_STATE_KIND = "jts_active_speaker_startup_load_state"
-DEFAULT_STARTUP_LOAD_STATE_PATH = Path(
-    "/var/lib/jasper/active_speaker_startup_load.json"
-)
-STARTUP_LOAD_STATE_ENV = "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE"
 AUDIO_HARDWARE_RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
 
 COMMISSION_LOAD_PREFLIGHT_KIND = "jts_active_speaker_commission_load_preflight"
 COMMISSION_LOAD_STATE_KIND = "jts_active_speaker_commission_load_state"
-DEFAULT_COMMISSION_LOAD_STATE_PATH = Path(
-    "/var/lib/jasper/active_speaker_commission_load.json"
-)
-COMMISSION_LOAD_STATE_ENV = "JASPER_ACTIVE_SPEAKER_COMMISSION_LOAD_STATE"
 COMMISSION_LOAD_SCHEMA_VERSION = 1
 
 # _live_confirm convergence poll (load_driver_commissioning_config): CamillaDSP
@@ -134,12 +131,6 @@ def _normalise_issue(raw: Any) -> dict[str, str]:
         str(raw.get("severity") or "warning"),
         str(raw.get("code") or "unknown_issue"),
         str(raw.get("message") or raw.get("code") or "unknown issue"),
-    )
-
-
-def startup_load_state_path(path: str | Path | None = None) -> Path:
-    return Path(
-        path or os.environ.get(STARTUP_LOAD_STATE_ENV) or DEFAULT_STARTUP_LOAD_STATE_PATH
     )
 
 
@@ -1179,14 +1170,6 @@ async def rollback_protected_startup_config(
 # browser-supplied verdict. Scope: the audible mask is the target's whole role on
 # the single active speaker group (mono jts3 = one output); per-SIDE isolation is
 # a future selector (S1, see prepare's docstring).
-
-
-def commission_load_state_path(path: str | Path | None = None) -> Path:
-    return Path(
-        path
-        or os.environ.get(COMMISSION_LOAD_STATE_ENV)
-        or DEFAULT_COMMISSION_LOAD_STATE_PATH
-    )
 
 
 def _commission_base_state(path: Path) -> dict[str, Any]:

@@ -51,8 +51,8 @@ logger = logging.getLogger(__name__)
 # /sound or /correction read while bonded recognises it as JTS-generated
 # (never "custom"). The state path is DELIBERATELY follower-specific so the
 # driver-domain compile never clobbers the solo baseline profile state at
-# baseline_profile.DEFAULT_STATE_PATH — that record must survive the bond so
-# the unbond restore can re-apply the solo active baseline.
+# state_paths.DEFAULT_BASELINE_PROFILE_STATE_PATH — that record must survive
+# the bond so the unbond restore can re-apply the solo active baseline.
 CONFIG_DIR = "/var/lib/camilladsp/configs"
 FOLLOWER_CONFIG_PATH = CONFIG_DIR + "/grouping_follower.yml"
 FOLLOWER_STATE_PATH = "/var/lib/jasper/active_speaker_follower_profile.json"
@@ -515,7 +515,7 @@ async def _prove_live_bass_extension_graph(
 ):
     """Canonical live graph/profile proof shared by both active bond roles."""
 
-    from jasper.active_speaker.baseline_profile import baseline_profile_state_path
+    from jasper.active_speaker.state_paths import baseline_profile_state_path
     from jasper.active_speaker.environment import DEFAULT_CAMILLA_STATEFILE
     from jasper.active_speaker.runtime_contract import (
         classify_active_bass_extension_graph,

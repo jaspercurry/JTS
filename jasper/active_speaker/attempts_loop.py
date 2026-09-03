@@ -4,69 +4,26 @@
 
 """The S3 tuning loop's improve/stop policy — a pure decision kernel.
 
-:func:`~jasper.active_speaker.flat_spec.spec_convergence_residual` produces the
-scalar the flat-linearization plan's S3 loop converges on and says, in its own
-docstring, that "S3's loop policy — how much improvement counts, how many
-iterations, when to stop — is not here and must not be." **This module is that
-policy.** It is the consumer that instrument was landed ahead of.
+:func:`~jasper.active_speaker.flat_spec.spec_convergence_residual` computes the residual
+but excludes loop policy by design; this module is that policy, consuming already-graded
+attempts and returning one :class:`LoopDecision`.
 
-It takes attempts that already carry their grades and returns one
-:class:`LoopDecision`. Two claims about that, scoped exactly, because a claim
-wider than its test is the kind of thing this module exists to refuse:
+No I/O ever (persistence lives in :mod:`model_error_store` instead); import-time light,
+pulling only stdlib at module scope (pinned by
+``test_kernel_imports_nothing_at_module_scope_but_stdlib``) -- the convergence path
+alone deferred-imports numpy/scipy via :func:`material_improvement_db`, which must stay
+a function-local import.
 
-* **No I/O, ever.** Nothing here reads a file, opens a socket, or plays audio,
-  on any path. Persistence lives next door in
-  :mod:`jasper.active_speaker.model_error_store` precisely so this stays true
-  and checkable rather than merely asserted.
-* **Import-time lightness, not runtime lightness.** Importing this module pulls
-  nothing but the standard library — pinned statically by
-  ``test_kernel_imports_nothing_at_module_scope_but_stdlib``, which reads the
-  module's own top-level imports. **Calling it is a different question.** The
-  convergence check reaches :func:`material_improvement_db`, which
-  deferred-imports :mod:`jasper.active_speaker.crossover_v2_flow` — and that
-  pulls numpy and scipy. So one ``decide_next`` call, on the convergence path
-  only, is not lightweight. That cost buys a single source of truth for the
-  shipped 0.5 dB bar; copying the constant here to stay light would trade a
-  real invariant for an import-graph nicety. The deferred import must stay
-  inside the function: hoisting it to module scope would make the first claim
-  false, and the static test fails if anyone does.
+Four rules, all measured on jts3 2026-07-31
+(``captures/repeat-floor-20260731/README.md``): (1) only consecutive attempts are
+compared, never a fixed baseline (which drifts to roughly the whole floor within ~15
+attempts); (2) repeat averaging stops paying past :data:`MAX_USEFUL_REPEAT_AVERAGES`;
+(3) a change smaller than :attr:`FloorStats.claim_floor_db` is not a change; (4) a floor
+licenses only the separation (:attr:`FloorStats.scope`) it was measured across --
+refused otherwise (#2081).
 
-Three rules constrain the kernel, all three measured on jts3 with the mic
-bolted in place on 2026-07-31 and written up in
-``captures/repeat-floor-20260731/README.md``:
-
-1. **Consecutive attempts only.** Graded against a fixed early baseline the
-   repeat floor *walks* — +0.0046 dB/repeat (r = +0.81), which accumulates to
-   roughly the whole floor within ~15 attempts as the box drifts (level falls
-   −0.0032 dB/repeat; thermal is the obvious candidate). Graded against the
-   immediate predecessor it is flat (−0.0021 dB/repeat, r = −0.50). So there is
-   **no fixed-baseline mode here, and adding one would be a regression**, not a
-   feature. :func:`decide_next` reads exactly the last two attempts.
-
-2. **Repeat averaging stops paying after 4** — :data:`MAX_USEFUL_REPEAT_AVERAGES`.
-
-3. **A change smaller than the instrument's own floor is not a change** —
-   :attr:`FloorStats.claim_floor_db`.
-
-4. **A floor licenses only the separation it was measured across** —
-   :attr:`FloorStats.scope`. The 2026-07-31 study is a *within-sitting* number:
-   the mic was bolted in place and the repeats were ~21 s apart, so it bounds
-   how far the instrument wanders while nothing moves. It says nothing about a
-   pair separated by a microphone being put down and picked up again — the same
-   README calls the remove/replace/re-aim arm unmeasured — **"arm" here is the
-   statistics sense, one condition of a repeatability study, and is neither the
-   measurement rig nor a DSP candidate under test** — and the panel's bound on
-   it (3.2 dB) is an order of magnitude above the floor itself. So
-   :func:`decide_next` refuses to grade a pair the floor's own scope does not
-   cover (issue #2081), rather than reporting a claim the study never licensed.
-
-The kernel grades a *magnitude* against that floor and, separately, asks
-whether the change was an improvement. Both questions have to be answerable
-before the loop may claim anything, and when either cannot be answered the
-decision is :data:`STOP_EVIDENCE` — never a pass. That mirrors
-:mod:`jasper.active_speaker.delta_probe`'s ``unavailable`` doctrine and
-:class:`~jasper.active_speaker.flat_spec.BandResult`'s "unevaluable is a
-first-class outcome, not a fabricated verdict".
+An unanswerable magnitude or improvement question always yields :data:`STOP_EVIDENCE`,
+never a pass, matching :mod:`delta_probe`'s ``unavailable`` doctrine.
 """
 
 from __future__ import annotations
@@ -75,16 +32,11 @@ import math
 from dataclasses import dataclass, replace
 from typing import Any, Mapping, Sequence
 
-# --------------------------------------------------------------------------
-# Vocabulary
-# --------------------------------------------------------------------------
-
 #: Keep going: this attempt is gradeable and the loop has somewhere to go.
 CONTINUE = "continue"
 #: Nothing material is left to win, or the tune is already in spec.
 STOP_CONVERGED = "stop_converged"
-#: The change from the predecessor is smaller than what the instrument can
-#: resolve. Continuing would be chasing the instrument's own noise.
+#: Change from the predecessor is smaller than the instrument can resolve.
 STOP_FLOOR = "stop_floor"
 #: The attempt budget is spent.
 STOP_BUDGET = "stop_budget"
@@ -115,22 +67,17 @@ FLOOR_BASES: frozenset[str] = frozenset({
     FLOOR_BASIS_MEASURED, FLOOR_BASIS_POLICY,
 })
 
-#: The floor was derived across a separation no wider than ONE measurement
-#: sitting — one continuous microphone placement — so it licenses only a pair
-#: measured in the same sitting. This is what the 2026-07-31 study measured
-#: (mic bolted in place, repeats ~21 s apart) and is the fail-closed value.
+#: Derived across a separation no wider than ONE measurement sitting; licenses
+#: only a pair in the same sitting. The fail-closed value (2026-07-31 study:
+#: mic bolted in place, repeats ~21 s apart).
 FLOOR_SCOPE_WITHIN_SITTING = "within_sitting"
-#: The floor's derivation does not depend on the pair sharing a sitting —
-#: either a re-placement study measured it that way, or the number is a policy
-#: bar about something no microphone sits between.
+#: Derivation does not depend on the pair sharing a sitting.
 FLOOR_SCOPE_ACROSS_SITTINGS = "across_sittings"
 
 FLOOR_SCOPES: frozenset[str] = frozenset({
     FLOOR_SCOPE_WITHIN_SITTING, FLOOR_SCOPE_ACROSS_SITTINGS,
 })
 
-# Reasons. Free-form strings would drift between the kernel, the replay driver
-# and the report; naming them here keeps one spelling per fact.
 REASON_AWAITING_FIRST_ATTEMPT = "awaiting_first_attempt"
 REASON_BASELINE_ESTABLISHED = "baseline_established"
 REASON_ATTEMPT_NOT_COMPARABLE = "attempt_not_comparable"
@@ -149,33 +96,19 @@ REASON_NO_MATERIAL_IMPROVEMENT_PREDICTED = "no_material_improvement_predicted"
 REASON_IN_SPEC = "in_spec"
 REASON_BUDGET_EXHAUSTED = "budget_exhausted"
 
-# --------------------------------------------------------------------------
-# Constants, with their provenance
-# --------------------------------------------------------------------------
-
 #: The honest per-attempt claim floor is **twice** the observed p95 of
-#: consecutive-pair deviations. Two-sided: a p95 bounds how big a *no-change*
-#: deviation gets, and both attempts in a pair carry that error independently,
-#: so a change has to clear it on both sides before it is the change and not
-#: the pair.
-#:
-#: ``captures/repeat-floor-20260731/README.md`` states this rule as "≥ 0.2 dB …
-#: 2× the consecutive-pair p95 (0.085 dB)". **That 0.2 is the same rule at
-#: conservative display rounding**, not a different threshold: the p95 on the
-#: 13 accepted consecutive pairs is 0.08508 dB, so the rule yields 0.17016 dB
-#: and the README rounds it up for a household-facing sentence. The kernel
-#: computes it; nothing here hardcodes either decimal.
+#: consecutive-pair deviations (two-sided: both attempts in a pair carry
+#: that error independently). ``captures/repeat-floor-20260731/README.md``
+#: states "≥ 0.2 dB ... 2x the consecutive-pair p95 (0.085 dB)" -- the same
+#: rule at display rounding (p95 0.08508 dB -> 0.17016 dB); the kernel
+#: computes the unrounded value.
 CLAIM_FLOOR_P95_MULTIPLE = 2.0
 
 
 def percentile(values: Sequence[float], q: float) -> float:
-    """Linear-interpolated percentile — NumPy's default method, in ten lines.
-
-    Spelled out rather than imported so the floor's provenance is auditable
-    without pinning a NumPy version: the claim floor is the product's most
-    consequential decimal, and it should be reproducible by reading. Its
-    agreement with the banked repeat-floor study's own published summary is
-    pinned by ``tests/test_active_speaker_attempts_loop.py``.
+    """Linear-interpolated percentile, NumPy's default method, spelled out (not imported) so
+    the floor's provenance is auditable without pinning a NumPy version; pinned against
+    the banked study's own summary by ``tests/test_active_speaker_attempts_loop.py``.
     """
 
     ordered = sorted(float(value) for value in values)
@@ -192,42 +125,25 @@ def percentile(values: Sequence[float], q: float) -> float:
     return ordered[int(low)] + weight * (ordered[int(high)] - ordered[int(low)])
 
 
-#: Averaging more than four repeats buys resolution the box's drift immediately
-#: spends. Measured 2026-07-31: σ falls as 1/√M, but drift accumulates linearly
-#: across the ~21 s each repeat costs, and at M = 4 the two cross —
-#: σ/√M ≈ 0.014 dB against ≈ 0.018 dB of accumulated drift.
-#:
-#: **Numerically equal to two shipped constants it does not mean the same thing
-#: as, and must not be unified with** (the house rule from
-#: :data:`~jasper.active_speaker.repeat_admission.MAX_RESERVATIONS`'s comment:
-#: equal by coincidence of value is not equal by shared meaning):
-#: :data:`~jasper.active_speaker.repeat_admission.MAX_ATTEMPTS` is an audible
-#: *spend* budget per capture set, refundable on transport failures, and
+#: Averaging more than four repeats buys resolution the box's drift
+#: immediately spends. Measured 2026-07-31: sigma falls as 1/sqrt(M), drift
+#: accumulates linearly across the ~21 s per repeat, and at M=4 the two cross
+#: (sigma/sqrt(M) ~= 0.014 dB vs ~= 0.018 dB accumulated drift). Numerically
+#: equal to, but distinct in meaning from,
+#: :data:`~jasper.active_speaker.repeat_admission.MAX_ATTEMPTS` (a spend
+#: budget) and
 #: :data:`~jasper.active_speaker.commissioning_capture.DEFAULT_REPEAT_TARGET`
-#: is 3 repeats for *outlier rejection*, explicitly "never noise-floor
-#: reduction". This one is the point past which noise-floor reduction by
-#: averaging stops working. Three different facts.
+#: (outlier rejection, not noise-floor reduction) -- do not unify.
 MAX_USEFUL_REPEAT_AVERAGES = 4
 
 
 @dataclass(frozen=True)
 class AttemptBudget:
-    """How many *tuning attempts* one speaker gets.
-
-    Attempts, not measurement repeats — a tune-and-grade cycle, not a
-    re-capture. ``target_attempts`` is WO-7's planning number ("about three
-    tries") and is **disclosed, not enforced**: it rides on every decision so a
-    household surface can render "2 of 3" without a second copy of the number,
-    and the only bound the kernel applies is ``hard_cap_attempts``. Two knobs
-    enforcing the same thing would be one knob and one bug.
-
-    ``hard_cap_attempts`` is a **policy** bound — target plus one retry, the
-    same shape the shipped capture path uses for repeats
-    (:data:`~jasper.active_speaker.commissioning_capture.DEFAULT_REPEAT_TARGET`
-    3, :data:`~jasper.active_speaker.repeat_admission.MAX_ATTEMPTS` 4). No
-    measurement sets it, and this docstring is the place that says so: the
-    2026-07-31 repeat study bounded *repeat averaging* at four
-    (:data:`MAX_USEFUL_REPEAT_AVERAGES`), which is a different quantity.
+    """How many *tuning attempts* one speaker gets (a tune-and-grade cycle, not a measurement
+    repeat). ``target_attempts`` is WO-7's planning number, disclosed not enforced --
+    the only bound the kernel applies is ``hard_cap_attempts``. ``hard_cap_attempts`` is
+    a policy bound (target plus one retry); no measurement sets it, and it is a
+    different quantity from :data:`MAX_USEFUL_REPEAT_AVERAGES`.
     """
 
     target_attempts: int = 3
@@ -248,35 +164,13 @@ class AttemptBudget:
 
 @dataclass(frozen=True)
 class FloorStats:
-    """What a change in ``metric`` has to clear before the loop may claim it.
-
-    Build with :meth:`from_repeat_study` when a repeat study measured this
-    metric, or :meth:`from_policy_bar` when none has. Both produce a number;
-    only the first produces a *measured* one, and :attr:`basis` rides through
-    to every decision and every report line so a reader can never mistake one
-    for the other.
-
-    Args:
-      metric: the grade metric this floor was measured on. :func:`decide_next`
-        refuses to grade an attempt whose metric differs — a floor measured on
-        one instrument says nothing about another.
-      median_db: median consecutive-pair deviation; context for the reader,
-        never a threshold. ``None`` on a policy bar.
-      p95_db: the p95 the claim floor is derived from. ``None`` on a policy bar.
-      claim_floor_db: the threshold itself.
-      basis: :data:`FLOOR_BASIS_MEASURED` or :data:`FLOOR_BASIS_POLICY`.
-      source: free-text provenance — which study, which shipped constant.
-      measured_at: when, as free text (an ISO date for a study, ``""`` when the
-        basis is a policy bar and there is no measurement to date).
-      scope: which *separation* this floor was derived across —
-        :data:`FLOOR_SCOPE_WITHIN_SITTING` or
-        :data:`FLOOR_SCOPE_ACROSS_SITTINGS`. Orthogonal to :attr:`basis`, and
-        the reason it is a second field rather than folded into the first: a
-        measured floor and a policy bar can each cover either separation, so
-        collapsing them would let "we measured this" imply "…across a mic
-        re-placement", which is exactly the inference issue #2081 was filed
-        about. The default is the fail-closed one: a floor that does not say
-        which separation it covers licenses the narrow comparison only.
+    """What a change in ``metric`` has to clear before the loop may claim it. Build with
+    :meth:`from_repeat_study` (measured) or :meth:`from_policy_bar` (no study);
+    :attr:`basis` rides through every decision. :attr:`scope` (separation covered) is
+    orthogonal to :attr:`basis` -- collapsing them would let "we measured this" imply
+    "across a mic re-placement" (#2081); ``median_db``/``p95_db`` are ``None`` on a
+    policy bar. :func:`decide_next` refuses to grade an attempt whose ``metric``
+    differs.
     """
 
     metric: str
@@ -311,19 +205,10 @@ class FloorStats:
         measured_at: str,
         scope: str = FLOOR_SCOPE_WITHIN_SITTING,
     ) -> "FloorStats":
-        """A floor measured by repeating one unchanged measurement.
-
-        ``claim_floor_db`` is computed as
-        ``CLAIM_FLOOR_P95_MULTIPLE * p95_db`` — see that constant for why the
-        multiple is 2 and why no decimal is transcribed here.
-
-        ``scope`` defaults to :data:`FLOOR_SCOPE_WITHIN_SITTING` because that
-        is what "repeat one unchanged measurement" describes, and the only such
-        study banked (``captures/repeat-floor-20260731``) held the mic fixed.
-        A study that DOES re-place the microphone between repeats passes
-        :data:`FLOOR_SCOPE_ACROSS_SITTINGS` and the wider comparison is
-        licensed with no kernel edit — which is the reason this is a parameter
-        rather than a constant this constructor hardcodes.
+        """A floor measured by repeating one unchanged measurement. ``claim_floor_db`` is
+        ``CLAIM_FLOOR_P95_MULTIPLE * p95_db``. ``scope`` defaults to
+        :data:`FLOOR_SCOPE_WITHIN_SITTING` (the only banked study held the mic fixed); a
+        re-placement study passes :data:`FLOOR_SCOPE_ACROSS_SITTINGS`.
         """
 
         if not (p95_db > 0.0):
@@ -344,18 +229,9 @@ class FloorStats:
         cls, *, metric: str, claim_floor_db: float, source: str, scope: str,
     ) -> "FloorStats":
         """A shipped threshold standing in where no repeat study exists.
-
-        Same arithmetic downstream, different epistemics: :attr:`median_db` and
-        :attr:`p95_db` stay ``None`` rather than being back-solved from the
-        bar, because inventing a p95 to fit a threshold would turn a policy
-        choice into a fake measurement.
-
-        ``scope`` is **required and has no default**, unlike
-        :meth:`from_repeat_study`'s. A repeat study's separation is a fact
-        about how it was run, so it can be inferred from the construction; a
-        declared bar has no such fact behind it, and picking either default for
-        it would be the module inventing the one thing the caller is the only
-        one who knows. Making it answer is the point.
+        :attr:`median_db`/:attr:`p95_db` stay ``None`` rather than being back-solved.
+        ``scope`` is required, with no default: a declared bar has no construction fact
+        to infer it from.
         """
 
         return cls(
@@ -367,13 +243,9 @@ class FloorStats:
         )
 
     def licenses_sitting_pair(self, previous: str, latest: str) -> bool:
-        """May a pair measured in these two sittings be graded against me?
-
-        ``""`` is UNKNOWN, never a match, and that asymmetry is the whole
-        guard: two unrecorded sittings compare equal as strings, so an
-        ``==`` here would read a pair that cannot say where it came from as a
-        pair that came from one place. State written before issue #2081 rides
-        in with two blanks, which is precisely the case that must not pass.
+        """May a pair measured in these two sittings be graded against me? ``""`` is UNKNOWN, never
+        a match: two unrecorded sittings must not compare equal as if they were the same
+        place (pre-#2081 state rides in with two blanks).
         """
 
         if self.scope == FLOOR_SCOPE_ACROSS_SITTINGS:
@@ -395,12 +267,9 @@ class FloorStats:
 
 @dataclass(frozen=True)
 class AttemptIntegrity:
-    """Whether this attempt's grade may be compared to another one at all.
-
-    ``comparable`` is the shipped acceptance gate's answer, not a quality
-    score: a capture the instrument rejected has no grade, rather than a bad
-    one. ``reasons`` carries the gate's own reason strings through unchanged so
-    the report can name what actually failed.
+    """Whether this attempt's grade may be compared to another one at all. ``comparable`` is
+    the shipped acceptance gate's answer, not a quality score. ``reasons`` carries the
+    gate's own reason strings through unchanged.
     """
 
     comparable: bool
@@ -412,65 +281,19 @@ class AttemptIntegrity:
 
 @dataclass(frozen=True)
 class AttemptRecord:
-    """One tuning attempt, already graded.
-
-    Grades are **lower-is-better** throughout, which both shipped candidates
-    are (``max_db_notch_excluded`` is a deviation; a linearization residual is
-    an error). The kernel does not carry a direction flag, because supporting
-    a higher-is-better metric that does not exist would be one more branch
-    nothing ever takes.
-
-    Two grade shapes are accepted, because the two shipped instruments produce
-    two shapes:
-
-    * ``grade_db`` — an absolute grade. Consecutive grades give both the
-      magnitude of the change and its direction.
-    * ``deviation_from_predecessor_db`` — an unsigned magnitude straight from
-      a comparator that only ever produces one (``max_db_notch_excluded``
-      re-grades one capture against another and returns how far apart they
-      are; there is no absolute per-capture number to subtract). Direction is
-      unknown from this alone, and the kernel refuses to claim one.
-
-    When both are present the explicit deviation wins for the magnitude — it is
-    the comparator's own answer — and the grades still supply direction.
-
-    Args:
-      attempt_id: stable identifier; appears in every decision's basis.
-      metric: the grade metric's name. Must match the floor's.
-      provenance: :data:`PROVENANCE_MODEL_GRADED` or
-        :data:`PROVENANCE_REALIZED`. Comparing across the two is refused —
-        a predicted grade and a measured one are different instruments, and
-        the household wire requires deltas labelled model-vs-model.
-      sitting_id: WHICH continuous microphone sitting produced this grade —
-        opaque to the kernel, which only ever asks two of them whether they
-        are the same string. ``""`` means unrecorded, and is treated as
-        "not the same sitting" rather than as a match; see
-        :meth:`FloorStats.licenses_sitting_pair`. Its sibling ``attempt_id``
-        answers a different question and cannot stand in for it: two attempts
-        necessarily carry two ids, so id inequality says nothing about whether
-        the microphone moved between them.
-      integrity: the shipped gate's comparability verdict.
-      repeats_used: how many repeats this attempt averaged. Disclosed against
-        :data:`MAX_USEFUL_REPEAT_AVERAGES`.
-      grade_db: absolute grade, lower is better.
-      deviation_from_predecessor_db: unsigned magnitude of change from the
-        immediately preceding attempt.
-      n_graded_bins: how many bins the grade was computed over, when the
-        instrument reports it.
-        :func:`~jasper.active_speaker.flat_spec.spec_convergence_residual`
-        warns that a loop comparing two iterations must be able to tell an
-        improvement from a smaller denominator, and says enforcing that is the
-        loop's job. :func:`decide_next` enforces it — asymmetrically, since a
-        *grown* denominator only makes an improvement harder to win.
-      predicted_remaining_improvement_db: what this attempt's fit says is still
-        available to win. **Not** ``CrossoverCandidate.flatness_improvement_db``
-        — that one is ``seed_ripple − committed_ripple``, what the (polarity,
-        delay) objective bought over the correlation seed on a decision already
-        taken, and plugging it in here would read a backward-looking number as
-        a forward-looking one.
-      in_spec: the fit is already inside spec; nothing left to chase.
-      curve_refs: opaque pointers to per-band curves for the report. The kernel
-        never dereferences them — it performs no I/O.
+    """One tuning attempt, already graded. Grades are lower-is-better throughout; the kernel
+    carries no direction flag. Two grade shapes are accepted: ``grade_db`` (absolute,
+    gives magnitude and direction) and ``deviation_from_predecessor_db`` (unsigned
+    magnitude only); when both are present the deviation wins for magnitude, grades
+    still supply direction. ``provenance`` may not be compared across
+    :data:`PROVENANCE_MODEL_GRADED`/:data:`PROVENANCE_REALIZED`. ``sitting_id`` is
+    opaque (only ever string-compared); ``""`` means unrecorded, treated as "not the
+    same sitting" (see :meth:`FloorStats.licenses_sitting_pair`). ``n_graded_bins`` is
+    enforced asymmetrically: a *grown* denominator only makes an improvement harder to
+    win. ``predicted_remaining_improvement_db`` is NOT
+    ``CrossoverCandidate.flatness_improvement_db`` (backward-looking, over a decision
+    already taken). ``curve_refs`` are never dereferenced here -- the kernel performs no
+    I/O.
     """
 
     attempt_id: str
@@ -525,15 +348,11 @@ class AttemptRecord:
 
 @dataclass(frozen=True)
 class LoopDecision:
-    """What the loop decided, and every number it decided from.
-
-    ``improved`` is carried separately from ``decision`` on purpose: an
-    above-floor *regression* is still :data:`CONTINUE` — the loop keeps working
-    rather than accepting a worse tune — and reading that as approval would be
-    wrong. ``improved=False`` plus
-    :data:`REASON_REGRESSION_FROM_PREDECESSOR` says it in the record. What to
-    do about a regression (revert, re-fit, re-measure) is the live flow's
-    policy, not this kernel's.
+    """What the loop decided, and every number it decided from. ``improved`` is carried
+    separately from ``decision``: an above-floor *regression* is still :data:`CONTINUE`
+    (the loop keeps working), never approval -- ``improved=False`` plus
+    :data:`REASON_REGRESSION_FROM_PREDECESSOR` says so. Handling a regression is the
+    live flow's policy, not this kernel's.
     """
 
     decision: str
@@ -573,12 +392,10 @@ class LoopDecision:
 def _magnitude_and_improvement(
     previous: AttemptRecord, latest: AttemptRecord,
 ) -> tuple[float | None, float | None]:
-    """The size of the change, and how much of it was an improvement.
-
-    Improvement is ``previous.grade_db - latest.grade_db`` (positive = the
-    grade fell = better) and is ``None`` when either grade is absent. The
-    magnitude prefers the comparator's own deviation when the instrument
-    supplied one, because that number was measured rather than subtracted.
+    """The size of the change, and how much of it was an improvement. Improvement is
+    ``previous.grade_db - latest.grade_db`` (positive = better), ``None`` if either is
+    absent. Magnitude prefers the comparator's own deviation when supplied, since that
+    number was measured rather than subtracted.
     """
 
     improvement_db: float | None = None
@@ -597,31 +414,13 @@ def decide_next(
     *,
     budget: AttemptBudget | None = None,
 ) -> LoopDecision:
-    """Improve or stop, given the attempts so far.
-
-    ``history`` is oldest-first and **only its last two entries are read** —
-    rule 1 above. There is deliberately no ``baseline=`` parameter and no way
-    to reach further back: on this hardware a fixed early baseline accumulates
-    drift comparable to the entire measurement floor within ~15 attempts, so a
-    fixed-baseline mode would not be an option, it would be a slow lie.
-
-    When the immediate predecessor is not comparable the kernel refuses to
-    grade rather than reaching past it to the last good attempt. Reaching back
-    re-opens exactly the drift question rule 1 closed, and there is no banked
-    gap-of-two deviation to calibrate what that costs.
-
-    The pair must also fall inside the floor's own :attr:`FloorStats.scope` —
-    rule 4. A within-sitting floor grades a within-sitting pair and nothing
-    else, and "we do not know which sittings these came from" is refused on the
-    same terms as "we know, and they differ".
-
-    Order of judgement, and why: evidence first (a number that cannot be
-    trusted must never reach a threshold), then the floor (a change too small
-    to resolve is the most useful thing to say, so it outranks the budget),
-    then — only for a decision that would otherwise be :data:`CONTINUE` —
-    convergence, then budget. Convergence outranks budget because "there was
-    nothing left to win" and "we ran out of tries" are different news and the
-    first one is the truth when both hold.
+    """Improve or stop, given the attempts so far. ``history`` is oldest-first; only its last
+    two entries are read (rule 1), with no ``baseline=`` parameter or way to reach
+    further back -- a fixed baseline accumulates drift comparable to the entire floor
+    within ~15 attempts. An incomparable predecessor refuses to grade. The pair must
+    also fall inside the floor's own :attr:`FloorStats.scope` (rule 4). Order of
+    judgement: evidence first, then the floor, then (only if otherwise :data:`CONTINUE`)
+    convergence, then budget.
     """
 
     budget = budget or AttemptBudget()
@@ -717,18 +516,9 @@ def decide_next(
         )
 
     if not floor.licenses_sitting_pair(previous.sitting_id, latest.sitting_id):
-        # Rule 4. Sits with the provenance refusal above and ahead of every
-        # number below for the same reason that one does: both ask whether
-        # these two grades may be subtracted AT ALL, and a magnitude computed
-        # first would only be a threshold-shaped way of saying yes. The
-        # distinction between the two reasons is operational, not cosmetic —
-        # on the deploy that lands #2081 every persisted history carries no
-        # sitting at all, and reading that as "the household moved the mic"
-        # would send a maintainer looking for a household that did nothing
-        # wrong. Such a speaker answers UNRECORDED until both attempts in its
-        # pair were captured after the upgrade, and MISMATCH from then on;
-        # neither is a claim, and the difference is which one a reader should
-        # act on.
+        # Rule 4. On the deploy that lands #2081 every persisted history
+        # carries no sitting yet, so this answers UNRECORDED (not MISMATCH)
+        # until both attempts in the pair postdate the upgrade.
         return _decision(
             STOP_EVIDENCE,
             (
@@ -773,22 +563,17 @@ def decide_next(
         )
 
     if magnitude_db < floor.claim_floor_db:
-        # `improved` stays None, not False: a sub-floor change is not a
-        # regression, it is a change the instrument cannot resolve either way.
-        # `improvement_db` still rides along when it exists, disclosed and
-        # unclaimable.
+        # `improved` stays None: a sub-floor change is unresolvable, not a
+        # regression.
         return _graded(STOP_FLOOR, REASON_BELOW_CLAIM_FLOOR)
 
     if improvement_db is None:
-        # Above the floor, but the comparator only reported a magnitude. The
-        # tune moved; whether it moved the right way is unknown, and an
-        # unknown direction may not be reported as an improvement.
+        # Above floor but direction unknown; may not be reported as improved.
         return _graded(STOP_EVIDENCE, REASON_DIRECTION_UNKNOWN_ABOVE_FLOOR)
 
     improved = improvement_db > 0.0
     if improved and _denominator_shrank(previous, latest):
-        # A grade pooled over fewer bins falls for free. flat_spec hands this
-        # hazard to the loop by name; refusing the claim is where it lands.
+        # A grade pooled over fewer bins falls for free.
         return _graded(
             STOP_EVIDENCE,
             REASON_GRADED_BINS_SHRANK,
@@ -821,10 +606,8 @@ def _denominator_shrank(previous: AttemptRecord, latest: AttemptRecord) -> bool:
 def _apply_stop_conditions(
     decision: LoopDecision, *, latest: AttemptRecord,
 ) -> LoopDecision:
-    """Turn a would-be :data:`CONTINUE` into a stop when there is nowhere to go.
-
-    Only reachable from a decision that already survived the evidence and floor
-    checks, so a stop here never masks one of those.
+    """Turn a would-be :data:`CONTINUE` into a stop when there is nowhere to go. Only reachable
+    from a decision that already survived the evidence and floor checks.
     """
 
     if latest.in_spec:
@@ -848,22 +631,11 @@ def _apply_stop_conditions(
 
 
 def material_improvement_db() -> float:
-    """The shipped bar for "an improvement worth applying", imported not copied.
-
-    Public because the replay driver needs the same number to build a policy
-    floor for model-graded metrics, and two import sites for one constant is
-    how two constants start.
-
-    :data:`~jasper.active_speaker.crossover_v2.attempt_grading.PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB`
-    is 0.5 dB because that is the gap between what the correction model
-    predicts and what the hardware realizes on JTS3 — an improvement smaller
-    than the model's own error is not one that can be honestly claimed. The
-    number is not restated here.
-
-    Imported inside the function because ``crossover_v2_flow`` is the flow that
-    will one day *call* this kernel; importing it at module scope would put a
-    very large module (and its numpy/scipy weight) behind every import of a
-    dependency-free decision kernel, and invite a cycle.
+    """The shipped bar for "an improvement worth applying", imported not copied. Public: the
+    replay driver needs the same number for a policy floor on model-graded metrics. 0.5
+    dB is the gap between what the correction model predicts and what JTS3's hardware
+    realizes. Imported inside the function to keep numpy/scipy off this dependency-free
+    kernel's import path.
     """
 
     from jasper.active_speaker.crossover_v2_flow import (
@@ -879,14 +651,9 @@ def replay(
     *,
     budget: AttemptBudget | None = None,
 ) -> list[LoopDecision]:
-    """Every decision the loop would reach, one per attempt.
-
-    A live loop stops at the first non-:data:`CONTINUE`. Replaying recorded
-    attempts wants the whole walk — what the loop *would* have said at each
-    step had it kept going — so an operator can see that a stop holds for the
-    same reason at every subsequent attempt rather than only the first. The
-    first non-``CONTINUE`` entry is where a live loop would actually have
-    stopped; :func:`first_stop_index` finds it.
+    """Every decision the loop would reach, one per attempt. A live loop stops at the first
+    non-:data:`CONTINUE`; replaying wants the whole walk instead.
+    :func:`first_stop_index` finds where a live loop would actually have stopped.
     """
 
     return [
