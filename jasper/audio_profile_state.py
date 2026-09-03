@@ -19,6 +19,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from .chip_aec_health import (
+    ACTION_RECOMMISSION, ENV_KEYS, STATUS_DISCLOSED_STALE, STATUS_READY,
+    AlignmentHealth,
+)
 from .chip_aec_policy import (
     ACTION_USE_SOFTWARE_OR_TEST, STATUS_TESTING, permits_selection,
 )
@@ -30,12 +34,6 @@ PROFILE_XVF_CHIP_AEC_TESTING = "xvf_chip_aec_testing"
 PROFILE_XVF_SOFTWARE_AEC3 = "xvf_software_aec3"
 PROFILE_DIRECT_MIC = "direct_mic"
 PROFILE_CUSTOM = "custom"
-
-# The reconciler's fixed re-commission remedy (ALIGNMENT_RECOMMISSION_ACTION
-# in deploy/bin/jasper-aec-reconcile — the two writers of this vocabulary).
-# `action` equal to this constant is what `commission_recommended` decodes, so
-# consumers gate on the boolean instead of scanning operator prose.
-ALIGNMENT_RECOMMISSION_ACTION = "Run sudo jasper-aec-commission"
 
 CONCRETE_PROFILES = (
     PROFILE_XVF_CHIP_AEC,
@@ -83,10 +81,7 @@ class RuntimeAecEnv:
     dtln_enabled: bool = False
     chip_aec_150_device: str = ""
     chip_aec_210_device: str = ""
-    chip_aec_alignment_status: str = ""
-    chip_aec_alignment_reason: str = ""
-    chip_aec_alignment_action: str = ""
-    chip_aec_alignment_selection: str = ""
+    chip_aec_alignment: AlignmentHealth = AlignmentHealth("")
 
 
 @dataclass(frozen=True)
@@ -376,29 +371,11 @@ def runtime_env_from_mapping(
             "",
             process_env=process_env,
         ),
-        chip_aec_alignment_status=env_value(
-            env,
-            "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS",
-            "",
-            process_env=process_env,
-        ),
-        chip_aec_alignment_reason=env_value(
-            env,
-            "JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON",
-            "",
-            process_env=process_env,
-        ),
-        chip_aec_alignment_action=env_value(
-            env,
-            "JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION",
-            "",
-            process_env=process_env,
-        ),
-        chip_aec_alignment_selection=env_value(
-            env,
-            "JASPER_AEC_CHIP_AEC_ALIGNMENT_SELECTION",
-            "",
-            process_env=process_env,
+        chip_aec_alignment=AlignmentHealth.from_env(
+            {
+                key: env_value(env, key, "", process_env=process_env)
+                for key in ENV_KEYS
+            }
         ),
     )
 
@@ -638,20 +615,21 @@ def build_audio_profile_status(
     # Serving rule for both records: jasper.chip_aec_policy's module docstring.
     # A legacy record carries no stamp; its only writers were managed
     # selections, so it answers for those and for no custom profile.
+    alignment = runtime.chip_aec_alignment
     alignment_selection = normalize_audio_input_profile(
-        runtime.chip_aec_alignment_selection, default=""
+        alignment.selection, default=""
     )
     alignment_owned = (
         alignment_selection == selection
         if alignment_selection
         else selection != PROFILE_CUSTOM
     )
-    alignment_status = runtime.chip_aec_alignment_status if alignment_owned else ""
+    alignment_status = alignment.status if alignment_owned else ""
     # Absent is not "blocked": with no verdict published for this selection the
     # chip arms on the live evidence _wake_engine checks — the operator's leg
     # and a beam actually on the carrier — rather than on a record about
     # someone else's path.
-    alignment_permits_chip = alignment_status == "ready" or not alignment_owned
+    alignment_permits_chip = alignment_status == STATUS_READY or not alignment_owned
     # A device mismatch means the bridge is not capturing the detected XVF, so
     # what arrives cannot be this mic's chip beam. The beam plan and the DAC
     # gate answer whether chip-AEC may arm, not what the bridge is carrying, so
@@ -661,7 +639,7 @@ def build_audio_profile_status(
         not aec_device_mismatch
         and (
             (chip_available and gate_permitted and alignment_permits_chip)
-            or alignment_status == "disclosed_stale"
+            or alignment_status == STATUS_DISCLOSED_STALE
         )
     )
     running_engine = _wake_engine(
@@ -676,7 +654,7 @@ def build_audio_profile_status(
     disclosed_engine = (
         running_engine
         if requested_intent.mode == "auto"
-        and alignment_status == "disclosed_stale"
+        and alignment_status == STATUS_DISCLOSED_STALE
         else None
     )
     direct_engine = running_engine if requested_intent.mode != "auto" else None
@@ -696,7 +674,7 @@ def build_audio_profile_status(
     if (
         managed_xvf
         and alignment_status
-        and alignment_status not in {"ready", "disclosed_stale"}
+        and alignment_status not in {STATUS_READY, STATUS_DISCLOSED_STALE}
     ):
         processing_mode = "Chip-AEC parked"
         session_source = "parked pending chip-AEC alignment"
@@ -704,22 +682,18 @@ def build_audio_profile_status(
         active_profile: str | None = None
         profile_state = alignment_status
         profile_reason = (
-            runtime.chip_aec_alignment_reason
-            or "Managed XVF chip-AEC alignment is not ready."
+            alignment.reason or "Managed XVF chip-AEC alignment is not ready."
         )
-        profile_action = runtime.chip_aec_alignment_action
+        profile_action = alignment.action
     elif disclosed_engine is not None:
         # ADR-0101: disclosed_stale is a RUNNING state — name the engine the
         # wake path actually has, and let the reconciler's own reason/action
         # say what chip-AEC lost. A disclosed box with no live engine keeps
         # the pending/waiting arms below: it is not running anything to claim.
         processing_mode, session_source, wake_legs, active_profile = disclosed_engine
-        profile_state = "disclosed_stale"
-        profile_reason = (
-            runtime.chip_aec_alignment_reason
-            or "Chip-AEC is not fully armed."
-        )
-        profile_action = runtime.chip_aec_alignment_action
+        profile_state = STATUS_DISCLOSED_STALE
+        profile_reason = alignment.reason or "Chip-AEC is not fully armed."
+        profile_action = alignment.action
     elif direct_engine is not None:
         processing_mode, session_source, wake_legs, active_profile = direct_engine
         profile_state = "disabled"
@@ -772,13 +746,13 @@ def build_audio_profile_status(
                 # The GATE's own disclosure, for a box whose blocked chip-AEC no
                 # alignment status describes; `disclosed_engine` above serves the
                 # ones the reconciler already published an alignment reason for.
-                profile_state = "disclosed_stale"
+                profile_state = STATUS_DISCLOSED_STALE
                 # `action` is operator text, while the gate answers in action
                 # CODES. Only the uncodified-DAC code has a command behind it —
                 # the one the reconciler pairs with its own disclosure of that
                 # same condition; every other code is said by `reason` instead.
                 profile_action = (
-                    ALIGNMENT_RECOMMISSION_ACTION
+                    ACTION_RECOMMISSION
                     if str(gate.get("recommended_action") or "")
                     == ACTION_USE_SOFTWARE_OR_TEST
                     else ""
@@ -846,7 +820,7 @@ def build_audio_profile_status(
         "action": profile_action,
         # Structured decode of `action` against the writers' shared constant,
         # so UI surfaces gate on a boolean rather than matching prose.
-        "commission_recommended": profile_action == ALIGNMENT_RECOMMISSION_ACTION,
+        "commission_recommended": profile_action == ACTION_RECOMMISSION,
     }
     if gate:
         audio_profile["chip_aec_gate"] = gate

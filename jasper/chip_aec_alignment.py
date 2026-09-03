@@ -359,8 +359,9 @@ class AlignmentArtifact:
     k_samples: int
     # The SYS_DELAY the commissioner verified — the one that passed the causal
     # window, the convergence transition, and the >= 10 dB beam suppression.
-    # Recorded for the boot journal; boot resolves its own delay from K and the
-    # live queue and does not bound itself against this (ADR-0223).
+    # A schema field held to the driver cap by `validate_banked_delays`, and
+    # journalled at boot — but boot resolves its own delay from K and the live
+    # queue and does not bound itself against this one (ADR-0223).
     sys_delay: int
 
     def __post_init__(self) -> None:

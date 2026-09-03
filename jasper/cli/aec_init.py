@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from jasper import chip_aec_health
 from jasper import chip_aec_shipped_alignment as shipped_alignment
 from jasper import output_hardware
 from jasper.atomic_io import atomic_write_text
@@ -38,7 +39,6 @@ from jasper.audio_hardware import dac as dac_registry
 # EnvironmentFile= line.
 from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_ENV_PATH
 from jasper.chip_aec_alignment import (
-    PER_UNIT_IDENTITY_FIELDS,
     QUEUE_MAX_MEDIAN_DRIFT,
     AlignmentIdentity,
     identity_divergence,
@@ -976,20 +976,26 @@ def shipped_class_alignment(
 
 @dataclass(frozen=True)
 class BankedAlignment:
-    """The banked proof one run resolved, and what it discloses about it.
+    """The banked proof one run resolved, and what it says about its source.
 
     ``commissioned_sys_delay`` is the delay banked alongside K — by this unit's
     own artifact or by the row shipped for its hardware class — journalled so a
     boot's delay can be read against the commissioner's.  ``sys_delay`` is what
     the live reference queue resolves that K to, and is what the chip is written
     with; it is not bounded against the commissioned one (ADR-0223).
+
+    ``shipped_label`` names the hardware-class row this ran from when nothing is
+    banked on the unit; ``identity_diff`` is what the unit's own commissioned
+    identity disagrees with live.  `jasper.chip_aec_health` turns them into the
+    household verdict — they are facts here, never prose.
     """
 
     k_samples: int
     commissioned_sys_delay: int
     sys_delay: int
     queue: tuple[int, ...]
-    disclosures: tuple[str, ...]
+    shipped_label: str
+    identity_diff: tuple[str, ...]
 
 
 def resolve_banked_alignment(
@@ -998,14 +1004,15 @@ def resolve_banked_alignment(
     """Resolve the K this run applies, against the live native-reference queue.
 
     ADR-0101: a proof that stopped describing this box is applied and disclosed,
-    not parked. Each disclosure names what moved; the reconciler publishes them
-    as `disclosed_stale` alongside the jasper-aec-commission that clears them.
+    not parked. This returns what moved; `jasper.chip_aec_health` judges it into
+    the `disclosed_stale` the reconciler publishes.
 
     Raises:
         CommissionRequired: this box has no banked K it can run from.
     """
 
-    disclosed: list[str] = []
+    shipped_label = ""
+    changed: tuple[str, ...] = ()
     commissioned_identity: AlignmentIdentity | None = None
     absent: str | None = None
     try:
@@ -1034,27 +1041,11 @@ def resolve_banked_alignment(
         shipped = shipped_class_alignment(dev, plan, status, absent=absent)
         k_samples = shipped.k_samples
         commissioned_sys_delay = shipped.sys_delay
-        disclosed.append(
-            f"running on the shipped class alignment for {shipped.label}; "
-            "run sudo jasper-aec-commission to personalize it to this unit"
-        )
+        shipped_label = shipped.label
     elif commissioned_identity is not None:
         changed = identity_divergence(
             commissioned_identity, build_identity(dev, plan, status)
         )
-        if changed:
-            # K is a property of the hardware CLASS, so a proof measured on a
-            # sibling unit still describes this box; anything else moved the
-            # edge K was measured against.
-            disclosed.append(
-                (
-                    "commissioned alignment was measured on a different unit"
-                    if set(changed) <= PER_UNIT_IDENTITY_FIELDS
-                    else "commissioned alignment no longer matches this "
-                    "hardware class"
-                )
-                + f" ({', '.join(changed)})"
-            )
     try:
         delay = runtime_sys_delay(k_samples, queue)
     except ValueError as exc:
@@ -1066,7 +1057,7 @@ def resolve_banked_alignment(
             raise CommissionRequired(f"{absent}; {exc}") from exc
         raise ChipInitError(str(exc)) from exc
     return BankedAlignment(
-        k_samples, commissioned_sys_delay, delay, queue, tuple(disclosed)
+        k_samples, commissioned_sys_delay, delay, queue, shipped_label, changed
     )
 
 
@@ -1121,12 +1112,22 @@ def main() -> int:
                 )
             banked = resolve_banked_alignment(dev, plan, card=card)
             apply_profile(dev, plan, banked.sys_delay, card=card)
-            disclosure = "; ".join(banked.disclosures)
+            health = chip_aec_health.alignment_health(
+                chip_aec_health.APPLIED,
+                shipped_label=banked.shipped_label,
+                identity_diff=banked.identity_diff,
+            )
+            # The /run file carries the disclosure alone; a fully ready
+            # alignment clears it.
+            disclosure = (
+                "" if health.status == chip_aec_health.STATUS_READY
+                else health.reason
+            )
             log_event(
                 logger,
                 "chip_aec_init",
                 level=logging.WARNING if disclosure else logging.INFO,
-                outcome="disclosed_stale" if disclosure else "ready",
+                outcome=health.status,
                 sys_delay=banked.sys_delay,
                 commissioned_sys_delay=banked.commissioned_sys_delay,
                 k_samples=banked.k_samples,
