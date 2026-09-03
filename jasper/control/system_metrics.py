@@ -141,6 +141,16 @@ CGROUP_MEMORY_STAT_FILE = "/sys/fs/cgroup/memory.stat"
 # a per-core utilization percentage.
 PROC_STAT = "/proc/stat"
 
+# Kernel pressure-stall information. install.sh puts `psi=1` on the
+# cmdline; without it (or without CONFIG_PSI) the file is absent and the
+# sampler omits the field rather than reporting a zero that would read as
+# "no pressure". The "some" line's avg60 is the share of the last 60
+# seconds in which at least one task stalled waiting on memory, 0-100.
+PROC_PRESSURE_MEMORY = "/proc/pressure/memory"
+# Cumulative OOM kills since boot. Absent on kernels that don't publish
+# the counter.
+PROC_VMSTAT = "/proc/vmstat"
+
 
 class SystemSampler:
     """Background thread that snapshots /proc + vcgencmd into ring
@@ -178,6 +188,8 @@ class SystemSampler:
         # Current snapshot values that are not stored in the main
         # 5-second ring buffers.
         self._mem_total_mb = 0
+        self._mem_psi_some_avg60: float | None = None
+        self._oom_kill: int | None = None
         self._disk_used_pct = 0.0
         self._disk_total_gb = 0.0
         self._temp_c: float | None = None
@@ -225,7 +237,7 @@ class SystemSampler:
         """Return current values + ring-buffer history. Copies arrays
         inside the lock so the caller can release before serializing."""
         with self._lock:
-            return {
+            snap = {
                 "sample_interval_sec": self._sample_interval,
                 "history_points": self._history_points,
                 "last_sample_at": self._last_sample_at,
@@ -294,6 +306,16 @@ class SystemSampler:
                 # (race with cgroup teardown). 100% = 1 core saturated.
                 "services": list(self._services_snapshot),
             }
+            # Omitted, not zeroed, when the kernel doesn't publish them —
+            # the dashboard must be able to tell "this kernel has no PSI"
+            # from "there is no memory pressure".
+            if self._mem_psi_some_avg60 is not None:
+                snap["current"]["mem_psi_some_avg60"] = round(
+                    self._mem_psi_some_avg60, 2,
+                )
+            if self._oom_kill is not None:
+                snap["current"]["oom_kill"] = self._oom_kill
+            return snap
 
     def service_states_snapshot(self) -> dict[str, dict[str, Any]]:
         """Return the already-cached 30 s systemd state without re-probing.
@@ -340,6 +362,8 @@ class SystemSampler:
     def _tick(self) -> None:
         """Cheap-metric sample — /proc reads + statvfs + sysfs only."""
         mem = self._read_meminfo()
+        mem_psi = self._read_mem_psi_some_avg60()
+        oom_kill = self._read_oom_kill()
         load = self._read_loadavg_1m()
         net = self._read_net_dev()
         disk_used_pct, disk_total_gb = self._read_disk()
@@ -375,6 +399,8 @@ class SystemSampler:
                 self._append(self._fan_rpm, 0.0)
                 self._append(self._fan_pwm, 0.0)
             self._mem_total_mb = mem["total_mb"]
+            self._mem_psi_some_avg60 = mem_psi
+            self._oom_kill = oom_kill
             self._net_rx_bytes = net["rx_bytes"]
             self._net_tx_bytes = net["tx_bytes"]
             self._disk_used_pct = disk_used_pct
@@ -431,6 +457,41 @@ class SystemSampler:
             "used_mb": (total_kb - avail_kb) // 1024,
             "swap_used_mb": (swap_total_kb - swap_free_kb) // 1024,
         }
+
+    @staticmethod
+    def _read_mem_psi_some_avg60(
+        path: str = PROC_PRESSURE_MEMORY,
+    ) -> float | None:
+        """Percent of the last 60 s in which at least one task stalled on
+        memory, or None where the kernel publishes no PSI.
+
+        Line shape: ``some avg10=0.00 avg60=1.23 avg300=0.41 total=12345``.
+        """
+        try:
+            with open(path) as f:
+                for line in f:
+                    if not line.startswith("some "):
+                        continue
+                    for field in line.split()[1:]:
+                        key, _, value = field.partition("=")
+                        if key == "avg60":
+                            return float(value)
+        except (OSError, ValueError):
+            return None
+        return None
+
+    @staticmethod
+    def _read_oom_kill(path: str = PROC_VMSTAT) -> int | None:
+        """OOM kills since boot (cumulative), or None where /proc/vmstat
+        has no ``oom_kill`` counter."""
+        try:
+            with open(path) as f:
+                for line in f:
+                    if line.startswith("oom_kill "):
+                        return int(line.split()[1])
+        except (OSError, ValueError, IndexError):
+            return None
+        return None
 
     @staticmethod
     def _read_loadavg_1m() -> float:
