@@ -16,8 +16,11 @@ RuntimeDirectoryMode=0755
 # The intent match mirrors jasper.usb_mic.read_intent (last assignment
 # wins; whitespace then surrounding ' and " stripped) but not its 4 KiB /
 # UTF-8 limits, which is safe only because jasper-usbgadget-up composes
-# p_chmask through read_intent itself: a file Python calls corrupt reaches
-# here as p_chmask=0.
+# p_chmask through the same policy: a file Python calls corrupt reaches
+# here as p_chmask=0. The second shell reader of this key is
+# jasper_usbgadget_usb_mic_enabled in deploy/usbsink/jasper-usbgadget-
+# compose.sh, which DOES enforce the 4 KiB cap; converging the two is
+# follow-up work.
 # \\47\\42 is doubled so the quote pair reaches printf whether or not
 # systemd resolves escapes inside single quotes.
 # No `+`: usb_mic.env is 0644 in /var/lib/jasper 0770 root:jasper, which

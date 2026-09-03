@@ -49,8 +49,6 @@ source "$(dirname "$0")/jasper-usbgadget-compose.sh"
 
 CPUINFO="${JASPER_CPUINFO_FILE:-/proc/cpuinfo}"
 NAME="${GADGET_NAME}"
-SPEAKER_NAME_FILE="${JASPER_SPEAKER_NAME_FILE:-/var/lib/jasper/speaker_name.env}"
-SPEAKER_NAME_READER="${JASPER_SPEAKER_NAME_READER:-/opt/jasper/.venv/bin/python}"
 
 log() {
     echo "jasper-usbgadget-up: $*"
@@ -73,18 +71,9 @@ if [[ -z "${GADGET_UDC}" ]]; then
     exit 1
 fi
 
-SPEAKER_NAME="JTS"
-
-# Management-writable identity state is untrusted at this root boundary.
-# The canonical Python reader owns env quoting plus the 32-character,
-# printable-name policy. Never source/eval/pre-read the path or copy its raw
-# value into ConfigFS strings / structured logs. The reader performs one
-# descriptor-held, no-follow, nonblocking, 64 KiB-capped read so FIFO/symlink/
-# replacement races fail safely to JTS.
-canonical_name="$("${SPEAKER_NAME_READER}" -m jasper.speaker_name "${SPEAKER_NAME_FILE}" 2>/dev/null || true)"
-if [[ -n "${canonical_name}" ]]; then
-    SPEAKER_NAME="${canonical_name}"
-fi
+# Never source/eval/pre-read the identity path: only the shared reader's
+# validated answer may reach ConfigFS strings or a structured log.
+SPEAKER_NAME="$(jasper_usbgadget_speaker_name)"
 MIC_NAME="${SPEAKER_NAME} Mic"
 
 write_if_present() {
