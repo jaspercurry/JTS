@@ -97,26 +97,62 @@ async def test_manual_start_refused_when_measurement_active(caplog):
     assert "reason=measurement_active" in caplog.text
 
 
-async def test_manual_start_refused_when_paused_asks_for_an_early_retry():
-    """A refused press is the household asking whether the outage is
-    over, so it shortens the supervisor's wait too (issue #3855)."""
-    wl = _make_wake_loop()
-    nudges = 0
+def _paused_connection(wl, *, paused_for_sec: float):
+    """Wire a connection that reports paused for `paused_for_sec` of
+    loop time, then reports connected. Counts the reconnect nudges."""
+    loop = asyncio.get_event_loop()
+    clears_at = loop.time() + paused_for_sec
+    state = types.SimpleNamespace(nudges=0)
 
     def _nudge() -> bool:
-        nonlocal nudges
-        nudges += 1
+        state.nudges += 1
         return True
 
     wl._connection = types.SimpleNamespace(
-        is_paused=lambda: True,
+        is_paused=lambda: loop.time() < clears_at,
         last_failure_detail=lambda: None,
+        wake_cue=lambda: "cant_connect",
         request_reconnect_now=_nudge,
     )
+    return state
 
-    assert await wl.manual_session_start() == "PAUSED"
+
+async def test_manual_start_refused_when_paused_asks_for_an_early_retry(
+    monkeypatch, caplog,
+):
+    """A press during a real outage still refuses — with a cue, because a
+    press that produces nothing is unexplainable — and shortens the
+    supervisor's wait (issue #3855)."""
+    from jasper import voice_daemon
+
+    monkeypatch.setattr(voice_daemon, "PAUSED_CONNECTION_WAIT_SEC", 0.2)
+    wl = _make_wake_loop()
+    wl._play_cue = _SpyCalls()
+    state = _paused_connection(wl, paused_for_sec=99.0)
+
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        assert await wl.manual_session_start() == "PAUSED"
+
     _assert_no_turn_no_duck(wl)
-    assert nudges == 1
+    assert state.nudges == 1
+    assert wl._play_cue.called is True
+    assert "reason=connection_paused" in caplog.text
+
+
+async def test_manual_start_waits_out_a_planned_rotation(monkeypatch):
+    """A press landing inside a planned session rotation gets its turn
+    once the fresh session is up, instead of a dead PAUSED."""
+    from jasper import voice_daemon
+
+    monkeypatch.setattr(voice_daemon, "PAUSED_CONNECTION_WAIT_SEC", 1.2)
+    wl = _make_wake_loop()
+    wl._play_cue = _SpyCalls()
+    _paused_connection(wl, paused_for_sec=0.3)
+
+    assert await wl.manual_session_start() == "OK"
+
+    assert wl._begin_turn.called is True
+    assert wl._play_cue.called is False
 
 
 async def test_manual_start_does_not_repeat_begin_owned_cleanup():

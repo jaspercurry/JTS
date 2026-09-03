@@ -413,7 +413,7 @@ async def test_supervisor_speaks_once_then_recovers_silently() -> None:
         api_key="fake",
         model="fake-model",
         voice="Aoede",
-        keepalive_period_sec=9999.0,
+        rotate_after_sec=0.0,
         backoff_schedule=(0.0, 0.0, 0.0),
         connect_factory=factory,
     )

@@ -347,8 +347,8 @@ class Deferred:
       * OpenAI: a mid-turn reconnect (the pre-cap watchdog fires inside
         the buffer before the 60-minute hard cap); tearing the socket
         down mid-reply would cut the user off mid-sentence.
-      * Gemini: the same, triggered by a ``GoAway`` with ample
-        ``time_left``.
+      * Gemini: the same, triggered either by a planned session
+        rotation or by a ``GoAway`` with ample ``time_left``.
       * ``OutageTracker``: an escalation cue raised before the daemon
         wired a cue player.
 

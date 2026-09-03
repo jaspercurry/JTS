@@ -38,6 +38,7 @@ try:
     from jasper.voice.gemini_session import (
         ConnectionState,
         GeminiLiveConnection,
+        _close_code_and_reason,
     )
     from jasper.tools import ToolRegistry
     _HAVE_GENAI = True
@@ -161,25 +162,46 @@ def _make_conn(
     *,
     backoff_schedule=(0.0, 0.0),
     context_reset_sec: float = 9999.0,
-    keepalive_period_sec: float = 9999.0,
+    rotate_after_sec: float = 0.0,
 ) -> tuple[GeminiLiveConnection, _FakeConnect]:
     """Build a connection wired to a _FakeConnect.
 
     Tests pass `backoff_schedule=(0.0, 0.0)` to make reconnect immediate
     (no real waiting in unit tests). `context_reset_sec` defaults to a
     huge value so the idle reset doesn't fire unless a test explicitly
-    overrides it. Same for keepalive."""
+    overrides it. `rotate_after_sec=0` disables the planned rotation so
+    only the tests that exercise it spawn that timer."""
     factory = _FakeConnect()
     conn = GeminiLiveConnection(
         api_key="fake",
         model="fake-model",
         voice="Aoede",
         context_reset_sec=context_reset_sec,
-        keepalive_period_sec=keepalive_period_sec,
+        rotate_after_sec=rotate_after_sec,
         backoff_schedule=backoff_schedule,
         connect_factory=factory,
     )
     return conn, factory
+
+
+def _ws_close_error(code: int, reason: str) -> Exception:
+    """A `websockets`-shaped close error: the frame lands on `.rcvd`."""
+    class _Rcvd:
+        pass
+    rcvd = _Rcvd()
+    rcvd.code = code
+    rcvd.reason = reason
+    exc = Exception(f"{code} {reason}")
+    exc.rcvd = rcvd
+    return exc
+
+
+def _api_error(code: int, message: str) -> Exception:
+    """A genai `APIError`-shaped error: no frame, code on `.code`."""
+    exc = Exception(f"{code} None. {message}")
+    exc.code = code
+    exc.message = message
+    return exc
 
 
 async def _wait_until(predicate, timeout: float = 2.0):
@@ -325,12 +347,12 @@ async def test_session_resumption_handle_used_on_reconnect():
     registry = ToolRegistry()
     await conn.start(registry, "system")
     try:
-        # First config has no session_resumption field at all — production
-        # code deliberately omits it on the initial connect (Google's
-        # reference demos never set it, and sending handle=None has
-        # been observed to put the server into a silent-failure state).
+        # The first connect must still ASK for resumption (handle=None):
+        # the server only emits session_resumption_update when setup
+        # carried the field, so omitting it meant we never got a handle.
         first_config = factory.configs[0]
-        assert first_config.session_resumption is None
+        assert first_config.session_resumption is not None
+        assert first_config.session_resumption.handle is None
 
         sess = factory.sessions[0]
         # Server reports a resumption handle.
@@ -435,7 +457,7 @@ async def test_repeated_failures_surface_failed_state():
         model="fake-model",
         voice="Aoede",
         context_reset_sec=9999.0,
-        keepalive_period_sec=9999.0,
+        rotate_after_sec=0.0,
         backoff_schedule=(0.0, 0.0),
         connect_factory=factory,
     )
@@ -489,10 +511,9 @@ async def test_idle_context_reset_drops_resumption_handle_and_reopens():
         turn2 = await conn.acquire_turn()
         # New session was opened.
         assert len(factory.sessions) == 2
-        # New session opened with NO resumption handle (fresh context).
-        # Production code omits the field entirely when there's no
-        # handle — see _build_session_resumption().
-        assert factory.configs[1].session_resumption is None
+        # New session opened with NO resumption handle (fresh context) —
+        # the field is still sent so the server keeps issuing handles.
+        assert factory.configs[1].session_resumption.handle is None
         # The connection cleared the cached handle.
         assert conn._resumption_handle is None
         await turn2.release()
@@ -570,7 +591,7 @@ async def test_409_on_initial_connect_retries():
         model="fake-model",
         voice="Aoede",
         context_reset_sec=9999.0,
-        keepalive_period_sec=9999.0,
+        rotate_after_sec=0.0,
         backoff_schedule=(0.0,),
         connect_factory=factory,
     )
@@ -596,7 +617,7 @@ async def test_non_409_failure_on_initial_connect_does_not_retry():
         model="fake-model",
         voice="Aoede",
         context_reset_sec=9999.0,
-        keepalive_period_sec=9999.0,
+        rotate_after_sec=0.0,
         backoff_schedule=(0.0,),
         connect_factory=factory,
     )
@@ -622,7 +643,7 @@ async def test_terminal_initial_connect_stays_up_and_heals():
         model="fake-model",
         voice="Aoede",
         context_reset_sec=9999.0,
-        keepalive_period_sec=9999.0,
+        rotate_after_sec=0.0,
         backoff_schedule=(0.0,),
         connect_factory=factory,
     )
@@ -658,7 +679,7 @@ async def test_setup_rejection_on_initial_connect_stays_up():
         model="fake-model",
         voice="Aoede",
         context_reset_sec=9999.0,
-        keepalive_period_sec=9999.0,
+        rotate_after_sec=0.0,
         backoff_schedule=(0.0,),
         connect_factory=factory,
     )
@@ -751,7 +772,7 @@ async def test_409_detected_via_websockets_status_code_attribute():
         model="fake-model",
         voice="Aoede",
         context_reset_sec=9999.0,
-        keepalive_period_sec=9999.0,
+        rotate_after_sec=0.0,
         backoff_schedule=(0.0,),
         connect_factory=factory,
     )
@@ -804,9 +825,8 @@ async def test_reconnect_409_drops_resumption_handle_and_retries_fresh():
         # Handle was cleared.
         assert conn._resumption_handle is None
         # Successful reconnect's config carries NO handle (reconnected
-        # fresh, not with the stale handle). _build_session_resumption()
-        # omits the field entirely when there's no handle.
-        assert factory.configs[1].session_resumption is None
+        # fresh, not with the stale handle).
+        assert factory.configs[1].session_resumption.handle is None
     finally:
         await conn.stop()
 
@@ -900,7 +920,7 @@ async def test_reconnect_1008_session_expired_drops_resumption_handle():
         await _wait_until(lambda: len(factory.sessions) >= 2, timeout=3.0)
         await _wait_until(lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0)
         assert conn._resumption_handle is None
-        assert factory.configs[1].session_resumption is None
+        assert factory.configs[1].session_resumption.handle is None
     finally:
         await conn.stop()
 
@@ -933,7 +953,7 @@ async def test_reconnect_generic_exception_drops_resumption_handle():
         await _wait_until(lambda: len(factory.sessions) >= 2, timeout=3.0)
         await _wait_until(lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0)
         assert conn._resumption_handle is None
-        assert factory.configs[1].session_resumption is None
+        assert factory.configs[1].session_resumption.handle is None
     finally:
         await conn.stop()
 
@@ -986,7 +1006,7 @@ async def test_context_reset_hard_fail_triggers_supervisor():
         model="fake-model",
         voice="Aoede",
         context_reset_sec=0.01,
-        keepalive_period_sec=9999.0,
+        rotate_after_sec=0.0,
         backoff_schedule=(0.0, 0.0),
         connect_factory=factory,
     )
@@ -1266,3 +1286,108 @@ async def test_wake_during_a_connect_attempt_cuts_the_next_wait_short():
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+
+
+async def test_planned_rotation_rolls_the_session_without_backoff():
+    """The rotate watchdog opens a fresh session before the server's
+    idle abort can, and the roll skips the reconnect backoff wait."""
+    delays: list[float] = []
+
+    async def _sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    factory = _FakeConnect()
+    conn = GeminiLiveConnection(
+        api_key="fake",
+        model="fake-model",
+        backoff_schedule=None,
+        connect_factory=factory,
+        rotate_after_sec=0.05,
+        sleep=_sleep,
+    )
+    await conn.start(ToolRegistry(), "system")
+    try:
+        await _wait_until(lambda: len(factory.sessions) >= 2, timeout=3.0)
+        await _wait_until(
+            lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0,
+        )
+        # The rotation's own attempt waited zero seconds — no 1 s
+        # reconnect_delay(1) gap in front of the fresh session.
+        assert delays and delays[0] == 0.0, delays
+        assert conn._planned_rotate is False
+    finally:
+        await conn.stop()
+
+
+async def test_planned_rotation_defers_until_the_active_turn_ends():
+    """A rotation that comes due mid-turn waits for the turn to be
+    released instead of cutting the user off."""
+    factory = _FakeConnect()
+    conn = GeminiLiveConnection(
+        api_key="fake",
+        model="fake-model",
+        backoff_schedule=(0.0, 0.0),
+        connect_factory=factory,
+        rotate_after_sec=0.05,
+    )
+    await conn.start(ToolRegistry(), "system")
+    try:
+        turn = await conn.acquire_turn()
+        await _wait_until(lambda: conn._deferred_reconnect.pending, timeout=3.0)
+        # Still on the original session while the turn is open.
+        assert len(factory.sessions) == 1
+        assert turn.turn_lost() is False
+        await turn.release()
+        await _wait_until(lambda: len(factory.sessions) >= 2, timeout=3.0)
+        assert conn._deferred_reconnect.pending is False
+    finally:
+        await conn.stop()
+
+
+@pytest.mark.parametrize(
+    "exc, expected",
+    [
+        (_ws_close_error(1006, "abnormal closure"), (1006, "abnormal closure")),
+        # genai's APIError: the frame is consumed, the code survives on
+        # `.code` — this is the server's idle abort on jts4.
+        (_api_error(1008, "The operation was aborted."),
+         (1008, "The operation was aborted.")),
+        # An HTTP status is not a WebSocket close code.
+        (_api_error(503, "unavailable"), (None, None)),
+        (RuntimeError("no code anywhere"), (None, None)),
+    ],
+)
+def test_close_code_extraction(exc, expected):
+    """Both exception shapes the receive loop can see must yield the
+    close code as a value, not just as prose inside the message."""
+    assert _close_code_and_reason(exc) == expected
+
+
+async def test_unplanned_drop_does_not_inherit_the_rotation_zero_backoff():
+    """A rotation deferred behind a live turn must not hand its
+    skip-the-backoff ticket to a real failure that lands first."""
+    delays: list[float] = []
+
+    async def _sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    factory = _FakeConnect()
+    conn = GeminiLiveConnection(
+        api_key="fake",
+        model="fake-model",
+        backoff_schedule=None,
+        connect_factory=factory,
+        rotate_after_sec=0.05,
+        sleep=_sleep,
+    )
+    await conn.start(ToolRegistry(), "system")
+    try:
+        turn = await conn.acquire_turn()
+        await _wait_until(lambda: conn._deferred_reconnect.pending, timeout=3.0)
+        # The server drops us before the turn ends.
+        factory.sessions[0].feed_error(_ws_close_error(1006, "abnormal closure"))
+        await _wait_until(lambda: len(factory.sessions) >= 2, timeout=3.0)
+        assert delays and delays[0] > 0.0, delays
+        await turn.release()
+    finally:
+        await conn.stop()

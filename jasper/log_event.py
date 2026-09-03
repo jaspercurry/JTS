@@ -182,10 +182,15 @@ def log_event(
         message = render_json(name, merged)
     else:
         message = render_logfmt(name, merged)
+    # `jasper_event` carries the event name as a record attribute. The
+    # rendered message interpolates every field value, so it does not
+    # identify the call site; handlers that group records by origin
+    # (jasper.flight_recorder) need the name separately.
+    extra = {"jasper_event": name}
     # Only thread exc_info when asked, so the common (non-exception)
     # path is exactly `logger.log(level, message)` — same LogRecord
     # (exc_info=None) as the plain call this replaces.
     if exc_info:
-        logger.log(level, message, exc_info=exc_info)
+        logger.log(level, message, exc_info=exc_info, extra=extra)
     else:
-        logger.log(level, message)
+        logger.log(level, message, extra=extra)
