@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The room-correction band ceiling, and its seam with the gated speaker spec.
+"""SSOT for the room-correction band ceiling and the gated spec's lower edge.
 
 **This module is the single source of truth for the room layer's upper band
 edge.** Before it existed the "350 Hz cap" was ten independent float literals
@@ -110,14 +110,13 @@ from __future__ import annotations
 # module docstring's "A session can grade higher than this edge" note.
 GATED_SPEC_LOWER_EDGE_HZ: float = 250.0
 
-# The room-correction ceiling, in Hz, when no per-room estimate is available.
-# 350 Hz is the shipped Toole-aligned modal/transition boundary and stays the
-# fallback whenever the RC2 estimator is missing or uncertain.
+# The room-correction ceiling, Hz, when no per-room estimate is available: the
+# shipped Toole-aligned modal/transition boundary.
 ROOM_BOUNDARY_DEFAULT_HZ: float = 350.0
 
-# Clamp bounds for a per-room ceiling estimate (RC2/RC3). The floor is the
-# gated spec's lower edge BY DEFINITION (see the module docstring's "relation,
-# stated once"); the ceiling is the widest room-correction band the project
-# admits, and is also the `assertive` strategy's band.
+# Clamp bounds for a per-room ceiling estimate. The floor is the gated spec's
+# lower edge BY DEFINITION (see the module docstring); the ceiling is the widest
+# room-correction band the project admits, and is also the `assertive`
+# strategy's band.
 ROOM_BOUNDARY_MIN_HZ: float = GATED_SPEC_LOWER_EDGE_HZ
 ROOM_BOUNDARY_MAX_HZ: float = 500.0
