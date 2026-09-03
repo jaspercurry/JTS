@@ -37,7 +37,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from jasper.cli import aec_bridge
+from jasper.cli import aec_bridge, aec_bridge_telemetry
 from jasper.cli.aec_bridge import (
     BridgeStalled,
     FRAME_SAMPLES,
@@ -126,7 +126,7 @@ def _reset_shutdown_and_stub_sd(monkeypatch):
 
 def test_bridge_stats_snapshot_writes_monotonic_counters(tmp_path):
     path = tmp_path / "aec_bridge_stats.json"
-    stats = aec_bridge._BridgeStats()
+    stats = aec_bridge._BridgeStats(aec_bridge._STATS_IDENTITY)
     stats.inc("frames_processed", 3)
     stats.inc_nested("queue_drops", "mic", 2)
     stats.inc_nested("packets_sent_by_leg", "on", 1)
@@ -135,7 +135,10 @@ def test_bridge_stats_snapshot_writes_monotonic_counters(tmp_path):
 
     import json
     data = json.loads(path.read_text())
-    assert data["schema_version"] == aec_bridge.BRIDGE_STATS_SCHEMA_VERSION
+    assert (
+        data["schema_version"]
+        == aec_bridge_telemetry.BRIDGE_STATS_SCHEMA_VERSION
+    )
     assert data["pid"] > 0
     assert data["counters"]["frames_processed"] == 3
     assert data["counters"]["queue_drops"]["mic"] == 2
@@ -143,7 +146,7 @@ def test_bridge_stats_snapshot_writes_monotonic_counters(tmp_path):
 
 
 def test_bridge_stats_snapshot_carries_negotiated_capture_geometry() -> None:
-    stats = aec_bridge._BridgeStats()
+    stats = aec_bridge._BridgeStats(aec_bridge._STATS_IDENTITY)
     stats.set_capture_stream(
         sample_rate_hz=16_000,
         block_frames=320,
@@ -163,7 +166,7 @@ def test_bridge_stats_reference_input_is_null_before_first_frame(
 ) -> None:
     clock = SimpleNamespace(now=100.0)
     monkeypatch.setattr(aec_bridge.time, "monotonic", lambda: clock.now)
-    stats = aec_bridge._BridgeStats()
+    stats = aec_bridge._BridgeStats(aec_bridge._STATS_IDENTITY)
     stats.reset(
         reference_source="outputd_udp",
         reference_endpoint="127.0.0.1:9891",
@@ -235,7 +238,7 @@ def test_bridge_stats_reference_input_age_advances_and_new_input_resets(
 
 
 def test_bridge_stats_reference_input_block_is_bounded_and_additive() -> None:
-    stats = aec_bridge._BridgeStats()
+    stats = aec_bridge._BridgeStats(aec_bridge._STATS_IDENTITY)
     snapshot = stats.snapshot()
 
     assert snapshot["schema_version"] == 4
@@ -1373,7 +1376,7 @@ def test_configured_legs_route_through_shared_emit_packet(monkeypatch):
     monkeypatch.setattr(dtln_mod, "default_model_dir", lambda: "/models")
 
     emitted: list[str] = []
-    real_emit_packet = aec_bridge.emit_packet
+    real_emit_packet = aec_bridge_telemetry.emit_packet
 
     def counting_emit_packet(**kwargs):
         packet_ready = len(kwargs["batch"]) + len(kwargs["pcm"]) >= OUT_FRAME_BYTES
@@ -1381,7 +1384,9 @@ def test_configured_legs_route_through_shared_emit_packet(monkeypatch):
         if packet_ready:
             emitted.append(kwargs["leg"])
 
-    monkeypatch.setattr(aec_bridge, "emit_packet", counting_emit_packet)
+    monkeypatch.setattr(
+        aec_bridge_telemetry, "emit_packet", counting_emit_packet,
+    )
 
     engine = engine_returning(100)
     _aec_loop(
@@ -1424,6 +1429,7 @@ def test_usb_host_mic_emitter_prepends_v2_header(monkeypatch):
         (OUT_HOST, 9894),
         bytearray(),
         "usb_host_mic",
+        aec_bridge._bridge_stats,
         frame_samples=FRAME_SAMPLES,
     )
     timestamps = iter((1_000_000_000, 1_020_000_000))
@@ -1480,6 +1486,7 @@ def test_usb_host_mic_sequence_wraps_u32(monkeypatch):
         (OUT_HOST, 9894),
         bytearray(),
         "usb_host_mic",
+        aec_bridge._bridge_stats,
         frame_samples=FRAME_SAMPLES,
     )
     emitter._seq = 0xFFFFFFFF
@@ -1508,6 +1515,7 @@ def test_usb_host_mic_sequence_exposes_sender_drop(monkeypatch):
         (OUT_HOST, 9894),
         bytearray(),
         "usb_host_mic",
+        aec_bridge._bridge_stats,
         frame_samples=FRAME_SAMPLES,
     )
     monkeypatch.setattr(
@@ -1538,6 +1546,7 @@ def test_wake_legs_wire_format_unchanged(leg: str):
         (OUT_HOST, OUT_PORT),
         bytearray(),
         leg,
+        aec_bridge._bridge_stats,
     )
     pcm = b"\x12\x34" * aec_bridge.OUT_FRAME_SAMPLES
 
@@ -2196,7 +2205,7 @@ def test_bridge_stats_snapshot_carries_leg_engine_status(tmp_path):
     failure (bridge degrades to AEC3-only while voice keeps listening
     on the unfed :9878 leg)."""
     path = tmp_path / "aec_bridge_stats.json"
-    stats = aec_bridge._BridgeStats()
+    stats = aec_bridge._BridgeStats(aec_bridge._STATS_IDENTITY)
     stats.set_leg_engine("dtln", enabled=True, loaded=False, error="no onnx")
 
     stats.write_snapshot(path)
@@ -2223,7 +2232,7 @@ def test_bridge_stats_snapshot_carries_leg_engine_status(tmp_path):
 
 def test_bridge_stats_snapshot_carries_active_capture_plan(tmp_path):
     path = tmp_path / "aec_bridge_stats.json"
-    stats = aec_bridge._BridgeStats()
+    stats = aec_bridge._BridgeStats(aec_bridge._STATS_IDENTITY)
     stats.set_active_capture_plan(
         wake_corpus_plan_id="plan-123",
         expected_legs=("chip_aec_150", "chip_aec_210", "raw0"),
@@ -2251,7 +2260,10 @@ def test_bridge_stats_snapshot_carries_active_capture_plan(tmp_path):
     stats.write_snapshot(path)
 
     data = json.loads(path.read_text())
-    assert data["schema_version"] == aec_bridge.BRIDGE_STATS_SCHEMA_VERSION
+    assert (
+        data["schema_version"]
+        == aec_bridge_telemetry.BRIDGE_STATS_SCHEMA_VERSION
+    )
     assert data["wake_corpus_plan_id"] == "plan-123"
     assert data["emitted_legs"] == ["chip_aec_150", "chip_aec_210", "raw0"]
     active = data["active_capture_plan"]
