@@ -1716,49 +1716,36 @@ def test_chip_aec_alignment_row_serves_only_the_stamped_selection(
 # ---------------------------------------------------------------------------
 
 
+# (file body or None for missing, (mode, profile, JASPER_WAKE_LEG_RAW))
+_MODE_FILE_CASES = {
+    "missing_file": (None, ("auto", "", True)),
+    "empty_file": ("", ("auto", "", True)),
+    "quoted_values": (
+        "JASPER_AEC_MODE=\"disabled\"\nJASPER_WAKE_LEG_RAW='0'\n"
+        "JASPER_AUDIO_INPUT_PROFILE=\"xvf_chip_aec\"\n",
+        ("disabled", "xvf_chip_aec", False),
+    ),
+    "export_lines_ignored": (
+        "export JASPER_AEC_MODE=disabled\nexport JASPER_WAKE_LEG_RAW=0\n",
+        ("auto", "", True),
+    ),
+    "trailing_comment_kept_malformed_bool_defaults": (
+        "JASPER_AEC_MODE=disabled # note\nJASPER_WAKE_LEG_RAW=0 # note\n",
+        ("disabled # note", "", True),
+    ),
+    "duplicate_key_last_wins": (
+        "JASPER_AEC_MODE=disabled\nJASPER_WAKE_LEG_RAW=0\n"
+        "JASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\n",
+        ("auto", "", True),
+    ),
+    "empty_value": ("JASPER_AEC_MODE=\nJASPER_WAKE_LEG_RAW=\n", ("auto", "", False)),
+    "space_before_equals_matched": ("JASPER_AEC_MODE = disabled\n", ("disabled", "", True)),
+    "unbalanced_quote_kept_verbatim": ("JASPER_AEC_MODE=\"disabled\n", ('"disabled', "", True)),
+}
+
+
 @pytest.mark.parametrize(
-    ("body", "expected"),
-    [
-        pytest.param(None, ("auto", "", True), id="missing_file"),
-        pytest.param("", ("auto", "", True), id="empty_file"),
-        pytest.param(
-            "JASPER_AEC_MODE=\"disabled\"\nJASPER_WAKE_LEG_RAW='0'\n"
-            "JASPER_AUDIO_INPUT_PROFILE=\"xvf_chip_aec\"\n",
-            ("disabled", "xvf_chip_aec", False),
-            id="quoted_values",
-        ),
-        pytest.param(
-            "export JASPER_AEC_MODE=disabled\nexport JASPER_WAKE_LEG_RAW=0\n",
-            ("auto", "", True),
-            id="export_lines_ignored",
-        ),
-        pytest.param(
-            "JASPER_AEC_MODE=disabled # note\nJASPER_WAKE_LEG_RAW=0 # note\n",
-            ("disabled # note", "", True),
-            id="trailing_comment_kept_malformed_bool_defaults",
-        ),
-        pytest.param(
-            "JASPER_AEC_MODE=disabled\nJASPER_WAKE_LEG_RAW=0\n"
-            "JASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\n",
-            ("auto", "", True),
-            id="duplicate_key_last_wins",
-        ),
-        pytest.param(
-            "JASPER_AEC_MODE=\nJASPER_WAKE_LEG_RAW=\n",
-            ("auto", "", False),
-            id="empty_value",
-        ),
-        pytest.param(
-            "JASPER_AEC_MODE = disabled\n",
-            ("disabled", "", True),
-            id="space_before_equals_matched",
-        ),
-        pytest.param(
-            "JASPER_AEC_MODE=\"disabled\n",
-            ('"disabled', "", True),
-            id="unbalanced_quote_kept_verbatim",
-        ),
-    ],
+    ("body", "expected"), _MODE_FILE_CASES.values(), ids=_MODE_FILE_CASES.keys(),
 )
 def test_aec_mode_file_readers_share_one_parser(
     tmp_path, monkeypatch, body, expected,

@@ -211,11 +211,8 @@ _AEC_REASONS = (
 
 
 def _aec_mode_env() -> dict[str, str]:
-    """The wizard-owned mode file, read fresh on every call (one-shot CLI).
-
-    Missing or unreadable reads as empty, so each setting below falls back
-    to install.sh's reconcile_aec_state seed."""
-
+    """The wizard-owned mode file, read fresh per call; missing or unreadable
+    reads as empty so each setting falls back to its reconcile_aec_state seed."""
     return _shared_parse_env_file(str(DEFAULT_AEC_MODE_PATH))
 
 

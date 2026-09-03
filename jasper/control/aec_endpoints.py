@@ -99,13 +99,9 @@ def _parse_env_bool(raw: str, default: bool) -> bool:
 
 
 def _read_aec_state() -> dict:
-    """Full aec_mode.env state — mode + every leg boolean + profile.
-    Missing keys fall back to the documented defaults so a partial file
-    from a pre-leg-toggle deploy still parses sanely.
-
-    The reconciler's ensure_mode_file appends any missing keys on its
-    next run, so this fallback is a one-pass deal — but it must be
-    correct for the GET that races that first reconcile."""
+    """Full aec_mode.env state; missing keys take the documented defaults
+    so a partial file from a pre-leg-toggle deploy still parses sanely
+    (the reconciler's ensure_mode_file appends them on its next run)."""
     env_file = read_env_file_state(_AEC_MODE_FILE)
     values = env_file.values
     state: dict[str, Any] = {"mode": values.get("JASPER_AEC_MODE") or "auto"}
