@@ -17,6 +17,9 @@ Pi 5, the savings these guards protect are:
   jasper-aec-bridge (31-49 fewer modules each; -0.8 to -2.6 MB on x86_64 —
   jasper-control and the grouping supervisor drop reconcile.py's whole
   transitive graph, not just dbus_next, so they save the most)
+- jasper.active_speaker's module __getattr__ → jasper-voice reaches
+  volume_latch without the commissioning stack behind its siblings
+  (95 fewer modules; -7 MB on x86_64)
 
 A regression in any of these would silently re-inflate jasper-voice's
 RSS by tens of MB. CI catches the import-graph change, not the bytes,
@@ -702,6 +705,15 @@ def test_voice_daemon_import_does_not_require_declared_leaf_dependencies() -> No
         pytest.param(
             "jasper.cli.aec_bridge", ("dbus_next",), id="jasper-aec-bridge",
         ),
+        pytest.param(
+            "jasper.voice_daemon",
+            (
+                "yaml",
+                "jasper.audio_measurement",
+                "jasper.active_speaker.baseline_profile",
+            ),
+            id="jasper-voice",
+        ),
     ],
 )
 def test_resident_daemon_import_leaves_oneshot_subsystems_out(
@@ -714,8 +726,10 @@ def test_resident_daemon_import_leaves_oneshot_subsystems_out(
     belong behind function-local imports. The measurement stack
     (``numpy``/``scipy``/``sounddevice``) belongs to the oneshot commissioners;
     jasper-control reaches their persisted state through stdlib-only record
-    modules instead. The smallest supported box is a 415 MB Pi Zero 2 W
-    (issue #3697).
+    modules instead. jasper-voice touches ``jasper.active_speaker`` only for
+    the ``volume_latch`` leaf, which its package ``__getattr__`` keeps
+    separable from the commissioning submodules. The smallest supported box
+    is a 415 MB Pi Zero 2 W (issue #3697).
     """
     probe = (
         "import sys\n"
