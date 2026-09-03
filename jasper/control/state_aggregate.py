@@ -14,7 +14,7 @@ import threading
 import time
 from pathlib import Path
 from collections.abc import Mapping
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Sequence, TypeVar
 
 from .. import identity_state
 from ..accessories import status as accessory_status
@@ -70,6 +70,7 @@ from .aec_endpoints import _aec_full_status
 from .uds import _local_status_json, _mux_socket_command, _voice_socket_command
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 SOURCE_AVAILABILITY_TTL_SEC = 10.0
 _source_availability_cache: tuple[float, dict[str, Any]] | None = None
@@ -822,6 +823,15 @@ def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _fail_soft(label: str, reader: Callable[[], _T]) -> _T | None:
+    """Run a /state section reader, degrading to ``None`` on any failure."""
+    try:
+        return reader()
+    except Exception:  # noqa: BLE001
+        logger.exception(label)
+        return None
+
+
 def _persisted_volume_state() -> tuple[int | None, float | None]:
     """Persisted listening level and main volume; ``(None, None)`` if unreadable."""
     listening_level: int | None = None
@@ -844,39 +854,33 @@ def _persisted_volume_state() -> tuple[int | None, float | None]:
     return listening_level, persisted_main_volume_db
 
 
-def _sound_profile_state() -> dict[str, Any] | None:
-    """Persisted sound profile + output settings for ``/state.audio.sound``."""
-    try:
-        from ..dsp_apply import last_dsp_apply_state
-        from ..sound.profile import (
-            build_sound_filters,
-            estimate_headroom_db,
-            load_profile,
-        )
-        from ..sound.settings import load_sound_settings, output_trim_db
+def _read_sound_profile() -> dict[str, Any]:
+    from ..dsp_apply import last_dsp_apply_state
+    from ..sound.profile import (
+        build_sound_filters,
+        estimate_headroom_db,
+        load_profile,
+    )
+    from ..sound.settings import load_sound_settings, output_trim_db
 
-        profile = load_profile()
-        sound_settings = load_sound_settings()
-        return {
-            "enabled": profile.enabled,
-            "curve_id": profile.curve_id,
-            "simple_eq": profile.simple_eq.to_dict(),
-            "parametric_band_count": len(profile.parametric_bands),
-            "filter_count": len(build_sound_filters(profile)),
-            "headroom_db": estimate_headroom_db(profile),
-            "match_loudness": sound_settings.match_loudness,
-            "headroom_trim_db": sound_settings.headroom_trim_db,
-            "output_trim_db": output_trim_db(profile, sound_settings),
-            "updated_at": profile.updated_at or None,
-            "last_dsp_apply": last_dsp_apply_state(),
-        }
-    except Exception:  # noqa: BLE001
-        logger.exception("sound profile state probe failed")
-        return None
+    profile = load_profile()
+    sound_settings = load_sound_settings()
+    return {
+        "enabled": profile.enabled,
+        "curve_id": profile.curve_id,
+        "simple_eq": profile.simple_eq.to_dict(),
+        "parametric_band_count": len(profile.parametric_bands),
+        "filter_count": len(build_sound_filters(profile)),
+        "headroom_db": estimate_headroom_db(profile),
+        "match_loudness": sound_settings.match_loudness,
+        "headroom_trim_db": sound_settings.headroom_trim_db,
+        "output_trim_db": output_trim_db(profile, sound_settings),
+        "updated_at": profile.updated_at or None,
+        "last_dsp_apply": last_dsp_apply_state(),
+    }
 
 
 def _spotify_state() -> dict[str, Any]:
-    """Renderer state for ``/state.renderers.spotify``."""
     from .. import librespot_state
 
     blob = librespot_state.read(librespot_state.configured_path())
@@ -947,7 +951,6 @@ def _grouping_state(outputd_status: dict | None) -> dict[str, Any] | None:
 def _active_speaker_setup_state(
     active_config_path: str | None,
 ) -> dict[str, Any] | None:
-    """Pass-through of the speaker-setup readiness snapshot; no key filtering."""
     try:
         return read_active_speaker_setup_status(
             active_config_path=active_config_path,
@@ -997,45 +1000,17 @@ def _bass_extension_state() -> dict[str, Any] | None:
         return None
 
 
-def _transit_state(read_state: Callable[[], dict]) -> dict[str, Any] | None:
-    """Transit city packs for ``/state.transit``; ``None`` when the read failed."""
-    try:
-        return read_state()
-    except Exception:  # noqa: BLE001
-        logger.exception("transit state read failed")
-        return None
+def _read_output_hardware() -> dict[str, Any] | None:
+    from ..output_hardware import load_state
+
+    hardware = load_state()
+    return hardware.to_dict() if hardware is not None else None
 
 
-def _output_hardware_state() -> dict[str, Any] | None:
-    try:
-        from ..output_hardware import load_state
+def _read_tool_catalog() -> dict[str, Any]:
+    from ..tool_catalog_view import summary
 
-        hardware = load_state()
-        return hardware.to_dict() if hardware is not None else None
-    except Exception:  # noqa: BLE001
-        logger.exception("output hardware state read failed")
-        return None
-
-
-def _service_states(
-    snapshot: Callable[[], dict[str, dict[str, Any]]] | None,
-) -> dict[str, dict[str, Any]] | None:
-    try:
-        return snapshot() if snapshot else None
-    except Exception:  # noqa: BLE001
-        logger.exception("service state snapshot read failed")
-        return None
-
-
-def _tools_state() -> dict[str, Any] | None:
-    """Tool catalog summary for ``/state.tools``; ``None`` when the read failed."""
-    try:
-        from ..tool_catalog_view import summary
-
-        return summary()
-    except Exception:  # noqa: BLE001
-        logger.exception("tool catalog state read failed")
-        return None
+    return summary()
 
 
 async def _get_state(
@@ -1076,7 +1051,7 @@ async def _get_state(
     active_provider = read_active_provider_state()
 
     listening_level, persisted_main_volume_db = _persisted_volume_state()
-    sound_profile = _sound_profile_state()
+    sound_profile = _fail_soft("sound profile state probe failed", _read_sound_profile)
 
     # Slow probes — fan out in parallel.
     def _round_db(value: float | None) -> float | None:
@@ -1288,16 +1263,22 @@ async def _get_state(
     )
     audition_state = _audition_state()
     bass_extension_state = _bass_extension_state()
-    transit_state = _transit_state(read_transit_state_func)
-    output_hardware_state = _output_hardware_state()
-    service_states = _service_states(service_states_snapshot)
+    transit_state = _fail_soft("transit state read failed", read_transit_state_func)
+    output_hardware_state = _fail_soft(
+        "output hardware state read failed", _read_output_hardware,
+    )
+    service_states = (
+        _fail_soft("service state snapshot read failed", service_states_snapshot)
+        if service_states_snapshot
+        else None
+    )
 
     audio_graph_state = _audio_graph_state(
         fanin_status=fanin_st,
         outputd_status=outputd_st,
         service_states=service_states,
     )
-    tools_state = _tools_state()
+    tools_state = _fail_soft("tool catalog state read failed", _read_tool_catalog)
 
     # Conversation history is a read-only Feature surface. Settings are
     # wizard-owned and read fresh; the SQLite store is opened read-only so
