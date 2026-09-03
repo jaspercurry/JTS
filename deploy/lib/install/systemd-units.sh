@@ -86,8 +86,11 @@ JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=(
     "0644 deploy/systemd/jasper-doctor-json.service ${SYSTEMD_DIR}/jasper-doctor-json.service"
     "0644 deploy/systemd/jasper-xvf-firmware-update.service ${SYSTEMD_DIR}/jasper-xvf-firmware-update.service"
     "0644 deploy/systemd/jasper-aec-commission.service ${SYSTEMD_DIR}/jasper-aec-commission.service"
-    "0644 deploy/systemd/jasper-audio-hardware-reconcile.service ${SYSTEMD_DIR}/jasper-audio-hardware-reconcile.service"
+    # The script lands before its unit: the unit's ExecCondition= names it,
+    # and a systemd exec failure (203) is in the SKIP band, so a deploy
+    # interrupted between these two rows would silently stop reconciling.
     "0755 deploy/bin/jasper-audio-hardware-reconcile /usr/local/sbin/jasper-audio-hardware-reconcile"
+    "0644 deploy/systemd/jasper-audio-hardware-reconcile.service ${SYSTEMD_DIR}/jasper-audio-hardware-reconcile.service"
     "0755 deploy/bin/jasper-output-hardware-hotplug /usr/local/sbin/jasper-output-hardware-hotplug"
     "0755 deploy/bin/jasper-outputd-failure-reconcile /usr/local/sbin/jasper-outputd-failure-reconcile"
     "0755 deploy/bin/jasper-camilla-pipe-guard /usr/local/sbin/jasper-camilla-pipe-guard"
