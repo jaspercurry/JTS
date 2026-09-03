@@ -4,9 +4,14 @@
 
 """Acoustic context one capture's stimulus actually played under.
 
-A CHECK/MEASURE program's ROUTING graph loads INLINE via ``SetConfig``, leaving ``config_file_path`` unchanged -- ``graph.config_path`` can mislabel the graph actually running; ``graph.kind`` can never be ``null``.
+A CHECK/MEASURE program's ROUTING graph loads INLINE via ``SetConfig``, leaving
+``config_file_path`` unchanged -- ``graph.config_path`` can mislabel the graph actually
+running; ``graph.kind`` can never be ``null``.
 
-Observed only under capture retention, not every capture. :func:`volume_fields_agree` compares ``main_volume_db``/``session_volume_db``; #2925 T1-2: two reads two lines apart once disagreed 8.712 dB, unnoticed five days. A failed guarded read nulls its field and joins one WARN ``event=active_speaker.capture_provenance``.
+Observed only under capture retention, not every capture. :func:`volume_fields_agree`
+compares ``main_volume_db``/``session_volume_db``; #2925 T1-2: two reads two lines apart
+once disagreed 8.712 dB, unnoticed five days. A failed guarded read nulls its field and
+joins one WARN ``event=active_speaker.capture_provenance``.
 """
 
 from __future__ import annotations
@@ -64,7 +69,9 @@ class CaptureProvenance:
 
 
 class CaptureProvenanceRecorder:
-    """One-capture handoff, play seam to retention seam. :meth:`take` CONSUMES: a second read with no play between gets ``None``, never stale provenance."""
+    """One-capture handoff, play seam to retention seam. :meth:`take` CONSUMES: a second read
+    with no play between gets ``None``, never stale provenance.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -81,18 +88,25 @@ class CaptureProvenanceRecorder:
 
 
 def volume_fields_agree(provenance: CaptureProvenance) -> bool:
-    """Do this record's two volume fields tell the same story? (#2925 T1-2) ``True`` within ``SessionVolumePlan.open``'s tolerance, or when ``session_volume_db`` is ``None``; ``None`` ``main_volume_db`` against a declared volume IS a disagreement."""
+    """Do this record's two volume fields tell the same story? (#2925 T1-2) ``True`` within
+    ``SessionVolumePlan.open``'s tolerance, or when ``session_volume_db`` is ``None``;
+    ``None`` ``main_volume_db`` against a declared volume IS a disagreement.
+    """
     if provenance.session_volume_db is None:
         return True
     return fader_matches(provenance.main_volume_db, provenance.session_volume_db)
 
 
-#: Concrete types a guarded read may swallow; an unlisted type falls through to ``record_capture_provenance``'s blind belt.
+#: Concrete types a guarded read may swallow; an unlisted type falls through to
+#: ``record_capture_provenance``'s blind belt.
 _READ_ERRORS = (OSError, RuntimeError, TypeError, ValueError, AttributeError)
 
 
 def _stimulus_peak_dbfs(program: Any) -> float | None:
-    """Loudest stimulus segment's declared digital peak, dBFS. Scoped to ``stimulus_segments()`` (excludes the courtesy prelude); session volume is NOT folded in."""
+    """Loudest stimulus segment's declared digital peak, dBFS. Scoped to
+    ``stimulus_segments()`` (excludes the courtesy prelude); session volume is NOT
+    folded in.
+    """
     segments = program.stimulus_segments()
     peaks = [float(segment.gain_db) for segment in segments]
     return max(peaks) if peaks else None
@@ -108,7 +122,11 @@ async def record_capture_provenance(
     artifact: Any = None,
     read_volume_plan: Callable[[], Any] | None = None,
 ) -> None:
-    """Observe, and hand the result to ``recorder``. Never-break-a-capture belt: deliberately BLIND to ``Exception``; ``BaseException`` still propagates (a cancelled measurement stays cancelled). ``None`` recorder is a no-op. ``open_cam``/``read_volume_plan`` are ZERO-ARGUMENT RESOLVERS so obtaining them also happens inside the try."""
+    """Observe, and hand the result to ``recorder``. Never-break-a-capture belt: deliberately
+    BLIND to ``Exception``; ``BaseException`` still propagates (a cancelled measurement
+    stays cancelled). ``None`` recorder is a no-op. ``open_cam``/``read_volume_plan``
+    are ZERO-ARGUMENT RESOLVERS so obtaining them also happens inside the try.
+    """
     if recorder is None:
         return
     try:
@@ -144,7 +162,10 @@ async def observe_capture_provenance(
     artifact: Any = None,
     volume_plan: Any = None,
 ) -> CaptureProvenance:
-    """Read the live context for the stimulus about to play. Call as late as possible -- for the program branch, AFTER the routing graph loads, inside the same writer lock: ``get_active_config_raw`` still answers the applied graph until the load lands."""
+    """Read the live context for the stimulus about to play. Call as late as possible -- for
+    the program branch, AFTER the routing graph loads, inside the same writer lock:
+    ``get_active_config_raw`` still answers the applied graph until the load lands.
+    """
     unreadable: list[str] = []
 
     async def probe(name: str, read: Any) -> Any:
@@ -182,7 +203,8 @@ async def observe_capture_provenance(
         except _READ_ERRORS:
             unreadable.append("session_volume_db")
 
-    # ``phase`` is the CAPTURE's phase, passed in, never ``program.phase`` (one composed object can answer for several phases).
+    # ``phase`` is the CAPTURE's phase, passed in, never ``program.phase`` (one composed
+    # object can answer for several phases).
     program_id: str | None = None
     peak_dbfs: float | None = None
     try:
@@ -219,7 +241,8 @@ async def observe_capture_provenance(
         stimulus_peak_dbfs=peak_dbfs,
     )
     if not volume_fields_agree(observed):
-        # #2925 T1-2 tripwire. Companion WARN when the hold owned nothing to hold: ``crossover_v2_capture_volume_unheld``.
+        # #2925 T1-2 tripwire. Companion WARN when the hold owned nothing to hold:
+        # ``crossover_v2_capture_volume_unheld``.
         log_event(
             logger,
             "active_speaker.capture_provenance",

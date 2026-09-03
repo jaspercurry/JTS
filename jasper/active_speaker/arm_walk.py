@@ -4,17 +4,40 @@
 
 """Drive the crossover-v2 position gate with the lab turntable arm.
 
-The session publishes ``relay.position_pending`` on ``GET /correction/crossover/status`` and holds every begin until something POSTs ``/correction/crossover/v2/position-ready``; the turntable adapter moves the microphone. This module is the loop that joins them, kept as a contract rather than a throwaway per-campaign script.
+The session publishes ``relay.position_pending`` on ``GET
+/correction/crossover/status`` and holds every begin until something POSTs
+``/correction/crossover/v2/position-ready``; the turntable adapter moves the
+microphone. This module is the loop that joins them, kept as a contract
+rather than a throwaway per-campaign script.
 
-The browser/human flow is untouched and stays first-class; this is the opt-in lab-arm path only (nothing starts it, no unit, no timer). The loop, one turn per held capture::
+The browser/human flow is untouched and stays first-class; this is the
+opt-in lab-arm path only (nothing starts it, no unit, no timer). The loop,
+one turn per held capture::
 
     poll status -> power preflight -> move -> settle -> position-ready
 
-A walk ends when its session does: the same poll carries ``relay.status``, and the three terminal values (:data:`SESSION_ENDED_STATUSES`) are the cue to stop (``complete`` a clean finish, ``stopped`` -> :data:`EXIT_SESSION_STOPPED`, ``failed`` -> :data:`EXIT_SESSION_FAILED`). A terminal status only counts once this walk has seen its session LIVE, since the wizard keeps one relay slot and a walk launches before its session opens.
+A walk ends when its session does: the same poll carries ``relay.status``,
+and the three terminal values (:data:`SESSION_ENDED_STATUSES`) are the cue
+to stop (``complete`` a clean finish, ``stopped`` -> :data:`EXIT_SESSION_STOPPED`,
+``failed`` -> :data:`EXIT_SESSION_FAILED`). A terminal status only counts
+once this walk has seen its session LIVE, since the wizard keeps one relay
+slot and a walk launches before its session opens.
 
-Safety invariants, each a test in ``tests/test_arm_walk.py``: power is re-read before every WALK move (any sign VOIDS attestation -> :data:`EXIT_POWER_VOID`, park not re-checked -- the adapter's own preflight still blocks a brownout move); the envelope is clamped to :data:`~jasper.active_speaker.angle_capture.ARM_ENVELOPE_DEG` before any move; the arm parks at 0 deg and is verified (``abs(offset) < PARK_TOLERANCE_DEG``) on EVERY exit path, including :data:`PARK_ON_SIGNALS`; ``set-zero`` is never invoked (:data:`_TOOL_SUBCOMMANDS` is the complete adapter-verb set); the settle never goes under :data:`SETTLE_FLOOR_S`, validated at configure time and MEASURED per release.
+Safety invariants, each a test in ``tests/test_arm_walk.py``: power is
+re-read before every WALK move (any sign VOIDS attestation ->
+:data:`EXIT_POWER_VOID`, park not re-checked -- the adapter's own preflight
+still blocks a brownout move); the envelope is clamped to
+:data:`~jasper.active_speaker.angle_capture.ARM_ENVELOPE_DEG` before any
+move; the arm parks at 0 deg and is verified (``abs(offset) <
+PARK_TOLERANCE_DEG``) on EVERY exit path, including :data:`PARK_ON_SIGNALS`;
+``set-zero`` is never invoked (:data:`_TOOL_SUBCOMMANDS` is the complete
+adapter-verb set); the settle never goes under :data:`SETTLE_FLOOR_S`,
+validated at configure time and MEASURED per release.
 
-Attestation, not a nanny: the adapter requires two ``--confirm-*`` flags per move; the operator answers ONCE with ``--attest-rig-clear``, mapped to both flags on every move. A power sign is the one thing that voids it, since that is when the saved zero may no longer be the acoustic axis.
+Attestation, not a nanny: the adapter requires two ``--confirm-*`` flags per
+move; the operator answers ONCE with ``--attest-rig-clear``, mapped to both
+flags on every move. A power sign is the one thing that voids it, since
+that is when the saved zero may no longer be the acoustic axis.
 """
 
 from __future__ import annotations
@@ -194,11 +217,19 @@ class Pending:
 class Poll:
     """One read of the envelope.
 
-    ``failed_error`` is the session's OWN error string on ``relay.status == "failed"``, turning a dead session into an immediate exit instead of a :data:`DEFAULT_STUCK_ALARM_S` wait; which SESSION it is attributed to is the walk's own decision (:meth:`ArmWalk._session_ended`).
+    ``failed_error`` is the session's OWN error string on ``relay.status == "failed"``,
+    turning a dead session into an immediate exit instead of a
+    :data:`DEFAULT_STUCK_ALARM_S` wait; which SESSION it is attributed to is the walk's
+    own decision (:meth:`ArmWalk._session_ended`).
 
-    ``readable`` is whether the envelope was READ at all, separate from ``in_flight`` since conflating them would blame issue #2506 for a URL typo. An unreadable poll still reports ``in_flight=True``; :data:`WalkConfig.unreadable_ceiling_s` ends an unbroken run of them.
+    ``readable`` is whether the envelope was READ at all, separate from ``in_flight``
+    since conflating them would blame issue #2506 for a URL typo. An unreadable poll
+    still reports ``in_flight=True``; :data:`WalkConfig.unreadable_ceiling_s` ends an
+    unbroken run of them.
 
-    ``ended`` is the TERMINAL ``relay.status`` a finished session published (:data:`SESSION_ENDED_STATUSES`), or empty -- a third state, not the negation of ``in_flight``: no relay block at all means no session has opened yet.
+    ``ended`` is the TERMINAL ``relay.status`` a finished session published
+    (:data:`SESSION_ENDED_STATUSES`), or empty -- a third state, not the negation of
+    ``in_flight``: no relay block at all means no session has opened yet.
     """
 
     pending: Pending | None
@@ -217,7 +248,9 @@ class Mover(Protocol):
         """Move to a signed absolute angle. ``True`` only on a confirmed ok."""
 
     def offset_deg(self) -> float | None:
-        """The signed readback from the saved zero, or ``None`` if unreadable. Callers consume the MAGNITUDE only (see the module docstring)."""
+        """The signed readback from the saved zero, or ``None`` if unreadable. Callers consume the
+        MAGNITUDE only (see the module docstring).
+        """
 
 
 class Session(Protocol):
@@ -238,7 +271,11 @@ class Session(Protocol):
 
 
 def parse_power(payload: Mapping[str, Any]) -> PowerVerdict:
-    """The adapter's ``power`` JSON -> a verdict, failing closed. Stricter than the adapter's own motion gate (CURRENT flags only, right for an attended human): this walk is unattended, so a since-boot flag also voids it, since the saved zero may not have survived the sag."""
+    """The adapter's ``power`` JSON -> a verdict, failing closed. Stricter than the adapter's
+    own motion gate (CURRENT flags only, right for an attended human): this walk is
+    unattended, so a since-boot flag also voids it, since the saved zero may not have
+    survived the sag.
+    """
     status = payload.get("power", {}).get("status", {})
     if not isinstance(status, Mapping) or not status.get("available"):
         detail = "power status unavailable"
@@ -259,7 +296,10 @@ def parse_power(payload: Mapping[str, Any]) -> PowerVerdict:
 
 @dataclass
 class TurntableMover:
-    """The installed ``jts_turntable.py`` adapter, driven as a subprocess. Never an import: ``experiments/`` is not a dependency, and each command gets a clean serial session and its documented one-retry recovery."""
+    """The installed ``jts_turntable.py`` adapter, driven as a subprocess. Never an import:
+    ``experiments/`` is not a dependency, and each command gets a clean serial session
+    and its documented one-retry recovery.
+    """
 
     tool_path: Path = DEFAULT_TOOL_PATH
     attest_rig_clear: bool = False
@@ -325,7 +365,11 @@ COMPLETE_PATH = "/correction/crossover/v2/complete"
 
 
 class LoopbackSession(WizardClient):
-    """The position gate's three verbs, over the wizard reached on loopback. A :class:`WizardClient` pointed at ``127.0.0.1`` plus the :class:`Session` protocol, so the laptop round runner reaches the SAME wizard across the LAN through the same transport rather than a second copy of the Host/CSRF rules."""
+    """The position gate's three verbs, over the wizard reached on loopback. A
+    :class:`WizardClient` pointed at ``127.0.0.1`` plus the :class:`Session` protocol,
+    so the laptop round runner reaches the SAME wizard across the LAN through the same
+    transport rather than a second copy of the Host/CSRF rules.
+    """
 
     def poll(self) -> Poll:
         status, body = self.open(STATUS_PATH)
@@ -418,7 +462,10 @@ class WalkConfig:
 
 
 class ArmWalk:
-    """One walk. Foreground, one run, parks whatever happens. Constructed with its three seams (``mover``, ``session``, clock/sleep) so the whole loop is exercised without a Pi, a turntable, or a socket."""
+    """One walk. Foreground, one run, parks whatever happens. Constructed with its three seams
+    (``mover``, ``session``, clock/sleep) so the whole loop is exercised without a Pi, a
+    turntable, or a socket.
+    """
 
     def __init__(
         self,
@@ -447,7 +494,11 @@ class ArmWalk:
     # -- the public entry point -------------------------------------------- #
 
     def run(self) -> int:
-        """Walk, then park. The park runs on every path out of this method (a ``finally``, so it covers a clean return, any exception, or the CLI's SIGTERM ``SystemExit``). The aborted line reads the exception off ``sys.exc_info`` rather than binding it, keeping it on its way out."""
+        """Walk, then park. The park runs on every path out of this method (a ``finally``, so it
+        covers a clean return, any exception, or the CLI's SIGTERM ``SystemExit``). The
+        aborted line reads the exception off ``sys.exc_info`` rather than binding it,
+        keeping it on its way out.
+        """
         code = EXIT_OK
         verdict_reached = False
         try:
@@ -467,7 +518,10 @@ class ArmWalk:
     # -- the loop ----------------------------------------------------------- #
 
     def _poll(self) -> Poll:
-        """One read of the envelope, and the ``_saw_session`` latch. EVERY read goes through here; an UNREADABLE poll proves nothing about a session and never opens it (keeps a 403 from being diagnosed as a stuck capture)."""
+        """One read of the envelope, and the ``_saw_session`` latch. EVERY read goes through here;
+        an UNREADABLE poll proves nothing about a session and never opens it (keeps a
+        403 from being diagnosed as a stuck capture).
+        """
         poll = self._session.poll()
         if poll.in_flight and poll.readable:
             self._saw_session = True
@@ -572,7 +626,12 @@ class ArmWalk:
     def _staged_walk_check(self, first: Poll) -> int | None:
         """The one pre-motion evidence that a stated walk will actually run.
 
-        A walk the session refuses at take time leaves NO trace on the envelope, so this asks the only thing answerable before anything moves: is one still staged, waiting for a session not yet open. Once a session IS in flight the question is unanswerable, and the loop falls back to :data:`EXIT_WALK_NOT_TAKEN` at the end. The two skip reasons are reported SEPARATELY: "already open" is a fact off the envelope, "could not be read" is the absence of any fact.
+        A walk the session refuses at take time leaves NO trace on the envelope, so this
+        asks the only thing answerable before anything moves: is one still staged,
+        waiting for a session not yet open. Once a session IS in flight the question is
+        unanswerable, and the loop falls back to :data:`EXIT_WALK_NOT_TAKEN` at the end.
+        The two skip reasons are reported SEPARATELY: "already open" is a fact off the
+        envelope, "could not be read" is the absence of any fact.
         """
         if not self._config.expect_angles or self._walk_staged is None:
             return None
@@ -673,9 +732,14 @@ class ArmWalk:
     def _session_ended(self, poll: Poll) -> int:
         """The session published a terminal status. Its verdict becomes ours.
 
-        Reached only once ``_saw_session`` (a LIVE, readable poll was seen), load-bearing rather than defensive: the wizard keeps ONE relay slot with the FINISHED session's block in it, and a walk launches BEFORE its session opens, so round N+1's first polls read round N's terminal block without the latch.
+        Reached only once ``_saw_session`` (a LIVE, readable poll was seen),
+        load-bearing rather than defensive: the wizard keeps ONE relay slot with the
+        FINISHED session's block in it, and a walk launches BEFORE its session opens, so
+        round N+1's first polls read round N's terminal block without the latch.
 
-        ``failed`` carries the session's OWN error; ``stopped`` is not :data:`EXIT_OK` (fewer positions measured than planned); ``complete`` returns cleanly, leaving the ``--expect-angles`` check to :meth:`_final_code`.
+        ``failed`` carries the session's OWN error; ``stopped`` is not :data:`EXIT_OK`
+        (fewer positions measured than planned); ``complete`` returns cleanly, leaving
+        the ``--expect-angles`` check to :meth:`_final_code`.
         """
         if poll.failed_error is not None:
             self._trail.emit("session_failed", level=logging.ERROR,
@@ -693,7 +757,10 @@ class ArmWalk:
     # -- the exits ---------------------------------------------------------- #
 
     def _final_code(self, code: int) -> int:
-        """An otherwise-clean walk still fails if a stated angle never came. Checked after the park, so a degraded session leaves the arm home and the operator a named code, not a silent zero."""
+        """An otherwise-clean walk still fails if a stated angle never came. Checked after the
+        park, so a degraded session leaves the arm home and the operator a named code,
+        not a silent zero.
+        """
         if code != EXIT_OK:
             return code
         missing = tuple(
@@ -801,7 +868,10 @@ def poll_from_status(status: Mapping[str, Any] | None) -> Poll:
 
 
 def staged_walk_pending() -> bool:
-    """Is an angle walk waiting for the next session to take it? Delegates to the spool's own predicate, imported lazily so this module stays importable and testable without the crossover flow behind it."""
+    """Is an angle walk waiting for the next session to take it? Delegates to the spool's own
+    predicate, imported lazily so this module stays importable and testable without the
+    crossover flow behind it.
+    """
     from .angle_capture_spool import staged_angle_request_pending
 
     return staged_angle_request_pending()

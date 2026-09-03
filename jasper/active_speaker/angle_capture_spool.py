@@ -4,13 +4,26 @@
 
 """ONE requested angle walk, waiting for the session that will run it.
 
-:mod:`~jasper.active_speaker.angle_capture` (#2732) turns an operator's intent into resolved stops but deliberately stops there ("no session calls it yet"). This module is the door: a mailbox, not a mechanism -- an operator PLACES one request, the next session TAKES it. Everything else (program, pose, advance policy) stays :mod:`.angle_capture`'s.
+:mod:`~jasper.active_speaker.angle_capture` (#2732) turns an operator's intent into
+resolved stops but deliberately stops there ("no session calls it yet"). This module is
+the door: a mailbox, not a mechanism -- an operator PLACES one request, the next session
+TAKES it. Everything else (program, pose, advance policy) stays :mod:`.angle_capture`'s.
 
-A file of its own, not a key in the flow state, for the same reason :mod:`.crossover_v2.prescription_spool` gives: the flow's durable state has exactly one writer, and the staging CLI runs in another process as another user, so the request gets its OWN path with its OWN owner.
+A file of its own, not a key in the flow state, for the same reason
+:mod:`.crossover_v2.prescription_spool` gives: the flow's durable state has exactly one
+writer, and the staging CLI runs in another process as another user, so the request gets
+its OWN path with its OWN owner.
 
-No second validator at either end: staging and taking both rebuild the request through :mod:`.angle_capture`'s own constructors. The only rule this module adds is about the BOX, not the request: a walk may not be staged while a measurement session already holds the speaker (:func:`live_measurement_session`).
+No second validator at either end: staging and taking both rebuild the request through
+:mod:`.angle_capture`'s own constructors. The only rule this module adds is about the
+BOX, not the request: a walk may not be staged while a measurement session already holds
+the speaker (:func:`live_measurement_session`).
 
-:func:`take_staged_angle_request` is the only way to GET a staged walk; it moves the document out of the pending slot BEFORE validating it, so "consumed on take, never reused" is a property of the function. A refused document is consumed too (else it would refuse every session after it), surviving at :data:`CONSUMED_SUFFIX` for the operator to inspect.
+:func:`take_staged_angle_request` is the only way to GET a staged walk; it moves the
+document out of the pending slot BEFORE validating it, so "consumed on take, never
+reused" is a property of the function. A refused document is consumed too (else it would
+refuse every session after it), surviving at :data:`CONSUMED_SUFFIX` for the operator to
+inspect.
 """
 
 from __future__ import annotations
@@ -105,7 +118,11 @@ ANGLE_SPOOL_REFUSAL_REASONS = frozenset({
 
 
 class AngleRequestRefused(CrossoverV2FlowError):
-    """A staged walk may not be placed or taken, with a machine-readable slug. Subclasses the flow's own error so a caller already handling ``CrossoverV2FlowError`` keeps handling this one. ``reason`` is from :data:`ANGLE_SPOOL_REFUSAL_REASONS`; ``detail`` is the sentence a person reads."""
+    """A staged walk may not be placed or taken, with a machine-readable slug. Subclasses the
+    flow's own error so a caller already handling ``CrossoverV2FlowError`` keeps
+    handling this one. ``reason`` is from :data:`ANGLE_SPOOL_REFUSAL_REASONS`;
+    ``detail`` is the sentence a person reads.
+    """
 
     def __init__(self, reason: str, detail: str) -> None:
         super().__init__(f"{reason}: {detail}")
@@ -133,7 +150,10 @@ def angle_request_spool_path() -> Path:
 
 
 def set_angle_request_spool_path_for_tests(path: Path | None) -> None:
-    """Point the slot somewhere writable. Tests only. Mirrors ``set_prescription_spool_path_for_tests``: the production path is under ``/var/lib/jasper``, unwritable by a hardware-free test."""
+    """Point the slot somewhere writable. Tests only. Mirrors
+    ``set_prescription_spool_path_for_tests``: the production path is under
+    ``/var/lib/jasper``, unwritable by a hardware-free test.
+    """
     global _spool_path_override
     _spool_path_override = path
 
@@ -145,11 +165,17 @@ def _consumed_path(pending: Path) -> Path:
 def stage_angle_request(request: AngleCaptureRequest) -> Path:
     """Bank one resolved walk for the next session to take.
 
-    ``request`` has ALREADY passed :class:`~.angle_capture.AngleCaptureRequest`'s validation; this adds exactly two checks it cannot make: not longer than :data:`MAX_STOPS`, and no measurement session currently live.
+    ``request`` has ALREADY passed :class:`~.angle_capture.AngleCaptureRequest`'s
+    validation; this adds exactly two checks it cannot make: not longer than
+    :data:`MAX_STOPS`, and no measurement session currently live.
 
-    Staging twice is last-wins: the slot holds ONE walk, logged on overwrite (``event=angle_capture.request_staged`` carries ``replaced``); the atomic rename means a concurrent take sees one whole document, never a splice.
+    Staging twice is last-wins: the slot holds ONE walk, logged on overwrite
+    (``event=angle_capture.request_staged`` carries ``replaced``); the atomic rename
+    means a concurrent take sees one whole document, never a splice.
 
-    Write is atomic, mode ``0o640`` with the parent's group (matching the flow state file), STRICT: a silent fallback to the writer's own group would publish a document ``jasper-web`` cannot open, surfacing as a walk that mysteriously did not run.
+    Write is atomic, mode ``0o640`` with the parent's group (matching the flow state
+    file), STRICT: a silent fallback to the writer's own group would publish a document
+    ``jasper-web`` cannot open, surfacing as a walk that mysteriously did not run.
     """
     if len(request.stops) > MAX_STOPS:
         _refuse(
@@ -217,29 +243,44 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
 
 
 def staged_angle_request_pending() -> bool:
-    """Is a walk waiting? Named rather than a bare ``.is_file()``, since "is one pending" is the concept the lifecycle tests are checking. The one production caller reads it AFTER a refused :func:`take_staged_angle_request` to see whether the refusal consumed the document (the two unreadable arms deliberately do not)."""
+    """Is a walk waiting? Named rather than a bare ``.is_file()``, since "is one pending" is
+    the concept the lifecycle tests are checking. The one production caller reads it
+    AFTER a refused :func:`take_staged_angle_request` to see whether the refusal
+    consumed the document (the two unreadable arms deliberately do not).
+    """
     return angle_request_spool_path().is_file()
 
 
 def take_staged_angle_request() -> AngleCaptureRequest | None:
     """THE reader. Consumes first, then validates, and never returns a reused one.
 
-    ``None`` means no walk staged (every ordinary session). Raises :class:`AngleRequestRefused` (slug from :data:`ANGLE_SPOOL_REFUSAL_REASONS`) or the underlying ``CrossoverV2FlowError`` when banked stops no longer satisfy :mod:`.angle_capture`'s contract -- deliberately not re-wrapped, since ``_validated_angle``'s own sentence is better.
+    ``None`` means no walk staged (every ordinary session). Raises
+    :class:`AngleRequestRefused` (slug from :data:`ANGLE_SPOOL_REFUSAL_REASONS`) or the
+    underlying ``CrossoverV2FlowError`` when banked stops no longer satisfy
+    :mod:`.angle_capture`'s contract -- deliberately not re-wrapped, since
+    ``_validated_angle``'s own sentence is better.
 
-    Move-before-validate makes single-use a property of this function: a document that refuses is consumed too, so a bad angle refuses once, not forever. The one exception -- a slot that cannot be READ at all -- is argued at its own arm below.
+    Move-before-validate makes single-use a property of this function: a document that
+    refuses is consumed too, so a bad angle refuses once, not forever. The one exception
+    -- a slot that cannot be READ at all -- is argued at its own arm below.
     """
     raw = _read_staged(consume=True)
     return None if raw is None else _validate(raw)
 
 
 def peek_staged_angle_request() -> AngleCaptureRequest | None:
-    """The same request :func:`take_staged_angle_request` would take, unconsumed -- for a caller that must STATE what is staged without running it (the tier chooser prices the walk before Start). A caller that wants to run the walk must not use this."""
+    """The same request :func:`take_staged_angle_request` would take, unconsumed -- for a
+    caller that must STATE what is staged without running it (the tier chooser prices
+    the walk before Start). A caller that wants to run the walk must not use this.
+    """
     raw = _read_staged(consume=False)
     return None if raw is None else _validate(raw)
 
 
 def _read_staged(*, consume: bool) -> bytes | None:
-    """The staged document's bytes, or ``None`` when the slot is empty. ONE reader behind both doors above, so the size ceiling, refusal slugs and consume order cannot drift."""
+    """The staged document's bytes, or ``None`` when the slot is empty. ONE reader behind both
+    doors above, so the size ceiling, refusal slugs and consume order cannot drift.
+    """
     pending = angle_request_spool_path()
     try:
         stat = pending.stat()
@@ -283,9 +324,16 @@ def _read_staged(*, consume: bool) -> bytes | None:
 def _consume(pending: Path) -> None:
     """Empty the slot, atomically, and never leave it filled quietly.
 
-    ``replace``, not ``unlink`` first, so the document survives for the operator and the slot empties in one step. Then ``unlink`` when the rename fails: unlike ``prescription_spool._consume`` (backstopped by an ordinal check), this slot has no ordinal analog -- a walk not stamped for a session would otherwise be re-taken by the next one. The unlink backstop makes single-use a property, not a hope; losing the document is the right trade against silently re-running a measurement.
+    ``replace``, not ``unlink`` first, so the document survives for the operator and the
+    slot empties in one step. Then ``unlink`` when the rename fails: unlike
+    ``prescription_spool._consume`` (backstopped by an ordinal check), this slot has no
+    ordinal analog -- a walk not stamped for a session would otherwise be re-taken by
+    the next one. The unlink backstop makes single-use a property, not a hope; losing
+    the document is the right trade against silently re-running a measurement.
 
-    Still best-effort at the end (a failed consume must not turn a walk that WAS read into a refusal), but **logged at WARNING**, since a slot that will not clear can re-run a session's worth of captures.
+    Still best-effort at the end (a failed consume must not turn a walk that WAS read
+    into a refusal), but **logged at WARNING**, since a slot that will not clear can
+    re-run a session's worth of captures.
     """
     try:
         pending.replace(_consumed_path(pending))
@@ -321,9 +369,19 @@ def _coerced_delay_us(raw: Any) -> float:
 def _validate(raw: bytes) -> AngleCaptureRequest:
     """Rebuild the request from the banked fields, through its own constructors.
 
-    Every angle, regime and mover check is :mod:`.angle_capture`'s; this checks only the document's own shape (JSON, kind, schema, an ordered stop list) before handing values straight to :class:`~.angle_capture.AngleStop`/:class:`~.angle_capture.AngleCaptureRequest`.
+    Every angle, regime and mover check is :mod:`.angle_capture`'s; this checks only the
+    document's own shape (JSON, kind, schema, an ordered stop list) before handing
+    values straight to
+    :class:`~.angle_capture.AngleStop`/:class:`~.angle_capture.AngleCaptureRequest`.
 
-    Angles are handed over UNCOERCED, same rule as ``per_driver_at``: an ``int()`` here would truncate ``0.4`` to an on-axis capture nobody asked for. R-1's two pairs (delay, polarity) are ADDITIVE and defaulted, so a document spooled before either existed still reads as a normal walk; neither is judged here -- ``MeasureSpec`` judges them when the host adopts the walk. ``delay_us`` is the one field COERCED through ``float``, refusing as :data:`SPOOL_MALFORMED` rather than a bare ``ValueError`` (the page's price peek catches only ``CrossoverV2FlowError``). ``level_matched`` is a BOOLEAN, never numbers.
+    Angles are handed over UNCOERCED, same rule as ``per_driver_at``: an ``int()`` here
+    would truncate ``0.4`` to an on-axis capture nobody asked for. R-1's two pairs
+    (delay, polarity) are ADDITIVE and defaulted, so a document spooled before either
+    existed still reads as a normal walk; neither is judged here -- ``MeasureSpec``
+    judges them when the host adopts the walk. ``delay_us`` is the one field COERCED
+    through ``float``, refusing as :data:`SPOOL_MALFORMED` rather than a bare
+    ``ValueError`` (the page's price peek catches only ``CrossoverV2FlowError``).
+    ``level_matched`` is a BOOLEAN, never numbers.
     """
     try:
         doc = json.loads(raw.decode("utf-8"))
@@ -378,7 +436,10 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
 
 
 def withdraw_staged_angle_request() -> bool:
-    """Remove a pending walk without running it. ``True`` if one was there. Does NOT write a ``.consumed`` copy: a withdrawn walk was never handed to a session, so filing it beside ones that were would make the consumed slot ambiguous."""
+    """Remove a pending walk without running it. ``True`` if one was there. Does NOT write a
+    ``.consumed`` copy: a withdrawn walk was never handed to a session, so filing it
+    beside ones that were would make the consumed slot ambiguous.
+    """
     pending = angle_request_spool_path()
     try:
         pending.unlink()

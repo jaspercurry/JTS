@@ -4,7 +4,12 @@
 
 """The correction wizard's transport, and the two round verbs built on it.
 
-One HTTP client for every caller of the crossover wizard (arm walk, jasper-basic-profile, jasper-round, scripts/run-crossover-round.py), so the Host-header and CSRF rules have one owner instead of drifting copies. ``apply_by_fingerprint`` and ``wait_for_round`` sit on top for the same reason -- the apply guard and bounded wait are BEHAVIOUR the laptop runner and the on-box CLI must agree about exactly. Neither sequences anything; the wizard's own artifact-dependency refusals do that.
+One HTTP client for every caller of the crossover wizard (arm walk,
+jasper-basic-profile, jasper-round, scripts/run-crossover-round.py), so the Host-header
+and CSRF rules have one owner instead of drifting copies. ``apply_by_fingerprint`` and
+``wait_for_round`` sit on top for the same reason -- the apply guard and bounded wait
+are BEHAVIOUR the laptop runner and the on-box CLI must agree about exactly. Neither
+sequences anything; the wizard's own artifact-dependency refusals do that.
 """
 
 from __future__ import annotations
@@ -17,24 +22,33 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable, Mapping
 
-#: Page that mints the CSRF cookie + meta token pair, and this client's default. A caller POSTing to a DIFFERENT wizard daemon passes that daemon's own page as ``csrf_page_path``.
+#: Page that mints the CSRF cookie + meta token pair, and this client's default. A
+#: caller POSTing to a DIFFERENT wizard daemon passes that daemon's own page as
+#: ``csrf_page_path``.
 CSRF_PAGE_PATH = "/sound/crossover/"
 STATUS_PATH = "/correction/crossover/status"
 
-#: The two stage-opening POSTs and the apply; pinned against ``correction_setup``'s ``_POST_ROUTES`` by ``tests/test_cli_round.py``.
+#: The two stage-opening POSTs and the apply; pinned against ``correction_setup``'s
+#: ``_POST_ROUTES`` by ``tests/test_cli_round.py``.
 SESSION_PATH = "/correction/crossover/v2/session"
 VERIFY_PATH = "/correction/crossover/v2/verify"
 APPLY_PATH = "/correction/crossover/v2/apply"
 
-#: Verify open's discriminator, restated (not imported, to stay numpy-free on a 1 GB speaker) from ``correction_crossover_v2``; pinned by ``tests/test_cli_round.py``.
+#: Verify open's discriminator, restated (not imported, to stay numpy-free on a 1 GB
+#: speaker) from ``correction_crossover_v2``; pinned by ``tests/test_cli_round.py``.
 STAGE_KEY = "stage"
 STAGE_MEASURE = "measure"
 STAGE_POST_APPLY = "post_apply"
 
-#: Measurement tiers a measuring stage open may name. Restated, not imported from :mod:`crossover_v2_flow` (pulls numpy at import time); pinned equal to ``crossover_v2_flow.TIERS`` by ``tests/test_cli_round.py``.
+#: Measurement tiers a measuring stage open may name. Restated, not imported from
+#: :mod:`crossover_v2_flow` (pulls numpy at import time); pinned equal to
+#: ``crossover_v2_flow.TIERS`` by ``tests/test_cli_round.py``.
 TIERS = ("express", "full", "remote")
 
-#: Phases a stage is still WORKING in: every capture phase plus ``closing`` and ``applying`` (session mid-flight, not a stopping point). Restated, not derived from ``.crossover_v2.journey`` (numpy import cost); pinned against it by ``tests/test_cli_round.py``.
+#: Phases a stage is still WORKING in: every capture phase plus ``closing`` and
+#: ``applying`` (session mid-flight, not a stopping point). Restated, not derived from
+#: ``.crossover_v2.journey`` (numpy import cost); pinned against it by
+#: ``tests/test_cli_round.py``.
 RUNNING_PHASES = frozenset(
     {
         "check",
@@ -49,7 +63,9 @@ RUNNING_PHASES = frozenset(
     }
 )
 
-#: Why a round verb refused, as a slug a script can branch on. First four are this client's own pre-flight refusals (nothing sent); last three are the wizard's answer, the answer that never arrived, and the clock's.
+#: Why a round verb refused, as a slug a script can branch on. First four are this
+#: client's own pre-flight refusals (nothing sent); last three are the wizard's answer,
+#: the answer that never arrived, and the clock's.
 REASON_NO_FINGERPRINT = "no_fingerprint_named"
 REASON_NO_V2_STATE = "no_v2_state"
 REASON_NO_CANDIDATE = "no_candidate_published"
@@ -65,9 +81,15 @@ _CSRF_META_RE = re.compile(r'<meta name="jts-csrf" content="([^"]+)"')
 class WizardClient:
     """The correction wizard over HTTP: the speaker's Host, and CSRF handled.
 
-    The transport every caller of that wizard needs, so none owns a second copy: an explicit ``Host:`` header (the management-host guard rejects ``127.0.0.1`` and any OTHER speaker's name), and the double-submit CSRF pair on every mutating POST (cookie from the jar, token from ``<meta name="jts-csrf">``) -- ``csrf_page_path`` names which of nginx's several wizard daemons mints it.
+    The transport every caller of that wizard needs, so none owns a second copy: an
+    explicit ``Host:`` header (the management-host guard rejects ``127.0.0.1`` and any
+    OTHER speaker's name), and the double-submit CSRF pair on every mutating POST
+    (cookie from the jar, token from ``<meta name="jts-csrf">``) -- ``csrf_page_path``
+    names which of nginx's several wizard daemons mints it.
 
-    :meth:`open`/:meth:`post` hand back TEXT, not parsed bodies; :meth:`get_json`/:meth:`post_json` are the round's JSON half, and :meth:`v2_block`, :meth:`open_session`, :meth:`apply` are the three verbs a round is made of.
+    :meth:`open`/:meth:`post` hand back TEXT, not parsed bodies;
+    :meth:`get_json`/:meth:`post_json` are the round's JSON half, and :meth:`v2_block`,
+    :meth:`open_session`, :meth:`apply` are the three verbs a round is made of.
     """
 
     def __init__(
@@ -110,7 +132,10 @@ class WizardClient:
             return 0, f"{type(exc).__name__}: {exc}"
 
     def _csrf_token(self) -> str:
-        """The page's token, minted once and reused -- but only once MINTED. A failed mint leaves the slot empty so the next POST that needs one retries, instead of caching an empty token forever."""
+        """The page's token, minted once and reused -- but only once MINTED. A failed mint leaves
+        the slot empty so the next POST that needs one retries, instead of caching an
+        empty token forever.
+        """
         if self._csrf:
             return self._csrf
         _, body = self.open(self._csrf_page)
@@ -140,26 +165,36 @@ class WizardClient:
         return status, _as_json(body)
 
     def status_envelope(self) -> tuple[int, dict[str, Any]]:
-        """The status GET's code, and the v2 block under it. The CODE separates "nothing known yet" from "nothing is answering"."""
+        """The status GET's code, and the v2 block under it. The CODE separates "nothing known yet"
+        from "nothing is answering".
+        """
         status, payload = self.get_json(STATUS_PATH)
         block = payload.get("crossover_v2") if isinstance(payload, Mapping) else None
         return status, dict(block) if isinstance(block, Mapping) else {}
 
     def v2_block(self) -> dict[str, Any]:
-        """``status["crossover_v2"]`` -- phase, candidate, failure, session id. ``{}`` when unreadable or absent; every caller treats that as "nothing known yet", never a verdict."""
+        """``status["crossover_v2"]`` -- phase, candidate, failure, session id. ``{}`` when
+        unreadable or absent; every caller treats that as "nothing known yet", never a
+        verdict.
+        """
         status, block = self.status_envelope()
         return block if status == 200 else {}
 
     def open_session(
         self, tier: str, *, stage: str = STAGE_MEASURE
     ) -> tuple[int, Any]:
-        """Open the measuring session, or the post-apply verify. ``tier`` is ignored for verify: stage 2 reads the instrument the MEASURING session already recorded."""
+        """Open the measuring session, or the post-apply verify. ``tier`` is ignored for verify:
+        stage 2 reads the instrument the MEASURING session already recorded.
+        """
         if stage == STAGE_POST_APPLY:
             return self.post_json(VERIFY_PATH, {STAGE_KEY: STAGE_POST_APPLY})
         return self.post_json(SESSION_PATH, {"tier": tier})
 
     def apply(self, expected_fingerprint: str) -> tuple[int, Any]:
-        """The bare POST. The gate is :func:`apply_by_fingerprint`, not this. No inline ``candidate`` override sent -- the host reopens the artifact from the recorded evidence bundle."""
+        """The bare POST. The gate is :func:`apply_by_fingerprint`, not this. No inline
+        ``candidate`` override sent -- the host reopens the artifact from the recorded
+        evidence bundle.
+        """
         return self.post_json(
             APPLY_PATH, {"expected_candidate_fingerprint": expected_fingerprint}
         )
@@ -193,9 +228,15 @@ def apply_by_fingerprint(
 ) -> dict[str, Any]:
     """The gate, then the apply. A mismatch POSTs nothing at all.
 
-    The endpoint runs the same comparison server-side, so this is not a second opinion -- what it adds is that nothing is SENT on a mismatch. An EMPTY argument is refused first and separately, since an absent live candidate also reads as ``""`` and would otherwise compare equal.
+    The endpoint runs the same comparison server-side, so this is not a second opinion
+    -- what it adds is that nothing is SENT on a mismatch. An EMPTY argument is refused
+    first and separately, since an absent live candidate also reads as ``""`` and would
+    otherwise compare equal.
 
-    Success is HTTP 200 **and** ``status == "applied"``: ``apply_failed`` is always 200 with an unchanged graph, ``blocked`` is the one status that moves the code off 200, and a refusal is a 400 with no ``status``. A LOST answer (http 0) is neither and carries no ``refused_by`` -- nothing refused, a connection just dropped.
+    Success is HTTP 200 **and** ``status == "applied"``: ``apply_failed`` is always 200
+    with an unchanged graph, ``blocked`` is the one status that moves the code off 200,
+    and a refusal is a 400 with no ``status``. A LOST answer (http 0) is neither and
+    carries no ``refused_by`` -- nothing refused, a connection just dropped.
     """
     named = (expected_fingerprint or "").strip()
     if not named:
@@ -254,7 +295,12 @@ def wait_for_round(
 ) -> dict[str, Any]:
     """Poll until this session's phases are all accepted, or it fails.
 
-    Terminal requires BOTH: the session id must have MOVED off ``prior_session_id`` (else a previous round's terminal phase reads as this round's completion at the moment the poll started), and the phase must leave :data:`RUNNING_PHASES`. A caller with no prior id (a separate invocation) passes ``""`` and waits on whatever session is current. A status read that is not answered ends the wait at once, rather than burning the full timeout indistinguishable from a slow round.
+    Terminal requires BOTH: the session id must have MOVED off ``prior_session_id``
+    (else a previous round's terminal phase reads as this round's completion at the
+    moment the poll started), and the phase must leave :data:`RUNNING_PHASES`. A caller
+    with no prior id (a separate invocation) passes ``""`` and waits on whatever session
+    is current. A status read that is not answered ends the wait at once, rather than
+    burning the full timeout indistinguishable from a slow round.
     """
     deadline = now() + timeout_s
     while True:

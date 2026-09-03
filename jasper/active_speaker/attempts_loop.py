@@ -4,13 +4,26 @@
 
 """The S3 tuning loop's improve/stop policy — a pure decision kernel.
 
-:func:`~jasper.active_speaker.flat_spec.spec_convergence_residual` computes the residual but excludes loop policy by design; this module is that policy, consuming already-graded attempts and returning one :class:`LoopDecision`.
+:func:`~jasper.active_speaker.flat_spec.spec_convergence_residual` computes the residual
+but excludes loop policy by design; this module is that policy, consuming already-graded
+attempts and returning one :class:`LoopDecision`.
 
-No I/O ever (persistence lives in :mod:`model_error_store` instead); import-time light, pulling only stdlib at module scope (pinned by ``test_kernel_imports_nothing_at_module_scope_but_stdlib``) -- the convergence path alone deferred-imports numpy/scipy via :func:`material_improvement_db`, which must stay a function-local import.
+No I/O ever (persistence lives in :mod:`model_error_store` instead); import-time light,
+pulling only stdlib at module scope (pinned by
+``test_kernel_imports_nothing_at_module_scope_but_stdlib``) -- the convergence path
+alone deferred-imports numpy/scipy via :func:`material_improvement_db`, which must stay
+a function-local import.
 
-Four rules, all measured on jts3 2026-07-31 (``captures/repeat-floor-20260731/README.md``): (1) only consecutive attempts are compared, never a fixed baseline (which drifts to roughly the whole floor within ~15 attempts); (2) repeat averaging stops paying past :data:`MAX_USEFUL_REPEAT_AVERAGES`; (3) a change smaller than :attr:`FloorStats.claim_floor_db` is not a change; (4) a floor licenses only the separation (:attr:`FloorStats.scope`) it was measured across -- refused otherwise (#2081).
+Four rules, all measured on jts3 2026-07-31
+(``captures/repeat-floor-20260731/README.md``): (1) only consecutive attempts are
+compared, never a fixed baseline (which drifts to roughly the whole floor within ~15
+attempts); (2) repeat averaging stops paying past :data:`MAX_USEFUL_REPEAT_AVERAGES`;
+(3) a change smaller than :attr:`FloorStats.claim_floor_db` is not a change; (4) a floor
+licenses only the separation (:attr:`FloorStats.scope`) it was measured across --
+refused otherwise (#2081).
 
-An unanswerable magnitude or improvement question always yields :data:`STOP_EVIDENCE`, never a pass, matching :mod:`delta_probe`'s ``unavailable`` doctrine.
+An unanswerable magnitude or improvement question always yields :data:`STOP_EVIDENCE`,
+never a pass, matching :mod:`delta_probe`'s ``unavailable`` doctrine.
 """
 
 from __future__ import annotations
@@ -93,7 +106,10 @@ CLAIM_FLOOR_P95_MULTIPLE = 2.0
 
 
 def percentile(values: Sequence[float], q: float) -> float:
-    """Linear-interpolated percentile, NumPy's default method, spelled out (not imported) so the floor's provenance is auditable without pinning a NumPy version; pinned against the banked study's own summary by ``tests/test_active_speaker_attempts_loop.py``."""
+    """Linear-interpolated percentile, NumPy's default method, spelled out (not imported) so
+    the floor's provenance is auditable without pinning a NumPy version; pinned against
+    the banked study's own summary by ``tests/test_active_speaker_attempts_loop.py``.
+    """
 
     ordered = sorted(float(value) for value in values)
     if not ordered:
@@ -123,7 +139,12 @@ MAX_USEFUL_REPEAT_AVERAGES = 4
 
 @dataclass(frozen=True)
 class AttemptBudget:
-    """How many *tuning attempts* one speaker gets (a tune-and-grade cycle, not a measurement repeat). ``target_attempts`` is WO-7's planning number, disclosed not enforced -- the only bound the kernel applies is ``hard_cap_attempts``. ``hard_cap_attempts`` is a policy bound (target plus one retry); no measurement sets it, and it is a different quantity from :data:`MAX_USEFUL_REPEAT_AVERAGES`."""
+    """How many *tuning attempts* one speaker gets (a tune-and-grade cycle, not a measurement
+    repeat). ``target_attempts`` is WO-7's planning number, disclosed not enforced --
+    the only bound the kernel applies is ``hard_cap_attempts``. ``hard_cap_attempts`` is
+    a policy bound (target plus one retry); no measurement sets it, and it is a
+    different quantity from :data:`MAX_USEFUL_REPEAT_AVERAGES`.
+    """
 
     target_attempts: int = 3
     hard_cap_attempts: int = 4
@@ -143,7 +164,13 @@ class AttemptBudget:
 
 @dataclass(frozen=True)
 class FloorStats:
-    """What a change in ``metric`` has to clear before the loop may claim it. Build with :meth:`from_repeat_study` (measured) or :meth:`from_policy_bar` (no study); :attr:`basis` rides through every decision. :attr:`scope` (separation covered) is orthogonal to :attr:`basis` -- collapsing them would let "we measured this" imply "across a mic re-placement" (#2081); ``median_db``/``p95_db`` are ``None`` on a policy bar. :func:`decide_next` refuses to grade an attempt whose ``metric`` differs.
+    """What a change in ``metric`` has to clear before the loop may claim it. Build with
+    :meth:`from_repeat_study` (measured) or :meth:`from_policy_bar` (no study);
+    :attr:`basis` rides through every decision. :attr:`scope` (separation covered) is
+    orthogonal to :attr:`basis` -- collapsing them would let "we measured this" imply
+    "across a mic re-placement" (#2081); ``median_db``/``p95_db`` are ``None`` on a
+    policy bar. :func:`decide_next` refuses to grade an attempt whose ``metric``
+    differs.
     """
 
     metric: str
@@ -178,7 +205,11 @@ class FloorStats:
         measured_at: str,
         scope: str = FLOOR_SCOPE_WITHIN_SITTING,
     ) -> "FloorStats":
-        """A floor measured by repeating one unchanged measurement. ``claim_floor_db`` is ``CLAIM_FLOOR_P95_MULTIPLE * p95_db``. ``scope`` defaults to :data:`FLOOR_SCOPE_WITHIN_SITTING` (the only banked study held the mic fixed); a re-placement study passes :data:`FLOOR_SCOPE_ACROSS_SITTINGS`."""
+        """A floor measured by repeating one unchanged measurement. ``claim_floor_db`` is
+        ``CLAIM_FLOOR_P95_MULTIPLE * p95_db``. ``scope`` defaults to
+        :data:`FLOOR_SCOPE_WITHIN_SITTING` (the only banked study held the mic fixed); a
+        re-placement study passes :data:`FLOOR_SCOPE_ACROSS_SITTINGS`.
+        """
 
         if not (p95_db > 0.0):
             raise ValueError("p95_db must be positive")
@@ -197,7 +228,11 @@ class FloorStats:
     def from_policy_bar(
         cls, *, metric: str, claim_floor_db: float, source: str, scope: str,
     ) -> "FloorStats":
-        """A shipped threshold standing in where no repeat study exists. :attr:`median_db`/:attr:`p95_db` stay ``None`` rather than being back-solved. ``scope`` is required, with no default: a declared bar has no construction fact to infer it from."""
+        """A shipped threshold standing in where no repeat study exists.
+        :attr:`median_db`/:attr:`p95_db` stay ``None`` rather than being back-solved.
+        ``scope`` is required, with no default: a declared bar has no construction fact
+        to infer it from.
+        """
 
         return cls(
             metric=metric,
@@ -208,7 +243,10 @@ class FloorStats:
         )
 
     def licenses_sitting_pair(self, previous: str, latest: str) -> bool:
-        """May a pair measured in these two sittings be graded against me? ``""`` is UNKNOWN, never a match: two unrecorded sittings must not compare equal as if they were the same place (pre-#2081 state rides in with two blanks)."""
+        """May a pair measured in these two sittings be graded against me? ``""`` is UNKNOWN, never
+        a match: two unrecorded sittings must not compare equal as if they were the same
+        place (pre-#2081 state rides in with two blanks).
+        """
 
         if self.scope == FLOOR_SCOPE_ACROSS_SITTINGS:
             return True
@@ -229,7 +267,10 @@ class FloorStats:
 
 @dataclass(frozen=True)
 class AttemptIntegrity:
-    """Whether this attempt's grade may be compared to another one at all. ``comparable`` is the shipped acceptance gate's answer, not a quality score. ``reasons`` carries the gate's own reason strings through unchanged."""
+    """Whether this attempt's grade may be compared to another one at all. ``comparable`` is
+    the shipped acceptance gate's answer, not a quality score. ``reasons`` carries the
+    gate's own reason strings through unchanged.
+    """
 
     comparable: bool
     reasons: tuple[str, ...] = ()
@@ -240,7 +281,19 @@ class AttemptIntegrity:
 
 @dataclass(frozen=True)
 class AttemptRecord:
-    """One tuning attempt, already graded. Grades are lower-is-better throughout; the kernel carries no direction flag. Two grade shapes are accepted: ``grade_db`` (absolute, gives magnitude and direction) and ``deviation_from_predecessor_db`` (unsigned magnitude only); when both are present the deviation wins for magnitude, grades still supply direction. ``provenance`` may not be compared across :data:`PROVENANCE_MODEL_GRADED`/:data:`PROVENANCE_REALIZED`. ``sitting_id`` is opaque (only ever string-compared); ``""`` means unrecorded, treated as "not the same sitting" (see :meth:`FloorStats.licenses_sitting_pair`). ``n_graded_bins`` is enforced asymmetrically: a *grown* denominator only makes an improvement harder to win. ``predicted_remaining_improvement_db`` is NOT ``CrossoverCandidate.flatness_improvement_db`` (backward-looking, over a decision already taken). ``curve_refs`` are never dereferenced here -- the kernel performs no I/O.
+    """One tuning attempt, already graded. Grades are lower-is-better throughout; the kernel
+    carries no direction flag. Two grade shapes are accepted: ``grade_db`` (absolute,
+    gives magnitude and direction) and ``deviation_from_predecessor_db`` (unsigned
+    magnitude only); when both are present the deviation wins for magnitude, grades
+    still supply direction. ``provenance`` may not be compared across
+    :data:`PROVENANCE_MODEL_GRADED`/:data:`PROVENANCE_REALIZED`. ``sitting_id`` is
+    opaque (only ever string-compared); ``""`` means unrecorded, treated as "not the
+    same sitting" (see :meth:`FloorStats.licenses_sitting_pair`). ``n_graded_bins`` is
+    enforced asymmetrically: a *grown* denominator only makes an improvement harder to
+    win. ``predicted_remaining_improvement_db`` is NOT
+    ``CrossoverCandidate.flatness_improvement_db`` (backward-looking, over a decision
+    already taken). ``curve_refs`` are never dereferenced here -- the kernel performs no
+    I/O.
     """
 
     attempt_id: str
@@ -295,7 +348,12 @@ class AttemptRecord:
 
 @dataclass(frozen=True)
 class LoopDecision:
-    """What the loop decided, and every number it decided from. ``improved`` is carried separately from ``decision``: an above-floor *regression* is still :data:`CONTINUE` (the loop keeps working), never approval -- ``improved=False`` plus :data:`REASON_REGRESSION_FROM_PREDECESSOR` says so. Handling a regression is the live flow's policy, not this kernel's."""
+    """What the loop decided, and every number it decided from. ``improved`` is carried
+    separately from ``decision``: an above-floor *regression* is still :data:`CONTINUE`
+    (the loop keeps working), never approval -- ``improved=False`` plus
+    :data:`REASON_REGRESSION_FROM_PREDECESSOR` says so. Handling a regression is the
+    live flow's policy, not this kernel's.
+    """
 
     decision: str
     reason: str
@@ -334,7 +392,11 @@ class LoopDecision:
 def _magnitude_and_improvement(
     previous: AttemptRecord, latest: AttemptRecord,
 ) -> tuple[float | None, float | None]:
-    """The size of the change, and how much of it was an improvement. Improvement is ``previous.grade_db - latest.grade_db`` (positive = better), ``None`` if either is absent. Magnitude prefers the comparator's own deviation when supplied, since that number was measured rather than subtracted."""
+    """The size of the change, and how much of it was an improvement. Improvement is
+    ``previous.grade_db - latest.grade_db`` (positive = better), ``None`` if either is
+    absent. Magnitude prefers the comparator's own deviation when supplied, since that
+    number was measured rather than subtracted.
+    """
 
     improvement_db: float | None = None
     if previous.grade_db is not None and latest.grade_db is not None:
@@ -352,7 +414,13 @@ def decide_next(
     *,
     budget: AttemptBudget | None = None,
 ) -> LoopDecision:
-    """Improve or stop, given the attempts so far. ``history`` is oldest-first; only its last two entries are read (rule 1), with no ``baseline=`` parameter or way to reach further back -- a fixed baseline accumulates drift comparable to the entire floor within ~15 attempts. An incomparable predecessor refuses to grade. The pair must also fall inside the floor's own :attr:`FloorStats.scope` (rule 4). Order of judgement: evidence first, then the floor, then (only if otherwise :data:`CONTINUE`) convergence, then budget.
+    """Improve or stop, given the attempts so far. ``history`` is oldest-first; only its last
+    two entries are read (rule 1), with no ``baseline=`` parameter or way to reach
+    further back -- a fixed baseline accumulates drift comparable to the entire floor
+    within ~15 attempts. An incomparable predecessor refuses to grade. The pair must
+    also fall inside the floor's own :attr:`FloorStats.scope` (rule 4). Order of
+    judgement: evidence first, then the floor, then (only if otherwise :data:`CONTINUE`)
+    convergence, then budget.
     """
 
     budget = budget or AttemptBudget()
@@ -538,7 +606,9 @@ def _denominator_shrank(previous: AttemptRecord, latest: AttemptRecord) -> bool:
 def _apply_stop_conditions(
     decision: LoopDecision, *, latest: AttemptRecord,
 ) -> LoopDecision:
-    """Turn a would-be :data:`CONTINUE` into a stop when there is nowhere to go. Only reachable from a decision that already survived the evidence and floor checks."""
+    """Turn a would-be :data:`CONTINUE` into a stop when there is nowhere to go. Only reachable
+    from a decision that already survived the evidence and floor checks.
+    """
 
     if latest.in_spec:
         return replace(decision, decision=STOP_CONVERGED, reason=REASON_IN_SPEC)
@@ -561,7 +631,11 @@ def _apply_stop_conditions(
 
 
 def material_improvement_db() -> float:
-    """The shipped bar for "an improvement worth applying", imported not copied. Public: the replay driver needs the same number for a policy floor on model-graded metrics. 0.5 dB is the gap between what the correction model predicts and what JTS3's hardware realizes. Imported inside the function to keep numpy/scipy off this dependency-free kernel's import path.
+    """The shipped bar for "an improvement worth applying", imported not copied. Public: the
+    replay driver needs the same number for a policy floor on model-graded metrics. 0.5
+    dB is the gap between what the correction model predicts and what JTS3's hardware
+    realizes. Imported inside the function to keep numpy/scipy off this dependency-free
+    kernel's import path.
     """
 
     from jasper.active_speaker.crossover_v2_flow import (
@@ -577,7 +651,10 @@ def replay(
     *,
     budget: AttemptBudget | None = None,
 ) -> list[LoopDecision]:
-    """Every decision the loop would reach, one per attempt. A live loop stops at the first non-:data:`CONTINUE`; replaying wants the whole walk instead. :func:`first_stop_index` finds where a live loop would actually have stopped."""
+    """Every decision the loop would reach, one per attempt. A live loop stops at the first
+    non-:data:`CONTINUE`; replaying wants the whole walk instead.
+    :func:`first_stop_index` finds where a live loop would actually have stopped.
+    """
 
     return [
         decide_next(history[: n + 1], floor, budget=budget)

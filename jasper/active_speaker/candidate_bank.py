@@ -4,7 +4,13 @@
 
 """Find a previously-minted candidate in the on-box bundle store, by fingerprint.
 
-Owns the fingerprint SCAN glob; a second reader should import it from here, not restate it. Integrity is the candidate model's alone (:meth:`MeasuredCrossoverCandidate.from_mapping`) -- this module adds only bounds and identity resolution, no second hasher. Lookup is keyed on bundle id *and* minting relay session id together, both carried on :class:`BankedCandidate`. Kept out of ``crossover_v2/`` to avoid that package's numpy-pulling ``__init__``; lazy-imports the candidate model instead.
+Owns the fingerprint SCAN glob; a second reader should import it from here, not restate
+it. Integrity is the candidate model's alone
+(:meth:`MeasuredCrossoverCandidate.from_mapping`) -- this module adds only bounds and
+identity resolution, no second hasher. Lookup is keyed on bundle id *and* minting relay
+session id together, both carried on :class:`BankedCandidate`. Kept out of
+``crossover_v2/`` to avoid that package's numpy-pulling ``__init__``; lazy-imports the
+candidate model instead.
 """
 
 from __future__ import annotations
@@ -19,18 +25,24 @@ from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
 
-#: Published candidate artifact path, relative to bundle root. First ``*`` is the bundle id (``bundles.open_bundle``'s 12-hex session id); second is the MINTING relay session id -- distinct namespaces, do not conflate.
+#: Published candidate artifact path, relative to bundle root. First ``*`` is the bundle
+#: id (``bundles.open_bundle``'s 12-hex session id); second is the MINTING relay session
+#: id -- distinct namespaces, do not conflate.
 CANDIDATE_ARTIFACT_GLOB = "*/evidence/v1/artifacts/crossover_v2/*/candidate.json"
 
-#: Candidate artifacts to PARSE before giving up (bounds ~4 MB JSON + a fingerprint recompute each on a 1 GB Pi); does NOT bound the directory walk.
+#: Candidate artifacts to PARSE before giving up (bounds ~4 MB JSON + a fingerprint
+#: recompute each on a 1 GB Pi); does NOT bound the directory walk.
 MAX_CANDIDATE_ARTIFACTS_SCANNED = 64
 
-#: Largest candidate.json this reader will parse (input ceiling, not a contract -- the publisher's own artifact budget is smaller).
+#: Largest candidate.json this reader will parse (input ceiling, not a contract -- the
+#: publisher's own artifact budget is smaller).
 MAX_CANDIDATE_BYTES = 4 * 1024 * 1024
 
 
 class CandidateBankRefusal(LookupError):
-    """No single trustworthy banked candidate answers this fingerprint. Carries a machine ``code`` so a door can map it without parsing prose."""
+    """No single trustworthy banked candidate answers this fingerprint. Carries a machine
+    ``code`` so a door can map it without parsing prose.
+    """
 
     def __init__(self, code: str, detail: str) -> None:
         super().__init__(detail)
@@ -40,7 +52,9 @@ class CandidateBankRefusal(LookupError):
 
 @dataclass(frozen=True)
 class BankedCandidate:
-    """One banked candidate plus the identity needed to re-open it later. ``bundle_session_id`` and ``relay_session_id`` together are the ONLY way back to this artifact."""
+    """One banked candidate plus the identity needed to re-open it later. ``bundle_session_id``
+    and ``relay_session_id`` together are the ONLY way back to this artifact.
+    """
 
     candidate: Any
     bundle_session_id: str
@@ -53,7 +67,10 @@ class BankedCandidate:
 
 
 def candidate_artifact_paths(root: Path) -> list[Path]:
-    """Every published candidate.json under the bundle root, in a stable order. Sorted for determinism only, NOT chronological (bundle dirs are ``uuid4().hex[:12]``); :data:`MAX_CANDIDATE_ARTIFACTS_SCANNED` bounds work, not recent history."""
+    """Every published candidate.json under the bundle root, in a stable order. Sorted for
+    determinism only, NOT chronological (bundle dirs are ``uuid4().hex[:12]``);
+    :data:`MAX_CANDIDATE_ARTIFACTS_SCANNED` bounds work, not recent history.
+    """
     try:
         found = sorted(Path(root).glob(CANDIDATE_ARTIFACT_GLOB))
     except OSError:
@@ -62,7 +79,10 @@ def candidate_artifact_paths(root: Path) -> list[Path]:
 
 
 def _identity_from_path(path: Path) -> tuple[str, str]:
-    """``(bundle_session_id, relay_session_id)`` for one artifact path. Positional, not parsed: the glob fixes the depth (relay session is the artifact's own directory, bundle is five levels above)."""
+    """``(bundle_session_id, relay_session_id)`` for one artifact path. Positional, not parsed:
+    the glob fixes the depth (relay session is the artifact's own directory, bundle is
+    five levels above).
+    """
     parents = path.parents
     relay_session_id = parents[0].name
     bundle_session_id = parents[5].name if len(parents) > 5 else ""
@@ -70,7 +90,9 @@ def _identity_from_path(path: Path) -> tuple[str, str]:
 
 
 def load_candidate_artifact(path: Path) -> Any | None:
-    """Parse and integrity-check one candidate artifact, or ``None`` (unreadable, oversized, malformed JSON, or a fingerprint mismatch)."""
+    """Parse and integrity-check one candidate artifact, or ``None`` (unreadable, oversized,
+    malformed JSON, or a fingerprint mismatch).
+    """
     from jasper.active_speaker.measured_crossover_candidate import (
         MeasuredCrossoverCandidate,
         MeasuredCrossoverCandidateError,
@@ -91,7 +113,10 @@ def load_candidate_artifact(path: Path) -> Any | None:
 def find_banked_candidate(
     fingerprint: str, *, root: Path | None = None
 ) -> BankedCandidate:
-    """The one banked candidate with this fingerprint, or a typed refusal: ``fingerprint_required``, ``not_found`` (no artifact both matches and verifies), or ``ambiguous`` (two lineages carry this fingerprint)."""
+    """The one banked candidate with this fingerprint, or a typed refusal:
+    ``fingerprint_required``, ``not_found`` (no artifact both matches and verifies), or
+    ``ambiguous`` (two lineages carry this fingerprint).
+    """
     from jasper.active_speaker.bundles import sessions_dir
 
     wanted = str(fingerprint or "").strip()

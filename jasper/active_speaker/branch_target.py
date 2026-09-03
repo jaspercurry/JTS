@@ -21,7 +21,8 @@ from jasper.active_speaker.branch_chain import (
 #: Octaves past the passband edge a branch may still place GAIN (#1968: ~1/2-1).
 STOPBAND_GAIN_MARGIN_OCTAVES: float = 0.5
 
-#: dB floor for "puts something into a band"; == ``linearization_fit._MIN_FILTER_GAIN_DB``, pinned by contract test.
+#: dB floor for "puts something into a band"; ==
+#: ``linearization_fit._MIN_FILTER_GAIN_DB``, pinned by contract test.
 SIGNIFICANT_GAIN_DB: float = 0.5
 
 
@@ -56,7 +57,9 @@ class BranchTarget:
 
 
 def octave_scaled(hz: float, octaves: float) -> float:
-    """``hz`` moved ``octaves`` octaves (signed); 0 and inf are fixed points. Public: reused by :mod:`linearization_fit` (#2523)."""
+    """``hz`` moved ``octaves`` octaves (signed); 0 and inf are fixed points. Public: reused by
+    :mod:`linearization_fit` (#2523).
+    """
     if hz <= 0.0 or math.isinf(hz):
         return hz
     return hz * (2.0 ** octaves)
@@ -69,7 +72,9 @@ def branch_target(
     level_mask: np.ndarray | None = None,
     gain_margin_octaves: float = STOPBAND_GAIN_MARGIN_OCTAVES,
 ) -> BranchTarget | None:
-    """This branch's fit objective, or ``None`` when ``sections`` is empty (role runs FULL RANGE). ``level_mask``, if given, re-centres the shape."""
+    """This branch's fit objective, or ``None`` when ``sections`` is empty (role runs FULL
+    RANGE). ``level_mask``, if given, re-centres the shape.
+    """
     if not sections:
         return None
     if gain_margin_octaves < 0.0:

@@ -4,9 +4,26 @@
 
 """What peak ONE driver's branch actually receives for ONE stimulus.
 
-Without a render, the un-segmented ceiling must assume every branch sees the whole stimulus peak; on a crossed-over graph that is wrong in both directions (measured 10.7 dB under the full-band peak on JTS3's basin-2 graph, 2026-08-19; a boosting chain instead binds tighter). This module closes the gap by RENDERING the actual stimulus through the actual applied CamillaDSP graph and reading each output channel's true peak at fader 0 dB.
+Without a render, the un-segmented ceiling must assume every branch sees the whole
+stimulus peak; on a crossed-over graph that is wrong in both directions (measured 10.7
+dB under the full-band peak on JTS3's basin-2 graph, 2026-08-19; a boosting chain
+instead binds tighter). This module closes the gap by RENDERING the actual stimulus
+through the actual applied CamillaDSP graph and reading each output channel's true peak
+at fader 0 dB.
 
-Refuses rather than approximates: any filter type not modelled exactly is a refusal, never a silent no-op, since under-reporting a peak raises the ceiling unsafely. One evaluator supplies every filter response (:func:`jasper.sound.profile._filter_response_complex`); this module owns only the pipeline walk and overlap-save render around it, agreeing to 0.000171 dB worst case against an independent time-domain renderer (``tests/test_active_speaker_branch_peak.py`` cross-check block). Inherits the shared evaluator's :data:`~jasper.sound.profile.RESPONSE_SAMPLE_RATE_HZ` constraint. "Peak" is the SAMPLE peak (matches ``program_admission.effective_true_peak_dbfs``); inter-sample overshoot is not modelled, as elsewhere in this codebase.
+Refuses rather than approximates: any filter type not modelled exactly is a refusal,
+never a silent no-op, since under-reporting a peak raises the ceiling unsafely. One
+evaluator supplies every filter response
+(:func:`jasper.sound.profile._filter_response_complex`); this module owns only the
+pipeline walk and overlap-save render around it, reading the config mapping directly
+rather than through :class:`~jasper.active_speaker.graph_safety.GraphView` (which drops
+``Mixer`` steps by construction and would omit the input split mixer's real -6.02 dB
+per-leg gain). Agrees to 0.000171 dB worst case
+against an independent time-domain renderer
+(``tests/test_active_speaker_branch_peak.py`` cross-check block). Inherits the shared
+evaluator's :data:`~jasper.sound.profile.RESPONSE_SAMPLE_RATE_HZ` constraint. "Peak" is
+the SAMPLE peak (matches ``program_admission.effective_true_peak_dbfs``); inter-sample
+overshoot is not modelled, as elsewhere in this codebase.
 """
 
 from __future__ import annotations
@@ -19,17 +36,29 @@ from jasper.bass_extension.bench.derivation import ALLOWED_FILTER_TYPES
 from jasper.json_fields import finite_float
 from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
 
-# Overlap-save geometry: block is what the shared evaluator samples across; overlap is the discarded tail and so the longest branch delay + ringing this render can model without wraparound. 683 ms / 171 ms at 48 kHz, generous by orders of magnitude -- measured against an independent time-domain renderer, worst case 0.000171 dB (``tests/test_active_speaker_branch_peak.py`` cross-check block). A branch delay exceeding the overlap is refused below.
+# Overlap-save geometry: block is what the shared evaluator samples across; overlap is
+# the discarded tail and so the longest branch delay + ringing this render can model
+# without wraparound. 683 ms / 171 ms at 48 kHz, generous by orders of magnitude --
+# measured against an independent time-domain renderer, worst case 0.000171 dB
+# (``tests/test_active_speaker_branch_peak.py`` cross-check block). A branch delay
+# exceeding the overlap is refused below.
 _BLOCK_SAMPLES = 32768
 _OVERLAP_SAMPLES = 8192
 
-# Longest renderable stimulus, in FRAMES; bounds peak memory (~55 MiB at this bound, 2 channels, on a 1 GB box). Checked against the decoded shape BEFORE the float64 conversion. PUBLIC: ``jasper.cli.seat_level.default_stimulus_wav`` generates exactly this many frames.
+# Longest renderable stimulus, in FRAMES; bounds peak memory (~55 MiB at this bound, 2
+# channels, on a 1 GB box). Checked against the decoded shape BEFORE the float64
+# conversion. PUBLIC: ``jasper.cli.seat_level.default_stimulus_wav`` generates exactly
+# this many frames.
 MAX_STIMULUS_SAMPLES = 48_000 * 60
 
-# CamillaDSP filter types this module models EXACTLY; anything else refuses. DERIVED from the offline-render allowlist. ``Conv`` is the one subtraction: the bench path can convolve a shipped FIR; this module models from config text alone, with no coefficients to read.
+# CamillaDSP filter types this module models EXACTLY; anything else refuses. DERIVED
+# from the offline-render allowlist. ``Conv`` is the one subtraction: the bench path can
+# convolve a shipped FIR; this module models from config text alone, with no
+# coefficients to read.
 _MODELLED_FILTER_TYPES = ALLOWED_FILTER_TYPES - {"Conv"}
 
-# Biquad shapes the shared RBJ evaluator implements; anything outside falls through to that evaluator's `Peaking` default, so it refuses instead.
+# Biquad shapes the shared RBJ evaluator implements; anything outside falls through to
+# that evaluator's `Peaking` default, so it refuses instead.
 _MODELLED_BIQUAD_TYPES = frozenset(
     {"Lowpass", "Highpass", "Notch", "Lowshelf", "Highshelf", "Peaking"}
 )
@@ -47,7 +76,9 @@ _DELAY_UNIT_SECONDS = {
 
 
 class BranchPeakError(RuntimeError):
-    """This graph or stimulus cannot be rendered exactly. Fail-conservative at the call site: drops back to the full-stimulus-peak bound."""
+    """This graph or stimulus cannot be rendered exactly. Fail-conservative at the call site:
+    drops back to the full-stimulus-peak bound.
+    """
 
 
 def _finite(value: Any, what: str) -> float:
@@ -64,7 +95,11 @@ def _mapping(value: Any, what: str) -> Mapping[str, Any]:
 
 
 def read_stimulus_samples(wav_path: str | Path) -> tuple[Any, int]:
-    """``(float64 samples shaped (frames, channels), sample_rate_hz)``. Integer PCM is normalised by its dtype's own maximum, the SAME convention :func:`jasper.cli.seat_level.stimulus_provenance` uses. Length bound is enforced against the DECODED SHAPE, before the float64 conversion."""
+    """``(float64 samples shaped (frames, channels), sample_rate_hz)``. Integer PCM is
+    normalised by its dtype's own maximum, the SAME convention
+    :func:`jasper.cli.seat_level.stimulus_provenance` uses. Length bound is enforced
+    against the DECODED SHAPE, before the float64 conversion.
+    """
     import numpy as np
     from scipy.io import wavfile
 
@@ -90,7 +125,10 @@ def read_stimulus_samples(wav_path: str | Path) -> tuple[Any, int]:
 def _filter_records(
     names: Sequence[str], filters: Mapping[str, Any]
 ) -> tuple[list[dict[str, Any]], list[Any], complex, float]:
-    """One pipeline step's names reduced to ``(biquads, sections, scale, delay_s)``. A transfer function is a product, so the four accumulators may be collected in any order and multiplied once."""
+    """One pipeline step's names reduced to ``(biquads, sections, scale, delay_s)``. A transfer
+    function is a product, so the four accumulators may be collected in any order and
+    multiplied once.
+    """
     from jasper.active_speaker.branch_chain import CrossoverSection
 
     biquads: list[dict[str, Any]] = []
@@ -194,7 +232,10 @@ def _filter_records(
 def _step_transfer(
     names: Sequence[str], filters: Mapping[str, Any], freqs: Any
 ) -> tuple[Any, float]:
-    """``(complex response across freqs, seconds of delay it adds)``. Delay is returned, not checked here: the overlap bounds a whole BRANCH, accumulated per channel in :func:`_pipeline_operations`."""
+    """``(complex response across freqs, seconds of delay it adds)``. Delay is returned, not
+    checked here: the overlap bounds a whole BRANCH, accumulated per channel in
+    :func:`_pipeline_operations`.
+    """
     import numpy as np
 
     from jasper.active_speaker.branch_chain import (
@@ -214,7 +255,9 @@ def _step_transfer(
 
 
 def _guard_branch_delay(delays: Sequence[float]) -> None:
-    """Refuse once ANY branch's ACCUMULATED delay passes the render overlap. Cumulative, not per step: three 80 ms steps are a 240 ms branch."""
+    """Refuse once ANY branch's ACCUMULATED delay passes the render overlap. Cumulative, not
+    per step: three 80 ms steps are a 240 ms branch.
+    """
     worst = max(delays, default=0.0)
     if worst * RESPONSE_SAMPLE_RATE_HZ > _OVERLAP_SAMPLES:
         raise BranchPeakError(
@@ -226,7 +269,9 @@ def _guard_branch_delay(delays: Sequence[float]) -> None:
 def _pipeline_operations(
     config: Mapping[str, Any], freqs: Any, capture_channels: int
 ) -> tuple[list[tuple[str, Any]], int]:
-    """The applied pipeline reduced to ordered spectrum operations, plus the ending channel count (playback width requested output indexes are validated against)."""
+    """The applied pipeline reduced to ordered spectrum operations, plus the ending channel
+    count (playback width requested output indexes are validated against).
+    """
     filters = config.get("filters")
     filters = filters if isinstance(filters, Mapping) else {}
     mixers = config.get("mixers")
@@ -278,7 +323,10 @@ def _pipeline_operations(
 
 
 def _step_channels(step: Mapping[str, Any], width: int, index: int) -> tuple[int, ...]:
-    """A Filter step's channel list, in either CamillaDSP spelling: the ``channels: [..]`` list JTS emits, or the scalar ``channel: N`` sugar CamillaDSP's readback adds. Absent means "every channel" (CamillaDSP's own default)."""
+    """A Filter step's channel list, in either CamillaDSP spelling: the ``channels: [..]`` list
+    JTS emits, or the scalar ``channel: N`` sugar CamillaDSP's readback adds. Absent
+    means "every channel" (CamillaDSP's own default).
+    """
     raw = step.get("channels")
     if isinstance(raw, list):
         found = [c for c in raw if isinstance(c, int) and not isinstance(c, bool)]
@@ -390,7 +438,14 @@ def stimulus_branch_peaks_dbfs(
     *,
     output_channels: Mapping[str, int],
 ) -> dict[str, float]:
-    """Each named output channel's true peak, dBFS, for this WAV at fader 0. ``config`` is the applied CamillaDSP graph, parsed; ``output_channels`` maps the caller's own key onto a playback channel index. The main volume fader is deliberately absent -- the ceiling formula this feeds adds it back. Memory: everything after decode is per-BLOCK, but decode itself holds the whole float64 stimulus (:data:`MAX_STIMULUS_SAMPLES` bounds it, ~46 MB at 48 kHz stereo, 60 s). Raises :class:`BranchPeakError` for anything not modelled exactly."""
+    """Each named output channel's true peak, dBFS, for this WAV at fader 0. ``config`` is the
+    applied CamillaDSP graph, parsed; ``output_channels`` maps the caller's own key onto
+    a playback channel index. The main volume fader is deliberately absent -- the
+    ceiling formula this feeds adds it back. Memory: everything after decode is
+    per-BLOCK, but decode itself holds the whole float64 stimulus
+    (:data:`MAX_STIMULUS_SAMPLES` bounds it, ~46 MB at 48 kHz stereo, 60 s). Raises
+    :class:`BranchPeakError` for anything not modelled exactly.
+    """
     import numpy as np
 
     if not output_channels:
@@ -469,7 +524,10 @@ def branch_peaks_for_targets(
     wav_path: str | Path,
     targets: Iterable[Mapping[str, Any]],
 ) -> dict[str, float]:
-    """Branch peaks keyed by ``target_fingerprint`` for measurement targets. Adapter between :func:`jasper.active_speaker.measurement.active_driver_targets` and :func:`stimulus_branch_peaks_dbfs`."""
+    """Branch peaks keyed by ``target_fingerprint`` for measurement targets. Adapter between
+    :func:`jasper.active_speaker.measurement.active_driver_targets` and
+    :func:`stimulus_branch_peaks_dbfs`.
+    """
     output_channels: dict[str, int] = {}
     for target in targets:
         fingerprint = str(target.get("target_fingerprint") or "")

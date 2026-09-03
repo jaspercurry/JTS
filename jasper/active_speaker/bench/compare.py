@@ -4,15 +4,38 @@
 
 """What the DSP emitted, as a curve — and how far it is from what was claimed.
 
-Stage: DIAGNOSE. Pure numpy: turns one branch's raw render channel into a magnitude curve, and given a treated/control pair produces the realized transfer, the frame against the fit's claim, error statistics, and a verdict. No subprocess, filesystem writes, config knowledge, or orchestration.
+Stage: DIAGNOSE. Pure numpy: turns one branch's raw render channel into a magnitude
+curve, and given a treated/control pair produces the realized transfer, the frame
+against the fit's claim, error statistics, and a verdict. No subprocess, filesystem
+writes, config knowledge, or orchestration.
 
-Units: frequencies in hertz; level/error/budget in decibels; sample amplitudes linear full-scale (``1.0`` = 0 dBFS); channel indices are zero-based frame positions in the interleaved stream.
+Units: frequencies in hertz; level/error/budget in decibels; sample amplitudes linear
+full-scale (``1.0`` = 0 dBFS); channel indices are zero-based frame positions in the
+interleaved stream.
 
-The A/B: ``realized_delta_db = treated_magnitude_db - control_magnitude_db``. The two renders differ ONLY in the linearization filters, so crossover, delay, per-driver gain, split mixer, ``--gain`` fader and stimulus cancel exactly -- nothing shared needs modelling, and its fidelity cannot move the answer. The claim graded against is :func:`jasper.active_speaker.linearization_fit.complex_correction_response`.
+The A/B: ``realized_delta_db = treated_magnitude_db - control_magnitude_db``. The two
+renders differ ONLY in the linearization filters, so crossover, delay, per-driver gain,
+split mixer, ``--gain`` fader and stimulus cancel exactly -- nothing shared needs
+modelling, and its fidelity cannot move the answer. The claim graded against is
+:func:`jasper.active_speaker.linearization_fit.complex_correction_response`.
 
-The soft clip is always on and accounted for: CamillaDSP's ``Limiter`` with ``soft_clip: true`` is a memoryless cubic on every sample (``src/filters/limiter.rs``: ``s = v/clip; s -= s^3/6.75; v = s*clip``), compressing both A/B arms by slightly different amounts wherever linearization changes level. For amplitude ``a*clip`` the fundamental is ``a*(1 - a^2/9)``; :func:`soft_clip_fundamental_gain_db` computes it and :func:`soft_clip_error_bound_db` bounds its contribution. The loop refuses a pair whose bound exceeds :data:`SOFT_CLIP_BUDGET_DB` rather than report an unattributable residual.
+The soft clip is always on and accounted for: CamillaDSP's ``Limiter`` with ``soft_clip:
+true`` is a memoryless cubic on every sample (``src/filters/limiter.rs``: ``s = v/clip;
+s -= s^3/6.75; v = s*clip``), compressing both A/B arms by slightly different amounts
+wherever linearization changes level. For amplitude ``a*clip`` the fundamental is ``a*(1
+- a^2/9)``; :func:`soft_clip_fundamental_gain_db` computes it and
+:func:`soft_clip_error_bound_db` bounds its contribution. The loop refuses a pair whose
+bound exceeds :data:`SOFT_CLIP_BUDGET_DB` rather than report an unattributable residual.
 
-On the verdict's sensitivity: :func:`jasper.active_speaker.delta_probe.classify_delta_probe` is unchanged and unretuned, calibrated for a MICROPHONE (1.5 dB below 10 kHz, 2.5 dB above -- below the 1.70 dB defect it catches, above real capture repeat spread). An offline render has none of that uncertainty, so ``matched`` here means only "no defect the room-side probe would catch" -- generous by one to two orders of magnitude, deliberately not re-tightened into a second parallel classifier. Read :attr:`BranchComparison.band_max_error_db` instead: the plain worst-case disagreement across the analysis band, reported whatever the verdict says.
+On the verdict's sensitivity:
+:func:`jasper.active_speaker.delta_probe.classify_delta_probe` is unchanged and
+unretuned, calibrated for a MICROPHONE (1.5 dB below 10 kHz, 2.5 dB above -- below the
+1.70 dB defect it catches, above real capture repeat spread). An offline render has none
+of that uncertainty, so ``matched`` here means only "no defect the room-side probe would
+catch" -- generous by one to two orders of magnitude, deliberately not re-tightened into
+a second parallel classifier. Read :attr:`BranchComparison.band_max_error_db` instead:
+the plain worst-case disagreement across the analysis band, reported whatever the
+verdict says.
 """
 
 from __future__ import annotations
@@ -100,7 +123,11 @@ class EmitComparisonError(ValueError):
 def decode_render_channel(
     raw_path: Path, *, channel_index: int, channel_count: int, precision: str
 ) -> np.ndarray:
-    """One branch's samples, float64, out of an interleaved raw render output. Thin adapter over :func:`jasper.bass_extension.bench.render.extract_channel` (which owns the de-interleave); this owns only the byte width and dtype, refusing any precision it cannot decode exactly."""
+    """One branch's samples, float64, out of an interleaved raw render output. Thin adapter
+    over :func:`jasper.bass_extension.bench.render.extract_channel` (which owns the
+    de-interleave); this owns only the byte width and dtype, refusing any precision it
+    cannot decode exactly.
+    """
 
     if precision != DECODABLE_PRECISION:
         raise EmitComparisonError(
@@ -144,7 +171,11 @@ def analysis_band_hz(meta: SweepMeta) -> tuple[float, float]:
 def soft_clip_fundamental_gain_db(peak_linear: float, clip_limit_dbfs: float) -> float:
     """The pinned soft clip's fundamental-frequency gain, dB, at ``peak_linear``.
 
-    ``Limiter::apply_soft_clip`` maps ``v`` to ``clip*(s - s^3/6.75)`` with ``s = v/clip``; for ``v(t) = a*clip*sin(theta)`` the fundamental leaves at ``a*clip*(1 - a^2/9)``, a gain of ``20*log10(1 - a^2/9)``, always <= 0 and monotone decreasing in ``a``. Returns 0.0 for silence. Amplitudes past the transform's own clamp (``|s| > 1.5``) return ``-inf`` -- a caller must refuse there, not interpolate.
+    ``Limiter::apply_soft_clip`` maps ``v`` to ``clip*(s - s^3/6.75)`` with ``s =
+    v/clip``; for ``v(t) = a*clip*sin(theta)`` the fundamental leaves at ``a*clip*(1 -
+    a^2/9)``, a gain of ``20*log10(1 - a^2/9)``, always <= 0 and monotone decreasing in
+    ``a``. Returns 0.0 for silence. Amplitudes past the transform's own clamp (``|s| >
+    1.5``) return ``-inf`` -- a caller must refuse there, not interpolate.
     """
 
     if clip_limit_dbfs > 0.0 or not math.isfinite(clip_limit_dbfs):
@@ -201,7 +232,13 @@ def deconvolved_ir(
 ) -> np.ndarray:
     """The full, unwindowed regularized impulse response of one rendered branch.
 
-    Unwindowed on purpose: the window must be shared between the two A/B arms (:func:`shared_arrival_window`); per-arm ``argmax`` windowing would truncate differently since linearization biquads shift the peak, letting the difference carry that instead of the filters. The module's default capture cap (a real FFT-memory guard on the Pi) is left in place; the caller refuses a stimulus long enough to reach it rather than let it truncate silently (:data:`jasper.active_speaker.bench.loop.MAX_STIMULUS_SECONDS`).
+    Unwindowed on purpose: the window must be shared between the two A/B arms
+    (:func:`shared_arrival_window`); per-arm ``argmax`` windowing would truncate
+    differently since linearization biquads shift the peak, letting the difference carry
+    that instead of the filters. The module's default capture cap (a real FFT-memory
+    guard on the Pi) is left in place; the caller refuses a stimulus long enough to
+    reach it rather than let it truncate silently
+    (:data:`jasper.active_speaker.bench.loop.MAX_STIMULUS_SECONDS`).
     """
 
     try:
@@ -219,7 +256,12 @@ def shared_arrival_window(
 ) -> tuple[int, int]:
     """The one arrival window BOTH arms of an A/B are truncated with.
 
-    Derived from the CONTROL arm, so the subject of the measurement never chooses its own window. Windowing discards the synchronized sweep's harmonic images (wrapped to the buffer end in a circular full IR); the default 500 ms post-arrival span is orders of magnitude longer than any digital filter chain's impulse. Pre-arrival span is widened to :data:`ARRIVAL_PRE_MS` (see that constant for the leakage floor the 5 ms default would impose).
+    Derived from the CONTROL arm, so the subject of the measurement never chooses its
+    own window. Windowing discards the synchronized sweep's harmonic images (wrapped to
+    the buffer end in a circular full IR); the default 500 ms post-arrival span is
+    orders of magnitude longer than any digital filter chain's impulse. Pre-arrival span
+    is widened to :data:`ARRIVAL_PRE_MS` (see that constant for the leakage floor the 5
+    ms default would impose).
     """
 
     try:
@@ -240,7 +282,11 @@ def windowed_magnitude_db(
     *,
     n_fft: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """``(freqs_hz, magnitude_db)`` for one arm, on a caller-fixed FFT length. ``normalize=False`` is load-bearing (normalizing would destroy the level relationship the A/B measures); ``n_fft`` is a parameter, not derived per-arm, so both arms land on one grid by construction."""
+    """``(freqs_hz, magnitude_db)`` for one arm, on a caller-fixed FFT length.
+    ``normalize=False`` is load-bearing (normalizing would destroy the level
+    relationship the A/B measures); ``n_fft`` is a parameter, not derived per-arm, so
+    both arms land on one grid by construction.
+    """
 
     try:
         ir = apply_arrival_window(np.asarray(full_ir, dtype=np.float64), window)
@@ -250,7 +296,11 @@ def windowed_magnitude_db(
 
 
 def magnitude_fft_length(window: tuple[int, int]) -> int:
-    """The FFT length both arms share -- the module's one grid decision. Mirrors :func:`~jasper.audio_measurement.deconv.magnitude_response`'s own default rule (next power of two at or above the windowed length, floored at 8192), computed once from the SHARED window."""
+    """The FFT length both arms share -- the module's one grid decision. Mirrors
+    :func:`~jasper.audio_measurement.deconv.magnitude_response`'s own default rule (next
+    power of two at or above the windowed length, floored at 8192), computed once from
+    the SHARED window.
+    """
 
     length = max(1, int(window[1]) - int(window[0]))
     return max(8192, 1 << (length - 1).bit_length())
@@ -270,7 +320,11 @@ def branch_validity_mask(
 ) -> np.ndarray:
     """The bins this branch's comparison trusts: in the sweep band, and audible.
 
-    "Audible" means within ``floor_db`` of the CONTROL arm's own in-band peak -- the control is the right yardstick since using the treated arm would let a filter that cut a region deeply exclude the very bins it is graded on. Returns an all-``False`` mask when nothing in ``band_hz`` is finite; callers must treat that as "not measured", not "measured, and empty".
+    "Audible" means within ``floor_db`` of the CONTROL arm's own in-band peak -- the
+    control is the right yardstick since using the treated arm would let a filter that
+    cut a region deeply exclude the very bins it is graded on. Returns an all-``False``
+    mask when nothing in ``band_hz`` is finite; callers must treat that as "not
+    measured", not "measured, and empty".
     """
 
     freqs = np.asarray(freqs_hz, dtype=np.float64)
@@ -290,9 +344,22 @@ def branch_validity_mask(
 class BranchComparison:
     """One branch's emitted-vs-claimed result: statistics, frame, and verdict.
 
-    ``band_hz`` is the sweep's usable band (:func:`analysis_band_hz`), the outer bound the validity mask applied inside -- NOT the bin set statistics were taken over, NOT the verdict's own probe band. ``valid_band_hz`` is the lowest/highest frequency surviving :func:`branch_validity_mask` (``None`` if nothing did); ``validity_floor_db`` is the floor that mask used.
+    ``band_hz`` is the sweep's usable band (:func:`analysis_band_hz`), the outer bound
+    the validity mask applied inside -- NOT the bin set statistics were taken over, NOT
+    the verdict's own probe band. ``valid_band_hz`` is the lowest/highest frequency
+    surviving :func:`branch_validity_mask` (``None`` if nothing did);
+    ``validity_floor_db`` is the floor that mask used.
 
-    ``band_max_error_db``/``band_rms_error_db`` (the HEADLINE numbers) are worst-case/rms ``|realized - claimed|`` across valid bins after removing ``expected_offset_db`` -- distinct from :attr:`verdict`'s own error fields, taken over the narrower set of bins where the correction commands at least ``DELTA_PROBE_MIN_COMMANDED_DB``. ``expected_offset_db`` is the level move the EMITTER knows it made between the two arms (program headroom gain difference), removed once and threaded identically to the classifier. ``frame`` is evidence about the shape of the disagreement, never a re-grade. ``soft_clip_bound_db`` is disclosed on every branch so a small residual can be read against its own instrument's noise floor.
+    ``band_max_error_db``/``band_rms_error_db`` (the HEADLINE numbers) are
+    worst-case/rms ``|realized - claimed|`` across valid bins after removing
+    ``expected_offset_db`` -- distinct from :attr:`verdict`'s own error fields, taken
+    over the narrower set of bins where the correction commands at least
+    ``DELTA_PROBE_MIN_COMMANDED_DB``. ``expected_offset_db`` is the level move the
+    EMITTER knows it made between the two arms (program headroom gain difference),
+    removed once and threaded identically to the classifier. ``frame`` is evidence about
+    the shape of the disagreement, never a re-grade. ``soft_clip_bound_db`` is disclosed
+    on every branch so a small residual can be read against its own instrument's noise
+    floor.
     """
 
     role: str
@@ -314,13 +381,20 @@ class BranchComparison:
 
     @property
     def measured(self) -> bool:
-        """Whether the instrument saw this branch at all: any bin survived the validity mask. Distinguishes the two situations both classifying as ``unavailable``: measured but nothing to verify (``measured`` True, :attr:`graded` False, benign) from the instrument seeing nothing (``measured`` False, a real problem)."""
+        """Whether the instrument saw this branch at all: any bin survived the validity mask.
+        Distinguishes the two situations both classifying as ``unavailable``: measured
+        but nothing to verify (``measured`` True, :attr:`graded` False, benign) from the
+        instrument seeing nothing (``measured`` False, a real problem).
+        """
 
         return self.n_bins > 0
 
     @property
     def graded(self) -> bool:
-        """Whether a verdict was reached -- ``unavailable`` means it was not. :mod:`jasper.active_speaker.delta_probe`'s own doctrine: not a pass, no evidence to refuse on either. A caller must not fold it into either side."""
+        """Whether a verdict was reached -- ``unavailable`` means it was not.
+        :mod:`jasper.active_speaker.delta_probe`'s own doctrine: not a pass, no evidence
+        to refuse on either. A caller must not fold it into either side.
+        """
 
         return self.verdict.verdict != VERDICT_UNAVAILABLE
 
@@ -359,11 +433,21 @@ def compare_branch(
 ) -> BranchComparison:
     """Grade one branch's realized transfer against what the fit claimed.
 
-    All four arrays share one grid. ``treated_db``/``control_db`` are the two arms' magnitudes from :func:`windowed_magnitude_db` (their difference is the realized transfer); ``claimed_db`` is ``20*log10(|complex_correction_response(filters, freqs)|)`` on the same grid. Taking the two arms, not a pre-differenced curve, lets this function own the validity decision (which needs the control arm's own level).
+    All four arrays share one grid. ``treated_db``/``control_db`` are the two arms'
+    magnitudes from :func:`windowed_magnitude_db` (their difference is the realized
+    transfer); ``claimed_db`` is ``20*log10(|complex_correction_response(filters,
+    freqs)|)`` on the same grid. Taking the two arms, not a pre-differenced curve, lets
+    this function own the validity decision (which needs the control arm's own level).
 
-    Three readings answer three questions: ``band_*`` is the measurement (how far apart the curves are across trusted bins, known level move removed); ``frame`` is evidence about the SHAPE of the disagreement, never a re-grade; ``verdict`` is the classification from the same classifier the room-side probe uses, with bins outside the validity mask handed to it as ``NaN`` (that classifier's own way of saying "not a measurement here").
+    Three readings answer three questions: ``band_*`` is the measurement (how far apart
+    the curves are across trusted bins, known level move removed); ``frame`` is evidence
+    about the SHAPE of the disagreement, never a re-grade; ``verdict`` is the
+    classification from the same classifier the room-side probe uses, with bins outside
+    the validity mask handed to it as ``NaN`` (that classifier's own way of saying "not
+    a measurement here").
 
-    Raises :class:`EmitComparisonError` on a grid mismatch -- a caller bug, not a measurement outcome, so it is loud rather than ``unavailable``.
+    Raises :class:`EmitComparisonError` on a grid mismatch -- a caller bug, not a
+    measurement outcome, so it is loud rather than ``unavailable``.
     """
 
     freqs = np.asarray(freqs_hz, dtype=np.float64)
