@@ -4,11 +4,10 @@
 
 """Driver-aware protection and level-cap policy.
 
-This module is intentionally deterministic and side-effect free. It decides
-whether a commissioning tone may be considered for a driver role/style, what
-level cap that driver's tone may reach, and — since the 2026-08-17 ruling —
-what a driver's LOW LIMIT is and which fields derive from it. It does not play
-audio, write CamillaDSP state, or persist level changes.
+Deterministic and side-effect free: whether a commissioning tone may be
+considered for a driver role/style, what level cap that tone may reach, what a
+driver's LOW LIMIT is, and which fields derive from it. It does not play audio,
+write CamillaDSP state, or persist level changes.
 """
 
 from __future__ import annotations
@@ -31,24 +30,13 @@ HIGH_FREQUENCY_ROLES = frozenset({"tweeter"})
 FULL_RANGE_ROLES = frozenset({"full_range"})
 
 _UNKNOWN_HF_STYLE = "unknown_high_frequency"
-# Per-style high-pass figures. Since the 2026-08-17 ruling (decisions 8-9,
-# issue #2603) this table is NOT a veto over sourced manufacturer data: a
+# Per-style high-pass figures. NOT a veto over sourced manufacturer data: a
 # published minimum recommended crossover wins outright, including below the
-# figure here. It keeps THREE jobs: (1) the DEFAULT answer when a manufacturer
-# publishes nothing, (2) the anchor for the plausibility band that treats a
-# declared low limit as garbage -- see ``resolve_driver_low_limit`` and
-# ``driver_low_limit_plausibility_band_hz`` -- and (3) the commissioning-tone
-# gate's FALLBACK, for a driver with nothing declared.
-#
-# Job (3) was the whole table until #2874. ``_highpass_satisfied`` compared a
-# staged high-pass against ``min_highpass_hz`` directly, so a tweeter declared
-# at B&C's published 1.6 kHz was refused a tone whose protective high-pass sat
-# at exactly that published figure -- the module refusing on a code default,
-# one page below ``apply_driver_low_limit``'s own rule that a code default may
-# never REFUSE. The gate now anchors on ``tone_gate_low_limit``, which resolves
-# declared -> legacy protection filter -> this table. So editing a number here
-# still moves an *audible-test* gate and not only a confirmation one, but only
-# for a driver whose manufacturer publishes nothing.
+# figure here (docs/active-speaker-tuning-layers-design.md decisions 8-9).
+# Three jobs: the DEFAULT when a manufacturer publishes nothing, the anchor for
+# ``driver_low_limit_plausibility_band_hz``, and the commissioning-tone gate's
+# FALLBACK via ``tone_gate_low_limit``. Editing a number here therefore still
+# moves an audible-test gate, but only for a driver with nothing declared.
 _STYLE_HIGH_PASS_HZ = {
     "compression_driver": 2000.0,
     "horn_compression_driver": 2000.0,
@@ -62,9 +50,8 @@ _STYLE_HIGH_PASS_HZ = {
 
 #: Shared by the ``tweeter`` and ``full_range`` classes: -65 dBFS was sized for
 #: a naked driver tone with no proven protective high-pass, and 100 ms is the
-#: floor-test duration that figure was validated at (see the HF
-#: measurement-ceiling derivation below for why -65 is superseded, not raised,
-#: on the program-admission path).
+#: floor-test duration that figure was validated at. On the program-admission
+#: path it is superseded by :func:`derive_hf_measurement_ceiling_dbfs`.
 _HIGH_FREQUENCY_FLOOR_TEST_MS = 100
 _HIGH_FREQUENCY_MAX_AUTO_LEVEL_DBFS = -65.0
 
@@ -107,17 +94,11 @@ def normalise_driver_style(style: Any) -> str | None:
 def driver_style_is_registered(driver_style: Any) -> bool:
     """Whether the per-style table actually DESCRIBES this driver style.
 
-    ``False`` means the style fell through to the cautious unknown-tweeter
-    default -- so any band or floor derived from it is a fallback, not a figure
-    for the driver the household installed. Callers that DISCLOSE such a
-    fallback need this question rather than a test against one sentinel value,
-    because the sentinel is not the only spelling that lands there: an unset
-    type is stamped ``"unspecified"`` by ``driver_safety._profile_core``, and a
-    typo (``compresion_driver``) or a style from a newer build reaches the same
-    default while looking like a real declaration.
-
-    Normalises first, so the picker's own label (``"Dome Tweeter"``) counts as
-    registered exactly as ``dome_tweeter`` does.
+    ``False`` means the style fell through to the unknown-tweeter default, so
+    any band or floor derived from it is a fallback. Several spellings land
+    there (``"unspecified"``, a typo, a style from a newer build), which is why
+    disclosing callers ask this rather than testing one sentinel. Normalises
+    first, so the picker's ``"Dome Tweeter"`` counts as registered.
     """
 
     return normalise_driver_style(driver_style) in _STYLE_HIGH_PASS_HZ
@@ -174,11 +155,8 @@ def driver_protection_profile(
             min_highpass_hz=min_highpass,
             floor_test_frequency_hz=max(min_highpass, 3000.0),
             floor_test_duration_ms=_HIGH_FREQUENCY_FLOOR_TEST_MS,
-            # On the program-admission path (a graph that carries the
-            # crossover HP by construction) this is superseded by the
-            # sensitivity-derived ceiling below -- see
-            # ``derive_hf_measurement_ceiling_dbfs`` and
-            # ``jasper.active_speaker.excitation_safety_plan.resolve_driver_excitation_ceilings``.
+            # Superseded on the program-admission path by
+            # ``derive_hf_measurement_ceiling_dbfs``.
             max_auto_level_dbfs=_HIGH_FREQUENCY_MAX_AUTO_LEVEL_DBFS,
         )
     return DriverProtectionProfile(
@@ -194,103 +172,27 @@ def driver_protection_profile(
 
 # --- HF measurement-ceiling derivation (two-invariant protection model) ------
 #
-# Operator ruling (2026-07-19): driver protection is exactly two invariants,
-# one owner each -- (1) wrong-frequency-range: the declared hard band plus the
-# proven protective high-pass (unrelated to this section, untouched, airtight);
-# (2) too-loud: ONE derived ceiling instead of stacked hedges. The -65 dBFS
-# ``max_auto_level_dbfs`` above was sized for a naked driver tone with no
-# proven HP. On the program-admission path -- a graph that carries the
-# driver's crossover high-pass by construction -- it pins a compression-driver
-# tweeter far below its optimal measurement level: JTS3 hardware measurement
-# (2026-07-18, run 5) showed the tweeter's -65 dBFS cap reading near-inaudible
-# at 27 dB in-band SNR, while the woofer's comfortable pilots ran -26 dBFS
-# effective -- a 25.2 dB sensitivity delta (B&C DE250-8 ~108.5 dB vs Dayton
-# Epique E150HE-44 ~83.3 dB) the class default never accounted for.
+# Driver protection is exactly two invariants, one owner each: wrong-frequency-
+# range (the declared hard band plus the proven protective high-pass, owned
+# elsewhere) and too-loud — ONE derived ceiling rather than stacked hedges. A
+# code figure may only refuse on a named damage mechanism
+# (docs/measurement-loop-doctrine.md §5), which is why no absolute dBFS hedge
+# sits above the derivation.
 #
-# The -35.0 dBFS absolute hedge this derivation carried until 2026-08-20 is
-# RETIRED, and nothing replaces it in that role. It landed "provisional pending
-# W6 bench validation"; W6 never ran, and the hedge quietly became the
-# OPERATIVE ceiling rather than a backstop above one. On the shipped JTS3
-# preset it bound 9.8 dB below the derivation (lf cap 0.0 dBFS, 25.2 dB
-# sensitivity delta -> -25.2 derived, clamped to -35), and on the CX120 coax
-# fixture 14.3 dB below it (lf cap -20.0, 0.7 dB delta -> -20.7 derived). A
-# constant that binds below the physics on real hardware is a level nanny, not
-# a bound.
+# What bounds a high-frequency driver's measurement level: the derivation
+# below, which admits it at the same ACOUSTIC level its low-frequency sibling
+# is already admitted at, clamped by MAX_TEST_LEVEL_DBFS. A negative delta (a
+# less-sensitive tweeter under a high-sensitivity pro woofer) is a legitimate
+# configuration, not an error, and clamping at full scale is still safe by the
+# same acoustic argument. Outside this module: the hard band, the preset's
+# ``max_commissioning_level_db_spl``, and the leveling ramp's guards.
 #
-# Measured consequence, 2026-08-19 overnight linearization session
-# (captures/linearization-night-2026-08-19/): the seat-SPL leveling ramp took
-# its mic-independent ceiling from min(driver caps) - stimulus peak
-# (session_volume_plan.unsegmented_stimulus_ceiling_db), so the tweeter's -35
-# WAS min(caps) and capped the whole session at 68.07 dB SPL at the seat
-# against the operator's 75-80 dB SPL target. The same shape recurred on the
-# new-horn box with the hedge already gone, because the DERIVED cap was then
-# min(caps): 68.3 dB SPL against a 75 dB target. So that ceiling no longer
-# reads any driver cap at all -- since 2026-08-23 it is digital headroom (full
-# scale less the binding branch peak) and the caps ride its log line as a
-# disclosure. What these caps still set is each driver's composed segment
-# level inside a v2 program, which is where a sensitivity-referenced number
-# belongs: it is level-MATCHING between two drivers, not a volume ceiling.
-#
-# Owner ratification, 2026-08-20, verbatim: "i use a fixed gain amp and
-# digitally control the volume. i can hit loud volumes - im confident the
-# woofer and or tweeter can hit 75db at the mic distance." And on the safety
-# model that stands in the hedge's place: "we should allow the user to ramp up
-# to 75 or 80db but in the UX have a big stop button that saves them if
-# anything goes wrong. no random db nannys!" (issue #2761 carries the stop-
-# button UX half; this module owns the ledger half.)
-#
-# What bounds a high-frequency driver's measurement level now:
-#   * the derivation below -- the high-frequency driver is admitted at the same
-#     ACOUSTIC level its low-frequency sibling is already admitted at. When the
-#     tweeter is the more sensitive driver (delta > 0, the usual case) the
-#     ceiling sits the full sensitivity delta BELOW that sibling's own cap;
-#   * MAX_TEST_LEVEL_DBFS, the same global loudest-admissible test level every
-#     other driver target is clamped to -- one owner for that bound, not a
-#     second private constant. Note what this clamp is NOT: it is not an
-#     error stop, because delta <= 0 is a legitimate configuration, not a
-#     mistake. A high-sensitivity pro woofer (~97 dB) under a modest dome
-#     tweeter (~90 dB) gives delta = -7, and the arithmetic correctly asks for
-#     MORE digital level than the woofer's cap so the quieter tweeter can reach
-#     the same SPL. Full scale is simply where that request runs out, and the
-#     result is still safe by the same argument: at 0 dBFS that tweeter makes
-#     ~90 dB while the already-admitted woofer at its own 0 dBFS cap makes
-#     ~97 dB;
-#   * unchanged and outside this module -- the wrong-frequency-range invariant
-#     (declared hard band + the proven protective high-pass), the preset's
-#     ``max_commissioning_level_db_spl`` SPL band top (85 dB SPL on JTS3), and
-#     the leveling ramp's runaway guard, volume latch, and restore-on-every-
-#     exit path.
-#
-# The residual this retirement leaves, named rather than hidden: the derivation
-# is only as good as the DECLARATION, and declared sensitivities carry no
-# plausibility validation (design_draft.declared_driver_sensitivities parses
-# for finiteness and nothing else). A household that swaps the two sensitivity
-# rows presents delta <= 0 for a genuinely more-sensitive tweeter, and the
-# cap then lands at full scale -- where the retired -35 hedge used to clamp
-# it by accident. That empties the derivation of content for that box's
-# composed tweeter level. Two mic-independent stops do survive the swap, which
-# is what bounds the residual to ~10 dB over intent at the loudest bankable
-# volume rather than
-# leaving it open-ended: MAX_TEST_LEVEL_DBFS still clamps the derived cap at
-# 0.0 dBFS (and seat_level_ramp's HARD_CEILING_DBFS clamps the ramp's volume
-# ceiling to the same), and the nominal measurement stimulus peaks at -12.0 dBFS
-# (audio_measurement.excitation.AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS) -- of
-# which a crossed-over driver receives its own branch's share, at most that peak
-# for any branch sitting at or under unity. The measured SPL band top and the
-# ramp's runaway guard sit above those as the mic-DEPENDENT layer. The leveling
-# ramp's own ceiling is unaffected either way: it stopped reading these caps on
-# 2026-08-23 and is bounded by digital headroom.
-#
-# Refusing to derive on delta <= 0 is NOT the fix -- it would break the
-# legitimate pro-woofer case above, and the two shapes derive the SAME ceiling:
-# both ask for more than full scale and both clamp to MAX_TEST_LEVEL_DBFS, so
-# they are 0.0 dB apart and no constant here can tell them apart even in
-# principle. Nor can a backstop be parked just under full scale to catch the
-# swap: an ordinary CORRECT coax (88.5 woofer / 89.2 tweeter) derives -0.70,
-# so the near-full-scale regime is where correct hardware already lives.
-# Validating the declaration is the fix, and it needs no invented per-style
-# anchor: the preset already ships the woofer's own sensitivity_db (83.3 on
-# JTS3), which a swapped draft contradicts. Tracked as issue #2765.
+# Residual, named rather than hidden: declared sensitivities carry no
+# plausibility validation, so a household that swaps the two rows empties the
+# derivation for that box's composed tweeter level. Refusing on delta <= 0
+# cannot separate that from the legitimate case — both clamp to
+# MAX_TEST_LEVEL_DBFS — so validating the declaration against the preset's own
+# ``sensitivity_db`` is the fix. Issue #2765.
 
 
 def derive_hf_measurement_ceiling_dbfs(
@@ -301,15 +203,10 @@ def derive_hf_measurement_ceiling_dbfs(
 ) -> float:
     """The sensitivity-referenced HF measurement ceiling (two-invariant model).
 
-    Same acoustic ceiling CLASS as the low-frequency driver's own declared
-    cap, corrected for the sensitivity delta between the two declared driver
-    specs, bounded by :data:`MAX_TEST_LEVEL_DBFS` -- the global loudest
-    admissible test level, which is where a legitimate negative delta (a
-    less-sensitive tweeter under a high-sensitivity woofer) runs out of digital
-    headroom rather than a level hedge (block comment above). Pure arithmetic
-    -- the caller owns picking valid inputs (a proven-protective-HP graph, a
-    high-frequency target that declared no level limit of its own, and both
-    drivers' declared sensitivities).
+    The low-frequency driver's own declared cap corrected for the sensitivity
+    delta between the two declared specs, bounded by :data:`MAX_TEST_LEVEL_DBFS`.
+    Pure arithmetic: the caller owns picking valid inputs (a proven-protective-HP
+    graph, an HF target with no level limit of its own, both sensitivities).
     """
 
     return min(
@@ -333,62 +230,17 @@ def _band_highpass_hz(band_limit: Any) -> float | None:
 def declared_protection_highpass_floor_hz(driver: Any) -> float | None:
     """The declared protective high-pass floor carried by one driver payload.
 
-    Reads exactly one thing: the strictest ``kind="highpass"`` ``cutoff_hz`` in
-    this payload's own ``required_protection_filters``. It does **not** prove
-    the value was ever frozen into a declaration, and callers must not read it
-    as such. On the staging path the payload comes from ``crossover_preview``'s
-    role-keyed research + manual-settings merge, which can carry a research-only
-    value that no saved safety profile has validated.
+    The strictest ``kind="highpass"`` ``cutoff_hz`` in this payload's own
+    ``required_protection_filters``. It does NOT prove the value was frozen into
+    a validated declaration — a staging payload can carry a research-only value
+    — and believability is judged in ``driver_safety``, not here. Safe anyway
+    for the two monotone consumers: the derived protection clamp is
+    ``max(floor, multiplier x fc)`` and the load gate can only refuse more.
+    The commissioning-tone gate is deliberately NOT monotone (a published floor
+    below the class default admits a tone the class default refused).
 
-    Believability is judged elsewhere and stays there, and since #2874 the
-    answer depends on WHO declared it: ``driver_safety`` refuses an unbelievable
-    figure in a *research reply* at intake
-    (``validate_research_low_limit_plausibility``), and DISCLOSES one a human
-    typed (``_target_low_limit_warnings``, severity ``warning``) rather than
-    refusing it — a class-anchored band may not overrule a declaration. So a
-    ``confirmed`` profile no longer certifies that its low limit is plausible
-    for its style, and it never certified that the limit sits at or above this
-    module's ``min_highpass_hz`` class default: since the 2026-08-17 ruling a
-    published manufacturer figure wins outright, including below it. Either way
-    both are properties of the profile, not of this read.
-
-    An unvalidated floor arriving here can only ever *tighten* the two
-    consumers this read was written for: the derived protection clamp is
-    ``max(floor, multiplier x fc)``, so a floor can raise the protective corner
-    and never lower it, and the load gate can only refuse more than it did
-    before. That is why this reader stays permissive about provenance while
-    those two stay monotone.
-
-    **A third consumer since #2874 is deliberately NOT monotone**, and the
-    asymmetry is the ruling rather than an oversight. The commissioning-tone
-    gate (:func:`tone_gate_low_limit`) anchors on the declared low limit — this
-    number, carried onto the preset by ``staging`` and read back by
-    ``test_signal_plan.declared_protection_floor_hz`` — so a floor BELOW the
-    class default now admits a tone the class default used to refuse. That is
-    the point: refusing a tone whose protective high-pass sits at the
-    manufacturer's own published figure was the #2603 bug.
-
-    What bounds the residual sorts into TWO classes, and only the second is
-    independent of the declaration. Moving WITH it: the staged high-pass, the
-    fc-floor refusals, and the band stamps all track the declared number, so a
-    wrong-low declaration relaxes them together — they are consistency, not a
-    stop. Standing INDEPENDENT of it: ``graph_safety``'s absolute
-    ``TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ`` corner (which is all that module
-    contributes here — its own SCOPE block routes the per-driver *designed*-Fc
-    question to ``path_safety`` instead, and it never reads a declared floor),
-    :attr:`DriverProtectionProfile.floor_test_frequency_hz`, and the level
-    ceilings plus the operator-gated ramp. The declared floor's own emit-time
-    prover is ``camilla_yaml._assert_tweeter_crossover_honours_declared_floor``,
-    with ``path_safety`` refusing a below-floor candidate at load; the preview
-    DISCLOSES a declared limit under its class default
-    (``low_limit_below_style_default``), and the research-reply intake refuses
-    an implausible figure before it can become one.
-
-    ``None`` means *no floor is declared* — never a guessed default. Consumers
-    must treat that as "unchanged behaviour", not as "floor of zero" and not as
-    an invitation to substitute the class-default policy floor: inventing a
-    floor where the operator declared none is exactly the nanny behaviour the
-    2026-08-14 never-nanny ruling excludes.
+    ``None`` means *no floor is declared* — never a floor of zero and never the
+    class-default policy floor (docs/measurement-loop-doctrine.md §5).
     """
 
     if not isinstance(driver, Mapping):
@@ -411,19 +263,9 @@ def declared_protection_highpass_floor_hz(driver: Any) -> float | None:
 def declared_protection_lowpass_ceiling_hz(driver: Any) -> float | None:
     """The declared protective low-pass ceiling carried by one driver payload.
 
-    The exact mirror of :func:`declared_protection_highpass_floor_hz`, and it
-    exists for the same reason that one does: ``required_protection_filters``
-    has admitted ``kind="lowpass"`` since the schema shipped (a mid declares
-    one, and ``driver_safety._target_issues`` refuses a mid that does not), but
-    nothing read it back as a per-driver upper edge. A caller that needed one
-    would have written a second parse of the same field, which is how the two
-    edges of one declaration end up disagreeing about what counts as declared.
-
-    Strictest wins, so ``min`` here where the floor takes ``max`` — both
-    directions tighten, neither can loosen.
-
-    ``None`` means *no ceiling is declared*, never a guessed default and never
-    the class-default policy corner, on that function's own never-nanny rule.
+    The mirror of :func:`declared_protection_highpass_floor_hz`. Strictest wins,
+    so ``min`` here where the floor takes ``max`` — both directions tighten.
+    ``None`` means *no ceiling is declared*, never a guessed default.
     """
 
     if not isinstance(driver, Mapping):
@@ -450,12 +292,8 @@ def protection_highpass_floor_satisfied(
 ) -> bool:
     """Whether a high-pass corner honours a declared protection floor.
 
-    The single comparison rule every protection-floor consumer shares (the
-    commissioning-tone gate in ``_highpass_satisfied``, the crossover-preview
-    disclosure, the path-safety load gate, and the L0 emit gate
-    ``camilla_yaml._assert_tweeter_crossover_honours_declared_floor``), so the
-    four surfaces cannot drift apart on the boundary case. An absent floor is
-    satisfied; an absent high-pass against a real floor is not.
+    The single comparison rule all four protection-floor consumers share. An
+    absent floor is satisfied; an absent high-pass against a real floor is not.
     """
 
     if floor_hz is None:
@@ -466,9 +304,7 @@ def protection_highpass_floor_satisfied(
 def format_protection_hz(value: float) -> str:
     """Render one protection-floor frequency for an operator-facing message.
 
-    Shared by the crossover-preview disclosure, the path-safety refusal, and
-    the L0 emit gate's refusal so a non-integer declared floor cannot render as
-    three different numbers on the surfaces a household compares.
+    Shared, so a non-integer declared floor cannot render three different ways.
     """
 
     return f"{float(value):g} Hz"
@@ -476,15 +312,11 @@ def format_protection_hz(value: float) -> str:
 
 # --- A driver's low limit: one declared owner, every consumer derives -------
 #
-# Owner ruling, 2026-08-17 (docs/active-speaker-tuning-layers-design.md
-# decisions 8 and 9; issue #2603). A driver's bottom allowed frequency IS the
-# manufacturer's minimum recommended crossover frequency, carrying whatever
-# slope condition the manufacturer attaches to it. It is entered ONCE, at
-# component entry, as ``recommended_highpass_hz`` plus its optional
-# ``recommended_highpass_slope_db_per_octave``. That pair is the OWNER.
-#
-# Everything the same fact used to be co-declared as is DERIVED here, by named
-# code, with the rationale carried on the result rather than left implicit:
+# A driver's bottom allowed frequency IS the manufacturer's minimum recommended
+# crossover frequency, entered once at component entry as
+# ``recommended_highpass_hz`` plus its optional
+# ``recommended_highpass_slope_db_per_octave``. That pair is the OWNER
+# (docs/active-speaker-tuning-layers-design.md decisions 8-9). Derived from it:
 #
 #   required_protection_filters[highpass].cutoff_hz  = the owner's frequency
 #   required_protection_filters[highpass].minimum_slope_db_per_octave
@@ -494,80 +326,30 @@ def format_protection_hz(value: float) -> str:
 #   hard_excitation_band_hz[0]                       = the owner's frequency
 #   measurement_band_hz[0]                           = max(published, owner)
 #
-# ``do_not_test_below_hz`` is RETIRED rather than derived. It was a second,
-# optional declaration of this same line, and its only consumer was a
-# crossover-preview blocker. Collapsed onto the owner it would have made that
-# blocker fire on exactly the condition #2491 deliberately routes elsewhere --
-# preview DISCLOSES a corner below the declared floor, ``path_safety`` REFUSES
-# it at load -- and blocking at preview would have made the load gate
-# unreachable. Retiring it is also strictly safer than what it replaced: the
-# disclosure and the load gate now fire from one always-derived number,
-# where the blocker only fired when a separate optional field happened to be
-# declared (the #2132 fail-open). The key is still ACCEPTED by the schemas so
-# drafts written before this load unchanged, and /sound/ still round-trips a
-# stored value under a "Legacy advisory floor (not enforced)" label rather than
-# dropping it silently. What is gone is every CONSUMER: no policy, band, filter
-# or gate derives from it any more.
-#
-# ``measurement_band_hz`` itself stays a SEPARATE published fact -- the
-# datasheet's frequency-response range -- and only has its lower edge clamped
-# up into the allowed band, because an analysis window cannot honestly extend
-# below the frequency the driver may not be excited under. For the B&C DE250
-# the published range is 1.0-18.0 kHz while the published minimum crossover is
-# 1.6 kHz, so the stored window is [1600, 18000] and the two facts stay
-# distinguishable.
-#
-# The slope split is decision 9 implemented literally: the DECLARATION carries
-# what the manufacturer printed ("12 dB/oct. or higher slope high-pass filter"
-# for the DE250), and the commissioning safety margin is computed HERE, named,
-# rather than smuggled into a datasheet field as though the manufacturer had
-# published it. Only the DECLARATION refuses; see the constant below for what
-# the margin is allowed to do instead.
+# ``measurement_band_hz`` stays a SEPARATE published fact (the datasheet's
+# response range) with only its lower edge clamped up into the allowed band.
+# ``do_not_test_below_hz`` is retired: accepted by the schemas so old drafts
+# load, but no policy, band, filter or gate derives from it.
 
-#: Commissioning floor on the protective high-pass THIS BUILD EMITS, dB/octave,
-#: and the figure every slope disclosure names. It is a code number, so the
-#: 2026-08-22 owner ruling quoted in ``driver_safety`` binds it: "declared
-#: values are the only refusing authority; class tables may prefill, disclose,
-#: and serve as fallback -- they must never refuse a declaration." Its two jobs:
-#:
-#: * PREFILL. :attr:`DriverLowLimit.derived_protection_slope_db_per_octave`
-#:   raises a published slope to it, and :func:`apply_driver_low_limit` stamps
-#:   that derived number as the protective high-pass this build emits and later
-#:   proves it emitted (``graph_safety.protection_requirement_present``). No
-#:   household choice is refused there -- the filter being proved is one this
-#:   build generated from this very number. Raising a published 12 dB/oct to 24
-#:   cannot hurt the driver (a steeper filter passes strictly less energy below
-#:   the corner) and it keeps every already-emitted graph legal.
-#: * DISCLOSE. ``crossover_preview``'s ``tweeter_slope_below_recommended_floor``
-#:   warning and
-#:   :attr:`~jasper.active_speaker.crossover_v2.topology_prescription.TopologyPrescription.recommended_slope_db_per_octave`
-#:   both name it, so a household crossing shallower is told what it crossed
-#:   against -- on the design page and on the round's receipt.
-#:
-#: What it may NOT do is refuse a crossover a household pinned. The topology
-#: gate did exactly that until the 2026-08-23 owner ruling ("if it was in the
-#: safe overall envelope, it's safe to test"), because it read the DERIVED
-#: number and called it the manufacturer's declaration. The manufacturer's
-#: published condition is :attr:`DriverLowLimit.slope_db_per_octave`, and it is
-#: the only slope entitled to refuse a corner.
+#: Commissioning floor on the protective high-pass THIS BUILD EMITS, dB/octave.
+#: A code number, so it may only PREFILL (raise a published slope in
+#: :attr:`DriverLowLimit.derived_protection_slope_db_per_octave`, which
+#: :func:`apply_driver_low_limit` stamps and ``graph_safety`` later proves) and
+#: DISCLOSE (``crossover_preview``'s ``tweeter_slope_below_recommended_floor``).
+#: It may NEVER refuse a crossover a household pinned: the manufacturer's
+#: published condition, :attr:`DriverLowLimit.slope_db_per_octave`, is the only
+#: slope entitled to refuse a corner.
 PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE = 24.0
 
 #: How far a DECLARED low limit may sit from its style's default before it stops
-#: being believed on sight. The style table is no longer a veto over sourced
-#: manufacturer data (a published 1.6 kHz for a compression driver must win over
-#: the 2 kHz class default); it is a plausibility anchor. A factor of 4 admits
-#: every real datasheet the field publishes -- large-format compression drivers
-#: publish recommended crossovers as low as 500-800 Hz and small ones as high as
-#: 8 kHz, both inside the compression-driver band -- while still catching a
-#: transposed digit or a woofer's number pasted into a tweeter row. One factor
-#: rather than a per-style band on purpose: the anchor is already per-style, and
-#: a second table would be a second thing to keep in sync (including its JS
-#: mirror) for a bound nothing has earned.
+#: being believed on sight. A factor of 4 admits every real datasheet the field
+#: publishes — large-format compression drivers publish recommended crossovers
+#: as low as 500-800 Hz and small ones as high as 8 kHz — while still catching a
+#: transposed digit or a woofer's number pasted into a tweeter row.
 #:
-#: What "stops being believed" MEANS depends on the author since #2874: a
-#: research reply outside the band is refused at intake, a human-typed value
-#: outside it saves under a loud warning. See the author-split block comment in
-#: ``driver_safety``.
+#: What "stops being believed" MEANS depends on the author: a research reply
+#: outside the band is refused at intake, a human-typed value saves under a
+#: warning. ``driver_safety`` owns that split.
 LOW_LIMIT_PLAUSIBILITY_FACTOR = 4.0
 
 LOW_LIMIT_DECLARED = "declared"
@@ -576,11 +358,7 @@ LOW_LIMIT_STYLE_DEFAULT = "style_default"
 
 #: One operator-facing phrase per low-limit provenance. Every surface that
 #: PRINTS a resolved low limit renders it through :func:`format_low_limit`, so
-#: the tone gate's refusal, the /sound/ policy view and the design draft cannot
-#: describe the same number three different ways -- which is the confusion
-#: #2874 was filed on: a draft showed ``recommended_highpass_hz: 1600`` beside
-#: an unlabelled class-table ``2000`` and two readers independently took the
-#: 2000 for a second floor on the corner.
+#: an unlabelled class-table figure cannot read as a second floor.
 LOW_LIMIT_PROVENANCE_LABELS = {
     LOW_LIMIT_DECLARED: "manufacturer declared",
     LOW_LIMIT_LEGACY_PROTECTION_FILTER: (
@@ -594,20 +372,11 @@ LOW_LIMIT_PROVENANCE_LABELS = {
 class DriverLowLimit:
     """One driver's bottom allowed frequency, and where the number came from.
 
-    ``frequency_hz`` is the low limit itself. ``slope_db_per_octave`` is the
-    manufacturer's published slope CONDITION and is ``None`` when the maker
-    prints none (BMS's 4590 is a real example) -- it is deliberately NOT
-    defaulted here, because a code default wearing a datasheet's clothes is the
-    exact failure decision 9 was written against. It is also the ONLY one of
-    the two entitled to refuse anything: see
-    :data:`PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE`.
-
-    The derived commissioning figure is
-    :attr:`derived_protection_slope_db_per_octave`, named DERIVED rather than
-    sharing the published one's words so a reader can never mistake which of
-    the two a call site is holding. That distinction is the whole of the
-    2026-08-23 ruling: the topology gate refused a household's pinned order
-    against the derived number while its message said "declared".
+    ``slope_db_per_octave`` is the manufacturer's published slope CONDITION,
+    ``None`` when the maker prints none and never defaulted — it is the only
+    slope entitled to refuse anything. The build's own commissioning figure is
+    :attr:`derived_protection_slope_db_per_octave`, named DERIVED so a call site
+    cannot mistake which of the two it holds.
     """
 
     frequency_hz: float
@@ -619,8 +388,7 @@ class DriverLowLimit:
     def derived_protection_slope_db_per_octave(self) -> float:
         """The slope the protective high-pass this build EMITS must meet.
 
-        A prefill, never a bound on what the household may cross at -- see
-        :data:`PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE`.
+        A prefill, never a bound on what the household may cross at.
         """
 
         published = self.slope_db_per_octave
@@ -655,10 +423,8 @@ def driver_low_limit_plausibility_band_hz(
 ) -> tuple[float, float] | None:
     """The band a declared low limit must land inside, or ``None`` if no anchor.
 
-    Anchored on the style default. Roles with no style entry (every
-    low-frequency role) have no anchor and therefore no plausibility bound --
-    inventing one we cannot justify is the nanny behaviour the 2026-08-14
-    ruling excludes.
+    Anchored on the style default; roles with no style entry (every
+    low-frequency role) get no bound rather than an invented one.
     """
 
     anchor = driver_protection_profile(role, driver_style=driver_style).min_highpass_hz
@@ -679,21 +445,12 @@ def driver_low_limit_plausible(
     """Whether a declared low limit is believable for this driver style.
 
     Inclusive at both edges. A garbage catcher, never a judgement about whether
-    a published number is wise: what actually protects the driver at a low
-    declared figure is the derived protective high-pass sitting AT that
-    frequency (proved at emit by
-    ``camilla_yaml._assert_tweeter_crossover_honours_declared_floor``), the
-    absolute ``graph_safety.TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ`` corner (which
-    is that module's whole contribution here — it never reads a declared floor,
-    and its own SCOPE block routes the per-driver *designed*-Fc question to
-    ``path_safety``), the commissioning high-pass at a multiple of the crossover
-    corner, the ``path_safety`` load gate, and the excitation level ceilings --
-    none of which this factor touches.
-
-    The one predicate behind both arms of the #2874 author split, which is why
-    it answers only *believable?* and never *what happens next?*: an
-    unbelievable RESEARCH REPLY is refused at intake, an unbelievable typed
-    value is disclosed and saved. ``driver_safety`` owns that choice.
+    a published number is wise — what protects the driver at a low declared
+    figure is the derived protective high-pass, the absolute
+    ``graph_safety.TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ`` corner, the
+    ``path_safety`` load gate and the excitation ceilings, none of which this
+    factor touches. It answers only *believable?*; ``driver_safety`` owns what
+    happens next.
     """
 
     band = driver_low_limit_plausibility_band_hz(role, driver_style=driver_style)
@@ -712,24 +469,16 @@ def resolve_driver_low_limit(
 
     Order, and why:
 
-    1. The OWNER (``recommended_highpass_hz``). A sourced manufacturer figure
-       wins outright, including below the style default -- that is the whole
-       point of the 2026-08-17 ruling.
+    1. The OWNER (``recommended_highpass_hz``): a sourced manufacturer figure
+       wins outright, including below the style default.
     2. A stored ``required_protection_filters`` high-pass, when no owner is
-       declared. This is the backwards-compatible read for drafts and profiles
-       written before the owner existed; it is labelled as inferred, never as a
-       datasheet fact, and it resolves to the STRICTER of the two numbers a
-       legacy artifact carries, so an already-deployed box never loosens.
-    3. The style default, when the manufacturer publishes nothing at all.
-       ``absent`` is a legitimate research answer (decision 9), so this path is
-       ordinary rather than exceptional -- but it is labelled as a code
-       default, never as published data, and see
+       declared — the backwards-compatible read, labelled as inferred and
+       resolving to the STRICTER number so a deployed box never loosens.
+    3. The style default, labelled as a code default; see
        :func:`apply_driver_low_limit` for the one thing it may not do.
 
-    ``None`` means the driver has no low limit at all: no owner, no stored
-    high-pass requirement, and no style anchor (every low-frequency role).
-    Consumers must read that as "unchanged behaviour", never as a floor of
-    zero.
+    ``None`` means no low limit at all (no owner, no stored high-pass, no style
+    anchor) — "unchanged behaviour", never a floor of zero.
     """
 
     if not isinstance(driver, Mapping):
@@ -777,9 +526,7 @@ def resolve_driver_low_limit(
 def format_low_limit_provenance(provenance: Any) -> str:
     """Render one low-limit provenance as the phrase an operator reads.
 
-    An unrecognised token renders as itself rather than as a guessed phrase:
-    inventing "class fallback" for a provenance this map does not know would
-    tell a household where a number came from on no evidence at all.
+    An unrecognised token renders as itself rather than as a guessed phrase.
     """
 
     token = str(provenance or "")
@@ -789,9 +536,8 @@ def format_low_limit_provenance(provenance: Any) -> str:
 def format_low_limit(limit: DriverLowLimit) -> str:
     """Render one resolved low limit as ``"1600 Hz (manufacturer declared)"``.
 
-    The single renderer for the frequency AND where it came from. A surface
-    that prints the number without the provenance is what #2874 is about, so
-    the two are produced together rather than left to each caller to pair up.
+    The single renderer for the frequency AND its provenance, produced together
+    so no surface can print the number unlabelled.
     """
 
     return (
@@ -808,19 +554,11 @@ def tone_gate_low_limit(
 ) -> DriverLowLimit | None:
     """The floor the commissioning-tone gate compares a staged high-pass against.
 
-    ``declared_low_limit_hz`` is this driver's OWN declared low limit, when the
-    caller knows it -- ``test_signal_plan`` reads it off the compiled preset,
-    ``playback`` off the protection block its plan already carries. ``None``
-    means the caller has no declaration to offer, and the style default stands
-    as the FALLBACK, which is the only tone-gate job the class table keeps
-    since #2874.
-
-    The resolution order is not repeated here: the declared frequency is handed
-    to :func:`resolve_driver_low_limit` in the field that function reads as the
-    OWNER, so the gate, the profile-confirm path and the crossover preview
-    cannot disagree about which number wins. ``None`` comes back only for a
-    role with no declaration and no style anchor (every low-frequency role),
-    and means "no floor at all" -- never a floor of zero.
+    ``declared_low_limit_hz`` is this driver's OWN declared low limit when the
+    caller knows it; ``None`` leaves the style default standing as the FALLBACK.
+    The declared frequency is handed to :func:`resolve_driver_low_limit` as the
+    OWNER, so the gate, the profile-confirm path and the preview cannot disagree
+    about which number wins. A ``None`` return means "no floor at all".
     """
 
     return resolve_driver_low_limit(
@@ -844,7 +582,7 @@ def driver_excitation_floor_hz(driver: Any) -> float | None:
     """The declared low edge below which this driver may not be excited.
 
     The declared owner, then a stored protective high-pass, then the declared
-    ``measurement_band_hz`` low edge. The style-default arm is deliberately not
+    ``measurement_band_hz`` low edge. The style default is deliberately NOT
     reached: this bounds a SWEEP, and the class table is a tone-gate fallback,
     not a frequency a driver may be driven to. ``None`` means undeclared.
     """
@@ -868,28 +606,17 @@ def apply_driver_low_limit(
 ) -> dict[str, Any]:
     """Return ``driver`` with every low-limit-derived field recomputed.
 
-    The projection half of the one-owner rule: the caller supplies a driver
-    declaration, this returns the same declaration with the derived fields
-    stamped from :func:`resolve_driver_low_limit`. Idempotent -- stamping an
-    already-stamped payload changes nothing, which is what lets the safety
-    profile's shape validator re-derive and refuse a hand-edited artifact whose
-    derived fields no longer match its own declared owner.
+    Idempotent, which is what lets the safety profile's shape validator
+    re-derive and refuse a hand-edited artifact whose derived fields no longer
+    match its own declared owner. A band whose upper edge sits at or below the
+    low limit is left ALONE rather than stamped into an inverted range; the
+    ``..._outside_hard_band`` vocabulary is what names that.
 
-    A band whose upper edge sits at or below the low limit is left ALONE rather
-    than stamped into an inverted range: that declaration is broken, and the
-    existing ``<role>:highpass_cutoff_outside_hard_band`` /
-    ``measurement_band_outside_hard_band`` vocabulary is what names it.
-
-    **A code default may UNBLOCK; it may never REFUSE.** A ``style_default``
-    low limit is deliberately NOT stamped. The stamped
-    ``required_protection_filters`` high-pass is what
-    :func:`declared_protection_highpass_floor_hz` reads into the preset, the
-    derived protection clamp, and the ``path_safety`` load gate -- so inventing
-    one where the operator declared nothing would refuse a design the household
-    chose, on a number this module made up. That is exactly the nanny behaviour
-    the 2026-08-14 ruling excludes (and the #2491 regression it would cause is
-    pinned), which is why the style figure stays what it is: the plausibility
-    anchor and the research prompt's worked number.
+    **A code default may UNBLOCK; it may never REFUSE**
+    (docs/measurement-loop-doctrine.md §5), so a ``style_default`` low limit is
+    NOT stamped: the stamped high-pass feeds the preset, the derived protection
+    clamp and the ``path_safety`` load gate, and inventing one would refuse a
+    design the household chose on a number this module made up.
     """
 
     if not isinstance(driver, Mapping):
@@ -997,16 +724,10 @@ def driver_protection_payload(
                 "high_frequency_protection_missing",
                 "high-frequency drivers require marked physical protection or software-guarded bring-up",
             ))
-        # Two refusals, not one. The single ``..._missing`` blocker told a
-        # household a protective high-pass was MISSING while one was staged --
-        # it just sat below the class default -- which is how the #2874 report
-        # started. Absent and below-floor are different facts with different
-        # fixes, so they are different codes carrying different copy, and both
-        # name the floor they compared against and where that floor came from.
-        #
-        # ``low_limit is not None`` narrows for the renderer below rather than
-        # guarding an unreachable state: a None limit means no floor, and
-        # ``protection_highpass_floor_satisfied`` already answered True there.
+        # Absent and below-floor are different facts with different fixes, so
+        # they get different codes, both naming the floor and its provenance.
+        # ``low_limit is not None`` narrows for the renderer rather than
+        # guarding an unreachable state.
         if not highpass_ok and low_limit is not None:
             if staged_highpass_hz is None:
                 issues.append(_issue(
@@ -1030,12 +751,10 @@ def driver_protection_payload(
                     ),
                 ))
     envelope = {
-        # The raw class figure is deliberately NOT republished here beside the
-        # resolved floor (#2874). It is the tone gate's fallback, not its
-        # anchor, and two floats one key apart with only one of them labelled
-        # is the ambiguity this ticket exists to remove. ``low_limit_hz``
-        # carries the class number whenever the class number is the operative
-        # one, with ``low_limit_provenance`` saying so.
+        # The raw class figure is deliberately NOT republished beside the
+        # resolved floor: two floats one key apart with only one labelled is an
+        # ambiguity. ``low_limit_hz`` carries the class number when the class
+        # number is operative, with ``low_limit_provenance`` saying so.
         key: value
         for key, value in profile.to_dict().items()
         if key != "min_highpass_hz"

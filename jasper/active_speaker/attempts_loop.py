@@ -173,9 +173,9 @@ def percentile(values: Sequence[float], q: float) -> float:
 
     Spelled out rather than imported so the floor's provenance is auditable
     without pinning a NumPy version: the claim floor is the product's most
-    consequential decimal, and it should be reproducible by reading. The
-    equivalence to the banked study's own summary is pinned by
-    ``tests/test_active_speaker_attempts_replay.py``.
+    consequential decimal, and it should be reproducible by reading. Its
+    agreement with the banked repeat-floor study's own published summary is
+    pinned by ``tests/test_active_speaker_attempts_loop.py``.
     """
 
     ordered = sorted(float(value) for value in values)
@@ -208,16 +208,6 @@ def percentile(values: Sequence[float], q: float) -> float:
 #: reduction". This one is the point past which noise-floor reduction by
 #: averaging stops working. Three different facts.
 MAX_USEFUL_REPEAT_AVERAGES = 4
-
-
-def useful_repeats(requested: int) -> int:
-    """Clamp a requested repeat count to what averaging can still pay for.
-
-    The seam the live flow calls when it decides how many repeats to take.
-    See :data:`MAX_USEFUL_REPEAT_AVERAGES` for the measurement behind the cap.
-    """
-
-    return max(1, min(int(requested), MAX_USEFUL_REPEAT_AVERAGES))
 
 
 @dataclass(frozen=True)

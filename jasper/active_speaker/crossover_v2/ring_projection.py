@@ -4,61 +4,14 @@
 
 """Re-project a banked round into the capture-ring layout its two readers want.
 
-``jasper-classify-features`` and ``jasper-read-distortion`` are the §6 mechanism
-discriminators, and both find their captures through one binding —
-:data:`~.evidence_packet.RING_SIDECAR_GLOB`, a sidecar JSON beside its WAV in a
-sibling ``wav/``. The speaker-side producer of that layout died with the
-retention seam (#3250), so for a while the only rings that existed were corpora
-pulled off a Pi before it.
-
-**Nothing was actually lost.** Since #3285 every wired round banks the capture
-WAV itself (``summed/summed_<take>_<uuid>.wav``) beside a per-take record
-carrying ``wav_path``, ``wav_sha256``, ``captured_at``, ``phase``,
-``diagnostic``, ``capture_integrity`` and ``frame_ledger`` — every field either
-reader consumes. What the bank does not carry is the ring's *layout*, and that
-is the whole of the gap. This module closes it laptop-side: it reads a banked
-bundle and writes the ring the readers already know how to open, re-projecting
-metadata that is already on disk rather than re-measuring anything.
-
-Three facts have to be restated in the projection because the bank spells them
-differently, and each is a place a silent skip lives if it is got wrong:
-
-1. **The stem is the timestamp.** ``load_round_captures`` parses
-   ``float(sidecar.stem.split("_")[0]) / 1e6`` as a microsecond epoch, and a
-   non-numeric leading field makes it skip the capture without a word. Stems
-   are minted ``<microseconds>_<take_id>``.
-2. **The session identity is the BUNDLE id**, ``info.json``'s ``session_id``
-   (``d0eca8f5a24d``-shaped) — never the take record's own ``session_id``,
-   which is the RELAY namespace (``wired-DBq7UPOcyyuJwCfWwQVOwA``-shaped). Both
-   readers scope the ring by the bundle id, so stamping the relay one would
-   scope every capture out.
-3. **Both ids travel together.** The relay id rides along as an alias under
-   :data:`~jasper.attribution.session_identity.ALIAS_RELAY_SESSION_ID`. That
-   pairing has never existed in a banked artifact before — the seam
-   :func:`~.harmonic_evidence._scope_captures` names as the only unguarded one
-   left is precisely that nothing maps between the two namespaces — so a
-   projected ring is the first place a mis-scoped read is checkable rather than
-   only auditable after the fact.
-
-**Takes are SELECTED through the measurement index and DECIDED by their own
-record**, the rule :func:`~.evidence_packet._banked_takes` already follows, so
-"what a banked take is and where it lives" keeps one owner. That index also
-owns the ``captured_at`` normalization: a cloud position banks a float epoch
-where a phase capture banks ``%Y-%m-%dT%H:%M:%SZ``, and
-:func:`~.record_index.bundle_measurements` already reconciles the two to
-second-resolution ISO. Second resolution is what the phase captures carry
-natively, so the projection publishes it uniformly rather than inventing
-sub-second digits for half the ring.
-
-**Nothing is skipped silently.** Every take this refuses to project comes back
-in :attr:`RingProjection.skipped` with a named reason — the readers' own
-skip-and-say-nothing behaviour is what makes a half-projected ring look like a
-complete one.
-
-Program WAVs are deliberately NOT projected. Both CLIs resolve them from the
-bundle through :func:`~.evidence_packet.round_program_dir`, which already knows
-the two shapes they are written in; a copy in the ring would be a second
-answer to a question that has an owner.
+``jasper-classify-features`` and ``jasper-read-distortion`` find captures
+through :data:`~.evidence_packet.RING_SIDECAR_GLOB` — a sidecar JSON beside
+its WAV in a sibling ``wav/`` — the one thing #3285's bank does not carry.
+Two facts the bank spells differently are restated here: stems are
+``<microseconds>_<take_id>``, and the ring is scoped by ``info.json``'s
+``session_id`` (the BUNDLE id), never the take record's relay ``session_id``,
+which rides along as an alias. Program WAVs are not projected — the CLIs
+resolve those from the bundle themselves.
 """
 
 from __future__ import annotations
@@ -97,18 +50,15 @@ __all__ = [
     "project_ring",
 ]
 
-#: The reader-facing halves of the ring, spelled once here because
-#: :data:`~.evidence_packet.RING_SIDECAR_GLOB` finds one and both readers pair
-#: it with the other at ``sidecar.parent.parent / "wav"``.
+#: The ring's two halves. :data:`~.evidence_packet.RING_SIDECAR_GLOB` finds
+#: the sidecar; both readers pair it at ``sidecar.parent.parent / "wav"``.
 _SIDECAR_SUBDIR = "sidecar"
 _WAV_SUBDIR = "wav"
 
 #: Refusal: the bundle is readable and holds no take this can project.
 NOTHING_TO_PROJECT = "nothing_to_project"
 
-#: Per-take skip reasons. Named rather than prose because the CLI reports them
-#: and a test asserts on them; the readers' silent equivalents are what this
-#: module exists to make visible.
+#: Per-take skip reasons, reported by name.
 SKIP_UNREADABLE_RECORD = "unreadable_record"
 SKIP_NO_PHASE = "no_phase"
 SKIP_NO_CAPTURED_AT = "no_captured_at"
@@ -160,9 +110,8 @@ class RingProjection:
 def _bundle_session_id(bundle_dir: Path) -> str:
     """The bundle's own ``session_id`` — the id both readers scope the ring by.
 
-    Raises :class:`OSError` or :class:`ValueError` rather than refusing: a
-    bundle whose ``info.json`` will not parse is unreadable, which is a
-    different answer from "readable, and holds nothing to project".
+    Raises ``OSError``/``ValueError``: unreadable is a different answer from
+    "readable, and holds nothing to project", and the CLI exits differently.
     """
     info = json.loads((bundle_dir / "info.json").read_text())
     session_id = info.get("session_id") if isinstance(info, Mapping) else None
@@ -177,10 +126,8 @@ def _bundle_session_id(bundle_dir: Path) -> str:
 def _microseconds(captured_at: str) -> int | None:
     """``captured_at`` as a microsecond epoch, or ``None`` if it will not parse.
 
-    :func:`~.record_index.bundle_measurements` has already reconciled the two
-    shapes the builders emit into ``%Y-%m-%dT%H:%M:%SZ``, so this parses one
-    shape. A record carrying a naive stamp is read as UTC, which is what the
-    ``Z`` the index writes means.
+    :func:`~.record_index.bundle_measurements` has already reconciled the
+    builders' two shapes to ``%Y-%m-%dT%H:%M:%SZ``; a naive stamp is read as UTC.
     """
     try:
         moment = datetime.fromisoformat(captured_at)
@@ -194,11 +141,8 @@ def _microseconds(captured_at: str) -> int | None:
 def _place(source: Path, destination: Path, *, copy: bool) -> bool:
     """Put the capture WAV at ``destination``. True when it was hardlinked.
 
-    Hardlinked by default because a ring is a re-projection of bytes the bundle
-    already holds, and a round's captures run to tens of megabytes. The
-    fallback is not defensive: a bundle on an external disk and a scratch ring
-    on the internal one is the ordinary case, and ``os.link`` raises ``EXDEV``
-    across devices.
+    Hardlinked by default — a round's captures run to tens of megabytes — and
+    ``os.link`` raises ``EXDEV`` when bundle and ring sit on different devices.
     """
     if not copy:
         try:
@@ -219,31 +163,20 @@ def project_ring(
 ) -> RingProjection:
     """Write ``bundle_dir``'s banked takes into ``dumps_dir`` as a capture ring.
 
-    ``dumps_dir`` is the path a caller then hands to ``--dumps``. It is created
-    if absent; an existing one is added to, never emptied, because a caller
-    projecting two rounds into one ring is doing the thing the readers' own
-    session scoping exists for.
+    An existing ``dumps_dir`` is added to, never emptied. ``setup_calibration_id``
+    names the measurement mic: the bank does not carry it, and
+    :func:`~.harmonic_evidence._calibration_for` reads it off the sidecar to pick
+    the sign convention a supplied calibration file is parsed under.
 
-    ``setup_calibration_id`` names the measurement microphone. The bank does
-    not carry it — it is only ever logged — and
-    :func:`~.harmonic_evidence._calibration_for` reads it off the sidecar to
-    choose the sign convention a supplied calibration file is parsed under, so
-    an operator passing ``--calibration`` for a mic whose convention is not the
-    default must say which mic it was. Omitted, the sidecar carries none and
-    the reader publishes the empty id it actually had.
-
-    Raises :class:`RingProjectionRefused` when the bundle holds no projectable
-    take. :class:`OSError` and :class:`ValueError` mean the bundle itself could
-    not be read — a different answer, and the CLI gives it a different exit
-    code.
+    Raises :class:`RingProjectionRefused` when no take is projectable;
+    :class:`OSError`/:class:`ValueError` mean the bundle itself is unreadable,
+    which the CLI exits differently on.
     """
     bundle_dir = Path(bundle_dir)
     dumps_dir = Path(dumps_dir)
 
-    # The one-round rule the consumers already apply. A bundle carrying two
-    # rounds would project both under ONE bundle id, which is exactly the
-    # pooling `harmonic_evidence._scope_captures` refuses — and it could not
-    # refuse it here, because every sidecar would carry the id it scoped by.
+    # One round per bundle: two would project under ONE bundle id, the pooling
+    # `harmonic_evidence._scope_captures` refuses but could not detect here.
     round_dir, why = round_artifact_dir(bundle_dir)
     if round_dir is None:
         raise ValueError(f"cannot read the round: {why}")
@@ -271,11 +204,8 @@ def project_ring(
             continue
 
         take_id = str(document.get("take_id") or record_path.stem)
-        # `<microseconds>_<take_id>`: the leading field is the only part a
-        # reader parses, and the take id makes the stem unique even when two
-        # takes share a second — which they can, the index publishing second
-        # resolution. Ties then order by take id, in both the glob and the
-        # readers' stable sort over it.
+        # The take id keeps the stem unique when two takes share a second (the index
+        # publishes second resolution); ties then order by take id.
         stem = f"{stamp}_{take_id}"
         sidecar = sidecar_dir / f"{stem}.json"
         wav = wav_dir / f"{stem}.wav"
@@ -339,12 +269,8 @@ def _read_take(
 def _resolve_wav(bundle_dir: Path, document: Mapping[str, Any]) -> Path | str:
     """The banked capture WAV this record names, or a named skip reason.
 
-    ``wav_path`` is read OFF THE RECORD and never re-derived from the take id:
-    the record is what the writer stamped beside the bytes it wrote, and a
-    second rule for composing that name here could disagree with it.
-
-    It is bundle-RELATIVE, and a path that leaves the bundle is refused rather
-    than followed — this walks documents to decide what to hardlink.
+    ``wav_path`` is read off the record, never re-derived, and is
+    bundle-relative; a path that leaves the bundle is refused, not followed.
     """
     raw = document.get("wav_path")
     if not isinstance(raw, str) or not raw:
@@ -366,18 +292,16 @@ def _sidecar_document(
 ) -> dict[str, Any]:
     """The take record, plus the two fields the ring's layout carried.
 
-    The record travels WHOLE — ``diagnostic``, ``capture_integrity``,
-    ``frame_ledger`` and the rest — because the readers' key union is wider
-    than any subset this module could pick without going stale against them.
+    The record travels WHOLE: the readers' key union is wider than any subset
+    this module could pick without going stale against them.
     """
     projected = dict(document)
     identity = SessionIdentity(session_id=session_id)
     try:
         identity = identity.with_alias(ALIAS_RELAY_SESSION_ID, relay_session_id)
     except SessionIdentityError:
-        # A relay id that fails the identity charset is dropped rather than
-        # taking the whole projection with it: the alias is an audit join,
-        # where `session_id` is what the readers scope by.
+        # A relay id failing the identity charset is dropped rather than taking the
+        # projection with it: the alias is an audit join, `session_id` is the scope.
         pass
     stamp_session_identity(projected, identity)
     if setup_calibration_id is not None:

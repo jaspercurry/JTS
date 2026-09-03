@@ -4,22 +4,15 @@
 
 """Durable identity and lifecycle journal for Active commissioning runs.
 
-This store is deliberately narrower than the commissioning orchestrator.  It
-does not apply graphs, admit captures, score candidates, or recover hardware.
-It gives those later host adapters one fail-closed current-run authority:
-
-* an exact session/run/owner-generation identity,
-* immutable, unique attempt/target reservations,
-* a bounded, append-only, sequenced journal of
-  :class:`CommissioningTransition` values,
-* one bounded cross-process issuance CAS around each live DSP mutation,
-* atomic read-modify-write persistence under one advisory lock, and
-* stale-callback rejection after service restart.
+One fail-closed current-run authority for the host adapters: session/run/owner
+identity, immutable attempt reservations, an append-only sequenced journal of
+:class:`CommissioningTransition` values, one cross-process issuance CAS around
+each live DSP mutation, and stale-callback rejection after service restart. It
+applies no graphs, admits no captures, and scores no candidates.
 
 Every public read validates the complete schema, semantic invariants, nested
-fingerprints, and whole-file fingerprint. Polling is silent.
-Successfully committed run creation/replacement, owner claims, attempt
-reservations, and lifecycle transitions emit stable events.
+fingerprints, and whole-file fingerprint. Polling is silent; committed runs,
+owner claims, reservations and transitions emit stable events.
 """
 
 from __future__ import annotations
@@ -1252,10 +1245,8 @@ class CommissioningRunStore:
     ) -> CommissioningRunHandle:
         """Atomically start a fresh session and stale every prior callback.
 
-        This is the explicit production boundary for abandoning the control-
-        plane identity of a prior commissioning run.  A possibly live or
-        unknown post-mutation graph cannot be hidden by replacement: those
-        lifecycle states first require exact host recovery evidence.
+        Replacement cannot hide a possibly live or unknown post-mutation graph:
+        those lifecycle states first require exact host recovery evidence.
         """
 
         session = _identifier(session_id, field_name="session_id")
@@ -1498,11 +1489,7 @@ class CommissioningRunStore:
     ) -> tuple[CommissioningAttemptHandle, ...]:
         """Return the immutable attempts owned by one exact run generation.
 
-        Commissioning hosts need to resume deterministic target progress after
-        a request retry without projecting handles back out of the public JSON
-        snapshot.  Keep that projection here, beside the parser and stale-run
-        checks which own its semantics.  Attempts from an older process-owner
-        generation remain intentionally inaccessible.
+        Attempts from an older process-owner generation stay inaccessible.
         """
 
         if not isinstance(handle, CommissioningRunHandle):

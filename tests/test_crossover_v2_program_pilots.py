@@ -4,7 +4,7 @@
 
 """W5a composer extension: leading pilot pairs + woofer-repeat level agreement.
 
-docs/crossover-measurement-productization-design.md §5.2: every MEASURE and
+docs/historical/crossover-measurement-productization-design.md §5.2: every MEASURE and
 VERIFY program also opens with a short two-level pilot pair so EACH capture
 carries its own linearity evidence, and MEASURE acceptance additionally
 requires the woofer repeat pair to agree in level within ±0.3 dB (a
@@ -390,13 +390,13 @@ def test_measure_summary_omits_the_channel_map_flag_it_cannot_judge(phase):
     ``None``, and these phases never thread an ambient window into the
     channel-map check — so since #2052 a healthy MEASURE/VERIFY sidecar
     records no ``channel_map_ok`` at all, where it used to record ``true``.
-    That is the honest record (the phase did not measure the map), but it
-    silently broke `scripts/severed-twin-replay.py`, whose `FIDELITY_FIELDS`
-    treats an absent field as a reconstruction infidelity: every banked corpus
-    AND every new sidecar would have failed its fidelity gate, reporting a
-    deliberate semantic change as a broken replay. That tuple dropped the
-    field; this pins the fact that made it necessary, so a change re-arming
-    the flag on these phases has to come back through here.
+    That is the honest record (the phase did not measure the map), but
+    `harmonic_evidence.FIDELITY_FIELDS` treats an absent field as a
+    reconstruction infidelity: keeping it would fail every banked corpus AND
+    every new sidecar, reporting a deliberate semantic change as a broken
+    replay. That tuple dropped the field; this pins the fact that made it
+    necessary, so a change re-arming the flag on these phases has to come
+    back through here.
 
     ``linearity_ok`` and ``pilot_snr_ok`` stay in the record, which is what
     makes the omission specific rather than the summary going quiet.

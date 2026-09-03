@@ -29,7 +29,7 @@ from jasper.audio_measurement.evidence_identity import (
 )
 from jasper.audio_measurement.null_walk import NullWalkError
 from jasper.log_event import log_event
-from .alignment_walk import driver_delay_walk_spec
+from .delay_sweep import sweep_spec
 from .commissioning_evidence import (
     REFERENCE_AXIS_GEOMETRY_ID,
     CompleteIsolatedDriverEvidence,
@@ -358,10 +358,10 @@ class CommissioningCaptureService:
         *,
         signed_path_difference_m: float,
     ) -> tuple[dict[str, Any], Any]:
-        spec = driver_delay_walk_spec(
+        spec = sweep_spec(
             crossover_fc_hz=target.electrical_fc_hz,
-            positive_delay_target_role=target.upper_role,
-            negative_delay_target_role=target.lower_role,
+            upper_role=target.upper_role,
+            lower_role=target.lower_role,
             signed_acoustic_path_difference_m=signed_path_difference_m,
         )
         try:

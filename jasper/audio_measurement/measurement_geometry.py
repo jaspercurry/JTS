@@ -4,23 +4,11 @@
 
 """Operator-declared measurement rig geometry.
 
-:mod:`jasper.audio_measurement.gating`'s reflection finder requires the
-smoothed envelope to drop 12 dB below the direct peak and re-cross with
-7.5 dB prominence. On JTS's rig class the geometric first bounce arrives
-only ~2.5-3 ms after the direct sound, while the direct sound is still
-decaying -- so the measured source structurally never fires and
-``entanglement_floor_hz`` would publish UNKNOWN forever. This module lets
-the operator declare the rig's geometry once so the floor can instead be
-DERIVED and disclosed with ``declared_geometry`` provenance, never
-mistaken for a measurement. See issue #3502.
-
-``jasper-declare-geometry`` (:mod:`jasper.cli.declare_geometry`, the
-single writer) stores :class:`DeclaredGeometry` to :data:`DEFAULT_PATH`, and
-the gate disclosures ask that file where it lives, at the point of use.
-Banking a round copies it beside the bundle as ``declared-geometry.json``
-(``jasper-round-bank`` and ``scripts/bank-crossover-round.sh``, on the terms
-:mod:`jasper.active_speaker.crossover_v2.round_inputs` states); the evidence
-packet builder reads only the path its caller resolved, never this one.
+On JTS's rig class the first bounce arrives only ~2.5-3 ms after the direct
+sound, so :mod:`.gating`'s reflection finder never fires and the entanglement
+floor is DERIVED from declared geometry instead (#3502).
+``jasper-declare-geometry`` is the single writer of :data:`DEFAULT_PATH`;
+consumers read it at the point of use and never cache it.
 """
 from __future__ import annotations
 
@@ -68,8 +56,7 @@ def _metres(name: str, value: object) -> float:
 
 
 def _require_range(name: str, value: object, lo: float, hi: float) -> None:
-    # NaN and the infinities fail every comparison, so the range check refuses
-    # them too and no separate finiteness rule is needed.
+    # NaN and the infinities fail every comparison, so the range check refuses them.
     metres = _metres(name, value)
     if not (lo <= metres <= hi):
         raise GeometryFieldError(
@@ -81,9 +68,8 @@ def _require_range(name: str, value: object, lo: float, hi: float) -> None:
 class DeclaredGeometry:
     """Operator-declared rig geometry: two heights, a distance, an optional ceiling.
 
-    ``ceiling_height_m`` is ``None`` when no ceiling was declared -- the
-    ceiling-bounce family is then simply absent from
-    :meth:`first_bounce_s`'s minimum rather than refused.
+    ``ceiling_height_m`` is ``None`` when no ceiling was declared; the
+    ceiling-bounce family is then absent from :meth:`first_bounce_s`'s minimum.
     """
 
     speaker_height_m: float
@@ -112,37 +98,12 @@ class DeclaredGeometry:
     def first_bounce_s(self, distance_m: float | None = None) -> float:
         """Excess time-of-arrival of the earliest room reflection, over direct.
 
-        The floor-bounce path always participates; the ceiling-bounce path
-        joins the minimum only when :attr:`ceiling_height_m` was declared --
-        a low ceiling can then win over the floor.
-
-        ``distance_m`` evaluates this rig at ONE capture's own
-        speaker-to-mic distance without mutating the record. The two heights
-        are rig facts and stay declared once; the distance is the capture's
-        (``PositionGeometry.mark_distance_m``), and the floor rises as the
-        microphone moves OUT: closing in lengthens the bounce path against a
-        direct path that shortens faster, so the excess arrival time grows and
-        the floor falls -- monotonically, for every pair of heights, which is
-        the same physics a near-field capture buys its low-end validity with.
-        ONLY ``None`` means "this capture states no distance" and falls back to
-        the declared :attr:`distance_m`; a non-finite or non-positive override
-        is a caller stating a distance that is not one, and raises
-        :class:`GeometryFieldError` rather than silently reporting the rig's
-        floor under the capture's name.
-
-        **Every production pose declares the same distance TODAY.** The one
-        caller is ``PositionGeometry.mark_distance_m``, and that is
-        ``spatial.MARK_DISTANCE_M`` (1.0 m) on every pose a round walks -- the
-        mark is a reference length, not a surveyed capsule distance -- so every
-        seat of a round currently derives the SAME floor and pooling them
-        cannot yet disagree. The per-capture parameter is what lets a row that
-        carries its own distance (#3498) be evaluated at it without this
-        method or any consumer changing.
-
-        The two heights are the DECLARED ones at every elevation: a pose raised
-        or lowered off the mark (``PositionGeometry.vertical_deg``) is timed
-        against the declared mic height unadjusted, because nothing in a round
-        measures where the capsule actually ended up.
+        ``distance_m`` evaluates this rig at ONE capture's own speaker-to-mic
+        distance; ``None`` alone falls back to the declared :attr:`distance_m`,
+        while a non-finite or non-positive override raises
+        :class:`GeometryFieldError`. The two heights are the DECLARED ones at
+        every elevation -- nothing in a round measures where the capsule
+        actually ended up.
         """
         if distance_m is None:
             distance = self.distance_m
@@ -168,13 +129,7 @@ class DeclaredGeometry:
         return (min(bounce_paths_m) - direct_m) / DEFAULT_SOUND_SPEED_M_S
 
     def entanglement_floor_hz(self, distance_m: float | None = None) -> float:
-        """This rig's entanglement floor, from :meth:`first_bounce_s`.
-
-        The floor itself is
-        :func:`jasper.audio_measurement.gating.f_entanglement_floor_hz` --
-        imported from there, never duplicated. ``distance_m`` reaches
-        :meth:`first_bounce_s` unchanged.
-        """
+        """This rig's entanglement floor, from :meth:`first_bounce_s`."""
         return f_entanglement_floor_hz(self.first_bounce_s(distance_m))
 
     def to_dict(self) -> dict[str, float]:
@@ -187,11 +142,7 @@ class DeclaredGeometry:
 
     @classmethod
     def from_dict(cls, doc: Mapping[str, Any]) -> "DeclaredGeometry":
-        """:meth:`to_dict`'s inverse, through the constructor's own refusals.
-
-        A missing distance arrives as ``None`` and is refused by name, so a
-        half-written record cannot read as a room.
-        """
+        """:meth:`to_dict`'s inverse, through the constructor's own refusals."""
         fields: dict[str, Any] = {
             name: doc.get(name)
             for name in ("speaker_height_m", "mic_height_m", "distance_m")
@@ -208,23 +159,15 @@ class DeclaredGeometry:
     @classmethod
     def load(cls, path: str | Path = DEFAULT_PATH) -> "DeclaredGeometry":
         data = json.loads(Path(path).read_text(encoding="utf-8"))
-        # A document that is not an object refuses as a geometry missing every
-        # field, rather than as an AttributeError from inside ``from_dict``.
         return cls.from_dict(data if isinstance(data, Mapping) else {})
 
 
 def load_declared_geometry(path: str | Path = DEFAULT_PATH) -> DeclaredGeometry | None:
     """The declared rig, or ``None`` when the operator has declared none.
 
-    Nothing declared is the ORDINARY state: every consumer then publishes
-    ``entanglement_floor_source = unknown``, warns about nothing, and refuses
-    nothing. A file that EXISTS and does not parse is the other fact
-    entirely -- a defect in the single writer or a hand-edit -- and raises,
-    because reading it as "absent" would hide it forever.
-
-    Read at the point of use. This file is wizard-owned and
-    ``jasper-declare-geometry`` rewrites it from a separate process, so a
-    long-lived daemon must never cache what it returns.
+    Nothing declared is the ORDINARY state; a file that EXISTS and does not
+    parse raises instead. Wizard-owned and rewritten from a separate process,
+    so a long-lived daemon must never cache what it returns.
     """
     try:
         return DeclaredGeometry.load(path)
@@ -235,14 +178,6 @@ def load_declared_geometry(path: str | Path = DEFAULT_PATH) -> DeclaredGeometry 
 def declared_first_bounce_s(
     distance_m: float | None = None, *, path: str | Path = DEFAULT_PATH
 ) -> float | None:
-    """The declared rig's first bounce at ONE capture's distance, in seconds.
-
-    :func:`load_declared_geometry` then
-    :meth:`DeclaredGeometry.first_bounce_s` -- the composition every gate
-    disclosure wants, in one place so no caller pairs a load with its own
-    arithmetic. ``None`` when nothing is declared, which is exactly what
-    :func:`jasper.audio_measurement.gate_disclosure.build_gate_disclosure`
-    reads as ``unknown``.
-    """
+    """The declared rig's first bounce at ONE capture's distance, in seconds."""
     geometry = load_declared_geometry(path)
     return None if geometry is None else geometry.first_bounce_s(distance_m)

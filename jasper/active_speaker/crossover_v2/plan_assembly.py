@@ -47,18 +47,13 @@ __all__ = [
 class JournalRecord:
     """One log line the planner would have emitted, as data.
 
-    The planner owns *what happened*; the host owns *how it is said* — it adds
-    its own ``session_id`` and writes through its own logger. Returned in
-    emission order.
+    The planner owns *what happened*; the host owns *how it is said*. Returned
+    in emission order.
 
-    A consumer cannot reach the plan through a record: the payload is detached
-    at construction by :func:`~.contracts.detached_json`, and :attr:`fields` is
-    a property returning a fresh detached copy on every read, so a formatter
-    that pops a key, clears the mapping, or edits a nested value edits a
-    throwaway. Copy-on-read rather than ``MappingProxyType`` because a proxy is
-    not JSON-serializable — the ``JASPER_LOG_JSON=1`` sink is
-    ``json.dumps(..., default=str)``, so a nested mapping would degrade from a
-    real object to a quoted Python repr.
+    :attr:`fields` returns a fresh detached copy on every read, so a formatter
+    that pops a key or edits a nested value edits a throwaway. Copy-on-read
+    rather than ``MappingProxyType`` because a proxy is not JSON-serializable —
+    the ``JASPER_LOG_JSON=1`` sink is ``json.dumps(..., default=str)``.
     """
 
     event: str
@@ -83,14 +78,11 @@ class JournalRecord:
 class LevelConsistency:
     """How far apart the two level DEFINITIONS place the pair, and on which axis.
 
-    A disclosure, not a placement. The pair is anchored on the raw measured
-    trim (:func:`anchor_trims`), so neither number places anything — and the
-    two were never estimates of one quantity, so a gap between them is a fact
-    about two definitions, not a fault in either.
-
-    ``None`` in place of this value means **one of the two definitions covered
-    no role**, so there was nothing to report — a third state, and not a quiet
-    synonym for "they landed together".
+    A disclosure, not a placement: the pair is anchored on the raw measured trim
+    (:func:`anchor_trims`), and the two were never estimates of one quantity, so
+    a gap between them is a fact about two definitions. ``None`` in place of
+    this value means one of the two definitions covered NO role — a third
+    state, not a quiet synonym for "they landed together".
     """
 
     differs: bool
@@ -111,12 +103,7 @@ class LevelConsistency:
     """:data:`LEVEL_MATCH_AXIS` — WHICH axis these levels were read on."""
 
     def to_dict(self) -> dict[str, Any]:
-        """This verdict as the JOURNAL's payload — its only caller.
-
-        Deliberately not a shared serialization: the banked finding needs these
-        numbers flat and role-suffixed and builds them itself off the
-        attributes. One verdict owner, one adapter per surface.
-        """
+        """This verdict as the JOURNAL's payload — its only caller."""
 
         return {
             "differs": bool(self.differs),
@@ -149,11 +136,7 @@ class TrimDecision:
 
     @property
     def committed_side(self) -> str:
-        """``"anchored"`` or ``"resolved"`` — derived from the strategy.
-
-        The journal's own ``committed`` field reads this rather than a literal,
-        so "which pair won" has one owner and no second copy to drift from it.
-        """
+        """``"anchored"`` or ``"resolved"`` — derived from the strategy."""
         return (
             "resolved"
             if self.strategy
@@ -168,8 +151,8 @@ class TrimDecision:
     def outcome(self) -> str:
         """The persisted ``linearization_outcome`` string.
 
-        ``"trim_rejected"`` is literal: a beyond-margin scan IS rejected, and
-        the anchor is what ships.
+        ``"trim_rejected"`` is literal: a beyond-margin scan IS rejected, and the
+        anchor is what ships.
         """
         return "trim_rejected" if self.beyond_sanity_margin else "fitted"
 
@@ -177,10 +160,6 @@ class TrimDecision:
 @dataclass(frozen=True)
 class SummationFrame:
     """The RAW branches, and the frame a prediction of their sum is taken in.
-
-    Everything :func:`compose_linearized_prediction` needs except the filters
-    and the trims — held together because a prediction composed from one
-    round's branches in another round's frame is a number with no meaning.
 
     ``residual_delay_us`` is already the RESIDUAL relative to the
     argmax-referenced frame (:func:`summed_model_residual_delay_us`'s answer),
@@ -209,20 +188,15 @@ def compose_linearized_prediction(
     THE composition: a second implementation of this arithmetic is how a
     prediction and a graph drift apart.
 
-    The correction is COMPLEX (minimum-phase), not a zero-phase magnitude
-    scale: the emitted biquads rotate phase near their corners and this
-    summation is phase-dominated, so a magnitude-only model mistracked the
-    measured VERIFY summation by ~2.0 dB — WORSE than modelling no correction
-    at all — where the complex model tracks to ~0.5 dB.
+    The correction is COMPLEX (minimum-phase), not a zero-phase magnitude scale:
+    the emitted biquads rotate phase near their corners and this summation is
+    phase-dominated, so a magnitude-only model mistracked the measured VERIFY
+    summation by ~2.0 dB where the complex model tracks to ~0.5 dB.
 
-    ONE grid for both branches, a precondition rather than a simplification:
-    the branch product and the sum below are elementwise.
-
-    ``filters_by_role`` is the PERSISTED filter shape
+    ONE grid for both branches is a precondition: the branch product and the sum
+    below are elementwise. ``filters_by_role`` is the PERSISTED filter shape
     (``{role: [{biquad_type, freq, q, gain}, ...]}``) — what the emitter
-    re-validates — so both callers speak one shape. A role with no entry is
-    corrected by unity: :func:`~..branch_chain.chain_response` returns ones for
-    an empty filter list, so an unfitted, unprescribed branch survives raw.
+    re-validates — and a role with no entry is corrected by unity.
     """
     roles = tuple(frame.branch_tf)
     corrected = [
@@ -314,8 +288,7 @@ class LinearizationPlan:
     def outcome(self) -> str:
         """The persisted ``linearization_outcome`` string.
 
-        No trim decision means no PAIR existed to decide one for: its own value
-        rather than a bare ``"fitted"``.
+        No trim decision means no PAIR existed to decide one for.
         """
         if self.trim is None:
             return LINEARIZATION_OUTCOME_SINGLE_BRANCH
@@ -355,26 +328,14 @@ def assemble_plan(
 
     ``records`` is passed live: it is snapshotted AFTER the headroom record.
     """
-    # The headroom charge, computed now that the trim is committed.
-    #
     # A correction's cost is a property of the CHAIN it is emitted into — the
     # crossover that follows it and the trim that follows that — so the
-    # topology-agnostic fit core cannot compute it. This is the same
+    # topology-agnostic fit core cannot compute it. The same
     # ``branch_headroom_db`` the emitter charges ``active_baseline_headroom``
-    # with, over the same three terms, so the number the household is told and
-    # the number the speaker gives up are one number.
-    #
-    # ``role_attenuations_db`` and not ``anchored``/``resolved``: whichever pair
-    # the trim decision committed is the trim the graph will run, and the charge
-    # follows the emitted graph.
-    #
-    # ``normalize_shift_db`` is NET-NEUTRAL under this rule. Subtracting a
-    # common S from every branch's trim lowers every branch's chain peak by S,
-    # so it lowers this charge by S too, and the pre-split attenuation the
-    # emitter applies falls by the same S the branches gained: identical output,
-    # no lost loudness. The one non-neutral case is a branch whose whole chain
-    # already sits below unity — the charge floors at 0 and cannot fall further
-    # — which the ``normalize_shift_db`` field still discloses.
+    # with, over the same three terms. ``role_attenuations_db`` and not
+    # ``anchored``/``resolved``: the charge follows the graph that will run.
+    # ``normalize_shift_db`` is NET-NEUTRAL under this rule, except for a branch
+    # whose whole chain already sits below unity, where the charge floors at 0.
     charge_db: dict[str, float] = {}
     peak_db: dict[str, float] = {}
     linearization: dict[str, Any] = {}
@@ -389,13 +350,11 @@ def assemble_plan(
     emit(
         "correction.crossover_v2_linearization_headroom",
         {
-            # What the branch actually puts above unity at its loudest bin...
             "chain_peak_db": {r: round(v, 3) for r, v in peak_db.items()},
-            # ...what that costs the speaker's maximum level (peak + margin,
-            # 0.0 for a chain that never exceeds unity)...
+            # Peak + margin; 0.0 for a chain that never exceeds unity.
             "headroom_cost_db": {r: round(v, 3) for r, v in charge_db.items()},
-            # ...and what a sum-of-positives rule would charge instead, kept so
-            # the reclaimed loudness is visible in the journal.
+            # What a sum-of-positives rule would charge instead, kept so the
+            # reclaimed loudness stays visible in the journal.
             "sum_of_positives_db": {
                 role: round(math.fsum(f.gain for f in fit.filters if f.gain > 0.0), 3)
                 for role, fit in fitted.fits.items()

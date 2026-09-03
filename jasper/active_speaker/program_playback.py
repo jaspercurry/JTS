@@ -2,36 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Program-playback entry for the crossover session (Wave 2, deliverable D).
+"""The one entry that plays a compiled excitation program (CHECK / MEASURE).
 
-:func:`play_program` is the one entry that plays a compiled excitation program
-(CHECK / MEASURE) through the speaker's real DSP chain. It composes two things:
-
-* the session-scoped fixed measurement volume
-  (:class:`jasper.active_speaker.session_volume_plan.SessionVolumePlan`) — it
-  ACQUIRES the volume assertion, it never opens or closes the session (one
-  session spans every phase; the flow owns open/close);
-* program admission
-  (:func:`jasper.active_speaker.program_admission.readmit_program_from_wav`) —
-  re-admitted from a fresh WAV byte readback right before playback, exactly as
-  ``play_admitted_wav`` re-admits before an isolated driver sweep.
-
-**The graph is no longer this function's business.**
-:class:`jasper.active_speaker.crossover_v2.session_graph.MeasurementSessionGraph`
-installs it once per session and proves it before each stimulus, so the
-load/restore pair this used to bracket every capture with — and the two ducks
-and five-plus CamillaDSP round-trips it cost — are gone. What stays here is the
-writer lock: a stimulus still must not have the graph swapped out from under it
-mid-capture, and holding the lock across the play is what prevents that.
-
-Playback itself rides the existing verified-aplay path
-(:func:`verified_program_aplay` → ``play_verified_wav``) to ``correction_substream``.
-The play seam and the writer lock are injected callables so the orchestration is
-exercised end-to-end with a fake aplay/DSP boundary.
-
-VERIFY needs no machinery here: it plays a mono summed sweep through the APPLIED
-production graph — the real system, not a commissioning construct — so it reuses
-the existing summed-sweep playback, NOT this program graph.
+:func:`play_program` acquires the session volume assertion but never opens or
+closes the session — one session spans every phase and the flow owns
+open/close. The graph is not this module's business:
+``crossover_v2.session_graph.MeasurementSessionGraph`` installs and proves it
+once per session; the writer lock held across the play is only what stops
+another DSP writer replacing the graph mid-capture. VERIFY does not come
+through here — it plays a summed sweep through the APPLIED production graph.
 """
 
 from __future__ import annotations
@@ -42,9 +21,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
 
-# The ALSA lane a program WAV is played into — the correction fan-in substream
-# that feeds CamillaDSP's capture, same as the isolated driver sweep
-# (``jasper.active_speaker.web_commissioning.COMMISSION_TONE_ALSA_DEVICE``).
 from jasper.audio_measurement.correction_lane import correction_play_device
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 from jasper.audio_measurement.playback import (
@@ -59,7 +35,7 @@ from .program_admission import ProgramAdmission
 
 logger = logging.getLogger(__name__)
 
-# Injected seams, bound to the real CamillaController by
+# Bound to the real CamillaController by
 # ``crossover_v2.composition.bind_program_playback_seams``.
 PlayWav = Callable[[], Awaitable[PlaybackResult]]
 WriterLock = Callable[[], AbstractAsyncContextManager]
@@ -96,16 +72,8 @@ async def verified_program_aplay(
 ) -> PlaybackResult:
     """The production ``play_wav`` seam: verified-aplay of the program WAV.
 
-    Wraps the existing content-bound path — ``verified_wav_source`` snapshots and
-    sha256-verifies the exact program WAV bytes, ``play_verified_wav`` re-verifies
-    and emits them through a stable fd. Wave 5 binds this as ``play_program``'s
-    ``play_wav`` seam; tests inject a fake so no aplay is spawned.
-
-    ``alsa_device=None`` (the production shape) resolves the correction
-    lane's CURRENT transport per call via ``correction_play_device()`` — a
-    def-time constant default would freeze the device at import and ignore
-    an arm (P6c-ii). Passing a device explicitly remains the test/override
-    seam.
+    ``alsa_device=None`` resolves the correction lane's CURRENT transport per
+    call; a def-time default would freeze the device at import and ignore an arm.
     """
     if alsa_device is None:
         alsa_device = correction_play_device()
@@ -125,23 +93,9 @@ async def play_program(
 ) -> ProgramPlaybackResult:
     """Play one CHECK/MEASURE program through the session's measurement graph.
 
-    Order of operations (all fail-closed):
-
-    1. ``session_volume_plan.assert_ready()`` — the session volume assertion
-       (raises if the fixed measurement volume is not open, confirmed, and within
-       its wall-clock ceiling).
-    2. ``readmit()`` — fresh re-admission from the rendered WAV bytes; a refused
-       program raises :class:`ProgramPlaybackRefused` before any audio.
-    3. Under ``writer_lock``: play the admitted WAV via ``play_wav`` (the
-       verified-aplay path).
-
-    The lock is held across the play rather than around a swap: the session
-    graph is installed and proven before the caller reaches here, and what the
-    lock still buys is that no other DSP writer can replace it mid-capture.
-
-    Emits ``event=active_speaker.program_playback`` start/end markers carrying the
-    ``program_id``. The play seam and writer lock are injected so this
-    orchestration is testable with a fake aplay/DSP boundary.
+    Fail-closed in order: the session volume assertion, then fresh re-admission
+    from the rendered WAV bytes (a refusal raises before any audio), then the
+    play under ``writer_lock``.
     """
     session_volume_plan.assert_ready()
 

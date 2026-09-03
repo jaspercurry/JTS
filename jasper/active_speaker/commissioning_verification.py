@@ -132,12 +132,9 @@ def _artifact_relative_path(source_path: str) -> str:
 def _bundle_forensics(bundle_dir: Path) -> tuple[str | None, str | None, str | None]:
     """``(build_sha, mic_calibration_id, mic_calibration_sha256)`` for a bundle.
 
-    ``bundles`` already resolves all three best-effort when it opens the
-    session — an install without a build manifest, or a calibration whose file
-    has moved, records ``None`` rather than failing. This reads them back with
-    the same posture: a bundle that will not parse yields three ``None``s, so
-    an unreadable forensic mirror can never stop a receipt that the strict
-    evidence chain has otherwise earned (ruling S10).
+    Best-effort like the ``bundles`` write that produced them: a bundle that
+    will not parse yields three ``None``s, so an unreadable forensic mirror
+    cannot stop a receipt the strict evidence chain has earned (ruling S10).
     """
 
     from .bundles import summarize_bundle
@@ -677,13 +674,9 @@ _LAST_DISCLOSED: tuple[str, str] | None = None
 def _deny(reason: str, cause: str) -> dict[str, Any]:
     """One un-vouched receipt answer, disclosed loudly and never enforced.
 
-    Ruling S10: an unproven fact is a WARNING, not a stop. The caller records
-    that the automatic crossover is not receipt-backed — which keeps room
-    correction from CLAIMING the verified authority — and runs anyway.
-
-    ``cause`` rides the answer as well as the log: without it a household-facing
-    class name cannot say WHICH file or errno produced it, and the operator is
-    left SSHing to the journal for the one sentence that ends the incident.
+    Ruling S10: an unproven fact is a WARNING, not a stop. ``cause`` rides the
+    answer as well as the log, so the file or errno behind it reaches the
+    operator without a journal read.
     """
 
     global _LAST_DISCLOSED
@@ -738,14 +731,9 @@ def read_commissioning_room_authority(
 ) -> dict[str, Any]:
     """Read Active's exact verified-receipt decision without claiming ownership.
 
-    The denials are distinguishable on purpose: a disclosure that cannot say
-    which of them happened is vague rather than loud. None of them stops room
-    correction — see :func:`_deny`. What each one means, and how the arms below
-    decide between them, is ADR-0196.
-
-    A lifecycle that is not ``verified`` — including a run record that has
-    never been commissioned at all — is ABSENT: a true state, not a damaged
-    one, and the state most speakers are in.
+    The denials are distinguishable on purpose and none of them stops room
+    correction (see :func:`_deny`); what each means is ADR-0196. A lifecycle
+    that is not ``verified`` is ABSENT — a true state, not a damaged one.
     """
 
     from .bundles import sessions_dir
@@ -777,11 +765,9 @@ def read_commissioning_room_authority(
             _artifact_relative_path(receipt_source_path(run))
         )
         payload = store.reopen_json_artifact(artifact)
-        # A receipt this JTS would have to grow fields to read is not corrupt
-        # and its household did nothing wrong: an upgrade moved the schema
-        # under a proof that was honestly minted. Naming that separately keeps
-        # "re-run commissioning once" from reading as "your evidence is
-        # damaged". Strict parsing is unchanged for the current version.
+        # A receipt this JTS would have to grow fields to read is not corrupt:
+        # an upgrade moved the schema under an honestly minted proof. Strict
+        # parsing is unchanged for the current version.
         declared = payload.get("schema_version")
         if (
             payload.get("kind") == RECEIPT_KIND

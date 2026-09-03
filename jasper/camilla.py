@@ -57,11 +57,10 @@ MAIN_VOLUME_RAMP_SETTLE_S = 0.45
 
 # How far a graph mutation ducks the main fader before swapping. The reload
 # discontinuity itself is not what sizes this: an un-ducked swap measured
-# 7-8 dB below the ambient floor's own sample-to-sample delta
-# (docs/cutover-briefs-acceptance.md §4). What the duck covers is the
-# broadband gain step between two DIFFERENT graphs, whose size is the
-# headroom charge the outgoing graph carried — 22.5 dB is the largest a
-# shipped profile has been measured to hold. 25 dB clears that, and is the
+# 7-8 dB below the ambient floor's own sample-to-sample delta. What the duck
+# covers is the broadband gain step between two DIFFERENT graphs, whose size
+# is the headroom charge the outgoing graph carried — 22.5 dB is the largest
+# a shipped profile has been measured to hold. 25 dB clears that, and is the
 # shipped `JASPER_DUCK_DB`, so out of the box a swap and a cue duck by the
 # same amount. See ADR-0213.
 GRAPH_SWAP_DUCK_DB = 25.0

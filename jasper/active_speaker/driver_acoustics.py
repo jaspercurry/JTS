@@ -4,35 +4,12 @@
 
 """Mic-backed acoustic analysis for active-speaker driver checks.
 
-The driver-check step in the active-crossover flow has, until now, recorded
-only operator confirmation plus a hand-passed ``observed_mic_dbfs`` number
-([`measurement.py`](measurement.py) says it deliberately "does not ... infer
-acoustic truth"). This module is the missing acoustic half: it turns a phone-
-mic sweep capture into a real per-driver verdict (is this driver producing
-sound, and in its expected band?) and a summed-crossover verdict (does the
-crossover region sum without a cancellation null?).
-
-It reuses the shared sweep / deconvolution / analysis primitives in
-[`jasper.audio_measurement`](../audio_measurement/__init__.py) rather than
-reinventing the DSP — the only thing that kernel can't do is target one physical
-output, so ``write_driver_sweep_wav`` builds a channel-targeted multichannel WAV
-(sweep on one channel, silence elsewhere). numpy/scipy and the kernel modules are
-imported lazily inside functions so the socket-activated ``/sound/`` wizard
-stays light until a measurement actually runs (mirrors
-[`jasper/web/correction_setup.py`](../web/correction_setup.py)).
-
-This module does no audio I/O and holds no state. The caller plays the WAV
-through the active route under the existing safe-playback machinery, records
-the phone mic with the shared browser recorder
-([`measurement-audio.js`](../../deploy/assets/shared/js/measurement-audio.js)),
-and hands the captured bytes here. The returned ``observed_mic_dbfs`` is what
-[`measurement.record_driver_measurement`](measurement.py) already consumes;
-the ``acoustic`` verdict block is new evidence for the same record.
-
-Playback *safety* (level, ramp, tweeter protection) stays owned by
-``safe_playback`` / ``calibration_level`` / ``driver_protection`` — this module
-only chooses the digital sweep amplitude; the real SPL is governed by the
-system volume and CamillaDSP at play time.
+Turns a phone-mic sweep capture into a per-driver verdict and the summed
+capture's magnitude curve; does no audio I/O and holds no state. numpy/scipy
+and the measurement kernel are imported lazily inside functions so the
+socket-activated ``/sound/`` wizard stays light. Playback safety (level,
+ramp, tweeter protection) stays owned by ``safe_playback`` /
+``calibration_level`` / ``driver_protection``.
 """
 
 from __future__ import annotations
@@ -42,9 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
-# quality_model holds only pure-data threshold profiles (no numpy/scipy), so it
-# is safe to import at module top even though the rest of the measurement kernel
-# stays lazily imported to keep the socket-activated /sound/ wizard light.
+# Pure-data threshold profiles only (no numpy/scipy), so top-level import is safe.
 from jasper.audio_measurement.excitation import (
     AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
 )
@@ -53,67 +28,48 @@ from jasper.audio_measurement.quality_model import DRIVER
 if TYPE_CHECKING:
     from jasper.audio_measurement.calibration import CalibrationCurve
 
-# Default swept-sine parameters. Shorter than room correction's 10 s — a single
-# driver needs far less SNR than a multi-position room average — but the same
-# band and sample rate so the correction deconvolution path is reused verbatim.
+# Same band and sample rate as room correction, so its deconvolution path is
+# reused verbatim.
 DEFAULT_F1_HZ = 20.0
 DEFAULT_F2_HZ = 20000.0
 DEFAULT_DURATION_S = 6.0
 DEFAULT_SAMPLE_RATE = 48000
-# The level tone and ESS share one source peak. Acoustic level is then governed
-# by the locked main volume and the applied per-role baseline gain.
+# Level tone and ESS share one source peak; acoustic level is then governed by
+# the locked main volume and the applied per-role baseline gain.
 DEFAULT_AMPLITUDE_DBFS = AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS
 
-# Frequency window we trust for a phone-mic + speaker sweep. Below ~40 Hz and
-# above ~18 kHz, room modes, mic roll-off, and sweep fade dominate.
+# Trusted window for a phone-mic + speaker sweep: below ~40 Hz and above
+# ~18 kHz, room modes, mic roll-off, and sweep fade dominate.
 ANALYSIS_LO_HZ = 40.0
 ANALYSIS_HI_HZ = 18000.0
 DEFAULT_SMOOTHING_FRACTION = 24
 
-# How far before the located sweep arrival the equal-length quiet reference
-# begins, beyond the sweep's own length: ``_capture_to_magnitude`` selects
-# ``ambient_start = arrival - len(reference) - AMBIENT_CONTROLLED_LEAD_S`` and
-# refuses the capture when that start precedes the controlled (host-paused)
-# interval. This is therefore the analyzer's REAL minimum ambient requirement:
-# ambient_duration_s >= kernel sweep duration + this lead. The host-side quiet
-# window (``test_signal_plan.AMBIENT_DURATION_MARGIN_S``, 2.0 s over the
-# *requested* sweep) must stay above this lead plus the synchronized-sweep
-# kernel's phase-rounding growth (~0.09 s); the contract test in
-# tests/test_active_speaker_test_signal_plan.py imports this constant and
-# fails loudly if a future margin reduction would make the analyzer reject
-# every capture at runtime.
+# Lead before the located sweep arrival at which the equal-length quiet
+# reference begins. Sets the analyzer's real minimum ambient requirement:
+# ambient_duration_s >= kernel sweep duration + this lead, which
+# test_signal_plan.AMBIENT_DURATION_MARGIN_S must stay above.
 AMBIENT_CONTROLLED_LEAD_S = 1.0
 
-# Verdict thresholds (all differential, so the unknown absolute calibration of
-# the deconvolved magnitude cancels out). The driver-specific ones are aliased
-# from the shared DRIVER QualityModel profile so the forked constant lives in
-# data (jasper.audio_measurement.quality_model); values are unchanged.
+# Verdict thresholds are all differential, so the unknown absolute calibration
+# of the deconvolved magnitude cancels out.
 SILENT_PEAK_DBFS = DRIVER.silent_peak_dbfs  # at/below this the capture is silent
 PRESENT_MIN_SEPARATION_DB = 0.0  # in-band must be at least as strong as out
 OUT_OF_BAND_SEPARATION_DB = -3.0  # clearly more energy outside the band
 DEFAULT_NULL_THRESHOLD_DB = DRIVER.null_threshold_db  # deep crossover null = "present"
 
-# The CONFIDENCE NEIGHBOURHOOD around each crossover Fc, geometrically centred:
+# Confidence neighbourhood around each crossover Fc, geometrically centred:
 # ``[Fc / OVERLAP_BAND_RATIO, Fc * OVERLAP_BAND_RATIO]``. Nothing is averaged
-# across it — the level is read AT Fc (see :func:`_overlap_band_levels`); this
-# band only has to hold enough bins, and is the window the SNR verdict spans.
+# across it — the level is read AT Fc; the band only has to hold enough bins,
+# and is the window the SNR verdict spans.
 OVERLAP_BAND_RATIO = 2.0 ** 0.5  # half-octave each side → one octave total
-# Below this many FFT bins in that neighbourhood (a very low Fc on a short
-# sweep) the reading is too sparsely resolved to interpolate through, so it is
-# marked unusable and the trim math fails closed to the datasheet sensitivity
-# trim. Aliased from the shared DRIVER profile (value unchanged).
+# Below this many FFT bins the reading is too sparsely resolved to interpolate
+# through: marked unusable, and the trim math fails closed to the datasheet
+# sensitivity trim.
 OVERLAP_MIN_BINS = DRIVER.overlap_min_bins
 
 DRIVER_ACOUSTIC_KIND = "jts_active_speaker_driver_acoustics"
 SUMMED_ACOUSTIC_KIND = "jts_active_speaker_summed_acoustics"
 
-# The verdict vocabulary, named so the analyzers below and the frozensets are
-# ONE source: a renamed or added verdict touches a single constant rather than
-# drifting between the analyzer's literal and the declared set. Exported so
-# callers that MAP verdicts (commissioning_capture's verdict->outcome maps) can
-# guard-test that they cover the full set: a verdict missing from a map fails a
-# test loudly instead of silently skipping a capture (`.get()` -> None -> not
-# recorded).
 VERDICT_PRESENT = "present"
 VERDICT_OUT_OF_BAND = "out_of_band"
 VERDICT_SILENT = "silent"
@@ -128,10 +84,6 @@ SUMMED_VERDICTS = frozenset(
     {SUMMED_BLEND_OK, SUMMED_POLARITY_OR_DELAY_PROBLEM, VERDICT_UNUSABLE_CAPTURE}
 )
 
-# The capture geometries the analysis reads. Exported so a caller carrying a
-# geometry out of an operator-authored document can check it at its own door
-# and refuse in its own vocabulary, instead of discovering an
-# out-of-vocabulary value as a DriverAcousticsError raised mid-analysis.
 CAPTURE_GEOMETRIES = frozenset({"near_field", "reference_axis"})
 
 
@@ -171,35 +123,22 @@ class DriverAcousticResult:
     passband_hz: tuple[float, float]
     mic_clipping: bool
     quality: dict[str, Any]
-    # Per-crossover overlap-band levels for measured level matching, guided or
-    # headless. One entry
-    # per crossover Fc this driver participates in, each
-    # ``{fc_hz, lo_hz, hi_hz, level_db, bins, usable}``. ``usable`` is False when
-    # the capture was silent/clipped/unusable or the band had too few bins, so
-    # the trim math (jasper.active_speaker.baseline_profile) can fail closed.
+    # One ``{fc_hz, lo_hz, hi_hz, level_db, bins, usable}`` entry per crossover
+    # Fc this driver participates in. ``usable`` is the gate the trim math fails
+    # closed on; ``level_db`` can be finite on an unusable entry.
     overlap_levels: tuple[dict[str, Any], ...] = ()
-    # L2 calibrated-mic evidence: True when a real measurement mic's
-    # calibration curve was applied to the magnitude.
+    # True when a calibrated measurement mic's curve was applied to the magnitude.
     calibrated: bool = False
-    # SC-1 band-specific SNR verdict block (magnitude decision class), from
-    # jasper.audio_measurement.snr_policy.band_snr_verdicts. None when no
-    # noise_band_report was supplied to analyze_driver_capture — there is no
-    # noise evidence to gate on, so there is nothing to report.
+    # Magnitude-class SNR verdicts (audio_measurement.snr_policy); None when no
+    # noise_band_report was supplied to analyze_driver_capture.
     snr: dict[str, Any] | None = None
-    # The paired ambient transform that produced ``snr``. This preserves the
-    # same deconvolved per-band noise evidence and signal-owned window/gate
-    # provenance for later consumers (including the LF splice lane) instead
-    # of forcing them back onto a scalar floor or a duplicate schema.
+    # The paired ambient transform that produced ``snr``.
     ambient: dict[str, Any] | None = None
-    # SC-2 IR-gating / low-frequency validity-floor block (see
-    # jasper.audio_measurement.gating and docs/active-crossover-information-design.md
-    # "Measurement validity"). ``None`` only when there was no IR to gate at all
-    # (the capture failed quality gating before deconvolution); otherwise always
-    # populated, exempt (near-field) or applied (reference-axis).
+    # IR-gating / low-frequency validity-floor block (audio_measurement.gating,
+    # docs/active-crossover-information-design.md "Measurement validity").
+    # ``None`` only when there was no IR to gate at all.
     gating: dict[str, Any] | None = None
-    # Server-owned geometry derived from the verified placement policy. This
-    # lets repeat admission distinguish a legacy near-field record from a
-    # reference-axis record whose validity floor could not be established.
+    # Server-owned geometry derived from the verified placement policy.
     capture_geometry: str = "near_field"
 
     def to_dict(self) -> dict[str, Any]:
@@ -234,33 +173,25 @@ class SummedAcousticResult:
     observed_mic_dbfs: float
     mic_clipping: bool
     quality: dict[str, Any]
-    # L2 phase-aware evidence. ``expect_null`` records whether this was a
-    # reverse-polarity capture (one driver inverted) — for which a DEEP null is
-    # the pass signal — versus a normal in-phase capture, where a deep null is
-    # the polarity/delay problem. ``null_depth_db`` is always the raw measured
-    # depth; the verdict interprets it per ``expect_null``.
+    # A reverse-polarity capture (one driver inverted), for which a DEEP null is
+    # the pass signal. ``null_depth_db`` is always the raw measured depth; the
+    # verdict interprets it per ``expect_null``.
     expect_null: bool = False
     calibrated: bool = False
-    # SC-1 band-specific SNR verdict block (alignment decision class), from
-    # jasper.audio_measurement.snr_policy.band_snr_verdicts over the overlap
-    # band [fc/2, fc*2]. None when neither noise_band_report nor
-    # noise_floor_dbfs was supplied to the summed analyzer.
+    # Alignment-class SNR verdicts over the overlap band [fc/2, fc*2]. None when
+    # neither noise_band_report nor noise_floor_dbfs was supplied.
     snr: dict[str, Any] | None = None
     ambient: dict[str, Any] | None = None
     # True when null_depth_db was reduced from its raw measured value because
-    # the overlap-band SNR could not prove a deeper null (see
-    # jasper.audio_measurement.snr_policy.cap_null_depth_db). The verdict
-    # above is always decided from the UNCAPPED measured depth; only the
-    # reported number is capped.
+    # the overlap-band SNR could not prove a deeper null. The verdict above is
+    # always decided from the UNCAPPED measured depth; only the reported
+    # number is capped.
     null_depth_capped: bool = False
-    # Whether the crossover Fc (and its lower shoulder, Fc/2) sit above the
-    # SC-2 low-frequency validity floor. True whenever gating was not applied
-    # (near-field/exempt) or found no floor issue; False only when a
-    # reference-axis capture's floor makes the null undecidable (paired with
-    # verdict=unusable_capture).
+    # Whether Fc and its lower shoulder Fc/2 sit above the low-frequency validity
+    # floor. True whenever gating was not applied or found no floor issue.
     above_validity_floor: bool | None = True
     near_validity_floor: bool = False
-    # SC-2 gating block — see DriverAcousticResult.gating.
+    # See DriverAcousticResult.gating.
     gating: dict[str, Any] | None = None
     capture_geometry: str = "near_field"
 
@@ -298,12 +229,9 @@ def write_driver_sweep_wav(
 ) -> DriverSweep:
     """Write a multichannel sweep WAV with the ESS on one channel, silence else.
 
-    ``jasper.audio_measurement.sweep.write_sweep_wav`` only emits mono; an active
-    speaker needs the sweep routed to exactly one physical output so a single
-    driver is excited. The returned ``DriverSweep.sweep_meta`` carries the exact
-    synchronization parameters the analysis side must regenerate the reference
-    sweep from (regenerating beats reloading the int16 WAV, which would add
-    quantization error to the deconvolution reference).
+    ``DriverSweep.sweep_meta`` carries the synchronization parameters the
+    analysis side regenerates the reference sweep from; reloading the int16 WAV
+    instead would add quantization error to the deconvolution reference.
     """
     if channel_count < 1:
         raise DriverAcousticsError(f"channel_count must be >= 1, got {channel_count}")
@@ -350,37 +278,22 @@ def _capture_to_magnitude(
     """Shared capture → (quality, freqs, smoothed_magnitude_db, gating) pipeline.
 
     Returns ``(quality, None, None, None)`` when the capture fails quality
-    gating — deconvolving an unsafe (clipped / too short / wrong rate)
-    capture would fabricate a curve, so we stop and report the failure
-    instead.
+    gating: deconvolving a clipped / too short / wrong-rate capture would
+    fabricate a curve.
 
-    When ``calibration`` is supplied (an L2 calibrated measurement mic), the
-    mic-correction curve is applied to the magnitude via the SAME
-    ``jasper.audio_measurement.calibration.apply_calibration_curve`` the room-correction path
-    uses, so the surfaced FR is calibrated and the null-depth shoulders (taken at
-    different frequencies) are corrected rather than relying on the additive cal
-    cancelling.
-
-    ``capture_geometry`` selects whether the deconvolved impulse response is
-    gated to its reflection-free span before the magnitude response is taken
-    (see :mod:`jasper.audio_measurement.gating` and
-    docs/active-crossover-information-design.md "Measurement validity: gating
-    and the low-frequency floor"). ``"near_field"`` (today's shipped capture,
-    taken a few centimetres from the driver) is exempt — the room cannot
-    contaminate a capture that close — and the ungated IR is used, so a
-    near-field caller's result is byte-identical to before this parameter
-    existed. ``"reference_axis"`` (the ~1 m fixed-axis capture) gates the IR
-    and returns the SC-2 gating block describing what was done; the returned
-    ``gating`` dict is always populated (exempt or applied) whenever an IR
-    exists at all.
+    ``capture_geometry`` selects IR gating (see
+    :mod:`jasper.audio_measurement.gating` and
+    docs/active-crossover-information-design.md "Measurement validity").
+    ``"near_field"`` is exempt and uses the ungated IR; ``"reference_axis"``
+    gates the IR. The returned ``gating`` dict is populated (exempt or applied)
+    whenever an IR exists at all.
 
     The paired-ambient report is measured on
     :data:`~jasper.audio_measurement.snr_policy.CROSSOVER_SNR_BANDS_HZ` — the
     canonical acoustic bands, correct for the WIDE per-driver near-field sweep
     this path was built for. The caller MUST measure its signal side on that
     same table: the two are subtracted per ``band_id``. A sweep too narrow to
-    cover a canonical band needs a derived table instead
-    (:func:`~jasper.audio_measurement.snr_policy.sweep_excitation_bands`).
+    cover a canonical band needs a derived table instead.
     """
     if capture_geometry not in CAPTURE_GEOMETRIES:
         raise DriverAcousticsError(
@@ -632,69 +545,18 @@ def _capture_to_magnitude(
 def _capture_band_levels(captured_wav: str | Path) -> list[dict[str, Any]]:
     """Raw-domain per-band FFT levels of a captured WAV, for the SC-1 SNR gate.
 
-    Deliberately mirrors how a ``noise_band_report`` is built — both sides via
-    :func:`jasper.audio_measurement.snr_policy.band_levels_dbfs` on the raw
-    signal — rather than the deconvolved (gain-corrected) magnitude response
-    ``_capture_to_magnitude`` produces: an SNR verdict compares captured
-    broadband energy against measured ambient noise in the same band, so both
-    sides must be in the same (raw dBFS) units to be physically meaningful.
+    Raw dBFS, not the deconvolved magnitude: an SNR verdict subtracts a
+    ``noise_band_report`` built the same way, band for band.
 
-    **This Hann-windows a non-stationary sweep, and that bias is measured
-    (issue #2010, 2026-08-01) — but nothing in production reaches this
-    function, which is why the Hann default was left in place rather than
-    mirrored from #1847's ``window="rectangular"`` fix.** All three parts
-    matter to anyone changing this:
-
-    *What it costs.* A Hann window re-weights a swept sine's frequencies by
-    WHEN they occur in the capture, so the reported band split is wrong by a
-    band-dependent amount. Rendered through
-    :func:`jasper.audio_measurement.sweep.synchronized_swept_sine` and
-    compared against the analytical dwell-time law
-    (:func:`jasper.audio_measurement.program_analysis.sweep_band_crest_factor_db`),
-    a BARE sweep at this module's OWN defaults (:data:`DEFAULT_F1_HZ` 20 Hz,
-    :data:`DEFAULT_F2_HZ` 20 kHz, :data:`DEFAULT_DURATION_S` 6 s) reads
-    sub_bass -11.57 dB, bass -1.57, upper_bass +2.44, transition +4.09,
-    mid +1.76, treble -7.62 against the law. Those figures hold for that shape
-    only. The summed-crossover sweep was much narrower — bounded to one
-    octave either side of the crossover, clamped to
-    :data:`~jasper.active_speaker.test_signal_plan.MIN_DRIVER_TEST_FREQUENCY_HZ`
-    and
-    :data:`~jasper.active_speaker.test_signal_plan.MAX_DRIVER_TEST_FREQUENCY_HZ`
-    — and was NOT characterised band-by-band, so those per-band figures do not
-    describe it.
-
-    *What actually drives it: capture LAYOUT, not sweep range or duration.*
-    Holding the sweep fixed and varying only the leading quiet from 0 to 20 s
-    moved every band by more than 13 dB — treble across a 27 dB span, and
-    five of the six bands CHANGED SIGN along the way (a band reading too
-    quiet at one layout reads too loud at another). Varying sweep duration
-    from 2.07 s to 20.03 s instead moved it by under 0.1 dB. So the bias is
-    not a fixed per-band offset that could be calibrated out once; it is a
-    function of where the sweep happens to sit inside the recording.
-
-    *Why it is nonetheless dead today.* Its one remaining call site,
-    :func:`analyze_driver_capture`, is unreachable in the sense that matters:
-    the raw-WAV ``POST /crossover/driver-capture`` route it needs was retired
-    by W5b. That route is absent from ``jasper.web.correction_setup``'s route
-    allowlist and pinned at 404 by ``test_web_correction_setup``'s
-    route-inventory test. The static callers that survive
-    (``web_measurement``'s driver-capture chain, itself zero-caller) cannot
-    be entered.
-
-    *Reviving that caller re-arms this immediately.* Adding a driver-capture
-    upload route puts a layout-dependent error straight into the SC-1 SNR
-    gate — a decision, not a disclosure. ``window="rectangular"`` is the likely fix: it
-    tracks the same law to within 0.2 dB everywhere in the 2.07-20.03 s family
-    above. That residual is a smooth function of sweep LENGTH, not a constant
-    (about 0.18 dB at 2.07 s, 0.10 dB at the 6 s default, 0.05 dB at 20.03 s,
-    worst band ``sub_bass`` throughout), so any single decimal is an artifact
-    of the duration it was sampled at — re-derive at the length you actually
-    ship. Even so it is not a validated drop-in here: on a PADDED capture,
-    which driver captures are by design, it carries a band-independent
-    duty-cycle offset of ``10*log10(sweep_len/capture_len)`` — 5.93 dB across
-    that same 0-to-20 s lead sweep. Characterise that term against whatever
-    the noise side is measured over before switching, or the gate trades one
-    bias for another.
+    #2010: the default Hann window biases a non-stationary sweep's band split by
+    a capture-layout-dependent amount (>13 dB across a 0-20 s leading quiet,
+    sign-changing per band). No production caller reaches this function — the
+    raw-WAV ``POST /crossover/driver-capture`` route its one call site needs is
+    retired and pinned at 404 — so the shipped SC-1 SNR gate does not carry that
+    bias, and reviving such a route re-arms it. ``window="rectangular"`` tracks
+    the dwell-time law to within 0.2 dB but adds a
+    ``10*log10(sweep_len/capture_len)`` duty-cycle offset on a padded capture;
+    characterise that against the noise side before switching.
     """
     import numpy as np
 
@@ -761,63 +623,32 @@ def _overlap_band_levels(
 ) -> tuple[dict[str, Any], ...]:
     """The deconvolved magnitude AT each crossover Fc, with its confidence band.
 
-    **A view of THE level fact, not a second definition of it** (ruling S8).
-    "Level-matched" means matched acoustic output through the HANDOVER REGION:
-    after the target filters both branches sit on their matched −6 dB
-    Linkwitz-Riley shoulder at Fc, so the driver-to-driver delta there is their
-    relative sensitivity.
-    :func:`~jasper.audio_measurement.program_analysis.solve_branch_trims` reads
-    that one condition as a power mean over the mirrored ±1-octave halves; this
-    reads it at the single frequency where the condition is defined. One
-    definition, two sittings — the distance between them is what
-    ``baseline_profile._compare_level_sittings`` discloses.
+    A view of the one level fact, not a second definition of it (ruling S8,
+    docs/REFACTOR-TUNING-2026-08.md). ``level_db`` is a POINT: ``mag_db``
+    interpolated at ``fc`` off the 1/24-octave-smoothed magnitude, never a mean
+    over ``[lo_hz, hi_hz]`` — that span is the confidence neighbourhood which
+    must hold ``OVERLAP_MIN_BINS`` bins, and the window the SNR verdict spans.
 
-    ``level_db`` is therefore a POINT: ``mag_db`` interpolated at ``fc`` off the
-    1/24-octave-smoothed magnitude, which is where the log-symmetric averaging
-    happens. It is **not** a mean over ``[lo_hz, hi_hz]`` — a linear-bin band
-    mean would skew a sloped response, the lower driver rolling off while the
-    upper climbs. ``[lo_hz, hi_hz]`` is the confidence NEIGHBOURHOOD that must
-    hold enough bins, and the window the SNR verdict is taken over; nothing is
-    averaged across it.
+    Returns one entry per ``Fc`` (``{fc_hz, lo_hz, hi_hz, level_db, bins,
+    usable, snr_verdict, above_validity_floor, near_validity_floor}``). An entry
+    is ``usable`` only when the capture passed quality gating, was not silent,
+    the mic did not clip, the band held enough bins, ``fc`` sits at/above the
+    validity floor, and its SNR verdict is not ``"insufficient"``. ``usable`` is
+    the only gate: ``level_db`` is NaN only when there was nothing to read at
+    ``fc``, and is finite on a clipped or under-resolved entry, so a reader that
+    skips the flag gets a number no measurement stands behind. A ``"reduced"``
+    verdict does not force ``usable=False``.
 
-    Returns one entry per crossover ``Fc`` (``{fc_hz, lo_hz, hi_hz, level_db,
-    bins, usable, snr_verdict, above_validity_floor, near_validity_floor}``).
-    An entry is ``usable`` only when the capture passed quality gating, was
-    not silent, the mic did not clip, the band held at least
-    ``OVERLAP_MIN_BINS`` bins, ``fc`` sits at/above the SC-2 low-frequency
-    validity floor (when one applies), AND its SC-1 SNR verdict is not
-    ``"insufficient"`` — otherwise ``level_db`` is NaN and ``usable`` is False
-    so the level-match trim math can fail closed to the datasheet trim, same
-    as a silent/clipped capture.
-
-    ``snr_bands`` is the ``"bands"`` list from
-    :func:`jasper.audio_measurement.snr_policy.band_snr_verdicts` (magnitude
-    class) when the caller supplied noise evidence, else ``None``.
-    ``snr_verdict`` is the worst verdict among the ``snr_bands`` entries
-    covering ``[lo_hz, hi_hz]`` (:func:`~jasper.audio_measurement.snr_policy.worst_band_verdict`),
-    or ``"unknown"`` when there is no evidence — which leaves ``usable``
-    exactly as computed above (no regression for the shipped no-noise flow).
-    A "reduced" verdict does NOT force ``usable=False``: it is a
-    reduced-confidence result, not a refusal.
-
-    ``validity_floor_hz`` is ``None`` for a near-field capture, whose explicit
-    gating exemption makes ``validity_floor_known=True`` and every entry
-    ``above_validity_floor=True``. An ungateable reference-axis capture passes
-    ``validity_floor_known=False``: every entry records the tri-state
-    ``above_validity_floor=None`` and is unusable. When a floor applies, an entry
-    with ``fc < validity_floor_hz`` is marked ``above_validity_floor=False``
-    (and thereby unusable); ``near_validity_floor`` is the advisory
-    ``[floor, NEAR_FLOOR_RATIO * floor)`` reduced-confidence band and does
-    NOT affect ``usable``.
+    ``validity_floor_known=False`` (an ungateable reference-axis capture) makes
+    every entry ``above_validity_floor=None`` and unusable. ``near_validity_floor``
+    marks the advisory ``[floor, NEAR_FLOOR_RATIO * floor)`` band and does not
+    affect ``usable``.
     """
     import numpy as np
 
     from jasper.audio_measurement import snr_policy
     from jasper.audio_measurement.gating import NEAR_FLOOR_RATIO
 
-    # A local `floor` narrowed to `float | None` (rather than branching on a
-    # separate `has_floor` bool) lets every comparison below stay a plain
-    # `floor is not None and ...` — mypy narrows `floor` from that guard.
     floor = (
         validity_floor_hz
         if validity_floor_hz is not None and math.isfinite(validity_floor_hz)
@@ -884,12 +715,8 @@ def usable_overlap_level_db(
 ) -> float | None:
     """The USABLE overlap-band level at ``fc`` in dB, or ``None`` (fail-closed).
 
-    An entry counts only when :func:`_overlap_band_levels` marked it ``usable``
-    (good SNR, not silent, not clipped, enough bins, at or above the validity
-    floor) and its level is a finite number. The one owner of that reading, so
-    a live :class:`DriverAcousticResult` and a persisted capture record — which
-    ``baseline_profile._overlap_level_at`` wraps this for — can never disagree
-    about whether the same band is evidence.
+    The one owner of that reading: a live :class:`DriverAcousticResult` and a
+    persisted capture record must not disagree about whether a band is evidence.
     """
     for entry in overlap_levels or ():
         if not isinstance(entry, Mapping) or not entry.get("usable"):
@@ -924,36 +751,17 @@ def analyze_driver_capture(
 ) -> DriverAcousticResult:
     """Classify whether a driver is producing sound in its expected band.
 
-    ``passband_hz`` is the driver's intended pass band (e.g. a woofer's
-    ``(40, 400)``). A correct driver has more energy inside its band than
-    outside it; a silent capture is flagged ``silent``; a driver whose energy
-    sits clearly outside its band (mis-wired output, swapped driver) is flagged
-    ``out_of_band``. ``observed_mic_dbfs`` is the capture RMS — the value
-    ``measurement.record_driver_measurement`` already consumes.
-
     ``overlap_fcs`` are the crossover frequencies this driver participates in
-    (from :func:`jasper.active_speaker.profile.crossover_edges_for_role`); each
-    yields an overlap-band level entry (see :data:`OVERLAP_BAND_RATIO`) used to
-    refine the datasheet sensitivity trim with a MEASURED level match. Magnitude
+    (:func:`jasper.active_speaker.profile.crossover_edges_for_role`). Magnitude
     only — never used to authorise a phase or delay decision.
 
-    ``noise_band_report`` is an optional band-specific ambient-noise report:
-    either the legacy correction-shape
-    ``[{band_id, band_hz, level_dbfs}, ...]`` list, or a domain-tagged
-    ``{domain, method, bands}`` report from the controlled pre-sweep quiet crop. When
-    supplied, the SC-1 magnitude-class SNR verdict block
-    (:func:`jasper.audio_measurement.snr_policy.band_snr_verdicts`) is
-    computed and stored on the result's ``snr`` field, scoped to
-    ``relevant_hz = passband_hz ∩ [ANALYSIS_LO_HZ, ANALYSIS_HI_HZ]``; when
-    omitted, ``snr`` is ``None`` (no noise evidence to gate on).
-    ``capture_geometry`` (``"near_field"`` default, or ``"reference_axis"``)
-    selects IR gating — see :func:`_capture_to_magnitude`. When gating is
-    applied and reports a low-frequency validity floor, every derived
-    quantity here (in-band/out-of-band means, overlap-band levels) is
-    restricted to data at/above that floor; a driver whose entire passband
-    sits below the floor is reported ``unusable_capture`` rather than a
-    magnitude computed from contaminated data (spec: "no proposal rests on
-    data below the floor").
+    ``noise_band_report`` accepts either a
+    ``[{band_id, band_hz, level_dbfs}, ...]`` list or a domain-tagged
+    ``{domain, method, bands}`` report; when supplied, ``snr`` is scoped to
+    ``relevant_hz = passband_hz ∩ [ANALYSIS_LO_HZ, ANALYSIS_HI_HZ]``, else
+    ``None``. When gating reports a low-frequency validity floor, every derived
+    quantity is restricted to data at/above that floor, and a driver whose whole
+    passband sits below it is ``unusable_capture``.
     """
     import numpy as np
 
@@ -1003,11 +811,8 @@ def analyze_driver_capture(
     band_hi = min(hi, ANALYSIS_HI_HZ)
 
     if not validity_known or (floor_hz is not None and band_lo >= band_hi):
-        # The validity floor sits at/above this driver's own passband
-        # ceiling: the reference-axis capture cannot decide anything about
-        # this driver at all. Near-field splice (Slice 1) is the product fix
-        # for this case; here we refuse rather than emit a magnitude
-        # computed from below-floor data.
+        # The validity floor sits at/above this driver's own passband ceiling,
+        # so refuse rather than emit a magnitude from below-floor data.
         return DriverAcousticResult(
             verdict=VERDICT_UNUSABLE_CAPTURE,
             present=False,
@@ -1033,10 +838,9 @@ def analyze_driver_capture(
 
     in_band = _band_mean_db(freqs, mag_db, band_lo, band_hi)
 
-    # Out-of-band reference: trusted analysis window minus the passband. The
-    # window's lower edge is the validity floor when one applies (eff_lo),
-    # not the raw ANALYSIS_LO_HZ — near_field's eff_lo == ANALYSIS_LO_HZ
-    # always, so this is byte-identical to before capture_geometry existed.
+    # Out-of-band reference: trusted analysis window minus the passband. Its
+    # lower edge is the validity floor when one applies (eff_lo), not the raw
+    # ANALYSIS_LO_HZ.
     out_mask = ((freqs >= eff_lo) & (freqs <= ANALYSIS_HI_HZ)) & ~(
         (freqs >= band_lo) & (freqs <= band_hi)
     )
@@ -1123,13 +927,9 @@ def analyze_driver_capture(
 class SummedCaptureCurve:
     """One summed capture's calibrated magnitude, and whether it may be read.
 
-    The capture half of a reverse-null measurement, and deliberately ONLY that
-    half: the subtraction that turns this curve into a null depth lives in
-    :func:`~jasper.audio_measurement.analysis.crossover_null_depth_db`, and
-    where its shoulders sit in
-    :func:`~jasper.audio_measurement.analysis.shoulder_span`. Three owners, one
-    each — which is what lets a computed proposal and an acoustic confirm read
-    the same quantity without either of them holding a second copy of it.
+    The capture half of a reverse-null measurement and only that half: the null
+    depth is :func:`~jasper.audio_measurement.analysis.crossover_null_depth_db`,
+    its shoulders :func:`~jasper.audio_measurement.analysis.shoulder_span`.
     """
 
     freqs: Any
@@ -1151,27 +951,13 @@ def summed_capture_curve(
 ) -> SummedCaptureCurve | None:
     """A summed capture as a magnitude curve, or ``None`` when it cannot be read.
 
-    ``None`` means the capture decides nothing and the caller must say so rather
-    than report a number: either it failed quality gating (deconvolving a
-    clipped, short or wrong-rate capture fabricates a curve), or a
-    ``reference_axis`` capture's low-frequency validity floor sits above
-    ``crossover_fc_hz / 2`` — the lower shoulder — so the room, not the
-    crossover, would be supplying the reference.
+    ``None`` means the capture decides nothing: it either failed quality gating,
+    or a ``reference_axis`` capture's validity floor sits above the lower
+    shoulder ``crossover_fc_hz / 2``, so the room would supply the reference.
 
-    **This is the narrow seam #3390's deletion left room for, not its revival.**
-    ``analyze_summed_crossover`` was deleted as a zero-caller analyzer and the
-    reasoning was right; what it bundled was a capture pipeline AND a
-    threshold-and-verdict layer (``expect_null``, ``null_threshold_db``, the SNR
-    depth cap). A door that banks rows for something else to grade needs the
-    first and must not carry the second — a verdict computed here would be a
-    second opinion about a call this repo makes elsewhere. So the pipeline gets
-    a public name and the verdicts stay deleted.
-
-    ``capture_geometry`` is REQUIRED, on the same terms the deleted analyzer
-    required it: the two geometries analyse a capture differently enough (a
-    gated versus an ungated impulse response, and so a different curve and a
-    different floor) that there is no answer that is right when the caller has
-    not thought about it.
+    A capture pipeline only — no verdict; grading the depth belongs elsewhere.
+    ``capture_geometry`` is REQUIRED: the two geometries yield a different curve
+    and a different floor, so no default is right.
     """
     if not (crossover_fc_hz > 0):
         raise DriverAcousticsError(

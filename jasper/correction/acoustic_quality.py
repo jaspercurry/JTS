@@ -4,15 +4,10 @@
 
 """Acoustic trust evidence for room-correction captures.
 
-`quality.py` answers "is this WAV structurally safe to analyze?",
-`browser_audio.py` answers "did getUserMedia look sane?", and
-`runtime_integrity.py` answers "was the Pi healthy?". This module sits
-above those facts and summarizes whether the captured acoustics are
-trustworthy enough for stronger recommendations.
-
-The report uses evidence JTS already stores: capture RMS/peak, browser
-metadata, pre-sweep silence WAV summaries when present, direct-arrival
-checks, banded SNR estimates, and same-position repeatability.
+Sits above `quality.py` (is this WAV safe to analyze?), `browser_audio.py`
+(did getUserMedia look sane?) and `runtime_integrity.py` (was the Pi healthy?)
+and summarizes whether the captured acoustics are trustworthy enough for
+stronger recommendations, from evidence JTS already stores.
 """
 from __future__ import annotations
 
@@ -44,57 +39,26 @@ from ._numbers import round_finite as _round
 SCHEMA_VERSION = 1
 DBFS_FLOOR = quality.DBFS_FLOOR
 
-# Provenance marker for every band-referenced level this module publishes —
-# `band_snr`, `min_band_snr_db`, and the `band_noise_dbfs` rows they are
-# computed from (issue #1838; bumped again by #1847 — see below).
-#
-# Why a marker and not a schema bump: the numbers moved but the KEYS/shape
-# did not. v1 -> v2 (#1838): `snr_policy.band_levels_dbfs` returned a
-# per-BIN mean rather than band power, so a level read low by
-# `7.27 + 10*log10(n_bins)` AND the SNR built from it inherited a
-# `10*log10(N_capture/N_noise)` bias (~12 dB at the shipped 0.7 s-noise /
-# ~11 s-capture shape) because the two sides are measured over
-# different-length windows and the error therefore did not cancel. v2 -> v3
-# (#1847): `capture_band_snr`'s sweep side now measures with
-# `window="rectangular"` instead of the Hann window the ambient/noise side
-# still (correctly) uses — Hann re-weighted a chirp's per-band split by WHEN
-# each frequency occurs in the capture, moving `sub_bass` +3.1 to +11.5 dB
-# depending on capture padding, comparable in magnitude to the ~12 dB that
-# motivated v2 in the first place, and enough on its own to cross both
-# `SNR_WARN_DB` (20) and `SNR_OK_DB` (25) since they sit only 5 dB apart.
-# Every era writes the same keys with the same units, so a reader diffing
-# `min_band_snr_db` across ANY of these boundaries — the doctor, the
-# bundle collection summary, the calibration agent's advisor packet — would
-# see a spurious multi-dB "regression" or "improvement" that is entirely
-# the estimator.
-#
-# A reader MUST treat an ABSENT marker as the oldest (pre-#1838) scale, and
-# refuse to compare reports carrying DIFFERENT marker values. Bumping
-# SCHEMA_VERSION would have said "this artifact is shaped differently",
-# which is false and would have invalidated every archived bundle for
-# readers that gate on the version.
+# Provenance marker for every band-referenced level this module publishes. The
+# numbers moved twice — #1838 (per-bin mean -> band power) and #1847
+# (rectangular window on the sweep side) — while the keys and units did not, so
+# a reader MUST treat an ABSENT marker as the oldest scale and MUST refuse to
+# compare reports carrying different marker values.
 BAND_SNR_SCALE = "band_power_v3"
-# TRAP — these edges look like the room-correction boundary and are
-# deliberately NOT routed through jasper.audio_measurement.room_boundary.
-# This is capture-quality vocabulary, not a correction band: its first four
-# rows are shared verbatim with the gated instrument's
-# snr_policy.CROSSOVER_SNR_BANDS_HZ (pinned by
-# tests/test_audio_measurement_snr_policy.py). Routing the 350 Hz edge here
-# would drag the gated instrument's capture-quality bands onto a per-room
-# boundary once RC3 lands, making banded SNR non-comparable across sessions
-# and across instruments — the whole reason these numbers exist. They stay
-# static. See docs/room-correction-regime-plan.md, "The ten sites, not seven —
-# and the one that must NOT move."
+# TRAP — these edges look like the room-correction boundary and are deliberately
+# NOT routed through jasper.audio_measurement.room_boundary. This is
+# capture-quality vocabulary, shared verbatim with the gated instrument's
+# snr_policy.CROSSOVER_SNR_BANDS_HZ; routing the 350 Hz edge would make banded
+# SNR non-comparable across sessions and instruments once the boundary becomes
+# per-room. They stay static. See docs/room-correction-regime-plan.md.
 SNR_BANDS_HZ: tuple[tuple[str, float, float], ...] = (
     ("sub_bass", 20.0, 80.0),
     ("bass", 80.0, 160.0),
     ("upper_bass", 160.0, 350.0),
     ("transition", 350.0, 1000.0),
 )
-# SNR trust thresholds now live on the shared ROOM QualityModel profile so the
-# room, driver, and level-ramp layers differ by data rather than forked
-# constants; values are unchanged (25.0 / 20.0). Kept as module-level aliases so
-# existing references still resolve.
+# SNR trust thresholds live on the shared ROOM QualityModel profile; these are
+# module-level aliases so existing references still resolve.
 SNR_OK_DB = _ROOM_QUALITY.snr_ok_db
 SNR_WARN_DB = _ROOM_QUALITY.snr_warn_db
 
@@ -126,10 +90,8 @@ def band_levels_dbfs(
 ) -> list[dict[str, Any]]:
     """Estimate Room's four fixed trust bands with the shared FFT kernel.
 
-    ``window`` forwards to :func:`snr_policy.band_levels_dbfs` unchanged —
-    "hann" (default, correct for the stationary noise-WAV callers of this
-    wrapper) or "rectangular" (for the non-stationary sweep capture;
-    :func:`capture_band_snr` passes this).
+    ``window`` forwards to :func:`snr_policy.band_levels_dbfs`: "hann" for the
+    stationary noise WAV, "rectangular" for the non-stationary sweep capture.
     """
     return snr_policy.band_levels_dbfs(
         samples, sample_rate, SNR_BANDS_HZ, window=window
@@ -142,34 +104,12 @@ def capture_band_snr(
 ) -> list[dict[str, Any]]:
     """Join capture and pre-sweep-noise levels by band identity.
 
-    **Scale is right (#1838); band SHAPE is now right too (#1847) —
-    absolute per-band level still is not.** Before #1838 the shared
-    estimator returned a per-bin mean, and because this compares a ~11 s
-    sweep capture against a ~0.7 s noise WAV the error did NOT cancel — the
-    reported SNR carried a ``10*log10(N_capture/N_noise)`` bias, measured at
-    ~12 dB. That is fixed. Before #1847: ``snr_policy.band_levels_dbfs``'s
-    Hann window, correct for the stationary noise side, re-weighted the
-    SWEEP side's frequencies by when they occur in the capture (~-10 dB on
-    ``sub_bass``). The capture side now measures with
-    ``window="rectangular"`` instead — an unwindowed FFT weights every
-    sample equally regardless of when its energy lands in time, the correct
-    treatment for a non-stationary sweep (see
-    :func:`snr_policy.band_levels_dbfs`'s own docstring for the analytic
-    validation) — and that is fixed too.
-
-    **What is still NOT calibrated: absolute per-band level.** The
-    estimator's denominator is the WHOLE capture's sample count, and this
-    path has no duration FLOOR on the raw upload — only the 30 s ceiling
-    (``deconv.cap_capture_length``) bounds it from above. Extra lead-in/tail
-    silence around the sweep therefore dilutes every band's reported level
-    by the same factor (more non-signal samples in the same divisor)
-    without changing which band carries relatively more or less energy —
-    up to a few dB of admissible swing depending on how much padding a
-    given upload carries. Read the per-band SPLIT within one capture as
-    trustworthy now; read one band's absolute dBFS as ordinal within that
-    capture, not as calibrated SPL comparable across captures of different
-    padding. Reports carry ``band_snr_scale`` so the eras are
-    distinguishable on disk — see :data:`BAND_SNR_SCALE`.
+    Scale (#1838) and band shape (#1847) are right; absolute per-band level is
+    NOT calibrated. The estimator's denominator is the whole capture's sample
+    count and this path has no duration floor, so lead-in/tail silence dilutes
+    every band's reported level by the same factor. Read the per-band SPLIT
+    within one capture as trustworthy; read one band's absolute dBFS as ordinal
+    within that capture, not comparable across captures of different padding.
     """
     if not noise_report:
         return []
@@ -178,8 +118,7 @@ def capture_band_snr(
     except Exception:  # noqa: BLE001
         return []
     # Bound before the float64 cast: this re-reads the raw upload from disk, so
-    # an oversized capture must not pay a full-length 64-bit copy before the
-    # shared FFT cap fires.
+    # an oversized capture must not pay a full-length 64-bit copy first.
     captured = deconv.cap_capture_length(
         captured,
         sweep_len=0,
@@ -267,10 +206,8 @@ def repeatability_from_arrays(
         }
     # The repeatability band never reaches above the room-correction ceiling
     # (routed through the boundary SSOT, not re-declared: a literal 350 here
-    # would silently cap repeatability at 350 Hz even after the ceiling moves
-    # — one of the two sites that would have defeated a raised ceiling
-    # quietly, per docs/room-correction-regime-plan.md RC1), nor above the
-    # band this session actually corrected.
+    # would cap repeatability even after the ceiling moves), nor above the band
+    # this session actually corrected.
     upper_band_hz = min(ROOM_BOUNDARY_DEFAULT_HZ, peq_f_high)
     mask = (freqs_hz >= 50.0) & (freqs_hz <= upper_band_hz)
     if int(mask.sum()) < 3:
@@ -332,8 +269,8 @@ def analyze_capture(
 
     captured, sample_rate = sweep.read_wav_mono(captured_wav_path)
     # Bound once before both quality and deconvolution so the recorded evidence
-    # and the derived response describe the same signal. Preserve the raw size
-    # so truncation remains visible in status and bundle evidence.
+    # and the derived response describe the same signal. The raw size is kept so
+    # truncation stays visible in status and bundle evidence.
     raw_capture_samples = len(captured)
     captured = deconv.cap_capture_length(
         captured,
@@ -435,9 +372,8 @@ def _capture_summary(report: dict[str, Any]) -> dict[str, Any]:
     ]
     band_snrs = [value for value in band_snrs if value is not None]
     min_band_snr = min(band_snrs) if band_snrs else None
-    # TrustLevel words, plus the no-evidence slot beside them. Left unannotated
-    # rather than typed `TrustLevel | str` — that union collapses to `str`, so
-    # it would assert more than it checks.
+    # TrustLevel words plus the no-evidence slot. Left unannotated rather than
+    # typed `TrustLevel | str`, which collapses to `str`.
     if estimated_snr is None:
         snr_level = TRUST_UNAVAILABLE
         issues.append({
@@ -609,9 +545,8 @@ def build_acoustic_quality_report(
             "snr_level": snr_level,
             "min_estimated_snr_db": _round(min_snr),
             "min_band_snr_db": _round(min_band_snr),
-            # #1838: which estimator every band-referenced level in this
-            # report came from. Absent means the pre-#1838 per-bin scale —
-            # a reader must not diff across that boundary.
+            # #1838: which estimator every band-referenced level here came
+            # from. Absent means the pre-#1838 per-bin scale; do not diff across.
             "band_snr_scale": BAND_SNR_SCALE,
             "capture_count": len(captures),
             "noise_capture_count": len(noise_reports or []),

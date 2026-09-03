@@ -16,10 +16,11 @@ The grid, its scoring and its selection stay in
 
 from __future__ import annotations
 
-from typing import Any
-
-from jasper.active_speaker.alignment_walk import driver_delay_walk_spec
-from jasper.audio_measurement.null_walk import NullWalkSpec
+from jasper.audio_measurement.null_walk import (
+    MAX_STEP_US,
+    NullWalkSpec,
+    geometry_seed_us,
+)
 
 # Both bars are docs/tuning-methodology.md's, and both are depths in dB re the
 # Fc/2 and 2*Fc shoulder mean — the one canonical null-depth definition. They
@@ -36,6 +37,8 @@ USABLE_NULL_DEPTH_DB = 15.0
 VERDICT_ROBUST = "delay_resolved_robust"
 VERDICT_WEAK = "delay_resolved_weak"
 VERDICT_AXIS_LIMITED = "axis_or_lobing_limited"
+
+
 def sweep_spec(
     *,
     crossover_fc_hz: float,
@@ -54,15 +57,13 @@ def sweep_spec(
     the same half-period window on zero.
     """
 
-    kwargs: dict[str, Any] = {
-        "crossover_fc_hz": crossover_fc_hz,
-        "positive_delay_target_role": upper_role,
-        "negative_delay_target_role": lower_role,
-        "signed_acoustic_path_difference_m": signed_acoustic_path_difference_m,
-    }
-    if step_us is not None:
-        kwargs["step_us"] = step_us
-    return driver_delay_walk_spec(**kwargs)
+    return NullWalkSpec(
+        crossover_fc_hz=crossover_fc_hz,
+        geometry_seed_us=geometry_seed_us(signed_acoustic_path_difference_m),
+        positive_delay_target=upper_role,
+        negative_delay_target=lower_role,
+        step_us=MAX_STEP_US if step_us is None else step_us,
+    )
 
 
 __all__ = [

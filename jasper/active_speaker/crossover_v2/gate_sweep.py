@@ -5,57 +5,28 @@
 """Room or speaker: the same feature read through a ladder of gate windows.
 
 A banked round's captures are deconvolved, gated at a ladder of window
-lengths, and read pose by pose. What separates a room feature from a
-loudspeaker one is **across-pose sigma that GROWS with window length**, not
-sigma that is large: an azimuth-only pose cloud produces big, perfectly
-window-invariant HF scatter that is pure directivity, and reading "high
-sigma => room" mis-attributes it (#3495; the evidence is P1, at
+lengths, and read pose by pose. The discriminator is across-pose sigma that
+GROWS with window length, not sigma that is large: an azimuth-only pose
+cloud produces big, perfectly window-invariant HF scatter that is pure
+directivity, and reading "high sigma => room" mis-attributes it (#3495;
+the evidence is P1, at
 ``captures/recommission-day2-2026-09-01/p1-position-window/P1-REPORT.md``).
 
-The published ``sigma_growth_ratio`` spans the feature's resolution-VALID
-rungs only: below :data:`RESOLUTION_INVALID_CYCLES` the read is the window's,
-not the feature's, and a ratio anchored there is set by its own tiny
-denominator. Every other rung pair stays readable — ``sigma_map`` banks the
-across-pose sigma on the whole analysis grid at every rung.
-
-Sigma is published per varied AXIS as well as over every pose
-(``sigma_by_axis``): only a round that mixes azimuth and elevation poses can
-say whether a feature moves with height, which is the axis #3503 says decides
-the contested sub-500 Hz features.
-
-Which bin the ratio is about is the CALLER's choice, not an argmax: a band's
-deepest median-detrended bin is not always its most window-divergent one.
-``at_hz`` anchors the report on the frequency the spec verdict flagged; the
-per-band worst bin is published beside it, unchanged.
-
-Three measured hazards this module exists to not repeat (all P1):
-
-* **The window's own bias is not small and never vanishes.** A raw long-rung
-  delta conflates the window with the room, so the published delta is
-  null-model corrected: the fitted notch is synthesized, injected into a real
-  capture IR, and re-read through the same rungs, and its own change is
-  subtracted.
-* **A number without its frame does not reproduce.** One capture and one
-  feature read a materially different depth under each defensible frame, so
-  every result carries the frame descriptor that produced it.
-* **The pose label is not the pose** (#3503) **and the phase label is not
-  the program** (#3504). Poses are keyed on the full declared
-  (azimuth, elevation, distance) triple, never on a seat index at an assumed
-  common height; captures are bound to programs by content hash, never by
-  the sidecar's declared stimulus phase, which is mislabelled on five of six
-  captures of the round this instrument was built from.
+``sigma_growth_ratio`` spans the resolution-VALID rungs only; the published
+delta is null-model corrected, because the window's own bias is not small
+and never vanishes; and every result carries the frame descriptor that
+produced it, one feature reading a materially different depth under each
+defensible frame. Poses are keyed on the full declared (azimuth, elevation,
+distance) triple, never a seat index at an assumed height (#3503), and
+captures are bound to programs by content hash, never by the sidecar's
+declared phase (#3504).
 
 One engine, two doors: :func:`sweep_round` reads a banked round directory,
-:func:`sweep_features` reads captures a caller already holds. Both go through
-the same ladder, so no second reader grows a window shape beside this one.
-The ROOM/SPEAKER rule is this module's too — ``window_verdict`` and the routes
-that produced it are published per feature, and a caller maps those three
-words into its own register rather than re-applying the thresholds.
-
-Pipeline stage: **diagnose**, offline and read-only. It plays nothing,
-writes nothing but its own report, and decides nothing beyond that one
-attribution: the output is evidence for an argument, and EQ is not its
-business.
+:func:`sweep_features` reads captures a caller already holds. The
+ROOM/SPEAKER rule is this module's too — ``window_verdict`` and its routes
+are published per feature, and a caller maps those three words into its own
+register rather than re-applying the thresholds. Pipeline stage: diagnose,
+offline and read-only.
 """
 
 from __future__ import annotations
@@ -92,42 +63,40 @@ SCHEMA_VERSION = 1
 GENERATED_BY = "jasper.active_speaker.crossover_v2.gate_sweep"
 
 #: The ladder, shortest first. It reaches 20 ms because the contested
-#: sub-500 Hz features do not clear the cycles bars below ~12 ms at all, so a
-#: (3, 5, 7) ladder cannot price the band it is being asked about (P1). Short
-#: rungs test resolution validity; long rungs are a deliberate
-#: room-admittance probe, and the two are never averaged.
+#: sub-500 Hz features do not clear the cycles bars below ~12 ms at all, so
+#: a (3, 5, 7) ladder cannot price the band it is being asked about (P1).
+#: Short rungs test resolution validity, long rungs probe room admittance,
+#: and the two are never averaged.
 DEFAULT_RUNGS_MS: tuple[float, ...] = (3.0, 4.0, 5.0, 7.0, 9.0, 12.0, 20.0)
 
-#: Cycles-in-window bars. Below the invalid bar the read is not
-#: resolution-valid — it is the gate's own trusted floor
-#: (:data:`~jasper.audio_measurement.gating.TRUSTED_FLOOR_MULTIPLIER`) read as
-#: cycles-in-window; below the grey bar it is merely doubtful. Flags, not
-#: filters, on the published table — but the invalid bar does bound which
-#: rungs a sensitivity may be computed across.
+#: Cycles-in-window bars. Below the invalid bar the read is the gate's own
+#: trusted floor (:data:`~jasper.audio_measurement.gating.TRUSTED_FLOOR_MULTIPLIER`)
+#: read as cycles-in-window; below the grey bar it is merely doubtful.
+#: Flags on the published table, not filters — but the invalid bar does
+#: bound which rungs a sensitivity may be computed across.
 RESOLUTION_INVALID_CYCLES = TRUSTED_FLOOR_MULTIPLIER
 RESOLUTION_GREY_CYCLES = 5.0
 
 #: One normalisation constant per capture, from THIS band at THIS rung,
 #: applied to every rung of that capture. Per-window normalisation would
-#: poison exactly the cross-rung deltas this instrument publishes, by a
-#: margin of the same order as the deltas themselves (P1). Deliberately NOT
-#: the sibling :data:`.feature_classifier.NORMALISE_BAND_HZ` (400-8000 Hz,
-#: median, per rung): 400-1200 Hz is the band that moves most with the rung,
-#: and a reference must not drift with the thing it is referencing (P1). Not
-#: :data:`~jasper.active_speaker.flat_spec.REFERENCE_BAND_HZ`: that one grades.
+#: poison the cross-rung deltas this instrument publishes, by a margin of
+#: the same order as the deltas themselves (P1). Deliberately NOT
+#: :data:`.feature_classifier.NORMALISE_BAND_HZ` (400-8000 Hz, median, per
+#: rung): 400-1200 Hz is the band that moves most with the rung, and a
+#: reference must not drift with the thing it is referencing (P1). Not
+#: :data:`~jasper.active_speaker.flat_spec.REFERENCE_BAND_HZ`, which this
+#: module already imports a sibling of: that one grades.
 REFERENCE_BAND_HZ = (2500.0, 8000.0)
 #: The rung the reference is read at IS the shipped window: every cloud
 #: sidecar P1 worked from carried ``gate_window_ms: 7.0`` with
 #: ``gate_floor_source: search_span_bound``, so the reference sits where
-#: the pipeline's own gate sits rather than at a rung of its own
-#: (``captures/recommission-day2-2026-09-01/p1-position-window/
-#: P1-REPORT.md`` sec 4).
+#: the pipeline's own gate sits rather than at a rung of its own (P1 sec 4).
 REFERENCE_RUNG_MS = SEARCH_T_MAX_MS
 
-#: Analysis grid. Deliberately NOT :func:`.feature_classifier.classification_grid`,
-#: whose floor is 300 Hz: the lowest spec band starts at 250 Hz and the
-#: features under investigation sit at 358 and 441.6 Hz, so the grid has to
-#: reach below the band edge it grades.
+#: Analysis grid. Deliberately NOT
+#: :func:`.feature_classifier.classification_grid`, whose floor is 300 Hz:
+#: the lowest spec band starts at 250 Hz and the features under
+#: investigation sit at 358 and 441.6 Hz.
 GRID_LO_HZ = 200.0
 GRID_HI_HZ = 20000.0
 GRID_FRACTION = 48
@@ -141,56 +110,47 @@ N_FFT = 1 << 16
 #: high-Q notch's own ringing to finish well inside it.
 NULL_MODEL_HOST_S = 0.2
 
-#: Q multiplier for the disclosure-only narrow bracket on the window bias.
-#: The ladder this engine replaced bracketed its null model between the fitted
-#: Q and a narrower one; the bracket said whether the correction was sensitive
-#: to the fit's own width. It corrects nothing here either — it is published
-#: beside the fitted-Q bias so a reader can see how much of the correction the
-#: width choice is worth.
+#: Q multiplier for the disclosure-only narrow bracket on the window bias. It
+#: corrects nothing — it is published beside the fitted-Q bias so a reader
+#: can see how much of the correction the width choice is worth.
 NARROW_Q_BRACKET = 1.5
 
-# --- the room/speaker rule ---------------------------------------------------
-#
-# The verdict is this engine's, not its callers'. Two readers of one ladder
+# The verdict is this engine's, not its callers': two readers of one ladder
 # applying two thresholds would be two instruments wearing one name.
 
 #: Across-pose sigma growth, longest valid rung over shortest, at or above
-#: which the feature is the room's (the discriminator is the module
-#: docstring's). It sits in a wide measured gap rather than on a convention:
-#: on the banked validation corpus
-#: (``captures/recommission-day2-2026-09-01/gate-sweep-validation/README.md``
-#: and the P1 report it reproduces) the three sub-1.2 kHz features the room
-#: owns read 3.6x / 5.5x / 5.1x, and every HF feature reads 0.94x to 1.4x.
+#: which the feature is the room's. It sits in a wide measured gap rather
+#: than on a convention: on the banked validation corpus
+#: (``captures/recommission-day2-2026-09-01/gate-sweep-validation/README.md``)
+#: the three sub-1.2 kHz features the room owns read 3.6x / 5.5x / 5.1x,
+#: and every HF feature reads 0.94x to 1.4x.
 SIGMA_GROWTH_ROOM_RATIO = 2.0
 
 #: ...and below this much across-pose sigma at the LONGEST valid rung, the
 #: ratio above is not read at all.
 #:
-#: The floor is on the LONG rung deliberately: a room feature is exactly a tiny
-#: short-rung sigma that grows (P1: 358 Hz, six seats within 0.03 dB at 3 ms,
-#: 2.26 dB by 12 ms), so a floor on the ratio's denominator would delete the
-#: signal this instrument exists to find. A round whose captures are repeat
-#: takes at ONE pose has across-pose sigma that is its own capture noise, and a
-#: ratio of two noise figures is a coin toss with a room's name on it: measured
-#: at 1e-4 dB on the classifier's synthetic fixtures, where it read 2.3x and
-#: would have called a known minimum-phase resonance the room. This floor is
-#: three orders of magnitude above that and an order below every real
-#: across-pose disagreement in the banked validation corpus (P1 sec 5b:
-#: 1.4-2.9 dB at 20 ms where the room owns the feature, 0.13-2.35 dB where
-#: directivity does), so it costs the discriminator nothing there.
+#: The floor is on the LONG rung deliberately: a room feature is exactly a
+#: tiny short-rung sigma that grows (P1: 358 Hz, six seats within 0.03 dB
+#: at 3 ms, 2.26 dB by 12 ms), so a floor on the ratio's denominator would
+#: delete the signal this instrument exists to find. A round whose captures
+#: are repeat takes at ONE pose has across-pose sigma that is its own
+#: capture noise: 1e-4 dB on the classifier's synthetic fixtures, where the
+#: ratio read 2.3x. This floor is three orders above that and an order
+#: below every real across-pose disagreement in the banked corpus (P1 sec
+#: 5b: 1.4-2.9 dB at 20 ms where the room owns the feature, 0.13-2.35 dB
+#: where directivity does).
 SIGMA_GROWTH_MIN_SIGMA_DB = 0.2
 
 #: How far the null-model-corrected depth may move between the shortest and
 #: longest resolution-valid rung before the window is judged to have been
-#: reading the room.
-#:
-#: **dB on the CORRECTED quantity**, which is smaller than a raw swing and not
-#: comparable with one. It is docs/tuning-methodology.md sec 6's own ~1-2 dB
-#: prudence bar carried onto it: the null model removes ~1.1 dB of window bias
-#: from a sub-500 Hz feature's raw 3->20 ms swing on the banked validation
-#: corpus (441.6 Hz: raw -2.89, corrected -1.74; 1000 Hz: raw -1.23, corrected
-#: -0.14), and the margin either side stays wide — window-invariant HF bins
-#: correct to 0.06-0.11 dB, features the room owns to 1.7-3.2 dB.
+#: reading the room. **dB on the CORRECTED quantity**, which is smaller
+#: than a raw swing and not comparable with one: it is
+#: docs/tuning-methodology.md sec 6's ~1-2 dB prudence bar carried onto it.
+#: The null model removes ~1.1 dB of window bias from a sub-500 Hz
+#: feature's raw 3->20 ms swing on the banked validation corpus (441.6 Hz:
+#: raw -2.89, corrected -1.74; 1000 Hz: raw -1.23, corrected -0.14), and
+#: the margin either side stays wide — window-invariant HF bins correct to
+#: 0.06-0.11 dB, features the room owns to 1.7-3.2 dB.
 GATE_DELTA_SLACK_DB = 0.5
 
 #: Centre movement between the shortest and longest valid rung, in octaves,
@@ -216,12 +176,10 @@ ROUTE_CENTRE_SHIFT = "centre_shift"
 AXIS_AZIMUTH = "azimuth"
 AXIS_ELEVATION = "elevation"
 
-# --- refusals: every one names the input that was missing --------------------
 
 REFUSE_REFERENCE_BAND_EMPTY = "gate_sweep_reference_band_empty"
 REFUSE_SINGLE_POSE = "gate_sweep_single_pose"
 
-# --- why a band has no sensitivity -------------------------------------------
 
 NULL_INSUFFICIENT_VALID_RUNGS = "insufficient_valid_rungs"
 NULL_BAND_NOT_RADIATED = "band_outside_radiated_band"
@@ -233,11 +191,6 @@ def analysis_grid() -> np.ndarray:
     """Log grid at :data:`GRID_FRACTION` points per octave."""
     n = int(round(GRID_FRACTION * np.log2(GRID_HI_HZ / GRID_LO_HZ))) + 1
     return GRID_LO_HZ * 2.0 ** (np.arange(n) / GRID_FRACTION)
-
-
-# --------------------------------------------------------------------------- #
-# the window and the curve it produces
-# --------------------------------------------------------------------------- #
 
 
 def gated_segment(
@@ -368,11 +321,6 @@ def _read_curves(
     return tuple(reads)
 
 
-# --------------------------------------------------------------------------- #
-# the null model: what the WINDOW alone does to a feature of this shape
-# --------------------------------------------------------------------------- #
-
-
 @dataclass(frozen=True)
 class NotchFit:
     """The band's worst feature, fitted across poses at the longest rung."""
@@ -396,8 +344,7 @@ def fit_notch(
 
     The centre is searched over +/-:data:`.feature_optics.CENTRE_SEARCH_OCT`
     (1/6 octave), NOT the classifier's 1/3-octave neighbourhood: the wider
-    span walked off onto a neighbouring feature on half the poses and fitted
-    the null model to the wrong thing (P1).
+    span walked off onto a neighbouring feature on half the poses (P1).
     """
     lo = nominal_hz * 2.0**-CENTRE_SEARCH_OCT
     hi = nominal_hz * 2.0**CENTRE_SEARCH_OCT
@@ -427,15 +374,13 @@ def null_model_hosts(
 ) -> dict[str, tuple[np.ndarray, int]]:
     """The two hosts a synthesized notch is injected into, as ``(ir, peak)``.
 
-    ``real`` is the capture's own IR pre-gated to ``host_rung_ms`` — the
-    host the published correction uses, because a real IR carries the
-    reflections and the noise floor a window actually acts on.
-
-    ``synthetic`` is a bare impulse, and it is disclosed beside the real one
-    for a measured reason: injecting a feature into a host that ALREADY has
-    one at that frequency stops being additive once the pair is deep, and
-    the two hosts then disagree (P1 reports both for the same reason).
-    A reader who sees them agree knows the correction is in its regime.
+    ``real`` is the capture's own IR pre-gated to ``host_rung_ms`` — the host
+    the published correction uses, because a real IR carries the reflections
+    and the noise floor a window actually acts on. ``synthetic`` is a bare
+    impulse, disclosed beside it because injecting a feature into a host that
+    ALREADY has one at that frequency stops being additive once the pair is
+    deep; a reader who sees the two agree knows the correction is in its
+    regime.
     """
     rate = capture.sample_rate
     segment, lead = gated_segment(
@@ -463,13 +408,10 @@ def window_bias_db(
 
     The fitted notch is synthesized as a minimum-phase RBJ peaking section
     (:func:`.feature_optics.biquad_peaking`), injected into ``host``, and
-    re-read at every rung. Each read is with-notch minus without-notch
-    through identical windows, so the host's own structure cancels and what
-    is left is the window's doing.
-
-    ``host_detrended_by_rung`` supplies the without-notch half when the caller
-    already holds it (:func:`_host_detrended`); it does not depend on ``fit``,
-    so a round re-reads one host for every feature it prices.
+    re-read at every rung. Each read is with-notch minus without-notch through
+    identical windows, so the host's own structure cancels and what is left is
+    the window's doing. ``host_detrended_by_rung`` supplies the without-notch
+    half when the caller already holds it; it does not depend on ``fit``.
     """
     from scipy.signal import lfilter
 
@@ -514,8 +456,7 @@ def _host_detrended(
 ) -> dict[float, np.ndarray]:
     """The without-notch host reads, detrended, memoised for the whole round.
 
-    One round prices every feature against the same two hosts, and the
-    without-notch half of a bias read does not depend on the feature — so a
+    The without-notch half of a bias read does not depend on the feature, so a
     naive loop pays one ``rfft`` of :data:`N_FFT` plus a fractional-octave
     smooth per feature per host per rung for an array it already computed.
     """
@@ -533,11 +474,6 @@ def _host_detrended(
             cache[key] = curve
         out[rung] = curve
     return out
-
-
-# --------------------------------------------------------------------------- #
-# the sweep
-# --------------------------------------------------------------------------- #
 
 
 def _cycles(freq_hz: float, rung_ms: float) -> float:
@@ -585,15 +521,11 @@ def _axis_sigmas(
 
     The azimuth family is the poses declaring elevation 0, the elevation
     family the poses declaring azimuth 0, and the (0, 0) anchor is in both. A
-    family is formed only where its OWN angle takes two values: two captures
-    that differ in distance alone would otherwise publish an elevation spread
-    for a round in which elevation never moved. A family that did not vary is
-    absent rather than zero, so a round that varied one axis reads exactly as
-    it did before this split.
-
-    An undeclared pose field is never read as zero — a capture that declares
-    no height is not a capture at height zero, which is the assumption #3503
-    exists to refuse — so a round declaring no poses forms no family at all.
+    family is formed only where its OWN angle takes two values, so two
+    captures differing in distance alone publish no elevation spread; a family
+    that did not vary is absent rather than zero. An undeclared pose field is
+    never read as zero — a capture that declares no height is not a capture at
+    height zero — so a round declaring no poses forms no family at all.
     """
     families = {
         AXIS_AZIMUTH: [
@@ -656,12 +588,11 @@ def moved_routes(
     """Which routes say the window MOVED this feature. Any one alone is enough.
 
     Three independent readings of one question, because each is blind where
-    another sees: the sigma-growth route (the module docstring's
-    discriminator) needs a real pose cloud; a corrected depth change is what
-    a round of repeat takes at one pose still has; and a centre that WALKS
-    between the two rungs catches a feature the window re-makes without
-    deepening, which the other two miss entirely. An empty list is
-    :data:`WINDOW_STABLE` — a finding, not a silence.
+    another sees: the sigma-growth route needs a real pose cloud; a corrected
+    depth change is what a round of repeat takes at one pose still has; and a
+    centre that WALKS between the two rungs catches a feature the window
+    re-makes without deepening. An empty list is :data:`WINDOW_STABLE` — a
+    finding, not a silence.
     """
     routes: list[str] = []
     if sigma_growth_readable and sigma_growth_ratio >= SIGMA_GROWTH_ROOM_RATIO:
@@ -686,18 +617,12 @@ def _feature_result(
     """One bin read through the whole ladder: table, poses, null model, verdict.
 
     ``hz`` is snapped to the nearest analysis-grid bin and the snapped
-    ``bin_hz`` is what every number below is read at.
-
-    Each pose row carries only what varies with the BIN — its per-rung values.
-    Who that pose is is the round's fact, not the feature's, and it is banked
-    once beside the report rather than N times inside it. The rows are in
-    capture order, which is the order that block is in: a round whose captures
-    declare no pose has one ``pose_key`` for all of them, so the JOIN is the
-    position, not the key.
-
-    ``sigma_by_axis`` is the same spread over each axis family beside the
-    all-pose one, never instead of it: a mixed round says which axis the
-    feature moves with, and a family the round did not vary is absent (#3503).
+    ``bin_hz`` is what every number below is read at. Each pose row carries
+    only what varies with the BIN; who that pose is is the round's fact,
+    banked once beside the report, and the rows are in capture order so the
+    JOIN is the position, not the key. ``sigma_by_axis`` is the same spread
+    per axis family beside the all-pose one, never instead of it, and a family
+    the round did not vary is absent (#3503).
     """
     grid_index = int(np.argmin(np.abs(grid - float(hz))))
     bin_hz = float(grid[grid_index])
@@ -894,13 +819,13 @@ def _band_result(
     )
     result["worst_bin_hz"] = feature.pop("bin_hz")
     # The band's deepest feature is not always its most window-divergent one
-    # (P1), so the whole band's mean sigma is published beside the worst
-    # bin's — and a caller that already knows which bin it is asking about
-    # names it with ``at_hz`` instead. The mean pools every graded bin at
-    # every rung, including bins below their own resolution floor at the
-    # short rungs: that is P1's statistic, and the frame's resolution bars
-    # price it. No ratio is published for it — a ratio of two sigmas over
-    # hundreds of bins is set by its smallest denominator, not by the room.
+    # (P1), so the whole band's mean sigma is published beside the worst bin's
+    # — and a caller that already knows which bin it is asking about names it
+    # with ``at_hz``. The mean pools every graded bin at every rung, including
+    # bins below their own resolution floor at the short rungs: that is P1's
+    # statistic, and the frame's resolution bars price it. No ratio is
+    # published for it — a ratio of two sigmas over hundreds of bins is set by
+    # its smallest denominator, not by the room.
     result["band_mean_sigma_db_by_rung"] = {
         _key(r): float(np.mean(sigma[r][mask])) for r in rungs_ms
     }
@@ -1060,15 +985,13 @@ def sweep_features(
     """Named bins read through the ladder, from captures already in memory.
 
     :func:`sweep_round`'s ``features`` block, for a caller that holds its own
-    deconvolved captures rather than a banked round directory. Same window,
-    same grid, same normalisation, same null model — one engine, two doors.
-
-    Computes from ``capture_id``, ``radiated_band_hz``, ``sample_rate``,
-    ``ir`` and ``peak_idx`` alone, and echoes the declared pose into each
-    ``poses`` row; ``wav``, ``program``, ``program_sha256`` and ``phase`` are
-    never read, so a caller with none passes ``None``. Numbers banked from
-    here need :func:`frame_descriptor`'s block beside them, exactly as the
-    round door's do.
+    deconvolved captures rather than a banked round directory: same window,
+    grid, normalisation and null model — one engine, two doors. Computes from
+    ``capture_id``, ``radiated_band_hz``, ``sample_rate``, ``ir`` and
+    ``peak_idx`` alone and echoes the declared pose into each ``poses`` row;
+    ``wav``, ``program``, ``program_sha256`` and ``phase`` are never read, so
+    a caller with none passes ``None``. Numbers banked from here need
+    :func:`frame_descriptor`'s block beside them.
 
     Raises :class:`~.round_captures.RoundCapturesRefused` on fewer than two
     poses, :exc:`ValueError` on an unusable ladder or an off-grid bin.

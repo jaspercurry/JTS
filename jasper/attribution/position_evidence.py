@@ -4,47 +4,13 @@
 
 """Per-position cloud evidence — the members, not just the aggregate.
 
-**The gap this closes** (``docs/historical/attribution-stage-plan.md`` §6). The cloud
-pipeline **already computes** every per-position value and then discards it:
-it reports ``n_confident: 6``, ``clustered_fraction: 1.0``, and the household
-sentence built on them, while persisting only one aggregate 512-point curve
-and a ``positions`` list of ``{attempt, index, position_id}``. WO-0 had to
-rebuild the feature-stability figures behind the plan's amended mechanism rows
-from raw WAVs pulled off the Pi. So P2 — the position-variance classifier §5
-calls a *free* probe — is not actually free today, and
-``clustered_fraction: 1.0`` is the summary of a distribution nobody can
-inspect.
-
-Everything here is already in memory at group close, on
-``spatial_combine.CombinedResponse``: ``per_position_db``,
-``per_position_diag_db``, ``per_position_echo``, ``position_ids``. This module
-is serialization, not analysis. It computes no new signal, applies no
-threshold, and reaches no verdict.
-
-**Consensus claim A7, persistence half** (§11.1, owner row "WO-1
-(persistence) / WO-6 (display)"): *plot the members alongside the aggregate;
-never ship the aggregate alone*. Four schools state it and the Q-D bake-off's
-clearest leg depends on having members. This block is the members. Whether
-they are *displayed* is WO-6's.
-
-**Guard G9, data half** (§11.2, owner "WO-4 / WO-1"). The two-sided 6 dB
-OFFAX membership gate on cloud positions — and G8's equidistance precondition
-alongside it — are WO-4's to implement and route. Their *input* is
-per-position level and per-position delay, which is precisely what a member
-curve plus its echo scalars carry. A row here is the carrier those verdicts
-attach to; adding a key to a row is a non-breaking change, since every reader
-of this block is dict-based and tolerant.
-
-**Resolution honesty.** The persisted grid is log-spaced at
-:data:`CURVE_FRACTIONAL_OCTAVE` (1/12 octave, §6's floor). That is the *grid*,
-not the *resolution*: the curve sampled onto it is already smoothed at the
-combiner's diagnostic fraction, so the true resolution is whatever
-``smoothing_fraction`` says and the grid merely oversamples it. Both numbers
-are declared in the artifact for that reason. Sampling a pre-smoothed curve
-also avoids the stride-decimation aliasing that #1858 found in the persisted
-``predicted_sum`` prior — a log grid built by striding a linear one would
-alias hardest exactly where this evidence matters least forgiving, at the
-bottom.
+Serialization, not analysis: everything here is already in memory at group
+close on ``spatial_combine.CombinedResponse``. No new signal is computed, no
+threshold applied, no verdict reached. The persisted grid is log-spaced at
+:data:`CURVE_FRACTIONAL_OCTAVE`, which is the GRID and not the resolution —
+the curve is already smoothed at the combiner's diagnostic fraction, and both
+numbers are declared in the artifact. Sampling a pre-smoothed curve also avoids
+the stride-decimation aliasing #1858 found in the persisted ``predicted_sum``.
 """
 
 from __future__ import annotations
@@ -57,23 +23,17 @@ import numpy as np
 #: Schema tag for the persisted block.
 POSITION_EVIDENCE_SCHEMA = "jts_attribution_position_evidence/1"
 
-#: Log-grid density, in fractions of an octave. §6 asks for "the per-position
-#: analysed curve (>= 1/12-octave from the validity floor up — ~1.5 k floats
-#: for a 12-position cloud)"; 1/12 octave over the audio band is ~120 points
-#: per position, which lands on that estimate.
+#: Log-grid density, in fractions of an octave (§6's floor). 1/12 octave over
+#: the audio band is ~120 points per position.
 CURVE_FRACTIONAL_OCTAVE = 12
 
-#: Grid floor when the group reported no validity floor. Never a claim that
-#: the measurement is valid down here — ``floor_source`` says which floor was
-#: used, and a reader that needs the validated band reads ``validity_floor_hz``
-#: off the group.
+#: Grid floor when the group reported no validity floor. Never a claim that the
+#: measurement is valid down here — ``floor_source`` says which floor was used.
 DEFAULT_CURVE_FLOOR_HZ = 20.0
 
 #: Per-position echo scalars carried from ``spatial_combine.EchoDiagnostic``.
-#: ``tau_us`` and ``confidence`` are §6's named pair; ``concentration`` is the
-#: prominence behind that confidence, and the rest are what make a reported
-#: tau auditable rather than a magic number. ``refusal`` is first because a
-#: non-empty refusal means every other value is uninformative.
+#: ``refusal`` is first because a non-empty refusal means every other value is
+#: uninformative.
 _ECHO_FIELDS: tuple[str, ...] = (
     "refusal",
     "tau_us",
@@ -84,22 +44,15 @@ _ECHO_FIELDS: tuple[str, ...] = (
     "resolution_us",
 )
 
-#: Per-position scalars carried from the session's own retained metadata —
-#: the gate actually used and the ripple, both of which §6 names and both of
-#: which the pipeline already had.
+#: Per-position scalars carried from the session's own retained metadata.
 _RECORD_FIELDS: tuple[str, ...] = (
     "index",
     "attempt",
     "take_id",
     "role",
-    # WHERE the microphone was, as numbers (owner ruling, 2026-08-24). Until
-    # the writer stamped these a position's only statement of place was the
-    # household prompt sentence, which this block does not carry at all — so a
-    # reader of a round's members could not tell an on-axis capture from a
-    # 22°-off one except by the coarse ``role`` below. ``position_deg`` is
-    # absent whenever no bearing was commanded and on any round banked before
-    # the writer gained the fields; ``FIELD_DESCRIPTIONS`` below enumerates the
-    # cases and names the fields that separate them.
+    # WHERE the microphone was, as numbers. ``position_deg`` is absent whenever
+    # no bearing was commanded and on any round banked before the writer gained
+    # the fields; ``FIELD_DESCRIPTIONS`` below enumerates the cases.
     "position_deg",
     "position_axis",
     "vertical_deg",
@@ -108,15 +61,12 @@ _RECORD_FIELDS: tuple[str, ...] = (
     "gate_floor_source",
     "gate_disclosure",
     # The two numbers ``gate_disclosure``'s sentence narrates, banked beside it
-    # so a reader does not have to parse English for them (ticket 1.5). Subject
-    # to the same ``is not None`` rule as every field here: a row carries the
-    # key only when the capture had a value for it, which is why a reader
-    # asking "does this round bank them at all" has to look at more than one
-    # row — see ``evidence_packet._gate_numbers_reason``.
+    # so a reader need not parse English. A row carries a key only when the
+    # capture had a value for it — see ``evidence_packet._gate_numbers_reason``.
     "gate_moved_rms_db",
     "gate_reflection_delay_ms",
-    # The ROOM's floor at this seat, and the word that says where it came
-    # from. Projected as a PAIR — a floor without its provenance reads as a
+    # The ROOM's floor at this seat and the word saying where it came from.
+    # Projected as a PAIR: a floor without its provenance reads as a
     # measurement whatever produced it (#3502).
     "gate_entanglement_floor_hz",
     "gate_entanglement_floor_source",
@@ -309,24 +259,12 @@ def _sample_onto(
 ) -> list[float]:
     """Sample a smoothed curve onto ``grid_hz``, interpolating in log-frequency.
 
-    ``np.interp`` on ``log2(f)`` rather than on ``f``: the grid is
-    geometrically spaced, so linear-in-frequency interpolation would weight
-    the top of each interval far more heavily than the bottom.
-
-    The source grid is an ``rfftfreq`` grid, so its first bin is DC and
-    ``log2(0)`` is ``-inf``. **What dropping the non-positive bins actually
-    buys, stated exactly:** it suppresses a ``divide by zero`` RuntimeWarning
-    and removes any reliance on how ``np.interp`` treats a ``-inf`` left edge,
-    which numpy does not specify. It does **not** change the sampled values —
-    measured, not assumed: :func:`position_evidence_block` builds the grid at
-    ``max(floor, lowest positive bin)``, so no query point can ever land in
-    the ``[-inf, log2(f1)]`` segment, and the guarded and unguarded results
-    are bit-identical on the shipped grid.
-
-    The guard stays because depending on unspecified behaviour for a
-    correct answer is a latent bug, not because it is currently load-bearing.
-    Pinned by ``test_sampling_emits_no_divide_by_zero_warning`` — which fails
-    if it is deleted, so the reason above stays honest.
+    ``np.interp`` on ``log2(f)`` rather than on ``f``, because the grid is
+    geometrically spaced. The source grid is an ``rfftfreq`` grid whose first
+    bin is DC, so non-positive bins are dropped to avoid a divide-by-zero
+    warning and any reliance on how ``np.interp`` treats a ``-inf`` left edge.
+    That guard does not change the sampled values: the grid starts at
+    ``max(floor, lowest positive bin)``, so no query point reaches that segment.
     """
 
     freqs = np.asarray(freqs_hz, dtype=float)
@@ -348,22 +286,12 @@ def position_evidence_block(
 ) -> dict[str, Any]:
     """Serialize one closed cloud group's per-position members.
 
-    Args:
-      combined: the ``spatial_combine.CombinedResponse`` the group produced.
-      position_records: the session's own retained per-position metadata,
-        joined by ``position_id``. Supplies the gate, the ripple, the
-        accepted attempt, and the capture hash — values the combiner never
-        sees because they are properties of the capture, not of the combine.
-      validity_floor_hz: the group's gated validity floor; the grid starts
-        there when it is usable.
-      fractional_octave: grid density, defaulting to §6's 1/12-octave floor.
-
-    Returns:
-      A self-describing block, or ``{"available": False, "reason": ...}``
-      when the group carries no per-position curves. Never raises: this rides
-      the same diagnostic/disclosure path as the rest of the cloud result,
-      where a failure must degrade to an honest "unavailable" rather than
-      fail a capture the household already gave.
+    ``position_records`` is the session's own retained per-position metadata,
+    joined by ``position_id``: the gate, the ripple, the accepted attempt and
+    the capture hash, all properties of the capture the combiner never sees.
+    Returns a self-describing block, or ``{"available": False, "reason": ...}``
+    when the group carries no per-position curves. Never raises — a failure
+    must degrade to an honest "unavailable".
     """
 
     try:

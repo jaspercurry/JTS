@@ -4,24 +4,13 @@
 
 """FFT-based regularized deconvolution for room-impulse extraction.
 
-Given the captured signal y(t) ≈ (h * x)(t) where x is the played
-sweep and h is the room IR we want to recover, we deconvolve:
-
     H(f) = Y(f) * conj(X(f)) / (|X(f)|² + ε)
     h(t) = ifft(H(f))
 
-The Tikhonov regularizer ε keeps the inversion well-conditioned at
-frequencies outside the sweep band where |X(f)| → 0. We use a
-constant ε proportional to the peak of |X(f)|² rather than the
-frequency-dependent ε(f) variants from the literature — for the
-20 Hz–20 kHz sweep band that covers everything we care about, the
-constant form is robust and keeps the code obvious.
-
-The recovered IR is then trimmed to a window centered on the
-direct-arrival peak (argmax of |h(t)|). Default window: 5 ms before
-the peak (catches non-causal artifacts from the deconvolution) and
-500 ms after (covers domestic-room decay; longer wastes memory and
-adds noise from beyond the meaningful reverberation tail).
+The Tikhonov ε is constant and proportional to the peak of |X(f)|², which is
+robust over the 20 Hz-20 kHz sweep band. The recovered IR is trimmed around
+the direct-arrival peak: 5 ms before (non-causal artifacts of the inversion)
+and 500 ms after (domestic-room decay).
 """
 from __future__ import annotations
 
@@ -35,15 +24,10 @@ DEFAULT_PRE_ARRIVAL_MS = 5.0
 DEFAULT_POST_ARRIVAL_MS = 500.0
 DEFAULT_EPSILON_RELATIVE = 1e-3
 
-# Upper bound on captured-signal length fed to the FFT, in seconds. A
-# legitimate capture is the ~10 s sweep plus a short room-decay tail;
-# anything longer is a stuck recording or an oversized upload. The
-# correction HTTP layer caps the WAV body at 32 MB
-# (jasper/web/correction_setup.py:MAX_WAV_BODY_BYTES) — ~350 s of 48 kHz
-# mono — which would drive n_pad to 2**25 and a ~1.3 GB FFT working set:
-# an OOM on the 1 GB Pi. Truncating to this bound keeps n_pad at ~2**21
-# (~100-150 MB peak) and is acoustically lossless, because the IR we
-# extract lives entirely in the first ~10-12 s.
+# Upper bound on captured-signal length fed to the FFT, in seconds. The
+# correction HTTP layer caps the WAV body at 32 MB (~350 s of 48 kHz mono),
+# which would drive n_pad to 2**25 and a ~1.3 GB FFT working set: an OOM on the
+# 1 GB Pi. This bound keeps n_pad at ~2**21 (~100-150 MB peak).
 DEFAULT_MAX_CAPTURE_SECONDS = 30.0
 
 
@@ -61,21 +45,10 @@ def cap_capture_length(
 ) -> np.ndarray:
     """Truncate an over-long capture to bound the FFT working set.
 
-    A legitimate capture is the sweep plus a short room-decay tail;
-    anything longer is a stuck recording or an oversized upload that
-    would drive the FFT to OOM on the 1 GB Pi (see
-    DEFAULT_MAX_CAPTURE_SECONDS). Never truncates below sweep_len — the
-    inversion needs the full sweep response. Returns the input unchanged
-    when within bounds; logs a WARNING when it truncates.
-
-    max_capture_seconds=None reads the module default at call time; a
-    value ≤ 0 disables the cap.
-
-    Used inside deconvolve() (defense at the FFT, for every caller), by
-    callers that want quality assessment and deconvolution to see the
-    same signal, and by other FFT inputs derived from the same uploads
-    (e.g. session band-level estimation). sweep_len=0 means "no sweep to
-    preserve" — just bound to the seconds cap.
+    Never truncates below ``sweep_len`` -- the inversion needs the full sweep
+    response; ``sweep_len=0`` means there is no sweep to preserve.
+    ``max_capture_seconds=None`` reads :data:`DEFAULT_MAX_CAPTURE_SECONDS` at
+    call time; a value <= 0 disables the cap.
     """
     seconds = (
         DEFAULT_MAX_CAPTURE_SECONDS
@@ -105,10 +78,9 @@ def cap_capture_tail(
 ) -> tuple[np.ndarray, int]:
     """Retain a bounded capture tail and return its source start offset.
 
-    Relay capture starts before an unbounded network/setup wait but stops just
-    after the sweep.  Crossover analysis therefore needs the tail, unlike the
-    generic :func:`cap_capture_length` contract whose existing callers retain
-    the beginning.  The returned offset makes persisted crop provenance exact.
+    Relay capture starts before an unbounded network wait but stops just after
+    the sweep, so crossover analysis needs the TAIL, unlike
+    :func:`cap_capture_length`, whose callers retain the beginning.
     """
 
     if max_capture_seconds <= 0 or sample_rate <= 0:
@@ -135,10 +107,9 @@ def regularized_deconvolution_full(
 ) -> np.ndarray:
     """Recover the full regularized linear-deconvolution impulse response.
 
-    Unlike :func:`deconvolve`, this primitive performs no peak selection or
-    time windowing.  A caller comparing signal and noise can therefore derive
-    one window from the signal and apply that identical linear operator to
-    both, rather than letting random noise choose its own argmax window.
+    No peak selection or time windowing, so a caller comparing signal against
+    noise can apply one signal-derived window to both rather than letting
+    noise choose its own argmax window.
     """
     if captured.ndim != 1 or sweep.ndim != 1:
         raise ValueError(
@@ -214,29 +185,11 @@ def deconvolve(
 ) -> np.ndarray:
     """Recover h(t) from y(t) ≈ (h * x)(t) via regularized FFT.
 
-    Args:
-      captured: mono float32, the recorded sweep capture (with room
-        response baked in).
-      sweep: mono float32, the same sweep signal that was played.
-        Must be the EXACT signal used at playback time — otherwise
-        the deconvolution math is wrong by an unknown filter.
-      sample_rate: shared by both signals (we resample at the Python
-        layer if iOS Safari handed us something other than 48 kHz,
-        before this function is called).
-      pre_arrival_ms: how many ms before the peak to include in the
-        IR window. Catches non-causal artifacts.
-      post_arrival_ms: how many ms after the peak. 500 ms is plenty
-        for typical living rooms (RT60 < 1 s).
-      epsilon_relative: regularizer as a fraction of peak |X(f)|².
-        Smaller = sharper deconvolution but more sensitive to
-        capture noise outside the sweep band. 1e-3 is the standard
-        Kirkeby value.
-      max_capture_seconds: upper bound on the captured signal before
-        the FFT (see cap_capture_length). None reads the module default
-        (DEFAULT_MAX_CAPTURE_SECONDS) at call time; ≤ 0 disables.
-
-    Returns:
-      ir (float32): the room impulse response, windowed.
+    ``sweep`` must be the EXACT signal played, or the math is wrong by an
+    unknown filter. ``epsilon_relative`` is the regularizer as a fraction of
+    peak |X(f)|²; 1e-3 is the standard Kirkeby value. ``post_arrival_ms`` of
+    500 covers a living room (RT60 < 1 s). ``max_capture_seconds=None`` reads
+    :data:`DEFAULT_MAX_CAPTURE_SECONDS` at call time; <= 0 disables.
     """
     full_ir = regularized_deconvolution_full(
         captured,
@@ -269,20 +222,10 @@ def magnitude_response(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Magnitude response of an impulse response, in dB.
 
-    Args:
-      ir: mono float32 IR.
-      sample_rate: in Hz.
-      n_fft: FFT length. None → next power of 2 ≥ max(8192, len(ir)).
-        8192 is the floor because we want enough frequency resolution
-        in the bass region (5.86 Hz/bin at 48 kHz with N=8192) for
-        meaningful 1/48-octave smoothing later.
-      normalize: subtract peak so the response is "0 dB at the
-        loudest frequency, negative everywhere else" (the convention
-        for a relative magnitude response). Set False to preserve
-        absolute deconvolution amplitude.
-
-    Returns:
-      (frequencies_hz, magnitude_db). Both 1-D float64.
+    ``n_fft`` defaults to the next power of two >= max(8192, len(ir)); the 8192
+    floor gives 5.86 Hz/bin at 48 kHz, enough bass resolution for 1/48-octave
+    smoothing. ``normalize`` subtracts the peak; set False to keep the absolute
+    deconvolution amplitude.
     """
     if n_fft is None:
         n_fft = max(8192, _next_power_of_two(len(ir)))
@@ -302,17 +245,12 @@ from .sweep import SweepMeta
 
 # How far a harmonic window reaches from its center, as a fraction of the
 # distance to the NEAREST neighbouring order's center. Below 0.5 by
-# construction: two adjacent windows sized this way cannot touch, which is what
-# lets `extract_harmonic_ir` reject an overlap rather than silently mixing two
-# orders. Named because a second reader needs it —
-# `distortion.required_pre_guard_s` predicts this window's leading edge to size
-# the deconvolution pre-guard, and a literal in both places would be two
-# sources of one truth.
+# construction, so two adjacent windows cannot touch. Also read by
+# `distortion.required_pre_guard_s`, which predicts this window's leading edge.
 HARMONIC_WINDOW_GAP_FRACTION = 0.4
 
-# Radius of the local-peak search around a harmonic image's predicted center.
-# The prediction is exact for an ideal synchronized sweep; this absorbs the
-# sub-sample rounding and the small group delay a real driver adds between the
+# Radius of the local-peak search around a harmonic image's predicted center;
+# absorbs sub-sample rounding and the group delay a real driver adds between a
 # fundamental's arrival and its harmonic's.
 HARMONIC_PEAK_SEARCH_RADIUS_S = 0.002
 
