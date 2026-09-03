@@ -37,12 +37,11 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
 
-from .atomic_io import advisory_file_lock, atomic_write_text
+from .atomic_io import advisory_file_lock, atomic_write_text, read_json_mapping
 from .install_profile import (
     install_profile_supports_wake_detection,
     read_install_profile,
 )
-from .json_fields import read_json_mapping
 from .log_event import log_event
 
 logger = logging.getLogger(__name__)

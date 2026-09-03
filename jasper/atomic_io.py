@@ -344,9 +344,19 @@ def atomic_write_json(
     )
 
 
+def read_json_mapping(path: str | os.PathLike) -> dict[str, Any] | None:
+    """One JSON object off disk, or ``None`` — never raises. ``None`` covers
+    every way the artifact can fail to be a mapping: missing, unreadable, not
+    UTF-8, unparsable, or a non-object top level."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def _parse_env_text(text: str) -> dict[str, str]:
-    # NOT env_load.parse_env_text: this half of a read-modify-write round-trip
-    # keeps surrounding quotes so _format_env_text republishes them verbatim.
     out: dict[str, str] = {}
     for raw in text.splitlines():
         line = raw.strip()

@@ -35,7 +35,7 @@ import subprocess
 from types import ModuleType
 from typing import Any, Optional
 
-from jasper.control.client import AsyncControlClient, ControlError, DEFAULT_PORT
+from jasper.control.client import AsyncControlClient, ControlError, default_port
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -64,12 +64,15 @@ SWITCH_CONTROL_NAME = "PCM Capture Switch"
 # `alsaaudio.mixers(cardindex=...)` reports exactly ["PCM"] for this card.
 MIXER_ELEMENT_NAME = "PCM"
 
-# Where jasper-control listens. The /volume/set endpoint accepts an
-# optional `source` field; with source="usbsink" the coordinator
-# routes through observe_source_volume (echo-prevented) rather than
-# set_listening_level (authoritative). See jasper.control.server for
-# the handler.
-DEFAULT_CONTROL_URL = f"http://127.0.0.1:{DEFAULT_PORT}"
+
+def default_control_url() -> str:
+    """Where jasper-control listens, on this box's own port.
+
+    The /volume/set endpoint accepts an optional `source` field; with
+    source="usbsink" the coordinator routes through observe_source_volume
+    (echo-prevented) rather than set_listening_level (authoritative). See
+    jasper.control.server for the handler."""
+    return f"http://127.0.0.1:{default_port()}"
 
 
 # `amixer cget` output format for the UAC2 gadget volume control. CRITICAL:
@@ -156,14 +159,14 @@ class VolumeBridge:
     def __init__(
         self,
         card_name: str = "UAC2Gadget",
-        control_url: str = DEFAULT_CONTROL_URL,
+        control_url: str | None = None,
         *,
         discovery_retry_interval_sec: float = 5.0,
         http_timeout_sec: float = 2.0,
         alsaaudio_module: ModuleType | None = None,
     ) -> None:
         self._card_name = card_name
-        self._control_url = control_url.rstrip("/")
+        self._control_url = (control_url or default_control_url()).rstrip("/")
         self._discovery_retry_interval = discovery_retry_interval_sec
         self._http_timeout = http_timeout_sec
         self._alsa = alsaaudio_module

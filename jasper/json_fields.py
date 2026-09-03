@@ -2,34 +2,22 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Small shared reader and field parser for versioned JSON artifacts.
+"""Small shared field parser for versioned JSON artifacts.
 
 Artifact modules keep ownership of their schemas and error classes. This leaf
-only centralizes getting an untyped JSON mapping off disk and the repeated
-scalar/container rules used while turning one into those domain models.
+only centralizes the repeated scalar/container rules used while turning an
+untyped JSON mapping into those domain models. It stays I/O-free — reading an
+artifact off disk is ``atomic_io.read_json_mapping``.
 """
 
 from __future__ import annotations
 
-import json
 import math
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Collection, Mapping
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
-
-
-def read_json_mapping(path: Path) -> dict[str, Any] | None:
-    """One JSON object off disk, or ``None`` — never raises. ``None``
-    covers every way the artifact can fail to be a mapping: missing,
-    unreadable, not UTF-8, unparsable, or a non-object top level."""
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return payload if isinstance(payload, dict) else None
 
 
 def finite_float(value: Any) -> float | None:
