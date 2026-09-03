@@ -966,7 +966,7 @@ def pose_curve_record(curve: LateralPoseCurve) -> dict[str, Any]:
         "freqs_hz": [float(hz) for hz in curve.freqs_hz],
         "magnitude_db": [float(db) for db in 20.0 * np.log10(magnitude)],
         "phase_deg": [float(deg) for deg in np.degrees(np.angle(tf))],
-        # Ruling S3 one field further (docs/REFACTOR-TUNING-2026-08.md): the
+        # Ruling S3 one field further (ADR-0228 entry 2): the
         # linearization envelope reads the conservative floor ACROSS
         # occurrences and its sigma term reads the repeats, so a round banked
         # without these two cannot be re-fitted offline. Additive: a round

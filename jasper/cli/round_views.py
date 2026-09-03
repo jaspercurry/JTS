@@ -4,7 +4,7 @@
 
 """Operator entry point for the round-grading comparison views (issue #2769).
 
-One console script, ten subcommands — each a thin argparse wrapper over
+One console script, eleven subcommands — each a thin argparse wrapper over
 :mod:`jasper.active_speaker.crossover_v2.round_views`, which owns every
 number this tool prints. A round directory is EITHER a banked round tree or
 a live session bundle still on the speaker
@@ -70,6 +70,15 @@ Subcommands:
   cannot. Observed only: no grade moves. Writes ``directivity.json``. A round
   banked before the seat bearings were written still answers, with
   ``angles_recorded`` false — read it as role-labelled, never as 0°.
+* ``cloud-binding <round-dir>`` — re-fit this round's linearization with the
+  cloud's null evidence CUT, and say whether that evidence actually BOUND the
+  fit: by how much, and in which octave bands. It refuses rather than
+  reporting when the all-inputs-wired refit does not reproduce the fit the
+  round banked, and names a round whose MEASURE take predates the per-
+  occurrence fit inputs as unevaluable instead of refitting it into an empty
+  answer. Observed only: no grade moves, and it says nothing about whether
+  the wired answer was RIGHT — nothing banked is ground truth for that.
+  Writes ``cloud_binding.json``.
 
 Every subcommand accepts ``--out PATH`` to write somewhere else instead
 (``-`` for stdout, except ``repeat-floor``, whose record is published by
@@ -94,6 +103,7 @@ from jasper.active_speaker.crossover_v2.round_views import (
     RoundViewsError,
     agreement_table,
     audibility_co_metrics,
+    cloud_binding_view,
     default_agreement_lo_hz,
     directivity_view,
     entry_state_grade,
@@ -483,6 +493,30 @@ def _cmd_directivity(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_cloud_binding(args: argparse.Namespace) -> int:
+    banked = _load_round(args.round_dir)
+    view = cloud_binding_view(banked)
+    written = _write(
+        view.to_dict(), args.out, _default_out(banked, "cloud_binding.json")
+    )
+    if not view.evaluable:
+        summary = f"NOT EVALUATED ({view.not_evaluated_reason})"
+    else:
+        moved = [
+            f"{role.role} {role.max_delta_db:.2f} dB"
+            for role in view.roles if role.bound
+        ]
+        summary = (
+            f"BOUND: {', '.join(moved)}" if moved else "NOT BOUND: no branch moved"
+        ) + f"; refit vs banked {view.refit_vs_banked_db:.3f} dB"
+    print(
+        f"cloud-binding [observed only, no grade moves]: {summary}"
+        f"{f' -> {written}' if written else ''}",
+        file=sys.stderr,
+    )
+    return EXIT_OK
+
+
 def _band_sweep_line(band: Any) -> str:
     """One band's gate read as the operator reads it: which band, then whether
     that band's own worst bin is the room or the speaker.
@@ -582,7 +616,8 @@ def build_parser() -> argparse.ArgumentParser:
             "The round-grading comparison views: entry-state grading, "
             "frozen-reference grading, per-seat curves, session-to-session "
             "repeatability and the banked repeat floor, per-seat agreement, "
-            "audibility co-metrics, measured per-angle directivity, the gate "
+            "audibility co-metrics, measured per-angle directivity, whether "
+            "the cloud's null evidence bound the linearization fit, the gate "
             "sweep read onto the spec verdict, and the shared frequency view "
             "— over banked rounds and live sessions."
         ),
@@ -687,6 +722,14 @@ def build_parser() -> argparse.ArgumentParser:
     directivity.add_argument("round_dir", help=_ROUND_DIR_HELP)
     directivity.add_argument("--out", default=None, help="write the result here (- for stdout)")
     directivity.set_defaults(func=_cmd_directivity)
+
+    cloud_binding = sub.add_parser(
+        "cloud-binding",
+        help="re-fit with the cloud's null evidence cut, and say whether it bound the fit — observed only",
+    )
+    cloud_binding.add_argument("round_dir", help=_ROUND_DIR_HELP)
+    cloud_binding.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    cloud_binding.set_defaults(func=_cmd_cloud_binding)
 
     spec_sweep = sub.add_parser(
         "spec-sweep",

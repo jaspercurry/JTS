@@ -84,6 +84,13 @@ issue of its own yet.
   still refuse is a **claim** — a fact that cannot be proven is not banked —
   and refusing to claim is a different act from refusing to work. The repo-wide
   form lives in the governance charter ([AGENTS.md](../AGENTS.md)).
+- **Evidence that decided nothing is still evidence, and is reported as such.**
+  `jasper-round-views cloud-binding` re-fits a banked round's linearization
+  with the position cloud's null evidence cut, so whether that evidence
+  actually BOUND the fitted prescription — and in which bands — is a number a
+  round can be asked for rather than a thing assumed either way. Observed
+  only; it moves no grade, and it says nothing about whether the wired answer
+  was right.
 
 ## 3. The guiding principle — least-bad measured, honed in bites
 
