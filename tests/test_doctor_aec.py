@@ -1748,6 +1748,16 @@ def test_chip_aec_alignment_row_serves_only_the_stamped_selection(
             ("auto", "", False),
             id="empty_value",
         ),
+        pytest.param(
+            "JASPER_AEC_MODE = disabled\n",
+            ("disabled", "", True),
+            id="space_before_equals_matched",
+        ),
+        pytest.param(
+            "JASPER_AEC_MODE=\"disabled\n",
+            ('"disabled', "", True),
+            id="unbalanced_quote_kept_verbatim",
+        ),
     ],
 )
 def test_aec_mode_file_readers_share_one_parser(
