@@ -70,6 +70,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .. import identity
 from ..control import household_credential
+from ..control.client import PEER_CONTROL_PORT
 from ..mdns import browse_once
 from ..multiroom.airplay_latency import with_airplay_latency_fit
 from ..multiroom.config import DEFAULT_CROSSOVER_HZ, is_private_or_loopback_ipv4
@@ -107,7 +108,7 @@ CONTROL_MDNS_TYPE = "_jasper-control._tcp.local."
 
 # jasper-control's HTTP port, used when an instance resolves without an SRV
 # port. The management UI is on port 80 (nginx), so click-through URLs stay bare.
-CONTROL_HTTP_PORT = 8780
+CONTROL_HTTP_PORT = PEER_CONTROL_PORT
 CONTROL_HTTP_TIMEOUT_SEC = 5.0
 PEER_RESPONSE_MAX_BYTES = 64 * 1024
 

@@ -34,6 +34,7 @@ from collections import deque
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from jasper.camilla_config_contract import DEFAULT_CAMILLA_PORT
 from jasper.log_event import log_event
 from jasper.music_sources import MUSIC_SOURCE_SPECS
 
@@ -483,7 +484,7 @@ class AirPlayHealthSampler:
         mpris_probe: Callable[[], dict[str, Any] | None] | None = None,
         camilla_probe: Callable[[], dict[str, Any] | None] | None = None,
         camilla_host: str = "127.0.0.1",
-        camilla_port: int = 1234,
+        camilla_port: int = DEFAULT_CAMILLA_PORT,
         maintenance_suppress_path: str | None = MAINTENANCE_SUPPRESS_UNTIL_PATH,
         warmup_sec: float = DEFAULT_WARMUP_SEC,
         connect_grace_sec: float = DEFAULT_CONNECT_GRACE_SEC,

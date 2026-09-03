@@ -33,8 +33,11 @@ _TWO_SIBLINGS = (
         # A typo (JASPER_PEERING=onn) resolves to off; silence would leave the
         # operator believing peering is on.
         ("JASPER_PEERING=banana\n", "warn", "banana"),
+        # Unbalanced quote: only a matching pair is stripped, so the doctor
+        # reports the same value peering.config.load_config resolves.
+        ("JASPER_PEERING='on\n", "warn", "'on"),
     ],
-    ids=["absent", "off", "on", "malformed"],
+    ids=["absent", "off", "on", "malformed", "unbalanced-quote"],
 )
 def test_check_peering_mode_verdicts(monkeypatch, tmp_path, body, status, must_name):
     env = tmp_path / "peering.env"

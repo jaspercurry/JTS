@@ -30,6 +30,7 @@ from collections import deque
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..local_sources.registry import local_source_lifecycles
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
 from ..fanin.latency_mode import PRESETS, classify_runtime
@@ -2261,7 +2262,7 @@ class AudioHealthSampler:
         incident_store: IncidentStore | None = None,
         time_fn: Callable[[], float] = time.time,
         camilla_host: str = "127.0.0.1",
-        camilla_port: int = 1234,
+        camilla_port: int = DEFAULT_CAMILLA_PORT,
     ) -> None:
         self._sample_interval = sample_interval_sec
         self._route_interval = route_interval_sec

@@ -81,7 +81,7 @@ from ..atomic_io import atomic_write_text
 from ..control import client as control
 from ..control import control_token
 from ..control.restart_broker import manage_units
-from ..env_load import read_env_file_state
+from ..env_load import parse_env_file, read_env_file_state
 from ..http_security import management_read_allowed, mutating_request_allowed
 from ..log_event import log_event
 from ..voice.provider_state import read_active_provider
@@ -174,19 +174,8 @@ def _asset_version() -> str:
     verified manifest is written; that long-lived process must notice the
     final atomic manifest replacement. This is one tiny local read per page
     navigation, never part of a wizard's polling/data path."""
-    version = "dev"
-    try:
-        with open(_ASSET_VERSION_PATH) as f:
-            for raw in f:
-                line = raw.strip()
-                if line.startswith("JASPER_GIT_SHA="):
-                    sha = line.split("=", 1)[1].strip()
-                    if sha and sha != "unknown":
-                        version = sha
-                    break
-    except OSError:
-        pass
-    return version
+    sha = parse_env_file(_ASSET_VERSION_PATH).get("JASPER_GIT_SHA", "")
+    return sha if sha and sha != "unknown" else "dev"
 
 
 # Curated inline icon sprite for the redesigned pages. Symbols mirror the

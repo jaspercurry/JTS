@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
-from .camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
+from .camilla_config_contract import DEFAULT_CAMILLA_PORT, DEFAULT_VOLUME_LIMIT_DB
 from .log_event import log_event
 
 if TYPE_CHECKING:
@@ -1063,7 +1063,7 @@ def primary_controller() -> CamillaController:
     validation must not block low-level DSP recovery and setup paths.
     """
     host = os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1")
-    port = int(os.environ.get("JASPER_CAMILLA_PORT", "1234"))
+    port = int(os.environ.get("JASPER_CAMILLA_PORT", DEFAULT_CAMILLA_PORT))
     return CamillaController(host, port)
 
 

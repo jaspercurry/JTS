@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from . import home_assistant as _ha_env
+from .camilla_config_contract import DEFAULT_CAMILLA_PORT
 from .librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
 from .mics.xvf3800 import CHIP_AEC_ENABLED_ENV
 from .assistant_loudness import (
@@ -716,7 +717,7 @@ class Config:
                 "JASPER_SERVER_VAD_PREFIX_MS", 300,
             ),
             camilla_host=_env("JASPER_CAMILLA_HOST", "127.0.0.1"),
-            camilla_port=_env_int("JASPER_CAMILLA_PORT", 1234),
+            camilla_port=_env_int("JASPER_CAMILLA_PORT", DEFAULT_CAMILLA_PORT),
             duck_db=_env_float("JASPER_DUCK_DB", -25.0),
             duck_transport=_env("JASPER_DUCK_TRANSPORT", "fanin").strip().lower(),
             # Pre-response idle watchdog: closes the turn after this

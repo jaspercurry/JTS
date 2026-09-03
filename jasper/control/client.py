@@ -61,8 +61,20 @@ def _connect_host(bind_host: str) -> str:
     return host
 
 
+#: A PEER's jasper-control port. This box's own JASPER_CONTROL_PORT says
+#: nothing about which port a sibling listens on, so remote URLs use this
+#: while local loopback callers use default_port().
+PEER_CONTROL_PORT = 8780
+
+
+def default_port() -> int:
+    """THIS box's jasper-control port, read fresh so an operator's
+    JASPER_CONTROL_PORT reaches callers constructed after import."""
+    return int(os.environ.get("JASPER_CONTROL_PORT") or PEER_CONTROL_PORT)
+
+
 DEFAULT_HOST = _connect_host(os.environ.get("JASPER_CONTROL_HOST", "127.0.0.1"))
-DEFAULT_PORT = int(os.environ.get("JASPER_CONTROL_PORT") or "8780")
+DEFAULT_PORT = default_port()
 DEFAULT_BASE_URL = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
 DEFAULT_TIMEOUT = 2.0
 
