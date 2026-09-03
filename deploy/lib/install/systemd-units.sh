@@ -1274,6 +1274,11 @@ mask_distro_background_units() {
         if systemctl list-unit-files "${unit}" 2>/dev/null \
                 | grep -q "^${unit}"; then
             systemctl mask --now "${unit}" >/dev/null 2>&1 || true
+            # `mask --now` on a still-active timer records Result=resources
+            # (the mask severs the trigger link before the stop resolves it)
+            # and the unit sits in `failed` state forever even though the
+            # mask itself succeeded — clear that stale record.
+            systemctl reset-failed "${unit}" >/dev/null 2>&1 || true
         fi
     done
     # The sentinel file is cloud-init's own opt-out: the package stays

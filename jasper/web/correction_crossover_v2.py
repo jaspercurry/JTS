@@ -2407,28 +2407,27 @@ def _wav_bytes_to_samples(wav_bytes: bytes) -> tuple[Any, int]:
     return decode_wav_to_mono(wav_bytes)
 
 
-def resolve_relay_calibration(setup: Any, device: Any) -> Any:
+def resolve_setup_calibration(setup: Any, device: Any) -> Any:
     """The production mic-calibration resolver for a v2 capture.
 
-    Reuses ``correction_setup._relay_calibration_from_setup`` — the ONE point
-    the room + legacy crossover relay flows already use to materialize the
-    phone wizard's serial/upload/stored calibration choice as a stored
-    ``CalibrationRecord`` (and persist it as the household default mic).
-    Returns the record or ``None`` (phone mic / no calibration chosen, OR a
-    detected mic-identity mismatch — see ``_relay_calibration_from_setup``'s
-    ``device`` parameter / ``_stored_calibration_model_mismatch``: a
-    ``mode="stored"`` re-confirm silently carrying a DIFFERENT mic's
-    calibration than this capture's reported device, the 2026-07-20
-    incident). ``device`` is this capture's phone-reported input device
-    (``CaptureResult.device``) — threaded through so that mismatch can be
-    caught at the same point the calibration is resolved for THIS capture,
-    not applied blind to whichever mic actually recorded.
+    Consumes ``household_mic.resolve_setup_calibration`` — the ONE point the
+    capture's ``setup.calibration`` reference becomes a stored
+    ``CalibrationRecord``. Returns the record, or ``None`` when the capture
+    declared no calibration or its reference names a DIFFERENT mic than the
+    one this capture reports (the 2026-07-20 incident). ``device`` is this
+    capture's realized input device (``CaptureAnswer.device``) — threaded
+    through so that mismatch is caught where the calibration is resolved for
+    THIS capture, not applied blind to whichever mic actually recorded.
     """
-    from .correction_setup import _relay_calibration_from_setup
+    from jasper.correction.household_mic import resolve_setup_calibration as resolve
 
-    return _relay_calibration_from_setup(
-        dict(setup) if isinstance(setup, Mapping) else None,
+    from .correction_setup import _calibration_root, _household_mic_path
+
+    return resolve(
+        setup if isinstance(setup, Mapping) else None,
         device=device if isinstance(device, Mapping) else None,
+        root=_calibration_root(),
+        path=_household_mic_path(),
     )
 
 
@@ -2437,25 +2436,19 @@ def default_setup_calibration_for_v2() -> Any | None:
 
     Every v2 capture logged ``crossover_v2_uncalibrated_capture`` even when
     the household had a resolvable stored mic (a UMIK-2 by serial, ingested
-    via ``/correction/calibration/fetch``). Root cause: ``resolve_relay_calibration``
-    is only as good as what the phone posts in ``setup.calibration`` — and a
-    v2 capture-plan session has no calibration-picker screen of its own. The
-    LEGACY per-driver crossover flow gets away with this because its
-    calibration choice comes from the ``level_ramp`` level-match page the
-    household visits FIRST in the same phone tab (the capture page's
-    ``setupState`` module variable survives the in-tab hash navigation from
-    that page into the driver sweeps that follow); v2 has no preceding
-    level-match page (design: CHECK's own pilot pairs solve gain), so it
-    never had a carrier for the same hint.
+    via ``/correction/calibration/fetch``). Root cause:
+    ``resolve_setup_calibration`` is only as good as the reference the capture
+    carries in ``setup.calibration``, and a v2 session has no
+    calibration-picker screen of its own (design: CHECK's own pilot pairs
+    solve gain), so nothing carried the household's remembered mic into it.
 
-    Reuses ``correction_setup._default_setup_calibration_for_spec`` — the
-    SAME household-mic-hint resolver the legacy level-match handlers already
-    pass into ``build_level_ramp_spec``. Threaded into
+    Reuses ``correction_setup._default_setup_calibration_for_spec`` — the ONE
+    household-mic-hint resolver. Threaded into
     ``build_v2_session_spec``/``build_v2_verify_session_spec`` via their
-    shared ``**spec_kwargs`` forward to ``build_crossover_sweep_spec``
-    (W6.12 added the parameter there); the capture page applies it SILENTLY
-    (no extra tap) when nothing has already been chosen for that page load.
-    Fail-soft: any resolution miss yields no hint, never blocks session open.
+    shared ``**spec_kwargs`` forward to ``build_crossover_sweep_spec``, and
+    the measurement source mints the capture's own reference from it
+    (``correction_crossover_v2_wired._wired_setup_reference``). Fail-soft: any
+    resolution miss yields no hint, never blocks session open.
     """
     from .correction_setup import _default_setup_calibration_for_spec
 
@@ -2471,15 +2464,13 @@ def default_setup_calibration_for_v2() -> Any | None:
 
 
 def _setup_calibration_observation(setup: Any) -> tuple[str, str]:
-    """What the capture's phone-reported setup held, redacted-safe (W6.13).
+    """What the capture's own setup reference held, redacted-safe (W6.13).
 
     Returns ``(mode, calibration_id)`` for the uncalibrated-capture WARN so a
-    live journal line settles empirically whether the phone sent NO setup at
-    all (``mode="absent"``) or sent one whose calibration didn't resolve
-    (e.g. ``mode="none"``, or a stale ``calibration_id``) — the round-5
-    ambiguity. Only the mode and the calibration_id (a stored-record id, not
-    a secret) are ever extracted; a serial or an uploaded calibration file
-    body never reaches the journal.
+    live journal line settles empirically whether the capture carried NO setup
+    at all (``mode="absent"``) or one whose calibration didn't resolve (e.g.
+    ``mode="none"``, or a stale ``calibration_id``). Only the mode and the
+    calibration_id (a stored-record id, not a secret) are ever extracted.
     """
     if not isinstance(setup, Mapping):
         return "absent", ""
@@ -2647,7 +2638,7 @@ def _capture_evidence_blocks(result: Any, analysis: Any) -> dict[str, Any]:
 
 def bind_production_analyze(
     *,
-    resolve_calibration: Callable[[Any, Any], Any] | None = resolve_relay_calibration,
+    resolve_calibration: Callable[[Any, Any], Any] | None = resolve_setup_calibration,
     meta: dict[str, Any] | None = None,
     provenance: CaptureProvenanceRecorder | None = None,
     carry: CaptureProvenanceRecorder | None = None,
@@ -4971,8 +4962,8 @@ class V2PreparedSession:
     """What the correction_setup dispatch needs to host one v2 session."""
 
     label: str
-    open: Callable[..., Any]
-    run_and_consume: Callable[[Any, Any], Any]
+    open: Callable[[], Any]
+    run_and_consume: Callable[[Any], Any]
     request_stop: Callable[[], None]
     #: This session's position gate, or ``None`` for an ungated one. Built for
     #: either GATED shape (``V2PlanShape.positions_gated``): the remote tier,
@@ -5625,8 +5616,6 @@ def _hand_released_plan_shape(plan_shape: Any) -> Any:
 def _mint_wired_session(wired_device: Any, spec: Any) -> Any:
     """Mint one session on the measurement mic (#2662 W2b).
 
-    Answers ``pi_session`` + ``tap_link``; the link is empty by construction.
-
     **No Pi-minted per-capture result wait.** The wait #2706 put on the spec was
     the Fc sweep's compute ceiling plus its measured overhead; with no sweep to
     bound, the Pi publishes nothing and ``resultWaitMs`` falls back to the
@@ -5868,7 +5857,7 @@ def _build_wired_run(
     complete_event: threading.Event,
     retake_event: threading.Event,
     capture_stimulus: Any = None,
-) -> Callable[[Any, Any], Any]:
+) -> Callable[[Any], Any]:
     """The provider runner, driving the conductor hooks.
 
     It takes the device, the session ceiling (its confirm-wait bound), the
@@ -6472,7 +6461,7 @@ def prepare_v2_session(
 
     held: _HeldSession | None = None
 
-    def _open(client: Any, base: str, capture_origin: str, return_url: str) -> Any:
+    def _open() -> Any:
         if verify_only:
             spec = build_v2_verify_session_spec(
                 # The corner this round was measured and applied at — stage 1's
@@ -6483,7 +6472,7 @@ def prepare_v2_session(
                 acknowledgement_binding=acknowledgement_binding,
                 plan_shape=plan_shape,
                 default_setup_calibration=default_setup_calibration_for_v2(),
-            ).with_return_url(return_url)
+            )
         else:
             spec = build_v2_session_spec(
                 context.roles_bands,
@@ -6506,7 +6495,7 @@ def prepare_v2_session(
                 include_entry_baseline=include_entry_baseline,
                 lateral_prompts=lateral_prompts,
                 default_setup_calibration=default_setup_calibration_for_v2(),
-            ).with_return_url(return_url)
+            )
         # This stage's own wall-clock budget, read ONCE off the plan it just
         # emitted: the runner's confirm-wait is bounded by it and the
         # walked-away volume ceiling is armed from it further down, and those
@@ -6808,7 +6797,7 @@ def prepare_v2_session(
         held = _HeldSession(tuning=tuning, run=source_run)
         return rc
 
-    async def _run(client: Any, pi_session: Any) -> None:
+    async def _run(pi_session: Any) -> None:
         """Drive the walk the preparer built.
 
         The session's own lifetime is NOT driven here. Both halves live in the
@@ -6822,9 +6811,9 @@ def prepare_v2_session(
         """
         if held is None:
             raise RuntimeError(
-                "the v2 relay session was run before it was opened"
+                "the v2 measurement session was run before it was opened"
             )
-        await held.run(client, pi_session)
+        await held.run(pi_session)
 
     def _request_stop() -> None:
         with stop_lock:

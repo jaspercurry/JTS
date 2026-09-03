@@ -49,8 +49,6 @@ const ids = [
   "crossover-walk-detail",
   "crossover-walk-action",
   "crossover-relay-status",
-  "crossover-relay-link",
-  "crossover-relay-qr",
   "crossover-relay-stop",
   "capture-status",
 ];
@@ -74,7 +72,6 @@ const baseEnvelope = {
 };
 
 globalThis.__getJSON = async () => ({ ...baseEnvelope });
-globalThis.__renderRelayQr = () => {};
 globalThis.__jtsConfirm = async () => true;
 globalThis.__renderCloud = () => {};
 globalThis.__redrawCloudChart = () => {};
@@ -90,7 +87,7 @@ const { render, runAction, setStatus } = await loadEsm(
   {
     rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
     prelude: aliasGlobals([
-      "getJSON", "postJSON", "renderRelayQr", "jtsConfirm", "renderCloud", "redrawCloudChart",
+      "getJSON", "postJSON", "jtsConfirm", "renderCloud", "redrawCloudChart",
     ]),
     truncateBefore: "\nrefresh().catch((error) => {",
     exportNames: ["render", "runAction", "setStatus"],

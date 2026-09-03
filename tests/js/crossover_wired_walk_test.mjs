@@ -24,7 +24,6 @@ globalThis.__postJSON = async (path, body) => {
   posted.push({ path, body });
   return { ok: true, released: { index: body && body.index } };
 };
-globalThis.__renderRelayQr = () => {};
 globalThis.__renderCloud = () => {};
 globalThis.__redrawCloudChart = () => {};
 
@@ -33,7 +32,7 @@ const { render } = await loadEsm(
   {
     rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
     prelude: aliasGlobals([
-      "getJSON", "postJSON", "renderRelayQr", "renderCloud", "redrawCloudChart",
+      "getJSON", "postJSON", "renderCloud", "redrawCloudChart",
     ]),
     truncateBefore: "\nrefresh().catch((error) => {",
     exportNames: ["render"],
@@ -44,17 +43,9 @@ const walk = () => elements.get("crossover-walk");
 const walkAction = () => elements.get("crossover-walk-action");
 const relayStatus = () => elements.get("crossover-relay-status");
 
-// The sentence a wired session used to be stuck on for the whole round, for a
-// link that is never created. Asserted by ABSENCE rather than pinning whatever
-// replaced it: the replacement is product copy and will be re-worded, while
-// "the phone sentence must never reach a wired session" is the defect.
-const PHONE_LINK_COPY = "Creating the measurement link…";
-const RELAY_TAP_COPY = "Open the trusted capture page and follow its one next step.";
 function assertWiredStatus() {
   const text = relayStatus().textContent;
-  assert.notEqual(text, PHONE_LINK_COPY);
-  assert.notEqual(text, RELAY_TAP_COPY);
-  assert.ok(text.length > 0, "a wired session must never show a blank status");
+  assert.ok(text.length > 0, "a live session must never show a blank status");
 }
 
 // The words are the CAPTURE PLAN's, not this page's: the gate copies the
@@ -98,7 +89,7 @@ function envelope(relay, extra = {}) {
 // -- state: a wired session that has not begun holding yet ------------------ //
 // The panel stays down (there is nothing to say), and the status line names
 // the instrument rather than a link that will never be created.
-render(envelope({ status: "starting", source: "wired", tap_link: "" }));
+render(envelope({ status: "starting", source: "wired" }));
 assert.equal(walk().hidden, true);
 assertWiredStatus();
 
@@ -221,12 +212,15 @@ assert.deepEqual(actionLabels(), [CLOSING_SAVE.label, CLOSING_RETAKE.label]);
 // -- state: WIND-DOWN — the captures are over ------------------------------- //
 // A retained prompt must not outlive the walk it described.
 render(envelope({
-  status: "committing",
+  status: "stopping",
   source: "wired",
   position_pending: PENDING,
 }));
 assert.equal(walk().hidden, true);
-assert.equal(relayStatus().textContent, "Saving the verified measurement…");
+assert.equal(
+  relayStatus().textContent,
+  "Stopping playback and restoring the speaker safely…",
+);
 
 // -- state: TERMINAL -------------------------------------------------------- //
 render(envelope({ status: "complete", source: "wired" }));
@@ -246,32 +240,12 @@ assert.equal(walk().hidden, true);
 assert.equal(walkAction().children.length, 0);
 assertWiredStatus();
 
-// -- a RELAY session is untouched ------------------------------------------- //
-// The connect affordance a phone needs still renders, and the panel that
-// replaced it on the wired path does not appear beside it.
+// -- a hold nobody at this browser releases is not narrated as a wait ------- //
 render(envelope({
   status: "awaiting_phone",
-  source: "relay",
-  tap_link: "https://capture.test/#s=cap",
+  source: "wired",
   position_pending: DRIVEN_PENDING,
 }));
-assert.equal(walk().hidden, true);
-assert.equal(
-  relayStatus().textContent,
-  "Open the trusted capture page and follow its one next step.",
-);
-assert.equal(elements.get("crossover-relay-link").hidden, false);
+assertWiredStatus();
 
-// A session with no source at all (an older slot, or a flow that never
-// stamped one) keeps the pre-#2881 behavior exactly.
-render(envelope({
-  status: "awaiting_phone",
-  tap_link: "https://capture.test/#s=cap",
-}));
-assert.equal(walk().hidden, true);
-assert.equal(
-  relayStatus().textContent,
-  "Open the trusted capture page and follow its one next step.",
-);
-
-console.log(JSON.stringify({ ok: true, passed: 53 }));
+console.log(JSON.stringify({ ok: true, passed: 50 }));

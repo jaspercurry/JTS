@@ -114,7 +114,6 @@ from .crossover_v2.contracts import (
     ADOPTION_ROW_KEEP_ITERATING,
     ADOPTION_ROW_KEEP_MISSED_EXHAUSTED,
 )
-from .crossover_v2.capture_source import SOURCE_WIRED
 from .crossover_v2.refusal_copy import REASON_VOLUME_UNRESOLVED
 # The round-outcome vocabulary this screen renders. Imported rather than
 # re-typed: the four codes are picked by the web host's ``_post_apply_grade``,
@@ -1483,14 +1482,9 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     a fit that is about to produce the very thing the household is waiting for.
     Stop rides the relay block as it does on every in-session screen.
 
-    **The confirm itself belongs to whoever can reach it** (#2881). On a RELAY
-    session the phone owns Retake / Continue on its own confirm screen, and
-    this screen stays actionless and points there. On a WIRED session there is
-    no phone: the same two moves are the household's, here, so the screen mints
-    them against the endpoints the wired runner already listens on
-    (``/v2/complete``, ``/v2/retake``). They are not new machinery and not new
-    decisions — the same two the confirm screen has always offered, minted for
-    the surface that can actually show them. Both carry ``show_during_relay``
+    **The confirm itself belongs to the household, here** (#2881): the screen
+    mints Save / Record-again against the endpoints the runner already listens
+    on (``/v2/complete``, ``/v2/retake``). Both carry ``show_during_relay``
     because the session they belong to is by definition still in flight.
 
     **…but NOT while a capture is held.** Tapping "Record the last spot again"
@@ -1505,28 +1499,42 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     is held the confirm genuinely is not the household's move yet, and the
     pair comes back on its own the moment the gate releases.
     """
+    from .arm_walk import SESSION_ENDED_STATUSES
+
     v2 = _v2(status)
     running = str(v2.get("cloud_close") or "") == CLOUD_CLOSE_RUNNING
-    held = bool(_mapping(status.get("relay")).get("position_pending"))
-    on_wire = _wired_session(status)
-    wired = on_wire and not running and not held
+    relay = _mapping(status.get("relay"))
+    # The screen is derived from durable ``cloud_close``, not from the slot, so
+    # it also renders after the walk ended with its group un-confirmed (Stop, a
+    # failure, a reload past a restart). The two moves below POST into signals
+    # the slot drops the moment it leaves an in-flight status, so minting them
+    # for a dead session would be minting a 409.
+    live = bool(
+        str(relay.get("status") or "")
+        and str(relay.get("status")) not in SESSION_ENDED_STATUSES
+    )
+    held = bool(relay.get("position_pending"))
+    ready = live and not running and not held
     if running:
         verdict = (
             "JTS is working out your correction from the measurements — this "
             "takes a few seconds."
         )
-    elif wired:
+    elif ready:
         verdict = (
             "All spots measured. Save this measurement, or record the last "
             "spot again."
         )
-    elif on_wire:
+    elif live:
         # Held. The only way to reach this screen with a hold open is a retake
         # the household just asked for, so point at the step that is waiting
         # rather than repeat that everything is measured.
         verdict = "Re-recording one spot — follow the step below."
     else:
-        verdict = "All spots measured — confirm on the measurement page."
+        verdict = (
+            "All spots measured, but this measurement session has ended "
+            "before it was saved. Measure again to keep a round."
+        )
     return _envelope(
         screen="closing",
         active_step="measure",
@@ -1537,14 +1545,14 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "endpoint": "/correction/crossover/v2/complete",
             "body": {},
             "show_during_relay": True,
-        } if wired else None,
+        } if ready else None,
         alternate_actions=[{
             "id": "crossover_v2_retake",
             "label": "Record the last spot again",
             "endpoint": "/correction/crossover/v2/retake",
             "body": {},
             "show_during_relay": True,
-        }] if wired else [],
+        }] if ready else [],
         busy=running,
         status=status,
         # The pre-apply cloud's own flatness/carve-out disclosure is already
@@ -1684,11 +1692,10 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "endpoint": "/correction/crossover/v2/session",
             "body": {},
             # W6.12's escape hatch, for the same reason it exists on
-            # verify_fail: a relay that is still winding down from stage 1
-            # (`finishing`/`committing`/`stopping`) would otherwise blanket-
-            # hide every alternate, and a household landing on the decision
-            # screen with no way out is precisely the dead end this flow is
-            # meant to remove.
+            # verify_fail: a session still winding down from stage 1
+            # (`stopping`) would otherwise blanket-hide every alternate, and a
+            # household landing on the decision screen with no way out is
+            # precisely the dead end this flow is meant to remove.
             "show_during_relay": True,
         },
         {
@@ -2617,37 +2624,6 @@ def _v2(status: Mapping[str, Any]) -> Mapping[str, Any]:
     return _mapping(status.get("crossover_v2"))
 
 
-def _wired_session(status: Mapping[str, Any]) -> bool:
-    """Whether the session in flight is measuring on the WIRED source.
-
-    Reads the transport the slot itself published (``relay.source``,
-    ``correction_setup._begin_relay_capture``) rather than inferring it from an
-    absent ``tap_link``: "no phone link" is also what a relay session looks like
-    for the second before registration returns, and a screen that guessed would
-    offer the household a control the wrong session cannot serve.
-
-    False with no session in flight, which is what a caller minting live
-    controls wants — the seams those controls POST to are dropped with the
-    slot, so an offer outliving the session would be an offer to a 409.
-    """
-    return str(_mapping(status.get("relay")).get("source") or "") == SOURCE_WIRED
-
-
-def _follow_the_prompts(status: Mapping[str, Any]) -> str:
-    """WHERE the household reads the next spot's instruction, as a clause.
-
-    Two measuring screens have to name the place, and on the WIRED source
-    there is no measurement page to name — the walkthrough under the
-    live-session block is where each spot's prompt renders (#2881). One
-    definition rather than the same conditional written at both sites.
-    """
-    return (
-        "follow the step below"
-        if _wired_session(status)
-        else "follow the prompts on the measurement page"
-    )
-
-
 def _step_payload(active_step: str, done_steps: set[str]) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for step_id in _STEP_IDS:
@@ -3428,15 +3404,14 @@ def _verify_fail_envelope(
 
     ``republish_previous`` and ``verify_remeasure`` carry ``show_during_relay``
     (W6.12, the same seam W6.10 added for the review screen's Apply): the
-    JS action-row renderer's relay-in-flight gate otherwise blanket-clears
-    EVERY alternate action while the relay object is still transitioning
-    (``finishing`` / ``committing`` / ``stopping`` — a real window right
-    after a failed capture, before the phone side has fully wound down), so
-    a household landing on this screen saw no buttons at all and had to
-    guess "hit Stop" to make them reappear. ``verify_retry`` (the primary
-    "Try again") deliberately keeps NO such flag: it starts a brand-new
-    relay session, and doing that while the prior one is still tearing down
-    is exactly the race the gate exists to prevent — the way back and
+    JS action-row renderer's in-flight gate otherwise blanket-clears EVERY
+    alternate action while the capture is still transitioning (``stopping``,
+    a real window right after a failed capture, before the walk has fully
+    wound down), so a household landing on this screen saw no buttons at all
+    and had to guess "hit Stop" to make them reappear. ``verify_retry`` (the
+    primary "Try again") deliberately keeps NO such flag: it starts a
+    brand-new session, and doing that while the prior one is still tearing
+    down is exactly the race the gate exists to prevent — the way back and
     Re-measure are the "get me out of this" affordances that must stay
     reachable regardless — "regardless" of the RELAY gate, that is, not a
     claim both are always offered (the way back needs a prior banked
@@ -3928,9 +3903,9 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         env = _envelope(
             screen="measure", active_step="measure",
             verdict=(
-                f"JTS is measuring from a few different spots — "
-                f"{_follow_the_prompts(status)}. Moving the microphone between "
-                "spots is what lets JTS tell the speaker apart from the room."
+                "JTS is measuring from a few different spots — follow the "
+                "step below. Moving the microphone between spots is what lets "
+                "JTS tell the speaker apart from the room."
             ),
             next_action=None,
             status=status,
@@ -3944,10 +3919,10 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         env = _envelope(
             screen="measure", active_step="measure",
             verdict=(
-                f"JTS is measuring from a few spots either side of the mark, "
-                f"and then back on it — {_follow_the_prompts(status)}. "
-                "Moving the microphone is what shows how the speaker's drivers "
-                "hand over to each other away from the middle."
+                "JTS is measuring from a few spots either side of the mark, "
+                "and then back on it — follow the step below. Moving the "
+                "microphone is what shows how the speaker's drivers hand over "
+                "to each other away from the middle."
             ),
             next_action=None,
             status=status,
