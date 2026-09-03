@@ -1593,7 +1593,7 @@ def build_chip_aec_readiness_artifact(
 
     intent = _intent_from_env(mode_env)
     runtime = runtime_env_from_mapping(system_env, process_env=os.environ)
-    chip_available = bool(mic_probe.xvf_present and mic_probe.chip_beam_plan)
+    chip_available = mic_probe.chip_aec_supported
     dac = _dac_details(system_env, outputd_status)
     chip_gate = resolve_chip_aec_dac_gate(dac.get("id"), outputd_status=outputd_status)
     profile_status = build_audio_profile_status(

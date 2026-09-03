@@ -688,6 +688,34 @@ def test_metadata_atomic_no_tmp_left_behind(backend, tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Chip-AEC availability (one owner: MicProbe.chip_aec_supported)
+# ---------------------------------------------------------------------------
+
+
+def test_mic_chip_aec_available_reads_chip_aec_supported_field() -> None:
+    """A registered-but-unvalidated beam plan must read as chip-AEC NOT
+    available; a production-validated one as available. Pins that
+    _mic_chip_aec_available reads MicProbe.chip_aec_supported directly
+    rather than re-deriving bool(xvf_present and chip_beam_plan), which
+    ignored production_validated."""
+    unvalidated = wake_corpus_setup.MicProbe(
+        xvf_present=True,
+        capture_channels=6,
+        chip_beam_plan="experimental_unvalidated",
+        chip_aec_supported=False,
+    )
+    validated = wake_corpus_setup.MicProbe(
+        xvf_present=True,
+        capture_channels=6,
+        chip_beam_plan="xvf_square_fixed_150_210",
+        chip_aec_supported=True,
+    )
+
+    assert bridge_session._mic_chip_aec_available(unvalidated) is False
+    assert bridge_session._mic_chip_aec_available(validated) is True
+
+
+# ---------------------------------------------------------------------------
 # Auto-stop on excessive duration
 # ---------------------------------------------------------------------------
 

@@ -869,11 +869,6 @@ def capture_channels() -> int | None:
     return _capture_channels_for_card(alsa_card_name())
 
 
-def chip_aec_supported() -> bool:
-    """True only when the detected mic variant has a validated beam plan."""
-    return detect_runtime_profile().chip_aec_supported
-
-
 def dfu_flash_command(firmware_path: str = "") -> str:
     """Return the canonical DFU flash command as a string. Useful for
     doctor remediation messages and BRINGUP cross-references.

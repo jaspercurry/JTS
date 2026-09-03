@@ -80,9 +80,10 @@ logger = logging.getLogger("jasper-wake-corpus-web")
 
 
 def _mic_chip_aec_available(mic_probe: MicProbe) -> bool:
-    """Whether the detected mic profile has a chip-AEC beam plan."""
+    """Whether the detected mic profile has a production-validated
+    chip-AEC beam plan."""
 
-    return bool(mic_probe.xvf_present and mic_probe.chip_beam_plan)
+    return mic_probe.chip_aec_supported
 
 
 def _chip_aec_gate_for_status(
