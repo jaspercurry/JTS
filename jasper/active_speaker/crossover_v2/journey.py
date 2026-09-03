@@ -275,11 +275,8 @@ class CommissionJourney:
         """The applied graph has been put back — disarms the VERIFY hold (#2616).
 
         This object is the single owner of ``applied``; a durable-state writer
-        that clears it holds no conductor, so without this a restored live
-        session kept ``applied`` True in memory and the next
-        ``persist_conductor_state`` wrote that stale True back over the clear.
-        Unconditional, like its inverse: restoring a session that never applied
-        is a no-op rather than an error.
+        must not clear it independently. Unconditional, like its inverse:
+        restoring a session that never applied is a no-op rather than an error.
         """
         self._applied = False
 
