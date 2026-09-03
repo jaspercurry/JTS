@@ -4,30 +4,12 @@
 
 """Target frequency-response curves for room correction.
 
-Built-in targets (returned as dB arrays evaluated on a frequency grid):
-
-  - flat — 0 dB everywhere. The "do nothing above the modal range"
-    target for power users.
-
-  - harman — Harman in-room target (Olive 2013, AES 8994). Roughly
-    -1 dB/octave from 100 Hz to 20 kHz, with a +4 dB sub-bass shelf
-    below 80 Hz. The published research target most closely
-    matching what listeners prefer in a typical living room.
-
-  - house_curve(warmth) — interpolant between flat and harman.
-    warmth=0 returns flat; warmth=1 returns full Harman; warmth>1
-    extrapolates (more bass, more downward tilt) and warmth<0
-    extrapolates the other way (brighter / less bass).
-
-Product-visible named profiles and their warmth coefficients are owned by
-``jasper.correction.strategy.TARGET_PROFILES``. This module owns only the
-deterministic curve math.
-
-We deliberately do NOT ship the B&K-1974 / EBU Tech 3276 / JBL-Synthesis
-curves in V1. They're presets a power user might want, but the four
-canonical targets — flat, Harman, plus warm/bright tilts of Harman —
-cover the discriminating axis (overall tilt + sub-bass emphasis).
-Adding more is Phase 2 polish.
+``flat`` is 0 dB everywhere; ``harman`` is the Harman in-room target (Olive
+2013, AES 8994) — roughly -1 dB/octave from 100 Hz to 20 kHz with a +4 dB
+sub-bass shelf below 80 Hz; ``house_curve(warmth)`` interpolates between them
+and extrapolates outside [0, 1]. Product-visible named profiles and their
+warmth coefficients are owned by ``jasper.correction.strategy.TARGET_PROFILES``;
+this module owns only the deterministic curve math.
 """
 from __future__ import annotations
 
@@ -40,31 +22,23 @@ def flat_target(freqs: np.ndarray) -> np.ndarray:
 
 
 def harman_target(freqs: np.ndarray) -> np.ndarray:
-    """Harman in-room target curve (Olive 2013).
+    """Harman in-room target curve (Olive 2013), in dB on ``freqs``.
 
-    Approximation:
-      - Sub-bass shelf: +4 dB at f ≤ 60 Hz, smoothly returning to
-        0 dB at 100 Hz (cosine-like crossfade in log-frequency).
-      - Above 100 Hz: -1 dB/octave tilt, ending at ~ -7.6 dB at
-        20 kHz.
-
-    Returns dB array on the supplied frequency grid.
+    Approximated as a +4 dB shelf at or below 60 Hz returning to 0 dB at
+    100 Hz, then a -1 dB/octave tilt reaching about -7.6 dB at 20 kHz.
     """
     db = np.zeros_like(freqs, dtype=np.float64)
 
-    # Sub-bass shelf
     sub_mask = freqs <= 60.0
     db[sub_mask] = 4.0
 
-    # Smooth shoulder 60 → 100 Hz.
     transition_mask = (freqs > 60.0) & (freqs < 100.0)
     if transition_mask.any():
         f = freqs[transition_mask]
-        # Linear in log-frequency: at 60 Hz output 4 dB, at 100 Hz output 0.
         x = np.log2(f / 60.0) / np.log2(100.0 / 60.0)
         db[transition_mask] = 4.0 * (1.0 - x)
 
-    # -1 dB/octave above 100 Hz. Octave ratio = log2(f / 100).
+    # -1 dB/octave above 100 Hz.
     above_mask = freqs >= 100.0
     db[above_mask] = -np.log2(freqs[above_mask] / 100.0)
 
@@ -74,9 +48,7 @@ def harman_target(freqs: np.ndarray) -> np.ndarray:
 def house_curve(freqs: np.ndarray, warmth: float = 1.0) -> np.ndarray:
     """House curve: linear interpolant between flat and Harman.
 
-    Args:
-      warmth: 0 = flat, 1 = full Harman, 0.5 = halfway. Clamped to
-        [-1, 2] to avoid pathological extrapolations from a UI bug.
+    ``warmth`` 0 = flat, 1 = full Harman; clamped to [-1, 2].
     """
     w = float(np.clip(warmth, -1.0, 2.0))
     return harman_target(freqs) * w

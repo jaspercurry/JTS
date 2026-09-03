@@ -2,36 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Measurement-session state machine.
+"""Measurement-session state machine: multi-position MMM averaging + verify.
 
-Phase 2: multi-position MMM averaging + verify pass.
-
-The session owns the measurement state machine. The web handler opens
-a fresh measurement window for each sweep so renderers pause only while
-the speaker is actively measuring. Browser-side calls arm capture,
-upload pre-sweep room noise, trigger sweep playback, upload the captured
-response, and eventually apply or verify the generated correction.
-
-State transitions in the browser flow (with N = total_positions):
-
-    IDLE → NEEDS_NOISE_CAPTURE → PREPARING → SWEEPING → AWAITING_CAPTURE
-         → (on_capture_uploaded for position 0 ... N-2)
-         → optional NEEDS_REPEAT_CAPTURE → AWAITING_REPEAT_CAPTURE
-         → NEEDS_NEXT_POSITION
-         → NEEDS_NOISE_CAPTURE → SWEEPING (position 1)
-         → ...
-         → AWAITING_CAPTURE (position N-1)
-         → on_capture_uploaded for last position
-         → ANALYZING (spatial avg + PEQ design)
-         → READY → APPLIED
-         → VERIFYING (separate fresh window) → AWAITING_VERIFY_CAPTURE
-         → VERIFIED  (back to APPLIED with verify_curve populated)
-
-Single-position is N=1: the same flow, just no NEEDS_NEXT_POSITION.
-
-Phase 1 callers (the old `prepare_and_play_sweep` API) still work —
-it's a thin wrapper that opens a fresh window for one position
-and closes it when done.
+The web handler opens a fresh measurement window for each sweep, so renderers
+pause only while the speaker is actively measuring. Single-position runs are
+N=1 — the same flow without NEEDS_NEXT_POSITION.
 """
 from __future__ import annotations
 
@@ -97,21 +72,14 @@ from .status import (
 from ..log_event import log_event
 
 
-# Household run policy. These values are intentionally owned by the session
-# layer so HTTP, relay, and browser entry paths cannot drift into different
-# measurement semantics.
+# Owned by the session layer so HTTP, relay and browser entry paths cannot
+# drift into different measurement semantics.
 DEFAULT_ROOM_POSITION_COUNT = 6
 ROOM_POSITION_COUNT_CHOICES = (1, 3, DEFAULT_ROOM_POSITION_COUNT)
 DEFAULT_REPEAT_MAIN_POSITION = True
 
-# Room's full-band ESS needs more acoustic headroom than the continuous
-# level-check tone.  Two JTS3 UMIK-2 runs (2026-07-15) reached full scale after
-# locking first in the shared [-20, -12] dBFS window and then in Room's initial
-# 3 dB-lower window.  The second sweep measured -15.86 dBFS RMS with 0.1856%
-# clipped samples while retaining 25.49 dB estimated SNR.  Keep the shared
-# kernel and Active near-field policy unchanged; Room alone targets the
-# same-width window 6 dB lower, covering the observed 3.24 dB tone-to-sweep RMS
-# rise with additional peak reserve.
+# Room's full-band ESS sits 6 dB below the shared level-check window: two JTS3
+# UMIK-2 runs (2026-07-15) reached full scale in the shared [-20, -12] dBFS one.
 ROOM_LEVEL_WINDOW_LOW_DBFS = -26.0
 ROOM_LEVEL_WINDOW_HIGH_DBFS = -18.0
 
@@ -140,37 +108,12 @@ def _verify_snr_quality_warning(
 ) -> tuple[bool, str]:
     """Whether a verify capture's own SNR should gate its accept verdict.
 
-    (#2058 SF2.) Deliberately mirrors
-    :func:`acoustic_quality.build_acoustic_quality_report`'s own
-    ``snr_level in {"low", "unavailable"}`` grouping — its
-    ``recommended_action`` already treats a MISSING SNR estimate ("captures
-    are present but no measured noise floor was recorded") with the same
-    "remeasure or capture a noise floor before stronger advice" urgency as a
-    measured-low one, not as merely informational. Gating both here mirrors
-    that existing judgment rather than inventing a new one.
-
-    Checked for mass-downgrade risk before shipping: ``None`` is a genuine
-    capture-time degradation in production, not the default.
-    ``noise_floor_db`` (or the per-capture ``noise_report``, which also
-    satisfies this) is populated by multiple real production paths ahead of
-    any verify capture — the household's normal per-position noise-capture
-    step (``on_noise_capture_uploaded``), the client-supplied autolevel
-    value, and the relay-ingestion path in ``jasper.web.correction_setup``
-    all set it — so ``None`` reaching here means every one of those
-    genuinely didn't run for this session, not the common case.
-
-    ``estimated_snr_db`` is the verify capture's own
-    ``verify_quality["estimated_snr_db"]`` — ``None`` when no noise-floor
-    evidence was available for this specific capture. The 20 dB boundary is
-    :data:`acoustic_quality.SNR_WARN_DB` — the SAME constant
-    ``acoustic_quality._capture_summary`` compares against for its own
-    "low" tier, single-sourced rather than restated (a second literal here
-    would let this gate and the quality report's own verdict silently drift
-    apart under a future retune). At the boundary itself this does not warn
-    (``<``, not ``<=``), matching that same comparison.
-
-    Returns ``(quality_warned, reason)``; ``reason`` is ``""`` when not
-    warned.
+    Returns ``(quality_warned, reason)``; ``reason`` is ``""`` when not warned.
+    The boundary is :data:`acoustic_quality.SNR_WARN_DB`, read rather than
+    restated so this gate and that module's own "low" tier cannot drift, and
+    the comparison is strict (``<``) to match it. ``None`` warns: it is a real
+    capture-time degradation, not the default — several production paths
+    populate ``noise_floor_db`` ahead of any verify capture.
     """
     if estimated_snr_db is None:
         return True, (
@@ -204,12 +147,10 @@ class SessionState(Enum):
 
 
 class SessionBusyError(RuntimeError):
-    """An operation was refused because a transient sweep/analysis task is
-    running and would race it. Distinct from a generic error so the web
-    layer can map it to HTTP 409 (Conflict) rather than 500, and so the
-    autolevel volume-restore can tell "rejected, measurement still live"
-    apart from "reset completed". Subclasses RuntimeError for back-compat
-    with callers that catch the broader type."""
+    """Refused because a transient sweep/analysis task would race it.
+
+    The web layer maps this to HTTP 409 rather than 500.
+    """
 
 
 @dataclass
@@ -260,45 +201,19 @@ class SessionConfig:
     sample_rate: int = 48000
     amplitude_dbfs: float = AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS
 
-    # NOTE: there are deliberately no `peq_f_low` / `peq_f_high` fields here.
-    # Until 2026-07-28 this dataclass carried a frozen shadow copy of the
-    # `balanced` strategy's band that was never overridden (`SessionConfig()`
-    # is the only constructor call in the tree). Filter design read the
-    # SELECTED strategy, but acceptance, the verify before/after delta,
-    # repeatability, confidence banding, and the DISCLOSED `correction_band_hz`
-    # all read the shadow copy — so a household-selectable `safe` session
-    # corrected 25-250 Hz while grading ACCEPT/REVERT over 50-350, scoring
-    # confidence over 20-350, and telling the household `[20, 350]`
-    # (issue #1797: corrected-narrow-stated-wide). The band now has one
-    # reader — `MeasurementSession.correction_band_hz` — which resolves the
-    # session's actual strategy, so the two can no longer disagree. Do not
-    # re-add a band field here; add strategy character to
+    # No `peq_f_low` / `peq_f_high` here: the band has one reader,
+    # `MeasurementSession.correction_band_hz` (#1797). Add strategy character to
     # `strategy.CORRECTION_STRATEGIES` instead.
     correction_strategy: str = strategy.DEFAULT_CORRECTION_STRATEGY_ID
 
 
-# After a sweep the session waits in an awaiting_*_capture state for the
-# browser to upload the recording. If that upload never arrives (iOS screen
-# lock, backgrounded tab, network blip), the session would wedge forever and
-# block every future /start. This watchdog abandons such a stranded session so
-# the wizard self-recovers. A sweep+upload normally completes in seconds; 120 s
-# is generous headroom. This runs concurrently with voice_daemon's
-# measurement-window auto-clear and happens to share its value, but the two are
-# independent: the coordinator's lease renewal decouples them, and neither
-# ordering is a contract. Tune this one on its own evidence.
+# Stranded-upload watchdog. A sweep plus upload normally completes in seconds;
+# 120 s is headroom. Independent of voice_daemon's measurement-window clear.
 AWAITING_CAPTURE_TIMEOUT_SEC = 120.0
 
-# States the stranded-capture watchdog guards: every state where the session
-# is parked waiting on the BROWSER to upload audio it records automatically,
-# with no user action in the loop. If that upload never arrives — denied mic
-# permission, a backgrounded iOS tab, a closed page — the session would wedge
-# forever and block every future /start. needs_noise_capture is included
-# because it is exactly that shape: an automatic pre-sweep noise recording,
-# entered before any measurement window opens (so a wedge there never leaves
-# the speaker muted — see begin_noise_capture / prepare_and_play_sweep). The
-# user-paced needs_next_position / needs_repeat_capture states are deliberately
-# NOT guarded: the user may legitimately take minutes to reposition the phone,
-# and those states already carry their own Cancel affordance.
+# States parked on an automatic browser upload with no user action in the loop.
+# The user-paced needs_next_position / needs_repeat_capture are deliberately NOT
+# guarded: repositioning can take minutes and both carry their own Cancel.
 _CAPTURE_TIMEOUT_STATES = frozenset({
     SessionState.NEEDS_NOISE_CAPTURE,
     SessionState.AWAITING_CAPTURE,
@@ -306,16 +221,9 @@ _CAPTURE_TIMEOUT_STATES = frozenset({
     SessionState.AWAITING_VERIFY_CAPTURE,
 })
 
-# States reset() refuses, because a fire-and-forget sweep/analysis task is
-# actively running and will set the next state AFTER reset() sets IDLE —
-# leaving the session looking reset for an instant and then jumping back.
-# Direct reset still refuses these states. The persistent emergency Stop in
-# correction/js/main.js first cancels and reaps the identity-guarded background
-# audio task, moves the session to FAILED, and only then invokes reset; a stale
-# client that skips that quiescence seam remains fenced off the race.
-# Every settled, parked, or wedged state (idle / needs_* / awaiting_* / ready
-# / applied / verified / failed) still resets, so the escape hatch keeps
-# working when the user actually needs it.
+# States reset() refuses: a fire-and-forget sweep/analysis task is running and
+# would set the next state AFTER reset() sets IDLE. Every settled, parked or
+# wedged state still resets, so the escape hatch keeps working.
 _RESET_BUSY_STATES = frozenset({
     SessionState.PREPARING,
     SessionState.SWEEPING,
@@ -325,12 +233,9 @@ _RESET_BUSY_STATES = frozenset({
 
 
 class MeasurementSession:
-    """Multi-position measurement session.
+    """Multi-position measurement session; one per `POST /start`.
 
-    The HTTP handler creates one MeasurementSession per `POST /start`
-    call. It lives until the next `/start` (which replaces it) or
-    until the daemon restarts. State + curves persist as long as
-    the session does.
+    Lives until the next `/start` replaces it or the daemon restarts.
     """
 
     def __init__(
@@ -367,8 +272,7 @@ class MeasurementSession:
             expected_sample_rate=self.cfg.sample_rate,
             has_mic_calibration=mic_calibration is not None,
         ).to_dict()
-        # Per-position smoothed magnitude responses (dB on log grid).
-        # Spatial-averaged at end of multi-position flow.
+        # Per-position smoothed magnitudes (dB on a log grid).
         self.position_magnitudes: list[np.ndarray] = []
         self.position_freqs: np.ndarray | None = None  # log grid
         self.capture_quality: list[dict[str, Any]] = []
@@ -384,81 +288,46 @@ class MeasurementSession:
         )
         self.position_analysis: dict[str, Any] | None = None
 
-        # Output curves for the chart.
         self.measured_curve: CurveJSON | None = None
         self.target_curve: CurveJSON | None = None
         self.predicted_curve: CurveJSON | None = None
-        # Pre-correction curve at position 1 (the FIRST measured position),
-        # retained as the matched comparison basis for the P4 acceptance
-        # verdict: the verify capture is taken at position 1, so comparing it
-        # against this same-geometry curve is apples-to-apples (the spatial
-        # average mixes several seats — see acceptance.py). None for a session
-        # that never captured a position; the evaluator falls back to
-        # measured_curve then.
+        # Pre-correction curve at the FIRST measured position: the matched
+        # comparison basis for acceptance (the verify capture is taken there).
         self.position1_curve: CurveJSON | None = None
         self.verify_curve: CurveJSON | None = None
         self.verify_metrics: dict[str, float] | None = None
-        # Honest MEASURED before/after readout, populated by the verify
-        # path: pre-correction measured deviation, post-correction
-        # verify deviation (both over the SAME band as verify_metrics),
-        # the measured delta, and fill_segments for the browser. None
-        # until a verify measurement lands — the predicted design figure
-        # is never promoted into "improvement" without this.
+        # Measured before/after readout from the verify path, over the SAME
+        # band as verify_metrics. None until a verify measurement lands.
         self.verify_before_after: dict[str, Any] | None = None
-        # P4 deterministic acceptance verdict (accept / surface /
-        # revert_pending_confirm / revert), populated by on_verify_capture_-
-        # uploaded from the pure AcceptanceEvaluator. None until a verify
-        # lands. `_verify_count` and `_prior_clear_regression` track the
-        # confirmatory-re-measure concordance across re-verifies: a clear
-        # regression auto-reverts only when the verify IMMEDIATELY AFTER it
-        # concurs (strict adjacency — a clean verify answers the pending
-        # question and clears the flag).
+        # P4 acceptance verdict; None until a verify lands. A clear regression
+        # auto-reverts only when the immediately following verify concurs.
         self.acceptance: dict[str, Any] | None = None
         self._verify_count = 0
         self._prior_clear_regression = False
-        # Outcome of the automatic rollback, recorded when it actually
-        # completes (never predicted): {"result": "ok"|"failed", "at": ts}.
-        # None = no auto-revert has run to completion (not attempted, or still
-        # in flight after an upload-response timeout — the coroutine keeps
-        # running and records the truth when reset() finishes, which is why
-        # this lives on the session rather than in the HTTP response). The
-        # envelope reads it to tell the household the truth post-revert: a
-        # successful revert lands the session in IDLE, where the honest
-        # "reverted" copy is driven by this field; a failed one leaves the
-        # correction APPLIED and the result-screen copy must say so.
+        # Recorded when the automatic rollback completes, never predicted:
+        # {"result": "ok"|"failed", "at": ts}. None = none has finished.
         self.auto_revert_outcome: dict[str, Any] | None = None
         self.design_report: dict[str, Any] | None = None
 
         self.peqs: list[PEQJSON] = []
         self.config_path: Path | None = None
-        # The CamillaDSP config path that was live immediately BEFORE apply()
-        # swapped in this correction. Captured at apply time so a confirmed-
-        # regression auto-revert can restore exactly the prior graph through
-        # the existing reset() path (never a new reversal mechanism). None
-        # until apply() runs with a config getter.
+        # The CamillaDSP config that was live immediately BEFORE apply().
         self.pre_apply_config_path: str | None = None
         self.pre_measurement_config_path: Path | None = None
-        # Immutable, session-unique copy of CamillaDSP's running graph at
-        # Start. The public predecessor path above remains provenance only: a
-        # later Active candidate build may legally rewrite that durable name
-        # without loading it, so rollback must never treat the name as content.
+        # Session-unique copy of CamillaDSP's running graph at Start; rollback
+        # must load this, never the predecessor NAME (which may be rewritten).
         self.pre_measurement_restore_path: Path | None = None
         self.measurement_config_path: Path | None = None
-        # Active-owned admission sampled at /start. The web owner carries this
-        # opaque tuple and revalidates it at each DSP-writer boundary; the
-        # session never interprets or reconstructs Layer-A evidence.
+        # Opaque Active-owned admission sampled at /start, revalidated at each
+        # DSP-writer boundary. The session never interprets it.
         self.room_authority_binding: (
             tuple[bool | None, str | None, str | None] | None
         ) = None
 
-        # Sweep cache.
         self.sweep_meta: sweep.SweepMeta | None = None
         self.sweep_wav_path: Path | None = None
         self.last_capture_path: Path | None = None
 
-        # Auto-level is orthogonal to the measurement state machine. The
-        # controller owns the ramp events and retained main_volume setter; the
-        # session keeps the public methods for web-handler compatibility.
         self._autolevel_controller = AutolevelController(
             session_id=self.session_id,
         )
@@ -466,42 +335,23 @@ class MeasurementSession:
         self._autolevel_reset_intent: object | None = None
         self._background_audio_task: asyncio.Task[Any] | None = None
 
-        # P2 relay-closed level match. The settle-based RampController (shared
-        # kernel) is the generalization of AutolevelController; the browser-locked
-        # AutolevelController above stays as the no-relay/local fallback. The lock
-        # store is per-geometry (near-field baffle vs listening position), so a
-        # near-field lock and a listening-position lock coexist. `run_level_match`
-        # drives it; the store's drift reference is checked on later sweeps.
+        # P2 relay-closed level match. The lock store is per-geometry, so a
+        # near-field lock and a listening-position lock coexist.
         self.level_lock_store = LevelLockStore()
         self._last_level_match: LevelMatchOutcome | None = None
-        # Single-flight slot for the CURRENT run's LevelMatchSession, so a
-        # manual Lock / Cancel from the flow can reach the running
-        # RampController through `lock_level_match` / `cancel_level_match`. A
-        # bare local (the prior shape) discarded the controller the instant
-        # `run_level_match` awaited, so neither seam could ever fire. NOTE this
-        # is a per-run SLOT, unlike `_autolevel_controller` (a permanent
-        # controller object): `run_level_match` refuses to start while it is
-        # occupied and clears it identity-guarded, so an overlapping run can
-        # never orphan a live ramp from its Cancel seam.
+        # Per-run slot, not a permanent controller: `run_level_match` refuses
+        # to start while it is occupied and clears it identity-guarded.
         self._level_match_session: LevelMatchSession | None = None
         self._level_match_task: asyncio.Task[Any] | None = None
-        # Cleanup may be triggered by relay failure, reset, and apply at nearly
-        # the same time.  Serialize the write + restored flag so the lease is
-        # released exactly once and a failed CamillaDSP write remains retryable.
+        # Cleanup can fire from relay failure, reset and apply at once; serialize
+        # so the lease releases once and a failed write stays retryable.
         self._level_restore_lock = asyncio.Lock()
-        # Presentation/orchestration choice for this run.  The measurement
-        # state machine remains transport-agnostic; the server envelope uses
-        # this marker only to choose the correct thin adapter action.
+        # Presentation marker only; the state machine stays transport-agnostic.
         self.capture_transport = "local"
-        # The local browser learns its realized device only after `/start`.
-        # This one-shot guard prevents a stale tab or later position from
-        # changing capture identity after the run has been admitted.
+        # One-shot: capture identity cannot change after the run is admitted.
         self._local_capture_setup_bound = False
 
-        # Single-slot guard that abandons stranded browser-capture states and
-        # refuses reset while a fire-and-forget sweep/analysis task is active.
-        # Armed/cancelled centrally from _set_state; capture_timeout_sec remains
-        # an overridable session property for tests (and disables when <= 0).
+        # capture_timeout_sec stays overridable for tests; <= 0 disables.
         self._state_guard = SessionStateGuard(
             session_id=self.session_id,
             capture_timeout_states=_CAPTURE_TIMEOUT_STATES,
@@ -514,64 +364,31 @@ class MeasurementSession:
             logger=logger,
         )
 
-        # Optional client-reported room noise floor (the autolevel
-        # preflight measures this in the browser before the tone
-        # plays). Saved into info.json so debug bundles preserve the
-        # context that drove the autolevel target band.
+        # Optional client-reported room noise floor; saved into info.json.
         self.noise_floor_db: float | None = None
 
-        # Snapshot of the active CamillaDSP config when `/start` was hit,
-        # before the web layer emits its topology-preserving measurement
-        # baseline (Room/preference EQ removed; protected speaker DSP kept).
-        # The bundle can therefore describe the speaker state that preceded
-        # measurement; `/start` rejects graphs the carrier cannot preserve.
+        # Active CamillaDSP config at `/start`, before the measurement baseline
+        # is emitted. `/start` rejects graphs the carrier cannot preserve.
         self.current_correction_at_start: dict[str, Any] | None = None
 
-        # Per-session debug bundle. All artifacts (info.json,
-        # result.json, per-position WAVs, verify.wav, applied.yml)
-        # and mic_calibration.* land here. The directory is created
-        # lazily on first write so tests that pass a SessionConfig
-        # pointing at a tmp_path don't have to pre-mkdir.
+        # Created lazily on first write.
         self.bundle_dir: Path = self.cfg.sessions_dir / self.session_id
         self.save_bundles: bool = _bundles_enabled()
         self.artifacts = SessionArtifacts(self)
 
-        # Events retained for debugging / future progress streams. The
-        # shipped browser UI currently polls GET /status.
         self._events: list[SessionEvent] = []
         self._event_seq = 0
-        # Lazy-init the asyncio.Lock — Python 3.9 binds it to the
-        # current loop at construction time and raises if none is
-        # running. Construction happens from sync HTTP-handler
-        # threads, so deferring until first async use keeps the
-        # session safe to instantiate anywhere.
+        # Lazy-init: asyncio.Lock binds to the running loop at construction and
+        # the session is constructed from sync HTTP-handler threads.
         self._lock_obj: asyncio.Lock | None = None
 
     @property
     def correction_band_hz(self) -> tuple[float, float]:
         """The band THIS session actually corrects, as ``(f_low, f_high)``.
 
-        The single reader of the session's band. Everything that grades,
-        scores, or discloses the correction must go through here so it cannot
-        disagree with what `design_correction` actually fitted: acceptance, the
-        verify before/after delta, repeatability, confidence banding, and the
-        disclosed `correction_band_hz` all resolve the SAME strategy the
-        designer used. Before this property existed each of those read a frozen
-        `SessionConfig` copy of the `balanced` band, so a `safe` session
-        corrected 25-250 Hz while grading and disclosing 20/50-350 Hz
-        (issue #1797).
-
-        Resolved fresh from `strategy.CORRECTION_STRATEGIES` rather than cached
-        at construction, so the strategy table stays the one owner of strategy
-        character.
-
-        NOT a per-room ceiling yet, and this property does not make it one:
-        `CORRECTION_STRATEGIES` binds the boundary SSOT's *static* module-level
-        values at import time, so RC3 must still change how those bands are
-        composed (in `strategy.py`) before a per-room f_t can flow through
-        here. What RC1 bought is that the change is confined to that one
-        composition — every consumer below already reads whatever this
-        property returns.
+        The single reader of the session's band, resolved fresh from
+        `strategy.CORRECTION_STRATEGIES` so that table stays the one owner of
+        strategy character (#1797).
         """
         strat = strategy.resolve_correction_strategy(self.strategy_choice)
         return (strat.f_low_hz, strat.f_high_hz)
@@ -627,9 +444,6 @@ class MeasurementSession:
         """Whether the one-shot local browser identity has been accepted."""
         return self._local_capture_setup_bound
 
-    # ------------------------------------------------------------------
-    # Internal helpers.
-    # ------------------------------------------------------------------
 
     def _emit(self, type_: str, payload: dict[str, Any]) -> None:
         self._event_seq += 1
@@ -665,10 +479,7 @@ class MeasurementSession:
     async def _set_state(self, state: SessionState, **extra: Any) -> None:
         prev = self.state
         self.state = state
-        # Re-arm the stranded-capture watchdog on every transition: cancel any
-        # pending timer, then start a fresh one only when entering a state that
-        # waits on an automatic browser upload. An upload (or any other
-        # transition) cancels it for free.
+        # Cancel any pending timer; re-arm only for automatic-upload states.
         self._state_guard.on_transition(state)
         payload = {"state": state.value, "prev": prev.value, **extra}
         self._emit("state", payload)
@@ -677,8 +488,7 @@ class MeasurementSession:
             self.session_id, prev.value, state.value,
             extra if extra else "",
         )
-        # Bundle artifacts are best-effort — never let a write failure
-        # bring down a measurement state transition.
+        # Best-effort: a bundle write failure must not break a transition.
         try:
             self._write_info_json()
         except Exception:  # noqa: BLE001
@@ -686,10 +496,6 @@ class MeasurementSession:
                 "bundle info.json write failed (state=%s)", state.value,
             )
 
-    # ------------------------------------------------------------------
-    # Bundle artifacts. MeasurementSession keeps this public/internal surface
-    # for callers, while SessionArtifacts owns the file-system work.
-    # ------------------------------------------------------------------
 
     def _bundle_relative_path(self, path: Path) -> str | None:
         return self.artifacts.bundle_relative_path(path)
@@ -834,10 +640,7 @@ class MeasurementSession:
             logger.exception("bundle runtime_integrity.json write failed")
 
     def capture_path_for_position(self, idx: int) -> Path:
-        """Where a per-position WAV should be written. Falls back to
-        cfg.capture_dir when bundles are disabled or the per-session
-        dir can't be created — keeps the upload path working even
-        when /var/lib/jasper is read-only or full."""
+        """Where a per-position WAV should be written."""
         return self.artifacts.capture_path_for_position(idx)
 
     def noise_capture_path_for_position(self, idx: int) -> Path:
@@ -883,16 +686,6 @@ class MeasurementSession:
         timeout_s: float = 5.0,
     ) -> bool:
         """Block until session state is no longer in `from_states`.
-
-        Used by HTTP handlers that kick off background async tasks
-        and want to return the *new* state to the client — without
-        this wait, the client briefly sees stale pre-transition
-        state and (in the case of pollState's needs_next_position /
-        applied / verified branches) STOPS POLLING, missing all
-        subsequent state changes. The bug surfaced as
-        `cannot advance to next position from state awaiting_capture`
-        when the user double-tapped Continue after the polling died
-        silently.
 
         Returns True if state changed, False on timeout.
         """
@@ -947,10 +740,8 @@ class MeasurementSession:
         if not tasks:
             return False
 
-        # A live ramp owns volume writes. Ask its controller to exit through
-        # the click-free fade + exact listening-volume restore, then await that
-        # owner task. Before the controller exists (or after it is terminal),
-        # task cancellation is safe because no ramp write remains outstanding.
+        # A live ramp owns volume writes: ask its controller to exit through the
+        # click-free fade and exact listening-volume restore, then await it.
         level_stopping_gracefully = False
         if (
             level_task is not None
@@ -1002,34 +793,22 @@ class MeasurementSession:
                     "bundle info.json write failed (state=%s)", self.state.value,
                 )
             # A failed measurement must not strand the speaker at the loud
-            # autolevel level — the web apply/reset handlers, which normally
-            # restore it, never run on this path (watchdog timeout, analysis
-            # error, etc.).
+            # autolevel level; the web handlers never run on this path.
             await self._restore_listening_volume_if_ramped()
         finally:
             if owned_intent is not None:
                 await self.end_autolevel_reset(owned_intent)
 
     async def _restore_listening_volume_if_ramped(self) -> None:
-        """Restore main_volume to the pre-autolevel listening level when a
-        measurement ends on a path the web apply/reset handlers don't cover
-        (watchdog FAILED, verify VERIFIED).
+        """Restore main_volume to the pre-autolevel listening level.
 
-        Autolevel ramps main_volume up to a measurement level and leaves it
-        LOCKED for the whole measurement (run_autolevel never resets
-        session.state), so without this hook a failed or verify-ended
-        measurement would leave the speaker loud until the next /reset.
-        Best-effort and idempotent — the apply/reset HTTP handlers own the
-        success paths; this fires only for the endings they never see. It
-        holds no lock and swallows errors, so it is safe to call from _fail
-        (which runs under the session lock)."""
+        Best-effort, idempotent and lock-free, for the endings the web
+        apply/reset handlers never see (watchdog FAILED, verify VERIFIED).
+        """
         await self._autolevel_controller.restore_listening_volume_if_ramped()
 
     def _ensure_sweep_cache(self) -> tuple[Path, sweep.SweepMeta]:
-        """Generate or reuse the cached sweep WAV. Cached on disk
-        because the sweep is deterministic per parameter tuple — no
-        point regenerating each measurement (saves ~50 ms per
-        position)."""
+        """Generate or reuse the cached sweep WAV (deterministic per parameters)."""
         self.cfg.sweep_dir.mkdir(parents=True, exist_ok=True)
         sweep_path = self.cfg.sweep_dir / (
             f"sweep_{int(self.cfg.f1_hz)}_{int(self.cfg.f2_hz)}_"
@@ -1057,9 +836,8 @@ class MeasurementSession:
         position_index: int,
     ) -> dict[str, Any]:
         samples, sample_rate = sweep.read_wav_mono(noise_wav_path)
-        # Bound the noise array up front: the /upload-noise body is limited
-        # only by the 32 MB HTTP cap, and the rms/peak/abs math below (plus
-        # _band_levels_dbfs) would otherwise spike memory on the 1 GB Pi.
+        # Bound the noise array up front: the /upload-noise body is capped only
+        # by the 32 MB HTTP limit and the math below would spike the 1 GB Pi.
         samples = deconv.cap_capture_length(samples, sweep_len=0, sample_rate=sample_rate)
         samples64 = samples.astype(np.float64)
         abs_samples = np.abs(samples64)
@@ -1087,10 +865,8 @@ class MeasurementSession:
             "rms_dbfs": round(_dbfs(rms), 2),
             "peak_dbfs": round(_dbfs(peak), 2),
             "band_noise_dbfs": _band_levels_dbfs(samples64, sample_rate),
-            # #1838: which estimator produced `band_noise_dbfs`. This dict is
-            # persisted into the bundle and re-read later, so it carries the
-            # marker itself rather than relying on the enclosing report's.
-            # Absent = the pre-#1838 per-bin scale; do not diff across it.
+            # #1838: this dict is persisted and re-read later, so it carries the
+            # estimator marker itself. Absent = pre-#1838 scale; do not diff.
             "band_snr_scale": acoustic_quality.BAND_SNR_SCALE,
             "method": "pre_sweep_silence_wav",
         }
@@ -1145,8 +921,7 @@ class MeasurementSession:
         """Read capture, assess quality, deconvolve, smooth, log-resample.
 
         Returns ``(log_freqs, smoothed_db, capture_quality, direct_arrival,
-        replay_artifacts)`` for design positions, the main-seat repeat, and
-        the verify pass.
+        replay_artifacts)``.
         """
 
         def _log_quality_issue(issue: quality.QualityIssue) -> None:
@@ -1222,12 +997,8 @@ class MeasurementSession:
             band_snr = self._capture_band_snr(captured_wav_path, noise_report)
             if band_snr:
                 out["band_snr"] = band_snr
-            # #2058 SF6: SNR_WARN_DB, not a restated literal — this is the
-            # same threshold acoustic_quality._capture_summary compares
-            # against for its own "low" tier, and _verify_snr_quality_warning
-            # above compares the verify capture's SNR against it too. A
-            # second literal "20.0" here would let this issue and either of
-            # those comparisons silently drift apart under a future retune.
+            # #2058 SF6: read SNR_WARN_DB rather than restating 20.0, so this
+            # issue and acoustic_quality's own "low" tier cannot drift apart.
             if estimated_snr_db < acoustic_quality.SNR_WARN_DB:
                 issues = list(out.get("issues") or [])
                 issues.append({
@@ -1261,21 +1032,10 @@ class MeasurementSession:
     ) -> dict[str, Any] | None:
         """Honest MEASURED before/after over the verify band.
 
-        The "before" is the pre-correction spatial-averaged measured
-        curve (`self.measured_curve`); the "after" is the just-captured
-        verify curve. Both deviations are taken over the SAME band as
-        `verify_metrics` (`[50, self.correction_band_hz[1]]` — see the
-        comment at the verify_metrics call for why 50 Hz, not the strategy's
-        own low edge), which is the guard against the band-mismatch trap: we
-        deliberately do NOT reuse the design report's predicted "before"
-        (computed over the full strategy band, whose low edge is 20 or 25 Hz)
-        as the measured baseline.
-
-        Every capture resamples onto the same log grid, so the design
-        measured curve and the verify curve share `verify_freqs`. We
-        still interpolate onto `verify_freqs` defensively so a future
-        grid change can't silently misalign the two arrays. Returns None
-        if the pre-correction measured curve is unavailable.
+        Both deviations are taken over the SAME band as `verify_metrics`
+        (``[50, self.correction_band_hz[1]]``), never the design report's
+        predicted "before". Returns None if the pre-correction curve is
+        unavailable.
         """
         if self.measured_curve is None:
             return None
@@ -1283,8 +1043,6 @@ class MeasurementSession:
         pre_mag = np.asarray(self.measured_curve.magnitude_db, dtype=np.float64)
         if pre_freqs.size == 0 or pre_mag.size != pre_freqs.size:
             return None
-        # Align the pre-correction curve to the verify grid. np.interp is
-        # a no-op when the grids already match (the normal case).
         before_on_grid = np.interp(verify_freqs, pre_freqs, pre_mag)
         return analysis.before_after_delta(
             verify_freqs,
@@ -1356,8 +1114,6 @@ class MeasurementSession:
             if basis_freqs.size == 0 or basis_mag.size != basis_freqs.size:
                 return None
 
-            # Align the pre-correction basis to the verify grid (a no-op when
-            # the grids already match — the normal case).
             before_on_grid = np.interp(verify_freqs, basis_freqs, basis_mag)
 
             self._verify_count += 1
@@ -1372,20 +1128,10 @@ class MeasurementSession:
                 prior_clear_regression=self._prior_clear_regression,
             )
             # Verify-capture quality rides along as disclosure, never a gate
-            # (#2058 follow-up). self.verify_quality was populated just above
-            # this method's call site (on_verify_capture_uploaded), before
-            # the verdict, specifically so this is available here.
-            #
-            # Deliberately NOT self.acoustic_quality["summary"]["level"]: that
-            # aggregate is "warn" on the SAME session whenever ANY capture
-            # (including a measurement position) carries ANY warn-severity
-            # issue, and jasper.audio_measurement.quality's "mic_uncalibrated"
-            # is one such issue on nearly every session that skips a
-            # measurement-mic calibration upload — disclosing that on nearly
-            # every verdict would be noise, not signal. SNR is different: a
-            # noisy capture's noise floor does NOT cancel between before and
-            # verify (it is capture-local, not shared), so it directly bears
-            # on whether the extracted curve shape itself can be trusted.
+            # (#2058). Deliberately not acoustic_quality's aggregate level: that
+            # is "warn" on nearly every session that skips a mic calibration,
+            # while a capture-local noise floor does not cancel between before
+            # and verify and so bears on the extracted curve shape itself.
             verify_snr_db = (
                 self.verify_quality.get("estimated_snr_db")
                 if isinstance(self.verify_quality, dict)
@@ -1399,15 +1145,9 @@ class MeasurementSession:
             quality_warned, quality_reason = _verify_snr_quality_warning(
                 verify_snr_db,
             )
-            # Record this verify's clear-regression state so the NEXT verify
-            # can judge concordance. STRICT ADJACENCY: a clean verify clears
-            # the flag — the confirmatory sweep the flow asked for has
-            # answered the pending question (first read = noise), so a later
-            # regression must earn its own confirmatory re-measure rather
-            # than reverting instantly off a stale flag. (Latched semantics
-            # compound the single-sweep false-flag rate across re-verifies;
-            # adjacency squares it — the plan's false-revert-is-trust-
-            # expensive axis.)
+            # Strict adjacency: a clean verify clears the flag, so a later
+            # regression must earn its own confirmatory re-measure. Latched
+            # semantics would compound the single-sweep false-flag rate.
             self._prior_clear_regression = result.clear_regression
             result_dict = result.to_dict()
             result_dict["verify_quality_warned"] = quality_warned
@@ -1433,17 +1173,12 @@ class MeasurementSession:
             correction_band_hz=self.correction_band_hz,
         )
 
-    # ------------------------------------------------------------------
-    # Phase 1 / Phase 2 measurement flow.
-    # ------------------------------------------------------------------
 
     async def begin_noise_capture(self) -> None:
         """Ask the browser to record pre-sweep room noise.
 
-        The browser flow uses this before each measurement position so
-        the bundle carries a real noise artifact instead of only the
-        older autolevel scalar. Direct test/legacy callers may still
-        call `prepare_and_play_sweep()` from IDLE.
+        Direct test/legacy callers may still call `prepare_and_play_sweep()`
+        from IDLE.
         """
         async with self._lock:
             valid_states = {SessionState.IDLE, SessionState.NEEDS_NEXT_POSITION}
@@ -1465,11 +1200,8 @@ class MeasurementSession:
     ) -> dict[str, Any]:
         """Bind the realized local-browser input before its first upload.
 
-        The server-owned flow asks the household to choose/authorize the local
-        microphone after ``/start``. Keep that late setup on the live session
-        instead of leaving the pre-authorization ``None`` values as the bundle
-        and analysis authority. Only the parked pre-sweep state is mutable;
-        relay setup continues through its own versioned binding path.
+        Only the parked pre-sweep state is mutable; relay setup continues
+        through its own versioned binding path.
         """
         report = browser_audio.assess_browser_audio_path(
             input_device=input_device,
@@ -1573,8 +1305,8 @@ class MeasurementSession:
     ) -> None:
         """Play a sweep after the caller validates and enters its prepare state.
 
-        ``position_payload`` is intentionally optional: all sweep events expose
-        duration, while measurement and repeat also expose position metadata.
+        ``position_payload`` is optional: all sweep events expose duration,
+        while measurement and repeat also expose position metadata.
         """
         await self._record_runtime_snapshot(
             f"{capture_kind}_prepare",
@@ -1638,14 +1370,10 @@ class MeasurementSession:
             Callable[[], Awaitable[dict[str, Any] | None]] | None
         ) = None,
     ) -> None:
-        """Single sweep. Used both for position[i] within a multi-
-        position flow AND for the Phase 1 single-position-only path.
+        """Single sweep, for position[i] and for the single-position path.
 
-        Flow: PREPARING → SWEEPING → AWAITING_CAPTURE.
-
-        The caller is responsible for the measurement_window —
-        either wrapping a single call (Phase 1 single-position) or
-        opening once and calling this multiple times (multi-position).
+        Flow: PREPARING -> SWEEPING -> AWAITING_CAPTURE. The caller owns the
+        measurement window.
         """
         async with self._lock:
             valid_states = {
@@ -1691,9 +1419,8 @@ class MeasurementSession:
     ) -> None:
         """Play an optional repeat sweep at the main seat.
 
-        This uses the same sweep and measurement window as a normal
-        position but stores the resulting capture separately so bundle
-        recompute does not mistake it for another listening position.
+        Stored separately so bundle recompute does not mistake it for another
+        listening position.
         """
         async with self._lock:
             if self.state != SessionState.NEEDS_REPEAT_CAPTURE:
@@ -1724,10 +1451,7 @@ class MeasurementSession:
     async def on_capture_uploaded(
         self, captured_wav_path: Path,
     ) -> None:
-        """Position-N capture arrived. Deconv + smooth + store. If
-        more positions remain, transition to NEEDS_NEXT_POSITION.
-        Otherwise, spatial-average the per-position magnitudes,
-        design PEQs, transition to READY."""
+        """Position-N capture arrived: deconvolve, smooth and store."""
         async with self._lock:
             if self.state != SessionState.AWAITING_CAPTURE:
                 raise RuntimeError(
@@ -1752,13 +1476,10 @@ class MeasurementSession:
         )
         noise_report = self._noise_report_for_position(position_index)
 
-        # Deconvolution + smoothing (and, below, PEQ design) are
-        # multi-second NumPy. Run them on a worker thread so they don't
-        # monopolize the single shared correction event loop (other
-        # measurement coroutines schedule onto it) for the whole
-        # analysis. Safe without extra locking: ANALYZING is an active,
-        # reset-busy state with the capture watchdog disarmed, so no
-        # other coroutine mutates this session while the worker runs.
+        # Deconvolution, smoothing and PEQ design are multi-second NumPy: run
+        # them on a worker thread so they do not monopolize the shared
+        # correction event loop. Safe without extra locking because ANALYZING is
+        # reset-busy with the capture watchdog disarmed.
         try:
             (
                 log_freqs,
@@ -1959,8 +1680,7 @@ class MeasurementSession:
             )
 
     def _run_design_from_positions(self) -> None:
-        """Spatial-average per-position magnitudes, run target lookup,
-        run PEQ design, fill measured/target/predicted curves."""
+        """Spatial-average positions, look up the target, design the PEQs."""
         if not self.position_magnitudes or self.position_freqs is None:
             raise RuntimeError(
                 "no position data — run capture first"
@@ -1968,9 +1688,8 @@ class MeasurementSession:
 
         averaged_db = analysis.spatial_average_db(self.position_magnitudes)
         log_freqs = self.position_freqs
-        # Read the active bass-management corner (fail-soft None). The room
-        # designer READS it — it never re-picks it (the speaker layer owns the
-        # corner) — so it can refuse to boost inside the crossover region.
+        # The room designer only READS the bass-management corner (the speaker
+        # layer owns it), so it can refuse to boost inside the crossover region.
         from jasper.bass_management import active_crossover_corner_hz
 
         design = strategy.design_correction(
@@ -1986,9 +1705,8 @@ class MeasurementSession:
             freqs_hz=log_freqs.tolist(),
             magnitude_db=averaged_db.tolist(),
         )
-        # Retain position 1 (the first captured seat) on its own so the P4
-        # verify can compare against the SAME geometry it re-measures at,
-        # rather than only against the multi-seat spatial average.
+        # Retain position 1 separately so the P4 verify compares against the
+        # SAME geometry it re-measures at, not the multi-seat spatial average.
         self.position1_curve = CurveJSON(
             freqs_hz=log_freqs.tolist(),
             magnitude_db=self.position_magnitudes[0].tolist(),
@@ -2011,9 +1729,6 @@ class MeasurementSession:
             self.position_analysis = None
             logger.exception("bundle position_analysis.json write failed")
 
-    # ------------------------------------------------------------------
-    # Apply / reset / verify.
-    # ------------------------------------------------------------------
 
     async def apply(
         self,
@@ -2045,8 +1760,7 @@ class MeasurementSession:
 
         async def _prepare_config() -> dict[str, Any]:
             # apply_dsp_config invokes prepare only after acquiring the shared
-            # DSP-writer lock. The web owner injects its Active-owned authority
-            # check here so no legal writer can change Layer A between the
+            # DSP-writer lock, so no legal writer can change Layer A between the
             # decision and carrier re-emission.
             if prepare_guard is None:
                 raise RuntimeError(
@@ -2067,8 +1781,8 @@ class MeasurementSession:
                 raise RuntimeError(
                     "CamillaDSP did not report a loaded config path"
                 )
-            # Remember the pre-swap graph so a P4 confirmed-regression
-            # auto-revert can restore it via the existing reset() path.
+            # Remember the pre-swap graph so a confirmed-regression auto-revert
+            # can restore it via the existing reset() path.
             self.pre_apply_config_path = prior_config_path
             carrier = carrier_for_loaded_config(
                 prior_config_path,
@@ -2184,12 +1898,11 @@ class MeasurementSession:
             Callable[[], Awaitable[dict[str, Any] | None]] | None
         ) = None,
     ) -> None:
-        """One-position re-measurement after Apply. The result lands
-        in self.verify_curve / self.verify_metrics, plus the honest
-        MEASURED before/after readout in self.verify_before_after (the
-        pre-correction measured curve vs this verify curve over the same
-        band) — overlaid on the chart so the user can see the
-        correction's actual, measured effect, not just the prediction."""
+        """One-position re-measurement after Apply.
+
+        Lands in self.verify_curve / self.verify_metrics plus the measured
+        before/after readout in self.verify_before_after.
+        """
         async with self._lock:
             if self.state != SessionState.APPLIED and self.state != SessionState.VERIFIED:
                 raise RuntimeError(
@@ -2211,10 +1924,7 @@ class MeasurementSession:
     async def on_verify_capture_uploaded(
         self, captured_wav_path: Path,
     ) -> None:
-        """Verify capture arrived. Deconv + smooth, store as
-        verify_curve, compute absolute deviation metrics AND the
-        honest measured before/after delta (verify_before_after).
-        Transition to VERIFIED."""
+        """Verify capture arrived: store the curve, metrics and before/after."""
         async with self._lock:
             if self.state != SessionState.AWAITING_VERIFY_CAPTURE:
                 raise RuntimeError(
@@ -2269,15 +1979,10 @@ class MeasurementSession:
         )
 
         target_db = self._design_target(log_freqs)
-        # Use deviation_metrics' 50 Hz low edge rather than the PEQ design
-        # band's (20 or 25 Hz, per strategy). Below ~50 Hz the iPhone
-        # mic's built-in 24 dB/octave HPF dominates the captured
-        # signal — including those frequencies in the deviation
-        # summary produces alarming numbers ("max 56 dB!") that are
-        # mic artifacts, not room reality. PEQ design still goes
-        # down to 20 Hz because the mic captures *enough* there
-        # to inform a useful filter, just not enough for a clean
-        # deviation-from-target readout.
+        # 50 Hz low edge, not the PEQ design band's 20-25 Hz: below ~50 Hz the
+        # iPhone mic's built-in 24 dB/octave HPF dominates the capture, so those
+        # bins are a mic artifact in a deviation readout. Design still reaches
+        # 20 Hz, where the capture informs a filter but not a clean readout.
         metrics = analysis.deviation_metrics(
             log_mag, target_db, log_freqs,
             f_high=self.correction_band_hz[1],
@@ -2292,14 +1997,8 @@ class MeasurementSession:
             log_freqs, log_mag, target_db,
         )
 
-        # Quality BEFORE verdict (#2058): the acceptance verdict below
-        # consults this verify capture's own quality via self.verify_quality
-        # (and self.acoustic_quality is refreshed here too, for the bundle
-        # artifact and the /upload-noise-style API surfaces), so both must
-        # be populated first. Computing the verdict before the quality
-        # report even existed is exactly how a session used to record
-        # verdict:accept beside a warned acoustic_quality with nothing ever
-        # comparing the two.
+        # Quality BEFORE verdict (#2058): the acceptance verdict below consults
+        # self.verify_quality, so both reports must be populated first.
         self.verify_quality = self._quality_report_dict(
             capture_quality,
             capture_kind="verify",
@@ -2313,12 +2012,8 @@ class MeasurementSession:
         except Exception:  # noqa: BLE001
             logger.exception("bundle acoustic_quality.json write failed")
 
-        # P4: the deterministic accept/surface/revert verdict. Computed here
-        # (pure — no CamillaDSP) and recorded on the session, in result.json
-        # (below), and in the envelope. When the verdict is a CONFIRMED
-        # regression (`revert`), the web layer performs the automatic rollback
-        # through the existing reset() path — the session never writes
-        # CamillaDSP itself.
+        # Pure accept/surface/revert verdict. On a confirmed regression the web
+        # layer performs the rollback; the session never writes CamillaDSP.
         self.acceptance = self._evaluate_acceptance(
             log_freqs, log_mag, target_db,
         )
@@ -2357,18 +2052,12 @@ class MeasurementSession:
                 max_db=metrics["max_db"],
             )
         # Verify ends the measurement without an apply/reset, so restore the
-        # listening level here too if autolevel ramped it (e.g. autolevel was
-        # re-run from the APPLIED state before this verify).
+        # listening level here too if autolevel ramped it.
         await self._restore_listening_volume_if_ramped()
 
     @property
     def acceptance_verdict(self) -> str | None:
-        """The current P4 verdict string, or None before a verify lands.
-
-        A thin, side-effect-free accessor the web layer reads to decide
-        whether to trigger the automatic rollback (``revert``) or prompt for a
-        confirmatory re-measure (``revert_pending_confirm``).
-        """
+        """The current P4 verdict string, or None before a verify lands."""
         if not isinstance(self.acceptance, dict):
             return None
         verdict = self.acceptance.get("verdict")
@@ -2382,27 +2071,12 @@ class MeasurementSession:
     ) -> bool:
         """Automatically roll back a CONFIRMED-regression correction.
 
-        The one automatic action P4 takes against the household's applied
-        choice. It fires only when the deterministic verdict is a *confirmed*
-        clear regression (``revert`` — a second concordant verify, per plan §4
-        P4 point 4); every other verdict (accept / surface /
-        revert_pending_confirm) is a no-op here and returns False.
-
-        The rollback rides the **existing** reset() reversal — this method
-        never invents a new one. ``target_config_path`` is the graph to restore
-        (the caller resolves it the same way ``POST /reset`` does: the no-room
-        re-emit of the current topology, preserving speaker DSP + preference
-        EQ); when the caller passes nothing it falls back to the pre-apply
-        config captured at apply() time, then to the base graph inside reset().
-
-        Returns True only when the rollback actually completed (session now
-        IDLE on the restored graph). The outcome — ok or failed — is recorded
-        on ``self.auto_revert_outcome`` when it is KNOWN, never predicted, so
-        the envelope tells the household the truth even when the caller's HTTP
-        response already went out (an upload-response timeout leaves this
-        coroutine running; it records the result when reset() finishes). On a
-        reset failure reset() itself also fails the session loudly (no silent
-        revert failure).
+        Fires only on the ``revert`` verdict (a second concordant verify); every
+        other verdict is a no-op returning False. Rides the existing reset()
+        reversal. ``target_config_path`` is the graph to restore, defaulting to
+        the pre-apply config and then to reset()'s base graph. Returns True only
+        when the rollback completed; the outcome is recorded on
+        ``self.auto_revert_outcome`` when it is known, never predicted.
         """
         if self.acceptance_verdict != "revert":
             return False
@@ -2424,12 +2098,10 @@ class MeasurementSession:
             ),
             level=logging.WARNING,
         )
-        # try/finally (not try/except) so a raising reset() still records a
-        # truthful "failed" outcome while the original exception propagates
-        # untouched. reset() has two NON-raising terminal shapes: success →
-        # IDLE (with rolled_back_to), or CamillaDSP rejected the config →
-        # _fail → FAILED without raising. Only the first is a performed
-        # rollback.
+        # try/finally, not try/except, so a raising reset() still records a
+        # truthful "failed" outcome while the exception propagates untouched.
+        # reset() has two non-raising terminal shapes: IDLE (rolled back) or
+        # _fail -> FAILED. Only the first is a performed rollback.
         ok = False
         try:
             await self.reset(camilla_set_config, target_config_path=target)
@@ -2439,14 +2111,9 @@ class MeasurementSession:
         return ok
 
     def _record_auto_revert_outcome(self, result: str) -> None:
-        """Record the completed rollback outcome + rewrite the evidence.
+        """Record the completed rollback outcome and rewrite the evidence.
 
-        Called only from auto_revert() once the outcome is a fact. Runs inside
-        its finally-block, so it must never raise: the dict assignment and the
-        log line are non-raising, and the result.json rewrite is guarded (the
-        bundle write must never mask the revert result). The `event=` line
-        makes the outcome greppable next to the intent line auto_revert()
-        already emitted.
+        Runs inside auto_revert()'s finally-block, so it must never raise.
         """
         self.auto_revert_outcome = {"result": result, "at": time.time()}
         log_event(
@@ -2461,9 +2128,6 @@ class MeasurementSession:
         except RECOVERABLE_ERRORS:
             logger.exception("bundle result.json (auto-revert) write failed")
 
-    # ------------------------------------------------------------------
-    # Auto-level.
-    # ------------------------------------------------------------------
 
     async def run_autolevel(
         self,
@@ -2484,68 +2148,13 @@ class MeasurementSession:
         fade_down_to_db: float = -40.0,
         fade_step_s: float = 0.03,
     ) -> None:
-        """Auto-level CamillaDSP main_volume.
+        """Auto-level CamillaDSP main_volume against a continuous tone.
 
-        Ramps main_volume from `start_db` up toward `end_db` while a
-        continuous tone plays through the music chain. The client
-        (iPhone) watches its mic level via AudioWorklet and either
-        auto-locks when the captured level enters the target range,
-        OR the user taps a manual "Lock now" button. Either path
-        POSTs to `/autolevel/lock`, which sets
-        the controller's lock event and causes this function to freeze
-        main_volume at the current ramp value.
-
-        Three exits:
-          - LOCKED:     client signalled lock; main_volume stays at
-                        the lock value.
-          - MAXED_OUT:  ramp reached end_db without lock — speaker /
-                        amp combo too quiet (or iOS Safari is silent-
-                        AGC'ing the mic readout, which has happened
-                        in the field). main_volume is restored and the UI
-                        tells the user to raise the external amplifier and
-                        retry; no measurement lock is minted.
-          - CANCELLED:  client called /autolevel/cancel OR safety
-                        timeout fired. main_volume restored to
-                        `original_main_volume_db`.
-
-        Order of operations matters (a real first-user bug fix):
-        we set main_volume to `start_db` BEFORE starting the tone
-        so the user doesn't hear an initial blast at their normal
-        listening level before the ramp drops them to -40 dB. And
-        we fade main_volume back DOWN to `fade_down_to_db` before
-        killing the tone, so the stop is silent rather than a click.
-
-        On entry, snapshots current main_volume into
-        `self.autolevel.original_main_volume_db` so the
-        measurement-workflow apply/reset handlers can restore the
-        user's listening volume after the workflow ends.
-
-        Safety — DON'T BLOW THE LISTENER'S EARS OUT:
-
-        Originally end_db was hard-capped at -6 dB. First-user
-        report: even -6 dB was still way too loud — their listening
-        volume was around -20 dB main_volume; -6 dB is 14 dB louder
-        (~4x perceived loudness), painfully blasted them.
-
-        end_db now defaults to None, computed RELATIVE TO the user's
-        existing main_volume:
-
-            end_db = clamp(
-                original_main_volume_db + end_db_bump,
-                [end_db_absolute_min, end_db_absolute_max],
-            )
-
-        Defaults give +6 dB bump over normal listening, clamped to
-        [-20, -6] dB. So:
-          - user at -20 dB → autolevel cap -14 dB (only ~6 dB louder)
-          - user at -5 dB  → cap -6 dB (absolute max)
-          - user at -45 dB → cap -20 dB (floored UP to a usable
-            measurement level)
-
-        Combined with the -12 dBFS tone amplitude (matches the
-        sweep), worst-case dongle output at the cap is -18 dBFS —
-        far quieter than the prior -6 dBFS tone × -6 dB cap = -12
-        dBFS that blasted the user.
+        ``end_db`` defaults to ``clamp(original_main_volume_db + end_db_bump,
+        [end_db_absolute_min, end_db_absolute_max])``: +6 dB over the
+        household's listening level, clamped to [-20, -6] dB. With the -12 dBFS
+        tone that puts worst-case dongle output at -18 dBFS. Exits LOCKED,
+        MAXED_OUT (no measurement lock minted) or CANCELLED.
         """
         await self._autolevel_controller.run(
             reservation_token=reservation_token,
@@ -2566,9 +2175,7 @@ class MeasurementSession:
         )
 
     async def lock_autolevel(self) -> bool:
-        """Signal the running autolevel task to stop ramping and
-        lock at the current main_volume. Returns True if a task was
-        running."""
+        """Stop ramping and lock at the current main_volume."""
         return await self._autolevel_controller.lock()
 
     async def reserve_autolevel_run(self) -> object | None:
@@ -2616,9 +2223,8 @@ class MeasurementSession:
             return intent
         finally:
             if not reset_ready:
-                # The caller has no token to release when begin itself fails.
-                # Roll back our exact intent so a timeout/cancellation cannot
-                # wedge every future Stop behind "reset already in progress".
+                # The caller has no token to release when begin itself fails;
+                # roll back so a timeout cannot wedge every future Stop.
                 await asyncio.shield(self.end_autolevel_reset(intent))
 
     async def end_autolevel_reset(self, intent: object) -> bool:
@@ -2630,17 +2236,13 @@ class MeasurementSession:
             return True
 
     async def cancel_autolevel(self) -> bool:
-        """Signal the running autolevel task to abort and restore
-        the original main_volume."""
+        """Abort the running autolevel task and restore the original volume."""
         return await self._autolevel_controller.cancel()
 
     async def cancel_autolevel_and_wait(self, *, timeout_s: float = 5.0) -> bool:
         """Cancel a running ramp and await its listening-volume restore."""
         return await self._autolevel_controller.cancel_and_wait(timeout_s=timeout_s)
 
-    # ------------------------------------------------------------------
-    # Level match (P2, relay-closed settle-based ramp).
-    # ------------------------------------------------------------------
 
     async def run_level_match(
         self,
@@ -2659,36 +2261,19 @@ class MeasurementSession:
         wait_for_armed: bool = True,
         armed_timeout_s: float | None = None,
     ) -> LevelMatchOutcome:
-        """Relay-closed, settle-based level match for one mic geometry (§3.1).
+        """Relay-closed, settle-based level match for one mic geometry.
 
-        The generalization of ``run_autolevel``: instead of the browser deciding
-        the lock blind, the Pi's :class:`RampController` reads the phone's batched
-        mic-level samples (via ``read_status``), recovers the chain gain, stops
-        ahead into the safe window, and locks — never blasting up to find it. A
-        terminal LOCKED stores a per-geometry
-        :class:`MeasurementLevelLock` in ``level_lock_store``.
-
-        ``read_status`` is the relay status reader (the batched-event transport);
-        the host injects it so this method never imports the relay client — and
-        at production it must be a CACHED background-poller snapshot, never a
-        blocking per-call HTTP GET (see level_match.py's P3b wiring notes). When
-        no relay/phone session exists, the caller uses the existing
-        ``run_autolevel`` local path instead — this method is additive, not a
-        replacement. ``run_token`` is the per-run nonce minted into this run's
-        ``build_level_ramp_spec``. ``clock`` / ``sleep`` default to the real
-        asyncio clock; tests inject fakes.
+        ``read_status`` is the relay status reader, injected so this method
+        never imports the relay client; in production it must be a cached
+        background-poller snapshot, never a blocking per-call HTTP GET. A
+        terminal LOCKED stores a per-geometry lock in ``level_lock_store``.
         """
         loop = asyncio.get_running_loop()
         task = asyncio.current_task()
         if task is None:
             raise RuntimeError("level match has no asyncio task")
-        # Single-flight: one level match at a time per measurement session
-        # (mirrors the /autolevel/start handler's "already in progress" guard —
-        # AutolevelController is a PERMANENT controller so it needs no slot,
-        # but this retained per-run session does). Without this, a second
-        # overlapping run would stomp the retained slot and the first's clear
-        # would then orphan the second's live ramp from its Lock/Cancel seam —
-        # the one state where a dead Cancel matters (a live volume ramp).
+        # Single-flight: one level match at a time per session. An overlapping
+        # run would orphan the first's live ramp from its Lock/Cancel seam.
         async with self._autolevel_gate:
             if self._autolevel_reset_intent is not None:
                 raise SessionBusyError("room-correction reset is in progress")
@@ -2704,15 +2289,13 @@ class MeasurementSession:
                     "measurement level is already locked; finish or cancel the "
                     "current measurement before checking it again"
                 )
-            # Retain both the run adapter and its exact owner task so a
-            # Lock/Cancel/Reset can reach it without racing a replacement.
+            # Retain the adapter and its owner task so Lock/Cancel/Reset can
+            # reach it without racing a replacement.
             session = LevelMatchSession(
                 session_id=self.session_id,
                 store=self.level_lock_store,
-                # A room sweep has substantial deconvolution/averaging gain and
-                # its downstream quality model still rejects unusable captures.
-                # At a stable low cap, preserve explicitly degraded evidence;
-                # never relax trust, clip, spread, liveness, or timeout guards.
+                # A room sweep has substantial deconvolution/averaging gain, so
+                # at a stable low cap keep explicitly degraded evidence.
                 config=MeasurementRamp.from_env(
                     allow_bounded_low_level=True,
                     cap_bump_db=LISTENING_POSITION_CAP_BUMP_DB,
@@ -2748,8 +2331,7 @@ class MeasurementSession:
         self._last_level_match = outcome
         if outcome.locked:
             # A level check owns the loud target only while its tone window is
-            # active.  Persist the target/original in the outcome, but return to
-            # the household's listening level before the window is released.
+            # active: return to the listening level before the window closes.
             restored = await self.restore_level_match_volume(set_main_volume_db)
             if not restored:
                 raise RuntimeError(
@@ -2764,11 +2346,7 @@ class MeasurementSession:
     ) -> bool:
         """Restore the exact pre-ramp listening volume once.
 
-        The shared ramp ends a successful LOCKED run at its target. The session
-        immediately calls this before returning from ``run_level_match``; each
-        later sweep calls ``ensure_level_match_volume`` inside its measurement
-        window and this method again in that window's ``finally``. MAXED_OUT /
-        error / cancel paths are restored by the kernel itself.
+        MAXED_OUT / error / cancel paths are restored by the kernel itself.
         """
         async with self._level_restore_lock:
             outcome = self._last_level_match
@@ -2804,9 +2382,8 @@ class MeasurementSession:
     ) -> bool:
         """Reassert the saved lock immediately before an acoustic sweep.
 
-        The physical remote is external and another software controller may have
-        changed CamillaDSP volume since the level check.  A cached ``locked``
-        flag alone is therefore not permission to play.
+        The physical remote is external, so a cached ``locked`` flag alone is
+        not permission to play.
         """
         async with self._level_restore_lock:
             outcome = self._last_level_match
@@ -2815,8 +2392,7 @@ class MeasurementSession:
             ramp = outcome.ramp
             if ramp.locked_main_volume_db is None:
                 return False
-            # Already asserted for this sweep window.  The shared lock makes
-            # concurrent ensure calls one logical transition.
+            # Already asserted for this sweep window.
             if ramp.restored is not True:
                 return True
             applied = await set_main_volume_db(float(ramp.locked_main_volume_db))
@@ -2841,28 +2417,21 @@ class MeasurementSession:
             return True
 
     async def lock_level_match(self) -> bool:
-        """Manual lock (the user tapped Lock during a level match) — freezes the
-        running ramp at its current level and trusts the user. Returns True when
-        a level match was in flight to lock, mirroring ``lock_autolevel``. A
-        no-op returning False when no ramp is running."""
+        """Manual lock: freeze the running ramp at its current level."""
         session = self._level_match_session
         if session is None:
             return False
         return await session.lock_now()
 
     async def cancel_level_match(self) -> bool:
-        """Signal a running level match to abort and restore the pre-ramp
-        volume (the kernel owns the restore). Returns True when a level match
-        was in flight, mirroring ``cancel_autolevel``. A no-op returning False
-        when no ramp is running."""
+        """Abort a running level match; the kernel owns the volume restore."""
         session = self._level_match_session
         if session is None:
             return False
         return await session.cancel()
 
     def level_match_snapshot(self) -> dict[str, Any]:
-        """The current per-geometry locks + last level-match outcome (for
-        ``/status`` surfacing). Empty until the first level match runs."""
+        """Per-geometry locks and the last level-match outcome, for ``/status``."""
         return {
             "running": self._level_match_session is not None,
             "locks": self.level_lock_store.snapshot(),
@@ -2873,9 +2442,6 @@ class MeasurementSession:
             ),
         }
 
-    # ------------------------------------------------------------------
-    # Snapshot.
-    # ------------------------------------------------------------------
 
     def snapshot(self) -> dict[str, Any]:
         return session_snapshot(self)
