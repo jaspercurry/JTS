@@ -19,12 +19,13 @@ exceptions are explicit, not silent.
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
 from jasper import source_intent
 from jasper.accessories import reconcile as accessory_reconcile
+from jasper.accessories import status as accessory_status
 from jasper.fanin import coupling_reconcile
 from jasper.multiroom import reconcile as multiroom_reconcile
 
@@ -193,6 +194,11 @@ def test_accessory_bridge_host_keeps_the_folded_adapter_sandbox():
         ("UMask", "0077"),
     ):
         assert directive in pairs, f"jasper-input lost {directive[0]}"
+    # ProtectSystem=strict makes a bare mkdir under /run fail, so the
+    # supervisor's status file exists only if the unit owns that directory.
+    status_dir = PurePosixPath(accessory_status.STATUS_PATH).parent
+    assert status_dir.parent == PurePosixPath("/run")
+    assert ("RuntimeDirectory", status_dir.name) in pairs
     assert ("PrivateDevices", "true") not in pairs
     # The BlueZ grant is a user-database membership, never a unit directive.
     assert not any(

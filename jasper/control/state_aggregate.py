@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from typing import Any, Callable, Sequence
 
 from .. import identity_state
+from ..accessories import status as accessory_status
 from ..audio_quality import (
     DEFAULT_CONVERTER as _default_audio_converter,
     converter_options as _audio_converter_options,
@@ -1482,6 +1483,9 @@ async def _get_state(
             # like the doctor and audio_health surfaces, so a down CamillaDSP
             # cannot make a parked box read as not-parked.
             "active_speaker_parked": _active_speaker_parked_snapshot(),
+            # jasper-input stays `active` while one bridge loops in restart
+            # backoff (ADR-0225); this is the only non-journal sign of it.
+            "accessory_bridges": accessory_status.snapshot(),
         },
         "home_assistant": ha_status,
         # Multiroom grouping (off by default). null only if the fresh

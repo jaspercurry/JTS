@@ -19,8 +19,8 @@ RestartSec=2
 # WS1 Phase 3b — user drop (3b-1). Non-root service user; `input`
 # (supplementary) grants /dev/input/event* (root:input on Trixie), `jasper`
 # (primary) is the shared group and reaches jasper-control's restart-broker
-# socket. Writes nothing, needs no capability — CapabilityBoundingSet= drops
-# them all and SystemCallFilter=@system-service blocks the dangerous classes.
+# socket. Needs no capability — CapabilityBoundingSet= drops them all and
+# SystemCallFilter=@system-service blocks the dangerous classes.
 #
 # `bluetooth` — the BlueZ system-bus grant the mic adapter task needs — is
 # deliberately NOT listed here: systemd fails a unit 216/GROUP on a name it
@@ -39,11 +39,18 @@ SystemCallFilter=@system-service
 
 # Hardening — the process reads /dev/input/event* and the published accessory
 # mic sources, watches udev, talks to BlueZ, and makes localhost HTTP/UDP calls.
-# No writes outside stdout/stderr (journald). /dev/input/event* access comes
-# from the `input` supplementary group above, which is also why the mic
-# adapter's former PrivateDevices=true cannot come across: it would hide the
-# input nodes this process exists to read.
+# /dev/input/event* access comes from the `input` supplementary group above,
+# which is also why the mic adapter's former PrivateDevices=true cannot come
+# across: it would hide the input nodes this process exists to read.
 ProtectSystem=strict
+# Its only write: the supervisor's per-bridge status.json, which
+# /state.resilience.accessory_bridges reads. Under ProtectSystem=strict a bare
+# mkdir under /run fails, so the directory has to come from RuntimeDirectory=;
+# 0750 root-of-unit jasper-input:jasper lets jasper-control (Group=jasper)
+# read it. Reaped on stop, which is what keeps the file from outliving the
+# process it describes.
+RuntimeDirectory=jasper-input
+RuntimeDirectoryMode=0750
 ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
@@ -54,8 +61,8 @@ RemoveIPC=true
 UMask=0077
 # WS1 phase-1 hardening (hardened root).
 # AF_NETLINK is required for the pyudev hot-plug monitor; AF_INET for the
-# localhost POST to jasper-control. Writes nothing, so ProtectSystem=strict
-# needs no ReadWritePaths.
+# localhost POST to jasper-control. The one write is covered by
+# RuntimeDirectory= above, so ProtectSystem=strict needs no ReadWritePaths.
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true

@@ -16,9 +16,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections.abc import Awaitable, Callable, Mapping
+from typing import Any
 
+from jasper.atomic_io import atomic_write_json
 from jasper.log_event import log_event
+
+from .status import STATUS_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -27,22 +32,56 @@ RESTART_BACKOFF_SEC = 2.0
 # Consecutive failures double the wait up to this ceiling, so a bridge that can
 # never start (no BlueZ, no udev, a broken venv) idles instead of spinning the
 # Pi Zero 2 W's single core and writing a journal line every 2 s forever. The
-# attempt count rides along on every failure line: a bridge stuck in this loop
-# is invisible in the unit's state, which stays `active`.
+# attempt count rides along on every failure line.
 MAX_RESTART_BACKOFF_SEC = 60.0
 
+_publish_failure_warned = False
+
 Bridge = Callable[[], Awaitable[None]]
+Publish = Callable[[], None]
 
 
-async def _run_forever(name: str, bridge: Bridge, backoff_sec: float) -> None:
+def _publish(health: Mapping[str, Any], status_path: str | os.PathLike) -> None:
+    global _publish_failure_warned
+    try:
+        # 0640 + the parent's group: jasper-control (Group=jasper) reads it.
+        atomic_write_json(
+            status_path, {"bridges": health}, mode=0o640, group_from_parent=True,
+        )
+    except OSError as exc:
+        # Fail-soft — an unwritable /run costs observability, never a bridge.
+        # One WARNING per process (a missing RuntimeDirectory is a deploy bug
+        # worth seeing once), then quiet: this runs on every restart.
+        log_event(
+            logger,
+            "accessory.status_publish_failed",
+            level=logging.DEBUG if _publish_failure_warned else logging.WARNING,
+            err=type(exc).__name__,
+        )
+        _publish_failure_warned = True
+
+
+async def _run_forever(
+    name: str,
+    bridge: Bridge,
+    backoff_sec: float,
+    entry: dict[str, Any],
+    publish: Publish,
+) -> None:
     consecutive_failures = 0
     while True:
+        if entry["last_error"] is not None:
+            entry["last_error"] = None
+            publish()
         try:
             await bridge()
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 — this breadth IS the contract
             consecutive_failures += 1
+            entry["restarts"] += 1
+            entry["last_error"] = type(exc).__name__
+            publish()
             log_event(
                 logger,
                 "accessory.bridge_failed",
@@ -64,11 +103,23 @@ async def supervise(
     bridges: Mapping[str, Bridge],
     *,
     backoff_sec: float = RESTART_BACKOFF_SEC,
+    status_path: str | os.PathLike = STATUS_PATH,
 ) -> None:
     """Run every bridge until cancelled, restarting each one independently."""
 
+    health: dict[str, dict[str, Any]] = {
+        name: {"restarts": 0, "last_error": None} for name in bridges
+    }
+
+    def publish() -> None:
+        _publish(health, status_path)
+
+    publish()
     tasks = [
-        asyncio.create_task(_run_forever(name, bridge, backoff_sec), name=name)
+        asyncio.create_task(
+            _run_forever(name, bridge, backoff_sec, health[name], publish),
+            name=name,
+        )
         for name, bridge in bridges.items()
     ]
     try:
