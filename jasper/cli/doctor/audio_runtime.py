@@ -2670,6 +2670,8 @@ def _outputd_transport_health(
         DEFAULT_CAMILLA2_STATEFILE_PATH,
         DEFAULT_CAMILLA_STATEFILE_PATH,
         output_endpoint_evidence_from_statefiles,
+    )
+    from jasper.transport_coherence import (
         transport_coherence_report,
         transport_topology_for_coupling,
     )

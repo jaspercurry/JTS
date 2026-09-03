@@ -366,7 +366,7 @@ def _transport_state(
         ActiveLaneCapabilityGap,
         active_lane_capability_gap,
     )
-    from ..audio_runtime_plan import transport_coherence_report
+    from ..transport_coherence import transport_coherence_report
 
     report = transport_coherence_report(
         coupling=coupling,
