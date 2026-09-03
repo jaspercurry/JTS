@@ -15,6 +15,7 @@ import threading
 import time
 from typing import Any, Iterator
 
+from .. import chip_aec_commission_record as commission_record
 from .. import enhanced_aec
 from ..audio_profile_state import (
     AecIntent,
@@ -55,11 +56,6 @@ _XVF_FIRMWARE_UPDATE_SERVICE = "jasper-xvf-firmware-update.service"
 _ENHANCED_AEC_INSTALL_SERVICE = "jasper-enhanced-aec-install.service"
 _AEC_COMMISSION_SERVICE = "jasper-aec-commission.service"
 _AEC_BRIDGE_SERVICE = "jasper-aec-bridge.service"
-# Duplicates jasper.cli.aec_commission.STATE_PATH (same pattern as the
-# firmware-update state file above): importing the writer would pull numpy
-# into the long-lived control daemon. Agreement pinned by
-# tests/test_aec_commission.py.
-_AEC_COMMISSION_STATE_FILE = "/var/lib/jasper/chip-aec-commission.json"
 _UNIT_LIVE_STATES = frozenset({"active", "activating", "reloading"})
 _AEC_BRIDGE_STATS_FILE = "/run/jasper/aec_bridge_stats.json"
 _AEC_BRIDGE_STATS_FRESH_SECONDS = 3.0
@@ -361,27 +357,15 @@ def _read_xvf_firmware_update_state() -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _read_commission_state() -> dict[str, Any]:
-    try:
-        with open(_AEC_COMMISSION_STATE_FILE) as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
 def _commission_status() -> dict[str, Any]:
     """The /aec `commission` object: live job truth + last-run verdict.
 
     `state`/`detail` come from the commissioner's persisted outcome record
     (empty strings before the first run), so a failed run's reason survives
     for the wake page instead of dying in the journal."""
-    last = _read_commission_state()
-    return {
-        "running": _unit_active(_AEC_COMMISSION_SERVICE),
-        "state": str(last.get("state") or ""),
-        "detail": str(last.get("detail") or ""),
-    }
+    last = commission_record.read(commission_record.OUTCOME_PATH)
+    outcome = last if last is not None else commission_record.CommissionOutcome()
+    return outcome.to_public(running=_unit_active(_AEC_COMMISSION_SERVICE))
 
 
 def _xvf_firmware_update_status() -> dict[str, Any]:

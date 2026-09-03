@@ -906,7 +906,7 @@ def test_aec_full_status_commission_carries_last_run_verdict(
         '{"state": "failed", "detail": "timing peak ratio 1.02 below 1.10"}'
     )
     monkeypatch.setattr(
-        aec_endpoints, "_AEC_COMMISSION_STATE_FILE", str(outcome),
+        aec_endpoints.commission_record, "OUTCOME_PATH", outcome,
     )
 
     status = server._aec_full_status()

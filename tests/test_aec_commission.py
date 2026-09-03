@@ -927,14 +927,6 @@ def test_a_refused_body_hands_the_music_back_once_after_its_own_cleanup(
     assert io.events[-1] == "reconciled"
 
 
-def test_commission_outcome_path_matches_control_reader() -> None:
-    # jasper-control duplicates the literal (importing this module would pull
-    # numpy into the long-lived daemon); the two must name one file.
-    from jasper.control import aec_endpoints
-
-    assert aec_endpoints._AEC_COMMISSION_STATE_FILE == str(aec_commission.STATE_PATH)
-
-
 def test_commissioning_requires_root_before_creating_marker(tmp_path: Path) -> None:
     marker = tmp_path / "active"
 

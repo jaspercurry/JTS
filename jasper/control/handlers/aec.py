@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+from ...chip_aec_commission_record import CommissionOutcome
 from .. import server as _server
 from ._base import ControlHandlerMixin
 
@@ -441,7 +442,7 @@ class AecRoutes(ControlHandlerMixin):
                 self._send_json(
                     {
                         "error": "chip-AEC re-commissioning is already running",
-                        "commission": {"running": True},
+                        "commission": CommissionOutcome().to_public(running=True),
                     },
                     status=409,
                 )
@@ -452,7 +453,7 @@ class AecRoutes(ControlHandlerMixin):
                 {
                     "error": "the re-commissioning run could not be started",
                     "code": "aec_commission_start_failed",
-                    "commission": {"running": False},
+                    "commission": CommissionOutcome().to_public(running=False),
                 },
                 status=502,
             )
