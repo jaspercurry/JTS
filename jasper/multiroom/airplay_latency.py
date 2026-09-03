@@ -27,8 +27,8 @@ Why this can fail to fit (the "Stage D" gap deferred):
 
 The negotiated budget is knowable only from shairport's journal: shairport
 logs ``Notified latency is N frames.`` **only when N != 77175**, so the
-ABSENCE of that line means the default 77175 frames (~1.75 s; ~2.0 s with
-shairport's fixed +11035) — the comfortable/"free" regime. Empirically
+ABSENCE of that line means the default 77175 frames (~1.75 s; exactly 2.0 s
+with shairport's fixed +11025) — the comfortable/"free" regime. Empirically
 (jts.local, 2026-06-21) every observed real AP2 session used the default
 budget, so the tight regime is expected to be rare; this surface is
 deliberately quiet (warns only when the budget genuinely does not fit) and
@@ -64,9 +64,11 @@ from .config import GroupingConfig
 # line in the journal means the sender used exactly this value.
 AP2_DEFAULT_NOTIFIED_FRAMES = 77175
 # Fixed term shairport adds inside the PTP anchor (the value the backend
-# latency offset lives inside): set_ptp_anchor_info(..., frame_1 - 11035
-# - added_latency, ...).
-SHAIRPORT_FIXED_ADD_FRAMES = 11035
+# latency offset lives inside): rtp.c's
+# ap2_realttime_stream_latency_fudge_factor, used as
+# set_ptp_anchor_info(..., frame_1 - ap2_realttime_stream_latency_fudge_factor,
+# ...). 77175 + 11025 = 88200 = exactly 2.000 s at 44100 Hz.
+SHAIRPORT_FIXED_ADD_FRAMES = 11025
 # AP2 RTP audio frame clock.
 AIRPLAY_FRAME_RATE_HZ = 44100
 # The solo speaker's fixed downstream delay above the AP2 anchor baseline
