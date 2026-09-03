@@ -228,6 +228,79 @@ install_renderers() {
     bash "${REPO_DIR}/deploy/configure-bluez.sh"
 }
 
+reconcile_headless_boot_config() {
+    # A JTS speaker is headless: no desktop compositor, no HDMI audio. The
+    # OS image sizes its GPU reservations for a desktop, which costs a
+    # Zero 2 W (415 MB usable) 64 MB of gpu_mem plus 256 MB of vc4-kms-v3d
+    # CMA. cma-64 is the smallest size that overlay documents and still
+    # carries the KMS console; snd_bcm2835 (dtparam=audio) drives a card
+    # that never enumerates on any JTS box. A Pi 5 already runs 64 MB of
+    # CMA and ignores gpu_mem, so these directives change nothing there.
+    # config.txt is read by the firmware at boot: a reboot is required.
+    local cfg="${JTS_BOOT_CONFIG_FILE:-/boot/firmware/config.txt}"
+    if [[ ! -f "$cfg" ]]; then
+        echo "  $cfg not present; skipping headless boot reconciliation."
+        return 0
+    fi
+    # The owned block goes at the head of the file, not the tail: the tail
+    # is where reconcile_usb_data_role re-renders its own block every run,
+    # and two owners appending there leapfrog instead of converging.
+    # gpu_mem and dtparam=audio are owned outright — strip the image's
+    # copies wherever they sit so no conditional-filter section can leave a
+    # stale value in force. The display overlay must keep its single line,
+    # so shrink CMA by rewriting it; a vc4-kms-v3d line carrying parameters
+    # JTS does not own is left alone. sed -i is not portable to the BSD sed
+    # the tests run under.
+    #
+    # This trim is a comfort optimisation (frees RAM the desktop stack never
+    # uses), so every failure path below leaves config.txt as packaged
+    # instead of failing the deploy over it.
+    local tmp mode
+    if ! tmp="$(mktemp "${cfg}.jts.XXXXXX" 2>/dev/null)"; then
+        echo "  WARN: could not stage a $cfg rewrite; boot config left as packaged."
+        return 0
+    fi
+    if ! {
+        cat <<'EOF'
+# BEGIN JTS HEADLESS BOOT
+# JTS install — headless speaker: no desktop, no HDMI audio. The bare
+# dtoverlay= returns dtparam scope to the base DTB, which a preceding
+# overlay line would otherwise capture. Reboot required to apply.
+[all]
+gpu_mem=16
+dtoverlay=
+dtparam=audio=off
+# END JTS HEADLESS BOOT
+EOF
+        sed -E \
+            -e '/^[[:space:]]*# BEGIN JTS HEADLESS BOOT[[:space:]]*$/,/^[[:space:]]*# END JTS HEADLESS BOOT[[:space:]]*$/d' \
+            -e '/^[[:space:]]*gpu_mem(_256|_512|_1024)?=[0-9]+[[:space:]]*(#.*)?$/d' \
+            -e '/^[[:space:]]*dtparam=audio(=[A-Za-z0-9]+)?[[:space:]]*(#.*)?$/d' \
+            -e 's/^([[:space:]]*dtoverlay=vc4-kms-v3d)(,cma-[A-Za-z0-9]+)?([[:space:]]+#.*)?[[:space:]]*$/\1,cma-64\3/' \
+            "$cfg"
+    } > "$tmp"; then
+        rm -f "$tmp"
+        echo "  WARN: could not rewrite $cfg; boot config left as packaged."
+        return 0
+    fi
+    if cmp -s "$tmp" "$cfg"; then
+        rm -f "$tmp"
+        return 0
+    fi
+    # Replace by rename so a failed write can never leave the boot config
+    # truncated, keeping the mode the firmware partition already grants.
+    # That partition is journal-less vfat and the operator's next step is a
+    # reboot, so flush the rename before returning.
+    mode="$(stat -c '%a' "$cfg" 2>/dev/null || stat -f '%Lp' "$cfg" 2>/dev/null || true)"
+    if ! { chmod "${mode:-644}" "$tmp" && mv -f "$tmp" "$cfg"; }; then
+        rm -f "$tmp"
+        echo "  WARN: could not publish $cfg; boot config left as packaged."
+        return 0
+    fi
+    sync
+    echo "  headless boot directives written to $cfg (reboot required to apply)."
+}
+
 reconcile_usb_data_role() {
     # The Pi Zero's one OTG data port cannot be host (USB output DAC) and
     # peripheral (USB input/management gadget) at the same time. Resolve that

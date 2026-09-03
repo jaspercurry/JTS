@@ -641,9 +641,10 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
    - Remove the retired dmix/fanin topology switch state file, which
      jasper-doctor warns about on presence.
    - Reconcile the USB data role from board topology and the registered
-     output-DAC overlay; add other Pi boot/config changes when needed:
-     memory cgroup/PSI kernel args, MGLRU tmpfiles, sysctl values,
-     and rpi-swap zram sizing.
+     output-DAC overlay; trim the boot config for headless operation
+     (gpu_mem, vc4-kms-v3d CMA, HDMI audio); add other Pi boot/config
+     changes when needed: memory cgroup/PSI kernel args, MGLRU tmpfiles,
+     sysctl values, and rpi-swap zram sizing.
    - Disable WiFi power-save on the active wlan0 connection (nmcli)
      so AirPlay's unicast UDP stream avoids radio-sleep stalls.
    - Repair stored measurement-mic calibrations fetched under the wrong
@@ -2239,6 +2240,7 @@ main() {
         install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
         install_camilladsp
         install_renderers
+        reconcile_headless_boot_config
         reconcile_usb_data_role
         tune_wifi_for_airplay
         install_streambox_jasper
@@ -2286,6 +2288,7 @@ main() {
     install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
     install_camilladsp
     install_renderers
+    reconcile_headless_boot_config
     reconcile_usb_data_role
     tune_wifi_for_airplay
     install_jasper
