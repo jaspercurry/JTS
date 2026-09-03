@@ -2,12 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""jasper-doctor checks — audio domain.
-
-Re-homed verbatim from the original monolithic
-``jasper/cli/doctor.py``; see ``jasper/cli/doctor/__init__.py``
-for the package overview and ``_registry.py`` for how order is
-preserved. No check logic changed in the split."""
+"""jasper-doctor checks — audio domain."""
 from __future__ import annotations
 
 import json
@@ -56,44 +51,13 @@ _OBSERVED_OUTPUT_HARDWARE_CLOCK_ISSUE_CODES = frozenset({
     "dual_apple_endpoint_not_synchronous",
 })
 
-# --- jts_ring platform assets (audio-graph consolidation P1) ---
-# The ALSA plugin dir ALSA actually dlopen()s ioplugs from on aarch64
-# Trixie (verified live on jts.local/jts3; bluealsa/jack register plugins
-# here too). Kept in lockstep with JTS_RING_ALSA_PLUGIN_DIR in
-# deploy/lib/install/ring-platform.sh. NOTE: this is a hardcoded aarch64
-# multiarch path in two places (here + ring-platform.sh's env-overridable
-# JTS_RING_ALSA_PLUGIN_DIR). Fine for the mandated 64-bit fleet
-# (BRINGUP/QUICKSTART pin RPiOS Lite 64-bit); if the installer dir is ever
-# overridden for another arch, this constant would need to move with it
-# (deriving both from `dpkg-architecture -qDEB_HOST_MULTIARCH` would remove
-# the assumption).
-# Asset paths live in the shared jasper.ring_assets SSOT so the doctor probe and
-# the coupling reconciler's activation gate name the same files. Re-exported here
-# under the historical private names so the rest of this module (and its tests)
-# stay stable.
+# Re-exported from the shared jasper.ring_assets SSOT (which owns the paths and
+# their constraints) so the doctor probe and the coupling reconciler's
+# activation gate name the same files.
 _JTS_RING_ALSA_PLUGIN_DIR = ring_assets.RING_ALSA_PLUGIN_DIR
 _JTS_RING_IOPLUG_SO = ring_assets.RING_IOPLUG_SO
 _JTS_RING_CONF_D = ring_assets.RING_CONF_D
-# The tmpfs directory the ring files live in (shipped by
-# deploy/tmpfiles/jts-ring.conf). Module constant so tests can repoint it.
 _JTS_RING_SHM_DIR = ring_assets.RING_SHM_DIR
-# The two inert PCM names the conf.d defines, each paired with (probe tool,
-# ring-file basename). The open probe against these both resolves the name
-# AND forces ALSA to dlopen the ioplug .so; with no ring present it exercises
-# the writer-dead / no-reader silence path, which terminates safely.
-#
-# The ring-file basename matters because the ioplug's open path is
-# create-or-attach (O_RDWR|O_CREAT|O_EXCL in jts_ring_reader_open /
-# jts_ring_writer_open): probing an ABSENT ring CREATES the file. That would
-# violate P1's inertness invariant ("no ring file exists until P2 arms") and
-# poison P2's first arm (a valid-magic ring with the conf.d placeholder
-# geometry is a fail-closed open error, not a reclaimable magic-less file).
-# The probe therefore snapshots each ring path's existence and unlinks only
-# what it created — see _jts_ring_pcm_resolves, which owns the ONE
-# `_JTS_RING_PCMS` table (jasper.cli.doctor.audio_runtime). This module used to
-# carry a second copy of that table; it had zero readers, because the probe and
-# the check are both re-exported from audio_runtime at the bottom of this file,
-# so the copy could only ever be a second answer waiting to disagree.
 
 
 def _observed_output_hardware_clock_blockers(
@@ -145,8 +109,6 @@ def _extract_card_name(device_str: str) -> str | None:
     m = re.search(r"CARD=([^,\s]+)", device_str)
     if m:
         return m.group(1)
-    # PortAudio substring form — return as-is; check_alsa_card greps
-    # arecord -L output for substring presence.
     return device_str
 
 _ARECORD_L_LINE_RE = re.compile(r"^card (\d+):.*\bdevice (\d+):")
@@ -177,19 +139,13 @@ def _soften_for_push_to_talk(
     A speaker with no local microphone but a paired mic-bearing remote has its
     voice-input gate legitimately open (issue #2205), so a red "your microphone
     is missing" is the wrong register. These checks probe the local device, so
-    they are the surface that can actually tell "no local mic" from "local mic
-    present"; the `microphone` headline cannot, because it reads the OR verdict.
+    they are the surface that can tell "no local mic" from "local mic present";
+    the `microphone` headline cannot, because it reads the OR verdict. The
+    detail reports GATE state, never runtime state.
 
-    The detail reports GATE state, never runtime state. The daemon half of
-    issue #2205 has since landed, so such a box CAN answer — which makes the
-    runtime claim tempting and no less unfounded. Saying "voice runs
-    push-to-talk only" here would still be a present-tense claim about a daemon
-    this check never looks at; whether it is actually up is a separate fact.
-
-    The local finding stays visible (``warn``, original detail appended) so an
-    operator can still see the local mic is gone. Only the register changes:
-    expected-idle, not failure. A ``warn``/``ok`` result is returned untouched —
-    this never upgrades a status.
+    The local finding stays visible (``warn``, original detail appended); only
+    the register changes. A ``warn``/``ok`` result is returned untouched — this
+    never upgrades a status.
 
     Applied only to *device-absent / cannot-open* failures. A mic that opens but
     records silence is a present-and-broken local mic, not an absent one; that
@@ -207,34 +163,25 @@ def _soften_for_push_to_talk(
 
 @doctor_check(order=3.5, group="audio", label="microphone")
 def check_microphone() -> CheckResult:
-    """Single headline for microphone presence — the one flag for "is there
-    a mic?".
+    """Single headline for microphone presence.
 
     Reads the reconciler's one canonical record via
-    ``jasper.mic_presence.read_mic_presence`` and states present/absent + *why*
-    in a single line. The downstream ``mic ALSA card`` / ``mic capture`` checks
-    and the audio-open-failure log all defer to this same verdict instead of
-    independently re-probing ALSA, so a missing mic is one yellow advisory —
-    not a scatter of contradicting red failures. Absent is ``warn`` (never
-    ``fail``): the reconciler parked voice and it auto-starts when a mic is
-    reconnected or an actionable profile condition is resolved, so it's
-    noteworthy, not broken.
+    ``jasper.mic_presence.read_mic_presence``; the downstream ``mic ALSA card``
+    / ``mic capture`` checks defer to the same verdict instead of re-probing
+    ALSA, so a missing mic is one advisory, not a scatter of contradicting
+    failures. Absent is ``warn``, never ``fail``: the reconciler parked voice
+    and it auto-starts when a mic is reconnected or an actionable profile
+    condition is resolved.
 
-    **What ``ok`` claims, precisely: the voice-input start gate is open.** Not
-    that jasper-voice is running, and not that a *local* microphone exists —
-    the record this reads is the OR of the local and accessory halves and
-    carries no local probe (see ``jasper.mic_presence``). So the status
-    deliberately does NOT drop to ``warn`` merely because an accessory
-    satisfied the gate: the identical record shape also covers a box with a
+    ``ok`` claims only that the voice-input start gate is open. Not that
+    jasper-voice is running, and not that a *local* microphone exists — the
+    record is the OR of the local and accessory halves and carries no local
+    probe (see ``jasper.mic_presence``). It therefore does NOT drop to ``warn``
+    for an accessory-satisfied gate: the identical record shape covers a
     healthy non-XVF local mic (a custom ``JASPER_MIC_DEVICE``, a plain USB mic)
-    that happens to have a remote paired, and warning there would be a
-    permanent false yellow on a working speaker — the contradicting-checks
-    scatter this single-reader design exists to prevent. The surfaces that CAN
-    tell those apart are ``mic ALSA card`` and ``mic capture``: they probe the
-    device and downgrade to ``warn`` naming issue #2205 when the local mic is
-    genuinely missing. The detail line here reads "voice-input gate open"
-    rather than "present", so an operator can tell the two apart at a glance
-    without this check pretending to knowledge it does not have."""
+    on a box with a remote paired. ``mic ALSA card`` and ``mic capture`` are
+    the surfaces that can tell those apart; they downgrade to ``warn`` naming
+    issue #2205 when the local mic is genuinely missing."""
     mp = read_mic_presence()
     status = "warn" if mp.absent_confirmed else "ok"
     return CheckResult("microphone", status, mp.summary)
@@ -242,28 +189,23 @@ def check_microphone() -> CheckResult:
 
 @doctor_check(order=4, group="audio", label="mic ALSA card", needs_cfg=True)
 def check_mic_card_matches_config(cfg: Config) -> CheckResult:
-    """Validate the card configured in JASPER_MIC_DEVICE is actually
-    present. Two lookup paths depending on the format:
+    """Validate the card configured in JASPER_MIC_DEVICE is actually present.
 
-    - Named card (``Array``, ``CARD=UMIK-2``, ``plughw:CARD=Foo``):
-      grep ``arecord -L`` for the substring.
-    - Positional shorthand (``hw:7,1``, ``plughw:0,0``): parse
-      ``arecord -l`` for ``card N: ... device M:``.
-
-    install.sh autodetects on the Pi, so the literal may differ from
-    'Array' — e.g. when the AEC bridge is enabled, mic moves to a
-    UDP-form device (`udp:9876`) and this card check is skipped."""
+    Named cards (``Array``, ``CARD=UMIK-2``, ``plughw:CARD=Foo``) and the
+    positional shorthand (``hw:7,1``, ``plughw:0,0``) take different lookup
+    paths. install.sh autodetects on the Pi, so the literal may differ from
+    'Array' — e.g. when the AEC bridge is enabled the mic moves to a UDP-form
+    device (`udp:9876`) and this card check is skipped."""
     if _parked_as_bonded_follower():
         return CheckResult(
             "mic ALSA card", "ok",
             "parked (bonded follower) — the dumb-follower profile stops "
             "voice + the AEC stack while paired; the leader owns the mic",
         )
-    # No usable mic: the reconciler's single source of truth already
-    # classified this and parked voice. Defer to the `microphone` headline —
-    # independently re-probing `arecord -L` here only to report a red FAILURE
-    # for an expected, auto-recovering state was the exact contradiction this
-    # check used to create. See jasper/mic_presence.py.
+    # No usable mic: the reconciler's single source of truth already classified
+    # this and parked voice, so defer to the `microphone` headline rather than
+    # re-probing `arecord -L` for a red FAILURE on an expected, auto-recovering
+    # state. See jasper/mic_presence.py.
     presence = read_mic_presence()
     if presence.absent_confirmed:
         return CheckResult(
@@ -271,8 +213,8 @@ def check_mic_card_matches_config(cfg: Config) -> CheckResult:
             "no usable microphone input — see the `microphone` check "
             "(voice is intentionally parked until its condition is resolved)",
         )
-    # UDP transport has no ALSA card to validate; just say so. The
-    # `jasper-aec-bridge` running check covers transport liveness.
+    # UDP transport has no ALSA card to validate; `check_aec_bridge_running`
+    # (jasper/cli/doctor/aec.py) covers transport liveness.
     from jasper.audio_io import parse_udp_device
     try:
         if parse_udp_device(cfg.mic_device or ""):
@@ -317,10 +259,7 @@ def check_loopback() -> CheckResult:
     card. A ring-coupled box still needs it for every lane the ring has
     not taken; the pair allocation lives canonically in
     `deploy/modprobe.d/snd-aloop.conf` (and is cross-referenced from
-    `deploy/alsa/asoundrc.jasper`). U4/P7-4 removed a WRITER — the
-    ring arm's lane-7 mirror — not the card, so the severity is
-    unchanged on either coupling. P9 removes snd-aloop itself, and this
-    check goes with it.
+    `deploy/alsa/asoundrc.jasper`).
     """
     proc = _run(["aplay", "-L"])
     if "CARD=Loopback" in proc.stdout:
@@ -333,8 +272,7 @@ def check_loopback() -> CheckResult:
 
 # order=79 stays AFTER resilience's fractional 78.5 insert — the registry
 # contract is "the single async check sorts last", not contiguous integers
-# (test_doctor_registry). The former order=78 (grouping TTS-separation
-# check) was removed 2026-06-11; the gap is intentional.
+# (test_doctor_registry), so the gap below 79 is intentional.
 @doctor_check(order=79, group="audio", label="CamillaDSP websocket", needs_cfg=True, is_async=True)
 async def check_camilla_websocket(cfg: Config) -> CheckResult:
     controller: CamillaController | None = None
@@ -376,7 +314,7 @@ async def check_camilla_websocket(cfg: Config) -> CheckResult:
             await controller.close()
 
 def _jasper_voice_active() -> bool:
-    """True if jasper-voice.service reports active. Cheap systemctl call."""
+    """True if jasper-voice.service reports active."""
     return _run(["systemctl", "is-active", "jasper-voice.service"]).stdout.strip() == "active"
 
 @doctor_check(
@@ -396,10 +334,9 @@ def check_mic_capture(cfg: Config) -> CheckResult:
     jasper-voice is alive and report 'skipped' rather than spuriously
     failing.
 
-    UDP devices (`udp:N` / `udp://HOST:N`, the AEC bridge transport
-    under PR 2) aren't PortAudio devices — there's no `sd.rec` for
-    them. We skip the probe entirely and let jasper-voice's continued
-    operation be the evidence.
+    UDP devices (`udp:N` / `udp://HOST:N`, the AEC bridge transport)
+    aren't PortAudio devices — there's no `sd.rec` for them, so the
+    probe is skipped the same way.
     """
     if _parked_as_bonded_follower():
         return CheckResult(
@@ -408,11 +345,10 @@ def check_mic_capture(cfg: Config) -> CheckResult:
             "voice + the AEC stack while paired; the leader owns the mic",
         )
     # Intentionally idle, not broken: the reconciler's single source of truth
-    # confirms no usable mic and parked jasper-voice. Defer to the `microphone`
-    # headline so a mic-less box / a unit mid-unplug is one advisory, not a red
-    # line. A genuine open failure (no absent verdict but the device won't open
-    # — custom or busy mic) still falls through to the probe + its fail below.
-    # See jasper/mic_presence.py.
+    # confirms no usable mic and parked jasper-voice, so defer to the
+    # `microphone` headline. A genuine open failure (no absent verdict but the
+    # device won't open — custom or busy mic) still falls through to the probe
+    # and its fail below. See jasper/mic_presence.py.
     presence = read_mic_presence()
     if presence.absent_confirmed:
         return CheckResult(
@@ -420,10 +356,8 @@ def check_mic_capture(cfg: Config) -> CheckResult:
             "no usable microphone input (expected) — see the `microphone` "
             "check; voice is intentionally parked until its condition is resolved",
         )
-    # UDP transport: no PortAudio probe possible. The bridge's
-    # heartbeat (Tier 1) and `check_aec_bridge_running` already cover
-    # whether the transport is alive; this check just stays out of
-    # the way.
+    # UDP transport: no PortAudio probe possible. `check_aec_bridge_running`
+    # (jasper/cli/doctor/aec.py) already covers whether the transport is alive.
     from jasper.audio_io import parse_udp_device
     try:
         if parse_udp_device(cfg.mic_device or ""):
@@ -441,9 +375,8 @@ def check_mic_capture(cfg: Config) -> CheckResult:
         import numpy as np
         import sounddevice as sd
         # Open at the device's configured native rate/channels — PortAudio
-        # rejects rates the device doesn't support. MicCapture downsamples
-        # to 16 kHz at runtime; for the doctor's purposes we just need a
-        # half-second read to confirm the device produces non-silent audio.
+        # rejects rates the device doesn't support (MicCapture downsamples to
+        # 16 kHz at runtime). A half-second read is enough here.
         rec = sd.rec(
             int(0.5 * cfg.mic_capture_rate),
             samplerate=cfg.mic_capture_rate,
@@ -453,8 +386,8 @@ def check_mic_capture(cfg: Config) -> CheckResult:
         peak = int(np.abs(rec).max())
         if peak == 0:
             # NOT softened: the device opened, so a local microphone IS present
-            # — it is muted or misrouted. A paired accessory does not make that
-            # expected, and "no local microphone" would be a lie here.
+            # — it is muted or misrouted, which a paired accessory does not
+            # make expected.
             return CheckResult(
                 "mic capture", "fail",
                 f"recorded silence from {cfg.mic_device} — wrong device or muted",
@@ -480,10 +413,9 @@ def check_tts_open(cfg: Config) -> CheckResult:
     """Verify TTS output device is enumerable. Doesn't actually open the
     stream — opening + starting a `sd.RawOutputStream` against a dmix
     device races with the running jasper-voice (which holds a writer
-    open) and historically produced false-negative "can't open" errors
-    while TTS was provably working. `query_devices` is enough to confirm
-    the device exists in PortAudio's enumeration and has output
-    channels available."""
+    open) and yields false-negative "can't open" errors while TTS is
+    working. `query_devices` is enough to confirm the device exists in
+    PortAudio's enumeration and has output channels available."""
     if cfg.tts_transport == "outputd":
         socket_path = cfg.tts_outputd_socket
         sock: socket.socket | None = None
@@ -555,13 +487,11 @@ def check_output_hardware_state() -> CheckResult:
         if item.get("severity") == "blocker"
     ]
     # The reconciler-emitted final-edge format (JASPER_OUTPUTD_DAC_FORMAT in
-    # /var/lib/jasper/outputd.env, which env_load sources). Read it, never
-    # re-derive it from the registry: the emitted value is what outputd and the
-    # chip-AEC alignment identity actually see, so this surfaces the one value
-    # an operator can compare against the registry by hand. It does NOT detect
-    # drift on its own — it prints a single value; registry-vs-emission drift
-    # is caught by the reconcile contract tests in
-    # tests/test_audio_hardware_reconcile.py. Unset/blank is the historical
+    # /var/lib/jasper/outputd.env, which env_load sources). Read, never
+    # re-derived from the registry: the emitted value is what outputd and the
+    # chip-AEC alignment identity actually see. Disclosure only — it prints one
+    # value and detects no drift on its own; registry-vs-emission drift is
+    # caught by tests/test_audio_hardware_reconcile.py. Unset/blank is the
     # S16_LE edge (an unrecognized DAC, or a box predating the emit).
     final_edge = os.environ.get("JASPER_OUTPUTD_DAC_FORMAT", "").strip() or "S16_LE"
     detail = (
@@ -705,19 +635,13 @@ def _camilla_configs_writable_result(
 ) -> CheckResult:
     """CheckResult for the CamillaDSP config dir's group-write posture.
 
-    ``jasper-web`` runs non-root (WS1 privilege drop) and writes active-speaker
-    staged/commissioning configs and room-correction configs into this dir
-    *atomically* (temp file in-dir + rename), which needs directory group-write.
-    install.sh's intended posture is ``root:jasper 2775``; a deploy that lands it
-    root-only (e.g. an interrupted install before the widen step) makes non-root
-    staging fail with ``PermissionError`` and surfaces to the household as
-    "could not load the silent active-speaker setup" (the jts3 2026-07-06
-    incident). Catch that here instead of at the wizard.
-
-    Delegates the group/mode predicate to ``_shared._group_writable_dir``
-    (shared with ``correction._not_writable_by_group`` and
-    ``env.check_state_dir`` — this used to be a fourth near-copy of the same
-    stat-and-compare logic)."""
+    ``jasper-web`` runs non-root and writes active-speaker staged/commissioning
+    configs and room-correction configs into this dir *atomically* (temp file
+    in-dir + rename), which needs directory group-write. install.sh's intended
+    posture is ``root:jasper 2775``; a deploy that lands it root-only (e.g. an
+    interrupted install before the widen step) makes non-root staging fail with
+    ``PermissionError`` and surfaces to the household as "could not load the
+    silent active-speaker setup". Catch that here instead of at the wizard."""
 
     label = "CamillaDSP config dir writable"
     try:
@@ -752,17 +676,14 @@ def check_camilla_configs_writable() -> CheckResult:
 @doctor_check(order=20.7, group="audio")
 def check_dac_usb_sync_mode() -> CheckResult:
     """Classify the speaker DAC's USB sync mode as an advisory clock-coherence
-    observation for chip-AEC (Stage 6 of the audio-latency foundation work).
+    observation for chip-AEC.
 
-    This is NOT the chip-AEC gate. USB sync mode is *one* clock-coherence
-    signal; the binding production chip-AEC gate is the fixed DAC-profile
+    This is NOT the chip-AEC gate: USB sync mode is *one* clock-coherence
+    signal, while the binding production gate is the fixed DAC-profile
     qualification (`resolve_chip_aec_dac_gate` in jasper/chip_aec_policy.py).
-    The SRO clock verdict is diagnostic only. A
-    synchronous/adaptive endpoint and an approved DAC happen to agree on
-    today's Apple dongle, but that agreement is incidental — an
-    async-but-approved DAC would still pass the binding gate. Read this check
-    as a clock-coherence observation that helps explain a chip-AEC verdict,
-    never as an enable/disable switch.
+    An async-but-approved DAC still passes that gate. Read this check as an
+    observation that helps explain a chip-AEC verdict, never as an
+    enable/disable switch.
 
     Chip-AEC assumes the speaker output and the mic reference share a clock
     domain. A USB Audio *playback* endpoint that is synchronous or adaptive
@@ -829,9 +750,8 @@ def check_dac_usb_sync_mode() -> CheckResult:
     if async_cards:
         # Advisory only: an async endpoint is a weak clock-coherence signal,
         # but the binding chip-AEC gate is fixed DAC qualification, not this
-        # tag or the diagnostic SRO verdict. WARN so a
-        # maintainer notices the drift risk; software AEC3 keeps echo cancelled
-        # either way.
+        # tag. WARN so a maintainer notices the drift risk; software AEC3 keeps
+        # echo cancelled either way.
         return CheckResult(
             "DAC USB sync mode", "warn",
             "async USB playback endpoint — weak clock coherence; chip-AEC is "
@@ -851,22 +771,12 @@ def check_apple_dongle_audio() -> CheckResult:
     """Apple's USB-C → 3.5mm Headphone Jack Adapter only exposes its
     USB Audio class interface when something is plugged into the analog
     3.5mm jack. With no analog load lsusb sees the chip but no audio card
-    enumerates, so the reconciler's record names no DAC at all.
+    enumerates, so the reconciler's record names no DAC at all. Naming that
+    state gives the operator a clear signal instead of a generic ALSA error.
 
-    States, so the operator gets a clear signal instead of a generic
-    ALSA error:
-
-      - the record names an Apple profile but lsusb shows fewer adapters
-        than that profile needs → fail
-      - the record names an Apple profile and every card it needs → ok,
-        whatever the record's status (this reads observed hardware, not
-        whether the reconciler is driving it)
-      - the record names an Apple profile short of a card (a parked
-        dual-Apple pair) → warn
-      - the record names no DAC and the chip is on USB → warn (plug in
-        speakers/headphones)
-      - the record names no DAC and no chip is on USB, or names another
-        DAC → ok, skipped
+    The record is read for OBSERVED hardware, not for whether the reconciler is
+    driving it, so a full complement of cards is ``ok`` whatever the record's
+    status.
     """
     state = _output_hardware_state_or_none()
     dac_id = _observed_output_dac_id(state)
@@ -931,9 +841,8 @@ def check_dongle_headphone_at_max() -> CheckResult:
     ceiling.
 
     `jasper-dac-init.service` sets this on every boot; if it's drifted,
-    this check catches it. -36 dB at 40% was the historical "safe test"
-    setting and is what triggered the audible-loudness gap that led to
-    this check existing."""
+    this check catches it — a Headphone control left low (e.g. 40%,
+    -36 dB) costs audible loudness with nothing else red."""
     state = _output_hardware_state_or_none()
     dac_id = _observed_output_dac_id(state)
     control_groups = _dac_mixer_control_groups_for(APPLE_USB_C_DONGLE_ID)
@@ -1102,11 +1011,9 @@ def check_camilla_ring_chunk_fits() -> CheckResult:
 
     The emitters cannot land that config any more
     (``resolve_camilla_latency_for_devices`` clamps the resolved chunk), so this
-    is the standing surface for the case the clamp cannot reach: a config
-    written by an OLDER build and still on disk. That is not hypothetical — it
-    is jts4 on 2026-09-01, whose InnoMaker floor put chunk 1024 on
-    ``jts_ring_playback`` and took the box silent through ten restarts while
-    every other check stayed green.
+    is the standing surface for the one case the clamp cannot reach: a config
+    written by an OLDER build and still on disk, which has taken a box silent
+    through repeated restarts while every other check stayed green.
 
     Removal condition: delete this check once no supported upgrade path can
     still carry a pre-clamp config onto a box.
@@ -1136,13 +1043,10 @@ def check_camilla_ring_chunk_fits() -> CheckResult:
             label, "ok",
             f"{config_path} names no ring end (chunksize={chunksize})",
         )
-    # CamillaDSP's own ceiling on the pair, measured against 4.1.3 on jts4 and
-    # exact across chunk 128/256/512 and queuelimit 1/2/4. Checked here because
-    # a config can carry a chunk that fits the ring and STILL be refused: that
-    # is exactly the state jts4 landed in on 2026-09-01 (256 / 4096), where the
-    # ring half of this check passed while the box crash-looped. If a future
-    # CamillaDSP moves this formula, this line reports a wrong number loudly
-    # rather than going quiet.
+    # CamillaDSP's own ceiling on the pair: target_level <= chunksize *
+    # (queuelimit + 4), measured against CamillaDSP 4.1.3 and exact across
+    # chunk 128/256/512 and queuelimit 1/2/4. Checked separately because a
+    # config can carry a chunk that fits the ring and STILL be refused here.
     queuelimit = devices.get("queuelimit")
     target_level = devices.get("target_level")
     if queuelimit is not None and target_level is not None:
@@ -1167,12 +1071,11 @@ def check_camilla_ring_chunk_fits() -> CheckResult:
             "Regenerate the config: `sudo jasper-sound reconcile-current-dsp`.",
             speaker_silent=True,
         )
-    # Say so when the clamp is what put this number here. Otherwise the box runs
-    # a chunk its own DacProfile does not declare, with the only explanation in
-    # source comments — the reading gap that let this bug live. Asked of the
-    # SAME resolver the emitters fall back to, never of a second derivation of
-    # "which DAC is active": disagreeing answers to that question are the whole
-    # bug, and a disclosure that re-derived it could name a floor no emitter used.
+    # Say so when the clamp is what put this number here; otherwise the box runs
+    # a chunk its own DacProfile does not declare with no on-box explanation.
+    # Asked of the SAME resolver the emitters fall back to, never of a second
+    # derivation of "which DAC is active" — a disclosure that re-derived it
+    # could name a floor no emitter used.
     unclamped = resolve_camilla_chunksize()
     clamped = (
         f", clamped from the {unclamped} this box resolves to"
@@ -1250,11 +1153,11 @@ def check_active_speaker_runtime_graph() -> CheckResult:
         staged_metadata_path=staged_metadata_path(),
     )
     if graph.classification == GRAPH_PARKED_ALL_MUTED and graph.allowed:
-        # A parked graph is intentional silence, not a broken runtime. This
-        # covers both a zero-group topology (the household must choose a layout)
-        # and an incomplete roleful layout (the existing commissioning exits).
-        # The action is owned by ``parked_muted_exits`` so doctor, /state, and
-        # the dashboard cannot invent three versions of it.
+        # A parked graph is intentional silence, not a broken runtime — both a
+        # zero-group topology (the household must choose a layout) and an
+        # incomplete roleful layout. The action is owned by
+        # ``parked_muted_exits`` so doctor, /state, and the dashboard cannot
+        # invent three versions of it.
         if contract.classification == CONTRACT_UNCONFIGURED or (
             contract.requires_roleful_graph
         ):
@@ -1305,33 +1208,26 @@ def check_active_speaker_runtime_graph() -> CheckResult:
 def check_active_speaker_topology_blockers() -> CheckResult:
     """Name the saved layout's unresolved blockers on a parked speaker.
 
-    Before #2145 a roleful topology carrying any topology-level blocker made
-    every deploy abort, so the blockers were impossible to miss — the install
-    transcript was the notification. They no longer abort it: the parked graph
-    is structurally silent (File sink, every output hard-muted), so a blocker
-    that cannot make it unsafe no longer refuses it, and the box parks and takes
-    the deploy. That is the right outcome, but it removes the loud signal, so
-    this check restores one at the household's own diagnostic surface and names
-    each blocker plus the wizard step that clears it.
+    A blocker on a roleful topology no longer aborts the deploy (#2145): the
+    parked graph is structurally silent (File sink, every output hard-muted),
+    so a blocker that cannot make it unsafe no longer refuses it. This check is
+    the replacement signal at the household's own diagnostic surface.
 
     The blockers and the way OUT of parked are stated as two facts, because
     they are two: parking is gated on the absence of a staged startup graph, not
     on the blockers, so clearing them does not on its own restore sound. The
-    exits therefore come from :func:`parked_muted_exits`, the owned
-    capability-aware helper the CLI and `/state` also use — it drops "finish
-    crossover preview" on a DAC that has no active outputd lane, where that
-    action can never succeed.
+    exits come from :func:`parked_muted_exits`, the owned capability-aware
+    helper the CLI and `/state` also use — it drops "finish crossover preview"
+    on a DAC that has no active outputd lane, where that action can never
+    succeed.
 
-    WARN, never FAIL: a parked speaker is silent, not broken, and nothing here
-    is audible or at risk — the state is "commissioning is unfinished", which is
-    the household's to finish, not an error to fix. `jasper-doctor` exits
-    non-zero only on fails, so warning keeps a mid-commission box deployable,
-    which is the whole point of #2145.
+    WARN, never FAIL: a parked speaker is silent, not broken — the state is
+    "commissioning is unfinished". `jasper-doctor` exits non-zero only on fails,
+    so warning keeps a mid-commission box deployable (#2145).
 
-    Scoped to the parked outcome on purpose. A blocker-bearing topology that
-    DOES have a staged graph still fails the deploy and is already reported by
-    `check_active_speaker_runtime_graph`; repeating it here would be a second
-    voice for one fact.
+    Scoped to the parked outcome on purpose: a blocker-bearing topology that
+    DOES have a staged graph still fails the deploy and is reported by
+    `check_active_speaker_runtime_graph`.
     """
 
     from jasper.active_speaker.runtime_contract import (
@@ -1346,14 +1242,11 @@ def check_active_speaker_topology_blockers() -> CheckResult:
     try:
         topology = load_output_topology_strict()
     except OutputTopologyError:
-        # POINTS, does not restate. `check_active_speaker_runtime_graph` and
+        # Points, does not restate: `check_active_speaker_runtime_graph` and
         # `check_active_speaker_output_hardware_match` both already print the
-        # parse error verbatim; a third copy is the same fact in a third voice,
-        # which this check's own docstring rules out.
-        #
-        # Still a `fail`, not an ok-defer: this check cannot answer its question
-        # without a topology, and a green line next to two reds would read as
-        # "the layout is fine" about the very artifact that failed to load.
+        # parse error verbatim. Still a `fail`, not an ok-defer — this check
+        # cannot answer its question without a topology, and a green line next
+        # to two reds would read as "the layout is fine".
         return CheckResult(
             name,
             "fail",
@@ -1409,16 +1302,6 @@ def check_active_speaker_topology_blockers() -> CheckResult:
             ),
         )
 
-    # The exits come from the OWNED capability-aware helper, never a hand-rolled
-    # sentence: on a DAC with no active outputd lane "finish crossover preview"
-    # can never succeed, and this is one of three surfaces (CLI, doctor,
-    # `/state`) that must name the same actions.
-    #
-    # And the blockers are stated as a SEPARATE fact from the exits, because
-    # they are one: parking is gated on there being no staged startup graph, not
-    # on the blockers. A household told to "clear the blockers to get sound
-    # back" would clear them, still hear silence, and watch this check go green
-    # while the speaker stayed parked.
     return CheckResult(
         name,
         "warn",
@@ -1432,8 +1315,7 @@ def check_active_speaker_topology_blockers() -> CheckResult:
         ),
         # Reached only when `safe_graph_for_current_topology` returned
         # PARKED_MUTED_STATUS, so the speaker is provably emitting nothing
-        # (#2471). The two warn branches above it are NOT silent: one could
-        # not determine the runtime graph, the other found the box unparked.
+        # (#2471). The two warn branches above are NOT silent.
         speaker_silent=True,
     )
 
@@ -1476,20 +1358,14 @@ def check_sound_profile() -> CheckResult:
 
     _, active_path = _active_camilla_config_path()
     # "Is this a JTS-generated config?" has ONE owner
-    # (:func:`jasper.sound.camilla_yaml.is_jts_generated_config`); this used to
-    # hold a second, narrower copy as a literal set and it had already fallen
-    # behind by four shapes — `sound_reset_*`, `sound_snapshot_*`,
-    # `sound_lean_current`, and the `grouping_*` trio. Those names are all
-    # reachable in production (`sound_reset_*` from the household's own
-    # /sound/ reset), and since #2572 the reconcile legitimately leaves a
-    # content-identical graph running under whatever it is named instead of
-    # rewriting it to `sound_current.yml` — so a stale copy here turns a
-    # transient mis-warn into a permanent one, telling a household its saved
-    # profile is missing from a graph that demonstrably carries it.
-    # `config_dir` is the active config's own parent, the same way
-    # `check_correction_current_config` asks: this check is about the config
-    # the speaker actually loaded, wherever that lives, so the question left
-    # to the canonical owner is purely the name.
+    # (:func:`jasper.sound.camilla_yaml.is_jts_generated_config`) — never a
+    # local copy of the name set: since #2572 the reconcile legitimately leaves
+    # a content-identical graph running under whatever it is named instead of
+    # rewriting it to `sound_current.yml`, so a stale copy here would
+    # permanently tell a household its saved profile is missing from a graph
+    # that carries it. `config_dir` is the active config's own parent, the same
+    # way `check_correction_current_config` asks, so the only question left to
+    # the canonical owner is the name.
     active_generated = is_jts_generated_config(
         active_path,
         config_dir=Path(active_path).parent,
@@ -1605,12 +1481,11 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
     the just-applied candidate's bytes onto it as a best-effort, fail-soft
     copy after CamillaDSP already confirmed the candidate live. A promote
     failure (disk full, permissions drift) leaves that copy stale without
-    affecting the audible graph at all — CamillaDSP's own statefile already
-    self-persists the running candidate path independently. This check
-    surfaces that gap for the OTHER readers who trust the canonical name
-    (the multiroom follower fallback, operators, this doctor itself): the
-    live graph is always the audible truth and is correct either way, so a
-    mismatch is a WARN, never a FAIL.
+    affecting the audible graph — CamillaDSP's statefile self-persists the
+    running candidate path independently. This check surfaces that gap for the
+    other readers who trust the canonical name (the multiroom follower
+    fallback, operators, this doctor). WARN, never FAIL: the live graph is the
+    audible truth and is correct either way.
     """
     from jasper.active_speaker.baseline_profile import (
         active_layer_a_fingerprint,
@@ -1621,11 +1496,11 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
     label = "active speaker baseline canonical"
     statefile, live_path_raw = _active_camilla_config_path()
     if live_path_raw is None:
-        # A missing/unreadable outputd statefile is already surfaced by the
-        # checks that own it as a real failure (e.g. check_active_speaker_
-        # runtime_graph fails when a roleful topology needs it); this check's
-        # own scope is only "does canonical mirror the live baseline", which
-        # cannot be evaluated at all here -- not applicable, not a warning.
+        # A missing/unreadable outputd statefile is already a real failure at
+        # the checks that own it (check_active_speaker_runtime_graph fails when
+        # a roleful topology needs it). This check's scope is only "does
+        # canonical mirror the live baseline", which cannot be evaluated here —
+        # not applicable, not a warning.
         return CheckResult(
             label, "ok",
             f"could not read config_path from {statefile}; canonical-file "
@@ -1684,15 +1559,14 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
 
 @doctor_check(order=31.55, group="audio", label="active speaker applied graph")
 def check_active_speaker_applied_graph() -> CheckResult:
-    """Is the durable graph the one the applied profile names? (finding F-6).
+    """Is the durable graph the one the applied profile names?
 
     A crossover-v2 round that ends on a verify rejection banks no adoption and
     auto-restores nothing, but its apply has already repointed CamillaDSP's
-    persisted ``config_file_path`` at the rejected candidate. The blind run hit
-    exactly that: ``as_woofer_delay: 0.1286`` on the anchor against
-    ``corrections.woofer.delay_ms = 0.0`` in the profile, with no surface
-    naming it. ``setup_status`` already binds the two; this reads the binding
-    out with the values.
+    persisted ``config_file_path`` at the rejected candidate — leaving the
+    anchor's per-driver values (delays, gains) disagreeing with the applied
+    profile's with no surface naming it. ``setup_status`` already binds the
+    two; this reads the binding out with the values.
 
     **Compared at the DURABLE anchor, never at the running graph** — with no
     readback argument the reader resolves its path from the CamillaDSP
@@ -1844,12 +1718,12 @@ def check_room_correction_authority() -> CheckResult:
     detail = str(acoustic.get("detail") or "")
     cause = str(acoustic.get("cause") or "")
     if reason == ROOM_AUTHORITY_RECEIPT_ABSENT:
-        # The state every uncommissioned speaker is in, which is most of them:
-        # demoted from a fleet-wide WARN nag. But ABSENT is the module's
-        # catch-all default reason, so it also covers a receipt that VANISHED
-        # under a verified lifecycle -- a genuine anomaly a bare "ok" would
-        # hide. Forwarding `cause` keeps that sub-state visible (a store code
-        # vs "lifecycle is not verified") without turning it into a nag.
+        # The state every uncommissioned speaker is in, which is most of them —
+        # hence `ok`. But ABSENT is the module's catch-all default reason, so it
+        # also covers a receipt that VANISHED under a verified lifecycle, a
+        # genuine anomaly a bare "ok" would hide. Forwarding `cause` keeps that
+        # sub-state visible (a store code vs "lifecycle is not verified")
+        # without turning it into a nag.
         return CheckResult(
             label, "ok",
             f"room correction runs unbanked ({reason})"
@@ -1875,10 +1749,10 @@ def check_active_speaker_setup_notices() -> CheckResult:
 
     Ruling S10 and ADR-0019 turn staleness and unproven-ness into loud
     disclosures rather than blocks — a topology fingerprint that rotated on a
-    metadata edit being the worked example (wave 7j). Nothing else renders a
-    non-blocker setup issue, so without this line the demotion would be a
-    silent one. Blockers keep their own surfaces (`/state`, the landing page,
-    the volume and grouping refusals) and are deliberately not repeated here.
+    metadata edit being the worked example. Nothing else renders a non-blocker
+    setup issue, so without this line the demotion would be a silent one.
+    Blockers keep their own surfaces (`/state`, the landing page, the volume
+    and grouping refusals) and are deliberately not repeated here.
     """
 
     from ...active_speaker.setup_status import read_active_speaker_setup_status
