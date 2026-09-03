@@ -149,40 +149,6 @@ def test_apple_dongle_check_ok_for_a_partial_record_naming_its_card(monkeypatch)
     assert "A" in result.detail
 
 
-def test_dongle_headphone_gain_check_skips_for_non_apple_output_dac(monkeypatch):
-    def fail_probe(*_args, **_kwargs):
-        raise AssertionError("Apple mixer probe should not run")
-
-    record_active_dac("hifiberry_dac8x")
-    monkeypatch.setattr(doctor.audio, "_run", fail_probe)
-
-    result = doctor.check_dongle_headphone_at_max()
-
-    assert result.status == "ok"
-    assert "active output DAC is hifiberry_dac8x" in result.detail
-
-
-def test_dongle_headphone_gain_check_uses_reconciled_card(monkeypatch):
-    calls = []
-
-    record_active_dac("apple_usb_c_dongle", card_id="Apple2")
-
-    def fake_run(cmd, *args, **kwargs):
-        calls.append(cmd)
-        return SimpleNamespace(
-            returncode=0,
-            stdout="Front Left: Playback 100 [100%] [0.00dB] [on]\n",
-            stderr="",
-        )
-
-    monkeypatch.setattr(doctor.audio, "_run", fake_run)
-
-    result = doctor.check_dongle_headphone_at_max()
-
-    assert result.status == "ok"
-    assert calls == [["amixer", "-c", "Apple2", "sget", "Headphone"]]
-
-
 def test_dual_apple_dongle_check_requires_two_audio_cards(monkeypatch):
     state = OutputHardwareState(
         profile_id=DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
@@ -483,53 +449,6 @@ def test_output_hardware_state_surfaces_the_declared_final_edge(monkeypatch):
     assert "final_edge=S16_LE (declared)" in (
         doctor.check_output_hardware_state().detail
     )
-
-
-def test_dual_apple_headphone_gain_checks_every_card(monkeypatch):
-    state = OutputHardwareState(
-        profile_id=DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
-        profile_label="Dual Apple USB-C DAC 4-channel pair",
-        status="ready",
-        physical_output_count=4,
-        apple_dac_count=2,
-        child_devices=(
-            OutputCardFact(
-                card_id="A",
-                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
-            ),
-            OutputCardFact(
-                card_id="A_1",
-                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
-            ),
-        ),
-    )
-    commands: list[list[str]] = []
-
-    def fake_run(cmd, *args, **kwargs):
-        commands.append(cmd)
-        if cmd[:3] == ["amixer", "-c", "A"]:
-            return SimpleNamespace(
-                returncode=0,
-                stdout="Front Left: Playback 120 [100%] [0.00dB] [on]\n",
-                stderr="",
-            )
-        if cmd[:3] == ["amixer", "-c", "A_1"]:
-            return SimpleNamespace(
-                returncode=0,
-                stdout="Front Left: Playback 90 [75%] [-10.00dB] [on]\n",
-                stderr="",
-            )
-        raise AssertionError(cmd)
-
-    monkeypatch.setattr(doctor.audio, "_load_output_hardware_state", lambda: state)
-    monkeypatch.setattr(doctor.audio, "_run", fake_run)
-
-    result = doctor.check_dongle_headphone_at_max()
-
-    assert result.status == "warn"
-    assert "A_1:75%" in result.detail
-    assert ["amixer", "-c", "A", "sget", "Headphone"] in commands
-    assert ["amixer", "-c", "A_1", "sget", "Headphone"] in commands
 
 
 # ------------------------------------------------ ALSA shorthand mic lookup

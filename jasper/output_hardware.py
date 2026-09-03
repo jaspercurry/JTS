@@ -32,8 +32,10 @@ from .audio_hardware.dac import (
     DacProfile,
     HIFIBERRY_DAC8X_ID,
     HIFIBERRY_DAC8X_STUDIO_ID,
+    MixerControl,
     all_profiles as _all_dac_profiles,
     by_id as _dac_profile_by_id,
+    mixer_control_groups_for,
     profile_for_card_label as _dac_profile_for_card_label,
 )
 from .audio_hardware.usb_port_role import (
@@ -771,6 +773,39 @@ def load_state(path: str | Path | None = None) -> OutputHardwareState | None:
     if raw.get("kind") != OUTPUT_HARDWARE_STATE_KIND:
         return None
     return OutputHardwareState.from_mapping(raw)
+
+
+def mixer_pins_for_state(
+    state: OutputHardwareState | None,
+) -> tuple[tuple[str, MixerControl], ...]:
+    """``(card_id, control)`` for every mixer pin the OBSERVED profile declares.
+
+    The one place the registry's per-child mixer policy is paired with the
+    cards the reconciler actually saw, so ``jasper-dac-init`` applies and
+    ``jasper-doctor`` verifies the same list. Keyed on
+    :attr:`OutputHardwareState.observed_profile_id`, not the driven lane: a
+    hardware gain stage is worth pinning whenever the board is present, and a
+    partial record still names the card it saw.
+    """
+
+    if state is None:
+        return ()
+    profile_id = state.observed_profile_id
+    if profile_id is None:
+        return ()
+    groups = mixer_control_groups_for(profile_id)
+    if not groups:
+        return ()
+    if len(groups) == 1:
+        cards: list[str] = [state.selected_card_id or ""]
+    else:
+        cards = [child.card_id for child in state.child_devices]
+    return tuple(
+        (card, control)
+        for controls, card in zip(groups, cards)
+        if card
+        for control in controls
+    )
 
 
 def active_dac_profile_id(path: str | Path | None = None) -> str | None:

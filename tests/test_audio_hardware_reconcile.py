@@ -871,8 +871,12 @@ def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
     _assert_no_empty_alsa_card(template)
     assert _render_log(tmp_path) == "render\n"
     commands = _systemctl_log(tmp_path)
-    assert "enable jasper-dac-init.service jasper-headphone-monitor.service" in commands
-    assert "start jasper-dac-init.service" in commands
+    assert "enable jasper-dac-init.service" in commands
+    assert "enable jasper-headphone-monitor.service" in commands
+    # The pin is RESTARTED: RemainAfterExit makes a `start` a no-op once the
+    # one-shot has run, and at boot it can run before the record it reads
+    # exists.
+    assert "--no-block restart jasper-dac-init.service" in commands
     # The monitor is ensured idempotently, never restarted: this gate runs on
     # every udev/reconcile pass and a deploy fires it repeatedly inside the
     # unit's StartLimitIntervalSec, so a restart-per-pass burns StartLimitBurst
@@ -905,18 +909,29 @@ def test_reconcile_dac8x_role_disables_apple_helpers(tmp_path: Path):
     _assert_states(template, "pcm.outputd_dac", "type hw", "card sndrpihifiberry")
     _assert_no_empty_alsa_card(template)
     commands = _systemctl_log(tmp_path)
-    assert (
-        "disable --now jasper-dac-init.service jasper-headphone-monitor.service"
-        in commands
-    )
-    assert (
-        "reset-failed jasper-dac-init.service jasper-headphone-monitor.service"
-        in commands
-    )
+    assert "disable --now jasper-dac-init.service" in commands
+    assert "disable --now jasper-headphone-monitor.service" in commands
     assert "enable jasper-dac-init.service" not in commands
     assert "stop jasper-voice.service" in commands
     assert "--no-block restart jasper-outputd.service" in commands
     assert "--no-block restart jasper-aec-reconcile.service" in commands
+
+
+def test_reconcile_studio_role_enables_the_mixer_pin_without_the_apple_monitor(
+    tmp_path: Path,
+):
+    """The Studio driver writes no mixer defaults of its own, so its profile
+    declares pins and the boot pin is enabled for it. The drift monitor stays
+    Apple-only."""
+    result = _run_reconcile(tmp_path, DAC8X_STUDIO_LISTING, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert "JASPER_AUDIO_DAC_ID=hifiberry_dac8x_studio" in _jasper_env(tmp_path)
+    commands = _systemctl_log(tmp_path)
+    assert "enable jasper-dac-init.service" in commands
+    assert "--no-block restart jasper-dac-init.service" in commands
+    assert "enable jasper-headphone-monitor.service" not in commands
+    assert "disable --now jasper-headphone-monitor.service" in commands
 
 
 def test_reconcile_unknown_role_renders_null_outputd_dac(tmp_path: Path):
@@ -928,10 +943,8 @@ def test_reconcile_unknown_role_renders_null_outputd_dac(tmp_path: Path):
     _assert_parked_outputd_dac_template(_template(tmp_path))
     assert _render_log(tmp_path) == "render\n"
     commands = _systemctl_log(tmp_path)
-    assert (
-        "disable --now jasper-dac-init.service jasper-headphone-monitor.service"
-        in commands
-    )
+    assert "disable --now jasper-dac-init.service" in commands
+    assert "disable --now jasper-headphone-monitor.service" in commands
     assert "--no-block stop jasper-voice.service jasper-outputd.service" in commands
     assert "reset-failed jasper-voice.service jasper-outputd.service" in commands
     assert "restart jasper-outputd.service" not in commands
@@ -1342,7 +1355,8 @@ def test_reconcile_dual_apple_records_profile_and_parks_until_dual_sink(
     _assert_parked_outputd_dac_template(_template(tmp_path))
     assert _render_log(tmp_path) == "render\n"
     commands = _systemctl_log(tmp_path)
-    assert "enable jasper-dac-init.service jasper-headphone-monitor.service" in commands
+    assert "enable jasper-dac-init.service" in commands
+    assert "enable jasper-headphone-monitor.service" in commands
     assert "--no-block stop jasper-voice.service jasper-outputd.service" in commands
     assert "event=audio_hardware_reconcile.dual_apple_detected" in result.stderr
     assert (
@@ -1519,7 +1533,8 @@ def test_reconcile_saved_single_topology_still_takes_the_single_dongle(
     assert "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle" in env_text
     assert "JASPER_AUDIO_DAC_CARD=A" in env_text
     commands = _systemctl_log(tmp_path)
-    assert "enable jasper-dac-init.service jasper-headphone-monitor.service" in commands
+    assert "enable jasper-dac-init.service" in commands
+    assert "enable jasper-headphone-monitor.service" in commands
     assert (
         "--no-block stop jasper-voice.service jasper-outputd.service" not in commands
     )

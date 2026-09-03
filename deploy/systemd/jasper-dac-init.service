@@ -1,24 +1,25 @@
 [Unit]
-Description=Pin Apple USB-C dongle Headphone control to max (fixed analog ceiling)
-# The dongle's "Headphone" amixer control is an analog attenuator
-# in the DAC's output stage. Leaving it below 100% throws away
-# headroom we'd want available to the digital chain (CamillaDSP
-# main_volume) — the user-perceived volume should be controlled
-# entirely in software. Pin it at 100% on every boot so a stray
-# alsactl restore or external setting can't quietly cap us.
+Description=Pin the classified output DAC's declared mixer controls
+# JTS owns gain in CamillaDSP (main_volume), so every hardware stage in front
+# of the speaker is pinned to what the DacProfile registry declares: the Apple
+# dongle's analog Headphone attenuator at 100%, the HiFiBerry Studio DAC8x's
+# master and per-channel volumes at 0 dB and its DAC Mute unmuted. The Studio
+# driver writes no defaults at all, so an unpinned board boots at whatever its
+# MCU holds — up to +24 dB on the master control.
 #
-# Runs once at boot, BEFORE jasper-camilla so the speaker output
-# path is at full hardware gain by the time camilla opens it.
-# Idempotent and runtime-gated: on non-Apple-DAC systems, or when
-# the dongle is temporarily absent, the helper exits cleanly.
-After=sound.target
+# Ordered after alsa-restore so a restored snapshot cannot outrun the pin, and
+# before the renderers so the output path is at declared gain by the time
+# anything opens it. jasper-audio-hardware-reconcile restarts this unit after
+# every record it writes, which is what covers a boot where this ran before
+# the record existed and every later hotplug.
+After=sound.target alsa-restore.service
 Before=jasper-camilla.service shairport-sync.service librespot.service
 Requires=sound.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/bin/jasper-dac-init __APPLE_DONGLE_CARD__ Headphone
+ExecStart=/usr/local/bin/jasper-dac-init
 # WS1 Tier-B DAC mixer slice: amixer access works through the `audio`
 # supplementary group on Apple USB-C DAC hardware, so the boot pin no longer
 # needs uid 0. The udev hotplug fast path remains a root-owned exception in

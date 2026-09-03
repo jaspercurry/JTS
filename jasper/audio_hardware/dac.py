@@ -45,17 +45,44 @@ class MixerControl:
     The registry only declares intent. Scripts such as
     ``jasper-dac-init`` and ``jasper-headphone-monitor`` remain the
     components that actually apply or monitor mixer state.
+
+    Exactly one target is declared, and the target KIND also picks the ALSA
+    namespace ``name`` is resolved in — the two are not independent knobs.
+    ``target_percent`` (with optional ``unmute``) names a SIMPLE mixer
+    element, the alsa-lib abstraction ``amixer sset`` addresses, whose name is
+    the kcontrol name minus its " Playback Volume"/" Playback Switch" suffix.
+    ``target_db`` and ``target_enum`` name a raw kcontrol exactly as the
+    driver declares it, which is what ``amixer cget``/``cset name=`` and
+    ``amixer contents`` use; the dB target is converted to the control's own
+    index through the TLV the control publishes, so no scale data is
+    duplicated here.
     """
 
     name: str
     target_percent: int | None = None
+    target_db: float | None = None
+    target_enum: str | None = None
     unmute: bool = False
 
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ValueError("mixer control name is required")
+        declared = [
+            target
+            for target in (self.target_percent, self.target_db, self.target_enum)
+            if target is not None
+        ]
+        if len(declared) != 1:
+            raise ValueError(
+                f"{self.name}: exactly one mixer target must be declared"
+            )
         if self.target_percent is not None and not 0 <= self.target_percent <= 100:
             raise ValueError("mixer target_percent must be 0..100")
+        if self.unmute and self.target_percent is None:
+            raise ValueError(
+                f"{self.name}: unmute is a simple-mixer switch and only rides "
+                "with target_percent"
+            )
 
 
 @dataclass(frozen=True)
@@ -342,6 +369,21 @@ APPLE_HEADPHONE_CONTROL = MixerControl(
     unmute=True,
 )
 
+# The Studio driver (sound/soc/bcm/hifiberry_studio_dac8x.c) exposes a hardware
+# gain stage and writes NO defaults into it: the level after a boot is whatever
+# the board's MCU happens to hold, and "Master Playback Volume" reaches +24 dB.
+# JTS owns gain in CamillaDSP, so every stage on this board is pinned at unity
+# and unmuted. Names are the driver's kcontrol names verbatim (what
+# `amixer -c0 contents` prints), one Output Ch control per physical channel.
+HIFIBERRY_STUDIO_MIXER_CONTROLS = (
+    MixerControl(name="Master Playback Volume", target_db=0.0),
+    *(
+        MixerControl(name=f"Output Ch{channel} Playback Volume", target_db=0.0)
+        for channel in range(8)
+    ),
+    MixerControl(name="DAC Mute", target_enum="unmuted"),
+)
+
 APPLE_USB_C_DONGLE = DacProfile(
     id=APPLE_USB_C_DONGLE_ID,
     label="Apple USB-C audio adapter",
@@ -560,6 +602,7 @@ HIFIBERRY_DAC8X_STUDIO = DacProfile(
     # resolution intersects config.txt against — so with the wrong value a
     # correctly-configured Studio box read as "no I2S HAT present".
     dtoverlay="hifiberry-studio-dac8x",
+    mixer_controls=HIFIBERRY_STUDIO_MIXER_CONTROLS,
     # NOT flipped to S32_LE alongside the base DAC8x above (wide-output-path
     # PR-7), deliberately. The two boards share a DAC-chip family — HiFiBerry's
     # datasheets describe both as four 192kHz/24-bit Burr-Brown DACs, differing
@@ -1000,6 +1043,7 @@ __all__ = [
     "HIFIBERRY_DAC8X_ID",
     "HIFIBERRY_DAC8X_STUDIO",
     "HIFIBERRY_DAC8X_STUDIO_ID",
+    "HIFIBERRY_STUDIO_MIXER_CONTROLS",
     "INNOMAKER_HIFI_AMP_PRO",
     "INNOMAKER_HIFI_AMP_PRO_ID",
     "LatencyFloor",

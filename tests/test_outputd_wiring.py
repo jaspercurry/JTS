@@ -253,36 +253,23 @@ def _polled_on_or_exited(
     raise AssertionError("monitor neither probed a second time nor exited")
 
 
-def test_apple_dongle_dac_init_resolves_its_card_at_runtime(tmp_path):
-    """The units render `<helper> auto Headphone` — the card is resolved on
-    every start, never baked in at install — so the helper must detect the
-    dongle and pin it to 100%, and exit cleanly when there is nothing to pin.
-    Bare too: `CONFIGURED_CARD="${1:-auto}"` makes a missing argument the same
-    run, which is what a hand invocation gets."""
-    def pinned(cards: str, argv: list[str]) -> list[str]:
-        bin_dir, log, _ = _apple_dongle_bin(tmp_path, cards)
-        # The wait is the one-shot's own exit; pyproject's pytest-timeout is
-        # the hang backstop. A per-call ceiling here would be a timing
-        # assertion, and load crosses it (#3092).
-        result = subprocess.run(
-            ["/bin/bash", str(REPO / "deploy" / "bin" / "jasper-dac-init"), *argv],
-            env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
-            capture_output=True, text=True,
-        )
-        assert result.returncode == 0, result.stderr
-        return log.read_text().splitlines() if log.exists() else []
-
-    unmuted = ["-c AppleA -- sset Headphone 100% unmute"]
-    assert pinned(APPLE_DONGLE_LISTING, ["auto", "Headphone"]) == unmuted
-    assert pinned(APPLE_DONGLE_LISTING, []) == unmuted
-    assert pinned(NO_APPLE_DONGLE_LISTING, ["auto", "Headphone"]) == []
-
+def test_the_boot_pin_and_the_drift_monitor_resolve_their_card_at_runtime():
+    """Neither helper may carry a card id baked in at install time. The monitor
+    unit renders `<helper> auto Headphone` and resolves the dongle on every
+    start; the boot pin takes no card argument at all — it reads the card off
+    the reconciler's record, and is ordered after alsa-restore so a restored
+    snapshot cannot outrun the pin."""
     init_unit = (REPO / "deploy" / "systemd" / "jasper-dac-init.service").read_text()
     monitor_unit = (
         REPO / "deploy" / "systemd" / "jasper-headphone-monitor.service"
     ).read_text()
-    assert "ExecStart=/usr/local/bin/jasper-dac-init __APPLE_DONGLE_CARD__ Headphone" in init_unit
-    assert "ExecStart=/usr/local/bin/jasper-headphone-monitor __APPLE_DONGLE_CARD__ Headphone" in monitor_unit
+    assert "ExecStart=/usr/local/bin/jasper-dac-init\n" in init_unit
+    assert "After=sound.target alsa-restore.service" in init_unit
+    assert "__APPLE_DONGLE_CARD__" not in init_unit
+    assert (
+        "ExecStart=/usr/local/bin/jasper-headphone-monitor __APPLE_DONGLE_CARD__ Headphone"
+        in monitor_unit
+    )
     assert 's/__APPLE_DONGLE_CARD__/${APPLE_DONGLE_SERVICE_CARD}/g' in installer_text()
 
 

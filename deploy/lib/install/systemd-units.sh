@@ -741,10 +741,9 @@ install_audio_output_recovery_unit_files() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-dac-init" \
         /usr/local/bin/jasper-dac-init
-    sed -e "s/__APPLE_DONGLE_CARD__/${APPLE_DONGLE_SERVICE_CARD}/g" \
+    install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-dac-init.service" \
-        > "${SYSTEMD_DIR}/jasper-dac-init.service"
-    chmod 0644 "${SYSTEMD_DIR}/jasper-dac-init.service"
+        "${SYSTEMD_DIR}/jasper-dac-init.service"
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-headphone-monitor" \
         /usr/local/bin/jasper-headphone-monitor
@@ -1556,20 +1555,14 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-turntable-autostop@.service" \
         "${SYSTEMD_DIR}/jasper-turntable-autostop@.service"
-    # Pin the Apple dongle's analog Headphone control to 100% at every
-    # boot — the dynamic volume control happens in CamillaDSP (or the
-    # source's own slider) and the dongle should never be limiting us.
+    # Pin every mixer control the classified DAC's profile declares at each
+    # boot — dynamic volume happens in CamillaDSP (or the source's own
+    # slider) and no hardware stage should be limiting or boosting us.
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-dac-init" \
         /usr/local/bin/jasper-dac-init
-    # Apple-only mixer helpers receive APPLE_DONGLE_SERVICE_CARD, always
-    # "auto": they resolve the card on every start, so a card id sampled
-    # during a re-enumeration cannot be frozen into these units.
-    sed -e "s/__APPLE_DONGLE_CARD__/${APPLE_DONGLE_SERVICE_CARD}/g" \
-        "${REPO_DIR}/deploy/systemd/jasper-dac-init.service" \
-        > "${install_transaction_dir}/jasper-dac-init.service"
     install -m 0644 \
-        "${install_transaction_dir}/jasper-dac-init.service" \
+        "${REPO_DIR}/deploy/systemd/jasper-dac-init.service" \
         "${SYSTEMD_DIR}/jasper-dac-init.service"
     # Diagnostic monitor: 1Hz poll on the dongle's Headphone control,
     # logs every change to journald. Companion to jasper-dac-init —
@@ -1578,6 +1571,9 @@ install_systemd_units() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-headphone-monitor" \
         /usr/local/bin/jasper-headphone-monitor
+    # The Apple-only drift monitor receives APPLE_DONGLE_SERVICE_CARD, always
+    # "auto": it resolves the card on every start, so a card id sampled during
+    # a re-enumeration cannot be frozen into its unit.
     sed -e "s/__APPLE_DONGLE_CARD__/${APPLE_DONGLE_SERVICE_CARD}/g" \
         "${REPO_DIR}/deploy/systemd/jasper-headphone-monitor.service" \
         > "${install_transaction_dir}/jasper-headphone-monitor.service"

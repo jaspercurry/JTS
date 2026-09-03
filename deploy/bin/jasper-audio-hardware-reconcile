@@ -1574,10 +1574,60 @@ render_ring_conf_if_needed() {
         "result=${result:-unknown} output_dac_id=${OUTPUT_DAC_ID} period_frames=${period:-none} previous_period_frames=${previous:-none} sample_format=${sample_format:-none} ring_a_channels=${channels_a:-none} ring_b_channels=${channels_b:-none} ring_active_channels=${channels_active:-none} topology=${topology:-none} reason=${reason:-none} ring_conf=$(jasper_asound_log_token "$conf")"
 }
 
+# True when the recognized DAC's profile declares mixer controls to pin, so the
+# boot pin is gated on the registry rather than on a hardcoded id list.
+dac_declares_mixer_pins() {
+    local dac_id="$1" answer
+    if [[ -z "$dac_id" ]] || ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
+        return 1
+    fi
+    answer="$(JASPER_DAC_ID_QUERY="$dac_id" "$OUTPUT_HARDWARE_PYTHON" - <<'PY' 2>/dev/null || true
+import os
+
+from jasper.audio_hardware.dac import mixer_control_groups_for
+
+groups = mixer_control_groups_for(os.environ["JASPER_DAC_ID_QUERY"]) or ()
+if any(groups):
+    print("pinned")
+PY
+)"
+    [[ "$answer" == "pinned" ]]
+}
+
 gate_role_services() {
-    if [[ ( "$OUTPUT_DAC_ID" == "apple_usb_c_dongle" || "$OUTPUT_DAC_ID" == "dual_apple_usb_c_dac_4ch" ) && "$APPLE_DONGLE_PRESENT" == "1" ]]; then
-        "$SYSTEMCTL" enable jasper-dac-init.service jasper-headphone-monitor.service
-        "$SYSTEMCTL" start jasper-dac-init.service || true
+    local apple_output=0 pin_dac_init=0
+    if [[ "$OUTPUT_DAC_ID" == "apple_usb_c_dongle" || "$OUTPUT_DAC_ID" == "dual_apple_usb_c_dac_4ch" ]]; then
+        # An Apple record can name a dongle that is no longer plugged in, so
+        # this arm keeps its own presence condition; every other DAC is pinned
+        # on the registry's answer alone, and asking it here costs a Python
+        # spawn the Apple boxes never pay.
+        if [[ "$APPLE_DONGLE_PRESENT" == "1" ]]; then
+            apple_output=1
+        fi
+        pin_dac_init="$apple_output"
+    elif dac_declares_mixer_pins "$OUTPUT_DAC_ID"; then
+        pin_dac_init=1
+    fi
+    # The pin is RESTARTED, not started: this one-shot's RemainAfterExit makes a
+    # `start` a no-op once it has run, and at boot it can run BEFORE the record
+    # it reads exists. reset-failed first keeps a deploy's several passes inside
+    # StartLimitIntervalSec from parking the unit (same bite as the monitor
+    # below). --no-block because the unit is ordered Before= camilla and the
+    # renderers: a blocking job would make this pass wait on whatever else is
+    # moving in that part of the graph.
+    local pin_state="disabled"
+    if [[ "$pin_dac_init" == "1" ]]; then
+        pin_state="enabled"
+        "$SYSTEMCTL" enable jasper-dac-init.service
+        "$SYSTEMCTL" reset-failed jasper-dac-init.service 2>/dev/null || true
+        "$SYSTEMCTL" --no-block restart jasper-dac-init.service || true
+    else
+        "$SYSTEMCTL" disable --now jasper-dac-init.service 2>/dev/null || true
+        "$SYSTEMCTL" reset-failed jasper-dac-init.service 2>/dev/null || true
+    fi
+    log_event "dac_mixer_pin" "state=${pin_state} output_dac_id=${OUTPUT_DAC_ID}"
+    if [[ "$apple_output" == "1" ]]; then
+        "$SYSTEMCTL" enable jasper-headphone-monitor.service
         # Ensure the monitor is running idempotently — do NOT restart it. This
         # gate runs on every udev/reconcile pass, and a deploy's core-audio
         # bounce fires it several times inside the unit's StartLimitIntervalSec;
@@ -1591,8 +1641,8 @@ gate_role_services() {
         "$SYSTEMCTL" start jasper-headphone-monitor.service || true
         log_event "apple_services" "state=enabled output_dac_id=${OUTPUT_DAC_ID}"
     else
-        "$SYSTEMCTL" disable --now jasper-dac-init.service jasper-headphone-monitor.service 2>/dev/null || true
-        "$SYSTEMCTL" reset-failed jasper-dac-init.service jasper-headphone-monitor.service 2>/dev/null || true
+        "$SYSTEMCTL" disable --now jasper-headphone-monitor.service 2>/dev/null || true
+        "$SYSTEMCTL" reset-failed jasper-headphone-monitor.service 2>/dev/null || true
         log_event "apple_services" "state=disabled output_dac_id=${OUTPUT_DAC_ID}"
     fi
 }
