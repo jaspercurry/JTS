@@ -591,23 +591,34 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       renderActiveSpeakerSetup() + '</div>';
   }
 
+  function i2sHatProfileLabel(profiles, id) {
+    var match = (profiles || []).find(function(p) { return p.id === id; });
+    return match ? match.label : '';
+  }
+
   function renderI2sHatSetting() {
     var hat = i2sHat;
     if (!hat || hat.visibility === 'hidden') return '';
-    var desired = hat.desired_enabled ? 'Enabled' : 'Auto / Off';
-    var runtime = hat.runtime_active ? 'Active now' : 'Not active now';
+    var profiles = hat.profiles || [];
+    // Nothing saved yet: pre-select the classified I2S DAC (if any) as a
+    // suggestion the operator still has to confirm with Save.
+    var selectedId = hat.desired_profile_id || hat.detected_profile_id || '';
+    var desiredLabel = hat.desired_profile_id ? i2sHatProfileLabel(profiles, hat.desired_profile_id) : 'None / unmanaged';
+    var detectedLabel = hat.detected_profile_id ? i2sHatProfileLabel(profiles, hat.detected_profile_id) : '';
     var issue = hat.intent_error ? 'Saved setting could not be read: ' + hat.intent_error : hat.reason;
+    var options = '<option value=""' + (selectedId ? '' : ' selected') + '>None / unmanaged</option>' +
+      profiles.map(function(p) {
+        return '<option value="' + escapeHtml(p.id) + '"' +
+          (selectedId === p.id ? ' selected' : '') + '>' + escapeHtml(p.label) + '</option>';
+      }).join('');
     return '<section class="sound-settings">' +
       '<div class="setting-row setting-row--stack">' +
-        '<div class="setting-row">' +
-          '<div class="setting-row__text">' +
-            '<p class="setting-row__title">Enable I²S audio HAT</p>' +
-            '<p class="setting-row__hint">Use the supported ' + escapeHtml(hat.profile_label) +
-              ' boot setting. Saved: ' + desired + '. Detected: ' + runtime + '.</p>' +
-          '</div>' +
-          '<label class="toggle"><input type="checkbox" id="set-i2s-hat"' +
-            (hat.desired_enabled ? ' checked' : '') + (!hat.available ? ' disabled' : '') +
-            ' aria-label="Enable I²S audio HAT"><span class="track"></span></label>' +
+        '<div class="field">' +
+          '<label for="set-i2s-hat">I²S audio HAT</label>' +
+          '<select id="set-i2s-hat"' + (!hat.available ? ' disabled' : '') +
+            ' aria-label="I²S audio HAT">' + options + '</select>' +
+          '<p class="setting-row__hint">Saved: ' + escapeHtml(desiredLabel) +
+            '. Detected: ' + escapeHtml(detectedLabel || 'none') + '.</p>' +
         '</div>' +
         (issue ? '<p class="setting-row__hint">' + escapeHtml(issue) + '</p>' : '') +
         (hat.restart_required ? '<div class="info-card info-card--accent" role="status">' +
@@ -5105,11 +5116,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     try {
       var resp = await fetch('./i2s-hat', {
         method: 'POST', headers: jsonHeaders(),
-        body: JSON.stringify({enabled: input.checked})
+        body: JSON.stringify({profile_id: input.value || null})
       });
       var payload = await resp.json();
-      if (typeof payload.desired_enabled === 'boolean') i2sHat = payload;
-      if (!resp.ok && typeof payload.desired_enabled === 'boolean')
+      if ('desired_profile_id' in payload) i2sHat = payload;
+      if (!resp.ok && 'desired_profile_id' in payload)
         return status('Setting saved, but the boot change could not be applied. Try again; if it still fails, open System and run diagnostics.', true);
       if (!resp.ok) throw new Error(payload.error || 'I²S HAT setting failed');
       status(payload.restart_required ?

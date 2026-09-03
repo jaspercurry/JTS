@@ -24,7 +24,7 @@ from typing import Any, Iterable, Literal, Mapping
 from jasper.atomic_io import atomic_write_text, read_regular_bytes_nofollow
 from jasper.env_file import parse_env_lines
 
-from .dac import INNOMAKER_HIFI_AMP_PRO_ID, DacProfile, all_profiles, by_id
+from .dac import DacProfile, all_profiles, by_id, is_boot_managed_i2s_profile
 from .text_property import read_text_property
 
 
@@ -115,7 +115,7 @@ class UsbPortRoleState:
         registered_i2s_overlays = {
             profile.dtoverlay.lower()
             for profile in all_profiles()
-            if profile.connection == "i2s" and profile.dtoverlay
+            if is_boot_managed_i2s_profile(profile) and profile.dtoverlay
         }
         if not set(overlays) <= registered_i2s_overlays:
             return None
@@ -297,7 +297,7 @@ def configured_i2s_overlays(
     registered = {
         profile.dtoverlay.lower()
         for profile in candidates
-        if profile.connection == "i2s" and profile.dtoverlay
+        if is_boot_managed_i2s_profile(profile) and profile.dtoverlay
     }
     return tuple(sorted(overlays & registered))
 
@@ -311,6 +311,13 @@ def overlay_declared_anywhere(content: str, overlay: str) -> bool:
     line vanishing from the file entirely (#2575).
     """
     return overlay.lower() in _overlay_values(content.splitlines())
+
+
+def _registered_i2s_profile(profile_id: str) -> DacProfile | None:
+    profile = by_id(profile_id)
+    if profile is None or not is_boot_managed_i2s_profile(profile):
+        return None
+    return profile
 
 
 def read_i2s_hat_intent(
@@ -329,22 +336,24 @@ def read_i2s_hat_intent(
     choice = values.get(I2S_HAT_INTENT_KEY)
     if not choice:
         return None
-    if choice != INNOMAKER_HIFI_AMP_PRO_ID:
+    if _registered_i2s_profile(choice) is None:
         raise ValueError("I2S HAT intent names an unsupported profile")
-    return INNOMAKER_HIFI_AMP_PRO_ID
+    return choice
 
 
 def write_i2s_hat_intent(
-    enabled: bool,
+    profile_id: str | None,
     path: str | Path = DEFAULT_I2S_HAT_INTENT_PATH,
 ) -> None:
     target = Path(path)
-    if not enabled:
+    if profile_id is None:
         target.unlink(missing_ok=True)
         return
+    if _registered_i2s_profile(profile_id) is None:
+        raise ValueError(f"unsupported I2S audio-HAT profile: {profile_id!r}")
     atomic_write_text(
         target,
-        f"{I2S_HAT_INTENT_KEY}={INNOMAKER_HIFI_AMP_PRO_ID}\n",
+        f"{I2S_HAT_INTENT_KEY}={profile_id}\n",
         mode=0o660,
         group_from_parent=True,
     )
@@ -603,9 +612,31 @@ def _without_managed_role_lines(content: str) -> str:
     return _collapse_empty_all_sections("".join(output))
 
 
-def _without_managed_i2s_hat(content: str, *, overlay: str) -> str:
+def _managed_i2s_hat_block(content: str) -> str | None:
+    """The exact JTS-owned I2S HAT block substring, or ``None`` if absent.
+
+    Comparing this substring (rather than the whole boot config) between two
+    renders tells whether JTS's OWN declaration changed, independent of
+    where an unrelated managed block (the USB data-role block) happens to
+    land relative to it.
+    """
+    start = content.find(I2S_HAT_BLOCK_BEGIN)
+    if start == -1:
+        return None
+    end = content.find(I2S_HAT_BLOCK_END, start)
+    if end == -1:
+        raise ValueError("JTS I2S audio-HAT block is missing its end marker")
+    return content[start : end + len(I2S_HAT_BLOCK_END)]
+
+
+def _without_managed_i2s_hat(content: str) -> str:
+    """Strip the JTS-owned I2S HAT block only, whatever overlay it names.
+
+    Everything outside the ``BEGIN``/``END`` markers survives untouched —
+    a hand-written ``dtoverlay=`` line is never JTS's to delete, even one
+    naming the same overlay this block manages (#i2s-hat-intent).
+    """
     output: list[str] = []
-    section = "global"
     in_managed_block = False
     for line in content.splitlines(keepends=True):
         stripped = line.strip()
@@ -622,26 +653,8 @@ def _without_managed_i2s_hat(content: str, *, overlay: str) -> str:
         if in_managed_block:
             if stripped and not stripped.startswith("#"):
                 match = _OVERLAY_LINE_RE.match(line)
-                if (
-                    match is None
-                    or match.group(1).lower() != overlay.lower()
-                    or "," in line.split("#", 1)[0]
-                ):
+                if match is None or "," in line.split("#", 1)[0]:
                     raise ValueError("unexpected directive in JTS I2S HAT block")
-            continue
-        match = _SECTION_RE.match(line)
-        if match:
-            section = match.group(1).strip().lower()
-            output.append(line)
-            continue
-        overlay_match = _OVERLAY_LINE_RE.match(line)
-        if (
-            section in {"global", "all"}
-            and overlay_match is not None
-            and overlay_match.group(1).lower() == overlay.lower()
-        ):
-            if "," in line.split("#", 1)[0]:
-                raise ValueError(f"ambiguous {overlay} overlay parameters")
             continue
         output.append(line)
     if in_managed_block:
@@ -649,15 +662,31 @@ def _without_managed_i2s_hat(content: str, *, overlay: str) -> str:
     return _collapse_empty_all_sections("".join(output))
 
 
-def render_i2s_hat_boot_config(content: str, profile_id: str | None) -> str:
-    if profile_id not in {None, INNOMAKER_HIFI_AMP_PRO_ID}:
-        raise ValueError("unsupported I2S audio-HAT profile")
-    profile = by_id(INNOMAKER_HIFI_AMP_PRO_ID)
-    if profile is None or profile.connection != "i2s" or not profile.dtoverlay:
-        raise ValueError("InnoMaker HAT profile is missing its I2S overlay metadata")
-    cleaned = _without_managed_i2s_hat(content, overlay=profile.dtoverlay).rstrip()
-    if profile_id is None:
-        return cleaned + ("\n" if cleaned else "")
+def render_i2s_hat_boot_config(
+    content: str, profile_id: str | None
+) -> tuple[str, tuple[str, ...]]:
+    """Render the managed I2S HAT block for ``profile_id`` (or remove it).
+
+    Returns ``(rendered_content, warnings)``. A hand-written ``dtoverlay=``
+    line is never deleted — including one already naming the overlay this
+    call is about to manage — so a collision surfaces as a warning instead
+    of silently folding the manual line into the managed block.
+    """
+    profile: DacProfile | None = None
+    if profile_id is not None:
+        profile = _registered_i2s_profile(profile_id)
+        if profile is None:
+            raise ValueError(f"unsupported I2S audio-HAT profile: {profile_id!r}")
+    cleaned = _without_managed_i2s_hat(content).rstrip()
+    if profile is None:
+        return cleaned + ("\n" if cleaned else ""), ()
+    assert profile.dtoverlay is not None
+    warnings = tuple(
+        f"hand-written dtoverlay={overlay} left in place; JTS now also "
+        f"manages dtoverlay={profile.dtoverlay} for the {profile.label} "
+        "intent — remove the stale line by hand if it no longer applies"
+        for overlay in configured_i2s_overlays(cleaned)
+    )
     last_line = cleaned.splitlines()[-1].strip().lower() if cleaned else ""
     section_prefix = "" if last_line == "[all]" else "[all]\n"
     separator = "\n" if last_line == "[all]" else "\n\n"
@@ -667,7 +696,8 @@ def render_i2s_hat_boot_config(content: str, profile_id: str | None) -> str:
         f"dtoverlay={profile.dtoverlay}\n"
         f"{I2S_HAT_BLOCK_END}\n"
     )
-    return f"{cleaned}{separator}{block}" if cleaned else block
+    rendered = f"{cleaned}{separator}{block}" if cleaned else block
+    return rendered, warnings
 
 
 def render_boot_config(content: str, desired_role: UsbDataRole) -> str:
@@ -699,7 +729,7 @@ def reconcile_boot_config(
     boot_config_path: str | Path,
     udc_class_dir: str | Path,
     i2s_hat_intent_path: str | Path | None = None,
-) -> tuple[UsbPortRoleState, bool, bool, str | None, bool]:
+) -> tuple[UsbPortRoleState, bool, bool, str | None, bool, tuple[str, ...]]:
     desired_profile = None
     if i2s_hat_intent_path is not None:
         desired_profile = read_i2s_hat_intent(i2s_hat_intent_path)
@@ -712,7 +742,7 @@ def reconcile_boot_config(
         )
         if i2s_hat_intent_path is not None and state.board_topology != "unsupported":
             raise FileNotFoundError(f"boot config does not exist: {config_path}")
-        return state, False, False, desired_profile, False
+        return state, False, False, desired_profile, False, ()
     original = config_path.read_text(encoding="utf-8")
     initial = resolve_usb_port_role(
         board_model=read_text_property(model_path),
@@ -720,17 +750,19 @@ def reconcile_boot_config(
         active_role=observed_active_role(udc_class_dir),
     )
     if initial.board_topology == "unsupported":
-        return initial, False, False, desired_profile, False
+        return initial, False, False, desired_profile, False, ()
     hat_changed = False
+    hat_warnings: tuple[str, ...] = ()
     with_hat = original
+    # No --i2s-hat-intent-file at all: leave every dtoverlay= line (managed or
+    # hand-written) exactly as found. That is the explicit per-box opt-in —
+    # a box the operator never pointed at an intent file keeps whatever
+    # overlay it booted with (see the jts3 incident this guards).
     if i2s_hat_intent_path is not None:
-        profile = by_id(INNOMAKER_HIFI_AMP_PRO_ID)
-        if profile is None or not profile.dtoverlay:
-            raise ValueError("InnoMaker HAT profile has no boot overlay")
-        hat_changed = (
-            profile.dtoverlay in configured_i2s_overlays(original)
-        ) != (desired_profile is not None)
-        with_hat = render_i2s_hat_boot_config(original, desired_profile)
+        with_hat, hat_warnings = render_i2s_hat_boot_config(original, desired_profile)
+        hat_changed = _managed_i2s_hat_block(original) != _managed_i2s_hat_block(
+            with_hat
+        )
     desired_role = resolve_usb_port_role(
         board_model=initial.board_model,
         boot_config=with_hat,
@@ -756,7 +788,7 @@ def reconcile_boot_config(
         boot_config=rendered,
         active_role=initial.active_role,
     )
-    return state, changed, hat_changed, desired_profile, durability_failed
+    return state, changed, hat_changed, desired_profile, durability_failed, hat_warnings
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -780,6 +812,7 @@ def main(argv: list[str] | None = None) -> int:
     hat_changed = False
     desired_hat_profile: str | None = None
     durability_failed = False
+    hat_warnings: tuple[str, ...] = ()
     if args.reconcile_boot:
         result = reconcile_boot_config(
             model_path=args.model_file,
@@ -787,7 +820,14 @@ def main(argv: list[str] | None = None) -> int:
             udc_class_dir=args.udc_class_dir,
             i2s_hat_intent_path=args.i2s_hat_intent_file,
         )
-        state, changed, hat_changed, desired_hat_profile, durability_failed = result
+        (
+            state,
+            changed,
+            hat_changed,
+            desired_hat_profile,
+            durability_failed,
+            hat_warnings,
+        ) = result
     else:
         state = resolve_system_usb_port_role(
             model_path=args.model_file,
@@ -824,6 +864,8 @@ def main(argv: list[str] | None = None) -> int:
             "event=hardware.boot_config_changed "
             f"reboot_required={int(state.reboot_required)}"
         )
+    for warning in hat_warnings:
+        print(f"event=hardware.i2s_hat_boot_config_conflict detail={warning!r}")
     return os.EX_IOERR if durability_failed else 0
 
 

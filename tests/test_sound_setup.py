@@ -846,7 +846,7 @@ def test_sound_post_csrf_rejection_precedes_body_read(tmp_path, monkeypatch):
     assert read_calls == []
 
     monkeypatch.setattr(sound_setup, "guard_mutating_request", lambda _handler: True)
-    body = b'{"enabled":1}'
+    body = b'{"profile_id":1}'
     response, read_calls = _drive_raw_sound_post(
         tmp_path, path="/i2s-hat", content_length=len(body), body=body
     )
@@ -1204,8 +1204,10 @@ def test_i2s_hat_payload_reports_modes_and_truthful_restart(monkeypatch, tmp_pat
 
     payload = sound_setup._i2s_hat_payload(intent_path=intent)
 
-    assert payload["desired_enabled"] is False
-    assert payload["runtime_active"] is True
+    assert payload["desired_profile_id"] is None
+    assert payload["detected_profile_id"] == "innomaker_hifi_amp_pro"
+    assert {"id": "innomaker_hifi_amp_pro", "label": "InnoMaker HiFi AMP Pro"} in payload["profiles"]
+    assert {"id": "hifiberry_dac8x_studio", "label": "HiFiBerry DAC8x Studio"} in payload["profiles"]
     assert payload["restart_required"] is True
     assert payload["visibility"] == "visible"
     assert payload["available"] is True
@@ -1229,7 +1231,7 @@ def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
     monkeypatch.setattr(
         sound_setup,
         "write_i2s_hat_intent",
-        lambda enabled: calls.append(("write", enabled)),
+        lambda profile_id: calls.append(("write", profile_id)),
     )
 
     def manage(unit, **kwargs):
@@ -1238,9 +1240,9 @@ def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
 
     monkeypatch.setattr(restart_broker, "manage_units", manage)
 
-    payload, result = sound_setup._save_i2s_hat_payload(True)
+    payload, result = sound_setup._save_i2s_hat_payload("innomaker_hifi_amp_pro")
 
-    assert calls[0] == ("write", True)
+    assert calls[0] == ("write", "innomaker_hifi_amp_pro")
     unit, options = calls[1]
     assert unit == "jasper-audio-hardware-reconcile.service"
     assert options["verb"] == "start"
@@ -1251,7 +1253,7 @@ def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
         raise OSError("broker unavailable")
 
     monkeypatch.setattr(restart_broker, "manage_units", fail_apply)
-    refreshed, failed = sound_setup._save_i2s_hat_payload(False)
+    refreshed, failed = sound_setup._save_i2s_hat_payload(None)
     assert refreshed["restart_required"] is True
     assert failed == {"ok": False, "error": "broker unavailable"}
 

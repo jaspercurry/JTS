@@ -45,7 +45,11 @@ from jasper.audio_measurement.correction_lane import (
     correction_play_device,
     popen_correction_play,
 )
-from jasper.audio_hardware.dac import INNOMAKER_HIFI_AMP_PRO_ID, by_id as dac_by_id
+from jasper.audio_hardware.dac import (
+    DacProfile,
+    all_profiles as dac_all_profiles,
+    is_boot_managed_i2s_profile,
+)
 from jasper.audio_hardware.usb_port_role import (
     DEFAULT_I2S_HAT_INTENT_PATH,
     read_i2s_hat_intent,
@@ -316,13 +320,15 @@ def _output_hardware_dict() -> dict[str, Any] | None:
     return hardware.to_dict() if hardware is not None else None
 
 
+def _i2s_hat_profiles() -> list[DacProfile]:
+    return [p for p in dac_all_profiles() if is_boot_managed_i2s_profile(p)]
+
+
 def _i2s_hat_payload(
     *,
     intent_path: str | Path = DEFAULT_I2S_HAT_INTENT_PATH,
 ) -> dict[str, Any]:
-    profile = dac_by_id(INNOMAKER_HIFI_AMP_PRO_ID)
-    if profile is None:
-        raise RuntimeError("supported I2S HAT profile is missing")
+    profiles = _i2s_hat_profiles()
     hardware = _output_hardware_dict() or {}
     topology = str(
         (hardware.get("usb_data_role") or {}).get("board_topology") or "unknown"
@@ -333,35 +339,40 @@ def _i2s_hat_payload(
         reason = "I²S HAT setup requires a recognized Raspberry Pi."
     intent_error = ""
     try:
-        desired_profile = read_i2s_hat_intent(intent_path)
+        desired_profile_id = read_i2s_hat_intent(intent_path)
     except (OSError, UnicodeError, ValueError) as exc:
-        desired_profile = None
+        desired_profile_id = None
         intent_error = str(exc)
-    runtime_active = hardware.get("profile_id") == profile.id or any(
-        child.get("device_id") == profile.id
-        for child in hardware.get("child_devices", ())
-    )
+    # The DETECTED I2S DAC, if the classifier already recognizes one — shown
+    # as "Detected" and offered as the pre-selected suggestion when nothing
+    # is saved yet. An EEPROM-based default is a later PR's job.
+    active_ids = {hardware.get("profile_id")} | {
+        child.get("device_id") for child in hardware.get("child_devices", ())
+    }
+    detected_profile_id = next((p.id for p in profiles if p.id in active_ids), None)
     return {
         "visibility": "visible",
         "available": available,
         "shared_usb_data_port": topology == "shared_otg_port",
         "reason": reason,
         "intent_error": intent_error,
-        "profile_label": profile.label,
-        "desired_enabled": desired_profile == profile.id,
-        "runtime_active": runtime_active,
+        "profiles": [{"id": p.id, "label": p.label} for p in profiles],
+        "desired_profile_id": desired_profile_id,
+        "detected_profile_id": detected_profile_id,
         "restart_required": Path(I2S_HAT_REBOOT_REQUIRED_PATH).is_file(),
     }
 
 
-def _save_i2s_hat_payload(enabled: bool) -> tuple[dict[str, Any], Mapping[str, Any]]:
+def _save_i2s_hat_payload(
+    profile_id: str | None,
+) -> tuple[dict[str, Any], Mapping[str, Any]]:
     from jasper.control.restart_broker import manage_units
 
     with _sound_state_write_lock:
         status = _i2s_hat_payload()
         if not status["available"]:
             raise ValueError(status["reason"] or "I²S HAT setup is unavailable")
-        write_i2s_hat_intent(enabled)
+        write_i2s_hat_intent(profile_id)
         try:
             result = manage_units(
                 I2S_HAT_RECONCILE_UNIT,
@@ -374,8 +385,7 @@ def _save_i2s_hat_payload(enabled: bool) -> tuple[dict[str, Any], Mapping[str, A
             result = {"ok": False, "error": str(exc)}
         payload = _i2s_hat_payload()
     outcome = "applied" if result.get("ok") else "error"
-    desired = "enabled" if enabled else "auto"
-    log_event(logger, "sound.i2s_hat", result=outcome, desired=desired)
+    log_event(logger, "sound.i2s_hat", result=outcome, desired=profile_id or "auto")
     return payload, result
 
 
@@ -4853,14 +4863,15 @@ def _make_handler(
             try:
                 raw = self._read_json(max_bytes=MAX_JSON_BYTES)
                 if path == "/i2s-hat":
-                    enabled = raw.get("enabled")
-                    if not isinstance(enabled, bool):
+                    profile_id = raw.get("profile_id")
+                    if profile_id is not None and not isinstance(profile_id, str):
                         self._send_json(
-                            {"error": "enabled must be a boolean"}, status=400
+                            {"error": "profile_id must be a string or null"},
+                            status=400,
                         )
                         return
                     try:
-                        payload, result = _save_i2s_hat_payload(enabled)
+                        payload, result = _save_i2s_hat_payload(profile_id)
                     except ValueError as e:
                         self._send_json({"error": str(e)}, status=HTTPStatus.BAD_REQUEST)
                         return
