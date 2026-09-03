@@ -4,23 +4,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Refresh output-hardware state after jasper-outputd fails.
+# Refresh output-hardware state after jasper-outputd fails, so the next
+# Restart=on-failure attempt reads current config rather than the stale DAC env
+# it died on. Runs from jasper-outputd.service ExecStopPost.
 #
-# Runs from jasper-outputd.service ExecStopPost. A dual-Apple child DAC can
-# disappear while the saved env still names its ALSA PCM; outputd then fails
-# before systemd restarts it. Reconcile here with --no-restart so the next
-# built-in Restart=on-failure attempt reads the current single-DAC/fake env
-# instead of replaying stale dual-DAC config.
-#
-# Config exits (78) normally park the unit. One observed hotplug class can be
-# repaired by the same reconcile after the USB DAC settles, so this helper gives
-# exit 78 one bounded reconcile + retry per short window. Persistent bad config
-# still parks instead of crash-looping into StartLimitAction=reboot. This helper
-# is deliberately fail-open and always exits 0.
-#
-# The unit's only other failure class is the EX_CONFIG park handled below:
-# under one audio transport (ADR-0100) outputd opens no content lane at all,
-# so the repeated-open streak this helper used to count has no subject left.
+# At most one reconcile per window across every failure class: a reconciler pass
+# costs a dozen-plus Python interpreters, and outputd restarts on failure into
+# StartLimitAction=reboot, so a crash loop must not multiply it. Exit 78 keeps
+# its ADR-0141 reconcile + no-block retry, sharing that one stamp: a repeated
+# exit 78 inside a window another class already spent also parks without
+# retry here, relying on the separate udev-triggered reconcile (untouched by
+# this stamp) to pick up a real hardware change.
+# Fail-open: always exits 0.
 
 set -uo pipefail
 
@@ -29,8 +24,10 @@ STATUS="${EXIT_STATUS:-}"
 RECONCILE="${JASPER_AUDIO_HARDWARE_RECONCILE:-/usr/local/sbin/jasper-audio-hardware-reconcile}"
 SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
 CONFIG_EXIT_STATUS=78
-CONFIG_RETRY_STATE="${JASPER_OUTPUTD_CONFIG_RETRY_STATE:-/run/jasper-outputd/config-retry.stamp}"
-CONFIG_RETRY_WINDOW_SEC="${JASPER_OUTPUTD_CONFIG_RETRY_WINDOW_SEC:-300}"
+# Remove this bound once jasper-audio-hardware-reconcile runs as one
+# interpreter instead of a dozen-plus.
+RECONCILE_STAMP="${JASPER_OUTPUTD_CONFIG_RETRY_STATE:-/run/jasper-outputd/failure-reconcile.stamp}"
+RECONCILE_WINDOW_SEC="${JASPER_OUTPUTD_CONFIG_RETRY_WINDOW_SEC:-300}"
 
 log() {
     local outcome="$1"
@@ -42,27 +39,21 @@ now_sec() {
     date +%s
 }
 
-config_retry_recent() {
-    local last now age
-    [[ -f "$CONFIG_RETRY_STATE" ]] || return 1
-    last="$(cat "$CONFIG_RETRY_STATE" 2>/dev/null || true)"
+reconcile_recent() {
+    local last age
+    last="$(cat "$RECONCILE_STAMP" 2>/dev/null || true)"
     [[ "$last" =~ ^[0-9]+$ ]] || return 1
-    now="$(now_sec)"
-    age=$((now - last))
-    [[ "$age" -ge 0 && "$age" -lt "$CONFIG_RETRY_WINDOW_SEC" ]]
+    age=$(($(now_sec) - last))
+    [[ "$age" -ge 0 && "$age" -lt "$RECONCILE_WINDOW_SEC" ]]
 }
 
-mark_config_retry() {
-    local dir
-    dir="$(dirname "$CONFIG_RETRY_STATE")"
-    mkdir -p "$dir" 2>/dev/null || true
-    now_sec > "$CONFIG_RETRY_STATE" 2>/dev/null || true
+mark_reconcile() {
+    mkdir -p "$(dirname "$RECONCILE_STAMP")" 2>/dev/null || true
+    now_sec > "$RECONCILE_STAMP" 2>/dev/null || true
 }
 
 # `exec-condition` is systemd's own SERVICE_RESULT spelling for an
-# ExecCondition skip (systemd.service(5) $SERVICE_RESULT). This read `condition`
-# until 2026-08-08, which matched nothing, so an ExecCondition park fell through
-# to the reconcile path it was written to skip.
+# ExecCondition skip (systemd.service(5) $SERVICE_RESULT).
 if [[ "$RESULT" == "success" || "$RESULT" == "exec-condition" ]]; then
     log skip reason=non_retrying_stop
     exit 0
@@ -73,26 +64,25 @@ if [[ ! -x "$RECONCILE" ]]; then
     exit 0
 fi
 
+if reconcile_recent; then
+    log skip reason=recent state="$RECONCILE_STAMP"
+    exit 0
+fi
+# Stamp before reconciling: a pass that is itself killed still spends the window.
+mark_reconcile
+
 if [[ "$STATUS" == "$CONFIG_EXIT_STATUS" ]]; then
-    if config_retry_recent; then
-        log skip reason=config_retry_already_attempted state="$CONFIG_RETRY_STATE"
-        exit 0
-    fi
-    mark_config_retry
     if "$RECONCILE" --reason outputd-config-failure --no-restart; then
         "$SYSTEMCTL" reset-failed jasper-outputd.service >/dev/null 2>&1 || true
         "$SYSTEMCTL" --no-block restart jasper-outputd.service >/dev/null 2>&1 || true
-        log retry reason=config_reconciled state="$CONFIG_RETRY_STATE"
+        log retry reason=config_reconciled state="$RECONCILE_STAMP"
     else
         rc=$?
-        log failed reason=config_reconciler_nonzero rc="$rc" state="$CONFIG_RETRY_STATE"
+        log failed reason=config_reconciler_nonzero rc="$rc" state="$RECONCILE_STAMP"
     fi
     exit 0
 fi
 
-# Every other failure class: refresh the hardware-derived env so the next
-# Restart=on-failure attempt reads current config rather than replaying stale
-# dual-DAC or DAC-format values.
 if "$RECONCILE" --reason outputd-failure --no-restart; then
     log ok reason=reconciled
 else
