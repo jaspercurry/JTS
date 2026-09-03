@@ -651,10 +651,6 @@ def test_outputd_start_instant_probe_is_bounded_per_call(monkeypatch) -> None:
     [
         # The probed never-run rendering on systemd 257: empty, rc=0.
         ("", 0),
-        # Defensive only — systemd 257 prints empty, not a literal zero. Kept in
-        # case another version renders it this way; same "nothing has run" case.
-        ("@0\n", 0),
-        ("0\n", 0),
         ("[not set]\n", 0),    # non-empty but unparseable
         ("@1786127844\n", 1),  # systemctl itself failed
     ],
@@ -691,17 +687,24 @@ def test_an_inert_ordering_guard_says_so_in_the_journal(
     assert int(fields["returncode"]) == returncode
 
 
-@pytest.mark.parametrize("stdout", ["", "@0\n"])
-def test_a_unit_that_never_ran_is_quiet(monkeypatch, caplog, stdout: str) -> None:
+def test_a_unit_that_never_ran_is_quiet(monkeypatch, caplog) -> None:
     # The legitimate case stays out of the journal: nothing has started, so there
     # is nothing anomalous to report and a WARN would be noise on every box that
     # boots with outputd gated off.
-    _stub_systemctl_show(monkeypatch, stdout)
+    _stub_systemctl_show(monkeypatch, "")
     caplog.set_level("WARNING", logger="jasper.aec_init")
 
     assert aec_init.outputd_main_start_realtime() is None
 
     assert event_records(caplog, "chip_aec_init.ordering_probe") == []
+
+
+def test_a_literal_zero_timestamp_parses_as_the_epoch(monkeypatch) -> None:
+    # Not the observed never-run rendering (that is an empty value, see above) —
+    # a literal `@0` parses like any other numeric ExecMainStartTimestamp.
+    _stub_systemctl_show(monkeypatch, "@0\n")
+
+    assert aec_init.outputd_main_start_realtime() == 0.0
 
 
 def test_outputd_start_instant_survives_a_host_without_systemctl(

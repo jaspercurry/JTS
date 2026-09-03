@@ -12,13 +12,10 @@ lanes off explicit overrides at the same time.
 """
 from __future__ import annotations
 
-import logging
 import os
 from typing import Protocol
 
-# The bridge's own logger name: these lines reach journald beside the rest of
-# jasper-aec-bridge's output, where log tooling already looks for them.
-logger = logging.getLogger("jasper.aec_bridge")
+from jasper.cli.aec_bridge_telemetry import logger
 
 # 320 samples @ 16 kHz = 20 ms, a multiple of WebRTC AEC3's 10 ms frame
 # requirement (160 samples); the binding splits 320 → 2×160 internally per

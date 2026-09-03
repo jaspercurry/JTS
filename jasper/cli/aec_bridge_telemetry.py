@@ -227,9 +227,8 @@ class _BridgeStats:
         """Publish the source actually exported, not just configured intent."""
 
         with self._lock:
-            source = self._active_capture_plan.get("usb_mic_source")
-            if not isinstance(source, dict):
-                return
+            source = self._active_capture_plan["usb_mic_source"]
+            assert isinstance(source, dict)  # set_active_capture_plan seeds it
             source["mode"] = mode
             source["leg"] = leg
             source["fallback_active"] = fallback_active
@@ -247,15 +246,15 @@ class _BridgeStats:
                 "loaded": False,
                 "error": error,
             }
-            emitted = self._active_capture_plan.get("emitted_legs")
-            if isinstance(emitted, list):
-                self._active_capture_plan["emitted_legs"] = [
-                    emitted_leg for emitted_leg in emitted
-                    if emitted_leg != leg
-                ]
-            ports = self._active_capture_plan.get("ports")
-            if isinstance(ports, dict):
-                ports.pop(leg, None)
+            emitted = self._active_capture_plan["emitted_legs"]
+            assert isinstance(emitted, list)  # set_active_capture_plan seeds it
+            self._active_capture_plan["emitted_legs"] = [
+                emitted_leg for emitted_leg in emitted
+                if emitted_leg != leg
+            ]
+            ports = self._active_capture_plan["ports"]
+            assert isinstance(ports, dict)  # set_active_capture_plan seeds it
+            ports.pop(leg, None)
 
     def inc(self, key: str, amount: int = 1) -> None:
         with self._lock:
@@ -263,9 +262,7 @@ class _BridgeStats:
 
     def inc_nested(self, group: str, key: str, amount: int = 1) -> None:
         with self._lock:
-            values = self._grouped_counters.get(group)
-            if values is None:
-                return
+            values = self._grouped_counters[group]
             values[key] = values.get(key, 0) + amount
 
     def snapshot(self) -> dict[str, object]:
