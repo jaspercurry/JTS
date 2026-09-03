@@ -748,6 +748,35 @@ def test_a_release_racing_the_hold_is_honoured_rather_than_dropped(
     assert [call["action"] for call in gate] == ["acquire", "release"]
 
 
+def test_a_window_that_refuses_to_open_raises_out_of_start_rather_than_parking(
+    monkeypatch,
+) -> None:
+    # `start()` waits on `entered` with no timeout, so signalling it from a
+    # window that never opened is all that stands between a refused gate and
+    # a commissioning run that never returns. A regression parks the helper
+    # thread forever, so the join bound reports it instead of hanging pytest.
+    @asynccontextmanager
+    async def refusing_window(**kwargs):
+        raise MeasurementWindowError("window refused")
+        yield
+
+    monkeypatch.setattr(coordinator, "measurement_window", refusing_window)
+    lease = aec_commission.IsolationLease(aec_commission.COMMISSION_GATE_OWNER)
+    raised: list[BaseException] = []
+
+    def _start() -> None:
+        with pytest.raises(MeasurementWindowError) as caught:
+            lease.start()
+        raised.append(caught.value)
+
+    starter = threading.Thread(target=_start, daemon=True)
+    starter.start()
+    starter.join(timeout=5)
+
+    assert not starter.is_alive()
+    assert [type(exc) for exc in raised] == [MeasurementWindowError]
+
+
 async def _cancel_when_set(trip: threading.Event, owner) -> None:
     while not trip.is_set():
         await asyncio.sleep(0.005)

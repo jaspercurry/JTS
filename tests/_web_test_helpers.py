@@ -28,6 +28,8 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from email.message import Message
 from io import BytesIO
 from typing import Any
@@ -35,6 +37,28 @@ from typing import Any
 
 CSRF_COOKIE_NAME = "jts_csrf"
 CSRF_FORM_FIELD = "csrf_token"
+
+
+def patch_measurement_window(monkeypatch: Any, calls: dict) -> None:
+    """Record ``coordinator.measurement_window`` into ``calls["window_events"]``
+    as ``"open"``/``"close"``. ``calls["window_mode"]``: ``"fail"`` refuses
+    entry, ``"fail_exit"`` fails the restore.
+    """
+    from jasper.correction import coordinator
+
+    @asynccontextmanager
+    async def window(**kwargs: Any) -> AsyncIterator[None]:
+        calls["window_events"].append("open")
+        if calls.get("window_mode") == "fail":
+            raise RuntimeError("window refused")
+        try:
+            yield
+        finally:
+            calls["window_events"].append("close")
+            if calls.get("window_mode") == "fail_exit":
+                raise RuntimeError("window restore failed")
+
+    monkeypatch.setattr(coordinator, "measurement_window", window)
 
 
 class FakeHandler:
