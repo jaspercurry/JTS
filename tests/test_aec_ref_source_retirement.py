@@ -17,7 +17,6 @@ from __future__ import annotations
 import ast
 import logging
 import re
-import sys
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -31,6 +30,7 @@ from jasper.cli import (
     aec_bridge_reference,
 )
 from jasper.cli.aec_bridge_reference import REF_CHANNELS, REF_RATE
+from tests._sounddevice_stub import stub_sounddevice
 
 REPO = Path(__file__).resolve().parents[1]
 BRIDGE_SOURCE = REPO / "jasper" / "cli" / "aec_bridge.py"
@@ -324,7 +324,7 @@ def test_chip_aec_refuses_to_start_without_a_chip_reference_producer(
     """
     _arm_chip_aec(monkeypatch, tmp_path, chip_ref_pcm="")
     sd_mod = MagicMock()
-    monkeypatch.setitem(sys.modules, "sounddevice", sd_mod)
+    stub_sounddevice(monkeypatch, sd_mod)
 
     with caplog.at_level(logging.ERROR, logger="jasper.aec_bridge"):
         assert aec_bridge.main() == 1
@@ -348,7 +348,7 @@ def test_the_chip_reference_guard_lets_a_configured_producer_through(
     _arm_chip_aec(monkeypatch, tmp_path, chip_ref_pcm="hw:Array,0")
     sd_mod = MagicMock()
     sd_mod.query_devices.side_effect = ValueError("no such device")
-    monkeypatch.setitem(sys.modules, "sounddevice", sd_mod)
+    stub_sounddevice(monkeypatch, sd_mod)
 
     assert aec_bridge.main() == 1
     sd_mod.query_devices.assert_called_once()

@@ -31,7 +31,6 @@ import json
 import logging
 from queue import Empty
 import struct
-import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -53,6 +52,7 @@ from jasper.cli.aec_bridge import (
 from jasper.cli.aec_bridge_config import OUT_HOST
 from jasper.cli.aec_bridge_engines import FRAME_SAMPLES
 from jasper.cli.aec_bridge_telemetry import OUT_FRAME_BYTES, _BridgeStats
+from tests._sounddevice_stub import stub_sounddevice
 
 
 class _AlwaysEmptyQ:
@@ -103,14 +103,16 @@ class _ScriptedMicQ:
 
 @pytest.fixture(autouse=True)
 def _reset_shutdown_and_stub_sd(monkeypatch):
-    """Each test gets a clean `_shutdown` and a stubbed `sd` module.
+    """Each test gets a clean `_shutdown` and stubbed PortAudio bindings.
 
-    Clears both the module Event and the top-of-file import. The loop's
-    actual check goes through the module-dict lookup.
+    `_shutdown` is cleared through both the module attribute and this file's
+    imported alias, because the loop's own check goes through the module-dict
+    lookup. The `sounddevice` stub lands in `sys.modules`, which is what the
+    device validators' function-local import reads.
     """
     aec_bridge._shutdown.clear()
     _shutdown.clear()
-    monkeypatch.setitem(sys.modules, "sounddevice", MagicMock())
+    stub_sounddevice(monkeypatch)
     aec_bridge._bridge_stats.reset()
     yield
     aec_bridge._shutdown.clear()
@@ -213,7 +215,7 @@ def test_main_exits_before_engine_init_when_mic_missing(monkeypatch):
     sd_mod.query_devices.side_effect = ValueError(
         "No input device matching 'Array'"
     )
-    monkeypatch.setitem(sys.modules, "sounddevice", sd_mod)
+    stub_sounddevice(monkeypatch, sd_mod)
     engine_cls = MagicMock()
     monkeypatch.setattr(aec_bridge_engines, "Aec3V1Engine", engine_cls)
 
