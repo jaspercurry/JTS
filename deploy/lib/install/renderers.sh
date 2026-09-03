@@ -251,8 +251,15 @@ reconcile_headless_boot_config() {
     # so shrink CMA by rewriting it; a vc4-kms-v3d line carrying parameters
     # JTS does not own is left alone. sed -i is not portable to the BSD sed
     # the tests run under.
+    #
+    # This trim is a comfort optimisation (frees RAM the desktop stack never
+    # uses), so every failure path below leaves config.txt as packaged
+    # instead of failing the deploy over it.
     local tmp mode
-    tmp="$(mktemp "${cfg}.jts.XXXXXX")"
+    if ! tmp="$(mktemp "${cfg}.jts.XXXXXX" 2>/dev/null)"; then
+        echo "  WARN: could not stage a $cfg rewrite; boot config left as packaged."
+        return 0
+    fi
     if ! {
         cat <<'EOF'
 # BEGIN JTS HEADLESS BOOT
@@ -273,7 +280,8 @@ EOF
             "$cfg"
     } > "$tmp"; then
         rm -f "$tmp"
-        return 1
+        echo "  WARN: could not rewrite $cfg; boot config left as packaged."
+        return 0
     fi
     if cmp -s "$tmp" "$cfg"; then
         rm -f "$tmp"
@@ -284,8 +292,11 @@ EOF
     # That partition is journal-less vfat and the operator's next step is a
     # reboot, so flush the rename before returning.
     mode="$(stat -c '%a' "$cfg" 2>/dev/null || stat -f '%Lp' "$cfg" 2>/dev/null || true)"
-    chmod "${mode:-644}" "$tmp"
-    mv -f "$tmp" "$cfg"
+    if ! { chmod "${mode:-644}" "$tmp" && mv -f "$tmp" "$cfg"; }; then
+        rm -f "$tmp"
+        echo "  WARN: could not publish $cfg; boot config left as packaged."
+        return 0
+    fi
     sync
     echo "  headless boot directives written to $cfg (reboot required to apply)."
 }
