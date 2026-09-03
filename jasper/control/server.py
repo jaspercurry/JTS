@@ -4,29 +4,21 @@
 
 """HTTP control surface for local and household-network clients.
 
-The same volume, transport, and session routes serve the management UI,
-supported HID/Bluetooth accessories, home automation, and future wall
-controls.
-
 Stack: stdlib http.server (bounded ThreadingHTTPServer), pycamilladsp
-client, VolumeCoordinator (source-aware dispatch).
+client, VolumeCoordinator (source-aware dispatch). The route tables live
+in `_make_handler`; `do_GET`/`do_POST` own dispatch in one place.
 
-The route table is in `_make_handler` below — `do_GET` and `do_POST`
-own the dispatch in one place rather than mirroring the list here
-(that mirror went stale several times). Highlights:
-
-- Volume + transport + session-bypass: external control actions.
 - /state: cross-daemon JSON snapshot — voice / audio / renderers;
   consumable from the management UI, jasper-doctor, or `curl`.
 - /cue/play: proxy to voice_daemon's UDS so a cue plays through
   the daemon's already-correctly-gained TtsPlayout.
-Volume dispatch: requests build a fresh VolumeCoordinator per call
-(matches the per-request _dispatch_transport pattern). The coordinator
-reads the canonical volume state from /var/lib/jasper/speaker_volume.json,
-applies the change, dispatches the derived effective level to the active
-source (or CamillaDSP when idle), and persists it. This daemon doesn't
-run inbound observers — that's voice_daemon's job. Both daemons converge
-through persistence and expose the same VolumeState interpretation.
+
+Volume dispatch builds a fresh VolumeCoordinator per call: it reads the
+canonical volume state from /var/lib/jasper/speaker_volume.json, applies
+the change, dispatches the derived effective level to the active source
+(or CamillaDSP when idle), and persists it. This daemon runs no inbound
+observers — that's voice_daemon's job; both converge through persistence
+and share the same VolumeState interpretation.
 """
 from __future__ import annotations
 
@@ -276,10 +268,9 @@ def _read_diagnostics_snapshot(
     return body, ""
 
 
-# Streambox is the restricted profile: jasper-control gates its route
-# surface to the management + audio actions every streambox owns (full
-# speakers allow everything). Capability-granted routes are added on top
-# by _control_route_allowed_for_install_profile, not listed here.
+# Streambox is the restricted profile: these are the management + audio
+# actions every streambox owns. Capability-granted routes are added on
+# top by _control_route_allowed_for_install_profile, not listed here.
 _STREAMBOX_ALLOWED_GET_ROUTES = frozenset({
     "/healthz",
     "/volume",
@@ -308,10 +299,7 @@ _STREAMBOX_ALLOWED_POST_ROUTES = frozenset({
     "/transport/toggle",
 })
 # Routes a restricted profile earns from its CAPABILITY grant rather than
-# from its tier name. These are the assistant's own surface: the two
-# push-to-talk turn boundaries a paired remote's bridge posts, cue playback
-# (which proxies to the voice daemon so levels stay right), and restarting
-# the unit that serves them. The local-mic/wake/AEC routes are deliberately
+# from its tier name. The local-mic/wake/AEC routes are deliberately
 # absent — they need Capability.WAKE_DETECTION, which a streambox is not
 # granted. See ADR-0217.
 _ASSISTANT_POST_ROUTES = frozenset({
@@ -328,12 +316,9 @@ def _active_speaker_level_match_provisional(
     """Whether the APPLIED active-speaker baseline's per-driver level match is a
     datasheet estimate rather than a phone measurement.
 
-    Read from the SINGLE active-speaker readiness snapshot (`setup`) that the
-    caller already computed via `read_active_speaker_setup_status`, not from a
-    second off-disk open. That snapshot's `baseline_profile` summary derives
-    `provisional` from the same persisted state file
-    (`active_speaker_baseline_profile.json`) — re-reading it here was a duplicate
-    source that could drift. The `status == "applied"` gate is preserved: the
+    Read from the readiness snapshot (`setup`) the caller already computed via
+    `read_active_speaker_setup_status`, so `active_speaker_baseline_profile.json`
+    has one reader here. The `status == "applied"` gate is load-bearing: the
     candidate only carries that status when it returns the persisted applied
     profile verbatim (see `build_baseline_profile_candidate`), so `provisional`
     then equals the on-disk value. Fail-soft: None when there is no applied
@@ -362,8 +347,7 @@ def _active_speaker_output_safety_snapshot(
     )
     return {
         **setup,
-        # Back-compat for the landing-page field name. This is now driven by the
-        # shared setup contract, not by a filename-only heuristic.
+        # Back-compat alias for the landing page's field name.
         "safety_muted": not bool(setup.get("volume_allowed")),
         "level_match_provisional": _active_speaker_level_match_provisional(setup),
         "source": "active_speaker.setup_status",
@@ -411,8 +395,6 @@ def _active_speaker_grouping_block() -> dict[str, Any] | None:
 # aec/usb-mic = starts or stops live room-audio export; aec/usb-mic-leg =
 # changes which live room-audio stream reaches the computer; aec/commission =
 # stops voice/AEC for minutes and plays audible measurement sweeps.
-# WS1 Phase 2 added the two restart routes and made the gate mandatory
-# (control_token.ensure_token() at startup, below).
 _TOKEN_GATED_ROUTES = frozenset({
     "/system/poweroff",
     "/system/reboot",
@@ -474,11 +456,6 @@ def _control_route_allowed_for_install_profile(
     )
 
 
-# _system_capabilities_for_profile was relocated to
-# jasper.install_profile.system_capabilities_for_profile so install.sh can
-# bake the same map into the static landing page (one source of truth).
-
-
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name, "")
     if not raw:
@@ -527,12 +504,11 @@ class _SingleFlightTTLCache:
         Only successful computations are cached. If the compute raises,
         waiters are released and the next caller may retry.
 
-        `wait()` is intentionally un-timed: a waiter blocks only for as
-        long as the single in-flight `compute()` runs, so the caller is
-        responsible for passing a self-bounding `compute` (the /state
-        aggregate enforces its own liveness budget). An unbounded compute
-        would otherwise park every waiter — and, on the bounded request
-        pool, the whole control plane — so keep that contract intact.
+        `wait()` is intentionally un-timed: a waiter blocks only for as long
+        as the single in-flight `compute()` runs, so `compute` MUST be
+        self-bounding (the /state aggregate enforces its own liveness
+        budget). An unbounded compute parks every waiter and, on the bounded
+        request pool, the whole control plane.
         """
         while True:
             with self._cond:
@@ -880,17 +856,15 @@ async def _dispatch_transport(action: str) -> dict:
 
 # ---------- peering daemon supervisor ----------
 
-# The peering daemon runs an asyncio event loop; jasper-control is
-# stdlib threaded HTTP. Bridge by spawning a single background daemon
-# thread that owns the asyncio loop for peering. When peering is OFF
-# (the default), the thread is not even created — zero cost on a
+# The peering daemon runs an asyncio event loop; jasper-control is stdlib
+# threaded HTTP. One background daemon thread owns that loop. When peering
+# is OFF (the default) the thread is never created — zero cost on a
 # single-Pi household.
 _peering_thread: threading.Thread | None = None
 
 
 def _run_peering_loop() -> None:
-    """Background thread target: own an asyncio loop, run the
-    PeeringDaemon until the process exits."""
+    """Background thread target: own an asyncio loop and run the PeeringDaemon."""
     global _peering_loop, _peering_thread
     # Lazy imports — keep jasper-control's import cost light when
     # peering is OFF and these modules never load.
@@ -939,12 +913,11 @@ def _run_peering_loop() -> None:
 
 
 def start_peering_daemon_if_enabled() -> None:
-    """Start the peering daemon in a background thread iff peering
-    is enabled in /var/lib/jasper/peering.env. Idempotent — repeated
-    calls are no-ops once the thread exists.
+    """Start the peering daemon in a background thread iff peering is enabled
+    in /var/lib/jasper/peering.env. Idempotent.
 
-    The check is done in the worker thread (not here) so that even
-    when peering is OFF, we don't pay the cost of importing zeroconf.
+    The enabled check runs in the worker thread, not here, so an OFF
+    household never pays the zeroconf import.
     """
     global _peering_thread
     if _peering_thread is not None:
@@ -998,10 +971,9 @@ _VOICE_TRANSIENT_ACTIVE_STATES = frozenset({
     "reloading",
 })
 
-# Seam for tests: the forward's ONE network call. Patching the stdlib
-# urllib.request.urlopen would also intercept the test driver's own HTTP
-# client (and anything else in-process); this alias scopes the double to
-# the pair forward.
+# Patch seam scoping a test double to the forward's ONE network call;
+# patching stdlib urllib.request.urlopen would also intercept the test
+# driver's own HTTP client.
 _pair_urlopen = urllib.request.urlopen
 
 
@@ -1009,9 +981,9 @@ def _pair_follower_leader_addr() -> str | None:
     """The leader's handle when THIS speaker is an active bonded follower,
     else None. One tiny env-file read per call (multiroom.config.load_config
     — never the runtime derive with its systemctl/RPC probes: this gates
-    every /volume request). The predicate itself is the shared
-    effective-role reader, so a refused bond that safely landed solo does not
-    forward local controls to the requested leader."""
+    every /volume request). The predicate is the shared effective-role
+    reader, so a refused bond that safely landed solo does not forward local
+    controls to the requested leader."""
     from ..multiroom.config import load_config
     from ..multiroom.effective_role import effective_follower_leader_addr
 
@@ -1070,10 +1042,10 @@ def _voice_starting_mic_payload(
 ) -> dict[str, Any] | None:
     """Return a first-class /mic payload while jasper-voice is in flight.
 
-    The voice daemon creates its UDS socket late in startup. During an intended
-    restart/provider switch/unbond, a missing socket means "not ready yet", not
-    necessarily "permanently offline". Keep that distinction in the backend so
-    the landing page can stay a dumb renderer of /mic state.
+    The voice daemon creates its UDS socket late in startup, so during a
+    restart/provider switch/unbond a missing socket means "not ready yet",
+    not "offline". The distinction is drawn here so the landing page stays a
+    dumb renderer of /mic state.
     """
     unit = read_unit(_VOICE_UNIT)
     active_state = unit.get("ActiveState", "")
@@ -1228,11 +1200,10 @@ def _schedule_grouping_reconciler_trailing_kick(
 class _GroupingReconcilerKickCoalescer:
     """Leading-edge rate limit with a trailing guarantee for /grouping/set.
 
-    The HTTP handler writes grouping.env before calling this. If updates arrive
-    faster than the minimum interval, one delayed kick is enough. The packaged
-    trailing service survives a jasper-control restart and the oneshot reconciler
-    re-reads grouping.env when it finally runs, so the last write wins without
-    restarting outputd for every trim/delay/crossover sweep step.
+    The HTTP handler writes grouping.env before calling this, and the oneshot
+    reconciler re-reads grouping.env when it finally runs, so the last write
+    wins without restarting outputd for every trim/delay/crossover sweep step.
+    The packaged trailing service survives a jasper-control restart.
     """
 
     def __init__(
@@ -1348,10 +1319,9 @@ def _kick_grouping_reconciler() -> None:
 
     The reconciler is the single applier of snapcast state and outputd grouping
     env. A fixed helper performs a blocking ``systemctl start`` so an active
-    Type=oneshot pass drains before it launches one fresh pass. This caller also
-    coalesces rapid /grouping/set bursts so trim/delay/crossover sweeps do not tear
-    down outputd on every intermediate value. A skipped kick always arms one
-    trailing retry; the final grouping.env write is therefore applied.
+    Type=oneshot pass drains before one fresh pass launches. Rapid
+    /grouping/set bursts coalesce, and a skipped kick always arms one trailing
+    retry, so the final grouping.env write is always applied.
     """
     _grouping_reconciler_kick_coalescer.kick()
 
@@ -1447,10 +1417,10 @@ def _resolve_grouping_crossover_hz_for_write(
 ) -> float | None:
     """Return the crossover value this /grouping/set write must persist.
 
-    Plain stereo writes retain the historical omitted-means-preserve contract.
-    A sub channel or sub-present bond actively consumes the corner, though, so
-    an omitted request must validate and write the same value: a valid existing
-    operator value when one is present, otherwise the safe default.
+    Plain stereo writes keep the omitted-means-preserve contract. A sub channel
+    or sub-present bond actively consumes the corner, so an omitted request
+    must instead validate and write a value: the existing operator value when
+    it is in range, otherwise the default.
     """
     if requested is not None:
         return requested
@@ -1481,8 +1451,8 @@ def _write_grouping(
     JASPER_GROUPING_BUFFER_MS / _CODEC survive a role change. This is the
     single control-plane WRITER of grouping.env; jasper-grouping-reconcile is
     the single READER->action. The endpoint that calls this (/grouping/set) is
-    token-gated (WS1 Phase 2); the cross-device bond-forming flow — one speaker
-    POSTing to another's :PORT/grouping/set — authenticates with the household
+    token-gated; the cross-device bond-forming flow — one speaker POSTing to
+    another's :PORT/grouping/set — authenticates with the household
     credential.
     """
     updates = {
@@ -1518,17 +1488,15 @@ def _write_grouping(
         updates["JASPER_GROUPING_SUBWOOFER_PRESENT"] = (
             "on" if subwoofer_present else "off"
         )
-    # Bond roster (leader only): same preserved-when-omitted contract as
-    # trim; an EXPLICIT empty string clears it (the bond flow clears the
-    # roster on non-leader members so a role flip can't leave a stale
-    # roster behind).
+    # Peer and roster (leader only): same preserved-when-omitted contract as
+    # trim, and an EXPLICIT empty string clears — the bond flow clears both on
+    # non-leader members so a role flip can't leave a stale roster behind.
     if peer_addr is not None:
         updates["JASPER_GROUPING_PEER_ADDR"] = peer_addr
     if peer_name is not None:
         updates["JASPER_GROUPING_PEER_NAME"] = peer_name
-    # The full bond roster (leader only): same preserved-when-omitted /
-    # explicit-empty-clears contract as peer_addr — `roster` is the already
-    # SERIALIZED env string (the caller builds it via config.format_roster).
+    # `roster` is the already SERIALIZED env string (callers build it via
+    # config.format_roster).
     if roster is not None:
         updates["JASPER_GROUPING_ROSTER"] = roster
     _atomic_rewrite_env(GROUPING_ENV_FILE, updates)
@@ -1549,9 +1517,8 @@ def _make_handler(
     ha_status_cache: Any = None,
 ) -> type[BaseHTTPRequestHandler]:
 
-    # Keep route-body imports factory-local. Importing this module remains a
-    # lightweight operation; the concern mixins arrive only when a concrete
-    # server is built, matching the existing lazy coordinator imports below.
+    # Route-body imports stay factory-local so importing this module stays
+    # cheap: the concern mixins arrive only when a concrete server is built.
     from .handlers import (
         AecRoutes,
         GroupingRoutes,
@@ -1561,9 +1528,9 @@ def _make_handler(
         VolumeRoutes,
     )
 
-    # One probe instance per handler — it's stateless (just closes
-    # over voice_socket_path), so all mutating volume ops share it.
-    # Read-only `_get_op` bypasses coordinator/actuator construction.
+    # One probe instance per handler — stateless (it only closes over
+    # voice_socket_path), so all mutating volume ops share it. Read-only
+    # `_get_op` bypasses coordinator/actuator construction.
     duck_active_probe = _make_duck_active_probe(voice_socket_path)
     state_response_cache = _SingleFlightTTLCache(STATE_RESPONSE_CACHE_TTL_SEC)
     if ha_status_cache is None:
@@ -1587,25 +1554,22 @@ def _make_handler(
         *,
         initial: bool = False,
     ) -> tuple[VolumeState, bool]:
-        """Route a source-observed volume change (e.g. host slider on
-        the USB gadget) through the coordinator's echo-prevented
-        observe path. Unknown source names fall back to the
-        authoritative set path so a future client that posts a fresh
-        source name doesn't silently no-op.
+        """Route a source-observed volume change (e.g. host slider on the USB
+        gadget) through the coordinator's echo-prevented observe path. Unknown
+        source names fall back to the authoritative set path so a client
+        posting a fresh source name doesn't silently no-op.
 
         Returns the level the coordinator ended up at plus whether the
-        observation was accepted. The explicit acknowledgement lets a
-        long-lived observer retry an initial value that arrived before
-        its source became active instead of mistaking HTTP 200 for
-        application.
+        observation was accepted. That explicit acknowledgement lets a
+        long-lived observer retry an initial value that arrived before its
+        source became active, instead of reading HTTP 200 as applied.
         """
-        # Lazy import to avoid pulling the full volume_coordinator
-        # graph into the import path of server.py's module load.
+        # Lazy import to keep the full volume_coordinator graph out of
+        # server.py's module load.
         from ..volume_coordinator import Source
         try:
             source_enum = Source(source_name)
         except ValueError:
-            # Unknown source — treat as authoritative.
             return await _set_op(percent), True
 
         async def _op(coord):
@@ -1614,9 +1578,8 @@ def _make_handler(
                 percent,
                 initial=initial,
             )
-            # The coordinator either took our value or stayed put
-            # (echo-suppressed). Return the one canonical state projection
-            # rather than asking this boundary to reinterpret mute.
+            # Return the one canonical state projection rather than asking
+            # this boundary to reinterpret mute.
             return coord.get_volume_state(), bool(applied)
         return await _with_coordinator(
             _op,
@@ -1655,9 +1618,8 @@ def _make_handler(
             duck_active_probe=duck_active_probe,
         )
 
-    # Class bodies do not close over a same-named function local when the
-    # class also assigns that name. Distinct aliases keep the factory-owned
-    # coroutine wiring explicit without promoting it to module state.
+    # A class body does not close over a same-named function local when the
+    # class also assigns that name, so the aliases below are required.
     handler_adjust_op = _adjust_op
     handler_get_op = _get_op
     handler_mute_set_op = _mute_set_op
@@ -1839,10 +1801,10 @@ def _make_handler(
         def _volume_payload(self, state: VolumeState) -> dict[str, Any]:
             """Serialize the coordinator's one canonical volume projection.
 
-            ``percent`` and ``db`` are always the currently effective values.
-            A temporary mute therefore reports 0 while preserving its separate
-            restore target. Existing accessory/USB clients can keep reading only
-            ``percent``; richer clients no longer have to infer mute.
+            ``percent`` and ``db`` are always the currently effective values,
+            so a temporary mute reports 0 while ``restore_percent`` preserves
+            its separate restore target — a client reading only ``percent``
+            stays correct, and no client has to infer mute.
             """
             percent = int(state.effective_percent)
             return {
@@ -1857,20 +1819,16 @@ def _make_handler(
             was handled (forwarded or rejected) and the caller must stop.
 
             Used by the four /volume* handlers, /transport/*, and
-            /source/select — every surface where a bonded follower's
-            local action must target the PAIR. While this speaker is an
-            ACTIVE bonded follower,
-            its local volume knobs are INERT — bonded content bypasses the local
-            CamillaDSP entirely (the leader's one Camilla bakes the
-            program). Without this, the landing
-            page slider, a paired remote, and curl all "work" silently
-            with no audible effect — the worst UX shape. So the four
-            /volume endpoints forward verbatim to the leader's control
-            API and relay its answer: every member's volume surface
-            controls the PAIR volume, whichever speaker's page you have
-            open. Solo and leader requests never enter this path; the
-            grouping read is one tiny env-file parse (load_config), NOT
-            the heavy runtime derive — this sits on every volume call.
+            /source/select — every surface where a bonded follower's local
+            action must target the PAIR. While this speaker is an ACTIVE
+            bonded follower its local volume knobs are INERT: bonded content
+            bypasses the local CamillaDSP entirely (the leader's one Camilla
+            bakes the program). So those requests are forwarded verbatim to
+            the leader's control API and its answer relayed, and every
+            member's volume surface controls the PAIR volume. Solo and leader
+            requests never enter this path; the grouping read is one tiny
+            env-file parse (load_config), NOT the heavy runtime derive — this
+            sits on every volume call.
             """
             leader = _pair_follower_leader_addr()
             if leader is None:
@@ -1879,9 +1837,8 @@ def _make_handler(
             # speakers misconfigured as each other's follower would
             # otherwise ping-pong until a timeout stack built up.
             if self.headers.get(_PAIR_FORWARD_HEADER):
-                # Drain any request body before responding so the
-                # connection state stays sane if keep-alive is ever
-                # enabled (HTTP/1.0 today, so this is pure hygiene).
+                # Drain any body before responding so connection state stays
+                # sane if keep-alive is ever enabled (HTTP/1.0 today).
                 try:
                     stale = int(self.headers.get("Content-Length", "0"))
                 except ValueError:
@@ -1917,10 +1874,9 @@ def _make_handler(
                 with _pair_urlopen(req, timeout=2.5) as resp:
                     payload = json.loads(resp.read().decode())
             except urllib.error.HTTPError as e:
-                # The leader ANSWERED — relay its verdict (status + JSON
-                # body) verbatim, tagged. Collapsing a 400 invalid-body
-                # reject into "unreachable" would tell the household a
-                # responding speaker is offline.
+                # The leader ANSWERED — relay its status + JSON body verbatim.
+                # Collapsing a 400 invalid-body reject into "unreachable"
+                # would report a responding speaker as offline.
                 try:
                     relayed = json.loads(e.read().decode())
                 except Exception:  # noqa: BLE001 — non-JSON error body
@@ -1953,8 +1909,7 @@ def _make_handler(
                 )
                 return True
             if isinstance(payload, dict):
-                # Additive marker so UIs can label the slider "pair
-                # volume"; older clients can keep reading db/percent.
+                # Additive marker so UIs can label the slider "pair volume".
                 payload.setdefault("pair_leader", leader)
             self._send_json(payload)
             return True
@@ -1962,10 +1917,8 @@ def _make_handler(
         # --- routes ---
         #
         # do_GET / do_POST own the dispatch via the _GET_ROUTES /
-        # _POST_ROUTES tables (path -> handler-method name) defined at the
-        # bottom of this class. Each table entry's handler holds the exact
-        # body the inlined `if self.path == ...` branch had — moved into a
-        # named method, logic unchanged.
+        # _POST_ROUTES tables (path -> handler-method name) at the bottom of
+        # this class.
         #
         # SECURITY ORDERING IS LOAD-BEARING: the management-read /
         # mutating-request guard runs FIRST, then install-profile route
@@ -2016,7 +1969,7 @@ def _make_handler(
             if control_token.verify(self.headers.get("X-JTS-Token")):
                 return True
             # /grouping/set is the one DEVICE-TO-DEVICE gated route: a peer
-            # fan-out (rooms_setup) or autonomous re-group (Phase D) presents the
+            # fan-out (rooms_setup) or an autonomous re-group presents the
             # household credential (X-JTS-Household), which each member verifies
             # against its own persisted copy — NOT the per-device CSRF token a
             # leader can't hold for a follower. Accept EITHER on this route only;
@@ -2048,12 +2001,12 @@ def _make_handler(
             return False
 
         # --- route tables (path -> handler-method name) ---
-        # Keyed by exact path. Method dispatch (do_GET vs do_POST)
-        # disambiguates the two '/debug' handlers; tuple routes map
-        # each member path to the one method that re-discriminates
-        # self.path internally (transport action, system action).
-        # The string keys keep the route literals greppable for the
-        # client/server contract test (tests/test_control_client.py).
+        # Keyed by exact path; method dispatch (do_GET vs do_POST)
+        # disambiguates the two '/debug' handlers. Several paths share one
+        # method that re-discriminates self.path internally (transport
+        # action, system action). The string keys keep the route literals
+        # greppable for the client/server contract test
+        # (tests/test_control_client.py).
         _GET_ROUTES = {
             "/healthz": "_get_healthz",
             "/volume": "_get_volume",
@@ -2110,14 +2063,12 @@ class ControlHTTPServer(ThreadingHTTPServer):
 
     `service_actions()` runs on every `serve_forever()` poll iteration
     (~0.5 s cadence) **in the accept-loop thread itself**, so bumping the
-    heartbeat here ties `WATCHDOG=1` to the loop actually spinning: if
-    the accept loop wedges (blocked selector, interpreter deadlock), the
-    bumps stop, `jasper.watchdog.Heartbeat`'s progress sentinel goes
-    stale, pats stop, and systemd's `WatchdogSec=` revives us with a
-    fresh process. Request handlers run on worker threads and
-    intentionally don't gate the heartbeat — a slow probe must not look
-    like a dead daemon. Same Tier 1 mechanism as jasper-voice
-    (Type=notify + sentinel-guarded `WATCHDOG=1`).
+    heartbeat here ties `WATCHDOG=1` to the loop actually spinning: if the
+    accept loop wedges (blocked selector, interpreter deadlock), the bumps
+    stop, `jasper.watchdog.Heartbeat`'s progress sentinel goes stale, pats
+    stop, and systemd's `WatchdogSec=` revives us with a fresh process.
+    Request handlers run on worker threads and intentionally don't gate the
+    heartbeat — a slow probe must not look like a dead daemon.
 
     `heartbeat` stays None in tests/dev so the server runs standalone.
     """
@@ -2309,9 +2260,8 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    # Log flight recorder + runtime debug toggle (/system Debug card).
-    # install() holds the jasper logger at DEBUG for the in-RAM ring,
-    # keeps the journal at INFO, applies the debug toggle, and wires
+    # install() holds the jasper logger at DEBUG for the in-RAM ring, keeps
+    # the journal at INFO, applies the /system Debug card's toggle, and wires
     # SIGUSR1 -> dump. See jasper/flight_recorder.py.
     from .. import flight_recorder
     flight_recorder.install("control")
@@ -2322,14 +2272,12 @@ def main(argv: list[str] | None = None) -> int:
 
     install_env_canonical_target_provider()
 
-    # System metrics sampler — 5 s ring buffer for the /system dashboard.
-    # Daemon thread, exits with the process.
+    # 5 s ring buffer for the /system dashboard; daemon thread.
     from .system_metrics import SystemSampler
     sampler = SystemSampler()
     sampler.start()
-    # One audio-health sampler — composes the existing AirPlay probes with
-    # cheap outputd state + slow route certification reads. It is the only
-    # resident audio-monitor thread.
+    # The ONE resident audio-monitor thread: it composes the AirPlay probes
+    # with cheap outputd state and slow route-certification reads.
     from .audio_health import AudioHealthSampler
     from .audio_incidents import IncidentStore
     audio_health_sampler = AudioHealthSampler(
@@ -2347,60 +2295,56 @@ def main(argv: list[str] | None = None) -> int:
         sampler=sampler,
         audio_health_sampler=audio_health_sampler,
     )
-    # WS1 Phase 2: arm the control-token gate before serving. ensure_token()
-    # auto-generates the token (0640 group jasper) if absent, so the destructive
-    # routes are always gated with no operator action; canonical_page
-    # auto-delivers it to the dashboard (invisible to the household). Idempotent — never rotates an
-    # existing token. Failure is non-fatal (the gate fail-safes to off) so a
-    # transient write error can't keep the recovery surface from starting.
+    # Arm the control-token gate before serving. ensure_token()
+    # auto-generates the token (0640 group jasper) if absent, so the
+    # destructive routes are always gated with no operator action;
+    # canonical_page auto-delivers it to the dashboard, invisible to the
+    # household. Idempotent — never rotates an existing token. Failure is
+    # non-fatal (the gate fail-safes to off) so a transient write error can't
+    # keep the recovery surface from starting.
     try:
         control_token.ensure_token()
     except OSError as exc:
         log_event(logger, "control_token.ensure_failed", error=str(exc),
                   level=logging.WARNING)
-    # WS1 Phase 3: the privileged restart broker. jasper-control is the single
-    # mediated systemctl boundary — jasper-web's wizard restarts, jasper-mux's
-    # librespot recovery, and the room-correction renderer pause ask it to run
-    # an allowlisted, closed-vocabulary restart over a SO_PEERCRED'd UNIX socket
-    # so those daemons need no privilege of their own once dropped to non-root
-    # service users. Bind failure is non-fatal (logged): the wizards fall back
-    # to their existing fail-soft "restart didn't happen, logged" behaviour.
+    # The privileged restart broker: jasper-control is the single mediated
+    # systemctl boundary. jasper-web's wizard restarts, jasper-mux's librespot
+    # recovery, and the room-correction renderer pause ask it to run an
+    # allowlisted, closed-vocabulary restart over a SO_PEERCRED'd UNIX socket,
+    # so those daemons need no privilege of their own. Bind failure is
+    # non-fatal (logged): callers fall back to their fail-soft "restart didn't
+    # happen, logged" behaviour.
     restart_broker_server = restart_broker.start_broker()
-    # Multi-device peering daemon. No-op (no thread, no asyncio loop,
-    # no zeroconf import) when /var/lib/jasper/peering.env has
-    # JASPER_PEERING=off — the default. The user enables it via the
-    # /rooms/ Speakers page, which writes the env file and restarts
-    # jasper-control to pick up the new mode.
+    # Multi-device peering daemon. No-op (no thread, no asyncio loop, no
+    # zeroconf import) when /var/lib/jasper/peering.env has JASPER_PEERING=off
+    # — the default. The /rooms/ Speakers page writes that env file and
+    # restarts jasper-control to pick up the new mode.
     start_peering_daemon_if_enabled()
-    # Tier 3 resilience: protocol-level liveness probe for shairport-sync
-    # so a wedged AP2 control plane recovers without manual intervention.
-    # Off via JASPER_SHAIRPORT_SUPERVISOR=disabled in /etc/jasper/jasper.env.
+    # Protocol-level liveness probe so a wedged shairport-sync AP2 control
+    # plane recovers without manual intervention. Off via
+    # JASPER_SHAIRPORT_SUPERVISOR=disabled in /etc/jasper/jasper.env.
     shairport_supervisor.start_supervisor()
-    # T5.2 — userspace-liveness supervisor closing the gap exposed
-    # by the 2026-05-23 incident (PID 1 alive enough to pat the
-    # kernel watchdog but sshd / userspace effectively dead). Probes
-    # sshd banner + our own HTTP /healthz + /proc/loadavg; clean
-    # `systemctl reboot` after 3 consecutive failures, rate-limited
-    # to 1 reboot per 24 hours.
+    # Userspace-liveness supervisor for the case where PID 1 still pats the
+    # kernel watchdog but userspace is dead. Probes the sshd banner, our own
+    # HTTP /healthz, and /proc/loadavg; clean `systemctl reboot` after 3
+    # consecutive failures, rate-limited to 1 reboot per 24 hours.
     # Off via JASPER_SYSTEM_SUPERVISOR=disabled.
     system_supervisor.start_supervisor()
-    # Bonded-member runtime liveness: closes the gap between grouping
-    # reconciles — sustained dac_content starvation kicks the
-    # reconciler (rate-limited), and the leader's snapcast group→stream
-    # bindings are read-repaired every poll (the 2026-06-11 silent-bond
-    # class). Costs one grouping.env read per 30 s when solo. Off via
+    # Bonded-member runtime liveness between grouping reconciles: sustained
+    # dac_content starvation kicks the reconciler (rate-limited), and the
+    # leader's snapcast group→stream bindings are read-repaired every poll.
+    # Costs one grouping.env read per 30 s when solo. Off via
     # JASPER_GROUPING_SUPERVISOR=disabled.
     grouping_supervisor.start_supervisor()
-    # After-the-fact multiroom cascade timeline: scans existing structured
-    # journal events into a small /state ring so restart chains are
-    # reconstructable without fetching raw logs first. Solo-gated (skips the
-    # journalctl scan when no bond is configured) and off via
-    # JASPER_MULTIROOM_CASCADE_TIMELINE=disabled.
+    # Multiroom cascade timeline: scans structured journal events into a small
+    # /state ring so restart chains are reconstructable without fetching raw
+    # logs first. Solo-gated (no journalctl scan when no bond is configured)
+    # and off via JASPER_MULTIROOM_CASCADE_TIMELINE=disabled.
     from ..multiroom import cascade_timeline
     cascade_timeline.start_sampler()
-    # Runtime debug toggle: clear an expired session left on disk, or
-    # re-arm the auto-quiet timer if a debug session is still active
-    # across this control restart. See jasper/control/debug_control.py.
+    # Runtime debug toggle: clear an expired session left on disk, or re-arm
+    # the auto-quiet timer if a debug session is still active across this
+    # restart. See jasper/control/debug_control.py.
     debug_control.reconcile_on_startup()
     logger.info(
         "jasper-control listening on http://%s:%d "
@@ -2409,12 +2353,11 @@ def main(argv: list[str] | None = None) -> int:
         args.camilla_host, args.camilla_port,
         args.voice_socket,
     )
-    # Tier 1 — systemd watchdog (Type=notify + WatchdogSec in the unit).
-    # READY=1 goes out here; serve_forever()'s poll loop bumps the
-    # progress sentinel via ControlHTTPServer.service_actions, so a
-    # wedged accept loop stops the WATCHDOG=1 pats and systemd restarts
-    # us. No-ops outside systemd (NOTIFY_SOCKET unset). Same Heartbeat
-    # helper jasper-voice uses (jasper/watchdog.py).
+    # systemd watchdog (Type=notify + WatchdogSec in the unit). READY=1 goes
+    # out here; serve_forever()'s poll loop bumps the progress sentinel via
+    # ControlHTTPServer.service_actions, so a wedged accept loop stops the
+    # WATCHDOG=1 pats and systemd restarts us. No-ops outside systemd
+    # (NOTIFY_SOCKET unset). See jasper/watchdog.py.
     from ..watchdog import Heartbeat
     heartbeat = Heartbeat()
     server.heartbeat = heartbeat
@@ -2427,10 +2370,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         restore_sigterm()
         stop_peering_daemon()
-        # Stop the restart broker's accept loop + close its socket, like the
-        # HTTP server / peering / heartbeat above — so SIGTERM tears down every
-        # background server explicitly rather than leaving the broker's daemon
-        # thread to die with the process. No-op if the broker failed to bind.
+        # None when the broker failed to bind (non-fatal, logged above).
         if restart_broker_server is not None:
             restart_broker_server.shutdown()
             restart_broker_server.server_close()
