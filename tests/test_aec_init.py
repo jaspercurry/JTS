@@ -1370,11 +1370,9 @@ def test_the_collected_window_is_one_runtime_sys_delay_accepts(monkeypatch) -> N
     _install_queue_stream(monkeypatch, stream, clock)
 
     _status, queue = aec_init.collect_reference_queue(REFERENCE_PCM)
-    commissioned = 400 - alignment.median_samples(queue)
 
-    assert (
-        alignment.runtime_sys_delay(400, queue, commissioned_sys_delay=commissioned)
-        == commissioned
+    assert alignment.runtime_sys_delay(400, queue) == 400 - alignment.median_samples(
+        queue
     )
 
 
@@ -1878,29 +1876,53 @@ def test_a_spread_past_the_horizon_names_the_ceiling_not_a_shortfall(
     assert "held" not in reason, "a closable shortfall would misattribute this"
 
 
-def test_a_queue_that_moved_past_the_margin_is_applied_and_disclosed(
+def test_a_moved_live_queue_arms_the_delay_k_resolves_without_disclosure(
     monkeypatch, disclosure_file
 ) -> None:
-    # The live queue left the window K was measured against; nothing is broken,
-    # and the delay it resolves has already cleared the chip's declared
-    # SYS_DELAY range. Apply it, arm the chip, and say how far it moved.
+    # Every outputd restart re-opens the chip-reference PCM at a different fill,
+    # and K - live median is exactly what absorbs it: jts.local commissioned at
+    # a median of 200 and booted at 266, applied -21, and the chip converged.
+    # A moved queue is the case K answers, not a reason to nag (ADR-0223).
     dev = _FakeXvfDevice()
-    # Commissioned at -47; the live queue resolves one frame past the bound.
     _arm_chip_aec(
-        monkeypatch, dev,
-        artifact=lambda: AlignmentArtifact(
-            _live_identity(), 245, -38 - alignment.MIN_EDGE_MARGIN - 1
-        ),
+        monkeypatch, dev, artifact=lambda: AlignmentArtifact(_live_identity(), 245, 45)
+    )
+    monkeypatch.setattr(
+        aec_init, "collect_reference_queue",
+        lambda _pcm: ({"reference_outputs": {}}, (266,) * 8),
     )
 
     assert aec_init.main() == 0
 
     writes = _write_map(dev)
     assert writes["SHF_BYPASS"] == [0]
-    assert writes["AUDIO_MGR_SYS_DELAY"] == [-38]
-    assert f"{alignment.MIN_EDGE_MARGIN + 1:+d} frames" in disclosure_file.read_text(
-        encoding="utf-8"
+    assert writes["AUDIO_MGR_SYS_DELAY"] == [245 - 266]
+    assert not disclosure_file.exists()
+
+
+def test_a_queue_that_resolves_past_the_driver_cap_leaves_the_chip_bypassed(
+    monkeypatch, disclosure_file
+) -> None:
+    # The declared CHIP_AEC_SYS_DELAY_MIN..MAX range is the one thing K may not
+    # resolve outside of: no delay is written, the chip stays bypassed, and the
+    # run fails loudly rather than clamping to an alignment nothing proved.
+    dev = _FakeXvfDevice()
+    _arm_chip_aec(
+        monkeypatch, dev, artifact=lambda: AlignmentArtifact(_live_identity(), 245, -38)
     )
+    monkeypatch.setattr(
+        aec_init, "collect_reference_queue",
+        lambda _pcm: (
+            {"reference_outputs": {}},
+            (245 - xvf3800.CHIP_AEC_SYS_DELAY_MIN + 1,) * 8,
+        ),
+    )
+
+    assert aec_init.main() == 1
+
+    writes = _write_map(dev)
+    assert writes["SHF_BYPASS"] == [1]
+    assert "AUDIO_MGR_SYS_DELAY" not in writes
 
 
 def test_the_load_bearing_queue_literals_are_what_the_derivations_assume() -> None:
@@ -1911,13 +1933,13 @@ def test_the_load_bearing_queue_literals_are_what_the_derivations_assume() -> No
     # rounded up.
     assert aec_init.MAX_REFERENCE_PERIODS_IN_FLIGHT == 2
     assert aec_init.QUEUE_MIN_WINDOW_SEC == 2.0
-    # This round's own constants, pinned for the same reason. The drift bound
+    # This round's own constants, pinned for the same reason: the drift bound
     # survives being widened to 26 against fixtures built from it, which walks
-    # back most of the tightening it exists for; MIN_EDGE_MARGIN is the only
-    # end-to-end guard between the alignment the commissioner verified and
-    # what boot applies, and it survives being cut to 1.
+    # back most of the tightening it exists for.
     assert alignment.QUEUE_MAX_MEDIAN_DRIFT == 17
     assert alignment.QUEUE_DRIFT_NOISE_SIGMAS == 3
+    # Commissioning-side only since ADR-0223: the causal-window margin
+    # `choose_delay` reserves and `_final_timing` re-checks at chirp time.
     assert alignment.MIN_EDGE_MARGIN == 8
     assert (
         aec_init.QUEUE_MIN_WINDOW_SEC

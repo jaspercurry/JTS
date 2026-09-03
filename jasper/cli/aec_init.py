@@ -41,7 +41,6 @@ from jasper.chip_aec_alignment import (
     PER_UNIT_IDENTITY_FIELDS,
     QUEUE_MAX_MEDIAN_DRIFT,
     AlignmentIdentity,
-    QueueMovedFromCommissioned,
     identity_divergence,
     load_artifact,
     median_samples,
@@ -980,9 +979,10 @@ class BankedAlignment:
     """The banked proof one run resolved, and what it discloses about it.
 
     ``commissioned_sys_delay`` is the delay banked alongside K — by this unit's
-    own artifact or by the row shipped for its hardware class.  ``sys_delay`` is
-    what the live reference queue resolves that K to, and is what the chip is
-    written with.
+    own artifact or by the row shipped for its hardware class — journalled so a
+    boot's delay can be read against the commissioner's.  ``sys_delay`` is what
+    the live reference queue resolves that K to, and is what the chip is written
+    with; it is not bounded against the commissioned one (ADR-0223).
     """
 
     k_samples: int
@@ -1056,16 +1056,7 @@ def resolve_banked_alignment(
                 + f" ({', '.join(changed)})"
             )
     try:
-        delay = runtime_sys_delay(
-            k_samples, queue, commissioned_sys_delay=commissioned_sys_delay
-        )
-    except QueueMovedFromCommissioned as exc:
-        # Nothing is broken: the live reference queue simply no longer sits
-        # where it did when K was measured. The delay it carries has already
-        # cleared the chip's declared SYS_DELAY range, so apply it and say how
-        # far it moved.
-        delay = exc.delay
-        disclosed.append(str(exc))
+        delay = runtime_sys_delay(k_samples, queue)
     except ValueError as exc:
         # A shipped K that will not resolve on this box (the driver cap refuses
         # the delay, or the queue is unstable) leaves the same disposition its

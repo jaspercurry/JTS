@@ -50,23 +50,14 @@ def _identity() -> AlignmentIdentity:
 
 def test_runtime_delay_uses_k_minus_exact_eight_sample_median() -> None:
     window = [282, 283, 284, 283, 282, 284, 283, 283]
-    assert runtime_sys_delay(245, window, commissioned_sys_delay=-38) == -38
+    assert runtime_sys_delay(245, window) == -38
 
 
 def test_runtime_delay_rejects_instability_and_out_of_range_without_clamp() -> None:
     with pytest.raises(ValueError, match="unstable"):
-        runtime_sys_delay(
-            245, [270, 271, 272, 273, 290, 291, 292, 293], commissioned_sys_delay=-38
-        )
-    # Out of range is reachable only from a commissioned delay near the
-    # chip's own ceiling, since the median bound below keeps the two within
-    # MIN_EDGE_MARGIN of each other.
+        runtime_sys_delay(245, [270, 271, 272, 273, 290, 291, 292, 293])
     with pytest.raises(ValueError, match="out of range"):
-        runtime_sys_delay(
-            283 + xvf3800.CHIP_AEC_SYS_DELAY_MAX + 1,
-            [283] * 8,
-            commissioned_sys_delay=xvf3800.CHIP_AEC_SYS_DELAY_MAX,
-        )
+        runtime_sys_delay(283 + xvf3800.CHIP_AEC_SYS_DELAY_MAX + 1, [283] * 8)
 
 
 def test_the_reference_window_is_the_precision_every_cadence_is_held_to() -> None:
@@ -113,15 +104,11 @@ def test_a_window_is_stable_only_once_it_has_bought_that_precision() -> None:
     assert not alignment.queue_window_is_stable([])
     # The same readings are what boot feeds back in, so the re-validation has to
     # accept exactly what the collector accepted — one rule, two callers.
-    commissioned = 400 - alignment.median_samples(jts3_window)
-    assert (
-        runtime_sys_delay(400, jts3_window, commissioned_sys_delay=commissioned)
-        == commissioned
+    assert runtime_sys_delay(400, jts3_window) == 400 - alignment.median_samples(
+        jts3_window
     )
     with pytest.raises(ValueError, match="unstable"):
-        runtime_sys_delay(
-            400, jts3_window[:231], commissioned_sys_delay=commissioned
-        )
+        runtime_sys_delay(400, jts3_window[:231])
 
 
 def test_precision_and_drift_are_independent_conditions() -> None:
@@ -142,48 +129,26 @@ def test_precision_and_drift_are_independent_conditions() -> None:
     assert not alignment.queue_window_is_stable(wide_but_still), "too few readings"
 
 
-def test_boot_bounds_the_delay_against_the_commissioned_one_both_ways() -> None:
-    # K = commissioned SYS_DELAY + commissioned median, so the gap between the
-    # delay boot resolves and the commissioned one IS the two windows' median
-    # difference — the only error term between the alignment the commissioner
-    # verified and what boot applies. choose_delay reserves MIN_EDGE_MARGIN
-    # frames on both causal-window edges, so that is exactly how far it may
-    # move. Pin the acceptance boundary on both sides, and in both directions.
-    window = [283] * 8
-    for offset in (
-        -alignment.MIN_EDGE_MARGIN,
-        0,
-        alignment.MIN_EDGE_MARGIN,
-    ):
-        # A live median `offset` frames BELOW the commissioned one resolves a
-        # delay `offset` frames above it, and vice versa.
-        assert (
-            runtime_sys_delay(245, window, commissioned_sys_delay=-38 - offset)
-            == -38
-        )
-    # Past the margin the delay is still handed out — it cleared the chip's own
-    # range — so boot applies it and discloses (ADR-0101) instead of stopping.
-    for offset in (
-        -alignment.MIN_EDGE_MARGIN - 1,
-        alignment.MIN_EDGE_MARGIN + 1,
-    ):
-        with pytest.raises(alignment.QueueMovedFromCommissioned) as moved:
-            runtime_sys_delay(245, window, commissioned_sys_delay=-38 - offset)
-        assert moved.value.delay == -38
+def test_a_moved_live_queue_is_absorbed_by_k_not_refused() -> None:
+    # K = commissioned SYS_DELAY + commissioned median, so K - live median is
+    # what compensates a reference queue that re-opened at a different fill.
+    # jts.local's four commissioning runs: K held within 3 frames (248, 245,
+    # 247, 248) while the queue moved, and the armed run converged on the
+    # delay that move resolved (ADR-0223).
+    for live in (186, 200, 252, 266):
+        assert runtime_sys_delay(245, [live] * 8) == 245 - live
 
 
-def test_the_driver_cap_is_checked_before_the_margin_it_makes_safe() -> None:
-    # The margin is a disclosure; CHIP_AEC_SYS_DELAY_MIN..MAX is the declared
-    # driver cap and stays a refusal. A delay outside the cap must therefore
-    # never leave here as a QueueMovedFromCommissioned a caller would apply.
-    out_of_range = xvf3800.CHIP_AEC_SYS_DELAY_MAX + 1
-    with pytest.raises(ValueError) as refused:
-        runtime_sys_delay(
-            283 + out_of_range,
-            [283] * 8,
-            commissioned_sys_delay=xvf3800.CHIP_AEC_SYS_DELAY_MIN,
-        )
-    assert not isinstance(refused.value, alignment.QueueMovedFromCommissioned)
+def test_the_driver_cap_refuses_a_delay_no_register_can_hold() -> None:
+    # CHIP_AEC_SYS_DELAY_MIN..MAX is the declared driver cap: a live median that
+    # resolves outside it is refused outright rather than clamped, so boot
+    # leaves the chip bypassed instead of writing a delay it cannot honour.
+    for k_samples, live in (
+        (283 + xvf3800.CHIP_AEC_SYS_DELAY_MAX + 1, 283),
+        (283 + xvf3800.CHIP_AEC_SYS_DELAY_MIN - 1, 283),
+    ):
+        with pytest.raises(ValueError):
+            runtime_sys_delay(k_samples, [live] * 8)
 
 
 def _class_fields() -> dict[str, object]:

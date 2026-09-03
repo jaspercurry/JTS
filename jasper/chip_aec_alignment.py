@@ -55,10 +55,7 @@ QUEUE_MAX_SPREAD = 16
 # second — 6.8 f/s at jts3's 5.0 s window, 17 f/s at jts.local's 2.0 s one.
 # That is looser than the pre-#2253 rule's ~8 f/s on a fine cadence, because
 # that number was the 16-frame spread bound doing double duty and no bound of
-# that shape survives a box whose write jitter alone is 86 frames.  The
-# end-to-end guard on the quantity K actually depends on is
-# `runtime_sys_delay`'s MIN_EDGE_MARGIN bound against the commissioned
-# SYS_DELAY, which no amount of drift escapes.
+# that shape survives a box whose write jitter alone is 86 frames.
 QUEUE_DRIFT_NOISE_SIGMAS = 3
 QUEUE_MAX_MEDIAN_DRIFT = math.ceil(
     QUEUE_DRIFT_NOISE_SIGMAS * QUEUE_MAX_SPREAD / math.sqrt(QUEUE_SAMPLE_COUNT)
@@ -182,64 +179,29 @@ def queue_window_is_stable(queue_samples: Sequence[int | float]) -> bool:
     return queue_median_drift(queue_samples) <= QUEUE_MAX_MEDIAN_DRIFT
 
 
-class QueueMovedFromCommissioned(ValueError):
-    """The live queue median no longer sits where the artifact measured it.
-
-    A distinct type because the disposition is distinct: nothing is broken, the
-    artifact simply stopped describing this box.  ``delay`` is the resolved
-    SYS_DELAY, which has already passed the chip's own range check, so a caller
-    may apply it and disclose (ADR-0101) rather than stop.  A subclass of
-    ValueError so a caller that only knows the old contract still catches it.
-    """
-
-    def __init__(self, message: str, delay: int) -> None:
-        super().__init__(message)
-        self.delay = delay
-
-
 def runtime_sys_delay(
     k_samples: int,
     queue_samples: Sequence[int | float],
-    *,
-    commissioned_sys_delay: int,
 ) -> int:
     """Return ``K - median(the live queue window)``; never clamp.
 
-    ``commissioned_sys_delay`` is keyword-only and has no default on purpose:
-    every caller has to supply the artifact's own value, so a boot cannot be
-    silently ungated.  The bound it enables is the end-to-end one.  Since
-    ``K = commissioned SYS_DELAY + median(commissioned window)``, the difference
-    between the delay resolved here and the commissioned one IS the difference
-    between the two windows' medians — the only error term standing between the
-    commissioner's verified alignment and what boot applies.  ``choose_delay``
-    reserves ``MIN_EDGE_MARGIN`` frames of causal-window margin on both edges,
-    so that is exactly how far the live median may have moved before the
-    projected first peak leaves the window commissioning proved.  Past it,
-    `QueueMovedFromCommissioned` hands the delay out for a caller that
-    discloses rather than one that stops.
+    ``K = commissioned SYS_DELAY + median(commissioned window)``, so subtracting
+    the live median is what absorbs a reference queue that re-opened at a
+    different fill: the queue term is real transport delay, and a moved median
+    is the case K exists to answer, not a fault (ADR-0223).
 
-    The chip's declared ``CHIP_AEC_SYS_DELAY_MIN..MAX`` range is checked FIRST
-    and still refuses outright: it is the driver cap, nothing may be written
-    outside it, and checking it ahead of the margin is what makes the margin
-    safe to demote to a disclosure.
+    The chip's declared ``CHIP_AEC_SYS_DELAY_MIN..MAX`` range refuses outright:
+    it is the driver cap, and nothing may be written outside it.
     """
 
-    if type(k_samples) is not int or type(commissioned_sys_delay) is not int:
-        raise ValueError("K and the commissioned SYS_DELAY must be integers")
+    if type(k_samples) is not int:
+        raise ValueError("K must be an integer")
     values = tuple(float(v) for v in queue_samples)
     queue = median_samples(values)
     if not queue_window_is_stable(values):
         raise ValueError("chip-reference queue is unstable")
     delay = k_samples - queue
     validate_banked_delays(k_samples, delay)
-    moved = delay - commissioned_sys_delay
-    if abs(moved) > MIN_EDGE_MARGIN:
-        raise QueueMovedFromCommissioned(
-            f"live reference queue median has moved {moved:+d} frames from the "
-            f"commissioned window (limit {MIN_EDGE_MARGIN}); SYS_DELAY {delay} "
-            "is outside the causal margin commissioning reserved",
-            delay,
-        )
     return delay
 
 
@@ -397,11 +359,8 @@ class AlignmentArtifact:
     k_samples: int
     # The SYS_DELAY the commissioner verified — the one that passed the causal
     # window, the convergence transition, and the >= 10 dB beam suppression.
-    # Stored so boot can bound how far it is allowed to resolve away from it
-    # (`runtime_sys_delay`).  Without it the only boot-side check on the delay
-    # is the chip's own -64..256 range, which is six times wider than the causal
-    # window, so a live median tens of frames off the commissioned one would be
-    # applied silently.
+    # Recorded for the boot journal; boot resolves its own delay from K and the
+    # live queue and does not bound itself against this (ADR-0223).
     sys_delay: int
 
     def __post_init__(self) -> None:
