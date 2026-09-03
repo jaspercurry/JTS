@@ -81,7 +81,7 @@ from jasper.audio_measurement.program_analysis import (
     INTEGRITY_CHECK_SWEEP_SCHEDULE,
     _verify_capture_integrity,
 )
-from jasper.capture_relay.session import CaptureBeginRefused
+from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginRefused
 
 from tests.crossover_v2_fixtures import (
     _DIAG_LOGGER,

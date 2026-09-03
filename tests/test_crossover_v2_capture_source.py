@@ -5,18 +5,16 @@
 """The capture-source seam's contract (#2662, decision 13).
 
 Pins the promises :mod:`jasper.active_speaker.crossover_v2.capture_source`
-makes: the relay's shipped answer type satisfies :class:`CaptureAnswer`; an
-answer carrying ONLY the contract's four attributes is sufficient for the
-production analyze seam (what makes the seam wired-ready — a second source
-mints exactly this shape); the integrity-counter tuple is the frame ledger's
-real read set, not a parallel spelling; and the host and the relay provider
-load independently of each other, publishing none of each other's names.
+makes: the wired provider's shipped answer type satisfies
+:class:`CaptureAnswer`; an answer carrying ONLY the contract's four
+attributes is sufficient for the production analyze seam (what makes the
+seam wired-ready — a second source mints exactly this shape); and the
+integrity-counter tuple is the frame ledger's real read set, not a parallel
+spelling.
 """
 from __future__ import annotations
 
 import io
-import subprocess
-import sys
 import wave
 from dataclasses import dataclass
 from typing import Any, Mapping
@@ -26,9 +24,8 @@ from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureAnswer,
 )
 from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
-from jasper.capture_relay.session import CaptureResult
 from jasper.web import correction_crossover_v2 as v2host
-from jasper.web import correction_crossover_v2_relay as v2relay
+from jasper.web.correction_crossover_v2_wired import WiredCaptureAnswer
 
 
 def _mono_wav_bytes(n: int = 4800) -> bytes:
@@ -51,15 +48,13 @@ class _WiredShapedAnswer:
     capture_integrity: Mapping[str, Any] | None = None
 
 
-def test_the_relays_shipped_answer_satisfies_the_contract():
-    """``CaptureResult`` IS a ``CaptureAnswer`` as it stands.
+def test_the_wired_providers_shipped_answer_satisfies_the_contract():
+    """``WiredCaptureAnswer`` IS a ``CaptureAnswer`` as it stands.
 
-    The relay provider passes through what the phone sent; the seam names
-    that existing shape rather than wrapping it. Structural, so this holds
-    for any conformant object — the ``isinstance`` is the runtime-checkable
-    protocol's attribute-presence check.
+    Structural, so this holds for any conformant object — the ``isinstance``
+    is the runtime-checkable protocol's attribute-presence check.
     """
-    assert isinstance(CaptureResult(wav=b""), CaptureAnswer)
+    assert isinstance(WiredCaptureAnswer(wav=b""), CaptureAnswer)
     assert isinstance(_WiredShapedAnswer(wav=b""), CaptureAnswer)
 
 
@@ -71,8 +66,8 @@ def test_a_contract_only_answer_satisfies_the_production_analyze_seam(
     This is the wired-readiness pin: a provider that mints an answer with
     exactly ``wav``/``device``/``setup``/``capture_integrity`` flows through
     ``bind_production_analyze`` — resolver, integrity report and all — so the
-    next source needs no relay-shaped extras. The analysis itself is stubbed;
-    the subject is what the binding consumes off the answer.
+    next source needs no provider-shaped extras. The analysis itself is
+    stubbed; the subject is what the binding consumes off the answer.
     """
     from jasper.audio_measurement import program_analysis as pa_mod
     from jasper.audio_measurement.program import build_verify_program
@@ -146,53 +141,3 @@ def test_the_integrity_counter_keys_are_the_ledgers_real_read_set():
     assert unrelated.encoded_frames is None
     assert unrelated.render_gaps is None
     assert unrelated.render_gap_frames is None
-
-
-def test_the_host_publishes_no_provider_names():
-    """Neither provider's names hang off the host — reached where they live.
-
-    The relay's three (once re-exported so the preparers could call them
-    unqualified) went when the relay stopped being the default source; the
-    other three were withdrawn earlier for external callers that never
-    arrived. Gone, not shadowed: each name is asserted absent on the host AND
-    present on the provider, so a rename cannot pass this vacuously.
-    """
-    for name in (
-        "PlaybackStartSignal",
-        "build_v2_run_and_consume",
-        "relay_link_ttl_s",
-        "TERMINAL_FAILURE_PURGE_GRACE_S",
-        "program_phase_schedule",
-        "start_program_phase_ladder",
-    ):
-        assert not hasattr(v2host, name), name
-        assert hasattr(v2relay, name), name
-
-
-def test_neither_module_imports_the_other_at_module_scope():
-    """The pair loads independently — behavioral pin, both directions.
-
-    Provider→host was always the strangler's import-safety condition. Host→
-    provider is what the WIRED default buys: the parked phone-relay island
-    must not load in a wizard process that measures on the local mic, so the
-    host reaches it on the relay branch only. Asserted on the real
-    interpreter rather than by scanning import statements: a fresh process
-    imports one module and checks ``sys.modules`` for the other — which also
-    catches an INDIRECT route (a dependency growing the import) that a source
-    scan of one file cannot see. The ``find_spec`` line is each probe's
-    positive control: it proves the name asserted absent is a real, loadable
-    module, so a rename cannot make this pass vacuously.
-    """
-    host = "jasper.web.correction_crossover_v2"
-    provider = "jasper.web.correction_crossover_v2_relay"
-    for imported, absent in ((provider, host), (host, provider)):
-        probe = (
-            "import importlib.util, sys\n"
-            f"import {imported}\n"
-            f"assert {absent!r} not in sys.modules, 'imported at module scope'\n"
-            f"assert importlib.util.find_spec({absent!r}) is not None\n"
-        )
-        completed = subprocess.run(
-            [sys.executable, "-c", probe], capture_output=True, text=True,
-        )
-        assert completed.returncode == 0, (imported, completed.stderr)
