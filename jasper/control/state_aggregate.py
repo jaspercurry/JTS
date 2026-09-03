@@ -823,35 +823,37 @@ def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def _fail_soft(label: str, reader: Callable[[], _T]) -> _T | None:
-    """Run a /state section reader, degrading to ``None`` on any failure."""
+def _soft_read(
+    label: str,
+    reader: Callable[[], _T],
+    *,
+    exc: tuple[type[BaseException], ...] = (Exception,),
+) -> _T | None:
     try:
         return reader()
-    except Exception:  # noqa: BLE001
+    except exc:
         logger.exception(label)
         return None
 
 
-def _persisted_volume_state() -> tuple[int | None, float | None]:
-    """Persisted listening level and main volume; ``(None, None)`` if unreadable."""
-    listening_level: int | None = None
-    persisted_main_volume_db: float | None = None
-    try:
-        from ..volume_coordinator import VolumeState
-        from ..volume_persistence import VolumePersistence
+def _read_persisted_volume() -> tuple[int | None, float | None]:
+    """The persisted listening level and main volume, in that order."""
+    from ..volume_coordinator import VolumeState
+    from ..volume_persistence import VolumePersistence
 
-        path = os.environ.get(
-            "JASPER_VOLUME_STATE_PATH",
-            "/var/lib/jasper/speaker_volume.json",
-        )
-        record = VolumePersistence(path).load()
-        if record is not None:
-            listening_level = VolumeState.from_record(record).effective_percent
-            if math.isfinite(record.main_volume_db):
-                persisted_main_volume_db = round(record.main_volume_db, 2)
-    except (OSError, ValueError):
-        pass
-    return listening_level, persisted_main_volume_db
+    path = os.environ.get(
+        "JASPER_VOLUME_STATE_PATH",
+        "/var/lib/jasper/speaker_volume.json",
+    )
+    record = VolumePersistence(path).load()
+    if record is None:
+        return None, None
+    return (
+        VolumeState.from_record(record).effective_percent,
+        round(record.main_volume_db, 2)
+        if math.isfinite(record.main_volume_db)
+        else None,
+    )
 
 
 def _read_sound_profile() -> dict[str, Any]:
@@ -898,7 +900,7 @@ def _active_source(
     mux_status: dict | None,
     spotify_playing: bool,
     airplay_playing: bool | None,
-    usbsink_state: dict[str, Any] | None,
+    usbsink_playing: bool,
 ) -> str:
     """Pick ``/state.active_source``.
 
@@ -924,7 +926,7 @@ def _active_source(
         return "spotify"
     if airplay_playing:
         return "airplay"
-    if usbsink_state is not None and usbsink_state.get("playing"):
+    if usbsink_playing:
         # `playing` is authoritative on both box shapes: solo reads the
         # bridge's RMS-gated flag, combo derives it from the fan-in DIRECT
         # lane's level (audible above the shared -60 dBFS gate), so a combo
@@ -933,71 +935,27 @@ def _active_source(
     return "idle"
 
 
-def _grouping_state(outputd_status: dict | None) -> dict[str, Any] | None:
-    """Multiroom grouping for ``/state.grouping``, with the bonded-leader
-    AirPlay latency fit attached. ``enabled=True`` with a non-null error is
-    the fail-LOUD "configured but broken" state; ``None`` means the fresh
-    read itself failed."""
-    try:
-        state: dict | None = read_grouping_state(
-            local_outputd_reader=lambda: outputd_status,
-        )
-    except Exception:  # noqa: BLE001
-        logger.exception("grouping state read failed")
-        state = None
-    return with_airplay_latency_fit(state)
-
-
-def _active_speaker_setup_state(
-    active_config_path: str | None,
-) -> dict[str, Any] | None:
-    try:
-        return read_active_speaker_setup_status(
-            active_config_path=active_config_path,
-        )
-    except (OSError, RuntimeError, TypeError, ValueError, KeyError):
-        logger.exception("active speaker setup status read failed")
-        return None
-
-
-def _audition_state() -> dict[str, Any] | None:
+def _read_audition_state() -> dict[str, Any] | None:
     """Reduced-graph audition record for ``/state.audition``.
 
     Non-null means somebody is auditioning a reduced graph, so every other
     reading of this speaker's sound is about THAT graph. ``stale`` marks a
     record whose owner died without restoring the applied graph.
     """
-    try:
-        from ..active_speaker.audition import read_audition_state
+    from ..active_speaker.audition import read_audition_state
 
-        state: dict | None = read_audition_state()
-        if state is not None:
-            state = dict(state)
-            state["stale"] = (
-                float(state.get("deadline_at") or 0.0) <= time.time()
-            )
-        return state
-    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
-        logger.exception("audition state read failed")
+    state = read_audition_state()
+    if state is None:
         return None
+    state = dict(state)
+    state["stale"] = float(state.get("deadline_at") or 0.0) <= time.time()
+    return state
 
 
-def _bass_extension_state() -> dict[str, Any] | None:
-    try:
-        from ..bass_extension.profile import bass_extension_state_summary
+def _read_bass_extension() -> dict[str, Any] | None:
+    from ..bass_extension.profile import bass_extension_state_summary
 
-        return bass_extension_state_summary()
-    except (
-        ImportError,
-        OSError,
-        RuntimeError,
-        TypeError,
-        ValueError,
-        KeyError,
-        AttributeError,
-    ):
-        logger.exception("bass extension profile state read failed")
-        return None
+    return bass_extension_state_summary()
 
 
 def _read_output_hardware() -> dict[str, Any] | None:
@@ -1050,8 +1008,12 @@ async def _get_state(
     # stale provider. ("", None) when unconfigured; never a guessed default.
     active_provider = read_active_provider_state()
 
-    listening_level, persisted_main_volume_db = _persisted_volume_state()
-    sound_profile = _fail_soft("sound profile state probe failed", _read_sound_profile)
+    listening_level, persisted_main_volume_db = _soft_read(
+        "persisted volume state read failed",
+        _read_persisted_volume,
+        exc=(OSError, ValueError),
+    ) or (None, None)
+    sound_profile = _soft_read("sound profile state probe failed", _read_sound_profile)
 
     # Slow probes — fan out in parallel.
     def _round_db(value: float | None) -> float | None:
@@ -1245,7 +1207,7 @@ async def _get_state(
         mux_status=mux_st,
         spotify_playing=spotify["playing"],
         airplay_playing=airplay,
-        usbsink_state=usbsink_state,
+        usbsink_playing=bool(usbsink_state and usbsink_state.get("playing")),
     )
 
     volume_policy = build_volume_policy_snapshot(
@@ -1257,18 +1219,41 @@ async def _get_state(
         diagnostics=_read_volume_diagnostics(),
     )
 
-    grouping_state = _grouping_state(outputd_st)
-    active_speaker_setup = _active_speaker_setup_state(
-        camilla_st.get("active_config_path"),
+    grouping_state = with_airplay_latency_fit(_soft_read(
+        "grouping state read failed",
+        lambda: read_grouping_state(local_outputd_reader=lambda: outputd_st),
+    ))
+    active_speaker_setup = _soft_read(
+        "active speaker setup status read failed",
+        lambda: read_active_speaker_setup_status(
+            active_config_path=camilla_st.get("active_config_path"),
+        ),
+        exc=(OSError, RuntimeError, TypeError, ValueError, KeyError),
     )
-    audition_state = _audition_state()
-    bass_extension_state = _bass_extension_state()
-    transit_state = _fail_soft("transit state read failed", read_transit_state_func)
-    output_hardware_state = _fail_soft(
+    audition_state = _soft_read(
+        "audition state read failed",
+        _read_audition_state,
+        exc=(ImportError, OSError, RuntimeError, TypeError, ValueError),
+    )
+    bass_extension_state = _soft_read(
+        "bass extension profile state read failed",
+        _read_bass_extension,
+        exc=(
+            ImportError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            KeyError,
+            AttributeError,
+        ),
+    )
+    transit_state = _soft_read("transit state read failed", read_transit_state_func)
+    output_hardware_state = _soft_read(
         "output hardware state read failed", _read_output_hardware,
     )
     service_states = (
-        _fail_soft("service state snapshot read failed", service_states_snapshot)
+        _soft_read("service state snapshot read failed", service_states_snapshot)
         if service_states_snapshot
         else None
     )
@@ -1278,22 +1263,21 @@ async def _get_state(
         outputd_status=outputd_st,
         service_states=service_states,
     )
-    tools_state = _fail_soft("tool catalog state read failed", _read_tool_catalog)
+    tools_state = _soft_read("tool catalog state read failed", _read_tool_catalog)
 
     # Conversation history is a read-only Feature surface. Settings are
     # wizard-owned and read fresh; the SQLite store is opened read-only so
     # jasper-control cannot create or mutate jasper-voice's DB.
-    try:
-        chat_state = _conversation_history_state()
-    except (ImportError, OSError, RuntimeError, ValueError):
-        logger.exception("conversation history state read failed")
-        chat_state = None
-
-    try:
-        research_state = _research_state(voice_status.get("research"))
-    except (ImportError, OSError, RuntimeError, ValueError):
-        logger.exception("research state read failed")
-        research_state = None
+    chat_state = _soft_read(
+        "conversation history state read failed",
+        _conversation_history_state,
+        exc=(ImportError, OSError, RuntimeError, ValueError),
+    )
+    research_state = _soft_read(
+        "research state read failed",
+        lambda: _research_state(voice_status.get("research")),
+        exc=(ImportError, OSError, RuntimeError, ValueError),
+    )
 
     # Lazy import (mirrors read_active_provider_state above) so jasper-control
     # doesn't pull jasper.voice.* at module load.
@@ -1430,7 +1414,8 @@ async def _get_state(
         "home_assistant": ha_status,
         # Snapshot of the wizard-owned grouping.env plus airplay_latency_fit
         # ({applicable: false} unless this speaker is an active bonded leader).
-        # See jasper/multiroom/state.py + jasper/multiroom/airplay_latency.py.
+        # enabled=True with a non-null error is the fail-LOUD "configured but
+        # broken" state. See jasper/multiroom/state.py + airplay_latency.py.
         "grouping": grouping_state,
         # {packs: [{id, label, enabled}]} read fresh from the wizard-owned
         # transit.env. Mirrors the daemon's enabled_pack_ids on both absent
