@@ -629,7 +629,9 @@ class AirPlayHealthSampler:
             except Exception:  # noqa: BLE001
                 logger.exception("airplay health sampler tick failed")
             elapsed = time.monotonic() - sample_start
-            time.sleep(max(0.1, self._sample_interval - elapsed))
+            # Floor bounds the loop rate when a tick overruns the interval,
+            # so a slow tick under load can't collapse it to a tight spin.
+            time.sleep(max(1.0, self._sample_interval - elapsed))
 
     def _tick(self) -> None:
         now = self._time()

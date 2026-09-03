@@ -11,6 +11,8 @@ import types
 import urllib.request
 from http.server import ThreadingHTTPServer
 
+import pytest
+
 import jasper.control.airplay_health as airplay_health
 from jasper.control.airplay_health import (
     AirPlayHealthSampler,
@@ -924,3 +926,31 @@ def test_storm_capture_is_failsoft_when_artifact_dir_unwritable(
         sampler._tick()
     assert sampler.snapshot()["storm"]["active"] is False
     assert "artifact=null" in caplog.text  # no artifact, rendered as null
+
+
+@pytest.mark.parametrize(
+    ("elapsed", "expected_sleep"),
+    [
+        (0.0, 5.0),
+        (4.5, 1.0),
+        (60.0, 1.0),
+    ],
+)
+def test_run_sleep_floor_bounds_the_tick_rate(
+    monkeypatch, elapsed: float, expected_sleep: float,
+) -> None:
+    sampler = AirPlayHealthSampler(sample_interval_sec=5.0, time_fn=lambda: 1000.0)
+    monkeypatch.setattr(sampler, "_tick", lambda: None)
+    monotonic_values = iter([0.0, elapsed])
+    monkeypatch.setattr(
+        airplay_health.time, "monotonic", lambda: next(monotonic_values),
+    )
+    captured: list[float] = []
+
+    def fake_sleep(seconds: float) -> None:
+        captured.append(seconds)
+        sampler._stopped = True
+
+    monkeypatch.setattr(airplay_health.time, "sleep", fake_sleep)
+    sampler._run()
+    assert captured == [expected_sleep]

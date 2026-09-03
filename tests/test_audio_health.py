@@ -4287,3 +4287,31 @@ def test_every_incident_row_stays_out_of_operator_register() -> None:
         "usbsink.service.jasper-usbsink-volume.service.off_drift",
         "usbsink.service.jasper-usbsink.service.off_drift",
     }
+
+
+@pytest.mark.parametrize(
+    ("elapsed", "expected_sleep"),
+    [
+        (0.0, 5.0),
+        (4.5, 1.0),
+        (60.0, 1.0),
+    ],
+)
+def test_run_sleep_floor_bounds_the_tick_rate(
+    monkeypatch, elapsed: float, expected_sleep: float,
+) -> None:
+    sampler = AudioHealthSampler(sample_interval_sec=5.0, time_fn=lambda: 1000.0)
+    monkeypatch.setattr(sampler, "_tick", lambda: None)
+    monotonic_values = iter([0.0, elapsed])
+    monkeypatch.setattr(
+        audio_health.time, "monotonic", lambda: next(monotonic_values),
+    )
+    captured: list[float] = []
+
+    def fake_sleep(seconds: float) -> None:
+        captured.append(seconds)
+        sampler._stopped = True
+
+    monkeypatch.setattr(audio_health.time, "sleep", fake_sleep)
+    sampler._run()
+    assert captured == [expected_sleep]
