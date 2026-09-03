@@ -109,6 +109,7 @@ from .voice import (
 )
 from . import audio as audio
 from . import audio_runtime as audio_runtime
+from . import audio_runtime_outputd as audio_runtime_outputd
 from . import audio_runtime_ring as audio_runtime_ring
 from . import boot_config as boot_config
 from .audio import (

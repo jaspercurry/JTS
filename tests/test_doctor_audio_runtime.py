@@ -25,7 +25,11 @@ from jasper.audio_hardware.dac import (
     LatencyFloor,
     latency_floor_for,
 )
-from jasper.cli.doctor import audio_runtime, audio_runtime_ring
+from jasper.cli.doctor import (
+    audio_runtime,
+    audio_runtime_outputd,
+    audio_runtime_ring,
+)
 from jasper.fanin_coupling import (
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_PLAYBACK_DEVICE,
@@ -159,7 +163,7 @@ class _FakeSocket:
         self.closed = True
 
 
-def _patch_camilla_systemctl(monkeypatch, *, enabled="enabled", active="active"):
+def _fake_systemctl(enabled: str, active: str):
     def fake_run(cmd, *args, **kwargs):
         stdout = ""
         if cmd[:2] == ["systemctl", "is-enabled"]:
@@ -168,7 +172,13 @@ def _patch_camilla_systemctl(monkeypatch, *, enabled="enabled", active="active")
             stdout = active + "\n"
         return type("P", (), {"stdout": stdout, "stderr": "", "returncode": 0})()
 
-    monkeypatch.setattr(doctor.audio_runtime, "_run", fake_run)
+    return fake_run
+
+
+def _patch_camilla_systemctl(monkeypatch, *, enabled="enabled", active="active"):
+    monkeypatch.setattr(
+        doctor.audio_runtime, "_run", _fake_systemctl(enabled, active)
+    )
 
 
 def test_check_camilla_service_ok_when_enabled_and_active(monkeypatch):
@@ -215,15 +225,9 @@ def test_check_camilla_service_fails_when_unit_is_not_installed(monkeypatch):
 
 
 def _patch_fanin_systemctl(monkeypatch, *, enabled="enabled", active="active"):
-    def fake_run(cmd, *args, **kwargs):
-        stdout = ""
-        if cmd[:2] == ["systemctl", "is-enabled"]:
-            stdout = enabled + "\n"
-        elif cmd[:2] == ["systemctl", "is-active"]:
-            stdout = active + "\n"
-        return type("P", (), {"stdout": stdout, "stderr": "", "returncode": 0})()
-
-    monkeypatch.setattr(doctor.audio_runtime, "_run", fake_run)
+    """Answer systemctl for every check module that reads a unit's state."""
+    for module in (doctor.audio_runtime, doctor.audio_runtime_outputd):
+        monkeypatch.setattr(module, "_run", _fake_systemctl(enabled, active))
 
 
 # The healthy Ring A block a running fan-in always publishes (ADR-0100 — the
@@ -1103,7 +1107,7 @@ def test_the_doctor_reads_outputd_env_through_the_units_own_layering(
         "jasper.multiroom.reconcile.OUTPUTD_GROUPING_ENV_FILE", str(grouping)
     )
 
-    env = audio_runtime._outputd_reconciled_env()
+    env = audio_runtime_outputd._outputd_reconciled_env()
 
     assert env[OUTPUTD_CONTENT_BRIDGE_ENV_VAR] == "direct"
 
@@ -1117,7 +1121,7 @@ def test_outputd_content_bridge_detail_reports_every_mode():
     it: `shm_ring` proves it reads the payload, and the two malformed shapes
     prove it degrades to `missing` rather than raising inside a doctor check.
     """
-    from jasper.cli.doctor.audio_runtime import _outputd_content_bridge_detail
+    from jasper.cli.doctor.audio_runtime_outputd import _outputd_content_bridge_detail
 
     assert (
         _outputd_content_bridge_detail({"content_bridge": {"mode": "direct"}})
@@ -3721,7 +3725,7 @@ def _outputd_ring_status(*, fmt="S16_LE", channels=2, period=128, slots=2):
 def _buffer_health(data, *, period=128, content_hop=None):
     from jasper.audio_runtime_plan import TRANSPORT_SHM_RING
 
-    return audio_runtime._outputd_buffer_health(
+    return audio_runtime_outputd._outputd_buffer_health(
         data,
         data["content"],
         content_hop=content_hop or TRANSPORT_SHM_RING,
@@ -3748,7 +3752,7 @@ def test_the_alsa_jitter_floor_applies_to_exactly_the_alsa_class(shape, expect_f
     """
     from jasper.cli.doctor._shared import CheckResult
 
-    result = audio_runtime._outputd_buffer_health(
+    result = audio_runtime_outputd._outputd_buffer_health(
         {},
         {"source": "alsa"},
         content_hop=shape,
@@ -5119,7 +5123,7 @@ def _xrun_section(rate_per_hour, last_xrun_age_ms):
 def test_outputd_xrun_warning_none_when_no_recent_xrun():
     """last_xrun_age_ms=null (no xrun ever) → never warn, regardless of rate."""
     quiet = _xrun_section(rate_per_hour=0.0, last_xrun_age_ms=None)
-    assert doctor.audio_runtime._outputd_xrun_rate_warning(quiet, quiet) is None
+    assert doctor.audio_runtime_outputd._outputd_xrun_rate_warning(quiet, quiet) is None
 
 
 def test_outputd_xrun_warning_suppressed_for_stale_burst():
@@ -5127,30 +5131,30 @@ def test_outputd_xrun_warning_suppressed_for_stale_burst():
     burst) must NOT warn — the WARN is for a sustained, *current* problem."""
     stale = _xrun_section(
         rate_per_hour=50.0,
-        last_xrun_age_ms=doctor.audio_runtime._OUTPUTD_XRUN_RECENT_AGE_MS + 1,
+        last_xrun_age_ms=doctor.audio_runtime_outputd._OUTPUTD_XRUN_RECENT_AGE_MS + 1,
     )
-    assert doctor.audio_runtime._outputd_xrun_rate_warning(stale, stale) is None
+    assert doctor.audio_runtime_outputd._outputd_xrun_rate_warning(stale, stale) is None
 
 
 def test_outputd_xrun_warning_suppressed_for_recent_single_blip():
     """A recent xrun with a LOW sustained rate (one transient blip) must not
     warn — only a rate at/above the threshold qualifies."""
     blip = _xrun_section(
-        rate_per_hour=doctor.audio_runtime._OUTPUTD_XRUN_RATE_WARN_PER_HOUR - 0.1,
+        rate_per_hour=doctor.audio_runtime_outputd._OUTPUTD_XRUN_RATE_WARN_PER_HOUR - 0.1,
         last_xrun_age_ms=1000,
     )
-    assert doctor.audio_runtime._outputd_xrun_rate_warning(blip, blip) is None
+    assert doctor.audio_runtime_outputd._outputd_xrun_rate_warning(blip, blip) is None
 
 
 def test_outputd_xrun_warning_fires_on_recent_sustained_rate():
     """Recent xrun AND a sustained rate at/above threshold → warn, naming the
     offending lane and both fields."""
     hot = _xrun_section(
-        rate_per_hour=doctor.audio_runtime._OUTPUTD_XRUN_RATE_WARN_PER_HOUR,
+        rate_per_hour=doctor.audio_runtime_outputd._OUTPUTD_XRUN_RATE_WARN_PER_HOUR,
         last_xrun_age_ms=2000,
     )
     quiet = _xrun_section(rate_per_hour=0.0, last_xrun_age_ms=None)
-    reason = doctor.audio_runtime._outputd_xrun_rate_warning(quiet, hot)
+    reason = doctor.audio_runtime_outputd._outputd_xrun_rate_warning(quiet, hot)
     assert reason is not None
     assert "dac" in reason
     assert "xrun_rate_per_hour" in reason
@@ -5161,7 +5165,7 @@ def test_outputd_xrun_warning_reports_worst_lane():
     """When both lanes qualify, the higher-rate lane is reported."""
     content = _xrun_section(rate_per_hour=8.0, last_xrun_age_ms=1000)
     dac = _xrun_section(rate_per_hour=40.0, last_xrun_age_ms=1000)
-    reason = doctor.audio_runtime._outputd_xrun_rate_warning(content, dac)
+    reason = doctor.audio_runtime_outputd._outputd_xrun_rate_warning(content, dac)
     assert reason is not None
     assert reason.startswith("dac ")
 
@@ -5177,7 +5181,7 @@ def _transport_health(env: dict[str, str], *, content_source: str):
     discrimination is the RETURN SHAPE, which is what the caller branches on.
     """
     payload = json.loads(_outputd_status_payload(content_source=content_source))
-    return doctor.audio_runtime._outputd_transport_health(
+    return doctor.audio_runtime_outputd._outputd_transport_health(
         payload,
         payload["content"],
         payload["dac"],
