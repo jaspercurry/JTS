@@ -1961,6 +1961,8 @@ def test_resolver_discovered_future_xvf_reaches_managed_policy(
     # No production beam plan, so no chip beams — but the mic is 6-channel, so
     # software AEC3 carries the wake path and the reason reaches the doctor.
     assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=disclosed_stale" in body
+    reason = _env_assignments(env_file)["JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON"]
+    assert reason == "'future XVF needs a validated beam plan'"
     assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
     assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
     assert "JASPER_MIC_DEVICE=udp:9876" in body
