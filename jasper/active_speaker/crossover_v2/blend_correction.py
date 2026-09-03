@@ -26,17 +26,15 @@ mask removed is not a bin this module may cut.
 The summed VERIFY capture rides the APPLIED incumbent, so its deviation already
 contains the incumbent's own blend correction and re-deriving ``B = −d``
 absolutely would oscillate. The shipped form is a damped fixed-point
-iteration::
+iteration, still a TOTAL re-derived every round::
 
     B_{N+1}(f) = clamp( B_N(f) − k · d_{N+1}(f) ),   k = BLEND_DAMPING = 0.7
 
-still a TOTAL re-derived every round. Refusals HOLD the incumbent rather than
-revert (panel ruling, 2026-08-18): an instrument that has just said it could
-not measure has no standing to remove a correction adopted on measured
-evidence. :data:`BLEND_NO_INCUMBENT` is the one arm that cannot hold, because
-it is exactly the state of not knowing what to hold; its cost is that it can
-REMOVE an applied correction, and it is reachable only through a corrupt or
-absent applied profile.
+Refusals HOLD the incumbent rather than revert (panel ruling, 2026-08-18): an
+instrument that could not measure has no standing to remove a correction
+adopted on measured evidence. :data:`BLEND_NO_INCUMBENT` is the one arm that
+cannot hold: its cost is that it REMOVES an applied correction (``filters=()``),
+reachable only through a corrupt or absent applied profile.
 
 Scope tripwire: this reads the summed response against an analytic,
 offset-invariant reference and commands a common-mode filter. Reading a

@@ -328,12 +328,10 @@ def program_for_phase(
 ) -> ExcitationProgram:
     """Which composed program this phase plays — **by identity, not by value**.
 
-    The caller passes the objects it is holding and gets one of them back. No
-    branch here composes, copies, or replaces, which is the whole mechanism
-    behind invariant 2: the COMPARED pair is answered with the same ``verify``
-    object and their captures share one ``program_id``. Every
-    :data:`GROUP_SUMMED_SWEEP_PHASES` position is likewise answered with the same
-    ``cloud`` object.
+    No branch here composes, copies, or replaces, which is invariant 2's whole
+    mechanism: the COMPARED pair gets the same ``verify`` object (shared
+    ``program_id``), and every :data:`GROUP_SUMMED_SWEEP_PHASES` position gets
+    the same ``cloud`` object.
 
     ``measure`` is ``None`` until the CHECK gain solve produces a plan;
     requesting MEASURE before then raises :class:`NoProgramForPhaseError` rather
