@@ -591,11 +591,7 @@ GAIN_MAX_DIGITAL_PEAK_DBFS = -GAIN_GUARD_DB  # digital peak must sit ≤ this
 # The ambient evidence is CHECK's 12 s window, measured up to a minute before
 # MEASURE plays and (per `program`'s module docstring) deliberately taken
 # BEFORE the courtesy beeps ask the household to quiet down; `k` comes from
-# 0.8 s pilots rather than from the sweep itself. 6 dB is the same figure
-# `jasper.audio_measurement.level_solver.SOLVER_MARGIN_DB` carries for the same
-# job in the ramp-driven solver, deliberately NOT imported: the two solvers are
-# independent, and sharing the symbol would let a tuning change to one silently
-# retune the other.
+# 0.8 s pilots rather than from the sweep itself.
 MEASURE_SNR_SOLVE_MARGIN_DB = 6.0
 
 # Peak-to-RMS of the excitation itself, dB. Every stimulus segment this

@@ -528,9 +528,8 @@ def declared_level_ceiling_dbfs(target: Mapping[str, Any]) -> tuple[float, str]:
     below; the two callers that want the answer are
     :func:`resolve_driver_excitation_ceilings` and
     ``commissioning_runtime.prepare_summed_excitation``, and everything further
-    downstream (``web.correction_crossover_backend``,
-    ``audio_measurement.level_solver``) takes the already-resolved number as an
-    argument. A third reader belongs here too.
+    downstream (``web.correction_crossover_backend``) takes the already-resolved
+    number as an argument. A third reader belongs here too.
 
     ``max_effective_peak_dbfs`` is OPTIONAL, and absent is the ordinary answer.
     It is the one datasheet fact in ``level_duration_limits``, so since the
