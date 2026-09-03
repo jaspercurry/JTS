@@ -54,8 +54,11 @@ def test_active_aec_probe_is_owned_by_dedicated_module(monkeypatch):
     results = doctor.probe_aec_ref_path()
 
     assert doctor.probe_aec_ref_path is doctor.aec_probe.probe_aec_ref_path
-    assert [(result.name, result.status) for result in results] == [
-        ("probe — bridge running", "fail")
+    assert [(result.name, result.status, result.reason) for result in results] == [
+        (
+            "probe — bridge running", "fail",
+            doctor.aec_probe.REASON_PROBE_BRIDGE_NOT_RUNNING,
+        )
     ]
 
 
@@ -119,8 +122,7 @@ def test_second_aec_probe_cannot_reach_precheck_wave_or_aplay(monkeypatch):
     assert [(result.name, result.status) for result in results] == [
         ("probe — exclusive run", "fail")
     ]
-    assert "already active" in results[0].detail
-    assert "No test tone was played" in results[0].detail
+    assert results[0].reason == doctor.aec_probe.REASON_PROBE_LOCK_BUSY
     assert calls == []
 
 
@@ -135,6 +137,7 @@ def test_aec_probe_reports_unavailable_process_lock(monkeypatch, tmp_path):
 
     assert results[0].name == "probe — exclusive run"
     assert results[0].status == "fail"
+    assert results[0].reason == doctor.aec_probe.REASON_PROBE_LOCK_ERROR
     assert "/run/jasper permissions" in results[0].detail
 
 
@@ -190,8 +193,7 @@ def test_active_aec_probe_fails_closed_when_state_unavailable(monkeypatch, error
     results = doctor.probe_aec_ref_path()
 
     assert [result.status for result in results] == ["ok", "fail"]
-    assert "idleness could not be established" in results[-1].detail
-    assert "no test tone was played" in results[-1].detail
+    assert results[-1].reason == doctor.aec_probe.REASON_PROBE_CONTROL_STATE_UNAVAILABLE
     assert not any(call and call[0] == "aplay" for call in calls)
 
 
@@ -218,8 +220,7 @@ def test_active_aec_probe_fails_closed_for_untrusted_active_source(
     results = doctor.probe_aec_ref_path()
 
     assert [result.status for result in results] == ["ok", "fail"]
-    assert "trustworthy active_source" in results[-1].detail
-    assert "no test tone was played" in results[-1].detail
+    assert results[-1].reason == doctor.aec_probe.REASON_PROBE_ACTIVE_SOURCE_UNKNOWN
     assert not any(call and call[0] == "aplay" for call in calls)
 
 
@@ -259,6 +260,7 @@ def test_active_aec_probe_refuses_known_active_playback(
     results = doctor.probe_aec_ref_path()
 
     assert [result.status for result in results] == ["ok", "fail"]
+    assert results[-1].reason == doctor.aec_probe.REASON_PROBE_ACTIVE_SOURCE_BUSY
     assert detail in results[-1].detail
     assert "Stop the active source and re-run" in results[-1].detail
     assert not any(call and call[0] == "aplay" for call in calls)
@@ -337,6 +339,12 @@ def test_active_aec_probe_trustworthy_idle_reaches_aplay(monkeypatch, tmp_path):
     results = doctor.probe_aec_ref_path()
 
     assert [result.status for result in results] == ["ok", "ok", "ok", "ok"]
+    assert [result.reason for result in results] == [
+        doctor.aec_probe.REASON_PROBE_BRIDGE_RUNNING,
+        doctor.aec_probe.REASON_PROBE_RENDERERS_IDLE,
+        doctor.aec_probe.REASON_PROBE_APLAY_OK,
+        doctor.aec_probe.REASON_PROBE_REF_HEALTHY,
+    ]
     assert any(call and call[0] == "aplay" for call in calls)
     assert isolation_open is False
 
@@ -383,6 +391,7 @@ def test_active_aec_probe_releases_isolation_after_aplay_failure(
 
     assert results[-1].name == "probe — aplay sine"
     assert results[-1].status == "fail"
+    assert results[-1].reason == doctor.aec_probe.REASON_PROBE_APLAY_FAILED
     assert events == ["isolation-enter", "aplay-failed", "isolation-exit"]
 
 
@@ -412,7 +421,7 @@ def test_active_aec_probe_never_generates_or_plays_without_isolation(
 
     assert [result.status for result in results] == ["ok", "ok", "fail"]
     assert results[-1].name == "probe — audio isolation"
-    assert "no test tone was played" in results[-1].detail
+    assert results[-1].reason == doctor.aec_probe.REASON_PROBE_ISOLATION_UNAVAILABLE
     assert not sine_path.exists()
     assert not any(call and call[0] == "aplay" for call in calls)
 
@@ -497,10 +506,7 @@ def test_active_aec_probe_reports_exit_cleanup_failure_after_tone(monkeypatch):
         "probe — audio isolation cleanup",
     ]
     assert results[-1].status == "fail"
-    assert "probe body completed" in results[-1].detail
-    assert "playback outcome is shown above" in results[-1].detail
-    assert "test tone ran" not in results[-1].detail.lower()
-    assert "no test tone was played" not in results[-1].detail.lower()
+    assert results[-1].reason == doctor.aec_probe.REASON_PROBE_ISOLATION_CLEANUP_FAILED
 
 
 def test_active_aec_probe_preserves_generate_failure_on_cleanup_failure(
@@ -548,5 +554,4 @@ def test_active_aec_probe_preserves_generate_failure_on_cleanup_failure(
     ]
     assert results[-2].status == "fail"
     assert "could not write probe file" in results[-2].detail
-    assert "probe body completed" in results[-1].detail
-    assert "test tone ran" not in results[-1].detail.lower()
+    assert results[-1].reason == doctor.aec_probe.REASON_PROBE_ISOLATION_CLEANUP_FAILED
