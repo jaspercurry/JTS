@@ -36,6 +36,7 @@ from jasper.wifi_guardian_persistence import (
     nm_unescape as _nm_unescape,
 )
 
+from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
 
@@ -168,13 +169,23 @@ def _format_phy_regdom_detail(phy_countries: dict[str, str]) -> str:
         parts.append(detail)
     return "; ".join(parts)
 
+def _cached_nmcli_active(nmcli: str) -> subprocess.CompletedProcess:
+    """``nmcli connection show --active``, memoized: check_wifi_guardian,
+    check_wifi_link_local_ipv6 and check_usbnet_nm_profile each want the
+    active-connection table, so one process serves all three per run."""
+    return evidence.get(
+        "nmcli_active",
+        lambda: _run(
+            [nmcli, "-t", "-f", NMCLI_ACTIVE_WIFI_FIELDS,
+             "connection", "show", "--active"],
+            timeout=5,
+        ),
+    )
+
+
 def _active_wifi_connection(nmcli: str) -> tuple[str | None, str | None]:
     """Return the active Wi-Fi NetworkManager profile name and device."""
-    proc = _run(
-        [nmcli, "-t", "-f", NMCLI_ACTIVE_WIFI_FIELDS,
-         "connection", "show", "--active"],
-        timeout=5,
-    )
+    proc = _cached_nmcli_active(nmcli)
     if proc.returncode != 0:
         return None, None
     return active_wifi_connection(proc.stdout)
@@ -424,18 +435,15 @@ def check_wifi_recover_timer() -> CheckResult:
             label, "skipped", "no systemctl",
             reason=REASON_RECOVER_TIMER_SKIPPED_NO_SYSTEMCTL,
         )
-    proc = _run(["systemctl", "is-enabled", "jasper-wifi-recover.timer"])
-    state = proc.stdout.strip()
-    if state == "enabled":
-        return CheckResult(label, "ok", "jasper-wifi-recover.timer enabled")
-    # is-enabled exits non-zero with empty/"not-found" stdout (or a
-    # "could not be found" stderr) when the unit isn't installed — a dev box,
-    # not a misconfigured Pi. Don't warn there.
-    if state in ("", "not-found") or "could not be found" in (proc.stderr or "").lower():
+    unit_state = evidence.unit_state("jasper-wifi-recover.timer")
+    if unit_state is None or unit_state.get("load_state") == "not-found":
         return CheckResult(
             label, "skipped", "timer not installed",
             reason=REASON_RECOVER_TIMER_NOT_INSTALLED,
         )
+    state = unit_state.get("unit_file_state") or "unknown"
+    if state == "enabled":
+        return CheckResult(label, "ok", "jasper-wifi-recover.timer enabled")
     return CheckResult(
         label, "warn",
         f"jasper-wifi-recover.timer is '{state}', not enabled — Wi-Fi can't "
@@ -461,13 +469,13 @@ def check_avahi_daemon() -> CheckResult:
     advertised" message.
     """
     label = "avahi-daemon"
-    state = _run(["systemctl", "is-active", "avahi-daemon.service"]).stdout.strip()
+    unit_state = evidence.unit_state("avahi-daemon.service")
+    state = (unit_state or {}).get("active_state") or "unknown"
     if state == "active":
         return CheckResult(label, "ok", "running (mDNS publishing enabled)")
-    # is-active prints "inactive" for both unit-not-found and stopped.
-    # Distinguish via `status` exit code: 4 means unit not loaded.
-    status = _run(["systemctl", "status", "avahi-daemon.service"])
-    if "could not be found" in status.stderr.lower() or status.returncode == 4:
+    # is-active prints "inactive" for both unit-not-found and stopped;
+    # LoadState from the same batched read distinguishes them.
+    if (unit_state or {}).get("load_state") == "not-found":
         return CheckResult(
             label, "fail",
             "avahi-daemon NOT installed. Re-run deploy/install.sh — "
@@ -958,10 +966,7 @@ def check_usbnet_nm_profile() -> CheckResult:
             label, "skipped", "no nmcli on PATH",
             reason=REASON_USBNET_SKIPPED_NO_NMCLI,
         )
-    proc = _run(
-        [nmcli, "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-        timeout=5,
-    )
+    proc = _cached_nmcli_active(nmcli)
     if proc.returncode != 0:
         return CheckResult(
             label, "warn",
@@ -971,9 +976,12 @@ def check_usbnet_nm_profile() -> CheckResult:
         )
     active_on_usb0: str | None = None
     for raw in proc.stdout.splitlines():
-        parts = raw.rsplit(":", 1)
-        if len(parts) == 2 and parts[1] == USBNET_IFACE:
-            active_on_usb0 = _nm_unescape(parts[0])
+        # TYPE,DEVICE,NAME (NMCLI_ACTIVE_WIFI_FIELDS) — NAME is requested
+        # LAST and split greedily so an escaped colon inside it (an SSID
+        # like "Home\:5G") never gets mistaken for the DEVICE separator.
+        parts = raw.split(":", 2)
+        if len(parts) == 3 and parts[1] == USBNET_IFACE:
+            active_on_usb0 = _nm_unescape(parts[2]) or None
             break
     if active_on_usb0 is None:
         return CheckResult(
@@ -1014,13 +1022,13 @@ def check_usbnet_dhcp_unit() -> CheckResult:
             label, "skipped", "no systemctl",
             reason=REASON_USBNET_SKIPPED_NO_SYSTEMCTL,
         )
-    proc = _run(["systemctl", "is-active", USBNET_DHCP_UNIT])
-    state = proc.stdout.strip()
-    if state in ("", "not-found") or "could not be found" in (proc.stderr or "").lower():
+    unit_state = evidence.unit_state(USBNET_DHCP_UNIT)
+    if unit_state is None or unit_state.get("load_state") == "not-found":
         return CheckResult(
             label, "skipped", "unit not installed",
             reason=REASON_USBNET_DHCP_NOT_INSTALLED,
         )
+    state = unit_state.get("active_state") or "unknown"
     iface_present = _usbnet_iface_present()
     if iface_present and state in ("active", "activating"):
         return CheckResult(label, "ok", f"{USBNET_DHCP_UNIT} {state}, {USBNET_IFACE} present")

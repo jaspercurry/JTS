@@ -21,6 +21,7 @@ import pytest
 
 from jasper import tool_catalog_view
 from jasper.cli import doctor
+from jasper.cli.doctor import _evidence
 from jasper.cli.doctor import web as doctor_web
 from jasper.control import control_token
 from jasper.conversation_history import (
@@ -32,7 +33,7 @@ from jasper.conversation_history import (
 )
 from jasper.voice import provider_state
 
-from .doctor_test_support import _registered_check_names
+from .doctor_test_support import _make_unit_states_fake, _registered_check_names
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -479,36 +480,18 @@ def _installer_wizard_units() -> set[str]:
 # green.
 _WIZARDS = sorted(_installer_wizard_units())
 
-_BOUND = "ActiveState=active\nResult=success\n"
-_START_LIMITED = "ActiveState=failed\nResult=service-start-limit-hit\n"
-# `systemctl show` on a unit that does not exist answers rc=0 with these.
-_NOT_INSTALLED = "ActiveState=inactive\nResult=success\n"
+_BOUND = {"active_state": "active", "result": "success"}
+_START_LIMITED = {"active_state": "failed", "result": "service-start-limit-hit"}
+# A unit that does not exist answers ActiveState=inactive/Result=success.
+_NOT_INSTALLED = {"active_state": "inactive", "result": "success", "load_state": "not-found"}
 
 
-def _socket_states(overrides=None, *, returncode=0, stderr=""):
-    """Fake ``_run`` serving a ``systemctl show`` body per wizard socket.
-
-    Every wizard socket is modelled, so a check that queries something
-    unmodelled fails loudly here instead of silently reading "". Queries are
-    asserted to be socket-side: reading the SERVICE is the #2216 blocker-1
-    regression (measured, the service enters ``ActiveState=failed`` 34 times
-    in 20 seconds of ordinary retrying while the socket never leaves
-    ``active``), so a revision that reaches for it fails here.
-    """
-    states = {f"{unit}.socket": _BOUND for unit in _WIZARDS}
-    for unit, body in (overrides or {}).items():
-        states[f"{unit}.socket"] = body
-
-    def fake_run(cmd, timeout=5.0):
-        assert cmd[:2] == ["systemctl", "show"], cmd
-        unit = cmd[2]
-        assert unit.endswith(".socket"), f"check read the service: {unit}"
-        assert unit in states, f"check queried an unmodelled unit: {unit}"
-        return subprocess.CompletedProcess(
-            cmd, returncode, stdout=states[unit], stderr=stderr,
-        )
-
-    return fake_run
+def _socket_states(overrides=None):
+    """Table-driven double for ``_evidence.read_unit_states`` serving every
+    wizard socket's state, so a check that queries something unmodelled
+    still resolves (every wizard socket below defaults healthy)."""
+    over = {f"{unit}.socket": body for unit, body in (overrides or {}).items()}
+    return _make_unit_states_fake(over)
 
 
 @pytest.mark.parametrize("unit", _WIZARDS)
@@ -519,7 +502,7 @@ def test_start_limited_wizard_socket_fails_with_its_own_remedy(monkeypatch, unit
     jasper-correction-web FAILS the other four rather than deselecting them.
     """
     monkeypatch.setattr(
-        doctor_web, "_run", _socket_states({unit: _START_LIMITED}),
+        _evidence, "read_unit_states", _socket_states({unit: _START_LIMITED}),
     )
 
     r = doctor_web.check_wizard_socket_start_limits()
@@ -536,7 +519,7 @@ def test_absent_wizard_unit_is_ok(monkeypatch, unit):
     from deploy/jasper-web-streambox.* under the jasper-web name.
     """
     monkeypatch.setattr(
-        doctor_web, "_run", _socket_states({unit: _NOT_INSTALLED}),
+        _evidence, "read_unit_states", _socket_states({unit: _NOT_INSTALLED}),
     )
 
     r = doctor_web.check_wizard_socket_start_limits()
@@ -547,13 +530,14 @@ def test_absent_wizard_unit_is_ok(monkeypatch, unit):
     "body, why",
     [
         (_BOUND, "listening, service idle-exited between sessions"),
-        ("ActiveState=activating\nResult=success\n", "socket still binding"),
+        ({"active_state": "activating", "result": "success"}, "socket still binding"),
         (_NOT_INSTALLED, "not installed on this profile"),
     ],
 )
 def test_healthy_wizard_sockets_are_ok(monkeypatch, body, why):
     monkeypatch.setattr(
-        doctor_web, "_run", _socket_states({unit: body for unit in _WIZARDS}),
+        _evidence, "read_unit_states",
+        _socket_states({unit: body for unit in _WIZARDS}),
     )
 
     r = doctor_web.check_wizard_socket_start_limits()
@@ -571,9 +555,9 @@ def test_any_failed_wizard_socket_fails_not_just_the_start_limit_marker(
     socket killed by ``trigger-limit-hit`` is just as unbound.
     """
     monkeypatch.setattr(
-        doctor_web, "_run",
+        _evidence, "read_unit_states",
         _socket_states({
-            "jasper-web": "ActiveState=failed\nResult=trigger-limit-hit\n",
+            "jasper-web": {"active_state": "failed", "result": "trigger-limit-hit"},
         }),
     )
 
@@ -583,54 +567,16 @@ def test_any_failed_wizard_socket_fails_not_just_the_start_limit_marker(
     assert r.reason == doctor_web.REASON_WIZARD_SOCKET_FINDING
 
 
-@pytest.mark.parametrize(
-    "body, returncode, stderr",
-    [
-        # #2216 should-fix 2: an unreadable probe must not render as healthy.
-        ("", 1, "Failed to connect to bus"),
-        # A non-zero systemctl is a failed read even when its body parses —
-        # otherwise the rc clause is dead weight behind the empty-state one.
-        (_BOUND, 1, "Failed to get properties: Connection timed out"),
-        # rc=0 with a body carrying no ActiveState is still a failed read.
-        ("Failed to get properties: Access denied\n", 0, ""),
-    ],
-    ids=["bus-down", "nonzero-yet-parses", "unparseable"],
-)
-def test_unreadable_wizard_socket_probe_fails(
-    monkeypatch, body, returncode, stderr,
-):
-    monkeypatch.setattr(
-        doctor_web, "_run",
-        _socket_states(
-            {unit: body for unit in _WIZARDS},
-            returncode=returncode, stderr=stderr,
-        ),
-    )
+def test_unreadable_wizard_socket_probe_fails(monkeypatch):
+    """A socket whose ActiveState cannot be determined at all — an
+    unparseable or otherwise degraded reply from the shared unit-state
+    batch — is a failed read, never rendered healthy (#2216 should-fix 2)."""
+    known = {f"{unit}.socket": _BOUND for unit in _WIZARDS if unit != "jasper-web"}
 
-    r = doctor_web.check_wizard_socket_start_limits()
+    def fake(units, *, timeout):
+        return {u: known[u] for u in units if u in known}
 
-    assert r.status == "fail"
-    assert r.reason == doctor_web.REASON_WIZARD_SOCKET_FINDING
-
-
-def test_one_timed_out_wizard_probe_still_reads_the_rest(monkeypatch):
-    """A wedged D-Bus hangs these reads — the sweep must survive the first one.
-
-    Uncaught, ``TimeoutExpired`` aborts into the harness's generic crashed-check
-    result (empty ``reason``) and loses every per-unit finding, on exactly the
-    failure this check exists to diagnose — so pinning ``REASON_WIZARD_SOCKET_
-    FINDING`` here (not just ``status == "fail"``) is what proves the sweep
-    survived rather than merely crashed.
-    """
-    hangs, wedged = _WIZARDS[0], _WIZARDS[1]
-    serve = _socket_states({wedged: _START_LIMITED})
-
-    def fake_run(cmd, timeout=5.0):
-        if cmd[2] == f"{hangs}.socket":
-            raise subprocess.TimeoutExpired(cmd, 5.0)
-        return serve(cmd, timeout=timeout)
-
-    monkeypatch.setattr(doctor_web, "_run", fake_run)
+    monkeypatch.setattr(_evidence, "read_unit_states", fake)
 
     r = doctor_web.check_wizard_socket_start_limits()
 
@@ -640,11 +586,9 @@ def test_one_timed_out_wizard_probe_still_reads_the_rest(monkeypatch):
 
 def test_wizard_socket_start_limits_skips_without_systemctl(monkeypatch):
     """Dev host: no systemd to be unhealthy. Matches every sibling's wording."""
-
-    def raises(cmd, timeout=5.0):
-        raise FileNotFoundError("systemctl not found")
-
-    monkeypatch.setattr(doctor_web, "_run", raises)
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", lambda units, *, timeout: None,
+    )
 
     r = doctor_web.check_wizard_socket_start_limits()
 

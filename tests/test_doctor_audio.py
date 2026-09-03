@@ -25,6 +25,7 @@ import jasper.active_speaker.setup_status as setup_status_mod
 from jasper.camilla import CamillaUnavailable
 from jasper.cli import doctor
 from jasper.cli.doctor import audio
+from jasper.cli.doctor._evidence import evidence
 from jasper.mic_presence import MicPresence
 from jasper.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
@@ -214,7 +215,7 @@ def test_dual_apple_dongle_check_requires_two_audio_cards(monkeypatch):
             )
         raise AssertionError(cmd)
 
-    monkeypatch.setattr(doctor.audio, "_load_output_hardware_state", lambda: state)
+    evidence.seed("output_hardware_state", state)
     monkeypatch.setattr(doctor.audio, "_run", fake_run)
 
     result = doctor.check_apple_dongle_audio()
@@ -322,7 +323,7 @@ def test_active_speaker_hardware_mismatch_is_separate_from_basic_output_health(
             ),
         ),
     )
-    monkeypatch.setattr(doctor.audio, "_load_output_hardware_state", lambda: state)
+    evidence.seed("output_hardware_state", state)
 
     output = doctor.check_output_hardware_state()
     active = doctor.check_active_speaker_output_hardware_match()
@@ -381,8 +382,8 @@ def test_active_speaker_hardware_match_checks_dual_apple_child_serials(
     assert active.reason == audio.REASON_OUTPUT_HARDWARE_CLOCK_BLOCKED
 
 
-def test_output_hardware_state_warns_without_a_record(monkeypatch):
-    monkeypatch.setattr(doctor.audio, "_load_output_hardware_state", lambda: None)
+def test_output_hardware_state_warns_without_a_record():
+    evidence.seed("output_hardware_state", None)
 
     result = doctor.check_output_hardware_state()
 
@@ -426,7 +427,7 @@ def test_dual_apple_headphone_gain_checks_every_card(monkeypatch):
             )
         raise AssertionError(cmd)
 
-    monkeypatch.setattr(doctor.audio, "_load_output_hardware_state", lambda: state)
+    evidence.seed("output_hardware_state", state)
     monkeypatch.setattr(doctor.audio, "_run", fake_run)
 
     result = doctor.check_dongle_headphone_at_max()
@@ -744,15 +745,15 @@ def _not_bonded(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_microphone_headline_verdicts(
     monkeypatch: pytest.MonkeyPatch, presence, status, reason
 ) -> None:
-    monkeypatch.setattr(audio, "read_mic_presence", presence)
+    evidence.seed("mic_presence", presence())
     r = audio.check_microphone()
     assert r.name == "microphone"
     assert r.status == status
     assert r.reason == reason
 
 
-def test_card_and_capture_defer_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(audio, "read_mic_presence", _absent)
+def test_card_and_capture_defer_when_absent() -> None:
+    evidence.seed("mic_presence", _absent())
     card = audio.check_mic_card_matches_config(_CFG)
     cap = audio.check_mic_capture(_CFG)
     # Both defer to the headline, which owns the verdict: nothing was probed
@@ -763,9 +764,9 @@ def test_card_and_capture_defer_when_absent(monkeypatch: pytest.MonkeyPatch) -> 
     assert cap.reason == audio.REASON_MIC_ABSENT_DEFERRED
 
 
-def test_absent_mic_is_one_flag_zero_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_absent_mic_is_one_flag_zero_failures() -> None:
     """The whole point of the cleanup: no mic == one warn, never a cascade."""
-    monkeypatch.setattr(audio, "read_mic_presence", _absent)
+    evidence.seed("mic_presence", _absent())
     statuses = [
         r.status for r in (
             audio.check_microphone(),
@@ -805,7 +806,7 @@ def test_recorded_silence_stays_a_failure_even_with_an_accessory(
 ) -> None:
     """Scope guard on the softening: a mic that OPENS but records silence is a
     present-and-broken local mic, not an absent one."""
-    monkeypatch.setattr(audio, "read_mic_presence", _push_to_talk_only)
+    evidence.seed("mic_presence", _push_to_talk_only())
     rec = types.SimpleNamespace()
 
     class _FakeSd:
@@ -883,7 +884,7 @@ def _drive_capture_open_failure_site(monkeypatch: pytest.MonkeyPatch):
 def test_every_soften_call_site_keeps_the_probe_reason(
     monkeypatch: pytest.MonkeyPatch, scenario, probe_reason
 ) -> None:
-    monkeypatch.setattr(audio, "read_mic_presence", _push_to_talk_only)
+    evidence.seed("mic_presence", _push_to_talk_only())
 
     result = scenario(monkeypatch)
 

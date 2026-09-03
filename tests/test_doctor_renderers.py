@@ -12,11 +12,25 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.cli import doctor
-from jasper.cli.doctor import _shared, renderers
+from jasper.cli.doctor import _evidence, _shared, renderers
 from jasper.cli.doctor.renderers import _classify_mux_mode
 from jasper.music_sources import MUSIC_SOURCES
 
 from .doctor_test_support import _grouping_cfg
+
+
+def _seed_unit_states(**by_unit):
+    """Seed the batched-roster evidence read so `evidence.unit_state(unit)`
+    (and `unit_active`) answer from these fields without spawning
+    `systemctl`. Missing fields default to falsy/None, matching a real
+    `systemctl show` reply's absent keys."""
+    fields = ("unit", "load_state", "active_state", "sub_state",
+              "unit_file_state", "result", "n_restarts", "main_pid")
+    states = {
+        unit: {f: overrides.get(f) for f in fields} | {"unit": unit}
+        for unit, overrides in by_unit.items()
+    }
+    _evidence.evidence.seed("units", states)
 
 
 def _patch_shairport_conf(monkeypatch, conf_text: str, tmp_path: Path):
@@ -33,16 +47,21 @@ def _patch_shairport_conf(monkeypatch, conf_text: str, tmp_path: Path):
     monkeypatch.setattr(doctor.renderers, "Path", fake_path)
 
 
+def _seed_bt_agent_running():
+    _seed_unit_states(
+        **{"bt-agent.service": {"load_state": "loaded", "active_state": "active",
+                                 "sub_state": "running"}},
+    )
+
+
 def test_check_bluetooth_pairing_policy_ok(monkeypatch):
+    _seed_bt_agent_running()
+
     def fake_run(cmd, *args, **kwargs):
-        if cmd[:3] == ["systemctl", "show", "bt-agent.service"]:
+        if cmd[:4] == ["systemctl", "show", "bt-agent.service", "-p"]:
             return SimpleNamespace(
                 returncode=0,
-                stdout=(
-                    "ActiveState=active\n"
-                    "SubState=running\n"
-                    "ExecStart={ path=/opt/jasper/.venv/bin/jasper-bluetooth-agent ; }\n"
-                ),
+                stdout="ExecStart={ path=/opt/jasper/.venv/bin/jasper-bluetooth-agent ; }\n",
                 stderr="",
             )
         if cmd == ["bluetoothctl", "show"]:
@@ -62,15 +81,13 @@ def test_check_bluetooth_pairing_policy_ok(monkeypatch):
 
 
 def test_check_bluetooth_pairing_policy_fails_old_agent(monkeypatch):
+    _seed_bt_agent_running()
+
     def fake_run(cmd, *args, **kwargs):
-        assert cmd[:3] == ["systemctl", "show", "bt-agent.service"]
+        assert cmd[:4] == ["systemctl", "show", "bt-agent.service", "-p"]
         return SimpleNamespace(
             returncode=0,
-            stdout=(
-                "ActiveState=active\n"
-                "SubState=running\n"
-                "ExecStart={ path=/usr/bin/bt-agent ; }\n"
-            ),
+            stdout="ExecStart={ path=/usr/bin/bt-agent ; }\n",
             stderr="",
         )
 
@@ -83,15 +100,13 @@ def test_check_bluetooth_pairing_policy_fails_old_agent(monkeypatch):
 
 
 def test_check_bluetooth_pairing_policy_warns_pairable_outside_window(monkeypatch):
+    _seed_bt_agent_running()
+
     def fake_run(cmd, *args, **kwargs):
-        if cmd[:3] == ["systemctl", "show", "bt-agent.service"]:
+        if cmd[:4] == ["systemctl", "show", "bt-agent.service", "-p"]:
             return SimpleNamespace(
                 returncode=0,
-                stdout=(
-                    "ActiveState=active\n"
-                    "SubState=running\n"
-                    "ExecStart={ path=/opt/jasper/.venv/bin/jasper-bluetooth-agent ; }\n"
-                ),
+                stdout="ExecStart={ path=/opt/jasper/.venv/bin/jasper-bluetooth-agent ; }\n",
                 stderr="",
             )
         if cmd == ["bluetoothctl", "show"]:
@@ -111,15 +126,13 @@ def test_check_bluetooth_pairing_policy_warns_pairable_outside_window(monkeypatc
 
 
 def test_check_bluetooth_pairing_policy_warns_when_pairing_window_open(monkeypatch):
+    _seed_bt_agent_running()
+
     def fake_run(cmd, *args, **kwargs):
-        if cmd[:3] == ["systemctl", "show", "bt-agent.service"]:
+        if cmd[:4] == ["systemctl", "show", "bt-agent.service", "-p"]:
             return SimpleNamespace(
                 returncode=0,
-                stdout=(
-                    "ActiveState=active\n"
-                    "SubState=running\n"
-                    "ExecStart={ path=/opt/jasper/.venv/bin/jasper-bluetooth-agent ; }\n"
-                ),
+                stdout="ExecStart={ path=/opt/jasper/.venv/bin/jasper-bluetooth-agent ; }\n",
                 stderr="",
             )
         if cmd == ["bluetoothctl", "show"]:
@@ -673,11 +686,16 @@ def test_probe_verdict_and_check_status(
     monkeypatch.setattr(
         "jasper.renderer_lanes.ring_writer_pid", lambda label: _ALOOP_OWNER_PID
     )
+    # Aloop ownership reads through the evidence cache now (not `Path`); seed
+    # every private-lane substream so whichever aloop device a row uses (only
+    # `_ALOOP` today) finds its owner_pid.
+    _evidence.evidence.seed(
+        "loopback_substreams",
+        {i: f"owner_pid : {_ALOOP_OWNER_PID}\n" for i in range(3)},
+    )
     real_path = doctor.renderers.Path
 
     def fake_path(arg):
-        if "/proc/asound/" in str(arg):
-            return _FakeProcPath(f"owner_pid : {_ALOOP_OWNER_PID}\n")
         if str(arg).startswith("/proc/"):
             return _FakeProcPath(cgroup)
         return real_path(arg)
@@ -1092,16 +1110,18 @@ def test_renderer_checks_treat_household_source_off_as_healthy(monkeypatch):
 
     monkeypatch.setattr(rdoc, "_parked_follower_result", lambda _label: None)
     monkeypatch.setattr(rdoc, "source_intent_enabled", lambda source: False)
+    _seed_unit_states(**{
+        "librespot.service": {"active_state": "inactive"},
+        "shairport-sync.service": {"active_state": "inactive"},
+        "nqptp.service": {"active_state": "inactive"},
+        "bluealsa.service": {"active_state": "inactive"},
+        "bluealsa-aplay.service": {"active_state": "inactive"},
+        "bt-agent.service": {"active_state": "inactive"},
+    })
     monkeypatch.setattr(
         rdoc,
         "_run",
-        lambda cmd: SimpleNamespace(
-            returncode=3,
-            stdout="Powered: no\n"
-            if cmd[:2] == ["bluetoothctl", "show"]
-            else "inactive\n",
-            stderr="",
-        ),
+        lambda cmd: SimpleNamespace(returncode=3, stdout="Powered: no\n", stderr=""),
     )
     monkeypatch.setattr(
         rdoc,
@@ -1126,11 +1146,7 @@ def test_renderer_check_fails_when_household_off_runtime_is_active(monkeypatch):
 
     monkeypatch.setattr(rdoc, "_parked_follower_result", lambda _label: None)
     monkeypatch.setattr(rdoc, "source_intent_enabled", lambda source: False)
-    monkeypatch.setattr(
-        rdoc,
-        "_run",
-        lambda cmd: SimpleNamespace(returncode=0, stdout="active\n", stderr=""),
-    )
+    _seed_unit_states(**{"librespot.service": {"active_state": "active"}})
     result = rdoc.check_librespot_running(None)
 
     assert result.status == "fail"
@@ -1192,12 +1208,14 @@ def test_bluealsa_desired_on_proves_radio_and_units(monkeypatch):
         "read_bluetooth_rfkill_state",
         lambda: BluetoothRfkillState(True, False, False),
     )
-
-    def run(cmd):
-        stdout = "Powered: yes\n" if cmd[0] == "bluetoothctl" else "active\n"
-        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
-
-    monkeypatch.setattr(rdoc, "_run", run)
+    _seed_unit_states(**{
+        "bluealsa.service": {"active_state": "active"},
+        "bluealsa-aplay.service": {"active_state": "active"},
+    })
+    monkeypatch.setattr(
+        rdoc, "_run",
+        lambda cmd: SimpleNamespace(returncode=0, stdout="Powered: yes\n", stderr=""),
+    )
 
     result = rdoc.check_bluealsa()
 

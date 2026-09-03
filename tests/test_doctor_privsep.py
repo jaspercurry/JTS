@@ -195,6 +195,57 @@ def test_household_secret_absent_is_skipped(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# _unit_runtime_identity — the evidence-cache seams
+# --------------------------------------------------------------------------- #
+def test_unit_runtime_identity_batches_user_group_across_daemons(monkeypatch):
+    """User/Group/SupplementaryGroups are read once for the whole manifest,
+    not once per daemon queried (ADR-0228 rule 4)."""
+    from jasper.cli.doctor import _evidence
+
+    calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def fake_property(prop, units):
+        calls.append((prop, tuple(units)))
+        return [f"{prop}-value" for _ in units]
+
+    def fake_unit_states(units, *, timeout):
+        return {
+            f"{u}.service": {"unit": f"{u}.service", "load_state": "loaded"}
+            for u in units
+        }
+
+    monkeypatch.setattr(_evidence, "_systemctl_show_property", fake_property)
+    monkeypatch.setattr(_evidence, "read_unit_states", fake_unit_states)
+
+    first = privsep._unit_runtime_identity("jasper-control")
+    second = privsep._unit_runtime_identity("jasper-web")
+
+    assert first["User"] == "User-value"
+    assert second["User"] == "User-value"
+    assert sorted(prop for prop, _ in calls) == ["Group", "SupplementaryGroups", "User"]
+
+
+def test_unit_runtime_identity_is_none_when_a_property_is_unreadable(monkeypatch):
+    """A LoadState success with a broken User/Group/SupplementaryGroups read
+    must not misclassify as 'runs as root' or 'not installed' — it is
+    unknown, like a full systemctl failure."""
+    from jasper.cli.doctor import _evidence
+
+    def fake_unit_states(units, *, timeout):
+        return {
+            f"{u}.service": {"unit": f"{u}.service", "load_state": "loaded"}
+            for u in units
+        }
+
+    monkeypatch.setattr(_evidence, "read_unit_states", fake_unit_states)
+    monkeypatch.setattr(
+        _evidence, "_systemctl_show_property", lambda prop, units: None,
+    )
+
+    assert privsep._unit_runtime_identity("jasper-control") is None
+
+
+# --------------------------------------------------------------------------- #
 # Integration: the decorated checks must be total (never crash) off the Pi.
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(

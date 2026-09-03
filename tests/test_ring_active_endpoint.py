@@ -1590,6 +1590,7 @@ def test_the_coupling_warn_names_the_recovery_ladder_and_never_the_forbidden_rin
     landing state.
     """
     from jasper.cli.doctor import audio_runtime
+    from jasper.cli.doctor._evidence import evidence
     from jasper.fanin_coupling import COUPLING_SHM_RING, OUTPUTD_CONTENT_BRIDGE_SHM_RING
 
     monkeypatch.setattr(audio_runtime, "_requires_roleful_graph", lambda: True)
@@ -1604,11 +1605,7 @@ def test_the_coupling_warn_names_the_recovery_ladder_and_never_the_forbidden_rin
     monkeypatch.setattr(
         "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: False
     )
-    monkeypatch.setattr(
-        audio_runtime,
-        "_active_camilla_config_path",
-        lambda *a, **k: ("/tmp/statefile.yml", "/tmp/loaded.yml"),
-    )
+    evidence.seed("camilla_config", ("/tmp/statefile.yml", "/tmp/loaded.yml"))
     monkeypatch.setattr(audio_runtime, "_loaded_capture_type", lambda path: "Alsa")
     monkeypatch.setattr(
         audio_runtime,
@@ -1648,6 +1645,7 @@ def test_the_coupling_warn_on_an_armed_box_names_the_forward_ladder_not_a_rollba
     """
     from jasper.active_speaker.runtime_contract import OUTPUTD_ACTIVE_PLAYBACK_DEVICE
     from jasper.cli.doctor import audio_runtime
+    from jasper.cli.doctor._evidence import evidence
     from jasper.fanin_coupling import COUPLING_SHM_RING, OUTPUTD_CONTENT_BRIDGE_SHM_RING
 
     monkeypatch.setattr(audio_runtime, "_requires_roleful_graph", lambda: True)
@@ -1662,11 +1660,7 @@ def test_the_coupling_warn_on_an_armed_box_names_the_forward_ladder_not_a_rollba
     monkeypatch.setattr(
         "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: True
     )
-    monkeypatch.setattr(
-        audio_runtime,
-        "_active_camilla_config_path",
-        lambda *a, **k: ("/tmp/statefile.yml", "/tmp/loaded.yml"),
-    )
+    evidence.seed("camilla_config", ("/tmp/statefile.yml", "/tmp/loaded.yml"))
     monkeypatch.setattr(audio_runtime, "_loaded_capture_type", lambda path: "Alsa")
     monkeypatch.setattr(
         audio_runtime,

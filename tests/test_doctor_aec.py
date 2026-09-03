@@ -6,7 +6,6 @@
 
 import hashlib
 import json
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -16,8 +15,31 @@ import pytest
 from jasper.chip_aec import health as chip_aec_health
 from jasper.audio_profile_state import MicProbe, RuntimeAecEnv
 from jasper.cli import doctor
+from jasper.cli.doctor import _evidence
 from jasper.control import aec_endpoints
 from tests._aec_bridge_helpers import _rms_log_line
+
+
+def _stub_unit_active_states(monkeypatch, active: dict[str, str]) -> None:
+    """`_evidence.read_unit_states` stand-in for the doctor's one batched
+    ``systemctl show``: units in `active` report that ActiveState (and
+    UnitFileState=enabled); every other rostered unit reads inactive."""
+
+    def fake(units, *, timeout):
+        return {
+            unit: {
+                "unit": unit,
+                "load_state": "loaded",
+                "active_state": active.get(unit, "inactive"),
+                "sub_state": "running" if active.get(unit) == "active" else "dead",
+                "unit_file_state": "enabled",
+                "n_restarts": 0,
+                "main_pid": 0,
+            }
+            for unit in units
+        }
+
+    monkeypatch.setattr(_evidence, "read_unit_states", fake)
 
 
 # --------------------------------------------- AEC bridge output assessment
@@ -432,13 +454,7 @@ def test_check_aec_output_health_skips_when_bridge_not_running(monkeypatch):
     exists to assess without a running bridge — that is a skip, not an ok,
     and the row it defers to is check_aec_bridge_running."""
     monkeypatch.setattr(doctor.aec, "_parked_follower_result", lambda _label: None)
-    monkeypatch.setattr(
-        doctor.aec,
-        "_run",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            stdout="inactive\n", stderr="", returncode=3,
-        ),
-    )
+    _stub_unit_active_states(monkeypatch, {})
 
     result = doctor.check_aec_bridge_output_health()
 
@@ -448,11 +464,10 @@ def test_check_aec_output_health_skips_when_bridge_not_running(monkeypatch):
 
 def _stage_bridge_journal(monkeypatch, journal: str) -> None:
     def fake_run(command, **_kwargs):
-        if command[:2] == ["systemctl", "is-active"]:
-            return SimpleNamespace(stdout="active\n", stderr="", returncode=0)
         return SimpleNamespace(stdout=journal, stderr="", returncode=0)
 
     monkeypatch.setattr(doctor.aec, "_parked_follower_result", lambda _label: None)
+    _stub_unit_active_states(monkeypatch, {"jasper-aec-bridge.service": "active"})
     monkeypatch.setattr(doctor.aec, "_run", fake_run)
     monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: True)
     monkeypatch.setattr(
@@ -481,7 +496,10 @@ def test_loopback_playback_active_reads_proc_status(tmp_path):
     with patch("glob.glob", return_value=sub_paths):
         # All closed → inactive.
         assert doctor._loopback_playback_active() is False
-        # Flip sub2 to RUNNING → active.
+        # Flip sub2 to RUNNING → active. The reader is cached per doctor run
+        # (ADR-0228 rule 4), so simulate a fresh run rather than expecting a
+        # second call within the same run to re-read /proc.
+        _evidence.evidence.reset()
         (fake_root / "sub2" / "status").write_text(
             "state: RUNNING\nowner_pid   : 12345\n"
         )
@@ -489,6 +507,7 @@ def test_loopback_playback_active_reads_proc_status(tmp_path):
 
     # No status files at all (e.g., snd-aloop not loaded) → inactive,
     # never raises.
+    _evidence.evidence.reset()
     with patch("glob.glob", return_value=[]):
         assert doctor._loopback_playback_active() is False
 
@@ -832,6 +851,7 @@ def _install_reference_health_check_fakes(
     monkeypatch.setattr(doctor.aec.time, "monotonic", lambda: 1_000.0)
     monkeypatch.setattr(doctor.aec.time, "time", lambda: 50_000.0)
     monkeypatch.setattr(doctor.aec, "_parked_follower_result", lambda _label: None)
+    _stub_unit_active_states(monkeypatch, {"jasper-aec-bridge.service": "active"})
     calls: list[list[str]] = []
 
     def fake_outputd_status():
@@ -846,8 +866,6 @@ def _install_reference_health_check_fakes(
 
     def fake_run(command, **_kwargs):
         calls.append(command)
-        if command == ["systemctl", "is-active", "jasper-aec-bridge.service"]:
-            return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
         if command[:3] == ["journalctl", "-u", "jasper-aec-bridge.service"]:
             return SimpleNamespace(returncode=0, stdout=journal, stderr="")
         raise AssertionError(f"unexpected command: {command!r}")
@@ -1430,11 +1448,7 @@ def test_check_dtln_uses_configured_model_size(monkeypatch, tmp_path: Path):
     _install_fake_dtln_registry(monkeypatch, tmp_path)
     monkeypatch.setenv("JASPER_AEC_DTLN_ENABLED", "1")
     monkeypatch.setenv("JASPER_AEC_DTLN_SIZE", "128")
-    monkeypatch.setattr(
-        doctor.aec,
-        "_run",
-        lambda *_args, **_kwargs: SimpleNamespace(stdout="inactive"),
-    )
+    _stub_unit_active_states(monkeypatch, {})
     (tmp_path / "dtln_aec_128_1.onnx").write_bytes(b"model")
     (tmp_path / "dtln_aec_128_2.onnx").write_bytes(b"model")
 
@@ -1676,18 +1690,11 @@ def test_aec_bridge_running_does_not_re_render_the_audio_profile(monkeypatch):
     Audio profile / Chip-AEC alignment rows, so this check must not rebuild
     the profile status (a mic-firmware probe) to say it."""
 
-    def fake_run(cmd, **kwargs):
-        if cmd == ["systemctl", "is-active", "jasper-aec-bridge.service"]:
-            return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
-        if cmd == ["systemctl", "is-enabled", "jasper-aec-bridge.service"]:
-            return SimpleNamespace(returncode=0, stdout="enabled\n", stderr="")
-        raise AssertionError(f"unexpected command: {cmd!r}")
-
     def unexpected_status(**_kwargs):
         raise AssertionError("the running branch must not re-render /aec")
 
     monkeypatch.setattr(doctor.aec, "_parked_follower_result", lambda _label: None)
-    monkeypatch.setattr(doctor.aec, "_run", fake_run)
+    _stub_unit_active_states(monkeypatch, {"jasper-aec-bridge.service": "active"})
     monkeypatch.setattr(
         doctor.aec, "_audio_profile_status_for_doctor", unexpected_status,
     )
@@ -1705,19 +1712,10 @@ def test_aec_bridge_down_during_commissioning_is_intentional_not_a_failure(
     must report that as the intended state, not a red bridge failure with a
     restart remedy."""
 
-    def fake_run(cmd, **kwargs):
-        if cmd == ["systemctl", "is-active", "jasper-aec-bridge.service"]:
-            return SimpleNamespace(returncode=3, stdout="inactive\n", stderr="")
-        if cmd == ["systemctl", "is-enabled", "jasper-aec-bridge.service"]:
-            return SimpleNamespace(returncode=0, stdout="enabled\n", stderr="")
-        if cmd == ["systemctl", "is-active", "jasper-aec-commission.service"]:
-            return SimpleNamespace(
-                returncode=0, stdout="activating\n", stderr="",
-            )
-        raise AssertionError(f"unexpected command: {cmd!r}")
-
     monkeypatch.setattr(doctor.aec, "_parked_follower_result", lambda _label: None)
-    monkeypatch.setattr(doctor.aec, "_run", fake_run)
+    _stub_unit_active_states(
+        monkeypatch, {"jasper-aec-commission.service": "activating"},
+    )
 
     result = doctor.aec.check_aec_bridge_running()
 
@@ -1734,15 +1732,10 @@ def test_aec_bridge_down_separates_a_withheld_verdict_from_a_dead_bridge(
     has to name which."""
     from jasper.mics import xvf3800
 
-    def fake_run(cmd, **kwargs):
-        if cmd[:2] == ["systemctl", "is-active"]:
-            return SimpleNamespace(returncode=3, stdout="inactive\n", stderr="")
-        return SimpleNamespace(returncode=0, stdout="enabled\n", stderr="")
-
     marker = tmp_path / "aec-bridge-ready"
     monkeypatch.setenv("JASPER_AEC_BRIDGE_READY_MARKER", str(marker))
     monkeypatch.setattr(doctor.aec, "_parked_follower_result", lambda _label: None)
-    monkeypatch.setattr(doctor.aec, "_run", fake_run)
+    _stub_unit_active_states(monkeypatch, {})
     monkeypatch.setattr(doctor.aec, "_aec_mode_setting", lambda: "auto")
     monkeypatch.setattr(
         xvf3800,
@@ -2076,10 +2069,9 @@ def test_check_dtln_prefers_stats_snapshot_over_journal(
         )
     )
     monkeypatch.setenv("JASPER_AEC_BRIDGE_STATS_PATH", str(stats_path))
+    _stub_unit_active_states(monkeypatch, {"jasper-aec-bridge.service": "active"})
 
     def _fake_run(cmd, **kwargs):
-        if cmd[0] == "systemctl":
-            return SimpleNamespace(stdout="active", stderr="", returncode=0)
         raise AssertionError(f"unexpected subprocess: {cmd}")
 
     monkeypatch.setattr(doctor.aec, "_run", _fake_run)
@@ -2133,16 +2125,7 @@ def test_enhanced_aec_doctor_accepts_non_actionable_states(
         "_audio_profile_status_for_doctor",
         lambda: {"audio_profile": {"active": "xvf_software_aec3"}},
     )
-    monkeypatch.setattr(
-        doctor.aec,
-        "_run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(
-            [],
-            0,
-            stdout="inactive\n",
-            stderr="",
-        ),
-    )
+    _stub_unit_active_states(monkeypatch, {})
     monkeypatch.setattr(
         doctor.aec.enhanced_aec,
         "status",
@@ -2170,16 +2153,7 @@ def test_enhanced_aec_doctor_warns_only_after_request(monkeypatch, state):
         "_audio_profile_status_for_doctor",
         lambda: {"audio_profile": {"active": "xvf_software_aec3"}},
     )
-    monkeypatch.setattr(
-        doctor.aec,
-        "_run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(
-            [],
-            0,
-            stdout="inactive\n",
-            stderr="",
-        ),
-    )
+    _stub_unit_active_states(monkeypatch, {})
     monkeypatch.setattr(
         doctor.aec.enhanced_aec,
         "status",

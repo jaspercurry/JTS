@@ -16,8 +16,9 @@ import time
 
 import pytest
 
+from jasper import service_units
 from jasper.cli import doctor
-from jasper.cli.doctor import resilience
+from jasper.cli.doctor import _evidence, resilience
 from jasper.cli.doctor.resilience import (
     _REBOOT_STATE_FUTURE_SKEW_SEC,
     _classify_reboot_state,
@@ -33,8 +34,11 @@ from .doctor_test_support import _registered_check_names
 
 
 def _systemctl_show(monkeypatch, stdout: str):
+    """Seed the evidence layer's unit-state batch from raw ``systemctl show``
+    block text, reusing the real parser for fidelity."""
+    parsed = service_units.parse_systemctl_show_units(stdout)
     monkeypatch.setattr(
-        doctor._shared, "_run", lambda *a, **kw: type("R", (), {"stdout": stdout})()
+        _evidence, "read_unit_states", lambda units, *, timeout: parsed,
     )
 
 

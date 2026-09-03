@@ -11,15 +11,14 @@ preserved. No check logic changed in the split."""
 from __future__ import annotations
 
 import errno
-import json
 import re
 import shutil
-import socket
 import subprocess
 import sys
 from pathlib import Path
 
 from ...env_load import parse_env_text
+from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
@@ -97,40 +96,6 @@ REASON_CROSSOVER_UNIT_MISSING = "crossover_unit_missing"
 REASON_CROSSOVER_UNIT_UNVERIFIED = "crossover_unit_unverified"
 REASON_CROSSOVER_UNIT_INVALID = "crossover_unit_invalid"
 
-_OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
-
-
-def _read_outputd_status(
-    socket_path: str = _OUTPUTD_STATUS_SOCKET,
-) -> dict | None:
-    """Best-effort local outputd STATUS read for grouping verdicts."""
-    sock: socket.socket | None = None
-    try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(2.0)
-        sock.connect(socket_path)
-        sock.sendall(b"STATUS\n")
-        chunks: list[bytes] = []
-        while True:
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            chunks.append(chunk)
-    except OSError:
-        return None
-    finally:
-        if sock is not None:
-            try:
-                sock.close()
-            except OSError:
-                pass
-    try:
-        payload = json.loads(b"".join(chunks).decode("utf-8", errors="replace"))
-    except json.JSONDecodeError:
-        return None
-    return payload if isinstance(payload, dict) else None
-
-
 def _devices_rate_adjust_from_text(text: str) -> bool | None:
     """``devices.enable_rate_adjust`` from a CamillaDSP config — True/False, or
     None when absent / unparseable. Reads via the shared
@@ -144,6 +109,60 @@ def _devices_rate_adjust_from_text(text: str) -> bool | None:
     if value in {"false", "no", "off", "0"}:
         return False
     return None
+
+
+def _unit_active_word(unit: str) -> str:
+    """A unit's ``systemctl is-active`` word, from the shared evidence cache
+    (ADR-0228 rule 4); ``"unknown"`` when systemctl itself is unavailable."""
+    state = evidence.unit_state(unit)
+    if state is None:
+        return "unknown"
+    return state.get("active_state") or "unknown"
+
+
+def _compute_grouping_runtime(cfg: object) -> dict:
+    """The one runtime-health derivation both grouping checks need: the
+    snap-unit batch, the leader's stream-client probe, and
+    :func:`derive_grouping_runtime` itself, run once per doctor run."""
+    from ...multiroom.config import SNAP_STREAM_ID
+    from ...multiroom.leader_config import active_leader_pipe_path
+    from ...multiroom.reconcile import plan
+    from ...multiroom.snapcast_rpc import read_stream_clients
+    from ...multiroom.state import _self_client_name, derive_grouping_runtime
+
+    units = [it.unit for it in plan(cfg).intents]
+    states = {u: _unit_active_word(u) for u in units}
+
+    # Leader producer feed (Increment 5): the ACTIVE CamillaDSP config is
+    # scanned for the pipe sink — daemon-adjacent truth (camilla's own
+    # statefile names the config), never an env-intent mirror. Consulted only
+    # for a valid leader; harmless to compute unconditionally since
+    # `derive_grouping_runtime` ignores it otherwise.
+    stream_clients = None
+    if cfg.role == "leader":
+        # The stream-client probe adds the 2026-06-11 silent-bond classes
+        # (stale group→stream binding / muted client / leader's own client
+        # absent); RPC failure maps to an explicit unreachable verdict, same
+        # as /state — the doctor and the dashboard must tell one story.
+        stream_clients = read_stream_clients()
+        if stream_clients is None:
+            stream_clients = "unreachable"
+
+    return derive_grouping_runtime(
+        cfg, states,
+        leader_tap_path=active_leader_pipe_path(),
+        stream_clients=stream_clients,
+        self_name=_self_client_name(),
+        want_stream=SNAP_STREAM_ID,
+        local_outputd_status=evidence.outputd_status().payload,
+    )
+
+
+def _grouping_runtime(cfg: object) -> dict:
+    """:func:`_compute_grouping_runtime`, read once per doctor run — both
+    check_grouping and check_grouping_pair_lock ask the same fact."""
+    return evidence.get("grouping_runtime", lambda: _compute_grouping_runtime(cfg))
+
 
 @doctor_check(order=71, group="grouping")
 def check_grouping() -> CheckResult:
@@ -163,7 +182,6 @@ def check_grouping() -> CheckResult:
         exactly what we refuse to show. Runtime health is derived by the
         same pure `derive_grouping_runtime` the /state surface uses."""
     from ...multiroom.config import load_config as _load_grouping_config
-    from ...multiroom.state import derive_grouping_runtime
 
     label = "grouping: mode"
     cfg = _load_grouping_config()
@@ -174,42 +192,7 @@ def check_grouping() -> CheckResult:
     if cfg.error is not None:
         return CheckResult(label, "warn", cfg.error, reason=REASON_CONFIG_INVALID)
 
-    # Enabled + valid: probe the units the plan wants running and derive
-    # runtime health through the shared pure function.
-    from ...multiroom.reconcile import plan
-
-    units = [it.unit for it in plan(cfg).intents]
-    out = _run(["systemctl", "is-active", *units]).stdout.splitlines()
-    states = (
-        {u: (out[i].strip() or "unknown") for i, u in enumerate(units)}
-        if len(out) == len(units)
-        else {u: "unknown" for u in units}
-    )
-    # Leader producer feed (Increment 5): the ACTIVE CamillaDSP config is
-    # scanned for the pipe sink — daemon-adjacent truth (camilla's own
-    # statefile names the config), never an env-intent mirror. The
-    # stream-client probe adds the 2026-06-11 silent-bond classes (stale
-    # group→stream binding / muted client / leader's own client absent);
-    # RPC failure maps to an explicit unreachable verdict, same as
-    # /state — the doctor and the dashboard must tell one story.
-    from ...multiroom.config import SNAP_STREAM_ID
-    from ...multiroom.leader_config import active_leader_pipe_path
-    from ...multiroom.snapcast_rpc import read_stream_clients
-    from ...multiroom.state import _self_client_name
-
-    stream_clients = None
-    if cfg.role == "leader":
-        stream_clients = read_stream_clients()
-        if stream_clients is None:
-            stream_clients = "unreachable"
-
-    runtime = derive_grouping_runtime(
-        cfg, states,
-        leader_tap_path=active_leader_pipe_path(),
-        stream_clients=stream_clients,
-        self_name=_self_client_name(),
-        want_stream=SNAP_STREAM_ID,
-    )
+    runtime = _grouping_runtime(cfg)
 
     base = (
         f"on — role={cfg.role} channel={cfg.channel} "
@@ -236,14 +219,7 @@ def check_grouping_pair_lock() -> CheckResult:
     observable today, but follower buffer-fill/drift/time-lock are not
     exposed by Snapcast's documented JSON-RPC surface.
     """
-    from ...multiroom.config import (
-        SNAP_STREAM_ID,
-        load_config as _load_grouping_config,
-    )
-    from ...multiroom.leader_config import active_leader_pipe_path
-    from ...multiroom.reconcile import plan
-    from ...multiroom.snapcast_rpc import read_stream_clients
-    from ...multiroom.state import derive_grouping_runtime, _self_client_name
+    from ...multiroom.config import load_config as _load_grouping_config
 
     label = "grouping: pair lock"
     cfg = _load_grouping_config()
@@ -254,29 +230,7 @@ def check_grouping_pair_lock() -> CheckResult:
     if cfg.error is not None:
         return CheckResult(label, "warn", cfg.error, reason=REASON_CONFIG_INVALID)
 
-    units = [it.unit for it in plan(cfg).intents]
-    out = _run(["systemctl", "is-active", *units]).stdout.splitlines()
-    states = (
-        {u: (out[i].strip() or "unknown") for i, u in enumerate(units)}
-        if len(out) == len(units)
-        else {u: "unknown" for u in units}
-    )
-
-    stream_clients = None
-    if cfg.role == "leader":
-        stream_clients = read_stream_clients()
-        if stream_clients is None:
-            stream_clients = "unreachable"
-
-    runtime = derive_grouping_runtime(
-        cfg,
-        states,
-        leader_tap_path=active_leader_pipe_path() if cfg.role == "leader" else "",
-        stream_clients=stream_clients,
-        self_name=_self_client_name(),
-        want_stream=SNAP_STREAM_ID,
-        local_outputd_status=_read_outputd_status(),
-    )
+    runtime = _grouping_runtime(cfg)
     pair_lock = runtime.get("pair_lock") or {}
     status = str(pair_lock.get("status") or "unknown")
     detail = str(pair_lock.get("detail") or "pair-lock verdict unavailable")
@@ -579,13 +533,13 @@ def check_grouping_rate_adjust() -> CheckResult:
     catches every generator and a config generated BEFORE the bond formed
     (stale → still rate_adjust on; the reconciler regenerates on bond
     form, so a warn here means that apply failed — check its journal)."""
+    from ...active_speaker.environment import camilla_statefile_path
     from ...multiroom.config import is_active_member, load_config
     from ...multiroom.reconcile import is_active_speaker_box
     from .correction import (
         REASON_CAMILLA_CONFIG_MISSING,
         REASON_CAMILLA_CONFIG_UNREADABLE,
         REASON_CAMILLA_STATEFILE_UNREADABLE,
-        _active_camilla_config_path,
     )
 
     label = "grouping: rate_adjust"
@@ -607,25 +561,25 @@ def check_grouping_rate_adjust() -> CheckResult:
             reason=REASON_NOT_APPLICABLE,
         )
 
-    statefile, config_path = _active_camilla_config_path()
+    config_path = evidence.camilla_config_path()
     if config_path is None:
         return CheckResult(
-            label, "warn", f"could not read config_path from {statefile}",
+            label, "warn",
+            f"could not read config_path from {camilla_statefile_path()}",
             reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
         )
-    path = Path(config_path)
-    if not path.exists():
+    if not Path(config_path).exists():
         return CheckResult(
             label, "warn", f"active config missing: {config_path}",
             reason=REASON_CAMILLA_CONFIG_MISSING,
         )
-    try:
-        rate_adjust = _devices_rate_adjust_from_text(path.read_text())
-    except OSError as e:
+    text = evidence.camilla_config_text()
+    if text is None:
         return CheckResult(
-            label, "warn", f"could not read {config_path}: {e}",
+            label, "warn", f"could not read {config_path}",
             reason=REASON_CAMILLA_CONFIG_UNREADABLE,
         )
+    rate_adjust = _devices_rate_adjust_from_text(text)
 
     if rate_adjust is True:
         return CheckResult(
@@ -658,6 +612,7 @@ def check_grouping_leader_pipe() -> CheckResult:
     an empty FIFO and every member (including the leader's own round-trip)
     hears silence while every unit shows green. The silent-wrong-config
     class this check exists for."""
+    from ...active_speaker.environment import camilla_statefile_path
     from ...multiroom.config import is_active_leader, load_config
     from ...multiroom.leader_config import playback_is_pipe
     from ...multiroom.reconcile import SNAPFIFO
@@ -665,7 +620,6 @@ def check_grouping_leader_pipe() -> CheckResult:
         REASON_CAMILLA_CONFIG_MISSING,
         REASON_CAMILLA_CONFIG_UNREADABLE,
         REASON_CAMILLA_STATEFILE_UNREADABLE,
-        _active_camilla_config_path,
     )
 
     label = "grouping: leader pipe"
@@ -676,25 +630,25 @@ def check_grouping_leader_pipe() -> CheckResult:
             reason=REASON_NOT_APPLICABLE,
         )
 
-    statefile, config_path = _active_camilla_config_path()
+    config_path = evidence.camilla_config_path()
     if config_path is None:
         return CheckResult(
-            label, "warn", f"could not read config_path from {statefile}",
+            label, "warn",
+            f"could not read config_path from {camilla_statefile_path()}",
             reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
         )
-    path = Path(config_path)
-    if not path.exists():
+    if not Path(config_path).exists():
         return CheckResult(
             label, "warn", f"active config missing: {config_path}",
             reason=REASON_CAMILLA_CONFIG_MISSING,
         )
-    try:
-        is_pipe = playback_is_pipe(path.read_text(), SNAPFIFO)
-    except OSError as e:
+    text = evidence.camilla_config_text()
+    if text is None:
         return CheckResult(
-            label, "warn", f"could not read {config_path}: {e}",
+            label, "warn", f"could not read {config_path}",
             reason=REASON_CAMILLA_CONFIG_UNREADABLE,
         )
+    is_pipe = playback_is_pipe(text, SNAPFIFO)
 
     if not is_pipe:
         return CheckResult(
@@ -734,23 +688,11 @@ def _resolved_jasper_voice_env() -> tuple[dict[str, str] | None, str]:
 
     unit_env: dict[str, str] | None = None
     error = ""
-    try:
-        proc = _run(
-            [
-                "systemctl", "show", "-p", "Environment", "--value",
-                "jasper-voice.service",
-            ],
-            timeout=3.0,
-        )
-    except (FileNotFoundError, subprocess.SubprocessError) as e:
-        error = str(e)
+    values = evidence.unit_property("Environment", ("jasper-voice.service",))
+    if values is None:
+        error = "systemctl unavailable"
     else:
-        if proc.returncode == 0:
-            unit_env = _parse_systemd_environment(proc.stdout)
-        else:
-            error = (proc.stderr or proc.stdout).strip() or (
-                f"systemctl exited {proc.returncode}"
-            )
+        unit_env = _parse_systemd_environment(values[0])
     grouping = read_env_file_state(VOICE_GROUPING_ENV_FILE)
     if grouping.status == "unreadable":
         return None, f"{VOICE_GROUPING_ENV_FILE}: {grouping.error}"
@@ -974,11 +916,10 @@ def check_grouping_local_vs_wireless_sub() -> CheckResult:
     bond predicates so it can never disagree with the rest of the grouping
     doctor about what the bond is doing."""
     from ...multiroom.config import is_active_leader, is_active_member, load_config
-    from ...output_topology import load_output_topology
 
     label = "grouping: local vs wireless sub"
 
-    has_local_sub = bool(load_output_topology().routing.subwoofer_group_ids)
+    has_local_sub = bool(evidence.output_topology().routing.subwoofer_group_ids)
 
     cfg = load_config()
     is_wireless_sub_follower = is_active_member(cfg) and cfg.channel == "sub"
@@ -1393,11 +1334,14 @@ def check_crossover_unit_installed() -> CheckResult:
         )
 
     unit = "jasper-camilla-crossover.service"
-    # `systemctl cat` is the canonical "is the unit installed?" probe used
-    # across the doctor (renderers / audio use systemctl rather than raw
-    # Path.exists, so a unit found anywhere on systemd's search path counts).
-    # returncode 0 = systemd found and could read the unit.
-    if _run(["systemctl", "cat", unit]).returncode != 0:
+    # LoadState answers "is the unit installed" off the shared evidence cache
+    # (ADR-0228 rule 1) rather than a dedicated `systemctl cat`; `not-found` /
+    # `masked` are the only "nothing to arm" states — a broken-but-present
+    # unit file (`error` / `bad-setting`) still counts as installed, same as
+    # `_installed_units` elsewhere in the doctor.
+    state = evidence.unit_state(unit)
+    load_state = state.get("load_state") if state else None
+    if load_state in (None, "not-found", "masked"):
         return CheckResult(
             label, "warn",
             f"active leader but {unit} is not installed — the endpoint-"

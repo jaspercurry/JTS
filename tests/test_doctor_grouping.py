@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.cli import doctor
-from jasper.cli.doctor import grouping
+from jasper.cli.doctor import _evidence, grouping
 from jasper.multiroom.config import BondMember
 from jasper.multiroom.tts_route import VOICE_PARK_ENV
 from jasper.tts_routing import (
@@ -46,28 +46,53 @@ _SUB_LEADER = dict(
 )
 
 
-def _patch_grouping(monkeypatch, cfg, is_active_stdout=None, *, unit_states=None):
-    """Stub the grouping check's IO. Prefer `unit_states` (a unit→state
-    mapping; unlisted units default to "inactive") — the plan carries the
-    dumb-follower park/restore intents, so positional stdout lines are brittle
-    against the unit list growing."""
+def _fake_unit_states(
+    active: dict[str, str] | None = None,
+    *,
+    load: dict[str, str] | None = None,
+    default_active="inactive",
+    default_load="loaded",
+):
+    """A ``_evidence.read_unit_states`` stand-in: ``active``/``load`` map a
+    unit name to its ActiveState/LoadState word; any unit not named gets the
+    matching default. Both the batched roster read and a per-unit fallback
+    read route through this one fake, so it must answer for any units list."""
+    active = active or {}
+    load = load or {}
+
+    def fake(units, *, timeout=2.0):
+        return {
+            u: {
+                "unit": u,
+                "load_state": load.get(u, default_load),
+                "active_state": active.get(u, default_active),
+                "sub_state": None,
+                "unit_file_state": None,
+                "result": None,
+                "n_restarts": 0,
+                "main_pid": 0,
+                "tasks_current": None,
+                "memory_current_bytes": None,
+                "cpu_usage_nsec": None,
+                "control_group": "",
+            }
+            for u in units
+        }
+
+    return fake
+
+
+def _patch_grouping(monkeypatch, cfg, *, unit_states=None):
+    """Stub the grouping check's IO. ``unit_states`` maps a unit name to its
+    ``systemctl is-active`` word; unlisted units default to "inactive" — the
+    plan carries the dumb-follower park/restore intents, so positional stdout
+    lines are brittle against the unit list growing."""
     import jasper.multiroom.config as mr_config
 
     monkeypatch.setattr(mr_config, "load_config", lambda *a, **k: cfg)
-
-    def fake_run(argv, *a, **kw):
-        class FakeRun:
-            stdout = ""
-
-        if unit_states is not None and list(argv[:2]) == ["systemctl", "is-active"]:
-            FakeRun.stdout = (
-                "\n".join(unit_states.get(u, "inactive") for u in argv[2:]) + "\n"
-            )
-        elif is_active_stdout is not None:
-            FakeRun.stdout = is_active_stdout
-        return FakeRun()
-
-    monkeypatch.setattr(doctor.grouping, "_run", fake_run)
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", _fake_unit_states(unit_states)
+    )
     # No producer-feed stubbing: check_grouping injects leader_tap_path=""
     # unconditionally (no music producer exists yet), so a bonded leader
     # honestly derives degraded.
@@ -92,7 +117,7 @@ def _patch_grouping(monkeypatch, cfg, is_active_stdout=None, *, unit_states=None
 def test_check_grouping_snapcast_installed_verdicts(
     monkeypatch, cfg_kwargs, installed, status, reason
 ):
-    _patch_grouping(monkeypatch, _grouping_cfg(**cfg_kwargs), "")
+    _patch_grouping(monkeypatch, _grouping_cfg(**cfg_kwargs))
     monkeypatch.setattr(
         "shutil.which", lambda name: f"/usr/bin/{name}" if installed else None
     )
@@ -177,7 +202,7 @@ _LINKER_ERROR = (
 def test_check_grouping_snapcast_version_verdicts(
     monkeypatch, cfg_kwargs, installed, run, status, reason
 ):
-    _patch_grouping(monkeypatch, _grouping_cfg(**cfg_kwargs), "")
+    _patch_grouping(monkeypatch, _grouping_cfg(**cfg_kwargs))
     monkeypatch.setattr(
         "shutil.which", lambda name: f"/usr/bin/{name}" if installed else None
     )
@@ -196,7 +221,7 @@ def test_check_grouping_snapcast_version_stdout_wins_over_stderr(monkeypatch):
     stdout must win the parse. The extracted value is data the reason
     vocabulary can't carry, so this keeps a `.detail` check as the
     pure-formatting-helper exception."""
-    _patch_grouping(monkeypatch, _grouping_cfg(**_LEADER), "")
+    _patch_grouping(monkeypatch, _grouping_cfg(**_LEADER))
     monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(
         doctor.grouping,
@@ -238,7 +263,7 @@ def test_check_grouping_household_credential_verdicts(
     if secret_present:
         secret.write_text("s\n")
     monkeypatch.setattr(hc, "SECRET_FILE", str(secret))
-    _patch_grouping(monkeypatch, _grouping_cfg(**cfg_kwargs), "")
+    _patch_grouping(monkeypatch, _grouping_cfg(**cfg_kwargs))
 
     r = doctor.check_grouping_household_credential()
 
@@ -274,7 +299,7 @@ def test_check_crossover_unit_skips_when_not_an_active_leader(
 ):
     """Not an active member, or an active follower (not the leader half of the
     pair): both skip before touching topology or systemd."""
-    _patch_grouping(monkeypatch, _grouping_cfg(**cfg_kwargs), "")
+    _patch_grouping(monkeypatch, _grouping_cfg(**cfg_kwargs))
 
     r = doctor.check_crossover_unit_installed()
 
@@ -291,7 +316,7 @@ def test_check_crossover_unit_skips_for_a_passive_leader(monkeypatch, tmp_path):
     topology_path = tmp_path / "output_topology.json"
     save_output_topology(_topology([]), path=topology_path)
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    _patch_grouping(monkeypatch, _grouping_cfg(**_LEADER), "")
+    _patch_grouping(monkeypatch, _grouping_cfg(**_LEADER))
 
     r = doctor.check_crossover_unit_installed()
 
@@ -317,6 +342,17 @@ def test_check_crossover_unit_active_leader_verdicts(
     monkeypatch, tmp_path, returncode, systemd_analyze, status, reason
 ):
     _active_leader_topology(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        _evidence,
+        "read_unit_states",
+        _fake_unit_states(
+            load={
+                "jasper-camilla-crossover.service": (
+                    "loaded" if returncode == 0 else "not-found"
+                ),
+            },
+        ),
+    )
     monkeypatch.setattr(
         doctor.grouping,
         "_run",
@@ -365,7 +401,7 @@ def test_check_grouping_local_vs_wireless_sub_verdicts(
     monkeypatch, tmp_path, local_sub, cfg_kwargs, status, reason
 ):
     _set_local_sub_topology(monkeypatch, tmp_path, with_sub=local_sub)
-    _patch_grouping(monkeypatch, _grouping_cfg(**cfg_kwargs), "")
+    _patch_grouping(monkeypatch, _grouping_cfg(**cfg_kwargs))
 
     r = doctor.check_grouping_local_vs_wireless_sub()
 
@@ -377,7 +413,7 @@ def test_check_grouping_local_vs_wireless_sub_verdicts(
 
 
 def test_check_grouping_off_is_ok(monkeypatch):
-    _patch_grouping(monkeypatch, _grouping_cfg(enabled=False), "")
+    _patch_grouping(monkeypatch, _grouping_cfg(enabled=False))
 
     r = doctor.check_grouping()
 
@@ -392,7 +428,7 @@ def test_check_grouping_invalid_config_warns(monkeypatch):
         channel="left",
         error="JASPER_GROUPING_BOND_ID is empty (grouping is on)",
     )
-    _patch_grouping(monkeypatch, cfg, "")
+    _patch_grouping(monkeypatch, cfg)
 
     r = doctor.check_grouping()
 
@@ -472,7 +508,9 @@ def test_check_grouping_pair_lock_warns(monkeypatch, dac_content, reason):
         unit_states={"jasper-snapclient.service": "active"},
     )
     monkeypatch.setattr(
-        doctor.grouping, "_read_outputd_status", lambda: {"dac_content": dac_content}
+        _evidence,
+        "read_status_socket",
+        lambda _path, *, timeout=2.0: {"dac_content": dac_content},
     )
 
     r = doctor.check_grouping_pair_lock()
@@ -490,14 +528,9 @@ def _solo_tts_lane(monkeypatch, voice_env_path):
 
     monkeypatch.setattr(mr_config, "load_config", lambda *a, **k: _grouping_cfg())
     monkeypatch.setattr(mr_reconcile, "VOICE_GROUPING_ENV_FILE", str(voice_env_path))
-    monkeypatch.setattr(
-        doctor.grouping,
-        "_run",
-        lambda *a, **k: SimpleNamespace(
-            returncode=0,
-            stdout=f"{VOICE_TTS_SOCKET_ENV}={FANIN_TTS_SOCKET}\n",
-            stderr="",
-        ),
+    _evidence.evidence.seed(
+        "prop:Environment:jasper-voice",
+        [f"{VOICE_TTS_SOCKET_ENV}={FANIN_TTS_SOCKET}"],
     )
     return doctor.check_grouping_tts_lane()
 

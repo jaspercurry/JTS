@@ -61,12 +61,12 @@ import grp
 import os
 import pwd
 import stat as _stat
-import subprocess
 from dataclasses import dataclass, field
 
 from ...accessories.mic_env import DEFAULT_ACCESSORY_MIC_ENV_FILE
+from ._evidence import evidence
 from ._registry import doctor_check
-from ._shared import REASON_SYSTEMCTL_UNAVAILABLE, CheckResult, _run
+from ._shared import REASON_SYSTEMCTL_UNAVAILABLE, CheckResult
 
 # Machine-stable codes naming which branch of a privsep check produced a
 # result (AGENTS.md: tests pin status + reason, never detail prose).
@@ -447,38 +447,46 @@ def _household_secret_verdict(
 # --------------------------------------------------------------------------- #
 # Runtime identity resolution (on-Pi; degrades to skip off the Pi).
 # --------------------------------------------------------------------------- #
+
+# The manifest's own unit tuple, fixed order — every User/Group/
+# SupplementaryGroups lookup below batches over this SAME tuple, so
+# `evidence.unit_property`'s memoization makes it one `systemctl show` per
+# property for the whole run, however many daemons ask.
+_MANIFEST_UNITS: tuple[str, ...] = tuple(s.unit for s in MANIFEST)
+_MANIFEST_UNIT_NAMES: tuple[str, ...] = tuple(f"{u}.service" for u in _MANIFEST_UNITS)
+
+
+def _manifest_unit_property_map(prop: str) -> dict[str, str] | None:
+    """{unit: value} for one property outside SHOW_PROPERTIES (User, Group,
+    SupplementaryGroups), read once per run for the whole manifest. None when
+    systemctl is unavailable or the reply shape is wrong."""
+    values = evidence.unit_property(prop, _MANIFEST_UNIT_NAMES)
+    if values is None:
+        return None
+    return dict(zip(_MANIFEST_UNITS, values))
+
+
 def _unit_runtime_identity(unit: str) -> dict[str, str] | None:
-    """``LoadState`` / ``User`` / ``Group`` / ``SupplementaryGroups`` from
-    ``systemctl show`` for ``unit``, or ``None`` when systemctl is unavailable
-    (dev / non-Linux host) so callers can fall through to a skipped-ok path.
+    """``LoadState`` / ``User`` / ``Group`` / ``SupplementaryGroups`` for
+    ``unit``, or ``None`` when systemctl is unavailable (dev / non-Linux
+    host) so callers can fall through to a skipped-ok path.
 
     Reads the *runtime* identity, not the manifest's, so the streambox
     jasper-web (which runs as root) self-skips and any live unit edit is
-    honoured."""
-    try:
-        proc = _run(
-            [
-                "systemctl",
-                "show",
-                "-p",
-                "LoadState",
-                "-p",
-                "User",
-                "-p",
-                "Group",
-                "-p",
-                "SupplementaryGroups",
-                f"{unit}.service",
-            ]
-        )
-    except (OSError, subprocess.SubprocessError):
+    honoured. ``LoadState`` comes off the shared per-run unit-state batch
+    (``evidence.unit_state``); ``User``/``Group``/``SupplementaryGroups``
+    are outside that batch and come off one memoized ``systemctl show`` per
+    property, shared across every daemon this module resolves."""
+    state = evidence.unit_state(f"{unit}.service")
+    if state is None:
         return None
-    fields: dict[str, str] = {}
-    for line in proc.stdout.splitlines():
-        key, sep, value = line.partition("=")
-        if sep:
-            fields[key.strip()] = value.strip()
-    return fields or None
+    fields: dict[str, str] = {"LoadState": state.get("load_state") or ""}
+    for prop in ("User", "Group", "SupplementaryGroups"):
+        prop_map = _manifest_unit_property_map(prop)
+        if prop_map is None:
+            return None
+        fields[prop] = prop_map.get(unit, "")
+    return fields
 
 
 def _resolve_identity(

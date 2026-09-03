@@ -16,6 +16,7 @@ from ...audio_hardware.dac import (
     by_id as _dac_profile_for,
     mixer_control_groups_for as _dac_mixer_control_groups_for,
 )
+from ...active_speaker.environment import camilla_statefile_path
 from ...camilla import CamillaController, CamillaUnavailable
 from ...camilla_config_contract import (
     DEFAULT_VOLUME_LIMIT_DB,
@@ -30,9 +31,9 @@ from ...output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
     OutputHardwareState,
-    load_state as _load_output_hardware_state,
 )
-from ...mic_presence import MicPresence, read_mic_presence
+from ...mic_presence import MicPresence
+from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
@@ -296,7 +297,7 @@ def check_microphone() -> CheckResult:
     jasper-voice is running, and not that a *local* mic exists (the record is
     the OR of the local and accessory halves). ``mic ALSA card`` and ``mic
     capture`` are the surfaces that can tell those apart (issue #2205)."""
-    mp = read_mic_presence()
+    mp = evidence.mic_presence()
     if mp.absent_confirmed:
         return CheckResult("microphone", "warn", mp.summary, reason=REASON_MIC_ABSENT)
     return CheckResult("microphone", "ok", mp.summary)
@@ -317,7 +318,7 @@ def check_mic_card_matches_config(cfg: Config) -> CheckResult:
     # this and parked voice, so defer to the `microphone` headline rather than
     # re-probing `arecord -L` for a red FAILURE on an expected, auto-recovering
     # state. See jasper/mic_presence.py.
-    presence = read_mic_presence()
+    presence = evidence.mic_presence()
     if presence.absent_confirmed:
         return CheckResult(
             "mic ALSA card", "skipped",
@@ -433,7 +434,7 @@ async def check_camilla_websocket(cfg: Config) -> CheckResult:
 
 def _jasper_voice_active() -> bool:
     """True if jasper-voice.service reports active."""
-    return _run(["systemctl", "is-active", "jasper-voice.service"]).stdout.strip() == "active"
+    return evidence.unit_active("jasper-voice.service") is True
 
 @doctor_check(
     order=6,
@@ -459,7 +460,7 @@ def check_mic_capture(cfg: Config) -> CheckResult:
     # `microphone` headline. A genuine open failure (no absent verdict but the
     # device won't open — custom or busy mic) still falls through to the probe
     # and its fail below. See jasper/mic_presence.py.
-    presence = read_mic_presence()
+    presence = evidence.mic_presence()
     if presence.absent_confirmed:
         return CheckResult(
             "mic capture", "skipped",
@@ -598,7 +599,7 @@ def check_tts_open(cfg: Config) -> CheckResult:
 def check_output_hardware_state() -> CheckResult:
     """Surface reconciler-owned output hardware state."""
 
-    state = _load_output_hardware_state()
+    state = evidence.output_hardware_state()
     if state is None:
         return CheckResult(
             "Output hardware state",
@@ -641,14 +642,10 @@ def check_active_speaker_output_hardware_match() -> CheckResult:
     """Keep saved active-speaker topology mismatch out of basic playback health."""
 
     from jasper.active_speaker.runtime_contract import classify_output_contract
-    from jasper.output_topology import (
-        OutputTopologyError,
-        clock_domain_report,
-        load_output_topology_strict,
-    )
+    from jasper.output_topology import OutputTopologyError, clock_domain_report
 
     try:
-        topology = load_output_topology_strict()
+        topology = _output_topology_strict()
     except OutputTopologyError as exc:
         return CheckResult(
             "active speaker output hardware",
@@ -666,7 +663,7 @@ def check_active_speaker_output_hardware_match() -> CheckResult:
             reason=REASON_TOPOLOGY_NOT_CONFIGURED,
         )
 
-    observed = _load_output_hardware_state()
+    observed = evidence.output_hardware_state()
     if observed is None:
         return CheckResult(
             "active speaker output hardware",
@@ -729,9 +726,21 @@ def check_active_speaker_output_hardware_match() -> CheckResult:
 
 def _output_hardware_state_or_none() -> OutputHardwareState | None:
     try:
-        return _load_output_hardware_state()
+        return evidence.output_hardware_state()
     except (OSError, ValueError, TypeError):
         return None
+
+
+def _output_topology_strict():
+    """The fail-closed topology load (ADR-0228 rule 4), read once per run.
+
+    Distinct from ``evidence.output_topology()``: that variant fails soft to
+    an empty draft, which the safety-authorizing callers here must not do —
+    they need to see (and fail on) a corrupt/unreadable saved topology.
+    """
+    from ...output_topology import load_output_topology_strict
+
+    return evidence.get("output_topology_strict", load_output_topology_strict)
 
 
 def _observed_output_dac_id(state: OutputHardwareState | None) -> str:
@@ -1041,7 +1050,6 @@ from .audio_runtime import (
     _FANIN_EXPECTED_ALOOP_INPUTS,
     _OUTPUTD_EXPECTED_DAC_PCM,
     _OUTPUTD_EXPECTED_DUAL_DAC_PCM,
-    _OUTPUTD_STATUS_SOCKET,
     _asound_non_comment_text,
     _asound_pcm_block,
     check_aec_clock_drift,
@@ -1064,7 +1072,6 @@ __all__ = [
     "_FANIN_EXPECTED_ALOOP_INPUTS",
     "_OUTPUTD_EXPECTED_DAC_PCM",
     "_OUTPUTD_EXPECTED_DUAL_DAC_PCM",
-    "_OUTPUTD_STATUS_SOCKET",
     "_asound_non_comment_text",
     "_asound_pcm_block",
     "check_aec_clock_drift",
@@ -1095,11 +1102,11 @@ def _devices_volume_limit_from_text(text: str) -> float | None:
 @doctor_check(order=28, group="audio")
 def check_camilla_volume_limit() -> CheckResult:
     """Verify the active Camilla config has JTS's non-positive fader cap."""
-    statefile, config_path = _active_camilla_config_path()
+    config_path = evidence.camilla_config_path()
     if config_path is None:
         return CheckResult(
             "CamillaDSP volume_limit", "warn",
-            f"could not read config_path from {statefile}",
+            f"could not read config_path from {camilla_statefile_path()}",
             reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
         )
     path = Path(config_path)
@@ -1109,19 +1116,20 @@ def check_camilla_volume_limit() -> CheckResult:
             f"statefile points at missing config {config_path}",
             reason=REASON_CAMILLA_CONFIG_MISSING,
         )
+    text = evidence.camilla_config_text()
+    if text is None:
+        return CheckResult(
+            "CamillaDSP volume_limit", "fail",
+            f"could not read {config_path}",
+            reason=REASON_CAMILLA_CONFIG_UNREADABLE,
+        )
     try:
-        limit = _devices_volume_limit_from_text(path.read_text())
+        limit = _devices_volume_limit_from_text(text)
     except ValueError as e:
         return CheckResult(
             "CamillaDSP volume_limit", "fail",
             f"invalid devices.volume_limit in {config_path}: {e}",
             reason=REASON_VOLUME_LIMIT_INVALID,
-        )
-    except OSError as e:
-        return CheckResult(
-            "CamillaDSP volume_limit", "fail",
-            f"could not read {config_path}: {e}",
-            reason=REASON_CAMILLA_CONFIG_UNREADABLE,
         )
     if limit is None:
         return CheckResult(
@@ -1158,10 +1166,11 @@ def check_camilla_ring_chunk_fits() -> CheckResult:
     still carry a pre-clamp config onto a box.
     """
     label = "camilla ring chunk"
-    statefile, config_path = _active_camilla_config_path()
+    config_path = evidence.camilla_config_path()
     if config_path is None:
         return CheckResult(
-            label, "warn", f"could not read config_path from {statefile}",
+            label, "warn",
+            f"could not read config_path from {camilla_statefile_path()}",
             reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
         )
     path = Path(config_path)
@@ -1249,10 +1258,10 @@ def check_active_speaker_runtime_graph() -> CheckResult:
         parked_muted_exits,
         topology_allows_flat_dac_graph,
     )
-    from jasper.output_topology import OutputTopologyError, load_output_topology_strict
+    from jasper.output_topology import OutputTopologyError
 
     try:
-        topology = load_output_topology_strict()
+        topology = _output_topology_strict()
     except OutputTopologyError as exc:
         return CheckResult(
             "active speaker runtime graph",
@@ -1272,7 +1281,7 @@ def check_active_speaker_runtime_graph() -> CheckResult:
             reason=REASON_GRAPH_PASSIVE_LAYOUT,
         )
 
-    statefile, config_path = _active_camilla_config_path()
+    statefile, config_path = evidence.get("camilla_config", _active_camilla_config_path)
     if config_path is None:
         return CheckResult(
             "active speaker runtime graph",
@@ -1391,11 +1400,11 @@ def check_active_speaker_topology_blockers() -> CheckResult:
         parked_muted_exits,
         safe_graph_for_current_topology,
     )
-    from jasper.output_topology import OutputTopologyError, load_output_topology_strict
+    from jasper.output_topology import OutputTopologyError
 
     name = "active speaker topology blockers"
     try:
-        topology = load_output_topology_strict()
+        topology = _output_topology_strict()
     except OutputTopologyError:
         # Points, does not restate: `check_active_speaker_runtime_graph` and
         # `check_active_speaker_output_hardware_match` both already print the
@@ -1521,7 +1530,7 @@ def check_sound_profile() -> CheckResult:
     settings = load_sound_settings()
     trim = output_trim_db(profile, settings)
 
-    _, active_path = _active_camilla_config_path()
+    active_path = evidence.camilla_config_path()
     # "Is this a JTS-generated config?" has ONE owner
     # (:func:`jasper.sound.camilla_yaml.is_jts_generated_config`) — never a
     # local copy of the name set: since #2572 the reconcile legitimately leaves
@@ -1558,10 +1567,9 @@ def check_bass_extension_profile() -> CheckResult:
         load_applied_baseline_profile_state,
     )
     from jasper.bass_extension.profile import evaluate_bass_extension_profile
-    from jasper.output_topology import load_output_topology
 
     evaluation = evaluate_bass_extension_profile(
-        topology=load_output_topology(),
+        topology=evidence.output_topology(),
         applied_baseline_state=load_applied_baseline_profile_state(),
     )
     if evaluation.status == "missing":
@@ -1667,7 +1675,7 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
     from jasper.active_speaker.profile import ActiveSpeakerConfigError
 
     label = "active speaker baseline canonical"
-    statefile, live_path_raw = _active_camilla_config_path()
+    statefile, live_path_raw = evidence.get("camilla_config", _active_camilla_config_path)
     if live_path_raw is None:
         # A missing/unreadable outputd statefile is already a real failure at
         # the checks that own it (check_active_speaker_runtime_graph fails when
@@ -1754,14 +1762,11 @@ def check_active_speaker_applied_graph() -> CheckResult:
     WARN, never FAIL: the anchor is the audible truth either way.
     """
 
-    from ...active_speaker.setup_status import (
-        IN_SEQUENCE_CAPTURE_ANCHOR_REASON,
-        read_active_speaker_setup_status,
-    )
+    from ...active_speaker.setup_status import IN_SEQUENCE_CAPTURE_ANCHOR_REASON
 
     label = "active speaker applied graph"
     try:
-        status = read_active_speaker_setup_status()
+        status = evidence.active_speaker_setup_status()
     except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
         return CheckResult(
             label, "warn", f"could not read speaker setup: {exc}",
@@ -1878,11 +1883,9 @@ def check_room_correction_authority() -> CheckResult:
         ROOM_AUTHORITY_RECEIPT_ABSENT,
         ROOM_AUTHORITY_RECEIPT_UNREADABLE,
     )
-    from ...active_speaker.setup_status import read_active_speaker_setup_status
-
     label = "room correction authority"
     try:
-        status = read_active_speaker_setup_status()
+        status = evidence.active_speaker_setup_status()
     except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
         return CheckResult(
             label, "warn", f"could not read speaker setup: {exc}",
@@ -1944,11 +1947,9 @@ def check_active_speaker_setup_notices() -> CheckResult:
     and grouping refusals) and are not repeated here.
     """
 
-    from ...active_speaker.setup_status import read_active_speaker_setup_status
-
     label = "active speaker setup notices"
     try:
-        status = read_active_speaker_setup_status()
+        status = evidence.active_speaker_setup_status()
     except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
         return CheckResult(
             label, "warn", f"could not read speaker setup: {exc}",

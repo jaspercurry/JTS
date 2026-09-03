@@ -23,6 +23,7 @@ from unittest.mock import patch
 import pytest
 
 from jasper.cli import doctor
+from jasper.cli.doctor import _evidence
 from jasper.cli.doctor import network as doctor_network
 from jasper.usb_network import (
     IPv4Observation,
@@ -34,6 +35,18 @@ from jasper.usb_network import (
 )
 
 from .doctor_test_support import _registered_check_names, _write_identity_env
+
+
+def _seed_unit_states(**by_unit):
+    """Seed the batched-roster evidence read so `evidence.unit_state(unit)`
+    answers from these fields without spawning `systemctl`."""
+    fields = ("unit", "load_state", "active_state", "sub_state",
+              "unit_file_state", "result", "n_restarts", "main_pid")
+    states = {
+        unit: {f: overrides.get(f) for f in fields} | {"unit": unit}
+        for unit, overrides in by_unit.items()
+    }
+    _evidence.evidence.seed("units", states)
 
 # -------------------------------------------------- active WiFi connection
 
@@ -472,11 +485,11 @@ def test_check_avahi_jasper_control_fails_on_timeout_without_service(
 
 def test_check_wifi_recover_timer_enabled_ok(monkeypatch):
     monkeypatch.setattr(doctor.network.shutil, "which", lambda _x: "/usr/bin/systemctl")
-    monkeypatch.setattr(
-        doctor.network,
-        "_run",
-        lambda *a, **k: _completed(stdout="enabled\n"),
-    )
+    _seed_unit_states(**{
+        "jasper-wifi-recover.timer": {
+            "load_state": "loaded", "unit_file_state": "enabled",
+        },
+    })
     r = doctor.check_wifi_recover_timer()
     assert r.status == "ok"
     assert r.reason == ""
@@ -484,11 +497,11 @@ def test_check_wifi_recover_timer_enabled_ok(monkeypatch):
 
 def test_check_wifi_recover_timer_disabled_warns(monkeypatch):
     monkeypatch.setattr(doctor.network.shutil, "which", lambda _x: "/usr/bin/systemctl")
-    monkeypatch.setattr(
-        doctor.network,
-        "_run",
-        lambda *a, **k: _completed(returncode=1, stdout="disabled\n"),
-    )
+    _seed_unit_states(**{
+        "jasper-wifi-recover.timer": {
+            "load_state": "loaded", "unit_file_state": "disabled",
+        },
+    })
     r = doctor.check_wifi_recover_timer()
     assert r.status == "warn"
     assert r.reason == doctor_network.REASON_RECOVER_TIMER_DISABLED
@@ -497,15 +510,7 @@ def test_check_wifi_recover_timer_disabled_warns(monkeypatch):
 def test_check_wifi_recover_timer_not_installed_skips(monkeypatch):
     """A dev box with systemctl but no JTS units: skip, don't warn."""
     monkeypatch.setattr(doctor.network.shutil, "which", lambda _x: "/usr/bin/systemctl")
-    monkeypatch.setattr(
-        doctor.network,
-        "_run",
-        lambda *a, **k: _completed(
-            returncode=1,
-            stdout="",
-            stderr="Failed to get unit file state ...: No such file or directory\n",
-        ),
-    )
+    _seed_unit_states(**{"jasper-wifi-recover.timer": {"load_state": "not-found"}})
     r = doctor.check_wifi_recover_timer()
     assert r.status == "skipped"
     assert r.reason == doctor_network.REASON_RECOVER_TIMER_NOT_INSTALLED
@@ -924,8 +929,10 @@ def _with_usb0_and_nmcli(monkeypatch, tmp_path):
 def test_usbnet_nm_profile_active_matches_is_ok(monkeypatch, tmp_path):
     _with_usb0_and_nmcli(monkeypatch, tmp_path)
     _stub_run(monkeypatch, {
-        ("/usr/bin/nmcli", "-t", "-f", "NAME,DEVICE"): subprocess.CompletedProcess(
-            [], 0, stdout="jts-usb:usb0\nHome WiFi:wlan0\n", stderr="",
+        ("/usr/bin/nmcli", "-t", "-f", "TYPE,DEVICE,NAME"): subprocess.CompletedProcess(
+            [], 0,
+            stdout="tun:usb0:jts-usb\n802-11-wireless:wlan0:Home WiFi\n",
+            stderr="",
         ),
     })
     r = doctor.check_usbnet_nm_profile()
@@ -936,8 +943,8 @@ def test_usbnet_nm_profile_active_matches_is_ok(monkeypatch, tmp_path):
 def test_usbnet_nm_profile_no_active_connection_on_usb0_is_fail(monkeypatch, tmp_path):
     _with_usb0_and_nmcli(monkeypatch, tmp_path)
     _stub_run(monkeypatch, {
-        ("/usr/bin/nmcli", "-t", "-f", "NAME,DEVICE"): subprocess.CompletedProcess(
-            [], 0, stdout="Home WiFi:wlan0\n", stderr="",
+        ("/usr/bin/nmcli", "-t", "-f", "TYPE,DEVICE,NAME"): subprocess.CompletedProcess(
+            [], 0, stdout="802-11-wireless:wlan0:Home WiFi\n", stderr="",
         ),
     })
     r = doctor.check_usbnet_nm_profile()
@@ -950,8 +957,8 @@ def test_usbnet_nm_profile_wrong_profile_on_usb0_is_fail(monkeypatch, tmp_path):
     other than the shipped jts-usb profile to usb0."""
     _with_usb0_and_nmcli(monkeypatch, tmp_path)
     _stub_run(monkeypatch, {
-        ("/usr/bin/nmcli", "-t", "-f", "NAME,DEVICE"): subprocess.CompletedProcess(
-            [], 0, stdout="netplan-usb0-legacy:usb0\n", stderr="",
+        ("/usr/bin/nmcli", "-t", "-f", "TYPE,DEVICE,NAME"): subprocess.CompletedProcess(
+            [], 0, stdout="tun:usb0:netplan-usb0-legacy\n", stderr="",
         ),
     })
     r = doctor.check_usbnet_nm_profile()
@@ -962,7 +969,7 @@ def test_usbnet_nm_profile_wrong_profile_on_usb0_is_fail(monkeypatch, tmp_path):
 def test_usbnet_nm_profile_nmcli_failure_is_warn(monkeypatch, tmp_path):
     _with_usb0_and_nmcli(monkeypatch, tmp_path)
     _stub_run(monkeypatch, {
-        ("/usr/bin/nmcli", "-t", "-f", "NAME,DEVICE"): subprocess.CompletedProcess(
+        ("/usr/bin/nmcli", "-t", "-f", "TYPE,DEVICE,NAME"): subprocess.CompletedProcess(
             [], 1, stdout="", stderr="nmcli: command failed",
         ),
     })
@@ -973,15 +980,17 @@ def test_usbnet_nm_profile_nmcli_failure_is_warn(monkeypatch, tmp_path):
 
 def test_usbnet_nm_profile_colon_bearing_name_unescaped(monkeypatch, tmp_path):
     """A profile NAME containing a literal colon (nmcli escapes it as
-    \\:) must still parse correctly — DEVICE never contains a colon, so
-    an rsplit(":", 1) isolates it regardless of escaped colons inside
-    NAME, and _nm_unescape reverses the escape for the reported name.
-    Also confirms this differently-named profile is correctly reported
-    as a mismatch rather than being misparsed into a false match."""
+    \\:) must still parse correctly. NAME is requested LAST
+    (TYPE,DEVICE,NAME) and split greedily (maxsplit=2, the same
+    colon-safe shape `active_wifi_connection` uses), so an escaped colon
+    inside it is never mistaken for a field separator; `_nm_unescape`
+    reverses the escape for the reported name. Also confirms this
+    differently-named profile is correctly reported as a mismatch rather
+    than being misparsed into a false match."""
     _with_usb0_and_nmcli(monkeypatch, tmp_path)
     _stub_run(monkeypatch, {
-        ("/usr/bin/nmcli", "-t", "-f", "NAME,DEVICE"): subprocess.CompletedProcess(
-            [], 0, stdout=r"legacy\:profile:usb0" + "\n", stderr="",
+        ("/usr/bin/nmcli", "-t", "-f", "TYPE,DEVICE,NAME"): subprocess.CompletedProcess(
+            [], 0, stdout="tun:usb0:legacy\\:profile\n", stderr="",
         ),
     })
     r = doctor.check_usbnet_nm_profile()
@@ -1008,11 +1017,8 @@ def test_usbnet_dhcp_unit_skips_not_installed(monkeypatch):
     monkeypatch.setattr(
         doctor_network.shutil, "which", lambda name: "/bin/systemctl",
     )
-    _stub_run(monkeypatch, {
-        ("systemctl", "is-active"): subprocess.CompletedProcess(
-            [], 3, stdout="inactive\n",
-            stderr="Unit jasper-usbnet-dhcp.service could not be found.",
-        ),
+    _seed_unit_states(**{
+        doctor_network.USBNET_DHCP_UNIT: {"load_state": "not-found"},
     })
     r = doctor.check_usbnet_dhcp_unit()
     assert r.status == "skipped"
@@ -1026,10 +1032,10 @@ def test_usbnet_dhcp_unit_active_with_iface_present_is_ok(monkeypatch, tmp_path)
     net_root = tmp_path / "sys-class-net"
     (net_root / "usb0").mkdir(parents=True)
     monkeypatch.setattr(doctor_network, "USBNET_SYS_CLASS_NET", net_root)
-    _stub_run(monkeypatch, {
-        ("systemctl", "is-active"): subprocess.CompletedProcess(
-            [], 0, stdout="active\n", stderr="",
-        ),
+    _seed_unit_states(**{
+        doctor_network.USBNET_DHCP_UNIT: {
+            "load_state": "loaded", "active_state": "active",
+        },
     })
     r = doctor.check_usbnet_dhcp_unit()
     assert r.status == "ok"
@@ -1045,10 +1051,10 @@ def test_usbnet_dhcp_unit_inactive_with_iface_absent_is_ok(monkeypatch, tmp_path
     monkeypatch.setattr(
         doctor_network, "USBNET_SYS_CLASS_NET", tmp_path / "sys-class-net",
     )
-    _stub_run(monkeypatch, {
-        ("systemctl", "is-active"): subprocess.CompletedProcess(
-            [], 3, stdout="inactive\n", stderr="",
-        ),
+    _seed_unit_states(**{
+        doctor_network.USBNET_DHCP_UNIT: {
+            "load_state": "loaded", "active_state": "inactive",
+        },
     })
     r = doctor.check_usbnet_dhcp_unit()
     assert r.status == "ok"
@@ -1064,10 +1070,10 @@ def test_usbnet_dhcp_unit_iface_present_but_unit_inactive_is_fail(monkeypatch, t
     net_root = tmp_path / "sys-class-net"
     (net_root / "usb0").mkdir(parents=True)
     monkeypatch.setattr(doctor_network, "USBNET_SYS_CLASS_NET", net_root)
-    _stub_run(monkeypatch, {
-        ("systemctl", "is-active"): subprocess.CompletedProcess(
-            [], 3, stdout="inactive\n", stderr="",
-        ),
+    _seed_unit_states(**{
+        doctor_network.USBNET_DHCP_UNIT: {
+            "load_state": "loaded", "active_state": "inactive",
+        },
     })
     r = doctor.check_usbnet_dhcp_unit()
     assert r.status == "fail"
@@ -1084,10 +1090,10 @@ def test_usbnet_dhcp_unit_iface_absent_but_unit_active_is_warn(monkeypatch, tmp_
     monkeypatch.setattr(
         doctor_network, "USBNET_SYS_CLASS_NET", tmp_path / "sys-class-net",
     )
-    _stub_run(monkeypatch, {
-        ("systemctl", "is-active"): subprocess.CompletedProcess(
-            [], 0, stdout="active\n", stderr="",
-        ),
+    _seed_unit_states(**{
+        doctor_network.USBNET_DHCP_UNIT: {
+            "load_state": "loaded", "active_state": "active",
+        },
     })
     r = doctor.check_usbnet_dhcp_unit()
     assert r.status == "warn"

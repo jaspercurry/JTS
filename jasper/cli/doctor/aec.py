@@ -47,6 +47,7 @@ from ..aec_bridge_config import (
 )
 from ..aec_bridge_engines import DTLN_ENABLED_ENV
 from ..aec_bridge_telemetry import BRIDGE_STATS_PATH_ENV
+from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
@@ -229,10 +230,7 @@ def _audio_profile_status_for_doctor(
     """
 
     if bridge_active is None:
-        bridge_active = (
-            _run(["systemctl", "is-active", "jasper-aec-bridge.service"])
-            .stdout.strip() == "active"
-        )
+        bridge_active = evidence.unit_active("jasper-aec-bridge.service") is True
     if env is None:
         env = _doctor_env_file()
     runtime = runtime_env_from_mapping(env, process_env=os.environ)
@@ -446,9 +444,8 @@ def check_enhanced_aec() -> CheckResult:
             PROFILE_XVF_CHIP_AEC,
             PROFILE_XVF_CHIP_AEC_TESTING,
         }
-        service_state = _run(
-            ["systemctl", "is-active", "jasper-enhanced-aec-install.service"]
-        ).stdout.strip()
+        install_state = evidence.unit_state("jasper-enhanced-aec-install.service")
+        service_state = str((install_state or {}).get("active_state") or "")
         payload = enhanced_aec.status(
             chip_aec_active=chip_active,
             service_active=service_state
@@ -596,8 +593,9 @@ def check_aec_bridge_running() -> CheckResult:
     if parked is not None:
         return parked
     from ...mics import xvf3800
-    is_active = _run(["systemctl", "is-active", "jasper-aec-bridge.service"]).stdout.strip()
-    is_enabled = _run(["systemctl", "is-enabled", "jasper-aec-bridge.service"]).stdout.strip()
+    bridge_state = evidence.unit_state("jasper-aec-bridge.service") or {}
+    is_active = str(bridge_state.get("active_state") or "")
+    is_enabled = str(bridge_state.get("unit_file_state") or "")
 
     if is_active == "active":
         # Which AEC the running bridge carries is the Audio profile row's
@@ -609,9 +607,8 @@ def check_aec_bridge_running() -> CheckResult:
     # The commissioner stops the whole AEC stack for its audible measurement
     # (minutes) and its live marker parks every reconcile, so a down bridge is
     # the intended state — not a failure with a restart remedy.
-    commission_state = _run(
-        ["systemctl", "is-active", "jasper-aec-commission.service"]
-    ).stdout.strip()
+    commission_unit = evidence.unit_state("jasper-aec-commission.service") or {}
+    commission_state = str(commission_unit.get("active_state") or "")
     if commission_state in {"active", "activating", "reloading"} or Path(
         "/run/jasper-chip-aec-commission/active"
     ).exists():
@@ -1235,9 +1232,10 @@ def check_aec_bridge_output_health() -> CheckResult:
     parked = _parked_follower_result("AEC bridge output")
     if parked is not None:
         return parked
-    is_active = _run(
-        ["systemctl", "is-active", "jasper-aec-bridge.service"]
-    ).stdout.strip()
+    is_active = str(
+        (evidence.unit_state("jasper-aec-bridge.service") or {}).get("active_state")
+        or ""
+    )
     if is_active != "active":
         # Already covered by check_aec_bridge_running; nothing of this
         # check's own domain (RMS windows, reference stats) exists to assess.
@@ -1447,11 +1445,8 @@ def _valid_udp_endpoint(value: object) -> bool:
 
 
 def _read_outputd_status_for_aec_reference() -> dict | None:
-    """Reuse outputd doctor's bounded STATUS reader with fail-soft policy."""
-    from .audio_runtime import _outputd_status_payload
-
-    status = _outputd_status_payload()
-    return status if isinstance(status, dict) else None
+    """The per-run cached outputd STATUS read (ADR-0228 rule 4) — fail-soft."""
+    return evidence.outputd_status().payload
 
 
 def _aec_reference_failure_remediation(
@@ -1678,9 +1673,10 @@ def check_aec_bridge_dtln_engine() -> CheckResult:
         return model_result
 
     # Bridge must be running for the engine to mean anything.
-    is_active = _run(
-        ["systemctl", "is-active", "jasper-aec-bridge.service"]
-    ).stdout.strip()
+    is_active = str(
+        (evidence.unit_state("jasper-aec-bridge.service") or {}).get("active_state")
+        or ""
+    )
     if is_active != "active":
         return CheckResult(
             "DTLN-aec engine", "skipped",

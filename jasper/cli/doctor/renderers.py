@@ -29,6 +29,7 @@ from ...source_intent import (
     read_bluetooth_rfkill_state,
     source_intent_enabled,
 )
+from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
     REASON_SOURCE_INTENT_INVALID,
@@ -107,6 +108,25 @@ REASON_MUX_MODE_PINNED = "mux_mode_pinned"
 # ----------------------------------------------------------------------
 
 
+def _bluetoothctl_show() -> subprocess.CompletedProcess | Exception:
+    """``bluetoothctl show``, or the exception it raised. Never raises itself
+    — the memoized read behind :func:`_cached_bluetoothctl_show` must be
+    computable exactly once and handed to every caller, so a caller that
+    needs to react to (or re-raise) a particular exception type gets it back
+    as a value instead of losing it to a swallowed first call."""
+    try:
+        return _run(["bluetoothctl", "show"])
+    except (OSError, subprocess.SubprocessError) as exc:
+        return exc
+
+
+def _cached_bluetoothctl_show() -> subprocess.CompletedProcess | Exception:
+    """``bluetoothctl show`` is asked up to three times per run (household-Off
+    drift, desired-On radio proof, pairing-policy's own adapter gate); one
+    process serves all three."""
+    return evidence.get("bluetoothctl_show", _bluetoothctl_show)
+
+
 def _intentional_source_off(
     source: Source,
     label: str,
@@ -127,8 +147,7 @@ def _intentional_source_off(
     if not enabled:
         drift: list[str] = []
         for unit in units:
-            state = _run(["systemctl", "is-active", unit]).stdout.strip()
-            if state == "active":
+            if evidence.unit_active(unit):
                 drift.append(f"{unit} is still active")
         if check_bluetooth_radio:
             try:
@@ -143,7 +162,9 @@ def _intentional_source_off(
                 )
             if rfkill.present and not rfkill.fully_soft_blocked:
                 drift.append("Bluetooth radio is not RF-killed")
-            powered = _run(["bluetoothctl", "show"])
+            powered = _cached_bluetoothctl_show()
+            if isinstance(powered, Exception):
+                raise powered
             if any(
                 line.strip().lower() == "powered: yes"
                 for line in powered.stdout.splitlines()
@@ -185,11 +206,11 @@ def _desired_bluetooth_radio_failure(label: str) -> CheckResult | None:
         drift.append("Bluetooth radio is soft blocked")
     if rfkill.hard_blocked:
         drift.append("Bluetooth radio is hard blocked")
-    try:
-        powered = _run(["bluetoothctl", "show"])
-    except (OSError, subprocess.SubprocessError) as exc:
-        drift.append(f"BlueZ Powered state cannot be read: {exc}")
+    powered_or_exc = _cached_bluetoothctl_show()
+    if isinstance(powered_or_exc, Exception):
+        drift.append(f"BlueZ Powered state cannot be read: {powered_or_exc}")
     else:
+        powered = powered_or_exc
         powered_value: str | None = None
         for raw in powered.stdout.splitlines():
             key, separator, value = raw.strip().partition(":")
@@ -238,8 +259,9 @@ def check_librespot_running(cfg: Config) -> CheckResult:
             "apt install raspotify (provides librespot via .deb)",
             reason=REASON_LIBRESPOT_BINARY_MISSING,
         )
-    p = _run(["systemctl", "is-active", "librespot.service"])
-    state = p.stdout.strip()
+    state = (evidence.unit_state("librespot.service") or {}).get(
+        "active_state",
+    ) or "unknown"
     if state != "active":
         return CheckResult(
             "librespot.service", "fail",
@@ -284,8 +306,9 @@ def check_shairport_sync_ap2() -> CheckResult:
             f"Apt's package is AP1-only; rebuild from source.",
             reason=REASON_SHAIRPORT_NOT_AP2,
         )
-    p2 = _run(["systemctl", "is-active", "shairport-sync.service"])
-    state = p2.stdout.strip()
+    state = (evidence.unit_state("shairport-sync.service") or {}).get(
+        "active_state",
+    ) or "unknown"
     if state != "active":
         return CheckResult(
             "shairport-sync AP2", "fail",
@@ -309,8 +332,9 @@ def check_nqptp_running() -> CheckResult:
     )
     if intentional_off is not None:
         return intentional_off
-    p = _run(["systemctl", "is-active", "nqptp.service"])
-    state = p.stdout.strip()
+    state = (evidence.unit_state("nqptp.service") or {}).get(
+        "active_state",
+    ) or "unknown"
     if state == "active":
         return CheckResult("nqptp", "ok", "active (UDP 319/320)")
     return CheckResult(
@@ -328,8 +352,9 @@ def check_jasper_mux() -> CheckResult:
     parked = _parked_follower_result("jasper-mux")
     if parked is not None:
         return parked
-    p = _run(["systemctl", "is-active", "jasper-mux.service"])
-    state = p.stdout.strip()
+    state = (evidence.unit_state("jasper-mux.service") or {}).get(
+        "active_state",
+    ) or "unknown"
     if state == "active":
         return CheckResult(
             "jasper-mux", "ok",
@@ -362,10 +387,12 @@ def check_bluealsa() -> CheckResult:
     radio_failure = _desired_bluetooth_radio_failure("bluealsa")
     if radio_failure is not None:
         return radio_failure
-    p1 = _run(["systemctl", "is-active", "bluealsa.service"])
-    p2 = _run(["systemctl", "is-active", "bluealsa-aplay.service"])
-    s1 = p1.stdout.strip()
-    s2 = p2.stdout.strip()
+    s1 = (evidence.unit_state("bluealsa.service") or {}).get(
+        "active_state",
+    ) or "unknown"
+    s2 = (evidence.unit_state("bluealsa-aplay.service") or {}).get(
+        "active_state",
+    ) or "unknown"
     if s1 == "active" and s2 == "active":
         return CheckResult("bluealsa", "ok", "daemon + aplay active")
     return CheckResult(
@@ -389,39 +416,16 @@ def check_bluetooth_pairing_policy() -> CheckResult:
     if intentional_off is not None:
         return intentional_off
     expected_exec = "/opt/jasper/.venv/bin/jasper-bluetooth-agent"
-    try:
-        p = _run([
-            "systemctl",
-            "show",
-            "bt-agent.service",
-            "-p",
-            "ActiveState",
-            "-p",
-            "SubState",
-            "-p",
-            "ExecStart",
-        ])
-    except FileNotFoundError:
+    unit_state = evidence.unit_state("bt-agent.service")
+    if unit_state is None:
         return CheckResult(
             "Bluetooth pairing policy",
             "skipped",
             "systemctl unavailable — skipped",
             reason=REASON_SYSTEMCTL_UNAVAILABLE,
         )
-    if p.returncode != 0:
-        return CheckResult(
-            "Bluetooth pairing policy",
-            "fail",
-            "systemctl show bt-agent.service failed",
-            reason=REASON_BT_PAIRING_SYSTEMCTL_SHOW_FAILED,
-        )
-    props = {}
-    for line in p.stdout.splitlines():
-        key, sep, value = line.partition("=")
-        if sep:
-            props[key] = value
-    active = props.get("ActiveState", "")
-    sub = props.get("SubState", "")
+    active = unit_state.get("active_state") or ""
+    sub = unit_state.get("sub_state") or ""
     if active != "active" or sub != "running":
         return CheckResult(
             "Bluetooth pairing policy",
@@ -429,7 +433,30 @@ def check_bluetooth_pairing_policy() -> CheckResult:
             f"bt-agent.service state={active}/{sub}; no-code default agent not running",
             reason=REASON_BT_PAIRING_AGENT_NOT_RUNNING,
         )
-    exec_start = props.get("ExecStart", "")
+    # ExecStart isn't in the batched roster read's property set — one small
+    # dedicated call for the one property this check needs it for.
+    try:
+        exec_proc = _run(["systemctl", "show", "bt-agent.service", "-p", "ExecStart"])
+    except FileNotFoundError:
+        return CheckResult(
+            "Bluetooth pairing policy",
+            "skipped",
+            "systemctl unavailable — skipped",
+            reason=REASON_SYSTEMCTL_UNAVAILABLE,
+        )
+    if exec_proc.returncode != 0:
+        return CheckResult(
+            "Bluetooth pairing policy",
+            "fail",
+            "systemctl show bt-agent.service failed",
+            reason=REASON_BT_PAIRING_SYSTEMCTL_SHOW_FAILED,
+        )
+    exec_start = ""
+    for line in exec_proc.stdout.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key == "ExecStart":
+            exec_start = value
+            break
     if expected_exec not in exec_start:
         return CheckResult(
             "Bluetooth pairing policy",
@@ -438,15 +465,17 @@ def check_bluetooth_pairing_policy() -> CheckResult:
             reason=REASON_BT_PAIRING_WRONG_AGENT,
         )
 
-    try:
-        bt = _run(["bluetoothctl", "show"])
-    except FileNotFoundError:
+    bt_or_exc = _cached_bluetoothctl_show()
+    if isinstance(bt_or_exc, FileNotFoundError):
         return CheckResult(
             "Bluetooth pairing policy",
             "warn",
             "agent OK, but bluetoothctl unavailable — adapter gate not checked",
             reason=REASON_BT_PAIRING_BLUETOOTHCTL_UNAVAILABLE,
         )
+    if isinstance(bt_or_exc, Exception):
+        raise bt_or_exc
+    bt = bt_or_exc
     if bt.returncode != 0:
         return CheckResult(
             "Bluetooth pairing policy",
@@ -871,17 +900,13 @@ def _systemd_unit_user(unit: str) -> tuple[Optional[str], str]:
     for an absent unit, so a renamed renderer would otherwise degrade into a
     root probe that passes — asserting "as the unit's real User=" with no unit.
     """
-    try:
-        r = subprocess.run(
-            ["systemctl", "show", unit, "-p", "LoadState", "-p", "User"],
-            capture_output=True, text=True, timeout=2,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None, "unknown"
-    props = dict(
-        line.split("=", 1) for line in r.stdout.splitlines() if "=" in line
-    )
-    return props.get("User") or None, props.get("LoadState") or "unknown"
+    state = evidence.unit_state(unit)
+    load_state = (state or {}).get("load_state") or "unknown"
+    # unit_property appends ".service" itself (its callers pass bare drift-
+    # table names), so strip it back off the fully-qualified name we take.
+    users = evidence.unit_property("User", (unit,))
+    user = (users[0] or None) if users else None
+    return user, load_state
 
 def _renderer_lane_device_overrides() -> dict[str, str]:
     """Renderer `--device` values the lane map declares (U3 / P6).
@@ -1220,14 +1245,12 @@ def _fanin_lane_busy_owner_matches(device: str, unit: str) -> tuple[bool, str]:
     substream = _FANIN_PRIVATE_RENDERER_DEVICES.get(device)
     if substream is None:
         return False, "not a known fan-in private lane"
-    status_path = Path(f"/proc/asound/Loopback/pcm0p/sub{substream}/status")
-    try:
-        text = status_path.read_text()
-    except OSError as e:
-        return False, f"could not read {status_path}: {e}"
+    text = evidence.loopback_substreams().get(substream)
+    if text is None:
+        return False, f"could not read Loopback substream {substream} status"
     m = re.search(r"owner_pid\s*:\s*(\d+)", text)
     if not m:
-        return False, f"{status_path} has no owner_pid"
+        return False, f"Loopback substream {substream} status has no owner_pid"
     pid = m.group(1)
     owned, why = _cgroup_owner_is_unit(pid, unit)
     if owned:

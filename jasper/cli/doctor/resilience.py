@@ -18,17 +18,17 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
 from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
+from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
     REASON_SYSTEMCTL_UNAVAILABLE,
     CheckResult,
     _ONESHOT_RUNTIME_STATE_UNITS,
     _RUNTIME_STATE_UNITS,
-    _service_runtime_states,
 )
 
 # Machine-stable codes naming which branch of a resilience check produced a
@@ -65,7 +65,7 @@ def check_service_runtime_state() -> CheckResult:
     to catch the production risk too: a unit can be start-limited or
     repeatedly restarting with no live cgroup left for the resource
     sampler to display."""
-    states = _service_runtime_states()
+    states = evidence.unit_states()
     if states is None:
         return CheckResult(
             "service runtime state", "skipped",
@@ -195,24 +195,16 @@ def _classify_supervisor_snapshots(resilience: dict[str, Any]) -> CheckResult:
     )
 
 
-def _read_control_payload(
-    fetch: Callable[..., dict[str, Any]], *keys: str
-) -> dict[str, Any] | None:
-    """Fetch a jasper-control HTTP payload and drill into nested dict
-    ``keys``, fail-soft to None on any transport error or shape mismatch."""
-    try:
-        payload: Any = fetch(timeout=2.0)
-    except (OSError, RuntimeError, ValueError):
-        return None
+def _nested_dict(payload: Any, *keys: str) -> dict[str, Any] | None:
+    """Drill a nested dict out of a jasper-control HTTP payload along
+    ``keys``, fail-soft to None on any shape mismatch."""
     for key in keys:
         payload = payload.get(key) if isinstance(payload, dict) else None
     return payload if isinstance(payload, dict) else None
 
 
 def _read_resilience_state() -> dict[str, Any] | None:
-    from ...control import client as control
-
-    return _read_control_payload(control.get_state, "resilience")
+    return _nested_dict(evidence.control_state().payload, "resilience")
 
 
 @doctor_check(order=40.5, group="resilience")
@@ -241,9 +233,9 @@ _UNDER_VOLTAGE_HISTORY_BIT = 0x1
 
 
 def _read_system_metrics_current() -> dict[str, Any] | None:
-    from ...control import client as control
-
-    return _read_control_payload(control.get_system_snapshot, "metrics", "current")
+    return _nested_dict(
+        evidence.control_system_snapshot().payload, "metrics", "current",
+    )
 
 
 @doctor_check(order=40.6, group="resilience")

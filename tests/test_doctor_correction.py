@@ -19,7 +19,7 @@ from unittest.mock import patch
 import pytest
 
 from jasper.cli import doctor
-from jasper.cli.doctor import correction
+from jasper.cli.doctor import _evidence, correction
 from jasper.correction import bundles
 
 from .correction_bundle_fixtures import write_golden_correction_bundle
@@ -27,13 +27,31 @@ from .correction_bundle_fixtures import write_golden_correction_bundle
 from .doctor_test_support import _pretend_group_is_jasper, _write_identity_env
 
 
-def test_check_correction_web_service_ok_when_socket_active(monkeypatch):
-    def fake_run(cmd, timeout=5.0):
-        unit = cmd[-1]
-        out = "active\n" if unit.endswith(".socket") else "inactive\n"
-        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+def _stub_unit_active_states(monkeypatch, active: dict[str, str]) -> None:
+    """`_evidence.read_unit_states` stand-in: units in `active` report that
+    ActiveState; every other rostered unit reads inactive."""
 
-    monkeypatch.setattr(doctor.correction, "_run", fake_run)
+    def fake(units, *, timeout):
+        return {
+            unit: {
+                "unit": unit,
+                "load_state": "loaded",
+                "active_state": active.get(unit, "inactive"),
+                "sub_state": "running" if active.get(unit) == "active" else "dead",
+                "unit_file_state": "enabled",
+                "n_restarts": 0,
+                "main_pid": 0,
+            }
+            for unit in units
+        }
+
+    monkeypatch.setattr(_evidence, "read_unit_states", fake)
+
+
+def test_check_correction_web_service_ok_when_socket_active(monkeypatch):
+    _stub_unit_active_states(
+        monkeypatch, {"jasper-correction-web.socket": "active"},
+    )
     r = doctor.check_correction_web_service()
     assert r.status == "ok"
     assert r.reason == ""
@@ -50,12 +68,9 @@ def test_check_correction_web_service_ok_when_socket_active(monkeypatch):
 def test_check_correction_web_service_warns_without_the_socket(
     monkeypatch, service_state, reason
 ):
-    def fake_run(cmd, timeout=5.0):
-        unit = cmd[-1]
-        out = "inactive\n" if unit.endswith(".socket") else f"{service_state}\n"
-        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
-
-    monkeypatch.setattr(doctor.correction, "_run", fake_run)
+    _stub_unit_active_states(
+        monkeypatch, {"jasper-correction-web.service": service_state},
+    )
     r = doctor.check_correction_web_service()
     assert r.status == "warn"
     assert r.reason == reason

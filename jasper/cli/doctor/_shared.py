@@ -19,10 +19,8 @@ The base layer every per-domain check module imports from:
 - ``_run`` (the subprocess wrapper) and ``_parse_env_file``;
 - ANSI colour constants and the chip-AEC passive check set;
 - the cross-cutting helpers used by more than one domain
-  (``_sha256_file``, ``_meminfo_kb``, ``_systemctl_show_property``,
-  ``_pid_of_unit``, ``_service_runtime_states`` +
-  ``_RUNTIME_STATE_UNITS``, ``_loopback_playback_active``,
-  ``_parked_follower_result``);
+  (``_sha256_file``, ``_meminfo_kb``, ``_RUNTIME_STATE_UNITS``,
+  ``_loopback_playback_active``, ``_parked_follower_result``);
 - the reason codes more than one domain emits
   (``REASON_SYSTEMCTL_UNAVAILABLE``, ``REASON_SOURCE_INTENT_INVALID``,
   ``REASON_PARKED_BONDED_FOLLOWER``), each declared beside the helper
@@ -258,104 +256,6 @@ def _meminfo_kb(field: str) -> int | None:
         return None
     return None
 
-def _pid_of_unit(unit: str) -> int | None:
-    """Best-effort single-unit PID lookup. Returns None if the unit
-    isn't running, or if systemctl isn't available (dev host).
-
-    Used only when a caller wants just one PID. The batch caller
-    `check_installed_settings_drift` uses `_systemctl_show_property`
-    directly to avoid N subprocess invocations for N units."""
-    try:
-        out = _run(
-            ["systemctl", "show", "-p", "MainPID", "--value", f"{unit}.service"],
-        ).stdout.strip()
-        pid = int(out)
-        return pid if pid > 0 else None
-    except (subprocess.SubprocessError, ValueError, FileNotFoundError):
-        return None
-
-def _systemctl_show_property(prop: str, units: list[str]) -> list[str] | None:
-    """Batch read of one systemd property across multiple units. One
-    subprocess call returns N values (one per unit, in input order).
-
-    Returns:
-        list of values (length == len(units)), OR None if systemctl
-        is unavailable (dev host).
-
-    Why this matters: unbatched, the installed-settings drift check would
-    call `systemctl show` once per (property × daemon) — a dozen-plus
-    subprocess invocations per doctor run. Batched, it's one invocation
-    per property (LoadState, MainPID, OOMScoreAdjust), a large
-    constant-factor win on the Pi.
-
-    Wire format note: `systemctl show -p X --value <u1> <u2> ... <uN>`
-    emits `value1\\n\\nvalue2\\n\\n...valueN\\n`. The separator is
-    `\\n\\n` (blank line between values), NOT plain `\\n`. We split
-    on that explicitly.
-    """
-    try:
-        out = _run(
-            ["systemctl", "show", "-p", prop, "--value"] +
-            [f"{u}.service" for u in units],
-            # Wider timeout — listing N units takes longer than 1.
-            timeout=10.0,
-        ).stdout
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return None
-    # Strip trailing newline before splitting so the last value isn't
-    # followed by a phantom empty element.
-    text = out.rstrip("\n")
-    # systemctl separates per-unit values with a blank line (\n\n) when
-    # multiple units are requested with --value. Splitting on \n alone
-    # would produce 2N-1 elements for N units; split on \n\n to get N.
-    if not text:
-        # All units returned empty values (e.g. all not-running).
-        # Still need len(units) entries.
-        return [""] * len(units)
-    if "\n\n" in text:
-        parts = text.split("\n\n")
-    else:
-        # Single unit, or systemd version that doesn't emit blank
-        # separators. Fall back to plain \n split.
-        parts = text.split("\n")
-    if len(parts) != len(units):
-        # Unexpected shape — degrade gracefully so the caller can
-        # surface "skipped" rather than crash.
-        return None
-    return parts
-
-
-def _installed_units(units: list[str]) -> set[str] | None:
-    """Subset of ``units`` whose unit file is actually installed.
-
-    "Installed" means ``LoadState`` is neither ``not-found`` (no unit
-    file) nor ``masked`` (symlinked to /dev/null) — i.e. an effective
-    unit file exists to carry a directive. A unit that exists but is
-    broken (``error`` / ``bad-setting``) is intentionally KEPT so its
-    drift still surfaces rather than being silently hidden.
-
-    Returns ``None`` if systemctl cannot answer — absent (dev host), or
-    present but returning nothing (no D-Bus, a host not booted with
-    systemd, a non-zero exit). Both are "unknown", not "everything is
-    installed": treating an empty answer as installed would read every
-    unit's directive as its systemd default and fabricate drift on all of
-    them. Callers fall through to their existing "skipped" path.
-
-    Why: drift checks verify a PROPERTY of a unit. A unit a profile never
-    installs — e.g. the voice/AEC stack on a streambox — has no property
-    to drift, and ``systemctl show`` reports its directives as defaults,
-    which would read as false drift. Callers filter their expected set to
-    this set so the check stays correct on every install profile without
-    hard-coding which units each tier runs.
-    """
-    load_states = _systemctl_show_property("LoadState", units)
-    if load_states is None or not any(s.strip() for s in load_states):
-        return None
-    return {
-        u for u, state in zip(units, load_states)
-        if state.strip() not in ("not-found", "masked")
-    }
-
 # `jasper.source_intent.source_intent_enabled` raised: the household's
 # per-source intent file is unreadable or malformed, so nothing downstream of
 # it can be judged. Shared by every domain that reads a source intent.
@@ -433,26 +333,6 @@ _ONESHOT_RUNTIME_STATE_UNITS = frozenset({
     "jasper-fanin-coupling-auto.service",
 })
 
-def _service_runtime_states() -> dict[str, dict[str, object]] | None:
-    try:
-        proc = _run(
-            [
-                "systemctl", "show", "--no-page",
-                "--property=Id",
-                "--property=LoadState",
-                "--property=ActiveState",
-                "--property=SubState",
-                "--property=Result",
-                "--property=NRestarts",
-            ] + list(_RUNTIME_STATE_UNITS),
-            timeout=10.0,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return None
-    from ...service_units import parse_systemctl_show_units
-
-    return parse_systemctl_show_units(proc.stdout)
-
 def _loopback_playback_active() -> bool:
     """True if any renderer is currently writing the music-chain loopback.
 
@@ -499,16 +379,12 @@ def _loopback_playback_active() -> bool:
     retire it on fleet arming state alone — the fleet being ring-armed
     is not the code dropping aloop support.
     """
-    import glob
-    for status_path in glob.glob("/proc/asound/Loopback/pcm0p/sub*/status"):
-        m = re.search(r"/sub(\d+)/status$", status_path)
-        if m and int(m.group(1)) > 4:
-            continue
-        try:
-            with open(status_path, encoding="utf-8") as f:
-                first_line = f.readline().strip()
-        except OSError:
-            continue
-        if first_line and first_line != "closed":
-            return True
-    return False
+    from ._evidence import evidence
+
+    def first_line(text: str) -> str:
+        return text.splitlines()[0].strip() if text else ""
+
+    return any(
+        index <= 4 and first_line(status) not in ("", "closed")
+        for index, status in evidence.loopback_substreams().items()
+    )

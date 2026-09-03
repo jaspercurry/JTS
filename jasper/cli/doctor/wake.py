@@ -17,6 +17,7 @@ from ...audio_profile_state import (
 )
 from ...config import Config, local_mic_present_from_env
 from ...openwakeword_guard import ensure_openwakeword_import_safe
+from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult, _sha256_file
 from .aec import (
@@ -151,10 +152,8 @@ def _voice_wake_legs_runtime() -> "set[str] | None":
     None when jasper-control is unreachable or the field is absent (older
     daemon / voice down) — callers treat None as "can't tell", not "no
     legs", and fall back to reporting configured intent."""
-    from ...control import client as control
-    try:
-        state = control.get_state(timeout=2)
-    except (control.ControlError, ValueError):
+    state = evidence.control_state().payload
+    if not isinstance(state, dict):
         return None
     voice = state.get("voice")
     if not isinstance(voice, dict):
@@ -184,10 +183,9 @@ def _push_to_talk_only_speaker() -> bool:
     if local_mic_present_from_env() is not False:
         return False
     # The accessory half comes from its owner's published file, read fresh —
-    # never os.environ, per jasper.mic_presence. read_mic_presence() is the
+    # never os.environ, per jasper.mic_presence. mic_presence() is the
     # documented status-surface reader and never raises.
-    from ...mic_presence import read_mic_presence
-    return read_mic_presence().accessory_present
+    return evidence.mic_presence().accessory_present
 
 def _assess_wake_legs(
     aec_mode: str, raw: bool, dtln: bool, armed_runtime: "set[str] | None",

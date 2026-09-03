@@ -664,10 +664,8 @@ def test_librespot_check_reports_ok_on_streambox_cfg(monkeypatch):
     monkeypatch.setattr(doctor.renderers, "_parked_follower_result", lambda _label: None)
     monkeypatch.setattr(doctor.renderers, "source_intent_enabled", lambda source: True)
     monkeypatch.setattr(doctor.renderers.os.path, "isfile", lambda p: True)
-    monkeypatch.setattr(
-        doctor.renderers,
-        "_run",
-        lambda cmd: SimpleNamespace(returncode=0, stdout="active\n", stderr=""),
+    doctor.renderers.evidence.seed(
+        "units", {"librespot.service": {"active_state": "active"}},
     )
 
     result = doctor.check_librespot_running(

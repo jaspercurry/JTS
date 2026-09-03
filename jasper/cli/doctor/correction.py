@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import datetime
+import itertools
 import json
 import os
 import re
@@ -13,6 +14,7 @@ import subprocess
 import time
 from datetime import datetime as _datetime, timezone
 from pathlib import Path
+from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult, _group_writable_dir, _run
 from ...active_speaker.environment import (
@@ -116,12 +118,16 @@ def check_correction_web_service() -> CheckResult:
     timeout; the socket must remain active so nginx can spawn the
     wizard on demand.
     """
-    socket_state = _run(
-        ["systemctl", "is-active", "jasper-correction-web.socket"]
-    ).stdout.strip()
-    service_state = _run(
-        ["systemctl", "is-active", "jasper-correction-web.service"]
-    ).stdout.strip()
+    socket_state = str(
+        (evidence.unit_state("jasper-correction-web.socket") or {}).get(
+            "active_state",
+        ) or ""
+    )
+    service_state = str(
+        (evidence.unit_state("jasper-correction-web.service") or {}).get(
+            "active_state",
+        ) or ""
+    )
     if socket_state == "active":
         return CheckResult(
             "correction web", "ok",
@@ -365,6 +371,12 @@ def check_correction_state_dirs() -> CheckResult:
         )
     return CheckResult("correction state dirs", "ok", str(root))
 
+# Bounds the sign-review glob below to a fixed number of files per run — a
+# household's manual-upload calibrations are a handful, never tens of
+# thousands, so this is a guard against an unbounded walk, not a real limit.
+_UPLOADED_CALIBRATION_SIGN_SCAN_CAP = 5_000
+
+
 @doctor_check(order=27.5, group="correction")
 def check_correction_uploaded_calibration_sign() -> CheckResult:
     """Advisory: uploaded mic calibrations still claiming the "correction"
@@ -380,7 +392,12 @@ def check_correction_uploaded_calibration_sign() -> CheckResult:
     root = calibration.configured_calibration_root()
     flagged: list[str] = []
     unreadable = 0
-    for path in sorted(root.glob("*/*/*.json")):
+    paths = sorted(
+        itertools.islice(
+            root.glob("*/*/*.json"), _UPLOADED_CALIBRATION_SIGN_SCAN_CAP,
+        )
+    )
+    for path in paths:
         try:
             data = json.loads(path.read_text())
         except (OSError, ValueError):
@@ -431,7 +448,7 @@ def _active_camilla_config_path() -> tuple[Path, str | None]:
 def check_correction_current_config() -> CheckResult:
     from jasper.correction.status import describe_current_config
 
-    statefile, config_path = _active_camilla_config_path()
+    statefile, config_path = evidence.get("camilla_config", _active_camilla_config_path)
     if config_path is None:
         return CheckResult(
             "current correction", "warn",
@@ -506,6 +523,12 @@ def _correction_evidence_status(bundle: dict[str, object]) -> str:
 
 @doctor_check(order=32, group="correction")
 def check_correction_latest_bundle() -> CheckResult:
+    # `bundles.summarize_bundle_collection` walks every bundle under
+    # `sessions_dir` (and, per bundle, an uncapped `rglob("*")` for its byte
+    # size) with no cap parameter to bound either walk. Left uncapped here —
+    # capping the bundle count at this call site would silently understate
+    # the reported bundle_count/storage totals below. A cap belongs in
+    # jasper/correction/bundles.py itself (out of this module's scope).
     from jasper.correction import bundles
 
     sessions_dir = Path(

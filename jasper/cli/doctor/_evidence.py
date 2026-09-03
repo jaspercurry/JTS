@@ -15,6 +15,7 @@ directly; the keys are the ones the public methods build.
 """
 from __future__ import annotations
 
+import subprocess
 import threading
 from dataclasses import dataclass
 from typing import Any, Callable, TypeVar
@@ -52,9 +53,69 @@ def _read_status(path: str, timeout: float) -> StatusRead:
         return StatusRead(None, exc)
 
 
+def _run(cmd: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+
+def _systemctl_show_property(prop: str, units: list[str]) -> list[str] | None:
+    """Batch read of one systemd property across multiple units. One
+    subprocess call returns N values (one per unit, in input order).
+
+    Returns:
+        list of values (length == len(units)), OR None if systemctl
+        is unavailable (dev host).
+
+    Why this matters: unbatched, a caller reading N units' worth of a
+    property outside ``SHOW_PROPERTIES`` would spend one subprocess
+    invocation per unit; batched, it is one invocation per property, a
+    large constant-factor win on the Pi.
+
+    Wire format note: `systemctl show -p X --value <u1> <u2> ... <uN>`
+    emits `value1\\n\\nvalue2\\n\\n...valueN\\n`. The separator is
+    `\\n\\n` (blank line between values), NOT plain `\\n`. We split
+    on that explicitly.
+    """
+    try:
+        out = _run(
+            ["systemctl", "show", "-p", prop, "--value"] +
+            list(units),
+            # Wider timeout — listing N units takes longer than 1.
+            timeout=10.0,
+        ).stdout
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return None
+    # Strip trailing newline before splitting so the last value isn't
+    # followed by a phantom empty element.
+    text = out.rstrip("\n")
+    # systemctl separates per-unit values with a blank line (\n\n) when
+    # multiple units are requested with --value. Splitting on \n alone
+    # would produce 2N-1 elements for N units; split on \n\n to get N.
+    if not text:
+        # All units returned empty values (e.g. all not-running).
+        # Still need len(units) entries.
+        return [""] * len(units)
+    if "\n\n" in text:
+        parts = text.split("\n\n")
+    else:
+        # Single unit, or systemd version that doesn't emit blank
+        # separators. Fall back to plain \n split.
+        parts = text.split("\n")
+    if len(parts) != len(units):
+        # Unexpected shape — degrade gracefully so the caller can
+        # surface "skipped" rather than crash.
+        return None
+    return parts
+
+
 def _loopback_substreams() -> dict[int, str]:
-    """First status line per snd-aloop playback substream index; a closed
-    substream reads ``closed``."""
+    """Full status text per snd-aloop playback substream index, keyed by
+    substream number; a closed substream reads ``closed``.
+
+    Full text (not just the first ``state:``/``closed`` line) so a caller
+    that needs the second ``owner_pid`` line — the aloop ownership gate in
+    ``renderers._fanin_lane_busy_owner_matches`` — can read it from the same
+    cached fetch; a caller that only wants open/closed reads
+    ``text.splitlines()[0]`` off the same value."""
     import glob
     import re
 
@@ -65,7 +126,7 @@ def _loopback_substreams() -> dict[int, str]:
             continue
         try:
             with open(status_path, encoding="utf-8") as f:
-                out[int(m.group(1))] = f.readline().strip()
+                out[int(m.group(1))] = f.read()
         except OSError:
             continue
     return out
@@ -153,11 +214,9 @@ class Evidence:
 
     def unit_property(self, prop: str, units: tuple[str, ...]) -> list[str] | None:
         """A property outside SHOW_PROPERTIES (OOMScoreAdjust, StartLimitAction,
-        ...) for several units in one call, in input order; None when
-        systemctl is unavailable or the reply shape is not one value per
-        unit."""
-        from ._shared import _systemctl_show_property
-
+        User, ...) for several full unit names in one call, in input order;
+        None when systemctl is unavailable or the reply shape is not one value
+        per unit."""
         return self.get(
             f"prop:{prop}:{','.join(units)}",
             lambda: _systemctl_show_property(prop, list(units)),
@@ -231,6 +290,19 @@ class Evidence:
                 return StatusRead(None, exc)
 
         return self.get("control_state", read)
+
+    def control_system_snapshot(self) -> StatusRead:
+        """jasper-control's /system/snapshot, fetched once per run."""
+
+        def read() -> StatusRead:
+            from ...control.client import get_system_snapshot
+
+            try:
+                return StatusRead(get_system_snapshot())
+            except Exception as exc:  # noqa: BLE001
+                return StatusRead(None, exc)
+
+        return self.get("control_system_snapshot", read)
 
 
 evidence = Evidence()

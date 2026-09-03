@@ -29,12 +29,12 @@ from ...memory_policy import memory_headroom_thresholds
 from ...wake_events import (
     DEFAULT_MAX_AUDIO_BYTES as _DEFAULT_WAKE_EVENTS_MAX_AUDIO_BYTES,
 )
+from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
     _meminfo_kb,
     _run,
-    _systemctl_show_property,
 )
 
 # Machine-stable codes naming which branch of a memory check produced a
@@ -316,15 +316,10 @@ def check_audio_path_no_swap() -> CheckResult:
     swapped: list[str] = []
     missing: list[str] = []
     units = _audio_path_units()
-    pids_raw = _systemctl_show_property("MainPID", list(units))
-    if pids_raw is None:
-        pids_raw = [""] * len(units)
-    for unit, pid_raw in zip(units, pids_raw):
-        try:
-            pid = int(pid_raw) if pid_raw else 0
-        except ValueError:
-            pid = 0
-        if pid <= 0:
+    for unit in units:
+        state = evidence.unit_state(f"{unit}.service")
+        pid = state.get("main_pid", 0) if state else 0
+        if not pid:
             missing.append(unit)
             continue
         try:

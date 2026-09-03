@@ -30,13 +30,16 @@ import subprocess
 import time
 from typing import NamedTuple
 
-from jasper.audio_hardware.usb_port_role import gadget_unavailable_detail
+from jasper.audio_hardware.usb_port_role import (
+    UsbPortRoleState,
+    gadget_unavailable_detail,
+)
 from jasper.audio_runtime_plan import UAC2_LOW_LATENCY_EXPECTED_ATTRS
 from jasper.audio_validation_route import route_live_state_issues
-from jasper.fanin.status import fanin_usbsink_lane_is_direct, read_fanin_status
+from jasper.fanin.status import fanin_usbsink_lane_is_direct
 from jasper.music_sources import Source
 from jasper.output_hardware import current_usb_data_role
-from jasper.route_latency.status_socket import FANIN_STATUS_SOCKET, read_status_socket
+from jasper.route_latency.status_socket import FANIN_STATUS_SOCKET
 from jasper.source_intent import source_intent_enabled
 from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR, udc_host_connected
 from jasper.usb_mic import (
@@ -53,11 +56,11 @@ from jasper.usb_mic import (
     relay_audio_issue,
 )
 
+from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
     REASON_SOURCE_INTENT_INVALID,
     CheckResult,
-    _parked_as_bonded_follower,
     _run,
 )
 
@@ -151,14 +154,22 @@ _UAC2_RATE_NUMID_RE = re.compile(r"numid=(\d+),iface=PCM,name='Capture Rate'")
 _UAC2_CTL_VALUE_RE = re.compile(r"^\s*: values=(\d+)", re.MULTILINE)
 
 
-def _systemd_is_active(unit: str) -> bool:
-    """Wrapper around `systemctl is-active`. Cheap; ~5 ms per call."""
-    return _run(["systemctl", "is-active", unit]).stdout.strip() == "active"
+def _unit_active(unit: str) -> bool:
+    """A unit's ActiveState off the shared evidence cache (ADR-0228 rule 4) —
+    the usbsink unit alone is asked about from four checks in this module, so
+    this costs one ``systemctl show`` per run rather than one per call.
+    Systemctl-unavailable (None) reads as not-active rather than crashing."""
+    return bool(evidence.unit_active(unit))
+
+def _unit_failed(unit: str) -> bool:
+    """True when the unit's ActiveState is ``failed``, off the same cache."""
+    state = evidence.unit_state(unit)
+    return bool(state and state.get("active_state") == "failed")
 
 def _skip_when_usbsink_inactive(label: str) -> CheckResult | None:
     """The `skipped` row for a check whose evidence only exists while the
     readiness marker is active, or ``None`` when it is active."""
-    if _systemd_is_active(USBSINK_UNIT):
+    if _unit_active(USBSINK_UNIT):
         return None
     return CheckResult(
         label, "skipped",
@@ -166,22 +177,19 @@ def _skip_when_usbsink_inactive(label: str) -> CheckResult | None:
         reason=REASON_USBSINK_SERVICE_INACTIVE,
     )
 
-def _systemd_is_failed(unit: str) -> bool:
-    """Wrapper around `systemctl is-failed`. True when the unit is parked in the
-    `failed` state. Cheap."""
-    return _run(["systemctl", "is-failed", unit]).stdout.strip() == "failed"
+def _lsmod_modules() -> set[str]:
+    """Every loaded kernel module name, from one ``lsmod`` per run."""
+    proc = _run(["lsmod"])
+    if proc.returncode != 0:
+        return set()
+    # lsmod output: first column is the module name.
+    return {
+        line.split()[0] for line in proc.stdout.splitlines() if line.split()
+    }
 
 def _module_loaded(name: str) -> bool:
     """True if `lsmod` shows the named kernel module."""
-    proc = _run(["lsmod"])
-    if proc.returncode != 0:
-        return False
-    # lsmod output: first column is the module name. Match-at-line-
-    # start to avoid substring matches against unrelated modules.
-    return any(
-        line.split() and line.split()[0] == name
-        for line in proc.stdout.splitlines()
-    )
+    return name in evidence.get("lsmod", _lsmod_modules)
 
 
 def _uac2_capture_rate() -> int | None:
@@ -218,6 +226,31 @@ def _uac2_function_path() -> Path:
 
 def _ncm_function_path() -> Path:
     return USBSINK_GADGET_PATH / "functions" / "ncm.usb0"
+
+
+def _uac2_present() -> bool:
+    """Whether ConfigFS composes the UAC2 audio function, read once per run —
+    several checks ask the same existence fact."""
+    return evidence.get("uac2_function_present", lambda: _uac2_function_path().exists())
+
+
+def _ncm_present() -> bool:
+    """Whether ConfigFS composes the NCM network function, read once per run."""
+    return evidence.get("ncm_function_present", lambda: _ncm_function_path().exists())
+
+
+def _gadget_dir_present() -> bool:
+    """Whether the composite gadget's ConfigFS directory exists at all, read
+    once per run."""
+    return evidence.get(
+        "usbsink_gadget_dir_present", lambda: USBSINK_GADGET_PATH.exists()
+    )
+
+
+def _usb_data_role() -> UsbPortRoleState:
+    """`current_usb_data_role()`, read once per doctor run — every check in
+    this module asks the same fact."""
+    return evidence.get("usb_data_role", current_usb_data_role)
 
 
 def _network_wanted() -> bool:
@@ -283,7 +316,7 @@ def _audio_wanted() -> _AudioIntent:
         return _AudioIntent(False, REASON_SOURCE_INTENT_INVALID, str(exc))
     if not enabled:
         return _AudioIntent(False, "intent_disabled")
-    if _parked_as_bonded_follower():
+    if evidence.parked_bonded_follower():
         return _AudioIntent(False, "parked_follower")
     return _AudioIntent(True, "enabled")
 
@@ -292,7 +325,7 @@ def check_usb_data_role() -> CheckResult:
     """Explain the resolved host/peripheral role and pending reboot state."""
 
     try:
-        state = current_usb_data_role()
+        state = _usb_data_role()
     except (OSError, RuntimeError, ValueError) as exc:
         return CheckResult(
             "USB data role", "warn", f"capability state unavailable: {exc}",
@@ -340,10 +373,10 @@ def check_usbsink_state() -> CheckResult:
     gadget-vs-network-intent story. A leftover libcomposite module with
     NEITHER function composed is RAM drift (network kill-switched + audio
     off, but the module never unloaded)."""
-    active = _systemd_is_active(USBSINK_UNIT)
-    uac2_present = _uac2_function_path().exists()
+    active = _unit_active(USBSINK_UNIT)
+    uac2_present = _uac2_present()
     libcomp = _module_loaded("libcomposite")
-    usb_role = current_usb_data_role()
+    usb_role = _usb_data_role()
     if not usb_role.gadget_available:
         if active or uac2_present:
             return CheckResult(
@@ -360,7 +393,7 @@ def check_usbsink_state() -> CheckResult:
             reason=REASON_STATE_HARDWARE_UNAVAILABLE,
         )
 
-    if _parked_as_bonded_follower():
+    if evidence.parked_bonded_follower():
         if active or uac2_present:
             details: list[str] = []
             if active:
@@ -382,7 +415,7 @@ def check_usbsink_state() -> CheckResult:
             "ok",
             "parked (bonded follower) — readiness marker and uac2.usb0 function down"
             + (" (gadget may still carry ncm.usb0 for the management network)"
-               if USBSINK_GADGET_PATH.exists() else ""),
+               if _gadget_dir_present() else ""),
             reason=REASON_STATE_PARKED,
         )
 
@@ -398,7 +431,7 @@ def check_usbsink_state() -> CheckResult:
                 "hosts stop seeing the audio device.",
                 reason=REASON_STATE_SPLIT_BRAIN,
             )
-        if libcomp and not USBSINK_GADGET_PATH.exists():
+        if libcomp and not _gadget_dir_present():
             return CheckResult(
                 "usbsink state", "warn",
                 "service inactive, uac2.usb0 absent, but libcomposite still "
@@ -472,7 +505,7 @@ def check_usbsink_host_stream() -> CheckResult:
     playing into a wedged data path" — the honest disclosure is the number plus
     the recovery, never a verdict, which is why this check never fails."""
     label = "usbsink host stream"
-    if not _uac2_function_path().exists():
+    if not _uac2_present():
         return CheckResult(
             label, "skipped", "uac2.usb0 not composed — no host stream",
             reason=REASON_HOST_STREAM_NOT_COMPOSED,
@@ -510,7 +543,7 @@ def check_usbsink_host_stream() -> CheckResult:
 def check_usbsink_low_latency_contract() -> CheckResult:
     """When the route claims low latency, verify the live USB data plane."""
 
-    usb_role = current_usb_data_role()
+    usb_role = _usb_data_role()
     if not usb_role.gadget_available:
         return CheckResult(
             "usbsink low-latency contract",
@@ -521,7 +554,7 @@ def check_usbsink_low_latency_contract() -> CheckResult:
 
     from jasper.audio_runtime_plan import build_audio_runtime_plan_from_system
 
-    plan = build_audio_runtime_plan_from_system()
+    plan = evidence.get("audio_runtime_plan", build_audio_runtime_plan_from_system)
     if not plan.route_profile.low_latency_claim:
         return CheckResult(
             "usbsink low-latency contract",
@@ -547,13 +580,13 @@ def check_usbsink_low_latency_contract() -> CheckResult:
             reason=REASON_LOW_LATENCY_NOT_WANTED,
         )
 
-    try:
-        fanin_status = read_status_socket(FANIN_STATUS_SOCKET)
-    except (OSError, TimeoutError, json.JSONDecodeError, ValueError) as e:
+    status_read = evidence.fanin_status()
+    fanin_status = status_read.payload
+    if fanin_status is None:
         return CheckResult(
             "usbsink low-latency contract",
             "fail",
-            f"can't read fan-in STATUS at {FANIN_STATUS_SOCKET}: {e}",
+            f"can't read fan-in STATUS at {FANIN_STATUS_SOCKET}: {status_read.error}",
             reason=REASON_LOW_LATENCY_STATUS_UNREADABLE,
         )
     live_issues = tuple(
@@ -624,7 +657,7 @@ def check_usbsink_low_latency_contract() -> CheckResult:
 def check_usb_mic_export() -> CheckResult:
     """Cross-check USB-microphone intent, descriptor, relay, and privacy."""
 
-    usb_role = current_usb_data_role()
+    usb_role = _usb_data_role()
     if not usb_role.gadget_available:
         return CheckResult(
             "USB microphone export",
@@ -660,7 +693,7 @@ def check_usb_mic_export() -> CheckResult:
                 f"microphone; restart {USBGADGET_UNIT}",
                 reason=REASON_MIC_EXPORT_UNEXPECTED_ADVERTISE,
             )
-        if function.is_dir() and bcd_device != USB_NO_MIC_BCD_DEVICE:
+        if _uac2_present() and bcd_device != USB_NO_MIC_BCD_DEVICE:
             return CheckResult(
                 "USB microphone export",
                 "fail",
@@ -700,7 +733,7 @@ def check_usb_mic_export() -> CheckResult:
             f"restart {USBGADGET_UNIT}",
             reason=REASON_MIC_EXPORT_DESCRIPTOR_STALE,
         )
-    if not _systemd_is_active(USBMIC_UNIT):
+    if not _unit_active(USBMIC_UNIT):
         return CheckResult(
             "USB microphone export",
             "fail",
@@ -829,7 +862,7 @@ def check_usb_combo_consistency() -> CheckResult:
     )
 
     # 1. A failed readiness-marker unit is the most actionable state — report first.
-    if _systemd_is_failed(USBSINK_UNIT):
+    if _unit_failed(USBSINK_UNIT):
         return CheckResult(
             "USB combo consistency", "fail",
             f"{USBSINK_UNIT} is in the failed state — the USB readiness marker "
@@ -1065,13 +1098,9 @@ def check_usbgadget_composition() -> CheckResult:
     unit in this state (not a unit failure), so there is nothing to compose
     yet regardless of intent."""
     label = "usbgadget composition"
-    usb_role = current_usb_data_role()
+    usb_role = _usb_data_role()
     if not usb_role.management_transport_available:
-        stale = (
-            USBSINK_GADGET_PATH.exists()
-            or _ncm_function_path().exists()
-            or _uac2_function_path().exists()
-        )
+        stale = _gadget_dir_present() or _ncm_present() or _uac2_present()
         if stale:
             return CheckResult(
                 label,
@@ -1087,7 +1116,7 @@ def check_usbgadget_composition() -> CheckResult:
             f"nothing composed; USB gadget unavailable ({usb_role.reason})",
             reason=REASON_COMPOSITION_NOT_APPLICABLE,
         )
-    if not usb_role.gadget_available and _uac2_function_path().exists():
+    if not usb_role.gadget_available and _uac2_present():
         return CheckResult(
             label,
             "fail",
@@ -1118,8 +1147,8 @@ def check_usbgadget_composition() -> CheckResult:
             + audio.detail,
             reason=REASON_SOURCE_INTENT_INVALID,
         )
-    ncm_present = _ncm_function_path().exists()
-    uac2_present = _uac2_function_path().exists()
+    ncm_present = _ncm_present()
+    uac2_present = _uac2_present()
     intent = f"network={want_network} audio={audio.wanted} ({audio.reason})"
     observed = f"ncm.usb0={ncm_present} uac2.usb0={uac2_present}"
     if uac2_present:
@@ -1129,11 +1158,11 @@ def check_usbgadget_composition() -> CheckResult:
         # is the invisible failure. Informational only: an idle box legitimately
         # reads consumed=False, so this must never become a warn.
         observed += (
-            f" consumed={fanin_usbsink_lane_is_direct(read_fanin_status(timeout_sec=1.0))}"
+            f" consumed={fanin_usbsink_lane_is_direct(evidence.fanin_status().payload)}"
         )
 
     if not want_network and not audio.wanted:
-        if ncm_present or uac2_present or USBSINK_GADGET_PATH.exists():
+        if ncm_present or uac2_present or _gadget_dir_present():
             return CheckResult(
                 label, "fail",
                 f"gadget present but neither function should exist "

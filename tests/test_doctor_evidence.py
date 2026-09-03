@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -88,6 +89,117 @@ def test_unit_state_is_none_without_systemctl(monkeypatch):
     assert ev.unit_states() is None
     assert ev.unit_state("jasper-fanin.service") is None
     assert ev.unit_active("jasper-fanin.service") is None
+
+
+def test_unit_property_batches_and_memoizes(monkeypatch):
+    calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def fake_show(prop, units):
+        calls.append((prop, tuple(units)))
+        return [f"{prop}:{u}" for u in units]
+
+    monkeypatch.setattr(_evidence, "_systemctl_show_property", fake_show)
+    ev = Evidence()
+    units = ("jasper-voice", "jasper-mux")
+    expected = ["OOMScoreAdjust:jasper-voice", "OOMScoreAdjust:jasper-mux"]
+    assert ev.unit_property("OOMScoreAdjust", units) == expected
+    assert ev.unit_property("OOMScoreAdjust", units) == expected
+    assert calls == [("OOMScoreAdjust", units)]
+
+
+def test_unit_property_is_none_when_the_reply_shape_mismatches(monkeypatch):
+    monkeypatch.setattr(
+        _evidence, "_systemctl_show_property", lambda prop, units: None,
+    )
+    ev = Evidence()
+    assert ev.unit_property("StartLimitAction", ("jasper-voice",)) is None
+
+
+def test_systemctl_show_property_parses_double_newline_separator(monkeypatch):
+    """`systemctl show -p X --value u1 u2` separates values with a blank
+    line, not a single newline (verified on the Pi)."""
+    monkeypatch.setattr(
+        _evidence, "_run",
+        lambda cmd, timeout=5.0: SimpleNamespace(stdout="1001\n\n1002\n\n1003\n"),
+    )
+    result = _evidence._systemctl_show_property(
+        "MainPID", ["unit-a", "unit-b", "unit-c"],
+    )
+    assert result == ["1001", "1002", "1003"]
+
+
+def test_systemctl_show_property_handles_single_unit(monkeypatch):
+    monkeypatch.setattr(
+        _evidence, "_run", lambda cmd, timeout=5.0: SimpleNamespace(stdout="1234\n"),
+    )
+    result = _evidence._systemctl_show_property("MainPID", ["unit-a"])
+    assert result == ["1234"]
+
+
+def test_systemctl_show_property_handles_empty_values(monkeypatch):
+    monkeypatch.setattr(
+        _evidence, "_run", lambda cmd, timeout=5.0: SimpleNamespace(stdout="\n\n\n\n\n"),
+    )
+    result = _evidence._systemctl_show_property(
+        "MainPID", ["unit-a", "unit-b", "unit-c"],
+    )
+    assert result == [""] * 3
+
+
+def test_systemctl_show_property_is_none_without_systemctl(monkeypatch):
+    def raises(cmd, timeout=5.0):
+        raise FileNotFoundError("systemctl not found")
+
+    monkeypatch.setattr(_evidence, "_run", raises)
+    assert _evidence._systemctl_show_property("MainPID", ["unit-a"]) is None
+
+
+def test_control_state_wraps_the_control_client(monkeypatch):
+    import jasper.control.client as control
+
+    monkeypatch.setattr(control, "get_state", lambda **kw: {"resilience": {}})
+    ev = Evidence()
+    read = ev.control_state()
+    assert read.payload == {"resilience": {}}
+    assert read.error is None
+
+
+def test_control_state_is_fail_soft_on_transport_error(monkeypatch):
+    import jasper.control.client as control
+
+    def raises(**kw):
+        raise control.ControlError("connection refused")
+
+    monkeypatch.setattr(control, "get_state", raises)
+    ev = Evidence()
+    read = ev.control_state()
+    assert read.payload is None
+    assert isinstance(read.error, control.ControlError)
+
+
+def test_control_system_snapshot_wraps_the_control_client(monkeypatch):
+    import jasper.control.client as control
+
+    monkeypatch.setattr(
+        control, "get_system_snapshot", lambda **kw: {"metrics": {"current": {}}},
+    )
+    ev = Evidence()
+    read = ev.control_system_snapshot()
+    assert read.payload == {"metrics": {"current": {}}}
+    assert read.error is None
+
+
+def test_control_system_snapshot_is_fail_soft_on_transport_error(monkeypatch):
+    import jasper.control.client as control
+
+    def raises(**kw):
+        raise control.ControlError("connection refused")
+
+    monkeypatch.setattr(control, "get_system_snapshot", raises)
+    ev = Evidence()
+    read = ev.control_system_snapshot()
+    assert read.payload is None
+    assert isinstance(read.error, control.ControlError)
 
 
 def test_parse_systemctl_show_units_shapes_one_record_per_unit():

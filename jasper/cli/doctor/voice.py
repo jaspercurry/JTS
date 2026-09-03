@@ -24,6 +24,7 @@ from ...voice.provider_state import (
     read_active_model_from_env_files,
     read_active_provider_state,
 )
+from ._evidence import evidence
 from ._registry import doctor_check
 from ...secret_redaction import redact_secrets
 from ._shared import (
@@ -366,12 +367,10 @@ def _voice_tool_packs_runtime() -> "list[dict] | None":
     daemon / voice down) — callers treat None as "can't tell" and fall
     back to reporting the static registry alone, rather than alarming.
     Mirrors _voice_wake_legs_runtime (wake.py)."""
-    from ...control import client as control
-    try:
-        state = control.get_state(timeout=2)
-    except (control.ControlError, ValueError):
+    payload = evidence.control_state().payload
+    if not isinstance(payload, dict):
         return None
-    voice = state.get("voice")
+    voice = payload.get("voice")
     if not isinstance(voice, dict):
         return None
     packs = voice.get("tool_packs")

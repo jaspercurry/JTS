@@ -191,7 +191,6 @@ def test_control_socket_paths_agree_across_processes(monkeypatch):
     for rel in (
         "jasper/mux.py",
         "jasper/control/airplay_health.py",
-        "jasper/cli/doctor/audio_runtime.py",
         "jasper/cli/system_soak.py",
     ):
         assert fanin_sock in (REPO / rel).read_text(), (
@@ -202,7 +201,6 @@ def test_control_socket_paths_agree_across_processes(monkeypatch):
     assert f'Environment="JASPER_OUTPUTD_CONTROL_SOCKET={outputd_sock}"' in unit
     for rel in (
         "jasper/audio_validation.py",
-        "jasper/cli/doctor/audio_runtime.py",
         "jasper/cli/system_soak.py",
     ):
         assert outputd_sock in (REPO / rel).read_text(), (

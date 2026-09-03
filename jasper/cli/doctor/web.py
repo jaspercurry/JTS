@@ -16,6 +16,7 @@ from pathlib import Path
 
 from ...control import control_token
 from ...identity import resolve_hostname
+from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import REASON_SYSTEMCTL_UNAVAILABLE, CheckResult, _run
 
@@ -451,38 +452,29 @@ WIZARD_UNITS = (
 _START_LIMIT_RESULT = "service-start-limit-hit"
 
 
-def _wizard_socket_state(unit: str) -> tuple[str, str]:
-    """``(ActiveState, finding)`` for one wizard's ``.socket``.
+def _wizard_socket_state(unit: str) -> tuple[str, str] | None:
+    """``(ActiveState, finding)`` for one wizard's ``.socket``, or ``None``
+    when the per-run unit-state evidence is unavailable (systemctl absent),
+    so the caller skips the whole sweep once.
 
     ``finding`` is empty when the listener is bound — including when the unit
-    is not installed on this profile, which ``systemctl show`` answers as
-    ``ActiveState=inactive`` / ``Result=success`` at rc=0 (measured on jts4)
-    rather than erroring. ``FileNotFoundError`` propagates so the caller can
-    skip the whole sweep once on a host with no ``systemctl``;
-    ``TimeoutExpired`` propagates so it can be charged to this one unit and
-    the remaining wizards still get read.
+    is not installed on this profile, which reads as ``ActiveState=inactive``
+    (measured on jts4) rather than erroring.
     """
     socket_unit = f"{unit}.socket"
-    show = _run(
-        ["systemctl", "show", socket_unit,
-         "--property=ActiveState", "--property=Result"]
-    )
-    state: dict[str, str] = {}
-    for line in show.stdout.splitlines():
-        key, sep, value = line.partition("=")
-        if sep:
-            state[key] = value.strip()
-    active = state.get("ActiveState", "")
-    if show.returncode != 0 or not active:
+    state = evidence.unit_state(socket_unit)
+    if state is None:
+        return None
+    active = state.get("active_state") or ""
+    if not active:
         return "", (
-            f"could not read {socket_unit} state from systemctl "
-            f"(rc={show.returncode}, stdout={show.stdout.strip()[:120]!r}, "
-            f"stderr={show.stderr.strip()[:120]!r}) — a start-limited wizard "
-            "is indistinguishable from a healthy one until this reads"
+            f"could not read {socket_unit} ActiveState from systemctl — a "
+            "start-limited wizard is indistinguishable from a healthy one "
+            "until this reads"
         )
     if active != "failed":
         return active, ""
-    result = state.get("Result", "") or "unknown"
+    result = state.get("result") or "unknown"
     cause = (
         "its paired service exhausted StartLimitBurst"
         if result == _START_LIMIT_RESULT
@@ -509,29 +501,21 @@ def check_wizard_socket_start_limits() -> CheckResult:
     does not install, not a finding; anything else is healthy. ``Result`` is
     reported but never gated on, so a socket killed by any marker (not just
     ``service-start-limit-hit``) still surfaces. A read that fails outright
-    (non-zero ``systemctl``, no ``ActiveState`` in the output, or a timeout)
-    is a ``fail``, never an ``ok`` standing in for "could not tell"; a
-    timeout is charged to its own unit so the rest of the sweep still reads.
-    See #2465 for why the family needs its own check.
+    (no ``ActiveState`` in the reply) is a ``fail``, never an ``ok`` standing
+    in for "could not tell". See #2465 for why the family needs its own
+    check.
     """
     label = "wizard socket start limits"
     observed: list[str] = []
     findings: list[str] = []
     for unit in WIZARD_UNITS:
-        try:
-            active, finding = _wizard_socket_state(unit)
-        except FileNotFoundError:
+        result = _wizard_socket_state(unit)
+        if result is None:
             return CheckResult(
                 label, "skipped", "systemctl unavailable — skipped (not Linux?)",
                 reason=REASON_SYSTEMCTL_UNAVAILABLE,
             )
-        except subprocess.TimeoutExpired as e:
-            findings.append(
-                f"timed out reading {unit}.socket state from systemctl "
-                f"({e}) — a start-limited wizard is indistinguishable from a "
-                "healthy one until this reads"
-            )
-            continue
+        active, finding = result
         if finding:
             findings.append(finding)
         else:

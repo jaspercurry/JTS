@@ -20,6 +20,7 @@ import pytest
 from tests._bonded_member import bonded_grouping_env
 
 from jasper.cli.doctor import grouping as doctor_grouping
+from jasper.cli.doctor._evidence import evidence
 
 from jasper.multiroom.dac_content_ring import (
     DAC_CONTENT_LANE_ENV,
@@ -264,6 +265,9 @@ def test_doctor_check_covers_the_active_follower(monkeypatch, tmp_path):
     # this is an observability lie rather than a hazard. Escalating would red a
     # fleet over a cosmetic key.
     config_file.write_text("devices:\n  enable_rate_adjust: false\n")
+    # A fresh doctor run re-reads the config; the evidence cache from the call
+    # above must not serve the stale text.
+    evidence.reset()
     assert check_grouping_rate_adjust().status == "ok"
 
 
@@ -402,7 +406,10 @@ def test_leader_pipe_check_warns_on_solo_config_and_passes_on_emitted_pipe(
     assert r.status == "warn"
     assert r.reason == doctor_grouping.REASON_LEADER_PIPE_NOT_WIRED
 
-    # The reconciler's bonded emit → ok.
+    # The reconciler's bonded emit → ok. A fresh doctor run re-reads the
+    # config; the evidence cache from the call above must not serve the stale
+    # text.
+    evidence.reset()
     config_file.write_text(
         emit_sound_config(
             SoundProfile(enabled=False),

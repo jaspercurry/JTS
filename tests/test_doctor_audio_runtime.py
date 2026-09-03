@@ -6,7 +6,6 @@
 
 import json
 from pathlib import Path
-from unittest.mock import Mock
 
 import pytest
 
@@ -27,11 +26,14 @@ from jasper.audio_hardware.dac import (
     latency_floor_for,
 )
 from jasper.cli.doctor import audio_runtime
+from jasper.cli.doctor import _evidence
+from jasper.cli.doctor._evidence import evidence
 from jasper.fanin_coupling import (
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_PLAYBACK_DEVICE,
 )
 from jasper.output_topology import OutputTopologyError
+from jasper.route_latency.status_socket import FANIN_STATUS_SOCKET
 
 from .doctor_test_support import record_active_dac
 from .active_speaker_fixtures import (
@@ -114,65 +116,46 @@ def test_fanin_asound_wiring_ok(monkeypatch, tmp_path):
     assert r.status == "ok"
 
 
-class _FakeSocket:
-    def __init__(
-        self,
-        payload: bytes = b"",
-        error: OSError | None = None,
-        *,
-        chunks: list[bytes] | None = None,
-        recv_error: OSError | None = None,
-    ):
-        self._chunks = list(chunks) if chunks is not None else [payload, b""]
-        self._error = error
-        self._recv_error = recv_error
-        self.timeout = None
-        self.connected_path = None
-        self.sent: list[bytes] = []
-        self.recv_sizes: list[int] = []
-        self.closed = False
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        self.close()
-
-    def settimeout(self, timeout):
-        self.timeout = timeout
-
-    def connect(self, path):
-        self.connected_path = path
-        if self._error is not None:
-            raise self._error
-
-    def sendall(self, data):
-        self.sent.append(data)
-
-    def recv(self, size):
-        self.recv_sizes.append(size)
-        if self._recv_error is not None:
-            raise self._recv_error
-        return self._chunks.pop(0)
-
-    def close(self):
-        self.closed = True
+#: Every unit this module's checks ask about, so a seeded run never falls
+#: through to a real ``systemctl show`` for one of them.
+_AUDIO_UNITS = (
+    "jasper-fanin.service",
+    "jasper-camilla.service",
+    "jasper-outputd.service",
+)
 
 
-def _patch_camilla_systemctl(monkeypatch, *, enabled="enabled", active="active"):
-    def fake_run(cmd, *args, **kwargs):
-        stdout = ""
-        if cmd[:2] == ["systemctl", "is-enabled"]:
-            stdout = enabled + "\n"
-        elif cmd[:2] == ["systemctl", "is-active"]:
-            stdout = active + "\n"
-        return type("P", (), {"stdout": stdout, "stderr": "", "returncode": 0})()
+def _seed_units(*, enabled="enabled", active="active"):
+    """Seed the run's ONE ``systemctl show`` (ADR-0228 rule 4).
 
-    monkeypatch.setattr(doctor.audio_runtime, "_run", fake_run)
+    ``enabled="not-found"`` is systemd's answer for a unit it does not have,
+    which the batched reader reports as ``load_state``, not as a file state.
+    """
+    evidence.seed(
+        "units",
+        {
+            unit: (
+                {
+                    "unit": unit,
+                    "load_state": "not-found",
+                    "unit_file_state": None,
+                    "active_state": "inactive",
+                }
+                if enabled == "not-found"
+                else {
+                    "unit": unit,
+                    "load_state": "loaded",
+                    "unit_file_state": enabled,
+                    "active_state": active,
+                }
+            )
+            for unit in _AUDIO_UNITS
+        },
+    )
 
 
 def test_check_camilla_service_ok_when_enabled_and_active(monkeypatch):
-    _patch_camilla_systemctl(monkeypatch)
+    _seed_units()
 
     result = doctor.check_camilla_service()
 
@@ -191,24 +174,12 @@ def test_check_camilla_service_ok_when_enabled_and_active(monkeypatch):
     ],
 )
 def test_check_camilla_service_failures(monkeypatch, enabled, active, reason):
-    _patch_camilla_systemctl(monkeypatch, enabled=enabled, active=active)
+    _seed_units(enabled=enabled, active=active)
 
     result = doctor.check_camilla_service()
 
     assert result.status == "fail"
     assert result.reason == reason
-
-
-def _patch_fanin_systemctl(monkeypatch, *, enabled="enabled", active="active"):
-    def fake_run(cmd, *args, **kwargs):
-        stdout = ""
-        if cmd[:2] == ["systemctl", "is-enabled"]:
-            stdout = enabled + "\n"
-        elif cmd[:2] == ["systemctl", "is-active"]:
-            stdout = active + "\n"
-        return type("P", (), {"stdout": stdout, "stderr": "", "returncode": 0})()
-
-    monkeypatch.setattr(doctor.audio_runtime, "_run", fake_run)
 
 
 # The healthy Ring A block a running fan-in always publishes (ADR-0100 — the
@@ -518,7 +489,7 @@ def _patch_ring_coupled_box(
     which is what selects the ACTIVE-ring transport shape rather than the
     full-range stereo Ring B — the marker, never the observed device.
 
-    Call this LAST, after ``_patch_fanin_status_socket``: that one points the
+    Call this LAST, after ``_patch_status_reader``: that one points the
     endpoint evidence at the stereo ring, so an earlier call is silently undone.
     """
     from jasper.fanin_coupling import (
@@ -556,12 +527,32 @@ def _patch_ring_coupled_box(
         )
 
 
-def _patch_fanin_status_socket(monkeypatch, payload: bytes):
-    monkeypatch.setattr(
-        doctor.socket,
-        "socket",
-        lambda *a, **kw: _FakeSocket(payload=payload),
-    )
+def _patch_unreachable_status(monkeypatch):
+    """A daemon whose STATUS socket cannot be reached at all — the OSError the
+    evidence cache classifies as ``StatusRead.unreachable``."""
+
+    def refused(path, *, timeout):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(_evidence, "read_status_socket", refused)
+
+
+def _patch_status_reader(monkeypatch, payload: bytes):
+    """Answer this run's ONE read of each daemon STATUS socket with ``payload``.
+
+    The seam is the evidence cache's reader, so several checks over one daemon
+    still cost one read (ADR-0228 rule 4), and the reader's own contract —
+    raise on unparseable bytes, raise on a non-object root — is preserved here
+    so the callers' classification branches stay under test.
+    """
+
+    def fake_read(path, *, timeout):
+        parsed = json.loads(payload.decode("utf-8"))
+        if not isinstance(parsed, dict):
+            raise ValueError("STATUS response root is not an object")
+        return parsed
+
+    monkeypatch.setattr(_evidence, "read_status_socket", fake_read)
     try:
         decoded = json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -589,113 +580,34 @@ def _patch_fanin_status_socket(monkeypatch, payload: bytes):
     )
 
 
-def test_status_socket_byte_reader_owns_fragmented_protocol_and_cleanup(monkeypatch):
-    fake = _FakeSocket(chunks=[b'{"ok":', b"true}", b""])
-    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
+def test_one_doctor_pass_opens_the_fanin_status_socket_once(monkeypatch):
+    """Every fan-in STATUS consumer in this module shares ONE read.
 
-    payload = doctor.audio_runtime._read_status_socket_bytes("/run/test.sock", timeout=1.25)
+    The five checks below used to open ``/run/jasper-fanin/control.sock`` five
+    times per run; the evidence cache is what makes that one (ADR-0228 rule 4).
+    """
+    opens: list[str] = []
 
-    assert payload == b'{"ok":true}'
-    assert 0 < fake.timeout <= 1.25
-    assert fake.connected_path == "/run/test.sock"
-    assert fake.sent == [b"STATUS\n"]
-    assert fake.recv_sizes == [65536, 65536, 65536]
-    assert fake.closed is True
+    def counting_read(path, *, timeout):
+        opens.append(path)
+        return json.loads(_fanin_status_payload().decode("utf-8"))
 
-
-def test_status_socket_byte_reader_accepts_exact_response_cap(monkeypatch):
-    cap = doctor.audio_runtime._STATUS_RESPONSE_MAX_BYTES
-    fake = _FakeSocket(chunks=[b"x" * 65536] * 16 + [b""])
-    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
-
-    payload = doctor.audio_runtime._read_status_socket_bytes("/run/test.sock", timeout=2.0)
-
-    assert len(payload) == cap
-    assert fake.recv_sizes == [65536] * 17
-    assert fake.closed is True
-
-
-def test_status_socket_byte_reader_rejects_response_over_cap(monkeypatch):
-    fake = _FakeSocket(chunks=[b"x" * 65536] * 16 + [b"y"])
-    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
-
-    with pytest.raises(OSError, match="exceeds byte limit"):
-        doctor.audio_runtime._read_status_socket_bytes("/run/test.sock", timeout=2.0)
-
-    assert fake.recv_sizes == [65536] * 17
-    assert fake.closed is True
-
-
-def test_status_socket_byte_reader_enforces_total_deadline(monkeypatch):
-    fake = _FakeSocket(chunks=[b"x", b"y", b""])
-    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
+    monkeypatch.setattr(_evidence, "read_status_socket", counting_read)
     monkeypatch.setattr(
-        doctor.audio_runtime.time,
-        "monotonic",
-        Mock(side_effect=[0.0, 0.0, 0.1, 0.2, 1.1]),
+        "jasper.renderer_lanes.read_armed_labels", lambda *a, **k: ["librespot"]
     )
+    _seed_units()
 
-    with pytest.raises(TimeoutError, match="deadline exceeded"):
-        doctor.audio_runtime._read_status_socket_bytes("/run/test.sock", timeout=1.0)
+    for check in (
+        audio_runtime.check_fanin_service,
+        audio_runtime.check_fanin_host_clock,
+        audio_runtime.check_fanin_tts_drops,
+        audio_runtime.check_fanin_ring_stall,
+        audio_runtime.check_renderer_ring_lanes,
+    ):
+        check()
 
-    assert fake.recv_sizes == [65536]
-    assert fake.closed is True
-
-
-@pytest.mark.parametrize("failure_stage", ["connect", "recv"])
-def test_status_socket_byte_reader_closes_on_failure(monkeypatch, failure_stage):
-    error = OSError(f"{failure_stage} failed")
-    fake = _FakeSocket(
-        error=error if failure_stage == "connect" else None,
-        recv_error=error if failure_stage == "recv" else None,
-    )
-    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
-
-    with pytest.raises(OSError, match=f"{failure_stage} failed"):
-        doctor.audio_runtime._read_status_socket_bytes("/run/test.sock", timeout=2.0)
-
-    assert fake.closed is True
-
-
-def test_status_socket_strict_wrapper_and_lossy_caller_keep_decode_ownership(
-    monkeypatch,
-):
-    strict = _FakeSocket(payload=b'{"note":"\xff"}')
-    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: strict)
-
-    with pytest.raises(UnicodeDecodeError):
-        doctor.audio_runtime._read_status_socket("/run/test.sock")
-
-    assert 0 < strict.timeout <= 1.0
-    assert strict.closed is True
-
-    lossy = _FakeSocket(payload=b'{"note":"\xff","tts":{"enabled":false}}')
-    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: lossy)
-
-    result = doctor.check_fanin_tts_drops()
-
-    assert result.status == "ok"
-    assert result.reason == audio_runtime.REASON_FANIN_TTS_LANE_DISABLED
-    assert 0 < lossy.timeout <= 2.0
-    assert lossy.closed is True
-
-
-def test_check_fanin_service_keeps_one_bounded_status_retry(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
-    monkeypatch.setattr(doctor.audio_runtime.time, "sleep", lambda _: None)
-    first = _FakeSocket(error=OSError("transient refusal"))
-    second = _FakeSocket(payload=_fanin_status_payload())
-    pending = [first, second]
-    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: pending.pop(0))
-
-    result = doctor.check_fanin_service()
-
-    assert result.status == "ok"
-    assert pending == []
-    assert 0 < first.timeout <= 2.0
-    assert 0 < second.timeout <= 2.0
-    assert first.closed is True
-    assert second.closed is True
+    assert opens == [FANIN_STATUS_SOCKET]
 
 
 @pytest.mark.parametrize(
@@ -726,8 +638,8 @@ def test_check_fanin_service_keeps_one_bounded_status_retry(monkeypatch):
 def test_status_consumers_classify_non_object_root_without_crashing(
     monkeypatch, check, expected_status, expected_reason
 ):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(monkeypatch, b"[]")
+    _seed_units()
+    _patch_status_reader(monkeypatch, b"[]")
 
     result = check()
 
@@ -736,8 +648,8 @@ def test_status_consumers_classify_non_object_root_without_crashing(
 
 
 def test_check_fanin_service_ok_with_expected_status(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(monkeypatch, _fanin_status_payload())
+    _seed_units()
+    _patch_status_reader(monkeypatch, _fanin_status_payload())
     r = doctor.check_fanin_service()
     assert r.status == "ok"
     assert r.reason == ""
@@ -754,12 +666,12 @@ def test_check_fanin_service_expects_the_ring_whatever_the_file_says(
     /var/lib/jasper/fanin.env FAILed a healthy box whose key was unwritten —
     coupling-auto runs After=jasper-fanin.service, so that is every fresh boot.
     """
-    _patch_fanin_systemctl(monkeypatch)
+    _seed_units()
     monkeypatch.setattr(
         "jasper.fanin.ring_health.read_persisted_coupling",
         lambda: persisted,
     )
-    _patch_fanin_status_socket(monkeypatch, _fanin_status_payload())
+    _patch_status_reader(monkeypatch, _fanin_status_payload())
 
     r = doctor.check_fanin_service()
 
@@ -767,8 +679,8 @@ def test_check_fanin_service_expects_the_ring_whatever_the_file_says(
 
 
 def test_check_fanin_service_fails_on_a_non_ring_live_transport(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch, _fanin_status_payload(transport="loopback")
     )
 
@@ -779,8 +691,8 @@ def test_check_fanin_service_fails_on_a_non_ring_live_transport(monkeypatch):
 
 
 def test_check_fanin_service_fails_when_status_carries_no_ring_block(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(monkeypatch, _fanin_status_payload(ring=None))
+    _seed_units()
+    _patch_status_reader(monkeypatch, _fanin_status_payload(ring=None))
 
     r = doctor.check_fanin_service()
 
@@ -789,7 +701,7 @@ def test_check_fanin_service_fails_when_status_carries_no_ring_block(monkeypatch
 
 
 def test_check_fanin_service_reports_pre_dsp_tts_loudness(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
+    _seed_units()
     payload = json.loads(_fanin_status_payload().decode())
     payload["tts"] = {
         "enabled": True,
@@ -809,7 +721,7 @@ def test_check_fanin_service_reports_pre_dsp_tts_loudness(monkeypatch):
             "final_gain_db": -11.5,
         },
     }
-    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
 
     r = doctor.check_fanin_service()
 
@@ -861,7 +773,7 @@ def test_assistant_gain_fault_pins_the_shared_loudness_contract(loudness, faulty
 
 def test_check_fanin_service_ok_with_peak_capped_positive_gain(monkeypatch):
     """#2345: a peak-capped positive gain is the contract, not a warning."""
-    _patch_fanin_systemctl(monkeypatch)
+    _seed_units()
     payload = json.loads(_fanin_status_payload().decode())
     payload["tts"] = {
         "enabled": True,
@@ -875,7 +787,7 @@ def test_check_fanin_service_ok_with_peak_capped_positive_gain(monkeypatch):
             "final_gain_db": 3.0,
         },
     }
-    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
 
     r = doctor.check_fanin_service()
 
@@ -884,7 +796,7 @@ def test_check_fanin_service_ok_with_peak_capped_positive_gain(monkeypatch):
 
 
 def test_check_fanin_service_warns_when_gain_exceeds_the_peak_cap(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
+    _seed_units()
     payload = json.loads(_fanin_status_payload().decode())
     payload["tts"] = {
         "enabled": True,
@@ -897,7 +809,7 @@ def test_check_fanin_service_warns_when_gain_exceeds_the_peak_cap(monkeypatch):
             "final_gain_db": 5.0,
         },
     }
-    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
 
     r = doctor.check_fanin_service()
 
@@ -906,7 +818,7 @@ def test_check_fanin_service_warns_when_gain_exceeds_the_peak_cap(monkeypatch):
 
 
 def test_check_fanin_service_warns_on_malformed_pre_dsp_tts_loudness(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
+    _seed_units()
     payload = json.loads(_fanin_status_payload().decode())
     payload["tts"] = {
         "enabled": True,
@@ -917,7 +829,7 @@ def test_check_fanin_service_warns_on_malformed_pre_dsp_tts_loudness(monkeypatch
             "final_gain_db": None,
         },
     }
-    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
 
     r = doctor.check_fanin_service()
 
@@ -926,28 +838,24 @@ def test_check_fanin_service_warns_on_malformed_pre_dsp_tts_loudness(monkeypatch
 
 
 def test_check_fanin_service_fails_on_invalid_status_json(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(monkeypatch, b"not-json")
+    _seed_units()
+    _patch_status_reader(monkeypatch, b"not-json")
     r = doctor.check_fanin_service()
     assert r.status == "fail"
     assert r.reason == audio_runtime.REASON_FANIN_STATUS_MALFORMED
 
 
 def test_check_fanin_service_fails_when_status_socket_unreachable(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
-    monkeypatch.setattr(
-        doctor.socket,
-        "socket",
-        lambda *a, **kw: _FakeSocket(error=OSError("connection refused")),
-    )
+    _seed_units()
+    _patch_unreachable_status(monkeypatch)
     r = doctor.check_fanin_service()
     assert r.status == "fail"
     assert r.reason == audio_runtime.REASON_FANIN_STATUS_UNREACHABLE
 
 
 def test_check_fanin_service_fails_on_small_runtime_input_buffer(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _fanin_status_payload(input_buffer_frames=2048),
     )
@@ -957,15 +865,15 @@ def test_check_fanin_service_fails_on_small_runtime_input_buffer(monkeypatch):
 
 
 def test_outputd_service_fails_when_disabled(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch, enabled="disabled")
+    _seed_units(enabled="disabled")
     r = doctor.check_outputd_service()
     assert r.status == "fail"
     assert r.reason == audio_runtime.REASON_OUTPUTD_UNIT_NOT_ENABLED
 
 
 def test_outputd_service_ok_with_expected_status(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(monkeypatch, _outputd_status_payload())
+    _seed_units()
+    _patch_status_reader(monkeypatch, _outputd_status_payload())
     r = doctor.check_outputd_service()
     assert r.status == "ok", r.detail
     assert r.reason == ""
@@ -1016,10 +924,7 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
     statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
     absent = tmp_path / "crossover-statefile.yml"
 
-    monkeypatch.setattr(
-        _audio_runtime, "_active_camilla_config_path",
-        lambda: (str(statefile), str(config)),
-    )
+    evidence.seed("camilla_config", (str(statefile), str(config)))
     monkeypatch.setattr(
         "jasper.audio_runtime_plan.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
     )
@@ -1034,12 +939,12 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(outputd_env))
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_status_payload(content_source="alsa", content_buffer_frames=4096),
     )
-    # `_patch_fanin_status_socket` also cans `output_endpoint_evidence_from_statefiles`
+    # `_patch_status_reader` also cans `output_endpoint_evidence_from_statefiles`
     # from the STATUS payload — convenient for the checks whose subject is the
     # payload, and fatal for this one, whose subject IS the evidence resolution.
     # Put the real reader back so both halves resolve the statefiles above.
@@ -1125,8 +1030,8 @@ def test_outputd_service_ok_with_shm_ring_content_source(monkeypatch, tmp_path):
     env_path = tmp_path / "outputd.env"
     env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_status_payload(
             content_source="shm_ring",
@@ -1150,7 +1055,7 @@ def test_outputd_service_fails_shm_ring_missing_ring_geometry(monkeypatch, tmp_p
     env_path = tmp_path / "outputd.env"
     env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
-    _patch_fanin_systemctl(monkeypatch)
+    _seed_units()
     payload = json.loads(
         _outputd_status_payload(
             content_source="shm_ring",
@@ -1159,7 +1064,7 @@ def test_outputd_service_fails_shm_ring_missing_ring_geometry(monkeypatch, tmp_p
         ).decode()
     )
     del payload["content"]["ring"]
-    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
 
     r = doctor.check_outputd_service()
 
@@ -1173,8 +1078,8 @@ def test_outputd_service_fails_shm_ring_slot_frames_mismatch(monkeypatch, tmp_pa
     env_path = tmp_path / "outputd.env"
     env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_status_payload(
             content_source="shm_ring",
@@ -1196,8 +1101,8 @@ def test_outputd_service_fails_shm_ring_capacity_incoherent(monkeypatch, tmp_pat
     env_path = tmp_path / "outputd.env"
     env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_status_payload(
             content_source="shm_ring",
@@ -1227,8 +1132,8 @@ def test_outputd_service_fails_when_the_daemon_lags_its_own_env(
     env_path = tmp_path / "outputd.env"
     env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_status_payload(content_source="alsa"),
     )
@@ -1352,8 +1257,8 @@ def test_outputd_service_ok_with_single_alsa_active_lane(monkeypatch, tmp_path):
     The width readout is the assertion that matters, and it comes from the env,
     independently of the transport.
     """
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_status_payload(dac_pcm=doctor._OUTPUTD_EXPECTED_DAC_PCM),
     )
@@ -1378,8 +1283,8 @@ def _patch_disconnected_post_dsp_route(monkeypatch, tmp_path) -> None:
     env = tmp_path / "outputd-disconnected.env"
     env.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env))
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_status_payload(content_source="alsa", content_buffer_frames=4096),
     )
@@ -1497,8 +1402,8 @@ def test_route_disconnect_remedy_does_not_recommend_an_impossible_reconcile(
 
 
 def test_outputd_service_warns_when_transport_evidence_is_unavailable(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(monkeypatch, _outputd_status_payload())
+    _seed_units()
+    _patch_status_reader(monkeypatch, _outputd_status_payload())
     monkeypatch.setattr(
         "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
         lambda *paths: audio_runtime_plan.OutputEndpointEvidence(
@@ -1516,8 +1421,8 @@ def test_outputd_service_warns_when_transport_evidence_is_unavailable(monkeypatc
 def test_outputd_service_ok_when_loudness_is_owned_by_fanin(monkeypatch):
     payload = json.loads(_outputd_status_payload().decode())
     payload.pop("assistant_loudness", None)
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+    _seed_units()
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
 
     r = doctor.check_outputd_service()
 
@@ -1537,8 +1442,8 @@ def test_outputd_service_warns_when_gain_exceeds_the_peak_cap(monkeypatch):
             "final_gain_db": -4.0,
         }
     )
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+    _seed_units()
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
 
     r = doctor.check_outputd_service()
 
@@ -1547,7 +1452,7 @@ def test_outputd_service_warns_when_gain_exceeds_the_peak_cap(monkeypatch):
 
 
 def test_outputd_service_fails_when_dual_apple_status_missing(monkeypatch, tmp_path):
-    _patch_fanin_systemctl(monkeypatch)
+    _seed_units()
     payload = json.loads(
         _outputd_status_payload(
             sink_mode="dual_apple",
@@ -1555,7 +1460,7 @@ def test_outputd_service_fails_when_dual_apple_status_missing(monkeypatch, tmp_p
         ).decode()
     )
     payload.pop("dual_apple", None)
-    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
     _patch_ring_coupled_box(monkeypatch, tmp_path, active_endpoint=True)
 
     r = doctor.check_outputd_service()
@@ -1564,8 +1469,8 @@ def test_outputd_service_fails_when_dual_apple_status_missing(monkeypatch, tmp_p
 
 
 def test_outputd_service_warns_when_dual_apple_pcm_link_missing(monkeypatch, tmp_path):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_status_payload(
             sink_mode="dual_apple",
@@ -1596,8 +1501,8 @@ def test_outputd_service_ok_with_dual_apple_status(monkeypatch, tmp_path):
     a composite naming the passive lane — is the 4ch-over-a-2ch-slave reuse this
     PR rejected as hearing-adjacent. A running composite box is a ring box.
     """
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_status_payload(
             sink_mode="dual_apple",
@@ -1611,8 +1516,8 @@ def test_outputd_service_ok_with_dual_apple_status(monkeypatch, tmp_path):
 
 
 def test_outputd_service_fails_on_fake_backend(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_status_payload(backend="fake"),
     )
@@ -1622,8 +1527,8 @@ def test_outputd_service_fails_on_fake_backend(monkeypatch):
 
 
 def test_outputd_service_fails_on_small_runtime_buffers(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_status_payload(dac_buffer_frames=1024),
     )
@@ -1635,8 +1540,8 @@ def test_outputd_service_fails_on_small_runtime_buffers(monkeypatch):
 def test_outputd_service_fails_when_reference_contract_missing(monkeypatch):
     payload = json.loads(_outputd_status_payload().decode())
     payload["reference_outputs"] = {}
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+    _seed_units()
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
 
     r = doctor.check_outputd_service()
 
@@ -1700,8 +1605,8 @@ def _aec_clock_block(*, verdict: str, status: str, ppm, observe: bool = False) -
     ],
 )
 def test_aec_clock_drift_ok_for_every_healthy_estimator_state(monkeypatch, aec_clock):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch, _outputd_aec_clock_payload(aec_clock=aec_clock)
     )
 
@@ -1712,8 +1617,8 @@ def test_aec_clock_drift_ok_for_every_healthy_estimator_state(monkeypatch, aec_c
 
 
 def test_aec_clock_drift_warns_when_untrusted(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_aec_clock_payload(
             aec_clock=_aec_clock_block(verdict="fallback", status="untrusted", ppm=None)
@@ -1727,8 +1632,8 @@ def test_aec_clock_drift_warns_when_untrusted(monkeypatch):
 def test_aec_clock_drift_warns_when_optional_chip_reference_is_unavailable(
     monkeypatch,
 ):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_aec_clock_payload(
             chip_ref_active=False,
@@ -1758,8 +1663,8 @@ def test_aec_clock_drift_warns_when_optional_chip_reference_is_unavailable(
 def test_aec_clock_drift_stands_down_without_an_estimate(
     monkeypatch, payload_kwargs, reason
 ):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch, _outputd_aec_clock_payload(**payload_kwargs)
     )
     r = doctor.check_aec_clock_drift()
@@ -1768,7 +1673,7 @@ def test_aec_clock_drift_stands_down_without_an_estimate(
 
 
 def test_aec_clock_drift_skips_when_outputd_disabled(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch, enabled="disabled")
+    _seed_units(enabled="disabled")
     r = doctor.check_aec_clock_drift()
     assert r.status == "skipped"
     assert r.reason == audio_runtime.REASON_AEC_CLOCK_OUTPUTD_NOT_ENABLED
@@ -1844,7 +1749,7 @@ def _fanin_payload_with_tts(tts: dict) -> bytes:
 
 
 def test_check_fanin_tts_drops_ok_when_counters_zero(monkeypatch):
-    _patch_fanin_status_socket(
+    _patch_status_reader(
         monkeypatch,
         _fanin_payload_with_tts(
             {
@@ -1863,7 +1768,7 @@ def test_check_fanin_tts_drops_ok_when_counters_zero(monkeypatch):
 
 
 def test_check_fanin_tts_drops_warns_on_protocol_error(monkeypatch):
-    _patch_fanin_status_socket(
+    _patch_status_reader(
         monkeypatch,
         _fanin_payload_with_tts(
             {
@@ -1883,7 +1788,7 @@ def test_check_fanin_tts_drops_warns_on_protocol_error(monkeypatch):
 def test_check_fanin_tts_drops_warns_on_dropped_audio(monkeypatch):
     # 82 dropped commands / 523200 frames ≈ 10.9 s at 48 kHz — the real
     # incident's order of magnitude.
-    _patch_fanin_status_socket(
+    _patch_status_reader(
         monkeypatch,
         _fanin_payload_with_tts(
             {
@@ -1901,7 +1806,7 @@ def test_check_fanin_tts_drops_warns_on_dropped_audio(monkeypatch):
 
 
 def test_check_fanin_tts_drops_ok_when_lane_disabled(monkeypatch):
-    _patch_fanin_status_socket(
+    _patch_status_reader(
         monkeypatch,
         _fanin_payload_with_tts({"enabled": False}),
     )
@@ -1913,11 +1818,7 @@ def test_check_fanin_tts_drops_ok_when_lane_disabled(monkeypatch):
 def test_check_fanin_tts_drops_skips_when_status_unreachable(monkeypatch):
     # Reachability is the 'jasper-fanin service' check's job; this check
     # must not double-report a down daemon.
-    monkeypatch.setattr(
-        doctor.socket,
-        "socket",
-        lambda *a, **kw: _FakeSocket(error=OSError("connection refused")),
-    )
+    _patch_unreachable_status(monkeypatch)
     r = doctor.check_fanin_tts_drops()
     assert r.status == "skipped"
     assert r.reason == audio_runtime.REASON_FANIN_TTS_STATUS_NOT_PROBED
@@ -1973,15 +1874,11 @@ def test_check_fanin_ring_stall_verdicts(
     monkeypatch, ring, unreachable, status, reason,
 ):
     if unreachable:
-        monkeypatch.setattr(
-            doctor.socket,
-            "socket",
-            lambda *a, **kw: _FakeSocket(error=OSError("connection refused")),
-        )
+        _patch_unreachable_status(monkeypatch)
     elif ring is None:
-        _patch_fanin_status_socket(monkeypatch, _fanin_status_payload(ring=None))
+        _patch_status_reader(monkeypatch, _fanin_status_payload(ring=None))
     else:
-        _patch_fanin_status_socket(monkeypatch, _fanin_payload_with_ring(ring))
+        _patch_status_reader(monkeypatch, _fanin_payload_with_ring(ring))
 
     r = doctor.check_fanin_ring_stall()
 
@@ -2055,10 +1952,9 @@ def test_armed_on_demand_lane_resting_state_is_healthy(monkeypatch):
     import jasper.renderer_lanes as rl
 
     monkeypatch.setattr(rl, "read_armed_labels", lambda *a, **kw: ("correction",))
-    monkeypatch.setattr(
-        doctor.audio_runtime,
-        "_read_status_socket",
-        lambda _path: {"inputs": [_resting_ring_entry("correction")]},
+    evidence.seed(
+        f"status:{FANIN_STATUS_SOCKET}",
+        _evidence.StatusRead({"inputs": [_resting_ring_entry("correction")]}),
     )
     result = doctor.audio_runtime.check_renderer_ring_lanes()
     assert result.status == "ok"
@@ -2074,15 +1970,16 @@ def test_armed_daemon_lane_never_fed_still_warns(monkeypatch):
     monkeypatch.setattr(
         rl, "read_armed_labels", lambda *a, **kw: ("spotify", "correction")
     )
-    monkeypatch.setattr(
-        doctor.audio_runtime,
-        "_read_status_socket",
-        lambda _path: {
-            "inputs": [
-                _resting_ring_entry("spotify"),
-                _resting_ring_entry("correction"),
-            ]
-        },
+    evidence.seed(
+        f"status:{FANIN_STATUS_SOCKET}",
+        _evidence.StatusRead(
+            {
+                "inputs": [
+                    _resting_ring_entry("spotify"),
+                    _resting_ring_entry("correction"),
+                ]
+            }
+        ),
     )
     result = doctor.audio_runtime.check_renderer_ring_lanes()
     assert result.status == "warn"
@@ -2486,11 +2383,9 @@ def _run_check(monkeypatch, *, cfg_text, tmp_path):
     """
     cfg = tmp_path / "sound_current.yml"
     cfg.write_text(cfg_text)
-    # _active_camilla_config_path returns (statefile, active_config_path|None) —
-    # mock the REAL tuple shape (a str-only mock masked a production TypeError).
-    monkeypatch.setattr(
-        audio_runtime, "_active_camilla_config_path", lambda: (cfg.parent, str(cfg))
-    )
+    # The evidence memo holds the REAL tuple shape, (statefile,
+    # active_config_path|None) — a str-only seed masked a production TypeError.
+    evidence.seed("camilla_config", (cfg.parent, str(cfg)))
     return audio_runtime.check_fanin_coupling()
 
 
@@ -2655,9 +2550,7 @@ filters:
 def _run_format_check(monkeypatch, tmp_path, cfg_text):
     cfg = tmp_path / "sound_current.yml"
     cfg.write_text(cfg_text)
-    monkeypatch.setattr(
-        audio_runtime, "_active_camilla_config_path", lambda: (cfg.parent, str(cfg))
-    )
+    evidence.seed("camilla_config", (cfg.parent, str(cfg)))
     return audio_runtime.check_camilla_playback_format()
 
 
@@ -2685,9 +2578,7 @@ def test_playback_format_fails_on_a_half_flipped_narrow_alsa_lane(
 
 
 def test_playback_format_skipped_when_no_config_loaded(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        audio_runtime, "_active_camilla_config_path", lambda: (tmp_path, None)
-    )
+    evidence.seed("camilla_config", (tmp_path, None))
     res = audio_runtime.check_camilla_playback_format()
     assert res.status == "skipped"
     assert res.reason == audio_runtime.REASON_PLAYBACK_FORMAT_NO_CONFIG
@@ -3666,14 +3557,8 @@ def _probe_must_not_run(monkeypatch):
 
 
 def _fanin_unit_state(monkeypatch, state: str):
-    """Answer `systemctl is-active jasper-fanin.service` with ``state``."""
-    monkeypatch.setattr(
-        audio_runtime,
-        "_run",
-        lambda cmd, timeout=5.0: SimpleNamespace(
-            returncode=0, stdout=f"{state}\n", stderr=""
-        ),
-    )
+    """Answer the run's one ``systemctl show`` with fan-in in ``state``."""
+    _seed_units(active=state)
 
 
 def test_ok_when_all_assets_present(monkeypatch, tmp_path):
@@ -4361,7 +4246,12 @@ def _arrange(
     device would let the two halves of that union drift apart without any test
     noticing — which is exactly how the pre-#2285 gap between this check and
     `check_outputd_service`'s transport note survived unseen.
+
+    Re-arranging the box mid-test drops what the run already learned about the
+    previous one: the doctor reads each evidence source once per RUN, and a
+    fixture that rewrites the same paths is a new run.
     """
+    evidence.reset()
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text(
         f"JASPER_OUTPUTD_CONTENT_BRIDGE={bridge}\n", encoding="utf-8"
@@ -4394,9 +4284,7 @@ def _arrange(
             f"config_path: {tmp_path / 'deleted-config.yml'}\n", encoding="utf-8"
         )
     crossover = _write_pair(tmp_path, "crossover", crossover_playback_device)
-    monkeypatch.setattr(
-        audio_runtime, "_active_camilla_config_path", lambda: (str(primary), None)
-    )
+    evidence.seed("camilla_config", (str(primary), None))
     monkeypatch.setattr(
         "jasper.audio_runtime_plan.DEFAULT_CAMILLA2_STATEFILE_PATH", str(crossover)
     )
@@ -4659,6 +4547,7 @@ def _arrange_projection(monkeypatch, tmp_path, *, env_lines: str):
     under test includes the read itself. Nothing else is arranged — the bridge
     that gates this check lives in this same file.
     """
+    evidence.reset()
     env = tmp_path / "outputd.env"
     env.write_text(env_lines, encoding="utf-8")
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env))
@@ -4933,8 +4822,8 @@ def test_outputd_service_ok_on_a_marker_armed_member(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "jasper.multiroom.reconcile.OUTPUTD_GROUPING_ENV_FILE", str(grouping_env)
     )
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         # What outputd publishes with no CENTRAL ring attached: `alsa`, and a
         # period-sized content buffer with no content.ring sub-block.
@@ -5064,8 +4953,8 @@ def test_doctor_stale_warning_uses_the_household_threshold(
 ) -> None:
     """One tolerance for "the transport stopped moving": the doctor must not
     warn about an age the /system household card still calls healthy."""
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch, payload(progress_age_ms=stale_ms + (1 if over else 0))
     )
 

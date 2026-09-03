@@ -22,9 +22,46 @@ import pytest
 from jasper import audio_runtime_plan
 from jasper.audio_hardware.usb_port_role import UsbPortRoleState
 from jasper.cli import doctor
-from jasper.cli.doctor import _shared, usbsink
+from jasper.cli.doctor import _evidence, _shared, usbsink
+from jasper.cli.doctor._evidence import evidence
 from jasper.fanin import coupling_auto as _ca
 from jasper.fanin import ring_health as _ring_health
+
+
+def _fake_unit_states(
+    active: dict[str, str] | None = None,
+    *,
+    load: dict[str, str] | None = None,
+    default_active="inactive",
+    default_load="loaded",
+):
+    """A ``_evidence.read_unit_states`` stand-in: ``active``/``load`` map a
+    unit name to its ActiveState/LoadState word; any unit not named gets the
+    matching default. Both the batched roster read and a per-unit fallback
+    read route through this one fake, so it must answer for any units list."""
+    active = active or {}
+    load = load or {}
+
+    def fake(units, *, timeout=2.0):
+        return {
+            u: {
+                "unit": u,
+                "load_state": load.get(u, default_load),
+                "active_state": active.get(u, default_active),
+                "sub_state": None,
+                "unit_file_state": None,
+                "result": None,
+                "n_restarts": 0,
+                "main_pid": 0,
+                "tasks_current": None,
+                "memory_current_bytes": None,
+                "cpu_usage_nsec": None,
+                "control_group": "",
+            }
+            for u in units
+        }
+
+    return fake
 
 # ----------------------------------------------------------------------
 # shared USB data role
@@ -111,9 +148,13 @@ def _state_env(
     functions: tuple[str, ...] = (),
     parked: bool = False,
 ):
-    monkeypatch.setattr(doctor.usbsink, "_systemd_is_active", lambda unit: active)
+    monkeypatch.setattr(
+        _evidence,
+        "read_unit_states",
+        _fake_unit_states({usbsink.USBSINK_UNIT: "active" if active else "inactive"}),
+    )
     monkeypatch.setattr(doctor.usbsink, "_module_loaded", lambda name: libcomposite)
-    monkeypatch.setattr(doctor.usbsink, "_parked_as_bonded_follower", lambda: parked)
+    evidence.seed("parked_bonded_follower", parked)
     gadget = tmp_path / "jts-usb-audio"
     for fn in functions:
         (gadget / "functions" / fn).mkdir(parents=True)
@@ -244,7 +285,11 @@ def test_check_usbsink_state_active_reads_host_connection_from_the_udc(
 def test_check_usbsink_card_verdicts(
     monkeypatch, tmp_path, active, card_present, status, reason
 ):
-    monkeypatch.setattr(doctor.usbsink, "_systemd_is_active", lambda unit: active)
+    monkeypatch.setattr(
+        _evidence,
+        "read_unit_states",
+        _fake_unit_states({usbsink.USBSINK_UNIT: "active" if active else "inactive"}),
+    )
     card = tmp_path / "UAC2Gadget"
     if card_present:
         card.mkdir()
@@ -387,7 +432,11 @@ def test_check_usbsink_active_libcomposite_verdicts(
 ):
     """A daemon active with libcomposite missing means audio cannot flow even
     though systemd thinks the unit is healthy."""
-    monkeypatch.setattr(doctor.usbsink, "_systemd_is_active", lambda unit: active)
+    monkeypatch.setattr(
+        _evidence,
+        "read_unit_states",
+        _fake_unit_states({usbsink.USBSINK_UNIT: "active" if active else "inactive"}),
+    )
     monkeypatch.setattr(doctor.usbsink, "_module_loaded", lambda name: libcomposite)
 
     r = doctor.check_usbsink_active_libcomposite()
@@ -476,9 +525,11 @@ def test_low_latency_contract_reports_why_usb_audio_is_not_wanted(
         lambda: usbsink._AudioIntent(False, audio_reason, "bad token"),
     )
     monkeypatch.setattr(
-        doctor.usbsink,
+        _evidence,
         "read_status_socket",
-        lambda _path: (_ for _ in ()).throw(AssertionError("must not probe fan-in")),
+        lambda _path, *, timeout=2.0: (
+            _ for _ in ()
+        ).throw(AssertionError("must not probe fan-in")),
     )
 
     result = doctor.check_usbsink_low_latency_contract()
@@ -498,13 +549,15 @@ def _claiming_route(monkeypatch, status_reader):
         "build_audio_runtime_plan_from_system",
         _low_latency_plan,
     )
-    monkeypatch.setattr(doctor.usbsink, "read_status_socket", status_reader)
+    monkeypatch.setattr(_evidence, "read_status_socket", status_reader)
 
 
 def test_low_latency_contract_requires_a_readable_fanin_status(monkeypatch):
     _claiming_route(
         monkeypatch,
-        lambda _path: (_ for _ in ()).throw(OSError("socket unavailable")),
+        lambda _path, *, timeout=2.0: (_ for _ in ()).throw(
+            OSError("socket unavailable")
+        ),
     )
 
     r = doctor.check_usbsink_low_latency_contract()
@@ -516,7 +569,7 @@ def test_low_latency_contract_requires_a_readable_fanin_status(monkeypatch):
 def test_low_latency_contract_warns_when_the_kernel_hides_the_attrs(
     monkeypatch, tmp_path
 ):
-    _claiming_route(monkeypatch, lambda _path: _fanin_direct_status())
+    _claiming_route(monkeypatch, lambda _path, *, timeout=2.0: _fanin_direct_status())
     gadget = tmp_path / "gadget"
     (gadget / "functions" / "uac2.usb0").mkdir(parents=True)
     monkeypatch.setattr(doctor.usbsink, "USBSINK_GADGET_PATH", gadget)
@@ -530,7 +583,7 @@ def test_low_latency_contract_warns_when_the_kernel_hides_the_attrs(
 def test_low_latency_contract_fails_on_a_direct_period_mismatch(monkeypatch):
     _claiming_route(
         monkeypatch,
-        lambda _path: _fanin_direct_status(health="capturing", period_frames=128),
+        lambda _path, *, timeout=2.0: _fanin_direct_status(health="capturing", period_frames=128),
     )
 
     r = doctor.check_usbsink_low_latency_contract()
@@ -542,7 +595,7 @@ def test_low_latency_contract_fails_on_a_direct_period_mismatch(monkeypatch):
 def test_low_latency_contract_fails_on_a_mismatched_exposed_attr(
     monkeypatch, tmp_path
 ):
-    _claiming_route(monkeypatch, lambda _path: _fanin_direct_status())
+    _claiming_route(monkeypatch, lambda _path, *, timeout=2.0: _fanin_direct_status())
     function_path = tmp_path / "gadget" / "functions" / "uac2.usb0"
     function_path.mkdir(parents=True)
     (function_path / "c_sync").write_text("adaptive\n")
@@ -566,7 +619,11 @@ _PATCHED = b"\x7fELF Kitchen\x00 patched body, no stock token"
 
 
 def _name_env(monkeypatch, *, active: bool, speaker: str = "Kitchen"):
-    monkeypatch.setattr(doctor.usbsink, "_systemd_is_active", lambda unit: active)
+    monkeypatch.setattr(
+        _evidence,
+        "read_unit_states",
+        _fake_unit_states({usbsink.USBSINK_UNIT: "active" if active else "inactive"}),
+    )
     monkeypatch.setattr(
         doctor.os, "uname", lambda: type("U", (), {"release": _KVER})()
     )
@@ -687,9 +744,7 @@ def _patch_composition_env(
     monkeypatch.setattr(
         doctor.usbsink, "source_intent_enabled", lambda _source: usbsink_enabled
     )
-    monkeypatch.setattr(
-        doctor.usbsink, "_parked_as_bonded_follower", lambda: parked_follower
-    )
+    evidence.seed("parked_bonded_follower", parked_follower)
     if lifecycle_ready is None:
         lifecycle_ready = usbsink_enabled
     if direct_ready is None:
@@ -702,11 +757,13 @@ def _patch_composition_env(
             stdout="enabled\n" if lifecycle_ready else "disabled\n",
         ),
     )
-    monkeypatch.setattr(
-        doctor.usbsink,
-        "read_fanin_status",
-        lambda **_kwargs: _fanin_direct_status() if direct_ready else None,
-    )
+
+    def fake_read_status_socket(_path, *, timeout=2.0):
+        if direct_ready:
+            return _fanin_direct_status()
+        raise OSError("fan-in unreachable")
+
+    monkeypatch.setattr(_evidence, "read_status_socket", fake_read_status_socket)
     return gadget
 
 
@@ -1094,7 +1151,11 @@ def _relay_mic_env(monkeypatch, tmp_path, payload: dict):
         "_audio_wanted",
         lambda: usbsink._AudioIntent(True, "ready"),
     )
-    monkeypatch.setattr(doctor.usbsink, "_systemd_is_active", lambda _unit: True)
+    monkeypatch.setattr(
+        _evidence,
+        "read_unit_states",
+        _fake_unit_states({usbsink.USBMIC_UNIT: "active"}),
+    )
 
 
 def test_usb_mic_export_warns_when_the_live_relay_audio_is_stalled(
@@ -1209,12 +1270,16 @@ def _setup_combo(
     parked=False,
     armed=False,
 ):
-    monkeypatch.setattr(doctor.usbsink, "_systemd_is_failed", lambda unit: failed)
+    monkeypatch.setattr(
+        _evidence,
+        "read_unit_states",
+        _fake_unit_states({usbsink.USBSINK_UNIT: "failed" if failed else "inactive"}),
+    )
     monkeypatch.setattr(_ca, "read_usb_gadget_available", lambda *a, **k: gadget)
     monkeypatch.setattr(
         doctor.usbsink, "source_intent_enabled", lambda _source: intent
     )
-    monkeypatch.setattr(doctor.usbsink, "_parked_as_bonded_follower", lambda: parked)
+    evidence.seed("parked_bonded_follower", parked)
     fanin_env = tmp_path / "fanin.env"
     fanin_env.write_text(
         f"{_ca.USB_DIRECT_ENV_VAR}={_ca.USB_COMBO_ENABLED_VALUE}\n" if armed else ""

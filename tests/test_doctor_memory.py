@@ -19,7 +19,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from jasper.cli import doctor
+from jasper.cli.doctor import _evidence
 from jasper.cli.doctor import memory as doctor_memory
+
+from .doctor_test_support import _make_unit_states_fake
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -203,11 +206,19 @@ def test_audio_path_units_cover_every_protected_slice_unit():
     assert len(doctor._AUDIO_PATH_UNITS) == len(set(doctor._AUDIO_PATH_UNITS))
 
 
-def test_audio_path_no_swap_is_ok_when_every_daemon_is_swap_free():
-    pids = [str(2001 + i) for i, _ in enumerate(doctor._AUDIO_PATH_UNITS)]
-    with patch.object(
-        doctor_memory, "_systemctl_show_property", return_value=pids
-    ), patch(
+def _audio_unit_states_fake(pids: dict[str, int]):
+    overrides = {
+        f"{unit}.service": {"main_pid": pid} for unit, pid in pids.items()
+    }
+    return _make_unit_states_fake(overrides)
+
+
+def test_audio_path_no_swap_is_ok_when_every_daemon_is_swap_free(monkeypatch):
+    pids = {unit: 2001 + i for i, unit in enumerate(doctor._AUDIO_PATH_UNITS)}
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", _audio_unit_states_fake(pids),
+    )
+    with patch(
         "pathlib.Path.read_text",
         lambda self: "Name:\tfake\nVmRSS:\t100000 kB\nVmSwap:\t0 kB\n",
     ):
@@ -216,7 +227,7 @@ def test_audio_path_no_swap_is_ok_when_every_daemon_is_swap_free():
         assert r.reason == doctor_memory.REASON_AUDIO_PATH_ALL_SWAP_FREE
 
 
-def test_audio_path_no_swap_names_the_swapped_daemon_and_amount():
+def test_audio_path_no_swap_names_the_swapped_daemon_and_amount(monkeypatch):
     """The 2026-05-24 signature: aec-bridge holding 42 MB of VmSwap."""
 
     def fake_read(self):
@@ -224,24 +235,27 @@ def test_audio_path_no_swap_names_the_swapped_daemon_and_amount():
         swap = "43056" if pid == "2003" else "0"
         return f"Name:\tfoo\nVmRSS:\t100000 kB\nVmSwap:\t{swap} kB\n"
 
-    pids = [
-        "2003" if unit == "jasper-aec-bridge" else str(3000 + i)
+    pids = {
+        unit: 2003 if unit == "jasper-aec-bridge" else 3000 + i
         for i, unit in enumerate(doctor._AUDIO_PATH_UNITS)
-    ]
-    with patch.object(
-        doctor_memory, "_systemctl_show_property", return_value=pids
-    ), patch("pathlib.Path.read_text", fake_read):
+    }
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", _audio_unit_states_fake(pids),
+    )
+    with patch("pathlib.Path.read_text", fake_read):
         r = doctor.check_audio_path_no_swap()
 
     assert r.status == "warn"
     assert r.reason == doctor_memory.REASON_AUDIO_SWAP_DETECTED
 
 
-def test_audio_path_no_swap_is_ok_without_systemctl():
-    with patch.object(doctor_memory, "_systemctl_show_property", return_value=None):
-        r = doctor.check_audio_path_no_swap()
-        assert r.status == "ok"
-        assert r.reason == doctor_memory.REASON_AUDIO_PATH_SOME_NOT_RUNNING
+def test_audio_path_no_swap_is_ok_without_systemctl(monkeypatch):
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", lambda units, *, timeout: None,
+    )
+    r = doctor.check_audio_path_no_swap()
+    assert r.status == "ok"
+    assert r.reason == doctor_memory.REASON_AUDIO_PATH_SOME_NOT_RUNNING
 
 
 # ------------------------------------------------------------ check_disk_space

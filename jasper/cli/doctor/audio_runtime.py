@@ -5,24 +5,32 @@
 """jasper-doctor checks for fan-in, outputd, and their runtime coupling."""
 from __future__ import annotations
 
-import json
 import os
 import re
 import shutil
-import socket
 import subprocess
 import time
 from pathlib import Path
+from typing import Any
 
 from ... import ring_assets
 from ...audio_hardware.dac import latency_floor_for
 from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
-from ...camilla_config_contract import read_camilla_device_field
+from ...camilla_config_contract import (
+    parse_camilla_devices_config,
+    read_camilla_device_field,
+)
 from ...fanin_coupling import RING_SLOT_FRAMES, read_declared_ring_wire_format
 from ._registry import doctor_check
 from ...output_hardware import active_dac_profile_id
-from ...route_latency.status_socket import FANIN_STALE_MS, OUTPUTD_STALE_MS
-from ._shared import CheckResult, _run
+from ...route_latency.status_socket import (
+    FANIN_STALE_MS,
+    FANIN_STATUS_SOCKET,
+    OUTPUTD_STALE_MS,
+    OUTPUTD_STATUS_SOCKET,
+)
+from ._evidence import evidence
+from ._shared import REASON_SYSTEMCTL_UNAVAILABLE, CheckResult, _run
 from .correction import _active_camilla_config_path
 
 # Aliases of the ring_assets SSOT; tests monkeypatch these names.
@@ -329,64 +337,21 @@ _OUTPUTD_EXPECTED_DAC_PCM = "outputd_dac"
 
 _OUTPUTD_EXPECTED_DUAL_DAC_PCM = "dual_apple_usb_c_dac_4ch"
 
-_FANIN_STATUS_SOCKET = "/run/jasper-fanin/control.sock"
-
-_OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
-
-_STATUS_RESPONSE_MAX_BYTES = 1_048_576
-
-
-def _read_status_socket_bytes(socket_path: str, *, timeout: float) -> bytes:
-    """Return the raw reply from a local JTS ``STATUS\n`` control socket.
-
-    Owns the socket lifecycle only; retry, decoding and fail-versus-skip policy
-    stay with the callers.
-    """
-
-    deadline = time.monotonic() + timeout
-
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        def set_remaining_timeout() -> None:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise socket.timeout("STATUS response deadline exceeded")
-            sock.settimeout(remaining)
-
-        set_remaining_timeout()
-        sock.connect(socket_path)
-        set_remaining_timeout()
-        sock.sendall(b"STATUS\n")
-        chunks: list[bytes] = []
-        received = 0
-        while True:
-            set_remaining_timeout()
-            chunk = sock.recv(65536)
-            if not chunk:
-                break
-            received += len(chunk)
-            if received > _STATUS_RESPONSE_MAX_BYTES:
-                raise OSError("STATUS response exceeds byte limit")
-            chunks.append(chunk)
-    return b"".join(chunks)
-
-
-def _read_status_socket(socket_path: str) -> dict[str, object]:
-    payload = _read_status_socket_bytes(socket_path, timeout=1.0).decode("utf-8")
-    parsed = json.loads(payload)
-    if not isinstance(parsed, dict):
-        raise ValueError("STATUS response root is not an object")
-    return parsed
-
-
 def _outputd_reconciled_env() -> dict[str, str]:
-    """outputd's env as its own unit layers it, read fresh.
+    """outputd's env as its own unit layers it, read once per doctor run.
 
     :func:`jasper.env_load.outputd_reconciled_env` plus the
     ``JASPER_OUTPUTD_ENV_FILE`` operator seam; nothing else.
     """
-    from ...env_load import outputd_reconciled_env
 
-    return outputd_reconciled_env(os.environ.get("JASPER_OUTPUTD_ENV_FILE") or None)
+    def read() -> dict[str, str]:
+        from ...env_load import outputd_reconciled_env
+
+        return outputd_reconciled_env(
+            os.environ.get("JASPER_OUTPUTD_ENV_FILE") or None
+        )
+
+    return evidence.get("outputd_reconciled_env", read)
 
 
 def _outputd_active_channels_from_env(env: dict[str, str]) -> int | None:
@@ -635,42 +600,23 @@ def check_fanin_service() -> CheckResult:
     if service_failure is not None:
         return service_failure
 
-    socket_path = "/run/jasper-fanin/control.sock"
-    last_error: OSError | None = None
-    for attempt in range(2):
-        try:
-            payload = _read_status_socket_bytes(socket_path, timeout=2.0)
-            break
-        except OSError as e:
-            last_error = e
-            if attempt == 0:
-                time.sleep(0.1)
-    else:
+    status = evidence.fanin_status()
+    if status.unreachable:
         return CheckResult(
             "jasper-fanin service",
             "fail",
-            f"active but UDS probe at {socket_path} failed: {last_error}. "
+            f"active but UDS probe at {FANIN_STATUS_SOCKET} failed: {status.error}. "
             f"Fan-in is mandatory; without STATUS doctor cannot verify "
             f"the live graph, buffers, or watchdog progress. "
             f"check: journalctl -u jasper-fanin | tail",
             reason=REASON_FANIN_STATUS_UNREACHABLE,
         )
-
-    body = payload.decode("utf-8", errors="replace")
-    try:
-        data = json.loads(body)
-    except json.JSONDecodeError as e:
+    data = status.payload
+    if data is None:
         return CheckResult(
             "jasper-fanin service",
             "fail",
-            f"active but UDS STATUS returned invalid JSON: {e}",
-            reason=REASON_FANIN_STATUS_MALFORMED,
-        )
-    if not isinstance(data, dict):
-        return CheckResult(
-            "jasper-fanin service",
-            "fail",
-            f"active but UDS STATUS root is {type(data).__name__}, expected object",
+            f"active but UDS STATUS is unusable: {status.error}",
             reason=REASON_FANIN_STATUS_MALFORMED,
         )
 
@@ -971,17 +917,17 @@ def check_camilla_service() -> CheckResult:
 @doctor_check(order=51.52, group="audio")
 def check_fanin_host_clock() -> CheckResult:
     """Report persistent USB host-clock recovery/fallback with exact cause."""
-    try:
-        data = _read_status_socket(_FANIN_STATUS_SOCKET)
-    except (OSError, TimeoutError, json.JSONDecodeError, ValueError) as e:
+    status = evidence.fanin_status()
+    if status.payload is None:
         # Reachability belongs to the preceding mandatory fan-in service check.
         return CheckResult(
             "USB host clock",
             "skipped",
-            f"not probed ({type(e).__name__}); see jasper-fanin service check",
+            f"not probed ({type(status.error).__name__}); "
+            "see jasper-fanin service check",
             reason=REASON_HOST_CLOCK_STATUS_NOT_PROBED,
         )
-    return _host_clock_health_from_status(data)
+    return _host_clock_health_from_status(status.payload)
 
 @doctor_check(order=51.5, group="audio")
 def check_fanin_tts_drops() -> CheckResult:
@@ -1001,19 +947,13 @@ def check_fanin_tts_drops() -> CheckResult:
       - warn when protocol errors or dropped audio > 0 since fan-in start.
     """
     name = "fan-in TTS delivery"
-    socket_path = "/run/jasper-fanin/control.sock"
-    try:
-        payload = _read_status_socket_bytes(socket_path, timeout=2.0)
-        data = json.loads(payload.decode("utf-8", errors="replace"))
-        if not isinstance(data, dict):
-            raise ValueError(
-                f"STATUS response root is {type(data).__name__}, not object"
-            )
-    except (OSError, json.JSONDecodeError, ValueError) as e:
+    status = evidence.fanin_status()
+    data = status.payload
+    if data is None:
         return CheckResult(
             name,
             "skipped",
-            f"not probed ({type(e).__name__}); fan-in reachability is "
+            f"not probed ({type(status.error).__name__}); fan-in reachability is "
             "covered by the 'jasper-fanin service' check",
             reason=REASON_FANIN_TTS_STATUS_NOT_PROBED,
         )
@@ -1083,16 +1023,13 @@ def check_fanin_ring_stall() -> CheckResult:
         vs no-reader drop split and the last stall duration.
     """
     name = "fan-in ring stall"
-    try:
-        payload = _read_status_socket_bytes(_FANIN_STATUS_SOCKET, timeout=2.0)
-        data = json.loads(payload.decode("utf-8", errors="replace"))
-        if not isinstance(data, dict):
-            raise ValueError(f"STATUS root is {type(data).__name__}, not object")
-    except (OSError, json.JSONDecodeError, ValueError) as e:
+    status = evidence.fanin_status()
+    data = status.payload
+    if data is None:
         return CheckResult(
             name,
             "skipped",
-            f"not probed ({type(e).__name__}); fan-in reachability is "
+            f"not probed ({type(status.error).__name__}); fan-in reachability is "
             "covered by the 'jasper-fanin service' check",
             reason=REASON_FANIN_RING_STALL_STATUS_NOT_PROBED,
         )
@@ -1132,9 +1069,60 @@ def check_fanin_ring_stall() -> CheckResult:
     return CheckResult(name, "ok", f"no active stall ({counts})")
 
 
+def _camilla_statefile() -> Path:
+    """The statefile behind :meth:`Evidence.camilla_config_path`, from the same
+    single read (same memo key)."""
+    statefile, _config_path = evidence.get(
+        "camilla_config", _active_camilla_config_path
+    )
+    return statefile
+
+
+#: ``devices.<block>.<field>`` pairs ``parse_camilla_devices_config``'s subset
+#: does not model, so they cost one extra read of the config each. They fall
+#: away as soon as that subset carries them.
+_EXTRA_DEVICE_FIELDS = (("capture", "type"), ("playback", "type"),
+                        ("playback", "filename"))
+
+
+def _loaded_device_fields(config_path: Path | str | None) -> dict[str, Any]:
+    """Every ``devices.*`` field this module compares, keyed ``<block>_<field>``,
+    from ONE read of ``config_path`` per doctor run.
+
+    The loaded graph's fields must all come from the SAME revision of the file:
+    reading them one at a time re-opened it per field and could answer from two
+    revisions. ``config_path`` is a parameter rather than always
+    :meth:`Evidence.camilla_config_path` because ``check_fanin_coupling`` falls
+    back to the shipped config path when the statefile names nothing.
+    """
+    if not config_path:
+        return {}
+    path = str(config_path)
+
+    def read() -> dict[str, Any]:
+        if path == evidence.camilla_config_path():
+            text = evidence.camilla_config_text()
+        else:
+            try:
+                text = Path(path).read_text(encoding="utf-8")
+            except OSError:
+                text = None
+        if text is None:
+            return {}
+        fields: dict[str, Any] = dict(parse_camilla_devices_config(text))
+        for block, field in _EXTRA_DEVICE_FIELDS:
+            fields[f"{block}_{field}"] = read_camilla_device_field(
+                path, block, field
+            )
+        return fields
+
+    return evidence.get(f"camilla_devices:{path}", read)
+
+
 def _loaded_device_field(config_path: Path, block: str, field: str) -> str | None:
     """A field from ``devices.<block>`` in a CamillaDSP config, or None."""
-    return read_camilla_device_field(config_path, block, field)
+    value = _loaded_device_fields(config_path).get(f"{block}_{field}")
+    return None if value is None else str(value)
 
 
 def _loaded_capture_type(config_path: Path) -> str | None:
@@ -1231,7 +1219,7 @@ def check_camilla_playback_format() -> CheckResult:
     by ``check_correction_current_config`` (``jasper/cli/doctor/correction.py``).
     """
     label = "camilla playback format"
-    _, config_path = _active_camilla_config_path()
+    config_path = evidence.camilla_config_path()
     if config_path is None:
         return CheckResult(
             label,
@@ -1374,10 +1362,11 @@ def _requires_roleful_graph() -> bool:
     )
 
     try:
-        return bool(
-            classify_output_contract(load_output_topology_strict())
-            .requires_roleful_graph
-        )
+        # The STRICT loader, not `evidence.output_topology()`: this one raises
+        # on a torn/absent file instead of fail-softing, which is what the
+        # `except` below classifies. Memoized so it stays one read per run.
+        topology = evidence.get("output_topology_strict", load_output_topology_strict)
+        return bool(classify_output_contract(topology).requires_roleful_graph)
     except (OutputTopologyError, OSError, ValueError):
         return False
 
@@ -1408,7 +1397,7 @@ def check_fanin_coupling() -> CheckResult:
     from jasper.multiroom.reconcile import SNAPFIFO
 
     label = "fan-in coupling"
-    _, active_path = _active_camilla_config_path()
+    active_path = evidence.camilla_config_path()
     config_path = Path(active_path) if active_path else Path(
         "/var/lib/camilladsp/configs/sound_current.yml"
     )
@@ -1536,9 +1525,9 @@ def _jts_ring_probeable_pcms() -> list[tuple[str, str]]:
     loses the race still unlinks only what it created, and the ioplug's SPSC
     guard refuses it.
     """
-    if _run(["systemctl", "is-active", "jasper-fanin.service"]).stdout.strip() == (
-        "active"
-    ):
+    # Active, or unknown (no systemctl on this host): fan-in may be writing
+    # Ring A, so nothing is probeable.
+    if evidence.unit_active("jasper-fanin.service") is not False:
         return []
     probeable = []
     for pcm, tool, _ring_basename in _JTS_RING_PCMS:
@@ -1609,6 +1598,13 @@ def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
     return False, err or f"{tool} exit {proc.returncode}"
 
 
+def _transport_park_snapshot() -> dict[str, Any]:
+    """The park verdict this run, read once for the two checks that consume it."""
+    from ...control import transport_park
+
+    return evidence.get("transport_park", transport_park.snapshot)
+
+
 def _grouped_dac_content_lane_parked() -> bool:
     """Is this box the bonded shape whose post-DSP hop is not a ring at all?
 
@@ -1618,7 +1614,7 @@ def _grouped_dac_content_lane_parked() -> bool:
     from ...control import transport_park
 
     try:
-        state = transport_park.snapshot()
+        state = _transport_park_snapshot()
     except Exception:  # noqa: BLE001 - a park read must never crash a sibling
         return False
     return any(
@@ -1736,13 +1732,12 @@ def check_ring_split_transport() -> CheckResult:
     # program-bake graph in the primary statefile and its real output endpoint in
     # camilla#2's, so a box whose primary names no registered endpoint while
     # camilla#2 names the ACTIVE ring must still be judged. The primary path
-    # comes from `_active_camilla_config_path()` so an operator's
+    # comes from the run's one statefile read so an operator's
     # `JASPER_CAMILLA_STATEFILE` override keeps working.
-    statefile, _ = _active_camilla_config_path()
-    evidence = output_endpoint_evidence_from_statefiles(
-        statefile, DEFAULT_CAMILLA2_STATEFILE_PATH
+    endpoint_evidence = output_endpoint_evidence_from_statefiles(
+        _camilla_statefile(), DEFAULT_CAMILLA2_STATEFILE_PATH
     )
-    playback_device = (evidence.devices or {}).get("playback_device")
+    playback_device = (endpoint_evidence.devices or {}).get("playback_device")
     graph_on_ring = playback_device in (
         RING_PLAYBACK_DEVICE,
         RING_ACTIVE_PLAYBACK_DEVICE,
@@ -2659,13 +2654,20 @@ def _service_state_failure(
     ``static``, ``disabled``, ``indirect``, ``masked``) means the unit will not
     come up on its own. `journalctl -u <unit>` is the next step for every
     caller, so the detail says so rather than repeating a per-unit sentence."""
-    enabled = _run(["systemctl", "is-enabled", unit]).stdout.strip()
-    if enabled == "not-found":
+    state = evidence.unit_state(unit)
+    if state is None:
+        return CheckResult(
+            label, "skipped",
+            "systemctl unavailable — skipped (not Linux?)",
+            reason=REASON_SYSTEMCTL_UNAVAILABLE,
+        )
+    if state.get("load_state") == "not-found":
         return CheckResult(
             label, "fail",
             f"{unit} is not installed. Re-run install.sh.",
             reason=missing,
         )
+    enabled = state.get("unit_file_state")
     if enabled not in ("enabled", "enabled-runtime"):
         return CheckResult(
             label, "fail",
@@ -2673,7 +2675,7 @@ def _service_state_failure(
             f"sudo systemctl enable --now {unit}",
             reason=not_enabled,
         )
-    active = _run(["systemctl", "is-active", unit]).stdout.strip()
+    active = state.get("active_state")
     if active != "active":
         return CheckResult(
             label, "fail",
@@ -2686,35 +2688,24 @@ def _service_state_failure(
 
 def _outputd_status_payload() -> dict[str, object] | CheckResult:
     """Load and validate the STATUS transport envelope."""
-    try:
-        payload = _read_status_socket_bytes(_OUTPUTD_STATUS_SOCKET, timeout=2.0)
-    except OSError as exc:
+    status = evidence.outputd_status()
+    if status.unreachable:
         return CheckResult(
             "jasper-outputd",
             "fail",
-            f"active but STATUS probe at {_OUTPUTD_STATUS_SOCKET} failed: {exc}. "
-            "Without STATUS doctor cannot verify DAC ownership, buffers, "
-            "xruns, or work-loop progress.",
+            f"active but STATUS probe at {OUTPUTD_STATUS_SOCKET} failed: "
+            f"{status.error}. Without STATUS doctor cannot verify DAC "
+            "ownership, buffers, xruns, or work-loop progress.",
             reason=REASON_OUTPUTD_STATUS_UNREACHABLE,
         )
-    body = payload.decode("utf-8", errors="replace")
-    try:
-        data = json.loads(body)
-    except json.JSONDecodeError as exc:
+    if status.payload is None:
         return CheckResult(
             "jasper-outputd",
             "fail",
-            f"active but STATUS returned invalid JSON: {exc}",
+            f"active but STATUS is unusable: {status.error}",
             reason=REASON_OUTPUTD_STATUS_MALFORMED,
         )
-    if not isinstance(data, dict):
-        return CheckResult(
-            "jasper-outputd",
-            "fail",
-            f"active but STATUS root is {type(data).__name__}, expected object",
-            reason=REASON_OUTPUTD_STATUS_MALFORMED,
-        )
-    return data
+    return status.payload
 
 
 def _outputd_content_bridge_detail(data: dict[str, object]) -> str:
@@ -2954,9 +2945,7 @@ def _transport_route_remedy() -> str:
         UnrecognizedDacProfile,
         active_lane_capability_gap,
     )
-    from jasper.output_topology import load_output_topology
-
-    gap = active_lane_capability_gap(load_output_topology())
+    gap = active_lane_capability_gap(evidence.output_topology())
     if isinstance(gap, ActiveLaneCapabilityGap):
         return (
             f". {gap.device_label} does not support the active speaker lane, so "
@@ -3345,20 +3334,24 @@ def check_aec_clock_drift() -> CheckResult:
         (still measuring) are all healthy.
     """
     label = "AEC clock drift"
-    enabled = _run(
-        ["systemctl", "is-enabled", "jasper-outputd.service"]
-    ).stdout.strip()
-    if enabled in {"not-found", "disabled", ""}:
+    state = evidence.unit_state("jasper-outputd.service")
+    if state is None:
+        return CheckResult(
+            label,
+            "skipped",
+            "systemctl unavailable — skipped (not Linux?)",
+            reason=REASON_SYSTEMCTL_UNAVAILABLE,
+        )
+    if state.get("load_state") == "not-found" or state.get(
+        "unit_file_state"
+    ) not in ("enabled", "enabled-runtime"):
         return CheckResult(
             label,
             "skipped",
             "jasper-outputd not enabled",
             reason=REASON_AEC_CLOCK_OUTPUTD_NOT_ENABLED,
         )
-    active = _run(
-        ["systemctl", "is-active", "jasper-outputd.service"]
-    ).stdout.strip()
-    if active != "active":
+    if state.get("active_state") != "active":
         return CheckResult(
             label,
             "skipped",
@@ -3366,31 +3359,13 @@ def check_aec_clock_drift() -> CheckResult:
             reason=REASON_AEC_CLOCK_OUTPUTD_INACTIVE,
         )
 
-    try:
-        payload = _read_status_socket_bytes(_OUTPUTD_STATUS_SOCKET, timeout=2.0)
-    except OSError as e:
+    read = evidence.outputd_status()
+    data = read.payload
+    if data is None:
         return CheckResult(
             label,
             "skipped",
-            f"STATUS unreachable: {e}",
-            reason=REASON_AEC_CLOCK_STATUS_UNAVAILABLE,
-        )
-
-    body = payload.decode("utf-8", errors="replace")
-    try:
-        data = json.loads(body)
-    except json.JSONDecodeError:
-        return CheckResult(
-            label,
-            "skipped",
-            "STATUS returned invalid JSON",
-            reason=REASON_AEC_CLOCK_STATUS_UNAVAILABLE,
-        )
-    if not isinstance(data, dict):
-        return CheckResult(
-            label,
-            "skipped",
-            f"STATUS root is {type(data).__name__}, expected object",
+            f"STATUS unusable: {read.error}",
             reason=REASON_AEC_CLOCK_STATUS_UNAVAILABLE,
         )
 
@@ -3502,17 +3477,17 @@ def check_renderer_ring_lanes() -> CheckResult:
             reason=REASON_RENDERER_LANES_UNARMED,
         )
 
-    try:
-        status = _read_status_socket(_FANIN_STATUS_SOCKET)
-    except (OSError, ValueError) as e:
+    read = evidence.fanin_status()
+    if read.payload is None:
         return CheckResult(
             label_name,
             "warn",
             f"{len(armed)} lane(s) armed ({', '.join(armed)}) but fan-in STATUS is "
-            f"unreadable ({type(e).__name__}) — cannot confirm they are attached",
+            f"unreadable ({type(read.error).__name__}) — cannot confirm they are "
+            "attached",
             reason=REASON_RENDERER_LANES_STATUS_UNREADABLE,
         )
-    inputs = status.get("inputs")
+    inputs = read.payload.get("inputs")
     if not isinstance(inputs, list):
         return CheckResult(
             label_name, "warn", "fan-in STATUS carries no inputs[] to judge",
@@ -3760,9 +3735,7 @@ def check_ring_transport_park() -> CheckResult:
     """
     label = "ring transport parks"
 
-    from ...control import transport_park
-
-    state = transport_park.snapshot()
+    state = _transport_park_snapshot()
     status = state.get("status")
 
     if status == "unavailable":
