@@ -46,6 +46,12 @@ VCGENCMD_INTERVAL_SEC = 30.0
 SERVICE_STATE_INTERVAL_SEC = 30.0
 HISTORY_POINTS = 720  # 60 min @ 5 s
 
+# Lower bound on the pause between ticks. Without it a tick that runs
+# longer than SAMPLE_INTERVAL_SEC — exactly the memory/IO pressure the
+# dashboard exists to surface — collapses the loop into a ~10 Hz spin
+# that makes the pressure worse.
+MIN_SLEEP_SEC = 1.0
+
 # Kernel thermal zone for SoC temperature. Prefer this over vcgencmd because
 # jasper-control runs as a non-root service user and vcgencmd can be blocked
 # by firmware-device permissions even while the same command works over SSH.
@@ -73,6 +79,14 @@ PWMFAN_DUTY_MAX = 255
 CGROUP_ROOT = "/sys/fs/cgroup"
 SERVICE_PREFIX = "jasper-"
 SERVICE_SUFFIX = ".service"
+
+# How many ticks a cached cgroup walk survives before it is redone. The
+# walk is the sampler's single most expensive step (~0.8% of a core at
+# the 5 s cadence on a Pi 5), and the unit set only changes when a
+# service starts or stops. A stopped unit is caught immediately (its
+# cgroup directory is gone); a newly started one waits at most this many
+# ticks — 12 × 5 s ≈ 60 s.
+SERVICE_CGROUP_RESCAN_TICKS = 12
 
 JASPER_SERVICE_GROUPS = {
     "jasper-aec-bridge.service": "Mic",
@@ -181,6 +195,10 @@ class SystemSampler:
         #   _services_snapshot — public: list of dicts for snapshot().
         self._service_samples: dict[str, tuple[int, float]] = {}
         self._services_snapshot: list[dict[str, Any]] = []
+        # Cached cgroup walk — see _service_cgroups().
+        self._service_cgroups_cache: list[dict[str, str]] | None = None
+        self._service_cgroups_root: str | None = None
+        self._service_cgroups_ticks = 0
         self._service_state_snapshot: dict[str, dict[str, Any]] = {}
         self._last_service_state_at = 0.0
         # Per-core CPU state. Same delta pattern as per-service: first
@@ -308,8 +326,11 @@ class SystemSampler:
                     logger.exception("vcgencmd tick failed")
                 last_vcgencmd_at = now_mono
             elapsed = time.monotonic() - sample_start
-            sleep_for = max(0.1, self._sample_interval - elapsed)
-            time.sleep(sleep_for)
+            time.sleep(self._next_sleep_sec(elapsed))
+
+    def _next_sleep_sec(self, elapsed: float) -> float:
+        """Pause before the next tick, never below MIN_SLEEP_SEC."""
+        return max(MIN_SLEEP_SEC, self._sample_interval - elapsed)
 
     def _tick(self) -> None:
         """Cheap-metric sample — /proc reads + statvfs + sysfs only."""
@@ -536,7 +557,7 @@ class SystemSampler:
         the live set, prev-sample entries we no longer see get dropped
         when we rebuild the dict below."""
         now_mono = time.monotonic()
-        services = self._list_service_cgroups(root_dir)
+        services = self._service_cgroups(root_dir)
         prev = self._service_samples
         new_samples: dict[str, tuple[int, float]] = {}
         out: list[dict[str, Any]] = []
@@ -733,6 +754,30 @@ class SystemSampler:
         if unit.startswith(SERVICE_PREFIX) and unit.endswith(SERVICE_SUFFIX):
             return JASPER_SERVICE_GROUPS.get(unit, "JTS")
         return EXTRA_SERVICE_GROUPS.get(unit)
+
+    def _service_cgroups(self, root_dir: str) -> list[dict[str, str]]:
+        """Cached ``_list_service_cgroups`` for the 5-second tick.
+
+        The walk itself is the sampler's dominant cost, so keep its result
+        and re-derive it only when the unit set can have changed: a
+        vanished cgroup directory (checked with one stat per cached unit,
+        which is orders of magnitude cheaper than re-walking the tree) or
+        SERVICE_CGROUP_RESCAN_TICKS elapsed, which is what catches a
+        newly started unit.
+        """
+        cache = self._service_cgroups_cache
+        if (
+            cache is not None
+            and root_dir == self._service_cgroups_root
+            and self._service_cgroups_ticks < SERVICE_CGROUP_RESCAN_TICKS
+            and all(os.path.isdir(entry["path"]) for entry in cache)
+        ):
+            self._service_cgroups_ticks += 1
+            return cache
+        self._service_cgroups_cache = self._list_service_cgroups(root_dir)
+        self._service_cgroups_root = root_dir
+        self._service_cgroups_ticks = 1
+        return self._service_cgroups_cache
 
     @classmethod
     def _list_service_cgroups(

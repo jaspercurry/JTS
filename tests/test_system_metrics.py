@@ -578,6 +578,61 @@ def test_tick_services_handles_missing_slice_dir(tmp_path) -> None:
     assert s._tick_services(str(tmp_path / "no-such-dir")) == []
 
 
+def test_service_cgroup_walk_is_cached_until_the_unit_set_changes(
+    tmp_path, monkeypatch,
+) -> None:
+    """The walk is the sampler's dominant cost, so a steady unit set must
+    not re-walk every tick — but a stop (cgroup gone) and a start (caught
+    by the periodic rescan) both have to reach the table."""
+    slice_dir = _make_fake_slice(str(tmp_path), {
+        "jasper-voice.service": {"cpu.stat": "usage_usec 1000000\n"},
+    })
+    walks = []
+    real_list = SystemSampler._list_service_cgroups
+
+    def counting_list(root_dir):
+        walks.append(root_dir)
+        return real_list(root_dir)
+
+    monkeypatch.setattr(
+        SystemSampler, "_list_service_cgroups", staticmethod(counting_list),
+    )
+    s = SystemSampler()
+
+    for _ in range(3):
+        assert [row["name"] for row in s._tick_services(slice_dir)] == [
+            "jasper-voice",
+        ]
+    assert len(walks) == 1
+
+    # A stopped unit takes its cgroup with it — visible on the next tick.
+    import shutil
+    shutil.rmtree(os.path.join(slice_dir, "jasper-voice.service"))
+    assert s._tick_services(slice_dir) == []
+    assert len(walks) == 2
+
+    # A started unit is picked up by the periodic rescan.
+    started = os.path.join(slice_dir, "jasper-outputd.service")
+    os.makedirs(started)
+    with open(os.path.join(started, "cpu.stat"), "w") as f:
+        f.write("usage_usec 2000000\n")
+    for _ in range(system_metrics.SERVICE_CGROUP_RESCAN_TICKS):
+        out = s._tick_services(slice_dir)
+    assert [row["name"] for row in out] == ["jasper-outputd"]
+
+
+@pytest.mark.parametrize("elapsed,expected", [
+    (0.0, 5.0),
+    (2.5, 2.5),
+    (4.5, 1.0),
+    (30.0, 1.0),
+])
+def test_sampler_sleep_never_drops_below_the_floor(elapsed, expected) -> None:
+    """A tick slower than the interval must not turn the loop into a spin."""
+    s = SystemSampler(sample_interval_sec=5.0)
+    assert s._next_sleep_sec(elapsed) == pytest.approx(expected)
+
+
 def test_tick_services_partial_read_skipped(tmp_path) -> None:
     """A cgroup whose cpu.stat AND memory.current are both unreadable
     (race with teardown) should be silently skipped. A cgroup with one
