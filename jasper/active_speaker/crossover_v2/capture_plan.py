@@ -102,13 +102,11 @@ CAPTURE_PLAN_TARGET = 3
 #
 # It is deliberately NOT `capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS`. Both
 # builders below passed that ceiling verbatim while the two happened to be
-# equal, which silently conflated a TRANSPORT limit (how many blob keys the
-# relay Worker will store for one session) with a POLICY choice (how many
-# retakes this measurement offers a household). Raising the transport ceiling
-# to 32 for multi-position capture plans separated them, and this constant
-# holds the shipped value so the 3-entry and 1-entry flows keep emitting the
-# exact same `max_attempts` on the wire. Changing it is a product decision
-# about retries, not a consequence of the relay's capacity.
+# equal, which silently conflated a SANITY ceiling (the largest attempt
+# budget any plan may ever declare, `CapturePlan.max_attempts` validation
+# enforces it) with a POLICY choice (how many retakes this measurement offers
+# a household). Separating them means changing this constant is a product
+# decision about retries, never a consequence of the sanity ceiling moving.
 CAPTURE_PLAN_MAX_ATTEMPTS = 8
 
 
@@ -130,11 +128,11 @@ DEFAULT_CLOUD_MEASURE_POSITIONS = _contracts.DEFAULT_CLOUD_MEASURE_POSITIONS
 # against exactly this number.
 MIN_CLOUD_MEASURE_POSITIONS = 6
 # The ceiling a caller may configure. Sized so the worst-case plan still fits
-# the relay's blob-index space — see ``assert_cloud_plan_fits_relay_capacity``,
-# which is the executable form of that claim.
+# under `capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS` — `CapturePlan.max_attempts`
+# validation (sweep_spec.py) is what enforces that fit at build time.
 #
 # **12 → 11 when #2291's entry baseline landed**, because that claim is what
-# this number IS, and one more stage-1 entry left the old value one blob index
+# this number IS, and one more stage-1 entry left the old value one attempt
 # over. The arithmetic, spelled out for the WALK-ARMED case — which is the one
 # that binds, and the reason this stays 11 through the lateral pause:
 #
@@ -145,40 +143,31 @@ MIN_CLOUD_MEASURE_POSITIONS = 6
 #     N=12 -> 33, N=11 -> 32 = MAX_CAPTURE_PLAN_ATTEMPTS
 #
 # **There is no slack, and the table above is why.** No stage-1 plan builds that
-# walk any more, but ``relay_plan_attempts_required`` counts its six poses
-# unconditionally — an operator's staged angle walk adds them to any session,
-# through this same index space — so the walk-armed row IS the binding one: at
-# N=11, M=6 it lands on 32, which is ``MAX_CAPTURE_PLAN_ATTEMPTS`` exactly.
+# walk any more, but an operator's staged angle walk adds its six poses to any
+# session unconditionally, through this same attempt budget — so the
+# walk-armed row IS the binding one: at N=11, M=6 it lands on 32, which is
+# ``MAX_CAPTURE_PLAN_ATTEMPTS`` exactly.
 #
 # **That row is the shipped one since the 2026-08-24 geometry ruling**, which
 # put the design axis into the post-apply pose set and took
 # ``DEFAULT_CLOUD_VERIFY_POSITIONS`` from 5 to 6. It used to be 31 at M=5 — one
-# index under — and this comment used to say raising N would spend that last
-# index. The ruling spent it on a capture instead. Nothing here needs to move
-# (32 is the ceiling, not one past it), but the headroom is now zero AT THIS
-# BOUND — and the bound is a deliberately conservative CROSS-STAGE sum, not a
-# session's real draw: stage 1 and stage 2 each mint their own relay session
-# with its own blob-index space, so the largest single session this flow can be
-# configured into is 26 of 32 and the shipped one draws 30 across both. Read
-# "zero" as "the guard has no slack left", never as "the next entry must be
-# bought with a household-visible retake" — a producer that genuinely needs one
-# should first check whether it lands inside a single stage's own draw. The
-# three ways to pay are unchanged — a step of configuration headroom
-# (this constant), a household-visible retake (``CLOUD_RETAKE_ALLOWANCE``), or a
-# lockstep raise of the relay Worker's own ceiling, which is a deployed
-# cross-system contract and not something a flow change gets to assume.
-#
-# Two different numbers get quoted at this ceiling and they answer different
-# questions; do not read one as the other. ``assert_cloud_plan_fits_relay_capacity``
-# sums ``cloud_capture_target`` (positions, not attempts) plus the poses, the
-# entry baseline and the geometry retries — 27 at N=11 — while the doctor asks
-# ``relay_plan_attempts_required`` for worst-case ATTEMPTS, which is the 32
-# above and the figure the relay Worker's own ceiling has to carry.
+# under — and this comment used to say raising N would spend that last one.
+# The ruling spent it on a capture instead. Nothing here needs to move (32 is
+# the ceiling, not one past it), but the headroom is now zero AT THIS BOUND —
+# and the bound is a deliberately conservative CROSS-STAGE sum, not a
+# session's real draw: stage 1 and stage 2 each build against their own
+# attempt budget, so the largest single session this flow can be configured
+# into is 26 of 32 and the shipped one draws 30 across both. Read "zero" as
+# "the guard has no slack left", never as "the next entry must be bought with
+# a household-visible retake" — a producer that genuinely needs one should
+# first check whether it lands inside a single stage's own draw. The two ways
+# to pay are unchanged — a step of configuration headroom (this constant), or
+# a household-visible retake (``CLOUD_RETAKE_ALLOWANCE``).
 #
 # Nothing shipped changed when this came down: ``DEFAULT_CLOUD_MEASURE_POSITIONS``
 # is 9 and stage 1 does not run the pre-apply cloud at all
 # (``STAGE1_INCLUDES_CLOUD_MEASURE``). What was spent then was one step of
-# configuration headroom, the cheapest of the three ways to pay named above.
+# configuration headroom, the cheaper of the two ways to pay named above.
 MAX_CLOUD_MEASURE_POSITIONS = 11
 # Total MIC POSITIONS in the post-apply cloud, VERIFY's anchor included — so
 # the plan emits ``M − 1`` additional prompted positions after VERIFY, and the
@@ -1347,13 +1336,12 @@ class V2PlanShape:
     def max_attempts(self) -> int:
         """The whole journey's admission budget — the CONSERVATIVE bound.
 
-        Kept as the sum rather than ``max(measure, verify)`` because both its
-        consumers — :func:`assert_cloud_plan_fits_relay_capacity`, and
-        ``jasper-doctor``'s OWN check via :func:`cloud_plan_max_attempts` —
-        ask "can the relay carry what this flow needs"; the sum is
-        strictly larger than either stage's own budget, so a guard that passes
-        on it passes on both. It is deliberately NOT what either session emits
-        — those read :attr:`measure_max_attempts` / :attr:`verify_max_attempts`.
+        Kept as the sum rather than ``max(measure, verify)`` because
+        :func:`cloud_plan_max_attempts` reads it as one conservative
+        cross-stage figure: the sum is strictly larger than either stage's
+        own budget, so a caller sized against it is sized for both. It is
+        deliberately NOT what either session emits — those read
+        :attr:`measure_max_attempts` / :attr:`verify_max_attempts`.
         """
         return self.capture_target + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE
 
@@ -1546,84 +1534,6 @@ def _shape_from_kwargs(
     )
 
 
-def relay_plan_attempts_required(
-    *,
-    cloud_measure_positions: int | None = None,
-    cloud_verify_positions: int | None = None,
-) -> int:
-    """Relay blob indexes one journey needs — the SINGLE producer of that fact.
-
-    Both consumers read it — :func:`assert_cloud_plan_fits_relay_capacity` with
-    the WORST-CASE counts ("any shape this flow can be configured into") and
-    ``jasper-doctor``'s ``check_capture_relay`` with the shipped defaults ("what
-    THIS Pi will actually run"). The two questions differ; the arithmetic must
-    not, so they pass arguments here rather than each adding their own terms.
-
-    R16's walk counts UNCONDITIONALLY, and that is the honest worst case rather
-    than a leftover: no stage-1 plan arms it, but an operator's staged angle
-    walk builds one on any session and its poses ride the same blob-index space.
-    A term guarded on a stage-1 flag would have said 0 for exactly the shape
-    that still runs six of them.
-
-    #2291's entry baseline is one more stage-1 entry and counts here —
-    flag-guarded in one place so the guard and the doctor cannot disagree about
-    it. Before one producer the two added their stage-1 terms separately, and a
-    build that changed one would under-report and pass a Pi whose Worker ceiling
-    sat just under the real count: green in the diagnostic, refused mid-session.
-    """
-    return (
-        cloud_plan_max_attempts(
-            cloud_measure_positions=cloud_measure_positions,
-            cloud_verify_positions=cloud_verify_positions,
-        )
-        + len(LATERAL_POSE_PROMPTS)
-        + (1 if STAGE1_INCLUDES_ENTRY_BASELINE else 0)
-    )
-
-
-def assert_cloud_plan_fits_relay_capacity() -> None:
-    """Raise unless the WORST-CASE cloud plan fits the relay's index space.
-
-    The relay stores one blob per admitted attempt at ``capture_index =
-    attempt - 1``, so ``capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS`` bounds
-    entries PLUS retakes for a whole session. That ceiling was sized (PR-3a)
-    from the choreography constants above; this function is the executable
-    statement of the dependency, so raising ``MAX_CLOUD_MEASURE_POSITIONS`` or
-    ``DEFAULT_CLOUD_VERIFY_POSITIONS`` past what the relay can carry fails
-    here — loudly, in a hardware-free test — instead of stranding an operator
-    mid-cloud when a blob index is refused.
-    """
-    from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
-
-    # R16's walk and #2291's entry baseline are entries too — the walk
-    # unconditionally, for the reason the shared producer above gives. Both
-    # counted through that one producer's rules, so this and jasper-doctor can
-    # never disagree about the number.
-    entries = (
-        cloud_capture_target(
-            cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
-            cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
-        )
-        + len(LATERAL_POSE_PROMPTS)
-        + (1 if STAGE1_INCLUDES_ENTRY_BASELINE else 0)
-    )
-    if entries + GEOMETRY_RETRY_POSITIONS > MAX_CAPTURE_PLAN_ATTEMPTS:
-        raise CrossoverV2FlowError(
-            f"worst-case cloud plan needs {entries + GEOMETRY_RETRY_POSITIONS} "
-            f"relay blob indexes but the relay ceiling is "
-            f"{MAX_CAPTURE_PLAN_ATTEMPTS}"
-        )
-    attempts = relay_plan_attempts_required(
-        cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
-        cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
-    )
-    if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
-        raise CrossoverV2FlowError(
-            f"worst-case cloud plan's attempt budget {attempts} exceeds the "
-            f"relay ceiling {MAX_CAPTURE_PLAN_ATTEMPTS}"
-        )
-
-
 def stage1_plan_max_attempts(
     capture_target: int, *, include_cloud_measure: bool,
 ) -> int:
@@ -1726,10 +1636,10 @@ def cloud_plan_max_attempts(
     """This flow's retry budget for a cloud plan (a POLICY number).
 
     Entries + the bounded geometry retakes + ``CLOUD_RETAKE_ALLOWANCE``. Kept
-    separate from ``capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS`` (the relay's
-    TRANSPORT ceiling) for the reason ``CAPTURE_PLAN_MAX_ATTEMPTS`` states:
-    conflating the two is how a transport change silently becomes a product
-    change. 23 at the full tier's shipped defaults, 14 for express.
+    separate from ``capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS`` (a SANITY
+    ceiling) for the reason ``CAPTURE_PLAN_MAX_ATTEMPTS`` states: conflating
+    the two is how a sanity-ceiling change silently becomes a product change.
+    23 at the full tier's shipped defaults, 14 for express.
     """
     return _shape_from_kwargs(
         plan_shape,
@@ -1820,9 +1730,8 @@ def build_v2_cloud_index_phase_map(
 ) -> dict[int, str]:
     """Capture-plan index → session phase for a STAGE-1 (measure) session.
 
-    The relay drives 1-based indexes where ``index == accepted_count + 1``
-    (``capture_relay.session._poll_capture_plan``), so this map is also the
-    running order::
+    The wired driver walks 1-based indexes where ``index == accepted_count +
+    1``, so this map is also the running order::
 
         1                    CHECK
         2                    MEASURE            (design-axis anchor)
@@ -2750,8 +2659,8 @@ def wall_clock_ceiling_s(capture_target: int) -> float:
 def session_wall_clock_ceiling_s(capture_plan: Any) -> float:
     """The walked-away volume ceiling for one plan, scaled by its length.
 
-    ``session_volume_plan.DEFAULT_WALL_CLOCK_CEILING_S`` (1800 s ≈ 2× the relay
-    TTL) was sized for the 3-entry flow. A 15-capture commission is a genuinely
+    ``session_volume_plan.DEFAULT_WALL_CLOCK_CEILING_S`` (1800 s) was sized
+    for the 3-entry flow. A 15-capture commission is a genuinely
     longer session — the operator walks the mic to a new spot, reads a prompt,
     and taps, once per position — so a fixed 1800 s would force-drain the
     measurement volume mid-cloud and turn a good session into a
@@ -2779,12 +2688,7 @@ def session_wall_clock_ceiling_s(capture_plan: Any) -> float:
     cannot reach them. (An earlier revision of this docstring attributed
     ``build_v2_capture_plan()``'s BARE-DEFAULTS scenario — 10 entries, 2640 s —
     to the shipped Full tier's stage 1, which is a different and smaller plan.
-    Two valid scenarios; only one of them is what ships.) **A HAND-WALKED stage
-    rides ``capture_relay.session.DEFAULT_TTL_S``, and neither the split nor
-    this ceiling makes it fit inside that link — this docstring must not be read
-    as claiming it does.** A REMOTE stage does fit, because
-    ``jasper.web.correction_crossover_v2_relay.relay_link_ttl_s`` mints its link from
-    this ceiling rather than from the default (issue #2509). At the 19-entry
+    Two valid scenarios; only one of them is what ships.) At the 19-entry
     maximum the unclamped value would be 3720 s and the plan's hard cap binds at
     3600 s.
     """

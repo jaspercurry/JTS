@@ -404,7 +404,6 @@ _min_positions_for_two_wide_offsets = _plan._min_positions_for_two_wide_offsets
 _pose = _plan._pose
 _program_duration_ms = _plan._program_duration_ms
 announced_capture_indexes = _plan.announced_capture_indexes
-assert_cloud_plan_fits_relay_capacity = _plan.assert_cloud_plan_fits_relay_capacity
 build_v2_capture_plan = _plan.build_v2_capture_plan
 build_v2_cloud_index_phase_map = _plan.build_v2_cloud_index_phase_map
 build_v2_session_spec = _plan.build_v2_session_spec
@@ -424,7 +423,6 @@ normalize_tier = _plan.normalize_tier
 position_angle_deg = _plan.position_angle_deg
 position_elevation_deg = _plan.position_elevation_deg
 position_geometry = _plan.position_geometry
-relay_plan_attempts_required = _plan.relay_plan_attempts_required
 remote_cloud_measure_positions = _plan.remote_cloud_measure_positions
 remote_cloud_verify_positions = _plan.remote_cloud_verify_positions
 remote_position_prompt = _plan.remote_position_prompt
@@ -752,13 +750,13 @@ VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
 # gives the same answer TWICE. Different questions, different baselines.
 VERIFY_REPEAT_FLOOR_DB = 0.2
 
-#: ``terminal_outcome`` for the verdict above — the relay contract's slot for
-#: WHY the host ended the set at consume time. Its siblings are the admission
+#: ``terminal_outcome`` for the verdict above — the runner's slot for WHY the
+#: host ended the set at consume time. Its siblings are the admission
 #: ladder's settle kinds ("this position ran out of tries"); this one says the
 #: opposite kind of thing, which is why it is named rather than borrowed: the
 #: captures were fine and they agreed, and it is the agreement that ends the
-#: set. Read by the journal (``capture_relay.plan_terminal_result``); the phone
-#: carries it without branching on it.
+#: set. Carried through to the persisted ``capture_result`` without the host
+#: branching on it.
 VERIFY_TERMINAL_OUTCOME_DETERMINISTIC = "verify_result_is_deterministic"
 
 # Re-exported from :mod:`jasper.active_speaker.crossover_v2.programs`, which
@@ -1492,7 +1490,8 @@ class CrossoverV2Session:
     Construct with the session identity, the declared drivers, the crossover Fc,
     the safety caps + session volume, and the injected :class:`V2FlowSeams`.
     Hand :meth:`authorize_begin`, :meth:`on_armed`, and :meth:`consume_capture`
-    to :func:`jasper.capture_relay.session.run_capture_plan`; call
+    to :func:`~jasper.web.correction_crossover_v2_wired.build_v2_wired_run_and_consume`;
+    call
     :meth:`note_apply_complete` once an apply lands (the deferred VERIFY then
     arms) — an optional synchronous shortcut for a caller that already holds
     this session; the seam-based ``apply_complete``/``apply_failed`` checks
@@ -7326,16 +7325,11 @@ class CrossoverV2Session:
             mismatch_payload: dict[str, Any] = {"tracking": dict(tracking)}
             if code == REASON_VERIFY_DETERMINISTIC_MISMATCH:
                 # The runner's own contract for "no later capture can make this
-                # set usable" (``capture_relay.session.run_capture_plan``): it
-                # publishes this exact ``capture_result`` and returns, instead
-                # of waiting for a next begin whose only answer is a refusal.
-                # That is what stops the retry loop riding the relay session
-                # into TTL expiry — the session closes on the verdict rather
-                # than on the clock. The phone has rendered a terminal
-                # ``capture_result`` since build 20260803.4 (#2097), so this
-                # needs no page change: it drops the live "Try again" and shows
-                # the host's own ``reason`` with a route back to the speaker
-                # page, where Undo and Re-measure live.
+                # set usable": a terminal verdict ends the walk immediately
+                # instead of waiting for a next begin whose only answer would
+                # be a refusal. The household sees the host's own ``reason``
+                # with a route back to the speaker page, where Undo and
+                # Re-measure live.
                 mismatch_payload["terminal"] = True
                 mismatch_payload["terminal_outcome"] = (
                     VERIFY_TERMINAL_OUTCOME_DETERMINISTIC
