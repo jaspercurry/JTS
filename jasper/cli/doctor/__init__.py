@@ -113,6 +113,28 @@ from . import audio_runtime_fanin as audio_runtime_fanin
 from . import audio_runtime_outputd as audio_runtime_outputd
 from . import audio_runtime_ring as audio_runtime_ring
 from . import boot_config as boot_config
+from .audio_runtime_fanin import (
+    check_fanin_binary_installed,
+    _asound_non_comment_text,
+    _asound_pcm_block,
+    _FANIN_EXPECTED_ALOOP_INPUTS,
+    check_fanin_asound_wiring,
+    check_fanin_coupling,
+    check_fanin_service,
+    check_fanin_tts_drops,
+    check_fanin_ring_stall,
+)
+from .audio_runtime_outputd import (
+    _OUTPUTD_EXPECTED_DAC_PCM,
+    _OUTPUTD_EXPECTED_DUAL_DAC_PCM,
+    _OUTPUTD_STATUS_SOCKET,
+    check_outputd_service,
+    check_aec_clock_drift,
+)
+from .audio_runtime import (
+    check_audio_runtime_plan,
+    check_camilla_service,
+)
 from .audio import (
     check_alsa_card,
     _HW_SHORTHAND_RE,
@@ -130,22 +152,6 @@ from .audio import (
     check_dac_usb_sync_mode,
     check_apple_dongle_audio,
     check_dongle_headphone_at_max,
-    check_fanin_binary_installed,
-    _asound_non_comment_text,
-    _asound_pcm_block,
-    _FANIN_EXPECTED_ALOOP_INPUTS,
-    _OUTPUTD_EXPECTED_DAC_PCM,
-    _OUTPUTD_EXPECTED_DUAL_DAC_PCM,
-    _OUTPUTD_STATUS_SOCKET,
-    check_audio_runtime_plan,
-    check_camilla_service,
-    check_fanin_asound_wiring,
-    check_fanin_coupling,
-    check_fanin_service,
-    check_fanin_tts_drops,
-    check_fanin_ring_stall,
-    check_outputd_service,
-    check_aec_clock_drift,
     _devices_volume_limit_from_text,
     check_camilla_volume_limit,
     check_camilla_ring_chunk_fits,

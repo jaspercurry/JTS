@@ -455,7 +455,7 @@ def test_the_narrow_wire_remedy_names_the_WHOLE_three_step_ladder(monkeypatch):
     missing.
 
     The SPELLING is pinned too, in the `sudo /opt/jasper/.venv/bin/…` form the
-    doctor's own rollback ladder uses (`jasper/cli/doctor/audio_runtime.py`).
+    doctor's own rollback ladder uses (`jasper/cli/doctor/audio_runtime_ring.py`).
     Both strings are operator-copied text for the same three rungs, and only
     that spelling pastes into a shell and works — a bare `jasper-active-speaker`
     is not on an operator's PATH.

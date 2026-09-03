@@ -3315,13 +3315,13 @@ def test_warns_when_the_conf_is_absent(monkeypatch, tmp_path):
 
 
 def test_check_is_registered_in_the_audio_doctor_group():
-    from jasper.cli.doctor import audio as audio_group
+    from jasper.cli.doctor import _registry
 
-    assert (
-        audio_group.check_ring_conf_floor_render
-        is audio_runtime_ring.check_ring_conf_floor_render
+    entry = next(
+        c for c in _registry.registered_checks()
+        if c.func is audio_runtime_ring.check_ring_conf_floor_render
     )
-    assert "check_ring_conf_floor_render" in audio_group.__all__
+    assert entry.group == "audio"
 
 
 # --- #2294: a floor-blocked box must SAY it cannot ring -----------------------

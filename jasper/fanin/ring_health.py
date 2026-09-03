@@ -1219,7 +1219,7 @@ def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
     next arm refuses again, this time from ``ring_edge_width_ready``, naming the
     graph. So the remedy is the whole ladder, graph first — and in the
     ``sudo /opt/jasper/.venv/bin/…`` spelling the doctor's own rollback ladder
-    uses (``jasper/cli/doctor/audio_runtime.py``), because these two strings are
+    uses (``jasper/cli/doctor/audio_runtime_ring.py``), because these two strings are
     operator-copied text for the same three rungs and only that spelling pastes
     into a shell and works.
 
