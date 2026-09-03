@@ -366,6 +366,7 @@ validate_streambox_systemd_units() {
             "${SYSTEMD_DIR}/bt-agent.service"
             "${SYSTEMD_DIR}/jasper-mux.service"
             "${SYSTEMD_DIR}/jasper-usbgadget.service"
+            "${SYSTEMD_DIR}/jasper-usbmic.service"
             "${SYSTEMD_DIR}/jasper-usbsink.service"
             "${SYSTEMD_DIR}/jasper-usbsink-volume.service"
             "${SYSTEMD_DIR}/jasper-usbnet-dhcp.service"
