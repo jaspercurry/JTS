@@ -703,7 +703,8 @@ def test_voice_daemon_import_does_not_require_declared_leaf_dependencies() -> No
         ),
         pytest.param("jasper.cli.usb_mic", ("dbus_next",), id="jasper-usbmic"),
         pytest.param(
-            "jasper.cli.aec_bridge", ("dbus_next",), id="jasper-aec-bridge",
+            "jasper.cli.aec_bridge", ("dbus_next", "scipy"),
+            id="jasper-aec-bridge",
         ),
         pytest.param(
             "jasper.voice_daemon",
@@ -728,8 +729,11 @@ def test_resident_daemon_import_leaves_oneshot_subsystems_out(
     jasper-control reaches their persisted state through stdlib-only record
     modules instead. jasper-voice touches ``jasper.active_speaker`` only for
     the ``volume_latch`` leaf, which its package ``__getattr__`` keeps
-    separable from the commissioning submodules. The smallest supported box
-    is a 415 MB Pi Zero 2 W (issue #3697).
+    separable from the commissioning submodules. ``scipy`` is the same
+    bargain at a much larger price (``jasper.dsp_numpy`` owns that figure):
+    the AEC bridge's steady-state resampling and high-pass are
+    ``jasper.dsp_numpy``. The smallest supported box is a 415 MB Pi Zero 2 W
+    (issue #3697).
     """
     probe = (
         "import sys\n"
