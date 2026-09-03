@@ -500,6 +500,7 @@ def _probe_xvf_mic() -> MicProbe:
             variant_id=runtime_profile.variant_id,
             geometry=runtime_profile.geometry,
             chip_beam_plan=runtime_profile.chip_beam_plan_id,
+            chip_aec_supported=runtime_profile.chip_aec_supported,
         )
     except Exception as e:  # noqa: BLE001 - readiness must fail soft
         return MicProbe(
@@ -521,6 +522,7 @@ def _mic_details(mic: MicProbe) -> dict[str, JsonValue]:
         "variant_id": mic.variant_id,
         "geometry": mic.geometry,
         "chip_beam_plan": mic.chip_beam_plan,
+        "chip_aec_supported": mic.chip_aec_supported,
         "probe_error": mic.probe_error,
     }
 
@@ -1592,7 +1594,7 @@ def build_chip_aec_readiness_artifact(
 
     intent = _intent_from_env(mode_env)
     runtime = runtime_env_from_mapping(system_env, process_env=os.environ)
-    chip_available = bool(mic_probe.xvf_present and mic_probe.chip_beam_plan)
+    chip_available = mic_probe.chip_aec_supported
     dac = _dac_details(system_env, outputd_status)
     chip_gate = resolve_chip_aec_dac_gate(dac.get("id"), outputd_status=outputd_status)
     profile_status = build_audio_profile_status(

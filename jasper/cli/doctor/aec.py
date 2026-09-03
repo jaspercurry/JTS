@@ -343,6 +343,7 @@ def _audio_profile_status_for_doctor(
                 variant_id=runtime_profile.variant_id,
                 geometry=runtime_profile.geometry,
                 chip_beam_plan=runtime_profile.chip_beam_plan_id,
+                chip_aec_supported=runtime_profile.chip_aec_supported,
             )
         except Exception:  # noqa: BLE001
             mic_probe = MicProbe(
@@ -351,11 +352,7 @@ def _audio_profile_status_for_doctor(
                 probe_error="firmware probe failed",
             )
 
-    chip_available = (
-        bool(mic_probe.xvf_present and mic_probe.chip_beam_plan)
-        if mic_probe is not None
-        else _chip_aec_available_for_doctor()
-    )
+    chip_available = mic_probe.chip_aec_supported
     profile_selection = _aec_profile_setting()
     testing_requested = (
         normalize_audio_input_profile(profile_selection, default="")

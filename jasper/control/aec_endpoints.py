@@ -490,6 +490,7 @@ def _xvf_mic_probe() -> MicProbe:
             variant_id=runtime_profile.variant_id,
             geometry=runtime_profile.geometry,
             chip_beam_plan=runtime_profile.chip_beam_plan_id,
+            chip_aec_supported=runtime_profile.chip_aec_supported,
             probe_error=None,
         )
     except Exception:  # noqa: BLE001
@@ -504,18 +505,6 @@ def _xvf_mic_probe() -> MicProbe:
             chip_beam_plan="",
             probe_error="firmware probe failed",
         )
-
-
-def _chip_aec_available(mic_probe: MicProbe) -> bool:
-    """True when one mic snapshot names a production-validated beam plan."""
-    if not mic_probe.xvf_present or not mic_probe.chip_beam_plan:
-        return False
-    try:
-        from ..mics import xvf3800
-        plan = xvf3800.chip_beam_plan(mic_probe.chip_beam_plan)
-        return bool(plan and plan.production_validated)
-    except Exception:  # noqa: BLE001
-        return False
 
 
 def _chip_aec_gate(
@@ -617,7 +606,7 @@ def _build_aec_full_status() -> dict:
     # Wrap defensively so a profile probe failure can never 500 a status
     # GET the /wake/ page polls every 3 s.
     mic_probe = _xvf_mic_probe()
-    chip_available = _chip_aec_available(mic_probe)
+    chip_available = mic_probe.chip_aec_supported
     chip_gate = _chip_aec_gate(env, state, mic_available=chip_available)
     requested_intent = AecIntent(
         mode=state["mode"],
