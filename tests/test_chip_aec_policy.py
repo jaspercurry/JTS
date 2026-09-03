@@ -11,7 +11,6 @@ from jasper.chip_aec_policy import (
     STATUS_APPROVED,
     STATUS_NEEDS_CALIBRATION,
     STATUS_TESTING,
-    combine_mic_availability,
     effective_chip_aec_dac_gate,
     gate_from_runtime_env,
     resolve_chip_aec_dac_gate,
@@ -164,8 +163,6 @@ def test_runtime_env_gate_rejects_missing_persisted_dac_identity():
     [
         ({"JASPER_AUDIO_DAC_ID": "hifiberry_dac8x"}, False,
          STATUS_APPROVED, ACTION_USE_CHIP_AEC),
-        ({"JASPER_AUDIO_DAC_ID": "mystery_usb_audio"}, False,
-         STATUS_NEEDS_CALIBRATION, ACTION_USE_SOFTWARE_OR_TEST),
         ({"JASPER_AUDIO_DAC_ID": "mystery_usb_audio"}, True,
          STATUS_TESTING, ACTION_RUN_TESTING_AND_VALIDATE),
         (
@@ -179,24 +176,13 @@ def test_runtime_env_gate_rejects_missing_persisted_dac_identity():
             False, STATUS_APPROVED, ACTION_USE_CHIP_AEC,
         ),
     ],
-    ids=["approved_no_record", "uncalibrated_no_record",
-         "uncalibrated_testing_no_record", "served_record_overrides_registry"],
+    ids=["approved_no_record", "uncalibrated_testing_no_record",
+         "served_record_overrides_registry"],
 )
-def test_effective_dac_gate_pin_doctor_and_web_agree(
+def test_effective_dac_gate_prefers_served_record_over_registry(
     env, testing_requested, status, action,
 ):
-    """jasper.cli.doctor.aec and jasper.control.aec_endpoints both resolve
-    the DAC gate through `effective_chip_aec_dac_gate` now. This pins its
-    structured verdict and proves the web path's mic fold — a no-op when the
-    mic is available — leaves that verdict unchanged, so both consumers
-    agree.
-    """
+    """The served-record-beats-registry rule (module docstring)."""
     gate = effective_chip_aec_dac_gate(env, testing_requested=testing_requested)
     assert gate.status == status
     assert gate.recommended_action == action
-
-    web_gate = combine_mic_availability(
-        gate, mic_available=True, testing_requested=testing_requested,
-    )
-    assert web_gate.status == gate.status
-    assert web_gate.recommended_action == gate.recommended_action

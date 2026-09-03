@@ -412,15 +412,10 @@ def combine_mic_availability(
 
 
 def effective_chip_aec_dac_gate(
-    env: Mapping[str, str], *, testing_requested: bool = False,
+    env: Mapping[str, str], *, testing_requested: bool,
 ) -> ChipAecGate:
-    """The DAC gate actually in effect for this box right now.
-
-    A record the reconciler already served (``gate_from_runtime_env``) wins
-    over a fresh registry lookup in both directions — see the module
-    docstring's "served record" paragraph — so this is the one call every
-    DAC-gate consumer should make instead of open-coding the fallback.
-    """
+    """A served record wins over a fresh lookup — see the module docstring's
+    "served record" paragraph."""
 
     return gate_from_runtime_env(env) or resolve_chip_aec_dac_gate(
         published_dac_id(env), testing_requested=testing_requested,
