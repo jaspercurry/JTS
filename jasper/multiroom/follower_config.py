@@ -146,7 +146,7 @@ async def precheck_active_follower(
     :func:`apply_prebuilt_follower_config` does the actual CamillaDSP swap once
     snapclient is feeding the grouping ring.
     """
-    from jasper.active_speaker import ActiveSpeakerConfigError
+    from jasper.active_speaker.profile import ActiveSpeakerConfigError
     from jasper.active_speaker.baseline_profile import (
         build_baseline_profile_candidate,
     )

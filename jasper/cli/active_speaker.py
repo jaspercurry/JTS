@@ -14,7 +14,10 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from jasper.active_speaker import ActiveSpeakerConfigError, ActiveSpeakerPreset
+from jasper.active_speaker.profile import (
+    ActiveSpeakerConfigError,
+    ActiveSpeakerPreset,
+)
 from jasper.active_speaker.baseline_profile import baseline_profile_state_path
 from jasper.active_speaker.camilla_yaml import emit_active_speaker_startup_config
 from jasper.active_speaker.environment import read_camilla_statefile_config_path

@@ -153,16 +153,16 @@ async def precheck_active_leader(
     reconciler's ``systemctl enable --now`` of the crossover unit) run only after
     snapserver + snapclient are up.
     """
-    from jasper.active_speaker import (
-        ActiveSpeakerConfigError,
-        emit_active_speaker_program_bake_config,
-    )
     from jasper.active_speaker.baseline_profile import (
         build_baseline_profile_candidate,
+    )
+    from jasper.active_speaker.camilla_yaml import (
+        emit_active_speaker_program_bake_config,
     )
     from jasper.active_speaker.crossover_preview import load_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement import load_measurement_state
+    from jasper.active_speaker.profile import ActiveSpeakerConfigError
     from jasper.active_speaker.runtime_contract import (
         GRAPH_DRIVER_DOMAIN_BASELINE,
         classify_camilla_graph,

@@ -95,8 +95,8 @@ from jasper.active_speaker.seat_level_reference import (
     SeatLevelTargetError,
     StimulusProvenance,
 )
-from jasper.active_speaker import ActiveSpeakerConfigError
 from jasper.active_speaker.commission_wiring import CommissionPresetResolutionError
+from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.active_speaker.session_volume_plan import (
     SessionVolumePlanError,
     unsegmented_stimulus_ceiling_db,
