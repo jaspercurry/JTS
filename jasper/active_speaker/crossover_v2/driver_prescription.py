@@ -4,156 +4,46 @@
 
 """ONE driver's full-band shape correction, prescribed from outside.
 
-The fourth member of the family, and the first that leaves the crossover
-window:
+The per-driver intake for the prescriber loop, whose only other door reaches
+the SUMMED blend region. It rides the blend gate's lifecycle — same posture,
+same shared exception type, same packet-fingerprint anchoring, same one-owner
+response format, same fail-closed never-clamped rule, same spool. What differs
+is what a proposal may say and what it is measured against.
 
-===========================  =============================  ==================
-quantity                     computed here                   prescribed here
-===========================  =============================  ==================
-inter-driver delay           ``program_analysis``'s aligner  ``.alignment_prescription``
-blend-region shape           :mod:`.blend_correction`        :mod:`.blend_prescription`
-ONE DRIVER's own shape       ``linearization_fit``           **this module**
-===========================  =============================  ==================
+Three rules govern this door.
 
-**Why it exists.**  The owner's directive is that the *entire driver* be
-linearized rather than only the band around the handoff.  The deterministic
-half of that already ships — ``linearization_fit`` fits each driver over its
-own passband and the filters land in that driver's own branch — but the
-prescriber loop could only reach the SUMMED blend region.  So a reader holding
-the round's evidence could see a driver defect at 5 kHz and had no vocabulary
-to say so: the blend gate refuses it :data:`~.blend_prescription.FILTER_OUTSIDE_REGION`
-at any Q, and the per-driver seam had no intake.  This module is that intake,
-and it is the shipped instrument for two of stage P3's rules
-(``docs/active-speaker-tuning-layers-design.md``):
+* The route is fixed: a prescription of this class lands in
+  :data:`LINEARIZATION_CANDIDATE_FIELD` and nowhere else
+  (``docs/active-speaker-tuning-layers-design.md`` stage P3 rule 3).
+* MERGE BY ROLE: a document's named roles replace those roles, unnamed roles
+  are untouched. The field has two producers — the Layer-1a fit writes every
+  eligible role — so this is a real question the blend class never had.
+* Every admission bar is SHAPE. The classification vouch is DISCLOSED, never
+  refused (#2863): a vouch is a prediction about whether a filter will help,
+  and the measurement decides. A hard bound here is for hearing or hardware
+  and nothing else, which is why the cut ceilings and the min-Q floor are gone
+  (ADR-0207) — a cut cannot clip, and the round's own measured verify with
+  auto-restore is the net.
 
-* **rule 1, classify-first** — "only minimum-phase, speaker-own defects are
-  eligible."  DISCLOSED here, against banked verdicts, by
-  :func:`_check_classification` reading :mod:`.feature_classification`: every
-  filter no verdict vouches for is counted onto the receipt and onto the
-  propose/stage report, and none of them is refused.  Owner ruling, 2026-08-23
-  — the vouch is a prediction about whether a filter will help, and a
-  prediction recommends while the measurement decides.
-* **rule 3, per-driver placement** — "a per-driver defect gets a per-driver
-  filter in that branch — Layer 1a's existing per-role stage — and the shared
-  stage is reserved for genuinely system-level shaping."  Enforced here as the
-  route: a prescription of this class lands in
-  :data:`LINEARIZATION_CANDIDATE_FIELD` and can land nowhere else.
+A boost's whole cost is MAXIMUM SPL: it is charged by
+``camilla_yaml.linearization_headroom_db`` and absorbed by
+``active_baseline_headroom``, which attenuates the program before the split, so
+a boosted graph delivers no more absolute level than an unboosted one.
+:data:`DRIVER_MAX_COMPOSED_BOOST_DB` on the evaluated per-role cascade is what
+sizes the class, bounding that spend at :data:`MAX_SPL_SPEND_BOUND_DB` = 13.0
+dB. The emitter's 12 dB rail, the per-driver soft-clip limiters and the runtime
+contract's re-proof are unchanged and are not this class's to weaken.
 
-**It rides the blend gate's lifecycle rather than forking it.**  Same posture
-("the model proposes; the harness disposes"), same shared exception type
-(:class:`~.blend_prescription.BlendPrescriptionRefused`), same packet
-fingerprint anchoring, same one-owner response format, same fail-closed
-never-clamped rule, same spool.  What is different is what a proposal may say
-and what it is measured against, and that is the whole of what lives here.
+Every bound with a source is RESTATED here rather than imported, on
+``camilla_yaml``'s lockstep rule: this gate independently re-validates a
+document the fit engine did not write, so inheriting the engine's policy
+constant would let a change there move what an outside reader may propose.
+``tests/test_crossover_v2_driver_prescription.py`` pins each pair numerically.
 
-**A document's named roles replace those roles; unnamed roles are untouched.**
-The field this class lands in is role-keyed and has two producers — the
-Layer-1a fit writes every eligible role, a document names the subset its author
-had something to say about — so "replace or compose?" is a real question the
-blend class never had to answer. The ruling is MERGE BY ROLE, and
-:func:`driver_prescription_to_candidate_fields` both implements it and records
-the two options it beat.
-
-**Both signs, and a boost's whole cost is maximum SPL.**  Owner ruling,
-2026-08-19.  A cut removes level and can never clip, at any width or depth.  A
-boost is charged by ``camilla_yaml.linearization_headroom_db`` and absorbed by
-``active_baseline_headroom``, which attenuates the program BEFORE the split by
-what the worst branch's evaluated chain puts above unity — so a boosted graph
-delivers no more absolute level at any frequency than an unboosted one at full
-scale, and what the household actually spends is maximum SPL.  This gate
-bounds that spend; the emitter's 12 dB rail, the per-driver soft-clip limiters
-and the runtime contract's re-proof are unchanged and are not this class's to
-weaken.
-
-The admission bars are therefore the only new safety logic, and since the
-2026-08-23 ruling every one of them is SHAPE.  A per-filter magnitude ceiling,
-a BOOST's Q envelope, the declared band, the emitter's own filter vocabulary,
-and :data:`DRIVER_MAX_COMPOSED_BOOST_DB` on the evaluated per-role cascade.
-That last one is what sizes the class: it bounds the spend one document can
-command at :data:`MAX_SPL_SPEND_BOUND_DB` = 13.0 dB.  What a boost owes over a
-cut is no longer a bar but a NUMBER — that spend — which
-:func:`_check_composed` measures at the boundary and the emitter re-proves.
-The EVIDENCE that used to bar a filter is now
-:func:`_check_classification`'s disclosure, counted onto the receipt so a
-reader weighs it instead of the gate deciding for them.
-
-**Where every bound comes from, and why not one of them is new.**  Restoring
-rather than inventing is the #2730 precedent, and it is stronger here because
-this seam's neighbour is a fit engine that has been emitting into the very
-same branch for months:
-
-===============================  ==================================  =========
-bound                            restored from                       value
-===============================  ==================================  =========
-:data:`DRIVER_MAX_BOOST_Q`       ``linearization_fit._PEAKING_Q_MAX``  8.0
-:data:`DRIVER_MAX_FILTERS_PER_ROLE` ``linearization_fit.MAX_FILTERS_PER_DRIVER``  8
-:data:`DRIVER_MAX_FILTER_BOOST_DB` ``linearization_fit.PER_FILTER_BOOST_CAP_DB``  12.0
-:data:`DRIVER_MAX_COMPOSED_BOOST_DB` owner policy, ruling R8                   12.0
-===============================  ==================================  =========
-
-The bounds that used to sit beside those are no longer BOUNDS, and so are not
-in the table.  :data:`DRIVER_MIN_CUT_DB` / :data:`DRIVER_MIN_BOOST_DB` (0.5)
-and :data:`RATIONALE_MAX_CHARS` (1,200) refused until 2026-08-29 and DISCLOSE
-now; the per-filter and composed CUT ceilings (12.0 / 18.0) and the min-Q
-floor (0.5) refused until ADR-0207 (owner ruling 2026-08-31) and are simply
-gone — a cut cannot clip, no downstream check re-imposes a depth or width
-bound on one, and the round's own measured verify with auto-restore is the
-net.  A hard bound is for hearing or hardware and nothing else.  See
-:func:`_subaudible_filters` and :func:`_rationale`.
-
-The per-filter BOOST ceiling is restored from the fit engine.  **It was not
-always**: until 2026-08-22 both boost ceilings
-came from the sibling ``blend_prescription`` class (3.0 and 4.0) on the owner's
-2026-08-18 ruling that "a new permission should not open at the ceiling of an
-old one", whose stated reason was that the fit's 12 dB rests on a closed-loop
-delta probe and — as R8 quotes it — "a prescription has no such prediction".
-Ruling **R8** of
-``docs/tuning-master-plan.md`` overturns that on its own terms — under the
-tournament every candidate banks a pre-registered expected delta before the
-round measures it, which IS that closed-loop prediction — and the per-filter
-ceiling moved to the emitter's own rail so a prescription at the ceiling is
-emittable rather than accepted here and refused downstream.
-
-The composed ceiling is the one bound here with no neighbour to restore from:
-the fit engine has no composed cap (total boost is deliberately unbounded
-there), so R8 sets it as policy at the same 12.0.  Its consequence is that two
-boost filters both at the per-filter rail can never clear the composed cap, so
-the composed cap binds every multi-filter boost.
-
-Every bound with a source is RESTATED rather than imported, on ``camilla_yaml``'s
-own lockstep rule: this gate is an independent re-validation of a document the
-fit engine did not write, so inheriting the engine's policy constant would let a
-future change to the engine silently move what an outside reader is allowed to
-propose.  ``tests/test_crossover_v2_driver_prescription.py`` pins every such
-pair numerically, so the duplication is a pinned lockstep and not a drift — and
-it pins the composed ceiling, which has no pair, against its own literal.
-
-**The band is the DRIVER's, and that is the point of the class.**  Not the
-crossover region, not the radiating band — ``branch_chain.radiating_band_hz``
-is the bound on a LIFT (#1809), and a cut past the handoff "is ordinary useful
-work, because whatever leaks through still reaches the sum and removing it
-spends no headroom" (``linearization_fit``'s own #2523 note).  What bounds a
-cut is the driver's own declared band: its published response range, floored
-by whatever protective high-pass it declares and capped by whatever protective
-low-pass it declares.  See :func:`driver_passbands_from_safety_profile`.
-
-**And BOTH signs carry an evidence DISCLOSURE here, where the blend class
-carries a bar.**  In the blend region, "cuts are bounded and free; boosts pay
-an evidence bar" — a cut there is cheap because the region is small, the
-honesty mask has already removed the interference-flagged bins, and the
-correction is graded a few hundred Hz wide.  None of those three hold out here.
-A full-band per-driver cut reaches bins the merged mask never screened, at
-frequencies no positional bar was ever computed for, and the 2026-08-19 night
-measured what happens when a filter is aimed at the wrong KIND of feature: both
-prescribed rounds were rolled back on skirt damage.  That is the reason the
-classification is REPORTED on every filter, in the currency stage P3 rule 1
-names — classification, not position.  It stopped being a refusal on
-2026-08-23, when the owner ruled that a candidate inside the caps may be
-tested: a filter aimed at the wrong kind of feature costs a rolled-back round,
-which is what a round is FOR, and the 2026-08-22 evidence is that refusing on
-it cost more than it saved — a role whose incumbent carried a Lowshelf could
-not keep it, because nothing vouches for a filter the fit engine placed
-(#2863).
+The band a filter must sit in is the DRIVER's own declared band — not the
+crossover region and not the radiating band — because a cut past the handoff
+still reaches the sum and spends no headroom (#2523). See
+:func:`driver_passbands_from_safety_profile`.
 """
 
 from __future__ import annotations
@@ -165,42 +55,30 @@ from typing import Any, NoReturn
 
 import numpy as np
 
-# Leaf of the crossover_v2 DAG, exactly like the sibling it mirrors: the ONE
-# biquad evaluator, the verdict register, the family's shared refusal type and
-# blocklist, and the module that owns a driver's declared protection edges.
+# Leaf of the crossover_v2 DAG. Facts about the graph — the ONE biquad
+# evaluator, the emitter's filter vocabulary, the shelf steepness it actually
+# spells, the trim floor, the declared protection edges — are CONSUMED here,
+# the opposite of the lockstep rule the policy bounds below follow.
 from jasper.active_speaker.branch_chain import (
     CHAIN_GRID_HZ,
     HEADROOM_MARGIN_DB,
     _evaluation_grid,
     chain_response,
 )
-# The EMITTER's own filter vocabulary and its own shelf-placement classifier,
-# consumed rather than restated: "would the emitter accept this list" is the
-# question this gate's shape bar asks, and it has one owner. That is the
-# opposite of the lockstep rule the bounds below follow, and deliberately so —
-# a POLICY number restated here is an independent re-validation, while the set
-# of filters the graph can build is a fact about the graph.
 from jasper.active_speaker.camilla_yaml import (
     LINEARIZATION_BIQUAD_TYPES,
     linearization_slot,
 )
-# The one Butterworth steepness every emitted linearization shelf carries. The
-# emitter drops a shelf entry's own ``q`` and spells this instead, so a gate
-# that evaluated a prescriber's number would be reading a filter the speaker
-# will not play.
+# The emitter drops a shelf entry's own ``q`` and spells this instead, so a
+# gate evaluating a prescriber's number would read a filter that never plays.
 from jasper.camilla_config_contract import SHELF_Q
 from jasper.active_speaker.driver_protection import (
     declared_protection_highpass_floor_hz,
     declared_protection_lowpass_ceiling_hz,
 )
-# ...and the owner of the persisted linearization entry this module merges INTO
-# — imported for its one key name rather than restating the literal, because
-# three modules have to agree on it or a hearing-relevant ceiling goes quiet.
+# Three modules must agree on this key name or a hearing-relevant ceiling goes
+# quiet.
 from jasper.active_speaker.linearization_fit import MIC_TIER_FIELD
-# The floor a per-driver trim may not go below, consumed rather than restated:
-# `level_trim`'s own docstring exports it for exactly this — a document
-# validated against a second copy could be accepted at a depth the solver would
-# never produce, and `MeasuredCrossoverCandidate` re-proves the same bound.
 from jasper.active_speaker.level_trim import MAX_ATTENUATION_DB
 
 from jasper.sound.profile import (
@@ -224,10 +102,7 @@ from .feature_classification import (
     defect_cuttable_at,
 )
 
-#: The role-keyed bands a proposal is checked against, and the verdicts that
-#: vouch for it. Aliased because these two travel together everywhere in this
-#: module — a gate holding one without the other can answer only half of
-#: "may this filter be aimed here".
+#: The role-keyed bands a proposal is checked against.
 DriverPassbands = Mapping[str, tuple[float, float]]
 
 __all__ = [
@@ -262,75 +137,40 @@ __all__ = [
 # identity
 # --------------------------------------------------------------------------- #
 
-#: The document version a prescriber of THIS class answers.
-#:
-#: Its own number, starting at 1, rather than a bump of
-#: :data:`~.blend_prescription.PRESCRIPTION_SCHEMA_VERSION`. That constant's own
-#: rule is "bumped when the shape changes in a way an older prescriber's output
-#: would no longer satisfy", and nothing about the blend shape changed here: a
-#: document naming ``kind=jts_crossover_blend_prescription`` is parsed by the
-#: same reader, against the same bounds, to the same answer, byte for byte. A
-#: NEW kind is a new contract, not a new version of the old one — and versioning
-#: them together would force every future change to either class to invalidate
-#: the other's in-flight documents.
+#: This class's own version, not a bump of the blend class's: a NEW kind is a
+#: new contract, and versioning them together would make every change to either
+#: invalidate the other's in-flight documents.
 DRIVER_PRESCRIPTION_SCHEMA_VERSION = 1
 
-#: The ``kind`` discriminator. Distinct from the blend class's, and that
-#: distinctness is what makes the shared spool safe: an older reader handed a
-#: newer envelope reaches this string, does not recognise it, and refuses —
-#: rather than parsing a per-driver document as a blend one.
+#: The ``kind`` discriminator. Its distinctness from the blend class's is what
+#: makes the shared spool safe: an older reader reaches this string, does not
+#: recognise it, and refuses rather than parsing this as a blend document.
 DRIVER_PRESCRIPTION_KIND = "jts_crossover_driver_prescription"
 
-#: The byte ceiling on ONE per-driver document, applied once its class is known.
+#: The byte ceiling on ONE per-driver document, applied once its class is known
+#: — a CONTENT bound, unlike the family's
+#: :data:`~.blend_prescription.PRESCRIPTION_MAX_BYTES` (64 KiB), which must run
+#: before the document names its kind and so cannot belong to a class
+#: vocabulary.
 #:
-#: **Two caps, one payload, and they are not the same job.** The family's
-#: :data:`~.blend_prescription.PRESCRIPTION_MAX_BYTES` (64 KiB) stops a
-#: pathological input being *parsed at all*, and it must be applied before the
-#: document names its own kind — bytes too large to parse have no class yet, so
-#: that refusal cannot belong to a class vocabulary. This one is a CONTENT bound
-#: applied after the kind is read, and it is what makes
-#: :data:`DRIVER_PRESCRIPTION_TOO_LARGE` a refusal this class can actually
-#: raise rather than an advertised slug nothing reaches.
-#:
-#: 32 KiB, derived rather than picked, and the derivation is a MEASUREMENT
-#: rather than the arithmetic that first stood here. The largest legitimate
-#: document is one filter object per slot across every role a speaker plausibly
-#: has — 8 filters × 4 roles — plus a full provenance block and a
-#: 1,200-character rationale. Built and measured, pretty-printed at indent 2, it
-#: is **6,046 bytes**; a first estimate of "under 4 KiB" was wrong by half and
-#: the test that pins this caught it. 32 KiB is five times that, and half the
-#: family ceiling. The test derives the figure from the schema's own constants
-#: rather than trusting this comment, so a future ceiling that made documents
-#: larger fails here instead of silently eating the margin.
+#: 32 KiB is five times the largest legitimate document: 8 filters × 4 roles
+#: plus a full provenance block and a 1,200-character rationale measures
+#: 6,046 bytes pretty-printed at indent 2. The test re-derives that from the
+#: schema's own constants rather than trusting this comment.
 DRIVER_PRESCRIPTION_MAX_BYTES = 32 * 1024
 
-#: How much of the free-text rationale is BANKED, in characters. The blend
-#: gate's number, and the same reason for it: the text is stored and never
-#: parsed for behaviour, so this bounds what gets written down rather than what
-#: is trusted, and it is what
-#: :data:`DRIVER_PRESCRIPTION_MAX_BYTES`'s derivation budgets for.
-#:
-#: **It truncates and discloses; it stopped refusing on 2026-08-29.** A
-#: prescriber that wrote too much has said nothing unsafe — no branch here or
-#: downstream reads the text — so a refusal cost it the whole round to re-author
-#: prose no gate was going to consult, which is
-#: ``docs/measurement-loop-doctrine.md`` §5's nanny shape. What was dropped is
-#: counted onto :attr:`DriverPrescription.rationale_dropped_chars` so the
-#: receipt cannot silently claim the banked words are all of them. Truncating
-#: rather than raising this number keeps
-#: :data:`DRIVER_PRESCRIPTION_MAX_BYTES`'s measured 6,046-byte largest honest
-#: document — and the five-times margin over it — true unchanged.
+#: How much of the free-text rationale is BANKED, in characters. It TRUNCATES
+#: and discloses rather than refusing: no branch here or downstream reads the
+#: text, so a refusal would cost a round to re-author prose no gate consults.
+#: The loss is counted onto :attr:`DriverPrescription.rationale_dropped_chars`,
+#: which keeps :data:`DRIVER_PRESCRIPTION_MAX_BYTES`'s measured largest
+#: document true.
 RATIONALE_MAX_CHARS = 1_200
 
-#: The candidate field a per-driver prescription lands in.
-#:
-#: ``MeasuredCrossoverCandidate.linearization`` — the role-keyed field the
-#: Layer-1a fit already writes, reduced to the emitter's shape by
-#: ``linearization_fit.linearization_filters_by_role`` and re-validated by
-#: ``camilla_yaml._validated_linearization`` before any of it reaches
-#: CamillaDSP. This is stage P3 rule 3's "Layer 1a's existing per-role stage",
-#: named here so a caller folding a prescription onto a candidate does not
-#: spell the field itself.
+#: The candidate field a per-driver prescription lands in: the role-keyed
+#: ``MeasuredCrossoverCandidate.linearization`` the Layer-1a fit already
+#: writes, re-validated by ``camilla_yaml._validated_linearization`` before any
+#: of it reaches CamillaDSP.
 LINEARIZATION_CANDIDATE_FIELD = "linearization"
 
 
@@ -339,300 +179,136 @@ LINEARIZATION_CANDIDATE_FIELD = "linearization"
 # --------------------------------------------------------------------------- #
 
 #: Widest Q one prescribed per-driver BOOST may use — ``linearization_fit.
-#: _PEAKING_Q_MAX``, the fit engine's PEAKING ceiling, which is also the number
-#: #2730 restored for the blend cut class on the 2026-08-19 ruling.
-#:
-#: **The CUT arm carries no POLICY ceiling**, on that same ruling — width is
-#: free, "filters can be whatever works best to get flat", and #2730 already
-#: made exactly this argument for the sibling class: a cut only ever removes
-#: level, so a narrow one carries no headroom hazard however sharp it is.
-#: What bounds a cut's DEPTH is the eight slots
-#: :data:`DRIVER_MAX_FILTERS_PER_ROLE` allows (depth ceilings retired by
-#: ADR-0207). Its Q is a different story: ADR-0207 also bounds a cut's Q to
-#: :data:`~jasper.sound.profile.EVALUABLE_Q_MAX` — not policy but INSTRUMENT
-#: fidelity, because past that ceiling the f64 biquad cascade stops
-#: evaluating the filter that was actually asked for (measured +6.99 dB
-#: REALIZED from a requested Q 8e14, admitted -3.0 dB cut). The emitter's own
-#: ``camilla_yaml._validated_biquad_entry`` still asks only that a biquad's
-#: ``q`` be positive and finite, so this ceiling is accepted here rather than
-#: refused downstream — the same "gate rather than build-time crash" posture
-#: every Tier-3 bound in this door follows.
-#:
-#: A BOOST keeps the ceiling because a boost is the sign that spends the
-#: household's maximum SPL, and the caps that bound that spend
-#: (:data:`DRIVER_MAX_FILTER_BOOST_DB`, :data:`DRIVER_MAX_COMPOSED_BOOST_DB`)
-#: are read on a SAMPLED grid: ``branch_chain._evaluation_grid``'s own docstring
-#: states its between-bin error at Q 8, and no fixed resolution can bound an
-#: arbitrary Q. So this is the width at which the composed reading stays the
-#: upper bound :data:`MAX_SPL_SPEND_BOUND_DB`'s proof needs it to be.
-#:
-#: The split is spelled by :func:`driver_max_q_for_gain` and nowhere else,
-#: mirroring ``blend_prescription.max_q_for_gain`` — the same shape with this
-#: class's own arms, since neither number is shared (that class's boost arm is
-#: 2.0 and its cut arm is 8.0). The classifier's opinion about the feature under
-#: a filter rides the receipt as a disclosure
-#: (:func:`_check_classification`); since 2026-08-23 it refuses nothing.
+#: _PEAKING_Q_MAX``, the fit engine's PEAKING ceiling. A boost keeps a width
+#: ceiling because the caps that bound its maximum-SPL spend are read on a
+#: SAMPLED grid, and no fixed resolution bounds an arbitrary Q; this is the
+#: width at which the composed reading stays the upper bound
+#: :data:`MAX_SPL_SPEND_BOUND_DB`'s proof needs. A CUT carries no policy
+#: ceiling at all (ADR-0207) — only the instrument-fidelity one and the eight
+#: slots :data:`DRIVER_MAX_FILTERS_PER_ROLE` allows.
 DRIVER_MAX_BOOST_Q = 8.0
 
 def driver_max_q_for_gain(gain_db: float) -> float:
     """The widest Q one prescribed filter may use, by the SIGN of its gain.
 
-    The ONE place this class's split is decided, so the validator, the refusal
-    message it prints, and the response format a prescriber is handed cannot
-    disagree about which ceiling applies to which filter. Same shape as
-    ``blend_prescription.max_q_for_gain``, deliberately not a call to it: the
-    two classes' BOOST arms are different numbers (this one 8.0, blend's 2.0),
-    so sharing the function would share the wrong answer for that sign.
-
-    ``gain_db > 0`` is a boost and gets :data:`DRIVER_MAX_BOOST_Q` — a POLICY
-    ceiling, because a boost's composed SPL spend is read on a sampled grid
-    with no fixed resolution that bounds an arbitrarily narrow peak.
-
-    Everything else — including exactly ``0.0`` — gets
-    :data:`~jasper.sound.profile.EVALUABLE_Q_MAX`. Unlike the boost arm that
-    is NOT policy: a cut still spends no headroom and is free up to it, but
-    past it the f64 biquad cascade stops evaluating the filter that was
-    actually asked for — measured +6.99 dB REALIZED from a requested Q 8e14,
-    admitted -3.0 dB cut. It is INSTRUMENT fidelity, owned by
-    :mod:`jasper.sound.profile` and imported rather than restated, so both
-    classes share the identical cut-arm number because they share the one
-    evaluator.
-
-    That is the same predicate :func:`_check_bounds` derives
-    :attr:`DriverPrescription.prescription_class` from, so a filter can never be
-    a cut for the class receipt and a boost for its Q bound.
+    A boost gets :data:`DRIVER_MAX_BOOST_Q`, a POLICY ceiling; everything else
+    — ``0.0`` included — gets :data:`~jasper.sound.profile.EVALUABLE_Q_MAX`, an
+    INSTRUMENT-fidelity one (past it the f64 biquad cascade stops evaluating
+    the filter asked for: measured +6.99 dB realized from a requested Q 8e14 on
+    an admitted -3.0 dB cut). Same shape as ``blend_prescription.
+    max_q_for_gain`` and deliberately not a call to it — that class's boost arm
+    is 2.0. Same predicate :func:`_check_bounds` derives
+    :attr:`DriverPrescription.prescription_class` from, so a filter cannot be a
+    cut for the receipt and a boost for its Q bound.
     """
     return DRIVER_MAX_BOOST_Q if gain_db > 0.0 else EVALUABLE_Q_MAX
 
 
 #: The depth below which the FIT ENGINE calls a cut cosmetic —
-#: ``linearization_fit._MIN_FILTER_GAIN_DB``, whose comment is its argument:
-#: "below this magnitude a filter is cosmetic (inaudible, wastes a filter
-#: slot)".
-#:
-#: **A DISCLOSURE here, not a bound; it stopped refusing on 2026-08-29.** That
-#: comment is a heuristic about audibility, not a measurement of this speaker,
-#: and a filter under it spends no maximum SPL and cannot clip — so §4's closed
-#: list has no mechanism to name for it and §5's nanny test fails a refusal:
-#: staging a deliberate 0.3 dB probe to see whether the round can resolve it is
-#: exactly the reversible experiment that doctrine protects. What the refusal
-#: was really guarding is the SLOT, and :data:`DRIVER_MAX_FILTERS_PER_ROLE`
-#: guards that directly — a prescriber that spends all eight on inaudible
-#: filters has spent its own budget, which is its call to make. The count rides
-#: the receipt as :attr:`DriverPrescription.subaudible_filters`.
+#: ``linearization_fit._MIN_FILTER_GAIN_DB``: "inaudible, wastes a filter slot".
+#: A DISCLOSURE here, not a bound: a filter under it spends no maximum SPL and
+#: cannot clip, and what a refusal was really guarding is the SLOT, which
+#: :data:`DRIVER_MAX_FILTERS_PER_ROLE` guards directly. The count rides the
+#: receipt as :attr:`DriverPrescription.subaudible_filters`.
 DRIVER_MIN_CUT_DB = 0.5
 
 #: Highest ONE prescribed boost may go, dB — ``camilla_yaml.
 #: MAX_LINEARIZATION_BOOST_DB`` / ``linearization_fit.PER_FILTER_BOOST_CAP_DB``,
-#: the rail the fit engine emits up to, restated on this module's lockstep rule
-#: like every other bound here.
-#:
-#: **This overturns the owner's 2026-08-18 ruling** that stood on this constant
-#: until 2026-08-22 — "a new permission should not open at the ceiling of an old
-#: one", which opened this class at its sibling ``blend_prescription.
-#: PRESCRIPTION_MAX_FILTER_BOOST_DB`` (3.0) instead. That ruling's stated reason
-#: was that the fit's 12 dB rests on a closed-loop delta probe grading what the
-#: fit predicted against what the speaker did, and — as R8 quotes it — "a
-#: prescription has no such prediction". Ruling **R8** of
-#: ``docs/tuning-master-plan.md`` (owner-ratified
-#: 2026-08-21) overturns it ON ITS OWN TERMS: under the tournament every
-#: candidate carries a **pre-registered expected delta**, banked before the round
-#: measures it, which is exactly the closed-loop prediction whose absence was the
-#: reason for opening low. The gate is now at the rail the emitter re-validates
-#: against, so a prescription at this ceiling is emittable rather than accepted
-#: here and refused downstream.
-#:
-#: Equal to :data:`DRIVER_MAX_COMPOSED_BOOST_DB` by R8, which has a consequence
-#: worth naming: two boost filters BOTH at this rail can never clear the composed
-#: cap, since each alone reads 12.0 there and any skirt overlap only adds (two
-#: Q-8 boosts 0.30 octaves apart compose to 12.9526, and moving them a full third
-#: of an octave apart still reads 12.7802). So the composed cap binds every
-#: multi-filter boost, and this one binds only the single-filter case.
+#: the rail the fit engine emits up to, restated on this module's lockstep rule.
+#: A prescription at this ceiling is therefore emittable rather than accepted
+#: here and refused downstream. Equal to
+#: :data:`DRIVER_MAX_COMPOSED_BOOST_DB` (ruling R8), so two boost filters both
+#: at this rail can never clear the composed cap — each alone reads 12.0 there
+#: and skirt overlap only adds (two Q-8 boosts a third of an octave apart still
+#: compose to 12.7802). The composed cap binds every multi-filter boost; this
+#: one binds the single-filter case.
 DRIVER_MAX_FILTER_BOOST_DB = 12.0
 
-#: Ceiling on the COMPOSED boost's peak over one role's passband, dB.
+#: Ceiling on the COMPOSED boost's peak over one role's passband, dB. POLICY
+#: (ruling R8) — the one bound here restored from no neighbour, since the fit
+#: engine leaves total boost deliberately unbounded.
 #:
-#: **POLICY, owner-ratified in ruling R8** (``docs/tuning-master-plan.md``,
-#: 2026-08-21) — the one bound in this module that is not restored from a
-#: neighbour, because there is no neighbour to restore it from: the fit engine
-#: has no composed cap to inherit (``PER_FILTER_BOOST_CAP_DB`` is a per-filter
-#: realization bound and total boost is deliberately unbounded there, by the
-#: owner's 2026-07-27 ruling), and the sibling ``blend_prescription.
-#: PRESCRIPTION_MAX_TOTAL_BOOST_DB`` (4.0) is the ceiling R8 moved off.
-#:
-#: This is the bound that sizes the whole class's cost, and it carries that
-#: weight only because :func:`_composed_grid` reads the cascade on the same
-#: span the charge is taken over. Given that, the remaining terms in the
-#: emitted branch — the crossover sections and the per-driver trim — are
-#: non-positive everywhere (measured and pinned), so a role's evaluated chain
-#: peak cannot exceed this and ``branch_chain.headroom_charge_db`` cannot
-#: charge more than :data:`MAX_SPL_SPEND_BOUND_DB`. **The span clause is
-#: load-bearing**: a band-limited reading made this same sentence false while
-#: every word of it about the other terms stayed true. Per ROLE because the
-#: quantity bounded is one branch's own spend and two drivers do not share
-#: it; the emitter folds the roles by worst branch rather than by sum, so the
-#: document's total spend is that bound and not a multiple of it.
+#: It sizes the whole class's cost, and carries that weight ONLY because
+#: :func:`_composed_grid` reads the cascade on the same span the charge is
+#: taken over. That span clause is load-bearing: a band-limited reading made
+#: this sentence false once while every other word of it stayed true. Given it,
+#: the remaining terms in the emitted branch (crossover sections, per-driver
+#: trim) are non-positive everywhere, so a role's evaluated chain peak cannot
+#: exceed this and ``branch_chain.headroom_charge_db`` cannot charge more than
+#: :data:`MAX_SPL_SPEND_BOUND_DB`. Per ROLE: the emitter folds roles by worst
+#: branch, not by sum, so a document's total spend is this bound and not a
+#: multiple of it.
 DRIVER_MAX_COMPOSED_BOOST_DB = 12.0
 
-#: The magnitude below which the fit engine calls a boost cosmetic, dB. The same
-#: number as :data:`DRIVER_MIN_CUT_DB` because it is the same argument —
-#: ``linearization_fit._MIN_FILTER_GAIN_DB``'s "inaudible, wastes a filter
-#: slot", which does not depend on the sign — and it is DEFINED by that constant
-#: rather than restated beside it so the pair cannot drift. It carries its own
-#: name only so the contract a prescriber reads names a floor per sign, as the
-#: refusal it used to raise did.
+#: The magnitude below which the fit engine calls a boost cosmetic, dB. DEFINED
+#: by :data:`DRIVER_MIN_CUT_DB` rather than restated beside it, because
+#: "inaudible, wastes a filter slot" does not depend on the sign; it carries
+#: its own name only so the contract a prescriber reads names a floor per sign.
 DRIVER_MIN_BOOST_DB = DRIVER_MIN_CUT_DB
 
 #: The most maximum SPL one accepted document can cost the household, dB.
-#:
-#: DERIVED, not chosen, and **re-proved at 13.0 dB for ruling R8's widened caps**
-#: (2026-08-22). The derivation, in four steps, each with its owner:
+#: DERIVED, not chosen, in four steps:
 #:
 #: 1. ``branch_chain.headroom_charge_db(peak) = peak + HEADROOM_MARGIN_DB`` for
-#:    any peak above ``_PEAK_EPS_DB`` (0.01 dB). That is the whole charge
-#:    formula — one addition, no other term.
+#:    any peak above ``_PEAK_EPS_DB`` (0.01 dB) — the whole charge formula.
 #: 2. :func:`_check_composed` refuses any role whose evaluated cascade peak
 #:    exceeds :data:`DRIVER_MAX_COMPOSED_BOOST_DB` by more than
-#:    :data:`_COMPOSED_BOOST_EVAL_TOL_DB`, so an ACCEPTED document has
-#:    ``peak <= 12.0 + 1e-9`` on the gate's own reading. That tolerance is
-#:    carried rather than dropped; where it lands is stated after step 4,
-#:    because step 4 contributes a second term to the same sum.
-#: 3. **The span clause** — the step the whole proof rests on. That reading is
-#:    taken on :func:`_composed_grid`, which is ``branch_chain._evaluation_grid``
+#:    :data:`_COMPOSED_BOOST_EVAL_TOL_DB`, so an accepted document reads
+#:    ``peak <= 12.0 + 1e-9``.
+#: 3. THE SPAN CLAUSE, which the whole proof rests on: that reading is taken on
+#:    :func:`_composed_grid`, which is ``branch_chain._evaluation_grid``
 #:    IMPORTED (the charge's own span) unioned with a dense sweep of the role's
-#:    band. Gate and charge therefore read the same domain, and a union can only
-#:    read HIGHER than either half. Without this clause the inference is
-#:    unsound rather than merely loose: a band-limited gate once passed a
-#:    cascade at 3.58 dB that the emitter charged 10.75 dB for, because the two
-#:    were measuring different intervals. A premise can be true and the
-#:    conclusion still false when they are about different domains.
-#: 4. The emitter's peak cannot exceed the gate's, for TWO reasons that are both
-#:    needed — the second was missing from an earlier revision of this list, and
-#:    it turns out to be the larger term:
+#:    band, so gate and charge read the same domain. Without it the inference
+#:    is unsound, not merely loose — a band-limited gate once passed a cascade
+#:    at 3.58 dB that the emitter charged 10.75 dB for.
+#: 4. The emitter's peak cannot exceed the gate's, for two reasons both needed:
+#:    the remaining terms in the emitted branch (crossover sections, per-driver
+#:    trim) are non-positive to within 1e-8 dB (worst measured +1.1654e-09 dB,
+#:    an LR8 section near 20 Hz — floating-point residue from cascading eight
+#:    biquads); and the emitter evaluates on a strict SUBSET of
+#:    :func:`_composed_grid`, so its maximum cannot exceed the superset's.
 #:
-#:    * the remaining terms in the emitted branch (the crossover sections and
-#:      the per-driver trim) are non-positive to within 1e-8 dB, so
-#:      ``cascade + sections <= cascade`` pointwise at any scale this system
-#:      resolves. Measured and pinned: an LR section reaches a small POSITIVE
-#:      maximum — floating-point residue from cascading up to eight biquads —
-#:      that grows as the corner drops toward ~20 Hz. Worst **+8.4154e-10 dB**
-#:      on ``CHAIN_GRID_HZ`` (the domain the emitter actually charges over) and
-#:      **+1.1654e-09 dB** on the denser grid the pin stress-tests with, both at
-#:      LR8 near 20 Hz. Search minima, so the pin's bar sits an order above
-#:      them;
-#:    * the emitter evaluates on ``_evaluation_grid(filters, CHAIN_GRID_HZ)``,
-#:      which is a strict SUBSET of :func:`_composed_grid` (verified over 200
-#:      random filter sets) — the gate adds a dense per-band sweep on top of the
-#:      same base. A maximum over a subset cannot exceed the maximum over the
-#:      superset.
-#:
-#: Therefore ``charge <= 12.0 + 1.0 = 13.0`` at published precision. Carrying
-#: both tolerances instead of dropping them, the true ceiling is step 2's 1e-9
-#: plus step 4's 1e-8 section allowance: ``13.000000011`` dB. Both are stated
-#: here, after the step that contributes the second one, rather than in step 2
-#: where the sum was not yet known.
-#:
-#: **The bound is ATTAINED, not approached**: one filter at
-#: :data:`DRIVER_MAX_FILTER_BOOST_DB`, at any Q, composes to exactly 12.000000
-#: on this gate's reading, so ``headroom_charge_db`` of it is exactly 13.000000.
-#: So this is a tight maximum — the worst-case max-SPL spend one accepted
-#: document can cost, which R8 records as moving 5 → 13 dB.
-#:
-#: Two independent checks. A random sweep over this gate's own rails, at its
-#: pinned seed: of 2 000 sets of 1-4 Peaking filters, 1 538 are admitted and
-#: their worst charge is 12.999377 dB, never crossing 13.0. That is EVIDENCE
-#: over a sample, not a proof over the space — the proof is the four steps
-#: above; the sweep is what would catch them being wrong. Its SHAPE is narrow
-#: on purpose and the limits are worth knowing before leaning on it: Peaking
-#: filters only, positive gains only, at most four of them, one band. Shelves,
-#: mixed-sign cascades and the eight-filter ceiling are covered by the
-#: dedicated refusal tests around it rather than by this draw. And the STRADDLE,
-#: pinned end to end through the EMITTER in
-#: ``tests/test_active_speaker_linearization_emission.py`` — two +9.0 dB Q-8
-#: boosts 0.1233 octaves apart compose to 11.916 here and are charged 12.861 by
-#: the emitter (admitted); move them to 0.1184 octaves and this gate refuses at
-#: 12.088 composed, which would have been charged 13.067.
-#:
-#: Those two charge figures are the EMITTER's and run a little under
-#: ``gate peak + 1.0`` (12.861 against 12.916). The gap is **0.0547 dB**, and it
-#: splits the way step 4's two reasons predict — measured on that fixture, not
-#: reasoned:
-#:
-#: * **0.0211 dB** is the crossover high-pass, which reads -0.021120 dB at the
-#:   gate's peak (6752.603 Hz);
-#: * **0.0336 dB** is the GRID, and it is the larger half: the emitter's coarser
-#:   subset does not contain 6752.603 Hz at all and takes its maximum at
-#:   6728.254 Hz instead.
-#:
-#: The peak does NOT relocate because the section is applied — checked on a
-#: fixed grid, where adding the high-pass leaves the maximum at 6752.603 Hz.
-#: The two frequencies differ because the two readings are on different grids,
-#: which is a distinction worth keeping: one is a property of the filter, the
-#: other of the sampling. One measured instance of step 4, not a demonstration
-#: of the general claim.
+#: Therefore ``charge <= 12.0 + 1.0 = 13.0`` at published precision (carrying
+#: both tolerances, 13.000000011 dB). The bound is ATTAINED, not approached:
+#: one filter at :data:`DRIVER_MAX_FILTER_BOOST_DB` at any Q composes to
+#: exactly 12.000000 here, so its charge is exactly 13.000000.
 #:
 #: Imported rather than restated because it is a CONSEQUENCE of the charge
 #: formula, not a policy this gate re-validates: a margin that moved must move
-#: this too. Published on the refusal and on the round's own event so a reader
-#: can see the ceiling beside the number that approached it.
+#: this too.
 #:
 #: **What this bounds is the CHARGE, not the realized peak.** Above ~18 kHz the
-#: sampling residue exceeds ``HEADROOM_MARGIN_DB`` (issue #2850, open at this
-#: writing), so up there the -1.0 dB per-driver soft-clip limiters are the
-#: backstop rather than this arithmetic — see the widened caps' entry in
-#: ``branch_chain.HEADROOM_MARGIN_DB``'s own comment.
+#: sampling residue exceeds ``HEADROOM_MARGIN_DB`` (#2850, open), so up there
+#: the -1.0 dB per-driver soft-clip limiters are the backstop rather than this
+#: arithmetic.
 MAX_SPL_SPEND_BOUND_DB = DRIVER_MAX_COMPOSED_BOOST_DB + HEADROOM_MARGIN_DB
 
-#: Slack allowed on the COMPOSED BOOST comparison alone, dB, so that the
-#: evaluator's own double-precision residue cannot decide a policy question.
-#:
-#: Needed only because ruling R8 made :data:`DRIVER_MAX_FILTER_BOOST_DB` and
+#: Slack on the COMPOSED BOOST comparison alone, dB, so the evaluator's own
+#: double-precision residue cannot decide a policy question. Needed only
+#: because ruling R8 made :data:`DRIVER_MAX_FILTER_BOOST_DB` and
 #: :data:`DRIVER_MAX_COMPOSED_BOOST_DB` the SAME number: a single filter at the
-#: per-filter rail composes to that rail exactly in arithmetic, and the biquad
-#: evaluates it to within a small residue whose SIGN depends on the centre
-#: frequency and Q. Untolerated, +12.0 dB at Q 3 / 6245 Hz is admitted
-#: (-5.3e-15) while +12.0 dB at Q 5 / 1600 Hz is refused (+7.8e-14) — the
-#: published per-filter ceiling refusing at its own value, decided by low bits.
-#:
-#: **The residue's size is a swept figure, not the first one measured.** Those
-#: two examples come from a hand-picked grid; over 4 000 random (freq, Q) draws
-#: at the rail plus that grid, the worst |residue| is **2.416e-13 dB** at
-#: 2015.4 Hz / Q 6.89 — about 3x the largest hand-picked value, and still
-#: 4 139x under this tolerance. Quoting the hand-picked 7.8e-14 as if it bounded
-#: the family would have been the narrow-fact-universal-tail mistake.
-#:
-#: 1e-9 dB is ~4 orders above that swept residue and ~7 below the 4-decimal
-#: precision
-#: every charge in this system is reported at, so it cannot absorb a real
-#: cascade: :data:`MAX_SPL_SPEND_BOUND_DB` still bounds the charge to 13.0 dB at
-#: every digit anything published carries.
-#:
-#: **Boost side only**, on the house rule against mirroring a fix into a sibling
-#: path that is not broken — and the cut side no longer has a composed bound
-#: to collide with at all (ADR-0207).
+#: rail composes to it exactly in arithmetic, and the biquad evaluates it to a
+#: residue whose SIGN depends on centre frequency and Q. Swept over 4,000
+#: random (freq, Q) draws at the rail, the worst |residue| is 2.416e-13 dB, so
+#: 1e-9 sits ~4 orders above it and ~7 below the 4-decimal precision every
+#: charge is published at — it cannot absorb a real cascade. Boost side only;
+#: the cut side has no composed bound to collide with (ADR-0207).
 _COMPOSED_BOOST_EVAL_TOL_DB = 1e-9
 
 #: How many filters one role may carry — ``linearization_fit.
-#: MAX_FILTERS_PER_DRIVER``, which is also ``camilla_yaml.
-#: MAX_LINEARIZATION_FILTERS_PER_DRIVER``, the emitter's own re-validation. A
-#: prescription past it would be accepted here and refused at emission, which is
-#: the one failure shape a gate exists to prevent.
+#: MAX_FILTERS_PER_DRIVER``, which is also the emitter's own
+#: ``camilla_yaml.MAX_LINEARIZATION_FILTERS_PER_DRIVER``, so a prescription
+#: past it cannot be accepted here and refused at emission.
 DRIVER_MAX_FILTERS_PER_ROLE = 8
 
-#: The highest frequency the gate's biquad evaluator is defined for.
-#:
-#: Half of :data:`~jasper.sound.profile.RESPONSE_SAMPLE_RATE_HZ`, imported from
-#: the evaluator's own owner rather than written down here, on the rule
-#: :mod:`.prescription_spool` follows for the same bound.
-#:
-#: It binds because a driver's DECLARED band is a datasheet fact and the
-#: evaluator's is an arithmetic one, and they do not have to agree: a
-#: supertweeter published to 40 kHz is an honest declaration, and a composed-cut
-#: bound evaluated past Nyquist is an aliased number rather than a conservative
-#: one. So the declared upper edge is CLAMPED here rather than the role being
-#: dropped — a real tweeter must not lose its whole band to a datasheet's top
-#: octave — and the packet publishes the clamped value, so the band a prescriber
-#: is shown is the band it is judged against.
+#: The highest frequency the gate's biquad evaluator is defined for: half of
+#: :data:`~jasper.sound.profile.RESPONSE_SAMPLE_RATE_HZ`, imported rather than
+#: restated. It binds because a driver's DECLARED band is a datasheet fact and
+#: the evaluator's is an arithmetic one — a supertweeter published to 40 kHz is
+#: honest, and a bound evaluated past Nyquist is aliased rather than
+#: conservative. The declared upper edge is CLAMPED, never dropped, and the
+#: packet publishes the clamped value so a prescriber is shown the band it is
+#: judged against.
 _EVALUABLE_MAX_HZ = RESPONSE_SAMPLE_RATE_HZ / 2.0
 
 
@@ -640,13 +316,10 @@ _EVALUABLE_MAX_HZ = RESPONSE_SAMPLE_RATE_HZ / 2.0
 # the refusal vocabulary — its own closed set, by slug, never by prose
 # --------------------------------------------------------------------------- #
 
-# A SECOND set beside the blend gate's, on `prescription_spool`'s rule: two
-# sets because they answer two questions about two seams. `filter_outside_region`
-# and `filter_outside_passband` are not the same refusal wearing two names —
-# they name different bands with different owners, and a prescriber told the
-# first when the second applied would go and re-read the crossover region while
-# its filter was fine. The exception TYPE is shared, because every caller
-# already handles that shape.
+# A SECOND set beside the blend gate's: `filter_outside_region` and
+# `filter_outside_passband` name different bands with different owners, so a
+# prescriber told the first when the second applied would re-read the crossover
+# region while its filter was fine. The exception TYPE is shared.
 
 DRIVER_PRESCRIPTION_TOO_LARGE = "driver_prescription_too_large"
 DRIVER_PRESCRIPTION_MALFORMED = "driver_prescription_malformed"
@@ -664,22 +337,9 @@ FILTER_BOOST_TOO_HIGH = "driver_filter_boost_too_high"
 COMPOSED_BOOST_EXCEEDED = "driver_composed_boost_exceeded"
 TRIM_PIN_MALFORMED = "driver_trim_pin_malformed"
 
-# ELEVEN slugs stood here and every one is gone. Six went on 2026-08-23 to
-# DISCLOSURES, all the classification bar's: `driver_feature_not_classified`,
-# `driver_feature_not_cuttable`, `driver_feature_not_boostable`,
-# `driver_feature_depth_unavailable`, `driver_boost_exceeds_feature_depth`,
-# and `driver_boost_unvouched` (the same bar restated at the route) — see
-# `_check_classification`. `driver_boost_in_crossover_overlap` went with the
-# nanny burn-down: see `_boosts_in_crossover_overlap`, which counts what it
-# used to refuse. `driver_filter_cut_too_shallow` and
-# `driver_filter_boost_too_shallow` (the audibility floor) went on
-# 2026-08-29, now counted by `_subaudible_filters`. `driver_filter_cut_too_deep`
-# and `driver_composed_cut_exceeded` went with ADR-0207: a cut spends no
-# headroom, so its depth is the prescriber's to spend and the measured verify
-# is the net — nothing to disclose that the banked filters do not already
-# say. All are deleted rather than registered-but-unreachable: no reader maps
-# a refusal slug back, and a vocabulary naming an answer this door can no
-# longer give would mislead the prescriber reading `refusal_reasons`.
+# A refusal this door can no longer give is DELETED from this set rather than
+# left registered-but-unreachable, because a prescriber reads it as
+# `refusal_reasons`.
 
 DRIVER_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     DRIVER_PRESCRIPTION_TOO_LARGE,
@@ -711,10 +371,8 @@ _PRESCRIPTION_FIELDS = frozenset({
     "pinned_trim_db",
     "rationale",
     # Written BY the gate, accepted on the way back in so a durable block
-    # round-trips through the SAME parser rather than needing a second, laxer
-    # one. A request that supplies them is harmless: the class is re-derived
-    # from the gains, the bands are taken from the packet rather than from the
-    # document, and the classification basis is recomputed.
+    # round-trips through this parser. A request that supplies them is
+    # harmless: the gate re-derives every one of them.
     "prescription_class",
     "passbands_hz",
     "classification_basis",
@@ -728,21 +386,12 @@ _PRESCRIPTION_FIELDS = frozenset({
     "displaced_filters",
     "displaced_boost_db",
     "displaced_boost_role",
-    # FORWARD-compatible, not backward: this reader accepts everything
-    # `to_dict` emits, but an OLDER build handed a NEWER receipt refuses it as
-    # an unknown field — true of the boost class's fields, of #2863's
-    # `displaced_*`, and of `unvouched_filters` above. Harmless: no production
-    # caller reads a receipt back — `driver_prescription_from_mapping` has test
-    # callers only, and the two production readers are handed a prescriber's
-    # DOCUMENT, which never carries these.
-    #
-    # An OLDER receipt read by a NEWER build is fine and needs nothing: this is
-    # an allowlist, not a required list, so a missing field takes its dataclass
-    # default — `unvouched_filters=None`, which is the honest "nobody computed
-    # this" rather than a substituted zero. And by the owner's 2026-08-23
-    # no-legacy-config ruling that is where it stops: a stored shape this
-    # contract can no longer parse REFUSES, with "re-author against the current
-    # contract" as the remediation. No tolerant reader, no legacy field list.
+    # FORWARD-compatible, not backward: an OLDER build handed a NEWER receipt
+    # refuses it as an unknown field. An allowlist rather than a required list,
+    # so an OLDER receipt read by a NEWER build takes each missing field's
+    # dataclass default — `unvouched_filters=None`, the honest "nobody computed
+    # this" rather than a substituted zero. A stored shape this contract can no
+    # longer parse REFUSES: no tolerant reader, no legacy field list.
 })
 
 #: Fields ONE filter may carry. ``role`` is the addition that makes this class
@@ -757,18 +406,14 @@ _FILTER_FIELDS = frozenset({"role", "biquad_type", "freq", "q", "gain"})
 class ClassificationBasis:
     """Why one prescribed filter was allowed to be aimed where it was.
 
-    Banked on the accepted prescription so a receipt six weeks later can name
-    the verdict that admitted the filter, not merely that some verdict did. The
-    blend class's :class:`~.blend_prescription.PositionalSupport` does the same
-    job for its own bar, and for the same reason: a gate that recorded only
-    "passed" leaves a reader unable to re-derive the decision.
+    Banked so a receipt can name the verdict that admitted the filter, not
+    merely that some verdict did.
     """
 
-    #: The FILTER's own centre, and below it the classified feature it was
-    #: matched to (whose own centre is the verdict's ``hz``). They differ by up
-    #: to :data:`~.feature_classification.VERDICT_MATCH_TOLERANCE_OCTAVES`, and
-    #: stating both is what lets a reader see a filter that only just cleared
-    #: the match rather than one sitting on its target.
+    #: The FILTER's own centre; the feature it matched carries its own in the
+    #: verdict's ``hz``. They differ by up to
+    #: :data:`~.feature_classification.VERDICT_MATCH_TOLERANCE_OCTAVES`, so both
+    #: are stated.
     filter_freq_hz: float
     role: str
     verdict: FeatureVerdict
@@ -786,104 +431,75 @@ class ClassificationBasis:
 class DriverPrescription:
     """A validated per-driver correction and the evidence that justifies it.
 
-    ``filters`` is a TOTAL for every role it names, not a delta — the whole
-    per-driver correction that role should carry, exactly as
-    :attr:`~.blend_prescription.BlendPrescription.filters` is for its region. A
-    role the document does not name is not mentioned and is not changed.
+    ``filters`` is a TOTAL for every role it names, not a delta. A role the
+    document does not name is not mentioned and is not changed.
+
+    Every ``int | None`` / ``float | None`` disclosure below reads the same
+    way: ``None`` is "nobody computed this" (the durable read-back applies no
+    bound), and ``0`` is "computed, and the answer is none". A receipt that
+    spelled them the same would claim a measurement it never made.
     """
 
     #: The prescribed biquads, in emission order, each naming its own role.
     filters: tuple[dict[str, Any], ...]
     #: ``"cut"`` or ``"boost"``, derived from the gains and never read from the
-    #: document. Same name and same meaning as the blend class's, so a receipt's
-    #: attribution key reads the same across both.
+    #: document.
     prescription_class: str
     #: The packet fingerprint this answered.
     packet_fingerprint: str
-    #: Who authored it. Both required — a prescription with no author is a
-    #: number with no way to ask about it later.
+    #: Who authored it. Both required.
     prescriber_model: str
     prescriber_operator: str
-    #: The per-role bands the proposal was checked against, echoed from the
-    #: evidence, as ``((role, lo_hz, hi_hz), ...)`` sorted by role. A tuple
-    #: rather than a mapping so the record stays hashable and ordered.
+    #: The per-role bands the proposal was checked against, as
+    #: ``((role, lo_hz, hi_hz), ...)`` sorted by role — a tuple rather than a
+    #: mapping so the record stays hashable and ordered.
     passbands_hz: tuple[tuple[str, float, float], ...]
     #: The banked verdict that VOUCHES for each vouched filter, in filter
-    #: order. Shorter than ``filters`` when some are unvouched — see
-    #: :attr:`unvouched_filters` for how many, and why that is a disclosure
-    #: rather than a refusal.
+    #: order. Shorter than ``filters`` when some are unvouched.
     classification_basis: tuple[ClassificationBasis, ...] = ()
-    #: How many filters no banked verdict vouches for. ``None`` means nobody
-    #: computed it (the durable read-back, which rebuilds no basis); ``0``
-    #: means it was computed and every filter sits on a matching-sign defect
-    #: verdict. The two are different facts, exactly as for
-    #: ``displaced_filters`` below, and an empty ``classification_basis``
-    #: cannot tell them apart — which is the whole reason this number is
-    #: carried rather than derived.
+    #: How many filters no banked verdict vouches for — a disclosure, never a
+    #: refusal. Carried rather than derived, because an empty
+    #: ``classification_basis`` cannot tell ``None`` from ``0``.
     unvouched_filters: int | None = None
-    #: How many filters sit below the fit engine's own audibility floor
-    #: (:data:`DRIVER_MIN_CUT_DB` / :data:`DRIVER_MIN_BOOST_DB`, magnitude, both
-    #: signs, a zero-gain filter included). ``None`` means nobody computed it
-    #: (the durable read-back, same convention as :attr:`unvouched_filters`);
-    #: ``0`` means it was computed and every filter clears the floor. A
-    #: DISCLOSURE, never a bound — see :func:`_subaudible_filters`.
+    #: How many filters sit below the fit engine's audibility floor
+    #: (:data:`DRIVER_MIN_CUT_DB` / :data:`DRIVER_MIN_BOOST_DB`, magnitude,
+    #: both signs, a zero-gain filter included) — see
+    #: :func:`_subaudible_filters`.
     subaudible_filters: int | None = None
     #: How many characters of the submitted rationale were dropped to fit
-    #: :data:`RATIONALE_MAX_CHARS`. ``None`` means nobody computed it — which
-    #: the durable read-back genuinely cannot, since what it reads back is the
-    #: already-truncated text; ``0`` means the whole rationale was banked.
+    #: :data:`RATIONALE_MAX_CHARS`.
     rationale_dropped_chars: int | None = None
-    #: How many boosting filters sit inside a crossover overlap. ``None`` means
-    #: nobody computed it (the durable read-back, same convention as
-    #: :attr:`unvouched_filters`); ``0`` means it was computed and none does.
-    #: A DISCLOSURE, never a bound — see :func:`_boosts_in_crossover_overlap`.
+    #: How many boosting filters sit inside a crossover overlap — see
+    #: :func:`_boosts_in_crossover_overlap`.
     boosts_in_crossover_overlap: int | None = None
-    #: The worst per-role composed boost the gate evaluated, dB, or ``None``
-    #: when nothing evaluated it. ``0.0`` means "measured, and this document
-    #: puts nothing above unity"; ``None`` means the durable read-back, which
-    #: applies no bound and therefore computes no number. The two are different
-    #: facts and a receipt that spelled them the same would claim a measurement
-    #: it never made.
+    #: The worst per-role composed boost the gate evaluated, dB.
     composed_boost_db: float | None = None
-    #: Which role carried that worst composed boost. The emitter folds by worst
-    #: BRANCH, so the number alone cannot say where the spend went.
+    #: Which role carried it. The emitter folds by worst BRANCH, so the number
+    #: alone cannot say where the spend went.
     composed_boost_role: str | None = None
     #: How many incumbent filters the named roles REPLACE — see
-    #: :func:`_check_displaced`. ``None`` means no incumbent was available to
-    #: compare against (the durable read-back, and any packet whose applied
-    #: profile could not be read); ``0`` means one was, and it was empty.
+    #: :func:`_check_displaced`.
     displaced_filters: int | None = None
     #: The worst amount the prescribed cascade sits ABOVE the incumbent one,
-    #: dB, and the role that carried it. Same ``None``-versus-``0.0`` rule as
-    #: ``composed_boost_db`` beside it, and the same first-role-wins tie rule.
+    #: dB, and the role that carried it (first role wins a tie).
     displaced_boost_db: float | None = None
     displaced_boost_role: str | None = None
     #: Roles whose trim this document NAMES, as ``((role, db), ...)`` sorted by
-    #: role — a tuple rather than a mapping for :attr:`passbands_hz`' reason.
-    #: Empty is the ordinary case and leaves every trim to the solver.
+    #: role. Empty is the ordinary case and leaves every trim to the solver.
     #:
     #: A named trim is CARRIED, not re-solved: :func:`~.planning.build_candidate`
-    #: folds it over the round's own solved value. The solver still measures and
-    #: banks its answer for the role — the pin decides only what the candidate
-    #: ships. It holds the ABSOLUTE per-driver level the chain was shaped
-    #: against, so a transplanted filter chain keeps that level instead of riding
-    #: a level-match datum re-derived this round.
+    #: folds it over the round's own solved value, so a transplanted filter
+    #: chain keeps the ABSOLUTE per-driver level it was shaped against. An
+    #: absolute pin does NOT promise to preserve the inter-driver delta — the
+    #: round's own common-mode reference still sets the other roles, and where
+    #: the two disagree the pinned branch leaves the ceiling under-used, which
+    #: is the safe direction and is charged honestly as headroom.
     #:
-    #: An absolute pin does NOT promise to preserve the inter-driver delta: it
-    #: overrides this role's trim while the round's own common-mode reference set
-    #: the others, and the two agree only when the pin was captured against that
-    #: same reference (true on a woofer-referenced 2-way, not in general). Where
-    #: they differ the pinned branch may leave the ceiling under-used — the safe
-    #: direction, and charged honestly as headroom by ``build_candidate`` against
-    #: the pinned value.
-    #:
-    #: Non-positive by the gate, on the same bound
-    #: ``MeasuredCrossoverCandidate`` re-proves: the emitted graph refuses a
-    #: positive per-driver Gain and a pin is not a way past it.
+    #: Non-positive by the gate, the same bound ``MeasuredCrossoverCandidate``
+    #: re-proves: the emitted graph refuses a positive per-driver Gain, and a
+    #: pin is not a way past it.
     pinned_trim_db: tuple[tuple[str, float], ...] = ()
-    #: The prescriber's own words. **Never parsed for behaviour** — no branch in
-    #: this module or any caller reads it, and it is excluded by construction
-    #: from every instruction this harness renders.
+    #: The prescriber's own words. NEVER parsed for behaviour.
     rationale: str = ""
 
     @property
@@ -894,10 +510,8 @@ class DriverPrescription:
     def filters_for(self, role: str) -> tuple[dict[str, Any], ...]:
         """This role's filters, in emission order, with ``role`` stripped.
 
-        The emitter's per-branch shape is ``{biquad_type, freq, q, gain}`` —
-        the role is the KEY there, so carrying it inside the record too would
-        put one fact in two places, and ``camilla_yaml._validated_biquad_entry``
-        would refuse the extra field anyway.
+        The emitter's per-branch shape is ``{biquad_type, freq, q, gain}`` and
+        ``camilla_yaml._validated_biquad_entry`` refuses the extra field.
         """
         return tuple(
             {key: value for key, value in entry.items() if key != "role"}
@@ -948,36 +562,13 @@ def driver_passbands_from_safety_profile(
 ) -> dict[str, tuple[float, float]]:
     """Each role's own declared band, from the confirmed driver-safety profile.
 
-    The band a per-driver filter must sit inside, composed from three declarations
-    that already exist and are already gated elsewhere:
-
-    * ``measurement_band_hz`` — "the driver's published frequency-response
-      range" in ``driver_safety``'s own words to the research model. The base.
-    * the declared protective HIGH-PASS, through
-      :func:`~jasper.active_speaker.driver_protection.declared_protection_highpass_floor_hz`.
-      This is #2736's floor — the number the apply transaction refuses a
-      crossover below — and it is the right lower edge for a cut too: below its
-      own protective corner a driver is not radiating program, so a filter there
-      is aimed at nothing and can only spend a slot and shift phase.
-    * the declared protective LOW-PASS, through the mirror reader. The woofer /
-      mid analogue of the same fact.
-
-    …and then clamped at :data:`_EVALUABLE_MAX_HZ`, which is the one edge that
-    is not a declaration: a response above half the sample rate is undefined
-    rather than merely out of policy, and a composed-cut bound evaluated there
-    would be an aliased number wearing a safety bound's name.
-
-    Neither protection edge is INVENTED where none is declared: an undeclared
-    floor leaves ``measurement_band_hz``'s own lower edge standing, on
-    ``declared_protection_highpass_floor_hz``'s never-nanny rule. Substituting
-    the class-default policy corner would refuse honest proposals on a number
-    the operator never declared.
-
-    A target with no readable ``measurement_band_hz``, or one whose composed
-    edges cross (a declared protection pair narrower than the published range
-    admits), is OMITTED rather than given a guessed band. The gate then refuses
-    that role by name, which is the honest answer: this speaker has not declared
-    where that driver plays.
+    ``measurement_band_hz`` (the driver's published response range) narrowed by
+    the declared protective high-pass and low-pass, then clamped at
+    :data:`_EVALUABLE_MAX_HZ`. Neither protection edge is INVENTED where none
+    is declared — an undeclared floor leaves the published lower edge standing,
+    on ``declared_protection_highpass_floor_hz``'s never-nanny rule. A target
+    with no readable band, or whose composed edges cross, is OMITTED rather
+    than guessed, and the gate then refuses that role by name.
     """
     targets = profile.get("targets") if isinstance(profile, Mapping) else None
     if not isinstance(targets, Sequence) or isinstance(targets, (str, bytes)):
@@ -1022,14 +613,9 @@ def _refuse(reason: str, detail: str, **evidence: Any) -> NoReturn:
 def check_driver_document_size(payload: bytes) -> None:
     """This class's own size bound, applied once the document has named itself.
 
-    Called by every reader that has established the document is a per-driver
-    one — the CLI's gate and the spool's take — and by nothing else. See
-    :data:`DRIVER_PRESCRIPTION_MAX_BYTES` for why two caps exist and which job
-    each does.
-
-    Both call sites have already been through a stat-or-length bound before the
-    bytes were parsed, so this never runs on an unbounded read: it is the second
-    of two, and the one that can speak in this class's vocabulary.
+    The second of two: both call sites have already applied a stat-or-length
+    bound before parsing, and this is the one that can speak in this class's
+    vocabulary. See :data:`DRIVER_PRESCRIPTION_MAX_BYTES`.
     """
     if len(payload) > DRIVER_PRESCRIPTION_MAX_BYTES:
         _refuse(
@@ -1055,13 +641,10 @@ def _finite_or_none(value: Any) -> float | None:
 def _finite_number(value: Any, *, field: str) -> float:
     """One numeric field, strictly — no coercion, ever.
 
-    ``bool`` is refused because it is an ``int`` in Python and ``gain=True``
-    would read as a +1 dB boost. Strings are refused because ``float("1900")``
-    succeeds, which would make this reader's strictness depend on the encoder's
-    habits rather than on the contract. ``OverflowError`` is caught because
-    ``10 ** 400`` is legal JSON, a legal Python ``int``, and raises rather than
-    returning infinity — an escape that reached the blend CLI end to end before
-    its own guard closed it.
+    ``bool`` is refused because it is an ``int`` and ``gain=True`` would read as
+    a +1 dB boost; strings because ``float("1900")`` succeeds; and
+    ``OverflowError`` is caught because ``10 ** 400`` is legal JSON, a legal
+    Python ``int``, and raises rather than returning infinity.
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         _refuse(
@@ -1079,11 +662,9 @@ def _finite_number(value: Any, *, field: str) -> float:
 def _parse_filters(raw: Any) -> tuple[dict[str, Any], ...]:
     """The filter list's SHAPE and its per-role count, and none of its bounds.
 
-    Split from the bounds on the family's rule: the shape is what a durable
-    read-back must also re-check, and the bounds are what only the request
-    boundary applies. The per-role COUNT is here rather than with the bounds
-    because it is a property of the document's shape — it does not need the
-    evidence to decide.
+    The shape is what a durable read-back must also re-check; the bounds are
+    what only the request boundary applies. The per-role COUNT sits here
+    because it needs no evidence to decide.
     """
     if raw is None:
         _refuse(FILTER_MALFORMED, "a prescription must state a filters list")
@@ -1114,9 +695,9 @@ def _parse_filters(raw: Any) -> tuple[dict[str, Any], ...]:
         role = role.strip()
         biquad_type = entry.get("biquad_type")
         if biquad_type not in LINEARIZATION_BIQUAD_TYPES:
-            # The EMITTER's set, consumed. This bar is not a policy about what
-            # is wise to prescribe; it is what the graph can be built out of, so
-            # a type outside it would be accepted here and raise at emission.
+            # The EMITTER's set, consumed: what the graph can be built out of,
+            # so a type outside it cannot be accepted here and raise at
+            # emission.
             _refuse(
                 FILTER_MALFORMED,
                 f"filter {position} must be one of "
@@ -1127,16 +708,10 @@ def _parse_filters(raw: Any) -> tuple[dict[str, Any], ...]:
         if biquad_type == "Peaking":
             q = _finite_number(entry.get("q"), field=f"filter {position} q")
         else:
-            # A SHELF carries no steepness of its own, so the document does not
-            # have to state one and a stated one is replaced rather than
-            # honoured. Both halves of the loop already work this way: the
-            # emitter's shelf `FilterSpec` carries no `q` at all
-            # (`camilla_yaml._emit_driver_linearization_definitions`), and the
-            # one biquad evaluator forces the same number
-            # (`jasper.sound.profile._biquad_coeffs`'s `eff_q`). Writing it into
-            # the record is what keeps the banked filter honest — the emitter's
-            # own `_validated_biquad_entry` requires a positive `q`, and a
-            # number nothing reads is worse than the number everything uses.
+            # A SHELF carries no steepness of its own: the emitter's shelf
+            # `FilterSpec` has no `q` and the evaluator forces this number, so
+            # a stated one is REPLACED rather than honoured. Written into the
+            # record because `_validated_biquad_entry` requires a positive `q`.
             q = SHELF_Q
         if freq <= 0.0:
             _refuse(FILTER_MALFORMED, f"filter {position} freq must be positive")
@@ -1166,18 +741,11 @@ def _parse_filters(raw: Any) -> tuple[dict[str, Any], ...]:
 def _check_shelf_placement(filters: Sequence[dict[str, Any]]) -> None:
     """The other half of the emitter's filter vocabulary: WHERE a shelf may sit.
 
-    ``camilla_yaml`` accepts a shelf in exactly two places in one role's chain —
-    leading (index 0), or a trailing ``Highshelf`` taper after a ``Lowshelf``
-    lead (#1668) — and raises on any other placement, because the position is
-    what names the emitted filter and two shelves in "peak" slots would collide.
-    :func:`~jasper.active_speaker.camilla_yaml.linearization_slot` is that
-    classifier, consumed rather than restated for
-    :func:`~.evidence_packet.packet_incumbent_linearization`'s reason: "would the
-    emitter accept this list" has one owner.
-
-    Applied PER ROLE and in document order, which is the order the merged
-    candidate field carries into the emitter. Peaking anywhere is always fine,
-    so a document that names no shelf never reaches the loop's body.
+    ``camilla_yaml`` accepts a shelf leading a role's chain, or a trailing
+    ``Highshelf`` taper after a ``Lowshelf`` lead (#1668), and raises on any
+    other placement; ``linearization_slot`` is that classifier, consumed rather
+    than restated. Applied PER ROLE in document order, the order the merged
+    candidate field carries into the emitter.
     """
     for role in dict.fromkeys(str(entry["role"]) for entry in filters):
         indexed = [
@@ -1211,11 +779,8 @@ def _crossover_overlaps(
 ) -> tuple[tuple[float, float, str, str], ...]:
     """Every pairwise overlap of the declared bands, as ``(lo, hi, role, role)``.
 
-    The crossover knee, derived from the bands this gate already holds — no new
-    input, and deliberately not the preset's ``fc_hz``: what a boost must not
-    move is the region where two drivers BOTH radiate, and the declared bands
-    are what say where that is. On the shipped two-way that is the tweeter's
-    1600 Hz protective floor up to the woofer's 3000 Hz protective ceiling.
+    Derived from the declared bands and deliberately not the preset's
+    ``fc_hz``: the region of interest is where two drivers BOTH radiate.
     """
     items = sorted(passbands.items())
     out: list[tuple[float, float, str, str]] = []
@@ -1234,14 +799,9 @@ def _boosts_in_crossover_overlap(
 
     **It refuses nothing.** Both drivers radiate in the overlap, so a
     per-driver boost there moves the summed response the crossover stage owns —
-    worth telling a reader, and not worth stopping a round for. The bar that
-    used to stop it was already incoherent with itself: it declined to bar the
-    SKIRT case (a filter centred outside the overlap whose skirt reaches into
-    it, +11.93 dB admitted) and the shelf case, on the reasoning its own
-    comment gives — that barring those would be "the nanny
-    ``docs/measurement-loop-doctrine.md`` §5 names". A centre-only bar is a
-    coherence gap, not a bound, and what bounds the SPEND is the composed and
-    per-filter caps that run either way.
+    worth telling a reader, not worth stopping a round for. Centres only: a
+    filter whose SKIRT reaches into the overlap is not counted, and what bounds
+    the SPEND is the composed and per-filter caps that run either way.
     """
     overlaps = _crossover_overlaps(passbands)
     if not overlaps:
@@ -1257,29 +817,12 @@ def _boosts_in_crossover_overlap(
 def _subaudible_filters(filters: Sequence[Mapping[str, Any]]) -> int:
     """How many filters sit under the fit engine's own cosmetic floor.
 
-    **It refuses nothing**, and that is the owner's 2026-08-29 ruling. Until
-    then both signs refused — ``driver_filter_cut_too_shallow`` and
-    ``driver_filter_boost_too_shallow`` — on ``linearization_fit.
-    _MIN_FILTER_GAIN_DB``'s "inaudible, wastes a filter slot". That is a
-    heuristic the FIT engine applies to its own output, and borrowing it as a
-    bar on an outside proposal fails every test this door is held to. A 0.3 dB
-    filter spends no maximum SPL and cannot clip, so
-    ``docs/measurement-loop-doctrine.md`` §4's closed list has no mechanism to
-    name; §3 rules that everything outside that list discloses; and §5's nanny
-    test fails it outright — staging a deliberate probe below the floor, to find
-    out whether the round can resolve it, is the reversible experiment the
-    doctrine protects. The scarce thing the refusal was standing in for is the
-    SLOT, and :data:`DRIVER_MAX_FILTERS_PER_ROLE` bounds that directly.
-
-    By MAGNITUDE, so one number answers for both signs — they are one constant
-    under two names — and a zero-gain filter is counted, which is the honest
-    reading: it is inert whatever its Q, so it is the floor's clearest case
-    rather than an exception to it.
-
-    **Strictly below**, which is the boundary the two refusals drew: a filter AT
-    the floor was admitted by them and is not counted by this. A disclosure that
-    counted more than the bar refused would rewrite the number's meaning while
-    claiming only to have demoted it.
+    **It refuses nothing** (``docs/measurement-loop-doctrine.md`` §4-§5): a
+    sub-floor filter spends no maximum SPL and cannot clip, and the scarce
+    thing a refusal stood in for is the SLOT, which
+    :data:`DRIVER_MAX_FILTERS_PER_ROLE` bounds directly. By MAGNITUDE, so one
+    number answers for both signs, counting a zero-gain filter. STRICTLY
+    below: a filter AT the floor is not counted.
     """
     return sum(
         1 for entry in filters if abs(float(entry["gain"])) < DRIVER_MIN_CUT_DB
@@ -1292,17 +835,10 @@ def _check_bounds(
     """Every per-filter bound, and the class the gains add up to.
 
     Returns ``"boost"`` when any gain is positive, else ``"cut"`` — the one
-    producer of the receipt's class field, exactly as the blend gate's is.
-
-    A document may mix signs; the class names what it is capable of, not what
-    every filter does. Each filter is bounded by its OWN sign here — its
-    magnitude ceiling and, through :func:`driver_max_q_for_gain`, its width —
-    and :func:`_check_classification` reads the evidence per filter by the same
-    sign.
-
-    **Neither sign has a magnitude FLOOR any more.** Both used to refuse under
-    :data:`DRIVER_MIN_CUT_DB`; since 2026-08-29 a filter under it is admitted
-    and counted by :func:`_subaudible_filters`, which is where the argument is.
+    producer of the receipt's class field. A document may mix signs; the class
+    names what it is capable of, and each filter is bounded by its OWN sign,
+    magnitude ceiling and width. Neither sign has a magnitude FLOOR:
+    :func:`_subaudible_filters` counts what used to be refused.
     """
     for position, entry in enumerate(filters):
         role = str(entry["role"])
@@ -1329,13 +865,9 @@ def _check_bounds(
                 freq_hz=freq,
                 passband_hz=[lo, hi],
             )
-        # The evaluator's own floor: below EVALUABLE_Q_MIN, _biquad_coeffs
-        # silently clamps eff_q and the emitter spells the filter "q:
-        # 0.0000" — not a shape this system can realize, whatever the
-        # gain's sign (this also covers the old zero/negative check). The
-        # old policy floor and the cut-depth ceilings are gone (ADR-0207);
-        # `driver_max_q_for_gain` owns the boost arm's policy ceiling and
-        # the cut arm's instrument-fidelity one.
+        # The evaluator's own floor: below EVALUABLE_Q_MIN, `_biquad_coeffs`
+        # silently clamps eff_q and the emitter spells the filter "q: 0.0000" —
+        # not a shape this system can realize, whatever the gain's sign.
         if q < EVALUABLE_Q_MIN:
             _refuse(
                 FILTER_MALFORMED,
@@ -1352,11 +884,8 @@ def _check_bounds(
                 q=q,
                 q_max=q_max,
             )
-        # A gain this deep underflows 64-bit arithmetic: 10**(gain/40) is
-        # exactly 0.0 below ~-12960 dB, and _biquad_coeffs divides by it (the
-        # Peaking denominator's alpha/amp) — an uncaught ZeroDivisionError.
-        # The gate must fail closed on its own input rather than let it
-        # escape as an unhandled exception at evaluation time.
+        # 10**(gain/40) is exactly 0.0 below ~-12960 dB, and `_biquad_coeffs`
+        # divides by it — an uncaught ZeroDivisionError at evaluation time.
         if 10.0 ** (gain / 40.0) == 0.0:
             _refuse(
                 FILTER_MALFORMED,
@@ -1391,33 +920,20 @@ def _composed_grid(
     """The grid the composed caps are read on: the CHARGE's own span, unioned
     with a dense sweep of the role's declared band.
 
-    **Two independent failures live here, and each half fixes one.**
+    Both halves are needed, each closing one failure.
 
-    *Domain.* The bound this gate publishes is a claim about what the EMITTER
-    will charge, and ``camilla_yaml.linearization_headroom_db`` charges the
-    cascade's peak over the whole spectrum — not over the declared band. A
-    MIXED-SIGN cascade's extremum can sit outside the hull of its own centres:
-    six ``+3.0 dB`` Q-0.7 filters at 40 Hz with two ``-12.0 dB`` Q-2.0 filters
-    at 48 Hz, all inside the shipped woofer's 40-3000 Hz band, peak at
-    **29.5 Hz** — below the band, where that branch has no protective
-    high-pass — and the emitter charges **10.75 dB** for a document a
+    DOMAIN. ``camilla_yaml.linearization_headroom_db`` charges the cascade's
+    peak over the WHOLE spectrum, and a mixed-sign cascade's extremum can sit
+    outside the hull of its own centres — six +3.0 dB Q-0.7 filters at 40 Hz
+    with two -12.0 dB Q-2.0 filters at 48 Hz, all inside the woofer's
+    40-3000 Hz band, peak at 29.5 Hz and are charged 10.75 dB for a document a
     band-limited reading passed at 3.58. So the span is
-    :func:`~jasper.active_speaker.branch_chain._evaluation_grid`'s own, IMPORTED
-    rather than mirrored: the gate and the charge cannot disagree about where to
-    look, because it is one construction.
+    ``branch_chain._evaluation_grid``'s own, IMPORTED rather than mirrored.
 
-    *Resolution.* That span's background sampling is 1/48 octave over the
-    14.55 octaves from ``_GRID_EDGE_LO_HZ`` to ``_GRID_EDGE_HI_HZ``, which is
-    coarser inside one driver's band than a Q-8 filter needs;
-    a dense per-band sweep is unioned in for that. Both halves are needed —
-    the span alone under-reads three cases this module pins (a two-bell cascade
-    peaking between its centres), and the band alone is the domain hole above.
-    The union can only ever read HIGHER than either, which is the only
-    direction a safety bound may move.
-
-    ``_evaluation_grid`` also unions each filter's own centre, each adjacent
-    pair's geometric midpoint, and the two domain edges, for the hazard its own
-    docstring names: no fixed resolution can bound an arbitrary Q.
+    RESOLUTION. That span samples 1/48 octave, coarser inside one driver's band
+    than a Q-8 filter needs, so a dense per-band sweep is unioned in. The union
+    can only read HIGHER than either half, the only direction a safety bound
+    may move.
     """
     return _evaluation_grid(
         role_filters,
@@ -1433,47 +949,21 @@ def _check_composed(
     """The composed BOOST cap, per role, on the EVALUATED cascade.
 
     Returns ``(worst composed BOOST across the document in dB, the role it
-    belongs to)`` — ``(0.0, None)`` when nothing rises above unity. That number
-    is what :data:`MAX_SPL_SPEND_BOUND_DB` bounds and what the receipt and the
-    round's event report, so it is returned rather than recomputed by a second
-    reader; the ROLE rides with it because the emitter folds by worst BRANCH,
-    so "which branch" is the half that says where the spend went.
+    belongs to)`` — ``(0.0, None)`` when nothing rises above unity. That is the
+    number :data:`MAX_SPL_SPEND_BOUND_DB` bounds and the receipt reports; the
+    ROLE rides with it because the emitter folds by worst BRANCH.
 
-    Through :func:`~jasper.active_speaker.branch_chain.chain_response` — the ONE
-    biquad evaluator in this codebase — so this gate and the emitter's own
-    accounting cannot disagree about what CamillaDSP will realize.
+    Through ``chain_response``, the ONE biquad evaluator here, so this gate and
+    the emitter's accounting cannot disagree about what CamillaDSP realizes,
+    and on :func:`_composed_grid`, never on a supplied axis.
 
-    Evaluated on :func:`_composed_grid`, never on a supplied axis: the CHARGE's
-    own span unioned with a dense sweep of the role's band. Two shipped
-    readings of this gate were wrong before that grid took its present shape,
-    and both were found by review rather than by a round — a fixed band-limited
-    sweep under-read a narrow filter near a WIDE band's top edge (0.17 dB for a
-    stack truly reaching 24.00), and a band-limited DOMAIN missed a mixed-sign
-    cascade whose extremum sat BELOW the band entirely (3.58 read against a
-    10.75 dB charge). ``_composed_grid`` carries the argument for each half.
-
-    **The cut-side reading was retired by ADR-0207**: a cut spends no
-    headroom, so this grid's widenings only ever needed to serve the boost
-    extreme, and that is the only one checked here.
-
-    Both are read WITHOUT the crossover sections and WITHOUT the branch trim,
-    and BOTH of those terms are non-positive to within 1e-8 dB — the trim by
-    construction (``intervention.anchor_trims`` normalizes it, pinned) and the
-    LR sections by measurement. Not exactly zero, which the old wording
-    ("maxes at +0.000000000 dB") implied by rounding: a section's true maximum
-    is a small POSITIVE floating-point residue, worst measured +8.4154e-10 dB
-    on the emitter's own grid and +1.1654e-09 dB on a denser one, both at LR8
-    near a 20 Hz corner. 1e-8 dB is what the pin asserts and the honest ceiling
-    to quote; it is a hundred-millionth of the 1.0 dB margin, so the inference
-    below is unaffected. So this reading is an UPPER
-    bound on what the emitter
-    will charge, which is the direction a gate's number has to err.
-
-    That inference is only sound because the span is now the charge's own. It
-    was not sound before: the terms were non-positive then too, but the gate
-    was measuring a different domain from the one being bounded, so "every
-    other term only subtracts" licensed nothing. A premise can be true and the
-    conclusion still false when they are about different intervals.
+    Read WITHOUT the crossover sections and WITHOUT the branch trim, both of
+    which are non-positive to within 1e-8 dB — the trim by construction
+    (``intervention.anchor_trims`` normalizes it), the LR sections by
+    measurement (worst +1.1654e-09 dB, floating-point residue at LR8 near a
+    20 Hz corner). So this reading is an UPPER bound on the emitter's charge,
+    the direction a gate's number must err — an inference that is only sound
+    because the span is the charge's own.
     """
     worst_boost = 0.0
     worst_role: str | None = None
@@ -1490,14 +980,9 @@ def _check_composed(
         composed = 20.0 * np.log10(
             np.maximum(np.abs(np.asarray(chain_response(role_filters, grid))), 1e-12)
         )
-        # "over its own band" is what this grid is deliberately NOT limited to
-        # — `_composed_grid` reads the CHARGE's whole span, so an extremum can
-        # and does land outside the declared band (measured as low as 1.92 Hz
-        # and as high as 21.5 kHz). The refusal therefore names the FREQUENCY
-        # rather than an interval the number may not be inside: a reader told
-        # only "at its peak over its own band" goes looking for a filter there
-        # and finds none. The composed CUT arm is gone (ADR-0207): a cut
-        # spends no headroom, and no downstream check re-imposes one.
+        # The extremum can and does land outside the declared band (measured as
+        # low as 1.92 Hz and as high as 21.5 kHz), so the refusal names the
+        # FREQUENCY rather than an interval the number may not be inside.
         peak_index = int(np.argmax(composed))
         peak_boost = max(0.0, float(composed[peak_index]))
         if peak_boost > DRIVER_MAX_COMPOSED_BOOST_DB + _COMPOSED_BOOST_EVAL_TOL_DB:
@@ -1515,18 +1000,11 @@ def _check_composed(
                 max_composed_boost_db=DRIVER_MAX_COMPOSED_BOOST_DB,
                 max_spl_spend_bound_db=MAX_SPL_SPEND_BOUND_DB,
             )
-        # `>` and not `>=`: the FIRST role reaching the worst value keeps it, so
-        # a tie is decided by the sorted role order rather than by which role
-        # happened to be evaluated last. A `max()` that forgot to compare would
-        # report the last role's number as the document's, which is a silent
-        # under-report into the receipt and the event.
-        #
-        # `peak_boost > 0.0` and not `>= 0.0`: a document that puts NOTHING
-        # above unity has no role that spent, and naming one anyway would make
-        # the receipt attribute a spend of 0.0 dB to whichever role sorted
-        # first. That is this record's own rule about `composed_boost_db`,
-        # applied to the field beside it — "not applicable" and "measured
-        # nothing" are different facts and only one of them has a role.
+        # `>` not `>=`: the FIRST role reaching the worst value keeps it, so a
+        # tie is decided by sorted role order rather than evaluation order.
+        # `peak_boost > 0.0` not `>= 0.0`: a document that puts nothing above
+        # unity has no role that spent, and naming one would attribute 0.0 dB
+        # to whichever role sorted first.
         if peak_boost > 0.0 and (worst_role is None or peak_boost > worst_boost):
             worst_boost, worst_role = peak_boost, role
     return worst_boost, worst_role
@@ -1542,49 +1020,22 @@ def _check_displaced(
     Returns ``(incumbent filters the named roles replace, the worst amount the
     prescribed cascade sits ABOVE the incumbent one in dB, the role that
     carried it)``, or ``(None, None, None)`` when the evidence carries no
-    incumbent to compare against. ``0`` filters with ``0.0`` dB is a measured
-    "this document displaces nothing"; ``None`` is "nobody knows", and the two
-    are different facts a receipt may not spell the same way.
+    incumbent. ``filters`` is a TOTAL for every role it names, so an incumbent
+    filter a naming document does not repeat is deleted — a change
+    :func:`_check_composed` cannot see, and one that measured a 6.065 dB tilt
+    step on 2026-08-22 (#2863).
 
-    **Why the number exists.** ``filters`` is a total for every role it names,
-    so a role's incumbent filters are deleted by a document that names the role
-    and does not repeat them. :func:`_check_composed` cannot see that: it reads
-    the document's own cascade, which is exactly right for the caps it enforces
-    and says nothing about what the cascade replaced. On 2026-08-22 a
-    five-filter tweeter document displaced a −6.0744 dB Lowshelf at 5844.67 Hz,
-    and the round measured a 6.065 dB tilt step for a change no gate had a
-    number for (#2863). The gain is that round's banked one; earlier revisions
-    of this sentence said −6.037, which is one measured number spelled two
-    ways.
+    It DISCLOSES and never refuses: dropping an incumbent cut adds nothing to
+    the cascade the emitter charges, and a driver's protective corners are not
+    in this map at all — they are declared as ``required_protection_filters``
+    and enforced by ``graph_safety``, ``path_safety`` and
+    ``excitation_safety_plan``, so no document routed here can delete one.
 
-    **It DISCLOSES and never refuses, and the mechanism test is why.** The
-    composed caps guard one thing — maximum-SPL spend, charged by
-    ``camilla_yaml.linearization_headroom_db`` over the cascade the emitter
-    actually realizes — and dropping an incumbent cut adds nothing to that
-    cascade, so it spends no headroom and cannot clip. A driver's protective
-    corners are not in this map either: they are declared as
-    ``required_protection_filters`` on the design draft's driver-safety profile
-    and enforced somewhere else entirely — ``graph_safety``'s emit-gate
-    high-pass proof, ``path_safety``'s per-driver protection floor, and
-    ``excitation_safety_plan``'s permitted bands — so no document routed here
-    can delete one. With no component-damage mechanism to name, a refusal here
-    would fail ``docs/measurement-loop-doctrine.md`` §5's nanny test — deleting a
-    shelf to find out whether it is still earning its place is precisely the
-    reversible experiment that doctrine protects.
-
-    **Measured against the INCUMBENT, which is not quite what the merge
-    replaces.** At staging time the round has not measured, so the fit this
-    document will actually displace does not exist yet; the incumbent is what
-    the speaker is playing and what the evidence packet can name. The two are
-    the same question asked one round apart.
-
-    **It is a PER-BRANCH number, and one case sits outside it.** Removing an
-    incumbent BOOST also releases the pre-split attenuation that boost was
-    charged (``camilla_yaml.linearization_headroom_db``), which raises the
-    whole speaker rather than one branch's band. This reads only the branch's
-    own cascade, so it reports that removal as the negative per-branch delta it
-    is and says nothing about the whole-speaker step beside it. Named rather
-    than papered over: the number is honest about the band it covers.
+    Measured against the INCUMBENT, which at staging time is what the speaker
+    is playing rather than the fit this document will displace: the same
+    question asked one round apart. It is also a PER-BRANCH number — removing
+    an incumbent BOOST additionally releases the pre-split attenuation it was
+    charged, a whole-speaker step this does not report.
     """
     if incumbent is None:
         return None, None, None
@@ -1602,20 +1053,15 @@ def _check_displaced(
             if entry["role"] == role
         ]
         lo, hi = passbands[role]
-        # One grid over BOTH cascades, so neither one's extremum can fall
-        # between the other's sample points — `_composed_grid` unions each
-        # filter's own centre, and a delta read on a grid built from half the
-        # filters would miss the incumbent's corner exactly where it matters.
+        # One grid over BOTH cascades, so neither extremum falls between the
+        # other's sample points.
         grid = _composed_grid(role_filters + previous, lo, hi)
         delta = 20.0 * np.log10(
             np.maximum(np.abs(np.asarray(chain_response(role_filters, grid))), 1e-12)
             / np.maximum(np.abs(np.asarray(chain_response(previous, grid))), 1e-12)
         )
         peak = max(0.0, float(np.max(delta)))
-        # `> 0.0` and the first-role-wins tie rule, both read off
-        # `_check_composed`: a document that raises nothing has no role that
-        # displaced upward, and naming one anyway would attribute 0.0 dB to
-        # whichever role sorted first.
+        # `> 0.0` and first-role-wins, both read off `_check_composed`.
         if peak > 0.0 and (worst_role is None or peak > worst_boost):
             worst_boost, worst_role = peak, role
     return displaced, worst_boost, worst_role
@@ -1628,36 +1074,20 @@ def _check_classification(
     """Which filters a banked verdict VOUCHES for, and how many it does not.
 
     Returns ``(the vouching basis in filter order, the count of filters with no
-    vouching verdict)``. **It refuses nothing**, and that is ruling 2026-08-23:
-    the vouch is a prediction about whether a filter will help, and
-    ``docs/measurement-loop-doctrine.md`` §2 lets a prediction recommend and
-    never decide. A filter inside this gate's caps and bands
-    spends nothing the household can hear more of, so §4's closed list has no
-    component-damage mechanism to name for it; §3 rules that every defect
-    outside that list "discloses and recommends a next action. It never
-    blocks."; and §5's nanny test fails a refusal here — trying an unclassified
-    feature and measuring the result is exactly the reversible experiment that
-    doctrine protects. What it cost while it did refuse is on the record: even
-    once a shelf itself became legal, nothing vouches for a filter the FIT
-    ENGINE placed, so a role whose incumbent carried one could not repeat it and
-    naming the role deleted it (#2863).
+    vouching verdict)``. **It refuses nothing**
+    (``docs/measurement-loop-doctrine.md`` §2-§5): a vouch is a prediction
+    about whether a filter will help, and a prediction recommends while the
+    measurement decides. Refusing on it cost a role its incumbent shelf,
+    because nothing vouches for a filter the FIT ENGINE placed (#2863).
 
     A verdict vouches when it is the NEAREST banked one to the filter's centre
-    and its classification matches the filter's sign — ``defect_cuttable_at``
-    for a cut, ``defect_boostable_at`` for a boost, each applying its own
-    nearest-verdict-decides rule. One question, asked the same way for both
-    signs, so a receipt reads the same across them.
-
-    **Vouched is not "will help", and unvouched is not "will not".** A defect
-    verdict says EQ is not structurally the wrong tool; run-log §9.2 says in as
-    many words that it does not say EQ helps, and every EQ candidate played on
-    2026-08-19 measured worse against the frozen reference. The round that
-    follows answers both, and it answers by measuring.
+    and its classification matches the filter's sign. Vouched is not "will
+    help" and unvouched is not "will not" — a defect verdict says only that EQ
+    is not structurally the wrong tool.
     """
     if verdicts is None:
-        # No banked classification at all: nothing is vouched, and the count
-        # says so. Distinct from the ``None`` the caller carries for "nobody
-        # computed this", which is what a durable read-back reports.
+        # No banked classification at all: nothing is vouched. Distinct from
+        # the ``None`` the caller carries for "nobody computed this".
         return (), len(filters)
     basis: list[ClassificationBasis] = []
     unvouched = 0
@@ -1706,15 +1136,10 @@ def _prescriber(raw: Any) -> tuple[str, str]:
 def _rationale(raw: Any) -> tuple[str, int]:
     """The prescriber's own words, banked to the ceiling, and what was dropped.
 
-    Returns ``(the banked text, how many characters were dropped)``.
-
-    **It truncates rather than refusing**, since 2026-08-29 — see
-    :data:`RATIONALE_MAX_CHARS`. A prose ceiling cannot be a safety bound
-    because nothing reads the prose: a document whose only fault was saying too
-    much used to lose its whole round, and the prescriber's remedy was to
-    re-author words no gate consults. Still strictly TEXT, because a rationale
-    that is a mapping means the document was built by something that does not
-    speak this contract.
+    Returns ``(the banked text, how many characters were dropped)``. It
+    TRUNCATES rather than refusing (:data:`RATIONALE_MAX_CHARS`) — a prose
+    ceiling cannot be a safety bound because nothing reads the prose — and is
+    still strictly TEXT.
     """
     if raw is None:
         return "", 0
@@ -1765,9 +1190,8 @@ def _parse_pinned_trim(
             _refuse(TRIM_PIN_MALFORMED, "pinned_trim_db keys must name a driver role")
         role = key.strip()
         if role in out:
-            # Two keys that differ only in surrounding whitespace strip to one
-            # role; a silent last-wins would let a document name two trims for a
-            # driver and ship whichever the dict happened to iterate last.
+            # Two keys differing only in whitespace strip to one role; a silent
+            # last-wins would ship whichever the dict iterated last.
             _refuse(
                 TRIM_PIN_MALFORMED,
                 f"pinned_trim_db names role {role!r} more than once",
@@ -1782,10 +1206,6 @@ def _parse_pinned_trim(
                 role=role,
                 document_names=sorted(named),
             )
-        # This module's own reader, consumed rather than re-written: it refuses
-        # ``bool`` (``True`` would read as +1 dB), refuses a string, and survives
-        # an arbitrary-precision int whose ``float()`` raises — which is a legal
-        # JSON number and would otherwise escape this gate as an OverflowError.
         db = _finite_or_none(value)
         if db is None:
             _refuse(
@@ -1823,11 +1243,9 @@ def _parse_prescription(
             DRIVER_PRESCRIPTION_MALFORMED,
             f"a prescription must be a mapping, got {type(raw).__name__}",
         )
-    # The blocklist runs BEFORE the unknown-field check, and the order is the
-    # point: every prohibited key is also an unknown one, so checking shape
-    # first would report a prescriber reaching for `volume_db` or
-    # `role_attenuations_db` as a typo. Those are different facts and only the
-    # second is worth a distinct slug.
+    # BEFORE the unknown-field check: every prohibited key is also an unknown
+    # one, so checking shape first would report a prescriber reaching for
+    # `role_attenuations_db` as a typo.
     prohibited = sorted(set(find_prohibited_keys(raw)))
     if prohibited:
         _refuse(
@@ -1892,35 +1310,18 @@ def read_driver_prescription(
     :class:`~.blend_prescription.BlendPrescriptionRefused` naming which gate
     said no.
 
-    The four keyword arguments are the evidence packet's own answers, read out
-    of it by :mod:`.evidence_packet`'s named readers. Taking VALUES rather than
-    the packet is what keeps this module a leaf of the DAG — the packet imports
-    the response format from here — and it is exactly the shape
-    :func:`~.blend_prescription.read_blend_prescription` already has.
+    The four keywords are the evidence packet's own answers, read out by
+    :mod:`.evidence_packet`'s named readers. Taking VALUES rather than the
+    packet keeps this module a leaf of the DAG. All four are required and
+    undefaulted: they are the only inputs a prescriber willing to lie cannot
+    forge, and forgetting ``incumbent_filters`` costs no error at all — only a
+    silent ``None`` where a disclosure belonged. That one bounds nothing and
+    ``None`` is a legitimate value for it, unlike the three above.
 
-    **All four are required and undefaulted**, on that function's rule: every
-    other bound in this gate rests on a number the prescriber itself supplied,
-    and these four are the only inputs a prescriber willing to lie cannot
-    forge. A caller that forgot one would lose the evidence's own opinion and
-    never know, which is precisely what a defaulted keyword hides —
-    ``incumbent_filters`` most of all, because forgetting it costs no refusal
-    and no error, only a silent ``None`` where a disclosure belonged.
-
-    ``incumbent_filters`` bounds nothing. It is what the graph is already
-    carrying, and it buys one disclosed number — see :func:`_check_displaced`
-    for what that number is and why it is not a gate. ``None`` is a legitimate
-    value ("this evidence does not say"), unlike the three above it.
-
-    **Order is deliberate.** Shape, then identity, then the bands, then the
-    per-filter bounds, then the composed cascade — every refusal, in the order
-    that sends a prescriber somewhere different, because reporting a later
-    failure for an earlier cause would send it to re-derive a number that was
-    fine. The DISCLOSURES run last, after the document is known to be
-    admissible, so one the gate was going to refuse anyway never pays for their
-    evaluation.
-
-    **The bounds are inclusive.** A filter exactly at a ceiling is legal; one
-    past it is refused.
+    Order is deliberate — shape, identity, bands, per-filter bounds, composed
+    cascade — because each stage sends a prescriber somewhere different. The
+    DISCLOSURES run last, so a document the gate refuses never pays for them.
+    The bounds are INCLUSIVE.
     """
     if raw is None:
         return None
@@ -1945,9 +1346,8 @@ def read_driver_prescription(
             "of the same round can disagree",
             prescription_answers=fingerprint,
             packet_is=packet_fingerprint,
-            # Only THIS side's inputs are knowable — the other is a fingerprint,
-            # not a build. Free: these three are already the gate's own answers
-            # to "was this evidence present", read for the checks below.
+            # Only THIS side's inputs are knowable — the other is a
+            # fingerprint, not a build.
             packet_is_evidence_present={
                 "drivers": bool(passbands_hz),
                 "classification": bool(classifications),
@@ -1968,8 +1368,6 @@ def read_driver_prescription(
 
     prescription_class = _check_bounds(filters, passbands)
     composed_boost_db, composed_boost_role = _check_composed(filters, passbands)
-    # The disclosures refuse nothing, so they run after every bound: a document
-    # the gate was going to reject anyway never pays for their evaluation.
     basis, unvouched_filters = _check_classification(filters, classifications)
     displaced_filters, displaced_boost_db, displaced_boost_role = _check_displaced(
         filters, incumbent_filters, passbands
@@ -2008,21 +1406,10 @@ def driver_prescription_route(prescription: DriverPrescription) -> str:
 
     :data:`LINEARIZATION_CANDIDATE_FIELD` is the role-keyed field the Layer-1a
     fit already writes, so a prescribed per-driver filter is byte-shaped like a
-    fitted one and passes the same emitter gates —
-    ``camilla_yaml._validated_linearization`` re-validates every entry
-    independently before any of it reaches CamillaDSP, and lands them in that
-    role's own branch immediately after its crossover filters. Both signs take
-    the same field: ``linearization`` accepts per-driver boosts to 12 dB and
-    ``camilla_yaml.linearization_headroom_db`` absorbs them.
-
-    It carries no condition of its own. It used to: until 2026-08-23 a boost
-    reaching here without a vouching verdict refused ``driver_boost_unvouched``,
-    which was :func:`_check_classification`'s bar restated as a property of the
-    FUNCTION so the two ungated constructors could not step past it. That bar is
-    now a disclosure by the same ruling, so restating it here would be the
-    refusal the ruling removed, wearing a second name — and the spend a boost
-    actually costs is bounded by :data:`MAX_SPL_SPEND_BOUND_DB`, which
-    :func:`_check_composed` applies at the boundary and the emitter re-proves.
+    fitted one and passes the same emitter gates. BOTH signs take it, and it
+    carries no condition of its own — the spend a boost costs is bounded by
+    :data:`MAX_SPL_SPEND_BOUND_DB`, which :func:`_check_composed` applies at
+    the boundary and the emitter re-proves.
     """
     return LINEARIZATION_CANDIDATE_FIELD
 
@@ -2034,101 +1421,35 @@ def driver_prescription_to_candidate_fields(
 ) -> dict[str, Any]:
     """The candidate fields a validated prescription contributes — MERGED BY ROLE.
 
-    The sibling of :func:`~.blend_prescription.blend_prescription_to_candidate_fields`,
-    and it exists for the same reason: a caller folding an outside value onto a
-    candidate should not spell the field, and the value must enter **at
-    candidate-build time** rather than be stamped on afterwards, because
-    ``MeasuredCrossoverCandidate.fingerprint`` is ``field(init=False)`` — a
-    content hash re-derived on read and refused as ``candidate_tampered``.
+    The value must enter at CANDIDATE-BUILD time:
+    ``MeasuredCrossoverCandidate.fingerprint`` is ``field(init=False)``, so a
+    value stamped on afterwards is refused as ``candidate_tampered``.
 
-    **The compose-vs-replace ruling, and why this signature is what it is.**
-    The blend class's answer does not carry over. There, a prescription and the
-    solver produce ONE list for ONE region, so a prescribed total simply
-    replaces a solved one. Here the field is role-keyed and two producers write
-    into it — the Layer-1a fit writes every eligible role, a document names the
-    subset its author had something to say about. Three options were on the
-    table:
+    MERGE BY ROLE: a document's named roles replace THOSE roles' filters,
+    unnamed roles keep their fitted ones. Replacing wholesale would
+    un-linearize a driver the document never mentioned; composing would double
+    corrections and could exceed the eight-filter branch ceiling from two
+    authors neither of whom sees the total. ``fitted`` is therefore REQUIRED
+    and undefaulted — forgetting it costs a driver its linearization,
+    invisibly, until somebody measures. Pass the candidate's own
+    ``{role: LinearizationFit.to_dict()}``, or ``None`` when no fit ran.
 
-    * **replace wholesale** — the blend precedent, mechanically. A one-role
-      document would silently discard the other driver's *fitted* filters, so a
-      prescriber correcting the tweeter would un-linearize the woofer without
-      saying so. Rejected.
-    * **compose (append)** — prescribed filters added to the fitted ones for the
-      same role. Doubles corrections at a frequency both aimed at, and can
-      exceed the eight-filter branch ceiling from two authors neither of whom
-      can see the total. Rejected.
-    * **MERGE BY ROLE** — a document's named roles replace *those roles'*
-      filters; unnamed roles keep their fitted ones. **Adopted (architect
-      ruling, 2026-08-19.)** It is the only option under which the response
-      format's own promise — "a role you do not name is not changed" — is true,
-      and it keeps one author per branch so the branch ceiling has one owner.
+    The per-role value carries ``filters`` and ``prescribed_by`` and nothing
+    that would claim to be a FIT: a prescription has no fit band, residual or
+    reason to report, and emitting those zeroed would bank a fit-quality claim
+    nothing measured. The one exception is :data:`MIC_TIER_FIELD`, carried
+    forward from the replaced entry — it names the MICROPHONE that measured the
+    round, not this correction, and ``_mic_trust_ceiling_hz`` reads it to
+    decide where the delta probe may grade at all (#2649).
 
-    ``fitted`` is therefore **required and undefaulted**, on
-    :func:`~.blend_prescription.read_blend_prescription`'s rule for exactly this
-    hazard: it is the input a caller can forget while everything still appears
-    to work, and the damage — a driver quietly losing its linearization — is
-    invisible until somebody measures. Pass the candidate's own
-    ``{role: LinearizationFit.to_dict()}`` mapping, or ``None`` when no fit ran.
+    ``headroom_cost_db`` is omitted but NOT owned here: a charge is a property
+    of the emitted chain (filters, crossover sections, committed trim) and this
+    is a pure function over a document and a fitted map.
+    :func:`~.planning.build_candidate` stamps it (#2759), so a caller that
+    folds these entries on without charging them discloses 0.0 for a branch
+    that genuinely spends maximum SPL.
 
-    **Splatting the prescribed-only map is FORBIDDEN**, and there is no longer a
-    way to obtain one from here. An earlier draft of this function returned only
-    the prescribed roles and told callers they could "splat it unconditionally";
-    those two sentences contradicted each other, and following the second would
-    have produced exactly the dropped-role hazard the ruling above rejects.
-
-    **The per-role value carries ``filters`` and nothing that would claim to be
-    a fit.** ``linearization_filters_by_role`` reduces
-    ``{role: LinearizationFit.to_dict()}`` by reading exactly one key, so this
-    shape reduces correctly — but a prescription is not a fit and has no
-    ``fit_band_hz``, no residual, and no ``reason_summary`` to report. Emitting
-    those zeroed would bank a fit-quality claim nothing measured, which is the
-    single thing this whole harness exists not to do. ``prescribed_by`` is
-    carried instead, so a reader of the persisted candidate can tell a
-    prescribed branch from a fitted one without joining it back to a receipt.
-
-    **...with ONE exception, and the line is fit-QUALITY versus
-    measurement-PROVENANCE.** :data:`MIC_TIER_FIELD` is carried forward from the
-    role's own fitted entry when it had one. It is not a claim about this
-    correction; it names the MICROPHONE that measured the round, and replacing a
-    role's filters does not change which microphone that was. It has to survive
-    because the candidate is the only carrier that crosses into the grading
-    stage, and ``CrossoverV2Session._mic_trust_ceiling_hz`` reads the tier off
-    this map to decide where the delta probe may grade at all (#2649). Dropping
-    it on a document that names every role removed the ceiling silently and
-    handed the probe untrusted HF — the exact defect #2649 closed.
-
-    Nothing else crosses that line, and each omission was checked against its
-    reader rather than assumed. ``reason_summary`` and
-    ``fit_band_hz``/``residual_rms_db`` are read by the fit-reason disclosure
-    and the attempt replay's comparability check, both of which SHOULD skip a
-    prescribed branch; ``driver_class`` has no reader on this map at all (the
-    browser surface reads it from the design draft), so carrying it would be
-    the speculative flexibility the paragraph above trims.
-
-    ``headroom_cost_db`` is the one omission this function does not OWN: the
-    entries it returns carry no charge, and
-    :func:`~.planning.build_candidate` stamps one onto every prescribed role
-    before the map reaches a candidate (#2759). The split is that a charge is a
-    property of the emitted CHAIN — filters, crossover sections, committed trim
-    — and this is a pure function over a document and a fitted map, which holds
-    the first of those three. Carrying the replaced fit's number instead would
-    be worse than omitting it: it is that fit's charge for filters that are no
-    longer emitted. So a caller that folds these entries onto a candidate
-    WITHOUT charging them discloses 0.0 through ``worst_headroom_cost_db`` for
-    a branch that genuinely spends maximum SPL — which is what a prescribed
-    BOOST does once the bounded boost route is open (#2754).
-
-    ``{}`` for a ``None`` prescription, whatever ``fitted`` holds: with no
-    document there is nothing to merge, and the fit reaches the candidate by its
-    own ordinary path. That keeps the no-prescription path byte-identical to
-    today's.
-
-    **It asks the route rather than spelling the field**, on the blend seam's
-    rule: this function is the last thing between a prescription and a
-    fingerprinted candidate field, and the one owner of "which field" answering
-    again costs a function call. Since 2026-08-23 that answer carries no
-    condition — see :func:`driver_prescription_route` — so this is a
-    single-source-of-truth call and no longer a second gate.
+    ``{}`` for a ``None`` prescription, whatever ``fitted`` holds.
     """
     if prescription is None:
         return {}
@@ -2148,17 +1469,14 @@ def driver_prescription_to_candidate_fields(
                 PACKET_FINGERPRINT_FIELD: prescription.packet_fingerprint,
             },
         }
-        # PROVENANCE, like ``prescribed_by`` beside it, and deliberately the BIT
-        # rather than the number: the pinned value itself is the candidate's own
+        # The BIT, never the number: the pinned value is the candidate's own
         # ``role_attenuations_db`` entry once ``build_candidate`` folds it, and
-        # writing it twice is how the two copies come to disagree. What the
-        # candidate cannot otherwise say is which of its trims the round did not
-        # solve, which is what a receipt has to disclose.
+        # two copies is how they come to disagree.
         if role in pinned_roles:
             entry["trim_pinned"] = True
-        # The one field that survives replacement — see the docstring. Read off
-        # the entry being replaced, so a role the fit never reached carries none
-        # and the ceiling's reader is told rather than left to infer.
+        # Read off the entry being REPLACED, so a role the fit never reached
+        # carries no tier and the ceiling's reader is told rather than left to
+        # infer.
         previous = merged.get(role)
         if isinstance(previous, Mapping) and previous.get(MIC_TIER_FIELD):
             entry[MIC_TIER_FIELD] = str(previous[MIC_TIER_FIELD])
@@ -2169,37 +1487,18 @@ def driver_prescription_to_candidate_fields(
 def driver_prescription_from_mapping(raw: Any) -> DriverPrescription | None:
     """A prescription read back out of this repository's own durable state.
 
-    The read-back half of the pair, on the family's rule: the same shape and
-    provenance checks, deliberately NOT the bounds, and ``None`` instead of a
-    raise.
-
-    Why no bounds. The only mappings that reach here were written by
-    :func:`read_driver_prescription` accepting them, so re-applying a bound
-    could not catch anything the boundary let through — it could only refuse a
-    prescription whose declared band moved between the round that measured it
-    and the stage that grades it, and refusing there would discard the evidence
-    of a round that really ran. The bounds have one owner and it is the
-    boundary.
-
-    Why still strict about shape. A hand-edited state file is a real input, and
-    a receipt that banked half a prescription would claim provenance it does not
-    have.
-
-    Note that this reader does NOT route and does NOT rebuild the
-    classification basis: it re-derives ``prescription_class`` from the gains
-    and applies no bound and no seam check, which is why
+    Shape and provenance only — the bounds have one owner and it is the
+    request gate; re-applying them here could only refuse a round that really
+    ran — and ``None`` instead of a raise. It does NOT route and rebuilds no
+    classification basis, which is why
     :func:`driver_prescription_to_candidate_fields` asks
-    :func:`driver_prescription_route` itself rather than assuming its input was
-    gated.
+    :func:`driver_prescription_route` itself.
     """
     if raw is None:
         return None
     try:
-        # The dropped-character count is discarded rather than carried: what
-        # this reader holds is the already-truncated text, so it cannot know
-        # what the prescriber originally wrote. `rationale_dropped_chars` takes
-        # its `None` default — "nobody computed this" — which is the honest
-        # answer and the same convention every other disclosure here follows.
+        # The dropped-character count is discarded: this reader holds the
+        # already-truncated text and cannot know what was originally written.
         filters, pinned_trim_db, fingerprint, model, operator, rationale, _dropped = (
             _parse_prescription(raw)
         )
@@ -2225,10 +1524,8 @@ def driver_prescription_from_mapping(raw: Any) -> DriverPrescription | None:
 def _passbands_from_mapping(raw: Any) -> tuple[tuple[str, float, float], ...]:
     """The banked bands, or ``()`` so the caller reads it as absent.
 
-    ``isfinite`` is the only numeric guard, and unlike the spool's band reader
-    there is no Nyquist bound here because this reader EVALUATES nothing — the
-    check would be a line no test could justify. The strict ordering is what
-    keeps a degenerate band out of a record a later stage would print.
+    No Nyquist bound, unlike the spool's band reader: this one EVALUATES
+    nothing. The strict ordering keeps a degenerate band out of the record.
     """
     if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
         return ()
@@ -2253,20 +1550,12 @@ def _passbands_from_mapping(raw: Any) -> tuple[tuple[str, float, float], ...]:
 def driver_prescription_response_format() -> dict[str, Any]:
     """The contract a per-driver prescriber must satisfy, as data.
 
-    Rendered into the evidence packet's ``response_format`` block beside the
-    blend class's by :mod:`.evidence_packet`, and enforced by
-    :func:`read_driver_prescription` here — one owner, so the instructions a
-    prescriber is given and the gate it is judged by cannot describe different
-    shapes.
-
-    **It is a pure constant.** Nothing banked, measured, or household-authored
-    reaches it, which is what makes prompt injection through the packet
-    structurally impossible rather than merely filtered: a packet's instructions
-    are these bytes whatever the round measured. That is also why the per-role
-    BANDS and the banked VERDICTS are not in here — those are evidence, they
-    vary per round, and they live in the packet's own evidence blocks. This
-    block states that the bounds exist and where to read them; it never states
-    their values for a particular speaker.
+    One owner for the instructions a prescriber is given and the gate it is
+    judged by, so the two cannot describe different shapes. It is a PURE
+    CONSTANT — nothing banked, measured, or household-authored reaches it,
+    which is what makes prompt injection through the packet structurally
+    impossible. That is also why the per-role BANDS and the banked VERDICTS are
+    not here: those are evidence and live in the packet's evidence blocks.
     """
     return {
         "artifact_schema_version": DRIVER_PRESCRIPTION_SCHEMA_VERSION,
@@ -2450,9 +1739,8 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "reasons an unvouched filter usually measures worse, which is "
                 "why the count is on the report you read before you stage"
             ),
-            # Per SIGN, and a pair rather than one key: a reader that walked
-            # the keys used to find only the cut's eligible class and could
-            # reasonably conclude a boost had no bar to satisfy.
+            # Per SIGN, and a pair rather than one key, so a reader walking the
+            # keys cannot conclude a boost has no bar to satisfy.
             "eligible_classification_for_a_cut": DEFECT_CUTTABLE,
             "eligible_classification_for_a_boost": DEFECT_BOOSTABLE,
             "the_sign_must_match_the_feature": (
