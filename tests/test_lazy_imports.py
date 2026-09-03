@@ -17,6 +17,8 @@ Pi 5, the savings these guards protect are:
   jasper-aec-bridge (31-49 fewer modules each; -0.8 to -2.6 MB on x86_64 —
   jasper-control and the grouping supervisor drop reconcile.py's whole
   transitive graph, not just dbus_next, so they save the most)
+- doctor lazy → PortAudio (via sounddevice) doesn't load in jasper-doctor,
+  which opens no audio device
 - jasper.active_speaker's module __getattr__ → jasper-voice reaches
   volume_latch without the commissioning stack behind its siblings
   (95 fewer modules; -7 MB on x86_64)
@@ -620,6 +622,28 @@ def test_doctor_wake_check_does_not_load_sklearn() -> None:
         "jasper-doctor's openWakeWord check pulled scikit-learn into the "
         "process. jasper/cli/doctor/wake.py must call "
         "ensure_openwakeword_import_safe() before its openwakeword import."
+    )
+
+
+def test_doctor_import_does_not_load_portaudio() -> None:
+    """jasper-doctor runs on every install and opens no audio device.
+
+    Importing `sounddevice` loads the PortAudio shared library, so the two
+    doctor checks that query devices import it inside their own bodies. Every
+    module in the doctor's import graph has to keep that bargain: one
+    top-level `import sounddevice` anywhere in it costs the load on every run
+    and makes the doctor unimportable on a host without the library.
+    """
+    probe = (
+        "import sys\n"
+        "import jasper.cli.doctor  # noqa: F401\n"
+        "print('sounddevice_loaded=' + "
+        "str('sounddevice' in sys.modules).lower())\n"
+    )
+    result = _run_probe(probe)
+    assert result.get("sounddevice_loaded") is False, (
+        "importing jasper.cli.doctor pulled sounddevice into sys.modules. "
+        "Keep the import inside the function that opens or queries a device."
     )
 
 
