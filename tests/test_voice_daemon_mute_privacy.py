@@ -413,7 +413,11 @@ async def test_listening_chirp_writes_inside_turn_episode() -> None:
         async def write_segment(self, pcm: bytes, **kwargs) -> None:
             events.append((pcm, kwargs))
 
-    wl = WakeLoop.for_tests()
+    # STATED, not inherited: the earcon bake width comes from
+    # `tts_wire_is_wide()`, which reads the box's own fanin.env — absent on a
+    # test runner, and an undeclared box is WIDE since #3655. `pcm_wide` below
+    # asserts this value, so the test declares it.
+    wl = WakeLoop.for_tests(_earcon_wide=False)
     wl._tts = _Tts()
     wl._chirp_on_pcm = b"wake"
     profile = object()

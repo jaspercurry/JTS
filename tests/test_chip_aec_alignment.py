@@ -281,6 +281,33 @@ def test_a_harvested_entry_round_trips_into_the_registry_it_is_pasted_into(
     assert shipped.for_identity(replace(_identity(), output_id="different_dac")) is None
 
 
+def test_the_apple_dongle_shipped_row_is_found_by_class_and_only_by_class() -> None:
+    # Pins the row pasted into shipped.REGISTRY for
+    # xvf3800_legacy_square_6ch on apple_usb_c_dongle (jts.local,
+    # 2026-09-02) — looked up against the real registry, not a
+    # monkeypatched stand-in.
+    identity = replace(
+        _identity(),
+        xvf_firmware="a1f70651e992d6f0bcff655b26925d33999b9c2d",
+        fixed_profile=(
+            "9e62ab0f4589a48f9918ce08974879ea41f381903da18c48e8e9a05ea595bb9e"
+        ),
+        output_id="apple_usb_c_dongle",
+        output_pcm="single_alsa:outputd_dac",
+        output_rate=48_000,
+        output_channels=2,
+        output_period=128,
+        output_buffer=256,
+    )
+
+    row = shipped.for_identity(identity)
+
+    assert row is not None
+    assert (row.k_samples, row.sys_delay) == (248, 48)
+    assert shipped.for_identity(replace(identity, output_id="different_dac")) is None
+    shipped._refuse_duplicate_classes(shipped.REGISTRY)
+
+
 def test_a_malformed_artifact_is_rejected() -> None:
     # The exact-field-set check rejects an artifact missing the commissioned
     # SYS_DELAY.

@@ -532,17 +532,6 @@ def test_aec_full_status_includes_legs_and_threshold(
             "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
         },
     )
-    validation_filters = []
-
-    def fake_validation_summary(**kwargs):
-        validation_filters.append(kwargs)
-        return {"state": "current", "status": "pass"}
-
-    monkeypatch.setattr(
-        aec_endpoints,
-        "_audio_validation_summary",
-        fake_validation_summary,
-    )
     monkeypatch.setattr(
         enhanced_aec,
         "status",
@@ -578,12 +567,6 @@ def test_aec_full_status_includes_legs_and_threshold(
     assert status["microphone"]["processing_mode"] == "Software AEC3"
     assert status["microphone"]["session_source"] == "WebRTC AEC3 via :9876"
     assert status["microphone"]["wake_legs"] == ["AEC3", "Chip-direct raw", "DTLN"]
-    assert status["validation"] == {"state": "current", "status": "pass"}
-    assert validation_filters == [{
-        "requested_profile": "xvf_software_aec3",
-        "mic_id": "xvf3800",
-        "dac_id": "apple_usb_c_dongle",
-    }]
     assert status["wake_word"]["label"]
     assert status["usb_mic"]["source_selection"]["requested"] == "primary"
     assert status["usb_mic"]["source_selection"]["applied"] is None

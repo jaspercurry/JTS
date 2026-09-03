@@ -52,7 +52,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
         with:
-          version: "0.11.14"
+          version: "0.12.9"
           python-version: "3.13"
           enable-cache: true
 
@@ -136,7 +136,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
         with:
-          version: "0.11.14"
+          version: "0.12.9"
           python-version: "3.13"
           enable-cache: true
 
@@ -273,7 +273,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
         with:
-          version: "0.11.14"
+          version: "0.12.9"
           python-version: "3.13"
           enable-cache: true
 
@@ -331,7 +331,7 @@ jobs:
         with:
           # Pin uv itself so dependency installation is reproducible for
           # the same reason `uv sync --locked` is.
-          version: "0.11.14"
+          version: "0.12.9"
           python-version: ${{ matrix.python-version }}
           enable-cache: true
 

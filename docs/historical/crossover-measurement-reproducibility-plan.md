@@ -907,7 +907,7 @@ Captured so they're off the table for the landing work:
   calls for. **Sequencing:** fix the estimator (T2-core, §4) against the
   retained corpus using the same headless direct-Pi-control harness first
   (fast offline iteration + fast hardware confirm), *then* productionize
-  the phone/browser capture-page experience — not before, since every
+  the phone/browser capture experience — not before, since every
   capture path (phone or headless) depends on the same estimator. Corpus:
   `captures/xover-e0-2026-07-21/` (`MANIFEST.md` full per-capture table,
   `RESULTS.md` full write-up).

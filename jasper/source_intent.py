@@ -42,8 +42,6 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from dbus_next.errors import DBusError  # type: ignore
-
 from jasper.audio_hardware.usb_port_role import (
     UsbPortRoleState,
 )
@@ -1062,6 +1060,8 @@ def _set_bluetooth_rfkill_blocked(blocked: bool) -> tuple[int, str]:
 
 
 def _read_bluez_powered() -> bool | None:
+    from dbus_next.errors import DBusError  # type: ignore
+
     try:
         from jasper.bluetooth.adapter import state
 
@@ -1077,6 +1077,8 @@ def _read_bluez_powered() -> bool | None:
 
 
 def _set_bluez_powered(enabled: bool) -> tuple[int, str]:
+    from dbus_next.errors import DBusError  # type: ignore
+
     try:
         from jasper.bluetooth.adapter import set_powered
 
@@ -1188,6 +1190,8 @@ def _attempt_teardown(
     action: Callable[[], object],
 ) -> None:
     """Run one safe teardown step and retain a bounded error for the caller."""
+
+    from dbus_next.errors import DBusError  # type: ignore
 
     try:
         action()
@@ -1664,6 +1668,8 @@ def _reconcile_once(
     handles both persistent enablement and runtime state, so there is no
     separate deploy-only stop mode.
     """
+
+    from dbus_next.errors import DBusError  # type: ignore
 
     operations = ops or default_reconcile_ops()
 

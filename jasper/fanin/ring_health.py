@@ -1487,6 +1487,8 @@ def read_persisted_coupling(
 
 def persisted_coupling_feeds_ring(
     env_path: str | os.PathLike = FANIN_ENV_PATH,
+    *,
+    text: str | None = None,
 ) -> bool:
     """Does ``fanin.env`` leave fan-in filling Ring A?
 
@@ -1499,9 +1501,16 @@ def persisted_coupling_feeds_ring(
     A file that EXISTS but cannot be read or decoded is corruption rather than a
     declaration and raises, leaving the caller to pick a direction;
     :func:`read_persisted_coupling` folds that into ``None`` instead.
+
+    ``text`` answers for a snapshot the caller has ALREADY read — the same rule
+    over the same key, so a caller that holds ``fanin.env``'s text for another
+    reason does not read the file twice and cannot spell the rule a second way.
+    An empty string is the no-file case: it declares nothing, so it feeds the
+    ring.
     """
-    try:
-        text = Path(env_path).read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return True
+    if text is None:
+        try:
+            text = Path(env_path).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return True
     return not coupling_value_removed(read_value(text, COUPLING_ENV_VAR))

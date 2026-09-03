@@ -196,9 +196,7 @@
 > **phone-mic relay transport**:
 > `POST /correction/crossover/relay-capture` (the third `RelayCaptureKind`
 > caller) plays the same capture sweep on `armed` and feeds the verified WAV into
-> `record_driver_capture` analysis. The Jasper relay is the normal product
-> transport; explicitly disabling `JASPER_CAPTURE_RELAY_BASE` retains the local
-> fallback. It reads the
+> `record_driver_capture` analysis. It reads the
 > play payload's real shape (`status` + nested `playback.audio_emitted`,
 > top-level `test_level_dbfs`/`sweep_meta`) and refuses while room/balance/sync
 > is active (server-computed at POST, re-checked when the phone arms). The
@@ -219,8 +217,8 @@
 > `committing` directly. A sweep first enters non-stoppable `finishing` for
 > phone upload, then `committing` for evidence persistence. Explicit Stop is
 > cancellation, not a failure-cue event, and the phone renders it as such. The
-> exact boundary and low-level lifecycle are canonical in
-> [phone-mic-relay-plan.md](../phone-mic-relay-plan.md).
+> exact boundary and low-level lifecycle are canonical in the crossover
+> relay-cancel handler itself.
 > The returned playback-role handoff is a server-only argument to capture
 > persistence; browser JSON cannot mint it. Existing bundles without a Shared
 > authority marker remain historical. Legacy browser/direct combined capture is

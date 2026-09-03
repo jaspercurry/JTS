@@ -222,7 +222,7 @@ against damage, and nothing else on the bench may hard-stop.
    "absolute SPL is never guessed"), `driver_cap_ceiling_underivable`, and the
    driver-floor confirmation pair.
 5. **Firmware brick hazards** — e.g. the XVF `SAVE_CONFIGURATION` ban
-   (`jasper/cli/aec_tune.py`).
+   (`tests/test_xvf_host.py`'s `_FORBIDDEN_COMMANDS`).
 
 **One retention that is kept by ruling rather than by mechanism.** Blend's
 `BOOST_ROUTE_UNAVAILABLE` (`crossover_v2/blend_prescription.py`) refuses the

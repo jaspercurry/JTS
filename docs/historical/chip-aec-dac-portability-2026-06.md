@@ -336,7 +336,7 @@ often "just works" means *chip-AEC* vs *fell back to software*.
 - Lab evidence (Option D, clock coherence): `docs/CHIP-AEC-EXPERIMENT.md` was
   deleted (see git history); the identity that decision now keys off is
   recorded in [ADR-0190](../adr/0190-chip-aec-identity-keys-only-physics.md)
-- Diagnostic baseline / observability: [AEC-DIAG-01-baseline.md](../AEC-DIAG-01-baseline.md), [AEC-DIAG-02-observability.md](../AEC-DIAG-02-observability.md)
+- Diagnostic observability: [AEC-DIAG-02-observability.md](../AEC-DIAG-02-observability.md)
 - DAC registry: [`jasper/audio_hardware/dac.py`](../../jasper/audio_hardware/dac.py); reconciler: [`deploy/bin/jasper-aec-reconcile`](../../deploy/bin/jasper-aec-reconcile)
 
 Last verified: 2026-07-30 (historical status and current-truth pointers

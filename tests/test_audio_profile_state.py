@@ -82,7 +82,7 @@ _STATUS_CASES = {
     "chip-aec-active": {
                 "exact_profile": {
                     "selection": "xvf_chip_aec", "requested": "xvf_chip_aec",
-                    "resolved": "xvf_chip_aec", "active": "xvf_chip_aec",
+                    "active": "xvf_chip_aec",
                     "state": "active", "reason": "Chip-AEC runtime env is applied.",
                     "validation_profile": "xvf_chip_aec", "action": "",
                     "commission_recommended": False,

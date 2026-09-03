@@ -839,7 +839,6 @@ def build_audio_profile_status(
     audio_profile: dict[str, Any] = {
         "selection": selection,
         "requested": requested_profile,
-        "resolved": requested_profile,
         "active": active_profile,
         "state": profile_state,
         "reason": profile_reason,

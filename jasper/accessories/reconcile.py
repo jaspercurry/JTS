@@ -29,8 +29,6 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from dbus_next.errors import DBusError  # type: ignore
-
 from jasper.atomic_io import atomic_write_text
 from jasper.install_profile import (
     install_profile_allows_local_sources,
@@ -796,6 +794,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from dbus_next.errors import DBusError  # type: ignore
+
     args = _parse_args(argv)
     logging.basicConfig(
         level=logging.INFO,

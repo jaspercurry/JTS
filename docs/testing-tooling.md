@@ -45,7 +45,6 @@ restate either.
 | Hold a field incident still in CI as a committed fixture | [Committed incident replay](#committed-incident-replay) |
 | Find what a measurement change actually moved, at value level | [Reading comparator (pre/post value diff)](#reading-comparator-prepost-value-diff) |
 | Detect, probe, or move the experimental USB turntable | [USB turntable experiment](#usb-turntable-experiment) |
-| Drive a crossover-v2 lab round with no browser or phone | [E0 headless capture client](#e0-headless-capture-client) |
 | Pull a crossover-v2 round's evidence off the Pi | [Crossover-v2 round banking](#crossover-v2-round-banking) |
 | Emit a round packet, or judge a prescription against it | [Crossover prescriber harness](#crossover-prescriber-harness) |
 | Decide if a bump is a driver defect, interference, or the room | [Feature-classification instrument](#feature-classification-instrument) |
@@ -911,33 +910,6 @@ install adds only a bounded udev-triggered stop one-shot for the known
 CH340-attached turntable. Read the experiment's
 [`README.md`](../experiments/usb-turntable/README.md) before use; coverage in
 `tests/test_usb_turntable_experiment.py`.
-
----
-
-## E0 headless capture client
-
-```sh
-.venv/bin/python experiments/e0-capture/e0_capture.py --selftest   # offline, no network
-```
-
-[`experiments/e0-capture/e0_capture.py`](../experiments/e0-capture/e0_capture.py)
-stands in for the browser capture page so a measurement microphone on a Mac can
-drive the real Pi-side crossover-v2 conductor (CHECK → MEASURE → VERIFY) with no
-browser and no phone. Wire protocol v3; records each plan entry with `sox` and
-posts the authenticated phone events the conductor's position gate rides. It is
-the lab/agent path — the browser flow stays first-class for a human driver.
-
-`--start-session` / `--tap-link` reach a live Pi and make the speaker play
-sweeps, so only a human hardware operator runs them.
-[`preflight_noaudio.py`](../experiments/e0-capture/preflight_noaudio.py)
-validates mint, spec fetch and MAC verification without playing anything. The
-wire contract is [`PROTOCOL.md`](../experiments/e0-capture/PROTOCOL.md); read
-the [`README.md`](../experiments/e0-capture/README.md) before a hardware round,
-in particular its residual risk — a capture-page change to the `setup` payload
-is not refused, it degrades the round to uncalibrated data, and the only signal
-is `correction.crossover_v2_uncalibrated_capture` in the
-`jasper-correction-web` journal. Coverage:
-`tests/test_e0_capture_experiment.py`.
 
 ---
 

@@ -57,6 +57,13 @@ logger = logging.getLogger(__name__)
 # daemon restarts and package upgrades. ABSENT => grouping off.
 GROUPING_ENV_FILE = "/var/lib/jasper/grouping.env"
 
+# The snapserver stream id — ONE definition: the argv builder names the pipe
+# source with it, the reconciler's binding pin re-binds persisted groups to it,
+# and the leader's runtime health checks clients against it. snapcast PERSISTS
+# group->stream assignments in server.json, so a stale binding silently mutes a
+# bond behind green health.
+SNAP_STREAM_ID = "jts"
+
 
 # ---------- Allowed value sets ----------
 

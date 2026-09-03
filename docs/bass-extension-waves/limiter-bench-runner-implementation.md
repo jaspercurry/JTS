@@ -59,8 +59,7 @@ Building the runner is authorized — gate 1 (the amendment is merged) is done. 
    `measurement_window()` (`jasper/correction/coordinator.py`); the two-boundary
    admission chain (`jasper/audio_measurement/excitation_admission.py` +
    `admitted_playback.py`); `MeasurementRamp` / `safe_playback`
-   (`jasper/audio_measurement/ramp.py`); the capture relay + `BUILDERS` registry
-   and `build_crossover_sweep_spec` (`jasper/capture_relay/spec.py`); the located
+   (`jasper/audio_measurement/ramp.py`); the located
    playback module (`jasper/audio_measurement/playback.py`); `bundles.py` +
    `evidence_identity.py` (`record_artifact`, `write_json_artifact`,
    `ArtifactIdentity`, `json_fingerprint`); the `camilla_yaml` limiter-name and
@@ -101,7 +100,7 @@ Building the runner is authorized — gate 1 (the amendment is merged) is done. 
 - `hard_excitation_band_hz`, `level_duration_limits` in
   `jasper/active_speaker/driver_safety.py`.
 - Operator CLI entries register in `pyproject.toml` `[project.scripts]` as
-  `jasper-<name> = "jasper.cli.<mod>:main"` (mirror `jasper-aec-tune`).
+  `jasper-<name> = "jasper.cli.<mod>:main"` (mirror `jasper-aec-commission`).
 
 ## What to build
 
@@ -134,9 +133,6 @@ Create:
 - Hardware-free tests under `tests/`.
 
 Modify (additive only):
-- `jasper/capture_relay/spec.py` — `build_bass_nearfield_spec(...)` + registry
-  entry (mirror `build_crossover_sweep_spec`; `driver_capture_geometry="near_field"`,
-  server-derived, never operator-supplied).
 - `pyproject.toml` — one `[project.scripts]` line for the CLI entry. This is
   operator invocation, not a daemon/route/service.
 
@@ -215,7 +211,7 @@ measurement window, admission, playback, and camilla graph; and a **round-trip**
 where a synthetic runner-emitted bundle is accepted by `produce_limiter_thresholds`
 (proving you emit what it reads). Deterministic, no network, no sleeps, no real
 device. Mirror the exemplar test style
-(`tests/test_bass_extension_limiter_evidence.py`, `tests/test_capture_relay_*.py`).
+(`tests/test_bass_extension_limiter_evidence.py`).
 The real on-device validation is Jasper's supervised bench session — not an
 automated test.
 

@@ -305,8 +305,7 @@ be undone or repeated (play, publish, apply, commit, journal). It is also the
 **adapter** for its one caller, the web host — which is why a one-line
 `return self._x` accessor there is a contract rather than scaffolding. Hand
 `authorize_begin` / `on_armed` / `consume_capture` to `run_capture_plan`
-([`capture_relay/session.py`](../jasper/capture_relay/session.py)) to drive a
-session; `snapshot` / `hydrate` carry phase persistence.
+to drive a session; `snapshot` / `hydrate` carry phase persistence.
 
 **The decisions are not there.** Every verdict rule, admission policy, prior,
 program composition, fit, spatial close and grade lives in
@@ -524,8 +523,6 @@ Design prose lives in each module's docstring. What that index does not cover:
 | [`audio_measurement/interference_nulls.py`](../jasper/audio_measurement/interference_nulls.py) | The interference-null identification gate and the per-position variance classifier. |
 | [`audio_measurement/frame_fit.py`](../jasper/audio_measurement/frame_fit.py) | The frame between two curves about to be differenced — the model and its disclosure record, no band and no verdict. |
 | [`attribution/`](../jasper/attribution/__init__.py) | Mechanism attribution's schema and persistence half: findings, the declaration registry, promotion, bundle-lifetime storage. |
-| [`capture_relay/session.py`](../jasper/capture_relay/session.py), [`spec.py`](../jasper/capture_relay/spec.py) | Session-spanning capture plans, the begin/deferred/refused vocabulary, hold and timeout budgets, `CAPTURE_PROTOCOL_VERSION`. |
-| [`capture-page/`](../capture-page/README.md) | The static phone recorder and the capture protocol it advertises. |
 
 ---
 
