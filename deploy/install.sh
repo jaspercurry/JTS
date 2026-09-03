@@ -1707,6 +1707,55 @@ PYBAKE
     rm -f /usr/share/jasper-web/correction-preflight.html
 }
 
+tune_nginx_worker_processes() {
+    # `worker_processes auto` starts one CPU-pinned worker per core to serve a
+    # loopback-only management proxy: four workers, ~14 MB Pss on a Pi 5 and
+    # three extra core-pinned processes on a realtime audio box. One is enough.
+    #
+    # This rewrites the packaged nginx.conf rather than dropping a file into
+    # /etc/nginx/modules-enabled/, which nginx does include at main context:
+    # worker_processes is a main-context directive and nginx rejects a second
+    # copy with "is duplicate", which would fail the `nginx -t` gate on every
+    # install. The cost of that choice is that nginx.conf is an nginx-common
+    # dpkg conffile, so a later package upgrade reports it as locally modified
+    # and keeps this copy. To undo on a box that already ran this, put
+    # `worker_processes auto;` back in /etc/nginx/nginx.conf — dropping the
+    # call here does not revert an installed box.
+    #
+    # Worker count is a comfort optimisation, so every failure path below
+    # leaves the packaged value in place instead of failing the deploy.
+    local main="${JTS_NGINX_MAIN_CONF:-/etc/nginx/nginx.conf}"
+    if [[ ! -f "${main}" ]]; then
+        echo "  ${main} not present; skipping nginx worker tuning."
+        return 0
+    fi
+    local tmp mode
+    if ! tmp="$(mktemp "${main}.jts.XXXXXX" 2>/dev/null)"; then
+        echo "  WARN: could not stage an ${main} rewrite; workers left as packaged."
+        return 0
+    fi
+    if ! sed -E 's/^([[:space:]]*)worker_processes[[:space:]]+[^;]+;/\1worker_processes 1;/' \
+            "${main}" > "${tmp}"; then
+        rm -f "${tmp}"
+        echo "  WARN: could not rewrite ${main}; workers left as packaged."
+        return 0
+    fi
+    if ! grep -qE '^[[:space:]]*worker_processes[[:space:]]+1;' "${tmp}"; then
+        printf 'worker_processes 1;\n' >> "${tmp}"
+    fi
+    if cmp -s "${tmp}" "${main}"; then
+        rm -f "${tmp}"
+        return 0
+    fi
+    mode="$(stat -c '%a' "${main}" 2>/dev/null || stat -f '%Lp' "${main}" 2>/dev/null || true)"
+    if ! { chmod "${mode:-644}" "${tmp}" && mv -f "${tmp}" "${main}"; }; then
+        rm -f "${tmp}"
+        echo "  WARN: could not publish ${main}; workers left as packaged."
+        return 0
+    fi
+    echo "  nginx worker_processes pinned to 1 in ${main}"
+}
+
 install_nginx_site() {
     # Standalone nginx site that reverse-proxies /spotify/ (multi-account
     # OAuth web flow) and /voice/ (voice-provider config wizard) on plain
@@ -1736,6 +1785,7 @@ install_nginx_site() {
     # default_server directives. nginx-light installs an enabled
     # `default` symlink; remove it idempotently.
     rm -f /etc/nginx/sites-enabled/default
+    tune_nginx_worker_processes
 
     if nginx -t 2>/dev/null; then
         systemctl enable --now nginx 2>/dev/null || true
@@ -1762,6 +1812,7 @@ install_streambox_nginx_site() {
 
     install_management_static_assets "${REPO_DIR}/deploy/index.html"
     rm -f /etc/nginx/sites-enabled/default
+    tune_nginx_worker_processes
 
     if nginx -t 2>/dev/null; then
         systemctl enable --now nginx 2>/dev/null || true

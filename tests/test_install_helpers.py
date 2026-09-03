@@ -646,6 +646,102 @@ def test_wifi_tuning_persists_retry_forever_and_power_save_disable():
     assert "802-11-wireless.powersave 2" in body
 
 
+_SYSTEMD_UNITS_LIB = _INSTALL_LIB_DIR / "systemd-units.sh"
+
+
+def test_mask_distro_background_units_masks_present_timers_only(tmp_path):
+    """Only the timers the image actually carries are masked (`mask --now` on
+    an absent unit would fail the install), and cloud-init is opted out via
+    its own sentinel rather than by removing the package."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "systemctl.log"
+    present = "apt-daily.timer\napt-daily-upgrade.timer\nman-db.timer\n"
+    stub = bindir / "systemctl"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [[ "$1" == "list-unit-files" ]]; then printf %s {shlex.quote(present)};'
+        " exit 0; fi\n"
+        f'printf "%s\\n" "$*" >> {shlex.quote(str(log))}\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    cloud_dir = tmp_path / "cloud"
+    cloud_dir.mkdir()
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"export PATH={shlex.quote(str(bindir))}:$PATH && "
+            f"source {_SYSTEMD_UNITS_LIB} >/dev/null 2>&1 && "
+            "mask_distro_background_units",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env={**os.environ, "JTS_CLOUD_INIT_DIR": str(cloud_dir)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (cloud_dir / "cloud-init.disabled").exists()
+    masked = [
+        line.split()[-1]
+        for line in log.read_text(encoding="utf-8").splitlines()
+        if line.startswith("mask ")
+    ]
+    assert masked == [
+        "apt-daily.timer",
+        "apt-daily-upgrade.timer",
+        "man-db.timer",
+    ]
+
+
+def _run_tune_nginx_worker_processes(conf: Path) -> None:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"source {_INSTALL_SH} >/dev/null 2>&1; tune_nginx_worker_processes",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env={**os.environ, "JTS_NGINX_MAIN_CONF": str(conf)},
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "packaged",
+    [
+        "user www-data;\nworker_processes auto;\npid /run/nginx.pid;\n",
+        "worker_processes 4;  # tuned\nevents { worker_connections 768; }\n",
+        "user www-data;\nevents { worker_connections 768; }\n",
+        "worker_processes 1;\n",
+    ],
+)
+def test_tune_nginx_worker_processes_pins_one_worker(tmp_path, packaged):
+    """One main-context worker_processes directive, value 1, stable on re-run.
+
+    A second copy would make nginx reject the config as duplicate, so the
+    count matters as much as the value."""
+    conf = tmp_path / "nginx.conf"
+    conf.write_text(packaged, encoding="utf-8")
+    _run_tune_nginx_worker_processes(conf)
+    once = conf.read_text(encoding="utf-8")
+    _run_tune_nginx_worker_processes(conf)
+    assert conf.read_text(encoding="utf-8") == once
+
+    directives = [
+        line.strip()
+        for line in once.splitlines()
+        if re.match(r"^\s*worker_processes\s", line)
+    ]
+    assert len(directives) == 1
+    assert directives[0].startswith("worker_processes 1;")
+
+
 def _run_reconcile_usb_data_role(
     cfg_path: Path,
     *,
