@@ -4,99 +4,14 @@
 
 """The round-grading comparison views a laptop campaign had re-derived by hand.
 
-Product promotion of four tools that lived under
-``captures/linearization-night-2026-08-19/tools/`` — ``frozen_reference.py``,
-``per_seat.py``, ``repeatability.py``, and ``agreement.py`` — which computed
-the numbers the crossover-v2 tournament's "dominance decides" rule was
-actually judged on (issue #2769). This module is the *reading and grading*
-half of that campaign; every DSP and grading primitive it uses is imported
-from the seam that already owns it:
-
-* :mod:`~jasper.active_speaker.crossover_v2.evidence_packet` reads a banked
-  round's bundle (this module never globs ``cloud_verify.json`` by hand) and
-  its persisted ``spec`` block rehydrates through
-  :meth:`~jasper.active_speaker.flat_spec.FlatSpecReport.from_dict` — the
-  product's own inverse of ``to_dict()``, not a private per-caller copy.
-* :mod:`~jasper.active_speaker.flat_spec` grades a curve
-  (:func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec`); this module
-  never re-derives a reference level or a band tolerance.
-* :mod:`~jasper.active_speaker.flat_spec_views` re-reads an already-graded
-  report per position/role. :func:`repeatability_spread` — no per-position
-  reference to substitute — uses the PUBLIC
-  :func:`~jasper.active_speaker.flat_spec_views.role_split_flatness`.
-  :func:`frozen_reference_grade` reaches for the private
-  :func:`~jasper.active_speaker.flat_spec_views._evaluate_position` /
-  :func:`~jasper.active_speaker.flat_spec_views._pool` building blocks
-  instead — the same ones the campaign's own ``frozen_reference.py`` used —
-  because grading a position against a SUBSTITUTED per-position reference is
-  exactly the one thing the public function has no parameter for; that
-  private coupling is load-bearing there and nowhere else in this module.
-* :mod:`~jasper.active_speaker.crossover_v2.durable_state` reads the round's
-  banked VERIFY curve (this module never parses ``verify_priors`` by hand).
-
-* :mod:`~jasper.active_speaker.crossover_v2.gate_sweep` reads one bin through
-  a ladder of gate windows over the same round's captures
-  (:func:`~jasper.active_speaker.crossover_v2.round_captures.discover_captures`);
-  :func:`spec_with_gate_sensitivity` stamps that answer onto the round's own
-  spec bands and computes none of it.
-
-**This module performs no DSP of its own.** It did, in one place: the VERIFY
-pose was the one curve a round did not carry pre-computed, so
-:func:`verify_pose_curve` deconvolved, gated, smoothed and resampled its raw
-dump-ring bytes. Ruling S3 banked the curve, so the re-derivation is gone and
-the only transform left anywhere here is the :func:`~.feature_optics.detrend`
-call :func:`agreement_table` takes through the shared optics seam.
-
-**Input shape**: a *banked round directory*, the tree
-``scripts/bank-crossover-round.sh <dest-dir>`` produces —
-
-.. code-block:: text
-
-    <round-dir>/
-      bundle/<session-id>/...        one active-speaker session bundle
-      state.json                     crossover-v2 flow state (optional)
-      design-draft.json              active-speaker design draft (optional)
-      applied-profile.json           applied baseline profile SSOT (optional)
-      repeat-floor.json              banked repeat floor (optional)
-
-It comes in TWO shapes, because the two-stage flow banks one bundle per stage:
-a MEASURE round (per-driver solos, the entry baseline, the lateral walk; no
-cloud group and so no cloud seats and no graded spec) and a VERIFY round (the
-verify capture and the cloud group). :func:`load_banked_round` reads either;
-:class:`BankedRound` says which views need which.
-
-**A seat's BEARING is read, and the position id alone is no longer enough.**
-Every view here keys a position by its stable ``position_id``
-(``f"{phase}_{index:02d}"``, assigned once by the walk driver), because that is
-what lines the SAME prompted spot up across rounds — but the 2026-08-24
-geometry ruling put the design axis at the front of the post-apply pose set,
-so an id stopped naming a fixed bearing across that boundary:
-``cloud_verify_02`` was −7° before it and 0° after; ``cloud_verify_04`` was
-−22° and is now +7°. A spread taken across the ruling is the difference between
-two different seats.
-
-So :func:`load_banked_round` reads each row's own ``position_deg`` into
-``PositionCurve.degrees`` (``None`` for a round banked before that writer, for
-a vertical seat, and for a retake that declares no side — "not recorded", never
-zero), and :func:`repeatability_spread` carries the bearings beside the numbers
-so a mixed comparison is VISIBLE
-(:meth:`RepeatabilityMetric.bearings_agree`). It discloses rather than refuses:
-the doctrine's hard stops are component damage and hearing safety, and
-comparing a pre-ruling round to a post-ruling one is a legitimate question a
-guard would have blocked. The synthesized VERIFY pose keeps ``0.0``, which is
-not a recovered angle but what that phase MEANS.
-
-The campaign's ``frozen_reference.py`` carried a hardcoded
-``index -> degrees`` table because the cloud record had no bearing of its own
-to read. It is not ported, and now for a better reason: a second
-hand-maintained copy of a fact the record already carries is only a place for
-the two to drift.
-
-**What this module still deliberately does NOT do.** It never joins a lateral
-walk pose to a cloud seat. They are DIFFERENT captures — a per-driver
-measurement and a summed sweep — not the same one with more detail, and both
-count positions from the front of their own table, so a matching index between
-them is a coincidence rather than a correspondence.
+Reads and grades a BANKED ROUND DIRECTORY (``scripts/bank-crossover-round.sh``),
+which comes in two shapes — a MEASURE round and a VERIFY round (#2769). Every
+DSP and grading primitive is imported from the seam that owns it; this module
+performs no DSP of its own beyond :func:`~.feature_optics.detrend`. A seat is
+keyed by its stable ``position_id``, but the 2026-08-24 geometry ruling moved
+what a given id points at, so each row's own ``position_deg`` rides beside it
+and a mixed comparison is disclosed rather than refused. A lateral walk pose is
+never joined to a cloud seat: they are different captures.
 """
 
 from __future__ import annotations
@@ -192,11 +107,9 @@ __all__ = [
     "verify_pose_curve",
 ]
 
-#: Mirrors ``.spatial.POSITION_ROLE_ONAX`` as a local literal rather
-#: than importing that (large, orchestration-heavy) module for one string.
-#: :mod:`.flat_spec_views` follows the same policy for the same reason — see
-#: its ``PositionCurve.role`` docstring: this package never owns that
-#: constant, it only takes it as a caller-supplied value.
+#: Mirrors ``.spatial.POSITION_ROLE_ONAX`` as a local literal rather than
+#: importing that large, orchestration-heavy module for one string. This package
+#: never owns the constant; it takes it as a caller-supplied value.
 DEFAULT_PRIMARY_ROLE = "onax"
 
 #: The synthetic role/position-id this module mints for a VERIFY-phase
@@ -204,8 +117,8 @@ DEFAULT_PRIMARY_ROLE = "onax"
 VERIFY_ROLE = "verify"
 VERIFY_POSITION_ID = "verify"
 
-#: The campaign's own literal agreement thresholds (``agreement.py``:
-#: ``test >= 3 and diss <= 1``), NOT a seat-count-relative generalisation —
+#: The campaign's own LITERAL agreement thresholds (``agreement.py``:
+#: ``test >= 3 and diss <= 1``), never a seat-count-relative generalisation —
 #: see :func:`agreement_table` for why a generalisation is the wrong port.
 AGREEMENT_TESTIFY_MIN = 3
 AGREEMENT_DISSENT_MAX = 1
@@ -217,24 +130,14 @@ AGREEMENT_DISSENT_MAX = 1
 
 @dataclass(frozen=True)
 class BankedRound:
-    """One round — banked or still live on the box — read once, ready for
-    every view below. :attr:`inputs` says which of the two it was and where
-    its three non-bundle inputs came from.
+    """One round — banked or still live on the box — read once, ready for every
+    view below.
 
-    ``report`` carries the round's own grading frame (trusted floor,
-    published exclusion intervals, and the full per-band evaluation, needed
-    for :func:`repeatability_spread`'s pooled figures). ``positions`` is built
-    directly from the evidence packet's ``positions`` block; nothing here
-    re-parses ``cloud_verify.json``.
-
-    **Both are ABSENT on a round that banked no cloud group, and that is a
-    round SHAPE rather than a defect** (#3478). Only the verify stage banks a
-    cloud group (``capture_plan.STAGE1_INCLUDES_CLOUD_MEASURE`` is ``False``),
-    so a measure-stage round — the only shape that produces an entry baseline
-    — has an empty ``positions`` and a ``None`` ``report``. The two accessors
-    below are where a view that NEEDS them says so; a view that does not
-    (:func:`entry_state_grade`, the frequency projector over :attr:`packet`)
-    reads the round it was given.
+    ``report`` carries the round's own grading frame; ``positions`` is built from
+    the evidence packet's ``positions`` block, and nothing here re-parses
+    ``cloud_verify.json``. Both are ABSENT on a round that banked no cloud group,
+    and that is a round SHAPE rather than a defect (#3478): only the verify stage
+    banks one. The two accessors below are where a view that NEEDS them says so.
     """
 
     round_dir: Path
@@ -262,14 +165,10 @@ class BankedRound:
     def graded_positions(self) -> tuple[PositionCurve, ...]:
         """The round's cloud seats, or :class:`RoundViewsError`.
 
-        TWO refusals, because two different things are missing. A round that
-        banked no cloud group is the measure-stage SHAPE above; a block that
-        says ``available`` with nothing left after the ``magnitude_db`` filter
-        is a TRUNCATED packet from a round that did walk one
-        (``evidence_packet._positions_block`` sets ``available`` to
-        ``bool(rows)``, so the two cannot be confused). The shape sentence over
-        a corrupt packet reads as "this round is fine, you asked it the wrong
-        question".
+        TWO refusals, because two different things are missing: a round that
+        banked no cloud group is the measure-stage SHAPE above, while a block
+        that says ``available`` with nothing left after the ``magnitude_db``
+        filter is a TRUNCATED packet from a round that did walk one.
         """
         if self.positions:
             return self.positions
@@ -287,13 +186,9 @@ def _row_degrees(row: Mapping[str, Any]) -> float | None:
     """One packet position row's banked bearing, or ``None`` for "not recorded".
 
     ``None`` covers every way a row can lack one and they are deliberately not
-    told apart HERE — a round banked before the 2026-08-24 geometry writer, a
-    vertical seat that commanded no bearing, a geometry-locked retake that
-    declares no side. The packet's own ``angle_deg`` block is where that
-    distinction is published; a view only needs to know it has no number.
-
-    ``bool`` is rejected before ``int`` because it subclasses it, so a
-    hand-edited ``true`` would otherwise be published as a 1° bearing.
+    told apart HERE; the packet's own ``angle_deg`` block publishes the
+    distinction. ``bool`` is rejected before ``int`` because it subclasses it,
+    so a hand-edited ``true`` would otherwise publish as a 1° bearing.
     """
     value = row.get("position_deg")
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -305,21 +200,13 @@ def load_banked_round(round_dir: Path) -> BankedRound:
     """Read one round — banked tree or LIVE session bundle — into a
     :class:`BankedRound`.
 
-    Which of the two it is, and therefore where the flow state, design draft
-    and applied profile come from, is :func:`~.round_inputs.round_inputs`'
-    answer; it rides on :attr:`BankedRound.inputs` so the views that reach for
-    the flow state read the same file this packet was built from rather than
-    re-deriving a location from :attr:`BankedRound.round_dir`.
-
-    Raises :class:`RoundViewsError` when the directory is neither shape, when
-    a banked tree holds more than one session, or when the bundle carries no
-    readable evidence packet.
-
-    **It does NOT judge what the round banked** — a loader-level "positions
-    and a graded spec, or nothing" refusal blocked the two views that need
-    neither on the only shape that reaches them (#3478, #3482). What a view
-    needs, the view says: :attr:`BankedRound.graded_report` and
-    :attr:`BankedRound.graded_positions`.
+    Which of the two it is, and so where the flow state, design draft and
+    applied profile come from, is :func:`~.round_inputs.round_inputs`' answer;
+    it rides on :attr:`BankedRound.inputs` so the views read the same files this
+    packet was built from. Raises :class:`RoundViewsError` when the directory is
+    neither shape, when a banked tree holds more than one session, or when the
+    bundle carries no readable evidence packet. It does NOT judge what the round
+    banked — what a view needs, the view says (#3478, #3482).
     """
     round_dir = Path(round_dir)
     inputs = round_inputs(round_dir)
@@ -347,14 +234,9 @@ def load_banked_round(round_dir: Path) -> BankedRound:
             freqs_hz=grid,
             magnitude_db=np.asarray(row.get("magnitude_db") or [], dtype=float),
             smoothing_fraction=smoothing,
-            # The seat's OWN banked bearing, read rather than defaulted, since
-            # the 2026-08-24 geometry ruling made the packet carry it. Absent
-            # stays ``None`` — "not recorded", never zero, which is
-            # ``PositionFlatness.degrees``' own documented contract — and that
-            # is what a round banked before the writer reads as. ``bool`` is
-            # excluded because it subclasses ``int`` and a stray ``true`` would
-            # otherwise publish 1 as a bearing, the same guard the packet's own
-            # angle block applies.
+            # The seat's OWN banked bearing, read rather than defaulted. Absent
+            # stays ``None`` — "not recorded", never zero. ``bool`` is excluded
+            # because it subclasses ``int``.
             degrees=_row_degrees(row),
             take_id=str(row.get("take_id") or ""),
         )
@@ -377,21 +259,15 @@ def load_banked_round(round_dir: Path) -> BankedRound:
 # --------------------------------------------------------------------------- #
 
 
-#: Why a band carries no gate sensitivity when the LADDER NEVER RAN on it.
-#: The ``not_swept_`` prefix is what tells these apart from the sweep's own
-#: refusals (``gate_sweep.NULL_*``), which mean the ladder ran and then
-#: declined to publish; both land in the one
-#: :attr:`~jasper.active_speaker.flat_spec.BandResult.gate_sensitivity_note`
-#: field, and conflating "not measured" with "measured, inconclusive" is the
-#: read this vocabulary exists to prevent.
+#: Why a band carries no gate sensitivity when the LADDER NEVER RAN on it. The
+#: ``not_swept_`` prefix tells these apart from the sweep's own refusals
+#: (``gate_sweep.NULL_*``), which mean the ladder ran and then declined to
+#: publish; both land in the one ``BandResult.gate_sensitivity_note`` field.
 NOT_SWEPT_SINGLE_POSE = "not_swept_single_pose"
 NOT_SWEPT_BAND_NOT_EVALUABLE = "not_swept_band_not_evaluable"
 #: Every ``RoundCapturesRefused`` the ladder can raise EXCEPT the single-pose
-#: one: no captures, no programs, a capture that will not bind to its bytes, a
-#: missing radiated band, and a radiated band that does not reach the sweep's
-#: reference band. They are one word here because the answer is the same —
-#: this round's captures did not become curves — and the refusal itself
-#: carries the detail.
+#: one. They are one word here because the answer is the same — this round's
+#: captures did not become curves — and the refusal carries the detail.
 NOT_SWEPT_CAPTURES_UNREADABLE = "not_swept_captures_unreadable"
 NOT_SWEPT_BIN_OFF_ANALYSIS_GRID = "not_swept_bin_outside_analysis_grid"
 
@@ -404,17 +280,10 @@ def _stamped_band(
 ) -> flat_spec.BandResult:
     """One band plus the ladder's read at its own worst bin, or the reason why not.
 
-    ``n_valid_rungs`` and ``gate_window_verdict`` are stamped whenever the
-    ladder RAN, including on a null: the former is the denominator behind the
-    two numbers beside it, and the latter is ``"unresolved"`` rather than
-    absent -- a reader weighing ``insufficient_valid_rungs`` needs to see how
-    few rungs, and a reader checking room-vs-speaker needs to see that the
-    ladder ran and still could not call it, not mistake silence for "never
-    swept".
-
-    ``detail`` carries only beside a capture-refusal note -- the two
-    ``RoundCapturesRefused`` buckets -- and is ``None`` for every other note,
-    swept or not.
+    ``n_valid_rungs`` and ``gate_window_verdict`` are stamped whenever the ladder
+    RAN, including on a null: ``"unresolved"`` rather than absent, so silence is
+    never mistaken for "never swept". ``detail`` carries only beside a
+    capture-refusal note and is ``None`` for every other note.
     """
     if feature is None:
         return replace(band, gate_sensitivity_note=note, gate_sensitivity_detail=detail)
@@ -441,42 +310,25 @@ def spec_with_gate_sensitivity(
     own worst bin.
 
     The spec verdict names the bin; :mod:`.gate_sweep` says whether that bin
-    moves with the analysis window. Before this the two lived one
-    ``jasper-gate-sweep --at-hz <bin>`` apart and a reader had to remember to
-    cross them, so the answer travelled only as far as whoever ran the second
-    command. Now each :class:`~jasper.active_speaker.flat_spec.BandResult`
-    carries the ladder's headline — including its ``window_verdict``, as
-    ``gate_window_verdict`` — at its own ``max_deviation_hz``, and the report
-    carries the frame those numbers are stated in. **Disclosure only: no
-    grade moves** — every field the evaluator set comes back untouched.
+    moves with the analysis window. Each
+    :class:`~jasper.active_speaker.flat_spec.BandResult` carries the ladder's
+    headline at its own ``max_deviation_hz``, and the report carries the frame
+    those numbers are stated in. **Disclosure only: no grade moves.**
 
-    **Why this reads a BANKED round rather than the live combine.** The cloud
-    pipeline's seam (``spatial.assemble_cloud_group_result``) has the graded
-    curve but not the impulse responses: ``CombinedResponse`` keeps each
-    position's magnitude and echo diagnostic and drops the ``ir`` that
-    ``detect_echo`` consumed. Reaching one there means the IR behind
-    ``DriverResponse.complex_tf``, and that IR has ALREADY been through
-    ``deconv.direct_arrival_window`` and the adaptive reflection gate, whose
-    search stops at ``gating.SEARCH_T_MAX_MS`` — 7 ms. The ladder's 9, 12 and
-    20 ms rungs would then read a window that was closed before they got
-    there, and ``sigma_growth_ratio`` would come back at ~1.0 by
-    construction: "it is the speaker", fabricated, on every band. A banked
-    round's ``summed_*.wav`` is the raw capture, deconvolved here against its
-    own program (:func:`~.round_captures.discover_captures`), and only that
-    IR can answer what a longer window admits.
+    It reads a BANKED round rather than the live combine because the cloud
+    pipeline's seam keeps each position's magnitude and drops the ``ir``. The IR
+    reachable there has already been through ``deconv.direct_arrival_window``
+    and the adaptive reflection gate, whose search stops at
+    ``gating.SEARCH_T_MAX_MS`` — 7 ms — so the ladder's 9, 12 and 20 ms rungs
+    would read a window closed before they got there and ``sigma_growth_ratio``
+    would come back at ~1.0 by construction. Only a banked round's raw
+    ``summed_*.wav``, deconvolved here against its own program, can answer what
+    a longer window admits.
 
-    Cost is one ladder pass over the round's captures: the round door's own
-    ``discover_captures`` decode/deconvolve, then ONE
-    :func:`~.gate_sweep.sweep_features` call at up to three bins. A band with
-    no ``max_deviation_hz`` to name is skipped rather than swept, and a report
-    that names none at all costs nothing — the captures are never read.
-
-    Every way there can be no number is named in
-    ``gate_sensitivity_note`` and none of them raises: a round whose
-    captures cannot be read is a round with an ungraded window, not an
-    ungraded spec. A capture refusal additionally stamps
-    ``gate_sensitivity_detail`` with the specific input that was missing —
-    the note names the bucket, the detail names the evidence.
+    Cost is one ladder pass at up to three bins. Every way there can be no
+    number is named in ``gate_sensitivity_note`` and none of them raises; a
+    capture refusal additionally stamps ``gate_sensitivity_detail`` with the
+    specific input that was missing.
     """
     report = banked.graded_report
     targets: list[tuple[int, float]] = []
@@ -487,8 +339,7 @@ def spec_with_gate_sensitivity(
             notes[index] = NOT_SWEPT_BAND_NOT_EVALUABLE
         elif not GRID_LO_HZ <= float(worst_hz) <= GRID_HI_HZ:
             # Named per band rather than allowed to raise: ``sweep_features``
-            # rejects the whole CALL on one off-grid bin, which would cost
-            # every other band its answer.
+            # rejects the whole CALL on one off-grid bin.
             notes[index] = NOT_SWEPT_BIN_OFF_ANALYSIS_GRID
         else:
             targets.append((index, float(worst_hz)))
@@ -506,17 +357,15 @@ def spec_with_gate_sensitivity(
             )
         except RoundCapturesRefused as exc:
             # The engine's own bar, echoed rather than re-judged: it refuses
-            # fewer than two captures, and this names that refusal apart from
-            # a round whose captures would not read at all.
+            # fewer than two captures.
             refused = (
                 NOT_SWEPT_SINGLE_POSE
                 if exc.reason == REFUSE_SINGLE_POSE
                 else NOT_SWEPT_CAPTURES_UNREADABLE
             )
             notes.update({index: refused for index, _hz in targets})
-            # The bucket slug names only the shape; what was actually missing
-            # rides on the exception the engine already raised, so a reader
-            # of this ONE band need not go re-run the ladder to see it.
+            # The bucket slug names only the shape; what was missing rides on
+            # the exception the engine already raised.
             details.update(
                 {index: {"reason": exc.reason, **exc.detail} for index, _hz in targets}
             )
@@ -544,14 +393,10 @@ def spec_with_gate_sensitivity(
 # --------------------------------------------------------------------------- #
 
 
-#: Why an entry state could not be graded, when the take IS banked but will not
-#: rehydrate. ``EntryBaseline.from_dict`` owns that rule and answers ``None``
-#: for every member of the set — a curve or mask that is not a list, a mask
-#: whose length disagrees with the curve, a curve ``ResponseCurve`` itself
-#: refuses (empty, length-mismatched, or non-finite), and a blank
-#: ``program_id`` / ``reference_mark`` / ``graph_fingerprint`` /
-#: ``captured_at``. This is what that ``None`` MEANS to an operator; that
-#: reader does not say which member it was, and neither does this.
+#: Why an entry state could not be graded when the take IS banked but will not
+#: rehydrate. ``EntryBaseline.from_dict`` owns that rule and answers ``None`` for
+#: every member of the set; it does not say which member it was, and neither
+#: does this.
 ENTRY_STATE_UNREADABLE = (
     "this round banked an entry_baseline take, but it does not rehydrate into "
     "a gradeable baseline — its curve, exclusion mask, or identity fields are "
@@ -563,44 +408,23 @@ ENTRY_STATE_UNREADABLE = (
 class EntryStateGrade:
     """The graph a round ENTERED on, graded — or the named reason it was not.
 
-    **The gap this closes.** Every round grades what it PRODUCED and compares
-    that against the state it started from, but the entry state itself was
-    never graded as a first-class result: a fresh box wearing nothing but its
-    declarations-derived config had no way to ask "how flat am I right now"
-    short of an operator calling
-    :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec` by hand. The
-    measurement was always banked — the entry-baseline take is write-once,
-    which is ruling S3's offline promise — so this is a reader, not a new
-    capture and not a second grader.
+    A reader, not a new capture and not a second grader: the entry-baseline take
+    is write-once (ruling S3's offline promise) and ``report`` is a real
+    :class:`~jasper.active_speaker.flat_spec.FlatSpecReport` from the shipped
+    evaluator, so it reads side by side with the round's own ``spec`` block.
 
-    ``report`` is a real :class:`~jasper.active_speaker.flat_spec.FlatSpecReport`
-    from the shipped evaluator, so it carries the same per-band table the
-    round's own ``spec`` block does and the two read side by side with no
-    translation step.
-
-    **The frame is the ROUND's, the exclusion mask is the TAKE's**, and the
-    split is deliberate. The mask belongs to this capture: it is
+    **The frame is the ROUND's, the exclusion mask is the TAKE's.** The mask is
     :func:`~.round_evidence._validity_clamp`'s output — the bins below THIS
-    capture's own reflection gate, where the response is an artifact of a
-    truncated gate window — not the cloud's interference screen, which is a
-    different mask over a different capture. Grading this curve through the
-    round's post-apply exclusions would report deviations at bins nobody
-    vouched for, and screen bins this capture's own gate never invalidated.
-    The floor and ceiling belong to the round, and :func:`_entry_frame` owns
-    both why and what a round that graded no after is stated in instead.
+    capture's own reflection gate — not the cloud's interference screen over a
+    different capture. Grading this curve through the round's post-apply
+    exclusions would report deviations at bins nobody vouched for.
+    :func:`_entry_frame` owns what a round that graded no after is stated in.
 
-    ``round_ordinal`` / ``round_ordinal_epoch`` are the round this entry state
-    belongs to and which epoch of the ordinal sequence that ordinal counts in,
-    read from the banked flow state. ``None`` for each is "not recorded" — a
-    round banked before the field shipped, or a directory with no state file.
-    They ride here because an unattributed table is not a disclosure: "the
-    entry state was this flat" means one thing at round 1 of a fresh box and
-    another at round 1 after a republish reset the count.
-
-    ``available`` ``False`` carries a non-empty ``reason`` and no report;
-    ``True`` carries a report and an empty ``reason``. A round that banked no
-    take is a fact this door reports rather than a failure it raises —
-    retention is fail-soft and never costs the household a retake.
+    ``round_ordinal`` / ``round_ordinal_epoch`` are read from the banked flow
+    state; ``None`` is "not recorded". They ride here because "the entry state
+    was this flat" means one thing at round 1 of a fresh box and another at
+    round 1 after a republish reset the count. ``available`` ``False`` carries a
+    non-empty ``reason`` and no report, and the reverse.
     """
 
     available: bool
@@ -634,17 +458,15 @@ class EntryStateGrade:
             "reason": self.reason,
             "program_id": self.program_id,
             "reference_mark": self.reference_mark,
-            # WHICH entry state was graded. Without it the table is an
-            # unattributed set of numbers: a first round's entry graph is the
+            # WHICH entry state was graded: a first round's entry graph is the
             # declarations-derived config a fresh box wears, a later round's is
-            # whatever the previous round left on the speaker, and the two are
-            # told apart by this fingerprint and nothing else here.
+            # whatever the previous round left, told apart by this and nothing
+            # else here.
             "graph_fingerprint": self.graph_fingerprint,
             "captured_at": self.captured_at,
             "artifact_ref": self.artifact_ref,
-            # WHICH round, and which epoch of the count that round number
-            # belongs to. Round 1 of a fresh box and round 1 after a reset are
-            # the same ordinal and different facts.
+            # WHICH round, and which epoch of the count. Round 1 of a fresh box
+            # and round 1 after a reset are the same ordinal, different facts.
             "round_ordinal": self.round_ordinal,
             "round_ordinal_epoch": self.round_ordinal_epoch,
             "report": None if self.report is None else self.report.to_dict(),
@@ -654,14 +476,10 @@ class EntryStateGrade:
 def _banked_series_position(state_path: Path | None) -> tuple[int | None, int | None]:
     """``(round_ordinal, round_ordinal_epoch)`` off the round's flow state.
 
-    ``(None, None)`` when the round names no readable flow state, and
-    ``None`` for either field the record does not carry — "not recorded",
-    never zero, on :attr:`PositionCurve.degrees`' rule. Read here rather than
-    off the evidence packet because the packet's ``round_receipt`` block
-    publishes identities and does not carry the ordinal.
-
-    ``bool`` is rejected before ``int`` because it subclasses it, the same
-    guard :func:`_row_degrees` applies for the same reason.
+    ``None`` for either field the record does not carry — "not recorded", never
+    zero. Read here rather than off the evidence packet because the packet's
+    ``round_receipt`` block publishes identities and not the ordinal. ``bool`` is
+    rejected before ``int`` for :func:`_row_degrees`' reason.
     """
 
     def _count(value: Any) -> int | None:
@@ -683,21 +501,15 @@ def _banked_series_position(state_path: Path | None) -> tuple[int | None, int | 
 
 
 def _entry_frame(report: FlatSpecReport | None) -> tuple[int, dict[str, Any]]:
-    """``(smoothing_fraction, frame_kwargs)`` for an entry baseline — the
-    round's own when it graded one, nothing when it did not.
+    """``(smoothing_fraction, frame_kwargs)`` for an entry baseline — the round's
+    own when it graded one, nothing when it did not.
 
-    The frame is the ROUND's so a before and an after are stated over one span
-    (:class:`EntryStateGrade`). A round that banked no cloud group graded no
-    after, so there is no span for this before to be made comparable with, and
-    the honest frame is no frame: unclamped, on ``0`` — this module's own
-    spelling for *not attested* (:func:`verify_pose_curve` reads the same
-    ``0``). Nothing is inferred and nothing is defaulted to a literal; the
-    emitted report echoes both clamps as ``None`` on its face, which is
-    :class:`~jasper.active_speaker.flat_spec.FlatSpecReport`'s own "not
-    stated", so the grade discloses which of the two frames produced it. The
-    room's floor rides with them under the same rule and is READ BACK rather
-    than re-derived: this grades an entry baseline in the ROUND's frame, and
-    a floor recomputed here would be a second opinion about one room.
+    The frame is the ROUND's so a before and an after are stated over one span. A
+    round that banked no cloud group graded no after, so the honest frame is no
+    frame: unclamped, on ``0``, this module's spelling for *not attested*. The
+    emitted report echoes both clamps as ``None`` on its face, so the grade
+    discloses which frame produced it. The room's floor is READ BACK rather than
+    re-derived: a floor recomputed here would be a second opinion about one room.
     """
     if report is None:
         return 0, {
@@ -713,25 +525,14 @@ def entry_state_grade(banked: BankedRound) -> EntryStateGrade:
     """Grade the entry state this round measured before it applied anything.
 
     Reads the banked entry-baseline take out of the round's evidence packet,
-    rehydrates it through
-    :meth:`~.round_evidence.EntryBaseline.from_dict` — which already owns the
-    "length-agreeing curve and mask, or nothing" rule, so this door does not
-    re-spell it — and hands the arrays to the shipped
-    :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec`. Every number
-    returned comes from that evaluator; see :class:`EntryStateGrade` for why
-    the frame is the round's and the mask is the take's, and
-    :func:`_entry_frame` for what a round that graded no after is stated in.
-
-    **It requires no cloud group**, which is what makes it reachable at all:
-    the measure stage is the only stage that banks an entry baseline and the
-    only one that banks no cloud (#3478).
-
-    ``packet["entry_baseline"]`` is indexed rather than fetched with a default:
-    the packet is DERIVED fresh on every read by a builder that always emits
-    this block (present-and-``available: False`` is how it reports a round that
-    banked no take), so a missing key is a corrupt packet and belongs in the
-    ``KeyError`` arm the CLI already treats as an unreadable round — not in a
-    fallback sentence that can never be produced.
+    rehydrates it through :meth:`~.round_evidence.EntryBaseline.from_dict` and
+    hands the arrays to the shipped
+    :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec`. It requires no
+    cloud group, which is what makes it reachable: the measure stage is the only
+    stage that banks an entry baseline and the only one that banks no cloud
+    (#3478). ``packet["entry_baseline"]`` is indexed rather than fetched with a
+    default, so a missing key lands in the ``KeyError`` arm the CLI already
+    treats as an unreadable round.
     """
 
     from jasper.active_speaker.crossover_v2.round_evidence import EntryBaseline
@@ -815,16 +616,14 @@ def _grade_positions(
 
 @dataclass(frozen=True)
 class FrozenReferenceResult:
-    """One target round graded twice: as shipped, and frozen to the
-    baseline's per-position reference levels.
+    """One target round graded twice: as shipped, and frozen to the baseline's
+    per-position reference levels.
 
-    ``shipped`` and ``frozen`` are ``{role: pooled_rms_db}``. The freeze
-    removes exactly the one degree of freedom §8.9 found compensating a
-    prescribed cut's level loss (grading each config against its OWN
-    reference) — see the module docstring's linked campaign tool for the
-    full derivation. ``target_own_refs`` / ``baseline_refs`` are the
-    per-position reference levels each half actually used, so a caller can
-    audit the freeze rather than trust it.
+    ``shipped`` and ``frozen`` are ``{role: pooled_rms_db}``. The freeze removes
+    the one degree of freedom §8.9 found compensating a prescribed cut's level
+    loss — grading each config against its OWN reference.
+    ``target_own_refs`` / ``baseline_refs`` are the per-position levels each half
+    actually used, so a caller can audit the freeze rather than trust it.
     """
 
     baseline_round_dir: str
@@ -850,16 +649,14 @@ class FrozenReferenceResult:
 
 
 def frozen_reference_grade(baseline: BankedRound, target: BankedRound) -> FrozenReferenceResult:
-    """Grade ``target`` twice: shipped, and frozen to ``baseline``'s
-    per-position reference levels.
+    """Grade ``target`` twice: shipped, and frozen to ``baseline``'s per-position
+    reference levels.
 
     ``target`` may be the same round as ``baseline`` (frozen == shipped by
-    construction in that case — the freeze changes nothing when a round is
-    compared against itself). Raises :class:`RoundViewsError` when either
-    round banked no cloud group (:attr:`BankedRound.graded_positions` /
-    :attr:`BankedRound.graded_report`), when a position present in ``target``
-    has no counterpart (matched by ``position_id``) in ``baseline``, or when
-    any position is not evaluable under its own report's frame.
+    construction then). Raises :class:`RoundViewsError` when either round banked
+    no cloud group, when a position in ``target`` has no ``position_id``
+    counterpart in ``baseline``, or when a position is not evaluable under its
+    own report's frame.
     """
     baseline_refs = {
         position.position_id: _own_reference_db(position, baseline.graded_report)
@@ -898,13 +695,13 @@ def frozen_reference_grade(baseline: BankedRound, target: BankedRound) -> Frozen
 
 @dataclass(frozen=True)
 class VerifyPoseResult:
-    """The VERIFY-phase (on-axis, zero-degree by definition of the phase)
-    capture's MEASURED curve, read off the round's own banked state and put on
-    the round's ``curve_grid_hz`` — or the reason it could not be.
+    """The VERIFY-phase capture's MEASURED curve, read off the round's own banked
+    state and put on the round's ``curve_grid_hz`` — or the reason it could not
+    be.
 
     ``curve`` is ``None`` exactly when ``reason`` is non-empty. Never raises: a
-    round banked before the curve was persisted, or one banked without its
-    ``state.json``, is a normal, expected shape, not an error.
+    round banked before the curve was persisted, or without its ``state.json``,
+    is a normal shape.
     """
 
     curve: PositionCurve | None
@@ -917,15 +714,12 @@ def _banked_verify_curve(
     """``((freqs_hz, measured_db), "")`` off the round's flow state, or
     ``(None, reason)``.
 
-    The ONE reader of ``verify_priors.verify_measured`` on this side of the
-    seam, because it has two consumers that want the curve differently:
-    :func:`verify_pose_curve` puts it on the round's cloud-position grid so it
-    can sit beside the seats, and :func:`forward_model_verify_delta` takes it
-    VERBATIM — that comparison interpolates onto the prediction's own grid, so
-    a detour through a third grid would only lose bins, and a round that
-    banked no cloud group has no such grid to detour through (#3482). The
-    parse itself is :func:`~.durable_state.verify_measured_curve_from_state`,
-    the product's own reader for the key.
+    The ONE reader of ``verify_priors.verify_measured`` on this side of the seam,
+    because two consumers want the curve differently: :func:`verify_pose_curve`
+    puts it on the round's cloud-position grid, and
+    :func:`forward_model_verify_delta` takes it VERBATIM, since that comparison
+    interpolates onto the prediction's own grid and a round with no cloud group
+    has no third grid to detour through (#3482).
     """
     state_path = inputs.state_path
     if state_path is None or not state_path.is_file():
@@ -951,32 +745,17 @@ def _banked_verify_curve(
 def verify_pose_curve(banked: BankedRound) -> VerifyPoseResult:
     """The VERIFY pose's measured curve, READ rather than re-derived.
 
-    This used to deconvolve every ``verify``-tagged dump-ring capture against
-    its banked program, gate it, smooth it at the positions' own fraction and
-    resample the result — the one place a *reading* module performed DSP, and
-    it did so only because the curve it wanted was not banked anywhere.
-
-    It is banked now. ``verify_priors.verify_measured`` holds the very pair the
-    delta probe graded (``(freqs_hz, measured_db, predicted_db)``, #2522), so
-    this reads the measured half through :func:`_banked_verify_curve` — the
-    module's one reader for that key — and interpolates it onto the round's
-    shared grid. That is the whole function: one hop from a banked number to a
-    comparable one.
+    ``verify_priors.verify_measured`` holds the very pair the delta probe graded
+    (``(freqs_hz, measured_db, predicted_db)``, #2522); this reads the measured
+    half through :func:`_banked_verify_curve` and interpolates it onto the
+    round's shared grid.
 
     The banked curve is block-averaged in dB to
     :data:`~.durable_state.MAX_PERSISTED_SUM_POINTS`, not smoothed at a
     fractional-octave width, so :attr:`PositionCurve.smoothing_fraction` is
-    reported as ``0`` — this module's own spelling for *not attested*
-    (:func:`load_banked_round` reads the same ``0`` for a round that banked no
-    fraction). Nothing consumes that attestation for THIS curve:
-    :func:`per_seat_curves` and :func:`agreement_table` read only
-    ``magnitude_db``, and the graded views run over the cloud seats.
-
-    **The resample is for the SEATS, and only they should pay it.** The grid
-    is the round's cloud-position grid, which is what makes this curve sit
-    beside them — and which a round that banked no cloud group does not have.
-    :func:`forward_model_verify_delta` therefore reads the same source
-    verbatim rather than coming through here.
+    reported as ``0`` — this module's spelling for *not attested*. The resample
+    is for the SEATS and only they should pay it, which is why
+    :func:`forward_model_verify_delta` reads the same source verbatim.
     """
     banked_curve, reason = _banked_verify_curve(banked.inputs)
     if banked_curve is None:
@@ -1002,19 +781,13 @@ def verify_pose_curve(banked: BankedRound) -> VerifyPoseResult:
 class ForwardModelDeltaResult:
     """A predicted-vs-measured VERIFY delta, or why there is none.
 
-    ``delta`` is ``None`` exactly when ``reason`` is non-empty, exactly as
-    :class:`VerifyPoseResult` reads. Never raises: a round that banked no
-    per-driver solos, or none at this pose, or no VERIFY curve, is a normal
-    shape rather than an error.
+    ``delta`` is ``None`` exactly when ``reason`` is non-empty. Never raises: a
+    round that banked no per-driver solos, none at this pose, or no VERIFY curve,
+    is a normal shape.
 
-    ``basis_round_dir`` / ``measured_round_dir`` name the two rounds the
-    halves came from, ALWAYS — equal when one round supplied both. They are
-    the join's disclosure: a delta whose prediction and whose measurement were
-    banked by different sessions is a different claim from one taken inside a
-    round, and a reader must not have to remember which it asked for.
-
-    Additive evidence. It carries no verdict, tolerance or score — what a
-    given ``max_abs_db`` means is the reader's judgement (invariant 3).
+    ``basis_round_dir`` / ``measured_round_dir`` name the two rounds the halves
+    came from, ALWAYS — equal when one round supplied both. Additive evidence: it
+    carries no verdict, tolerance or score (invariant 3).
     """
 
     delta: Mapping[str, Any] | None
@@ -1028,12 +801,9 @@ class ForwardModelDeltaResult:
     def acceptance(self) -> dict[str, Any]:
         """Whether a measurement judged this prediction, and which one (#3481).
 
-        Derived rather than passed in: a delta IS the judging, so a result
-        carrying one was judged by ``measured_round_dir`` and a result
-        carrying a reason was judged by nothing. The vocabulary is
-        :func:`~.forward_model.acceptance_block`'s, shared with the
-        prediction record, so ``predict``'s untriaged output and this one
-        cannot come to spell the same fact differently.
+        Derived rather than passed in: a delta IS the judging. The vocabulary is
+        :func:`~.forward_model.acceptance_block`'s, shared with the prediction
+        record, so the two cannot spell the same fact differently.
         """
         return forward_model.acceptance_block(
             self.measured_round_dir if self.delta is not None else None
@@ -1048,29 +818,19 @@ def forward_model_verify_delta(
     phase: str = PHASE_MEASURE,
     position_deg: int = DESIGN_AXIS_DEG,
 ) -> ForwardModelDeltaResult:
-    """Predict a summed response from ``basis``'s per-driver solos, and delta
-    it against the VERIFY sum ``measured`` banked (ticket 4.5).
+    """Predict a summed response from ``basis``'s per-driver solos, and delta it
+    against the VERIFY sum ``measured`` banked (ticket 4.5).
 
     The two halves the question needs: a PREDICTION BASIS (a banked take at
-    ``position_deg`` carrying both driver solos, magnitude and phase, per
-    ruling R9) and a MEASURED VERIFY SUM (``verify_priors.verify_measured``,
-    read verbatim through :func:`_banked_verify_curve`). Either absent, and the
-    result says which — this view never substitutes one for the other.
+    ``position_deg`` carrying both driver solos, magnitude and phase, per ruling
+    R9) and a MEASURED VERIFY SUM. Either absent, and the result says which.
 
-    **They come from two different banked rounds, because that is where the
-    flow puts them** (#3482). The measure stage walks the solos and never
-    reaches VERIFY; the verify stage measures the sum and walks no solos, in a
-    NEW bundle under a new relay session id. So ``measured`` is a separate
-    round and the join is disclosed on the result. It defaults to ``basis``,
-    which is the same question asked of one round — the shape a corpus banked
-    from a single session carries.
-
-    ``candidate`` is a PARAMETER rather than the round's incumbent, and that is
-    the point of a forward model: the question is usually what some candidate
-    WOULD have measured, not what the applied one did. Postdicting the flat
-    campaign's r8 regression is exactly that shape, and exactly this join —
-    r7's banked solos, the inherited EQ held verbatim, the delay r8 applied on
-    top, against r8's own measured verify.
+    They come from two different banked rounds because that is where the flow
+    puts them (#3482): the measure stage walks the solos and never reaches
+    VERIFY; the verify stage measures the sum in a NEW bundle under a new relay
+    session id. So the join is disclosed on the result. ``candidate`` is a
+    PARAMETER rather than the round's incumbent — the question is usually what
+    some candidate WOULD have measured.
     """
 
     measured = basis if measured is None else measured
@@ -1129,16 +889,13 @@ def per_seat_curves(
     """Every banked position plus, when supplied, the VERIFY pose — all
     normalised onto a comparable basis.
 
-    Each curve is expressed as its own deviation from its own median level
-    over ``norm_band_hz`` (the campaign tool's own normalisation). This is
-    what makes the VERIFY pose — captured through an entirely different DSP
-    path than the banked cloud positions — comparable to them without any
-    cross-calibration assumption: only SHAPE is compared, never absolute
-    level.
+    Each curve is expressed as its own deviation from its own median level over
+    ``norm_band_hz``. That is what makes the VERIFY pose — captured through an
+    entirely different DSP path — comparable to the banked cloud positions with
+    no cross-calibration assumption: only SHAPE is compared, never level.
     """
-    # Asked BEFORE the norm band, so a round that banked no cloud group is
-    # told what it is missing rather than that its (empty) grid has no bins in
-    # the band — the two are one absence and only the first sentence names it.
+    # Asked BEFORE the norm band, so a round that banked no cloud group is told
+    # what it is missing rather than that its empty grid has no bins in the band.
     positions = banked.graded_positions
     grid = np.asarray(banked.curve_grid_hz, dtype=float)
     sel = (grid >= norm_band_hz[0]) & (grid <= norm_band_hz[1])
@@ -1165,34 +922,25 @@ class RepeatabilityMetric:
     """One metric's spread across the compared rounds, plus each round's own
     value keyed by the round label the caller supplied.
 
-    ``degrees`` is the BEARING each round banked for this row, where the row is
-    a seat and the round records one — empty on a pooled role metric, which has
-    no single bearing. It exists because a per-seat metric is keyed by
-    ``position_id``, and a position id stopped naming the same bearing across
-    the 2026-08-24 geometry ruling: the ruling put the design axis at the front
-    of the post-apply pose set, so ``cloud_verify_02`` was −7° before it and 0°
-    after, ``cloud_verify_04`` was −22° and is now +7°. A "spread" taken across
-    that boundary is the difference between two different seats, and nothing in
-    the comparison could see it.
+    ``degrees`` is the BEARING each round banked for this row, empty on a pooled
+    role metric. It exists because a position id stopped naming the same bearing
+    across the 2026-08-24 geometry ruling, which put the design axis at the front
+    of the post-apply pose set: ``cloud_verify_02`` was −7° before it and 0°
+    after. A spread taken across that boundary is the difference between two
+    different seats.
 
-    **It DISCLOSES rather than refuses**, deliberately. The
-    measurement-loop doctrine's hard stops are for component damage and
-    hearing safety; this is an interpretation question, and an operator who
-    knowingly compares a pre-ruling round to a post-ruling one — to see what
-    the ruling itself did — is asking a legitimate question a guard would
-    have blocked. So the bearings ride beside the number and
-    :meth:`bearings_agree` names the answer; what to do about a ``False`` is
-    the reader's call.
+    It DISCLOSES rather than refuses: this is an interpretation question, and
+    comparing a pre-ruling round to a post-ruling one is legitimate.
+    :meth:`bearings_agree` names the answer; what to do with ``False`` is the
+    reader's call.
     """
 
     name: str
     values: dict[str, float]
     #: ``{round label: bearing}``, only for rows that HAVE one. A label absent
-    #: from this map recorded no bearing for the row (a pre-ruling round, a
-    #: vertical seat, a retake that declares no side) — which is why
-    #: :meth:`bearings_agree` answers ``None`` rather than ``True`` when fewer
-    #: than two are known: "nothing disagreed" and "nothing was comparable" are
-    #: different facts.
+    #: from this map recorded no bearing for the row, which is why
+    #: :meth:`bearings_agree` answers ``None`` rather than ``True`` below two
+    #: known bearings: "nothing disagreed" and "nothing was comparable" differ.
     degrees: dict[str, float] = field(default_factory=dict)
 
     def bearings_agree(self) -> bool | None:
@@ -1251,31 +999,17 @@ class RepeatabilityResult:
 def repeatability_spread(
     rounds: Sequence[tuple[str, BankedRound]], *, primary_role: str = DEFAULT_PRIMARY_ROLE
 ) -> RepeatabilityResult:
-    """Session-to-session spread of the pooled honest figures, plus each
-    round's own value and the pairwise deltas a caller can derive from them.
+    """Session-to-session spread of the pooled honest figures, plus each round's
+    own value.
 
-    ``rounds`` is ``(label, banked_round)`` pairs — the label is whatever
-    the caller wants printed (a session id, a timestamp, an attempt name).
-    Every round is graded SHIPPED (no frozen substitution) through the
-    PUBLIC :func:`~jasper.active_speaker.flat_spec_views.role_split_flatness`
-    — unlike :func:`frozen_reference_grade`, this view has no per-position
-    reference to substitute, so it has no reason to reach for the private
-    ``_evaluate_position``/``_pool`` building blocks the freeze needs.
-    ``role_split_flatness`` reports BOTH poolings per role (``rms_db``, the
-    shipped per-bin weighting, and ``log_rms_db``, the per-octave
-    re-weighting) and this view carries both through, correctly named —
-    an earlier version of this function hand-pooled with ``_pool`` and
-    labelled the result ``log_pooled`` while actually computing the LINEAR
-    (per-bin) pool, because ``_pool`` is the one weighted-mean identity both
-    poolings share and only the caller's choice of weights (bin count vs
-    octave span) tells them apart.
-
-    ``primary_role`` exists here only because ``role_split_flatness``'s
-    signature requires one — this function immediately recombines its
-    ``primary``/``others`` split back into one flat role list (below) and
-    reports every role the same way, so which role is named "primary"
-    changes nothing about this function's own output. It is a seam
-    requirement, not a repeatability policy.
+    ``rounds`` is ``(label, banked_round)`` pairs; the label is whatever the
+    caller wants printed. Every round is graded SHIPPED (no frozen substitution)
+    through the PUBLIC
+    :func:`~jasper.active_speaker.flat_spec_views.role_split_flatness`, which
+    reports BOTH poolings per role — ``rms_db``, the shipped per-bin weighting,
+    and ``log_rms_db``, the per-octave re-weighting — and this view carries both
+    through under those names. ``primary_role`` is a seam requirement of that
+    signature, not a repeatability policy: the split is immediately recombined.
     """
     role_pooled: dict[str, dict[str, float]] = {}
     log_role_pooled: dict[str, dict[str, float]] = {}
@@ -1298,18 +1032,15 @@ def repeatability_spread(
                         label
                     ] = position_flatness.rms_db
                     # The seat's banked bearing rides beside its number, so a
-                    # comparison spanning the geometry ruling is VISIBLE rather
-                    # than silently pairing two different seats under one id.
-                    # Only recorded bearings are stored — an absent label is
-                    # what makes ``bearings_agree()`` answer None instead of
-                    # inventing agreement out of a missing number.
+                    # comparison spanning the geometry ruling is VISIBLE. Only
+                    # recorded bearings are stored, which is what makes
+                    # ``bearings_agree()`` answer None rather than invent it.
                     if position_flatness.degrees is not None:
                         position_degrees.setdefault(position_flatness.position_id, {})[
                             label
                         ] = float(position_flatness.degrees)
         # The SHIPPED linear-pooled figure — spec_convergence_residual's own
-        # number, lifted from the report rather than recomputed — carried
-        # beside the per-octave/per-role re-poolings above so a caller can
+        # number, lifted from the report rather than recomputed — so a caller can
         # see whether the number the tournament actually reads repeats too.
         residual = flat_spec.spec_convergence_residual(banked.graded_report)
         if residual.evaluable and residual.rms_db is not None:
@@ -1366,11 +1097,10 @@ class AgreementFeature:
     n_dissent: int
     spread_db: float
     ratio: float
-    #: ``True``/``False`` when ``len(seats) >= AGREEMENT_TESTIFY_MIN`` (the
-    #: campaign's own literal threshold can in principle be met); ``None`` —
-    #: a NAMED not-evaluable state, never a vacuous boolean — below it, where
-    #: ``n_testify >= AGREEMENT_TESTIFY_MIN`` cannot be satisfied by
-    #: construction. See :func:`agreement_table`.
+    #: ``True``/``False`` when ``len(seats) >= AGREEMENT_TESTIFY_MIN``; ``None``
+    #: below it, where that threshold cannot be satisfied by construction — a
+    #: NAMED not-evaluable state, never a vacuous boolean. See
+    #: :func:`agreement_table`.
     common_mode: bool | None
 
     def to_dict(self) -> dict[str, Any]:
@@ -1428,15 +1158,11 @@ def _local_features(
 def default_agreement_lo_hz(banked: BankedRound) -> float:
     """The trusted sweep's low edge when a caller does not name one.
 
-    The round's OWN trusted floor (:attr:`FlatSpecReport.trusted_floor_hz`)
-    when it recorded one — a caller sweeping below a session's own honesty
-    floor would be grading bins that session itself could not vouch for.
-    Falls back to the spec's nominal reference-band edge
-    (:data:`~jasper.active_speaker.flat_spec.REFERENCE_BAND_HZ`) for a round
-    that recorded no floor, rather than a campaign-specific literal (the
-    previous default, ``357.14`` Hz, was one session's ``f_trusted_floor_hz``
-    at its particular 7 ms gate window — a coincidence of that campaign, not
-    a general default).
+    The round's OWN trusted floor when it recorded one — sweeping below a
+    session's own honesty floor grades bins that session could not vouch for.
+    Falls back to :data:`~jasper.active_speaker.flat_spec.REFERENCE_BAND_HZ`'s
+    edge rather than a campaign-specific literal (the previous default, 357.14
+    Hz, was one session's floor at its particular 7 ms gate window).
     """
     floor = banked.graded_report.trusted_floor_hz
     return float(floor) if floor is not None else float(REFERENCE_BAND_HZ[0])
@@ -1452,33 +1178,22 @@ def agreement_table(
     testify_db: float = 0.4,
     magnitude_ratio_ok: float = 3.0,
 ) -> tuple[AgreementFeature, ...]:
-    """Every feature in ``[lo_hz, hi_hz]``, with per-seat testify/dissent
-    counts and a magnitude-agreement ratio.
+    """Every feature in ``[lo_hz, hi_hz]``, with per-seat testify/dissent counts
+    and a magnitude-agreement ratio.
 
-    ``testify`` = same sign as the pooled curve AND ``|seat| >= testify_db``.
+    ``testify`` = same sign as the pooled curve AND ``|seat| >= testify_db``;
     ``dissent`` = opposite sign AND ``|seat| >= testify_db``. ``common_mode``
     requires BOTH sign agreement (``n_testify >= AGREEMENT_TESTIFY_MIN`` and
     ``n_dissent <= AGREEMENT_DISSENT_MAX``) AND magnitude agreement
     (``ratio <= magnitude_ratio_ok``).
 
-    **The sign-agreement counts are the campaign's own LITERAL thresholds**
-    (``test >= 3 and diss <= 1``), not a seat-count-relative generalisation.
-    An earlier version of this function scaled the testify requirement to
-    ``len(seats) - 1``, which is not the same rule: at the real 5-seat
-    default it demands testify >= 4 where the campaign's own measurement-
-    validated frame demands only >= 3, flipping the verdict on any feature
-    exactly 3 seats testify to (sign-agreement fails under the generalised
-    rule, holds under the literal one) — and at 1-2 seats it returns a
-    vacuous ``True`` (``max(n_seats - 1, 0)`` floors at 0, so an
-    unconstrained "at least 0 testify" trivially passes). Below
-    ``AGREEMENT_TESTIFY_MIN`` seats the literal threshold can never be
-    satisfied by construction, so ``common_mode`` is ``None`` there — a
-    named NOT-EVALUABLE state, distinct from both a real pass and a real
-    fail, matching the same "absence is not a zero" rule
-    :class:`~jasper.active_speaker.flat_spec.BandResult` follows for an
-    unevaluable band. ``n_testify``, ``n_dissent``, ``spread_db`` and
-    ``ratio`` are still reported at any seat count — they are measurements,
-    not verdicts, and remain informative even where the verdict is not.
+    The sign-agreement counts are the campaign's own LITERAL thresholds, not a
+    seat-count-relative generalisation: scaling testify to ``len(seats) - 1``
+    demands 4 at the 5-seat default where the measurement-validated frame demands
+    3, and returns a vacuous ``True`` at 1-2 seats. Below
+    :data:`AGREEMENT_TESTIFY_MIN` seats ``common_mode`` is ``None``, while
+    ``n_testify``, ``n_dissent``, ``spread_db`` and ``ratio`` are still reported
+    at any seat count — they are measurements, not verdicts.
     """
     grid = np.asarray(grid, dtype=float)
     if not seats:
@@ -1525,11 +1240,8 @@ def agreement_table(
 # --------------------------------------------------------------------------- #
 
 #: The lateral-walk curve role this view pools onto the on-axis curve: the
-#: composed acoustic response, not one driver's isolated branch. A local
-#: literal on :data:`DEFAULT_PRIMARY_ROLE`'s own precedent — importing
-#: ``crossover_v2.spatial`` (large, orchestration-heavy) for one string is
-#: not worth it, and this module defines no role constant of its own beyond
-#: what it needs to select.
+#: composed acoustic response, not one driver's isolated branch. A local literal
+#: on :data:`DEFAULT_PRIMARY_ROLE`'s own precedent.
 _SUMMED_CURVE_ROLE = "summed"
 
 _ON_AXIS_POSITION_UNAVAILABLE = (
@@ -1543,23 +1255,14 @@ _POOLED_WINDOW_UNAVAILABLE = (
 
 @dataclass(frozen=True)
 class PooledWindowResult:
-    """:func:`pooled_window_horizontal`'s output curve, plus its own
-    provenance.
+    """:func:`pooled_window_horizontal`'s output curve, plus its own provenance.
 
-    **Not** CTA-2034's "listening window": that average includes vertical
-    poses this rig does not capture — the name is deliberate (ADR-0202 /
-    ticket 6.13). This is the power average of whatever horizontal
-    bearings — 0/±7/±22° or fewer — the round's lateral walk banked a
-    :data:`_SUMMED_CURVE_ROLE` curve for.
-
-    Args:
-      freqs_hz: the grid the curve was resampled onto (the caller's own).
-      magnitude_db: the power-averaged curve.
-      bearings_deg: which banked bearings actually contributed, sorted —
-        the round's own coverage, disclosed rather than assumed complete.
-      n_curves: how many banked lateral-walk stops contributed in total —
-        never a superseded retake (:func:`pooled_window_horizontal` has
-        the pooling and supersession rules).
+    NOT CTA-2034's "listening window": that average includes vertical poses this
+    rig does not capture, and the name is deliberate (ADR-0202 / ticket 6.13).
+    This is the power average of whatever horizontal bearings — 0/±7/±22° or
+    fewer — the round's lateral walk banked a :data:`_SUMMED_CURVE_ROLE` curve
+    for. ``bearings_deg`` discloses the round's own coverage rather than assuming
+    it complete, and ``n_curves`` never counts a superseded retake.
     """
 
     freqs_hz: np.ndarray
@@ -1582,45 +1285,30 @@ def pooled_window_horizontal(
     """Power-average the round's banked SUMMED lateral-pose curves.
 
     **Reused, not re-walked.** :func:`~.feature_classifier.load_round_pose_curves`
-    is the same banked-curve reader (:func:`~.record_index.bundle_measurements`
-    + :func:`~.position_cycle.read_take_curves` +
-    :func:`~.position_cycle.parse_curve_magnitude`) every other lateral-pose
-    consumer in this tree already uses — never a second reader of the take
-    files. This function only adds the ``role == "summed"`` filter and the
-    power-average.
+    is the same banked-curve reader every other lateral-pose consumer uses; this
+    function only adds the ``role == "summed"`` filter and the power-average.
 
-    **Power-averaged, never dB-averaged** — the house convention
-    :func:`~jasper.audio_measurement.analysis.smooth_fractional_octave` uses
-    for the same reason (a dB mean over-emphasises deep nulls), restated
-    here rather than delegated to it because this reduction is across
-    CURVES at one frequency, not across frequencies within one curve, so it
-    is not literally a call to that function. Per curve: resampled onto
-    ``grid_hz`` and masked to the curve's OWN driven ``band_hz`` (a point
-    outside it was never measured, so it is excluded rather than read as
-    silence). Distinct stops sharing a bearing (a drift re-visit) are
-    power-averaged together FIRST, so a bearing visited three times cannot
-    outweigh one visited once; the per-bearing curves are then
-    power-averaged across bearings. A RETAKE is not such a repeat:
-    :func:`~.feature_classifier.load_round_pose_curves` has already
-    superseded the older attempts, so rejected noise never reaches this
-    pool.
+    **Power-averaged, never dB-averaged** — a dB mean over-emphasises deep
+    nulls. This reduction is across CURVES at one frequency rather than across
+    frequencies within one curve, so it is not a call to
+    ``analysis.smooth_fractional_octave``. Per curve: resampled onto ``grid_hz``
+    and masked to the curve's OWN driven ``band_hz``, since a point outside it
+    was never measured. Distinct stops sharing a bearing are power-averaged
+    together FIRST, so a bearing visited three times cannot outweigh one visited
+    once; a RETAKE is not such a repeat, the reader having already superseded
+    the older attempts.
 
-    Returns ``None`` when the round's lateral walk banked no
-    :data:`_SUMMED_CURVE_ROLE` curve at ANY bearing — not every round has
-    banked the composed post-apply response yet
-    (``docs/active-speaker-tuning-layers-design.md``'s "S at every angle"
-    is a landing capability, not a shipped one). The absence is disclosed
-    by the caller (:func:`audibility_co_metrics`'s ``pooled_window_reason``),
-    never fabricated.
+    Returns ``None`` when the lateral walk banked no :data:`_SUMMED_CURVE_ROLE`
+    curve at ANY bearing; the absence is disclosed by the caller, never
+    fabricated.
     """
 
     grid = np.asarray(grid_hz, dtype=float)
     by_bearing: dict[float, list[np.ndarray]] = {}
     for curve in load_round_pose_curves(Path(bundle_dir)):
-        # A raised pose is SKIPPED rather than given its own bucket: this
-        # pool is the lateral walk's horizontal window, and an elevated seat
-        # sharing a bearing with a mark-height one is a different measurement,
-        # not a repeat visit to the same stop.
+        # A raised pose is SKIPPED rather than given its own bucket: an elevated
+        # seat sharing a bearing with a mark-height one is a different
+        # measurement, not a repeat visit to the same stop.
         if (
             curve.role != _SUMMED_CURVE_ROLE
             or curve.position_deg is None
@@ -1634,13 +1322,11 @@ def pooled_window_horizontal(
     if not by_bearing:
         return None
 
-    # A grid point outside every contributing curve's own band is legitimate
-    # (not a bug): np.nanmean of an all-NaN slice is the correct "no bearing
-    # covered this frequency" answer, and both it and the log of its NaN
-    # propagate that honestly. Only the WARNINGS are silenced here — numpy's
-    # "Mean of empty slice" is raised through the stdlib `warnings` module
-    # (not the FPE machinery `errstate` governs), and "invalid value
-    # encountered in log10" needs `errstate` for the same NaN.
+    # A grid point outside every contributing curve's own band is legitimate:
+    # ``np.nanmean`` of an all-NaN slice is the correct "no bearing covered this
+    # frequency" answer. Only the WARNINGS are silenced — numpy's "Mean of empty
+    # slice" comes through the stdlib ``warnings`` module, and "invalid value
+    # encountered in log10" needs ``errstate`` for the same NaN.
     n_curves = sum(len(powers) for powers in by_bearing.values())
     bearing_means = []
     with warnings.catch_warnings(), np.errstate(invalid="ignore"):
@@ -1708,19 +1394,13 @@ class AudibilityCoMetrics:
     """NBD + SM on both curves ADR-0202 names, for one graded round.
 
     ``on_axis`` / ``pooled_window`` are ``None`` exactly when their own
-    ``*_reason`` is non-empty — the same "available iff no reason" contract
-    :class:`VerifyPoseResult` follows. A round missing one lens is not an
-    unreadable round: co-metrics inform, they never gate (ADR-0202 rule 2),
-    and an absent one is disclosed rather than fabricated.
+    ``*_reason`` is non-empty. A round missing one lens is not an unreadable
+    round: co-metrics inform and never gate (ADR-0202 rule 2).
 
-    Args:
-      round_dir: the round this describes.
-      on_axis: NBD/SM on ``banked.positions``' own
-        :data:`DEFAULT_PRIMARY_ROLE` curve(s), power-averaged together when
-        the round banked more than one.
-      pooled_window: NBD/SM on :func:`pooled_window_horizontal`.
-      pooled_window_bearings_deg: which bearings the pooled window actually
-        drew on — ``()`` when ``pooled_window`` is ``None``.
+    ``on_axis`` is NBD/SM on ``banked.positions``' own
+    :data:`DEFAULT_PRIMARY_ROLE` curve(s), power-averaged when the round banked
+    more than one; ``pooled_window_bearings_deg`` is ``()`` when there is no
+    pooled window.
     """
 
     round_dir: str
@@ -1746,17 +1426,13 @@ class AudibilityCoMetrics:
 def audibility_co_metrics(
     banked: BankedRound, *, band_hz: tuple[float, float] | None = None,
 ) -> AudibilityCoMetrics:
-    """NBD + SM on the on-axis curve and the pooled horizontal window, for
-    one graded round (ADR-0202, ticket 6.13).
+    """NBD + SM on the on-axis curve and the pooled horizontal window, for one
+    graded round (ADR-0202, ticket 6.13).
 
-    A co-metric surface, additive beside the round's grade: nothing here
-    reads or writes ``banked.report`` — it is read once, for its own
-    ``graded_band_hz`` default, and never touched again.
-
-    ``band_hz`` defaults to ``banked.report.graded_band_hz`` — the SAME
-    span ``flat_spec.SPEC_BANDS`` itself graded, so a co-metric and the
-    grade it sits beside describe the same stretch of spectrum unless a
-    caller deliberately asks for a different one.
+    A co-metric surface, additive beside the round's grade: ``banked.report`` is
+    read once, for its own ``graded_band_hz`` default, and never touched again.
+    ``band_hz`` defaults to that same span, so a co-metric and the grade beside
+    it describe the same stretch of spectrum.
     """
 
     band = banked.graded_report.graded_band_hz if band_hz is None else band_hz
@@ -1771,8 +1447,7 @@ def audibility_co_metrics(
         on_axis_metrics, on_axis_reason = None, _ON_AXIS_POSITION_UNAVAILABLE
     else:
         # Power-averaged on the same convention as everywhere else in this
-        # module (never dB-mean) — a no-op when there is exactly one, which
-        # is the ordinary case.
+        # module — a no-op when there is exactly one, the ordinary case.
         power = np.mean(
             [10.0 ** (p.magnitude_db / 10.0) for p in on_axis_positions], axis=0,
         )
