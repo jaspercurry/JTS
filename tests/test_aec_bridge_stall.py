@@ -31,6 +31,7 @@ import json
 import logging
 from queue import Empty
 import struct
+import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -39,7 +40,6 @@ import pytest
 
 from jasper.cli import (
     aec_bridge,
-    aec_bridge_config,
     aec_bridge_engines,
     aec_bridge_telemetry,
 )
@@ -110,7 +110,7 @@ def _reset_shutdown_and_stub_sd(monkeypatch):
     """
     aec_bridge._shutdown.clear()
     _shutdown.clear()
-    monkeypatch.setattr(aec_bridge_config, "sd", MagicMock())
+    monkeypatch.setitem(sys.modules, "sounddevice", MagicMock())
     aec_bridge._bridge_stats.reset()
     yield
     aec_bridge._shutdown.clear()
@@ -213,7 +213,7 @@ def test_main_exits_before_engine_init_when_mic_missing(monkeypatch):
     sd_mod.query_devices.side_effect = ValueError(
         "No input device matching 'Array'"
     )
-    monkeypatch.setattr(aec_bridge_config, "sd", sd_mod)
+    monkeypatch.setitem(sys.modules, "sounddevice", sd_mod)
     engine_cls = MagicMock()
     monkeypatch.setattr(aec_bridge_engines, "Aec3V1Engine", engine_cls)
 
