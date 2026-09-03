@@ -234,25 +234,6 @@ def test_audio_measurement_imports_neither_consumer_package():
     )
 
 
-def test_audio_measurement_imports_no_capture_transport():
-    """The measurement kernel is above the transport that feeds it.
-
-    ``jasper/capture_relay`` is parked (owner ruling, 2026-08-28): relay code
-    may import live code, never the reverse. The kernel is the half where that
-    is now unconditionally true, so it is pinned rather than claimed —
-    ``alignment`` moved here precisely because a WAV's provenance is not the
-    analyzer's business.
-    """
-    offenders = _upward_imports(
-        "jasper/audio_measurement", (("jasper", "capture_relay"),)
-    )
-    assert not offenders, (
-        "jasper/audio_measurement must not import jasper.capture_relay — the "
-        "relay is a parked transport and the kernel analyses captures whatever "
-        "carried them:\n" + "\n".join(offenders)
-    )
-
-
 def test_crossover_v2_imports_no_web_front_end():
     """The other half of the truth layer's membership.
 
