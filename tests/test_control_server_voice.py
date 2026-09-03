@@ -9,6 +9,9 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock
+
+from jasper.control import uds as uds_mod
 
 from tests.control_server_fixtures import (
     _explicit_passive_output_topology,
@@ -122,12 +125,107 @@ def test_session_end_already_ended_is_idempotent_200(server_with_voice_socket):
     assert body["result"] == "ALREADY_ENDED"
 
 
-def test_session_endpoint_503_when_voice_socket_missing(server_with_coordinator):
+def test_session_endpoint_503_when_voice_socket_missing(
+    monkeypatch, server_with_coordinator,
+):
+    # Keep the connect-retry budget tiny so this exercises the real give-up
+    # path without spending the real ~1.2s budget on every test run.
+    monkeypatch.setattr(uds_mod, "_CONNECT_RETRY_INTERVAL_SEC", 0.001)
+    monkeypatch.setattr(uds_mod, "_CONNECT_RETRY_BUDGET_SEC", 0.01)
+
     base, _ = server_with_coordinator
     # Fixture passes /nonexistent.sock — connect will FileNotFoundError.
     status, body = _post(f"{base}/session/start", None)
     assert status == 503
     assert "voice_daemon" in body["error"]
+    assert body["reason"] == "voice_daemon_unreachable"
+
+
+def _fake_voice_connection(reply: bytes):
+    reader = AsyncMock()
+    reader.readline.return_value = reply
+    writer = MagicMock()
+    writer.drain = AsyncMock()
+    writer.wait_closed = AsyncMock()
+    return reader, writer
+
+
+class _FakeClock:
+    """Deterministic time.monotonic()/asyncio.sleep() so the connect-retry
+    budget runs instantly instead of over real wall-clock seconds."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, secs: float) -> None:
+        self.now += secs
+
+
+def test_session_start_succeeds_once_the_late_socket_appears(
+    monkeypatch, server_with_coordinator,
+):
+    """A press landing in the ~2s gap after a jasper-voice restart -- before
+    its control socket exists -- must not hard-fail: the bounded connect
+    retry in jasper.control.uds._connect_voice_socket absorbs it, and the
+    request succeeds normally once the socket appears within budget."""
+    clock = _FakeClock()
+    monkeypatch.setattr(uds_mod.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(uds_mod.asyncio, "sleep", clock.sleep)
+
+    reader, writer = _fake_voice_connection(b'{"result":"OK"}\n')
+    attempts = 0
+
+    async def flaky_connect(_path):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise FileNotFoundError(_path)
+        return reader, writer
+
+    monkeypatch.setattr(uds_mod.asyncio, "open_unix_connection", flaky_connect)
+
+    base, _ = server_with_coordinator
+    status, body = _post(f"{base}/session/start", None)
+
+    assert status == 200
+    assert body["result"] == "OK"
+    assert attempts == 3
+
+
+def test_session_start_still_unreachable_logs_manual_refused_event(
+    monkeypatch, server_with_coordinator,
+):
+    """When the retry window closes with the socket still missing, the
+    refusal is not silent: jasper-control logs a structured
+    session.manual_refused event so the failure is visible in the logs
+    even though nothing can be heard on the speaker (jasper-control has no
+    audio path independent of the voice daemon's own control socket)."""
+    monkeypatch.setattr(uds_mod, "_CONNECT_RETRY_INTERVAL_SEC", 0.001)
+    monkeypatch.setattr(uds_mod, "_CONNECT_RETRY_BUDGET_SEC", 0.01)
+
+    import jasper.control.server as srv_mod
+
+    logged: list[tuple[str, dict]] = []
+
+    def spy_log_event(
+        _logger, name, /, *, level=None, exc_info=False, fields=None, **kwfields,
+    ):
+        logged.append((name, {**(fields or {}), **kwfields}))
+
+    monkeypatch.setattr(srv_mod, "log_event", spy_log_event)
+
+    base, _ = server_with_coordinator
+    status, body = _post(f"{base}/session/start", None)
+
+    assert status == 503
+    assert body["reason"] == "voice_daemon_unreachable"
+    manual_refused = [e for e in logged if e[0] == "session.manual_refused"]
+    assert len(manual_refused) == 1
+    assert manual_refused[0][1]["reason"] == "voice_daemon_unreachable"
+    assert manual_refused[0][1]["cmd"] == "START"
 
 
 def test_get_mic_reports_voice_starting_when_socket_missing(

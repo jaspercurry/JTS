@@ -18,6 +18,30 @@ MUX_CONTROL_SOCKET_PATH = "/run/jasper-mux/control.sock"
 # jasper-outputd's own STATUS is tens of KiB on a chip-AEC box.
 MAX_STATUS_BYTES = 256 * 1024
 
+# voice_daemon creates its control socket last during startup (~2s after the
+# process itself starts). A connect landing in that window would otherwise
+# surface as a hard "not running" 503 for a daemon that is merely still
+# coming up. Bounded well under the bridge's 2.0s per-request HTTP timeout
+# (jasper/control/client.py DEFAULT_TIMEOUT) so a caller sees one clean 503
+# rather than its own request timing out mid-retry.
+_CONNECT_RETRY_INTERVAL_SEC = 0.25
+_CONNECT_RETRY_BUDGET_SEC = 1.2
+
+
+async def _connect_voice_socket(
+    socket_path: str,
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    """Open the voice_daemon UDS, retrying a not-yet-created/not-yet-bound
+    socket for up to ``_CONNECT_RETRY_BUDGET_SEC``."""
+    deadline = time.monotonic() + _CONNECT_RETRY_BUDGET_SEC
+    while True:
+        try:
+            return await asyncio.open_unix_connection(socket_path)
+        except (FileNotFoundError, ConnectionRefusedError):
+            if time.monotonic() >= deadline:
+                raise
+            await asyncio.sleep(_CONNECT_RETRY_INTERVAL_SEC)
+
 
 async def _voice_socket_command(
     socket_path: str, cmd: str, *, timeout: float = 5.0,
@@ -27,7 +51,7 @@ async def _voice_socket_command(
     and /cue/play. The default 5s timeout covers session-state
     commands; cue playback takes longer (~6s for a 5s cue plus
     duck/restore plus drain) and bumps timeout explicitly."""
-    reader, writer = await asyncio.open_unix_connection(socket_path)
+    reader, writer = await _connect_voice_socket(socket_path)
     try:
         writer.write((cmd + "\n").encode("ascii"))
         await writer.drain()

@@ -57,6 +57,7 @@ class ControlHandlerMixin(BaseHTTPRequestHandler):
         timeout: float | None = None,
         missing_error: str | None = "voice_daemon not running",
         log_label: str = "voice command",
+        refusal_event: str | None = None,
     ) -> dict[str, Any] | None:
         raise NotImplementedError
 

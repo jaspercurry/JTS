@@ -215,12 +215,34 @@ def _log_key_action(
 
 
 def _is_retryable_hold_start(action: KeyAction, resp: ControlResponse | None) -> bool:
-    return (
+    if not (
         action.method == "POST"
         and action.path == "/session/start"
         and resp is not None
-        and resp.status == 409
-    )
+    ):
+        return False
+    if resp.status == 409:
+        return True
+    if resp.status == 503:
+        # A press landing in the ~2s window after a jasper-voice restart,
+        # before its control socket exists yet (jasper/control/uds.py's own
+        # bounded connect retry already absorbs the common case within one
+        # request; this is the fallback for a restart that outlasts it,
+        # retried for as long as the key stays held. Each retry POST already
+        # spent up to uds.py's own connect-retry budget before answering
+        # 503, so the effective cadence here is that budget plus
+        # HOLD_START_RETRY_SEC, not HOLD_START_RETRY_SEC alone). Keyed on
+        # the structured reason, not the 409/503-shared error prose, so a
+        # genuine refusal (CAP/PAUSED/MUTED/MEASURING) is left alone.
+        try:
+            body = resp.json()
+        except ValueError:
+            return False
+        return (
+            isinstance(body, dict)
+            and body.get("reason") == "voice_daemon_unreachable"
+        )
+    return False
 
 
 class _HoldController:
