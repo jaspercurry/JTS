@@ -1652,6 +1652,7 @@ def test_audio_profile_doctor_check_reports_active_chip_profile(monkeypatch):
             variant_id="xvf3800_legacy_square_6ch",
             geometry="square",
             chip_beam_plan="xvf_square_fixed_150_210",
+            chip_aec_supported=True,
         ),
     )
     result = doctor._assess_audio_profile(status)

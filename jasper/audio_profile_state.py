@@ -101,6 +101,7 @@ class MicProbe:
     variant_id: str = ""
     geometry: str = ""
     chip_beam_plan: str = ""
+    chip_aec_supported: bool = False
     probe_error: str | None = None
 
 

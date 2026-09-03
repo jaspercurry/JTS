@@ -500,6 +500,7 @@ def _probe_xvf_mic() -> MicProbe:
             variant_id=runtime_profile.variant_id,
             geometry=runtime_profile.geometry,
             chip_beam_plan=runtime_profile.chip_beam_plan_id,
+            chip_aec_supported=runtime_profile.chip_aec_supported,
         )
     except Exception as e:  # noqa: BLE001 - readiness must fail soft
         return MicProbe(

@@ -708,6 +708,7 @@ def _mic_probe_and_identity() -> tuple[MicProbe, dict[str, Any]]:
         variant_id=str(identity.get("variant_id", "")),
         geometry=str(identity.get("geometry", "")),
         chip_beam_plan=str(identity.get("chip_beam_plan", "")),
+        chip_aec_supported=bool(identity.get("chip_aec_supported", False)),
         probe_error=probe_error,
     )
     return probe, identity
