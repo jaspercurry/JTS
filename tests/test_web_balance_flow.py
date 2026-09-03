@@ -22,7 +22,6 @@ from http import HTTPStatus
 
 import pytest
 
-import jasper.correction.coordinator as coordinator
 import jasper.multiroom.state as mstate
 import jasper.web.rooms_setup as rooms
 from jasper.multiroom.balance import (
@@ -33,6 +32,7 @@ from jasper.multiroom.balance import (
 from jasper.web import balance_flow
 
 from ._async_wait import wait_until_sync
+from ._web_test_helpers import patch_measurement_window
 
 LEADER_G = {
     "enabled": True, "role": "leader", "channel": "left",
@@ -122,9 +122,8 @@ def _reset_state():
 def pair_env(loop_thread, monkeypatch):
     """A healthy bonded pair plus fakes for every seam; returns the
     call log + the schedule/run_async bridges bound to the loop."""
-    calls = {"window_open": 0, "window_closed": 0, "futures": [],
-             "spawned": [], "procs": [], "posted": [],
-             "volume_normalized": 0, "volume_restored": 0}
+    calls = {"window_events": [], "futures": [], "spawned": [], "procs": [],
+             "posted": [], "volume_normalized": 0, "volume_restored": 0}
     monkeypatch.setattr(
         mstate, "read_grouping_state", lambda *a, **k: dict(LEADER_G))
     monkeypatch.setattr(rooms, "self_addresses",
@@ -138,15 +137,7 @@ def pair_env(loop_thread, monkeypatch):
     monkeypatch.setattr(
         rooms, "_map_peers", lambda fn, addrs: [fn(a) for a in addrs])
 
-    @asynccontextmanager
-    async def fake_window(**kwargs):
-        calls["window_open"] += 1
-        try:
-            yield
-        finally:
-            calls["window_closed"] += 1
-
-    monkeypatch.setattr(coordinator, "measurement_window", fake_window)
+    patch_measurement_window(monkeypatch, calls)
 
     class FakeVolumeGuardReport:
         def public_dict(self):
@@ -369,8 +360,7 @@ def test_start_opens_one_window_and_rejects_double_start(pair_env):
     payload = start_ok(pair_env)
     assert payload["members"]["left"]["is_self"] is True
     assert payload["members"]["right"]["label"] == "jts3"
-    assert pair_env["window_open"] == 1
-    assert pair_env["window_closed"] == 0  # held across the session
+    assert pair_env["window_events"] == ["open"]  # held across the session
     assert pair_env["volume_normalized"] == 1
     assert balance_flow.active_phase() == "measuring"
     payload, status = balance_flow.handle_start(
@@ -479,8 +469,7 @@ def test_full_walkthrough_computes_trims(pair_env):
     assert rec["delta_db"] == pytest.approx(6.0, abs=0.1)
     assert rec["left_trim_db"] == pytest.approx(-6.0, abs=0.1)
     assert rec["right_trim_db"] == 0.0
-    wait_until_sync(lambda: pair_env["window_closed"] == 1, interval=0.02)
-    assert pair_env["window_closed"] == 1  # renderers restored
+    wait_until_sync(lambda: pair_env["window_events"] == ["open", "close"])
     assert balance_flow.active_phase() is None  # analyzed ≠ active
     wait_until_sync(lambda: pair_env["volume_restored"] == 1, interval=0.02)
     assert pair_env["volume_restored"] == 1
@@ -536,11 +525,7 @@ def test_stop_terminates_playback_and_releases_window(pair_env):
     payload, status = balance_flow.handle_stop()
     assert status == 200
     assert pair_env["procs"][0].terminated
-    deadline = time.monotonic() + 2.0
-    while (pair_env["window_closed"] != 1
-           and time.monotonic() < deadline):
-        time.sleep(0.02)
-    assert pair_env["window_closed"] == 1
+    wait_until_sync(lambda: pair_env["window_events"] == ["open", "close"])
     assert balance_flow.handle_status()["phase"] == "idle"
 
 
@@ -585,7 +570,7 @@ def test_activity_advances_the_idle_deadline(pair_env):
         d_lock = balance_flow._state["idle_deadline"]
     assert d_ramp > d_start
     assert d_lock > d_ramp
-    assert pair_env["window_closed"] == 0  # still held across the bumps
+    assert pair_env["window_events"] == ["open"]  # still held
 
 
 def test_inactivity_releases_the_window(pair_env, monkeypatch):
@@ -594,8 +579,7 @@ def test_inactivity_releases_the_window(pair_env, monkeypatch):
     an abandoned phone tab can't hold the speaker paused indefinitely."""
     monkeypatch.setattr(balance_flow, "IDLE_TIMEOUT_S", 0.2)
     start_ok(pair_env)
-    wait_until_sync(lambda: pair_env["window_closed"] == 1, interval=0.02)
-    assert pair_env["window_closed"] == 1
+    wait_until_sync(lambda: pair_env["window_events"] == ["open", "close"])
     st = balance_flow.handle_status()
     assert st["phase"] == "idle"
     assert "timed out" in st["error"]

@@ -17,10 +17,12 @@ import concurrent.futures
 import logging
 import tempfile
 import threading
+from contextlib import suppress
 from http import HTTPStatus
 from typing import Any, Callable
 
 from jasper.audio_measurement.correction_lane import exec_correction_play
+from jasper.correction.coordinator import HeldWindow
 from jasper.log_event import log_event
 
 from .pair_flow import members_by_channel, resolve_pair
@@ -104,33 +106,8 @@ def handle_status() -> dict:
         }
 
 
-async def _session_window(session_token: int, entered: threading.Event) -> None:
-    from jasper.correction.coordinator import measurement_window
-
-    release = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    with _lock:
-        if not _owns_session_locked(session_token, phase="measuring"):
-            entered.set()
-            return
-        _state["release_window"] = (
-            lambda: loop.call_soon_threadsafe(release.set)
-        )
-    try:
-        async with measurement_window():
-            with _lock:
-                if not _owns_session_locked(session_token, phase="measuring"):
-                    return
-            entered.set()
-            try:
-                await asyncio.wait_for(release.wait(), SESSION_MAX_S)
-            except asyncio.TimeoutError:
-                log_event(logger, "sync.session_timeout", level=logging.WARNING)
-                with _lock:
-                    if _owns_session_locked(session_token, phase="measuring"):
-                        _state["release_window"] = None
-                        _reset_locked("session timed out")
-    except Exception as e:  # noqa: BLE001
+async def _session_window(session_token: int, window: HeldWindow) -> None:
+    def failed(e: BaseException) -> None:
         log_event(logger, "sync.window_failed", level=logging.ERROR, exc_info=True)
         with _lock:
             # A successful analysis advances the phase before it releases the
@@ -141,8 +118,26 @@ async def _session_window(session_token: int, entered: threading.Event) -> None:
             if int(_state.get("session_token", 0)) == session_token:
                 _state["release_window"] = None
                 _reset_locked(f"measurement window failed: {e}")
-    finally:
-        entered.set()
+
+    with _lock:
+        if not _owns_session_locked(session_token, phase="measuring"):
+            window.entered.set()
+            return
+        _state["release_window"] = window.release
+    with suppress(Exception):
+        async with window.holding(on_failure=failed) as release:
+            with _lock:
+                if not _owns_session_locked(session_token, phase="measuring"):
+                    return
+            window.entered.set()
+            try:
+                await asyncio.wait_for(release.wait(), SESSION_MAX_S)
+            except asyncio.TimeoutError:
+                log_event(logger, "sync.session_timeout", level=logging.WARNING)
+                with _lock:
+                    if _owns_session_locked(session_token, phase="measuring"):
+                        _state["release_window"] = None
+                        _reset_locked("session timed out")
 
 
 def _marker_wav_path() -> str:
@@ -215,8 +210,8 @@ def handle_start(hostname: str, schedule: Callable) -> tuple[dict, int]:
         _state["members"] = members
         session_token = int(_state["session_token"])
 
-    entered = threading.Event()
-    window_coro = _session_window(session_token, entered)
+    window = HeldWindow()
+    window_coro = _session_window(session_token, window)
     try:
         window_future = schedule(window_coro)
     except RuntimeError as e:
@@ -229,7 +224,7 @@ def handle_start(hostname: str, schedule: Callable) -> tuple[dict, int]:
             "ok": False,
             "error": "could not start the measurement window",
         }, HTTPStatus.INTERNAL_SERVER_ERROR
-    if not entered.wait(WINDOW_OPEN_TIMEOUT_S):
+    if not window.entered.wait(WINDOW_OPEN_TIMEOUT_S):
         cancel = getattr(window_future, "cancel", None)
         if callable(cancel):
             cancel()

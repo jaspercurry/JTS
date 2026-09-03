@@ -79,8 +79,8 @@ import json
 import logging
 import threading
 import time
-from collections.abc import Mapping
-from contextlib import asynccontextmanager
+from collections.abc import Callable, Mapping
+from contextlib import asynccontextmanager, suppress
 from typing import Any, AsyncIterator
 
 from ..control.uds import _mux_socket_command
@@ -993,14 +993,13 @@ async def measurement_window(
 class HeldWindow:
     """A ``measurement_window`` held open for a caller that is not on its loop.
 
-    The handshake — capture the loop, publish a thread-safe releaser, signal a
-    ``threading.Event`` once the window is up, then park on an ``asyncio.Event``
-    until someone releases it — is the one ``jasper/web``'s sync and balance
-    flows each keep privately in their own ``_session_window``. Owning it here
-    means one copy of the ordering rules that are easy to get wrong: a release
-    that arrives before the loop exists is honoured rather than lost, and
-    ``entered`` is set in a ``finally`` so a caller blocked on it is never
-    stranded by a window that failed to open.
+    ``hold`` is the plain park; ``holding`` is for a caller already on a loop
+    that needs its own body and parking policy inside the window. Both get the
+    two orderings that are easy to get wrong: a release arriving before the loop
+    exists is honoured rather than lost, and ``entered`` is signalled from the
+    one ``finally`` below, after ``on_failure`` has published what the failure
+    means to the caller — so nobody wakes to state that does not exist yet, and
+    nobody is stranded by a window that failed to open.
 
     Which phase ``error`` belongs to is read off the flags: ``held`` False means
     the window never opened; ``lost`` set means it ended while held, before
@@ -1036,8 +1035,15 @@ class HeldWindow:
         except RuntimeError:
             pass  # the loop is already gone: the hold ended on its own
 
-    async def hold(self) -> None:
-        """Enter the window and park until released. Run this ON its loop."""
+    @asynccontextmanager
+    async def holding(
+        self, *, on_failure: Callable[[BaseException], None] = lambda _e: None,
+    ) -> AsyncIterator[asyncio.Event]:
+        """Enter the window, yield the Event ``release`` sets. ON its loop.
+
+        The failure is recorded here, handed to ``on_failure`` to publish, then
+        re-raised for the caller to suppress or not.
+        """
 
         try:
             self._loop = asyncio.get_running_loop()
@@ -1046,11 +1052,23 @@ class HeldWindow:
                 self._release.set()
             async with measurement_window(**self._window_kwargs):
                 self.held = True
-                self.entered.set()
-                await self._release.wait()
+                yield self._release
         except BaseException as exc:  # noqa: BLE001
             self.error = exc
             if self.held and not self._releasing.is_set():
                 self.lost.set()
+            on_failure(exc)
+            raise
         finally:
             self.entered.set()
+
+    async def hold(self) -> None:
+        """Enter the window and park until released. Run this ON its loop."""
+
+        # BaseException, not Exception: measurement_window aborts a lost window
+        # by CANCELLING the task that entered it — this one. `holding` records
+        # the failure, so swallowing it here just lets this loop finish.
+        with suppress(BaseException):
+            async with self.holding() as release:
+                self.entered.set()
+                await release.wait()
