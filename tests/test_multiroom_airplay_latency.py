@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from jasper.multiroom import airplay_latency as al
-from jasper.multiroom.config import GroupingConfig
+from jasper.multiroom.config import DEFAULT_BUFFER_MS, GroupingConfig
 from tests.shairport_template_helpers import SHAIRPORT_TEMPLATE, template_value
 
 PROBE_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "airplay-latency-probe.sh"
@@ -122,16 +122,30 @@ def test_backend_buffer_constant_tracks_the_shipped_template():
 def test_probe_script_frame_math_tracks_the_python_constants():
     """scripts/airplay-latency-probe.sh can't import Python, so it re-derives
     (frames + SHAIRPORT_FIXED_ADD_FRAMES) / AIRPLAY_FRAME_RATE_HZ in awk and
-    restates AP2_DEFAULT_NOTIFIED_FRAMES in its summary prose. Pin both
-    against this module's constants so a retune here can't silently leave
-    the probe behind (it already did once: PIPELINE_FIXED_DELAY_SEC moved
-    0.150 -> 0.160 without the script's derived figures following)."""
+    restates AP2_DEFAULT_NOTIFIED_FRAMES and the PIPELINE_FIXED_DELAY_SEC-
+    derived need/threshold/spare figures in its summary prose. Pin all of it
+    against this module's constants, computed rather than hardcoded so this
+    guard cannot itself go stale (it already drifted once for real:
+    PIPELINE_FIXED_DELAY_SEC moved 0.150 -> 0.160 without the script's
+    derived figures following)."""
     text = PROBE_SCRIPT.read_text(encoding="utf-8")
     m = re.search(r"\(f\+(\d+)\)/(\d+)", text)
     assert m is not None, "expected the awk (frames + add) / rate formula"
     assert int(m.group(1)) == al.SHAIRPORT_FIXED_ADD_FRAMES
     assert int(m.group(2)) == al.AIRPLAY_FRAME_RATE_HZ
     assert f"{al.AP2_DEFAULT_NOTIFIED_FRAMES} frames" in text
+
+    pipeline_ms = round(al.PIPELINE_FIXED_DELAY_SEC * 1000)
+    need_sec = al.PIPELINE_FIXED_DELAY_SEC + DEFAULT_BUFFER_MS / 1000.0
+    threshold_sec = need_sec + al.SHAIRPORT_BACKEND_BUFFER_SEC
+    budget_sec = (al.AP2_DEFAULT_NOTIFIED_FRAMES + al.SHAIRPORT_FIXED_ADD_FRAMES) / al.AIRPLAY_FRAME_RATE_HZ
+    spare_sec = budget_sec - threshold_sec
+    tight_buffer_ms = round((budget_sec - al.SHAIRPORT_BACKEND_BUFFER_SEC - al.PIPELINE_FIXED_DELAY_SEC) * 1000)
+
+    assert f"{pipeline_ms} ms" in text
+    assert f"need ~{need_sec:.2f} s => threshold ~{threshold_sec:.3f} s" in text
+    assert f"~{threshold_sec:.3f} s threshold with ~{spare_sec:.2f} s" in text
+    assert f"buffer_ms above {tight_buffer_ms}" in text
 
 
 @pytest.mark.parametrize("bad", [0, -1, -77175])
@@ -330,15 +344,24 @@ def test_doctor_warns_when_budget_too_short(monkeypatch):
 # ---------- AirPlay-health classification of the ground-truth warning ----------
 
 
-def test_classify_offset_too_short_warning():
-    from jasper.control.airplay_health import SHAIRPORT_UNIT, classify_journal_line
-
-    line = (
+@pytest.mark.parametrize(
+    "line",
+    [
+        # 5.2.3 rtp.c:1717 wording (jts.local).
         "The stream latency (0.300000 seconds) is too short to accommodate an "
         "audio backend latency offset of 0.550000 seconds and a backend buffer "
         "of 0.100000 seconds. The audio_backend_latency_offset has been set to "
-        "zero."
-    )
+        "zero.",
+        # 4.3.7 rtp.c:1822 wording (jts3, jts4) — the fleet runs both versions,
+        # and this warn()'s wording differs between them.
+        "The stream latency (0.300000 seconds) it too short to accommodate an "
+        "offset of 0.550000 seconds and a backend buffer of 0.100000 seconds.",
+    ],
+    ids=["5.2.3", "4.3.7"],
+)
+def test_classify_offset_too_short_warning(line):
+    from jasper.control.airplay_health import SHAIRPORT_UNIT, classify_journal_line
+
     ev = classify_journal_line(SHAIRPORT_UNIT, line)
     assert ev is not None
     assert ev["type"] == "shairport_offset_too_short"

@@ -51,6 +51,10 @@ from .config import GroupingConfig
 
 # --- shairport / AP2 contract constants ---
 
+# shairport logs the line _NOTIFIED_RE matches only when the negotiated
+# value differs from this default (verified against rtp.c's `!= 77175`
+# gate) — so ABSENCE of a match reliably means the default budget was
+# used, not that the read failed or is unknown.
 AP2_DEFAULT_NOTIFIED_FRAMES = 77175
 # Fixed term shairport adds inside the PTP anchor (the value the backend
 # latency offset lives inside): rtp.c's
@@ -134,8 +138,9 @@ class BondedAirplayLatencyFit:
 def assess_fit(buffer_ms: int, notified_frames: int | None) -> BondedAirplayLatencyFit:
     """Does the bonded-leader downstream delay fit the AP2 budget? PURE.
 
-    ``notified_frames`` is the sender-notified latency in frames, or None.
-    A non-positive value is treated as absent — the same fail-safe direction as
+    ``notified_frames`` is the sender-notified latency in frames, or None
+    (see ``AP2_DEFAULT_NOTIFIED_FRAMES`` for what absence means). A
+    non-positive value is treated as absent — the same fail-safe direction as
     ``jasper-apply-airplay-mode``'s offset clamp: never assume a smaller
     budget than the default from a garbage reading.
 
