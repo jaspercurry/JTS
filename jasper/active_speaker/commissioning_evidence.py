@@ -67,13 +67,10 @@ STATIONARY_CAPTURE_COUNT = 3
 DELAY_WALK_ALGORITHM_ID = "jts_active_crossover_delay_null_walk"
 DELAY_WALK_ALGORITHM_VERSION = "2"
 ACTIVE_REGION_SUMMED_ANALYZER_POLICY_ID = "jts_active_summed_crossover_capture"
-# "2" (SC-1 SNR units defect, 2026-08-01): the SC-1 alignment SNR band
-# table is now derived from the sweep's own [f1, f2] instead of the
-# canonical six acoustic bands, so a summed analysis reports different band
-# ids and different SNR values than a "1" analysis did. Those two are not
-# comparable, and this version is what says so — it rides
-# active_region_threshold_profile_fingerprint(), so evidence produced under
-# either policy cannot be silently mixed.
+# "2": the SC-1 alignment SNR band table derives from the sweep's own [f1, f2]
+# rather than the canonical six acoustic bands, so its band ids and SNR values
+# are not comparable with a "1" analysis. Rides
+# active_region_threshold_profile_fingerprint() so the two cannot be mixed.
 ACTIVE_REGION_SUMMED_ANALYZER_POLICY_VERSION = "2"
 ACTIVE_ISOLATED_DRIVER_EVIDENCE_CONSUMER_ID = (
     "jts.active_speaker.isolated_driver_evidence"

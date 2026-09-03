@@ -4,19 +4,16 @@
 
 """Strict, bundle-scoped storage for Active commissioning evidence.
 
-This is the authoritative I/O half of :mod:`commissioning_evidence`.  It
-reopens the bundle's existing Shared admission authority, publishes immutable
-canonical artifacts, and verifies exact bytes on every reopen.  ``info.json``
-and the fail-soft forensic manifest are deliberately not evidence authority.
+The authoritative I/O half of :mod:`commissioning_evidence`: it reopens the
+bundle's Shared admission authority, publishes immutable canonical artifacts,
+and verifies exact bytes on every reopen. ``info.json`` and the fail-soft
+forensic manifest are not evidence authority.
 
-One raw artifact is capped at the existing 5 MiB crossover-capture ceiling.
-The total bound covers the proven maximum stereo three-way run: four regions,
-each with 3 normal + 3 reverse + (27 coordinates * 5 repeats), plus 3 isolated
-captures for each of six physical drivers, or 582 captures at the full raw cap,
-plus 1 GiB for generated stimuli and canonical metadata.
-This is a hard safety ceiling, not a retention target.  A capture WAV is
-published once at its authoritative path; this store creates no manifest or
-shadow WAV copy.
+One raw artifact is capped at the 5 MiB crossover-capture ceiling; the total
+bound covers the maximum stereo three-way run (582 captures at the full raw cap
+plus 1 GiB of stimuli and metadata). That total is a hard safety ceiling, not a
+retention target. A capture WAV is published once at its authoritative path;
+this store creates no manifest or shadow WAV copy.
 """
 
 from __future__ import annotations
@@ -95,22 +92,13 @@ MAX_CAPTURE_ARTIFACT_COUNT = (
 MAX_TOTAL_AUTHORITATIVE_EVIDENCE_BYTES = (
     MAX_CAPTURE_ARTIFACT_COUNT * MAX_EVIDENCE_ARTIFACT_BYTES
 ) + (1024 * 1024 * 1024)
-# Keep this much free after a durable evidence publish — headroom for the run
-# still in progress. Open/current bundles are intentionally retention-protected,
-# so retention alone cannot rescue a full filesystem while an authoritative run
-# is growing.
-#
-# This USED to be defined as ``bundles.DEFAULT_SESSIONS_MAX_BYTES`` and is now
-# frozen at that constant's pre-2026-07-26 value, deliberately. The two answer
-# different questions: retention asks "how much history do we keep", this asks
-# "how much room must a publish leave behind". Raising retention 256 MiB → 1 GiB
-# for the crossover-v2 position-group choreography (flat-linearization PR-3b)
-# would otherwise have quadrupled the free space a Pi must have before it may
-# publish ANY evidence — a new refusal on every SD card with under a gigabyte
-# spare, from a change that was only ever about keeping more history. 256 MiB
-# still leaves room for several times a cloud session's own evidence. Change
-# this number only when the publish-headroom argument itself changes; pinned by
-# ``tests/test_active_speaker_commissioning_evidence_store.py``.
+# Free space a durable evidence publish must leave behind, as headroom for the
+# run still in progress; open/current bundles are retention-protected, so
+# retention alone cannot rescue a full filesystem while a run is growing.
+# Deliberately NOT ``bundles.DEFAULT_SESSIONS_MAX_BYTES``: that answers "how
+# much history do we keep", and tying the two makes a retention raise quadruple
+# the free space a Pi needs before it may publish anything. Change this only
+# when the publish-headroom argument itself changes.
 MIN_FREE_SPACE_AFTER_PUBLISH_BYTES = 256 * 1024 * 1024
 
 _ATTEMPT_CAPTURE_NAME_RE = re.compile(r"([0-9]{4})\.json")
@@ -156,11 +144,7 @@ class _PublishOutcomeUnknown(OSError):
 
 
 def is_missing(error: CommissioningEvidenceStoreError) -> bool:
-    """Is this refusal *"there is no such artifact"* rather than a failure?
-
-    The one question a reader asks that has an answer other than "raise", so it
-    belongs beside the code it compares rather than re-spelled at each caller.
-    """
+    """Is this refusal *"there is no such artifact"* rather than a failure?"""
 
     return error.code == CommissioningEvidenceStoreErrorCode.MISSING
 
