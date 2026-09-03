@@ -136,7 +136,9 @@ def _bash_carry_chip_aec_dac_gate(
 
 
 # The wizard only ever writes "1"/"0" (see normalize_bool's own comment), but
-# an operator hand-editing aec_mode.env may use any of these.
+# an operator hand-editing aec_mode.env may use any of these. normalize_bool()
+# trims surrounding whitespace before matching, same as parse_env_bool()'s
+# leading .strip(), so a padded value normalizes the same in both.
 _BOOL_VECTORS = [
     "yes",
     "no",
@@ -150,18 +152,7 @@ _BOOL_VECTORS = [
     "disabled",
     "",
     "garbage",
-    pytest.param(
-        " YES ",
-        marks=pytest.mark.xfail(
-            strict=True,
-            reason=(
-                "known divergence: normalize_bool() does not trim "
-                "whitespace before its case match, so a padded value falls "
-                "through to the unknown-bool branch (0) while "
-                "parse_env_bool()'s leading .strip() recognizes it (True)"
-            ),
-        ),
-    ),
+    " YES ",
 ]
 
 
@@ -170,8 +161,10 @@ def test_normalize_bool_matches_parse_env_bool(value: str) -> None:
     assert _bash_normalize_bool(value) == parse_env_bool(value, default=False)
 
 
-# Mixed case, quoting, dashes and empty all normalize the same way in both
-# languages; a fully whitespace-padded id is a documented exception below.
+# Mixed case, quoting, dashes, empty and whitespace padding all normalize
+# the same way in both languages: normalize_output_dac_id() trims
+# surrounding whitespace before matching, same as normalize_dac_id()'s
+# leading .strip().
 _DAC_ID_VECTORS = [
     "HiFiBerry-DAC8x",
     "'hifiberry_dac8x'",
@@ -180,17 +173,7 @@ _DAC_ID_VECTORS = [
     "-",
     "UNKNOWN",
     "Hi--Fi_Berry",
-    pytest.param(
-        "  hifiberry_dac8x  ",
-        marks=pytest.mark.xfail(
-            strict=True,
-            reason=(
-                "known divergence: normalize_output_dac_id() does not trim "
-                "whitespace, so a padded id keeps its spaces while "
-                "normalize_dac_id()'s leading .strip() removes them"
-            ),
-        ),
-    ),
+    "  hifiberry_dac8x  ",
 ]
 
 
