@@ -57,6 +57,7 @@ from ...speaker_name import runtime_name as _speaker_runtime_name
 from ...spotify_oauth import default_spotify_redirect_uri
 from ...usage import DEFAULT_USAGE_DB
 
+from ._evidence import evidence
 from ._registry import doctor_check, registered_checks
 from ._shared import (
     BOLD,
@@ -1116,6 +1117,7 @@ async def run_async(cfg: Config | SimpleNamespace) -> list[CheckResult]:
     hardware-sensitive probes within that lane while unrelated checks
     continue.
     """
+    evidence.reset()
     install_profile = read_install_profile()
     checks = _build_doctor_checks(cfg, install_profile)
     semaphore = asyncio.Semaphore(_doctor_max_concurrency())

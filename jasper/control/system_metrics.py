@@ -36,6 +36,13 @@ import time
 from array import array
 from typing import Any
 
+from ..service_units import (
+    EXTRA_SERVICE_GROUPS,
+    JASPER_SERVICE_GROUPS,
+    parse_systemctl_show_units,
+    systemd_int,
+)
+
 logger = logging.getLogger(__name__)
 
 # Sample cadences. 5 s = 720 points = 60-min ring buffer for the
@@ -88,40 +95,6 @@ SERVICE_SUFFIX = ".service"
 # ticks — 12 × 5 s ≈ 60 s.
 SERVICE_CGROUP_RESCAN_TICKS = 12
 
-JASPER_SERVICE_GROUPS = {
-    "jasper-aec-bridge.service": "Mic",
-    "jasper-voice.service": "Voice",
-    "jasper-camilla.service": "Audio",
-    "jasper-fanin.service": "Audio",
-    "jasper-outputd.service": "Audio",
-    "jasper-mux.service": "Audio",
-    "jasper-usbgadget.service": "Audio",
-    "jasper-usbsink.service": "Audio",
-    "jasper-usbsink-volume.service": "Audio",
-    "jasper-control.service": "Control",
-    "jasper-web.service": "Control",
-    "jasper-system-web.service": "Control",
-    "jasper-input.service": "Hardware",
-    "jasper-accessory-reconcile.service": "Hardware",
-    "jasper-headphone-monitor.service": "Hardware",
-}
-
-EXTRA_SERVICE_GROUPS = {
-    "shairport-sync.service": "Audio",
-    "librespot.service": "Audio",
-    "bluealsa.service": "Audio",
-    "bluealsa-aplay.service": "Audio",
-    "nqptp.service": "Audio",
-    "nginx.service": "Web",
-    "avahi-daemon.service": "Network",
-    "NetworkManager.service": "Network",
-    "wpa_supplicant.service": "Network",
-    "ssh.service": "System",
-    "dbus.service": "System",
-    "systemd-journald.service": "System",
-    "bluetooth.service": "System",
-    "bt-agent.service": "System",
-}
 
 # Memory cgroup controller probe. The Pi 5 device-tree blob injects
 # `cgroup_disable=memory` into the kernel cmdline by default; install.sh
@@ -731,59 +704,11 @@ class SystemSampler:
 
     @staticmethod
     def _parse_systemd_int(value: str | None) -> int | None:
-        raw = (value or "").strip()
-        if not raw or raw.startswith("["):
-            return None
-        try:
-            parsed = int(raw)
-        except ValueError:
-            return None
-        # systemd uses UINT64_MAX for some unset accounting properties.
-        if parsed >= (1 << 63):
-            return None
-        return parsed
+        return systemd_int(value)
 
     @classmethod
     def _parse_systemctl_show_units(cls, text: str) -> dict[str, dict[str, Any]]:
-        records: list[dict[str, str]] = []
-        cur: dict[str, str] = {}
-        for raw in text.splitlines():
-            line = raw.strip()
-            if not line:
-                if cur:
-                    records.append(cur)
-                    cur = {}
-                continue
-            if "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            cur[key] = value
-        if cur:
-            records.append(cur)
-
-        out: dict[str, dict[str, Any]] = {}
-        for record in records:
-            unit = (record.get("Id") or record.get("Names") or "").split()[0]
-            if not unit:
-                continue
-            out[unit] = {
-                "unit": unit,
-                "load_state": record.get("LoadState") or None,
-                "active_state": record.get("ActiveState") or None,
-                "sub_state": record.get("SubState") or None,
-                "result": record.get("Result") or None,
-                "n_restarts": cls._parse_systemd_int(record.get("NRestarts")) or 0,
-                "main_pid": cls._parse_systemd_int(record.get("MainPID")) or 0,
-                "tasks_current": cls._parse_systemd_int(record.get("TasksCurrent")),
-                "memory_current_bytes": cls._parse_systemd_int(
-                    record.get("MemoryCurrent"),
-                ),
-                "cpu_usage_nsec": cls._parse_systemd_int(
-                    record.get("CPUUsageNSec"),
-                ),
-                "control_group": record.get("ControlGroup") or "",
-            }
-        return out
+        return parse_systemctl_show_units(text)
 
     @classmethod
     def read_service_states(

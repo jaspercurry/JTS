@@ -449,9 +449,9 @@ def _service_runtime_states() -> dict[str, dict[str, object]] | None:
         )
     except (subprocess.SubprocessError, FileNotFoundError):
         return None
-    from ...control.system_metrics import SystemSampler
+    from ...service_units import parse_systemctl_show_units
 
-    return SystemSampler._parse_systemctl_show_units(proc.stdout)
+    return parse_systemctl_show_units(proc.stdout)
 
 def _loopback_playback_active() -> bool:
     """True if any renderer is currently writing the music-chain loopback.
