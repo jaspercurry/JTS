@@ -148,7 +148,8 @@ HF_SUPPRESSION_REASONS: frozenset[str] = frozenset({
 # Max magnitude error (dB) tolerated between the realized cut-domain cascade
 # and the desired cut_target over [onset, ceiling]; above it the stage is
 # suppressed (reason="fit_quality"). 2.0 rather than 1.5: the tighter bar
-# also caught ordinary curve raggedness on real curves.
+# also caught ordinary curve raggedness on real curves. Not higher: the worst
+# mis-shape reached in review probing measured 2.23 dB and must still be caught.
 HF_REALIZATION_TOLERANCE_DB: float = 2.0
 
 # Ceiling on CD-horn spend imposed by the SINGLE-Lowshelf realization, dB —
@@ -1532,7 +1533,7 @@ def _lift_stage(
     (R10a, #1968) scales the WANTED deficit by the branch's own-output
     fraction, gain side only.
 
-    Four bounds, applied in order: the stopband-gain guard (#1968,
+    Three bounds, applied in order: the stopband-gain guard (#1968,
     structural — a REALIZED-response check over the WHOLE grid, since a
     bell's skirts reach past its own radiating edge, refused as
     ``"stopband_gain"``); the measured-target bound (#2599, per filter,
@@ -1540,8 +1541,9 @@ def _lift_stage(
     :func:`_boost_evidence_verdicts`); the boost-evidence bound (#1967, per
     filter, dropping boosts overlapping a contradicted band — see
     :func:`_boost_exclusion_verdicts`). Suppressed (named, never silent)
-    when no slots remain, ``design_peq`` cannot realize the residue, or
-    every boost is refused.
+    when no slots remain, ``design_peq`` cannot realize the residue, the
+    realized lift overshoots the envelope's allowance or puts gain in the
+    stopband, or every boost is refused.
     """
     if not vocabulary.allow_boost:
         return _Lift(tuple(filters), 0.0, 0.0, 0.0, "")

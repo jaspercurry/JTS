@@ -119,7 +119,9 @@ def seam_rollback_deferral(probe: Any | None) -> str:
 # --------------------------------------------------------------------------- #
 
 # Max |realized − commanded| tolerated below DELTA_PROBE_HF_SPLIT_HZ.
-# Matches crossover_v2_flow.VERIFY_TOLERANCE_DB.
+# Matches crossover_v2_flow.VERIFY_TOLERANCE_DB, and must stay below 1.70 dB:
+# the 2026-07-27 shelf-Q realization error this probe exists to catch peaked
+# there (0.2 dB margin — the exceedance-WIDTH rule carries the rest).
 DELTA_PROBE_TOLERANCE_LOW_DB: float = 1.5
 
 # Max |realized − commanded| tolerated at/above DELTA_PROBE_HF_SPLIT_HZ.
@@ -142,9 +144,10 @@ DELTA_PROBE_MIN_COMMANDED_DB: float = 0.5
 
 # Commanded floor a bin must clear to be GRADED at/above
 # DELTA_PROBE_HF_SPLIT_HZ (#2521), equal to DELTA_PROBE_TOLERANCE_HIGH_DB by
-# design. Do not lower below the split — on this module's keystone fixture
-# a flat 1.0 dB floor drops the 2026-07-27 shelf-Q defect's exceedance from
-# 0.575 to 0.307 octaves, under DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES.
+# design. NOT applied below the split (do not raise DELTA_PROBE_MIN_COMMANDED_DB
+# to match): on this module's keystone fixture a flat 1.0 dB floor drops the
+# 2026-07-27 shelf-Q defect's exceedance from 0.575 to 0.307 octaves, under
+# DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES.
 DELTA_PROBE_MIN_COMMANDED_HIGH_DB: float = 2.5
 
 # Minimum bins the probe band must retain after masking to regress or
@@ -152,7 +155,9 @@ DELTA_PROBE_MIN_COMMANDED_HIGH_DB: float = 2.5
 DELTA_PROBE_MIN_BINS: int = 8
 
 # Best-fit realized/commanded scale below which a shape-tracking map is a
-# level-dependent SHORTFALL rather than a model error.
+# level-dependent SHORTFALL rather than a model error. Tied to
+# DELTA_PROBE_TOLERANCE_LOW_DB: a 15 % shortfall on the ~10 dB CD-horn lift
+# is 1.5 dB.
 DELTA_PROBE_SHORTFALL_GAIN_CEILING: float = 0.85
 
 #: Band ids a realization ratio is reported per (#2649), one per band
@@ -175,8 +180,10 @@ DELTA_PROBE_REALIZATION_BANDS: tuple[str, ...] = (
 DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB: float = 1.0
 
 # |residual common mode| beyond which a whole-band level shift is named
-# VERDICT_LEVEL_MISMATCH rather than left in the shape verdict (#1811). A
-# magnitude bar, NOT the discriminator; see classify_delta_probe.
+# VERDICT_LEVEL_MISMATCH rather than left in the shape verdict (#1811). Must
+# stay >= DELTA_PROBE_TOLERANCE_LOW_DB: a common mode smaller than the per-bin
+# tolerance cannot have pushed a bin past it. A magnitude bar, NOT the
+# discriminator; see classify_delta_probe.
 DELTA_PROBE_RESIDUAL_OFFSET_TOLERANCE_DB: float = 1.5
 
 # How spread the quiet evidence (DeltaProbeMap.quiet_probe_coverage) must

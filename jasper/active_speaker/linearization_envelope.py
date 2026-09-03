@@ -290,6 +290,8 @@ def position_stability_limit(
     Bands the cloud did not report leave their bins at the sentinel (a
     coverage fact already bounded elsewhere). Overlapping bands take the
     larger standard error. ``n_positions < 2`` raises.
+    On a protocol cloud (8-12 positions) the tightest limit is ~12.26 dB,
+    ~0.26 dB above the fit's 12 dB per-filter cut cap: that is the whole margin.
     """
     _validate_tier(tier)
     if n_positions < 2:

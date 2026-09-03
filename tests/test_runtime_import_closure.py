@@ -29,7 +29,7 @@ FORBIDDEN = (
     "jasper.camilla",
 )
 
-#: PLAN §4's active-speaker truth layer. ``startup_load`` is deliberately
+#: The active-speaker truth layer (ADR-0228 entries 1 and 8). ``startup_load`` is deliberately
 #: absent: lane A's load transaction stops and starts units through
 #: ``jasper.control.restart_broker``, which is a real runtime dependency.
 TRUTH_LAYER = (
