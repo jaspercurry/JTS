@@ -39,7 +39,7 @@ import numpy as np
 import pytest
 
 import jasper.audio_io as audio_io_mod
-from jasper.assistant_loudness import AssistantLoudnessProfile
+from jasper.assistant_loudness import AssistantLoudnessProfile, LoudnessMeasurement
 from jasper.audio_io import OutputdTtsPlayout, TtsPlayout, make_tts_playout
 
 from ._async_wait import wait_signalled
@@ -610,7 +610,7 @@ async def test_outputd_flush_silences_before_saving_profile(monkeypatch):
             events.append("flush")
             return super().flush_sync()
 
-    async def fake_save_profile() -> None:
+    async def fake_save_profile(meter) -> None:
         events.append("save")
 
     p = OutputdTtsPlayout(
@@ -628,6 +628,11 @@ async def test_outputd_flush_silences_before_saving_profile(monkeypatch):
 
 
 async def test_outputd_end_segment_marks_ended_before_saving_profile(monkeypatch):
+    """The profile save now runs as a background task (it must not block
+    the caller's end-of-turn chirp), so this pins that the stream's
+    end_segment still fires first and the save still eventually runs —
+    not that end_segment() blocks until it completes.
+    """
     events: list[str] = []
 
     class _OrderingStream(_CaptureOutputdStream):
@@ -635,7 +640,7 @@ async def test_outputd_end_segment_marks_ended_before_saving_profile(monkeypatch
             events.append("end")
             super().end_segment()
 
-    async def fake_save_profile() -> None:
+    async def fake_save_profile(meter) -> None:
         events.append("save")
 
     p = OutputdTtsPlayout(
@@ -650,8 +655,63 @@ async def test_outputd_end_segment_marks_ended_before_saving_profile(monkeypatch
     monkeypatch.setattr(p, "_save_assistant_source_profile", fake_save_profile)
 
     await p.end_segment()
+    for task in list(p._profile_save_tasks):
+        await task
 
     assert events == ["end", "save"]
+
+
+async def test_outputd_end_segment_does_not_block_on_slow_meter_finish(monkeypatch):
+    """Regression pin for the loop-blocking measurement pass: a slow
+    ``meter.finish()`` (the real one runs a pure-Python IIR filter twice
+    over the reply, ~0.7s of blocking per second of reply) must not delay
+    end_segment()'s return, and the profile save must still land once the
+    caller awaits the task it kept a reference to.
+    """
+    saved: list[tuple[str, str, str, LoudnessMeasurement]] = []
+
+    def fake_update_profile(provider, model, voice, measurement, **kwargs):
+        saved.append((provider, model, voice, measurement))
+
+    monkeypatch.setattr(
+        audio_io_mod, "update_profile_from_measurement", fake_update_profile,
+    )
+
+    measurement = LoudnessMeasurement(
+        source_lufs=-18.0,
+        source_peak_dbfs=-3.0,
+        voiced_duration_sec=2.0,
+        total_duration_sec=2.5,
+    )
+
+    class _SlowMeter:
+        def finish(self) -> LoudnessMeasurement:
+            time.sleep(0.3)
+            return measurement
+
+    p = OutputdTtsPlayout(
+        socket_path="/tmp/outputd-test.sock",
+        output_rate=48000,
+        gain_db=-8.0,
+        drain_tail_sec=0.0,
+    )
+    p._provider = "acme"
+    p._model = "m1"
+    p._voice = "v1"
+    p._assistant_meter = _SlowMeter()  # type: ignore[assignment]
+    p._stream = None
+
+    start = time.monotonic()
+    await p.end_segment()
+    elapsed = time.monotonic() - start
+    assert elapsed < 0.1
+
+    tasks = list(p._profile_save_tasks)
+    assert tasks
+    for task in tasks:
+        await task
+
+    assert saved == [("acme", "m1", "v1", measurement)]
 
 
 def test_outputd_stream_adapter_flush_sync_reads_ack_from_socket():
