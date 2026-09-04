@@ -343,7 +343,7 @@ def test_an_apply_that_answered_but_did_not_apply_is_a_refusal(
             [],
             {"status": "timed_out", "reason": wc.REASON_WAIT_TIMEOUT,
              "phase": "measure", "candidate_fingerprint": "",
-             "code": cli.EXIT_TIMEOUT},
+             "code": cli.EXIT_UNREADABLE},
         ),
     ],
 )
@@ -377,7 +377,7 @@ def test_wait_stops_on_the_first_unanswered_status_read(
         opener, monkeypatch, capsys,
     )
 
-    assert exit_code == cli.EXIT_TRANSPORT
+    assert exit_code == cli.EXIT_UNREADABLE
     assert receipt["reason"] == wc.REASON_ANSWER_LOST
     assert len(opener.requests) == 1
 
@@ -395,7 +395,7 @@ def test_an_apply_whose_answer_is_lost_is_not_a_wizard_refusal(
         opener, monkeypatch, capsys,
     )
 
-    assert code == cli.EXIT_TRANSPORT
+    assert code == cli.EXIT_UNREADABLE
     assert receipt["reason"] == wc.REASON_ANSWER_LOST
     assert receipt["refused_by"] == ""
     assert receipt["http"] == 0

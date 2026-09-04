@@ -104,7 +104,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Callable, NamedTuple, Sequence, TypeVar
+from typing import Any, NamedTuple, Sequence
 
 from jasper.active_speaker.crossover_v2.round_views import (
     AGREEMENT_TESTIFY_MIN,
@@ -144,12 +144,12 @@ from jasper.cli._refusal import (
     EXIT_REFUSED,
     EXIT_UNREADABLE,
     EXIT_WRITE_FAILED,
+    StageFailed,
     failed,
+    stage,
 )
 from jasper.cli._report import write_report
 from jasper.cli.gate_sweep import add_rungs_ms_argument
-
-_T = TypeVar("_T")
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
@@ -237,33 +237,10 @@ _REASON_BY_CODE = {
 }
 
 
-class _StageFailed(Exception):
-    """A failure a stage claimed, carrying that stage's exit code."""
-
-    def __init__(self, code: int, cause: Exception) -> None:
-        super().__init__(str(cause))
-        self.code = code
-
-
-def _stage(
-    code: int,
-    errors: tuple[type[Exception], ...],
-    fn: Callable[..., _T],
-    *args: Any,
-    **kwargs: Any,
-) -> _T:
-    """Run one stage; what it raises from ``errors`` gets that stage's code."""
-
-    try:
-        return fn(*args, **kwargs)
-    except errors as exc:
-        raise _StageFailed(code, exc) from exc
-
-
 def _load_round(round_dir: str | Path) -> BankedRound:
     """Read one round directory. A failure here is the ROUND, not the view."""
 
-    return _stage(
+    return stage(
         EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, load_banked_round, Path(round_dir)
     )
 
@@ -277,7 +254,7 @@ def _write(payload: Any, out: str | None, default_path: Path) -> Path | None:
     filesystem sends them to the wrong place. It falls to :func:`main`.
     """
 
-    return _stage(EXIT_WRITE_FAILED, (OSError,), write_report, payload, out, default_path)
+    return stage(EXIT_WRITE_FAILED, (OSError,), write_report, payload, out, default_path)
 
 
 def default_out(inputs: RoundInputs, round_dir: Path, name: str) -> Path:
@@ -322,7 +299,7 @@ def _cmd_entry(args: argparse.Namespace) -> int:
     banked = _load_round(args.round_dir)
     # A packet missing `entry_baseline` is a corrupt packet, which this grade's
     # own docstring puts in the unreadable arm — not a view declining a round.
-    grade = _stage(EXIT_UNREADABLE, (KeyError, TypeError), entry_state_grade, banked)
+    grade = stage(EXIT_UNREADABLE, (KeyError, TypeError), entry_state_grade, banked)
     written = _write(grade.to_dict(), args.out, _view_out(args, banked))
     report = grade.report
     # ``report is None`` IS ``not available`` — the two move together on
@@ -453,7 +430,7 @@ def _cmd_repeat_floor(args: argparse.Namespace) -> int:
             write_repeat_floor(payload, state_path=path)
         except OSError as exc:  # an unwritable destination is the WRITE exit
             detail = f"{path}: {exc}"
-            raise _StageFailed(
+            raise StageFailed(
                 EXIT_WRITE_FAILED,
                 OSError(detail + hint if isinstance(exc, PermissionError) else detail),
             ) from exc
@@ -651,9 +628,9 @@ def _cmd_frequency(args: argparse.Namespace) -> int:
     source_a = Path(args.source_a)
     # Resolving a source IS this verb's load stage, "that document holds no
     # curves" included: the fix is to name a different source.
-    run_a = _stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, _frequency_source, source_a)
+    run_a = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, _frequency_source, source_a)
     run_b = (
-        _stage(
+        stage(
             EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, _frequency_source, Path(args.source_b)
         )
         if args.source_b
@@ -674,7 +651,7 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
     # is a directory question, and building the evidence packet to answer it
     # would make the cheapest verb here cost the most (415 MB target, ADR-0226).
     round_dir = Path(args.round_dir)
-    inputs = _stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, round_dir)
+    inputs = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, round_dir)
     artifacts: list[dict[str, Any]] = []
     for view, spec in ARTIFACT_BY_VIEW.items():
         path = default_out(inputs, round_dir, spec.artifact)
@@ -874,7 +851,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
-    except _StageFailed as staged:
+    except StageFailed as staged:
         return failed(staged.code, _REASON_BY_CODE[staged.code], str(staged))
     except _ROUND_TOOL_ERRORS as exc:
         # What no stage claimed: the round READ, and the view then declined to

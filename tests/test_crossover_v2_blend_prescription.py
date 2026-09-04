@@ -2896,16 +2896,16 @@ def test_an_explicit_out_overrides_the_default_path(tmp_path):
     assert str(elsewhere) in out
 
 
-def test_an_unwritable_artifact_exits_one_rather_than_crashing(tmp_path):
-    """Writing is the ordinary path now, so a failed write is a named exit."""
+def test_an_unwritable_artifact_is_the_write_exit_not_an_unreadable_round(tmp_path):
+    """The evidence READ; only the filing failed, which is a different fix."""
     round_dir = _banked_round(tmp_path)
 
     code, _, err = _run_cli([
         "packet", str(round_dir), "--out", str(tmp_path / "nope" / "packet.json"),
     ])
 
-    assert code == cli.EXIT_EVIDENCE_UNREADABLE
-    assert err.startswith("error:")
+    assert code == cli.EXIT_WRITE_FAILED
+    assert err.startswith("error: could not write ")
 
 
 def test_propose_judges_a_document_against_the_file_packet_wrote(
@@ -3049,7 +3049,7 @@ def test_a_rebuild_input_beside_the_packet_file_is_refused(tmp_path, extra):
         "--prescription", str(document),
     ])
 
-    assert code == cli.EXIT_EVIDENCE_UNREADABLE
+    assert code == cli.EXIT_UNREADABLE
     assert err.startswith("error:")
 
 
@@ -3057,7 +3057,7 @@ def test_a_rebuild_input_beside_the_packet_file_is_refused(tmp_path, extra):
     pytest.param("{not json", id="not-json"),
     pytest.param("[]", id="wrong-shape"),
 ])
-def test_an_unreadable_packet_file_exits_one(tmp_path, blob):
+def test_an_unreadable_packet_file_is_the_unreadable_exit(tmp_path, blob):
     """The tool's own "the evidence could not be read" code, not a crash."""
     packet_path = tmp_path / "packet.json"
     packet_path.write_text(blob)
@@ -3067,17 +3067,17 @@ def test_an_unreadable_packet_file_exits_one(tmp_path, blob):
         "propose", "--packet", str(packet_path), "--prescription", str(document),
     ])
 
-    assert code == cli.EXIT_EVIDENCE_UNREADABLE
+    assert code == cli.EXIT_UNREADABLE
     assert err.startswith("error:")
 
 
-def test_naming_no_evidence_at_all_exits_one_with_a_sentence(tmp_path):
+def test_naming_no_evidence_at_all_is_unreadable_with_a_sentence(tmp_path):
     """``session_dir`` is optional only because ``--packet`` can replace it."""
     document = _write_document(tmp_path, {"kind": "whatever"})
 
     code, _, err = _run_cli(["propose", "--prescription", str(document)])
 
-    assert code == cli.EXIT_EVIDENCE_UNREADABLE
+    assert code == cli.EXIT_UNREADABLE
     assert "--packet" in err
 
 
@@ -3102,21 +3102,22 @@ def test_the_cli_reads_a_prescription_from_stdin(tmp_path):
     pytest.param([], "a directory that is not a bundle", id="bad-bundle"),
     pytest.param(["--state", "/nonexistent/state.json"], "a missing state", id="state"),
 ])
-def test_unreadable_evidence_exits_one_not_two(tmp_path, argv_tail, label):
-    """Exit 1 means "the round could not be read" — never a document fault."""
+def test_unreadable_evidence_is_not_reported_as_a_refusal(tmp_path, argv_tail, label):
+    """The UNREADABLE exit means "the round could not be read" — never a
+    document fault, which is the REFUSED one."""
     empty = tmp_path / "empty"
     empty.mkdir()
     code, _, err = _run_cli(["packet", str(empty), *argv_tail])
-    assert code == cli.EXIT_EVIDENCE_UNREADABLE, label
+    assert code == cli.EXIT_UNREADABLE, label
     assert err.startswith("error:")
 
 
-def test_a_missing_prescription_file_exits_one(tmp_path):
+def test_a_missing_prescription_file_is_the_unreadable_exit(tmp_path):
     session, _ = _bundle(tmp_path)
     code, _, err = _run_cli(
         ["propose", str(session), "--prescription", str(tmp_path / "nope.json")]
     )
-    assert code == cli.EXIT_EVIDENCE_UNREADABLE
+    assert code == cli.EXIT_UNREADABLE
     assert err.startswith("error:")
 
 

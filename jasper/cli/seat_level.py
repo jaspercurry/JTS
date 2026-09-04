@@ -108,6 +108,7 @@ from jasper.audio_measurement.calibration import (
 )
 
 from ._logging import CLI_LOG_FORMAT
+from ._refusal import EXIT_OK, EXIT_REFUSED
 
 logger = logging.getLogger(__name__)
 
@@ -731,7 +732,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"converged: {detail}")
     else:
         print(f"refused ({result.reason}): {detail}", file=sys.stderr)
-    return 0 if result.converged else 1
+    return EXIT_OK if result.converged else EXIT_REFUSED
 
 
 if __name__ == "__main__":

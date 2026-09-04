@@ -29,13 +29,15 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from jasper.cli._logging import CLI_LOG_FORMAT
+from jasper.cli._refusal import (
+    EXIT_OK,
+    EXIT_REFUSED,
+    EXIT_UNREADABLE,
+    STATUS_BY_CODE,
+)
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
-
-EXIT_OK = 0
-EXIT_REFUSED = 1
-EXIT_INPUT = 2
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
@@ -883,24 +885,27 @@ def _report(
 
 
 def _refused(reason: str, detail: str, *, json_output: bool, code: int) -> int:
+    """One failing stage, under the word its code owns (``_refusal.py``)."""
+
+    status = STATUS_BY_CODE[code]
     log_event(
         logger,
         "active_speaker.measure",
         level=logging.WARNING,
-        action="refused",
+        action=status,
         reason=reason,
         detail=detail,
     )
     if json_output:
         print(
             json.dumps(
-                {"status": "refused", "reason": reason, "detail": detail},
+                {"status": status, "reason": reason, "detail": detail},
                 indent=2,
                 sort_keys=True,
             )
         )
     else:
-        print(f"refused ({reason}): {detail}", file=sys.stderr)
+        print(f"{status} ({reason}): {detail}", file=sys.stderr)
     return code
 
 
@@ -974,7 +979,7 @@ def _cmd_measure(args: argparse.Namespace) -> int:
         specs = specs_from_args(args)
     except MeasureFlagError as exc:
         return _refused(
-            exc.reason, exc.detail, json_output=args.json, code=EXIT_INPUT
+            exc.reason, exc.detail, json_output=args.json, code=EXIT_UNREADABLE
         )
     try:
         payload = asyncio.run(_measure(specs, read_box_declaration()))
@@ -1030,7 +1035,7 @@ def build_parser() -> argparse.ArgumentParser:
             "     (box not measurable, an interrupt, a restore failure);\n"
             "     \"refused (<reason>): <detail>\" on stderr, and as JSON\n"
             "     with --json\n"
-            "  2  EXIT_INPUT -- the request could not even be built: a\n"
+            "  2  EXIT_UNREADABLE -- the request could not even be built: a\n"
             "     second --position, a variant axis with no --candidate-id,\n"
             "     a malformed --specs file"
         ),

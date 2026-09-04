@@ -53,19 +53,7 @@ from jasper.active_speaker.wizard_client import (
 )
 from jasper.identity import read_identity
 
-#: The wizard answered and the verb did what it says.
-EXIT_OK = 0
-#: The answer was LOST -- the daemon is down, a wrong ``--hostname``, a dropped
-#: connection. On ``apply`` that is genuinely unknown rather than a failure:
-#: the route has no try/except around its own answer, so a connection dropped
-#: after the graph loaded looks exactly like one dropped before it.
-EXIT_TRANSPORT = 1
-#: Refused -- the wizard's refusal, or this tool's own pre-flight one. A
-#: refusal is an answer, so nothing was applied.
-EXIT_REFUSED = 2
-#: ``wait`` reached its deadline with the session still running. Nothing is
-#: wrong yet and nothing was cancelled; the round is still going.
-EXIT_TIMEOUT = 3
+from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE
 
 DEFAULT_TIMEOUT_S = 900.0
 DEFAULT_POLL_S = 5.0
@@ -85,11 +73,14 @@ LOST_ANSWER_ADVICE = (
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
 AUTHORITY_TIER = "mutating-with-gates (`open`/`apply` write; `wait` does not)"
 
+#: A lost answer and a deadline are both UNREADABLE: neither is a refusal and
+#: neither says the round failed. Which one it was rides in the receipt's
+#: ``reason`` (``answer_lost`` / ``wait_timeout``), not in the number.
 _EXIT_BY_WAIT_STATUS = {
     "terminal": EXIT_OK,
     "failed": EXIT_REFUSED,
-    "lost": EXIT_TRANSPORT,
-    "timed_out": EXIT_TIMEOUT,
+    "lost": EXIT_UNREADABLE,
+    "timed_out": EXIT_UNREADABLE,
 }
 
 
@@ -193,7 +184,7 @@ def _cmd_open(client: WizardClient, args: argparse.Namespace) -> int:
     )
     if http == 200:
         return EXIT_OK
-    return EXIT_TRANSPORT if http == 0 else EXIT_REFUSED
+    return EXIT_UNREADABLE if http == 0 else EXIT_REFUSED
 
 
 def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
@@ -242,7 +233,7 @@ def _cmd_apply(client: WizardClient, args: argparse.Namespace) -> int:
         return EXIT_OK
     if lost:
         print(LOST_ANSWER_ADVICE, file=sys.stderr)
-        return EXIT_TRANSPORT
+        return EXIT_UNREADABLE
     return EXIT_REFUSED
 
 
@@ -293,12 +284,14 @@ def build_parser() -> argparse.ArgumentParser:
             "\n"
             "EXIT CODES\n"
             "  0  the wizard answered and the verb did what it says\n"
-            "  1  the answer was LOST. `open`/`wait` changed nothing; a lost\n"
-            "     answer to the apply POST does NOT mean the apply failed\n"
-            "  2  refused -- the wizard's, or this tool's own pre-flight\n"
-            "     fingerprint refusal. Nothing was applied\n"
-            "  3  `wait` hit its deadline with the session still running.\n"
-            "     Nothing was cancelled; the round is still going"
+            "  1  EXIT_REFUSED -- the wizard's refusal, or this tool's own\n"
+            "     pre-flight fingerprint refusal. Nothing was applied\n"
+            "  2  EXIT_UNREADABLE -- no answer to read. The receipt's\n"
+            "     `reason` says which: `answer_lost` (the daemon is down, a\n"
+            "     wrong --hostname, a dropped connection) or `wait_timeout`\n"
+            "     (the deadline passed with the session still running --\n"
+            "     nothing was cancelled, the round is still going). A lost\n"
+            "     answer to the apply POST does NOT mean the apply failed"
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from ._logging import CLI_LOG_FORMAT
+from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED
 # The beside-the-round output rule, reused rather than restated: a live
 # session bundle is daemon-owned, so a view defaulting inside it raises
 # PermissionError for the operator (#3498).
@@ -91,11 +92,6 @@ from jasper.identity import (
     read_identity,
     speaker_url,
 )
-
-EXIT_OK = 0
-EXIT_EVIDENCE_UNREADABLE = 1
-EXIT_REFUSED = 2
-EXIT_STAGE_FAILED = 3
 
 #: Authority tier for the generated tool-menu index (ADR-0204).
 AUTHORITY_TIER = "advisory (`stage` mutates)"
@@ -226,14 +222,16 @@ def _cmd_packet(args: argparse.Namespace) -> int:
             if args.out
             else default_out(round_inputs(round_dir), round_dir, PACKET_ARTIFACT)
         )
-        out.write_text(blob)
-    # ``OSError`` beside the packet's own error for the same reason
-    # ``_cmd_status`` pairs them: the write is now the ordinary path, and an
-    # unwritable round directory must reach the operator as this tool's
-    # refusal rather than a traceback.
     except (CrossoverEvidencePacketError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
-        return EXIT_EVIDENCE_UNREADABLE
+        return EXIT_UNREADABLE
+    try:
+        out.write_text(blob)
+    except OSError as exc:
+        # The evidence READ; only the filing failed, which is a different
+        # place to send the operator than an unreadable round.
+        print(f"error: could not write {out}: {exc}", file=sys.stderr)
+        return EXIT_WRITE_FAILED
     summary = _packet_summary(packet, out, len(blob))
     if args.json:
         print(json.dumps(summary, indent=2, sort_keys=True))
@@ -361,12 +359,12 @@ def _cmd_propose(args: argparse.Namespace) -> int:
     source_error = _evidence_source_error(args)
     if source_error is not None:
         print(f"error: {source_error}", file=sys.stderr)
-        return EXIT_EVIDENCE_UNREADABLE
+        return EXIT_UNREADABLE
     try:
         payload, prescription, candidate_fields, _ = _gate(args)
     except (CrossoverEvidencePacketError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
-        return EXIT_EVIDENCE_UNREADABLE
+        return EXIT_UNREADABLE
     except BlendPrescriptionRefused as exc:
         if args.json:
             print(json.dumps(exc.to_dict(), indent=2, sort_keys=True))
@@ -544,7 +542,7 @@ def _cmd_stage(args: argparse.Namespace) -> int:
     source_error = _evidence_source_error(args)
     if source_error is not None:
         print(f"error: {source_error}", file=sys.stderr)
-        return EXIT_EVIDENCE_UNREADABLE
+        return EXIT_UNREADABLE
     if not args.state:
         print(
             "error: --state is required to stage a prescription; the round it "
@@ -553,14 +551,14 @@ def _cmd_stage(args: argparse.Namespace) -> int:
             "this command cannot see",
             file=sys.stderr,
         )
-        return EXIT_EVIDENCE_UNREADABLE
+        return EXIT_UNREADABLE
     try:
         payload, prescription, candidate_fields, classifications = _gate(args)
         ordinal = _next_round_ordinal(args.state)
     except BlendPrescriptionRefused as exc:
         # FIRST. Every exception this handler names is a ``ValueError``
         # subclass, so an arm widened to ``except ValueError`` below would
-        # report every refused prescription as an unreadable input — exit 1
+        # report every refused prescription as an unreadable input — exit 2
         # with no reason slug.
         if args.json:
             print(json.dumps(exc.to_dict(), indent=2, sort_keys=True))
@@ -573,7 +571,7 @@ def _cmd_stage(args: argparse.Namespace) -> int:
         # The last two are the state file's own failure modes: it is read here
         # rather than by the packet builder.
         print(f"error: {exc}", file=sys.stderr)
-        return EXIT_EVIDENCE_UNREADABLE
+        return EXIT_UNREADABLE
 
     try:
         path = stage_prescription(
@@ -584,7 +582,7 @@ def _cmd_stage(args: argparse.Namespace) -> int:
         )
     except OSError as exc:
         print(f"error: could not stage the prescription: {exc}", file=sys.stderr)
-        return EXIT_STAGE_FAILED
+        return EXIT_WRITE_FAILED
 
     result: dict[str, Any] = {
         "accepted": True,
@@ -1067,7 +1065,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
     """Where this speaker stands, and what it can do next. Writes nothing.
 
     The report prints either way; the exit code still says which of two things
-    happened, :data:`EXIT_EVIDENCE_UNREADABLE` when the packet could not be
+    happened, :data:`EXIT_UNREADABLE` when the packet could not be
     built. Unlike its three siblings the human report goes to STDOUT: this verb
     emits no document unless ``--json`` asks for one, and a report whose only
     copy went to stderr would be invisible to the SSH agent reading it.
@@ -1094,7 +1092,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         _print_status(payload)
-    return EXIT_EVIDENCE_UNREADABLE if packet_error else EXIT_OK
+    return EXIT_UNREADABLE if packet_error else EXIT_OK
 
 
 #: What ``--state`` is, said once. The verbs differ only in whether they can
@@ -1267,16 +1265,15 @@ def build_parser() -> argparse.ArgumentParser:
             "EXIT CODES\n"
             "  0  accepted -- status (which accepts nothing) exits 0 once it\n"
             "     read the evidence, even a partial one\n"
-            "  1  EXIT_EVIDENCE_UNREADABLE -- the bundle, --state,\n"
-            "     --drivers, --applied-profile, --repeat-floor, or\n"
-            "     --declared-geometry could not\n"
-            "     be read\n"
-            "  2  EXIT_REFUSED -- propose's or stage's gate refused the\n"
+            "  1  EXIT_REFUSED -- propose's or stage's gate refused the\n"
             "     prescription; \"refused (<reason>): <detail>\" on stderr,\n"
             "     and as JSON with --json\n"
-            "  3  EXIT_STAGE_FAILED -- stage's own write to the spool\n"
-            "     failed -- a filesystem problem, distinct from a refused\n"
-            "     prescription: 2 means fix the prescription, 3 means fix\n"
+            "  2  EXIT_UNREADABLE -- the bundle, --state, --drivers,\n"
+            "     --applied-profile, --repeat-floor or --declared-geometry\n"
+            "     could not be read\n"
+            "  3  EXIT_WRITE_FAILED -- packet's or stage's own write failed\n"
+            "     -- a filesystem problem, distinct from a refused\n"
+            "     prescription: 1 means fix the prescription, 3 means fix\n"
             "     the speaker's filesystem"
         ),
     )

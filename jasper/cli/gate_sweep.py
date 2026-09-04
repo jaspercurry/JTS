@@ -43,7 +43,9 @@ from ._refusal import (
     EXIT_REFUSED,
     EXIT_UNREADABLE,
     EXIT_WRITE_FAILED,
+    StageFailed,
     failed,
+    stage,
 )
 from ._report import write_report
 
@@ -90,14 +92,10 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
             EXIT_REFUSED, exc.reason,
             json.dumps(exc.detail, sort_keys=True, default=str),
         )
-    try:
-        out = write_report(
-            report, args.out, round_dir / DEFAULT_OUT_NAME, make_parents=True
-        )
-    except OSError as exc:
-        # The round read and the sweep ran; only the filing failed. Reporting
-        # that as an unreadable round sends the operator to the wrong place.
-        return failed(EXIT_WRITE_FAILED, REFUSE_UNWRITABLE_OUT, str(exc))
+    out = stage(
+        EXIT_WRITE_FAILED, (OSError,), write_report,
+        report, args.out, round_dir / DEFAULT_OUT_NAME, make_parents=True,
+    )
     print(json.dumps({"status": "swept", "out": str(out or "-")}, indent=2, sort_keys=True))
     for band in report["bands"]:
         label = f"  {band['band_hz'][0]:g}-{band['band_hz'][1]:g} Hz"
@@ -213,6 +211,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure_verbose_logging(verbose=args.verbose)
     try:
         return int(args.func(args))
+    except StageFailed as staged:
+        return failed(staged.code, REFUSE_UNWRITABLE_OUT, str(staged))
     except ValueError as exc:
         return failed(EXIT_UNREADABLE, REFUSE_UNUSABLE_REQUEST, str(exc))
     except OSError as exc:

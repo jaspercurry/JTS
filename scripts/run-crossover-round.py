@@ -223,7 +223,8 @@ WALK_CLIENT_EXIT_GRACE_S = 90.0
 
 EXIT_OK = 0
 #: ``jasper-angle-capture stage`` refused or could not bank the walk. Its own
-#: exit code (2 refused / 3 filesystem) is the deciding value on the line.
+#: exit code (jasper/cli/_refusal.py's vocabulary) is the deciding value on
+#: the line.
 EXIT_STAGE = 3
 #: ``POST …/v2/session`` did not open. The wizard's own words are on the line.
 EXIT_OPEN = 4

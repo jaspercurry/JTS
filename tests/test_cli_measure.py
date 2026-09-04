@@ -29,9 +29,9 @@ from jasper.active_speaker.crossover_v2.contracts import (
 from jasper.active_speaker.crossover_v2.program_transaction import ProgramForStimulus
 from jasper.cli import measure
 from jasper.cli.measure import (
-    EXIT_INPUT,
     EXIT_OK,
     EXIT_REFUSED,
+    EXIT_UNREADABLE,
     REFUSE_CANDIDATE_ID_REQUIRED,
     REFUSE_GRAPH_LOST,
     REFUSE_NO_MIC,
@@ -189,7 +189,7 @@ def test_the_flag_refusal_exits_as_an_input_error(capsys):
         ["--kind", MEASURE_KIND_CANDIDATE, "--level-matched", "--json"]
     )
 
-    assert code == EXIT_INPUT
+    assert code == EXIT_UNREADABLE
     assert json.loads(capsys.readouterr().out)["reason"] == (
         REFUSE_CANDIDATE_ID_REQUIRED
     )

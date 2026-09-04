@@ -288,7 +288,7 @@ def test_an_unreadable_info_json_exits_as_a_filesystem_failure(
         [str(session_dir), "--campaign-root", str(tmp_path / "campaigns"), "--json"]
     )
 
-    assert args.func(args) == cli.EXIT_BANK_FAILED
+    assert args.func(args) == cli.EXIT_WRITE_FAILED
 
     assert json.loads(capsys.readouterr().out)["reason"] == "write_failed"
 
