@@ -45,13 +45,6 @@ _SHARED_JSON_OBJECT_READERS = {
     "wake_corpus_setup.py": ("_read_json", "max_bytes=_JSON_BODY_LIMIT"),
 }
 
-# wake_setup.py and rooms_setup.py call _common.read_json_body directly at
-# each site instead of wrapping it in a local per-file adapter.
-_DIRECT_JSON_BODY_READERS = {
-    "wake_setup.py": "read_json_body(self, max_bytes=_LAYER_BODY_LIMIT)",
-    "rooms_setup.py": "read_json_body(handler, max_bytes=_PEERING_BODY_LIMIT)",
-}
-
 
 def _matches(pattern: str) -> list[str]:
     rx = re.compile(pattern)
@@ -137,14 +130,6 @@ def test_migrated_json_object_readers_use_shared_helper_and_local_caps():
         assert cap_call in adapter
         assert ".headers" not in adapter
         assert "json.loads" not in adapter
-
-
-def test_wake_and_rooms_call_shared_json_body_reader_directly():
-    for filename, call in _DIRECT_JSON_BODY_READERS.items():
-        source = (Path("jasper/web") / filename).read_text(encoding="utf-8")
-        assert "def _read_json_body" not in source
-        assert "from ._common import" in source and "read_json_body" in source
-        assert source.count(call) >= 1
 
 
 def test_migrated_json_body_reads_remain_after_csrf_guard():

@@ -811,6 +811,15 @@ def read_json_object(
     return parsed
 
 
+_JSON_BODY_ERRORS = {
+    "invalid_content_length": "invalid Content-Length",
+    "negative_content_length": "invalid body length",
+    "body_too_large": "invalid body length",
+    "non_object": "body must be a JSON object",
+    "incomplete_body": "incomplete body",
+}
+
+
 def read_json_body(
     handler: BaseHTTPRequestHandler,
     *,
@@ -820,15 +829,11 @@ def read_json_body(
     try:
         return read_json_object(handler, max_bytes=max_bytes), None
     except JsonBodyError as exc:
-        if exc.code == "invalid_content_length":
-            return None, "invalid Content-Length"
-        if exc.code in {"negative_content_length", "body_too_large"}:
-            return None, "invalid body length"
-        if exc.code == "non_object":
-            return None, "body must be a JSON object"
-        if exc.code in {"invalid_utf8", "invalid_json"} and exc.__cause__:
-            return None, f"invalid JSON body: {exc.__cause__}"
-        return None, "invalid JSON body"
+        fallback = (
+            f"invalid JSON body: {exc.__cause__}"
+            if exc.__cause__ else "invalid JSON body"
+        )
+        return None, _JSON_BODY_ERRORS.get(exc.code, fallback)
 
 
 def read_form(handler: BaseHTTPRequestHandler) -> dict[str, str]:
