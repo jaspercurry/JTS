@@ -172,10 +172,12 @@ def test_fanin_control_command_vocabulary_matches_mux():
 
 def test_control_socket_paths_agree_across_processes(monkeypatch):
     """fan-in's control socket path is a hardcoded Rust constant (its
-    config.rs reads no env override) and every Python consumer hardcodes the
-    same literal; outputd's unit pins the env explicitly. If either daemon
-    moves its socket, every consumer here moves with it in the same PR.
+    config.rs reads no env override) and outputd's unit pins the env
+    explicitly. Every Python consumer either respells that literal or resolves
+    a shared constant; both spellings are checked here, so if either daemon
+    moves its socket every consumer moves with it in the same PR.
     """
+    from jasper.cli.doctor import audio_runtime_fanin, audio_runtime_outputd
     from jasper.correction.runtime_integrity import FANIN_CONTROL_SOCKET
     from jasper.fanin.status import FANIN_STATUS_SOCKET
     from jasper.peering.config import PEERING_UDS_PATH
@@ -191,23 +193,26 @@ def test_control_socket_paths_agree_across_processes(monkeypatch):
     for rel in (
         "jasper/mux.py",
         "jasper/control/airplay_health.py",
-        "jasper/cli/doctor/audio_runtime_fanin.py",
         "jasper/cli/system_soak.py",
     ):
         assert fanin_sock in (REPO / rel).read_text(), (
             f"{rel} no longer pins the fan-in control socket {fanin_sock}"
         )
+    # The doctor's fan-in checks resolve the shared constant instead of
+    # respelling the literal, so the VALUE they will connect to is asserted
+    # rather than their source text.
+    assert audio_runtime_fanin.FANIN_STATUS_SOCKET == fanin_sock
 
     unit = (REPO / "deploy" / "systemd" / "jasper-outputd.service").read_text()
     assert f'Environment="JASPER_OUTPUTD_CONTROL_SOCKET={outputd_sock}"' in unit
     for rel in (
         "jasper/audio_validation.py",
-        "jasper/cli/doctor/audio_runtime_outputd.py",
         "jasper/cli/system_soak.py",
     ):
         assert outputd_sock in (REPO / rel).read_text(), (
             f"{rel} no longer pins the outputd control socket {outputd_sock}"
         )
+    assert audio_runtime_outputd._OUTPUTD_STATUS_SOCKET == outputd_sock
 
     # voice connects where jasper-control's peering daemon binds.
     monkeypatch.delenv("JASPER_PEERING_UDS", raising=False)

@@ -11,15 +11,17 @@ preserved. No check logic changed in the split."""
 from __future__ import annotations
 
 import errno
-import json
 import re
 import shutil
-import socket
 import subprocess
 import sys
 from pathlib import Path
 
 from ...env_load import parse_env_text
+from ...route_latency.status_socket import (
+    OUTPUTD_STATUS_SOCKET,
+    read_status_socket_or_none,
+)
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
@@ -27,40 +29,6 @@ from ._shared import (
     _parse_systemd_environment,
     _run,
 )
-
-_OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
-
-
-def _read_outputd_status(
-    socket_path: str = _OUTPUTD_STATUS_SOCKET,
-) -> dict | None:
-    """Best-effort local outputd STATUS read for grouping verdicts."""
-    sock: socket.socket | None = None
-    try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(2.0)
-        sock.connect(socket_path)
-        sock.sendall(b"STATUS\n")
-        chunks: list[bytes] = []
-        while True:
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            chunks.append(chunk)
-    except OSError:
-        return None
-    finally:
-        if sock is not None:
-            try:
-                sock.close()
-            except OSError:
-                pass
-    try:
-        payload = json.loads(b"".join(chunks).decode("utf-8", errors="replace"))
-    except json.JSONDecodeError:
-        return None
-    return payload if isinstance(payload, dict) else None
-
 
 def _devices_rate_adjust_from_text(text: str) -> bool | None:
     """``devices.enable_rate_adjust`` from a CamillaDSP config — True/False, or
@@ -198,7 +166,9 @@ def check_grouping_pair_lock() -> CheckResult:
         stream_clients=stream_clients,
         self_name=_self_client_name(),
         want_stream=SNAP_STREAM_ID,
-        local_outputd_status=_read_outputd_status(),
+        local_outputd_status=read_status_socket_or_none(
+            OUTPUTD_STATUS_SOCKET, timeout=2.0
+        ),
     )
     pair_lock = runtime.get("pair_lock") or {}
     status = str(pair_lock.get("status") or "unknown")

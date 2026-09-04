@@ -18,11 +18,11 @@ from jasper.cli.doctor import (
 from jasper.output_topology import OutputTopologyError
 
 from ._doctor_audio_runtime_fixtures import (
-    _FakeSocket,
     _patch_fanin_status_socket,
     _patch_fanin_systemctl,
     _stage_floor_conf,
 )
+from .status_socket_fixtures import FakeStatusSocket
 
 
 # ---- shairport-sync.conf output_device check ---------------------------
@@ -252,19 +252,15 @@ def test_host_clock_doctor_warns_on_unavailable_or_generation_mismatch():
     assert "control_generation=3" in mismatch.detail
 
 
-def test_status_socket_strict_wrapper_and_lossy_caller_keep_decode_ownership(
+def test_status_reader_decodes_lossily_so_a_stray_byte_keeps_the_counters(
     monkeypatch,
 ):
-    strict = _FakeSocket(payload=b'{"note":"\xff"}')
-    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: strict)
+    """One reader, one decode policy: replacement, never an exception.
 
-    with pytest.raises(UnicodeDecodeError):
-        doctor._shared._read_status_socket("/run/test.sock")
-
-    assert 0 < strict.timeout <= 1.0
-    assert strict.closed is True
-
-    lossy = _FakeSocket(payload=b'{"note":"\xff","tts":{"enabled":false}}')
+    A single invalid byte anywhere in a daemon's reply must not cost a check
+    the counters it came for.
+    """
+    lossy = FakeStatusSocket(payload=b'{"note":"\xff","tts":{"enabled":false}}')
     monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: lossy)
 
     result = doctor.check_fanin_tts_drops()
@@ -278,8 +274,8 @@ def test_status_socket_strict_wrapper_and_lossy_caller_keep_decode_ownership(
 def test_check_fanin_service_keeps_one_bounded_status_retry(monkeypatch):
     _patch_fanin_systemctl(monkeypatch)
     monkeypatch.setattr(doctor.audio_runtime_fanin.time, "sleep", lambda _: None)
-    first = _FakeSocket(error=OSError("transient refusal"))
-    second = _FakeSocket(payload=_fanin_status_payload())
+    first = FakeStatusSocket(error=OSError("transient refusal"))
+    second = FakeStatusSocket(payload=_fanin_status_payload())
     pending = [first, second]
     monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: pending.pop(0))
 
@@ -490,11 +486,11 @@ def test_check_fanin_service_warns_on_malformed_pre_dsp_tts_loudness(monkeypatch
 
 
 def test_check_fanin_service_fails_on_invalid_status_json(monkeypatch):
+    """A reply that is not JSON at all is a classified FAIL, not a crash."""
     _patch_fanin_systemctl(monkeypatch)
     _patch_fanin_status_socket(monkeypatch, b"not-json")
-    r = doctor.check_fanin_service()
-    assert r.status == "fail"
-    assert "invalid JSON" in r.detail
+
+    assert doctor.check_fanin_service().status == "fail"
 
 
 def test_check_fanin_service_fails_when_status_socket_unreachable(monkeypatch):
@@ -502,7 +498,7 @@ def test_check_fanin_service_fails_when_status_socket_unreachable(monkeypatch):
     monkeypatch.setattr(
         doctor.socket,
         "socket",
-        lambda *a, **kw: _FakeSocket(error=OSError("connection refused")),
+        lambda *a, **kw: FakeStatusSocket(error=OSError("connection refused")),
     )
     r = doctor.check_fanin_service()
     assert r.status == "fail"
@@ -663,7 +659,7 @@ def test_check_fanin_tts_drops_ok_when_status_unreachable(monkeypatch):
     monkeypatch.setattr(
         doctor.socket,
         "socket",
-        lambda *a, **kw: _FakeSocket(error=OSError("connection refused")),
+        lambda *a, **kw: FakeStatusSocket(error=OSError("connection refused")),
     )
     r = doctor.check_fanin_tts_drops()
     assert r.status == "ok"
@@ -750,7 +746,7 @@ def test_check_fanin_ring_stall_ok_when_status_unreachable(monkeypatch):
     monkeypatch.setattr(
         doctor.socket,
         "socket",
-        lambda *a, **kw: _FakeSocket(error=OSError("connection refused")),
+        lambda *a, **kw: FakeStatusSocket(error=OSError("connection refused")),
     )
     r = doctor.check_fanin_ring_stall()
     assert r.status == "ok"

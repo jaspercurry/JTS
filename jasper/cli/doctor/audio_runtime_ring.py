@@ -21,8 +21,8 @@ from ...audio_hardware.dac import latency_floor_for
 from ...fanin_coupling import RING_SLOT_FRAMES
 from ...output_hardware import active_dac_profile_id
 from ._registry import doctor_check
-from ._shared import CheckResult, _read_status_socket, _run
-from .audio_runtime_fanin import _FANIN_STATUS_SOCKET, _requires_roleful_graph
+from ._shared import CheckResult, _run
+from .audio_runtime_fanin import _fanin_status, _requires_roleful_graph
 from .audio_runtime_outputd import _outputd_reconciled_env
 from .correction import _active_camilla_config_path
 
@@ -1105,14 +1105,13 @@ def check_renderer_ring_lanes() -> CheckResult:
         # into a red ✗ + exit 1.
         return CheckResult(label_name, "ok", "no renderer lane armed (fleet default)")
 
-    try:
-        status = _read_status_socket(_FANIN_STATUS_SOCKET)
-    except (OSError, ValueError) as e:
+    status = _fanin_status()
+    if isinstance(status, Exception):
         return CheckResult(
             label_name,
             "warn",
             f"{len(armed)} lane(s) armed ({', '.join(armed)}) but fan-in STATUS is "
-            f"unreadable ({type(e).__name__}) — cannot confirm they are attached",
+            f"unreadable ({type(status).__name__}) — cannot confirm they are attached",
         )
     inputs = status.get("inputs")
     if not isinstance(inputs, list):

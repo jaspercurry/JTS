@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import logging
 import socket
+import time
 from typing import Any
 
 from jasper.log_event import log_event
@@ -40,8 +41,15 @@ from jasper.log_event import log_event
 
 logger = logging.getLogger("jasper.route_latency.status_socket")
 
-DEFAULT_STATUS_TIMEOUT_SECONDS = 1.0
+# Seconds, TOTAL deadline for connect + send + every recv. 3.0 because the
+# reader used to arm 1.0 s per operation, so a boot-time caller on the
+# 415 MB Pi Zero 2 W keeps the same worst-case budget it had before the
+# deadline was made total.
+DEFAULT_STATUS_TIMEOUT_SECONDS = 3.0
 _RECV_CHUNK_BYTES = 65536
+# A daemon's STATUS reply is a few KiB; the cap bounds what a wedged or
+# runaway writer can make a caller buffer on a 1 GB Pi.
+_RESPONSE_MAX_BYTES = 1_048_576
 
 # Canonical control-socket paths for the two live route-health owners.
 FANIN_STATUS_SOCKET = "/run/jasper-fanin/control.sock"
@@ -51,26 +59,49 @@ OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
 def read_status_socket(path: str, *, timeout: float = DEFAULT_STATUS_TIMEOUT_SECONDS) -> dict[str, Any]:
     """Connect to a JTS ``STATUS\\n`` control socket and return its JSON reply.
 
+    ``timeout`` is a TOTAL deadline across connect, send and every recv, not a
+    per-operation one: a daemon dribbling a byte per timeout window must not be
+    able to hold a caller open indefinitely. The reply is capped at
+    :data:`_RESPONSE_MAX_BYTES`, and decoded lossily so a stray byte in an
+    otherwise well-formed reply does not cost a caller the counters it came for.
+
     Raises the underlying ``OSError`` / ``TimeoutError`` on a connect/read
-    failure, ``json.JSONDecodeError`` on an unparseable reply, and
-    ``ValueError`` when the reply's JSON root is not an object — so a caller
-    that wants to classify or surface the specific failure can. Callers that
-    prefer fail-soft ``None`` should use :func:`read_status_socket_or_none`.
+    failure or an over-cap reply, ``json.JSONDecodeError`` on an unparseable
+    reply, and ``ValueError`` when the reply's JSON root is not an object — so
+    a caller that wants to classify or surface the specific failure can.
+    Callers that prefer fail-soft ``None`` should use
+    :func:`read_status_socket_or_none`.
     """
 
+    deadline = time.monotonic() + timeout
+
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        sock.settimeout(timeout)
+        def arm_remaining_timeout() -> None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise socket.timeout("STATUS response deadline exceeded")
+            sock.settimeout(remaining)
+
+        arm_remaining_timeout()
         sock.connect(path)
+        arm_remaining_timeout()
         sock.sendall(b"STATUS\n")
         chunks: list[bytes] = []
+        received = 0
         while True:
+            arm_remaining_timeout()
             chunk = sock.recv(_RECV_CHUNK_BYTES)
             if not chunk:
                 break
+            received += len(chunk)
+            if received > _RESPONSE_MAX_BYTES:
+                raise OSError("STATUS response exceeds byte limit")
             chunks.append(chunk)
-    parsed = json.loads(b"".join(chunks).decode("utf-8"))
+    parsed = json.loads(b"".join(chunks).decode("utf-8", errors="replace"))
     if not isinstance(parsed, dict):
-        raise ValueError("STATUS response root is not an object")
+        raise ValueError(
+            f"STATUS response root is {type(parsed).__name__}, not an object"
+        )
     return parsed
 
 
