@@ -41,7 +41,7 @@ and persist their own accounting under
   Tool: `jasper-round-views frozen`, the re-measure graded against the round it
   is checking.
 - **save** — the result is banked.
-  Tool: `jasper-round-bank`.
+  Tool: `jasper-round bank`.
 
 ### 1a. The layering rule — what a measurement plays through
 
