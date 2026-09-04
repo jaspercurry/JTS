@@ -1191,14 +1191,54 @@ def test_cli_repeat_floor_exits_error_when_the_record_cannot_be_written(tmp_path
     assert json.loads(capsys.readouterr().out)["status"] == "unwritable"
 
 
-def test_cli_repeat_floor_requires_an_explicit_out(tmp_path):
+def test_cli_repeat_floor_requires_a_destination(tmp_path):
     """No default path: this tool runs on a laptop over banked directories and
-    cannot assume the speaker's own state path."""
+    cannot assume the speaker's own state path unasked."""
     from jasper.cli.round_views import main
 
     r1 = _make_round_dir(tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())})
     with pytest.raises(SystemExit):
         main(["repeat-floor", str(r1), str(r1)])
+
+
+def test_cli_repeat_floor_install_publishes_at_the_on_speaker_path(tmp_path, monkeypatch):
+    """``--install`` writes the same record the operator used to copy by hand."""
+    from jasper.active_speaker.repeat_floor import REPEAT_FLOOR_KIND, load_repeat_floor
+    from jasper.cli import round_views as cli
+
+    r1 = _make_round_dir(tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())})
+    r2 = _make_round_dir(
+        tmp_path, "r2",
+        position_curves={"cloud_verify_02": ("onax", _flat_curve(ripple_db=1.2))},
+    )
+    installed = tmp_path / "state" / "active_speaker_repeat_floor.json"
+    monkeypatch.setattr(cli, "_REPEAT_FLOOR_DEFAULT_PATH", installed)
+    out = tmp_path / "repeat-floor.json"
+
+    assert cli.main(["repeat-floor", str(r1), str(r2), "--install", "--out", str(out)]) == 0
+    record = load_repeat_floor(state_path=installed)
+    assert record is not None and record["kind"] == REPEAT_FLOOR_KIND
+    # Byte-identical to what --out writes: one payload, two destinations.
+    assert installed.read_bytes() == out.read_bytes()
+
+
+def test_cli_repeat_floor_install_exits_write_failed_on_an_unwritable_path(
+    tmp_path, monkeypatch, capsys
+):
+    """The normal no-sudo case: the shared unwritable record, not a traceback."""
+    from jasper.cli import round_views as cli
+
+    r1 = _make_round_dir(tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())})
+    r2 = _make_round_dir(
+        tmp_path, "r2",
+        position_curves={"cloud_verify_02": ("onax", _flat_curve(ripple_db=1.2))},
+    )
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("")
+    monkeypatch.setattr(cli, "_REPEAT_FLOOR_DEFAULT_PATH", blocker / "floor.json")
+
+    assert cli.main(["repeat-floor", str(r1), str(r2), "--install"]) == cli.EXIT_WRITE_FAILED
+    assert json.loads(capsys.readouterr().out)["status"] == "unwritable"
 
 
 def test_cli_reports_the_unreadable_exit_on_an_unreadable_round(tmp_path, capsys):
