@@ -380,7 +380,8 @@ PY
         -e '/^JASPER_AEC_CHIP_AEC_DAC_TRIAL=/d' \
         -e '/^JASPER_CAPTURE_RELAY_BASE=/d' \
         -e '/^JASPER_CAPTURE_ORIGIN=/d' \
-        -e '/^JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=/d'
+        -e '/^JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=/d' \
+        -e '/^JASPER_CONTROL_PORT=/d'
     migrate_wake_events_cap_seed
     if [[ -n "${OUTPUT_DAC_ID:-}" ]]; then
         sed_inplace "${ENV_DIR}/jasper.env" '/^JASPER_AUDIO_DAC_ID=/d'

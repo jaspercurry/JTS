@@ -19,6 +19,7 @@ A separate group exercises the snapshot() + start_supervisor() shape.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 import time
@@ -600,7 +601,18 @@ async def test_probe_loadavg_succeeds_in_normal_conditions():
 # ---------- jasper-control probe target ----------
 
 
-def test_control_probe_target_follows_the_configured_port():
-    """The self-probe is a LOCAL loopback call: a caller that constructs the
-    supervisor against another port must have the probe follow it."""
-    assert SystemSupervisor(control_port=9411)._control_port == 9411
+async def test_control_probe_dials_the_port_it_was_constructed_with():
+    """The self-probe is a LOCAL loopback call, and it must reach the daemon
+    it is probing: a supervisor built against another port dials THAT one, or
+    a healthy jasper-control reads as three failures and reboots the Pi."""
+
+    async def healthz(reader, writer):
+        await reader.read(256)
+        writer.write(b"HTTP/1.0 200 OK\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(healthz, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    async with server:
+        assert await SystemSupervisor(control_port=port).probe_jasper_control()

@@ -11,6 +11,9 @@
 #   jasper-airplay-volume <db>             general.run_this_when_volume_is_set
 #   jasper-airplay-volume --session-start  sessioncontrol.run_this_before_play_begins
 #
+# An optional second argument overrides the jasper-control base URL, which
+# only tests pass; shairport never does.
+#
 # Fire-and-forget by contract: shairport runs both with cmd_blocking off, a
 # dropped volume nudge is harmless, and a wedged hook is not — so every
 # failure path exits 0 having done nothing. The value is delivered to
@@ -33,7 +36,7 @@ lock="${runtime_dir}/airplay-volume.lock"
 session_start="${runtime_dir}/airplay-session-start"
 # jasper-control is always localhost on jasper/control/client.py's
 # CONTROL_PORT — the one module that owns this contract.
-url="http://127.0.0.1:8780/volume/set"
+url="${2:-http://127.0.0.1:8780}/volume/set"
 
 # shairport fires this before the connect-time volume push, so the volume
 # invocation that follows can tell a session snapshot from a user's nudge.
