@@ -4,12 +4,12 @@
 
 """The record seam filled: where a session's evidence lands.
 
-:class:`~.session_seams.RecordStore`'s one method writes to the write-once
-commissioning evidence bundle, on the paths the shipped ``V2FlowSeams``
-publishers wrote, so ``position_cycle``, ``evidence_packet`` and
-``candidate_bank`` find the same files. The id a record is banked under IS its
-store-relative path (ADR-0198). Store errors propagate unwrapped: fail-soft
-belongs in a named caller-side wrapper, never here and never a flag.
+:class:`~.session_seams.RecordStore`'s one method writes every kind of a
+session's evidence to the write-once commissioning bundle, so
+``position_cycle``, ``evidence_packet`` and ``candidate_bank`` find the same
+files. The id a record is banked under IS its store-relative path (ADR-0198).
+Store errors propagate unwrapped: fail-soft belongs in a named caller-side
+wrapper, never here and never a flag.
 """
 
 from __future__ import annotations
@@ -66,9 +66,7 @@ class _Route:
     relative_path: Callable[[str, Mapping[str, Any]], str]
     enveloped: bool
     #: Keys a caller supplies to ROUTE the record and that the file does not
-    #: carry, taken back off the way ``kind`` is. Without this a routing key
-    #: would be written, and the store would not be a drop-in for the publisher
-    #: whose bytes its readers already know.
+    #: carry, taken back off the way ``kind`` is.
     routing_keys: tuple[str, ...] = ()
     stamp_identity: bool = False
     verify: Callable[[Mapping[str, Any], Mapping[str, Any]], None] | None = None
@@ -80,20 +78,20 @@ def _round_dir(capture_session_id: str) -> str:
 
 
 def _verify_candidate(
-    record: Mapping[str, Any], reopened: Mapping[str, Any],
+    written: Mapping[str, Any], reopened: Mapping[str, Any],
 ) -> None:
     """The apply path's own tamper check: a candidate must survive exact reopen."""
     if MeasuredCrossoverCandidate.from_mapping(
         reopened
-    ).fingerprint != record.get("fingerprint"):
+    ).fingerprint != written.get("fingerprint"):
         raise RuntimeError("published measured candidate changed on exact readback")
 
 
 def _verify_receipt(
-    record: Mapping[str, Any], reopened: Mapping[str, Any],
+    written: Mapping[str, Any], reopened: Mapping[str, Any],
 ) -> None:
     """R21's accept-receipt pattern: a receipt is what it says it is."""
-    if reopened != dict(record):
+    if reopened != dict(written):
         raise RuntimeError("published round receipt changed on exact readback")
 
 
@@ -202,9 +200,7 @@ class BankedRecordStore:
         route = self._route(discriminator)
         relative = route.relative_path(self.capture_session_id, record)
         payload = self._payload(record, route, discriminator, measure)
-        await asyncio.to_thread(
-            self._publish, relative, payload, record, route,
-        )
+        await asyncio.to_thread(self._publish, relative, payload, route)
         return relative
 
     # --------------------------------------------------------------- internals
@@ -224,10 +220,7 @@ class BankedRecordStore:
         discriminator: str,
         measure: str | None,
     ) -> Mapping[str, Any]:
-        record = {
-            key: value for key, value in record.items()
-            if key not in route.routing_keys
-        }
+        record = {k: v for k, v in record.items() if k not in route.routing_keys}
         if not route.enveloped:
             return record
         owned = [key for key in _ENVELOPE_KEYS if key in record]
@@ -264,12 +257,11 @@ class BankedRecordStore:
         )
 
     def _publish(
-        self,
-        relative: str,
-        payload: Mapping[str, Any],
-        record: Mapping[str, Any],
-        route: _Route,
+        self, relative: str, payload: Mapping[str, Any], route: _Route,
     ) -> None:
         artifact = self.evidence.publish_json_artifact(relative, payload)
         if route.verify is not None:
-            route.verify(record, self.evidence.reopen_json_artifact(artifact))
+            # The PAYLOAD, not the record it came from: a route's verify asks
+            # whether what was written comes back, and the two differ wherever
+            # the store owns keys the caller supplied.
+            route.verify(payload, self.evidence.reopen_json_artifact(artifact))

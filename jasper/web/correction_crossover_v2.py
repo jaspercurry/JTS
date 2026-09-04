@@ -2801,10 +2801,9 @@ def _bank(
 
     The store owns the path, the envelope, the discriminator and the
     reopen-and-compare, and answers with the id that finds the record again;
-    the artifact identity every ``refs`` column and every citation needs is
-    re-read from that id. Driven through ``run_async`` because the publishing
-    seams are synchronous all the way up from ``consume_capture``, which runs
-    on a capture worker thread.
+    the identity every ``refs`` column and every citation needs is re-read from
+    it. Driven through ``run_async`` because the publishing seams are
+    synchronous all the way up from ``consume_capture``, on a worker thread.
     """
     from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 
@@ -2820,9 +2819,8 @@ def _bank_findings(
     """Bank one phase's finding set; answer the artifact it wrote.
 
     ``phase`` rides the record to ROUTE it — per phase and not per session,
-    because the pre-apply and post-apply groups close at different times and
-    the store is write-once — and the route takes it back off, so the file is
-    exactly ``FindingSet.to_dict()``.
+    because the two groups close at different times and the store is write-once
+    — and the route takes it back off: the file is ``FindingSet.to_dict()``.
     """
     _, artifact = _bank(
         records, run_async, {**finding_set.to_dict(), "phase": phase},
@@ -2835,10 +2833,8 @@ def _fail_soft(work: Callable[[], _T], *, event: str, **fields: Any) -> _T | Non
 
     The fail-soft boundary, at the caller and never in the store (ADR-0227
     §12): the store stays strict — ``publish_json_artifact`` raises rather than
-    silently dropping an artifact — so every OTHER caller keeps the strictness
-    it was built for, while a full disk here cannot turn an acoustically-good
-    capture or a diagnosed session into a failure. Each caller passes its own
-    shipped event name and fields, so a log search spans the move.
+    dropping an artifact — so every OTHER caller keeps the strictness it was
+    built for. Each caller passes its own shipped event name and fields.
     """
     try:
         return work()
@@ -2910,12 +2906,10 @@ def bind_round_receipt(
     The store runs the R21 accept-receipt reopen-and-compare at the write
     (``record_store._verify_receipt``).
 
-    Raises rather than swallowing: the store is deliberately strict, and the
-    fail-soft boundary is the round coordinator's own receipt writer
+    Raises rather than swallowing: the fail-soft boundary is the round
+    coordinator's own receipt writer
     (:func:`jasper.active_speaker.crossover_v2.coordinator.run_round` catches
-    it), the same shape :func:`bind_cloud_publisher` takes. Keeping the
-    boundary there preserves the strictness for every other caller of this
-    store.
+    it), the same shape :func:`bind_cloud_publisher` takes.
     """
     records = _record_store(store, capture_session_id)
 
@@ -3436,23 +3430,19 @@ def bind_cloud_publisher(
 
     One JSON artifact PER CLOSED GROUP — ``crossover_v2/<session>/<phase>.json``
     (``cloud_measure.json`` / ``cloud_verify.json``), never a single shared
-    ``cloud.json`` across both groups. The evidence store is write-once (a
-    repeated path is a ``PATH_CONFLICT`` refusal — see
-    :func:`bind_position_retention`'s own docstring), and the pre-apply and
-    post-apply groups close at genuinely different times in the SAME
-    session, so a single shared path would collide on the second group's
-    write. This is a mechanism deviation from the work order's literal
+    ``cloud.json`` across both groups: the store is write-once and the
+    pre-apply and post-apply groups close at genuinely different times in the
+    SAME session, so a shared path would collide on the second group's write.
+    This is a mechanism deviation from the work order's literal
     ``crossover_v2/<session>/cloud.json`` path, recorded here rather than
-    silently matched — the per-group content (mask/registry/spec/geometry)
-    is exactly what was asked for either way.
+    silently matched — the per-group content (mask/registry/spec/geometry) is
+    exactly what was asked for either way.
 
-    Fail-soft at the CALLER (``CrossoverV2Session._run_cloud_pipeline``):
-    this function does not swallow failures itself — a full disk or a
-    write-once conflict must surface as an exception here so the conductor's
-    own boundary can log and continue rather than every OTHER caller of this
-    store losing its strictness. :func:`bind_position_retention` is the
-    opposite, deliberately: its boundary is at the binding, so it catches where
-    this one raises.
+    Fail-soft at the CALLER (``CrossoverV2Session._run_cloud_pipeline``): a
+    full disk or a write-once conflict must surface as an exception here so the
+    conductor's own boundary can log and continue.
+    :func:`bind_position_retention` is the opposite, deliberately: its boundary
+    is at the binding, so it catches where this one raises.
     """
     from jasper.active_speaker.crossover_v2.record_store import CLOUD_EVIDENCE_KIND
 
