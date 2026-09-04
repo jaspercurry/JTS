@@ -26,6 +26,8 @@ from jasper.active_speaker.crossover_v2.delay_landscape import (
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL, PHASE_MEASURE
 from jasper.active_speaker.crossover_v2.position_cycle import read_take_curves
 from jasper.active_speaker.delay_sweep import sweep_spec
+from jasper.audio_measurement.analysis import ShoulderSpan
+from jasper.cli import null_door
 from jasper.cli.angle_capture import build_parser as angle_capture_parser
 from jasper.cli.delay_sweep import main
 
@@ -300,3 +302,122 @@ def test_a_retaken_pose_proposes_off_the_retake_not_the_take_it_replaced(
     assert code == 0
     assert payload["take_path"].endswith("p0_a02.json")
     assert payload["landscape"]["best_coordinate_us"] == pytest.approx(200.0, abs=50.0)
+
+
+def _null_row(bundle: Path, *, delay_us: float, depth_db: float | None = None,
+              inverted: bool = True, refusal=None):
+    """One `<bundle>/null_runs/` row, written by the door that owns their shape.
+
+    Built through `null_door`'s own writer rather than a hand copy, so a change
+    to the banked row fails here instead of being read past.
+    """
+
+    spec = sweep_spec(
+        crossover_fc_hz=FC_HZ, upper_role="tweeter", lower_role="woofer",
+        signed_acoustic_path_difference_m=0.0,
+    )
+    span = ShoulderSpan(
+        crossover_fc_hz=FC_HZ, overlap_hz=(FC_HZ / 2.0, FC_HZ * 2.0),
+        used_hz=(FC_HZ / 2.0, FC_HZ * 2.0), samples_below_fc=64, samples_above_fc=64,
+    )
+    row = null_door._row(
+        fc_hz=FC_HZ,
+        candidate=spec.dsp_candidate(delay_us),
+        inverted=inverted,
+        inverted_role="tweeter",
+        position_deg=0,
+        trims_db={"woofer": 0.0, "tweeter": -10.0},
+        trims_source="banked_base_trim",
+        gap_ceiling_db=3.3,
+        graph_fingerprint="abc123",
+        wav_sha256="0" * 64,
+        depth_db=depth_db,
+        span=None if refusal else span,
+        refusal=refusal,
+    )
+    return null_door._write_row(bundle / "null_runs", row)
+
+
+def _refused():
+    return null_door.NullDoorRefused(
+        "null_no_shoulders", "the band cannot place a shoulder"
+    )
+
+
+def _confirm(bundle: Path, capsys, *extra):
+    code = main(["confirm", str(bundle), "--fc-hz", str(FC_HZ), *extra])
+    captured = capsys.readouterr()
+    return code, json.loads(captured.out), captured.err
+
+
+def test_propose_banks_its_landscape_beside_the_round(tmp_path, capsys) -> None:
+    """The prediction is an artifact, not just stdout: `confirm` is graded
+    against it later, and a number an operator only ever saw scroll past is
+    not evidence."""
+
+    bundle = _bank(tmp_path, curves=[
+        _curve("woofer", arrival_us=200.0), _curve("tweeter"),
+    ])
+    code, payload, _err = _propose(bundle, capsys)
+
+    banked = bundle / "delay_landscape.json"
+    assert code == 0
+    assert payload["out"] == str(banked)
+    assert json.loads(banked.read_text())["landscape"] == payload["landscape"]
+
+
+def test_confirm_grades_the_played_rows_against_the_computed_optimum(
+    tmp_path, capsys,
+) -> None:
+    """The loop closes here: the coordinates `propose` printed were played,
+    `jasper-null` banked a row for each, and the verdict is read off those
+    rows rather than off the model that proposed them."""
+
+    bundle = _bank(tmp_path, curves=[
+        _curve("woofer", arrival_us=200.0), _curve("tweeter"),
+    ])
+    _code, proposed, _err = _propose(bundle, capsys)
+    optimum = proposed["landscape"]["best_coordinate_us"]
+    for coordinate in proposed["landscape"]["confirmation_coordinates_us"]:
+        _null_row(
+            bundle, delay_us=coordinate,
+            depth_db=26.0 if coordinate == optimum else 6.0,
+        )
+
+    code, payload, err = _confirm(bundle, capsys)
+
+    assert code == 0
+    assert payload["verdict"] == "delay_resolved_robust"
+    assert payload["prescribable_delay_us"] == pytest.approx(optimum)
+    banked = json.loads((bundle / "delay_confirmation.json").read_text())
+    assert banked["verdict"]["verdict"] == payload["verdict"]
+    assert banked["verdict"]["computed_optimum_us"] == pytest.approx(optimum)
+    # Every graded row is named with its coordinate and depth, and nothing
+    # from the capture rides along.
+    assert len(banked["graded_rows"]) == len(
+        proposed["landscape"]["confirmation_coordinates_us"]
+    )
+    assert all(
+        "wav_sha256" not in row and {"delay_us", "depth_db"} <= set(row)
+        for row in banked["graded_rows"]
+    )
+    assert err.strip()
+
+
+def test_confirm_refuses_rows_it_cannot_compare(tmp_path, capsys) -> None:
+    """A refused row has no depth and an in-phase row read the summed corner
+    rather than the reverse null — neither is a confirmation, and grading a
+    landscape off nothing is refused by name, not answered."""
+
+    bundle = _bank(tmp_path, curves=[
+        _curve("woofer", arrival_us=200.0), _curve("tweeter"),
+    ])
+    _null_row(bundle, delay_us=0.0, depth_db=22.0, inverted=False)
+    _null_row(bundle, delay_us=200.0, refusal=_refused())
+
+    code, payload, _err = _confirm(bundle, capsys)
+
+    assert code == 1
+    assert payload["status"] == "refused"
+    assert payload["reason"] == "delay_confirm_no_measured_rows"
+    assert not (bundle / "delay_confirmation.json").exists()
