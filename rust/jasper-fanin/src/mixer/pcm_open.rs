@@ -2,10 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Lane construction and the ALSA open/configure envelopes behind it: the
-//! aloop capture lanes, the USB DIRECT gadget capture, and the pure helpers
-//! that size and validate the geometry they negotiate.
-//!
 //! Open-time only: the per-period read and render paths, and the error
 //! classifier they share, stay with the mixer's work loop.
 

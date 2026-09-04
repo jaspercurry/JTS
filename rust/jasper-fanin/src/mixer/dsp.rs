@@ -2,10 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Pure DSP on the mixer's program sum: the width dispatch, lane entry, the
-//! gain and duck multiplies, and the saturating exits to the i16 and S32LE
-//! wires.
-//!
 //! Nothing here touches ALSA or `Mixer` state, so every function is testable
 //! from values alone.
 
