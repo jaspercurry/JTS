@@ -23,7 +23,6 @@ from jasper import audio_runtime_plan
 from jasper.audio_hardware.usb_port_role import UsbPortRoleState
 from jasper.cli import doctor
 from jasper.fanin import coupling_auto as _ca
-
 from .fanin_env_fixtures import declare_fanin_env
 
 # ----------------------------------------------------------------------

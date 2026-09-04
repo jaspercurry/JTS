@@ -2,12 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared ``fanin.env`` staging for tests exercising ``jasper.fanin.ring_health``.
-
-Deliberately free of any ``jasper`` import: ``monkeypatch.setattr`` resolves
-the dotted target string itself, so no test that only needs this helper has
-to import the package it is isolating from ``/var/lib/jasper/fanin.env``.
-"""
+"""Shared ``fanin.env`` staging for tests exercising ``jasper.fanin.ring_health``."""
 
 from __future__ import annotations
 

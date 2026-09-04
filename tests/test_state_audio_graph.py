@@ -488,17 +488,15 @@ def test_coupling_state_publishes_no_operator_pin(monkeypatch, tmp_path):
     controls their speaker. The marker file may survive on a deployed box, which
     is exactly why this is driven with one present.
     """
-    fanin_env = tmp_path / "fanin.env"
-    fanin_env.write_text(
+    declare_fanin_env(
+        monkeypatch,
+        tmp_path,
         "JASPER_FANIN_COUPLING_CHOICE=operator\n"
-        "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n"
+        "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n",
     )
     monkeypatch.setattr(
         "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: "shm_ring",
-    )
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
     )
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH",
@@ -521,12 +519,10 @@ def _patch_coupling_reads(monkeypatch, tmp_path, *, armed=False):
         "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: "loopback",
     )
-    fanin_env = tmp_path / "fanin.env"
-    fanin_env.write_text(
-        f"{ca.USB_DIRECT_ENV_VAR}={ca.USB_COMBO_ENABLED_VALUE}\n" if armed else ""
-    )
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
+    declare_fanin_env(
+        monkeypatch,
+        tmp_path,
+        f"{ca.USB_DIRECT_ENV_VAR}={ca.USB_COMBO_ENABLED_VALUE}\n" if armed else "",
     )
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH",
