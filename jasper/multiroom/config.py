@@ -38,14 +38,13 @@ import ipaddress
 import logging
 import re
 from dataclasses import dataclass
-from typing import Mapping
 
 from jasper.camilla_emit import (
     BASS_MANAGEMENT_CORNER_HZ_DEFAULT,
     BASS_MANAGEMENT_CORNER_HZ_HI,
     BASS_MANAGEMENT_CORNER_HZ_LO,
 )
-from jasper.env_load import read_env_file_state
+from jasper.env_load import read_env_file_or_warn
 
 logger = logging.getLogger(__name__)
 
@@ -263,14 +262,6 @@ _DISABLED = GroupingConfig(
     subwoofer_present=False,
     error=None,
 )
-
-
-def _read_env_file(path: str) -> Mapping[str, str]:
-    """Read an EnvironmentFile through the dependency-free canonical parser."""
-    state = read_env_file_state(path)
-    if state.status == "unreadable":
-        logger.warning("could not read %s: %s", path, state.error)
-    return state.values
 
 
 def _parse_enabled(raw: str) -> bool:
@@ -586,7 +577,7 @@ def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
           * role == "follower" and leader_addr empty
       - buffer_ms is always parsed + clamped, never an error.
     """
-    src = _read_env_file(path)
+    src = read_env_file_or_warn(path, logger=logger)
 
     if not _parse_enabled(src.get("JASPER_GROUPING", "off")):
         return _DISABLED
