@@ -26,12 +26,8 @@ the same comparison and would refuse the same request; what
 a mistyped or stale fingerprint ends here instead of becoming a state-changing
 request, with both values on the receipt.
 
-**``bank`` reaches no wizard**: it is the operator's door onto
-:func:`jasper.active_speaker.round_bank.bank_round`, which files one bundle
-plus the SSOT documents
-:mod:`~jasper.active_speaker.crossover_v2.round_inputs` names in the campaign
-home -- the tree ``scripts/bank-crossover-round.sh`` assembles on a laptop and
-``jasper-round-views`` reads.
+**``bank`` reaches no wizard**: it files through
+:func:`jasper.active_speaker.round_bank.bank_round` into the campaign home.
 
 The wizard verbs print a receipt -- the fields, or the same fields as JSON
 under ``--json``; ``bank`` prints the round directory. See
