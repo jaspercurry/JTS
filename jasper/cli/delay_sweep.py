@@ -63,14 +63,9 @@ from jasper.active_speaker.delay_sweep import sweep_spec
 from jasper.audio_measurement.null_walk import NullWalkError
 
 from ._logging import configure_verbose_logging
-from ._refusal import (
-    EXIT_OK,
-    EXIT_REFUSED,
-    EXIT_UNREADABLE,
-    EXIT_WRITE_FAILED,
-    failed,
-)
-from ._report import write_report
+from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, failed
+from ._report import file_report
+from .null_door import NULL_RUNS_DIR
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
@@ -84,9 +79,6 @@ REFUSE_UNWRITABLE_OUT = "delay_sweep_unwritable_out"
 
 LANDSCAPE_OUT_NAME = "delay_landscape.json"
 CONFIRMATION_OUT_NAME = "delay_confirmation.json"
-#: Where ``jasper-null`` banks one JSON row per played coordinate
-#: (jasper/cli/null_door.py).
-NULL_RUNS_DIR = "null_runs"
 
 
 def _spec_from_args(args: argparse.Namespace) -> Any:
@@ -167,16 +159,20 @@ def _landscape_from_bank(
     return landscape, take_path, _take_phase_composition(bundle_dir, take_path)
 
 
-def _bank(payload: Any, out: str | None, default_path: Path) -> Path | int:
-    """File the artifact beside the round, or the exit code that could not."""
+def _bank(payload: Any, out: str | None, default_path: Path) -> Path | None | int:
+    """File the artifact beside the round, or the exit code that could not.
 
-    target = Path(out) if out else default_path
-    try:
-        write_report(payload, None, target, make_parents=True)
-    except OSError as exc:
-        # The bank read and the landscape computed; only the filing failed.
-        return failed(EXIT_WRITE_FAILED, REFUSE_UNWRITABLE_OUT, str(exc))
-    return target
+    ``--out`` names a FILE here, never ``-``: both verbs print their summary on
+    stdout, so a report written there too would interleave with it.
+    """
+
+    return file_report(
+        payload,
+        None,
+        Path(out) if out else default_path,
+        reason=REFUSE_UNWRITABLE_OUT,
+        make_parents=True,
+    )
 
 
 def _cmd_propose(args: argparse.Namespace) -> int:

@@ -38,14 +38,8 @@ from jasper.active_speaker.crossover_v2.gate_sweep import (
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 
 from ._logging import configure_verbose_logging
-from ._refusal import (
-    EXIT_OK,
-    EXIT_REFUSED,
-    EXIT_UNREADABLE,
-    EXIT_WRITE_FAILED,
-    failed,
-)
-from ._report import write_report
+from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, failed
+from ._report import file_report
 
 #: Named like every other refusal here: the input that was missing.
 REFUSE_UNUSABLE_REQUEST = "gate_sweep_unusable_request"
@@ -90,14 +84,12 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
             EXIT_REFUSED, exc.reason,
             json.dumps(exc.detail, sort_keys=True, default=str),
         )
-    try:
-        out = write_report(
-            report, args.out, round_dir / DEFAULT_OUT_NAME, make_parents=True
-        )
-    except OSError as exc:
-        # The round read and the sweep ran; only the filing failed. Reporting
-        # that as an unreadable round sends the operator to the wrong place.
-        return failed(EXIT_WRITE_FAILED, REFUSE_UNWRITABLE_OUT, str(exc))
+    out = file_report(
+        report, args.out, round_dir / DEFAULT_OUT_NAME,
+        reason=REFUSE_UNWRITABLE_OUT, make_parents=True,
+    )
+    if isinstance(out, int):
+        return out
     print(json.dumps({"status": "swept", "out": str(out or "-")}, indent=2, sort_keys=True))
     for band in report["bands"]:
         label = f"  {band['band_hz'][0]:g}-{band['band_hz'][1]:g} Hz"

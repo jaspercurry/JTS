@@ -733,7 +733,7 @@ def test_an_unreadable_bundle_still_reports_and_says_which_half_failed(
 
     code, payload = _status([str(tmp_path / "not-a-bundle")], capsys)
 
-    assert code == cli.EXIT_EVIDENCE_UNREADABLE
+    assert code == cli.EXIT_UNREADABLE
     assert payload["packet_error"]
     assert payload["staged"]["pending"] is True
     assert payload["banked"]["available"] is False
@@ -748,7 +748,7 @@ def test_a_virgin_speaker_orients_with_no_session_dir_at_all(capsys):
     """
     code, payload = _status([], capsys)
 
-    assert code == cli.EXIT_EVIDENCE_UNREADABLE
+    assert code == cli.EXIT_UNREADABLE
     assert payload["packet_error"]
     assert payload["banked"]["available"] is False
     assert payload["banked"]["reason"] == payload["packet_error"]

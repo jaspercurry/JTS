@@ -50,6 +50,7 @@ from jasper.active_speaker.audition import (
     stop_audition,
 )
 from jasper.cli._logging import CLI_LOG_FORMAT
+from jasper.cli._refusal import EXIT_OK, EXIT_REFUSED
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -129,7 +130,7 @@ def _cmd_start(args: argparse.Namespace) -> int:
                 "the applied graph is NOT back; run `jasper-audition stop`",
                 file=sys.stderr,
             )
-    return 0 if payload["layer"] == AUDITION_LAYER_FULL else 1
+    return EXIT_OK if payload["layer"] == AUDITION_LAYER_FULL else EXIT_REFUSED
 
 
 def _ended(reason: str) -> dict[str, Any]:
@@ -158,7 +159,7 @@ def _cmd_stop(args: argparse.Namespace) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True, default=str))
     else:
         _print_status(payload)
-    return 0
+    return EXIT_OK
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
@@ -172,7 +173,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True, default=str))
     else:
         _print_status(payload)
-    return 0
+    return EXIT_OK
 
 
 def _refused(exc: AuditionRefused, *, json_output: bool) -> int:
@@ -194,7 +195,7 @@ def _refused(exc: AuditionRefused, *, json_output: bool) -> int:
         )
     else:
         print(f"refused ({exc.reason}): {exc.detail}", file=sys.stderr)
-    return 1
+    return EXIT_REFUSED
 
 
 #: Authority tier for the generated tool-menu index

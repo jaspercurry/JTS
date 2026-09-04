@@ -29,13 +29,16 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from jasper.cli._logging import CLI_LOG_FORMAT
+from jasper.cli._refusal import (
+    EXIT_OK,
+    EXIT_REFUSED,
+    EXIT_UNREADABLE,
+    EXIT_WRITE_FAILED,
+    STATUS_BY_CODE,
+)
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
-
-EXIT_OK = 0
-EXIT_REFUSED = 1
-EXIT_INPUT = 2
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
@@ -51,6 +54,9 @@ REFUSE_SPEC_INVALID = "measure_spec_invalid"
 REFUSE_BOX_NOT_READY = "measure_box_not_ready"
 #: No measurement microphone answered, so nothing would record the stimulus.
 REFUSE_NO_MIC = "measure_no_wired_mic"
+#: The evidence bundle would not open, so no take could be filed. Nothing is
+#: wrong with the request, which is why this is not a refusal.
+REFUSE_TAKE_UNFILED = "measure_take_unfiled"
 #: ``--level-matched`` on a box whose banked evidence names no trims. Refused
 #: at open, where an operator can still act on it.
 REFUSE_NO_LEVEL_EVIDENCE = "measure_no_level_match_evidence"
@@ -648,6 +654,8 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
     from jasper.active_speaker.bundles import open_bundle
     from jasper.active_speaker.commissioning_evidence_store import (
         CommissioningEvidenceStore,
+        CommissioningEvidenceStoreError,
+        CommissioningEvidenceStoreErrorCode,
     )
     from jasper.active_speaker.crossover_v2.composition import bind_engine_seams
     from jasper.active_speaker.crossover_v2.door import measurement_door
@@ -701,17 +709,25 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
             config_dir=config_dir,
             gate_owner=DOOR_GATE_OWNER,
         ) as door:
-            info = open_bundle(box.topology, calibration_id="")
-            if not isinstance(info, Mapping) or not info.get("session_id"):
-                raise BoxNotMeasurable(
-                    REFUSE_BOX_NOT_READY,
-                    "could not open a commissioning evidence bundle for this "
-                    "session",
+            try:
+                info = open_bundle(box.topology, calibration_id="")
+                if not isinstance(info, Mapping) or not info.get("session_id"):
+                    raise BoxNotMeasurable(
+                        REFUSE_BOX_NOT_READY,
+                        "could not open a commissioning evidence bundle for "
+                        "this session",
+                    )
+                store = CommissioningEvidenceStore.open(
+                    Path(str(info["bundle_dir"])),
+                    expected_session_id=str(info["session_id"]),
                 )
-            store = CommissioningEvidenceStore.open(
-                Path(str(info["bundle_dir"])),
-                expected_session_id=str(info["session_id"]),
-            )
+            except OSError as exc:
+                # Typed as the store's own failure, which is what it is: the
+                # evidence directory would not open. Its siblings raised
+                # inside the session already carry this type.
+                raise CommissioningEvidenceStoreError(
+                    CommissioningEvidenceStoreErrorCode.PERSIST_FAILED, str(exc)
+                ) from exc
             capture = WiredStimulusCapture(
                 device=device, bundle_dir=Path(store.bundle_dir),
             )
@@ -883,24 +899,27 @@ def _report(
 
 
 def _refused(reason: str, detail: str, *, json_output: bool, code: int) -> int:
+    """One failing stage, under the word its code owns (``_refusal.py``)."""
+
+    status = STATUS_BY_CODE[code]
     log_event(
         logger,
         "active_speaker.measure",
         level=logging.WARNING,
-        action="refused",
+        action=status,
         reason=reason,
         detail=detail,
     )
     if json_output:
         print(
             json.dumps(
-                {"status": "refused", "reason": reason, "detail": detail},
+                {"status": status, "reason": reason, "detail": detail},
                 indent=2,
                 sort_keys=True,
             )
         )
     else:
-        print(f"refused ({reason}): {detail}", file=sys.stderr)
+        print(f"{status} ({reason}): {detail}", file=sys.stderr)
     return code
 
 
@@ -968,16 +987,32 @@ def _restore_failed(exc: MeasureRestoreFailed) -> int:
 
 
 def _cmd_measure(args: argparse.Namespace) -> int:
+    from jasper.active_speaker.commissioning_evidence_store import (
+        CommissioningEvidenceStoreError,
+    )
     from jasper.active_speaker.crossover_v2.door import MeasurementDoorRefused
 
     try:
         specs = specs_from_args(args)
     except MeasureFlagError as exc:
         return _refused(
-            exc.reason, exc.detail, json_output=args.json, code=EXIT_INPUT
+            exc.reason, exc.detail, json_output=args.json, code=EXIT_UNREADABLE
+        )
+    # Its own stage: an ``OSError`` here is a declaration that would not read,
+    # which is a different place to send the operator than the run below.
+    try:
+        box = read_box_declaration()
+    except (BoxNotMeasurable, MeasurementDoorRefused) as exc:
+        return _refused(
+            exc.reason, exc.detail, json_output=args.json, code=EXIT_REFUSED
+        )
+    except OSError as exc:
+        return _refused(
+            REFUSE_BOX_NOT_READY, str(exc),
+            json_output=args.json, code=EXIT_UNREADABLE,
         )
     try:
-        payload = asyncio.run(_measure(specs, read_box_declaration()))
+        payload = asyncio.run(_measure(specs, box))
     except MeasureInterrupted as exc:
         return _interrupted(exc)
     except MeasureRestoreFailed as exc:
@@ -985,6 +1020,15 @@ def _cmd_measure(args: argparse.Namespace) -> int:
     except (BoxNotMeasurable, MeasurementDoorRefused) as exc:
         return _refused(
             exc.reason, exc.detail, json_output=args.json, code=EXIT_REFUSED
+        )
+    except CommissioningEvidenceStoreError as exc:
+        # The evidence bundle would not open: nothing is wrong with the
+        # request, so this sends the operator to the filesystem rather than
+        # to the flags. Its in-session siblings abort as an interrupt above,
+        # where there are banked ids to report.
+        return _refused(
+            REFUSE_TAKE_UNFILED, str(exc),
+            json_output=args.json, code=EXIT_WRITE_FAILED,
         )
     print(json.dumps(payload, indent=2, sort_keys=True, default=str))
     return EXIT_OK
@@ -1030,9 +1074,12 @@ def build_parser() -> argparse.ArgumentParser:
             "     (box not measurable, an interrupt, a restore failure);\n"
             "     \"refused (<reason>): <detail>\" on stderr, and as JSON\n"
             "     with --json\n"
-            "  2  EXIT_INPUT -- the request could not even be built: a\n"
+            "  2  EXIT_UNREADABLE -- the request could not even be built: a\n"
             "     second --position, a variant axis with no --candidate-id,\n"
-            "     a malformed --specs file"
+            "     a malformed --specs file\n"
+            "  3  EXIT_WRITE_FAILED -- the evidence bundle would not open,\n"
+            "     so no take could be filed; the bundle directory is the\n"
+            "     place to look"
         ),
     )
     parser.add_argument("--kind", choices=MEASURE_KINDS, required=True)

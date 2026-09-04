@@ -27,10 +27,11 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ._logging import configure_verbose_logging
+from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE
 
-EXIT_OK = 0
-EXIT_REFUSED = 1
-EXIT_INPUT = 2
+#: Where this door banks one JSON row per played coordinate, beside the
+#: bundle it measured. ``jasper-delay-sweep confirm`` grades what lands here.
+NULL_RUNS_DIR = "null_runs"
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
@@ -583,7 +584,7 @@ async def _run(args: argparse.Namespace) -> int:
     gap_ceiling_db = _gap_ceiling_db(trims_db, context.declared_sensitivities)
 
     work_dir = Path(args.bundle_dir) if args.bundle_dir else Path.cwd()
-    rows_dir = work_dir / "null_runs"
+    rows_dir = work_dir / NULL_RUNS_DIR
 
     written: list[dict[str, Any]] = []
     banked: list[str] = []
@@ -789,7 +790,7 @@ def build_parser() -> argparse.ArgumentParser:
             "     \"partial\", with however many rows it banked before\n"
             "     stopping), the measurement door refused, or the\n"
             "     capture/mic failed\n"
-            "  2  EXIT_INPUT -- a --delays coordinate off the proposed\n"
+            "  2  EXIT_UNREADABLE -- a --delays coordinate off the proposed\n"
             "     grid, or the state file could not be read"
         ),
     )
@@ -911,10 +912,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         # A coordinate off the shared walk's grid, which is the grid the
         # proposal was computed on: an input fault, not a refusal.
         print(f"unusable delay coordinate: {exc}", file=sys.stderr)
-        return EXIT_INPUT
+        return EXIT_UNREADABLE
     except OSError as exc:
         print(f"unreadable state: {exc}", file=sys.stderr)
-        return EXIT_INPUT
+        return EXIT_UNREADABLE
 
 
 if __name__ == "__main__":  # pragma: no cover

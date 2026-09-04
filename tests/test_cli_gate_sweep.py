@@ -17,6 +17,7 @@ import pytest
 
 from jasper.active_speaker.crossover_v2 import round_captures
 from jasper.cli import gate_sweep as cli
+from jasper.cli._refusal import EXIT_WRITE_FAILED
 from tests.crossover_v2_fixtures import bank_capture_round
 from tests.test_crossover_v2_gate_sweep import _pose_ir
 
@@ -92,7 +93,7 @@ def test_an_unwritable_out_is_the_write_exit_not_an_unreadable_round(
 
     rc = cli.main([str(round_dir), "--rungs-ms", "5", "20", "--out", str(blocker / "x.json")])
 
-    assert rc == cli.EXIT_WRITE_FAILED
+    assert rc == EXIT_WRITE_FAILED
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "unwritable"
     assert payload["reason"] == cli.REFUSE_UNWRITABLE_OUT

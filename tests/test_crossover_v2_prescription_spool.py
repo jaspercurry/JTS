@@ -1253,7 +1253,7 @@ def test_the_stage_verb_refuses_without_the_state_it_reads_the_ordinal_from(
 
     code = cli.main(["stage", str(tmp_path), "--prescription", str(document)])
 
-    assert code == cli.EXIT_EVIDENCE_UNREADABLE
+    assert code == cli.EXIT_UNREADABLE
     assert "--state is required" in capsys.readouterr().err
     assert not spool.staged_prescription_pending()
 
@@ -1329,7 +1329,7 @@ def test_a_stage_that_cannot_write_is_its_own_exit_code(tmp_path, monkeypatch):
         "--prescription", str(document),
     ])
 
-    assert code == cli.EXIT_STAGE_FAILED
+    assert code == cli.EXIT_WRITE_FAILED
 
 
 def test_propose_and_stage_run_the_same_gate(tmp_path, monkeypatch):

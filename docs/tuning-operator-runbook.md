@@ -621,41 +621,43 @@ was mistaken for.
 
 ## Exit codes
 
-Every CLI carries a named exit-code vocabulary you can branch on. The
-read-only measurement tools share ONE — `EXIT_OK` / `EXIT_REFUSED` /
-`EXIT_UNREADABLE` / `EXIT_WRITE_FAILED` in `jasper/cli/_refusal.py`, where the
-failing code names the STAGE that failed: the instrument declined, the input
-could not be read, or the result could not be filed. Everything else below
-owns its own numbering, so resolve those against the tool that produced them.
+**One vocabulary, four numbers, one owner** — `jasper/cli/_refusal.py`. Every
+tool in the menu above exits `0` when it did what it says, `1` when the
+instrument REFUSED a round it could read, `2` when the input was UNREADABLE,
+and `3` when the work was done and the result could not be FILED; the failing
+number names the stage that failed, which is what tells you where to go.
 
-| Tool | Codes | Vocabulary lives in |
-|---|---|---|
-| `scripts/run-crossover-round.py` | `0`, `3`–`12` | `EXIT_NAMES` in that file |
-| `jasper-arm-walk` | `0`, `3`–`15`, plus `129` / `130` / `143` (parked by SIGHUP / SIGINT / SIGTERM) | `EXIT_NAMES` in `jasper/active_speaker/arm_walk.py` |
-| `jasper-crossover-prescriber` | `0`–`3` (**`1`/`2` inverted vs. the shared rule**) | `EXIT_OK` / `EXIT_EVIDENCE_UNREADABLE` / `EXIT_REFUSED` / `EXIT_STAGE_FAILED`, its own |
-| `scripts/bank-crossover-round.sh` | `0`, `3`, `4` | its own header block |
-| `jasper-gate-sweep` | `0`–`3` | the shared rule |
-| `jasper-close-reference` | `0`–`3` | the shared rule |
-| `jasper-classify-features` | `0`–`3` | the shared rule |
-| `jasper-round-views` | `0`–`3` | the shared rule |
-| `jasper-read-distortion` | `0`–`3` | the shared rule |
-| `jasper-project-ring` | `0`–`3` | the shared rule |
-| `jasper-declare-geometry` | `0`–`3` | the shared rule, except `2` = `EXIT_NOT_FOUND` (`show` before anything was declared) — a human-only `set`/`show` door, so it prints no JSON |
+**The number is the contract; the record beside it is per tool.** The
+round-grading family — `jasper-round-views`, `jasper-gate-sweep`,
+`jasper-delay-sweep`, `jasper-close-reference`, `jasper-forward-model` — prints
+`{"status": "refused" | "unreadable" | "unwritable", "reason":
+"<tool_named_slug>", "detail": "<text>"}` on stdout and one `<status>
+(<reason>): <detail>` sentence on stderr, `status` and code always agreeing.
+The rest print their own receipt, most of them only under `--json`: read the
+tool's `--help` for its shape. Where a tool's failures are finer-grained than
+three numbers, the receipt's `reason` is what separates them — `jasper-round`
+exits `2` with `answer_lost` when the daemon did not answer and `2` with
+`wait_timeout` when `wait` reached its deadline with the round still going.
+`jasper-basic-profile` exits `2` for the same lost answer and names the round
+trip that lost it on stderr. In both, a lost answer to an apply POST does NOT
+mean the apply failed — run `review` and read the applied state.
 
-**The failure record, stated once.** Every tool on the shared rule prints, on
-stdout, `{"status": "refused" | "unreadable" | "unwritable", "reason":
-"<tool_named_slug>", "detail": "<text>"}`, and one `<status> (<reason>):
-<detail>` sentence on stderr. `status` and the exit code always agree —
-`refused` is `1`, `unreadable` is `2`, `unwritable` is `3` — so a caller can
-branch on either. Two exceptions, both deliberate: `jasper-declare-geometry`
-is a human-only `set`/`show` door and prints stderr text only; and
-`jasper-read-distortion` / `jasper-project-ring` / `jasper-classify-features`
-print their own older `{"ok": false, ...}` shape, and only when the caller
-passes `--json` — carrying `reason` + `detail` on a refusal and `error` on the
-other two, so it does not line up field-for-field with the record above.
+Two doors are deliberately outside the record's shape.
+`jasper-declare-geometry` is a human-only sudo `set`/`show` config door that
+prints text, not JSON, and keeps `2` = `EXIT_NOT_FOUND` (`show` before
+anything was declared); and `jasper-read-distortion` / `jasper-project-ring` /
+`jasper-classify-features` print an older `{"ok": false, ...}` record, and only
+under `--json`, so it does not line up field-for-field with the shape above.
 Converging that second shape is a follow-on.
 
-Three traps worth knowing before you branch on a number:
+Three surfaces carry their own numbering, so resolve those against what
+produced them: `jasper-arm-walk` (`0`, `3`–`15`, plus `129`/`130`/`143` parked
+by SIGHUP/SIGINT/SIGTERM — `EXIT_NAMES` in
+`jasper/active_speaker/arm_walk.py`), `scripts/run-crossover-round.py` (`0`,
+`3`–`12`; `EXIT_NAMES` in that file) and `scripts/bank-crossover-round.sh`
+(`0`, `1`, `3`, `4`; its own header block).
+
+Two traps worth knowing before you branch on a number:
 
 - **The round runner collapses its sub-tools' codes.** Any nonzero stage rc
   becomes `3`; any nonzero walk rc becomes `5` (except ssh's own `255`, which
@@ -664,15 +666,9 @@ Three traps worth knowing before you branch on a number:
   `arm_walk_exit` / `arm_walk_exit_name`, `bank_exit`). Read the trail, not `$?`,
   when you need to know *why* a phase failed.
 - **`2` is also argparse's usage exit, for every Python tool here.** A
-  malformed invocation exits `2` before any tool code runs, so on the shared
-  rule it collides with "the input could not be read", and on the prescriber
-  with "the prescription was refused". Only stderr separates them: argparse
+  malformed invocation exits `2` before any tool code runs, so it collides
+  with "the input could not be read". Only stderr separates them: argparse
   prints a `usage:` line and no `status` record.
-- **`bank-crossover-round.sh` `1` is no longer overloaded.** It used to mean
-  either bash's own missing-`<dest-dir>` usage refusal or `capture_integrity`'s
-  `EXIT_UNREADABLE` forwarded after a full pull. The capture-dump ring it
-  graded is gone, so `1` is now only bash's own failure — and the round runner
-  aborts on it rather than continuing.
 
 The codes are a contract because a refusal is not a crash — it is the loop
 working.

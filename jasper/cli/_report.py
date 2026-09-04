@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""JSON report writer for the read-only measurement CLIs: sort_keys, no NaN."""
+"""JSON report writer for the tuning CLIs: sort_keys, no NaN, one write rule."""
 from __future__ import annotations
 
 import json
@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from jasper.atomic_io import atomic_write_text
+
+from ._refusal import EXIT_WRITE_FAILED, failed
 
 
 def render_report(payload: Any) -> str:
@@ -35,3 +37,25 @@ def write_report(
         raise FileNotFoundError(f"no such directory: {target.parent}")
     atomic_write_text(target, text + "\n")
     return target
+
+
+def file_report(
+    payload: Any,
+    out: str | None,
+    default_path: Path,
+    *,
+    reason: str,
+    make_parents: bool = False,
+) -> Path | None | int:
+    """:func:`write_report`, or the exit code a failed filing publishes.
+
+    The one place an ``OSError`` while filing an artifact becomes
+    ``EXIT_WRITE_FAILED``: the work was done and only the filing failed, so
+    reporting it as an unreadable input sends the operator to the wrong place.
+    A ``ValueError`` out of the strict writer is deliberately not caught -- a
+    payload that will not serialise is not a filesystem problem.
+    """
+    try:
+        return write_report(payload, out, default_path, make_parents=make_parents)
+    except OSError as exc:
+        return failed(EXIT_WRITE_FAILED, reason, str(exc))

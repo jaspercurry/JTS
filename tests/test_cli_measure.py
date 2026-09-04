@@ -29,9 +29,10 @@ from jasper.active_speaker.crossover_v2.contracts import (
 from jasper.active_speaker.crossover_v2.program_transaction import ProgramForStimulus
 from jasper.cli import measure
 from jasper.cli.measure import (
-    EXIT_INPUT,
     EXIT_OK,
     EXIT_REFUSED,
+    EXIT_UNREADABLE,
+    EXIT_WRITE_FAILED,
     REFUSE_CANDIDATE_ID_REQUIRED,
     REFUSE_GRAPH_LOST,
     REFUSE_NO_MIC,
@@ -39,6 +40,7 @@ from jasper.cli.measure import (
     REFUSE_SPEC_INVALID,
     REFUSE_SPECS_MIXED_POSE,
     REFUSE_SPECS_WITH_TAKE_FLAGS,
+    REFUSE_TAKE_UNFILED,
     BoxDeclaration,
     MeasureFlagError,
     build_parser,
@@ -189,7 +191,7 @@ def test_the_flag_refusal_exits_as_an_input_error(capsys):
         ["--kind", MEASURE_KIND_CANDIDATE, "--level-matched", "--json"]
     )
 
-    assert code == EXIT_INPUT
+    assert code == EXIT_UNREADABLE
     assert json.loads(capsys.readouterr().out)["reason"] == (
         REFUSE_CANDIDATE_ID_REQUIRED
     )
@@ -468,6 +470,25 @@ def test_a_box_with_no_microphone_refuses_before_it_takes_the_speaker(
     assert json.loads(capsys.readouterr().out)["reason"] == REFUSE_NO_MIC
     assert speaker["cam"].loaded == []
     assert speaker["cam"].volume_db == pytest.approx(HOUSEHOLD_DB)
+
+
+def test_a_bundle_that_will_not_open_is_the_write_exit_not_a_refusal(
+    speaker, monkeypatch, capsys,
+):
+    """Nothing is wrong with the request: the evidence directory is."""
+    from jasper.active_speaker import bundles
+
+    monkeypatch.setattr(
+        bundles, "open_bundle",
+        lambda *a, **kw: (_ for _ in ()).throw(PermissionError("/var/lib: denied")),
+    )
+
+    code = measure.main(["--kind", MEASURE_KIND_BASELINE, "--json"])
+
+    assert code == EXIT_WRITE_FAILED
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "unwritable"
+    assert payload["reason"] == REFUSE_TAKE_UNFILED
 
 
 def test_a_refused_run_does_not_abandon_the_live_session_s_bundle(

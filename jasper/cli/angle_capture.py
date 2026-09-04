@@ -85,9 +85,7 @@ from jasper.audio_measurement.measurement_geometry import (
 )
 from jasper.identity import CROSSOVER_PAGE_PATH, speaker_url
 
-EXIT_OK = 0
-EXIT_REFUSED = 2
-EXIT_STAGE_FAILED = 3
+from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_WRITE_FAILED
 
 #: The named program does not exist. Not a walk refusal -- no walk was stated,
 #: so it does not borrow ``WALK_REFUSAL_REASONS``' vocabulary.
@@ -442,7 +440,7 @@ def _print_walk(payload: dict[str, Any]) -> None:
 
 
 def _fs_failure(detail: str, *, as_json: bool) -> int:
-    """A filesystem failure, on both channels, as :data:`EXIT_STAGE_FAILED`.
+    """A filesystem failure, on both channels, as :data:`EXIT_WRITE_FAILED`.
 
     Shared by the two verbs that touch the slot, so the exit-code contract this
     module states is answered from one place rather than restated per verb.
@@ -453,7 +451,7 @@ def _fs_failure(detail: str, *, as_json: bool) -> int:
                        indent=2)
         )
     print(detail, file=sys.stderr)
-    return EXIT_STAGE_FAILED
+    return EXIT_WRITE_FAILED
 
 
 def _refuse(exc: Exception, *, as_json: bool, reason: str | None = None) -> int:
@@ -711,10 +709,11 @@ def build_parser() -> argparse.ArgumentParser:
             "EXIT CODES\n"
             "  0  EXIT_OK -- resolved (plan), staged (stage), or\n"
             "     withdrew/no-op (withdraw)\n"
-            "  2  EXIT_REFUSED -- the request itself is invalid; \"refused\n"
-            "     (<reason>): <detail>\" on stderr names why, and as JSON\n"
-            "     with --json\n"
-            "  3  EXIT_STAGE_FAILED -- stage or withdraw could not write or\n"
+            "  1  EXIT_REFUSED -- the request reached a door and was\n"
+            "     refused; \"refused (<reason>): <detail>\" on stderr names\n"
+            "     why, and as JSON with --json. An invocation argparse\n"
+            "     itself rejects exits 2 with a usage line instead\n"
+            "  3  EXIT_WRITE_FAILED -- stage or withdraw could not write or\n"
             "     unlink the spool file -- a filesystem problem, not a\n"
             "     request problem"
         ),

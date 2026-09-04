@@ -11,9 +11,8 @@ that produced it, so this copies one bundle plus the SSOT documents
 — the same tree ``scripts/bank-crossover-round.sh`` assembles on a laptop, and
 the one ``jasper-round-views`` reads.
 
-**Exit codes are part of the contract** (a script is often the caller), on
-``jasper-angle-capture``'s vocabulary and for its reason; the epilog below is
-where they are spelled. **Nothing here prunes**: the campaign home is
+**Exit codes are part of the contract** (a script is often the caller), from
+``jasper/cli/_refusal.py`` like every other tuning tool. **Nothing here prunes**: the campaign home is
 operator-pruned and ``jasper-doctor`` discloses its size.
 """
 
@@ -31,9 +30,7 @@ from jasper.active_speaker.round_bank import (
     bank_round,
 )
 
-EXIT_OK = 0
-EXIT_REFUSED = 2
-EXIT_BANK_FAILED = 3
+from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_WRITE_FAILED
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204). It copies
@@ -53,7 +50,7 @@ def _cmd_bank(args: argparse.Namespace) -> int:
         print(f"refused ({exc.reason}): {exc}", file=sys.stderr)
     except OSError as exc:
         payload = {"banked": False, "reason": "write_failed", "detail": str(exc)}
-        code = EXIT_BANK_FAILED
+        code = EXIT_WRITE_FAILED
         print(f"could not bank {args.session_dir}: {exc}", file=sys.stderr)
     else:
         provenance = banked.provenance
@@ -98,10 +95,10 @@ def build_parser() -> argparse.ArgumentParser:
             "\n"
             "EXIT CODES\n"
             "  0  EXIT_OK -- banked; the round directory is on stdout\n"
-            "  2  EXIT_REFUSED -- not a session bundle, a session that has\n"
+            "  1  EXIT_REFUSED -- not a session bundle, a session that has\n"
             "     not finished, or that round is already banked (never\n"
             "     overwritten)\n"
-            "  3  EXIT_BANK_FAILED -- the copy could not be written -- a\n"
+            "  3  EXIT_WRITE_FAILED -- the copy could not be written -- a\n"
             "     filesystem problem, not a request problem"
         ),
     )
