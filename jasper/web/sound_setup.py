@@ -1433,7 +1433,7 @@ def _sound_page_island(*, page_mode: str, follower: bool) -> str:
         DEFAULT_FILTER_TYPE,
         DEFAULT_SLOPE_DB_PER_OCTAVE,
     )
-    from jasper.active_speaker.staging import (
+    from jasper.active_speaker.declaration_vocabulary import (
         supported_declaration_filter_types,
         supported_declaration_slopes_db_per_octave,
     )
