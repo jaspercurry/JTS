@@ -52,6 +52,9 @@ from jasper.usb_mic import (
 )
 from ..mics import xvf3800 as _mic_profile
 
+# `sounddevice` is imported inside the device validators, not here: the doctor
+# reads the env keys below. tests/test_lazy_imports.py pins it.
+
 # Output transport: UDP localhost. The bridge sends AEC'd mono int16 frames
 # to `127.0.0.1:JASPER_AEC_UDP_PORT`; jasper-voice's `UdpMicCapture` binds
 # the same port and receives.
@@ -432,7 +435,7 @@ def validate_mic_device(config: BridgeConfig | None = None) -> None:
     Ordering matters: missing hardware must fail before the reference thread
     and its UDP socket start.
     """
-    import sounddevice as sd  # PortAudio load; keep it off importers' path.
+    import sounddevice as sd  # Pi-side dep, lazy — see module top.
 
     config = config or BridgeConfig.from_env()
     try:
@@ -445,7 +448,7 @@ def validate_mic_device(config: BridgeConfig | None = None) -> None:
 
 def validate_usb_mic_device(config: BridgeConfig | None = None) -> None:
     """Fail fast when corpus USB capture is explicitly enabled but absent."""
-    import sounddevice as sd  # PortAudio load; keep it off importers' path.
+    import sounddevice as sd  # Pi-side dep, lazy — see module top.
 
     config = config or BridgeConfig.from_env()
     try:

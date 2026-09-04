@@ -23,8 +23,8 @@ from typing import Any
 
 import numpy as np
 
+from jasper.audio_measurement import peq as _peq
 from jasper.audio_measurement.analysis import deviation_metrics
-from jasper.correction import peq as _peq
 
 from .curves import curve_values
 

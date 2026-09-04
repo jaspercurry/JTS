@@ -113,7 +113,7 @@ builds against.
    you supply a limits derivation, you do not modify the chain).
 6. `jasper/active_speaker/excitation_safety_plan.py` — the limits-
    derivation pattern you mirror for the bass owner.
-7. `jasper/correction/coordinator.py` — `measurement_window()`.
+7. `jasper/measurement_window.py` — `measurement_window()`.
 8. `jasper/active_speaker/repeat_admission.py` — repeat/median/spread
    admission you reuse for the characterize captures.
 9. `jasper/audio_measurement/bundles.py` + `evidence_identity.py` —
@@ -124,7 +124,7 @@ builds against.
 - Waves 1–3 APIs exist as their prompts specify (spot-check:
   `adapter_for_enclosure`, `interpolate_anchors`,
   `BassExtensionProfile.from_dict`, `apply_bass_extension`).
-- `measurement_window` exists in `jasper/correction/coordinator.py`.
+- `measurement_window` exists in `jasper/measurement_window.py`.
 - `admit_excitation`, `ExcitationRequest`, `ExcitationLimits`,
   `ProtectionEvidence` exist in
   `jasper/audio_measurement/excitation_admission.py`.

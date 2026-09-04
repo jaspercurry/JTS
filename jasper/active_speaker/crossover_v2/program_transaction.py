@@ -2,16 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The play seam filled: one stimulus, played and RECORDED, the stage OBSERVED.
+"""The play seam filled: one stimulus, played and RECORDED, stage OBSERVED.
 
 :class:`~.playback_transaction.PlaybackTransaction` over
-:func:`~..program_playback.play_program`. Every stage is decided by a return
-value or an exception type, never a default: ``stage_reached`` feeds ``played``,
-and ``played`` is what :meth:`~.session.TuningSession.measure` gates BANKING on.
-The ladder has no rung below ``ready``, so the :data:`BELOW_READY_INCIDENTS`
-arms report ``ready`` and their incident carries the truth. ``wav_path`` comes
-from the injected :class:`StimulusCapture`; ``play_program``'s own result names
-the STIMULUS it emitted, not what the room heard.
+:func:`~..program_playback.play_program`. Every stage is a return value or
+exception type, never a default: ``stage_reached`` feeds ``played``, which
+gates BANKING. No rung below ``ready``: :data:`BELOW_READY_INCIDENTS` arms
+report ``ready``. ``wav_path`` comes from the injected ``StimulusCapture``;
+``play_program``'s result names the STIMULUS emitted, not what the room heard.
 """
 
 from __future__ import annotations
@@ -146,7 +144,7 @@ class ProgramPlaybackTransaction:
 
     ``session_volume_plan`` is the plan ``play_program`` asserts against. It is
     NOT this transaction's to open or close — the session's volume claim owns
-    the level, and MS-14's proof is taken through that claim before ``run``.
+    the level (ADR-0231 §4).
 
     ``capture`` is ``None`` on a host that does not record what it plays: the
     Pi's wired microphone binds one, and a browser capture binds none.

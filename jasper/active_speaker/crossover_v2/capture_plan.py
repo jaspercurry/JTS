@@ -1173,7 +1173,7 @@ def build_v2_cloud_index_phase_map(
 
     There is deliberately no VERIFY entry (#1806): stage 1 applies nothing, so
     nothing post-apply can be measured by it. VERIFY's absence here is what
-    ``correction_crossover_v2_status._phase_from_state`` reads to resolve a
+    ``crossover_envelope_v2.crossover_v2_phase`` reads to resolve a
     measure-only session to the review interlude.
 
     ``lateral_prompts`` is the walk's own table (L is its length); ``None`` is

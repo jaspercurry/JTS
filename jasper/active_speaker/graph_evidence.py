@@ -419,7 +419,7 @@ def driver_commission_audible_evidence(
 #
 # `driver_commission_audible_evidence` (above) proves a config is safe BEFORE it
 # loads, parsing the emitted YAML *text*. The guarded commissioning load
-# (`startup_load.load_driver_commissioning_config`) needs the same proof AFTER
+# (`commission_load.load_driver_commissioning_config`) needs the same proof AFTER
 # the load, against the config CamillaDSP is ACTUALLY running — read back over
 # the websocket (`CamillaController.get_active_config_raw`), not the file on
 # disk. CamillaDSP re-serializes the running graph in its own YAML dialect
@@ -559,7 +559,7 @@ def running_graph_matches_staged_anchor(
     """True when the RUNNING readback still shows the all-muted staged anchor.
 
     The convergence discriminator for the transient commissioning load
-    (``startup_load.load_driver_commissioning_config``): CamillaDSP acks the
+    (``commission_load.load_driver_commissioning_config``): CamillaDSP acks the
     inline ``SetConfig`` before its readback side reflects the new graph, so a
     read taken immediately after the load can still return the staged all-muted
     anchor (hardware-reproduced 2026-07-15, ~22 ms after the apply). The

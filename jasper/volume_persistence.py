@@ -55,6 +55,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
@@ -491,6 +492,12 @@ class VolumePersistence:
         if self._current_listening_level is not None:
             parts.append(f"listening_level={self._current_listening_level}%")
         logger.info("volume persistence: saved %s", ", ".join(parts))
+
+
+def configured_path() -> str:
+    """``JASPER_VOLUME_STATE_PATH`` or the default — the one reader of where
+    the persisted speaker volume lives (ADR-0232 rule 1)."""
+    return os.environ.get("JASPER_VOLUME_STATE_PATH") or VolumePersistence.DEFAULT_PATH
 
 
 def _regress_percent(

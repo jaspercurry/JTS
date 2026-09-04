@@ -36,6 +36,8 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Awaitable, Callable, Optional
+from ...camilla_config_contract import DEFAULT_CAMILLA_PORT
+from ...librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
 from ...config import Config
 from ...env_load import load_env_files as _load_env_files
 from ...identity import resolve_hostname
@@ -44,9 +46,8 @@ from ...install_profile import (
     install_role_for_profile,
     read_install_profile,
 )
-from ...librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
 from ...speaker_name import runtime_name as _speaker_runtime_name
-from ...spotify_oauth import default_spotify_redirect_uri
+from ...spotify_oauth import resolved_spotify_redirect_uri
 from ...usage import DEFAULT_USAGE_DB
 
 from ._evidence import evidence
@@ -101,8 +102,32 @@ from .voice import (
     check_pricing,
 )
 from . import audio as audio
-from . import audio_runtime as audio_runtime
+from . import audio_runtime_camilla as audio_runtime_camilla
+from . import audio_runtime_fanin as audio_runtime_fanin
+from . import audio_runtime_outputd as audio_runtime_outputd
+from . import audio_runtime_ring as audio_runtime_ring
 from . import boot_config as boot_config
+from .audio_runtime_fanin import (
+    check_fanin_binary_installed,
+    _asound_non_comment_text,
+    _asound_pcm_block,
+    _FANIN_EXPECTED_ALOOP_INPUTS,
+    check_fanin_asound_wiring,
+    check_fanin_coupling,
+    check_fanin_service,
+    check_fanin_tts_drops,
+    check_fanin_ring_stall,
+)
+from .audio_runtime_outputd import (
+    _OUTPUTD_EXPECTED_DAC_PCM,
+    _OUTPUTD_EXPECTED_DUAL_DAC_PCM,
+    check_outputd_service,
+    check_aec_clock_drift,
+)
+from .audio_runtime_camilla import (
+    check_audio_runtime_plan,
+    check_camilla_service,
+)
 from .audio import (
     check_alsa_card,
     _HW_SHORTHAND_RE,
@@ -120,21 +145,6 @@ from .audio import (
     check_dac_usb_sync_mode,
     check_apple_dongle_audio,
     check_dongle_headphone_at_max,
-    check_fanin_binary_installed,
-    _asound_non_comment_text,
-    _asound_pcm_block,
-    _FANIN_EXPECTED_ALOOP_INPUTS,
-    _OUTPUTD_EXPECTED_DAC_PCM,
-    _OUTPUTD_EXPECTED_DUAL_DAC_PCM,
-    check_audio_runtime_plan,
-    check_camilla_service,
-    check_fanin_asound_wiring,
-    check_fanin_coupling,
-    check_fanin_service,
-    check_fanin_tts_drops,
-    check_fanin_ring_stall,
-    check_outputd_service,
-    check_aec_clock_drift,
     _devices_volume_limit_from_text,
     check_camilla_volume_limit,
     check_camilla_ring_chunk_fits,
@@ -836,20 +846,16 @@ def _local_audio_config_from_env() -> SimpleNamespace:
     than the full voice ``Config``.
     """
     hostname = resolve_hostname()
-    spotify_redirect_default = default_spotify_redirect_uri(hostname)
     spotify_client_id = os.environ.get("SPOTIFY_CLIENT_ID", "")
     return SimpleNamespace(
         usage_db=os.environ.get("JASPER_USAGE_DB", DEFAULT_USAGE_DB),
         camilla_host=os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"),
-        camilla_port=_env_int_for_doctor("JASPER_CAMILLA_PORT", 1234),
+        camilla_port=_env_int_for_doctor("JASPER_CAMILLA_PORT", DEFAULT_CAMILLA_PORT),
         librespot_state_path=os.environ.get(
             "JASPER_LIBRESPOT_STATE", DEFAULT_LIBRESPOT_STATE,
         ),
         spotify_client_id=spotify_client_id,
-        spotify_redirect_uri=(
-            os.environ.get("SPOTIFY_REDIRECT_URI", spotify_redirect_default)
-            or spotify_redirect_default
-        ),
+        spotify_redirect_uri=resolved_spotify_redirect_uri(),
         spotify_cache_path=os.environ.get(
             "SPOTIFY_CACHE_PATH",
             "/var/lib/jasper-intsecrets/.spotify-cache",

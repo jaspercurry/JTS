@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""JSON report writer for the read-only measurement CLIs: sort_keys, no NaN."""
+"""JSON report writer for the tuning CLIs: sort_keys, no NaN."""
 from __future__ import annotations
 
 import json

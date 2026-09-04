@@ -21,8 +21,9 @@ gate's own docstring owns why.
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -136,12 +137,10 @@ class LoadedCamillaGraph:
     """ONE snapshot of the CamillaDSP graph the durable statefile points at.
 
     A snapshot object rather than three field reads: the width gate compares a
-    lane's device, format and channels together, and reading them one at a time
-    through :func:`jasper.camilla_config_contract.read_camilla_device_field`
-    would re-open the file per field — three answers that need not come from one
-    revision of it. ``devices`` is
-    :func:`~jasper.camilla_config_contract.parse_camilla_devices_config`'s subset
-    over that single read.
+    lane's device, format and channels together, and one file read per field
+    gives three answers that need not come from one revision of it. ``devices``
+    is :func:`~jasper.camilla_config_contract.parse_camilla_devices_config`'s
+    subset over that single read.
 
     ``note`` is empty when the graph WAS read and non-empty saying why not
     otherwise. It is never an exception: a box with no statefile yet is the
@@ -228,6 +227,15 @@ def load_topology_for_wire():
         return load_output_topology_strict()
     except (OutputTopologyError, OSError, ValueError, ImportError):
         return None
+
+
+def saved_topology_reader() -> Callable[[], Any]:
+    """A :func:`load_topology_for_wire` that touches the disk at most once.
+
+    One pass hands the same reader to every consumer, so the axes that need the
+    saved topology share a single read and the axes that do not read nothing.
+    """
+    return cache(lambda: load_topology_for_wire())
 
 
 def _effective_env_value(
@@ -1219,7 +1227,7 @@ def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
     next arm refuses again, this time from ``ring_edge_width_ready``, naming the
     graph. So the remedy is the whole ladder, graph first — and in the
     ``sudo /opt/jasper/.venv/bin/…`` spelling the doctor's own rollback ladder
-    uses (``jasper/cli/doctor/audio_runtime.py``), because these two strings are
+    uses (``jasper/cli/doctor/audio_runtime_ring.py``), because these two strings are
     operator-copied text for the same three rungs and only that spelling pastes
     into a shell and works.
 

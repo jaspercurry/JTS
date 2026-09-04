@@ -10,6 +10,8 @@ from jasper import audio_runtime_plan
 from jasper.audio_hardware.dac import APPLE_USB_C_DONGLE_ID
 from jasper.control import state_aggregate
 
+from .fanin_env_fixtures import declare_fanin_env
+
 
 def test_audio_graph_state_aggregates_route_fanin_and_outputd(
     monkeypatch,
@@ -165,13 +167,6 @@ def test_camilla_row_survives_an_unreadable_route_plan(monkeypatch):
 # --- /state.audio_graph.coupling (P2) ----------------------------------------
 
 
-def _pin_fanin_env(monkeypatch, tmp_path, text: str) -> None:
-    """Point the coupling block at a real fanin.env holding ``text``."""
-    path = tmp_path / "fanin.env"
-    path.write_text(text, encoding="utf-8")
-    monkeypatch.setattr("jasper.fanin.ring_health.FANIN_ENV_PATH", str(path))
-
-
 def test_coupling_state_undeclared_box_is_not_coherent(monkeypatch, tmp_path):
     """ADR-0100: only the ring PAIR is coherent, and one half here has not moved.
 
@@ -182,7 +177,7 @@ def test_coupling_state_undeclared_box_is_not_coherent(monkeypatch, tmp_path):
     pair is still incoherent, because the fan-in half names the retired
     transport, which this surface publishes AS WRITTEN.
     """
-    _pin_fanin_env(monkeypatch, tmp_path, "JASPER_FANIN_CAMILLA_COUPLING=loopback\n")
+    declare_fanin_env(monkeypatch, tmp_path, "JASPER_FANIN_CAMILLA_COUPLING=loopback\n")
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH",
         "/nonexistent/outputd.env",
@@ -212,7 +207,7 @@ def test_coupling_state_ring_armed_reports_coherent_pair(
 ):
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text(outputd_env_text)
-    _pin_fanin_env(monkeypatch, tmp_path, "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
+    declare_fanin_env(monkeypatch, tmp_path, "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH", str(outputd_env)
     )
@@ -248,7 +243,7 @@ def test_coupling_state_intent_coherence_follows_the_shared_predicate(
     """
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text("")
-    _pin_fanin_env(monkeypatch, tmp_path, fanin_text)
+    declare_fanin_env(monkeypatch, tmp_path, fanin_text)
     monkeypatch.setattr(
         "jasper.fanin.ring_health.OUTPUTD_ENV_PATH", str(outputd_env)
     )
@@ -404,7 +399,7 @@ def test_coupling_state_bonded_member_is_coherent_on_the_return_ring(
     grouping_env.write_text(
         "JASPER_OUTPUTD_DAC_CONTENT_LANE=1\n", encoding="utf-8"
     )
-    _pin_fanin_env(monkeypatch, tmp_path, "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
+    declare_fanin_env(monkeypatch, tmp_path, "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH", str(outputd_env)
     )
@@ -434,7 +429,7 @@ def test_coupling_state_reports_the_marker_beside_a_bridge_as_incoherent(
     grouping_env.write_text(
         "JASPER_OUTPUTD_DAC_CONTENT_LANE=1\n", encoding="utf-8"
     )
-    _pin_fanin_env(monkeypatch, tmp_path, "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
+    declare_fanin_env(monkeypatch, tmp_path, "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH", str(outputd_env)
     )
@@ -453,7 +448,7 @@ def test_coupling_state_partial_flip_reports_incoherent(monkeypatch, tmp_path):
     # now something an operator (or a stale env file) declared.
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n")
-    _pin_fanin_env(monkeypatch, tmp_path, "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
+    declare_fanin_env(monkeypatch, tmp_path, "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH", str(outputd_env)
     )
@@ -502,17 +497,15 @@ def test_coupling_state_publishes_no_operator_pin(monkeypatch, tmp_path):
     controls their speaker. The marker file may survive on a deployed box, which
     is exactly why this is driven with one present.
     """
-    fanin_env = tmp_path / "fanin.env"
-    fanin_env.write_text(
+    declare_fanin_env(
+        monkeypatch,
+        tmp_path,
         "JASPER_FANIN_COUPLING_CHOICE=operator\n"
-        "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n"
+        "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n",
     )
     monkeypatch.setattr(
         "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: "shm_ring",
-    )
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
     )
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH",
@@ -535,12 +528,10 @@ def _patch_coupling_reads(monkeypatch, tmp_path, *, armed=False):
         "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: "loopback",
     )
-    fanin_env = tmp_path / "fanin.env"
-    fanin_env.write_text(
-        f"{ca.USB_DIRECT_ENV_VAR}={ca.USB_COMBO_ENABLED_VALUE}\n" if armed else ""
-    )
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
+    declare_fanin_env(
+        monkeypatch,
+        tmp_path,
+        f"{ca.USB_DIRECT_ENV_VAR}={ca.USB_COMBO_ENABLED_VALUE}\n" if armed else "",
     )
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH",

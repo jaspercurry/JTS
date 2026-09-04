@@ -7,7 +7,7 @@ window (issues #1786, #1898, #1913).
 
 A window is opened and closed by `measurement_pause()` /
 `measurement_resume()` (the coordinator's MEASURE_PAUSE/RESUME UDS
-commands — see `jasper.correction.coordinator.measurement_window()`,
+commands — see `jasper.measurement_window.measurement_window()`,
 which the crossover-v2 flow holds open for a whole session via
 `acquire_session_measurement_pause()`). Refusal happens at one
 admission authority asked at two moments: `AssistantOutputGate`

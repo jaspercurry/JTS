@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import math
 import os
@@ -14,7 +13,7 @@ import threading
 import time
 from pathlib import Path
 from collections.abc import Mapping
-from typing import Any, Callable, Sequence, TypeVar
+from typing import Any, Callable, NamedTuple, Sequence, TypeVar
 
 from .. import identity_state
 from ..accessories import status as accessory_status
@@ -55,6 +54,10 @@ from ..multiroom import cascade_timeline
 from ..multiroom.state import read_grouping_state
 from ..transit.state import read_state as read_transit_state
 from ..log_event import log_event
+from ..route_latency.status_socket import (
+    FANIN_STATUS_SOCKET,
+    OUTPUTD_STATUS_SOCKET,
+)
 from ..volume_diagnostics import (
     build_volume_policy_snapshot,
     read_diagnostics as _read_volume_diagnostics,
@@ -361,11 +364,11 @@ def _coupling_state(
     try:
         from pathlib import Path
 
-        from ..audio_runtime_plan import TRANSPORT_DAC_CONTENT_RING
         from ..fanin.ring_health import FANIN_ENV_PATH, persisted_coupling_feeds_ring
         from ..fanin_coupling import (
             COUPLING_ENV_VAR,
             OUTPUTD_CONTENT_BRIDGE_SHM_RING,
+            TRANSPORT_DAC_CONTENT_RING,
             dac_content_marker_contradicted,
             dac_content_ring_served,
             outputd_content_is_central_ring,
@@ -764,7 +767,7 @@ async def _outputd_status(
     Missing socket is fail-soft here so /state remains available while
     jasper-doctor owns the actionable cutover failure.
     """
-    return await local_status_json("/run/jasper-outputd/control.sock")
+    return await local_status_json(OUTPUTD_STATUS_SOCKET)
 
 
 async def _wifi_guardian_snapshot() -> dict[str, Any]:
@@ -830,12 +833,9 @@ def _soft_read(
 def _read_persisted_volume() -> tuple[int | None, float | None]:
     """The persisted listening level and main volume, in that order."""
     from ..volume_coordinator import VolumeState
-    from ..volume_persistence import VolumePersistence
+    from ..volume_persistence import VolumePersistence, configured_path
 
-    path = os.environ.get(
-        "JASPER_VOLUME_STATE_PATH",
-        "/var/lib/jasper/speaker_volume.json",
-    )
+    path = configured_path()
     record = VolumePersistence(path).load()
     if record is None:
         return None, None
@@ -962,6 +962,126 @@ def _read_tool_catalog() -> dict[str, Any]:
     return summary()
 
 
+def _round_db(value: float | None) -> float | None:
+    if value is None:
+        return None
+    value = float(value)
+    if not math.isfinite(value):
+        return None
+    return round(value, 2)
+
+
+def _round_levels(levels: Sequence[float] | None) -> list[float | None] | None:
+    """Every channel the running graph carries, not just the front pair.
+
+    An active-crossover box plays four or more physical outputs, and a
+    stereo readout would hide entire drivers. The width comes from
+    CamillaDSP.
+    """
+    if levels is None:
+        return None
+    return [_round_db(v) for v in levels]
+
+
+async def _camilla_status(*, host: str, port: int) -> dict[str, Any]:
+    from ..camilla import CamillaController
+
+    status: dict[str, Any] = {
+        "main_volume_db": None,
+        "playback_rms_dbfs": None,
+        "playback_peak_dbfs": None,
+        "clipped_samples": None,
+        "active_config_path": None,
+    }
+
+    async def _no_config_path() -> None:
+        return None
+
+    try:
+        cam = CamillaController(host=host, port=port)
+        config_path_probe = (
+            cam.get_config_file_path(best_effort=True)
+            if hasattr(cam, "get_config_file_path")
+            else _no_config_path()
+        )
+        vol, rms, peak, clipped, active_config_path = await asyncio.wait_for(
+            asyncio.gather(
+                cam.get_volume_db(best_effort=True),
+                cam.get_playback_rms_all(best_effort=True),
+                cam.get_playback_peak_all(best_effort=True),
+                cam.get_clipped_samples(best_effort=True),
+                config_path_probe,
+            ),
+            timeout=_CAMILLA_PROBE_TIMEOUT_SEC,
+        )
+        status["main_volume_db"] = _round_db(vol)
+        status["playback_rms_dbfs"] = _round_levels(rms)
+        status["playback_peak_dbfs"] = _round_levels(peak)
+        status["clipped_samples"] = clipped
+        status["active_config_path"] = active_config_path
+        return status
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            logger,
+            "state.camilla_probe_failed",
+            error=exc,
+            level=logging.DEBUG,
+        )
+        return status
+
+
+async def _voice_status(cmd: Callable[..., Any], socket_path: str) -> dict | None:
+    try:
+        return await cmd(socket_path, "STATUS", timeout=2.0)
+    except (OSError, RuntimeError):
+        return None
+
+
+def _ha_status(snapshot: Callable[[], dict[str, Any]] | None) -> dict:
+    """HA status for /state via the child-process cache boundary.
+
+    The cache reads the wizard env-file signature fresh, so saves are
+    reflected without restarting jasper-control, while HA/httpx imports
+    stay in the short-lived probe child instead of the control daemon.
+    """
+    read = snapshot or _default_ha_status_snapshot
+    try:
+        return read()
+    except Exception:  # noqa: BLE001
+        logger.exception("home assistant state snapshot failed")
+        return _ha_failed_status()
+
+
+async def _mux_status(cmd: Callable[..., Any]) -> dict | None:
+    try:
+        return await cmd("STATUS", timeout=1.0)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+async def _aec_status(full_status: Callable[[], dict]) -> dict | None:
+    """Additive mirror of GET /aec for one-shot /state consumers."""
+    try:
+        return await asyncio.to_thread(full_status)
+    except Exception:  # noqa: BLE001
+        logger.exception("AEC/profile state probe failed")
+        return None
+
+
+class _Probes(NamedTuple):
+    """Built positionally: field order IS the gather order, ``ha_status`` last."""
+
+    camilla: dict[str, Any]
+    airplay: bool | None
+    voice: dict | None
+    fanin: dict | None
+    outputd: dict | None
+    mux: dict | None
+    aec: dict | None
+    wifi_guardian: dict[str, Any]
+    ha_status: dict[str, Any]
+
+
 async def _get_state(
     *,
     camilla_host: str,
@@ -985,7 +1105,6 @@ async def _get_state(
     completes in ~200 ms typical."""
     from datetime import datetime, timezone
 
-    from ..camilla import CamillaController
     from ..speaker_name import read_state as _read_speaker_name_state
     from ..voice.provider_state import (
         read_active_model_from_env_files,
@@ -1006,152 +1125,21 @@ async def _get_state(
     ) or (None, None)
     sound_profile = _soft_read("sound profile state probe failed", _read_sound_profile)
 
-    # Slow probes — fan out in parallel.
-    def _round_db(value: float | None) -> float | None:
-        if value is None:
-            return None
-        value = float(value)
-        if not math.isfinite(value):
-            return None
-        return round(value, 2)
-
-    def _round_levels(
-        levels: Sequence[float] | None,
-    ) -> list[float | None] | None:
-        """Every channel the running graph carries, not just the front pair.
-
-        An active-crossover box plays four or more physical outputs, and a
-        stereo readout would hide entire drivers. The width comes from
-        CamillaDSP.
-        """
-        if levels is None:
-            return None
-        return [_round_db(v) for v in levels]
-
-    async def _camilla_status() -> dict[str, Any]:
-        status: dict[str, Any] = {
-            "main_volume_db": None,
-            "playback_rms_dbfs": None,
-            "playback_peak_dbfs": None,
-            "clipped_samples": None,
-            "active_config_path": None,
-        }
-
-        async def _no_config_path() -> None:
-            return None
-
-        try:
-            cam = CamillaController(host=camilla_host, port=camilla_port)
-            config_path_probe = (
-                cam.get_config_file_path(best_effort=True)
-                if hasattr(cam, "get_config_file_path")
-                else _no_config_path()
-            )
-            vol, rms, peak, clipped, active_config_path = await asyncio.wait_for(
-                asyncio.gather(
-                    cam.get_volume_db(best_effort=True),
-                    cam.get_playback_rms_all(best_effort=True),
-                    cam.get_playback_peak_all(best_effort=True),
-                    cam.get_clipped_samples(best_effort=True),
-                    config_path_probe,
-                ),
-                timeout=_CAMILLA_PROBE_TIMEOUT_SEC,
-            )
-            status["main_volume_db"] = _round_db(vol)
-            status["playback_rms_dbfs"] = _round_levels(rms)
-            status["playback_peak_dbfs"] = _round_levels(peak)
-            status["clipped_samples"] = clipped
-            status["active_config_path"] = active_config_path
-            return status
-        except Exception as exc:  # noqa: BLE001
-            log_event(
-                logger,
-                "state.camilla_probe_failed",
-                error=exc,
-                level=logging.DEBUG,
-            )
-            return status
-
-    async def _airplay_playing() -> bool | None:
-        # Shared probe owns the subprocess hygiene (kill-on-timeout so a
-        # DBus stall can't leak one busctl per /state poll; spawn OSError
-        # → None instead of 500ing the whole fail-soft aggregate).
-        return await mpris.shairport_playing(timeout=2.0)
-
-    async def _voice_status() -> dict | None:
-        try:
-            return await voice_socket_command(
-                voice_socket_path, "STATUS", timeout=2.0,
-            )
-        except (FileNotFoundError, OSError, asyncio.TimeoutError, RuntimeError):
-            return None
-
-    async def _ha_status() -> dict:
-        """HA status for /state via the child-process cache boundary.
-
-        The cache reads the wizard env-file signature fresh, so saves are
-        reflected without restarting jasper-control, while HA/httpx imports
-        stay in the short-lived probe child instead of the control daemon.
-        """
-        snapshot = ha_status_snapshot or _default_ha_status_snapshot
-        try:
-            return snapshot()
-        except Exception:  # noqa: BLE001
-            logger.exception("home assistant state snapshot failed")
-            return _ha_failed_status()
-
-    async def _fanin_status() -> dict | None:
-        """Probe the jasper-fanin daemon's UDS STATUS endpoint.
-
-        ``None`` when the daemon is down or unhealthy, the socket is absent,
-        the probe times out, or the response isn't valid JSON. Fail-soft like
-        ``_voice_status``; jasper-doctor owns the actionable failure.
-        """
-        return await local_status_json("/run/jasper-fanin/control.sock")
-
-    async def _mux_status() -> dict | None:
-        try:
-            return await mux_socket_command("STATUS", timeout=1.0)
-        except (
-            FileNotFoundError,
-            ConnectionRefusedError,
-            asyncio.TimeoutError,
-            OSError,
-            RuntimeError,
-            ValueError,
-            json.JSONDecodeError,
-        ):
-            return None
-
-    async def _aec_status() -> dict | None:
-        """Additive mirror of GET /aec for one-shot /state consumers."""
-        try:
-            return await asyncio.to_thread(aec_full_status)
-        except Exception:  # noqa: BLE001
-            logger.exception("AEC/profile state probe failed")
-            return None
-
+    ha_status = _ha_status(ha_status_snapshot)
     try:
-        (
-            camilla_st,
-            airplay,
-            voice_st,
-            ha_status,
-            fanin_st,
-            outputd_st,
-            mux_st,
-            aec_status,
-            wifi_guardian,
-        ) = await asyncio.wait_for(
+        gathered = await asyncio.wait_for(
             asyncio.gather(
-                _camilla_status(),
-                _airplay_playing(),
-                _voice_status(),
-                _ha_status(),
-                _fanin_status(),
+                _camilla_status(host=camilla_host, port=camilla_port),
+                # The shared mpris probe owns the subprocess hygiene
+                # (kill-on-timeout so a DBus stall can't leak one busctl per
+                # /state poll; spawn OSError → None instead of 500ing the whole
+                # fail-soft aggregate).
+                mpris.shairport_playing(timeout=2.0),
+                _voice_status(voice_socket_command, voice_socket_path),
+                local_status_json(FANIN_STATUS_SOCKET),
                 _outputd_status(local_status_json=local_status_json),
-                _mux_status(),
-                _aec_status(),
+                _mux_status(mux_socket_command),
+                _aec_status(aec_full_status),
                 _wifi_guardian_snapshot(),
             ),
             timeout=_STATE_AGGREGATE_BUDGET_SEC,
@@ -1167,12 +1155,13 @@ async def _get_state(
             level=logging.WARNING,
         )
         raise
+    probes = _Probes(*gathered, ha_status=ha_status)
 
     spotify = _spotify_state()
     if sound_profile is not None:
         runtime = _sound_runtime_status(
             sound_profile,
-            camilla_st.get("active_config_path"),
+            probes.camilla.get("active_config_path"),
         )
         sound_profile["runtime"] = runtime
         # Top-level aliases for consumers that need only the running truth
@@ -1185,39 +1174,39 @@ async def _get_state(
     # USB Audio Input — fourth renderer. Fan-in owns the live DIRECT lane;
     # kernel UDC state owns host connection.
     usbsink_state = _build_usbsink_renderer_state(
-        fanin_st,
+        probes.fanin,
         host_connected=udc_host_connected(
             os.environ.get("JASPER_UDC_CLASS_DIR", DEFAULT_UDC_CLASS_DIR),
         ),
     )
 
-    voice_status = voice_st or {}
-    voice_session = bool(voice_st) and voice_status.get("state") == "SESSION"
+    voice_status = probes.voice or {}
+    voice_session = bool(probes.voice) and voice_status.get("state") == "SESSION"
     active_source = _active_source(
         voice_session=voice_session,
-        mux_status=mux_st,
+        mux_status=probes.mux,
         spotify_playing=spotify["playing"],
-        airplay_playing=airplay,
+        airplay_playing=probes.airplay,
         usbsink_playing=bool(usbsink_state and usbsink_state.get("playing")),
     )
 
     volume_policy = build_volume_policy_snapshot(
         active_source=active_source,
         listening_level=listening_level,
-        main_volume_db=camilla_st["main_volume_db"],
+        main_volume_db=probes.camilla["main_volume_db"],
         persisted_main_volume_db=persisted_main_volume_db,
-        mux_status=mux_st,
+        mux_status=probes.mux,
         diagnostics=_read_volume_diagnostics(),
     )
 
     grouping_state = with_airplay_latency_fit(_soft_read(
         "grouping state read failed",
-        lambda: read_grouping_state(local_outputd_reader=lambda: outputd_st),
+        lambda: read_grouping_state(local_outputd_reader=lambda: probes.outputd),
     ))
     active_speaker_setup = _soft_read(
         "active speaker setup status read failed",
         lambda: read_active_speaker_setup_status(
-            active_config_path=camilla_st.get("active_config_path"),
+            active_config_path=probes.camilla.get("active_config_path"),
         ),
         exc=(OSError, RuntimeError, TypeError, ValueError, KeyError),
     )
@@ -1250,8 +1239,8 @@ async def _get_state(
     )
 
     audio_graph_state = _audio_graph_state(
-        fanin_status=fanin_st,
-        outputd_status=outputd_st,
+        fanin_status=probes.fanin,
+        outputd_status=probes.outputd,
         service_states=service_states,
     )
     tools_state = _soft_read("tool catalog state read failed", _read_tool_catalog)
@@ -1301,7 +1290,7 @@ async def _get_state(
                     for field, status_key in _VOICE_STATUS_NESTED_FIELDS.items()
                 },
             },
-            "reachable": voice_st is not None,
+            "reachable": probes.voice is not None,
             # Disambiguates reachable:false: true means the AEC reconciler
             # parked voice for a missing microphone ("intentionally idle, no
             # mic", NOT "crashed"). Same read as the `microphone` block below,
@@ -1313,13 +1302,13 @@ async def _get_state(
         # from voice.reachable:false.
         "microphone": mic_presence.as_dict(),
         "audio": {
-            "main_volume_db": camilla_st["main_volume_db"],
+            "main_volume_db": probes.camilla["main_volume_db"],
             "listening_level_percent": listening_level,
             "volume_policy": volume_policy,
-            "playback_rms_dbfs": camilla_st["playback_rms_dbfs"],
-            "playback_peak_dbfs": camilla_st["playback_peak_dbfs"],
-            "clipped_samples": camilla_st["clipped_samples"],
-            "camilla_active_config_path": camilla_st["active_config_path"],
+            "playback_rms_dbfs": probes.camilla["playback_rms_dbfs"],
+            "playback_peak_dbfs": probes.camilla["playback_peak_dbfs"],
+            "clipped_samples": probes.camilla["clipped_samples"],
+            "camilla_active_config_path": probes.camilla["active_config_path"],
             "sound": sound_profile,
             "output_hardware": output_hardware_state,
         },
@@ -1330,7 +1319,7 @@ async def _get_state(
         "renderers": {
             "spotify": spotify,
             "airplay": (
-                None if airplay is None else {"playing": airplay}
+                None if probes.airplay is None else {"playing": probes.airplay}
             ),
             # null when the feature is disabled (no state file), so a
             # consumer can show "off" as distinct from "idle".
@@ -1343,13 +1332,13 @@ async def _get_state(
         "active_source": active_source,
         # Fan-in's UDS STATUS snapshot, verbatim. null only when the
         # daemon/socket is unavailable.
-        "fanin": fanin_st,
+        "fanin": probes.fanin,
         # Final-output owner; jasper-doctor owns the actionable failure.
-        "outputd": outputd_st,
+        "outputd": probes.outputd,
         # Additive mirror of GET /aec, so a one-shot /state consumer sees
         # requested intent vs observed runtime without a second request.
-        "aec": aec_status,
-        "source_selection": mux_st,
+        "aec": probes.aec,
+        "source_selection": probes.mux,
         "resilience": {
             "shairport": shairport_supervisor.snapshot(),
             # Bonded-member runtime liveness: dac_content starvation watch
@@ -1364,7 +1353,7 @@ async def _get_state(
             # Self-heal of the NM keyfile after dirty shutdown. Type=oneshot,
             # so there is no daemon to ask: synthesised from the on-disk stash
             # plus the most recent `event=wifi_guardian.*` journal line.
-            "wifi_guardian": wifi_guardian,
+            "wifi_guardian": probes.wifi_guardian,
             # Cross-boot circuit breaker for the StartLimitAction=reboot
             # ladder. {"ran": false} when the oneshot hasn't run this boot;
             # tripped=true means reboot escalation is disarmed for this boot —
@@ -1402,7 +1391,7 @@ async def _get_state(
             # backoff (ADR-0225); this is the only non-journal sign of it.
             "accessory_bridges": accessory_status.snapshot(),
         },
-        "home_assistant": ha_status,
+        "home_assistant": probes.ha_status,
         # Snapshot of the wizard-owned grouping.env plus airplay_latency_fit
         # ({applicable: false} unless this speaker is an active bonded leader).
         # enabled=True with a non-null error is the fail-LOUD "configured but

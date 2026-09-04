@@ -204,7 +204,7 @@ def test_the_doctor_check_reports_a_stalled_active_ring(tmp_path, monkeypatch):
     the unit tests above use."""
     import time
 
-    from jasper.cli.doctor import audio_runtime
+    from jasper.cli.doctor import audio_runtime_ring
 
     real_now = time.monotonic_ns()
     stalled = _ring_file(
@@ -215,14 +215,14 @@ def test_the_doctor_check_reports_a_stalled_active_ring(tmp_path, monkeypatch):
     monkeypatch.setattr(ring_assets, "RING_A_PROGRAM_FILE", str(tmp_path / "absent-a"))
     monkeypatch.setattr(ring_assets, "RING_B_CONTENT_FILE", str(tmp_path / "absent-b"))
     monkeypatch.setattr(ring_assets, "RING_ACTIVE_CONTENT_FILE", stalled)
-    result = audio_runtime.check_ring_reader_stall()
+    result = audio_runtime_ring.check_ring_reader_stall()
     assert result.status == "warn"
-    assert result.reason == audio_runtime.REASON_RING_READER_STALLED
+    assert result.reason == audio_runtime_ring.REASON_RING_READER_STALLED
 
 
 def test_the_doctor_check_is_silent_on_an_unarmed_box(tmp_path, monkeypatch):
     """Every box in the fleet today has no ring files at all."""
-    from jasper.cli.doctor import audio_runtime
+    from jasper.cli.doctor import audio_runtime_ring
 
     for attr in (
         "RING_A_PROGRAM_FILE",
@@ -230,9 +230,9 @@ def test_the_doctor_check_is_silent_on_an_unarmed_box(tmp_path, monkeypatch):
         "RING_ACTIVE_CONTENT_FILE",
     ):
         monkeypatch.setattr(ring_assets, attr, str(tmp_path / f"absent-{attr}"))
-    result = audio_runtime.check_ring_reader_stall()
+    result = audio_runtime_ring.check_ring_reader_stall()
     assert result.status == "skipped"
-    assert result.reason == audio_runtime.REASON_RING_READER_NO_LIVE_RING
+    assert result.reason == audio_runtime_ring.REASON_RING_READER_NO_LIVE_RING
 
 
 if __name__ == "__main__":  # pragma: no cover

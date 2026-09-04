@@ -986,7 +986,7 @@ copy, which strips the honesty-ladder fields via
 `linearization_filters_by_role` — see that function's docstring); it does
 not thread into the durable applied-profile artifact.
 **The level-match frame (PR-L3, 2026-07-27).** `solve_branch_trims`
-([`jasper/audio_measurement/program_analysis.py`](../../jasper/audio_measurement/program_analysis.py))
+([`jasper/audio_measurement/program_analysis/`](../../jasper/audio_measurement/program_analysis/))
 reads **each branch on its own side of Fc** — `[Fc/ρ, Fc]` for the woofer,
 `[Fc, Fc·ρ]` for the tweeter, log-symmetric by construction
 (`branch_level_bands_hz`), with `ρ ≤ 1 octave` narrowed by whichever
@@ -2311,7 +2311,7 @@ prefill, so every step carries a `PHASE_LADDER_START_SKEW_S` bias
 *intended* to land late rather than early. **ON-DEVICE:** that interval has
 not been measured; the skew is a safe-direction estimate, not a guarantee,
 and is named in
-[`jasper/web/correction_crossover_v2_relay.py`](../../jasper/web/correction_crossover_v2_relay.py).
+`jasper/web/correction_crossover_v2_relay.py` (deleted; ADR-0222).
 Measure it on hardware before tuning, and prefer an observed playback start
 over a smaller guess.
 
@@ -3229,7 +3229,7 @@ post-apply cloud measured **−4.80 dB at 1656 Hz** (signal-derived, 1/3-octave)
 344 Hz below the graded floor.
 
 So VERIFY now also grades an ABSOLUTE claim:
-[`crossover_region_band_hz`](../../jasper/audio_measurement/program_analysis.py)
+[`crossover_region_band_hz`](../../jasper/audio_measurement/program_analysis/)
 gives the region a SUMMED capture can honestly be judged over — `[Fc/2, 2Fc]`
 intersected with the capture's own gate-derived trusted floor and radiated band
 — which reaches BELOW the tweeter's sweep floor precisely because the composite
@@ -4312,7 +4312,7 @@ negative), and the selection log line is a WARNING.
 > the priors seam it arrives through, and the disclosure are **code-owned**:
 > read `_select_alignment_pair`'s and `summed_model_residual_delay_us`'s
 > docstrings and `MeasurementPriors.applied_alignment` in
-> [`program_analysis.py`](../../jasper/audio_measurement/program_analysis.py),
+> [`program_analysis/`](../../jasper/audio_measurement/program_analysis/),
 > not a restatement here.
 
 `_driver_snr_block` computes BOTH classes off one set of band measurements and
@@ -4328,7 +4328,7 @@ computed, ordinary for a session whose CHECK carried no ambient window.
 **What the candidate records.** `alignment_objective` (one of
 `ALIGNMENT_COMMITMENTS` — the set is code-owned and gained
 `applied_alignment_held_after_low_snr` in #2617; read the constants block in
-[`program_analysis.py`](../../jasper/audio_measurement/program_analysis.py) rather
+[`program_analysis/`](../../jasper/audio_measurement/program_analysis/) rather
 than this list), `seed_polarity_sign` and
 `left_anchor_lobe`, plus `AlignmentEstimate.polarity_agrees_with_sum` — the
 cross-check that had no production reader before #2598 and now travels in

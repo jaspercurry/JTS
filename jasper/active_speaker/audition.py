@@ -153,7 +153,7 @@ def _refuse_if_graph_is_claimed() -> None:
     """
 
     from jasper.active_speaker.session_volume_plan import live_measurement_session
-    from jasper.active_speaker.startup_load import load_commission_load_state
+    from jasper.active_speaker.commission_load import load_commission_load_state
 
     refusal = live_measurement_session(action="auditioning")
     if refusal is not None:

@@ -69,14 +69,14 @@ full = [
     # tflite-runtime is never imported at runtime. See install.sh.
     "sounddevice==0.5.6",
     "numpy>=1.26,<3",
-    # SciPy is needed for room-correction v2 (jasper.correction.*):
-    # synchronized swept-sine generation, FFT-based deconvolution,
-    # IIR biquad design (peq), and fractional-octave smoothing. Pi 5
-    # 1 GB has plenty of free disk for the install (~200 MB) and
+    # SciPy is needed for room-correction v2 (jasper.correction.* and the
+    # jasper.audio_measurement kernel it consumes): synchronized swept-sine
+    # generation, FFT-based deconvolution, and fractional-octave smoothing.
+    # Pi 5 1 GB has plenty of free disk for the install (~200 MB) and
     # the runtime RAM cost during measurement is bounded by the
     # measurement_window() pause that frees librespot/shairport/
-    # voice-daemon RAM first. ≥1.13 because we use scipy.signal.iirpeak
-    # and the numpy 2.0 ABI compatibility is patched.
+    # voice-daemon RAM first. ≥1.13 is the first release built against the
+    # numpy 2.0 ABI, which numpy>=1.26,<3 above allows.
     "scipy>=1.13,<2",
     "spotipy==2.26.0",
     "httpx==0.28.1",
@@ -196,21 +196,12 @@ jasper-calibration-agent = "jasper.calibration_agent.cli:main"
 jasper-active-speaker = "jasper.cli.active_speaker:main"
 jasper-audition = "jasper.cli.audition:main"
 jasper-crossover-prescriber = "jasper.cli.crossover_prescriber:main"
-jasper-project-ring = "jasper.cli.project_ring:main"
-jasper-classify-features = "jasper.cli.classify_features:main"
-jasper-read-distortion = "jasper.cli.read_distortion:main"
 jasper-round-views = "jasper.cli.round_views:main"
-jasper-round-bank = "jasper.cli.round_bank:main"
 jasper-round = "jasper.cli.round:main"
 jasper-angle-capture = "jasper.cli.angle_capture:main"
-jasper-arm-walk = "jasper.cli.arm_walk:main"
 jasper-active-speaker-emit-bench = "jasper.cli.active_speaker_emit_bench:main"
 jasper-basic-profile = "jasper.cli.basic_profile:main"
 jasper-seat-level = "jasper.cli.seat_level:main"
-jasper-delay-sweep = "jasper.cli.delay_sweep:main"
-jasper-forward-model = "jasper.cli.forward_model:main"
-jasper-gate-sweep = "jasper.cli.gate_sweep:main"
-jasper-close-reference = "jasper.cli.close_reference:main"
 jasper-measure = "jasper.cli.measure:main"
 jasper-null = "jasper.cli.null_door:main"
 jasper-bass-extension-bench = "jasper.cli.bass_extension_bench:main"
@@ -357,6 +348,7 @@ module = [
     "jasper.active_speaker.bringup",
     "jasper.active_speaker.calibration_level",
     "jasper.active_speaker.camilla_yaml",
+    "jasper.active_speaker.commission_load",
     "jasper.active_speaker.commission_ramp",
     "jasper.active_speaker.commissioning_coordinator",
     "jasper.active_speaker.crossover_preview",
@@ -372,10 +364,10 @@ module = [
     "jasper.aec_sweep",
     "jasper.assistant_loudness",
     "jasper.audio_io",
-    # Moved verbatim from jasper.correction.calibration in P1b (measurement
-    # kernel extraction); keeps the pre-existing latent type debt on the mypy
-    # baseline rather than fixing it in a behavior-preserving refactor.
+    # calibration and peq: latent type debt kept on the baseline, not fixed
+    # inside a relocation.
     "jasper.audio_measurement.calibration",
+    "jasper.audio_measurement.peq",
     "jasper.audio_validation",
     "jasper.bluetooth.scan",
     "jasper.camilla",
@@ -398,7 +390,6 @@ module = [
     "jasper.correction.acoustic_quality",
     "jasper.correction.autolevel",
     "jasper.correction.bundle_tools",
-    "jasper.correction.peq",
     "jasper.correction.runtime_integrity",
     "jasper.correction.session",
     "jasper.home_assistant",

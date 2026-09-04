@@ -6,6 +6,7 @@
 
 import argparse
 import ast
+import re
 import hashlib
 import importlib.util
 import json
@@ -1695,9 +1696,9 @@ def test_turntable_product_surface_is_the_stop_hook_and_the_opt_in_walk() -> Non
 
     Four of them are the hot-plug stop hook (a udev rule, its unit, and the
     install steps that ship both). The rest are the opt-in lab harness
-    ``jasper-arm-walk`` — its loop and its CLI, which drive the adapter as a
-    SUBPROCESS at the installed path and never import it, the CLI naming the
-    stop unit only to cite the `User=pi` identity it borrows — plus the one
+    ``jasper-angle-capture serve`` — its loop and its CLI, which drive the
+    adapter as a SUBPROCESS at the installed path and never import it, the CLI
+    naming the stop unit only to cite the `User=pi` identity it borrows — plus the one
     comment in the angle seam that says where its +/-45 arm envelope comes
     from. Nothing here starts on its own: no timer, no daemon, no voice tool.
     """
@@ -1734,8 +1735,26 @@ def test_turntable_product_surface_is_the_stop_hook_and_the_opt_in_walk() -> Non
         "deploy/udev/99-jasper-turntable-autostop.rules",
         "jasper/active_speaker/arm_walk.py",
         "jasper/active_speaker/angle_capture.py",
-        "jasper/cli/arm_walk.py",
+        "jasper/cli/angle_capture.py",
     }
+
+
+def test_the_units_start_timeout_covers_the_retry_loops_worst_case(turntable) -> None:
+    """The unit must outlast the loop it starts.
+
+    Per attempt: open()'s startup_timeout plus four independent
+    response_timeout round trips (probe's connection/firmware/product, then
+    stop), each capped at ``AUTOSTOP_IO_TIMEOUT``. A shorter
+    ``TimeoutStartSec`` SIGTERMs the loop mid-retry on a controller still
+    emitting post-power-on noise, and the platter never stops.
+    """
+    worst_case = turntable.AUTOSTOP_ATTEMPTS * 5 * turntable.AUTOSTOP_IO_TIMEOUT + (
+        turntable.AUTOSTOP_ATTEMPTS - 1
+    ) * turntable.AUTOSTOP_RETRY_SECONDS
+    match = re.search(r"TimeoutStartSec=(\d+)s", AUTOSTOP_UNIT.read_text())
+    assert match, "the autostop unit must declare a TimeoutStartSec"
+
+    assert int(match.group(1)) >= worst_case
 
 
 def test_hotplug_stop_udev_systemd_and_install_wiring() -> None:
@@ -1753,7 +1772,6 @@ def test_hotplug_stop_udev_systemd_and_install_wiring() -> None:
     assert "ExecStart=/usr/bin/python3 /opt/jasper/experiments/usb-turntable/" in unit
     assert "--port /dev/%I --json hotplug-stop" in unit
     assert "/bin/sh" not in unit
-    assert "TimeoutStartSec=40s" in unit
     assert "DeviceAllow=/dev/%I rw" in unit
     assert "jasper-turntable-autostop@.service" in units_install
     assert "99-jasper-turntable-autostop.rules" in units_install

@@ -74,6 +74,7 @@ import secrets
 import subprocess
 import urllib.parse
 from collections.abc import Callable
+from contextlib import suppress
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
@@ -685,6 +686,57 @@ def terminate_process(
             pass
     except (OSError, ProcessLookupError):
         pass
+
+
+def close_awaitable(awaitable: Any) -> None:
+    """Release a coroutine no runner took ownership of, so the interpreter
+    does not warn about one that was never awaited."""
+    close = getattr(awaitable, "close", None)
+    if callable(close):
+        close()
+
+
+def terminate_async_process(proc: Any) -> None:
+    """SIGTERM an ``asyncio.subprocess.Process`` a wizard spawned on the
+    background loop. A child that has already exited is not an error.
+
+    Reaping needs that loop, so it is not done here: a caller that must know
+    the child is gone awaits ``proc.wait()`` through its own runner.
+    """
+    if proc is None:
+        return
+    with suppress(ProcessLookupError):
+        proc.terminate()
+
+
+def reset_session_locked(
+    state: dict[str, Any],
+    fields: dict[str, Any],
+    *,
+    proc_key: str,
+    error: str = "",
+) -> None:
+    """Return a measurement flow's session ``state`` to idle, clearing the
+    child held under ``proc_key``; call under the flow's own lock, with
+    ``fields`` carrying that flow's schema delta. Every step is
+    non-blocking — a reap would need the background loop, which deadlocks
+    against a playback watcher waiting on the caller's lock.
+    """
+    holder = state.get(proc_key)
+    if holder:
+        terminate_async_process(holder.get("proc"))
+    release = state.get("release_window")
+    state.update({
+        "phase": "idle",
+        "error": error,
+        "members": None,
+        "session_token": int(state.get("session_token", 0)) + 1,
+        "release_window": None,
+        proc_key: None,
+        **fields,
+    })
+    if release is not None:
+        release()
 
 
 # Upper bound on a wizard form body. Every wizard POST here is a small

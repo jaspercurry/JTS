@@ -6,7 +6,7 @@
 
 jasper-control's samplers, jasper-doctor and jasper-system-soak all read
 unit state; they read it through here so one roster and one parser exist
-(ADR-0228 rule 1). Stdlib only: the doctor imports this on every run.
+(ADR-0232 rule 1). Stdlib only: the doctor imports this on every run.
 """
 from __future__ import annotations
 
@@ -171,7 +171,12 @@ def read_unit_states(
     """One ``systemctl show`` over ``units``; None when systemctl itself is
     unavailable or the call fails, so a caller can say "unknown" rather than
     "inactive". A unit systemd does not know comes back with
-    ``load_state == "not-found"``."""
+    ``load_state == "not-found"``.
+
+    A non-empty ask that yields NO records is also ``None``: systemctl ran but
+    answered nothing (no D-Bus, a host not booted with systemd), which is
+    "unknown", not "none of these units exist" — the latter would let a caller
+    report every unit as missing on a box where they are all running."""
     if not units:
         return {}
     cmd = ["systemctl", "show", "--no-page"]
@@ -183,4 +188,4 @@ def read_unit_states(
         return None
     if proc.returncode not in (0, 1):
         return None
-    return parse_systemctl_show_units(proc.stdout)
+    return parse_systemctl_show_units(proc.stdout) or None

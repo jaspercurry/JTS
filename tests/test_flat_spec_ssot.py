@@ -19,7 +19,7 @@ Two layers, mirroring ``test_crossover_v2_cloud_pipeline.py``:
   floor the assembler derives and publishes, and what it does to the payload
   — the evaluator's own arithmetic is ``tests/test_flat_spec.py``'s); and the
   frame-consistency walk — pipeline result → durable ``cloud`` block →
-  ``_compact_cloud_status`` → ``/state`` → the envelope's rendered ledger line
+  ``compact_cloud_status`` → ``/state`` → the envelope's rendered ledger line
   — asserted byte-identical at every hop.
 * **Corpus-gated.** The same walk on the real S0 main-leg cloud, so the
   contract is pinned against hardware data and the S0 session's own measured
@@ -54,9 +54,9 @@ from jasper.active_speaker.flat_spec import (
 )
 from jasper.audio_measurement.gating import TRUSTED_FLOOR_MULTIPLIER
 from jasper.audio_measurement.spatial_combine import PositionCapture, combine_positions
-from jasper.web.correction_crossover_v2_status import (
-    _chart_cloud_status,
-    _compact_cloud_status,
+from jasper.active_speaker.crossover_envelope_v2 import (
+    chart_cloud_status,
+    compact_cloud_status,
 )
 
 from tests import _flat_lin_corpus as corpus
@@ -612,7 +612,7 @@ def _walk_every_surface(result, monkeypatch) -> dict:
 
     Walks the REAL functions in the real order the host uses:
     ``assemble_cloud_group_result`` → ``_cloud_summary``'s durable shape →
-    ``_compact_cloud_status`` (`/state`) → ``build_crossover_envelope_v2``
+    ``compact_cloud_status`` (`/state`) → ``build_crossover_envelope_v2``
     (the wizard envelope + its rendered ledger line) → the shipped doctor
     check (N-1: the doctor is a spec-facing surface too, so "every surface"
     has to include it rather than be quietly scoped to three).
@@ -622,8 +622,8 @@ def _walk_every_surface(result, monkeypatch) -> dict:
     loader underneath it — the same seam PR-4's own doctor corpus test uses
     — rather than by handing it a pre-built block.
     """
-    compact = _compact_cloud_status(_durable_cloud_block(result))
-    chart = _chart_cloud_status(_durable_cloud_block(result))
+    compact = compact_cloud_status(_durable_cloud_block(result))
+    chart = chart_cloud_status(_durable_cloud_block(result))
     envelope = build_crossover_envelope_v2({
         "active": True,
         "setup": {"active": True, "status": "ready"},
@@ -712,7 +712,7 @@ def _assert_one_number_everywhere(views: dict) -> None:
     assert f"{gauge['rms_db']:.2f} dB" in rendered
 
     # N-1: the doctor's verdict is derived from the same spec verdict, not a
-    # re-graded one (AGENTS.md/ADR-0228 rule 3 pins status+reason, not the
+    # re-graded one (AGENTS.md/ADR-0232 rule 3 pins status+reason, not the
     # doctor's prose — which used to be pinned digit-for-digit here).
     from jasper.cli.doctor import correction as doctor_correction
 
@@ -731,14 +731,14 @@ def _assert_one_number_everywhere(views: dict) -> None:
     assert views["envelope_reference_db"] == spec["reference_db"]
     # Review S-1 (2026-07-27): the chart feed re-decimates the pipeline's own
     # 512-point ``curve`` down to its own 256-point ceiling
-    # (``_chart_cloud_status``'s own ``CHART_CURVE_MAX_JSON_POINTS`` —
+    # (``chart_cloud_status``'s own ``CHART_CURVE_MAX_JSON_POINTS`` —
     # measured 41,161 bytes for both phases at the full resolution, halved to
     # 20,653 by this re-decimation), so it is no longer byte-identical to the
     # pipeline curve — but every point it DOES carry must still be an actual
     # point of the pipeline curve, at the same stride
-    # ``_chart_cloud_status`` computes, never an interpolation or a
+    # ``chart_cloud_status`` computes, never an interpolation or a
     # re-derivation. Stride is CEILING division (gate finding on #1858,
-    # SF-1): ``_decimate_curve_for_chart`` used to floor-divide, a soft
+    # SF-1): ``decimate_curve_for_chart`` used to floor-divide, a soft
     # ceiling that could overshoot 256 by up to one stride; #1858's
     # block-average fix to the (unrelated) predicted-sum path could land a
     # persisted length just below 512, where floor division gave step=1 --
@@ -794,7 +794,7 @@ def test_the_pre_apply_cloud_never_supplies_the_post_apply_flatness_claim():
     """
     combined = combine_positions(_locked_cloud(), echo_band_hz=SYNTHETIC_BAND_HZ)
     result = assemble_cloud_group_result(combined, echo_band_hz=SYNTHETIC_BAND_HZ)
-    compact = _compact_cloud_status(
+    compact = compact_cloud_status(
         _durable_cloud_block(result, phase=PHASE_CLOUD_MEASURE)
     )
     assert compact[PHASE_CLOUD_MEASURE]["flatness"] is not None
@@ -817,14 +817,14 @@ def test_an_unavailable_pipeline_degrades_honestly_at_every_surface():
     in words rather than going silently blank like a session with no group."""
     result = assemble_cloud_group_result(None, echo_band_hz=SYNTHETIC_BAND_HZ)
     assert result == {"available": False, "reason": "combine_failed"}
-    compact = _compact_cloud_status(_durable_cloud_block(result))
+    compact = compact_cloud_status(_durable_cloud_block(result))
     entry = compact[PHASE_CLOUD_VERIFY]
     assert entry["flatness"] is None
     assert entry["overall_passed"] is None
     assert entry["excluded_interval_count"] is None
     # PR-7: same honesty rule for the corridor reference and the chart curve.
     assert entry["reference_db"] is None
-    chart = _chart_cloud_status(_durable_cloud_block(result))
+    chart = chart_cloud_status(_durable_cloud_block(result))
     assert chart[PHASE_CLOUD_VERIFY]["curve"] is None
     envelope = build_crossover_envelope_v2({
         "active": True,

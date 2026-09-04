@@ -27,6 +27,8 @@ from jasper.camilla_config_contract import parse_camilla_devices_config
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SoundProfile
 
+from .fanin_env_fixtures import declare_fanin_env
+
 
 def test_resolve_coupling_names_the_ring_or_nothing():
     # ONE transport (ADR-0100): the resolver either names it or answers None.
@@ -228,9 +230,7 @@ def test_assistant_wire_width_reads_the_file_through_the_shared_predicate(
     """
     from jasper import fanin_coupling
 
-    fanin_env = tmp_path / "fanin.env"
-    fanin_env.write_text(fanin_text, encoding="utf-8")
-    monkeypatch.setattr("jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env))
+    declare_fanin_env(monkeypatch, tmp_path, fanin_text)
 
     assert (
         fanin_coupling.assistant_wire_is_wide(wire_format=RING_WIRE_FORMAT_WIDE)

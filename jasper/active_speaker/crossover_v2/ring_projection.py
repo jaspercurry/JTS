@@ -4,7 +4,8 @@
 
 """Re-project a banked round into the capture-ring layout its two readers want.
 
-``jasper-classify-features`` and ``jasper-read-distortion`` find captures
+``jasper-round-views classify-features`` and ``jasper-round-views distortion``
+find captures
 through :data:`~.evidence_packet.RING_SIDECAR_GLOB` — a sidecar JSON beside
 its WAV in a sibling ``wav/`` — the one thing #3285's bank does not carry.
 Two facts the bank spells differently are restated here: stems are
@@ -47,6 +48,7 @@ __all__ = [
     "RingProjection",
     "RingProjectionRefused",
     "SkippedTake",
+    "bundle_session_id",
     "project_ring",
 ]
 
@@ -107,8 +109,8 @@ class RingProjection:
     skipped: tuple[SkippedTake, ...]
 
 
-def _bundle_session_id(bundle_dir: Path) -> str:
-    """The bundle's own ``session_id`` — the id both readers scope the ring by.
+def bundle_session_id(bundle_dir: Path) -> str:
+    """The bundle's own ``session_id`` — the id every reader scopes the ring by.
 
     Raises ``OSError``/``ValueError``: unreadable is a different answer from
     "readable, and holds nothing to project", and the CLI exits differently.
@@ -181,7 +183,7 @@ def project_ring(
     if round_dir is None:
         raise ValueError(f"cannot read the round: {why}")
 
-    session_id = _bundle_session_id(bundle_dir)
+    session_id = bundle_session_id(bundle_dir)
     sidecar_dir = dumps_dir / _SIDECAR_SUBDIR
     wav_dir = dumps_dir / _WAV_SUBDIR
     sidecar_dir.mkdir(parents=True, exist_ok=True)

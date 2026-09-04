@@ -477,8 +477,8 @@ def total_positive_boost_db(filters: Iterable[PeqFilter]) -> float:
     is the one canonical definition of "how much can these boosts clip",
     shared by the room-correction headroom trim
     (``jasper.sound.camilla_yaml``) and the PEQ boost-cap check
-    (``jasper.correction.peq.total_max_boost_db``). Any object exposing a
-    numeric ``.gain`` is accepted — the correction ``PEQ`` is structurally
+    (``jasper.audio_measurement.peq.total_max_boost_db``). Any object exposing a
+    numeric ``.gain`` is accepted — the designer's ``PEQ`` is structurally
     compatible with ``PeqFilter`` here.
     """
     return max(0.0, sum(f.gain for f in filters if f.gain > 0.0))
@@ -591,14 +591,14 @@ def parse_camilla_devices_config(text: str) -> dict[str, Any]:
     that is not ``true``/``false`` omits the key rather than guessing, like every
     other field.
 
-    ``capture_format`` / ``playback_format`` join ``*_device`` / ``*_channels``
-    in the per-lane subset because the ring's width gate
-    (``jasper.fanin.coupling_reconcile.ring_edge_width_ready``) has to judge
-    device, channels and format off ONE snapshot of the loaded graph — reading
-    the same file three times through the single-field reader would let the
-    three answers come from three different revisions of it. Keys are omitted
-    entirely when the block declares no such field, exactly like the others, so
-    every existing caller is unaffected.
+    ``*_format``, ``*_type`` and ``*_filename`` join ``*_device`` /
+    ``*_channels`` because the callers that judge a lane judge several of its
+    fields at once — the ring's width gate
+    (``jasper.fanin.coupling_reconcile.ring_edge_width_ready``) and the doctor's
+    coupling and playback-format checks — and one file read per field lets
+    those answers come from different revisions of it. A key is omitted when
+    the block declares no such field, exactly like the others, so every
+    existing caller is unaffected.
     """
 
     text = textwrap.dedent(text)
@@ -702,9 +702,9 @@ def parse_camilla_devices_config(text: str) -> dict[str, Any]:
             if key == "device":
                 result[f"{nested}_device"] = value
                 continue
-            if key == "format":
+            if key in {"format", "type", "filename"}:
                 if value:
-                    result[f"{nested}_format"] = value
+                    result[f"{nested}_{key}"] = value
                 continue
             if key == "channels":
                 try:
@@ -713,6 +713,21 @@ def parse_camilla_devices_config(text: str) -> dict[str, Any]:
                     continue
 
     return result
+
+
+def devices_playback_is_pipe(devices: Mapping[str, Any], fifo: str) -> bool:
+    """True when a parsed ``devices`` subset's playback lane is a ``File``
+    sink writing ``fifo`` — the bonded-leader pipe.
+
+    The FILENAME is compared exactly (the parser has already stripped its
+    quotes), not just the type: any other ``File`` sink — the parked graph's
+    ``/dev/null``, a stale local pipe — is not the bond.
+    """
+
+    return (
+        devices.get("playback_type") == "File"
+        and devices.get("playback_filename") == fifo
+    )
 
 
 def read_camilla_devices_config(path: str | Path | None) -> dict[str, Any] | None:
@@ -726,48 +741,3 @@ def read_camilla_devices_config(path: str | Path | None) -> dict[str, Any] | Non
         return None
     parsed = parse_camilla_devices_config(text)
     return parsed or None
-
-
-def read_camilla_device_field(
-    config_path: str | Path | None, block: str, field: str
-) -> str | None:
-    """One field from ``devices.<block>`` of a CamillaDSP config file, or None.
-
-    Tiny indent-aware scan (no YAML dep): find the 2-space device block, return
-    its first 4-space ``field:`` value with quotes stripped. Deliberately
-    narrower than :func:`parse_camilla_devices_config`, which returns a fixed
-    observability subset — this reads an arbitrary named field (``type``,
-    ``filename``) that no fixed subset has to grow a key for. One field per
-    call is one FILE READ per call, so a caller that needs several fields of
-    one graph revision wants the subset parser over a single snapshot instead
-    (which is why ``format`` moved into that subset).
-
-    The SSOT for that scan: ``jasper.cli.doctor.audio_runtime._loaded_device_field``
-    delegates here, and the wiring test that pins the shipped flat-cutover seed
-    to :data:`DEFAULT_PLAYBACK_FORMAT` reads it the same way.
-    """
-
-    if not config_path:
-        return None
-    try:
-        text = Path(config_path).read_text(encoding="utf-8")
-    except OSError:
-        return None
-    target_block = f"{block}:"
-    target_field = f"{field}:"
-    in_block = False
-    for raw in text.splitlines():
-        is_2space = raw.startswith("  ") and not raw.startswith("   ")
-        if is_2space and raw.strip() == target_block:
-            in_block = True
-            continue
-        if in_block:
-            if raw.startswith("    ") and raw.strip().startswith(target_field):
-                return raw.split(":", 1)[1].strip().strip("\"'")
-            # A sibling 2-space key (playback:/resampler:/...) or any dedent ends
-            # the block — never read a sibling block's field.
-            if is_2space or (raw[:1] not in (" ", "") and raw.strip()):
-                in_block = False
-    return None
-
-

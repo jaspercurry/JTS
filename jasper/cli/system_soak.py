@@ -20,6 +20,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from jasper.route_latency.status_socket import (
+    FANIN_STATUS_SOCKET,
+    OUTPUTD_STATUS_SOCKET,
+)
 from jasper.control.system_metrics import (
     EXTRA_SERVICE_GROUPS,
     JASPER_SERVICE_GROUPS,
@@ -33,8 +37,8 @@ MAX_DURATION_SEC = 2 * 60 * 60
 SCHEMA_VERSION = 1
 
 STATUS_SOCKETS = {
-    "outputd": "/run/jasper-outputd/control.sock",
-    "fanin": "/run/jasper-fanin/control.sock",
+    "outputd": OUTPUTD_STATUS_SOCKET,
+    "fanin": FANIN_STATUS_SOCKET,
     "mux": "/run/jasper-mux/control.sock",
     "voice": "/run/jasper/voice.sock",
 }

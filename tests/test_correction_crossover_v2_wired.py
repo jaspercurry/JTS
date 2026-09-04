@@ -1898,7 +1898,7 @@ def test_a_latched_isolation_abort_refuses_the_engine_play(monkeypatch):
     the NEXT play with the named error, before any audio — the engine leg
     included. Mutation: dropping the isolation wrapper reds this (the leg
     would play instead of refusing)."""
-    from jasper.correction.coordinator import MeasurementWindowError
+    from jasper.measurement_window import MeasurementWindowError
 
     monkeypatch.setattr(v2host, "session_measurement_pause_held", lambda: True)
     monkeypatch.setattr(
@@ -1930,7 +1930,7 @@ def test_the_engine_play_registers_as_the_windows_abort_target(monkeypatch):
 def test_a_mid_measure_abort_surfaces_as_the_named_window_error(monkeypatch):
     """An isolation-loss cancel mid-sweep becomes MeasurementWindowError, so
     the runner's cleanup arm persists an honest failure — flow-leg parity."""
-    from jasper.correction.coordinator import MeasurementWindowError
+    from jasper.measurement_window import MeasurementWindowError
 
     target = _FakeAbortTarget()
     monkeypatch.setattr(v2host, "session_measurement_pause_held", lambda: True)

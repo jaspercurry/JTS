@@ -962,11 +962,12 @@ def _cloud_summary(conductor: Any) -> dict[str, Any] | None:
                 else None
             ),
             # The PRODUCING session's id, stamped once here so
-            # ``_compact_cloud_status`` can tell "measured in the active
-            # session" from "carried forward". The carry-forward branch below
-            # copies this whole per-phase dict verbatim, so the stamp survives
-            # every re-arm without a second write site. A missing stamp reads as
-            # unknown provenance, never a fabricated one.
+            # ``crossover_envelope_v2.compact_cloud_status`` can tell
+            # "measured in the active session" from "carried forward". The
+            # carry-forward branch below copies this whole per-phase dict
+            # verbatim, so the stamp survives every re-arm without a second
+            # write site. A missing stamp reads as unknown provenance, never a
+            # fabricated one.
             "session_id": (
                 str(conductor.session_id) if hasattr(conductor, "session_id") else None
             ),
@@ -1080,14 +1081,14 @@ def build_conductor_state(
         if failure_code == getattr(conductor, "last_failure_code", None)
         else None
     )
-    # Let the journey learn about a restore it could not see (#2616): a
-    # durable-state writer that clears ``applied`` holds no conductor, so a live
-    # session whose speaker was restored out from under it keeps ``applied``
-    # True in memory and the write below would put that stale True back. The
-    # durable state is the authority on whether a restore HAPPENED and the
-    # journey owns the flag, so this tells the journey and writes what it says.
-    # Scoped to the SAME session, because a prior session's restore says nothing
-    # about this one.
+    # Let the journey learn about a restore it could not see (#2616): durable
+    # state is the authority on whether a restore HAPPENED, the journey owns
+    # the flag, so this tells the journey and writes what it says. Scoped to
+    # the SAME session — a prior session's restore says nothing about this
+    # one. ``snap.applied`` is the staleness check: a durable-state writer
+    # with no conductor (the web host) already cleared ``applied`` on disk,
+    # and without this the live conductor's stale True would be written
+    # straight back on the next persist.
     if (
         prior.get("applied") is False
         and prior.get("session_id") == snap.session_id
@@ -1115,9 +1116,9 @@ def build_conductor_state(
     state: dict[str, Any] = {
         "session_id": snap.session_id,
         "accepted_phases": list(snap.accepted_phases),
-        # The phases THIS session runs — read by ``_phase_from_state`` so a
-        # verify-only re-arm reaches "done" rather than waiting on a position
-        # group it never had.
+        # The phases THIS session runs — read by
+        # ``crossover_envelope_v2.crossover_v2_phase`` so a verify-only re-arm
+        # reaches "done" rather than waiting on a position group it never had.
         "session_phases": list(snap.session_phases),
         # WHICH INSTRUMENT produced this state. Empty string means unknown and
         # readers must render it as unknown rather than assuming "full":

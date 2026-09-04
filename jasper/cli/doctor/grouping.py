@@ -113,7 +113,7 @@ def _devices_rate_adjust_from_text(text: str) -> bool | None:
 
 def _unit_active_word(unit: str) -> str:
     """A unit's ``systemctl is-active`` word, from the shared evidence cache
-    (ADR-0228 rule 4); ``"unknown"`` when systemctl itself is unavailable."""
+    (ADR-0232 rule 4); ``"unknown"`` when systemctl itself is unavailable."""
     state = evidence.unit_state(unit)
     if state is None:
         return "unknown"
@@ -648,9 +648,7 @@ def check_grouping_leader_pipe() -> CheckResult:
             label, "warn", f"could not read {config_path}",
             reason=REASON_CAMILLA_CONFIG_UNREADABLE,
         )
-    is_pipe = playback_is_pipe(text, SNAPFIFO)
-
-    if not is_pipe:
+    if not playback_is_pipe(text, SNAPFIFO):
         return CheckResult(
             label, "warn",
             f"{config_path} does not write the snapserver pipe ({SNAPFIFO}) "
@@ -1151,7 +1149,7 @@ def check_grouping_pair_channels() -> CheckResult:
     try:
         resp = control_client.get(
             "/grouping",
-            base_url=f"http://{cfg.leader_addr}:{control_client.PEER_CONTROL_PORT}",
+            base_url=f"http://{cfg.leader_addr}:{control_client.CONTROL_PORT}",
             timeout=2.0,
         )
         leader = parse_grouping_response(resp.json()) or {}
@@ -1335,7 +1333,7 @@ def check_crossover_unit_installed() -> CheckResult:
 
     unit = "jasper-camilla-crossover.service"
     # LoadState answers "is the unit installed" off the shared evidence cache
-    # (ADR-0228 rule 1) rather than a dedicated `systemctl cat`; `not-found` /
+    # (ADR-0232 rule 1) rather than a dedicated `systemctl cat`; `not-found` /
     # `masked` are the only "nothing to arm" states — a broken-but-present
     # unit file (`error` / `bad-setting`) still counts as installed.
     state = evidence.unit_state(unit)

@@ -2198,7 +2198,7 @@ def test_a_window_that_will_not_open_refuses_the_pass(tmp_path, monkeypatch):
 
     A leveling pass that ran anyway would be measuring household music.
     """
-    from jasper.correction.coordinator import MeasurementWindowError
+    from jasper.measurement_window import MeasurementWindowError
 
     def _refusing(**_kw):
         return FakeWindow(
@@ -2228,7 +2228,7 @@ def test_a_converged_pass_survives_a_failed_isolation_teardown(
     reference is on disk. Every lease self-expires within ~2 minutes, so the
     stuck isolation is logged loudly rather than turned into a lost result.
     """
-    from jasper.correction.coordinator import MeasurementWindowError
+    from jasper.measurement_window import MeasurementWindowError
 
     log: list[str] = []
 

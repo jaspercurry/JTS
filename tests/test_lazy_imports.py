@@ -637,6 +637,9 @@ def test_doctor_import_does_not_load_portaudio() -> None:
     probe = (
         "import sys\n"
         "import jasper.cli.doctor  # noqa: F401\n"
+        "assert 'jasper.cli.aec_bridge_config' in sys.modules, (\n"
+        "    'probe never reached aec_bridge_config, the module whose "
+        "lazy import this pins')\n"
         "print('sounddevice_loaded=' + "
         "str('sounddevice' in sys.modules).lower())\n"
     )
@@ -729,7 +732,7 @@ def test_voice_daemon_import_does_not_require_declared_leaf_dependencies() -> No
         ),
         pytest.param("jasper.cli.usb_mic", ("dbus_next",), id="jasper-usbmic"),
         pytest.param(
-            "jasper.cli.aec_bridge", ("dbus_next", "scipy"),
+            "jasper.cli.aec_bridge", ("dbus_next", "scipy", "sounddevice"),
             id="jasper-aec-bridge",
         ),
         pytest.param(
@@ -760,8 +763,10 @@ def test_resident_daemon_import_leaves_oneshot_subsystems_out(
     separable from the commissioning submodules. ``scipy`` is the same
     bargain at a much larger price (``jasper.dsp_numpy`` owns that figure):
     the AEC bridge's steady-state resampling and high-pass are
-    ``jasper.dsp_numpy``. The smallest supported box is a 415 MB Pi Zero 2 W
-    (issue #3697).
+    ``jasper.dsp_numpy``. ``sounddevice`` leaves the bridge's import graph for
+    the reason it leaves the doctor's: loading PortAudio is the capture
+    threads' cost, paid where they open a device. The smallest supported box
+    is a 415 MB Pi Zero 2 W (issue #3697).
     """
     probe = (
         "import sys\n"

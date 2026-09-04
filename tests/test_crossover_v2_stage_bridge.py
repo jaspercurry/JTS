@@ -70,6 +70,7 @@ from tests._async_wait import wait_signalled
 from tests.conftest import seat_process_volume_owner
 
 from jasper.active_speaker import commission_wiring, crossover_v2_flow, delta_probe
+from jasper.active_speaker import session_volume_plan as session_volume_plan_mod
 from jasper.active_speaker import design_draft
 from jasper.active_speaker import driver_safety as driver_safety_mod
 from jasper.active_speaker import excitation_safety_plan as excitation_safety_plan_mod
@@ -94,6 +95,7 @@ from jasper.output_topology import (
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
 )
+from jasper.active_speaker.crossover_v2 import conductor_context as v2ctx
 from jasper.web import correction_crossover_v2 as v2host
 from tests.crossover_v2_fixtures import fake_measurement_mic
 
@@ -343,7 +345,7 @@ def _production_host_seams(monkeypatch, tmp_path):
                 continue
             if getattr(_module, _symbol, None) is _original:
                 monkeypatch.setattr(_module, _symbol, _fake)
-    monkeypatch.setattr(v2host, "ensure_crossover_preview_ready", lambda: None)
+    monkeypatch.setattr(v2ctx, "ensure_crossover_preview_ready", lambda: None)
     # The conductor context reads the per-role sweep-duration ceiling off the
     # same confirmed target as the caps above (#2921). These suites carry a
     # fixture profile with no ``level_duration_limits`` on it, so the real
@@ -356,7 +358,7 @@ def _production_host_seams(monkeypatch, tmp_path):
         lambda safety_profile, fingerprint: 6.0,
     )
     monkeypatch.setattr(
-        crossover_v2_flow, "derive_session_volume_db",
+        session_volume_plan_mod, "session_measurement_volume_db",
         lambda safety_profile, fps, **kw: -20.0,
     )
     monkeypatch.delenv(ACTIVE_PLAYBACK_DEVICE_ENV, raising=False)

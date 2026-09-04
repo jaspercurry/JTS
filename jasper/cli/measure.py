@@ -29,13 +29,15 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from jasper.cli._logging import CLI_LOG_FORMAT
+from jasper.cli._refusal import (
+    EXIT_OK,
+    EXIT_REFUSED,
+    EXIT_UNREADABLE,
+    STATUS_BY_CODE,
+)
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
-
-EXIT_OK = 0
-EXIT_REFUSED = 1
-EXIT_INPUT = 2
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
@@ -194,130 +196,80 @@ class BoxDeclaration:
 def read_box_declaration() -> BoxDeclaration:
     """The speaker's own declarations, or a typed refusal naming what is missing.
 
-    The same readers and gates ``resolve_conductor_context`` runs, in the same
-    order — a second FRONT END, never a second opinion about whether a box may
-    be measured. It deliberately does not run the wizard's
-    ``ensure_crossover_preview_ready()``, which WRITES a preview: repairing the
-    box's design inputs here would be setup under a measurement's name.
+    ONE owner: ``resolve_conductor_context`` resolves the preset, the per-role
+    bands/caps/duration limits, the targets, the session volume and the
+    playback device, and refuses fail-closed naming what to finish first. This
+    door adds only what a wired session needs on top — the confirmed per-role
+    protection — and the 2-way scope its measurement graph is built for.
 
-    DISCLOSED as the SECOND derivation of the box's declarations. Converging
-    means lifting the shared half of
-    ``jasper.web.correction_crossover_v2.resolve_conductor_context`` out of the
-    web host, which is its own reviewable change; until then the two are held
-    together by reading the SAME owners in the SAME order.
+    It measures the box as DECLARED and never repairs it, so a preview that is
+    not already staged refuses here rather than reaching
+    ``ensure_crossover_preview_ready``'s regenerate branch: repairing the
+    design inputs would be setup under a measurement's name.
     """
     from jasper.active_speaker.branch_chain import confirmed_protection_sections
-    from jasper.active_speaker.commission_wiring import resolve_capture_preset
-    from jasper.active_speaker.design_draft import (
-        declared_effective_driver_sensitivities,
-        load_design_draft,
+    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.crossover_v2.conductor_context import (
+        conductor_status,
+        resolve_conductor_context,
     )
-    from jasper.active_speaker.driver_safety import evaluate_driver_safety_profile
-    from jasper.active_speaker.excitation_safety_plan import (
-        ExcitationSafetyPlanError,
-        effective_sweep_duration_limit_s,
-        resolve_driver_excitation_ceilings,
+    from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.output_topology import (
+        load_output_topology,
+        topology_is_subless_passive_mains,
     )
-    from jasper.active_speaker.measurement import active_driver_targets
-    from jasper.active_speaker.playback_route import resolve_active_playback_device
-    from jasper.active_speaker.session_volume_plan import (
-        session_measurement_volume_db,
-    )
-    from jasper.audio_measurement.program import RoleBand
-    from jasper.output_topology import load_output_topology
 
-    topology = load_output_topology()
-    preset = resolve_capture_preset(topology)
-    if preset.way_count != 2:
+    if topology_is_subless_passive_mains(load_output_topology()):
+        raise BoxNotMeasurable(
+            REFUSE_BOX_NOT_READY,
+            "this box has no active crossover to measure",
+        )
+    preview = load_crossover_preview(current_design_draft=load_design_draft())
+    if preview.get("status") != "ready_for_protected_staging":
+        raise BoxNotMeasurable(
+            REFUSE_BOX_NOT_READY,
+            "the crossover preview is not staged for the current design; "
+            "finish speaker setup at http://jts.local/sound/",
+        )
+    try:
+        context = resolve_conductor_context(conductor_status())
+    except CrossoverV2Refused as exc:
+        raise BoxNotMeasurable(REFUSE_BOX_NOT_READY, str(exc)) from exc
+    if context.preset.way_count != 2:
         raise BoxNotMeasurable(
             REFUSE_BOX_NOT_READY,
             "the measurement graph is scoped to 2-way presets; this box "
-            f"declares {preset.way_count}",
+            f"declares {context.preset.way_count}",
         )
-    draft = load_design_draft(topology=topology)
-    safety_profile = draft.get("driver_safety_profile")
-    evaluation = evaluate_driver_safety_profile(safety_profile, topology)
-    if not evaluation.confirmed_and_current or not isinstance(
-        safety_profile, Mapping
-    ):
+    if context.fc_hz is None:
         raise BoxNotMeasurable(
             REFUSE_BOX_NOT_READY,
-            "the driver safety profile is not confirmed and current "
-            f"({evaluation.status}); confirm it at http://jts.local/sound/",
-        )
-    role_targets = {
-        str(target.get("role") or "").lower(): str(
-            target.get("target_fingerprint") or ""
-        )
-        for target in active_driver_targets(topology)
-        if isinstance(target, Mapping)
-    }
-    role_targets = {role: fp for role, fp in role_targets.items() if role and fp}
-    if set(role_targets) != {"woofer", "tweeter"}:
-        raise BoxNotMeasurable(
-            REFUSE_BOX_NOT_READY,
-            "the woofer and tweeter measurement targets are not both active",
-        )
-    declared_sensitivities = declared_effective_driver_sensitivities(draft)
-
-    roles_bands: list[Any] = []
-    caps: dict[str, float] = {}
-    limits: dict[str, float] = {}
-    for channel, role in enumerate(("woofer", "tweeter")):
-        try:
-            # ``program_admission=True``: these caps clamp every composed level
-            # and the routed graph carries each driver's protective filter by
-            # construction, so the derived HF ceiling must be the one in force.
-            band, cap = resolve_driver_excitation_ceilings(
-                safety_profile,
-                role_targets[role],
-                program_admission=True,
-                declared_sensitivities=declared_sensitivities,
-            )
-            limits[role] = effective_sweep_duration_limit_s(
-                safety_profile, role_targets[role],
-            )
-        except (ExcitationSafetyPlanError, ValueError) as exc:
-            raise BoxNotMeasurable(
-                REFUSE_BOX_NOT_READY,
-                f"the {role}'s safe excitation limits could not be resolved",
-            ) from exc
-        roles_bands.append(RoleBand(role, channel, band))
-        caps[role] = float(cap)
-
-    playback_device, _source = resolve_active_playback_device(topology)
-    if not playback_device:
-        raise BoxNotMeasurable(
-            REFUSE_BOX_NOT_READY,
-            "the active output device is not declared; finish speaker setup",
+            "this box declares no crossover corner to measure around",
         )
     try:
-        protection = confirmed_protection_sections(safety_profile, role_targets)
+        protection = confirmed_protection_sections(
+            context.safety_profile, context.role_targets
+        )
     except ValueError as exc:
         raise BoxNotMeasurable(
             REFUSE_BOX_NOT_READY,
             "the confirmed per-role protection could not be resolved",
         ) from exc
     return BoxDeclaration(
-        topology=topology,
-        preset=preset,
-        safety_profile=safety_profile,
-        role_targets=role_targets,
-        declared_sensitivities=declared_sensitivities,
-        playback_device=str(playback_device),
+        topology=context.topology,
+        preset=context.preset,
+        safety_profile=context.safety_profile,
+        role_targets=context.role_targets,
+        declared_sensitivities=context.declared_sensitivities,
+        playback_device=context.playback_device,
         protection_sections_by_role=protection,
-        roles_bands=tuple(roles_bands),
-        caps_dbfs=caps,
-        sweep_duration_limits_s=limits,
-        fc_hz=float(preset.crossover_regions[0].fc_hz),
-        session_volume_db=session_measurement_volume_db(
-            safety_profile,
-            [role_targets["woofer"], role_targets["tweeter"]],
-            declared_sensitivities=declared_sensitivities,
-        ),
+        roles_bands=context.roles_bands,
+        caps_dbfs=context.driver_caps_dbfs,
+        sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
+        fc_hz=context.fc_hz,
+        session_volume_db=context.session_volume_db,
     )
-
-
 
 
 def _variant_axes(spec: Any) -> tuple[str, ...]:
@@ -820,7 +772,7 @@ def _session_scoped_aborts() -> tuple[tuple[type[BaseException], ...], dict[type
     )
     from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
     from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
-    from jasper.correction.coordinator import MeasurementWindowError
+    from jasper.measurement_window import MeasurementWindowError
 
     reasons: dict[type, str] = {
         SessionGraphError: REFUSE_GRAPH_LOST,
@@ -933,24 +885,27 @@ def _report(
 
 
 def _refused(reason: str, detail: str, *, json_output: bool, code: int) -> int:
+    """One failing stage, under the word its code owns (``_refusal.py``)."""
+
+    status = STATUS_BY_CODE[code]
     log_event(
         logger,
         "active_speaker.measure",
         level=logging.WARNING,
-        action="refused",
+        action=status,
         reason=reason,
         detail=detail,
     )
     if json_output:
         print(
             json.dumps(
-                {"status": "refused", "reason": reason, "detail": detail},
+                {"status": status, "reason": reason, "detail": detail},
                 indent=2,
                 sort_keys=True,
             )
         )
     else:
-        print(f"refused ({reason}): {detail}", file=sys.stderr)
+        print(f"{status} ({reason}): {detail}", file=sys.stderr)
     return code
 
 
@@ -1024,7 +979,7 @@ def _cmd_measure(args: argparse.Namespace) -> int:
         specs = specs_from_args(args)
     except MeasureFlagError as exc:
         return _refused(
-            exc.reason, exc.detail, json_output=args.json, code=EXIT_INPUT
+            exc.reason, exc.detail, json_output=args.json, code=EXIT_UNREADABLE
         )
     try:
         payload = asyncio.run(_measure(specs, read_box_declaration()))
@@ -1080,7 +1035,7 @@ def build_parser() -> argparse.ArgumentParser:
             "     (box not measurable, an interrupt, a restore failure);\n"
             "     \"refused (<reason>): <detail>\" on stderr, and as JSON\n"
             "     with --json\n"
-            "  2  EXIT_INPUT -- the request could not even be built: a\n"
+            "  2  EXIT_UNREADABLE -- the request could not even be built: a\n"
             "     second --position, a variant axis with no --candidate-id,\n"
             "     a malformed --specs file"
         ),

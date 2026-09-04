@@ -53,7 +53,7 @@ from .correction import (
 # an `ok` carries one only where the ok itself is a fact a consumer branches on
 # (not-applicable, skipped, an informational sub-state). `detail` stays the
 # human sentence and is free to reword; tests pin `status` and `reason`
-# (ADR-0228 rule 3).
+# (ADR-0232 rule 3).
 
 
 REASON_ALSA_TOOL_MISSING = "alsa_tool_missing"
@@ -727,7 +727,7 @@ def _output_hardware_state_or_none() -> OutputHardwareState | None:
 
 
 def _output_topology_strict():
-    """The fail-closed topology load (ADR-0228 rule 4), read once per run.
+    """The fail-closed topology load (ADR-0232 rule 4), read once per run.
 
     Distinct from ``evidence.output_topology()``: that variant fails soft to
     an empty draft, which the safety-authorizing callers here must not do —
@@ -1040,50 +1040,6 @@ def check_dongle_headphone_at_max() -> CheckResult:
         "(analog ceiling open)",
     )
 
-from . import audio_runtime as audio_runtime
-from .audio_runtime import (
-    _FANIN_EXPECTED_ALOOP_INPUTS,
-    _OUTPUTD_EXPECTED_DAC_PCM,
-    _OUTPUTD_EXPECTED_DUAL_DAC_PCM,
-    _asound_non_comment_text,
-    _asound_pcm_block,
-    check_aec_clock_drift,
-    check_audio_runtime_plan,
-    check_camilla_service,
-    check_fanin_asound_wiring,
-    check_fanin_binary_installed,
-    check_fanin_coupling,
-    check_fanin_service,
-    check_fanin_tts_drops,
-    check_fanin_ring_stall,
-    check_outputd_service,
-    check_ring_conf_floor_render,
-    check_ring_geometry_coherence,
-    check_ring_ioplug_provenance,
-    check_ring_platform_assets,
-)
-
-__all__ = [
-    "_FANIN_EXPECTED_ALOOP_INPUTS",
-    "_OUTPUTD_EXPECTED_DAC_PCM",
-    "_OUTPUTD_EXPECTED_DUAL_DAC_PCM",
-    "_asound_non_comment_text",
-    "_asound_pcm_block",
-    "check_aec_clock_drift",
-    "check_audio_runtime_plan",
-    "check_camilla_service",
-    "check_fanin_asound_wiring",
-    "check_fanin_binary_installed",
-    "check_fanin_coupling",
-    "check_fanin_service",
-    "check_fanin_tts_drops",
-    "check_fanin_ring_stall",
-    "check_outputd_service",
-    "check_ring_conf_floor_render",
-    "check_ring_geometry_coherence",
-    "check_ring_ioplug_provenance",
-    "check_ring_platform_assets",
-]
 
 def _devices_volume_limit_from_text(text: str) -> float | None:
     """``devices.volume_limit`` from a CamillaDSP config, or None if absent /
@@ -1276,7 +1232,7 @@ def check_active_speaker_runtime_graph() -> CheckResult:
 
     "Is the speaker parked" is answered by ``active_graph_is_parked`` and the
     way out by ``parked_muted_exits`` — the readers ``/state`` and
-    ``jasper.control.audio_health`` consume (ADR-0228 rule 1). Asked of the
+    ``jasper.control.audio_health`` consume (ADR-0232 rule 1). Asked of the
     file the safety proof classified, not of a second statefile resolution, so
     one row never mixes two views of the disk. Deliberately narrower than those
     two reporting surfaces in one direction: bytes carrying the parked

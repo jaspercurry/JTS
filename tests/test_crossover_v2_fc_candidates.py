@@ -166,7 +166,7 @@ def test_the_refusal_vocabulary_is_exactly_the_two_damage_stops():
 
 
 def test_the_declared_diameter_resolves_off_the_draft_like_driver_class():
-    from jasper.web.correction_crossover_v2 import (
+    from jasper.active_speaker.crossover_v2.conductor_context import (
         _resolve_driver_class_by_role,
         _resolve_radiating_diameter_by_role,
     )
@@ -193,7 +193,9 @@ def test_the_declared_diameter_resolves_off_the_draft_like_driver_class():
 def test_a_malformed_diameter_costs_that_role_its_prior_not_the_session(drivers):
     """Fail-soft, exactly like the class resolver it mirrors: a beaming prior is
     guidance, so a bad declaration must never abort a measurement."""
-    from jasper.web.correction_crossover_v2 import _resolve_radiating_diameter_by_role
+    from jasper.active_speaker.crossover_v2.conductor_context import (
+        _resolve_radiating_diameter_by_role,
+    )
 
     assert _resolve_radiating_diameter_by_role(
         {"manual_settings": {"drivers": drivers}}
@@ -205,6 +207,8 @@ def test_a_malformed_diameter_costs_that_role_its_prior_not_the_session(drivers)
     {"manual_settings": {"drivers": ["not-a-mapping"]}},
 ])
 def test_a_draft_without_declarations_yields_no_priors(draft):
-    from jasper.web.correction_crossover_v2 import _resolve_radiating_diameter_by_role
+    from jasper.active_speaker.crossover_v2.conductor_context import (
+        _resolve_radiating_diameter_by_role,
+    )
 
     assert _resolve_radiating_diameter_by_role(draft) == {}

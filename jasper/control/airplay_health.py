@@ -32,11 +32,13 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable, Mapping
+from statistics import median
 from typing import Any
 
 from jasper.camilla_config_contract import DEFAULT_CAMILLA_PORT
 from jasper.log_event import log_event
 from jasper.music_sources import MUSIC_SOURCE_SPECS
+from jasper.route_latency.status_socket import FANIN_STATUS_SOCKET
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +64,6 @@ DEFAULT_WARMUP_SEC = 120.0
 # journal scan after a connect is covered.
 DEFAULT_CONNECT_GRACE_SEC = 45.0
 
-FANIN_SOCKET = "/run/jasper-fanin/control.sock"
 FANIN_TIMEOUT_SEC = 1.0
 SUBPROCESS_TIMEOUT_SEC = 2.0
 MAINTENANCE_SUPPRESS_UNTIL_PATH = "/run/jasper-airplay-health-suppress-until"
@@ -70,6 +71,24 @@ MAINTENANCE_SUPPRESS_UNTIL_PATH = "/run/jasper-airplay-health-suppress-until"
 # Fan-in's 4096-frame input buffer is load-bearing for AirPlay burst
 # absorption.
 MIN_AIRPLAY_INPUT_BUFFER_FRAMES = 4096
+
+# AirPlay drop attribution (network vs internal:receiver — see
+# jasper.control.audio_health._input_attribution, which owns the verdict
+# thresholds). The session baseline is the median rx_bytes_per_sec of the
+# last LINK_BASELINE_SAMPLES ticks where AirPlay was selected and the ring
+# lane was actually receiving frames.
+LINK_BASELINE_SAMPLES = 12
+LINK_HEALTHY_FRAMES_PER_SEC = 1000.0
+# Fallback mixer rate when fan-in STATUS omits output.sample_rate.
+DEFAULT_MIXER_RATE_HZ = 48000
+
+PROC_NET_WIRELESS_PATH = "/proc/net/wireless"
+PROC_NET_SNMP_PATH = "/proc/net/snmp"
+SYS_CLASS_NET_RX_BYTES_TMPL = "/sys/class/net/{iface}/statistics/rx_bytes"
+try:
+    _CLK_TCK = os.sysconf("SC_CLK_TCK") or 100
+except (ValueError, OSError, AttributeError):
+    _CLK_TCK = 100
 
 SHAIRPORT_UNIT = "shairport-sync"
 CAMILLA_UNIT = "jasper-camilla"
@@ -125,6 +144,27 @@ def _as_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _as_int_or_none(value: Any) -> int | None:
+    """Like _as_int, but a missing/unparseable value stays None, not 0 —
+    0 would misread as "confirmed zero" rather than "couldn't tell"."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _nonneg_delta(curr: Any, prev: Any) -> int | None:
+    if not isinstance(curr, int) or not isinstance(prev, int) or curr < prev:
+        return None
+    return curr - prev
+
+
+def _nonneg_rate(curr: Any, prev: Any, dt: float) -> float | None:
+    """A monotonic counter's per-second delta, or None on wrap/reset/absence."""
+    delta = _nonneg_delta(curr, prev)
+    return delta / dt if delta is not None else None
 
 
 def classify_journal_line(unit: str, line: str) -> dict[str, Any] | None:
@@ -363,6 +403,111 @@ def _default_context_probe(now_wall: float) -> dict[str, Any]:
     }
 
 
+def _read_wireless_iface() -> str | None:
+    """Interface name from /proc/net/wireless — never a hardcoded wlan0."""
+    text = _read_text_file(PROC_NET_WIRELESS_PATH)
+    if text is None:
+        return None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith(("Inter-", "face")):
+            continue
+        iface = line.split(":", 1)[0].strip()
+        if iface:
+            return iface
+    return None
+
+
+def _read_snmp_line_fields(text: str, prefix: str) -> dict[str, str]:
+    """/proc/net/snmp pairs a header line with a values line, both prefixed
+    e.g. "Udp:"/"Tcp:" — zip the two into a name->value dict."""
+    lines = text.splitlines()
+    for i in range(len(lines) - 1):
+        if lines[i].startswith(prefix) and lines[i + 1].startswith(prefix):
+            return dict(zip(lines[i].split()[1:], lines[i + 1].split()[1:]))
+    return {}
+
+
+def _read_link_counters() -> dict[str, Any]:
+    """Pure /proc + /sys reads for AirPlay drop attribution. No subprocess,
+    no privilege (ADR-0226). Every field is None when its source file is
+    missing or unparseable — never 0, which would read as "no traffic"
+    rather than "couldn't tell".
+    """
+    iface = _read_wireless_iface()
+    rx_bytes = (
+        _read_int_file(SYS_CLASS_NET_RX_BYTES_TMPL.format(iface=iface))
+        if iface else None
+    )
+    snmp_text = _read_text_file(PROC_NET_SNMP_PATH)
+    udp_fields = _read_snmp_line_fields(snmp_text, "Udp:") if snmp_text else {}
+    tcp_fields = _read_snmp_line_fields(snmp_text, "Tcp:") if snmp_text else {}
+    return {
+        "iface": iface,
+        "rx_bytes": rx_bytes,
+        "udp_in_datagrams": _as_int_or_none(udp_fields.get("InDatagrams")),
+        "udp_rcvbuf_errors": _as_int_or_none(udp_fields.get("RcvbufErrors")),
+        "tcp_in_segs": _as_int_or_none(tcp_fields.get("InSegs")),
+    }
+
+
+def _read_pid_stat_counters(pid: int) -> tuple[int, int] | None:
+    """(majflt, utime+stime ticks) from /proc/<pid>/stat, or None.
+
+    Field offsets per proc(5): majflt is field 12, utime field 14, stime
+    field 15; comm (field 2) may itself contain ")", so split after the
+    LAST ")" rather than by fixed position.
+    """
+    text = _read_text_file(f"/proc/{pid}/stat")
+    if text is None:
+        return None
+    close = text.rfind(")")
+    if close == -1:
+        return None
+    fields = text[close + 1:].split()
+    if len(fields) < 13:
+        return None
+    try:
+        majflt = int(fields[9])
+        utime = int(fields[11])
+        stime = int(fields[12])
+    except ValueError:
+        return None
+    return majflt, utime + stime
+
+
+def _read_pid_state(pid: int) -> str | None:
+    text = _read_text_file(f"/proc/{pid}/status")
+    if text is None:
+        return None
+    for line in text.splitlines():
+        if line.startswith("State:"):
+            parts = line.split()
+            if len(parts) >= 2:
+                return parts[1]
+    return None
+
+
+def _read_pid_comm(pid: int) -> str | None:
+    return _read_text_file(f"/proc/{pid}/comm")
+
+
+def _read_receiver_stat(pid: int) -> dict[str, Any]:
+    """Pure /proc/<pid> reads: the receiver-process half of AirPlay drop
+    attribution. `pid` is the ring's writer_pid — the ioplug inside
+    shairport-sync. Includes `comm` so the caller can refuse a stale,
+    recycled pid rather than trust an unrelated process's counters.
+    """
+    stat = _read_pid_stat_counters(pid)
+    return {
+        "pid": pid,
+        "comm": _read_pid_comm(pid),
+        "state": _read_pid_state(pid),
+        "majflt": stat[0] if stat is not None else None,
+        "cpu_ticks": stat[1] if stat is not None else None,
+    }
+
+
 def _csv_cell(value: Any) -> str:
     if value is None:
         return ""
@@ -483,6 +628,8 @@ class AirPlayHealthSampler:
         ) = None,
         mpris_probe: Callable[[], dict[str, Any] | None] | None = None,
         camilla_probe: Callable[[], dict[str, Any] | None] | None = None,
+        link_probe: Callable[[], dict[str, Any]] | None = None,
+        receiver_probe: Callable[[int], dict[str, Any]] | None = None,
         camilla_host: str = "127.0.0.1",
         camilla_port: int = DEFAULT_CAMILLA_PORT,
         maintenance_suppress_path: str | None = MAINTENANCE_SUPPRESS_UNTIL_PATH,
@@ -510,6 +657,8 @@ class AirPlayHealthSampler:
         self._camilla_probe = camilla_probe or (
             lambda: self._read_camilla_state(camilla_host, camilla_port)
         )
+        self._link_probe = link_probe or _read_link_counters
+        self._receiver_probe = receiver_probe or _read_receiver_stat
         self._maintenance_suppress_path = maintenance_suppress_path
         self._time = time_fn
         # Warmup / connect-grace suppression (see DEFAULT_*_SEC above).
@@ -549,6 +698,7 @@ class AirPlayHealthSampler:
         self._current_fanin: dict[str, Any] | None = None
         self._current_mpris: dict[str, Any] | None = None
         self._current_camilla: dict[str, Any] | None = None
+        self._current_link: dict[str, Any] | None = None
         self._last_sample_at: float | None = None
         self._last_journal_scan_at = 0.0
         self._last_mpris_sample_at = 0.0
@@ -558,6 +708,13 @@ class AirPlayHealthSampler:
             CAMILLA_UNIT: self._time(),
         }
         self._last_fanin_counts: dict[str, Any] | None = None
+        self._last_link_counts: dict[str, Any] | None = None
+        self._last_receiver_counts: dict[str, Any] | None = None
+        # Per-session healthy-tick baseline (reset on lane detach, an
+        # epoch_resets bump, or the active source leaving AirPlay — see
+        # LINK_BASELINE_SAMPLES above).
+        self._link_baseline: deque[float] = deque(maxlen=LINK_BASELINE_SAMPLES)
+        self._link_baseline_epoch: int | None = None
         self._maintenance_suppressed = False
         self._maintenance_suppressed_until: float | None = None
 
@@ -606,6 +763,7 @@ class AirPlayHealthSampler:
                     "fanin": copy.deepcopy(self._current_fanin),
                     "mpris": copy.deepcopy(self._current_mpris),
                     "camilla": copy.deepcopy(self._current_camilla),
+                    "link": copy.deepcopy(self._current_link),
                 },
                 "summary_5m": summary_5m,
                 "summary_30m": summary_30m,
@@ -651,6 +809,7 @@ class AirPlayHealthSampler:
         )
         self._ensure_bucket(now)
         self._sample_fanin(now, suppress_events=suppress_base)
+        self._sample_link(now)
 
         if now - self._last_mpris_sample_at >= self._mpris_interval:
             self._sample_mpris(now)
@@ -770,6 +929,9 @@ class AirPlayHealthSampler:
         input_rates: dict[str, float | None] = {
             spec.id.value: None for spec in MUSIC_SOURCE_SPECS
         }
+        input_empty_reads_rates: dict[str, float | None] = {
+            spec.id.value: None for spec in MUSIC_SOURCE_SPECS
+        }
         input_frames = {
             spec.id.value: (
                 _as_int(inputs_by_label[spec.fanin_label].get("frames_read"))
@@ -777,6 +939,17 @@ class AirPlayHealthSampler:
             )
             for spec in MUSIC_SOURCE_SPECS
         }
+        # empty_reads only exists on a ring-armed lane's optional "ring"
+        # block (U3/P6, rust/jasper-fanin/src/state.rs); None on an unarmed
+        # lane, never 0.
+        input_empty_reads: dict[str, int | None] = {}
+        for spec in MUSIC_SOURCE_SPECS:
+            lane = inputs_by_label.get(spec.fanin_label)
+            ring_block = lane.get("ring") if isinstance(lane, dict) else None
+            input_empty_reads[spec.id.value] = (
+                _as_int_or_none(ring_block.get("empty_reads"))
+                if isinstance(ring_block, dict) else None
+            )
         if prev is not None:
             dt = max(0.001, now - float(prev.get("ts", now)))
             prev_airplay_frames = _as_int(prev.get("airplay_frames"))
@@ -791,6 +964,12 @@ class AirPlayHealthSampler:
                     previous_frames = _as_int(previous_inputs.get(source_id))
                     if frames >= previous_frames:
                         input_rates[source_id] = (frames - previous_frames) / dt
+            previous_empty_reads = prev.get("input_empty_reads")
+            if isinstance(previous_empty_reads, Mapping):
+                for source_id, empty_reads in input_empty_reads.items():
+                    input_empty_reads_rates[source_id] = _nonneg_rate(
+                        empty_reads, previous_empty_reads.get(source_id), dt,
+                    )
 
             airplay_delta = airplay_xruns - _as_int(prev.get("airplay_xruns"))
             output_delta = output_xruns - _as_int(prev.get("output_xruns"))
@@ -826,9 +1005,11 @@ class AirPlayHealthSampler:
             "output_frames": output_frames,
             "output_xruns": output_xruns,
             "input_frames": input_frames,
+            "input_empty_reads": input_empty_reads,
         }
 
         input_buffer_frames = _as_int(status.get("input_buffer_frames"))
+        mixer_rate_hz = _as_int(output.get("sample_rate")) or DEFAULT_MIXER_RATE_HZ
         # Fixed-shape, source-neutral observations for the outer audio-health
         # composer. Keep only what explains health; /state retains the full
         # fan-in STATUS for deep debugging. Every declared source gets a slot,
@@ -849,6 +1030,15 @@ class AirPlayHealthSampler:
                 and isinstance(entry.get("direct"), dict)
                 else None
             )
+            ring = (
+                entry.get("ring")
+                if isinstance(entry, dict) and isinstance(entry.get("ring"), dict)
+                else None
+            )
+            slot_frames = (
+                _as_int_or_none(ring.get("slot_frames")) if ring is not None else None
+            )
+            empty_reads_rate = input_empty_reads_rates[spec.id.value]
             input_observations[spec.id.value] = {
                 "label": spec.fanin_label,
                 "present": isinstance(entry, dict),
@@ -860,6 +1050,17 @@ class AirPlayHealthSampler:
                 "frames_per_sec": (
                     round(input_rates[spec.id.value], 1)
                     if input_rates[spec.id.value] is not None else None
+                ),
+                "empty_reads_per_sec": (
+                    round(empty_reads_rate, 1)
+                    if empty_reads_rate is not None else None
+                ),
+                "silent_ms_per_sec": (
+                    round(
+                        empty_reads_rate * slot_frames / mixer_rate_hz * 1000.0,
+                        1,
+                    )
+                    if empty_reads_rate is not None and slot_frames else None
                 ),
                 "xrun_count": (
                     _as_int(entry.get("xrun_count"))
@@ -924,6 +1125,25 @@ class AirPlayHealthSampler:
                     }
                     if resampler is not None else None
                 ),
+                "ring": (
+                    {
+                        key: copy.deepcopy(ring.get(key))
+                        for key in (
+                            "attached",
+                            "detach_reason",
+                            "writer_alive",
+                            "writer_pid",
+                            "occupancy",
+                            "empty_reads",
+                            "startup_empty_reads",
+                            "epoch_resets",
+                            "slot_frames",
+                            "n_slots",
+                        )
+                        if key in ring
+                    }
+                    if ring is not None else None
+                ),
             }
         current = {
             "available": True,
@@ -965,6 +1185,155 @@ class AirPlayHealthSampler:
         }
         with self._lock:
             self._current_fanin = current
+
+    def _sample_link(self, now: float) -> None:
+        """Attribution-only signals: wireless link rate + the shairport
+        receiver's own /proc counters. Pure reads, no subprocess (ADR-0226);
+        fails soft to an all-None block on any probe error.
+        """
+        try:
+            counters = self._link_probe()
+        except Exception:  # noqa: BLE001
+            logger.debug("link probe failed", exc_info=True)
+            counters = None
+        if not isinstance(counters, dict):
+            counters = {}
+        iface = counters.get("iface")
+        rx_bytes = counters.get("rx_bytes")
+        udp_in = counters.get("udp_in_datagrams")
+        rcvbuf_err = counters.get("udp_rcvbuf_errors")
+        tcp_in = counters.get("tcp_in_segs")
+
+        prev = self._last_link_counts
+        rx_rate: float | None = None
+        udp_in_rate: float | None = None
+        tcp_in_rate: float | None = None
+        rcvbuf_err_delta: int | None = None
+        if prev is not None and iface is not None and prev.get("iface") == iface:
+            dt = max(0.001, now - float(prev.get("ts", now)))
+            rx_rate = _nonneg_rate(rx_bytes, prev.get("rx_bytes"), dt)
+            udp_in_rate = _nonneg_rate(udp_in, prev.get("udp_in_datagrams"), dt)
+            tcp_in_rate = _nonneg_rate(tcp_in, prev.get("tcp_in_segs"), dt)
+            rcvbuf_err_delta = _nonneg_delta(
+                rcvbuf_err, prev.get("udp_rcvbuf_errors"),
+            )
+        self._last_link_counts = {
+            "ts": now,
+            "iface": iface,
+            "rx_bytes": rx_bytes,
+            "udp_in_datagrams": udp_in,
+            "udp_rcvbuf_errors": rcvbuf_err,
+            "tcp_in_segs": tcp_in,
+        }
+
+        fanin = self._current_fanin if isinstance(self._current_fanin, dict) else {}
+        selected = fanin.get("selected_input")
+        inputs = fanin.get("inputs") if isinstance(fanin.get("inputs"), dict) else {}
+        airplay_input = (
+            inputs.get("airplay") if isinstance(inputs.get("airplay"), dict) else {}
+        )
+        ring = (
+            airplay_input.get("ring")
+            if isinstance(airplay_input.get("ring"), dict) else {}
+        )
+        writer_pid = ring.get("writer_pid")
+        receiver = (
+            self._sample_receiver(now, writer_pid)
+            if isinstance(writer_pid, int) and writer_pid > 0 else None
+        )
+
+        # Baseline bookkeeping — reset on lane detach, an epoch_resets bump
+        # (writer restart), or the active source leaving AirPlay. See
+        # LINK_BASELINE_SAMPLES above.
+        attached = ring.get("attached")
+        epoch_resets = ring.get("epoch_resets")
+        if selected != "airplay" or attached is False:
+            self._link_baseline.clear()
+            self._link_baseline_epoch = None
+        elif (
+            isinstance(epoch_resets, int)
+            and self._link_baseline_epoch is not None
+            and epoch_resets != self._link_baseline_epoch
+        ):
+            self._link_baseline.clear()
+        if isinstance(epoch_resets, int):
+            self._link_baseline_epoch = epoch_resets
+
+        frames_per_sec = _as_float(airplay_input.get("frames_per_sec"))
+        if (
+            selected == "airplay"
+            and rx_rate is not None
+            and rx_rate > 0
+            and frames_per_sec is not None
+            and frames_per_sec >= LINK_HEALTHY_FRAMES_PER_SEC
+        ):
+            self._link_baseline.append(rx_rate)
+        baseline = median(self._link_baseline) if self._link_baseline else None
+
+        current_link = {
+            "iface": iface,
+            "rx_bytes_per_sec": round(rx_rate, 1) if rx_rate is not None else None,
+            "rx_bytes_per_sec_baseline": (
+                round(baseline, 1) if baseline is not None else None
+            ),
+            "udp_in_datagrams_per_sec": (
+                round(udp_in_rate, 1) if udp_in_rate is not None else None
+            ),
+            "udp_rcvbuf_errors_delta": rcvbuf_err_delta,
+            "tcp_in_segs_per_sec": (
+                round(tcp_in_rate, 1) if tcp_in_rate is not None else None
+            ),
+            "receiver": receiver,
+        }
+        with self._lock:
+            self._current_link = current_link
+
+    def _sample_receiver(self, now: float, pid: int) -> dict[str, Any] | None:
+        """Delta shairport-sync's own /proc/<pid> counters into per-second
+        rates. `pid` is the ring's writer_pid — the ioplug inside
+        shairport-sync. Returns None when /proc/<pid>/comm doesn't say
+        "shairport": the writer_pid is stale once the process is
+        SIGKILLed, and a recycled pid's counters must never be
+        misattributed to the receiver.
+        """
+        try:
+            stat = self._receiver_probe(pid)
+        except Exception:  # noqa: BLE001
+            logger.debug("receiver probe failed", exc_info=True)
+            stat = None
+        if not isinstance(stat, dict):
+            stat = {}
+        comm = stat.get("comm")
+        if not isinstance(comm, str) or "shairport" not in comm:
+            self._last_receiver_counts = None
+            return None
+        majflt = stat.get("majflt")
+        cpu_ticks = stat.get("cpu_ticks")
+        prev = self._last_receiver_counts
+        majflt_rate: float | None = None
+        cpu_ms_rate: float | None = None
+        if prev is not None and prev.get("pid") == pid:
+            # Both-or-neither: a rate is only meaningful when BOTH counters
+            # produced a valid monotonic delta this tick.
+            majflt_delta = _nonneg_delta(majflt, prev.get("majflt"))
+            cpu_ticks_delta = _nonneg_delta(cpu_ticks, prev.get("cpu_ticks"))
+            if majflt_delta is not None and cpu_ticks_delta is not None:
+                dt = max(0.001, now - float(prev.get("ts", now)))
+                majflt_rate = majflt_delta / dt
+                cpu_ms_rate = cpu_ticks_delta * 1000.0 / _CLK_TCK / dt
+        self._last_receiver_counts = {
+            "ts": now, "pid": pid, "majflt": majflt, "cpu_ticks": cpu_ticks,
+        }
+        return {
+            "pid": pid,
+            "state": stat.get("state"),
+            "majflt_per_sec": (
+                round(majflt_rate, 2) if majflt_rate is not None else None
+            ),
+            "cpu_ms_per_sec": (
+                round(cpu_ms_rate, 1) if cpu_ms_rate is not None else None
+            ),
+        }
 
     def _sample_mpris(self, now: float) -> None:
         try:
@@ -1316,7 +1685,7 @@ class AirPlayHealthSampler:
 
     @staticmethod
     def _read_fanin_status(
-        socket_path: str = FANIN_SOCKET,
+        socket_path: str = FANIN_STATUS_SOCKET,
         timeout_sec: float = FANIN_TIMEOUT_SEC,
     ) -> dict[str, Any] | None:
         try:

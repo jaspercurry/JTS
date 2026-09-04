@@ -284,7 +284,7 @@ orchestration + per-rung retention, (d) LT/subsonic graph emission,
 | Mic calibration identity | `jasper/audio_measurement/calibration.py` (`CalibrationRecord.calibration_id`) | Profile binding |
 | Level settle ramp | `jasper/audio_measurement/ramp.py` (`MeasurementRamp`, incl. AGC-slope verification) | Reaching each ladder rung reliably |
 | Excitation admission (two-boundary) | `jasper/audio_measurement/excitation_admission.py` + `excitation_artifacts.py` + `admitted_playback.py` | **Reuse the existing admission kind** — it is explicitly domain-agnostic; we only supply our own limits derivation |
-| Measurement window / renderer pause | `jasper/correction/coordinator.py` (`measurement_window`) | Exclusive playback window per session |
+| Measurement window / renderer pause | `jasper/measurement_window.py` (`measurement_window`) | Exclusive playback window per session |
 | Quiet-start / floor confirmation | `jasper/active_speaker/safe_playback.py` | Operator confirms the right driver at floor level |
 | Evidence identity + bundles | `jasper/audio_measurement/evidence_identity.py` (`json_fingerprint`, `ArtifactIdentity`, `ExactDspStateIdentity`), `bundles.py` | All profile fingerprints and forensic storage |
 | Volume model | `jasper/volume_coordinator.py`, `volume_curve.py` (`percent_to_db`), `volume_persistence.py` (`speaker_volume.json`) | Scheduler input; canonical `listening_level` |

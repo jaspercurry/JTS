@@ -28,13 +28,20 @@ and persist their own accounting under
   A candidate that is cheap, safe, and reversible is measured without ceremony,
   and every mic movement gathers the maximum information it can support, not
   the minimum that answers one question.
+  Tool: `jasper-round open` / `wait`.
 - **analyze** — the evidence is read: what the capture says, and what this
   session did not separate.
-- **recommend** — pre-registered expectations are stated and the next thing to
-  try is named. Proposing, prescribing and recommending are one act; a final
-  call is that same act with more information behind it.
+  Tool: `jasper-crossover-prescriber packet`.
+- **recommend** — pre-registered expectations are stated (the driver
+  document's `expected_delta_db`) and the next thing to try is named.
+  Proposing, prescribing and recommending are one act; a final call is that
+  same act with more information behind it.
+  Tool: `jasper-crossover-prescriber propose`.
 - **loop** — checking that a recommendation held is measuring again (§3).
+  Tool: `jasper-round-views frozen`, the re-measure graded against the round it
+  is checking.
 - **save** — the result is banked.
+  Tool: `jasper-round bank`.
 
 ### 1a. The layering rule — what a measurement plays through
 
@@ -341,12 +348,10 @@ what it restores to) · **liveness** (the round ends rather than hanging).
    is the target.
 
 **The STOP-RELAXER pattern.** When a stop is *mostly* right, narrow it with a
-named, tested relaxer rather than deleting it or leaving it broad. Three
+named, tested relaxer rather than deleting it or leaving it broad. Two
 production functions exist only to admit a state a stop would otherwise refuse,
-and each has live consumers:
-`setup_status.setup_blocked_only_by_in_sequence_anchor` (the one admitted
-blocked setup shape), `delta_probe.seam_rollback_deferral` (a seam rollback
-whose realized deviation points entirely quieter than commanded), and
+and each has live consumers: `delta_probe.seam_rollback_deferral` (a seam
+rollback whose realized deviation points entirely quieter than commanded) and
 `revalidation.applied_profile_revalidation_satisfies_driver_target_proof`
 (first-time driver-target proof on an applied-profile edit). A census that greps
 for `raise` sees none of them, which is why they are named here. The pattern is

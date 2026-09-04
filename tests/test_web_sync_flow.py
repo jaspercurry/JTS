@@ -22,7 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import jasper.correction.coordinator as coordinator
+import jasper.measurement_window as coordinator
 import jasper.multiroom.state as mstate
 from jasper.web import rooms_setup as rooms
 from jasper.web import active_speaker_flow, sync_flow
@@ -827,6 +827,60 @@ def test_handle_play_aborts_and_kills_proc_when_a_concurrent_play_won(
     assert "already playing" in resp["error"]
     assert terminated == [True]  # loser terminated its just-spawned proc
     assert scheduled == []  # no watcher scheduled for the aborted proc
+
+
+def test_play_watcher_failure_kills_a_marker_that_ignores_terminate(
+    monkeypatch, caplog,
+):
+    """A marker that sits through SIGTERM is SIGKILLed rather than left
+    playing into the room, and the caller reports it unreaped."""
+    with sync_flow._lock:
+        sync_flow._reset_locked()
+        sync_flow._state["phase"] = "measuring"
+
+    signals: list[str] = []
+
+    class StubbornProc:
+        def terminate(self):
+            signals.append("terminate")
+
+        def kill(self):
+            signals.append("kill")
+
+        async def wait(self):
+            raise AssertionError("the runner owns the reap")
+
+    spawned = StubbornProc()
+
+    def run_async(coro, *, timeout):
+        coro.close()
+        if signals:
+            raise concurrent.futures.TimeoutError("child still running")
+        return spawned
+
+    monkeypatch.setattr(sync_flow, "_marker_wav_path", lambda: "/tmp/marker.wav")
+
+    def fail_schedule(coro):
+        coro.close()
+        raise RuntimeError("loop rejected watcher")
+
+    with caplog.at_level(logging.ERROR, logger="jasper.web.sync"):
+        payload, status = sync_flow.handle_play(run_async, fail_schedule)
+
+    try:
+        assert status == HTTPStatus.INTERNAL_SERVER_ERROR
+        assert payload["ok"] is False
+        assert signals == ["terminate", "kill"]
+        events = [
+            record.getMessage()
+            for record in caplog.records
+            if "event=sync.play_watch_schedule_failed" in record.getMessage()
+        ]
+        assert len(events) == 1
+        assert "reaped=false" in events[0]
+    finally:
+        with sync_flow._lock:
+            sync_flow._reset_locked()
 
 
 def test_handle_play_records_playback_on_the_happy_path(monkeypatch):

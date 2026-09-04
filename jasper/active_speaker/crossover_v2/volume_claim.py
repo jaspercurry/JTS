@@ -3,16 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """The session's fader claim, and ``SessionVolumePlan``'s door onto the same
-:class:`~jasper.volume_owner.VolumeOwner`.
-
-Adapts the handle-free :class:`~.session_seams.VolumeClaim` seam onto the
-handle-carrying owner: one :class:`~jasper.volume_owner.VolumeClaimHandle` held
-between three calls. ``SESSION_MEASUREMENT`` ranks 1, between household (0) and
-commissioning (2), and other rank-1 takers share this process, so a stale one
-makes ``acquire_level`` raise
-:class:`~jasper.volume_owner.VolumeClaimConflict`. Nothing here clamps:
-``devices.volume_limit`` stays ``0.0`` and
-``jasper.camilla._coerce_main_volume_db`` clamps every positive write.
+``VolumeOwner``. Adapts the handle-free ``session_seams.VolumeClaim`` seam
+onto the handle-carrying owner: one ``VolumeClaimHandle`` held between three
+calls. ``SESSION_MEASUREMENT`` ranks 1 (household 0, commissioning 2); a
+stale rank-1 taker sharing this process makes ``acquire_level`` raise
+``VolumeClaimConflict``. Nothing here clamps: ``devices.volume_limit`` stays
+``0.0``; ``camilla._coerce_main_volume_db`` clamps every positive write.
 """
 
 from __future__ import annotations

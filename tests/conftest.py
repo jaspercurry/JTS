@@ -359,6 +359,24 @@ def _isolate_seat_level_reference(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_identity_file(tmp_path_factory, monkeypatch):
+    """Point the reconciler's identity snapshot at a per-test (absent) file.
+
+    ``jasper.identity.resolve_hostname`` falls back to the
+    ``JASPER_HOSTNAME`` that ``jasper-identity-reconcile`` records in
+    /var/lib/jasper/identity.env, so on a real speaker that file — not the
+    codified default — would decide every hostname a test leaves unset.
+    Absent here means the hermetic ``DEFAULT_HOSTNAME`` baseline; a test that
+    exercises a RECORDED hostname re-points the same env var at a file it
+    wrote, which is the override the daemon-side reader honours too.
+    """
+    monkeypatch.setenv(
+        "JASPER_IDENTITY_FILE",
+        str(tmp_path_factory.mktemp("identity") / "identity.env"),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isolate_driver_base_trim(tmp_path_factory, monkeypatch):
     """Point the measured driver base trim at a per-test (absent) temp file.
 

@@ -262,7 +262,7 @@ def check_conversation_history() -> CheckResult:
     settings = read_settings()
     if not settings.capture_enabled:
         # Off by operator intent, and the off state WAS observed — `ok` with
-        # a reason, not a skip (ADR-0228 rule 3).
+        # a reason, not a skip (ADR-0232 rule 3).
         return CheckResult(
             label, "ok", "capture disabled", reason=REASON_HISTORY_DISABLED,
         )
@@ -402,17 +402,21 @@ _START_LIMIT_RESULT = "service-start-limit-hit"
 
 def _wizard_socket_state(unit: str) -> tuple[str, str] | None:
     """``(ActiveState, finding)`` for one wizard's ``.socket``, or ``None``
-    when the per-run unit-state evidence is unavailable (systemctl absent),
-    so the caller skips the whole sweep once.
+    when systemctl itself is unavailable, so the caller skips the whole sweep
+    once.
+
+    A reply that carries no state for THIS socket is not that: it is one
+    unreadable unit among readable ones, so it becomes a finding rather than
+    skipping the sweep.
 
     ``finding`` is empty when the listener is bound — including when the unit
     is not installed on this profile, which reads as ``ActiveState=inactive``
     rather than erroring.
     """
-    socket_unit = f"{unit}.socket"
-    state = evidence.unit_state(socket_unit)
-    if state is None:
+    if evidence.unit_states() is None:
         return None
+    socket_unit = f"{unit}.socket"
+    state = evidence.unit_state(socket_unit) or {}
     active = state.get("active_state") or ""
     if not active:
         return "", (

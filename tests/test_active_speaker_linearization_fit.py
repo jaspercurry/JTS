@@ -78,8 +78,8 @@ from jasper.active_speaker.branch_target import (
 )
 from jasper.active_speaker.camilla_yaml import linearization_slot
 from jasper.audio_measurement.analysis import smooth_fractional_octave
+from jasper.audio_measurement.peq import PEQ, predicted_response
 from jasper.audio_measurement.program_analysis import DriverResponse
-from jasper.correction.peq import PEQ, predicted_response
 
 _NATIVE_FREQS_HZ = np.linspace(100.0, 22_000.0, 4096)
 
@@ -274,7 +274,7 @@ def test_cut_only_invariant_violation_raises_not_silently_returns(monkeypatch):
     stage) and confirm fit_driver_linearization refuses it with a
     RuntimeError, never silently returning hardware-bound boost."""
     import jasper.active_speaker.linearization_fit as linearization_fit_module
-    from jasper.correction.peq import PEQ
+    from jasper.audio_measurement.peq import PEQ
 
     monkeypatch.setattr(
         linearization_fit_module, "design_peq",
@@ -669,7 +669,7 @@ def test_reported_residual_grades_the_realized_biquad_not_the_lorentzian():
     on the CURVE the graph emits, not on a model of it.
 
     The peaking stage folds itself into the working curve with
-    :func:`jasper.correction.peq.predicted_response`, a Lorentzian in
+    :func:`jasper.audio_measurement.peq.predicted_response`, a Lorentzian in
     log-frequency whose HALF-WIDTH matches the RBJ peaking biquad but whose
     skirts do not ("the far skirts are still a Lorentzian approximation" —
     ``_bell_response_db``'s own docstring), and which knows nothing of the
@@ -1457,7 +1457,7 @@ def test_cd_horn_no_filter_budget_suppression_when_slots_exhausted(monkeypatch):
     (flattening) peaking loop fill all MAX_FILTERS_PER_DRIVER slots, so the
     stage arrives already at capacity."""
     import jasper.active_speaker.linearization_fit as fit_mod
-    from jasper.correction.peq import PEQ
+    from jasper.audio_measurement.peq import PEQ
     eight = [
         PEQ(freq=1000.0 + 100.0 * i, q=2.0, gain=-1.0)
         for i in range(MAX_FILTERS_PER_DRIVER)
@@ -1793,7 +1793,7 @@ def test_a_cut_only_vocabulary_still_raises_on_a_boost():
     vocabulary — an explicit raise, not a bare assert, so ``python -O`` cannot
     strip it."""
     import jasper.active_speaker.linearization_fit as fit_mod
-    from jasper.correction.peq import PEQ
+    from jasper.audio_measurement.peq import PEQ
 
     resp, envelope = _dip_response()
     with pytest.MonkeyPatch.context() as mp:
@@ -1824,7 +1824,7 @@ def test_total_boost_is_uncapped_but_one_filter_is_not():
     per-filter realization bound stays. A gain past that bound raises rather
     than being silently clamped — same posture as the cut side."""
     import jasper.active_speaker.linearization_fit as fit_mod
-    from jasper.correction.peq import PEQ
+    from jasper.audio_measurement.peq import PEQ
 
     resp, envelope = _dip_response()
     vocab = FitVocabulary(allow_boost=True)

@@ -43,6 +43,9 @@ round's receipts.
   rows arrive pre-analyzed. Everything deeper is its own verb in the
   runbook's menu, run when a question warrants it. Read the packet first;
   open one verb per question; do not try to hold every analysis at once.
+  Which of those verbs a round has already been through is itself a read:
+  `jasper-round-views inventory <round-dir>` lists the artifacts banked
+  beside it and names the subcommand for each one it is missing.
 
 ## 0. DECLARE before you measure
 
@@ -162,11 +165,11 @@ proves nothing. Measured null depth decides `POLARITY_KEEP` vs `POLARITY_INVERT`
 touching nothing, and take the spread as your instrument's noise floor. **Act
 only on differences larger than it**, and state it in the receipt beside any
 delta you claim. Bank it rather than re-deriving it by hand:
-`jasper-round-views repeat-floor <N repeat rounds> --out repeat-floor.json`
-writes the record wherever `--out` says; put that file on the speaker at
-`/var/lib/jasper/active_speaker_repeat_floor.json` (or beside a banked round
-as `repeat-floor.json`) and the packet reads it from there. Two spreads exist
-and they never pool: `compute_sigma_curve` is in-capture at one pose, `positions.cross_seat_sigma.per_bin_sigma_db` is
+`sudo -n /opt/jasper/.venv/bin/jasper-round-views repeat-floor <N repeat rounds>
+--install` publishes the record at
+`/var/lib/jasper/active_speaker_repeat_floor.json`, where the packet reads it;
+add `--out repeat-floor.json` to keep a copy beside a banked round. Two of
+the spreads here never pool: `compute_sigma_curve` is in-capture at one pose, `positions.cross_seat_sigma.per_bin_sigma_db` is
 cross-seat and declared `unseparated`. Say which one you used. (The runbook's
 "Reading σ honestly" owns how to read them.)
 
@@ -190,8 +193,8 @@ refuses boosts and routes them to the driver door), and **per-driver
 linearization is blind across the blend region**, which has its own owner and
 its own bounded tool. Bank the plant before you touch a filter.
 
-**Positioning.** With an arm on the rig, `jasper-arm-walk` moves it. Without
-one, `jasper-angle-capture stage --program baseline --size express` (or
+**Positioning.** With an arm on the rig, `jasper-angle-capture serve` moves it.
+Without one, `jasper-angle-capture stage --program baseline --size express` (or
 `--size full`) banks a named pose table for the next session and prints the
 price and a handoff URL; hand that URL to the household, then poll
 `jasper-crossover-prescriber status` until the walk's takes appear under
@@ -327,11 +330,13 @@ how the coordinate is chosen.
    the emitted protection out and multiplies the **configured crossover** in, so
    the curve you propose from carries that crossover's phase rather than a bare
    driver's. The LATERAL phase skips that composition deliberately and keeps the
-   protection phase. **Which of the two you got is recorded on the banked curve
-   nowhere.** So the correction is not automated and not recoverable after the
-   fact: know it from the round you commanded, say which in the proposal, and
-   treat a lateral-phase optimum as protection-contaminated until the acoustic
-   confirm disposes of it.
+   protection phase. **Which of the two you got is stamped on the take**, as
+   `phase_composition` (`crossover_composed` or `protection_retained`), and
+   `jasper-round-views delay-landscape` echoes it beside the phase it read —
+   so the proposal states it rather than you. A take that states neither —
+   banked before the field, or captured with no protection emitted to retain — reads
+   as unknown, never as either one. Still treat a protection-retained optimum
+   as contaminated until the acoustic confirm disposes of it.
 2. **Propose, from evidence already banked.** Ruling S3 banks magnitude *and*
    phase for every measured curve, so the two per-driver transfers reconstruct
    exactly. Complex-sum them across `null_walk`'s whole delay grid — one branch
@@ -415,11 +420,12 @@ schedule, the geometry seed and the selectors — decision content, no DSP of it
 own. `crossover_v2/delay_landscape.py` is the propose half and the grader;
 `camilla_yaml.emit_active_speaker_program_config`'s `measurement_delays_us` puts
 a candidate delay in the measurement graph and **that emitter only**. Offline,
-`jasper-delay-sweep propose <bundle> --fc-hz N` reads that round's per-driver
-curves through the measurement index, prints the computed optimum, and hands
-back the `jasper-angle-capture stage` lines that confirm it. It opens no device
-and plays nothing. Grading the confirmation is not wired: no banked take
-records the delay coordinate it was played at.
+`jasper-round-views delay-landscape <bundle> --fc-hz N` reads that round's
+per-driver curves through the measurement index, prints the computed optimum,
+and hands back the `jasper-angle-capture stage` lines that confirm it. It opens
+no device and plays nothing. `jasper-round-views delay-confirm <bundle> --fc-hz N` then
+grades the `null_runs/` rows those coordinates were played at against the same
+landscape and banks the verdict as `delay_confirmation.json`.
 
 **Price orders the queue; it never empties it.** A delay the confirmation
 resolved is a measured physical error, so it gets applied — through the
@@ -504,13 +510,13 @@ division of labour.
    the speaker and with a room path that did not move. Rotation adjudicates.
 
 **Either discriminator can be UNAVAILABLE, and that is a third answer, not a
-negative one.** Both run over a round's capture WAVs in the `dumps/` ring —
-`jasper-classify-features` requires `--dumps` — and excess group delay is
-recomputed from the impulse response, not read off a curve, so a round with no
-WAVs can never be classified afterwards. A wired round banks its own capture
-WAVs, so build the ring from the bundle with `jasper-project-ring <bundle-dir>
---out <ring>` and hand that `--out` path to `--dumps`. What is genuinely gone
-is a round whose WAVs were never banked at all. When the inputs are absent the
+negative one.** Both run over a round's capture WAVs in the `dumps/` ring, and excess group
+delay is recomputed from the impulse response, not read off a curve, so a round
+with no WAVs can never be classified afterwards. A wired round banks its own
+capture WAVs, and `jasper-round-views classify-features <bundle-dir>` projects
+the ring out of the bundle itself, so no ring has to be built first (`--dumps`
+names one that already exists). What is genuinely gone is a round whose WAVs
+were never banked at all. When the inputs are absent the
 surfaces say so rather than guess: the
 packet's `feature_classification` block reports `available: false` beside a
 `status` / `reason` / `field` triple, and discriminator 2 already has its own
@@ -545,7 +551,7 @@ provenance stated — never vetoes:
   the gate's.**
   [Geometry, not convention: the comb spacing is the arrival delay's reciprocal.]
 - `gate_rungs` / `gate_sensitivity` — the window ladder, run by the gate-sweep
-  engine (`jasper-gate-sweep`; when to reach for it is §6a below and its
+  engine (`jasper-round-views gate-sweep`; when to reach for it is §6a below and its
   field-by-field guide is the runbook's "Reading a gate sweep", neither
   restated here — and a classification row's ladder numbers are in that
   report's frame, not this section's `depth_db` frame). `gate_rungs` is every
@@ -627,7 +633,7 @@ why the reader that stamps them is offline:
 writes the graded verdict carrying all five to
 `<round-dir>/spec_gate_sensitivity.json`. Read `gate_sensitivity_note` first: a
 `not_swept_` prefix means the ladder never ran, a bare slug means it ran and
-declined. `jasper-gate-sweep --at-hz` is now only for a bin the verdict did
+declined. `jasper-round-views gate-sweep --at-hz` is now only for a bin the verdict did
 *not* flag.
 
 **Prefer cuts; keep boosts modest and probe-verified.** The realization probe
@@ -685,9 +691,9 @@ and the failing band's own `room_entangled_below_hz` for how far up the
 reservation reaches. A feature above the entanglement floor needs no ladder —
 measured window-invariance and directivity already carry it.
 
-**Rung 2 — `jasper-gate-sweep`: is this feature the room or the speaker?**
+**Rung 2 — `jasper-round-views gate-sweep`: is this feature the room or the speaker?**
 Run it on a banked verify or cloud round (across-pose σ needs two poses):
-`jasper-gate-sweep <round_dir> --at-hz <max_deviation_hz> --out <path>`.
+`jasper-round-views gate-sweep <round_dir> --at-hz <max_deviation_hz> --out <path>`.
 Always pass `--at-hz` the failing band's own `max_deviation_hz` — a band's
 automatic `worst_bin_hz` is its DEEPEST bin, which is not in general its most
 window-divergent one. Read `features[].sensitivity.sigma_growth_ratio`,
@@ -697,13 +703,14 @@ module docstring, which states the discriminator once. It licenses no filter —
 it is evidence for an attribution argument, never a verdict or an EQ
 instruction.
 
-**Rung 3 — `jasper-close-reference`: how much of the far read was the room?**
+**Rung 3 — `jasper-round-views close-reference`: how much of the far read was
+the room?**
 Only once rung 2 says room and the feature is worth one more capture. Ask
-`jasper-close-reference distance --driver-diameter-in D --fc-hz FC` where to
-stand the mic; the human takes that capture (the close-reference program row is
-#3498's amendment item 1 and is not built, so today you declare the distance
-yourself); then `jasper-close-reference compare --far-round A --close-round B
---close-m M`. Read `alignment.trusted` before any band, then each
+`jasper-round-views close-reference --distance --driver-diameter-in D --fc-hz FC`
+where to stand the mic; the human takes that capture (the close-reference
+program row is #3498's amendment item 1 and is not built, so today you declare
+the distance yourself); then `jasper-round-views close-reference --far-round A
+--close-round B --close-m M`. Read `alignment.trusted` before any band, then each
 `windows[].bands[].verdict`: `agreement` says the far read was already
 speaker-dominated there, `room_dominated` prices the room's share, `unresolved`
 names which input was missing. It still prescribes nothing.
@@ -770,11 +777,13 @@ reason, never a fabricated number.
 
 The target is **flat design-axis / listening-window over the trusted zone**,
 optionally with a gentle downward in-room tilt — and if you apply one, **declare
-it**, because an undeclared tilt is indistinguishable from a defect on the next
-round's receipt. The tilt is a preference finding, not a law: it shifts toward
-flat for a dead room or a high-directivity speaker, toward more tilt for a live
-one. Do **not** equalise sound power flat — for any normally narrowing speaker
-that makes the on-axis too bright.
+it in the driver document's `declared_tilt_db_per_octave`** (negative for
+downward; `jasper-round-views frozen` echoes it), because an undeclared tilt is
+indistinguishable from a defect on the next round's receipt. The tilt is a
+preference finding, not a law: it shifts toward flat for a dead room or a
+high-directivity speaker, toward more tilt for a live one. Do **not** equalise
+sound power flat — for any normally narrowing speaker that makes the on-axis
+too bright.
 
 **Never buy flatness by filling non-minimum-phase dips.** A curve flattened that
 way is a worse speaker with a better graph. Peaks are more audible than dips:
@@ -807,6 +816,10 @@ the analysis window, not the speaker.
 **Every apply is measured; every reject auto-restores.** In-tolerance is not
 done — a round that passes keeps iterating while a flatter, more level result is
 still reachable, up to the series cap.
+
+Pre-register before you measure: the driver document's `expected_delta_db` is
+where the prediction lands, and `jasper-round-views frozen` reports it beside
+the move the round actually made.
 
 When a verify surprises you, **diagnose from the receipts before composing the
 next candidate**: which band, level or shape, realized or not, and what the

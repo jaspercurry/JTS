@@ -199,7 +199,7 @@ def test_household_secret_absent_is_skipped(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 def test_unit_runtime_identity_batches_user_group_across_daemons(monkeypatch):
     """User/Group/SupplementaryGroups are read once for the whole manifest,
-    not once per daemon queried (ADR-0228 rule 4)."""
+    not once per daemon queried (ADR-0232 rule 4)."""
     from jasper.cli.doctor import _evidence
 
     calls: list[tuple[str, tuple[str, ...]]] = []
@@ -209,10 +209,7 @@ def test_unit_runtime_identity_batches_user_group_across_daemons(monkeypatch):
         return [f"{prop}-value" for _ in units]
 
     def fake_unit_states(units, *, timeout):
-        return {
-            f"{u}.service": {"unit": f"{u}.service", "load_state": "loaded"}
-            for u in units
-        }
+        return {u: {"unit": u, "load_state": "loaded"} for u in units}
 
     monkeypatch.setattr(_evidence, "_systemctl_show_property", fake_property)
     monkeypatch.setattr(_evidence, "read_unit_states", fake_unit_states)
@@ -232,10 +229,7 @@ def test_unit_runtime_identity_is_none_when_a_property_is_unreadable(monkeypatch
     from jasper.cli.doctor import _evidence
 
     def fake_unit_states(units, *, timeout):
-        return {
-            f"{u}.service": {"unit": f"{u}.service", "load_state": "loaded"}
-            for u in units
-        }
+        return {u: {"unit": u, "load_state": "loaded"} for u in units}
 
     monkeypatch.setattr(_evidence, "read_unit_states", fake_unit_states)
     monkeypatch.setattr(

@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 
 from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..http_security import management_read_allowed, mutating_request_allowed
-from .client import default_port
+from .client import CONTROL_PORT
 from ..atomic_io import locked_update_env_file
 from ..audio_quality import (  # noqa: F401 - route-mixin dependency exports
     apply_requested_converter as _apply_audio_quality,
@@ -137,11 +137,12 @@ CORE_AUDIO_RESTART_UNITS = ["jasper-camilla.service"]
 LOCAL_SOURCE_AUDIO_REFRESH_UNITS = list(local_source_audio_refresh_units())
 _DIAGNOSTICS_RESULT_PATH = "/run/jasper-control/doctor-result.json"
 _DIAGNOSTICS_CACHE_TTL_SECONDS = 60.0
-# A start is treated as in flight for this long. Sized to
+# Ceiling on how long a start can be treated as in flight. Sized to
 # `TimeoutStartSec=600` in deploy/systemd/jasper-doctor-json.service: systemd
 # cannot leave the oneshot activating longer, so an older start is over
-# whatever became of it. A run that lands sooner clears the window early —
-# see `_start_diagnostics_refresh`.
+# whatever became of it. Within the ceiling the authority is systemd itself
+# (`_diagnostics_unit_in_flight`), and a run that lands clears the window
+# early — see `_start_diagnostics_refresh`.
 _DIAGNOSTICS_REFRESH_WINDOW_SECONDS = 600.0
 _diagnostics_refresh_lock = threading.Lock()
 _diagnostics_refresh_started_at: float | None = None
@@ -156,6 +157,26 @@ _usb_mic_leg_apply_pending: tuple[str, float] | None = None
 _aec_commission_start_lock = threading.Lock()
 
 
+def _diagnostics_unit_in_flight() -> bool:
+    """Is the doctor oneshot still running? Asked of systemd, not inferred from
+    the elapsed time, so a run that died WITHOUT writing a report (OOM-killed,
+    crashed) reopens the window on the next request instead of holding it for
+    the whole `_DIAGNOSTICS_REFRESH_WINDOW_SECONDS`.
+
+    Unreadable answers hold the window: not knowing must not become a restart
+    per request. A `oneshot` reads `activating` while it runs.
+    """
+    try:
+        proc = _run_unit_systemctl(
+            "show", "--property=ActiveState", "--value", "jasper-doctor-json.service",
+        )
+    except (subprocess.SubprocessError, OSError):
+        return True
+    if proc.returncode != 0:
+        return True
+    return (proc.stdout or "").strip() in ("activating", "active", "deactivating")
+
+
 def _start_diagnostics_refresh(
     *,
     snapshot_age_seconds: float | None,
@@ -167,14 +188,19 @@ def _start_diagnostics_refresh(
     now = time.monotonic()
     with _diagnostics_refresh_lock:
         started_at = _diagnostics_refresh_started_at
-        if started_at is not None:
-            elapsed = now - started_at
-            # A snapshot younger than the elapsed run is that run's own
-            # output: it landed, so the window is over.
-            if elapsed < _DIAGNOSTICS_REFRESH_WINDOW_SECONDS and (
-                snapshot_age_seconds is None or snapshot_age_seconds > elapsed
-            ):
-                return True, ""
+    # A snapshot younger than the elapsed run is that run's own output: it
+    # landed, so the window is over. Systemd is asked only when the cheap
+    # checks still allow a run to be in flight, and outside the lock — the
+    # probe is a subprocess.
+    if started_at is not None:
+        elapsed = now - started_at
+        if (
+            elapsed < _DIAGNOSTICS_REFRESH_WINDOW_SECONDS
+            and (snapshot_age_seconds is None or snapshot_age_seconds > elapsed)
+            and _diagnostics_unit_in_flight()
+        ):
+            return True, ""
+    with _diagnostics_refresh_lock:
         _diagnostics_refresh_started_at = now
     try:
         proc = _run_unit_systemctl(
@@ -535,7 +561,6 @@ _outputd_status = _state_aggregate._outputd_status
 _clamp_db = _volume_ops._clamp_db
 _db_to_percent = _volume_ops._db_to_percent
 _percent_to_db = _volume_ops._percent_to_db
-_spotify_redirect_uri = _volume_ops._spotify_redirect_uri
 _read_volume_state = _volume_ops.read_volume_state
 
 
@@ -2227,8 +2252,7 @@ def main(argv: list[str] | None = None) -> int:
         help="bind host (default 0.0.0.0 — LAN-reachable)",
     )
     parser.add_argument(
-        "--port", type=int,
-        default=default_port(),
+        "--port", type=int, default=CONTROL_PORT,
     )
     parser.add_argument(
         "--camilla-host",

@@ -71,9 +71,12 @@ def test_unit_state_batches_the_roster_and_reads_an_unlisted_unit_once(monkeypat
     def fake_read(units, *, timeout):
         calls.append(tuple(units))
         return {
-            unit: {"unit": unit, "active_state": "active", "load_state": "loaded"}
+            unit: {
+                "unit": unit,
+                "active_state": "active",
+                "load_state": "not-found" if unit == "ghost.service" else "loaded",
+            }
             for unit in units
-            if unit != "ghost.service"
         }
 
     monkeypatch.setattr(_evidence, "read_unit_states", fake_read)
@@ -83,6 +86,44 @@ def test_unit_state_batches_the_roster_and_reads_an_unlisted_unit_once(monkeypat
     assert ev.unit_state("ghost.service")["load_state"] == "not-found"
     assert ev.unit_state("ghost.service")["load_state"] == "not-found"
     assert calls == [service_units.DOCTOR_UNIT_ROSTER, ("ghost.service",)]
+
+
+@pytest.mark.parametrize(
+    "stdout, expected_keys",
+    [
+        # systemctl ran and answered nothing (no D-Bus, a host not booted with
+        # systemd): unknown, not "none of these units exist".
+        ("", None),
+        ("Id=jasper-fanin.service\nLoadState=not-found\n", {"jasper-fanin.service"}),
+    ],
+    ids=["empty-body", "a-real-not-found-record"],
+)
+def test_read_unit_states_separates_no_answer_from_a_not_found_answer(
+    monkeypatch, stdout, expected_keys
+):
+    monkeypatch.setattr(
+        service_units.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout=stdout, stderr=""),
+    )
+
+    states = service_units.read_unit_states(("jasper-fanin.service",))
+
+    assert (states if states is None else set(states)) == expected_keys
+
+
+def test_a_reply_carrying_no_record_for_the_unit_is_unknown_not_not_found(
+    monkeypatch,
+):
+    """A name systemd answers about at all comes back with its own
+    ``not-found`` record. A reply with no record under the asked name (an
+    alias whose canonical Id differs, a body that did not parse) is UNKNOWN —
+    fabricating ``not-found`` there fails a running unit as "not installed"."""
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", lambda units, *, timeout: {"other.service": {}},
+    )
+
+    assert Evidence().unit_state("ghost.service") is None
 
 
 def test_unit_state_is_none_without_systemctl(monkeypatch):

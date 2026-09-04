@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+import jasper.active_speaker.commission_load as commission_load_mod
 import jasper.active_speaker.startup_load as startup_load_mod
 from jasper.active_speaker import (
     ActiveSpeakerPreset,
@@ -518,10 +519,8 @@ def test_durable_statefile_drift_fails_closed(monkeypatch, caplog, tmp_path):
     # commissioning config (impossible with the inline transport), the load must
     # FAIL CLOSED inside the lock (roll back to staged), not report 'loaded' with
     # a buried blocker -- a reboot must never come up on the transient config.
-    import jasper.active_speaker.startup_load as startup_load_mod
-
     commission_path = str(tmp_path / "commission.yml")
-    with caplog.at_level("WARNING", logger=startup_load_mod.logger.name):
+    with caplog.at_level("WARNING", logger=commission_load_mod.logger.name):
         result, cam, staged, staged_path, statefile, state_path = _load(
             tmp_path, monkeypatch, role="woofer", statefile_target=commission_path
         )
@@ -629,7 +628,7 @@ def test_live_confirm_polls_until_readback_leaves_staged_anchor(
     # (audible_mask_correct + startup_headroom). The live confirm must POLL —
     # re-read until the readback leaves the anchor — then pass on the converged
     # graph.
-    monkeypatch.setattr(startup_load_mod, "LIVE_CONFIRM_POLL_INTERVAL_S", 0.0)
+    monkeypatch.setattr(commission_load_mod, "LIVE_CONFIRM_POLL_INTERVAL_S", 0.0)
     staged = _staged(tmp_path)
     staged_raw = _block(Path(staged["config"]["path"]).read_text(encoding="utf-8"))
     cam = SettlingCamilla(staged["config"]["path"], staged_raw, lag_reads=3)
@@ -650,8 +649,8 @@ def test_live_confirm_never_converging_raises_convergence_not_safety(
     # the failure is a load/convergence failure — a DISTINCT taxonomy from the
     # safety-check failure, so downstream surfaces don't burn the operator's
     # repeat budget with "keep the room quiet" advice for an infra fault.
-    monkeypatch.setattr(startup_load_mod, "LIVE_CONFIRM_POLL_INTERVAL_S", 0.0)
-    monkeypatch.setattr(startup_load_mod, "LIVE_CONFIRM_CONVERGENCE_BUDGET_S", 0.05)
+    monkeypatch.setattr(commission_load_mod, "LIVE_CONFIRM_POLL_INTERVAL_S", 0.0)
+    monkeypatch.setattr(commission_load_mod, "LIVE_CONFIRM_CONVERGENCE_BUDGET_S", 0.05)
     staged = _staged(tmp_path)
     staged_path = staged["config"]["path"]
     staged_raw = _block(Path(staged_path).read_text(encoding="utf-8"))
@@ -671,9 +670,9 @@ def test_live_confirm_never_converging_raises_convergence_not_safety(
         def __getattr__(self, name):
             return getattr(time, name)
 
-    monkeypatch.setattr(startup_load_mod, "time", _ReadKeyedTime())
+    monkeypatch.setattr(commission_load_mod, "time", _ReadKeyedTime())
 
-    with caplog.at_level("INFO", logger=startup_load_mod.logger.name):
+    with caplog.at_level("INFO", logger=commission_load_mod.logger.name):
         result, cam, *_ = _load(tmp_path, monkeypatch, role="woofer", camilla=cam)
 
     assert result["load"]["status"] == "failed"
@@ -718,9 +717,7 @@ def test_commissioning_load_re_emits_candidate_inside_the_lock(monkeypatch, tmp_
     # run_config_check=False) immediately before load, so a concurrent prepare
     # cannot overwrite the shared commissioning path between gate and load
     # (TOCTOU) and the live mask is fresh.
-    import jasper.active_speaker.startup_load as startup_load_mod
-
-    real = startup_load_mod.prepare_driver_commissioning_config
+    real = commission_load_mod.prepare_driver_commissioning_config
     run_checks: list[bool] = []
 
     def _spy(*args, **kwargs):
@@ -728,7 +725,7 @@ def test_commissioning_load_re_emits_candidate_inside_the_lock(monkeypatch, tmp_
         return real(*args, **kwargs)
 
     monkeypatch.setattr(
-        startup_load_mod, "prepare_driver_commissioning_config", _spy
+        commission_load_mod, "prepare_driver_commissioning_config", _spy
     )
     result, cam, *_ = _load(tmp_path, monkeypatch, role="woofer")
 
@@ -799,7 +796,7 @@ The pair is ring vs the journal's `-`: ADR-0100 left one transport, so a
     untested one. It reaches `status="loaded"` only because the transport was
     armed, and the control below runs the same call without arming.
     """
-    with caplog.at_level("INFO", logger=startup_load_mod.logger.name):
+    with caplog.at_level("INFO", logger=commission_load_mod.logger.name):
         result, *_ = _load(
             tmp_path,
             monkeypatch,

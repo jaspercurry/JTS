@@ -257,7 +257,6 @@ def _make_spotify_server(target: object) -> object:
             "JASPER_SPOTIFY_MANUAL_REDIRECT_URI",
             spotify_setup.DEFAULT_MANUAL_REDIRECT_URI,
         ),
-        hostname=os.environ.get("JASPER_HOSTNAME", "jts.local"),
     )
 
 
@@ -281,10 +280,6 @@ def _make_google_server(target: object) -> object:
         registry_path=os.environ.get(
             "JASPER_GOOGLE_ACCOUNTS_PATH",
             "/var/lib/jasper-secrets/google/accounts.json",
-        ),
-        redirect_uri=os.environ.get(
-            "GOOGLE_REDIRECT_URI",
-            google_setup.default_redirect_uri(),
         ),
     )
 

@@ -216,7 +216,7 @@ async def test_mux_command_answers_cancellation_racing_the_reply(monkeypatch):
     asyncio.wait_for swallows a CancelledError that arrives in the tick its
     awaited future completes (Lib/asyncio/tasks.py: ``except
     CancelledError: if fut.done(): return fut.result()``). This call sits
-    on correction/coordinator.py's _refresh_measurement_gate_lease, a
+    on measurement_window.py's _refresh_measurement_gate_lease, a
     cancellation-only ``while True:`` that measurement_window()'s finally
     cancels and then awaits unboundedly -- a swallowed cancel here makes
     that task immortal and wedges the whole window teardown.

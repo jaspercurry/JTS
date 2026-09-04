@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 from .uds import _voice_socket_command
 from ..spotify_oauth import (
     SPOTIFY_OAUTH_CALLBACK_BASE as _SHARED_SPOTIFY_OAUTH_CALLBACK_BASE,
-    default_spotify_redirect_uri,
+    resolved_spotify_redirect_uri,
 )
 from ..volume_curve import (
     DEFAULT_VOLUME_FLOOR_DB,
@@ -62,12 +62,6 @@ def _percent_to_db(percent: int) -> float:
     return percent_to_db(percent)
 
 
-def _spotify_redirect_uri() -> str:
-    hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
-    default_redirect_uri = default_spotify_redirect_uri(hostname)
-    return os.environ.get("SPOTIFY_REDIRECT_URI") or default_redirect_uri
-
-
 def read_volume_state() -> "VolumeState":
     """Read the canonical volume projection without constructing actuators.
 
@@ -76,13 +70,10 @@ def read_volume_state() -> "VolumeState":
     registry, or OAuth client construction.
     """
     from ..volume_coordinator import VolumeState
-    from ..volume_persistence import VolumePersistence
+    from ..volume_persistence import VolumePersistence, configured_path
 
     persistence = VolumePersistence(
-        os.environ.get(
-            "JASPER_VOLUME_STATE_PATH",
-            "/var/lib/jasper/speaker_volume.json",
-        ),
+        configured_path(),
     )
     return VolumeState.from_record(persistence.load())
 
@@ -118,7 +109,7 @@ def _build_spotify_router_or_none():
         legacy_cache_path = os.environ.get(
             "SPOTIFY_CACHE_PATH", "/var/lib/jasper-intsecrets/.spotify-cache",
         )
-        redirect_uri = _spotify_redirect_uri()
+        redirect_uri = resolved_spotify_redirect_uri()
         registry = Registry.load(accounts_path)
         maybe_migrate_legacy(
             registry,
@@ -207,14 +198,11 @@ async def _with_coordinator(
     from ..renderer import RendererClient
     from ..speaker_name import runtime_name as _speaker_runtime_name
     from ..volume_coordinator import VolumeCoordinator
-    from ..volume_persistence import VolumePersistence
+    from ..volume_persistence import VolumePersistence, configured_path
 
     camilla = CamillaController(host=camilla_host, port=camilla_port)
     persistence = VolumePersistence(
-        os.environ.get(
-            "JASPER_VOLUME_STATE_PATH",
-            "/var/lib/jasper/speaker_volume.json",
-        ),
+        configured_path(),
     )
     backend = RendererClient(
         librespot_state_path=librespot_state.configured_path(),

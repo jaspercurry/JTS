@@ -201,7 +201,6 @@ def _stage_box(
     monkeypatch.setattr(rh, "JASPER_ENV_PATH", str(jasper_env))
     monkeypatch.setattr(rh, "FANIN_ENV_PATH", str(fanin_env))
 
-    monkeypatch.setattr(cr, "load_topology_for_wire", _composite_active_2way)
     monkeypatch.setattr(rh, "load_topology_for_wire", _composite_active_2way)
     return graph
 

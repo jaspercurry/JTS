@@ -42,8 +42,8 @@ import pytest
 from jasper.active_speaker import session_volume_plan as svp
 from jasper.control import measurement_hold as mh
 from jasper.control.server import _make_handler
-from jasper.correction import coordinator
-from jasper.correction.coordinator import (
+from jasper import measurement_window as coordinator
+from jasper.measurement_window import (
     MEASUREMENT_HOLD_COMMAND_TIMEOUT_SEC,
     MEASUREMENT_LEASE_REFRESH_SEC,
     MEASUREMENT_LEASE_RETRY_SEC,

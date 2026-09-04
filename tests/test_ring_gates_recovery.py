@@ -650,7 +650,6 @@ def test_wire_gate_refuses_the_jts3_graph_shear_and_names_the_graph_end(
     not-yet-re-emitted box meets, and it must name the file to fix.
     """
     import jasper.ring_assets as ra
-    from jasper.fanin import coupling_reconcile as cr
     from jasper.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_WIRE_FORMAT,
@@ -658,7 +657,6 @@ def test_wire_gate_refuses_the_jts3_graph_shear_and_names_the_graph_end(
     )
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
-    monkeypatch.setattr(cr, "load_topology_for_wire", _mono_two_way_topology)
     monkeypatch.setattr(
         "jasper.fanin.ring_health.load_topology_for_wire", _mono_two_way_topology
     )
@@ -714,14 +712,12 @@ def test_wire_gate_refuses_a_graph_whose_active_width_is_not_the_resolved_one(
     would be refused either way and prove nothing about this axis.
     """
     import jasper.ring_assets as ra
-    from jasper.fanin import coupling_reconcile as cr
     from jasper.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_WIRE_FORMAT_WIDE,
     )
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
-    monkeypatch.setattr(cr, "load_topology_for_wire", _mono_two_way_topology)
     monkeypatch.setattr(
         "jasper.fanin.ring_health.load_topology_for_wire", _mono_two_way_topology
     )
@@ -786,7 +782,6 @@ def test_wire_gate_holds_the_active_ring_to_its_OWN_width_not_ring_bs(
     B's 2 must be REFUSED.
     """
     import jasper.ring_assets as ra
-    from jasper.fanin import coupling_reconcile as cr
     from jasper.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_WIRE_FORMAT_WIDE,
@@ -794,7 +789,6 @@ def test_wire_gate_holds_the_active_ring_to_its_OWN_width_not_ring_bs(
     )
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
-    monkeypatch.setattr(cr, "load_topology_for_wire", _three_way_topology)
     monkeypatch.setattr(
         "jasper.fanin.ring_health.load_topology_for_wire", _three_way_topology
     )
@@ -844,10 +838,8 @@ def test_wire_gate_holds_a_non_ring_graph_to_nothing(monkeypatch, tmp_path):
     the other side.
     """
     import jasper.ring_assets as ra
-    from jasper.fanin import coupling_reconcile as cr
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
-    monkeypatch.setattr(cr, "load_topology_for_wire", _mono_two_way_topology)
     monkeypatch.setattr(
         "jasper.fanin.ring_health.load_topology_for_wire", _mono_two_way_topology
     )
@@ -958,10 +950,8 @@ def test_wire_gate_says_so_when_it_could_not_read_the_graph(monkeypatch, tmp_pat
     reporting agreement it never checked — which is defect B in one sentence.
     """
     import jasper.ring_assets as ra
-    from jasper.fanin import coupling_reconcile as cr
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
-    monkeypatch.setattr(cr, "load_topology_for_wire", _mono_two_way_topology)
     monkeypatch.setattr(
         "jasper.fanin.ring_health.load_topology_for_wire", _mono_two_way_topology
     )

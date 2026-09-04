@@ -11,6 +11,7 @@ import pytest
 
 import jasper.audio_hardware as audio_hardware
 from jasper.audio_hardware import dac
+from jasper.audio_hardware.hat_eeprom import HatEeprom, read_hat_eeprom
 from jasper.camilla_config_contract import CamillaFloor
 from jasper.audio_hardware.dac import (
     APPLE_USB_C_DONGLE,
@@ -229,30 +230,101 @@ def test_studio_dac8x_pro_parks_rather_than_borrowing_the_studio_profile() -> No
         assert dac.profile_for_card_label(label) is None, label
 
 
-def test_unified_studio_soundcard_name_parks_rather_than_guessing_width() -> None:
-    """rpi-6.18.y's shared Studio card name is not claimable (#2258).
+_DAC8X_STUDIO_HAT = HatEeprom(
+    vendor="HiFiBerry",
+    product="StudioDAC8x",
+    uuid="be3b8164-dd7b-48fc-ab27-79dd7c641980",
+)
 
-    raspberrypi/linux 99c9dcd72 (2026-07-13) renamed the Studio driver to
-    `hifiberry_studio.c` and 8905174a9 gave it multi-card support, after which
-    the 8-channel Studio DAC8x and the 2-channel Studio Digi/AES BOTH present
-    `.name = "Hifiberry Studio Soundcard"` — no DAC8x token, no width, and the
-    UUID that separates them never reaches the label. Claiming that name here
-    would let a 2-channel Digi be driven as this 8-channel profile.
+# `label` is `product or proc_description or card_id`
+# (`output_hardware.probe_system_cards`), so both the bare kernel card name
+# and the joined /proc/asound/cards description are realistic inputs.
+_UNIFIED_STUDIO_PROC_LABEL = (
+    " 2 [HiFiBerryStudio]: HifiberryStudio - Hifiberry Studio Soundcard"
+    " Hifiberry Studio Soundcard"
+)
 
-    So this asserts a KNOWN LIMITATION, not a success: on those kernels a real
-    Studio DAC8x resolves to "unknown" and parks. #2258 tracks the non-label
-    discriminator that would close it. If a future change makes this name
-    routable via EEPROM/DT evidence, this test should be replaced, not deleted
-    quietly.
-    """
-    for label in (
-        "Hifiberry Studio Soundcard",
-        " 2 [HiFiBerryStudio]: HifiberryStudio - Hifiberry Studio Soundcard"
-        " Hifiberry Studio Soundcard",
-        # The sibling this ambiguity is dangerous for: 2 channels, not 8.
-        "Hifiberry Studio Digi",
-    ):
-        assert dac.profile_for_card_label(label) is None, label
+
+@pytest.mark.parametrize(
+    ("label", "hat_product", "expected_id"),
+    [
+        # The base driver stack keeps its own row even on Studio silicon:
+        # a profile keys the DRIVER STACK, and the EEPROM only ever
+        # disambiguates a label more than one stack emits. jts3 is exactly
+        # this case — Studio silicon on the base `hifiberry-dac8x` overlay.
+        ("snd_rpi_hifiberry_dac8x", None, HIFIBERRY_DAC8X_ID),
+        ("snd_rpi_hifiberry_dac8x", "StudioDAC8x", HIFIBERRY_DAC8X_ID),
+        # An unambiguous Studio label needs no EEPROM and is not overridden.
+        ("HiFiBerry Studio DAC8x", None, HIFIBERRY_DAC8X_STUDIO_ID),
+        ("HiFiBerry Studio DAC8x", "StudioDAC8x", HIFIBERRY_DAC8X_STUDIO_ID),
+        # rpi-6.18.y's `hifiberry_studio.c` names the 8-channel Studio DAC8x
+        # and the 2-channel Studio Digi/AES alike — no product token, no
+        # width — so on the label alone this name parks rather than risking a
+        # Digi being driven as an 8-channel board (#2258).
+        ("Hifiberry Studio Soundcard", None, None),
+        (_UNIFIED_STUDIO_PROC_LABEL, None, None),
+        ("Hifiberry Studio Soundcard", "StudioDAC8x", HIFIBERRY_DAC8X_STUDIO_ID),
+        (_UNIFIED_STUDIO_PROC_LABEL, "StudioDAC8x", HIFIBERRY_DAC8X_STUDIO_ID),
+        # Whole-string comparison, not a substring test: the Pro is a
+        # different board with the opposite I2S clock role.
+        ("Hifiberry Studio Soundcard", "StudioDAC8xPro", None),
+        ("HiFiBerry Studio DAC8x Pro", "StudioDAC8x", None),
+        # A HAT node that publishes no product routes nothing, so a partial
+        # read is never mistaken for evidence.
+        ("Hifiberry Studio Soundcard", "", None),
+        # An EEPROM never invents a route for a label no row claims, and the
+        # dangerous sibling parks with or without one.
+        ("Hifiberry Studio Digi", None, None),
+        ("Hifiberry Studio Digi", "StudioDAC8x", None),
+        ("Mystery USB DAC", "StudioDAC8x", None),
+    ],
+)
+def test_card_label_routing_matrix_over_hat_eeprom_evidence(
+    label: str,
+    hat_product: str | None,
+    expected_id: str | None,
+) -> None:
+    hat = (
+        None
+        if hat_product is None
+        else HatEeprom(vendor="HiFiBerry", product=hat_product, uuid="uuid")
+    )
+    profile = dac.profile_for_card_label(label, hat=hat)
+    assert (profile.id if profile is not None else None) == expected_id
+
+
+def test_hat_eeprom_reader_reports_none_when_no_hat_node_exists(
+    tmp_path: Path,
+) -> None:
+    assert read_hat_eeprom(tmp_path / "absent") is None
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert read_hat_eeprom(empty) is None
+
+
+def test_hat_eeprom_reader_strips_devicetree_nul_terminators(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "vendor").write_bytes(b"HiFiBerry\x00")
+    (tmp_path / "product").write_bytes(b"StudioDAC8x\x00")
+    (tmp_path / "uuid").write_bytes(
+        b"be3b8164-dd7b-48fc-ab27-79dd7c641980\x00\n"
+    )
+    assert read_hat_eeprom(tmp_path) == _DAC8X_STUDIO_HAT
+
+
+def test_hat_eeprom_reader_keeps_a_partially_published_node(
+    tmp_path: Path,
+) -> None:
+    """A blank field is an answer, not a failure — it just matches no row."""
+
+    (tmp_path / "vendor").write_bytes(b"HiFiBerry\x00")
+    partial = read_hat_eeprom(tmp_path)
+
+    assert partial == HatEeprom(vendor="HiFiBerry", product="", uuid="")
+    assert dac.profile_for_card_label(
+        "Hifiberry Studio Soundcard", hat=partial
+    ) is None
 
 
 # One or more realistic ALSA labels per single-kind profile. The walking guard
@@ -270,6 +342,9 @@ _PROFILE_LABEL_SAMPLES: dict[str, tuple[str, ...]] = {
         "HiFiBerry Studio DAC8x",
         "HiFiBerry DAC8x Studio, USB Audio",
         "StudioDAC8x",
+        # Gated on the HAT EEPROM at lookup time, but still exclusive here:
+        # no other row may claim the shared 6.18 Studio name either.
+        "Hifiberry Studio Soundcard",
     ),
     "innomaker_hifi_amp_pro": (
         "snd_rpi_merus_amp",
@@ -315,7 +390,10 @@ def test_every_single_profile_label_matches_exactly_one_profile() -> None:
                 if profile.kind == "single"
                 and any(
                     re.search(pattern, label, re.IGNORECASE)
-                    for pattern in profile.supported_card_matches
+                    for pattern in (
+                        profile.supported_card_matches
+                        + profile.eeprom_gated_card_matches
+                    )
                 )
             ]
             assert matching == [owner_id], (

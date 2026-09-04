@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Per-run evidence cache for jasper-doctor (ADR-0228 rule 4).
+"""Per-run evidence cache for jasper-doctor (ADR-0232 rule 4).
 
 Each evidence source is read once per run; checks are functions over the
 cache. A reader here owns only the read and its fail-soft shape; the verdict
@@ -31,6 +31,7 @@ from ...service_units import (
     parse_property_blocks,
     read_unit_states,
 )
+from ._shared import _run
 
 T = TypeVar("T")
 
@@ -66,10 +67,6 @@ def _read_status(path: str, timeout: float) -> StatusRead:
         return StatusRead(read_status_socket(path, timeout=timeout))
     except Exception as exc:  # noqa: BLE001 — classified by the caller
         return StatusRead(None, exc)
-
-
-def _run(cmd: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
 def _systemctl_show_property(prop: str, units: list[str]) -> list[str] | None:
@@ -176,8 +173,13 @@ class Evidence:
 
     def unit_state(self, unit: str) -> dict[str, Any] | None:
         """One unit's state (see ``service_units.parse_systemctl_show_units``
-        for the keys); a unit off the roster costs one extra read. None when
-        systemctl is unavailable."""
+        for the keys); a unit off the roster costs one extra read.
+
+        None means UNKNOWN, never "not installed": systemctl unavailable, or a
+        reply that carries no record under this name (an alias whose canonical
+        ``Id`` differs). A unit systemd genuinely does not know answers with a
+        record of its own carrying ``load_state == "not-found"``, so callers
+        can tell the two apart."""
         states = self.unit_states()
         if states is None:
             return None
@@ -189,7 +191,7 @@ class Evidence:
         )
         if extra is None:
             return None
-        return extra.get(unit, {"unit": unit, "load_state": "not-found"})
+        return extra.get(unit)
 
     def unit_active(self, unit: str) -> bool | None:
         """True/False from ActiveState; None when systemctl is unavailable."""

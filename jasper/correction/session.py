@@ -33,6 +33,7 @@ from jasper.audio_measurement.calibration import CalibrationRecord
 from jasper.audio_measurement.excitation import (
     AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
 )
+from jasper.audio_measurement.peq import PEQ
 from jasper.audio_measurement.ramp import (
     LISTENING_POSITION_CAP_BUMP_DB,
     LISTENING_POSITION_CAP_CEIL_DB,
@@ -62,7 +63,6 @@ from .level_match import (
     LevelMatchSession,
     MicGeometry as MicGeometry,
 )
-from .peq import PEQ
 from .state_guard import SessionStateGuard
 from .status import (
     describe_current_config as describe_current_config,

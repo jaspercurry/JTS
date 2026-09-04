@@ -118,9 +118,8 @@ def write_repeat_floor(
 
     The path is NOT part of the record: it is written on a laptop and read on
     the speaker, so a local path is nobody's provenance — the reader names the
-    file it actually read. World-readable and un-chowned for the same reason:
-    the operator places the file by hand, and the writer's directory says
-    nothing about the speaker's group.
+    file it actually read. World-readable and un-chowned: the writer's
+    directory says nothing about the speaker's group.
     """
     record = dict(payload)
     atomic_write_json(_state_path(state_path), record)

@@ -2,22 +2,23 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Open, wait on and apply a crossover round from a shell on the speaker.
+"""Run a crossover round -- open, wait, apply, bank -- from a shell on the speaker.
 
-The three round verbs the laptop's ``scripts/run-crossover-round.py`` already
-drove over the LAN, reachable from the box itself. Same wizard, same transport
+The round verbs the laptop's ``scripts/run-crossover-round.py`` already drove
+over the LAN, reachable from the box itself. Same wizard, same transport
 (:mod:`jasper.active_speaker.wizard_client`), same apply gate -- what changes is
 only WHERE the operator is standing, which matters when there is no laptop on
 the network, when the round is being driven from an ssh session, or when a
 script on the speaker wants the verbs without an ssh hop back out.
 
-**Three verbs, and deliberately nothing between them.** ``open`` posts one
+**Four verbs, and deliberately nothing between them.** ``open`` posts one
 stage open. ``wait`` polls until the wizard's session stops. ``apply`` gates a
-fingerprint and posts one apply. There is no runner, no state file and no
-resume: what may follow what is the wizard's own artifact-dependency refusal to
-answer, and a second sequencer here would be a weaker copy of it. ``wait``
-polls whatever session the wizard is currently publishing, so it is run
-directly after ``open`` rather than against a round from yesterday.
+fingerprint and posts one apply. ``bank`` files the finished session where it
+outlives session retention. There is no runner, no state file and no resume:
+what may follow what is the wizard's own artifact-dependency refusal to answer,
+and a second sequencer here would be a weaker copy of it. ``wait`` polls
+whatever session the wizard is currently publishing, so it is run directly
+after ``open`` rather than against a round from yesterday.
 
 **The apply gate is the library's, not a second opinion.** The endpoint runs
 the same comparison and would refuse the same request; what
@@ -25,9 +26,13 @@ the same comparison and would refuse the same request; what
 a mistyped or stale fingerprint ends here instead of becoming a state-changing
 request, with both values on the receipt.
 
-Every verb prints a receipt -- the fields, or the same fields as JSON under
-``--json``. See ``docs/tuning-operator-runbook.md`` steps 6 and 8, which name
-this tool beside the laptop script it shares its transport with.
+**``bank`` reaches no wizard**: it files through
+:func:`jasper.active_speaker.round_bank.bank_round` into the campaign home.
+
+The wizard verbs print a receipt -- the fields, or the same fields as JSON
+under ``--json``; ``bank`` prints the round directory. See
+``docs/tuning-operator-runbook.md`` steps 6 and 8, which name this tool beside
+the laptop script it shares its transport with.
 """
 
 from __future__ import annotations
@@ -35,6 +40,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from jasper.active_speaker.wizard_client import (
@@ -52,19 +58,7 @@ from jasper.active_speaker.wizard_client import (
 )
 from jasper.identity import read_identity
 
-#: The wizard answered and the verb did what it says.
-EXIT_OK = 0
-#: The answer was LOST -- the daemon is down, a wrong ``--hostname``, a dropped
-#: connection. On ``apply`` that is genuinely unknown rather than a failure:
-#: the route has no try/except around its own answer, so a connection dropped
-#: after the graph loaded looks exactly like one dropped before it.
-EXIT_TRANSPORT = 1
-#: Refused -- the wizard's refusal, or this tool's own pre-flight one. A
-#: refusal is an answer, so nothing was applied.
-EXIT_REFUSED = 2
-#: ``wait`` reached its deadline with the session still running. Nothing is
-#: wrong yet and nothing was cancelled; the round is still going.
-EXIT_TIMEOUT = 3
+from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED
 
 DEFAULT_TIMEOUT_S = 900.0
 DEFAULT_POLL_S = 5.0
@@ -82,13 +76,16 @@ LOST_ANSWER_ADVICE = (
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
-AUTHORITY_TIER = "mutating-with-gates (`open`/`apply` write; `wait` does not)"
+AUTHORITY_TIER = "mutating-with-gates (`open`/`apply`/`bank` write; `wait` does not)"
 
+#: A lost answer and a deadline are both UNREADABLE: neither is a refusal and
+#: neither says the round failed. Which one it was rides in the receipt's
+#: ``reason`` (``answer_lost`` / ``wait_timeout``), not in the number.
 _EXIT_BY_WAIT_STATUS = {
     "terminal": EXIT_OK,
     "failed": EXIT_REFUSED,
-    "lost": EXIT_TRANSPORT,
-    "timed_out": EXIT_TIMEOUT,
+    "lost": EXIT_UNREADABLE,
+    "timed_out": EXIT_UNREADABLE,
 }
 
 
@@ -101,6 +98,43 @@ def _emit(receipt: Mapping[str, Any], *, json_output: bool) -> None:
         if key in ("verb", "status") or value in (None, "", {}):
             continue
         print(f"  {key:<30}{value}")
+
+
+def _read_document(path: str) -> Any:
+    """One prescription document, from a file or ``-`` for stdin."""
+    try:
+        raw = sys.stdin.read() if path == "-" else Path(path).read_text()
+        return json.loads(raw)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{path}: {exc}") from exc
+
+
+def _prescription_doors(args: argparse.Namespace) -> dict[str, Any]:
+    """The alignment and topology documents, under the keys the host reads.
+
+    Passed through as read: the gate that judges a prescription is the session
+    open's own, and a second one here would be a weaker copy of it.
+    """
+    # The two key constants' modules pull numpy and scipy in, which is why both
+    # the guard and the deferred import are here: an ordinary open must not pay
+    # for a door it is not carrying (ADR-0226).
+    if not (args.alignment_prescription or args.topology_prescription):
+        return {}
+    from jasper.active_speaker.crossover_v2.alignment_prescription import (
+        ALIGNMENT_PRESCRIPTION_KEY,
+    )
+    from jasper.active_speaker.crossover_v2.topology_prescription import (
+        TOPOLOGY_PRESCRIPTION_KEY,
+    )
+
+    return {
+        key: _read_document(path)
+        for key, path in (
+            (ALIGNMENT_PRESCRIPTION_KEY, args.alignment_prescription),
+            (TOPOLOGY_PRESCRIPTION_KEY, args.topology_prescription),
+        )
+        if path
+    }
 
 
 def _cmd_open(client: WizardClient, args: argparse.Namespace) -> int:
@@ -121,7 +155,18 @@ def _cmd_open(client: WizardClient, args: argparse.Namespace) -> int:
             json_output=args.json,
         )
         return EXIT_REFUSED
-    http, payload = client.open_session(args.tier or "", stage=args.stage)
+    try:
+        prescriptions = {} if post_apply else _prescription_doors(args)
+    except ValueError as exc:
+        _emit(
+            {"verb": "open", "status": "blocked", "stage": args.stage,
+             "reason": REASON_OPEN_REFUSED, "detail": str(exc)},
+            json_output=args.json,
+        )
+        return EXIT_REFUSED
+    http, payload = client.open_session(
+        args.tier or "", stage=args.stage, prescriptions=prescriptions
+    )
     block = client.v2_block() if http == 200 else {}
     _emit(
         {
@@ -144,7 +189,7 @@ def _cmd_open(client: WizardClient, args: argparse.Namespace) -> int:
     )
     if http == 200:
         return EXIT_OK
-    return EXIT_TRANSPORT if http == 0 else EXIT_REFUSED
+    return EXIT_UNREADABLE if http == 0 else EXIT_REFUSED
 
 
 def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
@@ -193,11 +238,56 @@ def _cmd_apply(client: WizardClient, args: argparse.Namespace) -> int:
         return EXIT_OK
     if lost:
         print(LOST_ANSWER_ADVICE, file=sys.stderr)
-        return EXIT_TRANSPORT
+        return EXIT_UNREADABLE
     return EXIT_REFUSED
 
 
+def _cmd_bank(args: argparse.Namespace) -> int:
+    # Banking pulls the whole bundle and measurement import graph in: an
+    # ordinary open must not pay for a door it is not carrying (ADR-0226).
+    from jasper.active_speaker.round_bank import (
+        DEFAULT_CAMPAIGN_ROOT,
+        RoundBankError,
+        bank_round,
+    )
+
+    payload: dict[str, Any]
+    root = Path(args.campaign_root) if args.campaign_root else DEFAULT_CAMPAIGN_ROOT
+    try:
+        banked = bank_round(Path(args.session_dir), campaign_root=root)
+    except RoundBankError as exc:
+        payload = {"banked": False, "reason": exc.reason, "detail": str(exc)}
+        code = EXIT_REFUSED
+        print(f"refused ({exc.reason}): {exc}", file=sys.stderr)
+    except OSError as exc:
+        payload = {"banked": False, "reason": "write_failed", "detail": str(exc)}
+        code = EXIT_WRITE_FAILED
+        print(f"could not bank {args.session_dir}: {exc}", file=sys.stderr)
+    else:
+        provenance = banked.provenance
+        payload = {
+            "banked": True,
+            "round_dir": str(banked.path),
+            "provenance": provenance,
+        }
+        code = EXIT_OK
+        if not args.json:
+            print(str(banked.path))
+            print(
+                f"  session={provenance['session_id']} "
+                f"banked_at_utc={provenance['banked_at_utc']} "
+                f"installed_sha={provenance['installed_sha'] or 'unknown'} "
+                f"missing={','.join(provenance['missing'] or ['none'])}",
+                file=sys.stderr,
+            )
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    return code
+
+
 def _connection_args(parser: argparse.ArgumentParser) -> None:
+    """The wizard verbs' shared arguments; ``bank`` reaches no wizard."""
+    parser.set_defaults(wizard=True)
     parser.add_argument(
         "--hostname",
         default=None,
@@ -221,10 +311,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jasper-round",
         description=(
-            "Open, wait on and apply a crossover round from the speaker "
-            "itself. The same three wizard verbs scripts/run-crossover-round.py "
+            "Open, wait on, apply and bank a crossover round from the speaker "
+            "itself. The three wizard verbs scripts/run-crossover-round.py "
             "drives from a laptop, over the same transport and the same apply "
-            "gate."
+            "gate, plus the bank that files a finished session in the on-box "
+            "campaign home."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -234,24 +325,36 @@ def build_parser() -> argparse.ArgumentParser:
             "  /opt/jasper/.venv/bin/jasper-round wait --timeout-s 1200\n"
             "  /opt/jasper/.venv/bin/jasper-round apply "
             "--expected-fingerprint <fp>\n"
+            "  /opt/jasper/.venv/bin/jasper-round bank <session-dir>\n"
             "\n"
             "WHAT THIS DOES NOT DO\n"
-            "  - it does not stage an angle walk (jasper-angle-capture), run\n"
-            "    the arm (jasper-arm-walk), or bank a round; each is its own\n"
-            "    tool and this one sequences none of them\n"
+            "  - it does not stage an angle walk or run the arm (both are\n"
+            "    jasper-angle-capture); each is its own tool and this one\n"
+            "    sequences none of them\n"
             "  - `wait` polls the session the wizard is publishing NOW, so\n"
             "    run it after `open`, not against yesterday's round\n"
+            "  - `bank` files a round on this box only -- the same tree is\n"
+            "    assembled over ssh by scripts/bank-crossover-round.sh -- and\n"
+            "    evicts nothing: the campaign home is operator-pruned\n"
             "\n"
             "EXIT CODES\n"
-            "  0  the wizard answered and the verb did what it says\n"
-            "  1  the answer was LOST. `open`/`wait` changed nothing; a lost\n"
+            "  0  the verb did what it says -- the wizard answered, or\n"
+            "     the round was banked and its directory is on stdout\n"
+            "  1  EXIT_REFUSED -- the wizard's refusal, this tool's own\n"
+            "     pre-flight fingerprint refusal, or a session `bank` will\n"
+            "     not bank (not a bundle, unfinished, or already banked --\n"
+            "     a banked round is never overwritten). Nothing was applied\n"
+            "  2  EXIT_UNREADABLE -- no answer to read. The receipt's\n"
+            "     `reason` says which: `answer_lost` (the daemon is down, a\n"
+            "     wrong --hostname, a dropped connection) or `wait_timeout`\n"
+            "     (the deadline passed with the session still running --\n"
+            "     nothing was cancelled, the round is still going). A lost\n"
             "     answer to the apply POST does NOT mean the apply failed\n"
-            "  2  refused -- the wizard's, or this tool's own pre-flight\n"
-            "     fingerprint refusal. Nothing was applied\n"
-            "  3  `wait` hit its deadline with the session still running.\n"
-            "     Nothing was cancelled; the round is still going"
+            "  3  EXIT_WRITE_FAILED -- `bank` could not write the copy: a\n"
+            "     filesystem problem, not a request problem"
         ),
     )
+    parser.set_defaults(wizard=False)
     sub = parser.add_subparsers(dest="command", required=True)
 
     opener = sub.add_parser("open", help="post one stage open on this speaker")
@@ -276,6 +379,17 @@ def build_parser() -> argparse.ArgumentParser:
             "(default: %%(default)s)" % (STAGE_MEASURE, STAGE_POST_APPLY)
         ),
     )
+    for door in ("alignment", "topology"):
+        opener.add_argument(
+            f"--{door}-prescription",
+            metavar="PATH",
+            default=None,
+            help=(
+                "a JSON document -- a file, or - for stdin -- posted verbatim "
+                f"as this session's {door} prescription. The open's own gate "
+                f"judges it, never this tool; ignored by --stage {STAGE_POST_APPLY}"
+            ),
+        )
     opener.set_defaults(func=_cmd_open)
 
     waiter = sub.add_parser(
@@ -305,12 +419,33 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     applier.set_defaults(func=_cmd_apply)
+
+    banker = sub.add_parser(
+        "bank", help="file a finished session in the on-box campaign home"
+    )
+    banker.add_argument(
+        "session_dir",
+        help="the live session bundle to bank (the directory holding info.json)",
+    )
+    banker.add_argument(
+        "--campaign-root",
+        default=None,
+        help="where banked rounds live (default: the on-box campaign home)",
+    )
+    banker.add_argument("--json", action="store_true", help="emit JSON, not text")
+    banker.set_defaults(func=_cmd_bank)
     return parser
 
 
 def main(argv: Sequence[str] | None = None, *, opener: Any | None = None) -> int:
-    """``opener`` is :class:`WizardClient`'s own transport seam, for tests."""
+    """``opener`` is :class:`WizardClient`'s own transport seam, for tests.
+
+    ``bank`` reaches no wizard, so no client is built -- and it declares none
+    of :func:`_connection_args`' arguments to build one from.
+    """
     args = build_parser().parse_args(list(argv) if argv is not None else None)
+    if not args.wizard:
+        return int(args.func(args))
     client = WizardClient(
         host_header=args.hostname or read_identity().hostname,
         base_url=args.base_url,

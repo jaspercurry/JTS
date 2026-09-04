@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Behaviour pins for the PROPOSE door onto a banked round.
+"""Behaviour pins for the delay-landscape door onto a banked round.
 
 Three questions, one altitude each: does the door read the bank the store
 actually wrote, does it hand the operator a line they can run, and does a
@@ -20,14 +20,17 @@ import pytest
 from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.delay_landscape import (
+    REFUSAL_FC_OUTSIDE_OVERLAP,
     DelayLandscapeError,
     compute_landscape,
 )
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL, PHASE_MEASURE
 from jasper.active_speaker.crossover_v2.position_cycle import read_take_curves
 from jasper.active_speaker.delay_sweep import sweep_spec
+from jasper.audio_measurement.analysis import ShoulderSpan
+from jasper.cli import null_door
 from jasper.cli.angle_capture import build_parser as angle_capture_parser
-from jasper.cli.delay_sweep import main
+from jasper.cli.round_views import main
 
 FC_HZ = 1800.0
 
@@ -64,6 +67,7 @@ def _bank(
     position_deg: int = 0,
     kind: str = POSITION_EVIDENCE_KIND,
     take_id: str = "p0_a01",
+    composition: str | None = None,
 ) -> Path:
     """A bundle carrying one banked take, at the path the store writes.
 
@@ -83,6 +87,7 @@ def _bank(
             "phase": phase,
             "take_id": take_id,
             "position_deg": position_deg,
+            **({"phase_composition": composition} if composition else {}),
             "curves": curves,
         }),
         encoding="utf-8",
@@ -91,7 +96,7 @@ def _bank(
 
 
 def _propose(bundle: Path, capsys, *extra):
-    code = main(["propose", str(bundle), "--fc-hz", str(FC_HZ), *extra])
+    code = main(["delay-landscape", str(bundle), "--fc-hz", str(FC_HZ), *extra])
     captured = capsys.readouterr()
     return code, json.loads(captured.out), captured.err
 
@@ -191,7 +196,7 @@ def test_curves_that_cannot_span_the_shoulders_refuse_verbatim(
 
     assert code == 1
     assert payload["status"] == "refused"
-    assert payload["reason"] == "delay_propose_landscape_unsupported"
+    assert payload["reason"] == REFUSAL_FC_OUTSIDE_OVERLAP
 
     # Verbatim, pinned against the module that owns the sentence rather than
     # against a copy of its wording: re-word the refusal there and this still
@@ -215,7 +220,7 @@ def test_a_bundle_with_no_round_refuses_before_it_reads_anything(
 ) -> None:
     code, payload, err = _propose(tmp_path, capsys)
     assert code == 1
-    assert payload["reason"] == "delay_propose_no_round"
+    assert payload["reason"] == "delay_landscape_no_round"
 
 
 def test_a_take_carrying_one_role_is_not_half_an_answer(tmp_path, capsys) -> None:
@@ -226,7 +231,7 @@ def test_a_take_carrying_one_role_is_not_half_an_answer(tmp_path, capsys) -> Non
     bundle = _bank(tmp_path, curves=[_curve("woofer")])
     code, payload, err = _propose(bundle, capsys)
     assert code == 1
-    assert payload["reason"] == "delay_propose_no_banked_curves"
+    assert payload["reason"] == "delay_landscape_no_banked_curves"
 
 
 @pytest.mark.parametrize(
@@ -269,10 +274,36 @@ def test_a_lateral_pose_answers_when_the_caller_asks_for_one(
     assert payload["landscape"]["best_coordinate_us"] == pytest.approx(200.0, abs=50.0)
 
 
+def test_the_proposal_echoes_the_composition_its_take_was_banked_under(
+    tmp_path, capsys,
+) -> None:
+    """docs/tuning-methodology.md §4 step 1, stated by the tool.
+
+    Whether the analysis divided the emitted protection out and multiplied the
+    configured crossover in is a fact about the take, not about `--phase`, and
+    a protection-retained optimum is contaminated evidence. So the proposal
+    echoes what the take stamped — and `None` for a take banked before the
+    field existed, which is unknown rather than either one.
+    """
+
+    curves = [_curve("woofer", arrival_us=200.0), _curve("tweeter")]
+    stated = _bank(
+        tmp_path / "stated", curves=curves, composition="crossover_composed",
+    )
+    legacy = _bank(tmp_path / "legacy", curves=curves)
+
+    _code, proposed, _err = _propose(stated, capsys)
+    _code, unstamped, _err = _propose(legacy, capsys)
+
+    assert proposed["phase"] == PHASE_MEASURE
+    assert proposed["phase_composition"] == "crossover_composed"
+    assert unstamped["phase_composition"] is None
+
+
 def test_the_spec_the_door_builds_is_the_shared_one(tmp_path) -> None:
-    """`propose` must bound its grid with the same `sweep_spec` the landscape
-    reads its bars from, or the printed coordinates would not be the ones the
-    verdict grades."""
+    """`delay-landscape` must bound its grid with the same `sweep_spec` the
+    landscape reads its bars from, or the printed coordinates would not be the
+    ones the verdict grades."""
 
     spec = sweep_spec(
         crossover_fc_hz=FC_HZ, upper_role="tweeter", lower_role="woofer",
@@ -282,7 +313,7 @@ def test_the_spec_the_door_builds_is_the_shared_one(tmp_path) -> None:
     assert spec.negative_delay_target == "woofer"
 
 
-def test_a_retaken_pose_proposes_off_the_retake_not_the_take_it_replaced(
+def test_a_retaken_pose_reads_the_retake_not_the_take_it_replaced(
     tmp_path, capsys,
 ) -> None:
     """A superseded take stays on disk as the honest walk record, and `take_id`
@@ -300,3 +331,122 @@ def test_a_retaken_pose_proposes_off_the_retake_not_the_take_it_replaced(
     assert code == 0
     assert payload["take_path"].endswith("p0_a02.json")
     assert payload["landscape"]["best_coordinate_us"] == pytest.approx(200.0, abs=50.0)
+
+
+def _null_row(bundle: Path, *, delay_us: float, depth_db: float | None = None,
+              inverted: bool = True, refusal=None):
+    """One `<bundle>/null_runs/` row, written by the door that owns their shape.
+
+    Built through `null_door`'s own writer rather than a hand copy, so a change
+    to the banked row fails here instead of being read past.
+    """
+
+    spec = sweep_spec(
+        crossover_fc_hz=FC_HZ, upper_role="tweeter", lower_role="woofer",
+        signed_acoustic_path_difference_m=0.0,
+    )
+    span = ShoulderSpan(
+        crossover_fc_hz=FC_HZ, overlap_hz=(FC_HZ / 2.0, FC_HZ * 2.0),
+        used_hz=(FC_HZ / 2.0, FC_HZ * 2.0), samples_below_fc=64, samples_above_fc=64,
+    )
+    row = null_door._row(
+        fc_hz=FC_HZ,
+        candidate=spec.dsp_candidate(delay_us),
+        inverted=inverted,
+        inverted_role="tweeter",
+        position_deg=0,
+        trims_db={"woofer": 0.0, "tweeter": -10.0},
+        trims_source="banked_base_trim",
+        gap_ceiling_db=3.3,
+        graph_fingerprint="abc123",
+        wav_sha256="0" * 64,
+        depth_db=depth_db,
+        span=None if refusal else span,
+        refusal=refusal,
+    )
+    return null_door._write_row(bundle / "null_runs", row)
+
+
+def _refused():
+    return null_door.NullDoorRefused(
+        "null_no_shoulders", "the band cannot place a shoulder"
+    )
+
+
+def _confirm(bundle: Path, capsys, *extra):
+    code = main(["delay-confirm", str(bundle), "--fc-hz", str(FC_HZ), *extra])
+    captured = capsys.readouterr()
+    return code, json.loads(captured.out), captured.err
+
+
+def test_delay_landscape_banks_itself_beside_the_round(tmp_path, capsys) -> None:
+    """The prediction is an artifact, not just stdout: `delay-confirm` is graded
+    against it later, and a number an operator only ever saw scroll past is
+    not evidence."""
+
+    bundle = _bank(tmp_path, curves=[
+        _curve("woofer", arrival_us=200.0), _curve("tweeter"),
+    ])
+    code, payload, _err = _propose(bundle, capsys)
+
+    banked = bundle / "delay_landscape.json"
+    assert code == 0
+    assert payload["out"] == str(banked)
+    assert json.loads(banked.read_text())["landscape"] == payload["landscape"]
+
+
+def test_confirm_grades_the_played_rows_against_the_computed_optimum(
+    tmp_path, capsys,
+) -> None:
+    """The loop closes here: the coordinates `delay-landscape` printed were played,
+    `jasper-null` banked a row for each, and the verdict is read off those
+    rows rather than off the model that proposed them."""
+
+    bundle = _bank(tmp_path, curves=[
+        _curve("woofer", arrival_us=200.0), _curve("tweeter"),
+    ])
+    _code, proposed, _err = _propose(bundle, capsys)
+    optimum = proposed["landscape"]["best_coordinate_us"]
+    for coordinate in proposed["landscape"]["confirmation_coordinates_us"]:
+        _null_row(
+            bundle, delay_us=coordinate,
+            depth_db=26.0 if coordinate == optimum else 6.0,
+        )
+
+    code, payload, err = _confirm(bundle, capsys)
+
+    assert code == 0
+    assert payload["verdict"] == "delay_resolved_robust"
+    assert payload["prescribable_delay_us"] == pytest.approx(optimum)
+    banked = json.loads((bundle / "delay_confirmation.json").read_text())
+    assert banked["verdict"]["verdict"] == payload["verdict"]
+    assert banked["verdict"]["computed_optimum_us"] == pytest.approx(optimum)
+    # Every graded row is named with its coordinate and depth, and nothing
+    # from the capture rides along.
+    assert len(banked["graded_rows"]) == len(
+        proposed["landscape"]["confirmation_coordinates_us"]
+    )
+    assert all(
+        "wav_sha256" not in row and {"delay_us", "depth_db"} <= set(row)
+        for row in banked["graded_rows"]
+    )
+    assert err.strip()
+
+
+def test_confirm_refuses_rows_it_cannot_compare(tmp_path, capsys) -> None:
+    """A refused row has no depth and an in-phase row read the summed corner
+    rather than the reverse null — neither is a confirmation, and grading a
+    landscape off nothing is refused by name, not answered."""
+
+    bundle = _bank(tmp_path, curves=[
+        _curve("woofer", arrival_us=200.0), _curve("tweeter"),
+    ])
+    _null_row(bundle, delay_us=0.0, depth_db=22.0, inverted=False)
+    _null_row(bundle, delay_us=200.0, refusal=_refused())
+
+    code, payload, _err = _confirm(bundle, capsys)
+
+    assert code == 1
+    assert payload["status"] == "refused"
+    assert payload["reason"] == "delay_confirm_no_measured_rows"
+    assert not (bundle / "delay_confirmation.json").exists()

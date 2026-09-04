@@ -87,7 +87,7 @@ delta).
   `[20, 350]` — corrected-narrow-stated-wide, live on the household
   surface today. RC1 fixes this (the one named exception to its
   behavior-identical promise).
-- Vocabulary: peaking bells only (`correction/peq.py`, greedy
+- Vocabulary: peaking bells only (`audio_measurement/peq.py`, greedy
   peak-fit); shelves exist only in the taste layer. The round-trip
   reader `extract_room_peqs_from_config_text` regex-matches peaking
   blocks only — a new room-layer filter type is **silently dropped**
@@ -336,16 +336,15 @@ lanes (`-p no:randomly`).
   and [`tests/test_correction_boundary_ssot.py`](../tests/test_correction_boundary_ssot.py). Four
   deltas from the text above, all deliberate:
   (i) the SSOT is homed in **`audio_measurement`, not `correction`**.
-  The reason is *not* a strict layer order — `correction` and
-  `active_speaker` import each other in both directions
-  (`active_speaker.linearization_fit` -> `correction.peq`;
-  `correction.runtime_safety` -> `active_speaker.runtime_contract`),
-  so neither is below the other. The property that actually earns the
-  home is narrower and verified: `audio_measurement` is **imported by
-  both and imports neither**, so it is the one package every consumer
-  — including `audio_measurement.analysis`, itself a routed site — can
-  read the boundary from with no new cross-package edge. A contract
-  test pins that invariant;
+  `correction` sits above `active_speaker` (`correction.runtime_safety`
+  -> `active_speaker.runtime_contract`), so homing the constant there
+  would force `active_speaker` to import upward — which a contract test
+  forbids. The property that actually earns the home is narrower:
+  `audio_measurement` is **imported by both and imports neither**, so it
+  is the one package every consumer — including
+  `audio_measurement.analysis`, itself a routed site — can read the
+  boundary from with no new cross-package edge. A contract test pins
+  that invariant;
   (ii) the candidate extension needed **no change to
   `measured_crossover_candidate.py`** — the floor and gated curve
   ride *inside* `exclusion_evidence`, a free-form mapping already

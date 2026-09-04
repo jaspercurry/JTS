@@ -95,6 +95,7 @@ from .busctl import system_busctl
 from .control import restart_broker
 from .fanin.control import fanin_command
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
+from .route_latency.status_socket import FANIN_STATUS_SOCKET
 from .source_state import (
     airplay_playing_observed as airplay_playing,
     bluetooth_playing_observed as bluetooth_playing,
@@ -102,13 +103,13 @@ from .source_state import (
     usbsink_direct_frames_read,
     usbsink_direct_streaming,
 )
-from .spotify_oauth import default_spotify_redirect_uri
+from .spotify_oauth import resolved_spotify_redirect_uri
 
 logger = logging.getLogger(__name__)
 
 
 FANIN_CONTROL_SOCKET = os.environ.get(
-    "JASPER_FANIN_CONTROL_SOCKET", "/run/jasper-fanin/control.sock",
+    "JASPER_FANIN_CONTROL_SOCKET", FANIN_STATUS_SOCKET,
 )
 MUX_CONTROL_SOCKET = "/run/jasper-mux/control.sock"
 # Persisted so a household's manual pin survives the Restart=always
@@ -133,7 +134,7 @@ FANIN_TEST_OWNERS = frozenset({
 })
 # A diagnostic owner must renew before this monotonic deadline. This is long
 # enough for the commissioning tone (web_commissioning.COMMISSION_TONE_DURATION_S);
-# correction renews every correction.coordinator.MEASUREMENT_GATE_REFRESH_SEC. A web
+# correction renews every measurement_window.MEASUREMENT_GATE_REFRESH_SEC. A web
 # worker crash therefore self-recovers instead of pinning household music off.
 FANIN_TEST_LEASE_SEC = 60.0
 SHAIRPORT_MPRIS_BUS = "org.mpris.MediaPlayer2.ShairportSync"
@@ -1160,14 +1161,11 @@ class Mux:
         from .renderer import RendererClient
         from .speaker_name import runtime_name as speaker_runtime_name
         from .volume_coordinator import VolumeCoordinator
-        from .volume_persistence import VolumePersistence
+        from .volume_persistence import VolumePersistence, configured_path
 
         camilla = primary_controller()
         persistence = VolumePersistence(
-            os.environ.get(
-                "JASPER_VOLUME_STATE_PATH",
-                "/var/lib/jasper/speaker_volume.json",
-            ),
+            configured_path(),
         )
         backend = RendererClient(librespot_state_path=self._librespot_state_path)
         coordinator = VolumeCoordinator(
@@ -1784,12 +1782,10 @@ class Mux:
                 ),
                 default_name="default",
             )
-            hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
-            default_redirect_uri = default_spotify_redirect_uri(hostname)
             result = build_clients(
                 registry,
                 client_id=client_id,
-                redirect_uri=os.environ.get("SPOTIFY_REDIRECT_URI") or default_redirect_uri,
+                redirect_uri=resolved_spotify_redirect_uri(),
             )
             if not result.clients:
                 logger.debug("spotify Web API: no accounts authorized")

@@ -78,7 +78,7 @@ operator-supervised, and fail-closed. For every discovery/candidate activation
 the runner:
 
 - enters the existing `measurement_window()`
-  (`jasper/correction/coordinator.py`);
+  (`jasper/measurement_window.py`);
 - snapshots the **exact** predecessor graph + profile;
 - fades to the safe floor via the existing ramp / `safe_playback` path;
 - applies the proposed sealed natural graph and the target's LT/subsonic values

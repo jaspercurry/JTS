@@ -1068,7 +1068,9 @@ persisted by
 contract "records what the operator is trying to build and any externally
 researched driver facts" and deliberately does not compile filters or authorize
 playback. The externally-researched half arrives through the driver-research
-prompt owned by
+prompt in
+[`driver_safety_prompt.py`](../jasper/active_speaker/driver_safety_prompt.py),
+against the request and result contract owned by
 [`driver_safety.py`](../jasper/active_speaker/driver_safety.py)
 (`driver_research_targets`, `validate_driver_research_result_shape`,
 `finalise_research_result`), which is decision 9's rule in code: it asks for the
@@ -1219,7 +1221,7 @@ because they are easy to re-derive wrongly:
 
 - Per-driver **complex** transfer functions are produced and direct-arrival
   gated — `DriverResponse.complex_tf` in
-  [`program_analysis.py`](../jasper/audio_measurement/program_analysis.py).
+  [`program_analysis/`](../jasper/audio_measurement/program_analysis/).
 - The two drivers therefore share an **exact** common time origin: they are in
   the same capture, so **there is no cross-capture alignment problem for the
   A/B pair at all**. The USB start-offset scatter that motivates a shared
@@ -1358,7 +1360,7 @@ heading: what is absent there is a *guard*, not the capture it guards.
    S7, as the optimizer over it was earlier, by ruling R1; RE-LANDED
    2026-08-31 by Wave 6 ticket 6.7, this time with the consumers S7 found
    missing (the 3.8 banked-solo loader, the 4.5 verify delta, and the
-   `jasper-forward-model` door).**
+   `jasper-round-views forward-model` door).**
    The complex-summation predictor was `crossover_v2/forward_model.py`
    (`driver_plants` / `branch_operator` / `predict_sum`, plus the
    `XoverCandidate` it predicted for). It was pure and fixture-tested. The
@@ -1457,7 +1459,7 @@ laptop-side). The figures are that night's evidence, not standing constants.
    in-window failures lived in a non-minimum-phase summation zone and
    re-attributed them to rule 2. **Status: the instrument ships** as
    [`crossover_v2/feature_classifier.py`](../jasper/active_speaker/crossover_v2/feature_classifier.py)
-   (`jasper-classify-features`), which runs the excess-group-delay test, the
+   (`jasper-round-views classify-features`), which runs the excess-group-delay test, the
    gate-invariance check against a matched-Q null model, and the timing-scatter
    test over one round's banked captures, and refuses to emit a verdict at all
    unless its known-answer controls pass. It is an OFFLINE run over a banked
@@ -1548,7 +1550,7 @@ this stage reads as more finished than it is.
 
 | rule | the decision it has to make | ships? | what ships beside it |
 |---|---|---|---|
-| 1 classify first | per-bin minimum-phase classification | **partial** | the **reading** ships for the prescribed per-driver class, both signs — every filter is checked against the banked verdicts (nearest decides, sign must match) and the ones no verdict backs are counted onto `prescription.unvouched_filters` ([`driver_prescription.py`](../jasper/active_speaker/crossover_v2/driver_prescription.py), vocabulary in [`feature_classification.py`](../jasper/active_speaker/crossover_v2/feature_classification.py)). It **discloses and does not refuse** since the owner's 2026-08-23 ruling: the vouch is a prediction about whether a filter will help, and a refusal on it cost more than it saved — a role whose incumbent carried a shelf could never keep it (#2863). The **instrument** ships too — [`feature_classifier.py`](../jasper/active_speaker/crossover_v2/feature_classifier.py) / `jasper-classify-features`, controls-gated — but it types detected FEATURES rather than bins, runs OFFLINE over a banked round rather than inside one, and reads only horizontal captures — disclosed once in the evidence packet's `not_evaluated` block, not refused per verdict. `positional_support` remains the cross-position half for the blend boost class |
+| 1 classify first | per-bin minimum-phase classification | **partial** | the **reading** ships for the prescribed per-driver class, both signs — every filter is checked against the banked verdicts (nearest decides, sign must match) and the ones no verdict backs are counted onto `prescription.unvouched_filters` ([`driver_prescription.py`](../jasper/active_speaker/crossover_v2/driver_prescription.py), vocabulary in [`feature_classification.py`](../jasper/active_speaker/crossover_v2/feature_classification.py)). It **discloses and does not refuse** since the owner's 2026-08-23 ruling: the vouch is a prediction about whether a filter will help, and a refusal on it cost more than it saved — a role whose incumbent carried a shelf could never keep it (#2863). The **instrument** ships too — [`feature_classifier.py`](../jasper/active_speaker/crossover_v2/feature_classifier.py) / `jasper-round-views classify-features`, controls-gated — but it types detected FEATURES rather than bins, runs OFFLINE over a banked round rather than inside one, and reads only horizontal captures — disclosed once in the evidence packet's `not_evaluated` block, not refused per verdict. `positional_support` remains the cross-position half for the blend boost class |
 | 2 width-matched filters | choosing Q from a feature's measured width | **no** | the clamp itself, `BLEND_FILTER_Q = 2.0` — widened for cuts by [PR #2730](https://github.com/jaspercurry/JTS/pull/2730) (merged). A banked feature's `measured_q` is now *reported* to a prescriber in the packet's classification block, but nothing in the tree chooses a Q from it |
 | 3 correct in the owning branch | routing a defect to per-driver vs shared | **partial** | ships for the **prescribed** path: the two classes have separate gates, separate bands and separate candidate fields, so a per-driver defect can only reach `linearization` and a region-wide one can only reach `blend_correction` — neither gate can accept the other's filter. The **deterministic** path still makes no such routing decision |
 | 4 boosts pay a bar | the **blend-stage** boost route, gated on min-phase + multi-angle + budget | **no**, for the evidence half | what ships on the **per-driver prescribed** class is the SPEND half: a per-role composed budget that bounds the maximum-SPL spend at 13.0 dB, plus the per-filter caps and the crossover-knee bar ([`driver_prescription.py`](../jasper/active_speaker/crossover_v2/driver_prescription.py)) — 5.0 dB until ruling R8 widened the boost caps to 12 dB on 2026-08-22. The EVIDENCE half shipped in [PR #2754](https://github.com/jaspercurry/JTS/pull/2754) and was withdrawn on 2026-08-23: a nearest `defect-boostable` verdict reporting its own `depth_db`, and a boost no deeper than it, are now disclosed rather than required — the owner ruled that a candidate inside the caps may be tested, and NOT ONE row of the 2026-08-19 record carries a depth, so the bar refused every boost that record could have produced. Layer 1a's boost bounds also ship and were exercised in series 1 — `MAX_LINEARIZATION_BOOST_DB`, enforced in `runtime_contract.py`. The **blend** stage's own five-condition bar has still never been exercised |
@@ -1670,9 +1672,8 @@ durable state and evidence key on, and the host owns the mapping onto the
 persisted failure codes — the provider speaks only the flow's reason
 vocabulary. The contract itself lives in
 [jasper/active_speaker/crossover_v2/capture_source.py](../jasper/active_speaker/crossover_v2/capture_source.py)
-(do not restate it here); the relay provider's private choreography is
-[jasper/web/correction_crossover_v2_relay.py](../jasper/web/correction_crossover_v2_relay.py),
-and the wired (Pi-mic) provider is the seam's next occupant.
+(do not restate it here); the relay provider was deleted (ADR-0222) and the
+wired (Pi-mic) provider is the seam's occupant.
 
 ## Speaker-class applicability (#1671)
 

@@ -281,13 +281,13 @@ def test_a_session_with_no_lateral_group_still_folds_the_candidate_into_measure(
 def test_a_flag_on_mid_walk_state_reaches_the_lateral_wizard_screen():
     """The third guard of the completeness claim — it fails if a SURFACE was
     missed rather than a rule broken. Driven end to end: a real conductor's
-    recorded ``session_phases``, through ``_phase_from_state``, into the
+    recorded ``session_phases``, through ``crossover_v2_phase``, into the
     envelope, flag-on and mid-walk.
     """
     from jasper.active_speaker.crossover_envelope_v2 import (
         build_crossover_envelope_v2,
+        crossover_v2_phase,
     )
-    from jasper.web.correction_crossover_v2_status import _phase_from_state
 
     fakes = FakeSeams()
     c = _lateral_conductor(fakes)
@@ -296,11 +296,11 @@ def test_a_flag_on_mid_walk_state_reaches_the_lateral_wizard_screen():
     assert PHASE_LATERAL in session_phases
 
     # What the durable state looks like standing at pose two of six.
-    phase = _phase_from_state({
+    phase = crossover_v2_phase({
         "session_phases": list(session_phases),
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "applied": False,
-    })
+    }, review_declined=False)
     assert phase == PHASE_LATERAL
 
     env = build_crossover_envelope_v2({

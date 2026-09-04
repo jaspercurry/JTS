@@ -163,7 +163,7 @@ def test_echo_back_renders_exactly_what_its_headline_claims() -> None:
     either set would recreate exactly that gap.
     """
 
-    from jasper.active_speaker.driver_safety import _PROMPT_PROVENANCE_KEYS
+    from jasper.active_speaker.driver_safety_prompt import _PROMPT_PROVENANCE_KEYS
 
     claimed = set(_PROMPT_PROVENANCE_KEYS) | _frozen_safety_field_names()
     echoed = _echoed_field_keys()

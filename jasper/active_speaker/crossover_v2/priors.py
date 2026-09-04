@@ -15,7 +15,6 @@ session evidence arrives as arguments.
 from __future__ import annotations
 
 import functools
-from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from ..branch_chain import crossover_response_complex, radiating_band_hz, sections_by_role
@@ -37,7 +36,6 @@ __all__ = [
     "measure_sweep_durations_s",
     "check_priors",
     "measure_priors",
-    "candidate_priors",
     "lateral_priors",
     "verify_priors",
     "cloud_priors",
@@ -182,8 +180,7 @@ def measure_priors(
     it. ``ambient_report`` is CHECK's measured room floor (#1830), ``None`` only
     where CHECK produced none, leaving the SNR verdict honestly absent. The
     explicit alignment pins are REQUEST facts, validated at the boundary the
-    request arrived on, and survive :func:`candidate_priors` untouched — neither
-    the physical arrival gap nor the summing basin moves with the corner.
+    request arrived on.
 
     The three configured-path fields are gated on ``protection_sections_by_role``
     together: ``_compose_configured_path_ir`` RAISES on a partial prior set.
@@ -215,31 +212,6 @@ def measure_priors(
             else candidate_required_band_hz(
                 sections_by_role(source_preset.crossover_regions), fc_hz=fc_hz,
             )
-        ),
-    )
-
-
-def candidate_priors(
-    base: MeasurementPriors,
-    fc_hz: float,
-    sections: Mapping[str, tuple[Any, ...]],
-) -> MeasurementPriors:
-    """MEASURE's priors re-pointed at one candidate — THREE fields move.
-
-    No production caller today; it served the closed corner sweep. Takes an
-    already-built set rather than building one, so the other seven fields keep
-    one writer. ``configured_polarity_sign_by_role`` and
-    ``measurement_protection_response_by_role`` are carried UNCHANGED and are
-    load-bearing: ``_compose_configured_path_ir`` raises on a PARTIAL set.
-    """
-    return replace(
-        base,
-        crossover_fc_hz=float(fc_hz),
-        configured_crossover_response_by_role=role_transfers(sections),
-        # The same union :func:`measure_priors` takes, at THIS candidate's
-        # corner — asked of its single owner rather than re-spelled.
-        candidate_required_band_hz_by_role=candidate_required_band_hz(
-            sections, fc_hz=float(fc_hz),
         ),
     )
 

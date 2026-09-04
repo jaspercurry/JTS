@@ -60,6 +60,7 @@ from ..google_creds import (
     default_token_path_for,
     save_token,
 )
+from ..google_oauth import resolved_google_redirect_uri
 from ..log_event import log_event
 from ._common import (
     begin_request,
@@ -108,25 +109,6 @@ _CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+\.apps\.googleusercontent\.com$")
 _AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
 _TOKEN_URI = "https://oauth2.googleapis.com/token"
 _USERINFO_URI = "https://openidconnect.googleapis.com/v1/userinfo"
-
-# Google rejects mDNS hostnames (`.local`) and bare LAN IPs as OAuth
-# redirect URIs — only public TLDs or `localhost` are accepted, neither
-# of which fits a Pi accessed from household phones. So we register a
-# public GitHub Pages page that reads `?host=<hostname>` and bounces
-# the browser back to the speaker over HTTP+mDNS. Source repo:
-# https://github.com/jaspercurry/google-oauth-callback. Same pattern
-# as the Spotify wizard (jaspercurry/spotify-oauth-callback).
-_BOUNCE_REDIRECT_URI_BASE = (
-    "https://jaspercurry.github.io/google-oauth-callback/"
-)
-
-
-def default_redirect_uri() -> str:
-    """Default OAuth redirect URI for this speaker — the bounce page
-    parameterised with our mDNS hostname."""
-    hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
-    return f"{_BOUNCE_REDIRECT_URI_BASE}?host={hostname}"
-
 
 # ----------------------------------------------------------------------
 # Persistence helpers — env file + token writes.
@@ -238,7 +220,7 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
       3. Enable the Calendar and Gmail APIs.
       4. Create an OAuth client and paste creds here. The registered
          redirect URI is a GitHub Pages bounce page because Google
-         rejects mDNS hostnames — see `default_redirect_uri` above.
+         rejects mDNS hostnames — see jasper.oauth_redirect.
     """
     redirect_safe = html.escape(redirect_uri)
     if read_only:
@@ -1090,7 +1072,7 @@ def make_server(
     cfg = {
         "client_id": client_id,
         "client_secret": client_secret,
-        "redirect_uri": redirect_uri or default_redirect_uri(),
+        "redirect_uri": redirect_uri or resolved_google_redirect_uri(),
         "registry_path": registry_path,
     }
     return _systemd.make_http_server(target, _make_handler(cfg))
@@ -1119,13 +1101,7 @@ def main(argv: list[str] | None = None) -> int:
             "/var/lib/jasper-secrets/google/accounts.json",
         ),
     )
-    parser.add_argument(
-        "--redirect-uri",
-        default=os.environ.get(
-            "GOOGLE_REDIRECT_URI",
-            default_redirect_uri(),
-        ),
-    )
+    parser.add_argument("--redirect-uri", default=resolved_google_redirect_uri())
     args = parser.parse_args(argv)
 
     logging.basicConfig(

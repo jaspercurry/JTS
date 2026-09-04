@@ -942,7 +942,7 @@ ship; the later owner inherits the record and may extend it.
   **There is a second clamp, and an implementer widening the band needs
   both:** `_analyze_verify` then applies `lo_clamped = max(lo,
   summed.validity_floor_hz)`
-  ([`program_analysis.py`](../../jasper/audio_measurement/program_analysis.py)),
+  ([`program_analysis/`](../../jasper/audio_measurement/program_analysis/)),
   which can only raise the floor further — so widening `overlap_band_hz`
   alone does not reach 1919 Hz at a reflective mic position. So "VERIFY also
   evaluates an absolute frame at Fc" cannot see the defect unless both clamps

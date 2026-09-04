@@ -5,7 +5,7 @@
 """Unit tests for the jasper-doctor audio domain.
 
 Every assertion pins ``status`` and ``reason`` — never ``detail`` prose
-(ADR-0228 rule 3). ``audio.REASON_*`` is the closed vocabulary.
+(ADR-0232 rule 3). ``audio.REASON_*`` is the closed vocabulary.
 """
 
 import grp
@@ -37,6 +37,7 @@ from jasper.output_hardware import (
 )
 
 
+from ._sounddevice_stub import stub_sounddevice
 from .doctor_test_support import _fresh_cfg, record_active_dac
 
 
@@ -549,14 +550,11 @@ def test_check_mic_capture_falls_back_to_daemon_active(monkeypatch):
         def rec(self, *a, **kw):
             raise ValueError("No input device matching 'hw:7,1'")
 
-    sys.modules["sounddevice"] = FakeSD()
-    try:
-        with patch.object(doctor.audio, "_jasper_voice_active", return_value=True):
-            r = doctor.check_mic_capture(cfg)
-        assert r.status == "skipped"
-        assert r.reason == audio.REASON_MIC_HELD_BY_VOICE
-    finally:
-        del sys.modules["sounddevice"]
+    stub_sounddevice(monkeypatch, FakeSD())
+    with patch.object(doctor.audio, "_jasper_voice_active", return_value=True):
+        r = doctor.check_mic_capture(cfg)
+    assert r.status == "skipped"
+    assert r.reason == audio.REASON_MIC_HELD_BY_VOICE
 
 
 def test_check_mic_capture_fails_hard_when_daemon_inactive(monkeypatch):
@@ -572,14 +570,11 @@ def test_check_mic_capture_fails_hard_when_daemon_inactive(monkeypatch):
         def rec(self, *a, **kw):
             raise ValueError("No input device matching 'hw:7,1'")
 
-    sys.modules["sounddevice"] = FakeSD()
-    try:
-        with patch.object(doctor.audio, "_jasper_voice_active", return_value=False):
-            r = doctor.check_mic_capture(cfg)
-        assert r.status == "fail"
-        assert r.reason == audio.REASON_MIC_CAPTURE_OPEN_FAILED
-    finally:
-        del sys.modules["sounddevice"]
+    stub_sounddevice(monkeypatch, FakeSD())
+    with patch.object(doctor.audio, "_jasper_voice_active", return_value=False):
+        r = doctor.check_mic_capture(cfg)
+    assert r.status == "fail"
+    assert r.reason == audio.REASON_MIC_CAPTURE_OPEN_FAILED
 
 
 # ---- check_dac_usb_sync_mode (clock-coherence advisory) ---------------------
@@ -819,7 +814,7 @@ def test_recorded_silence_stays_a_failure_even_with_an_accessory(
         def abs(_x: object) -> object:
             return types.SimpleNamespace(max=lambda: 0)
 
-    monkeypatch.setitem(sys.modules, "sounddevice", _FakeSd)
+    stub_sounddevice(monkeypatch, _FakeSd)
     monkeypatch.setitem(sys.modules, "numpy", _FakeNp)
     result = audio.check_mic_capture(_CFG)
     assert result.status == "fail"
@@ -867,7 +862,7 @@ def _drive_capture_open_failure_site(monkeypatch: pytest.MonkeyPatch):
         def rec(*_a: object, **_k: object) -> object:
             raise OSError("no such device")
 
-    monkeypatch.setitem(sys.modules, "sounddevice", _FakeSd)
+    stub_sounddevice(monkeypatch, _FakeSd)
     monkeypatch.setitem(sys.modules, "numpy", types.SimpleNamespace())
     return audio.check_mic_capture(_CFG)
 

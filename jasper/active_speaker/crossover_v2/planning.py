@@ -4,14 +4,13 @@
 
 """ONE candidate, assembled — and what its linearization produced (#2291).
 
-Owns the build: the eligibility gate, the planner request this candidate's own
-sections imply, the cloud evidence its envelope consumed, and the assembly of
-the emitted ``MeasuredCrossoverCandidate``. Two rules. The crossover corner is
-derived from the candidate's own sections; no session Fc is read. And this
-module writes nothing and logs nothing itself except through its injected
-ports — the one ``log_event`` site is the guard for a ``journal`` port that
-raised being handed a record (#2361), the one channel a broken port cannot
-also take down.
+Owns the build: the eligibility gate, the planner request this candidate's
+sections imply, the cloud evidence its envelope consumed, and the emitted
+``MeasuredCrossoverCandidate``. Two rules: the crossover corner is derived
+from the candidate's own sections, never a session Fc; and this module logs
+nothing itself except ONE guarded ``log_event`` call — the guard for a
+``journal`` port that raised being handed a record (#2361), the one channel
+a broken port cannot also take down.
 """
 
 from __future__ import annotations
@@ -542,6 +541,11 @@ def build_candidate(
                 role: pinned.get(role, db)
                 for role, db in role_attenuations_db.items()
             }
+        if displaced_trim_db:
+            # A pin REPLACES what ``decide_trim`` committed, so this build no
+            # longer ships that pair and must not name it: the proposal falls
+            # back to ``TrimStrategy.COMMITTED_PAIR_UNRECORDED``.
+            state = replace(state, trim_strategy=None, anchor_drift_db=None)
         candidate_linearization = driver_prescription_to_candidate_fields(
             driver_prescription, fitted=linearization
         )[LINEARIZATION_CANDIDATE_FIELD]

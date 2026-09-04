@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""``jasper-round-bank``: one live session into the on-box campaign home.
+"""``jasper-round bank``: one live session into the on-box campaign home.
 
 The source session is the real one ``tests/crossover_v2_banked_round.py``
 builds through the product's own writers, so the tree this banks is the tree
@@ -29,7 +29,7 @@ from jasper.active_speaker.round_bank import (
     RoundBankError,
     bank_round,
 )
-from jasper.cli import round_bank as cli
+from jasper.cli import round as cli
 
 from tests.crossover_v2_banked_round import bank_measure_round
 
@@ -285,17 +285,21 @@ def test_an_unreadable_info_json_exits_as_a_filesystem_failure(
     monkeypatch.setattr(Path, "read_text", _denied)
     parser = cli.build_parser()
     args = parser.parse_args(
-        [str(session_dir), "--campaign-root", str(tmp_path / "campaigns"), "--json"]
+        ["bank", str(session_dir), "--campaign-root",
+         str(tmp_path / "campaigns"), "--json"]
     )
 
-    assert args.func(args) == cli.EXIT_BANK_FAILED
+    assert args.func(args) == cli.EXIT_WRITE_FAILED
 
     assert json.loads(capsys.readouterr().out)["reason"] == "write_failed"
 
 
 def test_cli_json_carries_the_banked_path_and_its_provenance(tmp_path, capsys):
     session_dir, _state = _live_session(tmp_path)
-    argv = [str(session_dir), "--campaign-root", str(tmp_path / "campaigns"), "--json"]
+    argv = [
+        "bank", str(session_dir), "--campaign-root",
+        str(tmp_path / "campaigns"), "--json",
+    ]
 
     assert cli.main(argv) == cli.EXIT_OK
 
@@ -305,12 +309,13 @@ def test_cli_json_carries_the_banked_path_and_its_provenance(tmp_path, capsys):
     assert payload["provenance"]["session_id"] == session_dir.name
 
 
-def test_cli_refusal_is_exit_2_with_the_reason_slug(tmp_path, capsys):
+def test_cli_refusal_carries_the_reason_slug(tmp_path, capsys):
     not_a_bundle = tmp_path / "empty"
     not_a_bundle.mkdir()
     parser = cli.build_parser()
     args = parser.parse_args(
-        [str(not_a_bundle), "--campaign-root", str(tmp_path / "campaigns"), "--json"]
+        ["bank", str(not_a_bundle), "--campaign-root",
+         str(tmp_path / "campaigns"), "--json"]
     )
 
     assert args.func(args) == cli.EXIT_REFUSED

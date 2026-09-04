@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -56,6 +55,7 @@ from . import volume_diagnostics
 from .bluealsa_probe import active_transport_path
 from .volume_owner import VolumeOwner
 from .volume_persistence import (
+    configured_path,
     VolumePersistence,
     db_to_percent,
     percent_to_db,
@@ -2791,10 +2791,7 @@ def install_env_canonical_target_provider() -> None:
         coord = VolumeCoordinator(
             camilla=primary_controller(),
             persistence=VolumePersistence(
-                os.environ.get(
-                    "JASPER_VOLUME_STATE_PATH",
-                    "/var/lib/jasper/speaker_volume.json",
-                )
+                configured_path()
             ),
             backend=RendererClient(
                 librespot_state_path=librespot_state.configured_path(),

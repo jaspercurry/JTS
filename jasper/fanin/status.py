@@ -22,6 +22,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from jasper.route_latency.status_socket import FANIN_STATUS_SOCKET
+
 
 # The STATUS input-lane ``source`` value on the USB DIRECT lane. Every
 # aloop-reading lane serialises ``source:"lane"``; only the gadget-direct-capture
@@ -38,7 +40,6 @@ FANIN_INPUT_SOURCE_DIRECT = "direct"
 # the Rust serializer publishes.
 FANIN_INPUT_SOURCE_RING = "ring"
 USBSINK_INPUT_LABEL = "usbsink"
-FANIN_STATUS_SOCKET = "/run/jasper-fanin/control.sock"
 
 # Stable ``direct.health`` tokens produced by rust/jasper-fanin.  Health is an
 # instantaneous observability signal owned by the capture process; cumulative

@@ -65,7 +65,8 @@ def doctor_check(
     Args:
         order: sparse sort key in the canonical run sequence; must be unique.
         group: subsystem/domain the check belongs to. Need not match the
-            module name (``drift.py`` registers under ``install``).
+            module name (``drift.py`` registers under ``install``, and the
+            four ``audio_runtime_*`` modules all register under ``audio``).
             Organizational only, except that
             ``__init__._STREAMBOX_OMITTED_DOCTOR_GROUPS`` skips whole groups
             a streambox does not install.

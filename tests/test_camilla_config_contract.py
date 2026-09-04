@@ -688,8 +688,10 @@ def test_parse_camilla_devices_config_extracts_clock_and_outputd_lanes() -> None
         "volume_limit": 0.0,
         "capture_channels": 2,
         "capture_device": "plug:jasper_capture",
+        "capture_type": "Alsa",
         "playback_channels": 2,
         "playback_device": "outputd_content_playback",
+        "playback_type": "Alsa",
     }
 
 

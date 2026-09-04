@@ -8,7 +8,7 @@ Single source of truth for the three ring-platform assets every box ships — th
 compiled ioplug ``.so``, the conf.d PCM definitions (:data:`RING_CONF_PCMS`) and
 the ``/dev/shm/jts-ring`` tmpfs directory — shared by three consumers:
 
-- ``jasper.cli.doctor.audio_runtime.check_ring_platform_assets`` — the
+- ``jasper.cli.doctor.audio_runtime_ring.check_ring_platform_assets`` — the
   deploy-time health probe. It also open-probes the PCMs, which needs
   ``arecord``/``aplay`` and so lives in the doctor.
 - ``jasper.fanin.coupling_reconcile`` — the ``shm_ring`` **activation gate**:

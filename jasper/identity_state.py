@@ -17,19 +17,18 @@ writer) snapshots the three names a speaker really has into
 This module is the read side, mirroring
 :mod:`jasper.voice.provider_state`'s lesson: long-lived daemons must
 re-read wizard/reconciler-owned files fresh, never trust the
-``os.environ`` snapshot taken at process start. Two consumers with
-different needs:
+``os.environ`` snapshot taken at process start. Two kinds of consumer:
 
-  * :func:`effective_hostnames` — called by
-    :mod:`jasper.http_security` on **every management request**, so it
-    keeps an mtime/size-keyed cache (one ``stat()`` per call, a re-parse
-    only when the reconciler rewrote the file). A renamed speaker's
-    management UI stays reachable because the allowlist learns
-    ``jts-2.local`` within one reconciler period.
+  * :func:`effective_hostnames` and :func:`configured_hostname` — on the
+    management request path and behind every URL
+    :func:`jasper.identity.resolve_hostname` builds, so both read through
+    one mtime/size-keyed cache (a ``stat()`` per call, a re-parse only
+    when the reconciler rewrote the file). Only the allowlist follows a
+    rename live: it learns ``jts-2.local`` within one reconciler period,
+    while ``resolve_hostname`` prefers the process environment and so
+    keeps the name its unit started with until the unit restarts.
   * :func:`snapshot` — the ``/state.resilience.identity`` and doctor
-    surface, and the reader :mod:`jasper.identity` falls back to for the
-    recorded ``configured_hostname``; reads fresh, derives a status,
-    never raises.
+    surface; reads fresh, derives a status, never raises.
 
 A missing file (fresh install before the first reconciler run, dev
 checkout) degrades to "no extra names / status=absent" — exactly the
@@ -90,32 +89,44 @@ def _names_from(identity: dict[str, str]) -> frozenset[str]:
     return frozenset(names)
 
 
-# (path, mtime_ns, size) -> names. One entry — there is one identity
-# file per speaker; the tuple key just makes staleness detection exact.
+# (path, mtime_ns, size) -> (parsed identity, allowlist names). One entry —
+# there is one identity file per speaker; the tuple key just makes staleness
+# detection exact.
 _cache_lock = threading.Lock()
 _cache_key: tuple[str, int, int] | None = None
-_cache_names: frozenset[str] = frozenset()
+_cache_value: tuple[dict[str, str], frozenset[str]] = ({}, frozenset())
 
 
-def effective_hostnames(path: str | None = None) -> frozenset[str]:
-    """Hostnames this speaker is *actually* reachable as, per the last
-    reconciler run. Request-path cheap: one ``stat()`` unless the file
-    changed. Empty set when the file is absent (reconciler hasn't run)."""
-    global _cache_key, _cache_names
+def _cached(path: str | None = None) -> tuple[dict[str, str], frozenset[str]]:
+    """Parsed identity file and its name set, re-parsed only when the
+    reconciler rewrote it. ``({}, frozenset())`` when the file is absent."""
+    global _cache_key, _cache_value
     resolved = path or identity_path()
     try:
         st = os.stat(resolved)
         key = (resolved, st.st_mtime_ns, st.st_size)
     except OSError:
-        return frozenset()
+        return ({}, frozenset())
     with _cache_lock:
         if key == _cache_key:
-            return _cache_names
-    names = _names_from(parse_env_file(resolved))
+            return _cache_value
+    identity = parse_env_file(resolved)
+    value = (identity, _names_from(identity))
     with _cache_lock:
         _cache_key = key
-        _cache_names = names
-    return names
+        _cache_value = value
+    return value
+
+
+def effective_hostnames(path: str | None = None) -> frozenset[str]:
+    """Hostnames this speaker is *actually* reachable as, per the last
+    reconciler run. Empty when the file is absent (reconciler hasn't run)."""
+    return _cached(path)[1]
+
+
+def configured_hostname(path: str | None = None) -> str:
+    """The reconciler's snapshot of ``JASPER_HOSTNAME``; "" when absent."""
+    return _cached(path)[0].get("JASPER_IDENTITY_CONFIGURED_HOSTNAME", "").strip()
 
 
 def snapshot(path: str | None = None) -> dict[str, Any]:

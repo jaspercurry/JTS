@@ -879,7 +879,7 @@ def build_audio_profile_status(
 def probe_xvf_mic() -> MicProbe:
     """One cheap XVF snapshot: /proc/asound identity, no stream, no chip write.
 
-    The only mic probe behind an audio-profile status (ADR-0228 rule 1) —
+    The only mic probe behind an audio-profile status (ADR-0232 rule 1) —
     /aec polls it every 3 s and jasper-doctor runs it per check, so it must
     stay total: any probe failure becomes a `probe_error` MicProbe, never an
     exception.

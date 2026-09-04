@@ -3341,7 +3341,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   // Exactly the union of two server-owned sets, in the order they matter to a
   // household reading the panel:
   //   * the five keys the research ask requires a source for
-  //     (driver_safety._PROMPT_PROVENANCE_KEYS), and
+  //     (driver_safety_prompt._PROMPT_PROVENANCE_KEYS), and
   //   * the five fields _profile_core FREEZES into the confirmed safety profile
   //     (its `safety_field_names`).
   // Seven keys, because three overlap. The panel headline states that union as

@@ -297,8 +297,8 @@ def test_browse_once_dedupes_repeated_names(monkeypatch):
 
 def test_browse_once_defaults_port_to_zero_when_absent(monkeypatch):
     """When the SRV record reports no port, ``port`` is 0 (the caller — e.g.
-    rooms_setup — decides whether to default it). Pinned so the primitive
-    stays policy-free."""
+    home_assistant_setup — decides whether to default it). Pinned so the
+    primitive stays policy-free."""
     name = "p._jasper-control._tcp.local."
     _install_fake_zeroconf(
         monkeypatch,

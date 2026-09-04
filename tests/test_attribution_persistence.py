@@ -775,12 +775,12 @@ def test_a_caller_that_passes_no_records_still_gets_the_curves() -> None:
 
 
 def test_state_projection_does_not_inherit_the_per_position_block() -> None:
-    """``_compact_cloud_status`` is a shape-scoped projection: a consumer that
+    """``compact_cloud_status`` is a shape-scoped projection: a consumer that
     reads ``cloud`` alone (the doctor) must never have to parse or skip
     curve-shaped data. Adding members to the pipeline result must not leak
     into it."""
 
-    from jasper.web.correction_crossover_v2_status import _compact_cloud_status
+    from jasper.active_speaker.crossover_envelope_v2 import compact_cloud_status
 
     result = assemble_cloud_group_result(
         _combined(),
@@ -788,7 +788,7 @@ def test_state_projection_does_not_inherit_the_per_position_block() -> None:
         validity_floor_hz=142.9,
         position_records=_records(),
     )
-    compact = _compact_cloud_status({PHASE: {"pipeline": result, "geometry": {}}})
+    compact = compact_cloud_status({PHASE: {"pipeline": result, "geometry": {}}})
 
     assert compact is not None
     assert "positions" not in (compact.get(PHASE) or {})

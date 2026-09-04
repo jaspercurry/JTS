@@ -436,7 +436,7 @@ def _doctor_env(monkeypatch, tmp_path, *, so_bytes=None, record=None):
     Returns the ``.so`` path. ``so_bytes=None`` leaves it absent; ``record=None``
     leaves the provenance file absent.
     """
-    from jasper.cli.doctor import audio_runtime as audio
+    from jasper.cli.doctor import audio_runtime_ring as audio
 
     plugin_dir = tmp_path / "plugindir"
     plugin_dir.mkdir()
@@ -469,7 +469,7 @@ def test_provenance_check_skips_when_the_so_is_absent(monkeypatch, tmp_path):
     """ONE absent file, ONE reason. ``check_ring_platform_assets`` owns the
     missing-asset verdict; a second refusal here would bury the one that names
     the fix."""
-    from jasper.cli.doctor import audio_runtime as audio
+    from jasper.cli.doctor import audio_runtime_ring as audio
 
     _doctor_env(monkeypatch, tmp_path)
     res = audio.check_ring_ioplug_provenance()
@@ -483,7 +483,7 @@ def test_provenance_check_warns_when_the_plugin_is_unvouched(
     """Installed but no record — the shape a REVOKING deploy leaves behind, and
     also the shape of every box that predates the recording. The detail must
     cover both readings and name the redeploy."""
-    from jasper.cli.doctor import audio_runtime as audio
+    from jasper.cli.doctor import audio_runtime_ring as audio
 
     _declared_wire("S16_LE")
     _doctor_env(monkeypatch, tmp_path, so_bytes=b"\x7fELF plugin")
@@ -499,7 +499,7 @@ def test_provenance_check_warns_when_the_installed_so_is_stale(
     rebuild leaves the PREVIOUS .so beside new daemons — structurally valid, so
     the presence check and the open-probe both pass. The sha is what separates
     it from a fresh build."""
-    from jasper.cli.doctor import audio_runtime as audio
+    from jasper.cli.doctor import audio_runtime_ring as audio
 
     _declared_wire("S16_LE")
     _doctor_env(
@@ -519,7 +519,7 @@ def test_provenance_check_reports_the_caps_when_the_record_matches(
     """The vouched path. The capability list is the operationally useful part —
     it is what the reconciler's gate compares a wide wire against — so it is
     printed rather than reduced to 'ok'."""
-    from jasper.cli.doctor import audio_runtime as audio
+    from jasper.cli.doctor import audio_runtime_ring as audio
 
     so_bytes = b"\x7fELF the real plugin"
     _doctor_env(
@@ -544,7 +544,7 @@ def test_provenance_check_reports_a_vouched_plugin_with_no_capabilities(
     plugin is genuinely the one installed (so not stale), and it parses no
     conf.d field (so a wide wire is still refused, by the reconciler's gate).
     """
-    from jasper.cli.doctor import audio_runtime as audio
+    from jasper.cli.doctor import audio_runtime_ring as audio
 
     so_bytes = b"\x7fELF an old but freshly-installed plugin"
     _declared_wire("S16_LE")
@@ -596,7 +596,7 @@ def _declared_wire(tmp_path, monkeypatch):
 
 
 def _resolved_capabilities():
-    from jasper.cli.doctor import audio_runtime as audio
+    from jasper.cli.doctor import audio_runtime_ring as audio
 
     return ring_assets.ring_wire_capabilities(audio._resolved_ring_wire())
 
@@ -612,7 +612,7 @@ def test_the_wire_is_resolved_through_the_arm_gates_own_two_calls(monkeypatch):
     exactly the roleful ones this verdict matters most for. Identity of the
     object handed across is therefore the assertion, not the shape of the call.
     """
-    from jasper.cli.doctor import audio_runtime as audio
+    from jasper.cli.doctor import audio_runtime_ring as audio
 
     topology = object()
     passed = []
@@ -653,7 +653,7 @@ def test_an_undeclared_box_now_needs_the_capability_so_the_verdict_is_a_failure(
     The gate is dormant on no box now except an operator's narrow pin; the
     §10.5(1) fleet provenance audit is what made that safe to land.
     """
-    from jasper.cli.doctor import audio_runtime as audio
+    from jasper.cli.doctor import audio_runtime_ring as audio
 
     _declared_wire(None)
     _doctor_env(monkeypatch, tmp_path, so_bytes=b"\x7fELF plugin")
@@ -674,7 +674,7 @@ def test_an_operator_narrow_pin_is_the_one_shape_the_gate_still_exempts(
     this one shape. Asserted beside the tripwire so "the gate is live fleet-wide"
     cannot quietly become "the gate is live everywhere, no exceptions".
     """
-    from jasper.cli.doctor import audio_runtime as audio
+    from jasper.cli.doctor import audio_runtime_ring as audio
 
     _declared_wire("S16_LE")
     _doctor_env(monkeypatch, tmp_path, so_bytes=b"\x7fELF plugin")
@@ -695,7 +695,7 @@ def test_the_arm_gate_itself_refuses_an_undeclared_box_with_no_record(
     quotes it.
     """
     import jasper.fanin.coupling_reconcile as cr
-    from jasper.cli.doctor import audio_runtime as audio
+    from jasper.cli.doctor import audio_runtime_ring as audio
 
     _declared_wire(None)
     so_path = _doctor_env(monkeypatch, tmp_path, so_bytes=b"\x7fELF plugin")
@@ -741,7 +741,7 @@ def test_a_declared_wide_wire_with_no_record_is_a_failure(
     declaration differs. The arm is refused from here on, so the check must say
     so with the gate's own sentence plus the command that fixes it.
     """
-    from jasper.cli.doctor import audio_runtime as audio
+    from jasper.cli.doctor import audio_runtime_ring as audio
 
     _declared_wire("S32_LE")
     _doctor_env(monkeypatch, tmp_path, so_bytes=b"\x7fELF plugin")
@@ -754,7 +754,7 @@ def test_a_declared_wide_wire_with_no_record_is_a_failure(
 def test_a_declared_wide_wire_with_a_stale_record_is_a_failure(
     monkeypatch, tmp_path, _declared_wire
 ):
-    from jasper.cli.doctor import audio_runtime as audio
+    from jasper.cli.doctor import audio_runtime_ring as audio
 
     _declared_wire("S32_LE")
     _doctor_env(
@@ -781,7 +781,7 @@ def test_a_vouched_plugin_that_cannot_parse_the_wire_is_a_failure(
     declared wire renders. The record-compare branches all pass it, so before
     the wire was consulted this box read `ok` while its arm was refused.
     """
-    from jasper.cli.doctor import audio_runtime as audio
+    from jasper.cli.doctor import audio_runtime_ring as audio
 
     so_bytes = b"\x7fELF an old but freshly-installed plugin"
     _declared_wire("S32_LE")
@@ -801,7 +801,7 @@ def test_a_declared_wide_wire_the_record_covers_is_ok(
 ):
     """The armed wide box (jts.local's shape): the escalation must not fire on
     a plugin whose record vouches for exactly this wire."""
-    from jasper.cli.doctor import audio_runtime as audio
+    from jasper.cli.doctor import audio_runtime_ring as audio
 
     so_bytes = b"\x7fELF the real plugin"
     _declared_wire("S32_LE")
@@ -822,7 +822,7 @@ def test_an_illegal_wire_declaration_is_not_reported_as_a_provenance_fault(
     refuses the arm through ``resolve_wire_for_gate``, with the parser's own
     sentence. Restating that here would give the operator two remedies for one
     fault, so the check falls back to weighing the record alone."""
-    from jasper.cli.doctor import audio_runtime as audio
+    from jasper.cli.doctor import audio_runtime_ring as audio
 
     _declared_wire("S24_3LE")
     _doctor_env(monkeypatch, tmp_path, so_bytes=b"\x7fELF plugin")
@@ -838,7 +838,7 @@ def test_an_absent_so_still_defers_even_when_the_wire_is_wide(
     """The missing-asset deferral stays ahead of the wire escalation: one absent
     file must not also produce a capability verdict about the file that is not
     there."""
-    from jasper.cli.doctor import audio_runtime as audio
+    from jasper.cli.doctor import audio_runtime_ring as audio
 
     _declared_wire("S32_LE")
     _doctor_env(monkeypatch, tmp_path)
@@ -864,7 +864,7 @@ def test_the_build_failure_warn_hands_off_to_the_check_by_its_real_name(
     nothing pinned the correction — so the wording is asserted here rather than
     left to survive on care.
     """
-    from jasper.cli.doctor import audio_runtime as audio
+    from jasper.cli.doctor import audio_runtime_ring as audio
 
     _doctor_env(monkeypatch, tmp_path, so_bytes=b"\x7fELF plugin")
     sh = _sh_text()

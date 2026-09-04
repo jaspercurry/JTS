@@ -17,6 +17,7 @@ import threading
 import time
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -285,17 +286,27 @@ class _FakeProc:
     stderr = ""
 
 
-def _record_systemctl(monkeypatch, proc: type = _FakeProc) -> list[list[str]]:
+def _record_systemctl(
+    monkeypatch, proc: type = _FakeProc, *, active_state: str = "activating",
+) -> list[list[str]]:
+    """Record every `systemctl` call, answering the diagnostics oneshot's
+    ActiveState probe with ``active_state``."""
     import jasper.control.server as srv_mod
 
     started: list[list[str]] = []
 
     def fake_run(cmd: list[str], *_args: object, **_kwargs: object) -> object:
         started.append(cmd)
+        if "--property=ActiveState" in cmd:
+            return SimpleNamespace(returncode=0, stdout=active_state, stderr="")
         return proc()
 
     monkeypatch.setattr(srv_mod.subprocess, "run", fake_run)
     return started
+
+
+def _starts(recorded: list[list[str]]) -> list[list[str]]:
+    return [cmd for cmd in recorded if "start" in cmd]
 
 
 def test_diagnostics_serves_the_cached_oneshot_and_runs_no_doctor(
@@ -393,7 +404,31 @@ def test_diagnostics_refresh_starts_only_while_none_is_in_flight(
 
     assert status == 200
     assert body["refreshing"] is expected_refreshing
-    assert started == expected_starts * [[
+    assert _starts(started) == expected_starts * [[
+        "systemctl", "--no-block", "start", "jasper-doctor-json.service",
+    ]]
+
+
+def test_a_run_that_died_without_writing_reopens_the_refresh_window(
+    server_with_coordinator, monkeypatch, diagnostics_snapshot,
+):
+    """A oneshot OOM-killed or crashed before it wrote leaves no snapshot, so
+    the elapsed-time test alone would hold the window for its full ceiling with
+    no retry. Systemd is the authority on whether it is still running."""
+    import jasper.control.server as srv_mod
+
+    diagnostics_snapshot({"fails": 0, "warns": 0, "results": []}, age_seconds=120.0)
+    monkeypatch.setattr(
+        srv_mod, "_diagnostics_refresh_started_at", time.monotonic() - 5.0,
+    )
+    started = _record_systemctl(monkeypatch, active_state="failed")
+
+    base, _ = server_with_coordinator
+    status, body = _get(f"{base}/system/diagnostics")
+
+    assert status == 200
+    assert body["refreshing"] is True
+    assert _starts(started) == [[
         "systemctl", "--no-block", "start", "jasper-doctor-json.service",
     ]]
 

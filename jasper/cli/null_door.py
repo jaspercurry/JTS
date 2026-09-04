@@ -4,11 +4,11 @@
 
 """Operator door onto the summed reverse null: the CONFIRM half.
 
-``jasper-delay-sweep propose`` computes a coordinate from banked per-driver
-curves; this plays it. ``--polarity both`` plays the in-phase and inverted
-takes at delay 0 — the PAIR is the polarity proof, neither half means anything
-alone — and ``--delays`` plays the proposal's optimum and a neighbour either
-side. It banks and does not grade: every coordinate writes ONE self-contained
+``jasper-round-views delay-landscape`` computes a coordinate from banked
+per-driver curves; this plays it. ``--polarity both`` plays the in-phase and
+inverted takes at delay 0 — the PAIR is the polarity proof, neither half means
+anything alone — and ``--delays`` plays the proposal's optimum and a neighbour
+either side. It banks and does not grade: every coordinate writes ONE self-contained
 JSON row to ``<bundle>/null_runs/`` carrying everything needed to judge it, so
 the row IS the join. A refusal is an output, printed verbatim from the module
 that decided it. Applying a confirmed delay is the prescription door's job.
@@ -27,10 +27,12 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ._logging import configure_verbose_logging
+from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE
 
-EXIT_OK = 0
-EXIT_REFUSED = 1
-EXIT_INPUT = 2
+#: Where this door banks one JSON row per played coordinate, beside the
+#: bundle it measured. ``jasper-round-views delay-confirm`` grades what lands
+#: here.
+NULL_RUNS_DIR = "null_runs"
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
@@ -83,7 +85,7 @@ def _mid_run_failures() -> dict[type[BaseException], str]:
     from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
     from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
     from jasper.audio_measurement.wired_capture import WiredCaptureError
-    from jasper.correction.coordinator import MeasurementWindowError
+    from jasper.measurement_window import MeasurementWindowError
 
     return {
         SessionGraphError: REFUSE_GRAPH_LOST,
@@ -142,10 +144,12 @@ def _context() -> Any:
     from the applied profile. A corner typed on a command line is a claim about
     the graph, and the graph can answer for itself.
     """
-    from jasper.web.correction_crossover_backend import status_payload
-    from jasper.web.correction_crossover_v2 import resolve_conductor_context
+    from jasper.active_speaker.crossover_v2.conductor_context import (
+        conductor_status,
+        resolve_conductor_context,
+    )
 
-    return resolve_conductor_context(status_payload())
+    return resolve_conductor_context(conductor_status())
 
 
 def _level_trims(context: Any) -> tuple[dict[str, float], str]:
@@ -581,7 +585,7 @@ async def _run(args: argparse.Namespace) -> int:
     gap_ceiling_db = _gap_ceiling_db(trims_db, context.declared_sensitivities)
 
     work_dir = Path(args.bundle_dir) if args.bundle_dir else Path.cwd()
-    rows_dir = work_dir / "null_runs"
+    rows_dir = work_dir / NULL_RUNS_DIR
 
     written: list[dict[str, Any]] = []
     banked: list[str] = []
@@ -760,16 +764,18 @@ def build_parser() -> argparse.ArgumentParser:
             "PURPOSE\n"
             "  Play the reverse null and bank one self-contained JSON row per\n"
             "  coordinate under <bundle>/null_runs/, usually reached for the\n"
-            "  polarity proof and the acoustic confirm after jasper-delay-\n"
-            "  sweep propose has printed where the null should sit --\n"
-            "  propose computes the delay landscape, this plays it and\n"
-            "  reports what the room actually did. Comparing rows across a\n"
-            "  run IS the grading step; this tool grades nothing itself.\n"
+            "  polarity proof and the acoustic confirm after\n"
+            "  jasper-round-views delay-landscape has printed where the null\n"
+            "  should sit -- that verb computes the delay landscape, this\n"
+            "  plays it and reports what the room actually did. Comparing\n"
+            "  rows across a run IS the grading step; this tool grades\n"
+            "  nothing itself.\n"
             "\n"
             "WHEN NOT TO USE\n"
-            "  - before jasper-delay-sweep propose has printed a coordinate\n"
-            "    grid -- a --delays value off that grid is refused (a\n"
-            "    coordinate nobody proposed names a graph nobody modelled)\n"
+            "  - before jasper-round-views delay-landscape has printed a\n"
+            "    coordinate grid -- a --delays value off that grid is\n"
+            "    refused (a coordinate nobody proposed names a graph nobody\n"
+            "    modelled)\n"
             "  - branches at very different sensitivities with no level\n"
             "    match applied -- an un-level-matched pair caps its own\n"
             "    null depth, and the depth is the whole reading\n"
@@ -787,7 +793,7 @@ def build_parser() -> argparse.ArgumentParser:
             "     \"partial\", with however many rows it banked before\n"
             "     stopping), the measurement door refused, or the\n"
             "     capture/mic failed\n"
-            "  2  EXIT_INPUT -- a --delays coordinate off the proposed\n"
+            "  2  EXIT_UNREADABLE -- a --delays coordinate off the proposed\n"
             "     grid, or the state file could not be read"
         ),
     )
@@ -909,10 +915,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         # A coordinate off the shared walk's grid, which is the grid the
         # proposal was computed on: an input fault, not a refusal.
         print(f"unusable delay coordinate: {exc}", file=sys.stderr)
-        return EXIT_INPUT
+        return EXIT_UNREADABLE
     except OSError as exc:
         print(f"unreadable state: {exc}", file=sys.stderr)
-        return EXIT_INPUT
+        return EXIT_UNREADABLE
 
 
 if __name__ == "__main__":  # pragma: no cover

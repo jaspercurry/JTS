@@ -47,7 +47,7 @@ from jasper.attribution.session_identity import (
     ALIAS_CAPTURE_SESSION_ID,
     read_session_identity,
 )
-from jasper.cli import project_ring as cli
+from jasper.cli import round_views as cli
 
 SR = 48000
 BUNDLE_ID = "d0eca8f5a24d"
@@ -366,33 +366,22 @@ def test_a_bundle_with_no_session_id_is_unreadable_not_refused(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# the exit-code contract its two consumers share
+# the view that projects it
 # --------------------------------------------------------------------------- #
 
 
-def test_the_cli_projects_and_reports_json(tmp_path, capsys):
+def test_no_dumps_projects_this_bundles_ring_before_it_classifies(tmp_path):
+    """The step the retired ``jasper-project-ring`` was: done by its consumer.
+
+    ``classify-features`` with no ``--dumps`` projects the bundle into the ring
+    at :data:`~jasper.cli.round_views.classify_features._PROJECTED_RING` and
+    reads THAT, so a round banked today -- which carries no ring of its own --
+    needs no second command before it can be classified. The verdict over this
+    fixture's noise captures is not the subject here; where the ring lands is.
+    """
     bundle = _bundle(tmp_path)
-    code = cli.main([str(bundle), "--out", str(tmp_path / "ring"), "--json"])
+    cli.main(["classify-features", str(bundle)])
 
-    assert code == cli.EXIT_OK
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["session_id"] == BUNDLE_ID
-    assert payload["capture_session_id"] == CAPTURE_ID
-    assert len(payload["projected"]) == len(_TAKES)
-
-
-def test_the_cli_refusal_and_unreadable_codes_are_distinct(tmp_path, capsys):
-    refused = cli.main([
-        str(_bundle(tmp_path / "a", bank_wavs=False)),
-        "--out",
-        str(tmp_path / "ring-a"),
-        "--json",
-    ])
-    assert refused == cli.EXIT_REFUSED
-    assert json.loads(capsys.readouterr().out)["reason"] == rp.NOTHING_TO_PROJECT
-
-    empty = tmp_path / "b"
-    empty.mkdir()
-    assert cli.main([str(empty), "--out", str(tmp_path / "ring-b")]) == (
-        cli.EXIT_UNREADABLE
-    )
+    ring = bundle / "ring"
+    assert len(list((ring / "sidecar").glob("*.json"))) == len(_TAKES)
+    assert len(list((ring / "wav").glob("*.wav"))) == len(_TAKES)

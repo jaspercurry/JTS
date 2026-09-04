@@ -58,6 +58,7 @@ from ._common import (
     bonded_follower_park_reason,
     canonical_header,
     canonical_page,
+    close_awaitable,
     guard_mutating_request,
     guard_read_request,
     read_json_object,
@@ -325,12 +326,6 @@ def _bluetooth_state_snapshot() -> tuple[dict[str, Any], int]:
 # ============================================================
 
 
-def _close_awaitable(awaitable: Any) -> None:
-    close = getattr(awaitable, "close", None)
-    if callable(close):
-        close()
-
-
 class _AsyncDispatcher:
     """Runs an asyncio event loop on a dedicated thread. The HTTP
     handlers (which are sync) submit coroutines via `run()` and
@@ -369,14 +364,14 @@ class _AsyncDispatcher:
         """Submit a coroutine to the loop and wait for the result.
         Used from sync HTTP handler threads."""
         if self._loop is None:
-            _close_awaitable(coro)
+            close_awaitable(coro)
             raise RuntimeError("dispatcher not started")
         try:
             fut: Future = asyncio.run_coroutine_threadsafe(coro, self._loop)
         except (RuntimeError, TypeError):
             # run_coroutine_threadsafe owns the coroutine only after a
             # successful submission. Close it when the loop rejects it.
-            _close_awaitable(coro)
+            close_awaitable(coro)
             raise
         try:
             return fut.result(timeout=timeout_sec)
@@ -387,12 +382,12 @@ class _AsyncDispatcher:
     def submit(self, coro):
         """Submit background work without tying it to one HTTP request."""
         if self._loop is None:
-            _close_awaitable(coro)
+            close_awaitable(coro)
             raise RuntimeError("dispatcher not started")
         try:
             return asyncio.run_coroutine_threadsafe(coro, self._loop)
         except (RuntimeError, TypeError):
-            _close_awaitable(coro)
+            close_awaitable(coro)
             raise
 
     def stream(self, coro_gen):
@@ -1065,7 +1060,7 @@ def _start_device_mutation(
     try:
         _dispatch().submit(driver)
     except (RuntimeError, TypeError):
-        _close_awaitable(driver)
+        close_awaitable(driver)
         _interrupt_start()
         raise
     return attempt, False
@@ -1221,7 +1216,7 @@ def _start_pair_stream(mac: str) -> bool:
     try:
         driver_future = asyncio.run_coroutine_threadsafe(drive_coro, loop)
     except (RuntimeError, TypeError):
-        _close_awaitable(drive_coro)
+        close_awaitable(drive_coro)
         _release_pair_attempt(
             mac_u,
             attempt,

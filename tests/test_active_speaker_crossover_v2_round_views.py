@@ -57,6 +57,12 @@ from jasper.active_speaker.crossover_v2.round_views import (
     verify_pose_curve,
 )
 from jasper.active_speaker.crossover_v2.gate_sweep import ROUTE_SIGMA_GROWTH, WINDOW_MOVED
+from jasper.active_speaker.crossover_v2.driver_prescription import (
+    DRIVER_PRESCRIPTION_KIND,
+    DRIVER_PRESCRIPTION_SCHEMA_VERSION,
+    driver_prescription_to_candidate_fields,
+    read_driver_prescription,
+)
 from jasper.active_speaker.crossover_v2.round_captures import REFUSE_NO_CAPTURES
 from jasper.active_speaker import flat_spec
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
@@ -380,6 +386,105 @@ def test_frozen_reference_refuses_a_target_position_absent_from_baseline(tmp_pat
     target = load_banked_round(target_dir)
     with pytest.raises(RoundViewsError, match="no baseline counterpart"):
         frozen_reference_grade(baseline, target)
+
+
+def test_the_measured_delta_pools_only_the_seats_the_target_re_measured(tmp_path):
+    """The comparand is the baseline at the TARGET's seats, under the target's
+    frame. A baseline seat the target did not re-measure would otherwise fold
+    a seat-composition change into a delta read as the prescription's doing.
+    """
+    baseline = load_banked_round(_make_round_dir(
+        tmp_path, "baseline",
+        position_curves={
+            "cloud_verify_02": ("onax", _flat_curve()),
+            "cloud_verify_04": ("onax", _flat_curve(ripple_db=4.0)),
+        },
+    ))
+    target = load_banked_round(_make_round_dir(
+        tmp_path, "target",
+        position_curves={"cloud_verify_02": ("onax", _flat_curve(offset_db=0.6))},
+    ))
+
+    result = frozen_reference_grade(baseline, target)
+
+    # Seat 04's 4 dB of ripple never enters: the pool is seat 02 alone, which
+    # grades flat, so the whole delta is the 0.6 dB the target was shifted by.
+    assert result.baseline["onax"] == pytest.approx(0.0, abs=1e-9)
+    assert result.measured_delta_db["onax"] == pytest.approx(0.6, abs=1e-6)
+
+
+def test_frozen_reference_echoes_the_pre_registration_beside_the_measured_move(
+    tmp_path,
+):
+    """One round trip: a staged driver document, through the door, onto the
+    candidate stamp the round banks, out of this view (row 2.9).
+
+    The two declared numbers are DISCLOSURE — the view echoes them and
+    subtracts, and grades nothing by them, so the measured half is exactly
+    what the same rounds produce with no document at all.
+    """
+    delta_db = 0.6
+    baseline_dir = _make_round_dir(
+        tmp_path, "baseline",
+        position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+    target_dir = _make_round_dir(
+        tmp_path, "target",
+        position_curves={"cloud_verify_02": ("onax", _flat_curve(offset_db=delta_db))},
+    )
+    prescription = read_driver_prescription(
+        {
+            "artifact_schema_version": DRIVER_PRESCRIPTION_SCHEMA_VERSION,
+            "kind": DRIVER_PRESCRIPTION_KIND,
+            "packet_fingerprint": "fp",
+            "prescriber": {"model": "a-model", "operator": "jasper"},
+            "filters": [{
+                "role": "tweeter", "biquad_type": "Peaking",
+                "freq": 5000.0, "q": 5.0, "gain": -3.0,
+            }],
+            "expected_delta_db": -0.25,
+            "declared_tilt_db_per_octave": -0.8,
+        },
+        packet_fingerprint="fp",
+        passbands_hz={"tweeter": (1600.0, 20000.0)},
+        classifications=None,
+        incumbent_filters=None,
+    )
+    (
+        target_dir / "bundle/sess1/evidence/v1/artifacts/crossover_v2/cap1"
+        / "candidate.json"
+    ).write_text(json.dumps(
+        driver_prescription_to_candidate_fields(prescription, fitted=None)
+    ))
+
+    baseline = load_banked_round(baseline_dir)
+    result = frozen_reference_grade(baseline, load_banked_round(target_dir))
+
+    assert result.expected_delta_db == -0.25
+    assert result.declared_tilt_db_per_octave == -0.8
+    assert result.baseline["onax"] == pytest.approx(0.0, abs=1e-9)
+    assert result.measured_delta_db["onax"] == pytest.approx(delta_db, abs=1e-6)
+    assert result.expected_minus_measured_db["onax"] == pytest.approx(
+        -0.25 - delta_db, abs=1e-6
+    )
+    assert result.to_dict()["expected_minus_measured_db"]["onax"] == pytest.approx(
+        -0.25 - delta_db, abs=1e-6
+    )
+
+    # The same two rounds with nothing staged: the measured half is identical
+    # and the pre-registration is absent rather than a predicted zero.
+    undeclared = frozen_reference_grade(baseline, load_banked_round(
+        _make_round_dir(
+            tmp_path, "plain",
+            position_curves={
+                "cloud_verify_02": ("onax", _flat_curve(offset_db=delta_db)),
+            },
+        )
+    ))
+    assert undeclared.measured_delta_db == pytest.approx(result.measured_delta_db)
+    assert undeclared.expected_delta_db is None
+    assert undeclared.declared_tilt_db_per_octave is None
+    assert undeclared.expected_minus_measured_db is None
 
 
 # --------------------------------------------------------------------------- #
@@ -1056,6 +1161,52 @@ def test_cli_per_seat_writes_seats_including_absent_verify_reason(tmp_path):
     assert payload["verify_pose"]["reason"]
 
 
+def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
+    from jasper.cli import round_views as cli
+
+    round_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+    assert cli.main(["per-seat", str(round_dir)]) == 0
+
+    assert cli.main(["inventory", str(round_dir)]) == 0
+    payload = json.loads((round_dir / "inventory.json").read_text())
+    rows = {row["artifact"]: row for row in payload["artifacts"]}
+
+    assert rows["per_seat.json"]["present"] is True
+
+    missing = rows["directivity.json"]
+    assert missing["present"] is False
+    assert missing["produced_by"] == "jasper-round-views directivity <this-round>"
+    assert missing["producer_needs_more_than_this_round"] is False
+    assert missing["path"] == str(round_dir / "directivity.json")
+    # The producer it named writes the artifact it named as missing.
+    assert cli.main(["directivity", str(round_dir)]) == 0
+    assert Path(missing["path"]).is_file()
+
+    # A view whose subcommand takes MORE than this round says so, and places
+    # this round in the slot that writes the artifact beside it — frozen
+    # grades the TARGET. Run as one round it is an invocation argparse rejects.
+    multi = rows["frozen_reference.json"]
+    assert multi["produced_by"] == (
+        "jasper-round-views frozen <other-round> <this-round>"
+    )
+    assert multi["producer_needs_more_than_this_round"] is True
+    with pytest.raises(SystemExit):
+        cli.main(["frozen", str(round_dir)])
+
+    assert rows["gate_sweep.json"]["produced_by"] == (
+        "jasper-round-views gate-sweep <this-round>"
+    )
+
+    # A view the evidence packet reads is read back where THAT reader looks —
+    # inside the round's own artifact directory, never beside the round.
+    assert rows["harmonic_distortion.json"]["path"] == str(
+        round_dir / "bundle/sess1/evidence/v1/artifacts/crossover_v2/cap1"
+        / "harmonic_distortion.json"
+    )
+
+
 def test_cli_frequency_writes_the_shared_web_contract(tmp_path):
     from jasper.cli.round_views import main
 
@@ -1156,14 +1307,54 @@ def test_cli_repeat_floor_exits_error_when_the_record_cannot_be_written(tmp_path
     assert json.loads(capsys.readouterr().out)["status"] == "unwritable"
 
 
-def test_cli_repeat_floor_requires_an_explicit_out(tmp_path):
+def test_cli_repeat_floor_requires_a_destination(tmp_path):
     """No default path: this tool runs on a laptop over banked directories and
-    cannot assume the speaker's own state path."""
+    cannot assume the speaker's own state path unasked."""
     from jasper.cli.round_views import main
 
     r1 = _make_round_dir(tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())})
     with pytest.raises(SystemExit):
         main(["repeat-floor", str(r1), str(r1)])
+
+
+def test_cli_repeat_floor_install_publishes_at_the_on_speaker_path(tmp_path, monkeypatch):
+    """``--install`` writes the same record the operator used to copy by hand."""
+    from jasper.active_speaker.repeat_floor import REPEAT_FLOOR_KIND, load_repeat_floor
+    from jasper.cli import round_views as cli
+
+    r1 = _make_round_dir(tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())})
+    r2 = _make_round_dir(
+        tmp_path, "r2",
+        position_curves={"cloud_verify_02": ("onax", _flat_curve(ripple_db=1.2))},
+    )
+    installed = tmp_path / "state" / "active_speaker_repeat_floor.json"
+    monkeypatch.setattr(cli.repeat, "_REPEAT_FLOOR_DEFAULT_PATH", installed)
+    out = tmp_path / "repeat-floor.json"
+
+    assert cli.main(["repeat-floor", str(r1), str(r2), "--install", "--out", str(out)]) == 0
+    record = load_repeat_floor(state_path=installed)
+    assert record is not None and record["kind"] == REPEAT_FLOOR_KIND
+    # Byte-identical to what --out writes: one payload, two destinations.
+    assert installed.read_bytes() == out.read_bytes()
+
+
+def test_cli_repeat_floor_install_exits_write_failed_on_an_unwritable_path(
+    tmp_path, monkeypatch, capsys
+):
+    """The normal no-sudo case: the shared unwritable record, not a traceback."""
+    from jasper.cli import round_views as cli
+
+    r1 = _make_round_dir(tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())})
+    r2 = _make_round_dir(
+        tmp_path, "r2",
+        position_curves={"cloud_verify_02": ("onax", _flat_curve(ripple_db=1.2))},
+    )
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("")
+    monkeypatch.setattr(cli.repeat, "_REPEAT_FLOOR_DEFAULT_PATH", blocker / "floor.json")
+
+    assert cli.main(["repeat-floor", str(r1), str(r2), "--install"]) == cli.EXIT_WRITE_FAILED
+    assert json.loads(capsys.readouterr().out)["status"] == "unwritable"
 
 
 def test_cli_reports_the_unreadable_exit_on_an_unreadable_round(tmp_path, capsys):
@@ -1211,7 +1402,7 @@ def test_a_payload_the_strict_writer_rejects_is_not_a_filesystem_problem(
     def _strict(*_args, **_kwargs):
         raise ValueError("Out of range float values are not JSON compliant")
 
-    monkeypatch.setattr(cli, "write_report", _strict)
+    monkeypatch.setattr(cli._common, "write_report", _strict)
 
     rc = cli.main(["per-seat", str(round_dir)])
 
@@ -1234,7 +1425,7 @@ def test_an_entry_grade_over_a_packet_missing_its_block_reads_as_unreadable(
     round_dir = _make_round_dir(
         tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
     )
-    read = cli.load_banked_round
+    read = cli._common.load_banked_round
 
     def _without_the_block(path):
         banked = read(path)
@@ -1243,7 +1434,7 @@ def test_an_entry_grade_over_a_packet_missing_its_block_reads_as_unreadable(
             packet={k: v for k, v in banked.packet.items() if k != "entry_baseline"},
         )
 
-    monkeypatch.setattr(cli, "load_banked_round", _without_the_block)
+    monkeypatch.setattr(cli._common, "load_banked_round", _without_the_block)
 
     rc = cli.main(["entry", str(round_dir)])
 
@@ -2171,6 +2362,115 @@ def test_cli_spec_sweep_writes_the_verdict_carrying_its_gate_read(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# gate-sweep: the ladder itself, over the round's own captures
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def gate_sweep_round(tmp_path):
+    return bank_capture_round(
+        tmp_path, [_pose_ir(i, late_copy_ms=8.0) for i in range(3)]
+    )
+
+
+def test_cli_gate_sweep_writes_its_report_beside_the_round(gate_sweep_round):
+    from jasper.cli import round_views as cli
+
+    rc = cli.main(["gate-sweep", str(gate_sweep_round), "--rungs-ms", "5", "20"])
+
+    assert rc == cli.EXIT_OK
+    report = json.loads(
+        (gate_sweep_round / cli.ARTIFACT_BY_VIEW["gate-sweep"].artifact).read_text()
+    )
+    assert report["frame"]["rungs_ms"] == [5.0, 20.0]
+    assert len(report["poses"]) == 3
+
+
+def test_cli_gate_sweep_out_puts_the_report_where_it_is_told(
+    gate_sweep_round, tmp_path
+):
+    from jasper.cli import round_views as cli
+
+    elsewhere = tmp_path / "sweep.json"
+    rc = cli.main(
+        ["gate-sweep", str(gate_sweep_round), "--rungs-ms", "5", "20",
+         "--out", str(elsewhere)]
+    )
+
+    assert rc == cli.EXIT_OK
+    assert elsewhere.is_file()
+    assert not (
+        gate_sweep_round / cli.ARTIFACT_BY_VIEW["gate-sweep"].artifact
+    ).exists()
+
+
+def test_cli_gate_sweep_at_hz_reports_the_named_bin(gate_sweep_round):
+    from jasper.cli import round_views as cli
+
+    rc = cli.main(
+        ["gate-sweep", str(gate_sweep_round), "--rungs-ms", "5", "20",
+         "--at-hz", "800"]
+    )
+
+    assert rc == cli.EXIT_OK
+    report = json.loads(
+        (gate_sweep_round / cli.ARTIFACT_BY_VIEW["gate-sweep"].artifact).read_text()
+    )
+    (feature,) = report["features"]
+    assert feature["requested_hz"] == 800.0
+
+
+def test_cli_gate_sweep_refusal_names_the_missing_input(tmp_path, capsys):
+    """The ladder's own refusal reaches the operator under ITS reason, not the
+    stage bucket: which input was missing is the answer."""
+    from jasper.cli import round_views as cli
+
+    assert cli.main(["gate-sweep", str(tmp_path)]) == cli.EXIT_REFUSED
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "refused"
+    assert payload["reason"] == REFUSE_NO_CAPTURES
+
+
+@pytest.mark.parametrize(
+    "argv", [["--rungs-ms", "7"], ["--at-hz", "100"]],
+    ids=["one-rung-ladder", "bin-off-the-analysis-grid"],
+)
+def test_cli_gate_sweep_an_unusable_request_is_the_unreadable_exit(
+    gate_sweep_round, capsys, argv
+):
+    from jasper.cli import round_views as cli
+
+    rc = cli.main(["gate-sweep", str(gate_sweep_round), *argv])
+
+    assert rc == cli.EXIT_UNREADABLE
+    assert not (
+        gate_sweep_round / cli.ARTIFACT_BY_VIEW["gate-sweep"].artifact
+    ).exists()
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "unreadable"
+    assert payload["reason"] == cli.REASON_UNREADABLE
+
+
+def test_cli_gate_sweep_an_unwritable_out_is_the_write_exit(gate_sweep_round, capsys):
+    """The round read and the sweep ran; only the filing failed."""
+    from jasper.cli import round_views as cli
+
+    blocker = gate_sweep_round / "not-a-dir"
+    blocker.write_text("")
+
+    rc = cli.main(
+        ["gate-sweep", str(gate_sweep_round), "--rungs-ms", "5", "20",
+         "--out", str(blocker / "x.json")]
+    )
+
+    assert rc == cli.EXIT_WRITE_FAILED
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "unwritable"
+    assert payload["reason"] == cli.REASON_UNWRITABLE
+
+
+# --------------------------------------------------------------------------- #
 # cloud-binding: did the cloud's null evidence bind the fit?
 # --------------------------------------------------------------------------- #
 
@@ -2449,3 +2749,61 @@ def test_cli_cloud_binding_writes_the_view_into_the_round_dir(tmp_path, capsys):
     assert payload["refit_vs_banked_db"] < payload["tolerance_db"]
     woofer = next(r for r in payload["roles"] if r["role"] == "woofer")
     assert any(b["cloud_excluded"] and b["delta_db"] > 1.0 for b in woofer["bands"])
+
+
+def test_every_import_in_the_round_views_package_resolves():
+    """Each view module's imports, module-scope AND deferred, name something
+    importable — the pin a mis-levelled relative import trips.
+
+    The subcommand tests below stub what a view calls, so a wrong ``.``-level
+    inside one would surface only on the operator's real invocation.
+    """
+    import ast
+    import importlib
+    import importlib.util
+
+    from jasper.cli import round_views as cli
+
+    def resolves(name: str) -> bool:
+        """A module, or a name a real module exposes.
+
+        ``find_spec`` answers ``None`` for a MISSING child of a real package
+        and raises for a child of a non-package, so neither result alone tells
+        a bad module path from a plain ``from module import attribute``; the
+        attribute is what the fallback checks, on the parent it just resolved.
+        """
+        try:
+            if importlib.util.find_spec(name) is not None:
+                return True
+        except (AttributeError, ImportError, ValueError):
+            pass
+        parent, _, leaf = name.rpartition(".")
+        if not parent:
+            return False
+        try:
+            return hasattr(importlib.import_module(parent), leaf)
+        except ImportError:
+            return False
+
+    package = cli.__name__
+    unresolved = []
+    for path in sorted(Path(cli.__file__).parent.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                base = (
+                    importlib.util.resolve_name(
+                        "." * node.level + (node.module or ""), package
+                    )
+                    if node.level
+                    else node.module
+                )
+                names = [base, *(f"{base}.{alias.name}" for alias in node.names)]
+            else:
+                continue
+            unresolved += [
+                f"{path.name}: {name}" for name in names if not resolves(name)
+            ]
+
+    assert unresolved == []

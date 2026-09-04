@@ -833,7 +833,7 @@ static int acquire_writer_lock(const char *path) {
     // it too) rather than something this guard introduced, and it is why
     // delete_stale_ring deliberately unlinks the ring file ALONE. The detector
     // is jasper-doctor's check_ring_writer_lock_exclusivity
-    // (jasper/cli/doctor/audio_runtime.py): it enumerates /proc/<pid>/fd for
+    // (jasper/cli/doctor/audio_runtime_ring.py): it enumerates /proc/<pid>/fd for
     // holders of a <ring>.writer.lock, groups them by PATHNAME so the orphaned
     // inode and its replacement land in one bucket, and FAILS on two live pids.
     // It cannot be a header read — writer_pid is a single slot a second attach

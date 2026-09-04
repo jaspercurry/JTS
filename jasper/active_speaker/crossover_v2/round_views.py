@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import warnings
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -39,6 +39,9 @@ from jasper.active_speaker.flat_spec_views import (
 from jasper.active_speaker.repeat_floor import SHIPPED_POOL_METRIC
 from jasper.active_speaker.crossover_v2 import forward_model, position_cycle
 from jasper.active_speaker.crossover_v2.contracts import DESIGN_AXIS_DEG
+from jasper.active_speaker.crossover_v2.driver_prescription import (
+    DECLARED_TILT_FIELD, EXPECTED_DELTA_FIELD,
+)
 from jasper.active_speaker.crossover_v2.durable_state import (
     verify_measured_curve_from_state,
 )
@@ -640,26 +643,62 @@ def _grade_positions(
     return pooled, per_position
 
 
+def _round_candidate(banked: BankedRound) -> dict[str, Any]:
+    """The round's own ``candidate.json``, or ``{}``."""
+    artifact_dir, _why = round_artifact_dir(banked.session_dir)
+    return {} if artifact_dir is None else _read_candidate(artifact_dir)
+
+
+def _banked_pre_registration(banked: BankedRound) -> dict[str, float]:
+    """What the round's prescription pre-registered, off the candidate's
+    ``prescribed_by`` stamp — every role carries the same pair, so the first wins."""
+    for entry in _mapping(_round_candidate(banked).get("linearization")).values():
+        stamp = _mapping(_mapping(entry).get("prescribed_by"))
+        declared = {
+            key: float(v) for key in (EXPECTED_DELTA_FIELD, DECLARED_TILT_FIELD)
+            if isinstance(v := stamp.get(key), (int, float)) and type(v) is not bool
+        }
+        if declared:
+            return declared
+    return {}
+
+
 @dataclass(frozen=True)
 class FrozenReferenceResult:
     """One target round graded twice: as shipped, and frozen to the baseline's
     per-position reference levels.
 
-    ``shipped`` and ``frozen`` are ``{role: pooled_rms_db}``. The freeze removes
-    the one degree of freedom §8.9 found compensating a prescribed cut's level
-    loss — grading each config against its OWN reference.
+    ``baseline``/``shipped``/``frozen`` are ``{role: pooled_rms_db}``. The freeze
+    removes the one degree of freedom §8.9 found compensating a prescribed cut's
+    level loss — grading each config against its OWN reference.
     ``target_own_refs`` / ``baseline_refs`` are the per-position levels each half
     actually used, so a caller can audit the freeze rather than trust it.
+
+    ``measured_delta_db`` is ``frozen - baseline`` per role under the target's
+    frame, ``{}`` when a baseline seat is not evaluable under it. It, the two
+    declared fields and ``expected_minus_measured_db`` are DISCLOSURE only.
     """
 
     baseline_round_dir: str
     target_round_dir: str
     shipped: dict[str, float]
     frozen: dict[str, float]
+    baseline: dict[str, float]
+    measured_delta_db: dict[str, float]
     shipped_positions: dict[str, float]
     frozen_positions: dict[str, float]
     baseline_refs: dict[str, float]
     target_own_refs: dict[str, float]
+    expected_delta_db: float | None = None
+    declared_tilt_db_per_octave: float | None = None
+
+    @property
+    def expected_minus_measured_db(self) -> dict[str, float] | None:
+        """Per role, or ``None`` when nothing was pre-registered."""
+        expected = self.expected_delta_db
+        if expected is None:
+            return None
+        return {r: expected - m for r, m in self.measured_delta_db.items()}
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -667,16 +706,21 @@ class FrozenReferenceResult:
             "target_round_dir": self.target_round_dir,
             "shipped": self.shipped,
             "frozen": self.frozen,
+            "baseline": self.baseline,
+            "measured_delta_db": self.measured_delta_db,
             "shipped_positions": self.shipped_positions,
             "frozen_positions": self.frozen_positions,
             "baseline_refs": self.baseline_refs,
             "target_own_refs": self.target_own_refs,
+            EXPECTED_DELTA_FIELD: self.expected_delta_db,
+            DECLARED_TILT_FIELD: self.declared_tilt_db_per_octave,
+            "expected_minus_measured_db": self.expected_minus_measured_db,
         }
 
 
 def frozen_reference_grade(baseline: BankedRound, target: BankedRound) -> FrozenReferenceResult:
     """Grade ``target`` twice: shipped, and frozen to ``baseline``'s per-position
-    reference levels.
+    reference levels — then difference the frozen half against the baseline.
 
     ``target`` may be the same round as ``baseline`` (frozen == shipped by
     construction then). Raises :class:`RoundViewsError` when either round banked
@@ -702,15 +746,31 @@ def frozen_reference_grade(baseline: BankedRound, target: BankedRound) -> Frozen
     }
     shipped_pooled, shipped_positions = _grade_positions(positions, report, None)
     frozen_pooled, frozen_positions = _grade_positions(positions, report, baseline_refs)
+    # Target seats, target frame, same ``baseline_refs``: only curves differ.
+    comparand = tuple(
+        p for p in baseline.graded_positions if p.position_id in target_own_refs
+    )
+    try:
+        baseline_pooled, _ = _grade_positions(comparand, report, baseline_refs)
+    except RoundViewsError:
+        baseline_pooled = {}  # A disclosure may not take the grade down.
+    declared = _banked_pre_registration(target)
     return FrozenReferenceResult(
         baseline_round_dir=str(baseline.round_dir),
         target_round_dir=str(target.round_dir),
         shipped=shipped_pooled,
         frozen=frozen_pooled,
+        baseline=baseline_pooled,
+        measured_delta_db={
+            role: value - baseline_pooled[role]
+            for role, value in frozen_pooled.items() if role in baseline_pooled
+        },
         shipped_positions=shipped_positions,
         frozen_positions=frozen_positions,
         baseline_refs=baseline_refs,
         target_own_refs=target_own_refs,
+        expected_delta_db=declared.get(EXPECTED_DELTA_FIELD),
+        declared_tilt_db_per_octave=declared.get(DECLARED_TILT_FIELD),
     )
 
 
@@ -805,35 +865,57 @@ def verify_pose_curve(banked: BankedRound) -> VerifyPoseResult:
 
 @dataclass(frozen=True)
 class ForwardModelDeltaResult:
-    """A predicted-vs-measured VERIFY delta, or why there is none.
+    """A predicted sum, its delta against a measured VERIFY sum, or why neither.
 
-    ``delta`` is ``None`` exactly when ``reason`` is non-empty. Never raises: a
-    round that banked no per-driver solos, none at this pose, or no VERIFY curve,
-    is a normal shape.
+    ``prediction`` is ``None`` only when the basis banked no summable pair —
+    the one shape with no forward model at all. ``delta`` is ``None`` exactly
+    when ``reason`` is non-empty, so a prediction nothing measured comes back
+    WITH its curve and a reason saying nothing judged it. Never raises: a round
+    that banked no per-driver solos, none at this pose, or no VERIFY curve, is
+    a normal shape.
 
     ``basis_round_dir`` / ``measured_round_dir`` name the two rounds the halves
-    came from, ALWAYS — equal when one round supplied both. Additive evidence: it
-    carries no verdict, tolerance or score (invariant 3).
+    came from, ALWAYS — equal when one round supplied both — and ``candidate``
+    names WHAT was predicted: a filed record whose curve cannot be attributed to
+    a chain is a prediction with no provenance. Additive evidence: it carries no
+    verdict, tolerance or score (invariant 3).
     """
 
     delta: Mapping[str, Any] | None
     reason: str
-    #: Required, not defaulted: an unattributed join is the thing this pair
-    #: exists to make impossible.
+    #: Required, not defaulted: an unattributed prediction is the thing these
+    #: three exist to make impossible.
     basis_round_dir: str
     measured_round_dir: str
+    candidate: "forward_model.SummationCandidate"
+    prediction: "forward_model.PredictedSum | None" = None
 
     @property
     def acceptance(self) -> dict[str, Any]:
         """Whether a measurement judged this prediction, and which one (#3481).
 
         Derived rather than passed in: a delta IS the judging. The vocabulary is
-        :func:`~.forward_model.acceptance_block`'s, shared with the prediction
-        record, so the two cannot spell the same fact differently.
+        :func:`~.forward_model.acceptance_block`'s, so the record cannot spell
+        the fact one way here and another way beside the prediction.
         """
         return forward_model.acceptance_block(
             self.measured_round_dir if self.delta is not None else None
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "acceptance": self.acceptance,
+            "basis_round_dir": self.basis_round_dir,
+            "candidate": asdict(self.candidate),
+            "measured_round_dir": self.measured_round_dir,
+            "prediction": (
+                None if self.prediction is None else self.prediction.to_dict()
+            ),
+            "predicted_minus_measured": (
+                None if self.delta is None else dict(self.delta)
+            ),
+            "reason": self.reason,
+        }
 
 
 def forward_model_verify_delta(
@@ -857,37 +939,50 @@ def forward_model_verify_delta(
     session id. So the join is disclosed on the result. ``candidate`` is a
     PARAMETER rather than the round's incumbent — the question is usually what
     some candidate WOULD have measured.
+
+    The PREDICTION is made first and returned whether or not a measured half
+    exists, so "what would this candidate measure" is answerable over a round
+    nothing has verified — with the result's own ``acceptance`` saying that
+    nothing judged it (#3481).
     """
 
     measured = basis if measured is None else measured
-    dirs = {
-        "basis_round_dir": str(basis.round_dir),
-        "measured_round_dir": str(measured.round_dir),
-    }
-    verify_curve, reason = _banked_verify_curve(measured.inputs)
-    if verify_curve is None:
-        return ForwardModelDeltaResult(None, reason, **dirs)
-    measured_freqs_hz, measured_db = verify_curve
+    basis_dir = str(basis.round_dir)
+    measured_dir = str(measured.round_dir)
     try:
         pair = forward_model.load_branch_pair(
             basis.session_dir, phase=phase, position_deg=position_deg
         )
     except forward_model.ForwardModelError as exc:
-        return ForwardModelDeltaResult(None, str(exc), **dirs)
+        return ForwardModelDeltaResult(
+            None, str(exc), basis_dir, measured_dir, candidate
+        )
     if pair is None:
         return ForwardModelDeltaResult(
             None,
             f"no {phase} take at {position_deg} deg banks both driver solos",
-            **dirs,
+            basis_dir,
+            measured_dir,
+            candidate,
         )
     predicted = forward_model.predict_sum(pair, candidate)
+    verify_curve, reason = _banked_verify_curve(measured.inputs)
+    if verify_curve is None:
+        return ForwardModelDeltaResult(
+            None, reason, basis_dir, measured_dir, candidate, predicted
+        )
+    measured_freqs_hz, measured_db = verify_curve
     try:
         delta = forward_model.predicted_minus_measured_db(
             predicted, measured_freqs_hz, measured_db
         )
     except forward_model.ForwardModelError as exc:
-        return ForwardModelDeltaResult(None, str(exc), **dirs)
-    return ForwardModelDeltaResult(delta, "", **dirs)
+        return ForwardModelDeltaResult(
+            None, str(exc), basis_dir, measured_dir, candidate, predicted
+        )
+    return ForwardModelDeltaResult(
+        delta, "", basis_dir, measured_dir, candidate, predicted
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1838,8 +1933,7 @@ def cloud_binding_view(banked: BankedRound) -> CloudBindingView:
     from jasper.active_speaker.profile import CrossoverRegion
 
     round_dir = banked.round_dir
-    artifact_dir, _why = round_artifact_dir(banked.session_dir)
-    candidate = {} if artifact_dir is None else _read_candidate(artifact_dir)
+    candidate = _round_candidate(banked)
     linearization = _mapping(candidate.get("linearization"))
     if not linearization:
         return _not_evaluated(round_dir, CLOUD_BINDING_NO_FIT)

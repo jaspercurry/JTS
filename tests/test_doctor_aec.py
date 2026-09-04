@@ -497,7 +497,7 @@ def test_loopback_playback_active_reads_proc_status(tmp_path):
         # All closed → inactive.
         assert doctor._loopback_playback_active() is False
         # Flip sub2 to RUNNING → active. The reader is cached per doctor run
-        # (ADR-0228 rule 4), so simulate a fresh run rather than expecting a
+        # (ADR-0232 rule 4), so simulate a fresh run rather than expecting a
         # second call within the same run to re-read /proc.
         _evidence.evidence.reset()
         (fake_root / "sub2" / "status").write_text(

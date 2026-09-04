@@ -21,7 +21,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Mapping, Sequence, TypedDict, cast
+from typing import Any, Callable, Literal, Mapping, Sequence, TypedDict, cast
 
 from jasper.audio_hardware.dac import by_id as dac_profile_by_id
 from jasper.audio_hardware.dac import camilla_floor_for, latency_floor_for
@@ -40,6 +40,7 @@ from jasper.camilla_config_contract import (
     read_camilla_devices_config,
 )
 from jasper.env_load import read_env_file_state
+from jasper.fanin.ring_health import saved_topology_reader
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
@@ -50,21 +51,6 @@ from jasper.fanin_coupling import (
     dac_content_lane_marker_armed,
     outputd_content_is_central_ring,
     resolve_coupling,
-)
-# Re-export until every consumer below imports these from jasper.fanin_coupling
-# directly; delete this block only once that list is empty. Deleting it with an
-# entry still on the list breaks that file's import.
-#   jasper/cli/doctor/audio_runtime.py — TRANSPORT_DAC_CONTENT_RING,
-#     TRANSPORT_SHM_RING, TRANSPORT_SHM_RING_ACTIVE, plus TRANSPORT_SHAPES named
-#     in its prose
-#   tests/test_doctor_audio_runtime.py — TRANSPORT_SHM_RING (and whichever file
-#     inherits that import if the doctor test file is split)
-#   jasper/control/state_aggregate.py — TRANSPORT_DAC_CONTENT_RING
-from jasper.fanin_coupling import (
-    TRANSPORT_DAC_CONTENT_RING as TRANSPORT_DAC_CONTENT_RING,
-    TRANSPORT_SHAPES as TRANSPORT_SHAPES,
-    TRANSPORT_SHM_RING as TRANSPORT_SHM_RING,
-    TRANSPORT_SHM_RING_ACTIVE as TRANSPORT_SHM_RING_ACTIVE,
 )
 from jasper.transport_coherence import (
     transport_coherence_report,
@@ -982,6 +968,7 @@ def _route_policy_errors(
     coupling: str | None,
     outputd_env: Mapping[str, str],
     camilla_devices: Mapping[str, Any] | None = None,
+    read_saved_topology: Callable[[], Any] | None = None,
 ) -> tuple[tuple[str, str], ...]:
     """Route-policy refusals as ``(reason_code, message)`` pairs."""
     errors = [
@@ -990,6 +977,7 @@ def _route_policy_errors(
             coupling=coupling,
             outputd_env=outputd_env,
             camilla_devices=camilla_devices,
+            read_saved_topology=read_saved_topology,
         ).errors
     ]
     if route.route_id != ROUTE_USB_LOW_LATENCY_48K:
@@ -1354,10 +1342,12 @@ def build_audio_runtime_plan(
         )
     settings.append(coupling_setting)
     camilla_devices = read_camilla_devices_config(correction_config_path)
+    read_saved_topology = saved_topology_reader()
     topology = transport_topology_for_coupling(
         str(coupling_setting.value),
         fanin_env=fanin_values,
         outputd_env=outputd_layered,
+        read_saved_topology=read_saved_topology,
     )
     correction_latency = correction_latency_eligibility_for_config(
         correction_config_path
@@ -1385,6 +1375,7 @@ def build_audio_runtime_plan(
         ),
         outputd_env=outputd_layered,
         camilla_devices=camilla_devices,
+        read_saved_topology=read_saved_topology,
     )
     return AudioRuntimePlan(
         profile_id=profile_id or "unknown",

@@ -169,10 +169,7 @@ from ._common import (
     send_route_failure,
     terminate_process,
 )
-from .volume_floor_tone import (
-    _VOLUME_FLOOR_TONE_SESSION,
-    _VolumeFloorToneSession,
-)
+from .volume_floor_tone import VOLUME_FLOOR_TONE_SESSION
 
 logger = logging.getLogger(__name__)
 
@@ -1178,15 +1175,12 @@ async def _reconcile_volume_curve_after_settings(
     from jasper import librespot_state
     from jasper.renderer import RendererClient
     from jasper.volume_coordinator import VolumeCoordinator
-    from jasper.volume_persistence import VolumePersistence
+    from jasper.volume_persistence import VolumePersistence, configured_path
 
     coord = VolumeCoordinator(
         camilla=camilla_factory(),
         persistence=VolumePersistence(
-            os.environ.get(
-                "JASPER_VOLUME_STATE_PATH",
-                "/var/lib/jasper/speaker_volume.json",
-            )
+            configured_path()
         ),
         backend=RendererClient(
             librespot_state_path=librespot_state.configured_path(),
@@ -1198,36 +1192,6 @@ async def _reconcile_volume_curve_after_settings(
         return True
     finally:
         await coord.aclose()
-
-
-async def _audition_volume_floor(
-    raw: dict[str, Any],
-    *,
-    camilla_factory: Callable[[], Any] = _camilla,
-    session: _VolumeFloorToneSession | None = None,
-    runner_factory: Callable[..., Any] | None = None,
-) -> dict[str, Any]:
-    """Start or update a held tone at the proposed 1% volume floor.
-
-    Non-persistent: only the /settings save path commits the chosen floor.
-    """
-    return await (session or _VOLUME_FLOOR_TONE_SESSION).start_or_update(
-        raw,
-        camilla_factory=camilla_factory,
-        runner_factory=runner_factory,
-    )
-
-
-async def _stop_volume_floor_tone(
-    *,
-    camilla_factory: Callable[[], Any] = _camilla,
-    reason: str = "stop",
-    session: _VolumeFloorToneSession | None = None,
-) -> dict[str, Any]:
-    return await (session or _VOLUME_FLOOR_TONE_SESSION).stop(
-        camilla_factory=camilla_factory,
-        reason=reason,
-    )
 
 
 async def _audition_profile(
@@ -1466,7 +1430,7 @@ def _sound_page_island(*, page_mode: str, follower: bool) -> str:
         DEFAULT_FILTER_TYPE,
         DEFAULT_SLOPE_DB_PER_OCTAVE,
     )
-    from jasper.active_speaker.staging import (
+    from jasper.active_speaker.declaration_vocabulary import (
         supported_declaration_filter_types,
         supported_declaration_slopes_db_per_octave,
     )
@@ -1924,10 +1888,8 @@ def _active_speaker_driver_research_request_payload(
 ) -> dict[str, Any]:
     """Build the silent, target-bound research request and copyable prompt."""
 
-    from jasper.active_speaker.driver_safety import (
-        build_driver_research_prompt,
-        build_driver_research_request,
-    )
+    from jasper.active_speaker.driver_safety import build_driver_research_request
+    from jasper.active_speaker.driver_safety_prompt import build_driver_research_prompt
     from jasper.active_speaker.design_draft import (
         normalise_manual_settings,
         normalise_operator_inputs,
@@ -2973,7 +2935,7 @@ async def _active_speaker_load_summed_commissioning_config(
     """Load the transient all-drivers-live commissioning graph for one check."""
 
     from jasper.active_speaker.staging import load_staged_startup_config
-    from jasper.active_speaker.startup_load import load_summed_commissioning_config
+    from jasper.active_speaker.commission_load import load_summed_commissioning_config
 
     cam = camilla_factory()
     staged = load_staged_startup_config()
@@ -3019,7 +2981,7 @@ async def _active_speaker_rollback_summed_commissioning_config(
     *,
     camilla_factory: Callable[[], Any],
 ) -> dict[str, Any]:
-    from jasper.active_speaker.startup_load import rollback_driver_commissioning_config
+    from jasper.active_speaker.commission_load import rollback_driver_commissioning_config
 
     cam = camilla_factory()
     load_config, _, _ = commission_seams(cam)
@@ -3519,7 +3481,7 @@ async def _active_speaker_commission_load_payload(
     graph at the protected floor (silent). Operator-only, single-flight."""
 
     from jasper.active_speaker.staging import load_staged_startup_config
-    from jasper.active_speaker.startup_load import (
+    from jasper.active_speaker.commission_load import (
         commission_load_runtime_status,
         commission_load_state_with_runtime_status,
         load_commission_load_state,
@@ -3687,7 +3649,7 @@ async def _active_speaker_commission_rollback_payload(
 
     from jasper.active_speaker.commission_ramp import clear_pending_ramp_step
     from jasper.active_speaker.safe_playback import stop_safe_playback_session
-    from jasper.active_speaker.startup_load import rollback_driver_commissioning_config
+    from jasper.active_speaker.commission_load import rollback_driver_commissioning_config
 
     tone_stop = _active_speaker_stop_commission_tone(reason="commission_rollback")
     cam = camilla_factory()
@@ -3946,7 +3908,7 @@ async def _active_speaker_commission_state_payload(
         load_ramp_state,
     )
     from jasper.active_speaker.safe_playback import load_safe_playback_state
-    from jasper.active_speaker.startup_load import (
+    from jasper.active_speaker.commission_load import (
         commission_load_runtime_status,
         commission_load_state_with_runtime_status,
         load_commission_load_state,
@@ -4601,7 +4563,7 @@ async def _active_speaker_finish_commissioning_payload(
         )
         try:
             from jasper.active_speaker.commission_ramp import load_ramp_state
-            from jasper.active_speaker.startup_load import load_commission_load_state
+            from jasper.active_speaker.commission_load import load_commission_load_state
 
             ramp_state = load_ramp_state()
             commission_load = load_commission_load_state()
@@ -5279,7 +5241,7 @@ def _make_handler(
                     try:
                         self._send_json(
                             asyncio.run(
-                                _audition_volume_floor(
+                                VOLUME_FLOOR_TONE_SESSION.start_or_update(
                                     raw,
                                     camilla_factory=camilla_factory,
                                 )
@@ -5293,7 +5255,7 @@ def _make_handler(
                     try:
                         self._send_json(
                             asyncio.run(
-                                _stop_volume_floor_tone(
+                                VOLUME_FLOOR_TONE_SESSION.stop(
                                     camilla_factory=camilla_factory,
                                     reason=str(raw.get("reason") or "stop"),
                                 )

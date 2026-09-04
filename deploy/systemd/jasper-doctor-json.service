@@ -16,9 +16,14 @@ Group=jasper
 # that, so ~600 s leaves headroom on a Zero 2 W without letting a wedged probe
 # leave the oneshot activating forever.
 TimeoutStartSec=600
-# The doctor import is ~40 MB RSS and the voice provider-import probe forks a
-# child up to ~85 MB inside this cgroup. The bound stops a runaway probe from
-# joining a global OOM cascade on a 415 MB box.
+# Whole-cgroup ceiling, not a per-process one: the ~40 MB doctor import, up to
+# `_doctor_max_concurrency` (8) checks in flight, and every subprocess they
+# fork all count against it — the heaviest single child is the voice
+# provider-import probe at ~85 MB; the aplay/amixer/journalctl probes are a
+# few MB each. The bound stops a runaway probe from joining a global OOM
+# cascade on a 415 MB box. REMOVAL/RAISE CONDITION: an OOM kill of this unit
+# in the journal — the report then goes missing entirely, which reads as a
+# stalled Diagnostics card.
 MemoryMax=256M
 # `--out` makes the doctor exit 0 even when checks fail (the failures are in
 # the JSON), so a "report with failures" never flips this unit to `failed`.

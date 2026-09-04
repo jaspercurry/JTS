@@ -377,11 +377,22 @@ from jasper.active_speaker.crossover_v2.spatial import (
     GEOMETRY_RETRY_POSITIONS as GEOMETRY_RETRY_POSITIONS,
 )
 
-from jasper.active_speaker.crossover_v2.attempt_grading import (
-    ATTEMPT_REASON_NO_FLOOR as ATTEMPT_REASON_NO_FLOOR,
-    PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB as PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
-    PRESCRIBED_NON_WORSENING_DB as _PRESCRIBED_NON_WORSENING_DB,
-)
+# The cross-session tuning-attempt ledger's constants. Here because this module
+# applies all three and nothing else reads them: ``_assert_accountable`` chooses
+# between the two bars, ``_grade_verify_attempt`` emits the reason.
+
+#: A grading status, not a refusal: no ``REASON_REGISTRY`` entry, no copy.
+ATTEMPT_REASON_NO_FLOOR = "ungraded_no_floor"
+
+#: dB of pooled spec residual (``flat_spec.spec_convergence_residual``), RAW
+#: pre-fit against LINEARIZED predicted sum; 0.5 is the model's own measured
+#: VERIFY tracking error on JTS3. A ledger boundary, never a refusal. See
+#: ADR-0227 #4.
+PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB = 0.5
+
+#: dB. Non-worsening bar for PRESCRIBED branches; a ledger boundary between
+#: ``improved`` and ``not_an_improvement``, never a refusal. See ADR-0227 #4.
+PRESCRIBED_NON_WORSENING_DB: float = 0.0
 
 
 def _prescribed_roles(candidate: Any) -> tuple[str, ...]:
@@ -2487,8 +2498,21 @@ class CrossoverV2Session:
                     baseline_fingerprint=(
                         baseline.graph_fingerprint if baseline is not None else ""
                     ),
+                    phase_composition=self._phase_composition(analysis),
                 ),
                 **self._capture_stamp(result),
+            ),
+        )
+
+    def _phase_composition(self, analysis: ProgramAnalysis) -> str:
+        """What a banked take says its curves carry — see
+        :func:`~jasper.active_speaker.crossover_v2.spatial.phase_composition`.
+        Here because whether protection was EMITTED is this session's fact.
+        """
+        return _spatial.phase_composition(
+            analysis,
+            protection_emitted=(
+                self._measurement_protection_sections_by_role is not None
             ),
         )
 
@@ -2754,7 +2778,7 @@ class CrossoverV2Session:
         )
         # Outside the lock below, unlike the cloud's in-lock retention: this writes
         # nothing any close reads.
-        self._retain_lateral_pose(pose, prompt, result)
+        self._retain_lateral_pose(pose, prompt, result, analysis)
         # ONE critical section for retain + close: the candidate build reads the whole
         # walk, and a half-landed retain would fit a session that never existed.
         with self._close_lock:
@@ -2768,7 +2792,11 @@ class CrossoverV2Session:
             return PhaseVerdict(True, payload=payload)
 
     def _retain_lateral_pose(
-        self, pose: LateralPose, prompt: CloudPositionPrompt, result: Any,
+        self,
+        pose: LateralPose,
+        prompt: CloudPositionPrompt,
+        result: Any,
+        analysis: ProgramAnalysis,
     ) -> None:
         """Bank one accepted pose's WAV + sidecar. Fail-soft; never a gate."""
         self._seams.bank_take(
@@ -2778,7 +2806,10 @@ class CrossoverV2Session:
                 position_deg=position_angle_deg(prompt),
                 vertical_deg=position_elevation_deg(prompt),
                 lateral_consumer=self._lateral_consumer,
-                claim=self._lateral_claim(pose.index),
+                claim=replace(
+                    self._lateral_claim(pose.index),
+                    phase_composition=self._phase_composition(analysis),
+                ),
                 **self._capture_stamp(result),
             ),
         )
@@ -3338,6 +3369,7 @@ class CrossoverV2Session:
         level_frame_finding: Mapping[str, Any] | None,
         realized_branch_level: Mapping[str, Any] | None = None,
         declared_transfer: Any = None,
+        linearization: _LinearizationState | None = None,
     ) -> None:
         """The ONE seam through which a planned candidate becomes real (#2291).
 
@@ -3369,6 +3401,7 @@ class CrossoverV2Session:
                 "tier": self._tier,
                 "speaker_id": self._speaker_id,
             },
+            linearization=linearization,
         )
         self._intervention_proposal = planned
         self._measure_proposal_fingerprint = (
@@ -3408,6 +3441,7 @@ class CrossoverV2Session:
                 built.linearization.realized_branch_level,
                 pair_reason=self._pair_reason,
             ),
+            linearization=built.linearization,
         )
         log_event(
             logger, "correction.crossover_v2_candidate_built",
@@ -3568,7 +3602,7 @@ class CrossoverV2Session:
             state=linearization,
             grade_prediction=spec_report_for_predicted_sum,
             material_improvement_db=(
-                _PRESCRIBED_NON_WORSENING_DB if prescribed_graph
+                PRESCRIBED_NON_WORSENING_DB if prescribed_graph
                 else PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
             ),
         )
@@ -4545,25 +4579,6 @@ class CrossoverV2Session:
 _role_transfers = _priors.role_transfers
 
 
-# --- session-volume lifecycle (one SessionVolumePlan per session, §5.5) ----
-
-
-def derive_session_volume_db(
-    safety_profile: Mapping[str, Any],
-    target_fingerprints: Sequence[str],
-    *,
-    declared_sensitivities: Mapping[str, float] | None = None,
-) -> float:
-    """The fixed session measurement volume — the SSOT derivation (§5.5)."""
-    from .session_volume_plan import session_measurement_volume_db
-
-    return session_measurement_volume_db(
-        safety_profile,
-        target_fingerprints,
-        declared_sensitivities=declared_sensitivities,
-    )
-
-
 __all__ = [
     "CrossoverV2Session",
     "CrossoverV2FlowError",
@@ -4572,7 +4587,6 @@ __all__ = [
     "build_v2_session_spec",
     "build_v2_verify_capture_plan",
     "build_v2_verify_session_spec",
-    "derive_session_volume_db",
     "V2ConductorSnapshot",
     "V2FlowSeams",
     "ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED",
@@ -4617,5 +4631,6 @@ __all__ = [
     "verify_absolute_tolerance_db",
     "LINEARIZATION_TRIM_SANITY_MARGIN_DB",
     "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB",
+    "PRESCRIBED_NON_WORSENING_DB",
     "spec_report_for_predicted_sum",
 ]

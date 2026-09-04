@@ -750,11 +750,11 @@ def test_the_active_shape_is_selected_by_the_marker_not_by_the_observed_device()
     written by a different owner, which is what gives the comparison something to
     disagree with.
     """
-    from jasper.fanin_coupling import TRANSPORT_SHM_RING, TRANSPORT_SHM_RING_ACTIVE
+    from jasper.fanin_coupling import COUPLING_SHM_RING, TRANSPORT_SHM_RING_ACTIVE
     from jasper.transport_coherence import transport_topology_for_coupling
 
     stereo = transport_topology_for_coupling("shm_ring", outputd_env={})
-    assert stereo.name == TRANSPORT_SHM_RING
+    assert stereo.name == COUPLING_SHM_RING
     assert stereo.camilla_to_outputd["camilla_playback_device"] == RING_PLAYBACK_DEVICE
 
     # The marker alone flips the shape: the observed Camilla playback device is
@@ -1488,7 +1488,10 @@ def test_the_ring_doctor_checks_are_still_registered():
     passed, because they call the function, not the registry. This asserts the
     registry.
     """
-    from jasper.cli.doctor import audio_runtime
+    from jasper.cli.doctor import (
+        audio_runtime_fanin,
+        audio_runtime_ring,
+    )
     from jasper.cli.doctor._registry import registered_checks
 
     # Importing the module is what runs its @doctor_check decorators; naming the
@@ -1497,9 +1500,9 @@ def test_the_ring_doctor_checks_are_still_registered():
     # formality — and it counts the marker's TEXT, so even quoting one here
     # would spend a slot).
     expected = (
-        audio_runtime.check_fanin_coupling,
-        audio_runtime.check_ring_conf_floor_render,
-        audio_runtime.check_ring_platform_assets,
+        audio_runtime_fanin.check_fanin_coupling,
+        audio_runtime_ring.check_ring_conf_floor_render,
+        audio_runtime_ring.check_ring_platform_assets,
     )
     registered = {entry.func.__name__ for entry in registered_checks()}
     for func in expected:
@@ -1507,7 +1510,7 @@ def test_the_ring_doctor_checks_are_still_registered():
             f"{func.__name__} is no longer a registered doctor check"
         )
     # ...and the private helper must NOT have been swept in.
-    assert audio_runtime._requires_roleful_graph.__name__ not in registered
+    assert audio_runtime_fanin._requires_roleful_graph.__name__ not in registered
 
 
 def test_the_floor_render_ok_names_the_roleful_reason_a_box_cannot_ring(monkeypatch):
@@ -1522,24 +1525,24 @@ def test_the_floor_render_ok_names_the_roleful_reason_a_box_cannot_ring(monkeypa
     real one ("why won't this box ring?") unanswered, which is the same
     defect #2294 fixed for the floor half.
     """
-    from jasper.cli.doctor import audio_runtime
+    from jasper.cli.doctor import audio_runtime_ring
 
     record_active_dac("test_dac")
-    monkeypatch.setattr(audio_runtime, "latency_floor_for", lambda dac_id: None)
+    monkeypatch.setattr(audio_runtime_ring, "latency_floor_for", lambda dac_id: None)
 
     # The roleful-vs-passive distinction is an additive prose note only (both
     # land in the same REASON_RING_FLOOR_NOT_DECLARED branch) — not a
-    # structured field, so it is not pinned here per AGENTS.md/ADR-0228 rule 3;
+    # structured field, so it is not pinned here per AGENTS.md/ADR-0232 rule 3;
     # the branch itself (why the check reads ok) is.
-    monkeypatch.setattr(audio_runtime, "_requires_roleful_graph", lambda: True)
-    roleful = audio_runtime.check_ring_conf_floor_render()
+    monkeypatch.setattr(audio_runtime_ring, "_requires_roleful_graph", lambda: True)
+    roleful = audio_runtime_ring.check_ring_conf_floor_render()
     assert roleful.status == "ok"
-    assert roleful.reason == audio_runtime.REASON_RING_FLOOR_NOT_DECLARED
+    assert roleful.reason == audio_runtime_ring.REASON_RING_FLOOR_NOT_DECLARED
 
-    monkeypatch.setattr(audio_runtime, "_requires_roleful_graph", lambda: False)
-    passive = audio_runtime.check_ring_conf_floor_render()
+    monkeypatch.setattr(audio_runtime_ring, "_requires_roleful_graph", lambda: False)
+    passive = audio_runtime_ring.check_ring_conf_floor_render()
     assert passive.status == "ok"
-    assert passive.reason == audio_runtime.REASON_RING_FLOOR_NOT_DECLARED
+    assert passive.reason == audio_runtime_ring.REASON_RING_FLOOR_NOT_DECLARED
 
 
 def test_the_matching_floor_ok_still_names_the_roleful_reason(monkeypatch, tmp_path):
@@ -1551,7 +1554,7 @@ def test_the_matching_floor_ok_still_names_the_roleful_reason(monkeypatch, tmp_p
     was really about, so it is pinned separately from the no-floor one.
     """
     from jasper.audio_hardware.dac import latency_floor_for
-    from jasper.cli.doctor import audio_runtime
+    from jasper.cli.doctor import audio_runtime_ring
     from jasper.fanin_coupling import RING_SLOT_FRAMES
 
     floor = latency_floor_for("hifiberry_dac8x")
@@ -1562,20 +1565,20 @@ def test_the_matching_floor_ok_still_names_the_roleful_reason(monkeypatch, tmp_p
     conf.write_text(RING_CONF.read_text(encoding="utf-8"), encoding="utf-8")
 
     record_active_dac("hifiberry_dac8x")
-    monkeypatch.setattr(audio_runtime, "_JTS_RING_CONF_D", str(conf))
+    monkeypatch.setattr(audio_runtime_ring, "_JTS_RING_CONF_D", str(conf))
 
     # As above: roleful-vs-passive is an additive prose note, not a distinct
     # reason (both are REASON_RING_FLOOR_RENDERED) — pin the branch, not the
-    # note (AGENTS.md/ADR-0228 rule 3).
-    monkeypatch.setattr(audio_runtime, "_requires_roleful_graph", lambda: True)
-    roleful = audio_runtime.check_ring_conf_floor_render()
+    # note (AGENTS.md/ADR-0232 rule 3).
+    monkeypatch.setattr(audio_runtime_ring, "_requires_roleful_graph", lambda: True)
+    roleful = audio_runtime_ring.check_ring_conf_floor_render()
     assert roleful.status == "ok"
-    assert roleful.reason == audio_runtime.REASON_RING_FLOOR_RENDERED
+    assert roleful.reason == audio_runtime_ring.REASON_RING_FLOOR_RENDERED
 
-    monkeypatch.setattr(audio_runtime, "_requires_roleful_graph", lambda: False)
-    passive = audio_runtime.check_ring_conf_floor_render()
+    monkeypatch.setattr(audio_runtime_ring, "_requires_roleful_graph", lambda: False)
+    passive = audio_runtime_ring.check_ring_conf_floor_render()
     assert passive.status == "ok"
-    assert passive.reason == audio_runtime.REASON_RING_FLOOR_RENDERED
+    assert passive.reason == audio_runtime_ring.REASON_RING_FLOOR_RENDERED
 
 
 def test_the_coupling_warn_names_the_recovery_ladder_and_never_the_forbidden_ring(
@@ -1589,11 +1592,11 @@ def test_the_coupling_warn_names_the_recovery_ladder_and_never_the_forbidden_rin
     mid-procedure transient (graph moved, marker not yet re-derived), not a
     landing state.
     """
-    from jasper.cli.doctor import audio_runtime
+    from jasper.cli.doctor import audio_runtime_fanin
     from jasper.cli.doctor._evidence import evidence
     from jasper.fanin_coupling import COUPLING_SHM_RING, OUTPUTD_CONTENT_BRIDGE_SHM_RING
 
-    monkeypatch.setattr(audio_runtime, "_requires_roleful_graph", lambda: True)
+    monkeypatch.setattr(audio_runtime_fanin, "_requires_roleful_graph", lambda: True)
     monkeypatch.setattr(
         "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: COUPLING_SHM_RING,
@@ -1606,27 +1609,24 @@ def test_the_coupling_warn_names_the_recovery_ladder_and_never_the_forbidden_rin
         "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: False
     )
     evidence.seed("camilla_config", ("/tmp/statefile.yml", "/tmp/loaded.yml"))
-    monkeypatch.setattr(audio_runtime, "_loaded_capture_type", lambda path: "Alsa")
-    monkeypatch.setattr(
-        audio_runtime,
-        "_loaded_device_field",
-        lambda path, lane, field: (
-            RING_ACTIVE_PLAYBACK_DEVICE if lane == "playback" else "jts_ring_capture"
-        ),
-    )
-    result = audio_runtime.check_fanin_coupling()
+    evidence.seed("camilla_devices:/tmp/loaded.yml", {
+        "capture_type": "Alsa",
+        "capture_device": RING_CAPTURE_DEVICE,
+        "playback_device": RING_ACTIVE_PLAYBACK_DEVICE,
+    })
+    result = audio_runtime_fanin.check_fanin_coupling()
     assert result.status == "warn"
     # A roleful box with a CLEARED marker gets the forward-ladder reason, never
     # the plain "graph not the ring" one that would send an operator at the
     # forbidden stereo ring.
-    assert result.reason == audio_runtime.REASON_COUPLING_ACTIVE_LADDER_PENDING
+    assert result.reason == audio_runtime_fanin.REASON_COUPLING_ACTIVE_LADDER_PENDING
 
     # A PASSIVE box keeps the plain expectation and the plain remedy — the
     # honest phrasing is scoped to the case where the stereo ring is forbidden.
-    monkeypatch.setattr(audio_runtime, "_requires_roleful_graph", lambda: False)
-    passive = audio_runtime.check_fanin_coupling()
+    monkeypatch.setattr(audio_runtime_fanin, "_requires_roleful_graph", lambda: False)
+    passive = audio_runtime_fanin.check_fanin_coupling()
     assert passive.status == "warn"
-    assert passive.reason == audio_runtime.REASON_COUPLING_GRAPH_NOT_RING
+    assert passive.reason == audio_runtime_fanin.REASON_COUPLING_GRAPH_NOT_RING
 
 
 def test_the_coupling_warn_on_an_armed_box_names_the_forward_ladder_not_a_rollback(
@@ -1644,11 +1644,11 @@ def test_the_coupling_warn_on_an_armed_box_names_the_forward_ladder_not_a_rollba
     the branch has no other test.
     """
     from jasper.active_speaker.runtime_contract import OUTPUTD_ACTIVE_PLAYBACK_DEVICE
-    from jasper.cli.doctor import audio_runtime
+    from jasper.cli.doctor import audio_runtime_fanin
     from jasper.cli.doctor._evidence import evidence
     from jasper.fanin_coupling import COUPLING_SHM_RING, OUTPUTD_CONTENT_BRIDGE_SHM_RING
 
-    monkeypatch.setattr(audio_runtime, "_requires_roleful_graph", lambda: True)
+    monkeypatch.setattr(audio_runtime_fanin, "_requires_roleful_graph", lambda: True)
     monkeypatch.setattr(
         "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: COUPLING_SHM_RING,
@@ -1661,21 +1661,18 @@ def test_the_coupling_warn_on_an_armed_box_names_the_forward_ladder_not_a_rollba
         "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: True
     )
     evidence.seed("camilla_config", ("/tmp/statefile.yml", "/tmp/loaded.yml"))
-    monkeypatch.setattr(audio_runtime, "_loaded_capture_type", lambda path: "Alsa")
-    monkeypatch.setattr(
-        audio_runtime,
-        "_loaded_device_field",
-        lambda path, lane, field: (
-            OUTPUTD_ACTIVE_PLAYBACK_DEVICE if lane == "playback" else RING_CAPTURE_DEVICE
-        ),
-    )
-    result = audio_runtime.check_fanin_coupling()
+    evidence.seed("camilla_devices:/tmp/loaded.yml", {
+        "capture_type": "Alsa",
+        "capture_device": RING_CAPTURE_DEVICE,
+        "playback_device": OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+    })
+    result = audio_runtime_fanin.check_fanin_coupling()
     assert result.status == "warn"
     # Roleful -> the forward ladder reason, whether the marker is armed or
     # cleared (the armed/cleared wording difference below is prose the
-    # reason vocabulary does not distinguish; AGENTS.md/ADR-0228 rule 3 pins
+    # reason vocabulary does not distinguish; AGENTS.md/ADR-0232 rule 3 pins
     # status+reason here, not that text).
-    assert result.reason == audio_runtime.REASON_COUPLING_ACTIVE_LADDER_PENDING
+    assert result.reason == audio_runtime_fanin.REASON_COUPLING_ACTIVE_LADDER_PENDING
 
     # The CLEARED-marker case (the sibling test above) still reads differently
     # in its message, but the same reason — asserted here so both remain on
@@ -1683,9 +1680,9 @@ def test_the_coupling_warn_on_an_armed_box_names_the_forward_ladder_not_a_rollba
     monkeypatch.setattr(
         "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: False
     )
-    cleared = audio_runtime.check_fanin_coupling()
+    cleared = audio_runtime_fanin.check_fanin_coupling()
     assert cleared.status == "warn"
-    assert cleared.reason == audio_runtime.REASON_COUPLING_ACTIVE_LADDER_PENDING
+    assert cleared.reason == audio_runtime_fanin.REASON_COUPLING_ACTIVE_LADDER_PENDING
 
 
 def _emitter_required_kwargs(emit):
@@ -2902,9 +2899,7 @@ def test_the_convergence_walk_clears_the_validator_the_reconciler_actually_runs(
     # different speaker.
     import jasper.ring_assets as ring_assets_module
     from jasper.camilla_config_contract import parse_camilla_devices_config
-    from jasper.fanin import coupling_reconcile as cr
 
-    monkeypatch.setattr(cr, "load_topology_for_wire", lambda: topology)
     monkeypatch.setattr(
         "jasper.fanin.ring_health.load_topology_for_wire", lambda: topology
     )
@@ -2981,10 +2976,8 @@ def _first_arm_on_a_stereo_ring_box(tmp_path, capsys, monkeypatch, *, graph_yaml
     ring's width is the one per-topology axis of that shape, so a box with no
     saved topology would be answering about a different speaker.
     """
-    from jasper.fanin import coupling_reconcile as cr
 
     topology = _active_topology("mono", "active_2_way")
-    monkeypatch.setattr(cr, "load_topology_for_wire", lambda: topology)
     monkeypatch.setattr(
         "jasper.fanin.ring_health.load_topology_for_wire", lambda: topology
     )
@@ -3464,6 +3457,7 @@ def _anchor_reemit_harness(
         GRAPH_PARKED_ALL_MUTED,
         GraphSafety,
     )
+    from jasper.active_speaker import startup_load
     from jasper.active_speaker.crossover_preview import build_crossover_preview
     from jasper.cli import active_speaker as cli
     from tests.active_speaker_fixtures import (
@@ -3525,8 +3519,7 @@ def _anchor_reemit_harness(
     # default path would otherwise decide this test's outcome from whatever the
     # dev machine happens to have on disk.
     monkeypatch.setattr(
-        cli,
-        "load_commission_load_state",
+        "jasper.active_speaker.commission_load.load_commission_load_state",
         lambda *a, **k: (
             {"status": "loaded", "target": "mono/tweeter",
              "candidate_config_path": "/var/lib/camilladsp/configs/commissioning.yml"}
@@ -3589,7 +3582,11 @@ def _anchor_reemit_harness(
             return unsafe_reproof
         return real_safe_graph(topology_arg, **kwargs)
 
+    # Both bindings: the CLI runs the pre-check, the engine runs the re-proof.
     monkeypatch.setattr(cli, "safe_graph_for_current_topology", _safe_graph)
+    monkeypatch.setattr(
+        startup_load, "safe_graph_for_current_topology", _safe_graph
+    )
 
     return SimpleNamespace(
         topology=topology,
@@ -3794,7 +3791,7 @@ def test_baseline_reemit_refuses_a_preserved_non_anchor_graph(
 ):
     """The CLASSIFICATION discriminator, not the status — pinned (review C-SF1).
 
-    `_startup_anchor_from_decision` deliberately checks the classification and
+    `startup_anchor_from_decision` deliberately checks the classification and
     not just `decision.status`, because `preserve_current` is ALSO how an
     approved runtime graph and a driver-domain baseline are preserved. Its
     docstring says so; nothing tested it, and a status-only variant passed the

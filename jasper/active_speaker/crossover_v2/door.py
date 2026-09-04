@@ -5,7 +5,7 @@
 """The kernel path onto a held speaker: consult, claim, install, yield, restore.
 
 One linear ``async with``, spelled once so two operator doors cannot disagree
-about the give-back. ``coordinator.measurement_window`` wraps the WHOLE session:
+about the give-back. ``measurement_window()`` wraps the WHOLE session:
 without it jasper-voice's idle reconciler reverts the opened measurement volume
 toward the household level within ~200 ms (W6.1 hardware run 2), and cap
 enforcement then silently understates. The install is ``set_active_config_raw``,
@@ -106,12 +106,15 @@ async def measurement_door(
     ``mux.FANIN_TEST_OWNERS`` is a CLOSED allowlist, so an owner missing from it
     is refused the gate, the correction lane never carries, and the door
     measures silence with every daemon healthy. ``None`` keeps
-    ``coordinator.MEASUREMENT_GATE_OWNER``, the wizard's.
+    ``MEASUREMENT_GATE_OWNER``, the wizard's.
 
     Raises :class:`MeasurementDoorRefused` before yielding when the door cannot
     open, and leaves the speaker as it found it on every such path.
     """
-    from jasper.correction import coordinator
+    from jasper.measurement_window import (
+        MEASUREMENT_GATE_OWNER,
+        measurement_window,
+    )
 
     from ..session_volume_plan import (
         DEFAULT_SESSION_VOLUME_STATE_PATH,
@@ -146,10 +149,8 @@ async def measurement_door(
 
     # The window wraps the open, because the latch's first write is a fader
     # write like any other.
-    async with coordinator.measurement_window(
-        gate_owner=(
-            coordinator.MEASUREMENT_GATE_OWNER if gate_owner is None else gate_owner
-        )
+    async with measurement_window(
+        gate_owner=MEASUREMENT_GATE_OWNER if gate_owner is None else gate_owner
     ):
         # A leftover ACTIVE record past its own wall-clock ceiling is a crashed
         # run, not a live one: `live_measurement_session` deliberately lets it

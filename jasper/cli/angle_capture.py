@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""State one angle walk, see exactly what it will run, and leave it for a session.
+"""State one angle walk, see exactly what it will run, leave it, and serve it.
 
 The operator's door onto :mod:`jasper.active_speaker.angle_capture` (#2732).
 ``plan`` prints the walk a request resolves to and writes nothing; ``stage``
@@ -10,6 +10,11 @@ runs the SAME resolution and banks the request where the next measurement
 session takes it, once
 (:mod:`jasper.active_speaker.angle_capture_spool`). Neither runs a capture,
 opens a session, plays anything, or moves a microphone.
+
+``serve`` is the other half and the only verb that moves anything: it runs
+:mod:`jasper.active_speaker.arm_walk`'s loop against a LIVE session, driving
+the lab turntable arm through the position gate a staged walk declared. Read
+that module for the loop, the safety invariants and its own stall vocabulary.
 
 ``--program`` names a row of :mod:`jasper.active_speaker.measurement_programs`,
 which owns the geometry; ``--angles`` is the escape hatch for a bearing no
@@ -22,10 +27,12 @@ refuses it. ``int("0.4")`` raises but ``int(0.4)`` is ``0``, and an angle
 truncated to zero is an ON-AXIS capture nobody asked for. There is no second
 validator here.
 
-**Exit codes are part of the contract**: ``0`` accepted, ``2`` the request was
-refused (fix the request), ``3`` an accepted request could not be banked (fix
-the speaker's filesystem). A refusal prints its machine-readable reason on
-stdout as JSON when asked, and the human sentence on stderr either way.
+**Exit codes are part of the contract**, and they are
+:mod:`jasper.cli._refusal`'s for every verb: ``0`` accepted, ``1`` refused
+(fix the request, or read the stall ``reason`` a walk stopped on), ``3`` the
+result could not be filed (fix the speaker's filesystem). Every refusal writes
+the human sentence to stderr; the machine-readable record goes to stdout --
+``serve`` always, the request verbs under ``--json``.
 
 What a taken walk then does, and what it deliberately does not publish, is
 ``docs/testing-tooling.md`` ("Angle-walk door").
@@ -37,11 +44,12 @@ import argparse
 import json
 import logging
 import sys
+from pathlib import Path
 from typing import Any, Sequence
 
 from ._logging import CLI_LOG_FORMAT
 
-from jasper.active_speaker import measurement_programs
+from jasper.active_speaker import arm_walk, measurement_programs
 from jasper.active_speaker.angle_capture import (
     MOVER_HUMAN,
     MOVERS,
@@ -85,9 +93,12 @@ from jasper.audio_measurement.measurement_geometry import (
 )
 from jasper.identity import CROSSOVER_PAGE_PATH, speaker_url
 
-EXIT_OK = 0
-EXIT_REFUSED = 2
-EXIT_STAGE_FAILED = 3
+from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_WRITE_FAILED, failed
+
+#: The rig ``serve`` drives. One today; the flag is what a second one would
+#: join, and it is NOT ``MOVERS`` (that says who moves the mic in a DECLARED
+#: walk, which is a different question).
+MOVER_TURNTABLE = "turntable"
 
 #: The named program does not exist. Not a walk refusal -- no walk was stated,
 #: so it does not borrow ``WALK_REFUSAL_REASONS``' vocabulary.
@@ -106,8 +117,11 @@ PROGRAM_SIZES = tuple(sorted({
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204). `stage`
-#: writes the walk for the next session; `plan` and `withdraw` do not.
-AUTHORITY_TIER = "mutating (`stage` writes; `plan`/`withdraw` do not)"
+#: writes the walk for the next session and `serve` drives the arm through it;
+#: `plan` and `withdraw` do neither.
+AUTHORITY_TIER = (
+    "mutating (`stage` writes, `serve` moves the arm; `plan`/`withdraw` do not)"
+)
 
 
 def _size_phrase() -> str:
@@ -148,6 +162,21 @@ def _parse_angles(raw: str) -> list[Any]:
     inventing a second sentence for the same fact.
     """
     return [_angle_field(field) for field in raw.split(",") if field.strip()]
+
+
+def _expect_angles(raw: str) -> tuple[int, ...]:
+    """``serve --expect-angles``: the same split, but whole degrees only.
+
+    Stricter than :func:`_parse_angles` because there is no seam downstream to
+    refuse a bad field: ``WalkConfig`` compares and formats these as ints.
+    """
+    fields = _parse_angles(raw)
+    degrees = [field for field in fields if isinstance(field, int)]
+    if len(degrees) != len(fields):
+        raise argparse.ArgumentTypeError(
+            "angles are whole degrees, comma separated (e.g. 7,-7,22,-22)"
+        )
+    return tuple(degrees)
 
 
 #: What each ``--regime`` value plays at each angle, in walk order. ``both`` is a
@@ -442,7 +471,7 @@ def _print_walk(payload: dict[str, Any]) -> None:
 
 
 def _fs_failure(detail: str, *, as_json: bool) -> int:
-    """A filesystem failure, on both channels, as :data:`EXIT_STAGE_FAILED`.
+    """A filesystem failure, on both channels, as :data:`EXIT_WRITE_FAILED`.
 
     Shared by the two verbs that touch the slot, so the exit-code contract this
     module states is answered from one place rather than restated per verb.
@@ -453,7 +482,7 @@ def _fs_failure(detail: str, *, as_json: bool) -> int:
                        indent=2)
         )
     print(detail, file=sys.stderr)
-    return EXIT_STAGE_FAILED
+    return EXIT_WRITE_FAILED
 
 
 def _refuse(exc: Exception, *, as_json: bool, reason: str | None = None) -> int:
@@ -539,6 +568,66 @@ def _cmd_withdraw(args: argparse.Namespace) -> int:
         print(json.dumps({"ok": True, "withdrawn": removed}, indent=2))
     else:
         print("withdrew the staged walk" if removed else "no walk was staged")
+    return EXIT_OK
+
+
+def _cmd_serve(args: argparse.Namespace) -> int:
+    """Run the arm through one live session and hand back a shared exit code.
+
+    The loop owns a stall vocabulary of its own
+    (``jasper.active_speaker.arm_walk.EXIT_NAMES``); it is published here as the
+    refusal's ``reason`` rather than as a number, because a tool in the menu
+    exits 0/1/2/3 and nothing else (docs/tuning-operator-runbook.md, "Exit
+    codes"). A park signal leaves through ``install_park_on_signals``' own
+    ``128 + signum`` instead, which is the shell's spelling and not this
+    module's to assign.
+    """
+    try:
+        config = arm_walk.WalkConfig(
+            settle_s=args.settle_s,
+            poll_s=args.poll_s,
+            idle_ceiling_s=args.idle_ceiling_s,
+            stuck_alarm_s=args.stuck_alarm_s,
+            complete_after=args.complete_after,
+            expect_angles=args.expect_angles,
+        )
+    except arm_walk.ArmWalkRefused as exc:
+        return failed(EXIT_REFUSED, "walk_refused", str(exc))
+
+    arm_walk.install_park_on_signals()
+    trail = arm_walk.Trail(args.trail)
+    walk = arm_walk.ArmWalk(
+        arm_walk.TurntableMover(
+            tool_path=args.tool, attest_rig_clear=args.attest_rig_clear
+        ),
+        arm_walk.LoopbackSession(host_header=args.hostname, base_url=args.base_url),
+        config,
+        trail=trail,
+        walk_staged=arm_walk.staged_walk_pending,
+    )
+    try:
+        code = walk.run()
+    finally:
+        # In a ``finally`` because a park signal leaves through here with no
+        # return value at all, and the summary is then the only account of what
+        # the walk served before it was stopped.
+        print(walk.summary(), file=sys.stderr)
+        trail.close()
+    if code != arm_walk.EXIT_OK:
+        return failed(
+            EXIT_REFUSED,
+            arm_walk.EXIT_NAMES.get(code, str(code)),
+            # The park runs in the walk's own unwind and NEVER raises, so no
+            # sentence here may claim the arm came home: the `parked` trail row
+            # is the only place that is answered.
+            f"the {args.mover} walk stopped at loop code {code}; its 'parked' "
+            "trail row is where the arm's return is confirmed",
+        )
+    print(
+        f"{args.mover} walk finished: ok; envelope "
+        f"+/-{arm_walk.ARM_ENVELOPE_DEG} deg",
+        file=sys.stderr,
+    )
     return EXIT_OK
 
 
@@ -683,22 +772,124 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_serve_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--attest-rig-clear",
+        action="store_true",
+        required=True,
+        help=(
+            "attest, once for this run, that the arm's full travel path is "
+            "clear and the saved zero is the acoustic axis. Maps to the "
+            "turntable adapter's two --confirm-* flags on every move. A power "
+            "sign voids it: the walk then stops, parks, and refuses"
+        ),
+    )
+    parser.add_argument(
+        "--hostname",
+        required=True,
+        help=(
+            "the speaker's own hostname (JASPER_HOSTNAME, e.g. jts3.local). "
+            "Sent as the Host header so the wizard's management-host guard "
+            "admits a loopback request"
+        ),
+    )
+    parser.add_argument(
+        "--mover",
+        default=MOVER_TURNTABLE,
+        choices=(MOVER_TURNTABLE,),
+        help=(
+            "which rig serves the gate (default: %(default)s). Not "
+            "plan/stage's --mover, which says who moves the microphone in the "
+            "walk being declared"
+        ),
+    )
+    parser.add_argument(
+        "--base-url",
+        default="http://127.0.0.1",
+        help="where the wizard is reached (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--tool",
+        type=Path,
+        default=arm_walk.DEFAULT_TOOL_PATH,
+        help=(
+            "the turntable adapter to drive as a subprocess "
+            "(default: %(default)s; point it at a checkout for lab work)"
+        ),
+    )
+    parser.add_argument(
+        "--expect-angles",
+        type=_expect_angles,
+        default=(),
+        help=(
+            "the non-zero angles the staged walk contributes. Given, the run "
+            "refuses to start when no walk is staged and no session is open, "
+            "and refuses if any stated angle never became a pending -- which "
+            "is how a walk the session refused (and silently replaced with its "
+            "ordinary shape) is caught instead of measured"
+        ),
+    )
+    parser.add_argument(
+        "--complete-after",
+        type=int,
+        default=None,
+        help=(
+            "after this many releases, POST the wired all-spots-measured "
+            "signal that closes the held pre-apply group. A wired stage has no "
+            "phone event to close it, so nothing else will"
+        ),
+    )
+    parser.add_argument(
+        "--settle-s",
+        type=float,
+        default=arm_walk.DEFAULT_SETTLE_S,
+        help=(
+            f"settle after each move before reporting the microphone in place "
+            f"(default: %(default)s; refused under the "
+            f"{arm_walk.SETTLE_FLOOR_S:.0f}s floor a landed arm needs)"
+        ),
+    )
+    parser.add_argument(
+        "--poll-s", type=float, default=arm_walk.DEFAULT_POLL_S,
+        help="how often to read the envelope (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--idle-ceiling-s", type=float, default=arm_walk.DEFAULT_IDLE_CEILING_S,
+        help="give up when nothing is pending this long (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--stuck-alarm-s", type=float, default=arm_walk.DEFAULT_STUCK_ALARM_S,
+        help=(
+            "in flight, nothing pending, nothing released this long is a "
+            "capture awaiting a human -- name it and stop (default: %(default)s)"
+        ),
+    )
+    parser.add_argument(
+        "--trail", type=Path, default=None,
+        help="append one JSON object per event to this file",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jasper-angle-capture",
         description=(
-            "State one angle walk, see what it resolves to, and leave it for "
-            "the next measurement session."
+            "State one angle walk, see what it resolves to, leave it for the "
+            "next measurement session, and serve it with the lab arm."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "WHEN NOT TO USE\n"
-            "  - to run a walk -- this only DECLARES one; jasper-arm-walk\n"
+            "  - plan/stage to RUN a walk -- they only DECLARE one; serve\n"
             "    (lab arm) or the guided web flow (human mover) is what\n"
             "    actually moves the microphone\n"
             "  - stage, when a walk is already staged -- check first with\n"
             "    jasper-crossover-prescriber status, or withdraw the\n"
             "    pending one\n"
+            "  - serve, when no walk is staged yet -- stage one first, or it\n"
+            "    refuses walk_not_staged with nothing moved\n"
+            "  - serve, when a human is moving the mic by hand this session\n"
+            "    -- that is stage --mover human\n"
             "\n"
             "EXAMPLES\n"
             "  jasper-angle-capture plan --program baseline --size express\n"
@@ -707,16 +898,24 @@ def build_parser() -> argparse.ArgumentParser:
             "  jasper-angle-capture stage --angles 0,7,-7 (operator escape\n"
             "    hatch: a free-form list no program names)\n"
             "  jasper-angle-capture withdraw\n"
+            "  sudo -u pi /opt/jasper/.venv/bin/jasper-angle-capture serve \\\n"
+            "      --mover turntable --attest-rig-clear --hostname jts3.local \\\n"
+            "      --expect-angles 7,-7,22,-22 --complete-after 5\n"
             "\n"
             "EXIT CODES\n"
-            "  0  EXIT_OK -- resolved (plan), staged (stage), or\n"
-            "     withdrew/no-op (withdraw)\n"
-            "  2  EXIT_REFUSED -- the request itself is invalid; \"refused\n"
-            "     (<reason>): <detail>\" on stderr names why, and as JSON\n"
-            "     with --json\n"
-            "  3  EXIT_STAGE_FAILED -- stage or withdraw could not write or\n"
+            "  0  EXIT_OK -- resolved (plan), staged (stage), withdrew/no-op\n"
+            "     (withdraw), or a clean finish with the arm parked (serve)\n"
+            "  1  EXIT_REFUSED -- the request reached a door and was\n"
+            "     refused, or a walk stopped short; \"refused (<reason>):\n"
+            "     <detail>\" on stderr names why. serve's reason is the\n"
+            "     loop's own stall name (walk_not_staged, stuck,\n"
+            "     session_stopped, ...; jasper/active_speaker/arm_walk.py\n"
+            "     owns that table). An invocation argparse itself rejects\n"
+            "     exits 2 with a usage line instead\n"
+            "  3  EXIT_WRITE_FAILED -- stage or withdraw could not write or\n"
             "     unlink the spool file -- a filesystem problem, not a\n"
-            "     request problem"
+            "     request problem\n"
+            "  129/130/143  serve parked the arm after SIGHUP/SIGINT/SIGTERM"
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -743,6 +942,29 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help="emit the result as JSON"
     )
     withdraw.set_defaults(func=_cmd_withdraw)
+
+    serve = sub.add_parser(
+        "serve",
+        help="drive the staged walk with the lab arm against a live session",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Serve a crossover-v2 measurement session's position gate with "
+            "the lab turntable arm: poll, move, settle, report the microphone "
+            "in place. Parks the arm at 0 deg on every exit. Runs ON the "
+            "speaker, in the foreground, one run per walk, as pi -- the "
+            "identity holding dialout, since the adapter opens a serial port "
+            "(User=pi in deploy/systemd/jasper-turntable-autostop@.service)."
+        ),
+        epilog=(
+            "Start it BEFORE opening the measurement session: the first poll "
+            "is what tells it whether a staged walk is still waiting, which is "
+            "the one check it can make before anything moves.\n"
+            "--attest-rig-clear is an attestation, not a safety check this "
+            "tool can verify for you."
+        ),
+    )
+    _add_serve_args(serve)
+    serve.set_defaults(func=_cmd_serve)
     return parser
 
 

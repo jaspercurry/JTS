@@ -25,6 +25,8 @@ import pytest
 from jasper.sound import runtime
 from jasper.sound.graph_carrier import ReemitResult
 
+from .fanin_env_fixtures import declare_fanin_env
+
 
 @pytest.fixture(autouse=True)
 def _saved_passive_layout(tmp_path, monkeypatch):
@@ -54,15 +56,13 @@ def _capture_reemit_coupling(monkeypatch, tmp_path):
     The fake carrier returns a base_flat result; what this helper needs is the
     dry-run reemit call, not what reconcile decides afterwards.
 
-    Both token sources are pinned AWAY from the ring — the env var is unset and
-    the persisted SSOT reader answers ``loopback`` — so ring kwargs coming out
-    the far end prove the seam consults neither.
+    Both token sources are declared OFF the ring — the env var unset, and a
+    ``fanin.env`` naming the retired ``loopback`` at the module path its
+    readers are handed — so ring kwargs coming out the far end prove the seam
+    consults neither.
     """
     monkeypatch.delenv("JASPER_FANIN_CAMILLA_COUPLING", raising=False)
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
-        lambda *a, **k: "loopback",
-    )
+    declare_fanin_env(monkeypatch, tmp_path, "JASPER_FANIN_CAMILLA_COUPLING=loopback\n")
 
     config_dir = tmp_path / "configs"
     config_dir.mkdir()

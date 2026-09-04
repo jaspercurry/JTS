@@ -25,7 +25,7 @@ from jasper.cli import doctor
 from jasper.cli.doctor import _evidence, _shared, usbsink
 from jasper.cli.doctor._evidence import evidence
 from jasper.fanin import coupling_auto as _ca
-from jasper.fanin import ring_health as _ring_health
+from .fanin_env_fixtures import declare_fanin_env
 
 
 def _fake_unit_states(
@@ -1280,11 +1280,11 @@ def _setup_combo(
         doctor.usbsink, "source_intent_enabled", lambda _source: intent
     )
     evidence.seed("parked_bonded_follower", parked)
-    fanin_env = tmp_path / "fanin.env"
-    fanin_env.write_text(
-        f"{_ca.USB_DIRECT_ENV_VAR}={_ca.USB_COMBO_ENABLED_VALUE}\n" if armed else ""
+    declare_fanin_env(
+        monkeypatch,
+        tmp_path,
+        f"{_ca.USB_DIRECT_ENV_VAR}={_ca.USB_COMBO_ENABLED_VALUE}\n" if armed else "",
     )
-    monkeypatch.setattr(_ring_health, "FANIN_ENV_PATH", str(fanin_env))
 
 
 @pytest.mark.parametrize(

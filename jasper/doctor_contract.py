@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The jasper-doctor output contract (ADR-0228 rule 3).
+"""The jasper-doctor output contract (ADR-0232 rule 3).
 
 The row shape, the status vocabulary, and the harness-generated reason codes
 — everything a *consumer* of a doctor report needs. Stdlib-only and free of

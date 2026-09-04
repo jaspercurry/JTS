@@ -9,7 +9,15 @@ contract re-exported from :mod:`jasper.doctor_contract`, the
 crash-isolation harness (so one crashing check cannot abort the run),
 the subprocess/env-file wrappers, the ANSI colour constants, and the
 helpers and ``REASON_*`` codes more than one domain uses — each declared
-beside the helper it belongs to."""
+beside the helper it belongs to.
+
+Not here: the daemon ``STATUS`` control-socket reader, which is
+:mod:`jasper.route_latency.status_socket` reached through
+:mod:`jasper.cli.doctor._evidence`, and the per-run evidence cache itself.
+
+``_run`` is re-imported into the domain modules that call it, so a check
+resolves it in its OWN namespace and a test patch must target that module,
+not this one."""
 from __future__ import annotations
 
 import grp
@@ -249,6 +257,57 @@ def _parked_as_bonded_follower() -> bool:
         return effective_local_sources_park_reason(load_config()) is not None
     except Exception:  # noqa: BLE001 — fail-open
         return False
+
+
+def _service_state_failure(
+    label: str,
+    unit: str,
+    *,
+    missing: str,
+    not_enabled: str,
+    inactive: str,
+) -> CheckResult | None:
+    """The systemd verdict for a MANDATORY unit: the actionable failure, or
+    ``None`` when it is installed, enabled and active.
+
+    One ladder for jasper-fanin, jasper-camilla and jasper-outputd — each
+    passes its own three reason codes. All three units carry an ``[Install]``
+    section, so anything other than ``enabled``/``enabled-runtime`` (including
+    ``static``, ``disabled``, ``indirect``, ``masked``) means the unit will not
+    come up on its own. `journalctl -u <unit>` is the next step for every
+    caller, so the detail says so rather than repeating a per-unit sentence."""
+    from ._evidence import evidence
+
+    state = evidence.unit_state(unit)
+    if state is None:
+        return CheckResult(
+            label, "skipped",
+            "systemctl unavailable — skipped (not Linux?)",
+            reason=REASON_SYSTEMCTL_UNAVAILABLE,
+        )
+    if state.get("load_state") == "not-found":
+        return CheckResult(
+            label, "fail",
+            f"{unit} is not installed. Re-run install.sh.",
+            reason=missing,
+        )
+    enabled = state.get("unit_file_state")
+    if enabled not in ("enabled", "enabled-runtime"):
+        return CheckResult(
+            label, "fail",
+            f"{unit} is {enabled or 'unknown'}; it is mandatory. Run: "
+            f"sudo systemctl enable --now {unit}",
+            reason=not_enabled,
+        )
+    active = state.get("active_state")
+    if active != "active":
+        return CheckResult(
+            label, "fail",
+            f"{unit} is enabled but state={active or 'unknown'}. "
+            f"Check: journalctl -u {unit}",
+            reason=inactive,
+        )
+    return None
 
 
 def _parked_follower_result(label: str) -> CheckResult | None:
