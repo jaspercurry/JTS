@@ -600,9 +600,7 @@ async def test_probe_loadavg_succeeds_in_normal_conditions():
 # ---------- jasper-control probe target ----------
 
 
-def test_control_probe_target_follows_control_port_env(monkeypatch):
-    """The self-probe is a LOCAL loopback call, so an operator's
-    JASPER_CONTROL_PORT must move it with the daemon it probes."""
-    monkeypatch.setenv("JASPER_CONTROL_PORT", "9411")
-
-    assert SystemSupervisor()._control_port == 9411
+def test_control_probe_target_follows_the_configured_port():
+    """The self-probe is a LOCAL loopback call: a caller that constructs the
+    supervisor against another port must have the probe follow it."""
+    assert SystemSupervisor(control_port=9411)._control_port == 9411

@@ -35,7 +35,7 @@ import subprocess
 from types import ModuleType
 from typing import Any, Optional
 
-from jasper.control.client import AsyncControlClient, ControlError, default_port
+from jasper.control.client import CONTROL_PORT, AsyncControlClient, ControlError
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -66,13 +66,13 @@ MIXER_ELEMENT_NAME = "PCM"
 
 
 def default_control_url() -> str:
-    """Where jasper-control listens, on this box's own port.
+    """Where jasper-control listens.
 
     The /volume/set endpoint accepts an optional `source` field; with
     source="usbsink" the coordinator routes through observe_source_volume
     (echo-prevented) rather than set_listening_level (authoritative). See
     jasper.control.server for the handler."""
-    return f"http://127.0.0.1:{default_port()}"
+    return f"http://127.0.0.1:{CONTROL_PORT}"
 
 
 # `amixer cget` output format for the UAC2 gadget volume control. CRITICAL:

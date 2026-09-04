@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper.control.client import CONTROL_PORT
 from jasper.volume_coordinator import AIRPLAY_DB_MAX, AIRPLAY_DB_MIN
 from tests.shairport_template_helpers import (
     SHAIRPORT_TEMPLATE,
@@ -59,20 +60,14 @@ def test_flock_is_available_on_linux():
         assert _FLOCK is not None
 
 
-def _hook_env(runtime_dir: Path, port: int | None = None) -> dict[str, str]:
-    env = {
-        "PATH": _HOOK_PATH,
-        "RUNTIME_DIRECTORY": str(runtime_dir),
-    }
-    if port is not None:
-        env["JASPER_CONTROL_PORT"] = str(port)
-    return env
+def _hook_env(runtime_dir: Path) -> dict[str, str]:
+    return {"PATH": _HOOK_PATH, "RUNTIME_DIRECTORY": str(runtime_dir)}
 
 
-def _run_hook(*args: str, runtime_dir: Path, port: int | None = None) -> None:
+def _run_hook(*args: str, runtime_dir: Path) -> None:
     subprocess.run(
         ["sh", str(HOOK), *args],
-        env=_hook_env(runtime_dir, port),
+        env=_hook_env(runtime_dir),
         check=True,
         timeout=60,
     )
@@ -179,12 +174,13 @@ def control_stub():
     """A stub jasper-control that records what the hook posted.
 
     `statuses` scripts the reply codes it hands back, oldest first; anything
-    past the end of that list answers 200.
+    past the end of that list answers 200. It binds the port the hook posts
+    to, which is fixed — jasper-control is not relocatable (CONTROL_PORT).
     """
     _Recorder.posts = []
     _Recorder.times = []
     _Recorder.statuses = []
-    server = HTTPServer(("127.0.0.1", 0), _Recorder)
+    server = HTTPServer(("127.0.0.1", CONTROL_PORT), _Recorder)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -201,7 +197,7 @@ def test_hook_posts_a_source_attributed_observation(control_stub, tmp_path):
     `observe_source_volume`. Without it jasper-control treats the caller as
     authoritative and the active-source gate, the echo window and the
     measurement hold are all bypassed."""
-    _run_hook("-7.500000", runtime_dir=tmp_path, port=control_stub.server_port)
+    _run_hook("-7.500000", runtime_dir=tmp_path)
 
     assert _Recorder.posts == [
         ("/volume/set", {"percent": 75, "source": "airplay"}),
@@ -218,8 +214,8 @@ def test_session_start_marks_only_the_first_observation_as_initial(
     sender no longer clears a mute asserted at the speaker. A later nudge must
     NOT carry it, or volume-up-while-muted would do nothing."""
     _run_hook("--session-start", runtime_dir=tmp_path)
-    _run_hook("-30.000000", runtime_dir=tmp_path, port=control_stub.server_port)
-    _run_hook("-15.000000", runtime_dir=tmp_path, port=control_stub.server_port)
+    _run_hook("-30.000000", runtime_dir=tmp_path)
+    _run_hook("-15.000000", runtime_dir=tmp_path)
 
     assert [body for _, body in _Recorder.posts] == [
         {"percent": 0, "source": "airplay", "observation_initial": True},
@@ -236,7 +232,7 @@ def test_a_rejected_write_is_retried_rather_than_recorded_as_delivered(
     for the rest of the drag."""
     _Recorder.statuses = [409]
 
-    _run_hook("-15.000000", runtime_dir=tmp_path, port=control_stub.server_port)
+    _run_hook("-15.000000", runtime_dir=tmp_path)
 
     percents = [body["percent"] for _, body in _Recorder.posts]
     assert percents[:2] == [50, 50]
@@ -245,8 +241,8 @@ def test_a_rejected_write_is_retried_rather_than_recorded_as_delivered(
 @requires_flock
 def test_hook_survives_an_unreachable_control_daemon(tmp_path):
     """A lost volume nudge is harmless; a hook that fails back into shairport
-    is not. Port 1 is privileged and unbound, so curl fails immediately."""
-    _run_hook("-10.000000", runtime_dir=tmp_path, port=1)
+    is not. No stub is bound here, so curl fails immediately."""
+    _run_hook("-10.000000", runtime_dir=tmp_path)
 
 
 @requires_flock
@@ -256,11 +252,10 @@ def test_hook_releases_its_lock_so_the_next_message_is_not_dropped(
     """The lock that coalesces a drag must not outlive one invocation, or the
     first message after a drag would be the last one the speaker ever
     hears."""
-    _run_hook("-30.000000", runtime_dir=tmp_path, port=control_stub.server_port)
+    _run_hook("-30.000000", runtime_dir=tmp_path)
     _run_hook(
         f"{AIRPLAY_DB_MAX:.6f}",
         runtime_dir=tmp_path,
-        port=control_stub.server_port,
     )
 
     assert [body["percent"] for _, body in _Recorder.posts] == [0, 100]
@@ -272,15 +267,13 @@ def _db_for(percent: float) -> str:
     return f"{db:.6f}"
 
 
-def _fire_burst(
-    percents, *, runtime_dir: Path, port: int, spacing: float,
-) -> None:
+def _fire_burst(percents, *, runtime_dir: Path, spacing: float) -> None:
     """Fire one hook invocation per volume message, the way shairport does.
 
     Messages are scheduled against an absolute clock, so Popen's own cost
     doesn't stretch the burst the assertions are written about.
     """
-    env = _hook_env(runtime_dir, port)
+    env = _hook_env(runtime_dir)
     started = time.monotonic()
     running = []
     for index, percent in enumerate(percents):
@@ -312,7 +305,6 @@ def test_hook_coalesces_a_drag_burst_and_still_lands_the_final_value(
     _fire_burst(
         messages,
         runtime_dir=tmp_path,
-        port=control_stub.server_port,
         spacing=0.05,
     )
 
@@ -348,7 +340,6 @@ def test_a_session_start_fade_up_is_adopted_once_at_its_settled_level(
     _fire_burst(
         CONNECT_FADE_UP,
         runtime_dir=tmp_path,
-        port=control_stub.server_port,
         spacing=FADE_SPACING_S,
     )
 
@@ -371,9 +362,8 @@ def test_a_reconnect_restores_the_remembered_level_before_the_animation(
     hold swallows never reaches the speaker.
     """
     level = CONNECT_FADE_UP[-1]
-    port = control_stub.server_port
-    _run_hook(_db_for(level), runtime_dir=tmp_path, port=port)
-    _run_hook("-144.000000", runtime_dir=tmp_path, port=port)
+    _run_hook(_db_for(level), runtime_dir=tmp_path)
+    _run_hook("-144.000000", runtime_dir=tmp_path)
     assert [body["percent"] for _, body in _Recorder.posts] == [level, 0]
     opened = len(_Recorder.posts)
 
@@ -382,7 +372,6 @@ def test_a_reconnect_restores_the_remembered_level_before_the_animation(
     _fire_burst(
         CONNECT_FADE_UP,
         runtime_dir=tmp_path,
-        port=port,
         spacing=FADE_SPACING_S,
     )
 
@@ -408,7 +397,6 @@ def test_the_same_ramp_without_a_session_start_still_tracks_the_slider(
     _fire_burst(
         CONNECT_FADE_UP,
         runtime_dir=tmp_path,
-        port=control_stub.server_port,
         spacing=FADE_SPACING_S,
     )
 

@@ -70,7 +70,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .. import identity
 from ..control import household_credential
-from ..control.client import PEER_CONTROL_PORT
+from ..control.client import CONTROL_PORT
 from ..mdns import browse_once
 from ..multiroom.airplay_latency import with_airplay_latency_fit
 from ..multiroom.config import DEFAULT_CROSSOVER_HZ, is_private_or_loopback_ipv4
@@ -659,7 +659,7 @@ def post_grouping_to_member(
         except ValueError:
             return False, f"not an IP address: {addr!r}"
         return False, f"refusing non-LAN target {addr}"
-    url = f"http://{target}:{PEER_CONTROL_PORT}/grouping/set"
+    url = f"http://{target}:{CONTROL_PORT}/grouping/set"
     headers = {"Content-Type": "application/json"}
     if token:
         headers["X-JTS-Token"] = token
@@ -845,7 +845,7 @@ def _get_remote_json_result(
     timeout: float,
 ) -> tuple[dict | None, str | None]:
     """GET one bounded peer JSON object with a small diagnostic result."""
-    url = f"http://{target}:{PEER_CONTROL_PORT}{path}"
+    url = f"http://{target}:{CONTROL_PORT}{path}"
     req = urllib.request.Request(url, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:

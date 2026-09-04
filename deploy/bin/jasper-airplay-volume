@@ -31,10 +31,9 @@ state="${runtime_dir}/airplay-volume.pct"
 restore_state="${runtime_dir}/airplay-restore.pct"
 lock="${runtime_dir}/airplay-volume.lock"
 session_start="${runtime_dir}/airplay-session-start"
-# jasper-control is always localhost, and 8780 is jasper/control/client.py's
-# DEFAULT_PORT — the one module that owns this contract. JASPER_CONTROL_PORT
-# is that client's own override, read here for the same reason.
-url="http://127.0.0.1:${JASPER_CONTROL_PORT:-8780}/volume/set"
+# jasper-control is always localhost on jasper/control/client.py's
+# CONTROL_PORT — the one module that owns this contract.
+url="http://127.0.0.1:8780/volume/set"
 
 # shairport fires this before the connect-time volume push, so the volume
 # invocation that follows can tell a session snapshot from a user's nudge.

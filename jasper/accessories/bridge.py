@@ -37,7 +37,7 @@ import signal
 from typing import Awaitable, Callable, Optional
 
 from jasper.control.client import (
-    AsyncControlClient, ControlError, ControlResponse, default_port,
+    CONTROL_PORT, AsyncControlClient, ControlError, ControlResponse,
 )
 from jasper.log_event import log_event
 
@@ -65,9 +65,8 @@ logger = logging.getLogger(__name__)
 
 
 def default_control_url() -> str:
-    """jasper-control on the same Pi. Stays localhost because the bridge is a
-    host-side caller; the port follows this box's JASPER_CONTROL_PORT."""
-    return f"http://127.0.0.1:{default_port()}"
+    """jasper-control on the same Pi; the bridge is a host-side caller."""
+    return f"http://127.0.0.1:{CONTROL_PORT}"
 
 
 # Coalesce window for rotation events. At 20 Hz detents (the VK-01's

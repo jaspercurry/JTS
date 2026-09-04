@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 
 from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..http_security import management_read_allowed, mutating_request_allowed
-from .client import default_port
+from .client import CONTROL_PORT
 from ..atomic_io import locked_update_env_file
 from ..audio_quality import (  # noqa: F401 - route-mixin dependency exports
     apply_requested_converter as _apply_audio_quality,
@@ -2237,8 +2237,7 @@ def main(argv: list[str] | None = None) -> int:
         help="bind host (default 0.0.0.0 — LAN-reachable)",
     )
     parser.add_argument(
-        "--port", type=int,
-        default=default_port(),
+        "--port", type=int, default=CONTROL_PORT,
     )
     parser.add_argument(
         "--camilla-host",
