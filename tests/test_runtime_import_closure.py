@@ -63,6 +63,24 @@ def _dotted(path: Path) -> str:
     return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
 
 
+def _package_exports(init: Path) -> set[str]:
+    """Module-scope names an ``__init__.py`` binds.
+
+    Tells ``from pkg import name`` (an attribute) apart from
+    ``from pkg import submodule`` (a module that has to exist on disk).
+    """
+
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(init.read_text(encoding="utf-8"))):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names.update((a.asname or a.name).split(".")[0] for a in node.names)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            names.add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+    return names
+
+
 def _guards_type_checking(test: ast.expr) -> bool:
     if isinstance(test, ast.Name):
         return test.id == "TYPE_CHECKING"
@@ -197,14 +215,15 @@ def test_the_truth_layer_never_imports_the_runtime(module):
     sorted((REPO_ROOT / "jasper" / "active_speaker").rglob("*.py")),
     ids=lambda path: str(path.relative_to(REPO_ROOT / "jasper" / "active_speaker")),
 )
-def test_active_speaker_relative_imports_resolve(path):
-    """A def moved between modules leaves no dangling ``from .gone import x``.
+def test_active_speaker_jasper_imports_resolve(path):
+    """A def moved between modules leaves no dangling ``jasper`` import.
 
-    The suite stubs these callers, so only the walk sees it — at module scope
-    and, the half a caller grep misses, inside a function body. Resolution is
-    ``_module_path``, not ``find_spec``: a spec lookup executes the target's
-    parent package, so an absent optional dependency would surface here as a
-    dangling import.
+    Relative and absolute alike: a relocation re-levels the first and leaves the
+    second spelled at the old home. The suite stubs these callers, so only the
+    walk sees it — at module scope and, the half a caller grep misses, inside a
+    function body. Resolution is ``_module_path``, not ``find_spec``: a spec
+    lookup executes the target's parent package, so an absent optional
+    dependency would surface here as a dangling import.
     """
 
     package = _dotted(path)
@@ -213,9 +232,28 @@ def test_active_speaker_relative_imports_resolve(path):
     unresolved = []
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in _import_nodes(tree.body, deferred=True):
-        if not isinstance(node, ast.ImportFrom) or not node.level:
-            continue
-        target = resolve_name("." * node.level + (node.module or ""), package)
-        if _module_path(target) is None:
-            unresolved.append(target)
+        if isinstance(node, ast.Import):
+            targets = [alias.name for alias in node.names]
+        else:
+            module = (
+                resolve_name("." * node.level + (node.module or ""), package)
+                if node.level
+                else node.module or ""
+            )
+            targets = [module]
+            init = _module_path(module)
+            if init is not None and init.name == "__init__.py":
+                # ``from pkg import x``: x is a submodule unless the package
+                # body binds the name itself.
+                exported = _package_exports(init)
+                targets += [
+                    f"{module}.{alias.name}"
+                    for alias in node.names
+                    if alias.name not in exported
+                ]
+        unresolved.extend(
+            target
+            for target in targets
+            if target.split(".")[0] == "jasper" and _module_path(target) is None
+        )
     assert unresolved == []

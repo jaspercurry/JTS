@@ -282,7 +282,7 @@ def test_a_refused_reemit_does_not_kick(box):
 def test_no_automated_path_can_pass_force(monkeypatch):
     """The safety here is an ABSENCE.
 
-    ``_reemit_staged_startup_anchor`` refuses while a per-driver commissioning
+    ``reemit_staged_startup_anchor`` refuses while a per-driver commissioning
     load is active, because moving the anchor mid-load re-points the operator's
     own stop control. This caller's safety IS that refusal, so ``--force`` is
     not threaded through.
