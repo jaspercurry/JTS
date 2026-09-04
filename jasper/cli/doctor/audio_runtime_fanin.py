@@ -564,6 +564,10 @@ def _host_clock_health_from_status(data: dict[str, object]) -> CheckResult:
     )
 
 
+#: `CheckResult.reason` for a loaded CamillaDSP config whose ``devices:`` block
+#: does not parse — the one branch of `check_fanin_coupling` that judges no axis.
+REASON_DEVICES_UNPARSED = "camilla_devices_unparsed"
+
 #: Seconds, TOTAL deadline for one doctor probe of fan-in's STATUS socket.
 #: One value for every probe: they all fail soft, so a slower answer is worth
 #: more than a faster verdict.
@@ -813,7 +817,21 @@ def check_fanin_coupling() -> CheckResult:
     label = "fan-in coupling"
     _, active_path = _active_camilla_config_path()
     fallback = "/var/lib/camilladsp/configs/sound_current.yml"
-    devices = read_camilla_devices_config(active_path or fallback) or {}
+    config_path = Path(active_path or fallback)
+    devices = read_camilla_devices_config(config_path) or {}
+    if not devices and config_path.exists():
+        # A config IS loaded and its devices block did not parse (an absent or
+        # duplicated top-level `devices:` key, or a file this process cannot
+        # read). Not "no config yet": every coupling axis below is unjudged.
+        return CheckResult(
+            label,
+            "warn",
+            f"loaded config {config_path} yields no devices block, so the "
+            "capture and playback axes cannot be judged. Check the file's "
+            "top-level devices: key, then run: sudo /opt/jasper/.venv/bin/"
+            "jasper-sound reconcile-current-dsp",
+            reason=REASON_DEVICES_UNPARSED,
+        )
     capture = devices.get("capture_type")
     if capture is None:
         # No JTS config loaded yet (fresh box / non-JTS graph).

@@ -1065,17 +1065,13 @@ def test_shipped_cutover_seed_declares_the_current_program_lane_width():
     from jasper.camilla_config_contract import (
         DEFAULT_PLAYBACK_FORMAT,
         parse_camilla_devices_config,
-        read_camilla_device_field,
     )
     from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
 
     cutover = REPO / "deploy" / "camilladsp" / "outputd-cutover.yml"
-    assert (
-        read_camilla_device_field(cutover, "playback", "format")
-        == DEFAULT_PLAYBACK_FORMAT
-    )
     emitted = parse_camilla_devices_config(emit_flat_outputd_cutover_config())
     seeded = parse_camilla_devices_config(cutover.read_text(encoding="utf-8"))
+    assert seeded["playback_format"] == DEFAULT_PLAYBACK_FORMAT
     for key in (
         "capture_device",
         "playback_device",
