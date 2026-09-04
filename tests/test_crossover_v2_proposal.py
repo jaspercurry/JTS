@@ -22,9 +22,11 @@ import dataclasses
 import logging
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2 import intervention as iv
+from jasper.active_speaker.crossover_v2.candidates import LinearizationState
 from jasper.active_speaker.crossover_v2.contracts import (
     CandidateFcDisagreementError,
     CrossoverV2ContractError,
@@ -33,6 +35,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
     PlanRefusal,
     TrimStrategy,
 )
+from jasper.active_speaker.crossover_v2.plan_assembly import LinearizationPlan
 from jasper.active_speaker.crossover_v2.proposal import (
     PROPOSAL_CREATED_EVENT,
     PROPOSAL_REFUSED_EVENT,
@@ -153,6 +156,67 @@ def test_a_fitted_artifact_cannot_say_which_pair_won_and_does_not_pretend_to():
     assert derived is TrimStrategy.COMMITTED_PAIR_UNRECORDED
     assert derived not in strategies
     assert "does not record which pair" in why
+
+
+def _plan(decision) -> LinearizationPlan:
+    """One plan around one real decision.
+
+    Every field :meth:`LinearizationState.from_plan` does not read is left at a
+    placeholder; the round-trip under test is the trim decision's.
+    """
+    return LinearizationPlan(
+        fc_hz=FC_HZ,
+        role_attenuations_db=dict(decision.committed_db),
+        linearization={},
+        trim=decision,
+        core_level_evidence={},
+        trim_band_estimate_db={},
+        polish_delta_db={},
+        level_consistency=None,
+        linearized_predicted_sum=(np.array([FC_HZ]), np.array([0.0])),
+        summation_frame=None,
+        radiating_band_hz={},
+    )
+
+
+@pytest.mark.parametrize(
+    ("anchor_error", "scan_error", "expected"),
+    [
+        (5.0, 0.1, TrimStrategy.RESOLVED_COMMITTED),
+        (0.1, 5.0, TrimStrategy.ANCHORED_COMMITTED),
+    ],
+)
+def test_the_committed_pair_and_its_drift_survive_the_commit_seam(
+    anchor_error, scan_error, expected,
+):
+    """What the build decided reaches the proposal, so nothing is guessed.
+
+    Both in-margin commits share one ``linearization_outcome`` string, so the
+    string alone cannot tell them apart. The state carries the strategy and the
+    drift it turned on; a state holding no such record still collapses to
+    :attr:`TrimStrategy.COMMITTED_PAIR_UNRECORDED`.
+    """
+    decision = _decision(
+        drift_db=1.0, anchor_error=anchor_error, scan_error=scan_error
+    )
+    assert decision.strategy is expected
+    assert decision.outcome == "fitted"
+
+    state = LinearizationState.from_plan(_plan(decision))
+    assert state.trim_strategy is expected
+    assert state.anchor_drift_db == pytest.approx(decision.anchor_drift_db)
+
+    strategy, why = trim_strategy_for_outcome(state.outcome, linearization=state)
+    assert strategy is expected
+    assert f"{decision.anchor_drift_db:.3f}" in why, (
+        "the drift the strategy turned on has to be recoverable from the "
+        "proposal, which holds no other slot for it"
+    )
+
+    unrecorded = LinearizationState(outcome=state.outcome)
+    assert trim_strategy_for_outcome(
+        unrecorded.outcome, linearization=unrecorded,
+    )[0] is TrimStrategy.COMMITTED_PAIR_UNRECORDED
 
 
 @pytest.mark.parametrize("outcome", ["", "ineligible_mic_tier", "fit_failed", None])
@@ -466,10 +530,7 @@ def test_the_walk_route_carries_its_builds_own_realized_level_verdict():
     change what ``proposal_fingerprint`` covers — the exact failure class this
     PR closes. This drives the real call site instead.
     """
-    from jasper.active_speaker.crossover_v2.candidates import (
-        LinearizationState,
-        SpeculativeClose,
-    )
+    from jasper.active_speaker.crossover_v2.candidates import SpeculativeClose
     from types import SimpleNamespace
 
     session, seams = _session()
@@ -489,7 +550,10 @@ def test_the_walk_route_carries_its_builds_own_realized_level_verdict():
         cloud=None,
         level_frame_finding=None,
         linearization=LinearizationState(
-            outcome="fitted", realized_level_match=_FakeRealizedMatch(_REALIZED),
+            outcome="fitted",
+            realized_level_match=_FakeRealizedMatch(_REALIZED),
+            trim_strategy=TrimStrategy.RESOLVED_COMMITTED,
+            anchor_drift_db=1.25,
         ),
     )
 
@@ -500,6 +564,10 @@ def test_the_walk_route_carries_its_builds_own_realized_level_verdict():
     assert isinstance(proposal, InterventionProposal)
     assert dict(proposal.realized_branch_level) == _REALIZED, (
         "the walk must read the verdict off its OWN build's linearization state"
+    )
+    assert proposal.trim_strategy is TrimStrategy.RESOLVED_COMMITTED, (
+        "the committed pair travels the same seam; deriving it from the "
+        "candidate's outcome string would say COMMITTED_PAIR_UNRECORDED"
     )
 
 

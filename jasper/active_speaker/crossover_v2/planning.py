@@ -541,6 +541,11 @@ def build_candidate(
                 role: pinned.get(role, db)
                 for role, db in role_attenuations_db.items()
             }
+        if displaced_trim_db:
+            # A pin REPLACES what ``decide_trim`` committed, so this build no
+            # longer ships that pair and must not name it: the proposal falls
+            # back to ``TrimStrategy.COMMITTED_PAIR_UNRECORDED``.
+            state = replace(state, trim_strategy=None, anchor_drift_db=None)
         candidate_linearization = driver_prescription_to_candidate_fields(
             driver_prescription, fitted=linearization
         )[LINEARIZATION_CANDIDATE_FIELD]

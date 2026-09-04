@@ -2020,6 +2020,40 @@ def test_a_pinned_trim_ships_and_an_unpinned_one_is_still_solved(
     )
 
 
+def _round_state(tmp_path, monkeypatch, *, pin: Any = None) -> Any:
+    """The linearization state ``build_candidate`` returned for one round."""
+    _stage_driver(tmp_path, ordinal=9, pinned_trim_db=pin)
+    taken = spool.take_staged_prescription(
+        round_ordinal=9, accepts=spool.STAGEABLE_KINDS
+    ).prescription
+    return _prescribed_round(monkeypatch, taken).state
+
+
+def test_a_pinned_trim_clears_the_committed_pair_the_round_no_longer_ships(
+    tmp_path, monkeypatch,
+):
+    """The pin replaces what ``decide_trim`` committed, so the record goes too.
+
+    ``LinearizationState.trim_strategy`` is what the proposal quotes instead of
+    guessing from ``outcome``; a pinned round ships the document's number, so a
+    state still naming the solved pair would put a false commitment on the
+    receipt — the 2026-08-10 defect's shape.
+    """
+    pinned = _round_state(
+        tmp_path / "pinned", monkeypatch, pin={"tweeter": _PINNED_TWEETER_DB}
+    )
+    control = _round_state(tmp_path / "control", monkeypatch)
+
+    assert control.trim_strategy is not None
+    assert control.anchor_drift_db is not None
+    assert pinned.trim_strategy is None
+    assert pinned.anchor_drift_db is None
+    assert pinned.outcome == control.outcome, (
+        "the fit's verdict is unchanged; only the record of WHICH pair it "
+        "committed goes with the trim the pin replaced"
+    )
+
+
 def test_a_pinned_trim_is_charged_headroom_at_the_value_that_ships(
     tmp_path, monkeypatch,
 ):
