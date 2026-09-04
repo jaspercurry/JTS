@@ -60,14 +60,9 @@ class DriftItem:
 # class is ALSA ownership churn where holder evidence matters and the Pi
 # should stay reachable.
 #
-# StartLimitAction/OnFailure stay hand-copied rather than read from each
-# unit's installed file (`systemctl show -p FragmentPath` + a parse, mirroring
-# the sysctl/MGLRU rows): FragmentPath resolves to the unit file on
-# `/etc/systemd/system` install.sh actually writes, so the read is mechanically
-# a single memoized batch property plus small local file reads — but that path
-# cannot be exercised or verified without a real box (no Pi in this
-# environment), and the values it would source (the reboot-escalation ladder)
-# are resilience-tier. Revisit with hardware access rather than guessing.
+# StartLimitAction/OnFailure expectations are the shipped unit-file values,
+# hand-copied; sourcing them from each unit's FragmentPath on the box is the
+# intended replacement.
 _UNIT_DIRECTIVES: dict[str, dict[str, str]] = {
     "OOMScoreAdjust": {u: str(v) for u, v in _EXPECTED_OOM_ADJ.items()},
     "StartLimitAction": {

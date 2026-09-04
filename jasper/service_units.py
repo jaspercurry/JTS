@@ -57,8 +57,16 @@ DOCTOR_EXTRA_UNITS = (
     "jasper-aec-commission.service",
     "jasper-enhanced-aec-install.service",
     "jasper-usbnet-dhcp.service",
+    "jasper-camilla-crossover.service",
+    "jasper-snapclient.service",
+    "jasper-snapserver.service",
+    "jasper-usbmic.service",
+    "jasper-chat-web.service",
+    "jasper-bluetooth-web.service",
     "jasper-correction-web.service",
     "jasper-correction-web.socket",
+    "jasper-bluetooth-web.socket",
+    "jasper-chat-web.socket",
     "jasper-web.socket",
     "jasper-system-web.socket",
     "jasper-wifi-recover.timer",
@@ -94,20 +102,17 @@ def systemd_int(value: str | None) -> int | None:
     return parsed
 
 
-def parse_systemctl_show_units(text: str) -> dict[str, dict[str, Any]]:
-    """``systemctl show`` output for N units, keyed by unit name.
-
-    Units are blank-line separated blocks of ``Key=value`` lines. The
-    numeric properties are coerced; string properties are None when
-    systemd emitted them empty.
-    """
-    records: list[dict[str, str]] = []
+def show_blocks(text: str) -> list[dict[str, str]]:
+    """``systemctl show`` output as one ``Key=value`` mapping per unit, in
+    output order. Units are separated by a blank line; a line without ``=``
+    is dropped."""
+    blocks: list[dict[str, str]] = []
     cur: dict[str, str] = {}
     for raw in text.splitlines():
         line = raw.strip()
         if not line:
             if cur:
-                records.append(cur)
+                blocks.append(cur)
                 cur = {}
             continue
         if "=" not in line:
@@ -115,7 +120,26 @@ def parse_systemctl_show_units(text: str) -> dict[str, dict[str, Any]]:
         key, _, value = line.partition("=")
         cur[key] = value
     if cur:
-        records.append(cur)
+        blocks.append(cur)
+    return blocks
+
+
+def parse_property_blocks(text: str, prop: str) -> list[str]:
+    """``prop``'s value per unit from ``systemctl show --property=<prop> u1
+    u2 ...``, in output order. A unit whose value is empty still emits a
+    ``<prop>=`` line, so an empty value keeps its slot; a block missing the
+    property yields ``""``."""
+    return [block.get(prop, "") for block in show_blocks(text)]
+
+
+def parse_systemctl_show_units(text: str) -> dict[str, dict[str, Any]]:
+    """``systemctl show`` output for N units, keyed by unit name.
+
+    Units are blank-line separated blocks of ``Key=value`` lines. The
+    numeric properties are coerced; string properties are None when
+    systemd emitted them empty.
+    """
+    records = show_blocks(text)
 
     out: dict[str, dict[str, Any]] = {}
     for record in records:

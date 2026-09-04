@@ -902,8 +902,6 @@ def _systemd_unit_user(unit: str) -> tuple[Optional[str], str]:
     """
     state = evidence.unit_state(unit)
     load_state = (state or {}).get("load_state") or "unknown"
-    # unit_property appends ".service" itself (its callers pass bare drift-
-    # table names), so strip it back off the fully-qualified name we take.
     users = evidence.unit_property("User", (unit,))
     user = (users[0] or None) if users else None
     return user, load_state

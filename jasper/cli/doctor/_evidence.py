@@ -9,14 +9,15 @@ cache. A reader here owns only the read and its fail-soft shape; the verdict
 stays in the check. ``run_async`` resets the cache at the start of every
 run, and a test fixture resets it between tests.
 
-Test seams: patch the reader functions this module imports (``_run``,
-``read_status_socket``) or ``evidence.seed(key, value)`` a memo entry
-directly; the keys are the ones the public methods build.
+Test seams: patch this module's reader functions (``_run``,
+``read_status_socket``, ``read_unit_states``) or ``evidence.seed(key, value)``
+a memo entry directly; the keys are the ones the public methods build.
 """
 from __future__ import annotations
 
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, TypeVar
 
@@ -25,11 +26,16 @@ from ...route_latency.status_socket import (
     OUTPUTD_STATUS_SOCKET,
     read_status_socket,
 )
-from ...service_units import DOCTOR_UNIT_ROSTER, read_unit_states
+from ...service_units import (
+    DOCTOR_UNIT_ROSTER,
+    parse_property_blocks,
+    read_unit_states,
+)
 
 T = TypeVar("T")
 
 STATUS_TIMEOUT_SECONDS = 2.0
+STATUS_RETRY_DELAY_SECONDS = 0.1
 UNIT_SHOW_TIMEOUT_SECONDS = 10.0
 _LOOPBACK_STATUS_GLOB = "/proc/asound/Loopback/pcm0p/sub*/status"
 
@@ -47,6 +53,15 @@ class StatusRead:
 
 
 def _read_status(path: str, timeout: float) -> StatusRead:
+    """One STATUS read, retried once after ``STATUS_RETRY_DELAY_SECONDS`` when
+    the socket is absent or refusing — a daemon restarting mid-run answers on
+    the second attempt, and the memo hands that result to every consumer."""
+    try:
+        return StatusRead(read_status_socket(path, timeout=timeout))
+    except (ConnectionRefusedError, FileNotFoundError):
+        time.sleep(STATUS_RETRY_DELAY_SECONDS)
+    except Exception as exc:  # noqa: BLE001 — classified by the caller
+        return StatusRead(None, exc)
     try:
         return StatusRead(read_status_socket(path, timeout=timeout))
     except Exception as exc:  # noqa: BLE001 — classified by the caller
@@ -58,53 +73,24 @@ def _run(cmd: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
 
 
 def _systemctl_show_property(prop: str, units: list[str]) -> list[str] | None:
-    """Batch read of one systemd property across multiple units. One
-    subprocess call returns N values (one per unit, in input order).
+    """One value of ``prop`` per unit, in input order; None when systemctl is
+    unavailable (dev host) or the reply is not one block per unit.
 
-    Returns:
-        list of values (length == len(units)), OR None if systemctl
-        is unavailable (dev host).
-
-    Why this matters: unbatched, a caller reading N units' worth of a
-    property outside ``SHOW_PROPERTIES`` would spend one subprocess
-    invocation per unit; batched, it is one invocation per property, a
-    large constant-factor win on the Pi.
-
-    Wire format note: `systemctl show -p X --value <u1> <u2> ... <uN>`
-    emits `value1\\n\\nvalue2\\n\\n...valueN\\n`. The separator is
-    `\\n\\n` (blank line between values), NOT plain `\\n`. We split
-    on that explicitly.
+    One subprocess per property rather than per unit: unbatched, a property
+    outside ``SHOW_PROPERTIES`` would cost N invocations, a large
+    constant-factor loss on the Pi.
     """
     try:
         out = _run(
-            ["systemctl", "show", "-p", prop, "--value"] +
-            list(units),
-            # Wider timeout — listing N units takes longer than 1.
-            timeout=10.0,
+            ["systemctl", "show", "--no-page", f"--property={prop}", *units],
+            timeout=UNIT_SHOW_TIMEOUT_SECONDS,
         ).stdout
-    except (subprocess.SubprocessError, FileNotFoundError):
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
         return None
-    # Strip trailing newline before splitting so the last value isn't
-    # followed by a phantom empty element.
-    text = out.rstrip("\n")
-    # systemctl separates per-unit values with a blank line (\n\n) when
-    # multiple units are requested with --value. Splitting on \n alone
-    # would produce 2N-1 elements for N units; split on \n\n to get N.
-    if not text:
-        # All units returned empty values (e.g. all not-running).
-        # Still need len(units) entries.
-        return [""] * len(units)
-    if "\n\n" in text:
-        parts = text.split("\n\n")
-    else:
-        # Single unit, or systemd version that doesn't emit blank
-        # separators. Fall back to plain \n split.
-        parts = text.split("\n")
-    if len(parts) != len(units):
-        # Unexpected shape — degrade gracefully so the caller can
-        # surface "skipped" rather than crash.
+    values = parse_property_blocks(out, prop)
+    if len(values) != len(units):
         return None
-    return parts
+    return values
 
 
 def _loopback_substreams() -> dict[int, str]:

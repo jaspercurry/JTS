@@ -5,7 +5,9 @@
 """The doctor's per-run evidence memo and the shared systemd reader."""
 from __future__ import annotations
 
+import ast
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -115,35 +117,45 @@ def test_unit_property_is_none_when_the_reply_shape_mismatches(monkeypatch):
     assert ev.unit_property("StartLimitAction", ("jasper-voice",)) is None
 
 
-def test_systemctl_show_property_parses_double_newline_separator(monkeypatch):
-    """`systemctl show -p X --value u1 u2` separates values with a blank
-    line, not a single newline (verified on the Pi)."""
+@pytest.mark.parametrize(
+    "stdout,units,expected",
+    [
+        ("User=root\n", ["a"], ["root"]),
+        ("User=\n", ["a"], [""]),
+        ("User=root\n\nUser=jasper\n", ["a", "b"], ["root", "jasper"]),
+        # A unit whose value is empty still emits `<prop>=`, so it keeps its
+        # slot whether it is first, in the middle, or last.
+        (
+            "User=root\n\nUser=\n\nUser=jasper\n",
+            ["a", "b", "c"],
+            ["root", "", "jasper"],
+        ),
+        (
+            "User=root\n\nUser=jasper\n\nUser=\n",
+            ["a", "b", "c"],
+            ["root", "jasper", ""],
+        ),
+        ("User=\n\nUser=\n\nUser=\n", ["a", "b", "c"], ["", "", ""]),
+    ],
+)
+def test_systemctl_show_property_yields_one_value_per_unit(
+    monkeypatch, stdout, units, expected,
+):
+    monkeypatch.setattr(
+        _evidence, "_run", lambda cmd, timeout=5.0: SimpleNamespace(stdout=stdout),
+    )
+    result = _evidence._systemctl_show_property("User", units)
+    assert result == expected
+
+
+def test_systemctl_show_property_is_none_when_blocks_do_not_cover_the_units(
+    monkeypatch,
+):
     monkeypatch.setattr(
         _evidence, "_run",
-        lambda cmd, timeout=5.0: SimpleNamespace(stdout="1001\n\n1002\n\n1003\n"),
+        lambda cmd, timeout=5.0: SimpleNamespace(stdout="User=root\n"),
     )
-    result = _evidence._systemctl_show_property(
-        "MainPID", ["unit-a", "unit-b", "unit-c"],
-    )
-    assert result == ["1001", "1002", "1003"]
-
-
-def test_systemctl_show_property_handles_single_unit(monkeypatch):
-    monkeypatch.setattr(
-        _evidence, "_run", lambda cmd, timeout=5.0: SimpleNamespace(stdout="1234\n"),
-    )
-    result = _evidence._systemctl_show_property("MainPID", ["unit-a"])
-    assert result == ["1234"]
-
-
-def test_systemctl_show_property_handles_empty_values(monkeypatch):
-    monkeypatch.setattr(
-        _evidence, "_run", lambda cmd, timeout=5.0: SimpleNamespace(stdout="\n\n\n\n\n"),
-    )
-    result = _evidence._systemctl_show_property(
-        "MainPID", ["unit-a", "unit-b", "unit-c"],
-    )
-    assert result == [""] * 3
+    assert _evidence._systemctl_show_property("User", ["a", "b"]) is None
 
 
 def test_systemctl_show_property_is_none_without_systemctl(monkeypatch):
@@ -152,6 +164,70 @@ def test_systemctl_show_property_is_none_without_systemctl(monkeypatch):
 
     monkeypatch.setattr(_evidence, "_run", raises)
     assert _evidence._systemctl_show_property("MainPID", ["unit-a"]) is None
+
+
+def test_status_read_retries_once_when_the_socket_refuses(monkeypatch):
+    attempts: list[str] = []
+
+    def reader(path, *, timeout):
+        attempts.append(path)
+        if len(attempts) == 1:
+            raise ConnectionRefusedError(path)
+        return {"ok": True}
+
+    monkeypatch.setattr(_evidence, "read_status_socket", reader)
+    read = Evidence().fanin_status()
+    assert read.payload == {"ok": True}
+    assert len(attempts) == 2
+
+
+def test_status_read_gives_up_after_a_second_refusal(monkeypatch):
+    attempts: list[str] = []
+
+    def reader(path, *, timeout):
+        attempts.append(path)
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(_evidence, "read_status_socket", reader)
+    read = Evidence().outputd_status()
+    assert read.payload is None
+    assert read.unreachable is True
+    assert len(attempts) == 2
+
+
+def _literal_unit_arguments() -> dict[str, set[str]]:
+    """Every string-literal unit name a doctor module passes to
+    ``unit_state``/``unit_active``, keyed by module file name."""
+    found: dict[str, set[str]] = {}
+    for path in sorted(Path(_evidence.__file__).parent.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            func = node.func
+            if isinstance(func, ast.Attribute):
+                name = func.attr
+            elif isinstance(func, ast.Name):
+                name = func.id
+            else:
+                continue
+            if name not in ("unit_state", "unit_active"):
+                continue
+            arg = node.args[0]
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                found.setdefault(path.name, set()).add(arg.value)
+    return found
+
+
+def test_every_literal_unit_the_doctor_asks_about_is_rostered():
+    """A unit named by a literal costs a second ``systemctl show`` unless it
+    rides the roster batch. Names built at runtime are exempt."""
+    roster = set(service_units.DOCTOR_UNIT_ROSTER)
+    off_roster = {
+        module: sorted(units - roster)
+        for module, units in _literal_unit_arguments().items()
+        if units - roster
+    }
+    assert off_roster == {}
 
 
 def test_control_state_wraps_the_control_client(monkeypatch):

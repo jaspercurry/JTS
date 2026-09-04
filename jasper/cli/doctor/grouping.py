@@ -1337,8 +1337,7 @@ def check_crossover_unit_installed() -> CheckResult:
     # LoadState answers "is the unit installed" off the shared evidence cache
     # (ADR-0228 rule 1) rather than a dedicated `systemctl cat`; `not-found` /
     # `masked` are the only "nothing to arm" states — a broken-but-present
-    # unit file (`error` / `bad-setting`) still counts as installed, same as
-    # `_installed_units` elsewhere in the doctor.
+    # unit file (`error` / `bad-setting`) still counts as installed.
     state = evidence.unit_state(unit)
     load_state = state.get("load_state") if state else None
     if load_state in (None, "not-found", "masked"):
