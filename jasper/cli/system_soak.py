@@ -22,6 +22,7 @@ from typing import Any
 
 from jasper.route_latency.status_socket import (
     FANIN_STATUS_SOCKET,
+    MUX_CONTROL_SOCKET_PATH,
     OUTPUTD_STATUS_SOCKET,
 )
 from jasper.control.system_metrics import (
@@ -39,7 +40,7 @@ SCHEMA_VERSION = 1
 STATUS_SOCKETS = {
     "outputd": OUTPUTD_STATUS_SOCKET,
     "fanin": FANIN_STATUS_SOCKET,
-    "mux": "/run/jasper-mux/control.sock",
+    "mux": MUX_CONTROL_SOCKET_PATH,
     "voice": "/run/jasper/voice.sock",
 }
 
