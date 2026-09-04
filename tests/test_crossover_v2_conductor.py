@@ -74,7 +74,7 @@ from jasper.active_speaker.delta_probe import (
     VERDICT_SAFETY_ONLY,
     VERDICT_UNAVAILABLE,
 )
-from jasper.active_speaker.crossover_v2.attempt_grading import (
+from jasper.active_speaker.crossover_v2_flow import (
     ATTEMPT_REASON_NO_FLOOR,
     PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
 )

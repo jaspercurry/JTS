@@ -35,7 +35,6 @@ import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import (
-    attempt_grading,
     capture_dispatch,
     refusal_copy,
     spatial,
@@ -114,10 +113,6 @@ MOVED_NAMES: dict[str, tuple[str, ...]] = {
         "CLOUD_CLOSE_RUNNING",
         "GEOMETRY_RETRY_POSITIONS",
     ),
-    "attempt_grading": (
-        "ATTEMPT_REASON_NO_FLOOR",
-        "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB",
-    ),
     "capture_dispatch": (
         "SWEEP_LOCATE_CONFIDENCE_FLOOR",
         "SWEEP_SCHEDULE_RESIDUAL_CEILING_MS",
@@ -169,7 +164,6 @@ NO_LONGER_REACHED_THROUGH_THE_FLOW: tuple[str, ...] = tuple(
 _OWNERS = {
     "refusal_copy": refusal_copy,
     "spatial": spatial,
-    "attempt_grading": attempt_grading,
     "capture_dispatch": capture_dispatch,
 }
 
