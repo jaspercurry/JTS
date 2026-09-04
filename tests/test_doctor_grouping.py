@@ -459,7 +459,9 @@ def test_check_grouping_pair_lock_warns(monkeypatch, dac_content, must_name):
         unit_states={"jasper-snapclient.service": "active"},
     )
     monkeypatch.setattr(
-        doctor.grouping, "_read_outputd_status", lambda: {"dac_content": dac_content}
+        doctor.grouping,
+        "read_status_socket_or_none",
+        lambda *a, **kw: {"dac_content": dac_content},
     )
 
     r = doctor.check_grouping_pair_lock()

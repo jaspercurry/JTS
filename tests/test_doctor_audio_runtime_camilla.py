@@ -4,8 +4,6 @@
 
 """Unit tests for the doctor's CamillaDSP-graph checks and runtime plan."""
 
-from unittest.mock import Mock
-
 import pytest
 
 from jasper import audio_runtime_plan
@@ -18,7 +16,6 @@ from jasper.cli.doctor import (
 )
 
 from ._doctor_audio_runtime_fixtures import (
-    _FakeSocket,
     _fake_systemctl,
     _patch_fanin_status_socket,
     _patch_fanin_systemctl,
@@ -74,80 +71,12 @@ def test_check_camilla_service_fails_when_unit_is_not_installed(monkeypatch):
     assert "not installed" in result.detail
 
 
-def test_status_socket_byte_reader_owns_fragmented_protocol_and_cleanup(monkeypatch):
-    fake = _FakeSocket(chunks=[b'{"ok":', b"true}", b""])
-    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
-
-    payload = doctor._shared._read_status_socket_bytes("/run/test.sock", timeout=1.25)
-
-    assert payload == b'{"ok":true}'
-    assert 0 < fake.timeout <= 1.25
-    assert fake.connected_path == "/run/test.sock"
-    assert fake.sent == [b"STATUS\n"]
-    assert fake.recv_sizes == [65536, 65536, 65536]
-    assert fake.closed is True
-
-
-def test_status_socket_byte_reader_accepts_exact_response_cap(monkeypatch):
-    cap = doctor._shared._STATUS_RESPONSE_MAX_BYTES
-    fake = _FakeSocket(chunks=[b"x" * 65536] * 16 + [b""])
-    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
-
-    payload = doctor._shared._read_status_socket_bytes("/run/test.sock", timeout=2.0)
-
-    assert len(payload) == cap
-    assert fake.recv_sizes == [65536] * 17
-    assert fake.closed is True
-
-
-def test_status_socket_byte_reader_rejects_response_over_cap(monkeypatch):
-    fake = _FakeSocket(chunks=[b"x" * 65536] * 16 + [b"y"])
-    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
-
-    with pytest.raises(OSError, match="exceeds byte limit"):
-        doctor._shared._read_status_socket_bytes("/run/test.sock", timeout=2.0)
-
-    assert fake.recv_sizes == [65536] * 17
-    assert fake.closed is True
-
-
-def test_status_socket_byte_reader_enforces_total_deadline(monkeypatch):
-    fake = _FakeSocket(chunks=[b"x", b"y", b""])
-    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
-    monkeypatch.setattr(
-        doctor._shared.time,
-        "monotonic",
-        Mock(side_effect=[0.0, 0.0, 0.1, 0.2, 1.1]),
-    )
-
-    with pytest.raises(TimeoutError, match="deadline exceeded"):
-        doctor._shared._read_status_socket_bytes("/run/test.sock", timeout=1.0)
-
-    assert fake.recv_sizes == [65536]
-    assert fake.closed is True
-
-
-@pytest.mark.parametrize("failure_stage", ["connect", "recv"])
-def test_status_socket_byte_reader_closes_on_failure(monkeypatch, failure_stage):
-    error = OSError(f"{failure_stage} failed")
-    fake = _FakeSocket(
-        error=error if failure_stage == "connect" else None,
-        recv_error=error if failure_stage == "recv" else None,
-    )
-    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
-
-    with pytest.raises(OSError, match=f"{failure_stage} failed"):
-        doctor._shared._read_status_socket_bytes("/run/test.sock", timeout=2.0)
-
-    assert fake.closed is True
-
-
 @pytest.mark.parametrize(
     ("check", "expected_status", "detail"),
     [
-        (doctor.check_fanin_service, "fail", "expected object"),
+        (doctor.check_fanin_service, "fail", "not an object"),
         (doctor.check_fanin_tts_drops, "ok", "not probed (ValueError)"),
-        (doctor.check_outputd_service, "fail", "expected object"),
+        (doctor.check_outputd_service, "fail", "not an object"),
         (doctor.check_aec_clock_drift, "ok", "skipped"),
     ],
 )

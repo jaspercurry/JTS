@@ -13,15 +13,17 @@ from __future__ import annotations
 import json
 import os
 
+from ...route_latency.status_socket import (
+    OUTPUTD_STATUS_SOCKET as _OUTPUTD_STATUS_SOCKET,
+    read_status_socket,
+)
 from ._registry import doctor_check
-from ._shared import CheckResult, _read_status_socket_bytes, _run
+from ._shared import CheckResult, _run
 from .audio_runtime_fanin import _assistant_gain_fault
 
 _OUTPUTD_EXPECTED_DAC_PCM = "outputd_dac"
 
 _OUTPUTD_EXPECTED_DUAL_DAC_PCM = "dual_apple_usb_c_dac_4ch"
-
-_OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
 
 
 def _outputd_reconciled_env() -> dict[str, str]:
@@ -189,7 +191,7 @@ def _outputd_service_state_failure() -> CheckResult | None:
 def _outputd_status_payload() -> dict[str, object] | CheckResult:
     """Load and validate the STATUS transport envelope."""
     try:
-        payload = _read_status_socket_bytes(_OUTPUTD_STATUS_SOCKET, timeout=2.0)
+        data = read_status_socket(_OUTPUTD_STATUS_SOCKET, timeout=2.0)
     except OSError as exc:
         return CheckResult(
             "jasper-outputd",
@@ -198,21 +200,14 @@ def _outputd_status_payload() -> dict[str, object] | CheckResult:
             "Without STATUS doctor cannot verify DAC ownership, buffers, "
             "xruns, or work-loop progress.",
         )
-    body = payload.decode("utf-8", errors="replace")
-    try:
-        data = json.loads(body)
     except json.JSONDecodeError as exc:
         return CheckResult(
             "jasper-outputd",
             "fail",
             f"active but STATUS returned invalid JSON: {exc}",
         )
-    if not isinstance(data, dict):
-        return CheckResult(
-            "jasper-outputd",
-            "fail",
-            f"active but STATUS root is {type(data).__name__}, expected object",
-        )
+    except ValueError as exc:
+        return CheckResult("jasper-outputd", "fail", f"active but {exc}")
     return data
 
 
@@ -818,21 +813,13 @@ def check_aec_clock_drift() -> CheckResult:
         return CheckResult(label, "ok", "skipped — jasper-outputd not active")
 
     try:
-        payload = _read_status_socket_bytes(_OUTPUTD_STATUS_SOCKET, timeout=2.0)
+        data = read_status_socket(_OUTPUTD_STATUS_SOCKET, timeout=2.0)
     except OSError as e:
         return CheckResult(label, "ok", f"skipped — STATUS unreachable: {e}")
-
-    body = payload.decode("utf-8", errors="replace")
-    try:
-        data = json.loads(body)
     except json.JSONDecodeError:
         return CheckResult(label, "ok", "skipped — STATUS returned invalid JSON")
-    if not isinstance(data, dict):
-        return CheckResult(
-            label,
-            "ok",
-            f"skipped — STATUS root is {type(data).__name__}, expected object",
-        )
+    except ValueError as e:
+        return CheckResult(label, "ok", f"skipped — {e}")
 
     reference_outputs = data.get("reference_outputs")
     if not isinstance(reference_outputs, dict):

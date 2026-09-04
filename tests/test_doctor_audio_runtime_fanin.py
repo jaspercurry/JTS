@@ -252,18 +252,14 @@ def test_host_clock_doctor_warns_on_unavailable_or_generation_mismatch():
     assert "control_generation=3" in mismatch.detail
 
 
-def test_status_socket_strict_wrapper_and_lossy_caller_keep_decode_ownership(
+def test_status_reader_decodes_lossily_so_a_stray_byte_keeps_the_counters(
     monkeypatch,
 ):
-    strict = _FakeSocket(payload=b'{"note":"\xff"}')
-    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: strict)
+    """One reader, one decode policy: replacement, never an exception.
 
-    with pytest.raises(UnicodeDecodeError):
-        doctor._shared._read_status_socket("/run/test.sock")
-
-    assert 0 < strict.timeout <= 1.0
-    assert strict.closed is True
-
+    A single invalid byte anywhere in a daemon's reply must not cost a check
+    the counters it came for.
+    """
     lossy = _FakeSocket(payload=b'{"note":"\xff","tts":{"enabled":false}}')
     monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: lossy)
 

@@ -203,7 +203,7 @@ def test_armed_on_demand_lane_resting_state_is_healthy(monkeypatch):
     monkeypatch.setattr(rl, "read_armed_labels", lambda *a, **kw: ("correction",))
     monkeypatch.setattr(
         doctor.audio_runtime_ring,
-        "_read_status_socket",
+        "read_status_socket",
         lambda _path: {"inputs": [_resting_ring_entry("correction")]},
     )
     result = doctor.audio_runtime_ring.check_renderer_ring_lanes()
@@ -225,7 +225,7 @@ def test_armed_daemon_lane_never_fed_still_warns(monkeypatch):
     )
     monkeypatch.setattr(
         doctor.audio_runtime_ring,
-        "_read_status_socket",
+        "read_status_socket",
         lambda _path: {
             "inputs": [
                 _resting_ring_entry("spotify"),

@@ -19,13 +19,9 @@ from pathlib import Path
 from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from ...camilla_config_contract import read_camilla_device_field
 from ...fanin_coupling import read_declared_ring_wire_format
+from ...route_latency.status_socket import FANIN_STATUS_SOCKET, read_status_socket
 from ._registry import doctor_check
-from ._shared import (
-    CheckResult,
-    _read_status_socket,
-    _read_status_socket_bytes,
-    _run,
-)
+from ._shared import CheckResult, _run
 from .audio_runtime_camilla import _graph_feeds_the_bond
 from .correction import _active_camilla_config_path
 
@@ -110,7 +106,6 @@ def _fanin_expected_inputs(
         for label, pcm in _FANIN_EXPECTED_ALOOP_INPUTS
     ]
 
-_FANIN_STATUS_SOCKET = "/run/jasper-fanin/control.sock"
 
 
 # The assistant-loudness gain floor, and the only fixed bound the shared Rust
@@ -306,12 +301,23 @@ def check_fanin_service() -> CheckResult:
             f"Check: journalctl -u jasper-fanin",
         )
 
-    socket_path = "/run/jasper-fanin/control.sock"
     last_error: OSError | None = None
     for attempt in range(2):
         try:
-            payload = _read_status_socket_bytes(socket_path, timeout=2.0)
+            data = read_status_socket(FANIN_STATUS_SOCKET, timeout=2.0)
             break
+        # A reply that arrived but did not parse is not retried: only an
+        # unreachable socket is worth a second attempt.
+        except json.JSONDecodeError as e:
+            return CheckResult(
+                "jasper-fanin service",
+                "fail",
+                f"active but UDS STATUS returned invalid JSON: {e}",
+            )
+        except ValueError as e:
+            return CheckResult(
+                "jasper-fanin service", "fail", f"active but UDS {e}"
+            )
         except OSError as e:
             last_error = e
             if attempt == 0:
@@ -320,26 +326,10 @@ def check_fanin_service() -> CheckResult:
         return CheckResult(
             "jasper-fanin service",
             "fail",
-            f"active but UDS probe at {socket_path} failed: {last_error}. "
+            f"active but UDS probe at {FANIN_STATUS_SOCKET} failed: {last_error}. "
             f"Fan-in is mandatory; without STATUS doctor cannot verify "
             f"the live graph, buffers, or watchdog progress. "
             f"check: journalctl -u jasper-fanin | tail",
-        )
-
-    body = payload.decode("utf-8", errors="replace")
-    try:
-        data = json.loads(body)
-    except json.JSONDecodeError as e:
-        return CheckResult(
-            "jasper-fanin service",
-            "fail",
-            f"active but UDS STATUS returned invalid JSON: {e}",
-        )
-    if not isinstance(data, dict):
-        return CheckResult(
-            "jasper-fanin service",
-            "fail",
-            f"active but UDS STATUS root is {type(data).__name__}, expected object",
         )
 
     output = data.get("output", {})
@@ -580,7 +570,7 @@ def _host_clock_health_from_status(data: dict[str, object]) -> CheckResult:
 def check_fanin_host_clock() -> CheckResult:
     """Report persistent USB host-clock recovery/fallback with exact cause."""
     try:
-        data = _read_status_socket(_FANIN_STATUS_SOCKET)
+        data = read_status_socket(FANIN_STATUS_SOCKET)
     except (OSError, TimeoutError, json.JSONDecodeError, ValueError) as e:
         # Reachability belongs to the preceding mandatory fan-in service check.
         return CheckResult(
@@ -606,14 +596,8 @@ def check_fanin_tts_drops() -> CheckResult:
       - warn when protocol errors or dropped audio > 0 since fan-in start.
     """
     name = "fan-in TTS delivery"
-    socket_path = "/run/jasper-fanin/control.sock"
     try:
-        payload = _read_status_socket_bytes(socket_path, timeout=2.0)
-        data = json.loads(payload.decode("utf-8", errors="replace"))
-        if not isinstance(data, dict):
-            raise ValueError(
-                f"STATUS response root is {type(data).__name__}, not object"
-            )
+        data = read_status_socket(FANIN_STATUS_SOCKET, timeout=2.0)
     except (OSError, json.JSONDecodeError, ValueError) as e:
         return CheckResult(
             name,
@@ -681,10 +665,7 @@ def check_fanin_ring_stall() -> CheckResult:
     """
     name = "fan-in ring stall"
     try:
-        payload = _read_status_socket_bytes(_FANIN_STATUS_SOCKET, timeout=2.0)
-        data = json.loads(payload.decode("utf-8", errors="replace"))
-        if not isinstance(data, dict):
-            raise ValueError(f"STATUS root is {type(data).__name__}, not object")
+        data = read_status_socket(FANIN_STATUS_SOCKET, timeout=2.0)
     except (OSError, json.JSONDecodeError, ValueError) as e:
         return CheckResult(
             name,

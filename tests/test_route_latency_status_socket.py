@@ -14,10 +14,12 @@ from __future__ import annotations
 import json
 import socket
 import threading
+from unittest.mock import Mock
 
 import pytest
 
 from jasper.route_latency import status_socket
+from tests._doctor_audio_runtime_fixtures import _FakeSocket
 from tests._socket_paths import short_socket_path_fixture as _short_sock_path_fixture
 
 _IMPORTED_FIXTURES = (_short_sock_path_fixture,)
@@ -102,3 +104,87 @@ def test_canonical_socket_paths_match_daemon_conventions():
     # place. These mirror the two live route-health owners.
     assert status_socket.FANIN_STATUS_SOCKET == "/run/jasper-fanin/control.sock"
     assert status_socket.OUTPUTD_STATUS_SOCKET == "/run/jasper-outputd/control.sock"
+
+
+# ---- socket lifecycle: fragmentation, the byte cap, and the total deadline ---
+#
+# Driven through a fake socket rather than the in-process server above: a
+# reply split across recv boundaries, one sized to the exact byte cap, and a
+# stalled deadline are all states a cooperating server cannot stage reliably.
+
+
+def test_reader_reassembles_a_fragmented_reply_and_closes(monkeypatch):
+    fake = _FakeSocket(chunks=[b'{"ok":', b"true}", b""])
+    monkeypatch.setattr(socket, "socket", lambda *a, **kw: fake)
+
+    result = status_socket.read_status_socket("/run/test.sock", timeout=1.25)
+
+    assert result == {"ok": True}
+    assert 0 < fake.timeout <= 1.25
+    assert fake.connected_path == "/run/test.sock"
+    assert fake.sent == [b"STATUS\n"]
+    assert fake.recv_sizes == [65536, 65536, 65536]
+    assert fake.closed is True
+
+
+def test_reader_accepts_a_reply_of_exactly_the_byte_cap(monkeypatch):
+    cap = status_socket._RESPONSE_MAX_BYTES
+    pad = b"x" * (cap - len(b'{"pad":""}'))
+    body = b'{"pad":"' + pad + b'"}'
+    assert len(body) == cap
+    chunks = [body[i:i + 65536] for i in range(0, cap, 65536)]
+    fake = _FakeSocket(chunks=chunks + [b""])
+    monkeypatch.setattr(socket, "socket", lambda *a, **kw: fake)
+
+    result = status_socket.read_status_socket("/run/test.sock", timeout=2.0)
+
+    assert len(result["pad"]) == len(pad)
+    assert fake.recv_sizes == [65536] * (len(chunks) + 1)
+    assert fake.closed is True
+
+
+def test_reader_rejects_a_reply_over_the_byte_cap(monkeypatch):
+    fake = _FakeSocket(chunks=[b"x" * 65536] * 16 + [b"y"])
+    monkeypatch.setattr(socket, "socket", lambda *a, **kw: fake)
+
+    with pytest.raises(OSError, match="exceeds byte limit"):
+        status_socket.read_status_socket("/run/test.sock", timeout=2.0)
+
+    assert fake.recv_sizes == [65536] * 17
+    assert fake.closed is True
+
+
+def test_reader_enforces_a_total_deadline_not_a_per_recv_one(monkeypatch):
+    fake = _FakeSocket(chunks=[b"x", b"y", b""])
+    monkeypatch.setattr(socket, "socket", lambda *a, **kw: fake)
+    monkeypatch.setattr(
+        status_socket.time, "monotonic", Mock(side_effect=[0.0, 0.0, 0.1, 0.2, 1.1])
+    )
+
+    with pytest.raises(TimeoutError, match="deadline exceeded"):
+        status_socket.read_status_socket("/run/test.sock", timeout=1.0)
+
+    assert fake.recv_sizes == [65536]
+    assert fake.closed is True
+
+
+@pytest.mark.parametrize("failure_stage", ["connect", "recv"])
+def test_reader_closes_the_socket_on_failure(monkeypatch, failure_stage):
+    error = OSError(f"{failure_stage} failed")
+    fake = _FakeSocket(
+        error=error if failure_stage == "connect" else None,
+        recv_error=error if failure_stage == "recv" else None,
+    )
+    monkeypatch.setattr(socket, "socket", lambda *a, **kw: fake)
+
+    with pytest.raises(OSError, match=f"{failure_stage} failed"):
+        status_socket.read_status_socket("/run/test.sock", timeout=2.0)
+
+    assert fake.closed is True
+
+
+def test_reader_decodes_lossily_rather_than_raising_on_a_stray_byte(monkeypatch):
+    fake = _FakeSocket(payload=b'{"note":"\xff","ok":true}')
+    monkeypatch.setattr(socket, "socket", lambda *a, **kw: fake)
+
+    assert status_socket.read_status_socket("/run/test.sock")["ok"] is True
