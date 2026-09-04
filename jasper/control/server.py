@@ -102,8 +102,6 @@ from ..usb_mic import (  # noqa: F401 - route-mixin dependency exports
 from ..active_speaker.setup_status import read_active_speaker_setup_status
 from ..doctor_contract import (
     REASON_REFRESH_FAILED,
-    REASON_SNAPSHOT_PENDING,
-    REASON_SNAPSHOT_UNAVAILABLE,  # noqa: F401 — read by handlers/system.py
     CheckResult,
     check_row,
     summarize,
@@ -139,9 +137,14 @@ CORE_AUDIO_RESTART_UNITS = ["jasper-camilla.service"]
 LOCAL_SOURCE_AUDIO_REFRESH_UNITS = list(local_source_audio_refresh_units())
 _DIAGNOSTICS_RESULT_PATH = "/run/jasper-control/doctor-result.json"
 _DIAGNOSTICS_CACHE_TTL_SECONDS = 60.0
-_DIAGNOSTICS_REFRESH_MIN_INTERVAL_SECONDS = 5.0
+# A start is treated as in flight for this long. Sized to
+# `TimeoutStartSec=600` in deploy/systemd/jasper-doctor-json.service: systemd
+# cannot leave the oneshot activating longer, so an older start is over
+# whatever became of it. A run that lands sooner clears the window early —
+# see `_start_diagnostics_refresh`.
+_DIAGNOSTICS_REFRESH_WINDOW_SECONDS = 600.0
 _diagnostics_refresh_lock = threading.Lock()
-_diagnostics_refresh_requested_at: dict[str, float] = {}
+_diagnostics_refresh_started_at: float | None = None
 _USB_MIC_APPLY_UNIT = "jasper-usbmic-apply.service"
 _AEC_BRIDGE_UNIT = "jasper-aec-bridge.service"
 _USB_MIC_LEG_APPLY_COALESCE_SECONDS = 5.0
@@ -153,72 +156,48 @@ _usb_mic_leg_apply_pending: tuple[str, float] | None = None
 _aec_commission_start_lock = threading.Lock()
 
 
-def _diagnostics_result_path() -> str:
-    return os.environ.get(
-        "JASPER_DIAGNOSTICS_RESULT_PATH",
-        _DIAGNOSTICS_RESULT_PATH,
-    )
-
-
-def _diagnostics_cache_ttl_seconds() -> float:
-    raw = os.environ.get("JASPER_DIAGNOSTICS_CACHE_TTL_SECONDS", "")
-    if not raw:
-        return _DIAGNOSTICS_CACHE_TTL_SECONDS
-    try:
-        value = float(raw)
-    except ValueError:
-        return _DIAGNOSTICS_CACHE_TTL_SECONDS
-    if value < 0:
-        return _DIAGNOSTICS_CACHE_TTL_SECONDS
-    return value
-
-
-def _diagnostics_refresh_min_interval_seconds() -> float:
-    raw = os.environ.get("JASPER_DIAGNOSTICS_REFRESH_MIN_INTERVAL_SECONDS", "")
-    if not raw:
-        return _DIAGNOSTICS_REFRESH_MIN_INTERVAL_SECONDS
-    try:
-        value = float(raw)
-    except ValueError:
-        return _DIAGNOSTICS_REFRESH_MIN_INTERVAL_SECONDS
-    if value < 0:
-        return _DIAGNOSTICS_REFRESH_MIN_INTERVAL_SECONDS
-    return value
-
-
-def _start_diagnostics_refresh(result_path: str) -> tuple[bool, str]:
+def _start_diagnostics_refresh(
+    *,
+    snapshot_age_seconds: float | None,
+) -> tuple[bool, str]:
+    """Start the root doctor oneshot unless one this process started is
+    still running. Returns ``(refreshing, error)``, where `refreshing` is
+    true only when a start is genuinely in flight."""
+    global _diagnostics_refresh_started_at
     now = time.monotonic()
-    min_interval = _diagnostics_refresh_min_interval_seconds()
     with _diagnostics_refresh_lock:
-        last = _diagnostics_refresh_requested_at.get(result_path, 0.0)
-        if now - last < min_interval:
-            return True, ""
-        _diagnostics_refresh_requested_at[result_path] = now
+        started_at = _diagnostics_refresh_started_at
+        if started_at is not None:
+            elapsed = now - started_at
+            # A snapshot younger than the elapsed run is that run's own
+            # output: it landed, so the window is over.
+            if elapsed < _DIAGNOSTICS_REFRESH_WINDOW_SECONDS and (
+                snapshot_age_seconds is None or snapshot_age_seconds > elapsed
+            ):
+                return True, ""
+        _diagnostics_refresh_started_at = now
     try:
-        proc = subprocess.run(
-            ["systemctl", "--no-block", "start", "jasper-doctor-json.service"],
-            capture_output=True, text=True, timeout=5,
+        proc = _run_unit_systemctl(
+            "--no-block", "start", "jasper-doctor-json.service",
         )
-    except (subprocess.SubprocessError, FileNotFoundError) as e:
-        with _diagnostics_refresh_lock:
-            _diagnostics_refresh_requested_at.pop(result_path, None)
-        return False, f"diagnostics refresh failed: {e}"
-    if proc.returncode != 0:
-        with _diagnostics_refresh_lock:
-            _diagnostics_refresh_requested_at.pop(result_path, None)
-        return (
-            False,
+        error = "" if proc.returncode == 0 else (
             "diagnostics refresh unavailable: "
-            + (proc.stderr or "").strip()[:300],
+            + (proc.stderr or "").strip()[:300]
         )
-    return True, ""
+    except (subprocess.SubprocessError, OSError) as e:
+        error = f"diagnostics refresh failed: {e}"
+    if error:
+        with _diagnostics_refresh_lock:
+            _diagnostics_refresh_started_at = None
+    return not error, error
 
 
 def _diagnostics_placeholder_result(
     *,
     detail: str,
-    status: str = "warn",
-    reason: str = REASON_SNAPSHOT_PENDING,
+    status: str,
+    reason: str,
+    refreshing: bool,
 ) -> dict[str, Any]:
     result = CheckResult("jasper-doctor", status, detail, reason=reason)
     counts = summarize([result])
@@ -229,7 +208,7 @@ def _diagnostics_placeholder_result(
         "duration_sec": None,
         "cache_age_seconds": None,
         "stale": True,
-        "refreshing": status != "fail",
+        "refreshing": refreshing,
         "results": [check_row(result)],
     }
 
@@ -269,9 +248,11 @@ def _read_diagnostics_snapshot(
         return None, str(e)
     if not isinstance(body, dict):
         return None, "diagnostics result was not a JSON object"
-    now = time.time()
-    age = max(0.0, now - stat.st_mtime)
-    body.setdefault("generated_at_epoch", stat.st_mtime)
+    generated_at = body.get("generated_at_epoch")
+    if not isinstance(generated_at, (int, float)):
+        generated_at = stat.st_mtime
+        body["generated_at_epoch"] = generated_at
+    age = max(0.0, time.time() - generated_at)
     body["cache_age_seconds"] = round(age, 3)
     body["stale"] = age > ttl_seconds
     body.setdefault("refreshing", False)

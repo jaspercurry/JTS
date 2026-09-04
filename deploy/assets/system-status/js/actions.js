@@ -160,8 +160,20 @@ export async function runDiagnostics(btn, out) {
     for (let attempt = 0; attempt < 12; attempt += 1) {
       const r = await fetch("/system/diagnostics.json", { cache: "no-store" });
       const body = await r.json();
+      // Not every JSON this route can answer with is a report: the overload
+      // and auth refusals carry an `error` and no rows, and rendering those
+      // as a report prints a table of undefineds.
+      if (!Array.isArray(body.results)) {
+        out.replaceChildren(h("span.muted", null,
+          "Failed: " + (body.error || r.status)));
+        break;
+      }
       renderDiagnostics(out, body);
-      if (body.error || !body.refreshing) break;
+      // Only the in-flight flag ends the poll. An `error` is part of the
+      // snapshot (a crashed doctor run bakes one into the cached file) and
+      // renders as a banner beside the rows, so stopping on it would strand
+      // the view on the very report a refresh is replacing.
+      if (!body.refreshing) break;
       await new Promise((resolve) => setTimeout(resolve, 2000));
     }
   } catch (e) {
