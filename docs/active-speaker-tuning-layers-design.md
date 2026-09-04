@@ -1219,7 +1219,7 @@ because they are easy to re-derive wrongly:
 
 - Per-driver **complex** transfer functions are produced and direct-arrival
   gated — `DriverResponse.complex_tf` in
-  [`program_analysis.py`](../jasper/audio_measurement/program_analysis.py).
+  [`program_analysis/`](../jasper/audio_measurement/program_analysis/).
 - The two drivers therefore share an **exact** common time origin: they are in
   the same capture, so **there is no cross-capture alignment problem for the
   A/B pair at all**. The USB start-offset scatter that motivates a shared
