@@ -94,33 +94,14 @@ logger = logging.getLogger(__name__)
 OPENAI_AUDIO_RATE_HZ = 24000
 DAEMON_MIC_RATE_HZ = 16000
 
-# Initial-connect retry budget.
-#
-# Pre-2026-05-23 this was a fixed 5-element schedule capping at ~15 s
-# total wall-time. That cap was the proximate cause of a permanent
-# silent-dead voice daemon at boot on 2026-05-23: the daemon raced
-# WiFi recovery from an unclean shutdown, hit ``[Errno -3] Temporary
-# failure in name resolution`` on every attempt, exhausted the
-# 5-retry cap before the network came up, and raised. With
-# ``Restart=on-watchdog`` (which doesn't fire on a non-zero exit;
-# the unit's old comment got that wrong) systemd never restarted it,
-# and the speaker stayed silent until someone power-cycled.
-#
-# Two changes:
-#
-# 1. Initial-connect now retries forever within a time budget (default
-#    10 minutes — long enough for any realistic home-network blip,
-#    short enough that a real misconfiguration still surfaces via the
-#    systemd outer loop within ~10 min on the doctor / dashboard).
-#    Exponential backoff with jitter via the shared
-#    ``reconnect_backoff_delay`` helper, same shape as the post-connect
-#    supervisor reconnect — so the same DNS blip on the 61st minute
-#    looks the same as the same blip at boot.
-# 2. Budget exhaustion still raises ``RuntimeError``. systemd's
-#    ``Restart=on-failure`` + ``StartLimitBurst=20`` /
-#    ``StartLimitIntervalSec=300`` is the
-#    outer loop: process exits non-zero, systemd waits ``RestartSec=5``,
-#    spawns a fresh process, gets another 10-minute budget.
+# Initial-connect retry budget. MUST stay a wall-clock budget, never an attempt
+# count: at boot this daemon races WiFi recovery, so any fixed number of tries
+# can be spent while name resolution is still failing, leaving the speaker
+# silent with nothing left to retry. Retries run for the whole budget
+# (exponential backoff with jitter via ``reconnect_backoff_delay``, the shape
+# the post-connect supervisor also uses), and exhaustion MUST raise so the exit
+# is non-zero — systemd's ``Restart=on-failure`` is the outer loop that grants
+# the next budget. See deploy/systemd/jasper-voice.service and ADR-0146.
 #
 # Override via ``JASPER_OPENAI_INITIAL_CONNECT_BUDGET_SEC``. Production
 # values are wired in the constructor's ``initial_connect_budget_sec``
