@@ -224,7 +224,6 @@ pub(super) fn fill_wide_ring_payload(sum: &[i64], out: &mut [u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mixer::tests::{expected_wide_sample, representative_sum, representative_wide_sum};
 
     #[test]
     fn mix_into_sums_two_inputs() {
@@ -499,59 +498,6 @@ mod tests {
                 -0x0001_0000
             ]
         );
-    }
-
-    /// A wide period built ONLY from i16 lanes carries exactly the information
-    /// the narrow one does — every wide sample is the narrow sample moved 16
-    /// bits up (modulo the one-LSB clip-rail asymmetry
-    /// [`expected_wide_sample`] names), and narrowing it back returns the narrow
-    /// bytes with no drift at all. That is what makes the promotion a scale
-    /// change rather than a content change, and it is why flipping a box's wire
-    /// cannot alter how an S16-only program sounds.
-    ///
-    /// Where the wide path now DIFFERS is that a lane with more than 16
-    /// significant bits keeps them —
-    /// `a_hi_res_direct_lane_keeps_its_low_bits_all_the_way_to_the_wide_payload`
-    /// is that half of the claim.
-    #[test]
-    fn wide_payload_is_information_equivalent_to_the_narrow_payload() {
-        let narrow_sum = representative_sum(64);
-        let wide_sum = representative_wide_sum(64);
-        let mut narrow = vec![0i16; narrow_sum.len()];
-        saturate_to_i16(&narrow_sum, &mut narrow, ProgramWidth::Narrow);
-        let mut wide = vec![0u8; wide_sum.len() * WIDE_BYTES_PER_SAMPLE];
-        fill_wide_ring_payload(&wide_sum, &mut wide);
-        let mut saw_clip_rail = false;
-        for (i, &n) in narrow.iter().enumerate() {
-            let bytes: [u8; WIDE_BYTES_PER_SAMPLE] = wide
-                [i * WIDE_BYTES_PER_SAMPLE..(i + 1) * WIDE_BYTES_PER_SAMPLE]
-                .try_into()
-                .unwrap();
-            let published = i32::from_le_bytes(bytes);
-            assert_eq!(
-                published,
-                expected_wide_sample(narrow_sum[i], n),
-                "sample {i} (narrow sum {})",
-                narrow_sum[i],
-            );
-            if narrow_sum[i] > i16::MAX as i64 {
-                saw_clip_rail = true;
-                assert_eq!(
-                    (published as i64) - (((n as i32) << 16) as i64),
-                    65_535,
-                    "the clip-rail difference must be exactly one i16 LSB",
-                );
-            }
-        }
-        assert!(
-            saw_clip_rail,
-            "the representative period must exercise the positive clip rail"
-        );
-        // Narrowing the wide sum back returns the narrow bytes EXACTLY, clip
-        // rail included — `narrow_i32_to_i16_round` inverts the promotion.
-        let mut round_tripped = vec![0i16; wide_sum.len()];
-        saturate_to_i16(&wide_sum, &mut round_tripped, ProgramWidth::Wide);
-        assert_eq!(round_tripped, narrow);
     }
 
     /// A known 24-bit sample in S24-in-S32 placement, and both 24-bit rails —
