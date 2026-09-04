@@ -3476,6 +3476,7 @@ def _anchor_reemit_harness(
         GRAPH_PARKED_ALL_MUTED,
         GraphSafety,
     )
+    from jasper.active_speaker import startup_load
     from jasper.active_speaker.crossover_preview import build_crossover_preview
     from jasper.cli import active_speaker as cli
     from tests.active_speaker_fixtures import (
@@ -3537,8 +3538,7 @@ def _anchor_reemit_harness(
     # default path would otherwise decide this test's outcome from whatever the
     # dev machine happens to have on disk.
     monkeypatch.setattr(
-        cli,
-        "load_commission_load_state",
+        "jasper.active_speaker.commission_load.load_commission_load_state",
         lambda *a, **k: (
             {"status": "loaded", "target": "mono/tweeter",
              "candidate_config_path": "/var/lib/camilladsp/configs/commissioning.yml"}
@@ -3601,7 +3601,11 @@ def _anchor_reemit_harness(
             return unsafe_reproof
         return real_safe_graph(topology_arg, **kwargs)
 
+    # Both bindings: the CLI runs the pre-check, the engine runs the re-proof.
     monkeypatch.setattr(cli, "safe_graph_for_current_topology", _safe_graph)
+    monkeypatch.setattr(
+        startup_load, "safe_graph_for_current_topology", _safe_graph
+    )
 
     return SimpleNamespace(
         topology=topology,
@@ -3806,7 +3810,7 @@ def test_baseline_reemit_refuses_a_preserved_non_anchor_graph(
 ):
     """The CLASSIFICATION discriminator, not the status — pinned (review C-SF1).
 
-    `_startup_anchor_from_decision` deliberately checks the classification and
+    `startup_anchor_from_decision` deliberately checks the classification and
     not just `decision.status`, because `preserve_current` is ALSO how an
     approved runtime graph and a driver-domain baseline are preserved. Its
     docstring says so; nothing tested it, and a status-only variant passed the

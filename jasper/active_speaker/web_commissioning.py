@@ -5,8 +5,8 @@
 """Shared web/operator orchestration for active-speaker measurement tests.
 
 The active-speaker domain already owns the safety state machines:
-``startup_load`` loads guarded graphs, ``commission_ramp`` gates audible driver
-steps, and ``safe_playback`` records floor confirmation. This module wires those
+``commission_load`` loads guarded graphs, ``commission_ramp`` gates audible
+driver steps, and ``safe_playback`` records floor confirmation. This module wires those
 pieces into one reusable operator service so HTTPS correction can run the same
 measurement prerequisites without importing the `/sound/` page module.
 """
@@ -62,13 +62,15 @@ from jasper.active_speaker.staging import (
     load_staged_startup_config,
     stage_protected_startup_config,
 )
-from jasper.active_speaker.startup_load import (
+from jasper.active_speaker.commission_load import (
     load_commission_load_state,
     load_driver_commissioning_config,
-    load_protected_startup_config,
-    load_startup_load_state,
     load_summed_commissioning_config,
     rollback_driver_commissioning_config,
+)
+from jasper.active_speaker.startup_load import (
+    load_protected_startup_config,
+    load_startup_load_state,
     staged_topology_match_status,
 )
 from jasper.active_speaker.topology_tone import build_summed_topology_tone_plan
@@ -83,6 +85,7 @@ from jasper.audio_measurement.correction_lane import (
 )
 from jasper.camilla import CamillaUnavailable
 from jasper.camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
+from jasper.control.uds import MUX_CONTROL_SOCKET_PATH
 from jasper.dsp_apply import same_config_file
 from jasper.json_fields import finite_float as _finite
 from jasper.log_event import log_event
@@ -108,7 +111,6 @@ COMMISSION_TONE_BACKEND = "correction_substream_continuous_tone"
 SUMMED_COMMISSION_SPEECH_BACKEND = "correction_substream_summed_speech"
 DRIVER_CAPTURE_SWEEP_BACKEND = "correction_substream_driver_sweep"
 AUTOMATIC_EXCITATION_GAIN_SOURCE = "applied_baseline_recomposition_snapshot"
-COMMISSION_TONE_MUX_SOCKET = "/run/jasper-mux/control.sock"
 COMMISSION_TONE_FANIN_LABEL = "correction"
 
 
@@ -615,7 +617,7 @@ def _commission_tone_mux_command(cmd: str) -> dict[str, Any]:
     data = b""
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sock.settimeout(2.0)
-        sock.connect(COMMISSION_TONE_MUX_SOCKET)
+        sock.connect(MUX_CONTROL_SOCKET_PATH)
         sock.sendall((cmd + "\n").encode("ascii"))
         while b"\n" not in data:
             chunk = sock.recv(4096)

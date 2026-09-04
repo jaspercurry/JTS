@@ -8,8 +8,9 @@ Structural, not behavioural: the walk reads ``ast`` import nodes, so it sees
 the edge a convenience re-export adds before anyone runs the code. Two
 questions per module — what its own file imports at any depth, and what its
 module-scope import closure executes. A third asks the same walk whether
-every relative import in ``jasper/active_speaker`` resolves from its own
-module depth, which is what a relocated def gets wrong.
+every ``jasper`` import in ``jasper/active_speaker`` still resolves — relative
+ones from their own module depth, absolute ones at the spelled home — which
+is what a relocated def gets wrong.
 """
 
 from __future__ import annotations
@@ -161,8 +162,8 @@ ACTIVE_SPEAKER_SOURCES = sorted((REPO_ROOT / "jasper/active_speaker").rglob("*.p
 TRUTH_LAYER_MODULES = TRUTH_LAYER + tuple(
     sorted(
         _dotted(path)
-        for path in (REPO_ROOT / "jasper" / "audio_measurement").glob("*.py")
-        if path.name != "__init__.py"
+        for path in (REPO_ROOT / "jasper" / "audio_measurement").rglob("*.py")
+        if _dotted(path) != "jasper.audio_measurement"
     )
 )
 
@@ -226,15 +227,16 @@ def _bound_names(path: Path) -> set[str] | None:
 
 
 @pytest.mark.parametrize("path", ACTIVE_SPEAKER_SOURCES, ids=_dotted)
-def test_every_relative_import_resolves_from_its_own_depth(path):
-    """A def moved between modules leaves relative imports naming the old one.
+def test_every_jasper_import_resolves(path):
+    """A def moved between modules leaves imports naming its old home.
 
-    Both halves of that: the module the import names must exist at this
-    module's depth, and it must still bind the names asked of it. Deferred
-    imports execute on a path the suite stubs out, so either mistake survives
-    a green run and fails first on hardware as an ImportError no caller
-    classifies. Resolved against the checkout rather than ``find_spec``, which
-    executes the parent packages it walks through.
+    A relocation re-levels relative imports and leaves absolute ones spelled at
+    the old module; both halves are checked — the module must exist, and it
+    must still bind the names asked of it. Deferred imports execute on a path
+    the suite stubs out, so either mistake survives a green run and fails first
+    on hardware as an ImportError no caller classifies. Resolved against the
+    checkout rather than ``find_spec``, which executes the parent packages it
+    walks through.
     """
 
     package = _dotted(path)
@@ -244,15 +246,26 @@ def test_every_relative_import_resolves_from_its_own_depth(path):
     for node in _import_nodes(
         ast.parse(path.read_text(encoding="utf-8")).body, deferred=True
     ):
-        if not isinstance(node, ast.ImportFrom) or not node.level:
-            continue
-        try:
-            dotted = importlib.util.resolve_name(
-                "." * node.level + (node.module or ""), package
+        if isinstance(node, ast.Import):
+            unresolved.extend(
+                f"line {node.lineno}: {alias.name}"
+                for alias in node.names
+                if alias.name.split(".")[0] == "jasper"
+                and _module_path(alias.name) is None
             )
-        except (ImportError, ValueError) as exc:
-            unresolved.append(f"line {node.lineno}: {exc}")
             continue
+        if node.level:
+            try:
+                dotted = importlib.util.resolve_name(
+                    "." * node.level + (node.module or ""), package
+                )
+            except (ImportError, ValueError) as exc:
+                unresolved.append(f"line {node.lineno}: {exc}")
+                continue
+        else:
+            dotted = node.module or ""
+            if dotted.split(".")[0] != "jasper":
+                continue
         target = _module_path(dotted)
         if target is None:
             unresolved.append(f"line {node.lineno}: {dotted}")

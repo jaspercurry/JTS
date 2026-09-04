@@ -201,7 +201,7 @@ def _reemit_graph_at_ring() -> tuple[bool, str]:
     publishes and every default comes from the one parser that owns them.
 
     ``--force`` IS NEVER PASSED, and the absence is load-bearing rather than
-    tidy: ``_reemit_staged_startup_anchor`` refuses while a per-driver
+    tidy: ``reemit_staged_startup_anchor`` refuses while a per-driver
     commissioning load is active, because moving the anchor mid-load re-points
     the operator's own stop control. This caller's safety is that refusal, so
     the flag is not threaded through and cannot be.

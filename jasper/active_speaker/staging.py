@@ -2179,7 +2179,7 @@ def prepare_driver_commissioning_config(
     # A ring/ring graph on a loopback-coupled or unarmed box is self-consistent
     # and passes here. This function is a PURE BUILDER — it reads no daemon env,
     # and teaching it to would put a reconciler read inside a builder — while
-    # `startup_load.build_driver_commission_load_preflight`'s
+    # `commission_load.build_driver_commission_load_preflight`'s
     # `commissioning_transport_armed` gate reads the live coupling and marker.
     # A config prepared on an unarmed box is harmless; a LOAD on one is the
     # silent sweep, so the live half stands where the load does.

@@ -5551,7 +5551,7 @@ def test_channel_map_isolation_boundary_is_inclusive_at_the_bound(monkeypatch):
         return _rms
 
     def _run(cross_rise: float):
-        monkeypatch.setattr(program_analysis, "_band_rms_dbfs", _script(cross_rise))
+        monkeypatch.setattr(program_analysis.check, "_band_rms_dbfs", _script(cross_rise))
         return program_analysis._channel_map_ok(
             pilot, SR, seg, ambient_samples=ambient, other_bands=(other,),
         )
@@ -6586,7 +6586,10 @@ def test_build_candidate_threads_overlap_band_into_trim_and_ripple(monkeypatch):
         seen_lo_hi.append((lo, hi))
         return real_ripple_db(freqs, magnitude, lo, hi)
 
-    monkeypatch.setattr(program_analysis, "_ripple_db", _spy_ripple_db)
+    # `_build_candidate` calls it directly and the ripple-optimal scan calls it
+    # from `response`; the spy has to sit in both to see every call.
+    monkeypatch.setattr(program_analysis.dispatch, "_ripple_db", _spy_ripple_db)
+    monkeypatch.setattr(program_analysis.response, "_ripple_db", _spy_ripple_db)
 
     _build_candidate(
         woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter", alignment, None,
@@ -7293,7 +7296,7 @@ def test_build_candidate_rejects_a_polish_the_level_gate_could_not_grade(
     woofer_ir, tweeter_ir = _lr_pair_irs(fc_hz, order=4)
     n_fft = _n_fft_for(woofer_ir, tweeter_ir)
     monkeypatch.setattr(
-        program_analysis,
+        program_analysis.dispatch,
         "solve_ripple_optimal_trim",
         lambda *a, **kw: (
             kw["seed_trim_db"] + excursion_db, 0.0, kw["seed_trim_db"],
@@ -7336,7 +7339,7 @@ def test_build_candidate_admits_a_polish_the_level_gate_can_grade(
     woofer_ir, tweeter_ir = _lr_pair_irs(fc_hz, order=4)
     n_fft = _n_fft_for(woofer_ir, tweeter_ir)
     monkeypatch.setattr(
-        program_analysis,
+        program_analysis.dispatch,
         "solve_ripple_optimal_trim",
         lambda *a, **kw: (
             kw["seed_trim_db"] + excursion_db, 0.0, kw["seed_trim_db"],
@@ -7596,7 +7599,7 @@ def _cdhorn_run5_analysis(monkeypatch):
     offset = sweep_anchored_global_offset(capture, program.segment("sweep_w"))
     real_global_offset = program_analysis._global_offset
     monkeypatch.setattr(
-        program_analysis,
+        program_analysis.dispatch,
         "_global_offset",
         lambda prog, cap, rate: (offset, *real_global_offset(prog, cap, rate)[1:]),
     )

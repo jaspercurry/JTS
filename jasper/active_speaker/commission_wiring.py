@@ -5,7 +5,7 @@
 """Shared operator-surface wiring for per-driver commissioning + the Stage-5 ramp.
 
 Owns the glue the ``jasper-active-speaker`` CLI and the ``/sound/`` commission
-card both need for ``startup_load.load_driver_commissioning_config`` /
+card both need for ``commission_load.load_driver_commissioning_config`` /
 ``commission_ramp.ramp_audible_step``: the inline CamillaController seams, the
 saved-crossover-preview resolution, and fresh path-safety evidence.
 """
