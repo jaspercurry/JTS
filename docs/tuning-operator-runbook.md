@@ -494,7 +494,7 @@ constants"** section, their single source of truth; ticket 3.7 turns them into
 code.
 
 **The delay lane is three acts, and the middle one is not optional.**
-`jasper-delay-sweep propose` reads and prints; `jasper-null` plays the
+`jasper-round-views delay-landscape` reads and prints; `jasper-null` plays the
 coordinates it printed and banks a row for each; the alignment door applies.
 Before grading a confirmation, check what the graph will actually play: the
 candidate delay arrives through the measurement-graph emitter, but the branch
@@ -622,8 +622,7 @@ be FILED; the failing number names the stage that failed, which is what tells
 you where to go.
 
 **The number is the contract; the record beside it is per tool.** The
-round-grading family — `jasper-round-views`, `jasper-delay-sweep`,
-`jasper-close-reference` — prints
+round-grading family — `jasper-round-views` — prints
 `{"status": "refused" | "unreadable" | "unwritable", "reason":
 "<tool_named_slug>", "detail": "<text>"}` on stdout and one `<status>
 (<reason>): <detail>` sentence on stderr, `status` and code always agreeing.
@@ -1107,17 +1106,18 @@ than re-deriving it.
 
 ### Reading a close-reference comparison
 
-`jasper-close-reference` corrects a capture taken close to the woofer back to
-the far distance and asks, band by band, how much of the far read was the room.
-Two verbs, both offline: `distance` sizes the capture, `compare` reads the pair.
-Neither opens a device. Exit codes: `0` done, `1` refused, `2` the round could
-not be read. When it is worth a capture, and what a verdict licenses, are
+`jasper-round-views close-reference` corrects a capture taken close to the
+woofer back to the far distance and asks, band by band, how much of the far
+read was the room. One view, two modes, both offline: `--distance` sizes the
+capture, the comparison reads the pair. Neither opens a device. Exit codes: `0`
+done, `1` refused, `2` the round could not be read, `3` compared and the report
+could not be filed. When it is worth a capture, and what a verdict licenses, are
 [`tuning-methodology.md`](tuning-methodology.md) §6a's.
 
-**`distance` answers "where do I stand the mic".** It takes the driver diameter
-(`--driver-diameter-in` or `--driver-diameter-mm` — **mm wins if both are
-given**) and `--fc-hz` (argparse-required; the diameter is not, and its absence
-refuses `close_reference_no_driver_diameter` instead).
+**`--distance` answers "where do I stand the mic".** It takes the driver
+diameter (`--driver-diameter-in` or `--driver-diameter-mm`, never both) and
+`--fc-hz`; without either it is a usage error, and it reads no round and writes
+no artifact.
 `distance_m` / `distance_in` is the recommendation:
 the piston far-field term `2a²/λ` at `band_top_hz` (= `fc_hz/2`) plus
 `k_margin` = 2 driver diameters, and **the margin term dominates** — the
@@ -1128,7 +1128,7 @@ placement is loose. `far_field_ceiling_hz` is where a mic that close goes
 near-field — a **ceiling**, because closing in costs you the top, not the
 bottom.
 
-**`compare` needs both rounds and the close distance you declared.**
+**A comparison needs both rounds and the close distance you declared.**
 `--far-round` / `--close-round` take a banked round directory (the one holding
 `bundle/`) or the bundle itself; `--far-capture` / `--close-capture` name a take
 id or WAV stem, defaulting to the on-axis summed take. `--close-m` is
@@ -1138,7 +1138,9 @@ distance until #3498's close-reference program row exists. `--far-m` defaults to
 1.0. `--fc-hz` and a diameter cap the band; `--geometry` (default
 `/var/lib/jasper/measurement_geometry.json`) supplies the derived windows and is
 **not** a refusal when absent; `--far-gate-ms` / `--close-gate-ms` override
-them; `--out` also writes the report.
+them. The report lands as `close_reference.json` beside the FAR round — beside
+the caller, session-prefixed, for an unbanked bundle; `--out` writes it
+elsewhere (`-` for stdout).
 
 **Read the validity band first — it is where the answer can exist at all.**
 
