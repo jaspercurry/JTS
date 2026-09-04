@@ -31,6 +31,7 @@ from typing import Any
 from . import librespot_state
 from .busctl import system_busctl
 from .music_sources import SOURCE_TO_ACTIVE_KEY, Source
+from .route_latency.status_socket import MUX_CONTROL_SOCKET_PATH
 from .source_state import (
     airplay_playing,
     bluetooth_playing,
@@ -39,8 +40,6 @@ from .source_state import (
 )
 
 logger = logging.getLogger(__name__)
-
-MUX_CONTROL_SOCKET = "/run/jasper-mux/control.sock"
 
 
 async def airplay_now_playing() -> dict[str, str]:
@@ -111,7 +110,7 @@ class RendererClient:
         """
         try:
             reader, writer = await asyncio.open_unix_connection(
-                MUX_CONTROL_SOCKET
+                MUX_CONTROL_SOCKET_PATH
             )
         except (FileNotFoundError, ConnectionRefusedError,
                 asyncio.TimeoutError, OSError) as e:
