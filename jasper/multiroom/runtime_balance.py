@@ -22,6 +22,7 @@ from typing import Any, Awaitable, Callable, Literal
 
 from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER
 from jasper.log_event import log_event
+from jasper.route_latency.status_socket import OUTPUTD_STATUS_SOCKET
 
 from . import config
 from .config import (
@@ -36,7 +37,6 @@ logger = logging.getLogger(__name__)
 # Compatibility alias for callers/tests that imported this module's old name.
 # The driver-domain emitter owns the actual Camilla filter identity.
 PAIR_BALANCE_FILTER = DRIVER_DOMAIN_PAIR_TRIM_FILTER
-OUTPUTD_CONTROL_SOCKET = "/run/jasper-outputd/control.sock"
 
 ApplyMode = Literal["active_camilla", "outputd", "not_bonded"]
 
@@ -113,7 +113,7 @@ def _active_endpoint_camilla(cfg: GroupingConfig):
 async def _outputd_command(
     command: str,
     *,
-    socket_path: str = OUTPUTD_CONTROL_SOCKET,
+    socket_path: str = OUTPUTD_STATUS_SOCKET,
     timeout: float = 1.0,
 ) -> dict[str, Any]:
     reader, writer = await asyncio.wait_for(

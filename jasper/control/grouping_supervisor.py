@@ -66,6 +66,7 @@ from typing import Any
 
 from jasper import identity
 from jasper.log_event import log_event
+from jasper.route_latency.status_socket import OUTPUTD_STATUS_SOCKET
 
 from . import household_credential
 from .client import AsyncControlClient, PEER_CONTROL_PORT
@@ -87,7 +88,7 @@ from ..multiroom.snapcast_rpc import ensure_groups_on_stream
 
 logger = logging.getLogger(__name__)
 
-OUTPUTD_CONTROL_SOCKET = "/run/jasper-outputd/control.sock"
+OUTPUTD_CONTROL_SOCKET = OUTPUTD_STATUS_SOCKET
 RECONCILE_KICK_HELPER = "/usr/local/sbin/jasper-grouping-reconcile-kick"
 
 

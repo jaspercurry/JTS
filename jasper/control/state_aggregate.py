@@ -49,6 +49,10 @@ from ..multiroom import cascade_timeline
 from ..multiroom.state import read_grouping_state
 from ..transit.state import read_state as read_transit_state
 from ..log_event import log_event
+from ..route_latency.status_socket import (
+    FANIN_STATUS_SOCKET,
+    OUTPUTD_STATUS_SOCKET,
+)
 from ..volume_diagnostics import (
     build_volume_policy_snapshot,
     read_diagnostics as _read_volume_diagnostics,
@@ -772,7 +776,7 @@ async def _outputd_status(
     Missing socket is fail-soft here so /state remains available while
     jasper-doctor owns the actionable cutover failure.
     """
-    return await local_status_json("/run/jasper-outputd/control.sock")
+    return await local_status_json(OUTPUTD_STATUS_SOCKET)
 
 
 async def _wifi_guardian_snapshot() -> dict[str, Any]:
@@ -1144,7 +1148,7 @@ async def _get_state(
                 # fail-soft aggregate).
                 mpris.shairport_playing(timeout=2.0),
                 _voice_status(voice_socket_command, voice_socket_path),
-                local_status_json("/run/jasper-fanin/control.sock"),
+                local_status_json(FANIN_STATUS_SOCKET),
                 _outputd_status(local_status_json=local_status_json),
                 _mux_status(mux_socket_command),
                 _aec_status(aec_full_status),
