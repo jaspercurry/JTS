@@ -202,7 +202,9 @@ def test_open_carries_the_alignment_and_topology_documents(
     topology = {"fc_hz": 1800.0, "order": 4}
     document = tmp_path / "alignment.json"
     document.write_text(json.dumps(alignment))
-    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(json.dumps(topology)))
+    monkeypatch.setattr(
+        cli.sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps(topology).encode()))
+    )
     opener = _opener(v2={"session_id": "s1", "phase": "check"})
 
     code, _ = _run(

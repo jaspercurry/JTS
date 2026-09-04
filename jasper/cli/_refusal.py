@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The tuning CLIs' shared exit-code rule and its output.
+"""The tuning CLIs' shared source reader, exit-code rule, and its output.
 
 A failure is an output, not an error, and there are three of them: the
 instrument REFUSED a round it could read, the input was UNREADABLE, or the
@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 _T = TypeVar("_T")
@@ -44,6 +45,23 @@ STATUS_BY_CODE = {
     EXIT_UNREADABLE: "unreadable",
     EXIT_WRITE_FAILED: "unwritable",
 }
+
+
+def read_source_bytes(path: str) -> bytes:
+    """The document named by ``path``, or stdin when ``path`` is ``-``."""
+
+    return sys.stdin.buffer.read() if path == "-" else Path(path).read_bytes()
+
+
+def read_json_source(path: str) -> Any:
+    """The same source parsed as JSON. Unreadable and unparsable arrive as one
+    ``ValueError`` naming the source, because they are the one outcome
+    :data:`EXIT_UNREADABLE` publishes."""
+
+    try:
+        return json.loads(read_source_bytes(path))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{path}: {exc}") from exc
 
 
 def refused(reason: str, detail: str, *, exit_code: int, status: str = "refused") -> int:
