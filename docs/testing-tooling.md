@@ -1025,8 +1025,8 @@ jasper-round-views agreement <round-dir>
 - Each subcommand writes its JSON beside a round by default —
   `jasper-round-views inventory <round-dir>` names those artifacts, and the
   subcommand that produces each one, from the CLI's own `ARTIFACT_BY_VIEW`, so
-  they are not enumerated here. `repeat-floor` is the exception: its `--out` is
-  required. `--out PATH` writes elsewhere, `--out -` to stdout. On failure it
+  they are not enumerated here. `repeat-floor` is the exception: it publishes
+  nowhere by default — pass `--install`, `--out PATH`, or both. On failure it
   publishes the shared record and the shared stage-named exit code (the
   [operator runbook](tuning-operator-runbook.md)'s "Exit codes" owns both).
 
