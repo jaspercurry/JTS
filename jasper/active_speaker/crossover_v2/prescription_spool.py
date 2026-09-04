@@ -5,22 +5,11 @@
 """ONE accepted prescription, waiting for the round it was written for.
 
 A mailbox: an operator PLACES one already-validated prescription, the next
-round TAKES it. It has its own file because the flow state has exactly one
-writer (``save_v2_state``) and staging runs from a CLI in another process.
-
-Four rules. Reading and consuming are one call — the document leaves the
-pending slot BEFORE it is validated, refused documents included, so no
-document can refuse round after round. Staleness is the round ordinal, banked
-at staging and re-derived at the take. Two staged classes share ONE slot (the
-alignment and topology prescriptions never reach here — they arrive as
-request-body keys at session open, #2773), so the envelope names its
-document's class in :data:`ENVELOPE_KIND_FIELD`. And ``accepts`` is
-fail-closed, so a taker cannot be handed a class it has no route for.
-
-The take re-runs the same gate against the anchors staging banked, which
-catches a corrupt file or an edited document but cannot re-derive the packet:
-the banked region and fingerprint are taken on trust from the step that had
-the evidence. The document is not — it is stored verbatim and re-hashed.
+round TAKES it — one file, one writer (``save_v2_state``), staged from a CLI
+in another process. Read and consume are one call, before validation, so a
+refused document cannot refuse round after round. Two staged classes share
+ONE slot via :data:`ENVELOPE_KIND_FIELD`; ``accepts`` is fail-closed, and
+staleness is the round ordinal, re-derived at the take.
 """
 
 from __future__ import annotations

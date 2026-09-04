@@ -505,18 +505,6 @@ def start_active_comparison_set(
     return comparison_set
 
 
-def _latest_by_key(
-    records: list[dict[str, Any]],
-    key: str,
-) -> dict[str, dict[str, Any]]:
-    latest: dict[str, dict[str, Any]] = {}
-    for record in records:
-        value = record.get(key)
-        if isinstance(value, str) and value:
-            latest[value] = record
-    return latest
-
-
 def _latest_current_driver_records(
     records: list[dict[str, Any]],
     targets: list[dict[str, Any]],

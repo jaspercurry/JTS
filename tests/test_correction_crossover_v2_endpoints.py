@@ -62,6 +62,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     v2_first_begin_timeout_s,
 )
 import jasper.active_speaker.baseline_profile as baseline_profile_mod
+from jasper.active_speaker import crossover_envelope_v2 as v2projection
 
 import jasper.capture_protocol as capture_protocol
 from jasper.capture_protocol import MAX_TTL_S
@@ -1498,7 +1499,7 @@ def test_state_cloud_reference_db_survives_an_unbounded_json_integer():
     on one that large RAISES ``OverflowError`` rather than returning
     ``inf`` — on the wizard's poll path, where an escaping conversion is a
     500 on a plain page load. The same hazard
-    :func:`_household_findings_status` already guards (the ``10 ** 400``
+    :func:`household_findings_status` already guards (the ``10 ** 400``
     case in ``test_an_unusable_clock_becomes_none_and_never_takes_the_row_with_it``
     below); ``_finite`` — read here through ``spec.reference_db``, the
     exact path PR #2242's review found it unreachable-but-real on — now
@@ -1576,7 +1577,7 @@ def test_cloud_summary_stamps_the_producing_session_id():
     phase's dict with the CONDUCTOR's own session id, so a later carry-
     forward (``persist_conductor_state``'s B1 branch, which copies this
     whole per-phase dict verbatim) can still say which session actually
-    produced it — see ``_compact_cloud_status``'s ``provenance_note``."""
+    produced it — see ``compact_cloud_status``'s ``provenance_note``."""
     fake = SimpleNamespace(
         session_id="cap_producer_session",
         session_phases=(PHASE_CLOUD_MEASURE,),
@@ -1592,7 +1593,7 @@ def test_cloud_summary_stamps_the_producing_session_id():
 
 def test_provenance_note_reflects_whether_the_group_matches_the_active_session():
     """The household-facing half of the same marker
-    (``_compact_cloud_status``'s ``provenance_note``, PR-7). Three states,
+    (``compact_cloud_status``'s ``provenance_note``, PR-7). Three states,
     told apart rather than collapsed: the stamped producer matches the
     caller's current session (nothing to say — the chart is fresh); it
     disagrees (a group carried forward from an earlier session — say so);
@@ -1609,12 +1610,12 @@ def test_provenance_note_reflects_whether_the_group_matches_the_active_session()
         },
     }
 
-    fresh = v2status._compact_cloud_status(
+    fresh = v2projection.compact_cloud_status(
         stamped_state, current_session_id="cap_producer_session",
     )
     assert fresh[PHASE_CLOUD_VERIFY]["provenance_note"] == ""
 
-    stale = v2status._compact_cloud_status(
+    stale = v2projection.compact_cloud_status(
         stamped_state, current_session_id="cap_rearm_session",
     )
     assert stale[PHASE_CLOUD_VERIFY]["provenance_note"] == (
@@ -1627,7 +1628,7 @@ def test_provenance_note_reflects_whether_the_group_matches_the_active_session()
             "geometry": {"locked": False}, "positions": [], "pipeline": pipeline,
         },
     }
-    legacy = v2status._compact_cloud_status(
+    legacy = v2projection.compact_cloud_status(
         legacy_state, current_session_id="cap_rearm_session",
     )
     assert legacy[PHASE_CLOUD_VERIFY]["provenance_note"] == ""
@@ -1635,7 +1636,7 @@ def test_provenance_note_reflects_whether_the_group_matches_the_active_session()
     # Backward compatibility: an existing caller that never passes
     # current_session_id at all (every test seam before this PR) still gets
     # the honest "unknown" reading, not a crash or a fabricated verdict.
-    no_current = v2status._compact_cloud_status(stamped_state)
+    no_current = v2projection.compact_cloud_status(stamped_state)
     assert no_current[PHASE_CLOUD_VERIFY]["provenance_note"] == ""
 
 
@@ -2092,7 +2093,7 @@ def test_a_fresh_measurement_clears_what_the_previous_session_disclosed(
 
 # --- the projection contract, pinned AT the projection layer ------------------
 #
-# Gate finding SF-1 (adversarial review of #1982): `_household_findings_status`
+# Gate finding SF-1 (adversarial review of #1982): `household_findings_status`
 # docstrings its whole contract — "a row without usable copy is DROPPED … an
 # unusable `at` becomes None. Fabricating neither a sentence nor a date" — and
 # nothing asserted it HERE. The gate proved the gap by weakening the copy check
@@ -2264,7 +2265,7 @@ def test_a_corrupt_session_phases_list_never_reads_as_done():
 def test_a_measure_only_session_resolves_to_review_never_done():
     """**The work order's premise 6, and PR-T2's first pin.**
 
-    ``_phase_from_state`` walks the recorded ``session_phases`` and returns
+    ``crossover_v2_phase`` walks the recorded ``session_phases`` and returns
     PHASE_DONE once each is accepted. Its one special case — VERIFY unaccepted
     with MEASURE accepted and not applied ⇒ PHASE_APPLYING — cannot fire when
     VERIFY is not in the recorded phases at all. So a stage-1 session (CHECK,
@@ -3309,7 +3310,7 @@ def test_the_predicted_curve_rides_the_existing_chart_decimation_owner():
     ``test_realized_chart_lengths_stay_within_cap_for_both_curve_families``)
     over 1..5000 plus 2000 random larger lengths: max observed output was
     exactly 256, never more, for any input."""
-    n = v2status.CHART_CURVE_MAX_JSON_POINTS * 4 + 7  # not a multiple of the cap
+    n = v2projection.CHART_CURVE_MAX_JSON_POINTS * 4 + 7  # not a multiple of the cap
     freqs = [100.0 + i for i in range(n)]
     mags = [float(i % 5) for i in range(n)]
     raw = {"freqs_hz": freqs, "magnitude_db": mags}
@@ -3328,13 +3329,13 @@ def test_the_predicted_curve_rides_the_existing_chart_decimation_owner():
     assert len(predicted["freqs_hz"]) == len(predicted["magnitude_db"])
     # Genuinely decimated, to exactly the shared owner's (now ceiling-division)
     # stride -- re-derived: ceil(1031 / 256) = 5, not floor's 4.
-    stride = -(-n // v2status.CHART_CURVE_MAX_JSON_POINTS)
+    stride = -(-n // v2projection.CHART_CURVE_MAX_JSON_POINTS)
     assert stride == 5
     assert len(predicted["freqs_hz"]) == len(range(0, n, stride))
     assert len(predicted["freqs_hz"]) == 207
     # The hard ceiling itself: never CAP + stride (the old soft promise),
     # always CAP outright.
-    assert len(predicted["freqs_hz"]) <= v2status.CHART_CURVE_MAX_JSON_POINTS
+    assert len(predicted["freqs_hz"]) <= v2projection.CHART_CURVE_MAX_JSON_POINTS
 
 
 def test_realized_chart_lengths_stay_within_cap_for_both_curve_families():
@@ -3348,7 +3349,7 @@ def test_realized_chart_lengths_stay_within_cap_for_both_curve_families():
     undecimated, next to 257). This test drives both persist-time decimators
     (``_decimate_sum`` for the prediction, ``_decimate_curve_for_json`` for
     the cloud) through the SAME chart-time re-decimation
-    (``_decimate_curve_for_chart``) at real FFT-bin grid sizes, and asserts
+    (``decimate_curve_for_chart``) at real FFT-bin grid sizes, and asserts
     what actually reaches the wire, not the constants that feed it.
 
     Two sizes, both realistic ``np.fft.rfftfreq`` outputs (the shape
@@ -3366,18 +3367,18 @@ def test_realized_chart_lengths_stay_within_cap_for_both_curve_families():
         mag_db = np.zeros(freqs.size)
 
         persisted_pred = v2host._decimate_sum((freqs, mag_db))
-        rendered_pred = v2status._decimate_curve_for_chart(
+        rendered_pred = v2projection.decimate_curve_for_chart(
             persisted_pred["freqs_hz"], persisted_pred["magnitude_db"],
         )
         persisted_cloud = _decimate_curve_for_json(freqs, mag_db)
-        rendered_cloud = v2status._decimate_curve_for_chart(
+        rendered_cloud = v2projection.decimate_curve_for_chart(
             persisted_cloud["freqs_hz"], persisted_cloud["magnitude_db"],
         )
 
         # The hard ceiling itself, for BOTH curve families -- this is what
         # the constants-equality guard could never see.
-        assert len(rendered_pred["freqs_hz"]) <= v2status.CHART_CURVE_MAX_JSON_POINTS
-        assert len(rendered_cloud["freqs_hz"]) <= v2status.CHART_CURVE_MAX_JSON_POINTS
+        assert len(rendered_pred["freqs_hz"]) <= v2projection.CHART_CURVE_MAX_JSON_POINTS
+        assert len(rendered_cloud["freqs_hz"]) <= v2projection.CHART_CURVE_MAX_JSON_POINTS
 
         # Same-frame density parity: the bug's own signature was an
         # UNBOUNDED mismatch (504 undecimated vs. 257, ~2x and growing with

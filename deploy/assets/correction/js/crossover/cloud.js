@@ -5,7 +5,7 @@
 // Before/after visualization + anomaly callouts (flat-linearization plan
 // PR-7). Renders the compact `env.cloud` verdict (geometry guidance,
 // provenance, spec bands, carve-out disclosure — all server-owned copy, see
-// jasper/web/correction_crossover_v2_status.py's `_compact_cloud_status`
+// jasper/active_speaker/crossover_envelope_v2.py's `compact_cloud_status`
 // and
 // jasper/active_speaker/crossover_v2_flow.py's `carve_outs_by_band`) plus
 // `env.cloud_chart`'s decimated curves. This module never invents copy or a
@@ -62,8 +62,8 @@ let lastChart = null;
 // carve-outs, provenance, geometry guidance) — VERIFY for Full (the
 // current, graded truth), MEASURE for Express (the ONLY cloud it ever
 // produces; M=1 never closes a CLOUD-VERIFY group, permanently, not "not
-// yet"). `_compact_cloud_status`
-// (jasper.web.correction_crossover_v2_status)
+// yet"). `compact_cloud_status`
+// (jasper.active_speaker.crossover_envelope_v2)
 // already projects the identical shape onto every phase entry, so this is
 // a read-side selection, not new server data.
 // `prediction` (two-stage commission D3.1) forces the pre-apply cloud, and it

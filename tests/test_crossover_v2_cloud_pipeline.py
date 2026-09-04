@@ -1163,12 +1163,12 @@ def test_carve_outs_survive_a_registry_that_identified_nothing():
 
 
 def _walk_to_envelope(result):
-    """Pipeline result → durable ``cloud`` block → ``_compact_cloud_status``
+    """Pipeline result → durable ``cloud`` block → ``compact_cloud_status``
     → the wizard envelope. The REAL functions, in the host's own order — the
     same walk ``tests/test_flat_spec_ssot.py`` uses for the flatness gauge."""
-    from jasper.web.correction_crossover_v2_status import _compact_cloud_status
+    from jasper.active_speaker.crossover_envelope_v2 import compact_cloud_status
 
-    compact = _compact_cloud_status(
+    compact = compact_cloud_status(
         {PHASE_CLOUD_VERIFY: {"geometry": result["geometry"], "pipeline": result}}
     )
     envelope = build_crossover_envelope_v2({
@@ -1222,9 +1222,9 @@ def test_the_pre_apply_cloud_never_renders_as_the_post_apply_verdict():
     """
     combined = combine_positions(_locked_cloud(), echo_band_hz=SYNTHETIC_BAND_HZ)
     result = assemble_cloud_group_result(combined, echo_band_hz=SYNTHETIC_BAND_HZ)
-    from jasper.web.correction_crossover_v2_status import _compact_cloud_status
+    from jasper.active_speaker.crossover_envelope_v2 import compact_cloud_status
 
-    compact = _compact_cloud_status(
+    compact = compact_cloud_status(
         {PHASE_CLOUD_MEASURE: {"geometry": result["geometry"], "pipeline": result}}
     )
     assert compact[PHASE_CLOUD_MEASURE]["carve_outs"], "still on the payload"
@@ -1245,9 +1245,9 @@ def test_an_unavailable_pipeline_projects_no_carve_outs():
     """Same rule as ``excluded_interval_count``: a pipeline that never ran must
     not project anything a reader could take for "we looked and found
     nothing"."""
-    from jasper.web.correction_crossover_v2_status import _compact_cloud_status
+    from jasper.active_speaker.crossover_envelope_v2 import compact_cloud_status
 
-    compact = _compact_cloud_status({
+    compact = compact_cloud_status({
         PHASE_CLOUD_VERIFY: {
             "geometry": {"locked": False},
             "pipeline": {"available": False, "reason": "combine_failed"},
@@ -1356,7 +1356,7 @@ def test_the_real_s0_carve_out_discloses_the_measured_comb():
 
 @corpus.requires_s0_curves
 def test_the_carve_out_payload_is_the_biggest_thing_on_a_state_entry():
-    """``_compact_cloud_status``'s docstring says so, so it is checked.
+    """``compact_cloud_status``'s docstring says so, so it is checked.
 
     Every other key on that entry is a reduction; this one is deliberately
     not, and the cost lands on `/state` and every envelope poll. Measured
@@ -1369,7 +1369,7 @@ def test_the_carve_out_payload_is_the_biggest_thing_on_a_state_entry():
     docstring rests on — four rows on this corpus, and this key outweighing
     every other on the entry combined — plus a generous kB band, so a change
     that made the payload an order of magnitude larger still fails here."""
-    from jasper.web.correction_crossover_v2_status import _compact_cloud_status
+    from jasper.active_speaker.crossover_envelope_v2 import compact_cloud_status
 
     echo_band_hz = (5000.0, 19_000.0)
     combined = combine_positions(
@@ -1378,7 +1378,7 @@ def test_the_carve_out_payload_is_the_biggest_thing_on_a_state_entry():
         signal_band_hz=corpus.S0_SUMMED_PASSBAND_HZ,
     )
     result = assemble_cloud_group_result(combined, echo_band_hz=echo_band_hz)
-    entry = _compact_cloud_status(
+    entry = compact_cloud_status(
         {PHASE_CLOUD_VERIFY: {"geometry": result["geometry"], "pipeline": result}}
     )[PHASE_CLOUD_VERIFY]
 

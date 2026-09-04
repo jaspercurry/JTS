@@ -523,8 +523,12 @@ def test_a_declined_review_stops_being_served_and_a_new_one_is_not(tmp_path):
     would never be offered, because a "no" the household gave to a different
     question was still on file.
     """
+    from jasper.active_speaker.crossover_envelope_v2 import crossover_v2_phase
     from jasper.web import correction_crossover_v2 as v2
-    from jasper.web import correction_crossover_v2_status as v2status
+
+    def phase() -> str:
+        state = v2.load_v2_state()
+        return crossover_v2_phase(state, review_declined=v2.review_declined(state))
 
     v2.set_state_path_for_tests(tmp_path / "v2_state.json")
     try:
@@ -536,19 +540,19 @@ def test_a_declined_review_stops_being_served_and_a_new_one_is_not(tmp_path):
             "candidate": {"fingerprint": "fp-1"},
         })
         # Before: the review interlude.
-        assert v2status._phase_from_state(v2.load_v2_state()) == "review"
+        assert phase() == "review"
 
         v2.observe_review_decline("fp-1")
 
         # After: the journey's resting screen, not the decision again.
-        assert v2status._phase_from_state(v2.load_v2_state()) == "check"
+        assert phase() == "check"
 
         # A NEWER measurement mints a different candidate, and the decline
         # does not cover it.
         state = v2.load_v2_state()
         state["candidate"] = {"fingerprint": "fp-2"}
         v2.save_v2_state(state)
-        assert v2status._phase_from_state(v2.load_v2_state()) == "review"
+        assert phase() == "review"
     finally:
         v2.set_state_path_for_tests(None)
 

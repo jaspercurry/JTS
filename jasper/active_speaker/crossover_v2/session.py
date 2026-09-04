@@ -45,17 +45,15 @@ async def _attach_cleanup_failure(
 ) -> None:
     """Run a cleanup; if it fails, hang the failure on ``primary`` and go on.
 
-    The one place this engine knows the rule *a cleanup failure never replaces
-    the failure that caused the cleanup*: an exception raised out of a
-    ``finally`` or an ``__aexit__`` demotes the original to ``__context__`` and
-    reports the symptom. The FIRST such failure wins, being the one nearest the
-    cause.
+    Rule: a cleanup failure never replaces the failure that caused the
+    cleanup. An exception raised out of a ``finally`` or ``__aexit__``
+    demotes the original to ``__context__``; the FIRST such failure wins.
 
-    The broad catch is the point rather than an oversight: a seam may raise
-    anything, and no narrower type means "the cleanup failed".
-    ``CancelledError`` is deliberately NOT caught — it is not an ``Exception``,
-    and on the ``__aexit__`` path a cancellation replacing the body's exception
-    is the right answer, since the caller asked for it.
+    The broad catch is deliberate — a seam may raise anything, so no
+    narrower type means "the cleanup failed". ``CancelledError`` is NOT
+    caught: it is not an ``Exception``, and on the ``__aexit__`` path a
+    cancellation replacing the body's exception is correct, since the
+    caller asked for it.
     """
     try:
         await cleanup()

@@ -4265,7 +4265,7 @@ def test_cloud_session_phases_and_resume_within_the_same_session():
     # A STAGE-1 session's phases (work order D1): CHECK, MEASURE, the
     # pre-apply cloud — and deliberately no VERIFY, because the post-apply
     # sweep is stage 2's own session. This tuple is exactly what the wizard's
-    # ``_phase_from_state`` reads to resolve the review interlude.
+    # ``crossover_v2_phase`` reads to resolve the review interlude.
     assert c.session_phases == (
         PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE,
     )

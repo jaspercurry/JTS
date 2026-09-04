@@ -91,38 +91,6 @@ _STAGED_CONFIG_BASENAMES = {
 IN_SEQUENCE_CAPTURE_ANCHOR_REASON = "active_speaker_commissioning_config_loaded"
 
 
-def setup_blocked_only_by_in_sequence_anchor(
-    status: Mapping[str, Any],
-) -> bool:
-    """Whether a blocked setup status is the capture sequence's own anchor.
-
-    ``status`` is the composed crossover status payload
-    (``correction_crossover_backend.status_payload()``), carrying both the
-    ``setup`` artifact this module produces and the backend-composed
-    ``capture_entry_pending`` flag.
-
-    Between capture attempts the persisted CamillaDSP path stays anchored on
-    the all-muted staged config, so a crash mid-sequence comes back muted.
-    :func:`read_active_speaker_setup_status` correctly reports ``blocked``/
-    ``active_speaker_commissioning_config_loaded`` for that, but a gate
-    demanding exact ``"ready"`` then wedges the flow permanently: the state is
-    "anchored mid-sequence by design", not "setup unproven".
-
-    The capture-entry stash (``jasper.active_speaker.capture_entry_anchor``) is
-    the discriminator rather than a heuristic — its lifecycle IS the sequence
-    boundary, and the service-start claim runs its restore before any endpoint
-    serves, so a stale stash cannot make a genuinely unfinished setup read as
-    ready. Every other blocked reason, and this reason without a pending stash,
-    gates exactly as a plain blocked status.
-    """
-
-    setup = status.get("setup")
-    setup = setup if isinstance(setup, Mapping) else {}
-    return bool(
-        setup.get("status") == "blocked"
-        and setup.get("reason") == IN_SEQUENCE_CAPTURE_ANCHOR_REASON
-        and status.get("capture_entry_pending") is True
-    )
 # ``ActiveSpeakerConfigError`` is named even though it subclasses ``ValueError``:
 # a graph naming a forbidden playback lane makes the emitter refuse, and this
 # surface is household-facing, so an indeterminate input must return the

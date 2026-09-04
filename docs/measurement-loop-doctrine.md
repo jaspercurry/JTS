@@ -347,12 +347,10 @@ what it restores to) · **liveness** (the round ends rather than hanging).
    is the target.
 
 **The STOP-RELAXER pattern.** When a stop is *mostly* right, narrow it with a
-named, tested relaxer rather than deleting it or leaving it broad. Three
+named, tested relaxer rather than deleting it or leaving it broad. Two
 production functions exist only to admit a state a stop would otherwise refuse,
-and each has live consumers:
-`setup_status.setup_blocked_only_by_in_sequence_anchor` (the one admitted
-blocked setup shape), `delta_probe.seam_rollback_deferral` (a seam rollback
-whose realized deviation points entirely quieter than commanded), and
+and each has live consumers: `delta_probe.seam_rollback_deferral` (a seam
+rollback whose realized deviation points entirely quieter than commanded) and
 `revalidation.applied_profile_revalidation_satisfies_driver_target_proof`
 (first-time driver-target proof on an applied-profile edit). A census that greps
 for `raise` sees none of them, which is why they are named here. The pattern is

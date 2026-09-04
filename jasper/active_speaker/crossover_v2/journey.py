@@ -274,12 +274,9 @@ class CommissionJourney:
     def mark_restored(self) -> None:
         """The applied graph has been put back — disarms the VERIFY hold (#2616).
 
-        This object is the single owner of ``applied``; a durable-state writer
-        that clears it holds no conductor, so without this a restored live
-        session kept ``applied`` True in memory and the next
-        ``persist_conductor_state`` wrote that stale True back over the clear.
-        Unconditional, like its inverse: restoring a session that never applied
-        is a no-op rather than an error.
+        A durable-state writer that clears ``applied`` holds no conductor, so
+        a live session's stale True would be written back on the next persist. Unconditional, like its inverse: restoring a session that
+        never applied is a no-op rather than an error.
         """
         self._applied = False
 
@@ -315,8 +312,9 @@ class CommissionJourney:
                 # Everything before VERIFY accepted but not yet applied ⇒ an
                 # apply is pending. Unreached by any shipped session since the
                 # two-stage split: stage 1 has no VERIFY in its plan and stage 2
-                # is constructed applied; the wizard's ``_phase_from_state``
-                # routes those two shapes.
+                # is constructed applied; the wizard's
+                # ``crossover_envelope_v2.crossover_v2_phase`` routes those two
+                # shapes.
                 if (
                     phase == PHASE_VERIFY
                     and PHASE_MEASURE in self._accepted

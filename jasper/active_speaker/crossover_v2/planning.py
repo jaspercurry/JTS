@@ -4,14 +4,13 @@
 
 """ONE candidate, assembled — and what its linearization produced (#2291).
 
-Owns the build: the eligibility gate, the planner request this candidate's own
-sections imply, the cloud evidence its envelope consumed, and the assembly of
-the emitted ``MeasuredCrossoverCandidate``. Two rules. The crossover corner is
-derived from the candidate's own sections; no session Fc is read. And this
-module writes nothing and logs nothing itself except through its injected
-ports — the one ``log_event`` site is the guard for a ``journal`` port that
-raised being handed a record (#2361), the one channel a broken port cannot
-also take down.
+Owns the build: the eligibility gate, the planner request this candidate's
+sections imply, the cloud evidence its envelope consumed, and the emitted
+``MeasuredCrossoverCandidate``. Two rules: the crossover corner is derived
+from the candidate's own sections, never a session Fc; and this module logs
+nothing itself except ONE guarded ``log_event`` call — the guard for a
+``journal`` port that raised being handed a record (#2361), the one channel
+a broken port cannot also take down.
 """
 
 from __future__ import annotations

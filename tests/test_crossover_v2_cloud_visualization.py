@@ -23,8 +23,8 @@ re-test of what an earlier PR already pins:
   (``tests/test_crossover_v2_cloud_pipeline.py``). Two different authors, two
   different tests — this file does not re-assert PR-6b's.
 
-The payload plumbing (``_compact_cloud_status``'s ``reference_db``/
-``tolerance_db``/``provenance_note``, the new ``_chart_cloud_status``
+The payload plumbing (``compact_cloud_status``'s ``reference_db``/
+``tolerance_db``/``provenance_note``, the new ``chart_cloud_status``
 projection, ``_cloud_summary``'s session-id stamp, and the envelope's
 ``cloud_chart`` key) is pinned where its siblings already live:
 ``tests/test_correction_crossover_v2_endpoints.py`` and
