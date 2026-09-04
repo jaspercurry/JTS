@@ -5,8 +5,8 @@
 """Held reference tone for the /sound/setup/ volume-floor audition.
 
 Owns the tone's process, its COMMISSIONING claim on the main fader and the
-one session that arbitrates them; the sound page keeps only the two route
-adapters that bind its CamillaDSP controller.
+session that arbitrates them. The sound page's two routes drive that session
+directly, handing it their own CamillaDSP factory.
 """
 
 from __future__ import annotations
@@ -19,8 +19,9 @@ import subprocess
 import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, AsyncIterator, Callable
 
 from jasper.audio_measurement.correction_lane import (
     CORRECTION_TONE_DIR,
@@ -54,7 +55,6 @@ def _volume_floor_tone_wav_path() -> Path:
     cache_dir = Path(
         os.environ.get("JASPER_VOLUME_FLOOR_TONE_DIR", str(CORRECTION_TONE_DIR))
     )
-    cache_dir.mkdir(parents=True, exist_ok=True)
     freq_key = "-".join(str(int(freq)) for freq in VOLUME_FLOOR_TONE_FREQS_HZ)
     wav_path = cache_dir / (
         f"volume_floor_reference_{freq_key}Hz_"
@@ -64,6 +64,8 @@ def _volume_floor_tone_wav_path() -> Path:
     )
     if wav_path.exists():
         return wav_path
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
 
     import numpy as np
     from scipy.io import wavfile
@@ -194,12 +196,7 @@ class _LoopingVolumeFloorTone:
                     rc = proc.poll()
                     if rc is not None:
                         break
-                    if self._stop.is_set():
-                        self._terminate_current()
-                        break
-                    if time.monotonic() >= deadline:
-                        finish_reason = "timeout"
-                        self._set_error("volume floor tone safety timeout")
+                    if self._stop.is_set() or time.monotonic() >= deadline:
                         self._terminate_current()
                         break
                     time.sleep(0.05)
@@ -210,8 +207,6 @@ class _LoopingVolumeFloorTone:
 
                 if self._stop.is_set():
                     finish_reason = "stopped"
-                    break
-                if finish_reason:
                     break
                 if rc not in (0, None):
                     finish_reason = "error"
@@ -225,7 +220,8 @@ class _LoopingVolumeFloorTone:
                         rc=rc,
                     )
                     break
-                # Natural EOF of the short cached WAV: immediately loop it.
+                # Natural EOF of the short cached WAV: immediately loop it. A
+                # deadline reached mid-WAV lands on the check at the top.
         finally:
             if finish_reason in {"error", "timeout"} and self._on_finish:
                 self._on_finish(self, finish_reason)
@@ -266,9 +262,25 @@ async def _release_floor_level(
     await owner.release(claim)
 
 
-class _VolumeFloorToneSession:
+def _payload(*, floor_db: float, status: str, active: bool) -> dict[str, Any]:
+    """The audition's one answer shape."""
+    return {
+        "ok": True,
+        "active": active,
+        "continuous": active,
+        "status": status,
+        "volume_floor_db": floor_db,
+        "percent": 1,
+        "db": round(percent_to_db(1, floor_db=floor_db), 3),
+    }
+
+
+class VolumeFloorToneSession:
     def __init__(self) -> None:
         self._lock = threading.RLock()
+        # A threading lock, not an asyncio one: the tone thread's
+        # _runner_finished restores under its own asyncio.run, so this is
+        # contended across two event loops.
         self._camilla_op_lock = threading.Lock()
         self._runner: Any | None = None
         # The COMMISSIONING claim this audition holds on the main fader. The
@@ -282,8 +294,21 @@ class _VolumeFloorToneSession:
         self._cancel_start = False
         self._generation = 0
 
-    async def _acquire_camilla_op_lock(self) -> None:
-        await asyncio.to_thread(self._camilla_op_lock.acquire)
+    @asynccontextmanager
+    async def _camilla_op(self) -> AsyncIterator[None]:
+        """Serialize one audition step's CamillaDSP reads and writes.
+
+        Polls instead of parking a worker thread on ``acquire``: a task
+        cancelled while parked there leaves the worker holding a lock nobody
+        will release, which deadlocks every later audition and stop with the
+        fader still down at the floor.
+        """
+        while not self._camilla_op_lock.acquire(blocking=False):
+            await asyncio.sleep(0.02)
+        try:
+            yield
+        finally:
+            self._camilla_op_lock.release()
 
     async def start_or_update(
         self,
@@ -292,6 +317,10 @@ class _VolumeFloorToneSession:
         camilla_factory: Callable[[], Any],
         runner_factory: Callable[..., Any] | None = None,
     ) -> dict[str, Any]:
+        """Start or update a held tone at the proposed 1% volume floor.
+
+        Non-persistent: only the /settings save path commits the chosen floor.
+        """
         settings = SoundSettings.from_mapping(
             {
                 **load_sound_settings().to_dict(),
@@ -324,81 +353,75 @@ class _VolumeFloorToneSession:
 
         if action == "start":
             original: tuple[float, bool] | None = None
-            acquired_camilla_op = False
             try:
+                # Outside the op lock: a cold cache imports numpy/scipy and
+                # synthesizes the WAV, which must not block a concurrent
+                # stop's restore.
                 runner = runner_factory(
                     _volume_floor_tone_wav_path(),
                     on_finish=self._runner_finished,
                 )
-                await self._acquire_camilla_op_lock()
-                acquired_camilla_op = True
-                camilla = camilla_factory()
-                original = await camilla.get_volume_and_mute(best_effort=True)
-                if original is None:
-                    raise RuntimeError("CamillaDSP volume state is unavailable")
-                self._claim = await _claim_floor_level(
-                    original[0], percent_to_db(1, floor_db=floor_db),
-                )
-                await camilla.set_main_mute(False)
-                with self._lock:
-                    cancelled = self._cancel_start
-                    self._starting = False
-                    self._cancel_start = False
-                    if not cancelled:
-                        self._original_db, self._original_mute = original
-                        self._camilla_factory = camilla_factory
-                        self._runner = runner
-                        self._floor_db = floor_db
-                        self._generation += 1
-                if cancelled:
-                    await self._restore_snapshot(
-                        camilla_factory=camilla_factory,
-                        original_db=original[0],
-                        original_mute=original[1],
+                async with self._camilla_op():
+                    camilla = camilla_factory()
+                    original = await camilla.get_volume_and_mute(best_effort=True)
+                    if original is None:
+                        raise RuntimeError("CamillaDSP volume state is unavailable")
+                    self._claim = await _claim_floor_level(
+                        original[0], percent_to_db(1, floor_db=floor_db),
                     )
-                    return self._inactive_payload(
-                        floor_db=floor_db,
-                        status="stopped",
-                    )
-                try:
-                    runner.start()
-                except (OSError, RuntimeError):
+                    await camilla.set_main_mute(False)
                     with self._lock:
-                        if self._runner is runner:
-                            self._clear_active_locked()
+                        cancelled = self._cancel_start
+                        self._starting = False
+                        self._cancel_start = False
+                        if not cancelled:
+                            self._original_db, self._original_mute = original
+                            self._camilla_factory = camilla_factory
+                            self._runner = runner
+                            self._floor_db = floor_db
                             self._generation += 1
-                    await self._restore_snapshot(
-                        camilla_factory=camilla_factory,
-                        original_db=original[0],
-                        original_mute=original[1],
-                    )
-                    original = None
-                    raise
-                started_runner = runner
+                    if cancelled:
+                        await self._restore_snapshot(
+                            camilla_factory=camilla_factory,
+                            original_db=original[0],
+                            original_mute=original[1],
+                        )
+                        return _payload(
+                            floor_db=floor_db, status="stopped", active=False,
+                        )
+                    try:
+                        runner.start()
+                    except (OSError, RuntimeError):
+                        with self._lock:
+                            if self._runner is runner:
+                                self._clear_active_locked()
+                                self._generation += 1
+                        await self._restore_snapshot(
+                            camilla_factory=camilla_factory,
+                            original_db=original[0],
+                            original_mute=original[1],
+                        )
+                        original = None
+                        raise
+                    started_runner = runner
             except (OSError, RuntimeError):
                 with self._lock:
                     self._starting = False
                     self._cancel_start = False
-                if original is not None:
-                    await self._restore_snapshot(
-                        camilla_factory=camilla_factory,
-                        original_db=original[0],
-                        original_mute=original[1],
-                    )
+                # The op lock was released with the block above, so retake it:
+                # this restore is a CamillaDSP write like any other.
+                await self._restore_snapshot_locked(
+                    camilla_factory=camilla_factory,
+                    original_db=None if original is None else original[0],
+                    original_mute=None if original is None else original[1],
+                )
                 raise
-            finally:
-                if acquired_camilla_op:
-                    self._camilla_op_lock.release()
         else:
-            await self._acquire_camilla_op_lock()
-            try:
+            async with self._camilla_op():
                 with self._lock:
                     active = self._runner is runner and self._generation == generation
                 if not active:
-                    return self._inactive_payload(
-                        floor_db=floor_db,
-                        status="stale",
-                    )
+                    return _payload(floor_db=floor_db, status="stale", active=False)
                 camilla = camilla_factory()
                 # The claim is held; only the level it sits at moves. One
                 # settle, so the tone steps between floors instead of jumping
@@ -413,12 +436,9 @@ class _VolumeFloorToneSession:
                     if self._runner is runner and self._generation == generation:
                         self._floor_db = floor_db
                     else:
-                        return self._inactive_payload(
-                            floor_db=floor_db,
-                            status="stale",
+                        return _payload(
+                            floor_db=floor_db, status="stale", active=False,
                         )
-            finally:
-                self._camilla_op_lock.release()
 
         if started_runner is not None:
             await asyncio.sleep(VOLUME_FLOOR_TONE_STARTUP_CHECK_S)
@@ -437,26 +457,11 @@ class _VolumeFloorToneSession:
             floor_db=f"{floor_db:.1f}",
             result="ok",
         )
-        return {
-            "ok": True,
-            "active": True,
-            "continuous": True,
-            "status": "started" if action == "start" else "updated",
-            "volume_floor_db": floor_db,
-            "percent": 1,
-            "db": round(percent_to_db(1, floor_db=floor_db), 3),
-        }
-
-    def _inactive_payload(self, *, floor_db: float, status: str) -> dict[str, Any]:
-        return {
-            "ok": True,
-            "active": False,
-            "continuous": False,
-            "status": status,
-            "volume_floor_db": floor_db,
-            "percent": 1,
-            "db": round(percent_to_db(1, floor_db=floor_db), 3),
-        }
+        return _payload(
+            floor_db=floor_db,
+            status="started" if action == "start" else "updated",
+            active=True,
+        )
 
     async def stop(
         self,
@@ -479,16 +484,11 @@ class _VolumeFloorToneSession:
                 self._generation += 1
         if runner is not None:
             runner.stop()
-        if original_db is not None and original_mute is not None:
-            await self._acquire_camilla_op_lock()
-            try:
-                await self._restore_snapshot(
-                    camilla_factory=camilla_factory,
-                    original_db=original_db,
-                    original_mute=original_mute,
-                )
-            finally:
-                self._camilla_op_lock.release()
+        await self._restore_snapshot_locked(
+            camilla_factory=camilla_factory,
+            original_db=original_db,
+            original_mute=original_mute,
+        )
         status = "stopped" if runner is not None or starting else "idle"
         log_event(
             logger,
@@ -557,16 +557,11 @@ class _VolumeFloorToneSession:
         original_db: float | None,
         original_mute: bool | None,
     ) -> None:
-        if original_db is not None and original_mute is not None:
-            await self._acquire_camilla_op_lock()
-            try:
-                await self._restore_snapshot(
-                    camilla_factory=camilla_factory,
-                    original_db=original_db,
-                    original_mute=original_mute,
-                )
-            finally:
-                self._camilla_op_lock.release()
+        await self._restore_snapshot_locked(
+            camilla_factory=camilla_factory,
+            original_db=original_db,
+            original_mute=original_mute,
+        )
         log_event(
             logger,
             "sound.volume_floor_tone",
@@ -575,6 +570,23 @@ class _VolumeFloorToneSession:
             reason=reason,
             floor_db="" if floor_db is None else f"{floor_db:.1f}",
         )
+
+    async def _restore_snapshot_locked(
+        self,
+        *,
+        camilla_factory: Callable[[], Any],
+        original_db: float | None,
+        original_mute: bool | None,
+    ) -> None:
+        """Take the op lock, then restore. No snapshot means nothing moved."""
+        if original_db is None or original_mute is None:
+            return
+        async with self._camilla_op():
+            await self._restore_snapshot(
+                camilla_factory=camilla_factory,
+                original_db=original_db,
+                original_mute=original_mute,
+            )
 
     async def _restore_snapshot(
         self,
@@ -605,4 +617,4 @@ class _VolumeFloorToneSession:
         self._camilla_factory = None
 
 
-_VOLUME_FLOOR_TONE_SESSION = _VolumeFloorToneSession()
+VOLUME_FLOOR_TONE_SESSION = VolumeFloorToneSession()
