@@ -365,7 +365,7 @@ def test_doctor_writer_lock_confirm_delay_outlasts_the_c_acquisition_budget():
     after ``_WRITER_LOCK_CONFIRM_DELAY_SEC``; if that delay did not OUTLAST the
     C budget, an ordinary create-or-attach race would be reported as the
     defect."""
-    from jasper.cli.doctor.audio_runtime import _WRITER_LOCK_CONFIRM_DELAY_SEC
+    from jasper.cli.doctor.audio_runtime_ring import _WRITER_LOCK_CONFIRM_DELAY_SEC
 
     c = _read(_C_HEADER)
     budget_ms = _extract(

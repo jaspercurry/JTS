@@ -84,7 +84,7 @@ FANIN_STATUS_CONSUMERS: dict[str, set[str]] = {
         "watchdog", "last_progress_age_ms", "pings_skipped",
     },
     # check_fanin_service
-    "jasper/cli/doctor/audio_runtime.py": {
+    "jasper/cli/doctor/audio_runtime_fanin.py": {
         "output", "pcm", "frames_written", "xrun_count",
         "inputs", "label", "input_buffer_frames",
         "watchdog", "last_progress_age_ms",
@@ -191,7 +191,7 @@ def test_control_socket_paths_agree_across_processes(monkeypatch):
     for rel in (
         "jasper/mux.py",
         "jasper/control/airplay_health.py",
-        "jasper/cli/doctor/audio_runtime.py",
+        "jasper/cli/doctor/audio_runtime_fanin.py",
         "jasper/cli/system_soak.py",
     ):
         assert fanin_sock in (REPO / rel).read_text(), (
@@ -202,7 +202,7 @@ def test_control_socket_paths_agree_across_processes(monkeypatch):
     assert f'Environment="JASPER_OUTPUTD_CONTROL_SOCKET={outputd_sock}"' in unit
     for rel in (
         "jasper/audio_validation.py",
-        "jasper/cli/doctor/audio_runtime.py",
+        "jasper/cli/doctor/audio_runtime_outputd.py",
         "jasper/cli/system_soak.py",
     ):
         assert outputd_sock in (REPO / rel).read_text(), (

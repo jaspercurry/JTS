@@ -4,38 +4,31 @@
 
 """Shared primitives for the jasper-doctor check package.
 
-This is the base layer every per-domain check module imports
-from. It holds, **verbatim from the original**
-``jasper/cli/doctor.py``:
+The base layer every per-domain check module imports from: the
+:class:`CheckResult` dataclass, the crash-isolation harness that keeps one
+crashing check from aborting a run, ``_run``, the JTS daemon ``STATUS``
+control-socket reader, and the helpers used by more than one domain.
 
-- the :class:`CheckResult` dataclass and the ``DoctorCheck``
-  type alias (the union that lets a list entry be either a bare
-  callable or a ``(label, callable)`` tuple);
-- the crash-isolation harness (``_run_doctor_check`` /
-  ``_run_async_doctor_check`` / ``_normalize_doctor_check`` /
-  ``_check_name`` / ``_crashed_check_result`` and the
-  secret-redacting ``_exception_detail``), unchanged so one
-  crashing check still cannot abort the run;
-- ``_run`` (the subprocess wrapper) and ``_parse_env_file``;
-- ANSI colour constants and the chip-AEC passive check set;
-- the genuinely cross-cutting helpers used by more than one
-  domain (``_sha256_file``, ``_meminfo_kb``,
-  ``_systemctl_show_property``, ``_pid_of_unit``,
-  ``_service_runtime_states`` + ``_RUNTIME_STATE_UNITS``,
-  ``_loopback_playback_active``).
-
-No logic changed in the split. Names that tests patch (e.g.
-``_run``) stay importable here and are re-imported into each
-domain module, so a check reads them from its own namespace."""
+``_run`` and ``_read_status_socket`` are re-imported into the domain modules
+that call them, so a check resolves them in its OWN namespace and a test patch
+must target that module, not this one. Such a patch reaches only that module's
+own calls: a helper defined HERE resolves ITS dependencies in this module's
+globals, so ``_read_status_socket_bytes`` (reached through
+``_read_status_socket``) and ``_run`` (through ``_pid_of_unit``,
+``_systemctl_show_property`` and ``_service_runtime_states``) stay bound here
+on those paths."""
 from __future__ import annotations
 
 import grp
 import hashlib
+import json
 import os
 import re
 import shlex
+import socket
 import stat as _stat
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -150,6 +143,50 @@ async def _run_async_doctor_check(
 
 def _run(cmd: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+_STATUS_RESPONSE_MAX_BYTES = 1_048_576
+
+
+def _read_status_socket_bytes(socket_path: str, *, timeout: float) -> bytes:
+    """Return the raw reply from a local JTS ``STATUS\n`` control socket.
+
+    Owns the socket lifecycle only; retry, decoding and fail-versus-skip policy
+    stay with the callers.
+    """
+
+    deadline = time.monotonic() + timeout
+
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        def set_remaining_timeout() -> None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise socket.timeout("STATUS response deadline exceeded")
+            sock.settimeout(remaining)
+
+        set_remaining_timeout()
+        sock.connect(socket_path)
+        set_remaining_timeout()
+        sock.sendall(b"STATUS\n")
+        chunks: list[bytes] = []
+        received = 0
+        while True:
+            set_remaining_timeout()
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            received += len(chunk)
+            if received > _STATUS_RESPONSE_MAX_BYTES:
+                raise OSError("STATUS response exceeds byte limit")
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _read_status_socket(socket_path: str) -> dict[str, object]:
+    payload = _read_status_socket_bytes(socket_path, timeout=1.0).decode("utf-8")
+    parsed = json.loads(payload)
+    if not isinstance(parsed, dict):
+        raise ValueError("STATUS response root is not an object")
+    return parsed
 
 def _parse_env_file(path: str) -> dict[str, str]:
     """Back-compat wrapper for tests and external doctor consumers."""

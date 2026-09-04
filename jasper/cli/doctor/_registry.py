@@ -104,9 +104,9 @@ def doctor_check(
         order: sort key in the canonical run sequence — a sparse key, not
             a contiguous index. To insert between two checks pass a value
             between their orders (e.g. 20.5); no renumber. Must be unique.
-        group: subsystem/domain the check belongs to. Usually the check's
-            module name, but it need not be — ``drift.py`` registers under
-            ``install``. Organizational metadata only, except that
+        group: subsystem/domain the check belongs to. Not the module name:
+            ``drift.py`` registers under ``install``, and the four
+            ``audio_runtime*`` modules all register under ``audio``. Organizational metadata only, except that
             ``__init__._STREAMBOX_OMITTED_DOCTOR_GROUPS`` skips whole
             groups a streambox does not install; ``install`` is not one of
             them, so drift checks run on both profiles.
