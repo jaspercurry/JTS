@@ -515,8 +515,11 @@ def check_grouping_leader_pipe() -> CheckResult:
     an empty FIFO and every member (including the leader's own round-trip)
     hears silence while every unit shows green. The silent-wrong-config
     class this check exists for."""
+    from ...camilla_config_contract import (
+        devices_playback_is_pipe,
+        read_camilla_devices_config,
+    )
     from ...multiroom.config import is_active_leader, load_config
-    from ...multiroom.leader_config import playback_is_pipe
     from ...multiroom.reconcile import SNAPFIFO
     from .correction import _active_camilla_config_path
 
@@ -531,12 +534,13 @@ def check_grouping_leader_pipe() -> CheckResult:
     path = Path(config_path)
     if not path.exists():
         return CheckResult(label, "warn", f"active config missing: {config_path}")
-    try:
-        is_pipe = playback_is_pipe(path.read_text(), SNAPFIFO)
-    except OSError as e:
-        return CheckResult(label, "warn", f"could not read {config_path}: {e}")
+    devices = read_camilla_devices_config(path)
+    if devices is None:
+        return CheckResult(
+            label, "warn", f"no readable devices block in {config_path}"
+        )
 
-    if not is_pipe:
+    if not devices_playback_is_pipe(devices, SNAPFIFO):
         return CheckResult(
             label, "warn",
             f"{config_path} does not write the snapserver pipe ({SNAPFIFO}) "

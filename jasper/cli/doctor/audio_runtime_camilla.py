@@ -62,21 +62,6 @@ def check_camilla_service() -> CheckResult:
     return CheckResult(label, "ok", "enabled and active")
 
 
-def _graph_feeds_the_bond(devices: dict[str, object]) -> bool:
-    """Is this graph's post-DSP endpoint the bond rather than a local ring?
-
-    A bonded LEADER's camilla#1 plays into the Snapcast pipe and never touches a
-    ring device. The FILENAME is compared, not just the type: any other ``File``
-    sink is a stale local pipe and must keep failing the playback axis.
-    """
-    from ...multiroom.reconcile import SNAPFIFO
-
-    return (
-        devices.get("playback_type") == "File"
-        and devices.get("playback_filename") == SNAPFIFO
-    )
-
-
 def _expected_playback_format(
     playback_type: str | None, playback_device: str | None
 ) -> tuple[str, str]:
