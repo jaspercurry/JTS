@@ -86,8 +86,9 @@ walk that nothing would serve.
 **Nothing here re-maps another tool's verdict.** ``jasper-angle-capture
 serve``'s exit code and the stall it named, and ``bank-crossover-round.sh``'s
 0/3/4, are reported verbatim, by their owners' own names, as the deciding
-value on this runner's own per-phase exit code. A failing walk stops the round before it banks: the walk's rc is
-the verdict, and a bank on top of it would be a second one.
+value on this runner's own per-phase exit code. A failing walk stops the round
+before it banks: the walk's rc is the verdict, and a bank on top of it would be
+a second one.
 
 **The examples below pass no ``--complete-after``, and that is the recipe.**
 The session closes ITSELF when it has served every hold it planned, and the walk
@@ -638,18 +639,19 @@ def _walk_exit_name(code: int, log_path: Path, since_byte: int = 0) -> str:
 
     ``since_byte`` is where THIS run's output starts: the log is opened for
     append, so a re-run under the same ``--label`` sits behind the previous
-    run's refusal and would otherwise inherit its reason.
+    run's refusal and would otherwise inherit its reason. It is an ``st_size``,
+    so the slice is taken on BYTES and decoded after -- one non-ASCII byte
+    upstream would otherwise shift a character slice past this run's own line.
     """
     if code == SSH_TRANSPORT_EXIT:
         return "ssh_transport_failed"
     if code == 0:
         return "ok"
     try:
-        named = _SERVE_REFUSAL.findall(
-            log_path.read_text(errors="ignore")[since_byte:]
-        )
+        tail = log_path.read_bytes()[since_byte:]
     except OSError:
-        named = []
+        tail = b""
+    named = _SERVE_REFUSAL.findall(tail.decode("utf-8", "ignore"))
     # No refusal in the log is the signal-parked ending (128+signum, printed by
     # nobody) or a walk killed outright: the rc is then all there is to report.
     return named[-1] if named else str(code)

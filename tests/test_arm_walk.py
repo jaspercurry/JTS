@@ -453,6 +453,32 @@ def test_the_first_signal_disarms_both_so_a_second_cannot_land():
             assert signal.getsignal(sig) is signal.SIG_IGN
 
 
+def test_a_park_signal_leaves_serve_on_128_plus_signum(monkeypatch, capsys):
+    """The one ending `serve` does not publish a record for -- through `main`.
+
+    Its exit contract is the shared 0/1/3 with the stall in the record; a signal
+    ending is the exception, and it goes out as the shell's own 128+signum with
+    NOTHING on stdout. `scripts/run-crossover-round.py`'s fall back to the bare
+    rc rides on exactly that, so it is pinned here rather than assumed.
+    """
+    def _signalled(self):
+        os.kill(os.getpid(), signal.SIGTERM)
+        # The handler fires at the interpreter's next check, which this sleep
+        # guarantees; reaching past it means it never ran.
+        time.sleep(1.0)
+        raise AssertionError("the park handler never fired")
+
+    monkeypatch.setattr(aw.ArmWalk, "run", _signalled)
+    with _own_signals(), pytest.raises(SystemExit) as excinfo:
+        cli.main(["serve", "--attest-rig-clear", "--hostname", "jts3.local"])
+
+    assert excinfo.value.code == aw.SIGNAL_EXIT_BASE + int(signal.SIGTERM) == 143
+    out = capsys.readouterr()
+    assert out.out == ""
+    # The summary still reaches stderr: it is printed in the walk's `finally`.
+    assert "no positions were released" in out.err
+
+
 def test_every_park_signal_is_installed_and_named_by_its_own_exit_code():
     """One rule, both ends: the handler exits 128+signum and EXIT_NAMES says so.
 

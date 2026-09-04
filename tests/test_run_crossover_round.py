@@ -1384,15 +1384,28 @@ def test_an_ssh_transport_failure_is_not_reported_as_the_arms_fault(
     assert bank_lines == []
 
 
-def test_the_walk_exit_name_is_read_from_the_record_not_from_the_code(tmp_path):
+# The chatter ahead of this run's own output. The non-ASCII row is the point of
+# the parametrization: ``since_byte`` is an ``st_size``, so slicing the decoded
+# text by it overshoots by one position per multi-byte character upstream.
+@pytest.mark.parametrize("earlier", [
+    "some earlier chatter\n",
+    "moved to +22° — settling\n",
+])
+def test_the_walk_exit_name_is_read_from_the_record_not_from_the_code(
+    tmp_path, earlier
+):
     """``serve`` exits 0/1/3, so the STALL has to come off its refusal line."""
     runner = _runner()
     log = tmp_path / "walk.log"
 
     assert runner._walk_exit_name(255, log) == "ssh_transport_failed"
+    # utf-8 explicitly, because the offset below is `len(...encode())` and the
+    # fixed reader decodes as utf-8: letting the locale pick would make this
+    # case pass or break on the host's encoding rather than on the code.
     log.write_text(
-        "some earlier chatter\nrefused (walk_not_staged): nothing was staged\n"
-        "refused (stuck): the turntable walk stopped at loop code 6\n"
+        earlier + "refused (walk_not_staged): nothing was staged\n"
+        "refused (stuck): the turntable walk stopped at loop code 6\n",
+        encoding="utf-8",
     )
     # The LAST refusal, and only when the walk actually stopped short.
     assert runner._walk_exit_name(1, log) == "stuck"
@@ -1403,6 +1416,14 @@ def test_the_walk_exit_name_is_read_from_the_record_not_from_the_code(tmp_path):
     # ...and a re-run under the same label never inherits the previous run's
     # reason: only bytes written after the launch are this walk's.
     assert runner._walk_exit_name(143, log, log.stat().st_size) == "143"
+
+    # ...and the offset is BYTES, which is what `st_size` hands over. Sliced as
+    # CHARACTERS it runs PAST the boundary by one position per multi-byte
+    # character upstream — straight through this run's own refusal line, whose
+    # reason then degrades to the bare rc.
+    rerun = tmp_path / "rerun.log"
+    rerun.write_bytes(earlier.encode() + b"refused (stuck): stopped short\n")
+    assert runner._walk_exit_name(1, rerun, len(earlier.encode())) == "stuck"
 
 
 def test_a_refused_stage_stops_before_anything_opens(checkout, wizard, tmp_path):

@@ -83,14 +83,13 @@ executed under both.
    fencing, not the distance: the artifact keeps its own kind and schema
    version so it can be lifted whole, the evidence blocks stay prose-free, and
    no code path in JTS reads the strings for any decision.
-9. **Naming: "arm" means the physical rig** (`jasper-angle-capture serve`)
-   — never a
-   DSP variant. DSP variants under test are **candidates**; a tournament
-   round runs a **candidate cycle** at each pose. Forward-only for new work;
-   ticket 2.8's subject sweep trued up the DSP-variant prose it covered
-   (`alignment_prescription` is now at zero). The rule binds this program's
-   vocabulary, not the word: unrelated senses survive deliberately across
-   the tree and a sweeper should leave them alone — one ring/coupling
+9. **Naming: "arm" means the physical rig** (`jasper-angle-capture serve`) —
+   never a DSP variant. DSP variants under test are **candidates**; a
+   tournament round runs a **candidate cycle** at each pose. Forward-only for
+   new work; ticket 2.8's subject sweep trued up the DSP-variant prose it
+   covered (`alignment_prescription` is now at zero). The rule binds this
+   program's vocabulary, not the word: unrelated senses survive deliberately
+   across the tree and a sweeper should leave them alone — one ring/coupling
    arming transaction as a noun (`coupling_reconcile`'s "the arm's outputd
    restart" and "an arm or a disarm"; the `test_ring_anchor_arm_acceptance`
    and `test_composite_ring_arm_enabling` modules), a branch or case of a

@@ -322,12 +322,12 @@ seconds of every remote session.
 5. Repeat. Analysis, apply and verify are unchanged.
 
 **Steps 3–5 have a shipped implementation for the lab turntable arm:**
-`jasper-angle-capture serve`
-([`arm_walk.py`](../jasper/active_speaker/arm_walk.py), CLI in
-[`cli/angle_capture.py`](../jasper/cli/angle_capture.py)) polls the envelope over loopback,
-drives the turntable adapter as a subprocess, and posts `/position-ready` — with
-the power preflight, the ±45° envelope clamp, the measured settle and the
-park-and-verify held in code. It is opt-in and foreground: nothing starts it. See
+`jasper-angle-capture serve` ([`arm_walk.py`](../jasper/active_speaker/arm_walk.py),
+CLI in [`cli/angle_capture.py`](../jasper/cli/angle_capture.py)) polls the
+envelope over loopback, drives the turntable adapter as a subprocess, and posts
+`/position-ready` — with the power preflight, the ±45° envelope clamp, the
+measured settle and the park-and-verify held in code. It is opt-in and
+foreground: nothing starts it. See
 [`testing-tooling.md`](testing-tooling.md#lab-arm-walk-harness).
 
 **The WIRED capture source is the default, and it changes steps 1–2.** A
@@ -354,8 +354,8 @@ walk's own fact), and a retake the walk cannot serve is journalled as
 the hold as a walkthrough — the spot's counter, the plan's own instruction, and
 one control that posts the release — then the held set's Save / Record-again
 where the phone's confirm screen would have been. Nothing else is needed: no
-`jasper-angle-capture serve`, no CSRF dance, no second device. Left unattended a hold still
-expires after `REMOTE_POSITION_HOLD_BUDGET_S` (600 s) as
+`jasper-angle-capture serve`, no CSRF dance, no second device. Left unattended
+a hold still expires after `REMOTE_POSITION_HOLD_BUDGET_S` (600 s) as
 `position_hold_expired`: loud, named, self-recovering, but a wasted session.
 
 The walkthrough follows the HOLD, not the transport — it renders when
