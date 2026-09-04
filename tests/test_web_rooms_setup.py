@@ -40,7 +40,6 @@ from pathlib import Path
 import pytest
 
 from jasper.control import household_credential
-from jasper.mdns import DiscoveredService
 from jasper.web import rooms_setup
 
 from ._web_test_helpers import FakeHandler
@@ -280,7 +279,6 @@ def test_get_root_shell_interpolates_no_discovered_data(monkeypatch):
         "name": "<script>alert(1)</script>",
         "room": "<img src=x onerror=alert(2)>",
         "address": "10.0.0.7",
-        "port": 8780,
     }
     _patch_discovery(
         monkeypatch,
@@ -335,8 +333,7 @@ def test_rooms_json_shape(monkeypatch):
         monkeypatch,
         speakers=[
             {"name": "jts-bedroom", "room": "bedroom",
-             "hostname": "jts-bedroom", "address": "192.168.1.9",
-             "port": 8780},
+             "hostname": "jts-bedroom", "address": "192.168.1.9"},
         ],
         grouping=dict(_OFF_GROUPING),
     )
@@ -445,10 +442,8 @@ def test_rooms_json_carries_live_pair_balance_snapshot(monkeypatch):
     }
     _patch_discovery(
         monkeypatch,
-        speakers=[{
-            "name": "Right", "room": "", "hostname": "jts3",
-            "address": "192.168.1.9", "port": 8780,
-        }],
+        speakers=[{"name": "Right", "room": "", "hostname": "jts3",
+                   "address": "192.168.1.9"}],
         grouping=self_g,
     )
     monkeypatch.setattr(
@@ -517,7 +512,7 @@ def test_rooms_json_peer_links_never_fall_back_to_raw_ip(monkeypatch):
         monkeypatch,
         speakers=[
             {"name": "Kitchen", "room": "kitchen", "hostname": "",
-             "address": "192.168.1.9", "port": 8780},
+             "address": "192.168.1.9"},
         ],
     )
 
@@ -539,8 +534,7 @@ def test_self_exclusion_uses_exact_hostname_not_substring(monkeypatch):
         self_hostname="jts.local",            # our hostname label is "jts"
         self_addrs=frozenset({"192.168.1.74"}),
         speakers=[
-            {"name": "JTS3", "hostname": "jts3", "room": "",
-             "address": "192.168.1.92", "port": 8780},
+            {"name": "JTS3", "hostname": "jts3", "room": "", "address": "192.168.1.92"},
         ],
     )
     data = json.loads(_get("/rooms.json").wfile.getvalue().decode())
@@ -559,10 +553,8 @@ def test_self_excluded_by_exact_hostname_when_address_missed(monkeypatch):
         speakers=[
             # Same hostname "jts", different address (our own advert the route
             # trick didn't list) -> must be excluded as self.
-            {"name": "JTS", "hostname": "jts", "room": "",
-             "address": "127.0.1.1", "port": 8780},
-            {"name": "JTS3", "hostname": "jts3", "room": "",
-             "address": "192.168.1.92", "port": 8780},
+            {"name": "JTS", "hostname": "jts", "room": "", "address": "127.0.1.1"},
+            {"name": "JTS3", "hostname": "jts3", "room": "", "address": "192.168.1.92"},
         ],
     )
     data = json.loads(_get("/rooms.json").wfile.getvalue().decode())
@@ -631,8 +623,8 @@ def test_rooms_json_excludes_self_by_address(monkeypatch):
     _patch_discovery(
         monkeypatch,
         speakers=[
-            {"name": "jts-living", "room": "", "address": "192.168.1.5", "port": 8780},
-            {"name": "jts-kitchen", "room": "kitchen", "address": "192.168.1.8", "port": 8780},
+            {"name": "jts-living", "room": "", "address": "192.168.1.5"},
+            {"name": "jts-kitchen", "room": "kitchen", "address": "192.168.1.8"},
         ],
         self_addrs=frozenset({"192.168.1.5"}),
     )
@@ -653,9 +645,9 @@ def test_rooms_json_excludes_self_by_hostname_label(monkeypatch):
             # Our OWN advert on an address the route trick didn't list: same
             # hostname "jts-living", a friendly display name -> excluded as self.
             {"name": "Living Room", "hostname": "jts-living", "room": "",
-             "address": "192.168.1.99", "port": 8780},
+             "address": "192.168.1.99"},
             {"name": "jts-bedroom", "hostname": "jts-bedroom", "room": "bedroom",
-             "address": "192.168.1.9", "port": 8780},
+             "address": "192.168.1.9"},
         ],
         self_hostname="jts-living.local",
         self_addrs=frozenset({"192.168.1.5"}),  # does NOT include .99
@@ -677,7 +669,7 @@ def test_rooms_json_hostile_peer_name_is_a_json_string_not_markup(monkeypatch):
         monkeypatch,
         speakers=[
             {"name": "</script><script>alert(1)</script>", "room": "<b>x</b>",
-             "address": "10.0.0.2", "port": 8780},
+             "address": "10.0.0.2"},
         ],
     )
     raw = _get("/rooms.json").wfile.getvalue().decode()
@@ -741,29 +733,6 @@ def test_discover_speakers_swallows_failure(monkeypatch):
     empty directory, never 500s). Simulated at the asyncio.run boundary."""
     monkeypatch.setattr(rooms_setup.asyncio, "run", _raise_run)
     assert rooms_setup._discover_speakers() == []
-
-
-def test_discover_speakers_record_carries_no_port(monkeypatch):
-    """A discovered peer is recorded as {name, hostname, room, address}. The
-    SRV port is deliberately not carried: every JTS speaker advertises
-    jasper-control on PEER_CONTROL_PORT (deploy/avahi/jasper-control.service
-    hardcodes it), so peer URLs are built from that one constant."""
-    svc = DiscoveredService(
-        name="JTS jasper-control on jts3._jasper-control._tcp.local.",
-        server="jts3.local.",
-        addresses=("192.168.1.9",),
-        port=9999,
-        txt={"name": "Living Room", "room": "bedroom"},
-    )
-    monkeypatch.setattr(rooms_setup, "browse_once", lambda *a, **k: [svc])
-    assert rooms_setup._discover_speakers() == [
-        {
-            "name": "Living Room",
-            "hostname": "jts3",
-            "room": "bedroom",
-            "address": "192.168.1.9",
-        }
-    ]
 
 
 def test_rooms_json_renders_empty_directory_when_discovery_fails(monkeypatch):
@@ -1248,7 +1217,7 @@ def test_discovery_cache_serves_within_ttl_without_rebrowsing(monkeypatch):
 
     def _counting_browse(*a, **k):
         calls["n"] += 1
-        return [{"name": "jts3", "room": "", "address": "192.168.1.9", "port": 8780}]
+        return [{"name": "jts3", "room": "", "address": "192.168.1.9"}]
 
     monkeypatch.setattr(rooms_setup, "_discover_speakers", _counting_browse)
     rooms_setup._disc_cache.update(at=0.0, result=[])
@@ -1266,7 +1235,7 @@ def test_discovery_cache_rebrowses_after_ttl_expiry(monkeypatch):
 
     def _counting_browse(*a, **k):
         calls["n"] += 1
-        return [{"name": "jts3", "room": "", "address": "192.168.1.9", "port": 8780}]
+        return [{"name": "jts3", "room": "", "address": "192.168.1.9"}]
 
     monkeypatch.setattr(rooms_setup, "_discover_speakers", _counting_browse)
     rooms_setup._disc_cache.update(at=0.0, result=[])
@@ -1282,7 +1251,7 @@ def test_discovery_cache_rebrowses_after_ttl_expiry(monkeypatch):
 def test_discovery_cache_empty_result_does_not_poison(monkeypatch):
     # A transient empty browse must not blank the directory for a full TTL —
     # the next call should retry rather than serve the empty result.
-    seq = [[], [{"name": "jts3", "room": "", "address": "192.168.1.9", "port": 8780}]]
+    seq = [[], [{"name": "jts3", "room": "", "address": "192.168.1.9"}]]
 
     def _flaky_browse(*a, **k):
         return seq.pop(0)
@@ -1293,7 +1262,7 @@ def test_discovery_cache_empty_result_does_not_poison(monkeypatch):
     assert rooms_setup.discover_speakers_cached() == []
     # Empty wasn't cached as fresh, so this re-browses and gets the speaker.
     assert rooms_setup.discover_speakers_cached() == [
-        {"name": "jts3", "room": "", "address": "192.168.1.9", "port": 8780}
+        {"name": "jts3", "room": "", "address": "192.168.1.9"}
     ]
 
 
