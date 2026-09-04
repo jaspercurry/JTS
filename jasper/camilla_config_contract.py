@@ -715,6 +715,21 @@ def parse_camilla_devices_config(text: str) -> dict[str, Any]:
     return result
 
 
+def devices_playback_is_pipe(devices: Mapping[str, Any], fifo: str) -> bool:
+    """True when a parsed ``devices`` subset's playback lane is a ``File``
+    sink writing ``fifo`` — the bonded-leader pipe.
+
+    The FILENAME is compared exactly (the parser has already stripped its
+    quotes), not just the type: any other ``File`` sink — the parked graph's
+    ``/dev/null``, a stale local pipe — is not the bond.
+    """
+
+    return (
+        devices.get("playback_type") == "File"
+        and devices.get("playback_filename") == fifo
+    )
+
+
 def read_camilla_devices_config(path: str | Path | None) -> dict[str, Any] | None:
     """Best-effort file reader for :func:`parse_camilla_devices_config`."""
 

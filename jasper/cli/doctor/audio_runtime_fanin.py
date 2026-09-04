@@ -16,12 +16,14 @@ import time
 from pathlib import Path
 
 from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
-from ...camilla_config_contract import read_camilla_devices_config
+from ...camilla_config_contract import (
+    devices_playback_is_pipe,
+    read_camilla_devices_config,
+)
 from ...fanin_coupling import read_declared_ring_wire_format
 from ...route_latency.status_socket import FANIN_STATUS_SOCKET, read_status_socket
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
-from .audio_runtime_camilla import _graph_feeds_the_bond
 from .correction import _active_camilla_config_path
 
 @doctor_check(order=49, group="audio")
@@ -859,7 +861,7 @@ def check_fanin_coupling() -> CheckResult:
     # A bonded LEADER's camilla#1 writes the Snapcast pipe and reaches no ring
     # device at all, so the playback axis is this check's business only on the
     # ring endpoint.
-    feeds_the_bond = _graph_feeds_the_bond(devices)
+    feeds_the_bond = devices_playback_is_pipe(devices, SNAPFIFO)
     if not feeds_the_bond and playback_device != expected_playback:
         if roleful and not armed:
             ring_mismatches.append(

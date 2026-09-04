@@ -21,6 +21,7 @@ from jasper.multiroom.leader_config import (
     SOLO_RESTORE_PATH,
     _clear_stash,
     _write_stash,
+    playback_is_pipe,
     read_stash,
     restore_action,
 )
@@ -88,6 +89,36 @@ def test_is_pipe_config_distinguishes_pipe_from_solo(tmp_path):
     assert _is_pipe_config(str(pipe)) is True
     assert _is_pipe_config(str(solo)) is False
     assert _is_pipe_config(str(tmp_path / "missing.yml")) is False
+
+
+@pytest.mark.parametrize("playback,expected", [
+    # The emitted shape: quoted filename, 2-space block, 4-space fields.
+    ('  playback:\n    type: File\n    filename: "%(fifo)s"\n', True),
+    # Quoting and the block's indent are the shared parser's business, not
+    # this predicate's — both used to read False on the hand-rolled scanner.
+    ("  playback:\n    type: 'File'\n    filename: %(fifo)s\n", True),
+    ('    playback:\n      type: File\n      filename: "%(fifo)s"\n', True),
+    # A File sink at any OTHER path is not the bond; the filename is matched
+    # EXACTLY, so a fifo-prefixed stale path no longer reads as pipe-shaped.
+    ('  playback:\n    type: File\n    filename: "%(fifo)s.old"\n', False),
+    ('  playback:\n    type: File\n    filename: "/dev/null"\n', False),
+    ('  playback:\n    type: Alsa\n    device: "jts_ring_playback"\n', False),
+])
+def test_playback_is_pipe_keys_on_type_and_exact_filename(playback, expected):
+    from jasper.multiroom.reconcile import SNAPFIFO
+
+    text = "devices:\n" + (playback % {"fifo": SNAPFIFO})
+    assert playback_is_pipe(text, SNAPFIFO) is expected
+
+
+def test_playback_is_pipe_fails_closed_on_a_duplicated_devices_key():
+    """An ambiguous config yields no devices subset at all, so the pipe
+    answer is False rather than a guess."""
+    from jasper.multiroom.reconcile import SNAPFIFO
+
+    one = f'devices:\n  playback:\n    type: File\n    filename: "{SNAPFIFO}"\n'
+    assert playback_is_pipe(one, SNAPFIFO) is True
+    assert playback_is_pipe(one + one, SNAPFIFO) is False
 
 
 def test_stash_round_trip(tmp_path):

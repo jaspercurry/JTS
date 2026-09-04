@@ -44,6 +44,10 @@ import os
 from pathlib import Path
 
 from .. import atomic_io
+from ..camilla_config_contract import (
+    devices_playback_is_pipe,
+    parse_camilla_devices_config,
+)
 from ..log_event import log_event
 from .config import GroupingConfig
 from .member_config import member_camilla_kwargs
@@ -351,26 +355,10 @@ async def restore_solo_config(*, camilla_factory=_camilla) -> str | None:
 
 def playback_is_pipe(text: str, fifo: str) -> bool:
     """True when a CamillaDSP config's ``devices.playback`` block is a
-    File sink writing ``fifo`` — the bonded-leader pipe. Scans the exact
-    shape our emitters generate (a 2-space ``playback:`` line, 4-space
-    fields)."""
-    in_playback = False
-    saw_file = False
-    saw_fifo = False
-    for line in text.splitlines():
-        if line.rstrip() == "  playback:":
-            in_playback = True
-            continue
-        if in_playback:
-            if line.startswith("    "):
-                field = line.strip()
-                if field == "type: File":
-                    saw_file = True
-                elif field.startswith("filename:") and fifo in field:
-                    saw_fifo = True
-            else:
-                in_playback = False
-    return saw_file and saw_fifo
+    File sink writing ``fifo`` — the bonded-leader pipe. The text-taking
+    face of :func:`devices_playback_is_pipe`, so this liveness signal and
+    the doctor's parsed-dict caller cannot disagree about the shape."""
+    return devices_playback_is_pipe(parse_camilla_devices_config(text), fifo)
 
 
 def active_leader_pipe_path() -> str:
