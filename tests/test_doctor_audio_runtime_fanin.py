@@ -22,6 +22,7 @@ from ._doctor_audio_runtime_fixtures import (
     _patch_fanin_systemctl,
     _stage_floor_conf,
 )
+from .fanin_env_fixtures import declare_fanin_env
 from .status_socket_fixtures import FakeStatusSocket
 
 
@@ -1252,12 +1253,10 @@ def test_check_fanin_coupling_value_reads_the_shared_predicate(
     state — fan-in serves the ring for it — so this surface must agree with the
     daemon rather than with the presence of a token (#3655).
     """
-    fanin_env = tmp_path / "fanin.env"
-    fanin_env.write_text(
-        "" if raw is None else f"JASPER_FANIN_CAMILLA_COUPLING={raw}\n"
-    )
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
+    declare_fanin_env(
+        monkeypatch,
+        tmp_path,
+        "" if raw is None else f"JASPER_FANIN_CAMILLA_COUPLING={raw}\n",
     )
     res = audio_runtime_fanin.check_fanin_coupling_value()
     assert res.status == status

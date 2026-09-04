@@ -45,6 +45,8 @@ from jasper.audio_io import (
     tts_wire_is_wide,
 )
 
+from .fanin_env_fixtures import declare_fanin_env
+
 _REPO = Path(__file__).resolve().parents[1]
 _RESAMPLER_RS = _REPO / "rust" / "jasper-resampler" / "src" / "lib.rs"
 
@@ -285,16 +287,14 @@ def _declare(monkeypatch, tmp_path, *, wire_format: str, coupling: str | None) -
 
     ``coupling=None`` leaves the key out entirely: the UNDECLARED box.
     """
-    import jasper.fanin.ring_health as rh
     import jasper.fanin_coupling as fc
 
-    fanin_env = tmp_path / "fanin.env"
-    fanin_env.write_text(
+    declare_fanin_env(
+        monkeypatch,
+        tmp_path,
         "" if coupling is None else f"JASPER_FANIN_CAMILLA_COUPLING={coupling}\n",
-        encoding="utf-8",
     )
     monkeypatch.setattr(fc, "read_declared_ring_wire_format", lambda: wire_format)
-    monkeypatch.setattr(rh, "FANIN_ENV_PATH", str(fanin_env))
     _clear_cache()
 
 
