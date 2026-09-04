@@ -2433,6 +2433,19 @@ def test_cli_gate_sweep_refusal_names_the_missing_input(tmp_path, capsys):
 
 
 @pytest.mark.parametrize(
+    ("evidence", "published"),
+    [({"b": 2, "a": 1}, '{"a": 1, "b": 2}'), ("a sentence", "a sentence")],
+)
+def test_a_named_refusal_publishes_the_evidence_it_was_given(evidence, published, capsys):
+    """Fields publish as sorted JSON; a refusal carrying only its own sentence
+    publishes that sentence, never a JSON-quoted string of it."""
+    from jasper.cli import round_views as cli
+
+    assert cli.refused_by_name("a_slug", evidence) == cli.EXIT_REFUSED
+    assert json.loads(capsys.readouterr().out)["detail"] == published
+
+
+@pytest.mark.parametrize(
     "argv", [["--rungs-ms", "7"], ["--at-hz", "100"]],
     ids=["one-rung-ladder", "bin-off-the-analysis-grid"],
 )
