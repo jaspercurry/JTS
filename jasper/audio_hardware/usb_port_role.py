@@ -25,7 +25,14 @@ from typing import Any, Iterable, Literal, Mapping
 from jasper.atomic_io import atomic_write_text, read_regular_bytes_nofollow
 from jasper.env_file import parse_env_lines
 
-from .dac import DacProfile, all_profiles, by_id, is_boot_managed_i2s_profile
+from .dac import (
+    DacProfile,
+    all_profiles,
+    by_id,
+    is_boot_managed_i2s_profile,
+    profile_for_hat,
+)
+from .hat_eeprom import DEFAULT_HAT_DIR, read_hat_eeprom
 from .text_property import read_text_property
 
 
@@ -316,6 +323,21 @@ def overlay_declared_anywhere(content: str, overlay: str) -> bool:
 
 def _registered_i2s_profile(profile_id: str) -> DacProfile | None:
     profile = by_id(profile_id)
+    if profile is None or not is_boot_managed_i2s_profile(profile):
+        return None
+    return profile
+
+
+def detected_i2s_hat_profile(
+    hat_dir: str | Path = DEFAULT_HAT_DIR,
+) -> DacProfile | None:
+    """The fitted HAT's own declared profile, or None when nothing declares one.
+
+    The single reading of "JTS can detect this HAT": the reconciler applies it
+    without asking, and the wizard reports rather than offers it (ADR-0234).
+    """
+
+    profile = profile_for_hat(read_hat_eeprom(hat_dir))
     if profile is None or not is_boot_managed_i2s_profile(profile):
         return None
     return profile
@@ -753,18 +775,23 @@ def reconcile_boot_config(
     boot_config_path: str | Path,
     udc_class_dir: str | Path,
     i2s_hat_intent_path: str | Path | None = None,
+    hat_dir: str | Path = DEFAULT_HAT_DIR,
 ) -> tuple[UsbPortRoleState, bool, bool, str | None, bool, I2sHatCollision | None]:
-    # The intent FILE must exist, not just the path argument -- a box the
-    # operator never pointed at a saved intent (no file yet, distinct from
-    # one that exists and explicitly says "none") gets NOTHING touched,
-    # managed block included (see the jts3 incident this guards).
+    # Resolution order (ADR-0234): a HAT that names itself in its ID EEPROM is
+    # applied with no operator step; the intent file is the toggle for the HATs
+    # that carry no EEPROM to read. With neither -- and the intent FILE must
+    # exist, not just the path argument -- NOTHING is touched, managed block
+    # included (see the jts3 incident this guards).
+    detected = detected_i2s_hat_profile(hat_dir)
+    detected_id = detected.id if detected is not None else None
     intent_declared = i2s_hat_intent_path is not None and Path(
         i2s_hat_intent_path
     ).is_file()
-    desired_profile = None
-    if intent_declared:
+    desired_profile = detected_id
+    if desired_profile is None and intent_declared:
         assert i2s_hat_intent_path is not None
         desired_profile = read_i2s_hat_intent(i2s_hat_intent_path)
+    manage_hat = detected_id is not None or intent_declared
     config_path = Path(boot_config_path)
     if not config_path.is_file():
         state = resolve_system_usb_port_role(
@@ -772,7 +799,7 @@ def reconcile_boot_config(
             boot_config_path=boot_config_path,
             udc_class_dir=udc_class_dir,
         )
-        if intent_declared and state.board_topology != "unsupported":
+        if manage_hat and state.board_topology != "unsupported":
             raise FileNotFoundError(f"boot config does not exist: {config_path}")
         return state, False, False, desired_profile, False, None
     original = config_path.read_text(encoding="utf-8")
@@ -786,7 +813,7 @@ def reconcile_boot_config(
     hat_changed = False
     hat_collision: I2sHatCollision | None = None
     with_hat = original
-    if intent_declared:
+    if manage_hat:
         with_hat, hat_changed, hat_collision = render_i2s_hat_boot_config(
             original, desired_profile
         )
@@ -822,6 +849,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reconcile-boot", action="store_true")
     parser.add_argument("--i2s-hat-intent-file")
+    parser.add_argument("--hat-dir", default=DEFAULT_HAT_DIR)
     parser.add_argument("--require-management-transport", action="store_true")
     parser.add_argument(
         "--model-file",
@@ -846,6 +874,7 @@ def main(argv: list[str] | None = None) -> int:
             boot_config_path=args.boot_config,
             udc_class_dir=args.udc_class_dir,
             i2s_hat_intent_path=args.i2s_hat_intent_file,
+            hat_dir=args.hat_dir,
         )
         (
             state,
@@ -872,7 +901,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if state.management_transport_available else 1
     fields = state.to_dict()
     fields["boot_config_changed"] = changed
-    if args.i2s_hat_intent_file:
+    if args.reconcile_boot:
         fields["i2s_hat_profile"] = desired_hat_profile or ""
         fields["i2s_hat_boot_config_changed"] = hat_changed
         fields["boot_config_published_not_durable"] = durability_failed

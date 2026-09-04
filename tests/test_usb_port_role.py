@@ -30,6 +30,7 @@ ZERO = "Raspberry Pi Zero 2 W Rev 1.0"
 PI5 = "Raspberry Pi 5 Model B Rev 1.0"
 I2S = "[all]\ndtoverlay=hifiberry-dac8x\n"
 PERIPHERAL = "[all]\ndtoverlay=dwc2,dr_mode=peripheral\n"
+HAND_WRITTEN_BASE = "[all]\ndtoverlay=hifiberry-dac8x\ndtparam=audio=on\n"
 HOST = "[all]\ndtoverlay=dwc2,dr_mode=host\n"
 
 I2S_PROFILES = tuple(p for p in all_profiles() if p.connection == "i2s")
@@ -39,13 +40,22 @@ I2S_PROFILE_IDS = tuple(p.id for p in I2S_PROFILES)
 def _boot_paths(
     tmp_path: Path, *, model_text: str = PI5, boot_config: str = PERIPHERAL
 ):
-    model, config, intent, udc = (
-        tmp_path / name for name in ("model", "config.txt", "i2s_hat.env", "udc")
+    model, config, intent, hat, udc = (
+        tmp_path / name
+        for name in ("model", "config.txt", "i2s_hat.env", "hat", "udc")
     )
     model.write_text(model_text, encoding="utf-8")
     config.write_text(boot_config, encoding="utf-8")
     udc.mkdir()
-    return model, config, intent, udc
+    return model, config, intent, hat, udc
+
+
+def _write_hat_eeprom(hat_dir: Path, product: str) -> Path:
+    hat_dir.mkdir(exist_ok=True)
+    (hat_dir / "vendor").write_bytes(b"HiFiBerry\x00")
+    (hat_dir / "product").write_text(product, encoding="utf-8")
+    (hat_dir / "uuid").write_text("uuid", encoding="utf-8")
+    return hat_dir
 
 
 def _serialized_role(**overrides) -> dict[str, object]:
@@ -298,7 +308,7 @@ def test_i2s_hat_renderer_rejects_non_i2s_and_unregistered_profiles() -> None:
 def test_reconcile_refuses_a_hand_written_overlay_collision(
     tmp_path: Path, capsys
 ) -> None:
-    model, config, intent, udc = _boot_paths(tmp_path)
+    model, config, intent, hat, udc = _boot_paths(tmp_path)
     config.write_text(
         "[all]\ndtoverlay=merus-amp\ndtoverlay=dwc2,dr_mode=peripheral\n",
         encoding="utf-8",
@@ -311,6 +321,7 @@ def test_reconcile_refuses_a_hand_written_overlay_collision(
         boot_config_path=config,
         udc_class_dir=udc,
         i2s_hat_intent_path=intent,
+        hat_dir=hat,
     )
 
     # The hand-written line is never deleted or folded into a managed
@@ -337,6 +348,8 @@ def test_reconcile_refuses_a_hand_written_overlay_collision(
             str(config),
             "--udc-class-dir",
             str(udc),
+            "--hat-dir",
+            str(hat),
         ]
     )
     captured = capsys.readouterr()
@@ -351,7 +364,7 @@ def test_reconcile_refuses_a_hand_written_overlay_collision(
 def test_hat_changed_and_durability_are_reported(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    model, config, intent, udc = _boot_paths(tmp_path)
+    model, config, intent, hat, udc = _boot_paths(tmp_path)
     config.write_text(PERIPHERAL, encoding="utf-8")
     write_i2s_hat_intent("innomaker_hifi_amp_pro", intent)
     (udc / "3f980000.usb").mkdir(parents=True)
@@ -361,6 +374,7 @@ def test_hat_changed_and_durability_are_reported(
         boot_config_path=config,
         udc_class_dir=udc,
         i2s_hat_intent_path=intent,
+        hat_dir=hat,
     )
 
     assert changed is True
@@ -375,6 +389,7 @@ def test_hat_changed_and_durability_are_reported(
         boot_config_path=config,
         udc_class_dir=udc,
         i2s_hat_intent_path=intent,
+        hat_dir=hat,
     )
     assert changed_again is False
     assert hat_changed_again is False
@@ -390,6 +405,7 @@ def test_hat_changed_and_durability_are_reported(
             boot_config_path=config,
             udc_class_dir=udc,
             i2s_hat_intent_path=intent,
+            hat_dir=hat,
         )
     assert config.read_text(encoding="utf-8") == invalid
 
@@ -404,7 +420,15 @@ def test_hat_changed_and_durability_are_reported(
     monkeypatch.setenv("JASPER_PI_MODEL_FILE", str(model))
     monkeypatch.setenv("JTS_BOOT_CONFIG_FILE", str(config))
     monkeypatch.setenv("JASPER_UDC_CLASS_DIR", str(udc))
-    result = main(["--reconcile-boot", "--i2s-hat-intent-file", str(intent)])
+    result = main(
+        [
+            "--reconcile-boot",
+            "--i2s-hat-intent-file",
+            str(intent),
+            "--hat-dir",
+            str(hat),
+        ]
+    )
     payload = json.loads(capsys.readouterr().out.splitlines()[0])
 
     assert result == 74
@@ -414,7 +438,7 @@ def test_hat_changed_and_durability_are_reported(
 
 def test_unsupported_board_never_mutates_hat_boot_setting(tmp_path: Path) -> None:
     original = "[all]\ndtparam=audio=on\n"
-    model, config, intent, udc = _boot_paths(
+    model, config, intent, hat, udc = _boot_paths(
         tmp_path, model_text="Acme SBC", boot_config=original
     )
     write_i2s_hat_intent("innomaker_hifi_amp_pro", intent)
@@ -424,6 +448,7 @@ def test_unsupported_board_never_mutates_hat_boot_setting(tmp_path: Path) -> Non
         boot_config_path=config,
         udc_class_dir=udc,
         i2s_hat_intent_path=intent,
+        hat_dir=hat,
     )
 
     assert state.board_topology == "unsupported"
@@ -432,34 +457,92 @@ def test_unsupported_board_never_mutates_hat_boot_setting(tmp_path: Path) -> Non
     assert config.read_text(encoding="utf-8") == original
 
 
-def test_missing_intent_file_is_the_explicit_opt_in_gate(tmp_path: Path) -> None:
-    """No saved intent -> the I2S HAT boot lines are never touched.
+@pytest.mark.parametrize(
+    ("hat_product", "intent_profile", "boot_config", "desired", "block", "collision"),
+    [
+        # A HAT that names itself is applied with no saved intent at all.
+        (
+            "StudioDAC8x",
+            None,
+            PERIPHERAL,
+            "hifiberry_dac8x_studio",
+            "hifiberry-studio-dac8x",
+            None,
+        ),
+        # Detection never compounds a hand-written line (the jts3 config):
+        # it refuses and reports, leaving the file's own overlay standing.
+        (
+            "StudioDAC8x",
+            None,
+            HAND_WRITTEN_BASE,
+            "hifiberry_dac8x_studio",
+            None,
+            I2sHatCollision(
+                managed_overlay="hifiberry-studio-dac8x",
+                colliding_overlays=("hifiberry-dac8x",),
+            ),
+        ),
+        # No EEPROM to read: the saved intent is the only answer left.
+        (
+            None,
+            "innomaker_hifi_amp_pro",
+            PERIPHERAL,
+            "innomaker_hifi_amp_pro",
+            "merus-amp",
+            None,
+        ),
+        # Neither -- the jts3 incident's pin: a hand-written line survives a
+        # reconcile pass untouched, and no managed block appears.
+        (None, None, HAND_WRITTEN_BASE, None, None, None),
+        # An EEPROM product no profile claims is no evidence, not a claim.
+        ("MysteryDAC8x", None, HAND_WRITTEN_BASE, None, None, None),
+        # Detection outranks a saved intent naming different hardware.
+        (
+            "StudioDAC8x",
+            "innomaker_hifi_amp_pro",
+            PERIPHERAL,
+            "hifiberry_dac8x_studio",
+            "hifiberry-studio-dac8x",
+            None,
+        ),
+    ],
+)
+def test_i2s_hat_desired_profile_resolution_order(
+    tmp_path: Path,
+    hat_product: str | None,
+    intent_profile: str | None,
+    boot_config: str,
+    desired: str | None,
+    block: str | None,
+    collision: I2sHatCollision | None,
+) -> None:
+    """EEPROM first, then the saved intent, then nothing at all (ADR-0234)."""
 
-    This is the jts3 incident's regression pin: a box with a hand-written
-    `dtoverlay=` line and no `/var/lib/jasper/i2s_hat.env` must not have
-    that line rewritten, added to, or removed by a reconcile pass —
-    ownership is opt-in per box, not automatic for every registered
-    profile (#i2s-hat-intent).
-    """
-    model, config, intent, udc = _boot_paths(
-        tmp_path,
-        boot_config="[all]\ndtoverlay=hifiberry-dac8x\ndtparam=audio=on\n",
-    )
-    assert not intent.exists()
+    model, config, intent, hat, udc = _boot_paths(tmp_path, boot_config=boot_config)
+    if hat_product is not None:
+        _write_hat_eeprom(hat, hat_product)
+    if intent_profile is not None:
+        write_i2s_hat_intent(intent_profile, intent)
+    hand_written = config.read_text(encoding="utf-8").count("dtoverlay=hifiberry-dac8x")
 
-    _, _, hat_changed, desired, _, collision = reconcile_boot_config(
+    _, _, hat_changed, resolved, _, reported = reconcile_boot_config(
         model_path=model,
         boot_config_path=config,
         udc_class_dir=udc,
         i2s_hat_intent_path=intent,
+        hat_dir=hat,
     )
 
-    assert desired is None
-    assert hat_changed is False
-    assert collision is None
+    assert resolved == desired
+    assert hat_changed is (block is not None)
+    assert reported == collision
     rendered = config.read_text(encoding="utf-8")
-    assert I2S_HAT_BLOCK_BEGIN not in rendered
-    assert "dtoverlay=hifiberry-dac8x" in rendered
+    assert rendered.count("dtoverlay=hifiberry-dac8x") == hand_written
+    if block is None:
+        assert I2S_HAT_BLOCK_BEGIN not in rendered
+    else:
+        assert I2S_HAT_BLOCK_BEGIN in rendered
+        assert f"dtoverlay={block}\n" in rendered
 
 
 def test_absent_intent_file_leaves_an_existing_managed_block_alone(
@@ -471,7 +554,7 @@ def test_absent_intent_file_leaves_an_existing_managed_block_alone(
     config.txt -- only a present-and-empty intent file
     (write_i2s_hat_intent(None)) removes it (#i2s-hat-intent).
     """
-    model, config, intent, udc = _boot_paths(tmp_path)
+    model, config, intent, hat, udc = _boot_paths(tmp_path)
     config.write_text(PERIPHERAL, encoding="utf-8")
     write_i2s_hat_intent("innomaker_hifi_amp_pro", intent)
     (udc / "3f980000.usb").mkdir(parents=True)
@@ -480,6 +563,7 @@ def test_absent_intent_file_leaves_an_existing_managed_block_alone(
         boot_config_path=config,
         udc_class_dir=udc,
         i2s_hat_intent_path=intent,
+        hat_dir=hat,
     )
     with_managed_block = config.read_text(encoding="utf-8")
     assert I2S_HAT_BLOCK_BEGIN in with_managed_block
@@ -490,6 +574,7 @@ def test_absent_intent_file_leaves_an_existing_managed_block_alone(
         boot_config_path=config,
         udc_class_dir=udc,
         i2s_hat_intent_path=intent,
+        hat_dir=hat,
     )
 
     assert desired is None
@@ -504,6 +589,7 @@ def test_absent_intent_file_leaves_an_existing_managed_block_alone(
         boot_config_path=config,
         udc_class_dir=udc,
         i2s_hat_intent_path=intent,
+        hat_dir=hat,
     )
     assert explicit_desired is None
     assert explicit_hat_changed is True
@@ -638,12 +724,14 @@ def test_reconcile_boot_config_preserves_unrelated_conditional_role(
         model_path=model,
         boot_config_path=config,
         udc_class_dir=udc,
+        hat_dir=tmp_path / "hat",
     )
     first = config.read_text(encoding="utf-8")
     _, changed_again, _, _, _, _ = reconcile_boot_config(
         model_path=model,
         boot_config_path=config,
         udc_class_dir=udc,
+        hat_dir=tmp_path / "hat",
     )
 
     assert changed is True
@@ -693,6 +781,7 @@ def test_unbalanced_managed_block_fails_without_mutating_boot_config(
             model_path=model,
             boot_config_path=config,
             udc_class_dir=udc,
+            hat_dir=tmp_path / "hat",
         )
     assert config.read_text(encoding="utf-8") == original
 
@@ -732,6 +821,8 @@ def test_cli_config_normalization_does_not_claim_same_role_needs_reboot(
             str(config),
             "--udc-class-dir",
             str(udc),
+            "--hat-dir",
+            str(tmp_path / "hat"),
         ]
     ) == 0
 

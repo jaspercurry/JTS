@@ -591,22 +591,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       renderActiveSpeakerSetup() + '</div>';
   }
 
-  function i2sHatProfileLabel(profiles, id) {
-    var match = (profiles || []).find(function(p) { return p.id === id; });
-    return match ? match.label : '';
-  }
-
   function renderI2sHatSetting() {
     var hat = i2sHat;
     if (!hat || hat.visibility === 'hidden') return '';
     var profiles = hat.profiles || [];
-    // The select always shows the SAVED value, never an unsaved suggestion —
-    // a change-driven control that silently pre-picked something the
-    // operator never chose would save it on the next unrelated edit.
     var selectedId = hat.desired_profile_id || '';
-    var desiredLabel = hat.desired_profile_id ? i2sHatProfileLabel(profiles, hat.desired_profile_id) : 'None / unmanaged';
-    var detectedLabel = hat.detected_profile_id ? i2sHatProfileLabel(profiles, hat.detected_profile_id) : '';
-    var offerDetected = hat.detected_profile_id && hat.detected_profile_id !== hat.desired_profile_id;
     var issue = hat.intent_error ? 'Saved setting could not be read: ' + hat.intent_error : hat.reason;
     var warnings = hat.warnings || [];
     var options = '<option value=""' + (selectedId ? '' : ' selected') + '>None / unmanaged</option>' +
@@ -614,18 +603,21 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         return '<option value="' + escapeHtml(p.id) + '"' +
           (selectedId === p.id ? ' selected' : '') + '>' + escapeHtml(p.label) + '</option>';
       }).join('');
+    // A HAT that identifies itself is applied for the operator, so the picker
+    // is shown only for the HATs that cannot be detected (ADR-0234).
+    var control = hat.detected_profile_id ?
+      '<p class="setting-row__hint"><strong>I²S audio HAT.</strong> Detected: ' +
+        escapeHtml(hat.detected_label || hat.detected_profile_id) +
+        ' — managed automatically.</p>' :
+      '<div class="field">' +
+        '<label for="set-i2s-hat">I²S audio HAT</label>' +
+        '<select id="set-i2s-hat"' + (!hat.available ? ' disabled' : '') +
+          ' aria-label="I²S audio HAT">' + options + '</select>' +
+        '<p class="setting-row__hint">Pick the HAT you fitted. Only HATs that cannot identify themselves are listed.</p>' +
+      '</div>';
     return '<section class="sound-settings">' +
       '<div class="setting-row setting-row--stack">' +
-        '<div class="field">' +
-          '<label for="set-i2s-hat">I²S audio HAT</label>' +
-          '<select id="set-i2s-hat"' + (!hat.available ? ' disabled' : '') +
-            ' aria-label="I²S audio HAT">' + options + '</select>' +
-          '<p class="setting-row__hint">Saved: ' + escapeHtml(desiredLabel) +
-            '. Detected: ' + escapeHtml(detectedLabel || 'none') + '.' +
-            (offerDetected ? ' <button type="button" class="btn btn--ghost" data-act="use-detected-i2s-hat" data-id="' +
-              escapeHtml(hat.detected_profile_id) + '"' + (!hat.available ? ' disabled' : '') +
-              '>Use detected: ' + escapeHtml(detectedLabel) + '</button>' : '') + '</p>' +
-        '</div>' +
+        control +
         (issue ? '<p class="setting-row__hint">' + escapeHtml(issue) + '</p>' : '') +
         warnings.map(function(w) {
           return '<p class="setting-row__hint output-template-warning">' + escapeHtml(w) + '</p>';
@@ -5374,7 +5366,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (act === 'overwrite') { overwrite(); }
     else if (act === 'reset-draft') { resetDraft(); }
     else if (act === 'refresh-output-topology') { refreshOutputTopology(); }
-    else if (act === 'use-detected-i2s-hat') { saveI2sHatProfileId(id, t); }
     else if (act === 'output-template-axis') {
       setOutputTemplateAxis(
         t.getAttribute('data-axis') || '',

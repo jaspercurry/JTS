@@ -952,6 +952,13 @@ def _matches_any(patterns: tuple[str, ...], text: str) -> bool:
     return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
 
 
+def _declares_hat_product(profile: DacProfile, hat: HatEeprom) -> bool:
+    product = hat.product.strip().casefold()
+    return bool(product) and any(
+        product == declared.casefold() for declared in profile.hat_products
+    )
+
+
 def profile_for_card_label(
     label: str,
     *,
@@ -977,15 +984,34 @@ def profile_for_card_label(
             return profile
     if hat is None:
         return None
-    product = hat.product.strip().casefold()
     for profile in REGISTRY:
         if profile.kind != "single":
             continue
-        if not any(product == declared.casefold() for declared in profile.hat_products):
+        if not _declares_hat_product(profile, hat):
             continue
         if _matches_any(profile.eeprom_gated_card_matches, text):
             return profile
     return None
+
+
+def profile_for_hat(hat: HatEeprom | None) -> DacProfile | None:
+    """Return the profile whose ``hat_products`` claims a fitted HAT.
+
+    The EEPROM product is the board's own declaration of what it is, so a
+    match identifies the fitted HAT before any driver has bound a card --
+    which is what lets the boot overlay be resolved from it (ADR-0234).
+    """
+
+    if hat is None:
+        return None
+    return next(
+        (
+            profile
+            for profile in REGISTRY
+            if profile.kind == "single" and _declares_hat_product(profile, hat)
+        ),
+        None,
+    )
 
 
 def supports_physical_output_count(profile_id: str, output_count: int) -> bool:
@@ -1109,6 +1135,7 @@ __all__ = [
     "latency_floor_for",
     "mixer_control_groups_for",
     "profile_for_card_label",
+    "profile_for_hat",
     "physical_output_count_for",
     "supports_physical_output_count",
 ]
