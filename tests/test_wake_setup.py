@@ -835,7 +835,7 @@ def _invalid_layer_request(
         (b"{", 1, "invalid JSON body", [1]),
         (b"\xff", 1, "invalid JSON body", [1]),
         (b"[]", 2, "body must be a JSON object", [2]),
-        (b"{}", 3, "invalid JSON body", [3]),
+        (b"{}", 3, "incomplete body", [3]),
         (b"{}", "invalid", "invalid Content-Length", []),
         (b"{}", -1, "invalid body length", []),
         (b"{}", wake_setup._LAYER_BODY_LIMIT + 1, "invalid body length", []),

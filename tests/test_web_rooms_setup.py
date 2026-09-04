@@ -846,7 +846,7 @@ def test_post_peering_rejects_bad_csrf(monkeypatch, tmp_path):
         (b"{", 1, "invalid JSON body", [1]),
         (b"\xff", 1, "invalid JSON body", [1]),
         (b"[]", 2, "body must be a JSON object", [2]),
-        (b"{}", 3, "invalid JSON body", [3]),
+        (b"{}", 3, "incomplete body", [3]),
         (b"{}", "invalid", "invalid Content-Length", []),
         (b"{}", -1, "invalid body length", []),
         (b"{}", rooms_setup._PEERING_BODY_LIMIT + 1, "invalid body length", []),
@@ -995,7 +995,7 @@ def test_grouping_routes_reject_incomplete_json_before_state_or_control_mutation
     assert handler.status == 400
     assert json.loads(handler.wfile.getvalue()) == {
         "ok": False,
-        "error": "invalid JSON body",
+        "error": "incomplete body",
     }
     assert handler.rfile.read_calls == [declared_length]
     assert effects == []
