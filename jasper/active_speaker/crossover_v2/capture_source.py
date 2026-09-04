@@ -4,9 +4,7 @@
 
 """The capture-source seam: what a capture provider owes the conductor.
 
-Decision 13, #2662: the conductor asks for a capture of program X at
-position Y and a provider answers with WAV plus metadata; how a source
-produces that recording is its own private internals.
+See ADR-0231 §1.
 
 Logic-free vocabulary only, same register as :mod:`.refusal_copy` and
 :mod:`.contracts`. The three conductor-owned hooks a provider is handed:

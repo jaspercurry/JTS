@@ -35,7 +35,7 @@ __all__ = [
 #: The mover-agnostic mic-position precondition is satisfied here and nowhere
 #: else. See ADR-0228 #8.
 STAGE_READY = "ready"
-#: MS-4: a stimulus enters pre-DSP, never through the post-crossover active ring.
+#: See ADR-0231 §3.
 STAGE_ADMIT = "admit"
 #: The declared level is held for this stimulus. Proving the fader agrees is the
 #: session's volume-claim slot's job, taken before this transaction is called
