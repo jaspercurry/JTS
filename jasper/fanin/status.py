@@ -22,9 +22,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from jasper.route_latency.status_socket import (
-    FANIN_STATUS_SOCKET as FANIN_STATUS_SOCKET,
-)
+from jasper.route_latency.status_socket import FANIN_STATUS_SOCKET
 
 
 # The STATUS input-lane ``source`` value on the USB DIRECT lane. Every

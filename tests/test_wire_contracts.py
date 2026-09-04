@@ -173,18 +173,22 @@ def test_fanin_control_command_vocabulary_matches_mux():
 def test_control_socket_paths_agree_across_processes(monkeypatch):
     """fan-in's control socket path is a hardcoded Rust constant (its
     config.rs reads no env override) and outputd's unit pins the env
-    explicitly. Every Python consumer resolves the shared constant under its
-    own local name, so the VALUE each process will connect to is asserted
-    here: if either daemon moves its socket, every consumer moves with it in
-    the same PR.
+    explicitly. Every Python consumer below resolves the shared constant, so
+    the VALUE each process will connect to is asserted here: if either daemon
+    moves its socket, every consumer moves with it in the same PR.
+
+    Two are deliberately absent. ``jasper.correction.runtime_integrity`` still
+    spells the outputd path itself (measurement corner). ``jasper.mux`` resolves
+    ``JASPER_FANIN_CONTROL_SOCKET`` at import time, so an operator exercising
+    that documented override would redden this; its default IS the shared
+    constant by construction, and ``tests/test_mux.py`` owns the override.
     """
-    from jasper import audio_validation, mux
+    from jasper import audio_validation
     from jasper.cli import system_soak
     from jasper.cli.doctor import audio_runtime_fanin, audio_runtime_outputd
-    from jasper.control import airplay_health, audio_health, grouping_supervisor
+    from jasper.control import grouping_supervisor
     from jasper.correction import runtime_integrity
     from jasper.fanin import status as fanin_status
-    from jasper.multiroom import runtime_balance
     from jasper.peering.config import PEERING_UDS_PATH
     from jasper.route_latency import status_socket, tap_client
 
@@ -202,8 +206,6 @@ def test_control_socket_paths_agree_across_processes(monkeypatch):
         fanin_status.FANIN_STATUS_SOCKET,
         runtime_integrity.FANIN_CONTROL_SOCKET,
         tap_client.FANIN_CONTROL_SOCKET,
-        mux.FANIN_CONTROL_SOCKET,
-        airplay_health.FANIN_SOCKET,
         audio_runtime_fanin.FANIN_STATUS_SOCKET,
         system_soak.STATUS_SOCKETS["fanin"],
     } == {fanin_sock}
@@ -211,8 +213,6 @@ def test_control_socket_paths_agree_across_processes(monkeypatch):
         status_socket.OUTPUTD_STATUS_SOCKET,
         runtime_integrity.OUTPUTD_CONTROL_SOCKET,
         grouping_supervisor.OUTPUTD_CONTROL_SOCKET,
-        runtime_balance.OUTPUTD_CONTROL_SOCKET,
-        audio_health.OUTPUTD_SOCKET,
         audio_runtime_outputd._OUTPUTD_STATUS_SOCKET,
         str(audio_validation.DEFAULT_OUTPUTD_STATUS_SOCKET),
         system_soak.STATUS_SOCKETS["outputd"],

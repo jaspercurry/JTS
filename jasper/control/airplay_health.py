@@ -64,7 +64,6 @@ DEFAULT_WARMUP_SEC = 120.0
 # journal scan after a connect is covered.
 DEFAULT_CONNECT_GRACE_SEC = 45.0
 
-FANIN_SOCKET = FANIN_STATUS_SOCKET
 FANIN_TIMEOUT_SEC = 1.0
 SUBPROCESS_TIMEOUT_SEC = 2.0
 MAINTENANCE_SUPPRESS_UNTIL_PATH = "/run/jasper-airplay-health-suppress-until"
@@ -1686,7 +1685,7 @@ class AirPlayHealthSampler:
 
     @staticmethod
     def _read_fanin_status(
-        socket_path: str = FANIN_SOCKET,
+        socket_path: str = FANIN_STATUS_SOCKET,
         timeout_sec: float = FANIN_TIMEOUT_SEC,
     ) -> dict[str, Any] | None:
         try:

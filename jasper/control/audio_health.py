@@ -55,7 +55,6 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 ROUTE_INTERVAL_SEC = 60.0
-OUTPUTD_SOCKET = OUTPUTD_STATUS_SOCKET
 LOCAL_STATUS_TIMEOUT_SEC = 1.0
 FANIN_STALE_MS = 5000
 OUTPUTD_STALE_MS = 3000
@@ -239,7 +238,7 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 
 
 def _read_local_status(
-    socket_path: str = OUTPUTD_SOCKET,
+    socket_path: str = OUTPUTD_STATUS_SOCKET,
     timeout_sec: float = LOCAL_STATUS_TIMEOUT_SEC,
     max_bytes: int = MAX_STATUS_BYTES,
 ) -> dict[str, Any] | None:
