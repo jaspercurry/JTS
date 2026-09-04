@@ -24,6 +24,9 @@ from jasper.log_event import log_event
 
 from .refusal_copy import (
     REASON_MEASUREMENT_TARGETS_MISSING,
+    REASON_PROGRAM_PROFILE_INCOMPLETE,
+    REASON_PROGRAM_PROFILE_MISSING,
+    REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
     REASON_REGISTRY,
     REASON_SPEAKER_SHAPE_UNSUPPORTED,
     CrossoverV2Refused,
@@ -132,12 +135,6 @@ def profile_refusal_code(evaluation_status: str) -> str:
       cleared by one ordinary save: it rebuilds the profile from the visible
       values, so an output change and an unreadable artifact end the same way.
     """
-    from jasper.active_speaker.crossover_v2.refusal_copy import (
-        REASON_PROGRAM_PROFILE_INCOMPLETE,
-        REASON_PROGRAM_PROFILE_MISSING,
-        REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
-    )
-
     status = str(evaluation_status or "")
     if status == "missing":
         return REASON_PROGRAM_PROFILE_MISSING
