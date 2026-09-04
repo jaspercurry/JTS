@@ -25,7 +25,7 @@ from ._logging import CLI_LOG_FORMAT
 # The beside-the-round output rule, reused rather than restated: a live
 # session bundle is daemon-owned, so a view defaulting inside it raises
 # PermissionError for the operator (#3498).
-from .round_views import _default_out
+from .round_views import default_out
 
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_PRESCRIPTION_MALFORMED,
@@ -224,7 +224,7 @@ def _cmd_packet(args: argparse.Namespace) -> int:
         out = (
             Path(args.out)
             if args.out
-            else _default_out(round_inputs(round_dir), round_dir, PACKET_ARTIFACT)
+            else default_out(round_inputs(round_dir), round_dir, PACKET_ARTIFACT)
         )
         out.write_text(blob)
     # ``OSError`` beside the packet's own error for the same reason
