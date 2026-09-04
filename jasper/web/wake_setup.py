@@ -93,7 +93,6 @@ from ..atomic_io import locked_update_env_file
 from ..log_event import log_event
 from .. import wake_models
 from ._common import (
-    JsonBodyError,
     pair_banner_html,
     DEFAULT_CONTROL_BASE,
     begin_request,
@@ -103,7 +102,7 @@ from ._common import (
     forward_control_token_headers,
     proxy_get,
     proxy_post,
-    read_json_object,
+    read_json_body,
     read_env_file,
     read_form,
     reject_csrf,
@@ -634,24 +633,6 @@ def _apply_save(
 _LAYER_BODY_LIMIT = 4096
 
 
-def _read_json_body(handler: BaseHTTPRequestHandler) -> tuple[dict | None, str | None]:
-    """Read and parse a small JSON body from `handler`. Returns
-    `(parsed, error)` — exactly one is non-None. Hard-caps at
-    `_LAYER_BODY_LIMIT` so we never read megabytes off the wire."""
-    try:
-        return read_json_object(handler, max_bytes=_LAYER_BODY_LIMIT), None
-    except JsonBodyError as exc:
-        if exc.code == "invalid_content_length":
-            return None, "invalid Content-Length"
-        if exc.code in {"negative_content_length", "body_too_large"}:
-            return None, "invalid body length"
-        if exc.code == "non_object":
-            return None, "body must be a JSON object"
-        if exc.code in {"invalid_utf8", "invalid_json"} and exc.__cause__:
-            return None, f"invalid JSON body: {exc.__cause__}"
-        return None, "invalid JSON body"
-
-
 def _apply_layer(
     layer: str, enabled: bool, *, control_base: str,
 ) -> tuple[int, bytes]:
@@ -871,7 +852,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     status=400,
                 )
                 return
-            body, err = _read_json_body(self)
+            body, err = read_json_body(self, max_bytes=_LAYER_BODY_LIMIT)
             if err is not None:
                 send_proxy_json(
                     self,
@@ -900,7 +881,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             send_proxy_json(self, resp, status=status)
 
         def _handle_profile(self) -> None:
-            body, err = _read_json_body(self)
+            body, err = read_json_body(self, max_bytes=_LAYER_BODY_LIMIT)
             if err is not None:
                 send_proxy_json(
                     self,
@@ -928,7 +909,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             send_proxy_json(self, resp, status=status)
 
         def _handle_sensitivity(self) -> None:
-            body, err = _read_json_body(self)
+            body, err = read_json_body(self, max_bytes=_LAYER_BODY_LIMIT)
             if err is not None:
                 send_proxy_json(
                     self,
@@ -965,7 +946,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             send_proxy_json(self, resp, status=status)
 
         def _handle_usb_mic(self) -> None:
-            body, err = _read_json_body(self)
+            body, err = read_json_body(self, max_bytes=_LAYER_BODY_LIMIT)
             if err is not None:
                 send_proxy_json(
                     self,
@@ -995,7 +976,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             send_proxy_json(self, resp, status=status)
 
         def _handle_usb_mic_leg(self) -> None:
-            body, err = _read_json_body(self)
+            body, err = read_json_body(self, max_bytes=_LAYER_BODY_LIMIT)
             if err is not None:
                 send_proxy_json(
                     self,

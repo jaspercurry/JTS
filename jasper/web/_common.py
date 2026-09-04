@@ -811,6 +811,26 @@ def read_json_object(
     return parsed
 
 
+def read_json_body(
+    handler: BaseHTTPRequestHandler,
+    *,
+    max_bytes: int,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Wrap :func:`read_json_object` as `(parsed, error)`; exactly one is None."""
+    try:
+        return read_json_object(handler, max_bytes=max_bytes), None
+    except JsonBodyError as exc:
+        if exc.code == "invalid_content_length":
+            return None, "invalid Content-Length"
+        if exc.code in {"negative_content_length", "body_too_large"}:
+            return None, "invalid body length"
+        if exc.code == "non_object":
+            return None, "body must be a JSON object"
+        if exc.code in {"invalid_utf8", "invalid_json"} and exc.__cause__:
+            return None, f"invalid JSON body: {exc.__cause__}"
+        return None, "invalid JSON body"
+
+
 def read_form(handler: BaseHTTPRequestHandler) -> dict[str, str]:
     """Parse a urlencoded form body off a stdlib BaseHTTPRequestHandler
     request into a single-value dict. Empty values are preserved (so

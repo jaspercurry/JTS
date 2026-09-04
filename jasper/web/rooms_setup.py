@@ -83,14 +83,13 @@ from ..multiroom.state import (
 from ..peering import config as peering_config
 from ..log_event import log_event
 from ._common import (
-    JsonBodyError,
     begin_request,
     canonical_header,
     canonical_page,
     guard_read_request,
     guard_mutating_request,
     reject_csrf,
-    read_json_object,
+    read_json_body,
     restart_voice_daemon,
     restart_systemd_units,
     send_html_response,
@@ -505,24 +504,6 @@ def _send_json(handler: BaseHTTPRequestHandler, payload: dict, *, status: int = 
 _PEERING_BODY_LIMIT = 4096
 
 
-def _read_json_body(handler: BaseHTTPRequestHandler) -> tuple[dict | None, str | None]:
-    """Read + parse a small JSON object body. Returns `(parsed, error)` —
-    exactly one is non-None. Hard-caps at `_PEERING_BODY_LIMIT`. Mirrors
-    wake_setup._read_json_body."""
-    try:
-        return read_json_object(handler, max_bytes=_PEERING_BODY_LIMIT), None
-    except JsonBodyError as exc:
-        if exc.code == "invalid_content_length":
-            return None, "invalid Content-Length"
-        if exc.code in {"negative_content_length", "body_too_large"}:
-            return None, "invalid body length"
-        if exc.code == "non_object":
-            return None, "body must be a JSON object"
-        if exc.code in {"invalid_utf8", "invalid_json"} and exc.__cause__:
-            return None, f"invalid JSON body: {exc.__cause__}"
-        return None, "invalid JSON body"
-
-
 def _save_peering(handler: BaseHTTPRequestHandler) -> None:
     """Handle POST /peering: write the wake-response state into peering.env
     and restart voice + jasper-control so both daemons pick it up.
@@ -536,7 +517,7 @@ def _save_peering(handler: BaseHTTPRequestHandler) -> None:
 
     Fail-soft: a parse/IO error returns a 4xx/5xx JSON error and never raises
     out of the handler."""
-    parsed, err = _read_json_body(handler)
+    parsed, err = read_json_body(handler, max_bytes=_PEERING_BODY_LIMIT)
     if err is not None:
         log_event(logger, "rooms.peering.save.reject", reason=err, level=logging.WARNING)
         _send_json(handler, {"ok": False, "error": err}, status=HTTPStatus.BAD_REQUEST)
@@ -916,7 +897,7 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
     A partial failure is surfaced per member, not auto-rolled-back — the
     household retries, and `/state` shows the half-formed bond as degraded.
     """
-    parsed, err = _read_json_body(handler)
+    parsed, err = read_json_body(handler, max_bytes=_PEERING_BODY_LIMIT)
     if err is not None:
         log_event(logger, "rooms.bond.save.reject", reason=err, level=logging.WARNING)
         _send_json(handler, {"ok": False, "error": err}, status=HTTPStatus.BAD_REQUEST)
@@ -1753,7 +1734,7 @@ def _set_member_trim(handler: BaseHTTPRequestHandler) -> None:
 
     Body ``{target: "pair", balance_db}`` — the rooms slider's only trim
     write."""
-    parsed, err = _read_json_body(handler)
+    parsed, err = read_json_body(handler, max_bytes=_PEERING_BODY_LIMIT)
     if err is not None:
         _send_json(handler, {"ok": False, "error": err},
                    status=HTTPStatus.BAD_REQUEST)
@@ -1794,7 +1775,7 @@ def _set_mains_highpass(handler: BaseHTTPRequestHandler) -> None:
     reconciler remains the single writer of outputd env; this endpoint only
     updates grouping.env.
     """
-    parsed, err = _read_json_body(handler)
+    parsed, err = read_json_body(handler, max_bytes=_PEERING_BODY_LIMIT)
     if err is not None:
         _send_json(handler, {"ok": False, "error": err},
                    status=HTTPStatus.BAD_REQUEST)
