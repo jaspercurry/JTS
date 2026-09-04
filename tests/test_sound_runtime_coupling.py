@@ -25,6 +25,8 @@ import pytest
 from jasper.sound import runtime
 from jasper.sound.graph_carrier import ReemitResult
 
+from .fanin_env_fixtures import declare_fanin_env
+
 
 @pytest.fixture(autouse=True)
 def _saved_passive_layout(tmp_path, monkeypatch):
@@ -60,9 +62,7 @@ def _capture_reemit_coupling(monkeypatch, tmp_path):
     consults neither.
     """
     monkeypatch.delenv("JASPER_FANIN_CAMILLA_COUPLING", raising=False)
-    fanin_env = tmp_path / "fanin.env"
-    fanin_env.write_text("JASPER_FANIN_CAMILLA_COUPLING=loopback\n", encoding="utf-8")
-    monkeypatch.setattr("jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env))
+    declare_fanin_env(monkeypatch, tmp_path, "JASPER_FANIN_CAMILLA_COUPLING=loopback\n")
 
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
