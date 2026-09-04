@@ -2110,3 +2110,48 @@ def test_an_undeclared_bridge_under_a_ring_plan_is_coherent(marker):
     )
 
     assert [e for e in report.errors if "must move together" in e] == [], report
+
+
+def test_a_shared_topology_reader_reads_once_and_changes_no_verdict(monkeypatch):
+    """The pass-scoped saved-topology reader is an optimization, not a verdict.
+
+    The ACTIVE ring's width is the one axis that reads the saved topology, so an
+    armed endpoint is where a pass would otherwise read it once per consumer.
+    """
+    import jasper.fanin.ring_health as rh
+
+    outputd_env = {
+        "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT": "1",
+        "JASPER_OUTPUTD_SHM_RING_PATH": "/dev/shm/jts-ring/active-content.ring",
+    }
+    reads: list[int] = []
+
+    def _load():
+        reads.append(1)
+        return None
+
+    # Built BEFORE the patch on purpose: the reader must look its loader up
+    # when it reads, not capture the one that existed when it was made.
+    read_saved_topology = rh.saved_topology_reader()
+    monkeypatch.setattr(transport_coherence, "load_topology_for_wire", _load)
+    monkeypatch.setattr(rh, "load_topology_for_wire", _load)
+
+    unshared = transport_coherence.transport_coherence_report(
+        coupling="shm_ring", outputd_env=outputd_env
+    )
+    assert len(reads) == 1
+
+    reads.clear()
+    shared = transport_coherence.transport_coherence_report(
+        coupling="shm_ring",
+        outputd_env=outputd_env,
+        read_saved_topology=read_saved_topology,
+    )
+    transport_coherence.transport_topology_for_coupling(
+        "shm_ring",
+        outputd_env=outputd_env,
+        read_saved_topology=read_saved_topology,
+    )
+
+    assert shared == unshared
+    assert len(reads) == 1

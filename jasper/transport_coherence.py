@@ -8,7 +8,7 @@ across CamillaDSP and outputd that shape implies."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from jasper.camilla_config_contract import (
     DEFAULT_SAMPLE_RATE,
@@ -46,6 +46,7 @@ def transport_topology_for_coupling(
     *,
     fanin_env: Mapping[str, str] | None = None,
     outputd_env: Mapping[str, str] | None = None,
+    read_saved_topology: Callable[[], Any] | None = None,
 ) -> TransportTopology:
     """Return the concrete transport topology this box's env implies.
 
@@ -64,6 +65,9 @@ def transport_topology_for_coupling(
     :data:`TRANSPORT_OFF_RING`. UNDECLARED IS THE RING on both axes, so a box
     the reconciler has not written yet resolves the ring rather than a route
     this repo deleted.
+
+    ``read_saved_topology`` replaces the saved-topology read the ACTIVE width
+    needs, so one pass's consumers can share a single memoized read.
     """
 
     fanin_values: Mapping[str, str] = fanin_env or {}
@@ -97,15 +101,12 @@ def transport_topology_for_coupling(
     # :func:`transport_coherence_report` already treats as missing evidence, and
     # the bad declaration keeps its loud owners: fan-in parks at exit 78 and the
     # doctor's ring-wire check names the token.
-    wire, _ = resolve_wire_for_gate(
-        load_topology_for_wire() if active_endpoint and on_ring else None
-    )
+    read = read_saved_topology or load_topology_for_wire
+    wire, _ = resolve_wire_for_gate(read() if active_endpoint and on_ring else None)
     wire_format = wire.sample_format if wire is not None else None
-    # Ring A (fan-in -> CamillaDSP, jts_ring_capture). Its wire — format, and a
-    # channel count that is per-ring — comes from the one resolver every
-    # declaring end reads, so /state reports the geometry the ring is actually
-    # built to rather than a literal that can silently disagree with it. The
-    # concrete ring path lives in fan-in's env (RING_PATH).
+    # Ring A (fan-in -> CamillaDSP, jts_ring_capture). Its wire comes from the
+    # one resolver every declaring end reads, so /state reports the geometry the
+    # ring is actually built to rather than a literal that can disagree with it.
     fanin_to_camilla: dict[str, Any] = {
         "transport": "shm_ring",
         "path": resolve_ring_path(fanin_values.get(RING_PATH_ENV_VAR)),
@@ -149,8 +150,7 @@ def transport_topology_for_coupling(
         )
     if on_ring:
         # Ring B (CamillaDSP -> outputd, jts_ring_playback), or the ACTIVE ring
-        # on an armed roleful box. Its concrete path lives in outputd's env
-        # (SHM_RING_PATH).
+        # on an armed roleful box.
         post_dsp_path = resolve_outputd_ring_path(
             outputd_values.get(OUTPUTD_RING_PATH_ENV_VAR)
         )
@@ -222,17 +222,14 @@ def transport_coherence_report(
     coupling: str | None = None,
     outputd_env: Mapping[str, str] | None = None,
     camilla_devices: Mapping[str, Any] | None = None,
+    read_saved_topology: Callable[[], Any] | None = None,
 ) -> TransportCoherenceReport:
     """Return contradictions across the complete Camilla/outputd transport.
 
     ``TransportTopology`` is the policy source. This function compares its two
     runtime consumers without re-deriving endpoint strings in reconcilers or
     doctor checks. Missing Camilla evidence is not itself an error; a concrete
-    contradiction is. Under ``shm_ring`` that comparison covers the WIRE as well
-    as the endpoints: the resolved format against outputd's own declared
-    ``JASPER_OUTPUTD_CONTENT_FORMAT``, and each ring's resolved channel count
-    against the channels CamillaDSP's loaded config declares — see the comment
-    on those checks for why the evidence is per-end.
+    contradiction is.
 
     Both ring SHAPES take the same branch: :data:`COUPLING_SHM_RING` and
     :data:`TRANSPORT_SHM_RING_ACTIVE` differ in WHICH post-DSP endpoint they
@@ -253,6 +250,7 @@ def transport_coherence_report(
     topology = transport_topology_for_coupling(
         coupling,
         outputd_env=outputd_values,
+        read_saved_topology=read_saved_topology,
     )
     errors: list[str] = []
     notes: list[str] = []
