@@ -109,7 +109,7 @@ from .voice import (
     check_pricing,
 )
 from . import audio as audio
-from . import audio_runtime as audio_runtime
+from . import audio_runtime_camilla as audio_runtime_camilla
 from . import audio_runtime_fanin as audio_runtime_fanin
 from . import audio_runtime_outputd as audio_runtime_outputd
 from . import audio_runtime_ring as audio_runtime_ring
@@ -130,7 +130,7 @@ from .audio_runtime_outputd import (
     check_outputd_service,
     check_aec_clock_drift,
 )
-from .audio_runtime import (
+from .audio_runtime_camilla import (
     check_audio_runtime_plan,
     check_camilla_service,
 )

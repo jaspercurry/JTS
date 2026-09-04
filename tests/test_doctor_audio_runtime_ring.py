@@ -60,13 +60,10 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
     from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 
     # ONE on-disk statefile pair drives BOTH halves — no stubbed evidence
-    # resolution. The first version of this guard canned
-    # `output_endpoint_evidence_from_statefiles` for half one and
-    # `_loaded_playback_device` for half two, which meant the two surfaces were
-    # fed by two independent fixtures and could disagree about the box without
-    # reddening anything. That is precisely how the gap this de-duplication
-    # inherited (the split check reading one statefile while the deleted note
-    # read two) survived unseen. Same bytes to both, or the guard is theatre.
+    # resolution. Canning the endpoint evidence for half one and the loaded
+    # config reader for half two feeds the two surfaces from independent
+    # fixtures, which lets them disagree about the box without reddening
+    # anything. Same bytes to both, or the guard is theatre.
     config = tmp_path / "loaded.yml"
     config.write_text(
         "devices:\n"

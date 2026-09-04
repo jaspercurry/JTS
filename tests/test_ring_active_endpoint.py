@@ -1613,12 +1613,15 @@ def test_the_coupling_warn_names_the_recovery_ladder_and_never_the_forbidden_rin
         "_active_camilla_config_path",
         lambda *a, **k: ("/tmp/statefile.yml", "/tmp/loaded.yml"),
     )
-    monkeypatch.setattr(audio_runtime_fanin, "_loaded_capture_type", lambda path: "Alsa")
     monkeypatch.setattr(
         audio_runtime_fanin,
-        "_loaded_device_field",
-        lambda path, lane, field: (
-            RING_ACTIVE_PLAYBACK_DEVICE if lane == "playback" else "jts_ring_capture"
+        "read_camilla_device_field",
+        lambda path, block, field: (
+            "Alsa"
+            if field == "type"
+            else RING_ACTIVE_PLAYBACK_DEVICE
+            if block == "playback"
+            else "jts_ring_capture"
         ),
     )
     result = audio_runtime_fanin.check_fanin_coupling()
@@ -1671,12 +1674,15 @@ def test_the_coupling_warn_on_an_armed_box_names_the_forward_ladder_not_a_rollba
         "_active_camilla_config_path",
         lambda *a, **k: ("/tmp/statefile.yml", "/tmp/loaded.yml"),
     )
-    monkeypatch.setattr(audio_runtime_fanin, "_loaded_capture_type", lambda path: "Alsa")
     monkeypatch.setattr(
         audio_runtime_fanin,
-        "_loaded_device_field",
-        lambda path, lane, field: (
-            OUTPUTD_ACTIVE_PLAYBACK_DEVICE if lane == "playback" else RING_CAPTURE_DEVICE
+        "read_camilla_device_field",
+        lambda path, block, field: (
+            "Alsa"
+            if field == "type"
+            else OUTPUTD_ACTIVE_PLAYBACK_DEVICE
+            if block == "playback"
+            else RING_CAPTURE_DEVICE
         ),
     )
     result = audio_runtime_fanin.check_fanin_coupling()

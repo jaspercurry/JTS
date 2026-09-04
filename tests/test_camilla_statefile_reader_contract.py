@@ -66,7 +66,7 @@ def test_every_folded_reader_resolves_one_statefile_fixture_identically(
     """One statefile on disk; four readers; one answer.
 
     The doctor helper (``_active_camilla_config_path``, which ``doctor.audio``,
-    ``doctor.audio_runtime``, and ``doctor.grouping`` import), the runtime plan,
+    ``doctor.audio_runtime_camilla``, and ``doctor.grouping`` import), the runtime plan,
     the bonded-leader pipe probe, and the canonical reader all read the SAME
     ``JASPER_CAMILLA_STATEFILE`` fixture here. Break the shared parse or the
     shared override lookup and the one assertion below reports all four at once
