@@ -621,8 +621,9 @@ HIFIBERRY_DAC8X_STUDIO = DacProfile(
     # still prints `dtoverlay=hifiberry-dac8x`; it predates that support, and
     # the kernel is the authority for what a board actually presents.
     #
-    # This field is read, not written: nothing here writes config.txt for a
-    # HiFiBerry (`render_i2s_hat_boot_config` is InnoMaker-only). It feeds
+    # `render_i2s_hat_boot_config` can manage this overlay too (any
+    # `connection == "i2s"` profile is eligible; the per-box intent file
+    # picks one, explicit opt-in only). It also feeds
     # `configured_i2s_overlays()`, the registered-overlay set USB port-role
     # resolution intersects config.txt against — so with the wrong value a
     # correctly-configured Studio box read as "no I2S HAT present".
@@ -895,6 +896,17 @@ def all_profiles() -> tuple[DacProfile, ...]:
     return REGISTRY
 
 
+def is_boot_managed_i2s_profile(profile: DacProfile) -> bool:
+    """Whether a profile is an I2S HAT eligible for the boot overlay line.
+
+    ``dtoverlay`` is required alongside ``connection == "i2s"``: a profile
+    can declare the I2S interface without owning a boot line (none do
+    today, but the two fields are independent, not implied by each other).
+    """
+
+    return profile.connection == "i2s" and bool(profile.dtoverlay)
+
+
 def by_id(profile_id: str) -> DacProfile | None:
     """Lookup a DAC profile by stable id."""
 
@@ -1103,6 +1115,7 @@ __all__ = [
     "clock_domain_contract_for",
     "clock_domain_label_for",
     "final_edge_format_for",
+    "is_boot_managed_i2s_profile",
     "is_known_profile_id",
     "known_profile_ids",
     "label_for",

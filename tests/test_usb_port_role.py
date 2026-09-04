@@ -9,9 +9,11 @@ from pathlib import Path
 
 import pytest
 
+from jasper.audio_hardware.dac import all_profiles
 from jasper.audio_hardware.usb_port_role import (
     I2S_HAT_BLOCK_BEGIN,
     MANAGED_BLOCK_BEGIN,
+    I2sHatCollision,
     UsbPortRoleState,
     configured_i2s_overlays,
     main,
@@ -29,6 +31,9 @@ PI5 = "Raspberry Pi 5 Model B Rev 1.0"
 I2S = "[all]\ndtoverlay=hifiberry-dac8x\n"
 PERIPHERAL = "[all]\ndtoverlay=dwc2,dr_mode=peripheral\n"
 HOST = "[all]\ndtoverlay=dwc2,dr_mode=host\n"
+
+I2S_PROFILES = tuple(p for p in all_profiles() if p.connection == "i2s")
+I2S_PROFILE_IDS = tuple(p.id for p in I2S_PROFILES)
 
 
 def _boot_paths(
@@ -178,72 +183,208 @@ def test_studio_dac8x_overlay_is_recognized_as_a_registered_i2s_hat() -> None:
     ) == ()
 
 
-def test_i2s_hat_intent_round_trip_and_rejects_other_profiles(tmp_path: Path) -> None:
+@pytest.mark.parametrize("profile", I2S_PROFILES, ids=I2S_PROFILE_IDS)
+def test_i2s_hat_intent_round_trip(tmp_path: Path, profile) -> None:
     intent = tmp_path / "i2s_hat.env"
 
     assert read_i2s_hat_intent(intent) is None
-    write_i2s_hat_intent(True, intent)
-    assert intent.read_text(encoding="utf-8") == (
-        "JASPER_I2S_HAT_PROFILE=innomaker_hifi_amp_pro\n"
-    )
-    assert read_i2s_hat_intent(intent) == "innomaker_hifi_amp_pro"
+    write_i2s_hat_intent(profile.id, intent)
+    assert intent.read_text(encoding="utf-8") == f"JASPER_I2S_HAT_PROFILE={profile.id}\n"
+    assert read_i2s_hat_intent(intent) == profile.id
+
+    # Explicit "none" is a persisted, distinct state from the file never
+    # having existed: it writes a marker, not an unlink (#i2s-hat-intent).
+    write_i2s_hat_intent(None, intent)
+    assert intent.is_file()
+    assert intent.read_text(encoding="utf-8") == "JASPER_I2S_HAT_PROFILE=\n"
+    assert read_i2s_hat_intent(intent) is None
+
+
+def test_i2s_hat_intent_rejects_unsupported_profiles(tmp_path: Path) -> None:
+    intent = tmp_path / "i2s_hat.env"
+    non_i2s_id = next(p.id for p in all_profiles() if p.connection != "i2s")
 
     intent.write_text("JASPER_I2S_HAT_PROFILE=other_hat\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="unsupported profile"):
+    with pytest.raises(ValueError):
         read_i2s_hat_intent(intent)
 
-    write_i2s_hat_intent(False, intent)
-    assert not intent.exists()
+    with pytest.raises(ValueError):
+        write_i2s_hat_intent(non_i2s_id, intent)
+    with pytest.raises(ValueError):
+        write_i2s_hat_intent("not_a_real_profile", intent)
 
 
-def test_i2s_hat_renderer_manages_only_global_overlay() -> None:
+@pytest.mark.parametrize("profile", I2S_PROFILES, ids=I2S_PROFILE_IDS)
+def test_i2s_hat_renderer_manages_only_global_overlay(profile) -> None:
     original = (
         "arm_64bit=1\n"
         "[cm5]\n"
-        "dtoverlay=merus-amp\n"
+        f"dtoverlay={profile.dtoverlay}\n"
         "[all]\n"
         "dtparam=audio=on\n"
     )
 
-    enabled = render_i2s_hat_boot_config(original, "innomaker_hifi_amp_pro")
-    disabled = render_i2s_hat_boot_config(enabled, None)
+    enabled, enabled_changed, enabled_collision = render_i2s_hat_boot_config(
+        original, profile.id
+    )
+    disabled, disabled_changed, disabled_collision = render_i2s_hat_boot_config(
+        enabled, None
+    )
 
     assert enabled.count(I2S_HAT_BLOCK_BEGIN) == 1
-    assert enabled.count("dtoverlay=merus-amp") == 2
+    assert enabled.count(f"dtoverlay={profile.dtoverlay}") == 2
+    # Section-scoped ([cm5]) lines are out of the global/all overlay scan,
+    # so they never collide with the managed block.
+    assert enabled_changed is True
+    assert enabled_collision is None
     assert "arm_64bit=1" in enabled and "dtparam=audio=on" in enabled
-    assert "[cm5]\ndtoverlay=merus-amp" in disabled
-    assert disabled.count("dtoverlay=merus-amp") == 1
+    assert f"[cm5]\ndtoverlay={profile.dtoverlay}" in disabled
+    assert disabled.count(f"dtoverlay={profile.dtoverlay}") == 1
     assert I2S_HAT_BLOCK_BEGIN not in disabled
+    assert disabled_changed is True
+    assert disabled_collision is None
 
 
-def test_hat_change_and_published_durability_are_reported(
-    tmp_path: Path, monkeypatch, capsys
+@pytest.mark.parametrize("profile", I2S_PROFILES, ids=I2S_PROFILE_IDS)
+def test_i2s_hat_renderer_refuses_a_same_overlay_collision(profile) -> None:
+    original = f"[all]\ndtoverlay={profile.dtoverlay}\ndtparam=audio=on\n"
+
+    rendered, changed, collision = render_i2s_hat_boot_config(original, profile.id)
+
+    # Two declarations of the same overlay is still two I2S machine drivers
+    # as far as this renderer is concerned: refuse rather than compound the
+    # hand-written line with a managed one.
+    assert rendered == original
+    assert changed is False
+    assert collision == I2sHatCollision(
+        managed_overlay=profile.dtoverlay,
+        colliding_overlays=(profile.dtoverlay,),
+    )
+
+    # Clearing never refuses -- there is nothing to collide with when
+    # removing JTS's own (nonexistent) block.
+    cleared, cleared_changed, cleared_collision = render_i2s_hat_boot_config(
+        original, None
+    )
+    assert I2S_HAT_BLOCK_BEGIN not in cleared
+    assert f"dtoverlay={profile.dtoverlay}" in cleared
+    assert cleared_changed is False
+    assert cleared_collision is None
+
+
+def test_i2s_hat_renderer_refuses_a_different_overlay_collision() -> None:
+    mismatched, matching = I2S_PROFILES[0], I2S_PROFILES[1]
+    original = f"[all]\ndtoverlay={mismatched.dtoverlay}\n"
+
+    rendered, changed, collision = render_i2s_hat_boot_config(original, matching.id)
+
+    assert rendered == original
+    assert changed is False
+    assert collision == I2sHatCollision(
+        managed_overlay=matching.dtoverlay,
+        colliding_overlays=(mismatched.dtoverlay,),
+    )
+
+
+def test_i2s_hat_renderer_rejects_non_i2s_and_unregistered_profiles() -> None:
+    non_i2s_id = next(p.id for p in all_profiles() if p.connection != "i2s")
+
+    with pytest.raises(ValueError):
+        render_i2s_hat_boot_config("[all]\n", non_i2s_id)
+    with pytest.raises(ValueError):
+        render_i2s_hat_boot_config("[all]\n", "not_a_real_profile")
+
+
+def test_reconcile_refuses_a_hand_written_overlay_collision(
+    tmp_path: Path, capsys
 ) -> None:
     model, config, intent, udc = _boot_paths(tmp_path)
     config.write_text(
         "[all]\ndtoverlay=merus-amp\ndtoverlay=dwc2,dr_mode=peripheral\n",
         encoding="utf-8",
     )
-    write_i2s_hat_intent(True, intent)
+    write_i2s_hat_intent("innomaker_hifi_amp_pro", intent)
     (udc / "3f980000.usb").mkdir(parents=True)
 
-    _, changed, hat_changed, desired, _ = reconcile_boot_config(
+    _, _, hat_changed, desired, _, collision = reconcile_boot_config(
         model_path=model,
         boot_config_path=config,
         udc_class_dir=udc,
         i2s_hat_intent_path=intent,
     )
 
-    assert changed is True  # adopts the exact manual line into JTS's block
+    # The hand-written line is never deleted or folded into a managed
+    # block: two I2S machine drivers on one boot config is not a state
+    # this writes, so it refuses and reports the collision instead.
     assert hat_changed is False
     assert desired == "innomaker_hifi_amp_pro"
-    assert config.read_text(encoding="utf-8").count("dtoverlay=merus-amp") == 1
+    assert collision == I2sHatCollision(
+        managed_overlay="merus-amp", colliding_overlays=("merus-amp",)
+    )
+    unchanged = config.read_text(encoding="utf-8")
+    assert I2S_HAT_BLOCK_BEGIN not in unchanged
+    assert unchanged.count("dtoverlay=merus-amp") == 1
+
+    capsys.readouterr()
+    result = main(
+        [
+            "--reconcile-boot",
+            "--i2s-hat-intent-file",
+            str(intent),
+            "--model-file",
+            str(model),
+            "--boot-config",
+            str(config),
+            "--udc-class-dir",
+            str(udc),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert result == 0
+    assert (
+        "event=hardware.i2s_hat_boot_config_conflict "
+        "managed_overlay=merus-amp colliding_overlays=merus-amp"
+    ) in captured.err
+    assert "i2s_hat_boot_config_conflict" not in captured.out
+
+
+def test_hat_changed_and_durability_are_reported(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    model, config, intent, udc = _boot_paths(tmp_path)
+    config.write_text(PERIPHERAL, encoding="utf-8")
+    write_i2s_hat_intent("innomaker_hifi_amp_pro", intent)
+    (udc / "3f980000.usb").mkdir(parents=True)
+
+    _, changed, hat_changed, desired, _, collision = reconcile_boot_config(
+        model_path=model,
+        boot_config_path=config,
+        udc_class_dir=udc,
+        i2s_hat_intent_path=intent,
+    )
+
+    assert changed is True
+    assert hat_changed is True
+    assert desired == "innomaker_hifi_amp_pro"
+    assert collision is None
+    assert I2S_HAT_BLOCK_BEGIN in config.read_text(encoding="utf-8")
+
+    # A second reconcile with the same intent is a no-op.
+    _, changed_again, hat_changed_again, _, _, collision_again = reconcile_boot_config(
+        model_path=model,
+        boot_config_path=config,
+        udc_class_dir=udc,
+        i2s_hat_intent_path=intent,
+    )
+    assert changed_again is False
+    assert hat_changed_again is False
+    assert collision_again is None
 
     invalid = config.read_text(encoding="utf-8").replace(
         "dtoverlay=merus-amp", "dtoverlay=merus-amp,unexpected=1"
     )
     config.write_text(invalid, encoding="utf-8")
-    with pytest.raises(ValueError, match="unexpected directive"):
+    with pytest.raises(ValueError):
         reconcile_boot_config(
             model_path=model,
             boot_config_path=config,
@@ -276,9 +417,9 @@ def test_unsupported_board_never_mutates_hat_boot_setting(tmp_path: Path) -> Non
     model, config, intent, udc = _boot_paths(
         tmp_path, model_text="Acme SBC", boot_config=original
     )
-    write_i2s_hat_intent(True, intent)
+    write_i2s_hat_intent("innomaker_hifi_amp_pro", intent)
 
-    state, changed, hat_changed, _, _ = reconcile_boot_config(
+    state, changed, hat_changed, _, _, collision = reconcile_boot_config(
         model_path=model,
         boot_config_path=config,
         udc_class_dir=udc,
@@ -287,7 +428,86 @@ def test_unsupported_board_never_mutates_hat_boot_setting(tmp_path: Path) -> Non
 
     assert state.board_topology == "unsupported"
     assert changed is False and hat_changed is False
+    assert collision is None
     assert config.read_text(encoding="utf-8") == original
+
+
+def test_missing_intent_file_is_the_explicit_opt_in_gate(tmp_path: Path) -> None:
+    """No saved intent -> the I2S HAT boot lines are never touched.
+
+    This is the jts3 incident's regression pin: a box with a hand-written
+    `dtoverlay=` line and no `/var/lib/jasper/i2s_hat.env` must not have
+    that line rewritten, added to, or removed by a reconcile pass —
+    ownership is opt-in per box, not automatic for every registered
+    profile (#i2s-hat-intent).
+    """
+    model, config, intent, udc = _boot_paths(
+        tmp_path,
+        boot_config="[all]\ndtoverlay=hifiberry-dac8x\ndtparam=audio=on\n",
+    )
+    assert not intent.exists()
+
+    _, _, hat_changed, desired, _, collision = reconcile_boot_config(
+        model_path=model,
+        boot_config_path=config,
+        udc_class_dir=udc,
+        i2s_hat_intent_path=intent,
+    )
+
+    assert desired is None
+    assert hat_changed is False
+    assert collision is None
+    rendered = config.read_text(encoding="utf-8")
+    assert I2S_HAT_BLOCK_BEGIN not in rendered
+    assert "dtoverlay=hifiberry-dac8x" in rendered
+
+
+def test_absent_intent_file_leaves_an_existing_managed_block_alone(
+    tmp_path: Path,
+) -> None:
+    """An absent intent file (never saved) differs from an explicit "none".
+
+    The former must not touch a managed block that already exists in
+    config.txt -- only a present-and-empty intent file
+    (write_i2s_hat_intent(None)) removes it (#i2s-hat-intent).
+    """
+    model, config, intent, udc = _boot_paths(tmp_path)
+    config.write_text(PERIPHERAL, encoding="utf-8")
+    write_i2s_hat_intent("innomaker_hifi_amp_pro", intent)
+    (udc / "3f980000.usb").mkdir(parents=True)
+    reconcile_boot_config(
+        model_path=model,
+        boot_config_path=config,
+        udc_class_dir=udc,
+        i2s_hat_intent_path=intent,
+    )
+    with_managed_block = config.read_text(encoding="utf-8")
+    assert I2S_HAT_BLOCK_BEGIN in with_managed_block
+    intent.unlink()
+
+    _, changed, hat_changed, desired, _, collision = reconcile_boot_config(
+        model_path=model,
+        boot_config_path=config,
+        udc_class_dir=udc,
+        i2s_hat_intent_path=intent,
+    )
+
+    assert desired is None
+    assert hat_changed is False
+    assert collision is None
+    assert config.read_text(encoding="utf-8") == with_managed_block
+
+    # A present-but-explicit-none intent, in contrast, DOES remove it.
+    write_i2s_hat_intent(None, intent)
+    _, _, explicit_hat_changed, explicit_desired, _, _ = reconcile_boot_config(
+        model_path=model,
+        boot_config_path=config,
+        udc_class_dir=udc,
+        i2s_hat_intent_path=intent,
+    )
+    assert explicit_desired is None
+    assert explicit_hat_changed is True
+    assert I2S_HAT_BLOCK_BEGIN not in config.read_text(encoding="utf-8")
 
 
 def test_serialized_role_rejects_board_topology_mismatch() -> None:
@@ -414,13 +634,13 @@ def test_reconcile_boot_config_preserves_unrelated_conditional_role(
     )
     udc.mkdir()
 
-    state, changed, _, _, _ = reconcile_boot_config(
+    state, changed, _, _, _, _ = reconcile_boot_config(
         model_path=model,
         boot_config_path=config,
         udc_class_dir=udc,
     )
     first = config.read_text(encoding="utf-8")
-    _, changed_again, _, _, _ = reconcile_boot_config(
+    _, changed_again, _, _, _, _ = reconcile_boot_config(
         model_path=model,
         boot_config_path=config,
         udc_class_dir=udc,

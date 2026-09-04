@@ -750,23 +750,25 @@ def test_i2s_reboot_marker_is_created_only_by_the_boot_setting_change(tmp_path: 
     )
     malformed_python.chmod(0o755)
     intent.unlink()
-    # expected None == "the marker is left exactly as it was found": a failed
-    # state write or a malformed observation neither sets nor clears it.
-    for expected, listing, extra_env in (
-        (None, INNOMAKER_LISTING, {"JASPER_OUTPUT_HARDWARE_STATE_PATH": str(tmp_path)}),
-        (None, INNOMAKER_LISTING + DAC8X_AND_APPLE_LISTING,
-         {"JASPER_OUTPUT_HARDWARE_PYTHON": str(malformed_python)}),
-        (True, INNOMAKER_LISTING + DAC8X_AND_APPLE_LISTING, None),
+    # The intent FILE is gone now, not present-and-empty: absent means the
+    # reconciler touches NEITHER the managed I2S block NOR the reboot
+    # marker, no matter what gets observed -- including a malformed or
+    # failed observation (#i2s-hat-intent).
+    for extra_env in (
+        {"JASPER_OUTPUT_HARDWARE_STATE_PATH": str(tmp_path)},
+        {"JASPER_OUTPUT_HARDWARE_PYTHON": str(malformed_python)},
+        None,
     ):
         for marker_present in (False, True):
             marker.unlink(missing_ok=True)
             if marker_present:
                 marker.touch()
-            observed = rerun(listing, extra_env=extra_env)
+            observed = rerun(INNOMAKER_LISTING, extra_env=extra_env)
             assert observed.returncode == 0, observed.stderr
-            assert marker.exists() is (marker_present if expected is None else expected)
-            assert "dtoverlay=merus-amp" not in (tmp_path / "config.txt").read_text()
-            assert "dtoverlay=dwc2,dr_mode=host" in (tmp_path / "config.txt").read_text()
+            assert marker.exists() is marker_present
+            config_text = (tmp_path / "config.txt").read_text()
+            assert "dtoverlay=merus-amp" in config_text
+            assert "dtoverlay=dwc2,dr_mode=peripheral" in config_text
 
     disabled_boot = (tmp_path / "config.txt").read_text(encoding="utf-8")
     marker.unlink()

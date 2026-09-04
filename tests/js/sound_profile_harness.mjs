@@ -1101,8 +1101,12 @@ async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
   const setupFetched = [], hatPosts = [];
   const hat = {
     visibility: "visible", available: true, reason: "", intent_error: "",
-    profile_label: "InnoMaker HiFi AMP Pro", desired_enabled: false,
-    runtime_active: false, restart_required: false,
+    profiles: [
+      { id: "innomaker_hifi_amp_pro", label: "InnoMaker HiFi AMP Pro" },
+      { id: "hifiberry_dac8x", label: "HiFiBerry DAC8x" },
+    ],
+    desired_profile_id: null, detected_profile_id: "hifiberry_dac8x",
+    warnings: [], restart_required: false,
   };
   const setupBase = baseFetch({
     "./output-topology": () => response({
@@ -1111,9 +1115,9 @@ async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
     "./i2s-hat": (_path, options = {}) => {
       const body = JSON.parse(options.body || "{}");
       hatPosts.push(body);
-      const failed = hatPosts.length > 1;
+      const failed = hatPosts.length > 2;
       return response({
-        ...hat, desired_enabled: body.enabled, runtime_active: failed,
+        ...hat, desired_profile_id: body.profile_id, detected_profile_id: failed ? "innomaker_hifi_amp_pro" : null,
         restart_required: !failed, error: failed ? "apply failed" : "",
       }, !failed, failed ? 502 : 200);
     },
@@ -1124,7 +1128,7 @@ async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
   }, { mode: "setup" });
   await setup.flush(); await setup.flush(); await setup.flush();
   const setupHtml = setup.elements.get("view-body").innerHTML;
-  for (const expected of ["Volume floor", "Extra headroom", "Speaker setup", "Enable I²S audio HAT"]) {
+  for (const expected of ["Volume floor", "Extra headroom", "Speaker setup", "I²S audio HAT"]) {
     if (!setupHtml.includes(expected)) {
       fail("Setup mode omitted an owned control", { expected, setupHtml });
     }
@@ -1137,19 +1141,38 @@ async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
   if (!setupFetched.includes("./output-topology")) {
     fail("Setup mode should load local topology", { setupFetched });
   }
-  setup.dispatchChange({ id: "set-i2s-hat", checked: true });
+  // Nothing saved yet but a DAC is detected: the select stays on the saved
+  // "None / unmanaged" value -- it must never silently pre-pick the
+  // detection for a change-driven control -- and a detected-use button
+  // offers it instead.
+  if (!setupHtml.includes('<option value="" selected>None / unmanaged</option>') ||
+      setupHtml.includes('<option value="hifiberry_dac8x" selected>')) {
+    fail("the select must render the SAVED value, not an unsaved suggestion",
+      { setupHtml });
+  }
+  if (!setupHtml.includes('data-act="use-detected-i2s-hat"') ||
+      !setupHtml.includes('data-id="hifiberry_dac8x"')) {
+    fail("a detected-but-unsaved profile needs a Use-detected button", { setupHtml });
+  }
+  setup.dispatchClick({ "data-act": "use-detected-i2s-hat", "data-id": "hifiberry_dac8x" });
+  await loadAndSetActiveState(setup);
+  if (hatPosts[0].profile_id !== "hifiberry_dac8x") {
+    fail("the Use-detected button must POST the detected profile id", { hatPosts });
+  }
+  setup.dispatchChange({ id: "set-i2s-hat", value: "innomaker_hifi_amp_pro" });
   await loadAndSetActiveState(setup);
   let hatHtml = setup.elements.get("view-body").innerHTML;
-  if (typeof hatPosts[0].enabled !== "boolean" || !hatPosts[0].enabled)
-    fail("the HAT control must POST a typed boolean", { hatPosts });
+  if (hatPosts[1].profile_id !== "innomaker_hifi_amp_pro")
+    fail("the HAT control must POST the selected profile id", { hatPosts });
   if (!hatHtml.includes("Restart required."))
     fail("the HAT response must add its restart callout", { hatHtml });
-  setup.dispatchChange({ id: "set-i2s-hat", checked: false });
+  setup.dispatchChange({ id: "set-i2s-hat", value: "" });
   await loadAndSetActiveState(setup);
   hatHtml = setup.elements.get("view-body").innerHTML;
   const message = setup.elements.get("status").textContent;
-  if (message !== "Setting saved, but the boot change could not be applied. Try again; if it still fails, open System and run diagnostics." ||
-      !hatHtml.includes("Saved: Auto / Off") || hatHtml.includes("Restart required.")) {
+  if (hatPosts[2].profile_id !== null ||
+      message !== "Setting saved, but the boot change could not be applied. Try again; if it still fails, open System and run diagnostics." ||
+      !hatHtml.includes("Saved: None / unmanaged") || hatHtml.includes("Restart required.")) {
     fail("partial HAT apply must adopt state and distinguish persistence", { message, hatHtml });
   }
   return { splitPageModesRenderAndBootOnlyOwnedSurfaces: true };
