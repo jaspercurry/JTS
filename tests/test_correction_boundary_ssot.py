@@ -157,6 +157,14 @@ def _imported_module(path: Path, node: ast.ImportFrom) -> str:
 #: symbol genuinely belongs to the front end it is reached in, not a parking
 #: space. Removing one is the work; adding one owes the row's own argument.
 BOUNDARY_ALLOWLIST: dict[str, dict[str, frozenset[str]]] = {
+    "jasper/correction": {
+        # `runtime_safety` reads the engine's declared driver caps directly —
+        # DSP safety, not front-end policy — so this is the one site allowed
+        # to import the layer below `correction`.
+        "jasper/correction/runtime_safety.py": frozenset(
+            {"jasper.active_speaker.runtime_contract"}
+        ),
+    },
     "jasper/cli": {
         # `WiredStimulusCapture` mints the household calibration REFERENCE
         # through the web host it imports late (`_mint_and_place`), which is
@@ -261,13 +269,18 @@ PACKAGE_BOUNDARIES: tuple[tuple[str, tuple[tuple[str, ...], ...], str], ...] = (
     ),
     (
         "jasper/active_speaker",
-        (("jasper", "correction"),),
-        "correction is the layer above; the engine must not reach up into it",
+        (("jasper", "correction"), ("jasper", "web"), ("jasper", "cli")),
+        "correction is the layer above and web/cli are front ends; the engine must not reach up into any of them",
     ),
     (
         "jasper/cli",
         (("jasper", "web"),),
         "the CLI is a front end beside the wizard, not a client of one",
+    ),
+    (
+        "jasper/correction",
+        (("jasper", "active_speaker"),),
+        "runtime_safety.py is the only site allowed to read the engine directly",
     ),
 )
 

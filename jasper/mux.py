@@ -95,6 +95,7 @@ from .busctl import system_busctl
 from .control import restart_broker
 from .fanin.control import fanin_command
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
+from .route_latency.status_socket import FANIN_STATUS_SOCKET
 from .source_state import (
     airplay_playing_observed as airplay_playing,
     bluetooth_playing_observed as bluetooth_playing,
@@ -108,7 +109,7 @@ logger = logging.getLogger(__name__)
 
 
 FANIN_CONTROL_SOCKET = os.environ.get(
-    "JASPER_FANIN_CONTROL_SOCKET", "/run/jasper-fanin/control.sock",
+    "JASPER_FANIN_CONTROL_SOCKET", FANIN_STATUS_SOCKET,
 )
 MUX_CONTROL_SOCKET = "/run/jasper-mux/control.sock"
 # Persisted so a household's manual pin survives the Restart=always

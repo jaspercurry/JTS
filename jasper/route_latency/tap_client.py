@@ -34,14 +34,15 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from jasper.route_latency.pairing import TapEvent
+from jasper.route_latency.status_socket import FANIN_STATUS_SOCKET
 
 
 # The fan-in DIRECT-capture tap (the only USB ingress tap). fan-in exposes it over
 # its control UDS with plaintext verbs. These MUST match the Rust side: the control
 # socket + default JSONL path in rust/jasper-fanin/src/impulse_tap.rs + config.rs.
-# FANIN_CONTROL_SOCKET is the SAME socket jasper.route_latency.status_socket reads
-# STATUS from (FANIN_STATUS_SOCKET); pinned equal by the tap-transport contract test.
-FANIN_CONTROL_SOCKET = "/run/jasper-fanin/control.sock"
+# The tap verbs and STATUS share one socket, so this is the STATUS constant
+# under the name the tap surface uses.
+FANIN_CONTROL_SOCKET = FANIN_STATUS_SOCKET
 FANIN_DEFAULT_TAP_PATH = "/run/jasper-fanin/impulse-tap.jsonl"
 DEFAULT_FANIN_TAP_TIMEOUT_SECONDS = 5.0
 

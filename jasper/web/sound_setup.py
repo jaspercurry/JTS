@@ -1433,7 +1433,7 @@ def _sound_page_island(*, page_mode: str, follower: bool) -> str:
         DEFAULT_FILTER_TYPE,
         DEFAULT_SLOPE_DB_PER_OCTAVE,
     )
-    from jasper.active_speaker.staging import (
+    from jasper.active_speaker.declaration_vocabulary import (
         supported_declaration_filter_types,
         supported_declaration_slopes_db_per_octave,
     )
@@ -1891,10 +1891,8 @@ def _active_speaker_driver_research_request_payload(
 ) -> dict[str, Any]:
     """Build the silent, target-bound research request and copyable prompt."""
 
-    from jasper.active_speaker.driver_safety import (
-        build_driver_research_prompt,
-        build_driver_research_request,
-    )
+    from jasper.active_speaker.driver_safety import build_driver_research_request
+    from jasper.active_speaker.driver_safety_prompt import build_driver_research_prompt
     from jasper.active_speaker.design_draft import (
         normalise_manual_settings,
         normalise_operator_inputs,

@@ -911,7 +911,7 @@ def test_sound_page_island_serves_the_compilers_crossover_vocabulary(
         DEFAULT_FILTER_TYPE,
         DEFAULT_SLOPE_DB_PER_OCTAVE,
     )
-    from jasper.active_speaker.staging import (
+    from jasper.active_speaker.declaration_vocabulary import (
         supported_declaration_filter_types,
         supported_declaration_slopes_db_per_octave,
     )

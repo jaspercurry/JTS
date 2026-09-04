@@ -5,16 +5,18 @@
 """The tuning truth layer imports nothing from the product runtime.
 
 Structural, not behavioural: the walk reads ``ast`` import nodes, so it sees
-the edge a convenience re-export adds before anyone runs the code. Three
-questions per module — what its own file imports at any depth, whether every
-relative import still resolves, and what its module-scope import closure
-executes.
+the edge a convenience re-export adds before anyone runs the code. Two
+questions per module — what its own file imports at any depth, and what its
+module-scope import closure executes. A third asks the same walk whether
+every ``jasper`` import in ``jasper/active_speaker`` still resolves — relative
+ones from their own module depth, absolute ones at the spelled home — which
+is what a relocated def gets wrong.
 """
 
 from __future__ import annotations
 
 import ast
-from importlib.util import resolve_name
+import importlib.util
 from pathlib import Path
 from typing import Iterator
 
@@ -38,6 +40,7 @@ TRUTH_LAYER = (
     "jasper.active_speaker.baseline_profile",
     "jasper.active_speaker.camilla_yaml",
     "jasper.active_speaker.driver_safety",
+    "jasper.active_speaker.driver_safety_prompt",
     "jasper.active_speaker.graph_safety",
     "jasper.active_speaker.linearization_envelope",
     "jasper.active_speaker.linearization_fit",
@@ -61,24 +64,6 @@ def _module_path(dotted: str) -> Path | None:
 def _dotted(path: Path) -> str:
     parts = list(path.relative_to(REPO_ROOT).with_suffix("").parts)
     return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
-
-
-def _package_exports(init: Path) -> set[str]:
-    """Module-scope names an ``__init__.py`` binds.
-
-    Tells ``from pkg import name`` (an attribute) apart from
-    ``from pkg import submodule`` (a module that has to exist on disk).
-    """
-
-    names: set[str] = set()
-    for node in ast.walk(ast.parse(init.read_text(encoding="utf-8"))):
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            names.update((a.asname or a.name).split(".")[0] for a in node.names)
-        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-            names.add(node.id)
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            names.add(node.name)
-    return names
 
 
 def _guards_type_checking(test: ast.expr) -> bool:
@@ -171,6 +156,9 @@ def _offenders(modules: set[str]) -> list[str]:
     )
 
 
+ACTIVE_SPEAKER_SOURCES = sorted((REPO_ROOT / "jasper/active_speaker").rglob("*.py"))
+
+
 TRUTH_LAYER_MODULES = TRUTH_LAYER + tuple(
     sorted(
         _dotted(path)
@@ -184,6 +172,7 @@ def test_the_walk_sees_a_real_import_graph():
     """A walker that returned nothing would satisfy every assertion below."""
 
     assert len(TRUTH_LAYER_MODULES) >= 40
+    assert len(ACTIVE_SPEAKER_SOURCES) >= 40
     closure = _closure("jasper.active_speaker.runtime_contract")
     assert len(closure) >= 20
     assert "jasper.active_speaker.profile" in closure
@@ -210,50 +199,83 @@ def test_the_truth_layer_never_imports_the_runtime(module):
     assert _offenders(_closure(module)) == []
 
 
-@pytest.mark.parametrize(
-    "path",
-    sorted((REPO_ROOT / "jasper" / "active_speaker").rglob("*.py")),
-    ids=lambda path: str(path.relative_to(REPO_ROOT / "jasper" / "active_speaker")),
-)
-def test_active_speaker_jasper_imports_resolve(path):
-    """A def moved between modules leaves no dangling ``jasper`` import.
+def _bound_names(path: Path) -> set[str] | None:
+    """Every name ``path``'s module scope binds; ``None`` if it cannot be read.
 
-    Relative and absolute alike: a relocation re-levels the first and leaves the
-    second spelled at the old home. The suite stubs these callers, so only the
-    walk sees it — at module scope and, the half a caller grep misses, inside a
-    function body. Resolution is ``_module_path``, not ``find_spec``: a spec
-    lookup executes the target's parent package, so an absent optional
-    dependency would surface here as a dangling import.
+    ``None`` for a module that answers names dynamically -- a module-level
+    ``__getattr__`` or a star import binds what no walk can enumerate, and
+    guessing there would fail a legitimate import.
+    """
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name == "__getattr__":
+                return None
+            names.add(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if alias.name == "*":
+                    return None
+                names.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(node, ast.Assign):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return names
+
+
+@pytest.mark.parametrize("path", ACTIVE_SPEAKER_SOURCES, ids=_dotted)
+def test_every_jasper_import_resolves(path):
+    """A def moved between modules leaves imports naming its old home.
+
+    A relocation re-levels relative imports and leaves absolute ones spelled at
+    the old module; both halves are checked — the module must exist, and it
+    must still bind the names asked of it. Deferred imports execute on a path
+    the suite stubs out, so either mistake survives a green run and fails first
+    on hardware as an ImportError no caller classifies. Resolved against the
+    checkout rather than ``find_spec``, which executes the parent packages it
+    walks through.
     """
 
     package = _dotted(path)
     if path.name != "__init__.py":
         package = package.rpartition(".")[0]
     unresolved = []
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    for node in _import_nodes(tree.body, deferred=True):
+    for node in _import_nodes(
+        ast.parse(path.read_text(encoding="utf-8")).body, deferred=True
+    ):
         if isinstance(node, ast.Import):
-            targets = [alias.name for alias in node.names]
-        else:
-            module = (
-                resolve_name("." * node.level + (node.module or ""), package)
-                if node.level
-                else node.module or ""
+            unresolved.extend(
+                f"line {node.lineno}: {alias.name}"
+                for alias in node.names
+                if alias.name.split(".")[0] == "jasper"
+                and _module_path(alias.name) is None
             )
-            targets = [module]
-            init = _module_path(module)
-            if init is not None and init.name == "__init__.py":
-                # ``from pkg import x``: x is a submodule unless the package
-                # body binds the name itself.
-                exported = _package_exports(init)
-                targets += [
-                    f"{module}.{alias.name}"
-                    for alias in node.names
-                    if alias.name not in exported
-                ]
+            continue
+        if node.level:
+            try:
+                dotted = importlib.util.resolve_name(
+                    "." * node.level + (node.module or ""), package
+                )
+            except (ImportError, ValueError) as exc:
+                unresolved.append(f"line {node.lineno}: {exc}")
+                continue
+        else:
+            dotted = node.module or ""
+            if dotted.split(".")[0] != "jasper":
+                continue
+        target = _module_path(dotted)
+        if target is None:
+            unresolved.append(f"line {node.lineno}: {dotted}")
+            continue
+        bound = _bound_names(target)
+        if bound is None:
+            continue
         unresolved.extend(
-            target
-            for target in targets
-            if target.split(".")[0] == "jasper" and _module_path(target) is None
+            f"line {node.lineno}: {dotted}.{alias.name}"
+            for alias in node.names
+            if alias.name not in bound and _module_path(f"{dotted}.{alias.name}") is None
         )
-    assert unresolved == []
+    assert not unresolved, "; ".join(unresolved)

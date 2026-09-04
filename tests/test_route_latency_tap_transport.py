@@ -32,7 +32,6 @@ from jasper.cli import route_latency_harness as harness
 from jasper.fanin.status import FANIN_INPUT_SOURCE_DIRECT
 from jasper.route_latency import tap_transport as tt
 from jasper.route_latency.pairing import MicDetection
-from jasper.route_latency.status_socket import FANIN_STATUS_SOCKET
 from jasper.route_latency.tap_client import (
     FANIN_CONTROL_SOCKET,
     FANIN_DEFAULT_TAP_PATH,
@@ -223,11 +222,7 @@ def test_fanin_tap_path_matches_rust_impulse_tap_default():
     assert f'pub const DEFAULT_TAP_PATH: &str = "{FANIN_DEFAULT_TAP_PATH}";' in rust
 
 
-def test_fanin_control_socket_is_the_same_socket_as_status():
-    # One socket serves both STATUS (combo detection) and TAP_ARM (the arm). If
-    # they ever diverged, a reader would read one socket and arm another.
-    assert FANIN_CONTROL_SOCKET == FANIN_STATUS_SOCKET
-    # …and it lives in the Rust tap's allowed dir (TAP_PATH_DIR).
+def test_fanin_control_socket_lives_in_the_rust_taps_allowed_dir():
     rust = _FANIN_IMPULSE_TAP_RS.read_text(encoding="utf-8")
     tap_dir = str(Path(FANIN_DEFAULT_TAP_PATH).parent)
     assert f'pub const TAP_PATH_DIR: &str = "{tap_dir}";' in rust
