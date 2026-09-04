@@ -809,12 +809,12 @@ def _outputd_ring_status(*, fmt="S16_LE", channels=2, period=128, slots=2):
 
 
 def _buffer_health(data, *, period=128, content_hop=None):
-    from jasper.audio_runtime_plan import TRANSPORT_SHM_RING
+    from jasper.fanin_coupling import COUPLING_SHM_RING
 
     return audio_runtime_outputd._outputd_buffer_health(
         data,
         data["content"],
-        content_hop=content_hop or TRANSPORT_SHM_RING,
+        content_hop=content_hop or COUPLING_SHM_RING,
         content_buffer=data["content"]["buffer_frames"],
         dac_buffer=period * 4,
         period_frames=period,

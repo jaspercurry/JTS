@@ -28,7 +28,6 @@ from jasper.fanin_coupling import (
     RING_TRANSPORT_SHAPES,
     TRANSPORT_DAC_CONTENT_RING,
     TRANSPORT_OFF_RING,
-    TRANSPORT_SHM_RING,
     TRANSPORT_SHM_RING_ACTIVE,
     TransportTopology,
     coupling_value_removed,
@@ -164,9 +163,7 @@ def transport_topology_for_coupling(
             post_dsp_device = RING_PLAYBACK_DEVICE
             post_dsp_channels = wire.ring_b_channels if wire is not None else None
         return TransportTopology(
-            name=(
-                TRANSPORT_SHM_RING_ACTIVE if active_endpoint else TRANSPORT_SHM_RING
-            ),
+            name=TRANSPORT_SHM_RING_ACTIVE if active_endpoint else COUPLING_SHM_RING,
             fanin_to_camilla=fanin_to_camilla,
             camilla_to_outputd={
                 "transport": "shm_ring",
@@ -237,7 +234,7 @@ def transport_coherence_report(
     against the channels CamillaDSP's loaded config declares — see the comment
     on those checks for why the evidence is per-end.
 
-    Both ring SHAPES take the same branch: :data:`TRANSPORT_SHM_RING` and
+    Both ring SHAPES take the same branch: :data:`COUPLING_SHM_RING` and
     :data:`TRANSPORT_SHM_RING_ACTIVE` differ in WHICH post-DSP endpoint they
     expect, and the endpoint comparison reads that from the resolved topology
     rather than re-deriving it. The active shape additionally requires outputd's

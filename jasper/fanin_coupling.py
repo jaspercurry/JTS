@@ -285,6 +285,10 @@ OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR = "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT"
 # named shapes fails LOUD on one nobody handled, where a threaded device value
 # shears silently through five call sites.
 #
+# The plain-ring shape IS :data:`COUPLING_SHM_RING`, spelled by that name
+# everywhere rather than aliased: a shape whose token is the coupling's token is
+# one fact, and a second name for it can only drift.
+#
 # ``shm_ring_active`` is selected on the PERSISTED COUPLING plus the reconciler's
 # endpoint MARKER — deliberately NOT on the observed ``camilla_playback_device``.
 # Selecting on the observed device would make
@@ -292,7 +296,6 @@ OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR = "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT"
 # comparison vacuous: it would derive the expectation from the very value it is
 # checking, so a Camilla graph pointed at the wrong ring would define itself
 # correct.
-TRANSPORT_SHM_RING = COUPLING_SHM_RING
 TRANSPORT_SHM_RING_ACTIVE = "shm_ring_active"
 # One END of the box is off the one transport (ADR-0100) — the LEGACY FIFO
 # spelling of the round-trip ``dac_content`` lane, which outputd requires
@@ -311,7 +314,7 @@ TRANSPORT_DAC_CONTENT_RING = "dac_content_ring"
 TRANSPORT_SHAPES = frozenset(
     (
         TRANSPORT_OFF_RING,
-        TRANSPORT_SHM_RING,
+        COUPLING_SHM_RING,
         TRANSPORT_SHM_RING_ACTIVE,
         TRANSPORT_DAC_CONTENT_RING,
     )
@@ -322,7 +325,7 @@ TRANSPORT_SHAPES = frozenset(
 # permanent-red-line shape. The dac-content shape is NOT a member: its post-DSP
 # hop is a ring, but CamillaDSP does not drive it, so every camilla-endpoint
 # comparison in this set is meaningless there.
-RING_TRANSPORT_SHAPES = frozenset((TRANSPORT_SHM_RING, TRANSPORT_SHM_RING_ACTIVE))
+RING_TRANSPORT_SHAPES = frozenset((COUPLING_SHM_RING, TRANSPORT_SHM_RING_ACTIVE))
 
 
 @dataclass(frozen=True)
