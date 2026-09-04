@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -43,11 +42,9 @@ from jasper.active_speaker.crossover_v2.ring_projection import (
 )
 from jasper.cli._refusal import (
     EXIT_OK,
-    EXIT_REFUSED,
     EXIT_UNREADABLE,
     EXIT_WRITE_FAILED,
     StageFailed,
-    failed,
     stage,
 )
 
@@ -57,6 +54,7 @@ from ._common import (
     _ROUND_TOOL_ERRORS,
     _write,
     add_rungs_ms_argument,
+    refused_by_name,
 )
 
 #: Where the ring lands when the operator named no ``--dumps``: inside the
@@ -148,10 +146,9 @@ def _cmd_classify_features(args: argparse.Namespace) -> int:
     except (FeatureClassificationRefused, RingProjectionRefused) as refusal:
         # The instrument's own reason, and the directory actually read: a
         # refusal that named neither starts a wrong-directory hunt.
-        return failed(EXIT_REFUSED, refusal.reason, json.dumps(
-            {**refusal.detail, "programs_dir": str(programs_dir)},
-            sort_keys=True, default=str,
-        ))
+        return refused_by_name(
+            refusal.reason, {**refusal.detail, "programs_dir": str(programs_dir)}
+        )
 
     written = _write(
         artifact, args.out, round_dir / ARTIFACT_BY_VIEW[args.command].artifact
