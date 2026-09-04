@@ -4,11 +4,11 @@
 
 """Operator door onto the summed reverse null: the CONFIRM half.
 
-``jasper-delay-sweep propose`` computes a coordinate from banked per-driver
-curves; this plays it. ``--polarity both`` plays the in-phase and inverted
-takes at delay 0 — the PAIR is the polarity proof, neither half means anything
-alone — and ``--delays`` plays the proposal's optimum and a neighbour either
-side. It banks and does not grade: every coordinate writes ONE self-contained
+``jasper-round-views delay-landscape`` computes a coordinate from banked
+per-driver curves; this plays it. ``--polarity both`` plays the in-phase and
+inverted takes at delay 0 — the PAIR is the polarity proof, neither half means
+anything alone — and ``--delays`` plays the proposal's optimum and a neighbour
+either side. It banks and does not grade: every coordinate writes ONE self-contained
 JSON row to ``<bundle>/null_runs/`` carrying everything needed to judge it, so
 the row IS the join. A refusal is an output, printed verbatim from the module
 that decided it. Applying a confirmed delay is the prescription door's job.
@@ -30,7 +30,8 @@ from ._logging import configure_verbose_logging
 from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE
 
 #: Where this door banks one JSON row per played coordinate, beside the
-#: bundle it measured. ``jasper-delay-sweep confirm`` grades what lands here.
+#: bundle it measured. ``jasper-round-views delay-confirm`` grades what lands
+#: here.
 NULL_RUNS_DIR = "null_runs"
 
 #: Authority tier for the generated tool-menu index
@@ -763,16 +764,18 @@ def build_parser() -> argparse.ArgumentParser:
             "PURPOSE\n"
             "  Play the reverse null and bank one self-contained JSON row per\n"
             "  coordinate under <bundle>/null_runs/, usually reached for the\n"
-            "  polarity proof and the acoustic confirm after jasper-delay-\n"
-            "  sweep propose has printed where the null should sit --\n"
-            "  propose computes the delay landscape, this plays it and\n"
-            "  reports what the room actually did. Comparing rows across a\n"
-            "  run IS the grading step; this tool grades nothing itself.\n"
+            "  polarity proof and the acoustic confirm after\n"
+            "  jasper-round-views delay-landscape has printed where the null\n"
+            "  should sit -- that verb computes the delay landscape, this\n"
+            "  plays it and reports what the room actually did. Comparing\n"
+            "  rows across a run IS the grading step; this tool grades\n"
+            "  nothing itself.\n"
             "\n"
             "WHEN NOT TO USE\n"
-            "  - before jasper-delay-sweep propose has printed a coordinate\n"
-            "    grid -- a --delays value off that grid is refused (a\n"
-            "    coordinate nobody proposed names a graph nobody modelled)\n"
+            "  - before jasper-round-views delay-landscape has printed a\n"
+            "    coordinate grid -- a --delays value off that grid is\n"
+            "    refused (a coordinate nobody proposed names a graph nobody\n"
+            "    modelled)\n"
             "  - branches at very different sensitivities with no level\n"
             "    match applied -- an un-level-matched pair caps its own\n"
             "    null depth, and the depth is the whole reading\n"

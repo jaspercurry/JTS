@@ -216,7 +216,7 @@ ratified rulings. Constants land in code as the named program definitions;
   `null_walk` is the bounded delay stepping's decision content — spec,
   schedule, scoring, selection — and `active_speaker.delay_sweep` bounds
   one walk and states the depth bars it is read against.
-  `jasper-delay-sweep propose` is the operator door onto the computed
+  `jasper-round-views delay-landscape` is the operator door onto the computed
   optimum. A delay is found by compute-then-confirm
   (`crossover_v2.delay_landscape`), which proposes the coordinate from
   banked complex transfers and confirms it with three staged takes; the

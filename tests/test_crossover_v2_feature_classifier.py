@@ -1466,7 +1466,7 @@ def _bank_lateral_pose(
 def test_the_cli_reads_banked_lateral_poses_into_persistence(tmp_path, capsys):
     """6.2: the reuse this ticket requires, end to end -- ``load_round_pose_curves``
     reaches a REAL banked take file through the same reader
-    ``jasper-delay-sweep`` uses, never a second tree-walker.
+    ``jasper-round-views delay-landscape`` uses, never a second tree-walker.
 
     The stop is banked TWICE -- a superseded first attempt whose curve never
     swept the feature, then the retake. Latest attempt wins: exactly one
