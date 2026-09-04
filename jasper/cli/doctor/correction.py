@@ -71,6 +71,7 @@ REASON_LATEST_BUNDLE_NONE = "latest_bundle_none"
 REASON_LATEST_BUNDLE_INVALID = "latest_bundle_invalid"
 REASON_LATEST_BUNDLE_ISSUES = "latest_bundle_issues"
 REASON_LATEST_BUNDLE_UNCALIBRATED_MIC = "latest_bundle_uncalibrated_mic"
+REASON_LATEST_BUNDLE_SUMMARY_TRUNCATED = "latest_bundle_summary_truncated"
 
 REASON_CERT_NOT_INSTALLED = "cert_not_installed"
 REASON_CERT_IDENTITY_ABSENT = "cert_identity_absent"
@@ -523,12 +524,6 @@ def _correction_evidence_status(bundle: dict[str, object]) -> str:
 
 @doctor_check(order=32, group="correction")
 def check_correction_latest_bundle() -> CheckResult:
-    # `bundles.summarize_bundle_collection` walks every bundle under
-    # `sessions_dir` (and, per bundle, an uncapped `rglob("*")` for its byte
-    # size) with no cap parameter to bound either walk. Left uncapped here —
-    # capping the bundle count at this call site would silently understate
-    # the reported bundle_count/storage totals below. A cap belongs in
-    # jasper/correction/bundles.py itself (out of this module's scope).
     from jasper.correction import bundles
 
     sessions_dir = Path(
@@ -553,9 +548,11 @@ def check_correction_latest_bundle() -> CheckResult:
         f"session={latest.get('session_id')} state={latest.get('state')} "
         f"schema={latest.get('bundle_schema_version')}"
     )
+    truncated = bool(collection.get("truncated"))
     collection_summary = (
         f"; bundles={collection.get('bundle_count', 0)} "
-        f"storage={_format_byte_count(collection.get('total_bundle_size_bytes'))} "
+        f"storage={'≥' if truncated else ''}"
+        f"{_format_byte_count(collection.get('total_bundle_size_bytes'))} "
         f"private_raw={collection.get('private_raw_audio_count', 0)}/"
         f"{_format_byte_count(collection.get('private_raw_audio_bytes'))} "
         f"evidence={_correction_evidence_status(latest)}"
@@ -585,6 +582,13 @@ def check_correction_latest_bundle() -> CheckResult:
             "calibrate one under Microphone on /correction/ (enter the "
             "serial number and Fetch calibration)",
             reason=REASON_LATEST_BUNDLE_UNCALIBRATED_MIC,
+        )
+    if truncated:
+        return CheckResult(
+            "latest correction bundle", "warn",
+            summary + f"; bundle walk hit the {bundles.BUNDLE_WALK_MAX_ENTRIES}"
+            " entry cap — storage totals are a lower bound",
+            reason=REASON_LATEST_BUNDLE_SUMMARY_TRUNCATED,
         )
     return CheckResult("latest correction bundle", "ok", summary)
 

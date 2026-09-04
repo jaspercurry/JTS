@@ -4,11 +4,11 @@
 
 """Read-only audio profile classification.
 
-This module is intentionally small and side-effect-free. It does not
-open audio devices, call systemd, write env files, or touch the XVF
-chip. Callers pass in the observed facts they already have, and this
-module turns them into the shared vocabulary that status surfaces can
-show consistently.
+This module is intentionally small. It does not open audio devices, call
+systemd, write env files, or touch the XVF chip: the one probe it owns
+(`probe_xvf_mic`) reads /proc/asound identity only. Callers hand it the
+observed facts, and it turns them into the shared vocabulary that status
+surfaces can show consistently.
 
 Why this exists: `/aec`, `/wake/`, `jasper-doctor`, corpus mode, and
 future onboarding all need to distinguish operator intent from runtime
@@ -28,6 +28,7 @@ from .chip_aec.policy import (
     ACTION_USE_SOFTWARE_OR_TEST, STATUS_TESTING, permits_selection,
 )
 from .cli.aec_bridge_engines import DTLN_ENABLED_ENV
+from .mics import xvf3800
 from .mics.xvf3800 import (
     AEC_MIC_DEVICE_ENV,
     CHIP_AEC_ENABLED_ENV,
@@ -873,3 +874,61 @@ def build_audio_profile_status(
             "warnings": warnings,
         },
     }
+
+
+def probe_xvf_mic() -> MicProbe:
+    """One cheap XVF snapshot: /proc/asound identity, no stream, no chip write.
+
+    The only mic probe behind an audio-profile status (ADR-0228 rule 1) —
+    /aec polls it every 3 s and jasper-doctor runs it per check, so it must
+    stay total: any probe failure becomes a `probe_error` MicProbe, never an
+    exception.
+    """
+
+    try:
+        runtime_profile = xvf3800.detect_runtime_profile()
+        return MicProbe(
+            xvf_present=runtime_profile.present,
+            capture_channels=runtime_profile.capture_channels,
+            recommended_channels=xvf3800.RECOMMENDED_CAPTURE_CHANNELS,
+            display_name=runtime_profile.display_name,
+            alsa_card_name=runtime_profile.alsa_card_name,
+            variant_id=runtime_profile.variant_id,
+            geometry=runtime_profile.geometry,
+            chip_beam_plan=runtime_profile.chip_beam_plan_id,
+            chip_aec_supported=runtime_profile.chip_aec_supported,
+        )
+    except Exception as e:  # noqa: BLE001 - status must fail soft
+        return MicProbe(
+            xvf_present=False,
+            capture_channels=None,
+            probe_error=f"firmware probe failed: {e}",
+        )
+
+
+def audio_profile_status(
+    intent: AecIntent,
+    runtime: RuntimeAecEnv,
+    *,
+    bridge_active: bool,
+    mic: MicProbe | None = None,
+    chip_gate: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Probe the mic, then classify: the one audio-profile status reader.
+
+    Both /aec and jasper-doctor consume this, so one box cannot answer the
+    profile question two ways. Chip availability is not a parameter: since
+    the probe owns `chip_aec_supported`, taking it separately is how the two
+    copies could disagree.
+    """
+
+    if mic is None:
+        mic = probe_xvf_mic()
+    return build_audio_profile_status(
+        intent,
+        runtime,
+        mic,
+        bridge_active=bridge_active,
+        chip_available=mic.chip_aec_supported,
+        chip_gate=chip_gate,
+    )

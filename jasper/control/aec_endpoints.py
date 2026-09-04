@@ -22,16 +22,16 @@ from ..audio_profile_state import (
     AEC_MODE_ENV,
     AecIntent,
     DEFAULT_AEC_MODE_PATH,
-    MicProbe,
     PROFILE_DIRECT_MIC,
     PROFILE_XVF_CHIP_AEC,
     PROFILE_XVF_CHIP_AEC_TESTING,
     PROFILE_XVF_SOFTWARE_AEC3,
     RuntimeAecEnv,
-    build_audio_profile_status,
+    audio_profile_status,
     infer_audio_input_profile,
     normalize_audio_input_profile,
     parse_env_bool as _parse_audio_profile_bool,
+    probe_xvf_mic,
     profile_env_updates,
     resolve_audio_input_intent,
     runtime_env_from_mapping,
@@ -403,80 +403,6 @@ def _read_wake_word_status() -> dict[str, Any]:
     }
 
 
-def _audio_profile_status(
-    state: dict[str, Any],
-    *,
-    bridge_active: bool,
-    chip_available: bool,
-    chip_gate: dict[str, Any] | None = None,
-    env: dict[str, str] | None = None,
-    runtime: RuntimeAecEnv | None = None,
-    mic_probe: MicProbe | None = None,
-) -> dict[str, Any]:
-    """Read-only mic/profile status for the /wake/ page.
-
-    This is intentionally descriptive and side-effect-free: it reads the
-    reconciler-owned env file plus the XVF profile's firmware helpers,
-    then classifies intent vs observed runtime. It does not probe audio
-    streams or open devices on the hot polling path.
-    """
-    if env is None:
-        env = _fresh_jasper_env()
-    if runtime is None:
-        runtime = runtime_env_from_mapping(env, process_env=os.environ)
-    if mic_probe is None:
-        mic_probe = _xvf_mic_probe()
-
-    return build_audio_profile_status(
-        AecIntent(
-            mode=state["mode"],
-            raw_enabled=bool(state["leg_raw"]),
-            dtln_enabled=bool(state["leg_dtln"]),
-            chip_aec_enabled=bool(state["leg_chip_aec"]),
-            chip_aec_150_enabled=bool(state["leg_chip_aec_150"]),
-            chip_aec_210_enabled=bool(state["leg_chip_aec_210"]),
-            profile_selection=str(state.get("profile") or ""),
-        ),
-        runtime,
-        mic_probe,
-        bridge_active=bridge_active,
-        chip_available=chip_available,
-        chip_gate=chip_gate,
-    )
-
-
-def _xvf_mic_probe() -> MicProbe:
-    """Return one cheap XVF profile snapshot for a status request."""
-
-    try:
-        from ..mics import xvf3800
-        runtime_profile = xvf3800.detect_runtime_profile()
-        return MicProbe(
-            xvf_present=runtime_profile.present,
-            capture_channels=runtime_profile.capture_channels,
-            recommended_channels=xvf3800.RECOMMENDED_CAPTURE_CHANNELS,
-            display_name=runtime_profile.display_name,
-            alsa_card_name=runtime_profile.alsa_card_name,
-            variant_id=runtime_profile.variant_id,
-            geometry=runtime_profile.geometry,
-            chip_beam_plan=runtime_profile.chip_beam_plan_id,
-            chip_aec_supported=runtime_profile.chip_aec_supported,
-            probe_error=None,
-        )
-    except Exception:  # noqa: BLE001
-        return MicProbe(
-            xvf_present=False,
-            capture_channels=None,
-            recommended_channels=6,
-            display_name="Seeed ReSpeaker XVF3800 (USB UA)",
-            alsa_card_name="",
-            variant_id="",
-            geometry="",
-            chip_beam_plan="",
-            probe_error="firmware probe failed",
-        )
-
-
 def _chip_aec_gate(
     env: dict[str, str],
     state: dict[str, Any],
@@ -573,11 +499,10 @@ def _build_aec_full_status() -> dict:
     bridge_active = _aec_bridge_active()
     env = _fresh_jasper_env()
     runtime = runtime_env_from_mapping(env, process_env=os.environ)
-    # Wrap defensively so a profile probe failure can never 500 a status
-    # GET the /wake/ page polls every 3 s.
-    mic_probe = _xvf_mic_probe()
-    chip_available = mic_probe.chip_aec_supported
-    chip_gate = _chip_aec_gate(env, state, mic_available=chip_available)
+    mic_probe = probe_xvf_mic()
+    chip_gate = _chip_aec_gate(
+        env, state, mic_available=mic_probe.chip_aec_supported,
+    )
     requested_intent = AecIntent(
         mode=state["mode"],
         raw_enabled=bool(state["leg_raw"]),
@@ -587,14 +512,12 @@ def _build_aec_full_status() -> dict:
         chip_aec_210_enabled=bool(state["leg_chip_aec_210"]),
         profile_selection=str(state.get("profile") or ""),
     )
-    profile_status = _audio_profile_status(
-        state,
+    profile_status = audio_profile_status(
+        requested_intent,
+        runtime,
         bridge_active=bridge_active,
-        chip_available=chip_available,
+        mic=mic_probe,
         chip_gate=chip_gate,
-        env=env,
-        runtime=runtime,
-        mic_probe=mic_probe,
     )
     effective = _applied_aec_intent(
         requested_intent,
