@@ -11,7 +11,7 @@ the web front end, so a third mover — phone-guided, or whatever comes next —
 added with zero engine edits.
 
 Same family as ``tests/test_correction_boundary_ssot.py``'s
-``test_audio_measurement_imports_neither_consumer_package``: an AST walk, not a
+``test_package_boundary_holds``: an AST walk, not a
 grep, so a deferred import inside a function body is caught exactly like a
 top-level one.
 

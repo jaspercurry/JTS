@@ -23,7 +23,9 @@ Requirement 5 arrived with the cutover and is the same invariant one layer out:
 the truth layer imports no front end. `jasper/audio_measurement` importing
 neither consumer package is what makes it a valid home for the SSOT; adding
 `jasper/active_speaker/crossover_v2` and its own front end gives the layer's
-membership — both packages, all of each — a pin instead of a claim.
+membership — both packages, all of each — a pin instead of a claim. The engine
+never importing `jasper.correction` rides in the same table: it is what turns
+the two consumer packages from mutually dependent into a plain layer order.
 """
 from __future__ import annotations
 
@@ -211,25 +213,48 @@ def test_clamp_bounds_and_spec_edge_are_the_ssots_values():
     assert flat_spec.REFERENCE_BAND_HZ[0] == room_boundary.GATED_SPEC_LOWER_EDGE_HZ
 
 
-def test_audio_measurement_imports_neither_consumer_package():
+#: Package edges the tuning layers may not have, and why each one matters.
+PACKAGE_BOUNDARIES: tuple[tuple[str, tuple[tuple[str, ...], ...], str], ...] = (
+    (
+        "jasper/audio_measurement",
+        (("jasper", "correction"), ("jasper", "active_speaker")),
+        "that is what makes it a valid home for the boundary SSOT",
+    ),
+    (
+        "jasper/active_speaker",
+        (("jasper", "correction"),),
+        "correction is the layer above; the engine must not reach up into it",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "package,forbidden,why",
+    PACKAGE_BOUNDARIES,
+    ids=[row[0] for row in PACKAGE_BOUNDARIES],
+)
+def test_package_boundary_holds(package, forbidden, why):
     """The invariant the SSOT's placement rests on (room_boundary's docstring).
 
-    `correction` and `active_speaker` import each other, so neither is "below"
-    the other. `audio_measurement` earns the home by being imported by both
-    while importing neither — which is what lets `analysis.py` (itself a routed
-    site) read the boundary with no new cross-package edge.
+    `audio_measurement` earns the home by being imported by both consumer
+    packages while importing neither — which is what lets `analysis.py` (itself
+    a routed site) read the boundary with no new cross-package edge.
 
-    If this fails, the placement argument is no longer true: either move the
-    offending import out of `audio_measurement`, or re-argue where the SSOT
-    belongs. Do not just delete this test.
+    The second row is the direction that made the argument awkward to state:
+    `correction` imports `active_speaker.runtime_contract`, so once the engine
+    stops importing `jasper.correction` the two packages stop being mutually
+    dependent and `correction` is simply the layer above.
+
+    If either fails, the placement argument is no longer true: either move the
+    offending import out, or re-argue where the SSOT belongs. Do not just
+    delete this test.
     """
-    offenders = _upward_imports(
-        "jasper/audio_measurement", (("jasper", "correction"), ("jasper", "active_speaker"))
-    )
+    offenders = _upward_imports(package, forbidden)
     assert not offenders, (
-        "jasper/audio_measurement must import neither jasper.correction nor "
-        "jasper.active_speaker — that is what makes it a valid home for the "
-        "boundary SSOT:\n" + "\n".join(offenders)
+        f"{package} must not import "
+        + " or ".join(".".join(prefix) for prefix in forbidden)
+        + f" — {why}:\n"
+        + "\n".join(offenders)
     )
 
 

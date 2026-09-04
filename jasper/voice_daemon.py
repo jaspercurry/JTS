@@ -565,7 +565,7 @@ MEASUREMENT_PAUSE_SETUP_DRAIN_TIMEOUT_SEC = (
 # without this the speaker would stay silent forever. Named because it is a
 # contract, not a local timeout — a legitimate window can outlive it (a
 # capture setup may wait minutes for a human), so the coordinator renews the
-# lease every `correction.coordinator.MEASUREMENT_LEASE_REFRESH_SEC`. That
+# lease every `measurement_window.MEASUREMENT_LEASE_REFRESH_SEC`. That
 # interval must stay under this one with room for a retry, or a healthy
 # long window would un-gate mid-sweep and let household music back into the
 # capture. Pinned against the refresh interval by
@@ -2608,7 +2608,7 @@ class WakeLoop:
 
         Refuses with `BUSY` while a voice session is active — yanking it would
         orphan the user's turn. The coordinator
-        (jasper.correction.coordinator) checks STATUS first.
+        (jasper.measurement_window) checks STATUS first.
 
         Ordering is load-bearing (issue #1898): admission closes first, then
         the measurement event is set and the MEASUREMENT_AUTOCLEAR_SEC safety

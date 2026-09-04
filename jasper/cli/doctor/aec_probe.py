@@ -28,7 +28,7 @@ from ...audio_measurement.correction_lane import (
     run_correction_play,
 )
 from ...control import client as control
-from ...correction.coordinator import MeasurementWindowError, measurement_window
+from ...measurement_window import MeasurementWindowError, measurement_window
 from ._shared import CheckResult, _run
 from .aec import _AEC_MIC_MUSIC_THRESHOLD, _parse_rms_window
 

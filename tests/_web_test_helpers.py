@@ -45,7 +45,7 @@ def patch_measurement_window(monkeypatch: Any, calls: dict) -> None:
     as ``"open"``/``"close"``. ``calls["window_mode"]``: ``"fail"`` refuses
     entry, ``"fail_exit"`` fails the restore.
     """
-    from jasper.correction import coordinator
+    from jasper import measurement_window as coordinator
 
     @asynccontextmanager
     async def window(**kwargs: Any) -> AsyncIterator[None]:

@@ -1319,7 +1319,7 @@ bug-class list — are in
 Three facts about the open measurement window, so a mid-round anomaly has a named
 mechanism to check instead of a guess.
 
-**The household's renderers are not paused.** `correction/coordinator.py`'s
+**The household's renderers are not paused.** `jasper/measurement_window.py`'s
 `measurement_window()` asks `jasper-mux` for `TEST_SELECT correction`, which moves
 fan-in's diagnostic gate and nothing else. AirPlay, Spotify, Bluetooth and USB
 keep running and keep draining into their private lanes; a de-selected lane is

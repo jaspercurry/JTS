@@ -943,10 +943,13 @@ async def acquire_session_measurement_pause() -> None:
     global _session_pause_cm, _session_abort_target
     if _session_pause_cm is not None:
         return
-    from jasper.correction import coordinator
+    from jasper.measurement_window import (
+        MeasurementAbortTarget,
+        measurement_window,
+    )
 
-    target = coordinator.MeasurementAbortTarget()
-    cm = coordinator.measurement_window(abort_target=target)
+    target = MeasurementAbortTarget()
+    cm = measurement_window(abort_target=target)
     await cm.__aenter__()
     _session_pause_cm = cm
     _session_abort_target = target
@@ -996,9 +999,9 @@ async def _under_measurement_isolation(play_body: Callable[[], Any]) -> None:
     if session_measurement_pause_held():
         await _play_under_session_pause(play_body)
         return
-    from jasper.correction import coordinator
+    from jasper.measurement_window import measurement_window
 
-    async with coordinator.measurement_window():
+    async with measurement_window():
         await play_body()
 
 
@@ -1014,7 +1017,7 @@ async def _play_under_session_pause(play_body: Callable[[], Any]) -> None:
     a cancel that lands mid-play surfaces as the same named error, so the
     runner's cleanup arm persists an honest failure either way.
     """
-    from jasper.correction.coordinator import MeasurementWindowError
+    from jasper.measurement_window import MeasurementWindowError
 
     target = _session_abort_target
     if target is not None and target.failed:

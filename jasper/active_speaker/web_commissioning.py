@@ -116,7 +116,7 @@ COMMISSION_TONE_FANIN_LABEL = "correction"
 class FaninGateContext:
     """Nesting context for a tone/sweep played inside another feature's hold.
 
-    A correction measurement window (``jasper.correction.coordinator``) holds
+    A correction measurement window (``jasper.measurement_window``) holds
     the mux's single test fan-in gate for its whole duration under its own
     owner. When commission-tone playback runs *inside* that window (the
     crossover-driver-sweep relay flow), it must not claim the gate under its

@@ -876,7 +876,7 @@ def check_measurement_hold() -> CheckResult:
     of "a measurement is live" — while it is up, source-observed volume writes
     (a host moving its USB slider) are declined so they cannot walk the fader a
     sweep is holding, and every other measurement is refused. It renews every
-    ``coordinator.MEASUREMENT_LEASE_REFRESH_SEC`` and lapses on its own
+    ``measurement_window.MEASUREMENT_LEASE_REFRESH_SEC`` and lapses on its own
     ``MEASUREMENT_HOLD_TTL_SEC`` after that, so a crashed holder recovers with
     no operator step and this check has nothing to reap.
 

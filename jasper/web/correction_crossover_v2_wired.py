@@ -602,7 +602,7 @@ def build_v2_wired_run_and_consume(
             SessionGraphError,
         )
         from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
-        from jasper.correction.coordinator import MeasurementWindowError
+        from jasper.measurement_window import MeasurementWindowError
 
         # The host's side of the seam, late-bound on purpose (#2662): the
         # persisted codes, the program-failure classifier, the local-seam

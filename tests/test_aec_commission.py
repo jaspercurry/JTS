@@ -33,8 +33,8 @@ from jasper.chip_aec.alignment import (
     commissioning_stimulus,
 )
 from jasper.cli import aec_commission
-from jasper.correction import coordinator
-from jasper.correction.coordinator import MeasurementWindowError
+from jasper import measurement_window as coordinator
+from jasper.measurement_window import MeasurementWindowError
 from jasper.mics import xvf3800
 
 ROOT = Path(__file__).resolve().parents[1]

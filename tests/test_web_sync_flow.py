@@ -22,7 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import jasper.correction.coordinator as coordinator
+import jasper.measurement_window as coordinator
 import jasper.multiroom.state as mstate
 from jasper.web import rooms_setup as rooms
 from jasper.web import active_speaker_flow, sync_flow

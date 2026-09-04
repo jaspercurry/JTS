@@ -37,7 +37,7 @@ from jasper.audio_measurement.ramp import (
     LevelSample,
     capped_gap_step_db,
 )
-from jasper.correction.coordinator import (
+from jasper.measurement_window import (
     MeasurementWindowError,
     measurement_window,
 )
@@ -845,7 +845,7 @@ async def run_seat_level_ramp(
     reference names its stimulus. The hold rides the crossover session's own volume plan
     on the same durable statefile, and refuses under a live or unresolved session
     (:func:`live_measurement_session`). Runs inside the shared measurement window
-    (:func:`jasper.correction.coordinator.measurement_window`, owned as ``seat-level``);
+    (:func:`jasper.measurement_window.measurement_window`, owned as ``seat-level``);
     every lease self-expires. Persists a reference only on a reading that rose clear of
     a floor THIS PASS MEASURED IN SILENCE.
     """

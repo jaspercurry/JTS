@@ -59,7 +59,7 @@ from ._common import JsonBodyError, read_json_object
 from .balance_level import DEFAULT_LOCK_FRAMES, MicLevelTracker
 
 from jasper.audio_measurement.correction_lane import exec_correction_play
-from jasper.correction.coordinator import HeldWindow
+from jasper.measurement_window import HeldWindow
 from jasper.log_event import log_event
 
 logger = logging.getLogger("jasper.web.balance")

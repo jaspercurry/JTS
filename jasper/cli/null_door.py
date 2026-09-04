@@ -83,7 +83,7 @@ def _mid_run_failures() -> dict[type[BaseException], str]:
     from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
     from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
     from jasper.audio_measurement.wired_capture import WiredCaptureError
-    from jasper.correction.coordinator import MeasurementWindowError
+    from jasper.measurement_window import MeasurementWindowError
 
     return {
         SessionGraphError: REFUSE_GRAPH_LOST,

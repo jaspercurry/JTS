@@ -1448,7 +1448,7 @@ def test_start_handler_loads_measurement_baseline_before_sweep(
         yield
 
     monkeypatch.setattr(
-        "jasper.correction.coordinator.measurement_window", noop_window,
+        "jasper.measurement_window.measurement_window", noop_window,
     )
 
     # Point the new session at tmp_path so we don't write to /var.

@@ -444,7 +444,7 @@ def _drive_one_capture(
     from jasper.active_speaker import program_playback as playback_mod
     from jasper.audio_measurement import program as program_mod
     from jasper.audio_measurement import program_analysis as pa_mod
-    from jasper.correction import coordinator
+    from jasper import measurement_window as coordinator
 
     monkeypatch.setattr(coordinator, "measurement_window", lambda **kw: _FakeWindow())
     monkeypatch.setattr(program_mod, "write_program_wav", lambda path, program: None)

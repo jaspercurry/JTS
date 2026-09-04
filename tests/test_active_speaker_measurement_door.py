@@ -42,7 +42,7 @@ VOLUME_STATE = "session_volume.json"
 @pytest.fixture
 def box(tmp_path, monkeypatch):
     """A speaker with a fake DSP, a real owner, and no isolation to acquire."""
-    from jasper.correction import coordinator
+    from jasper import measurement_window as coordinator
 
     class _NoWindow:
         async def __aenter__(self) -> Any:
@@ -302,7 +302,7 @@ async def test_the_door_holds_the_gate_under_the_owner_its_caller_states(
     Default unchanged: ``None`` keeps the wizard's owner, so every caller that
     does not care is byte-identical to before.
     """
-    from jasper.correction import coordinator
+    from jasper import measurement_window as coordinator
     from jasper.mux import FANIN_TEST_OWNERS
 
     seen: list[str | None] = []

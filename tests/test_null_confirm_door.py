@@ -652,7 +652,7 @@ def test_the_door_holds_the_fanin_gate_under_its_own_registered_owner(
     """
     import importlib
 
-    from jasper.correction.coordinator import MEASUREMENT_GATE_OWNER
+    from jasper.measurement_window import MEASUREMENT_GATE_OWNER
     from jasper.mux import FANIN_TEST_OWNERS
 
     owner = importlib.import_module(module).DOOR_GATE_OWNER
@@ -666,7 +666,7 @@ def test_the_door_holds_the_fanin_gate_under_its_own_registered_owner(
     [
         ("jasper.active_speaker.crossover_v2.session_graph", "SessionGraphError",
          null_door.REFUSE_GRAPH_LOST),
-        ("jasper.correction.coordinator", "MeasurementWindowError",
+        ("jasper.measurement_window", "MeasurementWindowError",
          null_door.REFUSE_ISOLATION_LOST),
         ("jasper.active_speaker.session_volume_plan", "SessionVolumePlanError",
          null_door.REFUSE_VOLUME_LOST),

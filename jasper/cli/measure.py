@@ -820,7 +820,7 @@ def _session_scoped_aborts() -> tuple[tuple[type[BaseException], ...], dict[type
     )
     from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
     from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
-    from jasper.correction.coordinator import MeasurementWindowError
+    from jasper.measurement_window import MeasurementWindowError
 
     reasons: dict[type, str] = {
         SessionGraphError: REFUSE_GRAPH_LOST,
