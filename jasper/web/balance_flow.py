@@ -129,7 +129,7 @@ def _bump_activity_locked() -> None:
 def _reset_locked(error: str = "") -> None:
     reset_session_locked(
         _state,
-        {"locks": {}, "ramp": None, "recommendation": None, "applied": None,
+        {"locks": {}, "recommendation": None, "applied": None,
          "meter": MicLevelTracker(), "meter_floor": None, "meter_target": None,
          "floor_wait_started_at": None, "volume_guard": None},
         proc_key="ramp",

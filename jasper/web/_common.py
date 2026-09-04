@@ -716,14 +716,11 @@ def reset_session_locked(
     proc_key: str,
     error: str = "",
 ) -> None:
-    """Return a measurement flow's session ``state`` to idle. Call under the
-    flow's own lock; ``fields`` carries that flow's schema delta.
-
-    Bumps ``session_token`` so a coroutine still holding the old token can
-    recognise its session was replaced, SIGTERMs the process recorded under
-    ``state[proc_key]["proc"]``, and finally invokes any ``release_window``
-    callable. Every step is non-blocking: a reap would need the background
-    loop, which deadlocks against a playback watcher waiting on this lock.
+    """Return a measurement flow's session ``state`` to idle, clearing the
+    child held under ``proc_key``; call under the flow's own lock, with
+    ``fields`` carrying that flow's schema delta. Every step is
+    non-blocking — a reap would need the background loop, which deadlocks
+    against a playback watcher waiting on the caller's lock.
     """
     holder = state.get(proc_key)
     if holder:
@@ -735,6 +732,7 @@ def reset_session_locked(
         "members": None,
         "session_token": int(state.get("session_token", 0)) + 1,
         "release_window": None,
+        proc_key: None,
         **fields,
     })
     if release is not None:

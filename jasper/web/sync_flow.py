@@ -57,7 +57,7 @@ _state: dict[str, Any] = {
 def _reset_locked(error: str = "") -> None:
     reset_session_locked(
         _state,
-        {"result": None, "recommendation": None, "playback": None},
+        {"result": None, "recommendation": None},
         proc_key="playback",
         error=error,
     )
