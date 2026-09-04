@@ -87,11 +87,6 @@ REASON_OUTPUT_HARDWARE_CLOCK_BLOCKED = "output_hardware_clock_blocked"
 
 REASON_TOPOLOGY_UNREADABLE = "output_topology_unreadable"
 REASON_TOPOLOGY_NOT_CONFIGURED = "output_topology_not_configured"
-REASON_TOPOLOGY_NOT_ROLEFUL = "output_topology_not_roleful"
-REASON_TOPOLOGY_NO_BLOCKERS = "output_topology_no_blockers"
-REASON_TOPOLOGY_BLOCKERS_PROBE_FAILED = "topology_blockers_graph_probe_failed"
-REASON_TOPOLOGY_BLOCKERS_NOT_PARKED = "topology_blockers_not_parked"
-REASON_TOPOLOGY_BLOCKERS_PARKED = "topology_blockers_parked"
 
 REASON_CAMILLA_CONFIG_DIR_MISSING = "camilla_config_dir_missing"
 REASON_CAMILLA_CONFIG_DIR_UNREADABLE = "camilla_config_dir_unreadable"
@@ -1247,12 +1242,58 @@ def check_camilla_ring_chunk_fits() -> CheckResult:
     return CheckResult(label, "ok", fits)
 
 
+_SPEAKER_SETUP_URL = "http://<speaker>/sound/setup/"
+
+
+def _blocker_summary(contract) -> str:
+    """``blockers=<codes>: <messages>`` for a contract, empty when it is clean."""
+
+    if not contract.issues:
+        return ""
+    codes = ",".join(str(issue.get("code") or "") for issue in contract.issues)
+    messages = "; ".join(
+        str(issue.get("message") or "")
+        for issue in contract.issues
+        if issue.get("message")
+    )
+    return f"blockers={codes}" + (f": {messages}" if messages else "")
+
+
+def _incomplete_layout_detail(contract) -> str:
+    """Why the saved layout is not a complete passive one, and where to fix it."""
+
+    blocker = (
+        contract.issues[0]["message"]
+        if contract.issues
+        else "saved layout is not a complete passive mono or stereo layout"
+    )
+    return f"{blocker}. Fix the layout at {_SPEAKER_SETUP_URL}"
+
+
 @doctor_check(order=28.5, group="audio")
 def check_active_speaker_runtime_graph() -> CheckResult:
-    """Report the graph selected for saved speaker intent, fail closed if unsafe."""
+    """Report the graph selected for saved speaker intent, fail closed if unsafe.
+
+    "Is the speaker parked" is answered by ``active_graph_is_parked`` and the
+    way out by ``parked_muted_exits`` — the readers ``/state`` and
+    ``jasper.control.audio_health`` consume (ADR-0228 rule 1). Asked of the
+    file the safety proof classified, not of a second statefile resolution, so
+    one row never mixes two views of the disk. Deliberately narrower than those
+    two reporting surfaces in one direction: bytes carrying the parked
+    provenance marker that FAIL the structural all-muted proof are reported
+    here as unsafe, never as a healthy park.
+
+    The saved layout's unresolved blockers ride on this row rather than a
+    second one: a blocker is already a refusal of the runtime graph, and on a
+    parked box it needs saying that clearing them does not by itself restore
+    sound — parking is gated on the absence of a staged startup graph.
+
+    Parked is WARN, never FAIL (#2145): a parked speaker is silent, not broken,
+    and a mid-commission box must stay deployable.
+    """
     from jasper.active_speaker.runtime_contract import (
         CONTRACT_UNCONFIGURED,
-        GRAPH_PARKED_ALL_MUTED,
+        active_graph_is_parked,
         classify_bass_extension_graph,
         classify_output_contract,
         parked_muted_exits,
@@ -1260,12 +1301,12 @@ def check_active_speaker_runtime_graph() -> CheckResult:
     )
     from jasper.output_topology import OutputTopologyError
 
+    name = "active speaker runtime graph"
     try:
         topology = _output_topology_strict()
     except OutputTopologyError as exc:
         return CheckResult(
-            "active speaker runtime graph",
-            "fail",
+            name, "fail",
             f"saved output topology is unavailable or invalid: {exc}",
             reason=REASON_TOPOLOGY_UNREADABLE,
         )
@@ -1275,8 +1316,7 @@ def check_active_speaker_runtime_graph() -> CheckResult:
     # are not passive playback contracts.
     if topology_allows_flat_dac_graph(contract):
         return CheckResult(
-            "active speaker runtime graph",
-            "ok",
+            name, "ok",
             f"{contract.classification}: explicit passive layout is valid",
             reason=REASON_GRAPH_PASSIVE_LAYOUT,
         )
@@ -1284,19 +1324,16 @@ def check_active_speaker_runtime_graph() -> CheckResult:
     statefile, config_path = evidence.get("camilla_config", _active_camilla_config_path)
     if config_path is None:
         return CheckResult(
-            "active speaker runtime graph",
-            "fail",
+            name, "fail",
             (
                 f"could not read config_path from {statefile}; saved topology "
                 "does not permit an unchecked flat fallback"
             ),
             reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
         )
-    path = Path(config_path)
-    if not path.exists():
+    if not Path(config_path).exists():
         return CheckResult(
-            "active speaker runtime graph",
-            "fail",
+            name, "fail",
             f"statefile points at missing config {config_path}",
             reason=REASON_CAMILLA_CONFIG_MISSING,
         )
@@ -1314,55 +1351,42 @@ def check_active_speaker_runtime_graph() -> CheckResult:
         intent_path=BASS_EXTENSION_APPLY_INTENT_PATH,
         staged_metadata_path=staged_metadata_path(),
     )
-    if graph.classification == GRAPH_PARKED_ALL_MUTED and graph.allowed:
+    if graph.allowed and active_graph_is_parked(graph.config_path):
         # A parked graph is intentional silence, not a broken runtime — both a
         # zero-group topology (the household must choose a layout) and an
-        # incomplete roleful layout. The action is owned by
-        # ``parked_muted_exits`` so doctor, /state, and the dashboard cannot
-        # invent three versions of it.
+        # incomplete roleful layout. Either way the proof above establishes that
+        # every output is muted, so both arms below carry `speaker_silent`.
         if contract.classification == CONTRACT_UNCONFIGURED or (
             contract.requires_roleful_graph
         ):
+            blockers = _blocker_summary(contract)
             return CheckResult(
-                "active speaker runtime graph",
-                "warn",
-                (
-                    f"parked silent for {contract.classification}: "
-                    f"{parked_muted_exits(topology)}"
-                ),
+                name, "warn",
+                f"parked silent for {contract.classification}."
+                + (f" Clear {blockers} at {_SPEAKER_SETUP_URL}." if blockers else "")
+                + f" Next: {parked_muted_exits(topology)}",
                 speaker_silent=True,
                 reason=REASON_GRAPH_PARKED_SILENT,
             )
-        detail = (
-            contract.issues[0]["message"]
-            if contract.issues
-            else "saved layout is not a complete passive mono or stereo layout"
-        )
         return CheckResult(
-            "active speaker runtime graph", "fail", detail,
+            name, "fail", _incomplete_layout_detail(contract),
+            speaker_silent=True,
             reason=REASON_GRAPH_LAYOUT_INCOMPLETE,
         )
     if graph.allowed:
         if contract.classification == CONTRACT_UNCONFIGURED:
             return CheckResult(
-                "active speaker runtime graph",
-                "fail",
+                name, "fail",
                 "unconfigured topology must use the proved parked graph",
                 reason=REASON_GRAPH_UNCONFIGURED_NOT_PARKED,
             )
         if not contract.requires_roleful_graph:
-            detail = (
-                contract.issues[0]["message"]
-                if contract.issues
-                else "saved layout is not a complete passive mono or stereo layout"
-            )
             return CheckResult(
-                "active speaker runtime graph", "fail", detail,
+                name, "fail", _incomplete_layout_detail(contract),
                 reason=REASON_GRAPH_LAYOUT_INCOMPLETE,
             )
         return CheckResult(
-            "active speaker runtime graph",
-            "ok",
+            name, "ok",
             f"{graph.classification} is legal for {contract.classification}",
         )
 
@@ -1371,123 +1395,7 @@ def check_active_speaker_runtime_graph() -> CheckResult:
         if graph.issues
         else "Camilla graph is unsafe for saved active speaker topology"
     )
-    return CheckResult(
-        "active speaker runtime graph", "fail", detail,
-        reason=REASON_GRAPH_UNSAFE,
-    )
-
-
-@doctor_check(order=28.6, group="audio")
-def check_active_speaker_topology_blockers() -> CheckResult:
-    """Name the saved layout's unresolved blockers on a parked speaker.
-
-    A blocker on a roleful topology no longer aborts the deploy (#2145), so
-    this is the replacement signal. The blockers and the way OUT of parked are
-    two facts: parking is gated on the absence of a staged startup graph, not
-    on the blockers, so clearing them does not on its own restore sound. The
-    exits come from :func:`parked_muted_exits`, the capability-aware helper the
-    CLI and `/state` also use — it drops actions a DAC can never complete.
-
-    WARN, never FAIL: a parked speaker is silent, not broken, and warning keeps
-    a mid-commission box deployable (#2145). Scoped to the parked outcome: a
-    blocker-bearing topology that DOES have a staged graph is reported by
-    `check_active_speaker_runtime_graph`.
-    """
-
-    from jasper.active_speaker.runtime_contract import (
-        PARKED_MUTED_STATUS,
-        classify_output_contract,
-        parked_muted_exits,
-        safe_graph_for_current_topology,
-    )
-    from jasper.output_topology import OutputTopologyError
-
-    name = "active speaker topology blockers"
-    try:
-        topology = _output_topology_strict()
-    except OutputTopologyError:
-        # Points, does not restate: `check_active_speaker_runtime_graph` and
-        # `check_active_speaker_output_hardware_match` both already print the
-        # parse error verbatim. Still a `fail`, not an ok-defer — this check
-        # cannot answer its question without a topology, and a green line next
-        # to two reds would read as "the layout is fine".
-        return CheckResult(
-            name,
-            "fail",
-            (
-                "saved output topology could not be loaded, so its blockers "
-                "cannot be listed; the active speaker runtime graph check "
-                "reports the parse error"
-            ),
-            reason=REASON_TOPOLOGY_UNREADABLE,
-        )
-
-    contract = classify_output_contract(topology)
-    if not contract.requires_roleful_graph:
-        return CheckResult(
-            name,
-            "skipped",
-            f"{contract.classification}: no roleful/protected outputs configured",
-            reason=REASON_TOPOLOGY_NOT_ROLEFUL,
-        )
-    if not contract.issues:
-        return CheckResult(
-            name, "ok", f"{contract.classification}: no topology blockers",
-            reason=REASON_TOPOLOGY_NO_BLOCKERS,
-        )
-
-    codes = ",".join(str(issue.get("code") or "") for issue in contract.issues)
-    messages = "; ".join(
-        str(issue.get("message") or "")
-        for issue in contract.issues
-        if issue.get("message")
-    )
-    try:
-        decision = safe_graph_for_current_topology(topology)
-    except (OSError, ValueError, OutputTopologyError) as exc:
-        # The blockers are the finding; a failed selection probe must not hide
-        # them, so report what is known and say the probe did not answer.
-        return CheckResult(
-            name,
-            "warn",
-            (
-                f"saved layout has unresolved blockers={codes}"
-                f"{': ' + messages if messages else ''}; "
-                f"could not determine the selected runtime graph ({exc}). "
-                "Fix the speaker layout at http://<speaker>/sound/setup/"
-            ),
-            reason=REASON_TOPOLOGY_BLOCKERS_PROBE_FAILED,
-        )
-
-    if decision.status != PARKED_MUTED_STATUS:
-        return CheckResult(
-            name,
-            "ok",
-            (
-                f"saved layout has blockers={codes}, but the speaker is not "
-                f"parked (runtime graph: {decision.status}); reported by the "
-                "active speaker runtime graph check"
-            ),
-            reason=REASON_TOPOLOGY_BLOCKERS_NOT_PARKED,
-        )
-
-    return CheckResult(
-        name,
-        "warn",
-        (
-            f"speaker is parked silent and its saved layout still has "
-            f"unresolved blockers={codes}"
-            f"{': ' + messages if messages else ''}. "
-            "Clearing them does not by itself unpark the speaker — "
-            f"next: {parked_muted_exits(topology)}. "
-            "Fix the layout at http://<speaker>/sound/setup/"
-        ),
-        # Reached only when `safe_graph_for_current_topology` returned
-        # PARKED_MUTED_STATUS, so the speaker is provably emitting nothing
-        # (#2471). The two warn branches above are NOT silent.
-        speaker_silent=True,
-        reason=REASON_TOPOLOGY_BLOCKERS_PARKED,
-    )
+    return CheckResult(name, "fail", detail, reason=REASON_GRAPH_UNSAFE)
 
 
 def _sound_profile_path() -> Path:
