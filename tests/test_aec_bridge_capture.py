@@ -29,6 +29,7 @@ from jasper.cli.aec_bridge_capture import usb_resampler
 from jasper.cli.aec_bridge_engines import FRAME_SAMPLES, SAMPLE_RATE
 from jasper.cli.aec_bridge_telemetry import _BridgeStats
 from tests._aec_bridge_helpers import IDENTITY
+from tests._sounddevice_stub import stub_sounddevice
 
 BRIDGE_SOURCE = Path(__file__).resolve().parents[1] / "jasper" / "cli" / "aec_bridge.py"
 
@@ -60,9 +61,7 @@ def test_mic_thread_logs_negotiated_input_latency(monkeypatch):
         blocksize=319,
     )
     input_stream = _input_stream(stream)
-    monkeypatch.setattr(
-        aec_bridge_capture, "sd", SimpleNamespace(InputStream=input_stream),
-    )
+    stub_sounddevice(monkeypatch, SimpleNamespace(InputStream=input_stream))
     event = MagicMock()
     monkeypatch.setattr(aec_bridge_capture, "log_event", event)
     stats = _BridgeStats(IDENTITY)
@@ -115,9 +114,7 @@ def test_mic_thread_passes_configured_capture_latency(
         blocksize=FRAME_SAMPLES,
     )
     input_stream = _input_stream(stream)
-    monkeypatch.setattr(
-        aec_bridge_capture, "sd", SimpleNamespace(InputStream=input_stream),
-    )
+    stub_sounddevice(monkeypatch, SimpleNamespace(InputStream=input_stream))
 
     aec_bridge_capture.mic_thread(
         MagicMock(),

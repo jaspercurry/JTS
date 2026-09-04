@@ -24,7 +24,6 @@ import time
 from typing import Any, Optional
 
 import numpy as np
-import sounddevice as sd
 
 from jasper.dsp_numpy import resample_poly
 from jasper.log_event import log_event
@@ -35,6 +34,9 @@ from jasper.cli.aec_bridge_telemetry import (
     logger,
 )
 from ..mics import xvf3800 as _mic_profile
+
+# `sounddevice` is imported where a capture device is opened, not here, so
+# importing this module costs no PortAudio. tests/test_lazy_imports.py pins it.
 
 # Above this, `jasper.dsp_numpy.resample_poly` runs one Python-level polyphase
 # branch per unit of `max(up, down)` and stops fitting a capture callback: a
@@ -58,6 +60,8 @@ def _usb_capture_rate(*, usb_mic_device: str, usb_mic_rate: int) -> int:
     """Return the USB mic capture rate PortAudio can actually open."""
     if usb_mic_rate > 0:
         return usb_mic_rate
+    import sounddevice as sd  # Pi-side dep, lazy — see module top.
+
     info = sd.query_devices(usb_mic_device, "input")
     rate = int(round(float(info.get("default_samplerate") or SAMPLE_RATE)))
     return rate if rate > 0 else SAMPLE_RATE
@@ -137,6 +141,8 @@ def mic_thread(
             if capture_latency == "low"
             else float(capture_latency)
         )
+    import sounddevice as sd  # Pi-side dep, lazy — see module top.
+
     with sd.InputStream(**input_stream_kwargs) as stream:
         log_event(
             logger,
@@ -227,6 +233,8 @@ def usb_mic_thread(
             except Full:
                 stats.inc_nested("queue_drops", "usb")
                 logger.warning("usb corpus mic queue full, dropping frame")
+
+    import sounddevice as sd  # Pi-side dep, lazy — see module top.
 
     with sd.InputStream(
         device=usb_mic_device,
