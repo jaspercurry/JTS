@@ -465,11 +465,11 @@ def test_missing_intent_file_is_the_explicit_opt_in_gate(tmp_path: Path) -> None
 def test_absent_intent_file_leaves_an_existing_managed_block_alone(
     tmp_path: Path,
 ) -> None:
-    """An intent file absent (never saved) is distinct from one that
+    """An absent intent file (never saved) differs from an explicit "none".
 
-    explicitly says "none": the former must not touch a managed block
-    that already exists in config.txt -- only a present-and-empty intent
-    file (write_i2s_hat_intent(None)) removes it (#i2s-hat-intent).
+    The former must not touch a managed block that already exists in
+    config.txt -- only a present-and-empty intent file
+    (write_i2s_hat_intent(None)) removes it (#i2s-hat-intent).
     """
     model, config, intent, udc = _boot_paths(tmp_path)
     config.write_text(PERIPHERAL, encoding="utf-8")
