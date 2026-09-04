@@ -3158,10 +3158,10 @@ def test_a_held_round_clears_the_accountability_prediction_gate():
     """
     from jasper.active_speaker.crossover_v2 import accountability
     from jasper.active_speaker.crossover_v2.candidates import LinearizationState
-    from jasper.active_speaker.crossover_v2.attempt_grading import (
+    from jasper.active_speaker.crossover_v2_flow import (
         PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
+        spec_report_for_predicted_sum,
     )
-    from jasper.active_speaker.crossover_v2_flow import spec_report_for_predicted_sum
 
     shipped, combed = _held_round_models()
 

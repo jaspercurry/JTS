@@ -377,11 +377,22 @@ from jasper.active_speaker.crossover_v2.spatial import (
     GEOMETRY_RETRY_POSITIONS as GEOMETRY_RETRY_POSITIONS,
 )
 
-from jasper.active_speaker.crossover_v2.attempt_grading import (
-    ATTEMPT_REASON_NO_FLOOR as ATTEMPT_REASON_NO_FLOOR,
-    PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB as PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
-    PRESCRIBED_NON_WORSENING_DB as _PRESCRIBED_NON_WORSENING_DB,
-)
+# The cross-session tuning-attempt ledger's constants. Here because this module
+# applies all three and nothing else reads them: ``_assert_accountable`` chooses
+# between the two bars, ``_grade_verify_attempt`` emits the reason.
+
+#: A grading status, not a refusal: no ``REASON_REGISTRY`` entry, no copy.
+ATTEMPT_REASON_NO_FLOOR = "ungraded_no_floor"
+
+#: dB of pooled spec residual (``flat_spec.spec_convergence_residual``), RAW
+#: pre-fit against LINEARIZED predicted sum; 0.5 is the model's own measured
+#: VERIFY tracking error on JTS3. A ledger boundary, never a refusal. See
+#: ADR-0227 #4.
+PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB = 0.5
+
+#: dB. Non-worsening bar for PRESCRIBED branches; a ledger boundary between
+#: ``improved`` and ``not_an_improvement``, never a refusal. See ADR-0227 #4.
+PRESCRIBED_NON_WORSENING_DB: float = 0.0
 
 
 def _prescribed_roles(candidate: Any) -> tuple[str, ...]:
@@ -3568,7 +3579,7 @@ class CrossoverV2Session:
             state=linearization,
             grade_prediction=spec_report_for_predicted_sum,
             material_improvement_db=(
-                _PRESCRIBED_NON_WORSENING_DB if prescribed_graph
+                PRESCRIBED_NON_WORSENING_DB if prescribed_graph
                 else PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
             ),
         )
@@ -4617,5 +4628,6 @@ __all__ = [
     "verify_absolute_tolerance_db",
     "LINEARIZATION_TRIM_SANITY_MARGIN_DB",
     "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB",
+    "PRESCRIBED_NON_WORSENING_DB",
     "spec_report_for_predicted_sum",
 ]

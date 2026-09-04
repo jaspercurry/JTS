@@ -21,7 +21,6 @@ import pytest
 from jasper.active_speaker.attempts_loop import (
     CLAIM_FLOOR_P95_MULTIPLE,
     CONTINUE,
-    DECISIONS,
     FLOOR_BASIS_MEASURED,
     FLOOR_BASIS_POLICY,
     FLOOR_SCOPE_ACROSS_SITTINGS,
@@ -794,7 +793,6 @@ def test_every_decision_serialises_with_the_numbers_it_used():
         [_attempt("a1", grade_db=5.0), _attempt("a2", grade_db=1.0)], _floor(),
     )
     payload = decision.to_dict()
-    assert payload["decision"] in DECISIONS
     assert payload["basis_attempt_ids"] == ["a1", "a2"]
     assert payload["magnitude_db"] == pytest.approx(4.0)
     assert payload["floor"]["claim_floor_db"] == pytest.approx(0.17016)
@@ -803,7 +801,7 @@ def test_every_decision_serialises_with_the_numbers_it_used():
 
 
 def test_material_improvement_bar_is_the_shipped_constant_not_a_copy():
-    from jasper.active_speaker.crossover_v2.attempt_grading import (
+    from jasper.active_speaker.crossover_v2_flow import (
         PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
     )
 

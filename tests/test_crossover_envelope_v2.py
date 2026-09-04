@@ -86,9 +86,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     verify_inconclusive_cause,
     verify_inconclusive_message,
 )
-from jasper.active_speaker.crossover_v2.attempt_grading import (
-    ATTEMPT_REASON_NO_FLOOR,
-)
+from jasper.active_speaker.crossover_v2_flow import ATTEMPT_REASON_NO_FLOOR
 from jasper.active_speaker.crossover_v2.contracts import (
     ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
 )
