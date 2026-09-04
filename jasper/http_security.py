@@ -67,11 +67,13 @@ def normalize_host(value: str | None) -> str:
 
 
 def _configured_hostnames(configured_hostname: str | None = None) -> set[str]:
-    configured = normalize_host(
-        configured_hostname
-        or os.environ.get("JASPER_HOSTNAME")
-        or DEFAULT_MANAGEMENT_HOSTNAME,
-    )
+    # An explicit argument still wins; otherwise the ONE resolver answers,
+    # so this guard and every URL the speaker builds agree on its name.
+    # Lazy import: jasper.identity takes DEFAULT_MANAGEMENT_HOSTNAME from
+    # this module at load time, so a module-level import here would cycle.
+    from .identity import resolve_hostname
+
+    configured = normalize_host(configured_hostname or resolve_hostname())
     names = {"localhost"}
     local_hostname = normalize_host(socket.gethostname())
     if local_hostname:

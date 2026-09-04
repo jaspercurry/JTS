@@ -58,13 +58,13 @@ def test_read_identity_hostname_defaults_when_unset(monkeypatch, tmp_path):
     assert identity.read_identity().hostname == "jts.local"
 
 
-def test_read_identity_hostname_falls_back_to_recorded_configured_hostname(
+def test_read_identity_hostname_prefers_the_recorded_configured_hostname(
     monkeypatch, tmp_path,
 ):
-    """A CLI run over ssh gets no EnvironmentFile, so JASPER_HOSTNAME is unset
-    and the process must read the hostname the reconciler recorded — otherwise
-    every box prints "jts.local" (F1: `jasper-crossover-prescriber status` on
-    jts3)."""
+    """The reconciler's record is re-read fresh; a process environment is a
+    snapshot frozen at unit start. So the recorded CONFIGURED name wins over
+    a JASPER_HOSTNAME the daemon booted with, and a CLI over ssh (no
+    EnvironmentFile at all) stops printing "jts.local" on every box."""
     identity_file = tmp_path / "identity.env"
     identity_file.write_text(
         "JASPER_IDENTITY_OS_HOSTNAME=jts3\n"
@@ -72,23 +72,11 @@ def test_read_identity_hostname_falls_back_to_recorded_configured_hostname(
         "JASPER_IDENTITY_CONFIGURED_HOSTNAME=jts3.local\n",
         encoding="utf-8",
     )
-    monkeypatch.delenv("JASPER_HOSTNAME", raising=False)
+    monkeypatch.setenv("JASPER_HOSTNAME", "stale.local")
     monkeypatch.setenv("JASPER_IDENTITY_FILE", str(identity_file))
     # The CONFIGURED name, not the OS name and not what Avahi renamed us to:
     # identity reads the *intended* side of that file, never the observed one.
     assert identity.read_identity().hostname == "jts3.local"
-
-
-def test_read_identity_hostname_env_wins_over_recorded(monkeypatch, tmp_path):
-    """A daemon's EnvironmentFile is fresher than the reconciler's 5-minute
-    snapshot, so a set JASPER_HOSTNAME wins over the recorded one."""
-    identity_file = tmp_path / "identity.env"
-    identity_file.write_text(
-        "JASPER_IDENTITY_CONFIGURED_HOSTNAME=stale.local\n", encoding="utf-8",
-    )
-    monkeypatch.setenv("JASPER_HOSTNAME", "jts5.local")
-    monkeypatch.setenv("JASPER_IDENTITY_FILE", str(identity_file))
-    assert identity.read_identity().hostname == "jts5.local"
 
 
 def test_read_identity_hostname_ignores_a_blank_recorded_hostname(
