@@ -168,8 +168,8 @@ delta you claim. Bank it rather than re-deriving it by hand:
 `sudo -n /opt/jasper/.venv/bin/jasper-round-views repeat-floor <N repeat rounds>
 --install` publishes the record at
 `/var/lib/jasper/active_speaker_repeat_floor.json`, where the packet reads it;
-add `--out repeat-floor.json` to keep a copy beside a banked round. Two
-spreads exist and they never pool: `compute_sigma_curve` is in-capture at one pose, `positions.cross_seat_sigma.per_bin_sigma_db` is
+add `--out repeat-floor.json` to keep a copy beside a banked round. Two of
+the spreads here never pool: `compute_sigma_curve` is in-capture at one pose, `positions.cross_seat_sigma.per_bin_sigma_db` is
 cross-seat and declared `unseparated`. Say which one you used. (The runbook's
 "Reading σ honestly" owns how to read them.)
 

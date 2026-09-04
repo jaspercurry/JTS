@@ -36,10 +36,8 @@ They are not advice.
   lab arm). You hand the human a URL; you do not simulate their walk.
 - **The owner rules** on taste and on which risk to accept.
 
-And the authority rule underneath all four: **the LLM recommends; the
-measurement decides.** Keep/rollback cites a measured delta, never a forecast.
-Heuristic rankings and machine "goodness" scores do not exist in this system —
-if you find one, it is provenance, not a verdict.
+And the authority rule underneath all four is the model linked above: the
+LLM recommends, the measurement decides.
 
 ## What v2 is
 
