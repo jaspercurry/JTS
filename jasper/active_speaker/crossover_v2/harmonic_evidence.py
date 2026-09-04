@@ -121,13 +121,8 @@ HARMONICS_ARTIFACT_KIND = "jts_crossover_v2_harmonic_distortion"
 #: to publish.
 HARMONIC_ORDERS: tuple[int, ...] = (2, 3)
 
-#: The shipped MEASURE driver bands for a PAIR, as the flow composes them today
-#: (:data:`DEFAULT_FULL_RANGE_BAND_HZ` is the 1-way sibling).
-#:
-#: Defaults rather than constants: a round measured with different bands is read
-#: by passing them, and a wrong pair cannot produce a wrong reading — it fails
-#: the ``program_id`` proof, which is the whole point of proving the rebuild
-#: instead of asserting it.
+#: The shipped MEASURE driver bands for a PAIR. A default, not a constant: a
+#: wrong pair fails the ``program_id`` proof rather than misreading the round.
 DEFAULT_BANDS_HZ: dict[str, tuple[float, float]] = {
     "woofer": (150.0, 4000.0),
     "tweeter": (1600.0, 20000.0),
@@ -1172,21 +1167,10 @@ def read_bundle_harmonics(
     calibration_path: Path | None = None,
     applied_profile_path: Path | None = None,
 ) -> tuple[Path, dict[str, Any]]:
-    """One commissioning bundle's round, read by :func:`read_round_harmonics`.
-
-    ``bundle_dir`` holds ``info.json`` beside
-    ``evidence/v1/artifacts/crossover_v2/<capture-session-id>/``. The round
-    inside it is found by :func:`~.evidence_packet.round_artifact_dir` — the
-    SAME rule the packet reader uses, so the reading cannot be filed where the
-    reader does not look, and a bundle carrying more than one round is refused
-    rather than guessed at. The round directory is returned beside the reading
-    because that directory is where the reading belongs.
-
-    ``state_path`` is THIS round's flow state; ``band_overrides`` is the band
-    offered for each role a state can name (:func:`round_bands_hz` keeps the
-    ones this round actually swept). Raises ``OSError``/``ValueError`` for a
-    bundle, state or capture that cannot be read, and
-    :class:`HarmonicEvidenceRefused` where the instrument declines.
+    """One bundle's round (``info.json`` beside ``evidence/v1/artifacts/``),
+    resolved by :func:`~.evidence_packet.round_artifact_dir` so the reading
+    lands where the packet reader looks. Raises ``OSError``/``ValueError`` for
+    what cannot be read, :class:`HarmonicEvidenceRefused` on a decline.
     """
     round_dir, why = round_artifact_dir(bundle_dir)
     if round_dir is None:
