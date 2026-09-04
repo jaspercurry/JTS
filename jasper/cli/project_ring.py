@@ -6,7 +6,7 @@
 
 Offline and laptop-side: it reads a commissioning bundle and writes the
 ``sidecar/`` + ``wav/`` layout ``jasper-classify-features --dumps`` and
-``jasper-read-distortion --dumps`` consume. No Pi is touched, nothing is
+``jasper-round-views distortion --dumps`` consume. No Pi is touched, nothing is
 re-measured, and the bundle is only read.
 
 ``<bundle-dir>`` is the same directory those two take — ``info.json`` beside
@@ -61,7 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="jasper-project-ring",
         description=(
             "Re-project a banked round into the capture ring that "
-            "jasper-classify-features and jasper-read-distortion read."
+            "jasper-classify-features and jasper-round-views distortion read."
         ),
     )
     parser.add_argument(
@@ -85,7 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "the measurement mic this round used. The bank does not carry it, "
-            "and jasper-read-distortion reads it off the sidecar to choose the "
+            "and jasper-round-views distortion reads it off the sidecar to choose the "
             "sign convention a --calibration file is parsed under."
         ),
     )
