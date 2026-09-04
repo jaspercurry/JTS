@@ -8087,7 +8087,9 @@ def test_declared_driver_class_reaches_the_compose_envelope_seam():
     compose_envelope through the exact ctor param the sibling test above
     proved works. Closes the seam #1668 PR-C's own test left open (its
     docstring said "no production caller populates it yet")."""
-    from jasper.web.correction_crossover_v2 import _resolve_driver_class_by_role
+    from jasper.active_speaker.crossover_v2.conductor_context import (
+        _resolve_driver_class_by_role,
+    )
 
     draft = {
         "manual_settings": {

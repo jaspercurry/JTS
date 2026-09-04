@@ -31,12 +31,14 @@ from typing import Any
 
 import pytest
 
-from jasper.active_speaker import commission_wiring, crossover_v2_flow, design_draft
+from jasper.active_speaker import commission_wiring, design_draft
+from jasper.active_speaker import session_volume_plan as session_volume_plan_mod
 from jasper.active_speaker import driver_safety as driver_safety_mod
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_MEASUREMENT_TARGETS_MISSING,
     REASON_REGISTRY,
     REASON_SPEAKER_SHAPE_UNSUPPORTED,
+    CrossoverV2Refused,
 )
 from jasper.active_speaker import excitation_safety_plan as excitation_safety_plan_mod
 from jasper.active_speaker.tone_plan import load_active_speaker_preset
@@ -47,6 +49,7 @@ from jasper.output_topology import (
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
 )
+from jasper.active_speaker.crossover_v2 import conductor_context as v2ctx
 from jasper.web import correction_crossover_v2 as v2host
 from tests.crossover_v2_fixtures import fake_measurement_mic
 
@@ -110,7 +113,7 @@ def _status() -> dict[str, Any]:
 _REAL_RESOLVE_PRESET = commission_wiring.resolve_capture_preset
 _REAL_RESOLVE_CEILINGS = excitation_safety_plan_mod.resolve_driver_excitation_ceilings
 _REAL_SWEEP_DURATION_LIMIT = excitation_safety_plan_mod.effective_sweep_duration_limit_s
-_REAL_DERIVE_SESSION_VOLUME = crossover_v2_flow.derive_session_volume_db
+_REAL_DERIVE_SESSION_VOLUME = session_volume_plan_mod.session_measurement_volume_db
 
 
 @pytest.fixture(autouse=True)
@@ -155,7 +158,7 @@ def _stub_non_topology_inputs(monkeypatch):
     # resolve_capture_preset above) keeps this file focused on the ONE seam
     # under test; the ensure step itself is covered in
     # tests/test_correction_crossover_v2_endpoints.py.
-    monkeypatch.setattr(v2host, "ensure_crossover_preview_ready", lambda: None)
+    monkeypatch.setattr(v2ctx, "ensure_crossover_preview_ready", lambda: None)
     # Same rule as the other stubs: this module tests the topology/playback-
     # device seam, not the driver-safety contract. The session-open confirmation
     # gate (issue #1821) is covered against the REAL evaluator in
@@ -183,8 +186,8 @@ def _stub_non_topology_inputs(monkeypatch):
         lambda safety_profile, fingerprint: 6.0,
     )
     monkeypatch.setattr(
-        crossover_v2_flow,
-        "derive_session_volume_db",
+        session_volume_plan_mod,
+        "session_measurement_volume_db",
         lambda safety_profile, fps, **kw: -20.0,
     )
     monkeypatch.delenv(ACTIVE_PLAYBACK_DEVICE_ENV, raising=False)
@@ -239,11 +242,11 @@ def test_a_subless_passive_speaker_opens_a_session(monkeypatch, _passive_topolog
     # A passive box compiles no crossover preview; asking for one would refuse a
     # session it can serve.
     monkeypatch.setattr(
-        v2host, "ensure_crossover_preview_ready",
+        v2ctx, "ensure_crossover_preview_ready",
         lambda: pytest.fail("a passive topology must not need a crossover preview"),
     )
 
-    context = v2host.resolve_conductor_context(_passive_status(_passive_topology))
+    context = v2ctx.resolve_conductor_context(_passive_status(_passive_topology))
 
     assert context.preset.way_count == 1
     assert context.preset.crossover_regions == ()
@@ -277,8 +280,8 @@ def test_the_session_refuses_by_a_registered_code(
     else:
         status["targets"] = {"drivers": [], "summed": []}
 
-    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
-        v2host.resolve_conductor_context(status)
+    with pytest.raises(CrossoverV2Refused) as excinfo:
+        v2ctx.resolve_conductor_context(status)
 
     assert excinfo.value.code == expected_code
     assert expected_code in REASON_REGISTRY
@@ -292,7 +295,7 @@ def test_resolves_real_playback_device_from_a_verified_topology(monkeypatch):
     topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
     _patch_topology(monkeypatch, topo)
 
-    context = v2host.resolve_conductor_context(_status())
+    context = v2ctx.resolve_conductor_context(_status())
 
     assert context.playback_device
     assert isinstance(context.playback_device, str)
@@ -329,7 +332,7 @@ def test_a_stale_baseline_topology_opens_the_session_and_says_so(
     }
 
     with caplog.at_level(logging.WARNING):
-        context = v2host.resolve_conductor_context(status)
+        context = v2ctx.resolve_conductor_context(status)
 
     assert context.topology is topo
     assert "event=correction.crossover_v2_baseline_topology_stale" in caplog.text
@@ -342,8 +345,8 @@ def test_refuses_when_the_layout_has_no_resolvable_playback_route(monkeypatch):
     topo = _topology("generic_single_dac", 8, card_id="DAC8")
     _patch_topology(monkeypatch, topo)
 
-    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
-        v2host.resolve_conductor_context(_status())
+    with pytest.raises(CrossoverV2Refused) as excinfo:
+        v2ctx.resolve_conductor_context(_status())
 
     assert "active output device is not declared" in str(excinfo.value)
 
@@ -355,7 +358,7 @@ def test_explicit_env_playback_device_is_honored(monkeypatch):
     _patch_topology(monkeypatch, topo)
     monkeypatch.setenv(ACTIVE_PLAYBACK_DEVICE_ENV, "hw:Lab")
 
-    context = v2host.resolve_conductor_context(_status())
+    context = v2ctx.resolve_conductor_context(_status())
 
     assert context.playback_device == "hw:Lab"
 
@@ -375,10 +378,10 @@ def test_driver_class_by_role_resolver_default_pins_todays_empty_behavior(monkey
     topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
     _patch_topology(monkeypatch, topo)
 
-    context = v2host.resolve_conductor_context(_status())
+    context = v2ctx.resolve_conductor_context(_status())
 
     assert context.driver_class_by_role == {}
-    assert v2host._resolve_driver_class_by_role(context.preset) == {}
+    assert v2ctx._resolve_driver_class_by_role(context.preset) == {}
 
 
 def test_driver_class_by_role_fake_resolver_injection_reaches_the_context(monkeypatch):
@@ -398,9 +401,9 @@ def test_driver_class_by_role_fake_resolver_injection_reaches_the_context(monkey
     topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
     _patch_topology(monkeypatch, topo)
     injected = {"tweeter": "compression_horn", "woofer": "unknown"}
-    monkeypatch.setattr(v2host, "_resolve_driver_class_by_role", lambda preset: injected)
+    monkeypatch.setattr(v2ctx, "_resolve_driver_class_by_role", lambda preset: injected)
 
-    context = v2host.resolve_conductor_context(_status())
+    context = v2ctx.resolve_conductor_context(_status())
 
     assert context.driver_class_by_role == injected
     assert context.driver_class_by_role is injected
@@ -505,10 +508,12 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
         _REAL_SWEEP_DURATION_LIMIT,
     )
     monkeypatch.setattr(
-        crossover_v2_flow, "derive_session_volume_db", _REAL_DERIVE_SESSION_VOLUME
+        session_volume_plan_mod,
+        "session_measurement_volume_db",
+        _REAL_DERIVE_SESSION_VOLUME,
     )
 
-    context = v2host.resolve_conductor_context(status)
+    context = v2ctx.resolve_conductor_context(status)
 
     # The derived {-8, -33.2}, not the pre-fix {-8, -65}. -33.2 is the
     # sensitivity arithmetic outright (-8 less the 25.2 dB delta); the
@@ -568,7 +573,7 @@ def test_a_role_with_no_resolvable_measurement_band_is_simply_absent(monkeypatch
     topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
     _patch_topology(monkeypatch, topo)
 
-    context = v2host.resolve_conductor_context(_status())
+    context = v2ctx.resolve_conductor_context(_status())
 
     assert "tweeter" not in context.measurement_band_hz_by_role
 
@@ -678,10 +683,12 @@ def test_declared_driver_class_and_pad_reach_the_conductor_context(monkeypatch):
         _REAL_SWEEP_DURATION_LIMIT,
     )
     monkeypatch.setattr(
-        crossover_v2_flow, "derive_session_volume_db", _REAL_DERIVE_SESSION_VOLUME
+        session_volume_plan_mod,
+        "session_measurement_volume_db",
+        _REAL_DERIVE_SESSION_VOLUME,
     )
 
-    context = v2host.resolve_conductor_context(status)
+    context = v2ctx.resolve_conductor_context(status)
 
     assert context.driver_class_by_role == {"tweeter": "compression_horn"}
     # 108.5 naked minus the declared -14.4 dB pad = 94.1 effective, not 108.5.

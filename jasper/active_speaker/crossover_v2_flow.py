@@ -4579,25 +4579,6 @@ class CrossoverV2Session:
 _role_transfers = _priors.role_transfers
 
 
-# --- session-volume lifecycle (one SessionVolumePlan per session, §5.5) ----
-
-
-def derive_session_volume_db(
-    safety_profile: Mapping[str, Any],
-    target_fingerprints: Sequence[str],
-    *,
-    declared_sensitivities: Mapping[str, float] | None = None,
-) -> float:
-    """The fixed session measurement volume — the SSOT derivation (§5.5)."""
-    from .session_volume_plan import session_measurement_volume_db
-
-    return session_measurement_volume_db(
-        safety_profile,
-        target_fingerprints,
-        declared_sensitivities=declared_sensitivities,
-    )
-
-
 __all__ = [
     "CrossoverV2Session",
     "CrossoverV2FlowError",
@@ -4606,7 +4587,6 @@ __all__ = [
     "build_v2_session_spec",
     "build_v2_verify_capture_plan",
     "build_v2_verify_session_spec",
-    "derive_session_volume_db",
     "V2ConductorSnapshot",
     "V2FlowSeams",
     "ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED",
