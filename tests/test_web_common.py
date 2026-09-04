@@ -12,6 +12,7 @@ and lets us assert on exactly the header bytes that go on the wire.
 from __future__ import annotations
 
 import http
+import importlib
 import os
 import threading
 from email.message import Message
@@ -1021,3 +1022,44 @@ def test_close_awaitable_releases_an_unsubmitted_coroutine():
     _common.close_awaitable(object())
 
     assert closed == [True]
+
+
+@pytest.mark.parametrize("module_name, proc_key", [
+    ("jasper.web.sync_flow", "playback"),
+    ("jasper.web.balance_flow", "ramp"),
+])
+def test_reset_session_locked_clears_the_shared_fields_for_both_flows(
+    module_name, proc_key,
+):
+    """Both measurement flows reset through one helper: whatever their own
+    schema delta, a reset lands the shared fields (phase/error/members/
+    session_token/release_window), SIGTERMs the held child and calls the
+    window release exactly once."""
+    flow = importlib.import_module(module_name)
+    proc = _StubbornProc()
+    released: list[bool] = []
+    with flow._lock:
+        snapshot = dict(flow._state)
+        before = int(flow._state["session_token"])
+        flow._state.update({
+            "phase": "measuring",
+            "error": "",
+            "members": {"left": {"label": "L"}},
+            proc_key: {"proc": proc},
+            "release_window": lambda: released.append(True),
+        })
+        try:
+            flow._reset_locked("boom")
+            after = dict(flow._state)
+        finally:
+            flow._state.clear()
+            flow._state.update(snapshot)
+
+    assert after["phase"] == "idle"
+    assert after["error"] == "boom"
+    assert after["members"] is None
+    assert after["session_token"] == before + 1
+    assert after["release_window"] is None
+    assert after[proc_key] is None
+    assert proc.signals == ["terminate"]
+    assert released == [True]
