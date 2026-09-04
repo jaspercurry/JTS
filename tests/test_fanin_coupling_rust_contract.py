@@ -38,6 +38,13 @@ _FANIN_LANE_RESAMPLER_RS = (
     _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "lane_resampler.rs"
 )
 _FANIN_MIXER_RS = _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "mixer.rs"
+# The mixer module's own body, across the files it is split into; the guards
+# below are about that body, not about one path.
+_FANIN_MIXER_MODULE_RS = (
+    _FANIN_MIXER_RS,
+    _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "mixer" / "dsp.rs",
+    _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "mixer" / "pcm_open.rs",
+)
 _FANIN_STATE_RS = _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "state.rs"
 _FANIN_DIRECT_CAPTURE_RS = (
     _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "mixer" / "direct_capture.rs"
@@ -62,9 +69,10 @@ def _lane_resampler_rs_text() -> str:
 
 
 def _mixer_rs_text() -> str:
-    if not _FANIN_MIXER_RS.exists():
-        pytest.skip(f"rust source not present: {_FANIN_MIXER_RS}")
-    return _FANIN_MIXER_RS.read_text(encoding="utf-8")
+    for path in _FANIN_MIXER_MODULE_RS:
+        if not path.exists():
+            pytest.skip(f"rust source not present: {path}")
+    return "\n".join(p.read_text(encoding="utf-8") for p in _FANIN_MIXER_MODULE_RS)
 
 
 def _state_rs_text() -> str:
