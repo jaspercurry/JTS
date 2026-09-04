@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from jasper.atomic_io import atomic_write_text
+from jasper.atomic_io import write_group_readable_text
 from jasper.camilla_config_contract import (
     GAINLESS_BIQUAD_TYPES,
     SHELF_Q,
@@ -609,7 +609,7 @@ def save_profile_library(
         )
         + "\n"
     )
-    _atomic_write_text(library_path, data)
+    write_group_readable_text(library_path, data)
 
 
 def _new_custom_profile_id(existing: Iterable[ProfileLibraryEntry]) -> str:
@@ -1151,11 +1151,4 @@ def save_profile(profile: SoundProfile, path: str | Path | None = None) -> None:
     )
     profile_path.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(profile.to_dict(), indent=2, sort_keys=True) + "\n"
-    _atomic_write_text(profile_path, data)
-
-
-def _atomic_write_text(path: Path, text: str) -> None:
-    # WS1 Phase 3b-2: publish 0640 so non-root jasper-control can read the
-    # non-secret sound profile/library for /state. The canonical helper applies
-    # that mode before the atomic rename, so a reader never sees 0600.
-    atomic_write_text(path, text, mode=0o640)
+    write_group_readable_text(profile_path, data)

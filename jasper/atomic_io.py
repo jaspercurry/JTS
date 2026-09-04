@@ -66,6 +66,7 @@ __all__ = [
     "locked_transform_env_file",
     "locked_update_env_file",
     "read_regular_bytes_nofollow",
+    "write_group_readable_text",
 ]
 
 
@@ -313,6 +314,16 @@ def atomic_write_text(
                 error=cleanup_exc,
             )
         raise
+
+
+def write_group_readable_text(path: str | os.PathLike, text: str) -> None:
+    """Atomically write ``text`` to ``path`` at 0640 (group jasper).
+
+    Shared by sound-config writers a non-root peer daemon (jasper-control's
+    ``/state``, the runtime contract's classifier) reads under the WS1
+    non-root drop.
+    """
+    atomic_write_text(path, text, mode=0o640)
 
 
 def atomic_write_json(
