@@ -5,7 +5,7 @@
 """jasper-doctor checks for the loaded CamillaDSP graph and the runtime plan.
 
 Import direction across the audio-runtime check modules runs one way —
-``audio_runtime`` -> ``_fanin`` -> ``_outputd`` -> ``_ring`` — so this
+``audio_runtime_camilla`` -> ``_fanin`` -> ``_outputd`` -> ``_ring`` — so this
 module may not import from any of the three.
 """
 from __future__ import annotations
@@ -60,21 +60,6 @@ def check_camilla_service() -> CheckResult:
     return CheckResult(label, "ok", "enabled and active")
 
 
-def _loaded_device_field(config_path: Path, block: str, field: str) -> str | None:
-    """A field from ``devices.<block>`` in a CamillaDSP config, or None."""
-    return read_camilla_device_field(config_path, block, field)
-
-
-def _loaded_playback_type(config_path: Path) -> str | None:
-    """The ``devices.playback.type`` of a CamillaDSP config, or None."""
-    return _loaded_device_field(config_path, "playback", "type")
-
-
-def _loaded_playback_filename(config_path: Path) -> str | None:
-    """The ``devices.playback.filename`` of a CamillaDSP config, or None."""
-    return _loaded_device_field(config_path, "playback", "filename")
-
-
 def _graph_feeds_the_bond(config_path: Path) -> bool:
     """Is this graph's post-DSP endpoint the bond rather than a local ring?
 
@@ -85,19 +70,9 @@ def _graph_feeds_the_bond(config_path: Path) -> bool:
     from ...multiroom.reconcile import SNAPFIFO
 
     return (
-        _loaded_playback_type(config_path) == "File"
-        and _loaded_playback_filename(config_path) == SNAPFIFO
+        read_camilla_device_field(config_path, "playback", "type") == "File"
+        and read_camilla_device_field(config_path, "playback", "filename") == SNAPFIFO
     )
-
-
-def _loaded_playback_format(config_path: Path) -> str | None:
-    """The ``devices.playback.format`` of a CamillaDSP config, or None."""
-    return _loaded_device_field(config_path, "playback", "format")
-
-
-def _loaded_playback_device(config_path: Path) -> str | None:
-    """The ``devices.playback.device`` of a CamillaDSP config, or None."""
-    return _loaded_device_field(config_path, "playback", "device")
 
 
 def _expected_playback_format(
@@ -159,13 +134,13 @@ def check_camilla_playback_format() -> CheckResult:
     if config_path is None:
         return CheckResult(label, "ok", "no loaded config to compare")
     path = Path(config_path)
-    loaded_format = _loaded_playback_format(path)
+    loaded_format = read_camilla_device_field(path, "playback", "format")
     if loaded_format is None:
         return CheckResult(
             label, "ok", f"{path} has no devices.playback.format field"
         )
-    playback_type = _loaded_playback_type(path)
-    playback_device = _loaded_playback_device(path)
+    playback_type = read_camilla_device_field(path, "playback", "type")
+    playback_device = read_camilla_device_field(path, "playback", "device")
     expected_format, expected_name = _expected_playback_format(
         playback_type, playback_device
     )

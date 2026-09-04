@@ -14,7 +14,7 @@ from jasper.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
 )
 from jasper.cli.doctor import (
-    audio_runtime,
+    audio_runtime_camilla,
 )
 
 from ._doctor_audio_runtime_fixtures import (
@@ -27,7 +27,7 @@ from ._doctor_audio_runtime_fixtures import (
 
 def _patch_camilla_systemctl(monkeypatch, *, enabled="enabled", active="active"):
     monkeypatch.setattr(
-        doctor.audio_runtime, "_run", _fake_systemctl(enabled, active)
+        doctor.audio_runtime_camilla, "_run", _fake_systemctl(enabled, active)
     )
 
 
@@ -312,9 +312,9 @@ def _run_format_check(monkeypatch, tmp_path, cfg_text):
     cfg = tmp_path / "sound_current.yml"
     cfg.write_text(cfg_text)
     monkeypatch.setattr(
-        audio_runtime, "_active_camilla_config_path", lambda: (cfg.parent, str(cfg))
+        audio_runtime_camilla, "_active_camilla_config_path", lambda: (cfg.parent, str(cfg))
     )
-    return audio_runtime.check_camilla_playback_format()
+    return audio_runtime_camilla.check_camilla_playback_format()
 
 
 def test_playback_format_ok_when_alsa_lane_matches_the_wide_default(
@@ -344,9 +344,9 @@ def test_playback_format_fails_on_a_half_flipped_narrow_alsa_lane(
 
 def test_playback_format_ok_when_no_config_loaded(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        audio_runtime, "_active_camilla_config_path", lambda: (tmp_path, None)
+        audio_runtime_camilla, "_active_camilla_config_path", lambda: (tmp_path, None)
     )
-    res = audio_runtime.check_camilla_playback_format()
+    res = audio_runtime_camilla.check_camilla_playback_format()
     assert res.status == "ok"
 
 
@@ -532,7 +532,7 @@ def test_playback_format_fails_on_a_deliberately_wide_file_sink_config(
 def test_no_doctor_remedy_names_a_coupling_the_cli_rejects():
     """THE CLASS, not the three instances below.
 
-    Eight of the audio_runtime module's remedies named
+    Eight of the audio_runtime_camilla module's remedies named
     `jasper-fanin-coupling-reconcile loopback` — a coupling ADR-0100 removed
     from the CLI's `choices`, so an operator who copied one got `exit 2` and an
     argparse error instead of a fix. A dead remedy is worse than no remedy: it

@@ -5,7 +5,7 @@
 """jasper-doctor checks for jasper-fanin and the snd-aloop lanes it reads.
 
 Import direction across the audio-runtime check modules runs one way —
-``audio_runtime`` -> ``_fanin`` -> ``_outputd`` -> ``_ring`` — so nothing
+``audio_runtime_camilla`` -> ``_fanin`` -> ``_outputd`` -> ``_ring`` — so nothing
 here may be imported by a module earlier in that chain.
 """
 from __future__ import annotations
@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
+from ...camilla_config_contract import read_camilla_device_field
 from ...fanin_coupling import read_declared_ring_wire_format
 from ._registry import doctor_check
 from ._shared import (
@@ -25,7 +26,7 @@ from ._shared import (
     _read_status_socket_bytes,
     _run,
 )
-from .audio_runtime import _graph_feeds_the_bond, _loaded_device_field
+from .audio_runtime_camilla import _graph_feeds_the_bond
 from .correction import _active_camilla_config_path
 
 @doctor_check(order=49, group="audio")
@@ -764,11 +765,6 @@ def check_fanin_coupling_value() -> CheckResult:
     )
 
 
-def _loaded_capture_type(config_path: Path) -> str | None:
-    """The ``devices.capture.type`` of a CamillaDSP config, or None."""
-    return _loaded_device_field(config_path, "capture", "type")
-
-
 def _requires_roleful_graph() -> bool:
     """Does the saved topology need a per-driver (crossover) graph?
 
@@ -823,7 +819,7 @@ def check_fanin_coupling() -> CheckResult:
     config_path = Path(active_path) if active_path else Path(
         "/var/lib/camilladsp/configs/sound_current.yml"
     )
-    capture = _loaded_capture_type(config_path)
+    capture = read_camilla_device_field(config_path, "capture", "type")
     if capture is None:
         # No JTS config loaded yet (fresh box / non-JTS graph).
         return CheckResult(label, "ok", "no loaded capture to compare")
@@ -839,8 +835,8 @@ def check_fanin_coupling() -> CheckResult:
     # it as expected would send an operator to a device the emitters refuse to
     # write. Such a box is mid-arm, and the remedy is the ladder, not a re-arm.
     roleful = _requires_roleful_graph()
-    capture_device = _loaded_device_field(config_path, "capture", "device")
-    playback_device = _loaded_device_field(config_path, "playback", "device")
+    capture_device = read_camilla_device_field(config_path, "capture", "device")
+    playback_device = read_camilla_device_field(config_path, "playback", "device")
     ring_mismatches: list[str] = []
     if capture != "Alsa" or capture_device != RING_CAPTURE_DEVICE:
         ring_mismatches.append(
@@ -939,7 +935,7 @@ _ALOOP_CARD_ID = "Loopback"
 _ALOOP_PCM_DIRS = ("pcm0p", "pcm0c", "pcm1p", "pcm1c")
 
 #: `pcm_substreams=8` in deploy/modprobe.d/snd-aloop.conf — pairs 0..7. Pinned
-#: against that file by tests/test_doctor_audio_runtime.py.
+#: against that file by tests/test_doctor_audio_runtime_fanin.py.
 _ALOOP_SUBSTREAMS = 8
 
 #: Cap on how many offenders are spelled out in the FAIL detail, so a

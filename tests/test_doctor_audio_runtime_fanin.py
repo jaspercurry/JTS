@@ -12,7 +12,6 @@ import pytest
 from jasper.cli import doctor
 import re
 from jasper.cli.doctor import (
-    audio_runtime,
     audio_runtime_fanin,
     audio_runtime_ring,
 )
@@ -1086,7 +1085,7 @@ def test_registered_pairs_are_within_the_module_range():
 
 
 # ===========================================================================
-# fan-in coupling drift + the capture-type parser
+# fan-in coupling drift
 # ===========================================================================
 
 _RAWFILE_CFG = """\
@@ -1131,27 +1130,6 @@ _BONDED_LEADER_CFG = _ALSA_CFG.replace(
     'device: "plug:jasper_capture"',
     'device: "jts_ring_capture"',
 )
-
-
-def test_capture_parser_reads_rawfile(tmp_path):
-    cfg = tmp_path / "c.yml"
-    cfg.write_text(_RAWFILE_CFG)
-    assert audio_runtime_fanin._loaded_capture_type(cfg) == "RawFile"
-    assert audio_runtime._loaded_playback_type(cfg) == "File"
-
-
-def test_capture_parser_reads_alsa_not_playback_file(tmp_path):
-    # The playback File sink must NOT be misread as the capture type.
-    cfg = tmp_path / "c.yml"
-    cfg.write_text(_ALSA_CFG)
-    assert audio_runtime_fanin._loaded_capture_type(cfg) == "Alsa"
-
-
-def test_capture_parser_none_when_absent(tmp_path):
-    assert audio_runtime_fanin._loaded_capture_type(tmp_path / "missing.yml") is None
-    cfg = tmp_path / "c.yml"
-    cfg.write_text("filters:\n  x: 1\n")
-    assert audio_runtime_fanin._loaded_capture_type(cfg) is None
 
 
 def _run_check(monkeypatch, *, cfg_text, tmp_path):

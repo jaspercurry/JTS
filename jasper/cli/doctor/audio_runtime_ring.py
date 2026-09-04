@@ -5,7 +5,7 @@
 """jasper-doctor checks for the SHM ring transport and the lanes on it.
 
 Import direction across the audio-runtime check modules runs one way —
-``audio_runtime`` -> ``_fanin`` -> ``_outputd`` -> ``_ring`` — so nothing
+``audio_runtime_camilla`` -> ``_fanin`` -> ``_outputd`` -> ``_ring`` — so nothing
 here may be imported by a module earlier in that chain.
 """
 from __future__ import annotations

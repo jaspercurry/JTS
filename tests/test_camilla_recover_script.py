@@ -291,7 +291,7 @@ def test_camilla_starting_again_retires_the_park(tmp_path: Path):
 
 def test_park_reason_and_action_reach_the_doctor(tmp_path: Path, monkeypatch):
     """One reader, from the writer's own record to the operator surface."""
-    from jasper.cli.doctor import _registry, audio_runtime
+    from jasper.cli.doctor import _registry, audio_runtime_camilla
     from jasper.control import camilla_recover_state
 
     names = [c.func.__name__ for c in _registry.registered_checks()]
@@ -304,7 +304,7 @@ def test_park_reason_and_action_reach_the_doctor(tmp_path: Path, monkeypatch):
     assert snapshot["parked"] is True
     assert snapshot["reason"] == "camilla_start_failed"
 
-    result = audio_runtime.check_camilla_recover_park()
+    result = audio_runtime_camilla.check_camilla_recover_park()
     assert result.status == "fail"
     assert snapshot["action"] in result.detail
     assert snapshot["re_arm"] in result.detail

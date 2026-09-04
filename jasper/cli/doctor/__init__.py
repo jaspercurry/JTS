@@ -10,7 +10,8 @@ This package is the decomposed form of the original single-file
 name that external code or the test-suite imports resolve from
 this ``__init__`` exactly as they did from the old module — the
 checks were re-homed into per-domain modules
-(:mod:`~jasper.cli.doctor.audio`, :mod:`~jasper.cli.doctor.audio_runtime`,
+(:mod:`~jasper.cli.doctor.audio`,
+:mod:`~jasper.cli.doctor.audio_runtime_camilla`,
 :mod:`~jasper.cli.doctor.network`,
 …) and the cross-cutting harness/helpers into
 :mod:`~jasper.cli.doctor._shared`, then re-exported here.
@@ -109,7 +110,7 @@ from .voice import (
     check_pricing,
 )
 from . import audio as audio
-from . import audio_runtime as audio_runtime
+from . import audio_runtime_camilla as audio_runtime_camilla
 from . import audio_runtime_fanin as audio_runtime_fanin
 from . import audio_runtime_outputd as audio_runtime_outputd
 from . import audio_runtime_ring as audio_runtime_ring
@@ -130,7 +131,7 @@ from .audio_runtime_outputd import (
     check_outputd_service,
     check_aec_clock_drift,
 )
-from .audio_runtime import (
+from .audio_runtime_camilla import (
     check_audio_runtime_plan,
     check_camilla_service,
 )

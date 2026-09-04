@@ -741,10 +741,6 @@ def read_camilla_device_field(
     call is one FILE READ per call, so a caller that needs several fields of
     one graph revision wants the subset parser over a single snapshot instead
     (which is why ``format`` moved into that subset).
-
-    The SSOT for that scan: ``jasper.cli.doctor.audio_runtime._loaded_device_field``
-    delegates here, and the wiring test that pins the shipped flat-cutover seed
-    to :data:`DEFAULT_PLAYBACK_FORMAT` reads it the same way.
     """
 
     if not config_path:

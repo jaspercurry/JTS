@@ -18,6 +18,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_TARGET_LEVEL,
     PeqFilter,
     parse_camilla_devices_config,
+    read_camilla_device_field,
     resolve_camilla_chunksize,
     resolve_camilla_target_level,
     resolve_enable_rate_adjust,
@@ -708,6 +709,52 @@ def test_parse_camilla_devices_config_rejects_ambiguous_volume_limit() -> None:
         assert "volume_limit" not in parse_camilla_devices_config(
             f"devices:\n  volume_limit: {value}\n"
         )
+
+
+_TWO_BLOCK_CFG = """\
+devices:
+  samplerate: 48000
+  capture:
+    type: RawFile
+    channels: 2
+    filename: "/run/jasper-fanin/camilla.pipe"
+  playback:
+    type: File
+    channels: 2
+    device: "outputd_content_playback"
+    filename: "/run/jasper-outputd/content.pipe"
+filters:
+"""
+
+
+@pytest.mark.parametrize(
+    ("text", "block", "field", "expected"),
+    [
+        (_TWO_BLOCK_CFG, "capture", "type", "RawFile"),
+        # The playback sink's own `type` must never be read as the capture's.
+        (_TWO_BLOCK_CFG, "playback", "type", "File"),
+        (_TWO_BLOCK_CFG, "playback", "filename", "/run/jasper-outputd/content.pipe"),
+        (_TWO_BLOCK_CFG, "playback", "device", "outputd_content_playback"),
+        # The capture block has no `device`, and the lookup must stop at the
+        # sibling boundary rather than falling through to playback's.
+        (_TWO_BLOCK_CFG, "capture", "device", None),
+        ("filters:\n  x: 1\n", "capture", "type", None),
+    ],
+)
+def test_read_camilla_device_field_is_scoped_to_its_block(
+    tmp_path, text: str, block: str, field: str, expected: str | None
+) -> None:
+    config = tmp_path / "c.yml"
+    config.write_text(text, encoding="utf-8")
+
+    assert read_camilla_device_field(config, block, field) == expected
+
+
+def test_read_camilla_device_field_returns_none_without_a_readable_config(
+    tmp_path,
+) -> None:
+    assert read_camilla_device_field(tmp_path / "missing.yml", "capture", "type") is None
+    assert read_camilla_device_field(None, "capture", "type") is None
 
 
 def test_parse_camilla_devices_config_ignores_nested_volume_limit() -> None:
