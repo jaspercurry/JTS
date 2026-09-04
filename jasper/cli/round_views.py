@@ -87,6 +87,14 @@ Subcommands:
   answer. Observed only: no grade moves, and it says nothing about whether
   the wired answer was RIGHT — nothing banked is ground truth for that.
   Writes ``cloud_binding.json``.
+* ``forward-model <round-dir> [--measured-round <round-dir>]`` — what a
+  candidate WOULD measure, from this round's banked per-driver solos summed
+  through its filters, trims, polarity and residual delay. With
+  ``--measured-round`` it is deltaed against that verify-stage round's banked
+  VERIFY sum; with no round carrying one, nothing judged it and the record's
+  ``acceptance`` says so.
+  Computes only: no audio plays and no device is opened, and applying what it
+  predicts stays the prescription doors' job. Writes ``forward_model.json``.
 * ``inventory <round-dir>`` — which of the named artifacts above this round
   already has, and the subcommand that produces each one it is missing, so
   "was this round ever analysed for X" is read rather than re-run. The round
@@ -113,6 +121,12 @@ import sys
 from pathlib import Path
 from typing import Any, NamedTuple, Sequence
 
+from jasper.active_speaker.crossover_v2.contracts import DESIGN_AXIS_DEG
+from jasper.active_speaker.crossover_v2.forward_model import (
+    ACCEPTANCE_RUNS,
+    candidate_from_json,
+)
+from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL, PHASE_MEASURE
 from jasper.active_speaker.crossover_v2.round_views import (
     AGREEMENT_TESTIFY_MIN,
     BankedRound,
@@ -123,6 +137,7 @@ from jasper.active_speaker.crossover_v2.round_views import (
     default_agreement_lo_hz,
     directivity_view,
     entry_state_grade,
+    forward_model_verify_delta,
     frozen_reference_grade,
     load_banked_round,
     per_seat_curves,
@@ -206,6 +221,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "co-metrics": ViewArtifact("audibility_co_metrics.json"),
     "directivity": ViewArtifact("directivity.json"),
     "cloud-binding": ViewArtifact("cloud_binding.json"),
+    "forward-model": ViewArtifact("forward_model.json"),
     "spec-sweep": ViewArtifact("spec_gate_sensitivity.json"),
     "gate-sweep": ViewArtifact("gate_sweep.json"),
     "frequency": ViewArtifact("frequency_view.json"),
@@ -574,6 +590,47 @@ def _cmd_cloud_binding(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_forward_model(args: argparse.Namespace) -> int:
+    basis = _load_round(args.round_dir)
+    # A candidate file the operator named and this cannot read is the LOAD
+    # stage, exactly as the round directory is.
+    candidate = stage(
+        EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, candidate_from_json,
+        args.candidate_json,
+        polarity_sign=args.polarity_sign,
+        residual_delay_us=args.residual_delay_us,
+    )
+    result = forward_model_verify_delta(
+        basis,
+        candidate,
+        measured=(
+            _load_round(args.measured_round) if args.measured_round else None
+        ),
+        phase=args.phase,
+        position_deg=args.position_deg,
+    )
+    if result.prediction is None:
+        # No summable pair is no forward model at all — the refusal arm, which
+        # main() publishes for every view here. An unjudged prediction is not:
+        # that is an answer, and it says on the record that nothing judged it.
+        raise RoundViewsError(result.reason)
+    predicted = result.prediction
+    written = _write(result.to_dict(), args.out, _view_out(args, basis))
+    judged = (
+        f"judged against {result.measured_round_dir}: max |delta| "
+        f"{result.delta['max_abs_db']:.2f} dB, RMS {result.delta['rms_db']:.2f} dB"
+        if result.delta is not None else f"NOT JUDGED ({result.reason})"
+    )
+    print(
+        f"forward-model [predicted, plays nothing]: {predicted.freqs_hz.size} "
+        f"bin(s) over {predicted.sum_band_hz[0]:g}-{predicted.sum_band_hz[1]:g} "
+        f"Hz from {predicted.take_path}; {judged}"
+        f"{f' -> {written}' if written else ''}",
+        file=sys.stderr,
+    )
+    return EXIT_OK
+
+
 def _band_sweep_line(band: Any) -> str:
     """One band's gate read as the operator reads it: which band, then whether
     that band's own worst bin is the room or the speaker.
@@ -759,8 +816,9 @@ def build_parser() -> argparse.ArgumentParser:
             "frozen-reference grading, per-seat curves, session-to-session "
             "repeatability and the banked repeat floor, per-seat agreement, "
             "audibility co-metrics, measured per-angle directivity, whether "
-            "the cloud's null evidence bound the linearization fit, the gate "
-            "window ladder and the sweep read onto the spec verdict, the "
+            "the cloud's null evidence bound the linearization fit, what a "
+            "candidate would measure from the banked per-driver solos, the "
+            "gate window ladder and the sweep read onto the spec verdict, the "
             "shared frequency view, and an inventory of which of those a "
             "round already carries — over banked rounds and live sessions."
         ),
@@ -879,6 +937,48 @@ def build_parser() -> argparse.ArgumentParser:
     cloud_binding.add_argument("round_dir", help=_ROUND_DIR_HELP)
     cloud_binding.add_argument("--out", default=None, help="write the result here (- for stdout)")
     cloud_binding.set_defaults(func=_cmd_cloud_binding)
+
+    forward = sub.add_parser(
+        "forward-model",
+        help="what a candidate WOULD measure, summed from this round's banked per-driver solos",
+        epilog=ACCEPTANCE_RUNS,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    forward.add_argument(
+        "round_dir",
+        help=f"{_ROUND_DIR_HELP} whose per-driver solos are the PREDICTION BASIS",
+    )
+    forward.add_argument(
+        "--measured-round", default=None,
+        help="a verify-stage round whose banked VERIFY sum judges the prediction. "
+             "Defaults to round_dir, which judges only for a round carrying both "
+             "halves; the two-stage flow banks the solos and the verify apart",
+    )
+    forward.add_argument(
+        "--candidate-json", default=None,
+        help="a JSON object with filters_by_role / trim_db_by_role / polarity_sign / "
+             "residual_delay_us; omitted means an uncorrected, untrimmed, in-phase "
+             "pair at zero residual delay",
+    )
+    forward.add_argument(
+        "--residual-delay-us", type=float, default=None,
+        help="RESIDUAL delay in the analysis frame, NOT an applied delay (each banked "
+             "solo is referenced to its own direct peak); overrides the candidate file",
+    )
+    forward.add_argument(
+        "--polarity-sign", type=int, default=None, choices=(-1, 1),
+        help="the tweeter branch's commanded polarity; overrides the candidate file",
+    )
+    forward.add_argument(
+        "--phase", default=PHASE_MEASURE, choices=(PHASE_MEASURE, PHASE_LATERAL),
+        help="which banked phase carries the per-driver solos to sum",
+    )
+    forward.add_argument(
+        "--position-deg", type=int, default=DESIGN_AXIS_DEG,
+        help="the bearing whose take is read",
+    )
+    forward.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    forward.set_defaults(func=_cmd_forward_model)
 
     spec_sweep = sub.add_parser(
         "spec-sweep",

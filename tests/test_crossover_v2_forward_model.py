@@ -25,8 +25,8 @@ from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.forward_model import (
     ACCEPTANCE_JUDGED,
     ACCEPTANCE_NOT_RUN,
+    ACCEPTANCE_RUNS,
     REFUSAL_GRID_DISAGREES,
-    REFUSAL_NO_CURVE_PAIR,
     BranchPair,
     ForwardModelError,
     PredictedSum,
@@ -39,9 +39,14 @@ from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
 from jasper.active_speaker.crossover_v2.position_cycle import parse_curve_complex
 from jasper.active_speaker.delay_sweep import sweep_spec
 from jasper.audio_measurement.analysis import crossover_null_depth_db
-from jasper.cli.forward_model import ACCEPTANCE_RUNS, build_parser, main as cli_main
+from jasper.cli._refusal import EXIT_REFUSED
+from jasper.cli.round_views import REASON_REFUSED, build_parser, main as cli_main
 
-from tests.crossover_v2_banked_round import bank_measure_round, bank_verify_round
+from tests.crossover_v2_banked_round import (
+    SOLO_BAND_HZ,
+    bank_measure_round,
+    bank_verify_round,
+)
 
 FC_HZ = 1800.0
 BAND = (200.0, 12000.0)
@@ -437,106 +442,70 @@ def test_a_measured_curve_that_is_not_a_curve_refuses() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_the_door_predicts_from_the_bank_and_plays_nothing(
-    tmp_path, capsys,
+def _record(round_dir: Path) -> dict:
+    """The view's own artifact, read from where it files it beside the round."""
+
+    return json.loads((round_dir / "forward_model.json").read_text())
+
+
+def test_the_door_predicts_from_the_bank_and_says_nothing_judged_it(
+    tmp_path,
 ) -> None:
-    """The advisory verb reads the bank the store wrote and prints the
-    prediction; the candidate's delay reaches it through the flag."""
+    """The advisory verb sums the round's banked solos and files the curve.
 
-    freqs = _grid()
-    bundle = _bank_take(tmp_path, [
-        _banked("woofer", _lr4(freqs, highpass=False), freqs),
-        _banked("tweeter", _lr4(freqs, highpass=True), freqs),
-    ])
-
-    code = cli_main([
-        "predict", str(bundle), "--residual-delay-us", "100", "--polarity-sign", "-1",
-    ])
-    payload = json.loads(capsys.readouterr().out)
-
-    assert code == 0
-    assert payload["status"] == "predicted"
-    prediction = payload["prediction"]
-    assert prediction["take_path"].endswith("positions/p0_a01.json")
-    assert len(prediction["predicted_db"]) == len(prediction["freqs_hz"]) == freqs.size
-    assert prediction["sum_band_hz"] == [BAND[0], BAND[1]]
-
-
-def test_the_acceptance_runs_worked_example_runs_on_what_the_flow_banks(
-    tmp_path, capsys,
-) -> None:
-    """Issue #3482: ``verify-delta``'s own worked example must be runnable.
-
-    ``ACCEPTANCE_RUNS`` run 1 is the model's entry gate, and it describes a
-    two-round operation — predict from the round that banked the SOLOS, delta
-    against the round that MEASURED the verify sum — while the verb took one
-    round for both halves. No banked round has both: stage 1 walks the solos
-    and stage 2 opens a new bundle for the verify. So the gate was
-    unexecutable on every corpus the flow can produce, on every rig.
-
-    Driven through ``main`` with the flags the help prescribes, over the two
-    round shapes the shared real-shape builder banks.
+    Issue #3481: it used to emit identically authoritative JSON whether or not
+    anything had ever checked the model against a measurement, and three
+    campaign decisions were triaged on it before the acceptance gate — which
+    lived only in ``--help`` prose — reached the driver. The record now carries
+    that nothing judged this one.
     """
     basis = bank_measure_round(tmp_path)
-    measured = bank_verify_round(tmp_path)
 
-    code = cli_main([
-        "verify-delta", str(basis), "--measured-round", str(measured),
-        "--residual-delay-us", "-100",
-    ])
-    payload = json.loads(capsys.readouterr().out)
+    code = cli_main(["forward-model", str(basis), "--residual-delay-us", "100"])
+    payload = _record(basis)
 
     assert code == 0
-    assert payload["status"] == "compared"
-    assert payload["basis_round_dir"] == str(basis)
-    assert payload["measured_round_dir"] == str(measured)
-    assert payload["predicted_minus_measured"]["compared_points"] > 0
-
-
-def test_a_prediction_no_measurement_judged_says_so_on_its_own_record(
-    tmp_path, capsys,
-) -> None:
-    """Issue #3481: ``predict`` emitted identically authoritative JSON whether
-    or not anything had ever checked the model against a measurement.
-
-    Three campaign decisions were triaged on this verb before the acceptance
-    gate — which lived only in ``--help`` prose — ever reached the driver, and
-    the model then failed acceptance on sign. The record now carries whether a
-    measurement judged it, so an untriaged prediction cannot enter round
-    provenance indistinguishably from a validated one.
-    """
-
-    freqs = _grid()
-    bundle = _bank_take(tmp_path, [
-        _banked("woofer", _lr4(freqs, highpass=False), freqs),
-        _banked("tweeter", _lr4(freqs, highpass=True), freqs),
-    ])
-
-    code = cli_main(["predict", str(bundle)])
-    payload = json.loads(capsys.readouterr().out)
-
-    assert code == 0
-    assert payload["prediction"]["acceptance"] == {
+    prediction = payload["prediction"]
+    assert prediction["take_path"].endswith("positions/measure_02_a01.json")
+    assert len(prediction["predicted_db"]) == len(prediction["freqs_hz"]) > 0
+    assert prediction["sum_band_hz"] == [SOLO_BAND_HZ[0], SOLO_BAND_HZ[1]]
+    # WHAT was predicted, on the filed record: the flag overrode the candidate,
+    # and a curve that cannot be attributed to a chain has no provenance.
+    assert payload["candidate"]["residual_delay_us"] == 100.0
+    assert payload["predicted_minus_measured"] is None
+    assert payload["acceptance"] == {
         "status": ACCEPTANCE_NOT_RUN,
         "judged_against": None,
     }
 
 
-def test_a_verify_delta_names_the_measurement_that_judged_the_prediction(
-    tmp_path, capsys,
+def test_the_acceptance_runs_worked_example_runs_on_what_the_flow_banks(
+    tmp_path,
 ) -> None:
-    """The other half of #3481: the comparand, on the record that carries the
-    delta rather than left in the invocation the reader no longer has."""
+    """Issue #3482: ``ACCEPTANCE_RUNS`` run 1 must be runnable.
 
+    It is the model's entry gate and it describes a two-round operation —
+    predict from the round that banked the SOLOS, delta against the round that
+    MEASURED the verify sum — while the verb once took one round for both
+    halves. No banked round has both: stage 1 walks the solos and stage 2 opens
+    a new bundle for the verify. Driven through ``main`` with the flags the help
+    prescribes, over the two round shapes the shared real-shape builder banks,
+    and the comparand is named on the record rather than left in an invocation
+    the reader no longer has (#3481).
+    """
     basis = bank_measure_round(tmp_path)
     measured = bank_verify_round(tmp_path)
 
     code = cli_main([
-        "verify-delta", str(basis), "--measured-round", str(measured),
+        "forward-model", str(basis), "--measured-round", str(measured),
+        "--residual-delay-us", "-100",
     ])
-    payload = json.loads(capsys.readouterr().out)
+    payload = _record(basis)
 
     assert code == 0
+    assert payload["basis_round_dir"] == str(basis)
+    assert payload["measured_round_dir"] == str(measured)
+    assert payload["predicted_minus_measured"]["compared_points"] > 0
     assert payload["acceptance"] == {
         "status": ACCEPTANCE_JUDGED,
         "judged_against": str(measured),
@@ -556,7 +525,7 @@ def test_every_flag_the_acceptance_runs_prescribe_is_a_flag_the_parser_has(
     parser = build_parser()
     options = {
         string
-        for action in parser._subparsers._group_actions[0].choices["verify-delta"]._actions
+        for action in parser._subparsers._group_actions[0].choices["forward-model"]._actions
         for string in action.option_strings
     }
     prescribed = set(re.findall(r"--[a-z][a-z0-9-]*", ACCEPTANCE_RUNS))
@@ -566,17 +535,15 @@ def test_every_flag_the_acceptance_runs_prescribe_is_a_flag_the_parser_has(
 
 
 def test_a_bank_that_cannot_answer_refuses_as_an_output(tmp_path, capsys) -> None:
-    """A refusal is a payload with a reason, not a traceback — a bundle with no
-    take carrying both solos is a finding about the bank."""
+    """A refusal is a payload with a reason, not a traceback — a round with no
+    take carrying both solos is a finding about the bank, and no forward model
+    at all rather than an unjudged one."""
 
-    freqs = _grid()
-    bundle = _bank_take(
-        tmp_path, [_banked("woofer", _lr4(freqs, highpass=False), freqs)]
-    )
+    basis = bank_verify_round(tmp_path)
 
-    code = cli_main(["predict", str(bundle)])
+    code = cli_main(["forward-model", str(basis)])
     payload = json.loads(capsys.readouterr().out)
 
-    assert code == 1
+    assert code == EXIT_REFUSED
     assert payload["status"] == "refused"
-    assert payload["reason"] == REFUSAL_NO_CURVE_PAIR
+    assert payload["reason"] == REASON_REFUSED

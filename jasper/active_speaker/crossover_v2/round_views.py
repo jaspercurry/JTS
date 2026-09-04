@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import warnings
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -865,35 +865,57 @@ def verify_pose_curve(banked: BankedRound) -> VerifyPoseResult:
 
 @dataclass(frozen=True)
 class ForwardModelDeltaResult:
-    """A predicted-vs-measured VERIFY delta, or why there is none.
+    """A predicted sum, its delta against a measured VERIFY sum, or why neither.
 
-    ``delta`` is ``None`` exactly when ``reason`` is non-empty. Never raises: a
-    round that banked no per-driver solos, none at this pose, or no VERIFY curve,
-    is a normal shape.
+    ``prediction`` is ``None`` only when the basis banked no summable pair —
+    the one shape with no forward model at all. ``delta`` is ``None`` exactly
+    when ``reason`` is non-empty, so a prediction nothing measured comes back
+    WITH its curve and a reason saying nothing judged it. Never raises: a round
+    that banked no per-driver solos, none at this pose, or no VERIFY curve, is
+    a normal shape.
 
     ``basis_round_dir`` / ``measured_round_dir`` name the two rounds the halves
-    came from, ALWAYS — equal when one round supplied both. Additive evidence: it
-    carries no verdict, tolerance or score (invariant 3).
+    came from, ALWAYS — equal when one round supplied both — and ``candidate``
+    names WHAT was predicted: a filed record whose curve cannot be attributed to
+    a chain is a prediction with no provenance. Additive evidence: it carries no
+    verdict, tolerance or score (invariant 3).
     """
 
     delta: Mapping[str, Any] | None
     reason: str
-    #: Required, not defaulted: an unattributed join is the thing this pair
-    #: exists to make impossible.
+    #: Required, not defaulted: an unattributed prediction is the thing these
+    #: three exist to make impossible.
     basis_round_dir: str
     measured_round_dir: str
+    candidate: "forward_model.SummationCandidate"
+    prediction: "forward_model.PredictedSum | None" = None
 
     @property
     def acceptance(self) -> dict[str, Any]:
         """Whether a measurement judged this prediction, and which one (#3481).
 
         Derived rather than passed in: a delta IS the judging. The vocabulary is
-        :func:`~.forward_model.acceptance_block`'s, shared with the prediction
-        record, so the two cannot spell the same fact differently.
+        :func:`~.forward_model.acceptance_block`'s, so the record cannot spell
+        the fact one way here and another way beside the prediction.
         """
         return forward_model.acceptance_block(
             self.measured_round_dir if self.delta is not None else None
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "acceptance": self.acceptance,
+            "basis_round_dir": self.basis_round_dir,
+            "candidate": asdict(self.candidate),
+            "measured_round_dir": self.measured_round_dir,
+            "prediction": (
+                None if self.prediction is None else self.prediction.to_dict()
+            ),
+            "predicted_minus_measured": (
+                None if self.delta is None else dict(self.delta)
+            ),
+            "reason": self.reason,
+        }
 
 
 def forward_model_verify_delta(
@@ -917,37 +939,53 @@ def forward_model_verify_delta(
     session id. So the join is disclosed on the result. ``candidate`` is a
     PARAMETER rather than the round's incumbent — the question is usually what
     some candidate WOULD have measured.
+
+    The PREDICTION is made first and returned whether or not a measured half
+    exists, so "what would this candidate measure" is answerable over a round
+    nothing has verified — with the result's own ``acceptance`` saying that
+    nothing judged it (#3481).
     """
 
+    # No ``measured`` is the basis judging ITSELF, which answers only for a
+    # round carrying both halves; the flow banks them in two, so the ordinary
+    # answer over a measure-stage round is a prediction nothing judged.
     measured = basis if measured is None else measured
-    dirs = {
-        "basis_round_dir": str(basis.round_dir),
-        "measured_round_dir": str(measured.round_dir),
-    }
-    verify_curve, reason = _banked_verify_curve(measured.inputs)
-    if verify_curve is None:
-        return ForwardModelDeltaResult(None, reason, **dirs)
-    measured_freqs_hz, measured_db = verify_curve
+    basis_dir = str(basis.round_dir)
+    measured_dir = str(measured.round_dir)
     try:
         pair = forward_model.load_branch_pair(
             basis.session_dir, phase=phase, position_deg=position_deg
         )
     except forward_model.ForwardModelError as exc:
-        return ForwardModelDeltaResult(None, str(exc), **dirs)
+        return ForwardModelDeltaResult(
+            None, str(exc), basis_dir, measured_dir, candidate
+        )
     if pair is None:
         return ForwardModelDeltaResult(
             None,
             f"no {phase} take at {position_deg} deg banks both driver solos",
-            **dirs,
+            basis_dir,
+            measured_dir,
+            candidate,
         )
     predicted = forward_model.predict_sum(pair, candidate)
+    verify_curve, reason = _banked_verify_curve(measured.inputs)
+    if verify_curve is None:
+        return ForwardModelDeltaResult(
+            None, reason, basis_dir, measured_dir, candidate, predicted
+        )
+    measured_freqs_hz, measured_db = verify_curve
     try:
         delta = forward_model.predicted_minus_measured_db(
             predicted, measured_freqs_hz, measured_db
         )
     except forward_model.ForwardModelError as exc:
-        return ForwardModelDeltaResult(None, str(exc), **dirs)
-    return ForwardModelDeltaResult(delta, "", **dirs)
+        return ForwardModelDeltaResult(
+            None, str(exc), basis_dir, measured_dir, candidate, predicted
+        )
+    return ForwardModelDeltaResult(
+        delta, "", basis_dir, measured_dir, candidate, predicted
+    )
 
 
 # --------------------------------------------------------------------------- #

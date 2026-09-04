@@ -17,6 +17,7 @@ whatever the emitted graph ran during its capture. Units are in every name.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -31,7 +32,6 @@ PREDICTION_KIND = "jts_forward_model_prediction"
 PREDICTION_SCHEMA_VERSION = 1
 
 REFUSAL_UNSUPPORTED = "forward_model_unsupported"
-REFUSAL_NO_CURVE_PAIR = "forward_model_no_banked_curve_pair"
 REFUSAL_GRID_DISAGREES = "forward_model_branch_grids_disagree"
 
 #: Nothing measured judged this prediction. What a bare prediction always is:
@@ -40,6 +40,41 @@ ACCEPTANCE_NOT_RUN = "not_run"
 
 #: A banked measurement judged it, and ``judged_against`` names which one.
 ACCEPTANCE_JUDGED = "judged_against_measured"
+
+ACCEPTANCE_RUNS = f"""\
+operator acceptance (run against the owner's banked captures, NOT CI tests):
+
+  1. Postdict the flat campaign's r8 regression. r8 applied the measured
+     -100 us inter-driver delay under EQ held verbatim from the incumbent
+     tune, and the 5-seat verify came back a REGRESSION: -3.1 dB at the
+     crossover region, auto-restored. The two halves sit in two banked
+     rounds, because the flow banks them that way -- a measure-stage round
+     walks the per-driver solos and a verify-stage round measures the sum:
+
+       jasper-round-views forward-model <r7-measure-round> \\
+           --measured-round <r8-verify-round> \\
+           --candidate-json <incumbent-filters.json> \\
+           --residual-delay-us -100
+
+     The model passes if the predicted delta reproduces that
+     crossover-region dip (~-3 dB) rather than predicting an improvement.
+     See historical/flat-campaign-2026-08-31.md section 5.
+
+  2. Track the C5 -> final measured delta. C5 is the blind-run 22-filter
+     starting chain; the final tune is 24 filters. Predict each chain over
+     the same banked solos and compare the predicted C5 -> final change
+     against the measured one (grade 1.112 -> 0.9035 over r9/r10, then
+     0.93 with tilt-removed RMS 0.18 -> 0.067 over r11/r12). The model
+     passes if it tracks that measured delta within its stated tolerance.
+
+Both are campaign-entry acceptance for ADR-0203's recommissioning campaign,
+and both must pass BEFORE any prediction is used to triage a candidate.
+
+Every record carries its own `acceptance` block, so the question is answerable
+from the output rather than from this help: a run with no `--measured-round`
+compares its curve to nothing and says `{ACCEPTANCE_NOT_RUN}`, while one with
+a measured round names the banked round that judged it.
+"""
 
 
 def acceptance_block(judged_against: str | None) -> dict[str, Any]:
@@ -144,9 +179,9 @@ class PredictedSum:
 
     ``predicted_db`` is on ``freqs_hz``, the banked pair's own shared grid.
     Outside :attr:`sum_band_hz` neither driver was swept and the prediction is
-    the floor rather than a response — a reader compares inside that band. The
-    serialized ``acceptance`` is :data:`ACCEPTANCE_NOT_RUN` by construction:
-    :func:`predict_sum` compares against nothing.
+    the floor rather than a response — a reader compares inside that band.
+    Whether a measurement judged it is the CONTAINING record's field, since
+    :func:`predict_sum` compares against nothing and cannot answer it.
     """
 
     freqs_hz: np.ndarray
@@ -162,8 +197,53 @@ class PredictedSum:
             "predicted_db": [float(db) for db in self.predicted_db],
             "sum_band_hz": [float(edge) for edge in self.sum_band_hz],
             "take_path": self.take_path,
-            "acceptance": acceptance_block(None),
         }
+
+
+def candidate_from_json(
+    path: str | Path | None,
+    *,
+    polarity_sign: int | None = None,
+    residual_delay_us: float | None = None,
+) -> SummationCandidate:
+    """One candidate from its JSON source plus the two single-value overrides.
+
+    No ``path`` is an uncorrected, untrimmed, in-phase pair at zero residual
+    delay. The two overrides WIN over the file when given, so a held-EQ
+    postdiction varies only the delay: the same candidate file, one flag moved.
+    Raises ``OSError``, ``ValueError`` or ``TypeError`` for a source that is not
+    a readable JSON object of the shape :class:`SummationCandidate` documents;
+    every message names ``path``, since the operator has more than one file open.
+    """
+    raw: Mapping[str, Any] = {}
+    if path is not None:
+        try:
+            loaded = json.loads(Path(path).read_text())
+        except ValueError as exc:
+            raise ValueError(f"{path}: {exc}") from exc
+        if not isinstance(loaded, Mapping):
+            raise ValueError(f"{path}: candidate JSON must be an object")
+        raw = loaded
+    filters = raw.get("filters_by_role") or {}
+    trims = raw.get("trim_db_by_role") or {}
+    if not isinstance(filters, Mapping) or not isinstance(trims, Mapping):
+        raise ValueError(
+            f"{path}: filters_by_role and trim_db_by_role must be objects"
+        )
+    return SummationCandidate(
+        filters_by_role={
+            str(role): list(entries) for role, entries in filters.items()
+        },
+        trim_db_by_role={str(role): float(db) for role, db in trims.items()},
+        polarity_sign=int(
+            raw.get("polarity_sign", 1) if polarity_sign is None else polarity_sign
+        ),
+        residual_delay_us=float(
+            raw.get("residual_delay_us", 0.0)
+            if residual_delay_us is None
+            else residual_delay_us
+        ),
+    )
 
 
 def load_branch_pair(
@@ -322,16 +402,17 @@ def predicted_minus_measured_db(
 __all__ = [
     "ACCEPTANCE_JUDGED",
     "ACCEPTANCE_NOT_RUN",
+    "ACCEPTANCE_RUNS",
     "PREDICTION_KIND",
     "PREDICTION_SCHEMA_VERSION",
     "REFUSAL_GRID_DISAGREES",
-    "REFUSAL_NO_CURVE_PAIR",
     "REFUSAL_UNSUPPORTED",
     "BranchPair",
     "ForwardModelError",
     "PredictedSum",
     "SummationCandidate",
     "acceptance_block",
+    "candidate_from_json",
     "load_branch_pair",
     "predict_sum",
     "predicted_minus_measured_db",
