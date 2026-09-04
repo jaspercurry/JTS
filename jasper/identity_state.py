@@ -23,9 +23,11 @@ re-read wizard/reconciler-owned files fresh, never trust the
     management request path and behind every URL
     :func:`jasper.identity.resolve_hostname` builds, so both read through
     one mtime/size-keyed cache (a ``stat()`` per call, a re-parse only
-    when the reconciler rewrote the file). Both follow a rename live,
-    within one reconciler period, instead of answering with the
-    ``os.environ`` snapshot a unit started with.
+    when the reconciler rewrote the file). Both follow a rename within one
+    reconciler period for readers that re-resolve per call, rather than
+    answering with the ``os.environ`` snapshot a unit started with; a
+    consumer that caches its answer (``Config.from_env``) still needs a
+    restart.
   * :func:`snapshot` — the ``/state.resilience.identity`` and doctor
     surface; reads fresh, derives a status, never raises.
 

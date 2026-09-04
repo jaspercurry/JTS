@@ -117,12 +117,12 @@ def resolve_hostname() -> str:
 
     Step 1 is ``jasper-identity-reconcile``'s snapshot of what
     ``/etc/jasper/jasper.env`` says, re-read fresh per call, so a rename
-    reaches a running daemon within one reconciler period instead of being
-    frozen at unit start — the rule wizard/reconciler-owned files carry
-    everywhere else. The ordering that makes it safe on a cold boot lives
-    in the unit: ``jasper-identity-reconcile.service`` is enabled by
-    install and runs ``Before=`` jasper-voice / jasper-control /
-    jasper-web, so the record is refreshed before any of them reads it.
+    reaches every PER-CALL reader within one reconciler period instead of
+    being frozen at unit start. A caller that resolves once and keeps the
+    answer still needs a restart — ``jasper-voice`` is the one that does
+    (``Config.from_env`` -> ``cfg.hostname``). See
+    ``deploy/systemd/jasper-identity-reconcile.service``'s ``Before=`` for
+    the cold-boot ordering that keeps those readers honest.
 
     Step 2 covers a box that has never run the reconciler (fresh install,
     dev checkout): identity.env is absent, step 1 yields "", and a

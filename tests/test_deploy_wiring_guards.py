@@ -51,6 +51,7 @@ from pathlib import Path
 import pytest
 
 from ._shell_corpus import shell_files
+from .systemd_unit_helpers import values_for
 
 _REPO = Path(__file__).resolve().parent.parent
 _DEPLOY = _REPO / "deploy"
@@ -577,3 +578,23 @@ def test_deploy_shell_stays_in_the_portable_dialect(reason, pattern, remedy):
             if pattern.search(line):
                 offenders.append(f"{path.relative_to(_REPO)}:{lineno}")
     assert not offenders, f"{reason}: {offenders}. Use {remedy}."
+
+
+_IDENTITY_ONESHOT = "jasper-identity-reconcile.service"
+_SYSTEMD = _REPO / "deploy" / "systemd"
+
+
+@pytest.mark.parametrize(
+    "reader", ["jasper-voice.service", "jasper-control.service"],
+)
+def test_start_time_hostname_readers_order_behind_the_identity_oneshot(reader):
+    """These two resolve the speaker's name ONCE at start and keep it — voice
+    through Config.from_env, control through the management-host allowlist's
+    env arm. Before= alone orders only units already in the transaction, so
+    each reader must also pull the oneshot in."""
+    assert _IDENTITY_ONESHOT in values_for(
+        (_SYSTEMD / reader).read_text(encoding="utf-8"), "Wants",
+    )
+    assert reader in values_for(
+        (_SYSTEMD / _IDENTITY_ONESHOT).read_text(encoding="utf-8"), "Before",
+    )
