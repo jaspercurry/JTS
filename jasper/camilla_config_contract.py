@@ -591,14 +591,14 @@ def parse_camilla_devices_config(text: str) -> dict[str, Any]:
     that is not ``true``/``false`` omits the key rather than guessing, like every
     other field.
 
-    ``capture_format`` / ``playback_format`` join ``*_device`` / ``*_channels``
-    in the per-lane subset because the ring's width gate
-    (``jasper.fanin.coupling_reconcile.ring_edge_width_ready``) has to judge
-    device, channels and format off ONE snapshot of the loaded graph — reading
-    the same file three times through the single-field reader would let the
-    three answers come from three different revisions of it. Keys are omitted
-    entirely when the block declares no such field, exactly like the others, so
-    every existing caller is unaffected.
+    ``*_format``, ``*_type`` and ``*_filename`` join ``*_device`` /
+    ``*_channels`` because the callers that judge a lane judge several of its
+    fields at once — the ring's width gate
+    (``jasper.fanin.coupling_reconcile.ring_edge_width_ready``) and the doctor's
+    coupling and playback-format checks — and reading the same file once per
+    field through :func:`read_camilla_device_field` lets those answers come from
+    different revisions of it. A key is omitted when the block declares no such
+    field, exactly like the others, so every existing caller is unaffected.
     """
 
     text = textwrap.dedent(text)
@@ -702,9 +702,9 @@ def parse_camilla_devices_config(text: str) -> dict[str, Any]:
             if key == "device":
                 result[f"{nested}_device"] = value
                 continue
-            if key == "format":
+            if key in {"format", "type", "filename"}:
                 if value:
-                    result[f"{nested}_format"] = value
+                    result[f"{nested}_{key}"] = value
                 continue
             if key == "channels":
                 try:

@@ -10,9 +10,11 @@ module may not import from any of the three.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
-from ...camilla_config_contract import read_camilla_device_field
+from ...camilla_config_contract import (
+    DEFAULT_PIPE_SINK_FORMAT,
+    DEFAULT_PLAYBACK_FORMAT,
+    read_camilla_devices_config,
+)
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
 from .correction import _active_camilla_config_path
@@ -60,7 +62,7 @@ def check_camilla_service() -> CheckResult:
     return CheckResult(label, "ok", "enabled and active")
 
 
-def _graph_feeds_the_bond(config_path: Path) -> bool:
+def _graph_feeds_the_bond(devices: dict[str, object]) -> bool:
     """Is this graph's post-DSP endpoint the bond rather than a local ring?
 
     A bonded LEADER's camilla#1 plays into the Snapcast pipe and never touches a
@@ -70,8 +72,8 @@ def _graph_feeds_the_bond(config_path: Path) -> bool:
     from ...multiroom.reconcile import SNAPFIFO
 
     return (
-        read_camilla_device_field(config_path, "playback", "type") == "File"
-        and read_camilla_device_field(config_path, "playback", "filename") == SNAPFIFO
+        devices.get("playback_type") == "File"
+        and devices.get("playback_filename") == SNAPFIFO
     )
 
 
@@ -85,10 +87,6 @@ def _expected_playback_format(
     in every reachable config (a ``File`` sink carries no ``device`` key), so
     their order is not load-bearing.
     """
-    from jasper.camilla_config_contract import (
-        DEFAULT_PIPE_SINK_FORMAT,
-        DEFAULT_PLAYBACK_FORMAT,
-    )
     from jasper.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_PLAYBACK_DEVICE,
@@ -133,14 +131,14 @@ def check_camilla_playback_format() -> CheckResult:
     _, config_path = _active_camilla_config_path()
     if config_path is None:
         return CheckResult(label, "ok", "no loaded config to compare")
-    path = Path(config_path)
-    loaded_format = read_camilla_device_field(path, "playback", "format")
+    devices = read_camilla_devices_config(config_path) or {}
+    loaded_format = devices.get("playback_format")
     if loaded_format is None:
         return CheckResult(
-            label, "ok", f"{path} has no devices.playback.format field"
+            label, "ok", f"{config_path} has no devices.playback.format field"
         )
-    playback_type = read_camilla_device_field(path, "playback", "type")
-    playback_device = read_camilla_device_field(path, "playback", "device")
+    playback_type = devices.get("playback_type")
+    playback_device = devices.get("playback_device")
     expected_format, expected_name = _expected_playback_format(
         playback_type, playback_device
     )
@@ -158,7 +156,7 @@ def check_camilla_playback_format() -> CheckResult:
         f"loaded CamillaDSP playback format={loaded_format!r} for playback "
         f"type={playback_type!r} device={playback_device!r}, expected "
         f"{expected_format!r} "
-        f"({expected_name}) — a half-flipped box: {path} was generated "
+        f"({expected_name}) — a half-flipped box: {config_path} was generated "
         f"against a different {expected_name} than the one currently in "
         "force. Regenerate the config (sudo /opt/jasper/.venv/bin/jasper-sound "
         f"reconcile-current-dsp) or investigate why {expected_name} and the "
