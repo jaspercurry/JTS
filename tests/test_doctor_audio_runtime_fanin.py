@@ -1145,6 +1145,31 @@ def _run_check(monkeypatch, *, cfg_text, tmp_path):
     return audio_runtime_fanin.check_fanin_coupling()
 
 
+@pytest.mark.parametrize(
+    "cfg_text",
+    [
+        # Two top-level `devices:` keys — the subset parser refuses to guess
+        # which one is live.
+        "devices:\n  capture:\n    type: Alsa\ndevices:\n  capture:\n    type: File\n",
+        # A graph with no `devices:` block at all.
+        "filters:\n  flat:\n    type: Gain\n",
+    ],
+    ids=("duplicate-devices", "no-devices-block"),
+)
+def test_a_loaded_config_whose_devices_block_does_not_parse_warns(
+    monkeypatch, tmp_path, cfg_text
+):
+    """A config IS loaded and no axis can be judged: that is a warn, not an ok.
+
+    The ``ok`` beside it means "no config yet", which a present-but-unparseable
+    graph is not.
+    """
+    result = _run_check(monkeypatch, cfg_text=cfg_text, tmp_path=tmp_path)
+
+    assert result.status == "warn"
+    assert result.reason == audio_runtime_fanin.REASON_DEVICES_UNPARSED
+
+
 @pytest.mark.parametrize("cfg_text", [_ALSA_CFG, _ALSA_LOCAL_PIPE_CFG, _RAWFILE_CFG])
 def test_a_graph_that_is_not_the_ring_graph_warns_with_the_ring_remedy(
     monkeypatch, tmp_path, cfg_text
@@ -1192,7 +1217,14 @@ def test_a_non_snapcast_file_sink_is_not_that_endpoint(monkeypatch, tmp_path):
 
 
 def test_check_ok_when_no_loaded_capture(monkeypatch, tmp_path):
-    res = _run_check(monkeypatch, cfg_text="filters:\n", tmp_path=tmp_path)
+    """A graph that PARSES but declares no capture lane has nothing to compare.
+
+    The unparseable graph beside it is a warn: this ok is for a readable
+    ``devices:`` block, not for any file the parser gave up on.
+    """
+    res = _run_check(
+        monkeypatch, cfg_text="devices:\n  samplerate: 48000\n", tmp_path=tmp_path
+    )
     assert res.status == "ok"
 
 

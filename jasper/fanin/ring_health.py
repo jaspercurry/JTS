@@ -137,12 +137,10 @@ class LoadedCamillaGraph:
     """ONE snapshot of the CamillaDSP graph the durable statefile points at.
 
     A snapshot object rather than three field reads: the width gate compares a
-    lane's device, format and channels together, and reading them one at a time
-    through :func:`jasper.camilla_config_contract.read_camilla_device_field`
-    would re-open the file per field — three answers that need not come from one
-    revision of it. ``devices`` is
-    :func:`~jasper.camilla_config_contract.parse_camilla_devices_config`'s subset
-    over that single read.
+    lane's device, format and channels together, and one file read per field
+    gives three answers that need not come from one revision of it. ``devices``
+    is :func:`~jasper.camilla_config_contract.parse_camilla_devices_config`'s
+    subset over that single read.
 
     ``note`` is empty when the graph WAS read and non-empty saying why not
     otherwise. It is never an exception: a box with no statefile yet is the

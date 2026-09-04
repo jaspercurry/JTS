@@ -1615,14 +1615,12 @@ def test_the_coupling_warn_names_the_recovery_ladder_and_never_the_forbidden_rin
     )
     monkeypatch.setattr(
         audio_runtime_fanin,
-        "read_camilla_device_field",
-        lambda path, block, field: (
-            "Alsa"
-            if field == "type"
-            else RING_ACTIVE_PLAYBACK_DEVICE
-            if block == "playback"
-            else "jts_ring_capture"
-        ),
+        "read_camilla_devices_config",
+        lambda path: {
+            "capture_type": "Alsa",
+            "capture_device": "jts_ring_capture",
+            "playback_device": RING_ACTIVE_PLAYBACK_DEVICE,
+        },
     )
     result = audio_runtime_fanin.check_fanin_coupling()
     assert result.status == "warn", result.detail
@@ -1676,14 +1674,12 @@ def test_the_coupling_warn_on_an_armed_box_names_the_forward_ladder_not_a_rollba
     )
     monkeypatch.setattr(
         audio_runtime_fanin,
-        "read_camilla_device_field",
-        lambda path, block, field: (
-            "Alsa"
-            if field == "type"
-            else OUTPUTD_ACTIVE_PLAYBACK_DEVICE
-            if block == "playback"
-            else RING_CAPTURE_DEVICE
-        ),
+        "read_camilla_devices_config",
+        lambda path: {
+            "capture_type": "Alsa",
+            "capture_device": RING_CAPTURE_DEVICE,
+            "playback_device": OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+        },
     )
     result = audio_runtime_fanin.check_fanin_coupling()
     assert result.status == "warn", result.detail

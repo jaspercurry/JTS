@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
-from ...camilla_config_contract import read_camilla_device_field
+from ...camilla_config_contract import read_camilla_devices_config
 from ...fanin_coupling import read_declared_ring_wire_format
 from ...route_latency.status_socket import FANIN_STATUS_SOCKET, read_status_socket
 from ._registry import doctor_check
@@ -564,6 +564,10 @@ def _host_clock_health_from_status(data: dict[str, object]) -> CheckResult:
     )
 
 
+#: `CheckResult.reason` for a loaded CamillaDSP config whose ``devices:`` block
+#: does not parse — the one branch of `check_fanin_coupling` that judges no axis.
+REASON_DEVICES_UNPARSED = "camilla_devices_unparsed"
+
 #: Seconds, TOTAL deadline for one doctor probe of fan-in's STATUS socket.
 #: One value for every probe: they all fail soft, so a slower answer is worth
 #: more than a faster verdict.
@@ -812,10 +816,23 @@ def check_fanin_coupling() -> CheckResult:
 
     label = "fan-in coupling"
     _, active_path = _active_camilla_config_path()
-    config_path = Path(active_path) if active_path else Path(
-        "/var/lib/camilladsp/configs/sound_current.yml"
-    )
-    capture = read_camilla_device_field(config_path, "capture", "type")
+    fallback = "/var/lib/camilladsp/configs/sound_current.yml"
+    config_path = Path(active_path or fallback)
+    devices = read_camilla_devices_config(config_path) or {}
+    if not devices and config_path.exists():
+        # A config IS loaded and its devices block did not parse (an absent or
+        # duplicated top-level `devices:` key, or a file this process cannot
+        # read). Not "no config yet": every coupling axis below is unjudged.
+        return CheckResult(
+            label,
+            "warn",
+            f"loaded config {config_path} yields no devices block, so the "
+            "capture and playback axes cannot be judged. Check the file's "
+            "top-level devices: key, then run: sudo /opt/jasper/.venv/bin/"
+            "jasper-sound reconcile-current-dsp",
+            reason=REASON_DEVICES_UNPARSED,
+        )
+    capture = devices.get("capture_type")
     if capture is None:
         # No JTS config loaded yet (fresh box / non-JTS graph).
         return CheckResult(label, "ok", "no loaded capture to compare")
@@ -831,8 +848,8 @@ def check_fanin_coupling() -> CheckResult:
     # it as expected would send an operator to a device the emitters refuse to
     # write. Such a box is mid-arm, and the remedy is the ladder, not a re-arm.
     roleful = _requires_roleful_graph()
-    capture_device = read_camilla_device_field(config_path, "capture", "device")
-    playback_device = read_camilla_device_field(config_path, "playback", "device")
+    capture_device = devices.get("capture_device")
+    playback_device = devices.get("playback_device")
     ring_mismatches: list[str] = []
     if capture != "Alsa" or capture_device != RING_CAPTURE_DEVICE:
         ring_mismatches.append(
@@ -842,7 +859,7 @@ def check_fanin_coupling() -> CheckResult:
     # A bonded LEADER's camilla#1 writes the Snapcast pipe and reaches no ring
     # device at all, so the playback axis is this check's business only on the
     # ring endpoint.
-    feeds_the_bond = _graph_feeds_the_bond(config_path)
+    feeds_the_bond = _graph_feeds_the_bond(devices)
     if not feeds_the_bond and playback_device != expected_playback:
         if roleful and not armed:
             ring_mismatches.append(
