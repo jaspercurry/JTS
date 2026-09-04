@@ -58,7 +58,9 @@ from jasper.active_speaker.wizard_client import (
 )
 from jasper.identity import read_identity
 
-from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED
+from ._refusal import (
+    EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, read_json_source,
+)
 
 DEFAULT_TIMEOUT_S = 900.0
 DEFAULT_POLL_S = 5.0
@@ -100,15 +102,6 @@ def _emit(receipt: Mapping[str, Any], *, json_output: bool) -> None:
         print(f"  {key:<30}{value}")
 
 
-def _read_document(path: str) -> Any:
-    """One prescription document, from a file or ``-`` for stdin."""
-    try:
-        raw = sys.stdin.read() if path == "-" else Path(path).read_text()
-        return json.loads(raw)
-    except (OSError, ValueError) as exc:
-        raise ValueError(f"{path}: {exc}") from exc
-
-
 def _prescription_doors(args: argparse.Namespace) -> dict[str, Any]:
     """The alignment and topology documents, under the keys the host reads.
 
@@ -128,7 +121,7 @@ def _prescription_doors(args: argparse.Namespace) -> dict[str, Any]:
     )
 
     return {
-        key: _read_document(path)
+        key: read_json_source(path)
         for key, path in (
             (ALIGNMENT_PRESCRIPTION_KEY, args.alignment_prescription),
             (TOPOLOGY_PRESCRIPTION_KEY, args.topology_prescription),
