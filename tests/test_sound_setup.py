@@ -26,6 +26,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.playback_route import OUTPUTD_ACTIVE_LANE_SOURCE
+from jasper.audio_hardware.dac import all_profiles as dac_all_profiles
 from jasper.camilla_config_contract import PeqFilter
 from jasper.dsp_apply import DspApplyState, dsp_write_epoch, record_dsp_apply_state
 from jasper.output_topology import (
@@ -73,6 +74,7 @@ from .active_speaker_fixtures import (
     PASSIVE_ONLY_DAC_LABEL,
     register_passive_only_dac,
 )
+from ._hat_eeprom import write_hat_eeprom
 from ._web_test_helpers import (
     json_post_with_csrf,
     make_csrf_session,
@@ -1189,35 +1191,48 @@ def test_sound_module_preserves_editor_behaviour():
     assert "window.prompt" not in js
 
 
-def test_i2s_hat_payload_reports_modes_and_truthful_restart(monkeypatch, tmp_path):
+def test_i2s_hat_payload_offers_only_the_undetectable_hats(monkeypatch, tmp_path):
+    """Detected HATs are reported, never offered as a choice (ADR-0234)."""
+
     intent = tmp_path / "i2s_hat.env"
+    hat_dir = tmp_path / "hat"
     marker = tmp_path / "i2s-reboot"
     marker.touch()
-    hardware = {
-        "profile_id": "unknown",
-        "status": "partial",
-        "child_devices": [{"device_id": "innomaker_hifi_amp_pro"}],
-        "usb_data_role": {"board_topology": "shared_otg_port"},
-    }
+    hardware = {"usb_data_role": {"board_topology": "shared_otg_port"}}
     monkeypatch.setattr(sound_setup, "I2S_HAT_REBOOT_REQUIRED_PATH", str(marker))
     monkeypatch.setattr(sound_setup, "_output_hardware_dict", lambda: hardware)
 
-    payload = sound_setup._i2s_hat_payload(intent_path=intent)
+    payload = sound_setup._i2s_hat_payload(intent_path=intent, hat_dir=hat_dir)
 
+    detectable = {p.id for p in dac_all_profiles() if p.hat_products}
+    offered = {entry["id"] for entry in payload["profiles"]}
+    assert "innomaker_hifi_amp_pro" in offered
+    assert not offered & detectable
     assert payload["desired_profile_id"] is None
-    assert payload["detected_profile_id"] == "innomaker_hifi_amp_pro"
-    assert {"id": "innomaker_hifi_amp_pro", "label": "InnoMaker HiFi AMP Pro"} in payload["profiles"]
-    assert {"id": "hifiberry_dac8x_studio", "label": "HiFiBerry DAC8x Studio"} in payload["profiles"]
+    assert payload["detected_profile_id"] is None
+    assert payload["detected_label"] == ""
     assert payload["restart_required"] is True
     assert payload["visibility"] == "visible"
     assert payload["available"] is True
     assert payload["shared_usb_data_port"] is True
     assert payload["warnings"] == []
-    assert all(text in _SOUND_MODULE.read_text() for text in ("Enabling this setting reserves this shared port for gadget/peripheral use after restart, so it can no longer host a USB output DAC and output moves to the HAT.", "ordinary powered micro-USB host cable: it supplies 5 V", "Use a VBUS-isolated data connection/adapter or leave the port disconnected."))
 
+    write_hat_eeprom(hat_dir, product="StudioDAC8x")
+    detected = sound_setup._i2s_hat_payload(intent_path=intent, hat_dir=hat_dir)
+
+    assert detected["detected_profile_id"] == "hifiberry_dac8x_studio"
+    assert detected["detected_label"] == next(
+        p.label for p in dac_all_profiles() if p.id == "hifiberry_dac8x_studio"
+    )
+    assert "hifiberry_dac8x_studio" not in {e["id"] for e in detected["profiles"]}
+
+    # A board the reconciler will not manage reports no detection either.
     hardware.clear()
     hardware["usb_data_role"] = {"board_topology": "unsupported"}
-    assert sound_setup._i2s_hat_payload(intent_path=intent)["available"] is False
+    unsupported = sound_setup._i2s_hat_payload(intent_path=intent, hat_dir=hat_dir)
+    assert unsupported["available"] is False
+    assert unsupported["detected_profile_id"] is None
+    assert unsupported["detected_label"] == ""
 
 
 def test_i2s_hat_payload_surfaces_a_boot_config_collision(monkeypatch, tmp_path):
@@ -1232,7 +1247,7 @@ def test_i2s_hat_payload_surfaces_a_boot_config_collision(monkeypatch, tmp_path)
     )
 
     payload = sound_setup._i2s_hat_payload(
-        intent_path=intent, boot_config_path=boot_config
+        intent_path=intent, boot_config_path=boot_config, hat_dir=tmp_path / "hat"
     )
 
     assert payload["desired_profile_id"] == "innomaker_hifi_amp_pro"

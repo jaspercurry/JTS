@@ -40,6 +40,7 @@ from .dac import (
     latency_floor_for,
     mixer_control_groups_for,
     profile_for_card_label,
+    profile_for_hat,
     physical_output_count_for,
     supports_physical_output_count,
 )
@@ -79,6 +80,7 @@ __all__ = [
     "latency_floor_for",
     "mixer_control_groups_for",
     "profile_for_card_label",
+    "profile_for_hat",
     "physical_output_count_for",
     "supports_physical_output_count",
 ]

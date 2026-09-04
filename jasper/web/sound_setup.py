@@ -45,16 +45,14 @@ from jasper.audio_measurement.correction_lane import (
     correction_play_device,
     popen_correction_play,
 )
-from jasper.audio_hardware.dac import (
-    DacProfile,
-    all_profiles as dac_all_profiles,
-    is_boot_managed_i2s_profile,
-)
+from jasper.audio_hardware.hat_eeprom import DEFAULT_HAT_DIR
 from jasper.audio_hardware.usb_port_role import (
     DEFAULT_BOOT_CONFIG_PATH,
     DEFAULT_I2S_HAT_INTENT_PATH,
+    detected_i2s_hat_profile,
     read_i2s_hat_intent,
     render_i2s_hat_boot_config,
+    selectable_i2s_hat_profiles,
     write_i2s_hat_intent,
 )
 from jasper.dsp_apply import same_config_file
@@ -322,14 +320,10 @@ def _output_hardware_dict() -> dict[str, Any] | None:
     return hardware.to_dict() if hardware is not None else None
 
 
-def _i2s_hat_profiles() -> list[DacProfile]:
-    return [p for p in dac_all_profiles() if is_boot_managed_i2s_profile(p)]
-
-
 def _i2s_hat_collision_warnings(
-    profile_id: str | None, boot_config_path: str | Path
+    profile_id: str | None, boot_config_path: str | Path, *, detected: bool
 ) -> list[str]:
-    """Re-derive (read-only) whether saving ``profile_id`` would collide.
+    """Re-derive (read-only) whether applying ``profile_id`` would collide.
 
     ``jasper-audio-hardware-reconcile`` owns the actual write and is the
     one place a collision gets refused; this recomputes the same pure
@@ -347,10 +341,14 @@ def _i2s_hat_collision_warnings(
         return []
     if collision is None:
         return []
+    remedy = (
+        "Remove the hand-written line, then deploy or reboot."
+        if detected
+        else "Remove the existing line, then try again."
+    )
     return [
         f"A hand-written dtoverlay={overlay} line is already in config.txt; "
-        f"the {collision.managed_overlay} boot line was not written. Remove "
-        "the existing line, or save None / unmanaged, then try again."
+        f"the {collision.managed_overlay} boot line was not written. {remedy}"
         for overlay in collision.colliding_overlays
     ]
 
@@ -359,8 +357,9 @@ def _i2s_hat_payload(
     *,
     intent_path: str | Path = DEFAULT_I2S_HAT_INTENT_PATH,
     boot_config_path: str | Path = DEFAULT_BOOT_CONFIG_PATH,
+    hat_dir: str | Path = DEFAULT_HAT_DIR,
 ) -> dict[str, Any]:
-    profiles = _i2s_hat_profiles()
+    profiles = selectable_i2s_hat_profiles()
     hardware = _output_hardware_dict() or {}
     topology = str(
         (hardware.get("usb_data_role") or {}).get("board_topology") or "unknown"
@@ -375,13 +374,11 @@ def _i2s_hat_payload(
     except (OSError, UnicodeError, ValueError) as exc:
         desired_profile_id = None
         intent_error = str(exc)
-    # The DETECTED I2S DAC, if the classifier already recognizes one — shown
-    # as a hint next to the (unchanged) saved selection. An EEPROM-based
-    # default is a later PR's job.
-    active_ids = {hardware.get("profile_id")} | {
-        child.get("device_id") for child in hardware.get("child_devices", ())
-    }
-    detected_profile_id = next((p.id for p in profiles if p.id in active_ids), None)
+    # A HAT that names itself in its EEPROM is reconciled without the operator
+    # choosing anything, so the wizard reports it instead of offering it. On a
+    # board the reconciler will not manage, it reports nothing.
+    detected = detected_i2s_hat_profile(hat_dir) if available else None
+    resolved_id = detected.id if detected is not None else desired_profile_id
     return {
         "visibility": "visible",
         "available": available,
@@ -390,8 +387,11 @@ def _i2s_hat_payload(
         "intent_error": intent_error,
         "profiles": [{"id": p.id, "label": p.label} for p in profiles],
         "desired_profile_id": desired_profile_id,
-        "detected_profile_id": detected_profile_id,
-        "warnings": _i2s_hat_collision_warnings(desired_profile_id, boot_config_path),
+        "detected_profile_id": detected.id if detected is not None else None,
+        "detected_label": detected.label if detected is not None else "",
+        "warnings": _i2s_hat_collision_warnings(
+            resolved_id, boot_config_path, detected=detected is not None
+        ),
         "restart_required": Path(I2S_HAT_REBOOT_REQUIRED_PATH).is_file(),
     }
 

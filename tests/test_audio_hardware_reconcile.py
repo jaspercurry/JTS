@@ -696,7 +696,7 @@ def test_runtime_convergence_only_writes_statefile(tmp_path: Path) -> None:
 # --- I2S HAT boot intent ------------------------------------------------------
 
 
-def test_i2s_reboot_marker_is_created_only_by_the_boot_setting_change(tmp_path: Path):
+def test_i2s_reboot_marker_tracks_desired_versus_observed(tmp_path: Path):
     model = "Raspberry Pi Zero 2 W Rev 1.0"
     (tmp_path / "install_profile").write_text("streambox\n", encoding="utf-8")
     intent = tmp_path / "i2s_hat.env"
@@ -723,14 +723,16 @@ def test_i2s_reboot_marker_is_created_only_by_the_boot_setting_change(tmp_path: 
         )
 
     marker.unlink()  # a reboot naturally clears /run
+    # The boot line is already in place, so this pass changes nothing -- and
+    # the marker is still raised, because the desired HAT is not what is
+    # running. State, not edge (an install-time pass can write the line first).
     second = rerun(reason="boot")
     assert second.returncode == 0, second.stderr
-    assert not marker.exists()  # missing hardware does not recreate it
+    assert marker.is_file()
 
-    marker.touch()
     third = rerun()
     assert third.returncode == 0, third.stderr
-    assert marker.is_file()  # unrelated reconciles leave a pending marker alone
+    assert marker.is_file()
 
     (tmp_path / "systemctl.log").unlink(missing_ok=True)
     matched = rerun(INNOMAKER_LISTING)

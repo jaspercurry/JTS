@@ -628,10 +628,10 @@ HIFIBERRY_DAC8X_STUDIO = DacProfile(
     # still prints `dtoverlay=hifiberry-dac8x`; it predates that support, and
     # the kernel is the authority for what a board actually presents.
     #
-    # `render_i2s_hat_boot_config` can manage this overlay too (any
-    # `connection == "i2s"` profile is eligible; the per-box intent file
-    # picks one, explicit opt-in only). It also feeds
-    # `configured_i2s_overlays()`, the registered-overlay set USB port-role
+    # `render_i2s_hat_boot_config` manages this overlay: `hat_products` below
+    # makes this row the one a fitted Studio DAC8x resolves to, and the
+    # reconciler writes the line without an operator step (ADR-0234). It also
+    # feeds `configured_i2s_overlays()`, the registered-overlay set USB port-role
     # resolution intersects config.txt against — so with the wrong value a
     # correctly-configured Studio box read as "no I2S HAT present".
     dtoverlay="hifiberry-studio-dac8x",
@@ -952,6 +952,13 @@ def _matches_any(patterns: tuple[str, ...], text: str) -> bool:
     return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
 
 
+def _declares_hat_product(profile: DacProfile, hat: HatEeprom) -> bool:
+    product = hat.product.strip().casefold()
+    return bool(product) and any(
+        product == declared.casefold() for declared in profile.hat_products
+    )
+
+
 def profile_for_card_label(
     label: str,
     *,
@@ -977,15 +984,34 @@ def profile_for_card_label(
             return profile
     if hat is None:
         return None
-    product = hat.product.strip().casefold()
     for profile in REGISTRY:
         if profile.kind != "single":
             continue
-        if not any(product == declared.casefold() for declared in profile.hat_products):
+        if not _declares_hat_product(profile, hat):
             continue
         if _matches_any(profile.eeprom_gated_card_matches, text):
             return profile
     return None
+
+
+def profile_for_hat(hat: HatEeprom | None) -> DacProfile | None:
+    """Return the profile whose ``hat_products`` claims a fitted HAT.
+
+    The EEPROM product is the board's own declaration of what it is, so a
+    match identifies the fitted HAT before any driver has bound a card --
+    which is what lets the boot overlay be resolved from it (ADR-0234).
+    """
+
+    if hat is None:
+        return None
+    return next(
+        (
+            profile
+            for profile in REGISTRY
+            if profile.kind == "single" and _declares_hat_product(profile, hat)
+        ),
+        None,
+    )
 
 
 def supports_physical_output_count(profile_id: str, output_count: int) -> bool:
@@ -1109,6 +1135,7 @@ __all__ = [
     "latency_floor_for",
     "mixer_control_groups_for",
     "profile_for_card_label",
+    "profile_for_hat",
     "physical_output_count_for",
     "supports_physical_output_count",
 ]
