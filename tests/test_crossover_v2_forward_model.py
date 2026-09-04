@@ -25,7 +25,6 @@ from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.forward_model import (
     ACCEPTANCE_JUDGED,
     ACCEPTANCE_NOT_RUN,
-    ACCEPTANCE_RUNS,
     REFUSAL_GRID_DISAGREES,
     BranchPair,
     ForwardModelError,
@@ -40,7 +39,12 @@ from jasper.active_speaker.crossover_v2.position_cycle import parse_curve_comple
 from jasper.active_speaker.delay_sweep import sweep_spec
 from jasper.audio_measurement.analysis import crossover_null_depth_db
 from jasper.cli._refusal import EXIT_REFUSED
-from jasper.cli.round_views import REASON_REFUSED, build_parser, main as cli_main
+from jasper.cli.round_views import (
+    ACCEPTANCE_RUNS,
+    REASON_REFUSED,
+    build_parser,
+    main as cli_main,
+)
 
 from tests.crossover_v2_banked_round import (
     SOLO_BAND_HZ,
@@ -532,6 +536,25 @@ def test_every_flag_the_acceptance_runs_prescribe_is_a_flag_the_parser_has(
 
     assert prescribed
     assert prescribed <= options
+
+
+def test_a_delta_that_was_asked_for_and_could_not_be_made_refuses(
+    tmp_path, capsys,
+) -> None:
+    """Naming ``--measured-round`` is asking to be judged, so a round that banks
+    no VERIFY sum answers the question asked with a refusal — not with an
+    unjudged prediction filed under exit 0, which would read as the answer."""
+
+    basis = bank_measure_round(tmp_path)
+
+    code = cli_main([
+        "forward-model", str(basis), "--measured-round", str(basis),
+    ])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == EXIT_REFUSED
+    assert payload["reason"] == REASON_REFUSED
+    assert not (basis / "forward_model.json").exists()
 
 
 def test_a_bank_that_cannot_answer_refuses_as_an_output(tmp_path, capsys) -> None:

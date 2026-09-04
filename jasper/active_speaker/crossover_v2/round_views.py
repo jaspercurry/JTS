@@ -946,9 +946,6 @@ def forward_model_verify_delta(
     nothing judged it (#3481).
     """
 
-    # No ``measured`` is the basis judging ITSELF, which answers only for a
-    # round carrying both halves; the flow banks them in two, so the ordinary
-    # answer over a measure-stage round is a prediction nothing judged.
     measured = basis if measured is None else measured
     basis_dir = str(basis.round_dir)
     measured_dir = str(measured.round_dir)

@@ -122,10 +122,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, Sequence
 
 from jasper.active_speaker.crossover_v2.contracts import DESIGN_AXIS_DEG
-from jasper.active_speaker.crossover_v2.forward_model import (
-    ACCEPTANCE_RUNS,
-    candidate_from_json,
-)
+from jasper.active_speaker.crossover_v2.forward_model import candidate_from_json
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL, PHASE_MEASURE
 from jasper.active_speaker.crossover_v2.round_views import (
     AGREEMENT_TESTIFY_MIN,
@@ -188,6 +185,21 @@ AUTHORITY_TIER = "advisory"
 _ROUND_DIR_HELP = "a banked round directory, or a live session bundle"
 
 PROG = "jasper-round-views"
+
+#: The two runs that must pass before a prediction triages a candidate, as
+#: invocations rather than prose. The pointers below own what each postdicts.
+ACCEPTANCE_RUNS = """\
+operator acceptance (the owner's banked captures, NOT CI tests) -- both must
+pass before a prediction triages a candidate. See ADR-0203 and
+docs/historical/flat-campaign-2026-08-31.md section 5 for what each postdicts:
+
+  1. jasper-round-views forward-model <r7-measure-round> \\
+         --measured-round <r8-verify-round> \\
+         --candidate-json <incumbent-filters.json> --residual-delay-us -100
+
+  2. jasper-round-views forward-model <r9-measure-round> \\
+         --measured-round <r10-verify-round> --candidate-json <c5-chain.json>
+"""
 
 #: The positionals a view's subcommand takes, with the inventoried round in
 #: the SLOT that writes the artifact beside it: ``frozen`` grades — and writes
@@ -609,10 +621,12 @@ def _cmd_forward_model(args: argparse.Namespace) -> int:
         phase=args.phase,
         position_deg=args.position_deg,
     )
-    if result.prediction is None:
-        # No summable pair is no forward model at all — the refusal arm, which
-        # main() publishes for every view here. An unjudged prediction is not:
-        # that is an answer, and it says on the record that nothing judged it.
+    # No summable pair is no forward model at all; a delta an operator ASKED
+    # for and did not get is the same refusal. An unjudged prediction nobody
+    # asked to judge is not — that is an answer, and the record carries it.
+    if result.prediction is None or (
+        args.measured_round is not None and result.delta is None
+    ):
         raise RoundViewsError(result.reason)
     predicted = result.prediction
     written = _write(result.to_dict(), args.out, _view_out(args, basis))

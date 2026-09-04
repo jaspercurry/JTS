@@ -41,41 +41,6 @@ ACCEPTANCE_NOT_RUN = "not_run"
 #: A banked measurement judged it, and ``judged_against`` names which one.
 ACCEPTANCE_JUDGED = "judged_against_measured"
 
-ACCEPTANCE_RUNS = f"""\
-operator acceptance (run against the owner's banked captures, NOT CI tests):
-
-  1. Postdict the flat campaign's r8 regression. r8 applied the measured
-     -100 us inter-driver delay under EQ held verbatim from the incumbent
-     tune, and the 5-seat verify came back a REGRESSION: -3.1 dB at the
-     crossover region, auto-restored. The two halves sit in two banked
-     rounds, because the flow banks them that way -- a measure-stage round
-     walks the per-driver solos and a verify-stage round measures the sum:
-
-       jasper-round-views forward-model <r7-measure-round> \\
-           --measured-round <r8-verify-round> \\
-           --candidate-json <incumbent-filters.json> \\
-           --residual-delay-us -100
-
-     The model passes if the predicted delta reproduces that
-     crossover-region dip (~-3 dB) rather than predicting an improvement.
-     See historical/flat-campaign-2026-08-31.md section 5.
-
-  2. Track the C5 -> final measured delta. C5 is the blind-run 22-filter
-     starting chain; the final tune is 24 filters. Predict each chain over
-     the same banked solos and compare the predicted C5 -> final change
-     against the measured one (grade 1.112 -> 0.9035 over r9/r10, then
-     0.93 with tilt-removed RMS 0.18 -> 0.067 over r11/r12). The model
-     passes if it tracks that measured delta within its stated tolerance.
-
-Both are campaign-entry acceptance for ADR-0203's recommissioning campaign,
-and both must pass BEFORE any prediction is used to triage a candidate.
-
-Every record carries its own `acceptance` block, so the question is answerable
-from the output rather than from this help: a run with no `--measured-round`
-compares its curve to nothing and says `{ACCEPTANCE_NOT_RUN}`, while one with
-a measured round names the banked round that judged it.
-"""
-
 
 def acceptance_block(judged_against: str | None) -> dict[str, Any]:
     """Whether a measurement judged this prediction, and which one.
@@ -247,12 +212,7 @@ def candidate_from_json(
 
 
 def load_branch_pair(
-    bundle_dir: Path,
-    *,
-    phase: str,
-    position_deg: int,
-    woofer_role: str = DRIVER_ROLE_WOOFER,
-    tweeter_role: str = DRIVER_ROLE_TWEETER,
+    bundle_dir: Path, *, phase: str, position_deg: int
 ) -> BranchPair | None:
     """The latest banked take carrying BOTH roles, as complex transfers.
 
@@ -269,7 +229,7 @@ def load_branch_pair(
         Path(bundle_dir),
         phase=phase,
         position_deg=position_deg,
-        roles=(woofer_role, tweeter_role),
+        roles=(DRIVER_ROLE_WOOFER, DRIVER_ROLE_TWEETER),
     )
     if found is None:
         return None
@@ -283,18 +243,20 @@ def load_branch_pair(
         # would sum bins that are not the same frequency, and the result would
         # still look like a spectrum.
         raise ForwardModelError(
-            f"{take_path}: the {woofer_role!r} and {tweeter_role!r} curves "
-            "disagree about their frequency grid",
+            f"{take_path}: the {DRIVER_ROLE_WOOFER!r} and "
+            f"{DRIVER_ROLE_TWEETER!r} curves disagree about their frequency grid",
             reason=REFUSAL_GRID_DISAGREES,
             detail={"take_path": take_path},
         )
     return BranchPair(
         freqs_hz=woofer[0],
-        woofer_role=woofer_role,
-        tweeter_role=tweeter_role,
+        woofer_role=DRIVER_ROLE_WOOFER,
+        tweeter_role=DRIVER_ROLE_TWEETER,
         woofer_tf=woofer[1],
         tweeter_tf=tweeter[1],
-        band_hz_by_role={woofer_role: woofer[2], tweeter_role: tweeter[2]},
+        band_hz_by_role={
+            DRIVER_ROLE_WOOFER: woofer[2], DRIVER_ROLE_TWEETER: tweeter[2],
+        },
         take_path=take_path,
     )
 
@@ -402,7 +364,6 @@ def predicted_minus_measured_db(
 __all__ = [
     "ACCEPTANCE_JUDGED",
     "ACCEPTANCE_NOT_RUN",
-    "ACCEPTANCE_RUNS",
     "PREDICTION_KIND",
     "PREDICTION_SCHEMA_VERSION",
     "REFUSAL_GRID_DISAGREES",
