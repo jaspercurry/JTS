@@ -169,3 +169,5 @@ Verified, not shipped: `CommissioningRunStore.replace_current` SPENT (~275 lines
 CI fd exhaustion: two measured passes (7,097 chunked; 10,533 of 26,095 single-process at CI's invocation minus `-n 4`) found no per-test accumulator; fd 13→17. CI runs four xdist workers against a tight runner ulimit; the back half of the suite is unmeasured. Only real gap: `tests/test_conversation_history.py` never closes `ConversationStore` (fixture teardown, GC-recovered). No fix PR.
 
 Lessons: `git checkout --ours` on a generated file or a doc reinstates what a lane removed and drops lane prose — merge three-way, then regenerate. Lane worktrees go under the session scratchpad, not `mktemp -d` in /tmp (path collision between agents).
+
+Row 3.7 (#3991, NN) merged by the owner at d048426 after the hardware pass; #3934 (owner) merged at 35f6812. Nothing from waves 1–3 or 7 remains open.
