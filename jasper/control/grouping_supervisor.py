@@ -69,7 +69,7 @@ from jasper.log_event import log_event
 from jasper.route_latency.status_socket import OUTPUTD_STATUS_SOCKET
 
 from . import household_credential
-from .client import AsyncControlClient, PEER_CONTROL_PORT
+from .client import CONTROL_PORT, AsyncControlClient
 from .uds import read_status_body
 from .supervisor_runtime import (
     build_asyncio_thread,
@@ -548,7 +548,7 @@ class GroupingSupervisor:
         return resp.ok, detail
 
     def peer_client(self, peer_addr: str) -> AsyncControlClient:
-        return AsyncControlClient(f"http://{peer_addr}:{PEER_CONTROL_PORT}")
+        return AsyncControlClient(f"http://{peer_addr}:{CONTROL_PORT}")
 
     def household_headers(self) -> dict[str, str] | None:
         secret = household_credential.current()
