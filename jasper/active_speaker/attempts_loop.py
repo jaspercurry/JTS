@@ -43,10 +43,6 @@ STOP_BUDGET = "stop_budget"
 #: The evidence does not support grading this attempt at all. Never a pass.
 STOP_EVIDENCE = "stop_evidence"
 
-DECISIONS: frozenset[str] = frozenset({
-    CONTINUE, STOP_CONVERGED, STOP_FLOOR, STOP_BUDGET, STOP_EVIDENCE,
-})
-
 #: The grade was predicted by a fit, never measured after applying it.
 PROVENANCE_MODEL_GRADED = "model-graded"
 #: The grade was measured from a capture taken after the tune was applied.

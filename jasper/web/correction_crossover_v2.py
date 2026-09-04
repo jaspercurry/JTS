@@ -1513,9 +1513,6 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     surface-not-auto-restore paragraph above, which this extends rather than
     revisits.
     """
-    from jasper.active_speaker.crossover_v2.attempt_grading import (
-        PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
-    )
     from jasper.active_speaker.crossover_v2.capture_plan import (
         TIER_EXPRESS,
         TIER_FULL,
@@ -1527,6 +1524,7 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     from jasper.active_speaker.crossover_v2_flow import (
         CLAIM_FAIL,
         CLAIM_PASS,
+        PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
     )
     from jasper.active_speaker.crossover_v2.accountability import LEDGER_NOT_AN_IMPROVEMENT
 

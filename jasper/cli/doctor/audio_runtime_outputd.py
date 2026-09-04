@@ -271,19 +271,19 @@ def _outputd_buffer_health(
     """Validate the content hop's buffer geometry and return ring detail.
 
     ``content_hop`` is the resolved transport shape's name
-    (:data:`jasper.audio_runtime_plan.TRANSPORT_SHAPES`), which is what decides
+    (:data:`jasper.fanin_coupling.TRANSPORT_SHAPES`), which is what decides
     both branches below AND which ring's width the observed channels are held
     to — the ACTIVE shape reads the post-crossover per-driver ring. Taking the
     resolved shape rather than re-reading markers keeps one env read per check.
     """
-    from jasper.audio_runtime_plan import (
+    from jasper.fanin_coupling import (
+        RING_TRANSPORT_SHAPES,
         TRANSPORT_DAC_CONTENT_RING,
-        TRANSPORT_SHM_RING,
         TRANSPORT_SHM_RING_ACTIVE,
     )
 
     ring_detail = ""
-    if content_hop in (TRANSPORT_SHM_RING, TRANSPORT_SHM_RING_ACTIVE):
+    if content_hop in RING_TRANSPORT_SHAPES:
         # Under shm_ring neither outputd sink opens a content PCM, so
         # content.buffer_frames is a synthetic period-sized stand-in and the
         # generic ">= 2x period" ALSA jitter-margin floor does not apply (every

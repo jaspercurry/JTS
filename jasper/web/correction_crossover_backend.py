@@ -1155,34 +1155,6 @@ def claim_commissioning_run_owner() -> CommissioningRunHandle | None:
     return _COMMISSIONING_RUN_STORE.claim_owner()
 
 
-def begin_commissioning_run(
-    comparison_set: Mapping[str, Any],
-) -> CommissioningRunHandle:
-    """Bind a fresh durable run to one authoritative comparison session."""
-
-    if not comparison_set_valid(comparison_set):
-        raise ValueError("commissioning comparison set is invalid")
-    session_id = comparison_set.get("bundle_session_id")
-    session_fingerprint = comparison_set.get("fingerprint")
-    if not isinstance(session_id, str) or not session_id.strip():
-        raise ValueError(
-            "commissioning run requires a fresh production evidence bundle"
-        )
-    if (
-        not isinstance(session_fingerprint, str)
-        or len(session_fingerprint) != 64
-        or any(
-            character not in "0123456789abcdef"
-            for character in session_fingerprint
-        )
-    ):
-        raise ValueError("commissioning comparison identity is unavailable")
-    return _COMMISSIONING_RUN_STORE.replace_current(
-        session_id=session_id,
-        session_fingerprint=session_fingerprint,
-    )
-
-
 def commissioning_run_status(
     comparison_set: Mapping[str, Any] | None,
     *,

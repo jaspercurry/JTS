@@ -380,7 +380,7 @@ def test_the_bounds_are_the_numbers_the_evidence_earned():
     * **3.0 dB per filter** — the woofer's own acknowledged
       ``measured_excess_db`` inside the series-1 blind zone (2.09-2.26 dB,
       rounds r1/r2/r4 over 1291.4-2077.2 Hz) plus one model tracking error
-      (0.5 dB, ``attempt_grading.PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB``):
+      (0.5 dB, ``crossover_v2_flow.PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB``):
       2.26 + 0.5 = 2.76, rounded up.
     * **4.0 dB composed** — just under the whole observed defect, which the
       cloud flat-spec gauge read at -4.24 dB worst across series-1. Correcting
