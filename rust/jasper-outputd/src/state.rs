@@ -2611,9 +2611,14 @@ mod tests {
 
     #[test]
     fn snapshot_json_emits_every_key_the_python_status_consumers_read() {
-        // jasper/audio_validation.py and jasper/cli/doctor/audio_runtime.py read
-        // STATUS through fail-soft `.get()` chains, so a renamed key never throws
-        // — it degrades to null and quietly blanks a check. Built on the box shape
+        // jasper/audio_validation.py, jasper/cli/doctor/audio_runtime.py,
+        // jasper/control/state_aggregate.py (/state) and
+        // jasper/control/audio_health.py (the Audio view) read STATUS through
+        // fail-soft `.get()` chains, so a renamed key never throws — it degrades
+        // to null and quietly blanks a check. Names only: WHERE each key sits is
+        // pinned on the Python side, by
+        // `test_python_status_reads_match_the_rust_emitters_nesting` in
+        // tests/test_wire_contracts.py. Built on the box shape
         // that emits every optional block (chip-reference writer armed and
         // observing, UDP reference target set) so no key is missing merely because
         // its section was not reached.
@@ -2637,6 +2642,12 @@ mod tests {
             "backend",
             "sink_mode",
             "content",
+            "deaf",
+            "mix",
+            "clipped_samples",
+            "tts",
+            "watchdog",
+            "last_progress_age_ms",
             "dac",
             "pcm",
             "sample_rate",

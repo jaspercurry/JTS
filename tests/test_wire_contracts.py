@@ -17,7 +17,9 @@ in `rust/jasper-outputd/src/state.rs`.
 """
 from __future__ import annotations
 
+import ast
 import re
+from functools import lru_cache
 from pathlib import Path
 
 from jasper.cli.aec_init import RECENT_WRITES_KEY, _reference_writes
@@ -35,24 +37,142 @@ def _strip_comment_lines(text: str, *, markers: tuple[str, ...]) -> str:
     )
 
 
-def _rust_emitted_json_keys(path: Path) -> set[str]:
-    """Key names a hand-rolled Rust JSON emitter produces.
+# ---------------------------------------------------------------------------
+# The emitter side: the NESTED key tree a hand-rolled Rust STATUS writer
+# builds.
+#
+# LIMITATION: parsed from the writer source, never executed — the pytest lane
+# has no cargo, and the daemon crates need ALSA headers to build at all — so
+# the tree is the UNION of every conditional block (a key only one config
+# reaches is still present), and a subtree that arrives as an opaque fragment
+# from another crate is marked OPAQUE and accepts any path below it.
+# ---------------------------------------------------------------------------
 
-    Matches helper calls (``push_kv_*(&mut buf, "key", ...)``, ``_opt``
-    variants included) and inline object/array openers
-    (``buf.push_str(r#""key":...``). Flat — nesting is not modeled, which is
-    all a fail-soft ``.get()`` consumer needs. Test-only assertions are cut at
-    ``#[cfg(test)]`` so they cannot satisfy the production contract.
+#: Child marker for a node whose subtree the source cannot show: a value
+#: pushed as a pre-rendered fragment (``host_clock``, ``tap``) or an object
+#: whose key is a runtime variable (``dac_content``'s per-transport path).
+OPAQUE = "*"
+
+_RUST_FN_RE = re.compile(r"^(?P<indent> *)(?:pub )?fn (?P<name>\w+)[(<]", re.MULTILINE)
+
+#: One emitting step of a `String`-building writer, in source order.
+_RUST_EMIT_RE = re.compile(
+    r"""
+      \w+\.push_str\(r\#""(?P<obj>\w+)":\{"\#\)      # opens "key":{
+    | \w+\.push_str\(r\#""(?P<arr>\w+)":\["\#\)      # opens "key":[
+    | \w+\.push_str\(r\#""(?P<frag>\w+)":"\#\)       # "key": <opaque fragment>
+    | (?:push_str|format!)\(&?"\\"(?P<esc>\w+)\\":   # "key": built with format!
+    | \w+\.push\('(?P<open>\{)'\)
+    | \w+\.push\('(?P<close>[\}\]])'\)
+    | (?:self\.)?(?P<helper>push_\w+)\(\s*(?:&mut\s+)?\w+,\s*"(?P<key>\w+)"
+    | (?:self\.)?push_kv_\w+\(\s*(?:&mut\s+)?\w+,\s*(?P<dynamic>[a-z_][\w.]*)\s*,
+    | (?:self\.)?(?P<inline>push_\w+_json)\(\s*(?:&mut\s+)?\w+\s*\)
+    """,
+    re.VERBOSE,
+)
+
+#: A `fn(buf, key, ..)` helper that nests an object under its `key` argument
+#: (`push_dll_rate_diff`), as opposed to the `push_kv_*` scalar writers.
+_HELPER_OPENS_OBJECT = re.compile(r'push_str\(r\#"":[\{\[]"\#\)')
+
+
+def _rust_fn_bodies(src: str) -> dict[str, str]:
+    """Every `fn` body in rustfmt'd source, keyed by name.
+
+    Bodies are cut on the closing brace at the signature's own indent, which
+    brace counting cannot do here: the writers push literal `{` and `}` as
+    JSON text.
+    """
+    bodies: dict[str, str] = {}
+    lines = src.splitlines()
+    for match in _RUST_FN_RE.finditer(src):
+        start = src[: match.start()].count("\n")
+        close = f"{' ' * len(match.group('indent'))}}}"
+        for end in range(start + 1, len(lines)):
+            if lines[end] == close:
+                bodies[match.group("name")] = "\n".join(lines[start + 1 : end])
+                break
+    return bodies
+
+
+def _parse_rust_emitter(
+    body: str, node: dict, bodies: dict[str, str], seen: frozenset[str],
+) -> None:
+    stack = [node]
+    for match in _RUST_EMIT_RE.finditer(body):
+        top = stack[-1]
+        opened = match.group("obj") or match.group("arr")
+        if opened:
+            stack.append(top.setdefault(opened, {}))
+        elif match.group("frag"):
+            top.setdefault(match.group("frag"), {})[OPAQUE] = {}
+        elif match.group("esc"):
+            top.setdefault(match.group("esc"), {})
+        elif match.group("open"):
+            # An anonymous object: the payload's own opening brace, or one
+            # array element. Its keys belong to the node already on top.
+            stack.append(top)
+        elif match.group("close"):
+            if len(stack) > 1:
+                stack.pop()
+        elif match.group("helper"):
+            child = top.setdefault(match.group("key"), {})
+            helper = bodies.get(match.group("helper"))
+            if helper and match.group("helper") not in seen:
+                if _HELPER_OPENS_OBJECT.search(helper):
+                    _parse_rust_emitter(
+                        helper, child, bodies, seen | {match.group("helper")},
+                    )
+        elif match.group("dynamic"):
+            top[OPAQUE] = {}
+        elif match.group("inline"):
+            helper = bodies.get(match.group("inline"))
+            if helper and match.group("inline") not in seen:
+                _parse_rust_emitter(
+                    helper, top, bodies, seen | {match.group("inline")},
+                )
+
+
+@lru_cache(maxsize=None)
+def _rust_status_key_tree(path: Path) -> dict:
+    """The nested key structure ``snapshot_json`` emits, as nested dicts.
+
+    Test-only assertions are cut at ``#[cfg(test)]`` so they cannot satisfy
+    the production contract.
     """
     src = path.read_text().split("#[cfg(test)]", 1)[0]
     src = _strip_comment_lines(src, markers=("//",))
-    keys: set[str] = set()
-    keys.update(re.findall(
-        r'push_kv_\w+\(\s*(?:&mut\s+)?\w+,\s*"(\w+)"',
-        src,
-    ))
-    keys.update(re.findall(r'\w+\.push_str\(r#""(\w+)":', src))
-    return keys
+    bodies = _rust_fn_bodies(src)
+    tree: dict = {}
+    _parse_rust_emitter(bodies["snapshot_json"], tree, bodies, frozenset())
+    return tree
+
+
+def _rust_emitted_json_keys(path: Path) -> set[str]:
+    """Every key name the emitter produces, at any depth — nesting flattened
+    away, which is all a consumer read through an already-pinned parent needs.
+    """
+    def flatten(node: dict) -> set[str]:
+        names: set[str] = set()
+        for name, child in node.items():
+            if name == OPAQUE:
+                continue
+            names.add(name)
+            names |= flatten(child)
+        return names
+
+    return flatten(_rust_status_key_tree(path))
+
+
+def _emits_path(tree: dict, path: tuple[str, ...]) -> bool:
+    node = tree
+    for name in path:
+        if OPAQUE in node:
+            return True
+        if name not in node:
+            return False
+        node = node[name]
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -65,8 +185,11 @@ def _rust_emitted_json_keys(path: Path) -> set[str]:
 # crate (`snapshot_json_emits_every_key_the_python_status_consumers_read` in
 # rust/jasper-outputd/src/state.rs); fan-in's own `#[test]`s pin its emitted
 # shape but never look at the Python call sites, so fan-in's emitter is
-# scanned HERE instead — this is the only place that pins which Python
-# reader depends on which emitted key.
+# scanned HERE instead.
+#
+# Names only. These are the reads section 1b's AST walk cannot resolve —
+# per-input blocks keyed by a runtime label, payloads passed to another
+# module's helper — so the key must be pinned to a consumer by hand.
 # ---------------------------------------------------------------------------
 
 FANIN_STATUS_CONSUMERS: dict[str, set[str]] = {
@@ -110,6 +233,231 @@ def test_fanin_status_keys_match_python_consumers():
                     f"references {key!r} — update this test's pins"
                 )
     assert not problems, "\n".join(problems)
+
+
+# ---------------------------------------------------------------------------
+# 1b. STATUS JSON key PATHS — the same seam, with nesting modeled
+#
+# The flat key-name check above cannot see WHERE a key sits: `/state` read
+# outputd's `aec_clock` at the top level while outputd nests it under
+# `reference_outputs`, and shipped null fields for months with the flat guard
+# green. This half walks each Python consumer's AST for the dotted paths it
+# reads out of a STATUS payload and asserts the emitter builds each one at
+# that depth. The flat check stays for what the walk cannot resolve — a
+# per-input read keyed by a runtime label, a payload handed to another
+# module's helper.
+# ---------------------------------------------------------------------------
+
+#: Single-argument calls that hand back the same mapping (`_mapping` coerces a
+#: non-Mapping to `{}`), and attributes that unwrap an evidence record.
+_TRANSPARENT_CALLS = frozenset({"_mapping", "dict"})
+_TRANSPARENT_ATTRS = frozenset({"payload"})
+
+
+def _dotted_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        base = _dotted_name(node.value)
+        return f"{base}.{node.attr}" if base else None
+    return None
+
+
+def _resolve_read(node: ast.AST, env: dict[str, tuple[str, ...]]) -> tuple[str, ...] | None:
+    """The `(root, key, key, ...)` an expression reads, or None.
+
+    Follows the fail-soft spellings these consumers actually use: `.get("k")`
+    with or without a default, `["k"]`, `x.get("k") or {}`, and the
+    `x.get("k") if isinstance(...) else None` guard.
+    """
+    if isinstance(node, ast.Name):
+        return env.get(node.id, (node.id,))
+    if isinstance(node, ast.Attribute):
+        if node.attr in _TRANSPARENT_ATTRS:
+            return _resolve_read(node.value, env)
+        return None
+    if isinstance(node, ast.Subscript):
+        base = _resolve_read(node.value, env)
+        key = node.slice
+        if base and isinstance(key, ast.Constant) and isinstance(key.value, str):
+            return base + (key.value,)
+        return None
+    if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
+        return _resolve_read(node.values[0], env)
+    if isinstance(node, ast.IfExp):
+        return _resolve_read(node.body, env) or _resolve_read(node.orelse, env)
+    if isinstance(node, ast.Call):
+        name = _dotted_name(node.func)
+        if name in _TRANSPARENT_CALLS and node.args:
+            return _resolve_read(node.args[0], env)
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            base = _resolve_read(node.func.value, env)
+            return base + (node.args[0].value,) if base else None
+        # A zero-argument producer: `evidence.outputd_status()`.
+        return (name,) if name and not node.args else None
+    return None
+
+
+def _record_reads(node: ast.AST, env: dict, out: set[tuple[str, ...]]) -> None:
+    resolved = _resolve_read(node, env)
+    if resolved:
+        out.add(resolved)
+    for child in ast.iter_child_nodes(node):
+        _record_reads(child, env, out)
+
+
+def _walk_reads(node: ast.AST, env: dict, out: set[tuple[str, ...]]) -> None:
+    """Collect every resolvable read, tracking `name = <read>` aliases.
+
+    Aliases are what make the walk see anything at all: every consumer binds
+    the block first (`refs = status.get("reference_outputs")`) and reads keys
+    off the binding. A rebinding to something unresolvable drops the alias, so
+    a name reused for an unrelated value cannot forge a path.
+    """
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        inner = dict(env)
+        args = node.args
+        for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs):
+            inner.pop(arg.arg, None)
+        for child in ast.iter_child_nodes(node):
+            _walk_reads(child, inner, out)
+        return
+    if isinstance(node, ast.expr):
+        _record_reads(node, env, out)
+        return
+    if (
+        isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+    ):
+        _record_reads(node.value, env, out)
+        resolved = _resolve_read(node.value, env)
+        name = node.targets[0].id
+        if resolved is None:
+            env.pop(name, None)
+        else:
+            env[name] = resolved
+        return
+    for child in ast.iter_child_nodes(node):
+        _walk_reads(child, env, out)
+
+
+def _python_status_paths(path: Path, roots: dict[str, str]) -> dict[str, set[tuple[str, ...]]]:
+    """Dotted paths a consumer reads, grouped by the daemon that emitted them."""
+    reads: set[tuple[str, ...]] = set()
+    _walk_reads(ast.parse(path.read_text()), {}, reads)
+    found: dict[str, set[tuple[str, ...]]] = {}
+    for read in reads:
+        daemon = roots.get(read[0])
+        if daemon and len(read) > 1:
+            found.setdefault(daemon, set()).add(read[1:])
+    return found
+
+
+#: consumer file -> where a STATUS payload ENTERS it -> the daemon that sent
+#: it. A root is a parameter/local name, or a zero-argument producer call
+#: (`evidence.outputd_status()`), whose value is the whole payload.
+STATUS_PATH_CONSUMERS: dict[str, dict[str, str]] = {
+    "jasper/control/state_aggregate.py": {
+        "outputd_status": "outputd",
+        "fanin_status": "fanin",
+    },
+    # `outputd` here is the raw payload of `_read_local_status(OUTPUTD_SOCKET)`.
+    # Its fan-in half is NOT a root: `current["fanin"]` is the AirPlay
+    # sampler's normalized model, not what jasper-fanin emitted.
+    "jasper/control/audio_health.py": {"outputd": "outputd"},
+    "jasper/audio_validation.py": {
+        "outputd_status": "outputd",
+        "first_outputd": "outputd",
+        "final_outputd": "outputd",
+        "preflight_outputd": "outputd",
+    },
+    "jasper/cli/doctor/audio_runtime.py": {
+        "evidence.outputd_status": "outputd",
+        "evidence.fanin_status": "fanin",
+    },
+    "jasper/cli/doctor/aec.py": {
+        "evidence.outputd_status": "outputd",
+        "outputd_status": "outputd",
+    },
+    "jasper/cli/doctor/usbsink.py": {
+        "evidence.fanin_status": "fanin",
+        "fanin_status": "fanin",
+    },
+    # doctor/grouping.py only FORWARDS `evidence.outputd_status().payload`;
+    # the keys are read here, under the parameter it forwards into.
+    "jasper/multiroom/state.py": {"local_outputd_status": "outputd"},
+}
+
+STATUS_RS = {"outputd": OUTPUTD_STATE_RS, "fanin": FANIN_STATE_RS}
+
+#: (consumer, dotted path) -> why a read of a path no daemon emits stands.
+#: Each entry fails once it stops being read, or once the daemon starts
+#: emitting the path — remove it then.
+STATUS_PATH_EXCEPTIONS: dict[tuple[str, str], str] = {
+    # outputd emits `dac.pcm` but never `dac.card`; `_dac_details` falls
+    # through to JASPER_AUDIO_DAC_CARD, so the read is dead rather than
+    # broken. REMOVAL CONDITION: goes when the dead read goes.
+    ("jasper/audio_validation.py", "dac.card"): "always-None read; env fallback owns the value",
+}
+
+
+def test_python_status_reads_match_the_rust_emitters_nesting():
+    problems: list[str] = []
+    for consumer_rel, roots in STATUS_PATH_CONSUMERS.items():
+        src = (REPO / consumer_rel).read_text()
+        for root in roots:
+            if root not in src:
+                problems.append(
+                    f"contract pin stale: {consumer_rel} no longer names the "
+                    f"STATUS payload {root!r} — update this test's roots"
+                )
+        found = _python_status_paths(REPO / consumer_rel, roots)
+        if not found:
+            problems.append(
+                f"contract pin stale: no STATUS path resolves in "
+                f"{consumer_rel} — its reads moved, or the roots did"
+            )
+        for daemon, paths in sorted(found.items()):
+            tree = _rust_status_key_tree(STATUS_RS[daemon])
+            # The one way this guard passes vacuously: an OPAQUE at the root
+            # accepts every path under it.
+            assert OPAQUE not in tree, f"{daemon} emitter tree — extractor broke?"
+            for path in sorted(paths):
+                dotted = ".".join(path)
+                if _emits_path(tree, path):
+                    continue
+                if (consumer_rel, dotted) in STATUS_PATH_EXCEPTIONS:
+                    continue
+                problems.append(
+                    f"{consumer_rel} reads STATUS path {dotted!r} that "
+                    f"{STATUS_RS[daemon].relative_to(REPO)} does not emit at "
+                    f"that depth — a silently null field"
+                )
+    assert not problems, "\n".join(problems)
+
+
+def test_status_path_exceptions_stay_accurate():
+    for (consumer_rel, dotted), reason in STATUS_PATH_EXCEPTIONS.items():
+        roots = STATUS_PATH_CONSUMERS[consumer_rel]
+        found = _python_status_paths(REPO / consumer_rel, roots)
+        path = tuple(dotted.split("."))
+        daemons = [d for d, paths in found.items() if path in paths]
+        assert daemons, (
+            f"exception ({consumer_rel}, {dotted}) ({reason}) is no longer "
+            f"read — dead entry; remove it."
+        )
+        for daemon in daemons:
+            assert not _emits_path(_rust_status_key_tree(STATUS_RS[daemon]), path), (
+                f"exception ({consumer_rel}, {dotted}) ({reason}) IS emitted "
+                f"now — the contract is live; remove the exception."
+            )
 
 
 def test_aec_init_reads_the_chip_ref_sample_ring_outputd_publishes():
