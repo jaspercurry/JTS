@@ -142,7 +142,9 @@ class StimulusCapture(Protocol):
 class ProgramPlaybackTransaction:
     """``PlaybackTransaction`` over ``play_program``, one stimulus per call.
 
-    See ADR-0231 §4.
+    ``session_volume_plan`` is the plan ``play_program`` asserts against. It is
+    NOT this transaction's to open or close — the session's volume claim owns
+    the level (ADR-0231 §4).
 
     ``capture`` is ``None`` on a host that does not record what it plays: the
     Pi's wired microphone binds one, and a browser capture binds none.

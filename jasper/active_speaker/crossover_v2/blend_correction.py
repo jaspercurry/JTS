@@ -30,7 +30,9 @@ iteration, still a TOTAL re-derived every round::
 
     B_{N+1}(f) = clamp( B_N(f) − k · d_{N+1}(f) ),   k = BLEND_DAMPING = 0.7
 
-See ADR-0231 §2.
+Refusals HOLD the incumbent rather than revert; :data:`BLEND_NO_INCUMBENT` is
+the one arm that cannot hold, since it REMOVES an applied correction
+(ADR-0231 §2).
 
 Scope tripwire: this reads the summed response against an analytic,
 offset-invariant reference and commands a common-mode filter. Reading a

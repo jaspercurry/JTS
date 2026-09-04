@@ -122,7 +122,9 @@ and `tests/test_crossover_v2_program_transaction.py:206`, and restated at
 
 ### 4. MS-14 — every stimulus plays at the declared level, proven, or not at all
 
-> "the level, and MS-14's proof is taken through that claim before ``run``."
+> "``session_volume_plan`` is the plan ``play_program`` asserts against. It is
+> NOT this transaction's to open or close — the session's volume claim owns
+> the level, and MS-14's proof is taken through that claim before ``run``."
 
 **Provenance:** hard constraint MS-14, `docs/REFACTOR-TUNING-2026-08.md` §2
 ("**MS-14 — Every stimulus plays at the declared level, proven, or not at
