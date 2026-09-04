@@ -190,11 +190,12 @@ Note for wave 7's 7.5: lane E found only TWO path-or-stdin readers (bytes-for-ha
 | 8.8 | --help style: one metavar `<round-dir>` across round-views/prescriber/null; four descriptions to one sentence; no dest/behaviour change | P | menu regenerates; `--help` diff is metavar/description only | sanity look | tiny |
 | 8.9 | fast-lane guards: both boundary tests in `scripts/test-fast`'s always-on list | T | test-fast runs them on an unrelated change | sanity look | tiny |
 | 8.10 | record fold: TARGET.md rewritten to HEAD truth (slugs, stderr summaries, field spellings, σ sentence, close_reference per band, position_cycle per 8.4, LinearizationState per 8.3, future tense removed, subcommand order); WAVE-LOG wave-8 fold; LANDING.md table re-verified; #3769 closed | P | every TARGET sentence has a file:line or a row | orchestrator | small |
+| 8.11 | ADR-0227 ruling 12 executed: the five direct evidence publishers (`bind_evidence_publishers` check/candidate, `bind_round_receipt`, `bind_cloud_publisher`, `attribution.storage.publish_finding_set`) consume the `RecordStore` routes that already exist; their own path composition deleted; fail-soft stays in one named caller-side wrapper; `EngineSeams` grows no seam; the twelve writers outside the engine's evidence documents stay where they are (TARGET says the seam covers the engine's evidence, not the whole round) | R+D | premise first: each binder's path and payload equal the route's, else stop; then every file a fixture session writes is byte-identical in path and content before and after; existing flow tests green | code-review high; one hardware round after landing | medium |
 | owner | #3991 hardware pass then merge (other session merges); #3934 merged (merge of main pushed by this session); one full round walked on the box with the ten binaries after wave 8 lands — the proof static analysis cannot give | NN / hardware | `volume_limit: 0.0` in the emitted config; `inventory` on the walked round names nothing missing | owner | — |
 
 Batching: 8.1a–d + 8.3 + 8.4 + 8.5 + 8.8 + 8.9 in one code batch (file-disjoint lanes: round.py | angle_capture+basic_profile+audition+measure | crossover_prescriber | test file | contracts/baseline_profile | round_bank | round_views delay+distortion | metavars | test-fast).
-8.2 and 8.6 in a second batch (both touch the capture/level domain and need the owner's look).
-8.7 + 8.10 as the docs close. ~12 PRs, 2–3 CI runs.
+8.2, 8.6 and 8.11 in a second batch (all touch the capture, level or evidence path and need the owner's look).
+8.7 + 8.10 as the docs close. ~13 PRs, 2–3 CI runs.
 
 ## 5. Definition of done
 
@@ -243,14 +244,11 @@ Then stop. Any further right-sizing is churn until a hardware round asks for som
 - closing the doctor's three cli→web edges (`crossover_v2_status_block`, `GRADE_*`, `_systemd`): pinned,
   cannot rot, doctor is operator-facing; no walk benefit.
 - reemit report return: taken by wave 7 (7.4); not re-rowed.
-- RecordStore-as-the-seam fold (ADR-0227 #12, standing unexecuted): 19 writer functions bypass it and five
-  of RecordStore's six routes have no production writer — the ruling describes a seam that was never adopted.
-  Recommend the owner re-rule it (an ADR superseding 0227 #12: RecordStore banks take records; direct
-  publishers stay) or give it its own program; not a wave-8 row.
+- reversing ADR-0227 #12 (RecordStore banks take records only, delete the five unused routes): the routes exist and are tested and the direct publishers are the duplicates in the web host; the owner chose to execute the ruling instead (row 8.11).
 - renaming tests/test_arm_walk.py / test_round_bank.py: the engine modules `arm_walk.py` and `round_bank.py`
   still exist under those names; the test names match their subjects.
 
 ## 7. Housekeeping this session did
 
-- #3934 merged with `origin/main` and pushed: SHA `07c2b65cec45bb9fdfdbf289ce8ec86ea20e80e5`, no conflicts; `scripts/test-fast` sentinel `==> test-fast: 240 passed`.
+- #3934 and #3991 merged on the owner's instruction (#3991's hardware pass waived pre-merge; `volume_limit: 0.0` still to be confirmed on the next deploy). #3934 first merged with `origin/main` and pushed: SHA `07c2b65cec45bb9fdfdbf289ce8ec86ea20e80e5`, no conflicts; `scripts/test-fast` sentinel `==> test-fast: 240 passed`.
 - This file, `LANDING.md`.
