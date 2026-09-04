@@ -776,8 +776,9 @@ reason, never a fabricated number.
 
 The target is **flat design-axis / listening-window over the trusted zone**,
 optionally with a gentle downward in-room tilt — and if you apply one, **declare
-it**, because an undeclared tilt is indistinguishable from a defect on the next
-round's receipt. The tilt is a preference finding, not a law: it shifts toward
+it in the driver document's `declared_tilt_db_per_octave`** (negative for
+downward; `jasper-round-views frozen` echoes it), because an undeclared tilt is
+indistinguishable from a defect on the next round's receipt. The tilt is a preference finding, not a law: it shifts toward
 flat for a dead room or a high-directivity speaker, toward more tilt for a live
 one. Do **not** equalise sound power flat — for any normally narrowing speaker
 that makes the on-axis too bright.
@@ -813,6 +814,10 @@ the analysis window, not the speaker.
 **Every apply is measured; every reject auto-restores.** In-tolerance is not
 done — a round that passes keeps iterating while a flatter, more level result is
 still reachable, up to the series cap.
+
+Pre-register before you measure: the driver document's `expected_delta_db` is
+where the prediction lands, and `jasper-round-views frozen` reports it beside
+the move the round actually made.
 
 When a verify surprises you, **diagnose from the receipts before composing the
 next candidate**: which band, level or shape, realized or not, and what the

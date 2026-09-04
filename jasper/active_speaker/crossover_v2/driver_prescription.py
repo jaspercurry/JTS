@@ -74,6 +74,8 @@ from .feature_classification import (
 DriverPassbands = Mapping[str, tuple[float, float]]
 
 __all__ = [
+    "DECLARED_TILT_BOUND_DB_PER_OCTAVE",
+    "DECLARED_TILT_FIELD",
     "DRIVER_MAX_BOOST_Q",
     "DRIVER_MAX_COMPOSED_BOOST_DB",
     "DRIVER_MAX_FILTERS_PER_ROLE",
@@ -85,6 +87,8 @@ __all__ = [
     "DRIVER_PRESCRIPTION_REFUSAL_REASONS",
     "DRIVER_PRESCRIPTION_TOO_LARGE",
     "DRIVER_PRESCRIPTION_SCHEMA_VERSION",
+    "EXPECTED_DELTA_BOUND_DB",
+    "EXPECTED_DELTA_FIELD",
     "LINEARIZATION_CANDIDATE_FIELD",
     "MAX_SPL_SPEND_BOUND_DB",
     "ClassificationBasis",
@@ -140,6 +144,23 @@ RATIONALE_MAX_CHARS = 1_200
 #: writes, re-validated by ``camilla_yaml._validated_linearization`` before any
 #: of it reaches CamillaDSP.
 LINEARIZATION_CANDIDATE_FIELD = "linearization"
+
+#: The pre-registration pair, by key name. Held here rather than spelled at
+#: each reader because the door writes them, the candidate carries them and
+#: ``round_views`` echoes them, and three literals is how the three drift.
+EXPECTED_DELTA_FIELD = "expected_delta_db"
+DECLARED_TILT_FIELD = "declared_tilt_db_per_octave"
+
+#: Widest ``expected_delta_db`` the door admits, dB. Not a bar on optimism but
+#: a UNIT check — the metric predicted is a pooled RMS deviation, so a number
+#: wider than the whole magnitude span a graded curve occupies is a percentage
+#: or a frequency in the wrong slot.
+EXPECTED_DELTA_BOUND_DB = 30.0
+
+#: Widest ``declared_tilt_db_per_octave`` the door admits, dB/octave — the
+#: bound above read as a slope over the ~10 graded octaves. A voicing tilt is a
+#: small fraction of it (methodology §8).
+DECLARED_TILT_BOUND_DB_PER_OCTAVE = 3.0
 
 
 # --------------------------------------------------------------------------- #
@@ -304,6 +325,7 @@ FILTER_Q_OUT_OF_RANGE = "driver_filter_q_out_of_range"
 FILTER_BOOST_TOO_HIGH = "driver_filter_boost_too_high"
 COMPOSED_BOOST_EXCEEDED = "driver_composed_boost_exceeded"
 TRIM_PIN_MALFORMED = "driver_trim_pin_malformed"
+DRIVER_EXPECTATION_MALFORMED = "driver_expectation_malformed"
 
 # A refusal this door can no longer give is DELETED from this set rather than
 # left registered-but-unreachable, because a prescriber reads it as
@@ -325,6 +347,7 @@ DRIVER_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     FILTER_BOOST_TOO_HIGH,
     COMPOSED_BOOST_EXCEEDED,
     TRIM_PIN_MALFORMED,
+    DRIVER_EXPECTATION_MALFORMED,
 })
 
 #: Top-level fields a proposal may carry. Anything else is refused rather than
@@ -337,6 +360,8 @@ _PRESCRIPTION_FIELDS = frozenset({
     "prescriber",
     "filters",
     "pinned_trim_db",
+    EXPECTED_DELTA_FIELD,
+    DECLARED_TILT_FIELD,
     "rationale",
     # Written BY the gate, accepted on the way back in so a durable block
     # round-trips through this parser. A request that supplies them is
@@ -471,6 +496,19 @@ class DriverPrescription:
     pinned_trim_db: tuple[tuple[str, float], ...] = ()
     #: The prescriber's own words. NEVER parsed for behaviour.
     rationale: str = ""
+    #: The PRE-REGISTERED expectation: how far this document predicts
+    #: ``jasper-round-views frozen``'s pooled per-role RMS deviation
+    #: (``FrozenReferenceResult.frozen``, dB) will move between the round this
+    #: is staged for and the round it is graded against — negative is flatter,
+    #: that view's own sign. ``None`` is "nothing was pre-registered", never a
+    #: predicted zero. Read by no gate: it moves no limit and no grade, and
+    #: exists so the next round's receipt can subtract it (doctrine §1).
+    expected_delta_db: float | None = None
+    #: The voicing tilt the operator DECLARES, dB/octave, negative for a
+    #: downward in-room tilt. Declared rather than measured, so that an applied
+    #: tilt is not read as a defect on the next round's receipt (methodology
+    #: §8). Also read by no gate.
+    declared_tilt_db_per_octave: float | None = None
 
     @property
     def roles(self) -> tuple[str, ...]:
@@ -518,6 +556,8 @@ class DriverPrescription:
             "displaced_filters": self.displaced_filters,
             "displaced_boost_db": self.displaced_boost_db,
             "displaced_boost_role": self.displaced_boost_role,
+            EXPECTED_DELTA_FIELD: self.expected_delta_db,
+            DECLARED_TILT_FIELD: self.declared_tilt_db_per_octave,
             "rationale": self.rationale,
         }
 
@@ -1122,6 +1162,34 @@ def _rationale(raw: Any) -> tuple[str, int]:
     return text[:RATIONALE_MAX_CHARS], max(0, len(text) - RATIONALE_MAX_CHARS)
 
 
+def _pre_registration(raw: Mapping[str, Any]) -> tuple[float | None, float | None]:
+    """The two declared numbers, or ``None`` each for "nothing was declared".
+
+    Applied by BOTH doors for :func:`_parse_pinned_trim`'s reason: a banked
+    value outside these bounds could never have been produced by the door that
+    wrote it. REFUSED rather than dropped — a pre-registration that vanished on
+    a typo reads on the next receipt as a round nobody predicted.
+    """
+    def declared(field: str, bound: float) -> float | None:
+        value = raw.get(field)
+        if value is None:
+            return None
+        number = _finite_or_none(value)
+        if number is None or abs(number) > bound:
+            _refuse(
+                DRIVER_EXPECTATION_MALFORMED,
+                f"{field} must be a finite number between {-bound:g} and "
+                f"{bound:g}, got {value!r}",
+                field=field, bound=bound,
+            )
+        return number
+
+    return (
+        declared(EXPECTED_DELTA_FIELD, EXPECTED_DELTA_BOUND_DB),
+        declared(DECLARED_TILT_FIELD, DECLARED_TILT_BOUND_DB_PER_OCTAVE),
+    )
+
+
 def _parse_pinned_trim(
     raw: Any, filters: Sequence[Mapping[str, Any]]
 ) -> tuple[tuple[str, float], ...]:
@@ -1300,6 +1368,7 @@ def read_driver_prescription(
         filters, pinned_trim_db, fingerprint, model, operator, rationale,
         rationale_dropped,
     ) = _parse_prescription(raw)
+    expected_delta_db, declared_tilt = _pre_registration(raw)
 
     if not isinstance(packet_fingerprint, str) or not packet_fingerprint:
         _refuse(
@@ -1367,6 +1436,8 @@ def read_driver_prescription(
         displaced_boost_db=displaced_boost_db,
         displaced_boost_role=displaced_boost_role,
         rationale=rationale,
+        expected_delta_db=expected_delta_db,
+        declared_tilt_db_per_octave=declared_tilt,
     )
     driver_prescription_route(prescription)
     return prescription
@@ -1431,6 +1502,15 @@ def driver_prescription_to_candidate_fields(
         if isinstance(role, str) and role.strip()
     }
     pinned_roles = {role for role, _db in prescription.pinned_trim_db}
+    # Not ``field``: this function already binds that name to the route key.
+    pre_registration = {
+        key: value
+        for key, value in (
+            (EXPECTED_DELTA_FIELD, prescription.expected_delta_db),
+            (DECLARED_TILT_FIELD, prescription.declared_tilt_db_per_octave),
+        )
+        if value is not None
+    }
     for role in prescription.roles:
         entry: dict[str, Any] = {
             "filters": [dict(f) for f in prescription.filters_for(role)],
@@ -1438,6 +1518,11 @@ def driver_prescription_to_candidate_fields(
                 "model": prescription.prescriber_model,
                 "operator": prescription.prescriber_operator,
                 PACKET_FINGERPRINT_FIELD: prescription.packet_fingerprint,
+                # The pre-registration rides the stamp that already says WHO
+                # asked, so the round banks what was predicted beside what it
+                # measured. Omitted when nothing was declared: a null here
+                # would read as a predicted zero.
+                **pre_registration,
             },
         }
         # The BIT, never the number: the pinned value is the candidate's own
@@ -1473,6 +1558,7 @@ def driver_prescription_from_mapping(raw: Any) -> DriverPrescription | None:
         filters, pinned_trim_db, fingerprint, model, operator, rationale, _dropped = (
             _parse_prescription(raw)
         )
+        expected_delta_db, declared_tilt = _pre_registration(raw)
     except BlendPrescriptionRefused:
         return None
     bands = _passbands_from_mapping(raw.get("passbands_hz") if isinstance(raw, Mapping) else None)
@@ -1489,6 +1575,8 @@ def driver_prescription_from_mapping(raw: Any) -> DriverPrescription | None:
         prescriber_operator=operator,
         passbands_hz=bands,
         rationale=rationale,
+        expected_delta_db=expected_delta_db,
+        declared_tilt_db_per_octave=declared_tilt,
     )
 
 
@@ -1577,6 +1665,22 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "otherwise rides a level it was not shaped against. A trim you "
                 "name is CARRIED, never re-solved, and it is never a "
                 "measurement of this round"
+            ),
+            EXPECTED_DELTA_FIELD: (
+                "PRE-REGISTER your prediction: how far this document should "
+                "move `jasper-round-views frozen`'s pooled per-role RMS "
+                "deviation against the round it is graded against, dB, "
+                "negative for flatter, magnitude at most "
+                f"{EXPECTED_DELTA_BOUND_DB:g}. That view echoes it beside the "
+                "measured move and their difference. It gates nothing; "
+                "leaving it out pre-registers nothing"
+            ),
+            DECLARED_TILT_FIELD: (
+                "the voicing tilt you are DECLARING, dB/octave, negative for a "
+                "downward in-room tilt, magnitude at most "
+                f"{DECLARED_TILT_BOUND_DB_PER_OCTAVE:g}. Declare one whenever "
+                "you apply one: an undeclared tilt is indistinguishable from a "
+                "defect on the next round's receipt. It gates nothing"
             ),
             "rationale": (
                 f"free text. The first {RATIONALE_MAX_CHARS} characters are "
