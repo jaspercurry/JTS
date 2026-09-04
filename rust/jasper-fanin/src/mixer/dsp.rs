@@ -225,6 +225,8 @@ pub(super) fn fill_wide_ring_payload(sum: &[i64], out: &mut [u8]) {
 mod tests {
     use super::*;
 
+    const FULL_SCALE_WIDE: i64 = (32_767i64) << 16;
+
     #[test]
     fn mix_into_sums_two_inputs() {
         let mut sum = vec![0i64; 4];
@@ -648,7 +650,6 @@ mod tests {
     /// agreeing at the speaker.
     #[test]
     fn the_wide_duck_keeps_the_i64_headroom_the_i32_rails_would_have_spent() {
-        const FULL_SCALE_WIDE: i64 = (32_767i64) << 16;
         let duck = 0.5f32;
         // Three full-scale wide lanes: 6_442_254_336, three times over the
         // `i32` rail and entirely legitimate mid-chain.
@@ -721,7 +722,6 @@ mod tests {
     /// it on every duck transition.
     #[test]
     fn the_wide_ramp_keeps_the_same_headroom_as_the_flat_wide_multiply() {
-        const FULL_SCALE_WIDE: i64 = (32_767i64) << 16;
         let mut ramped = vec![3 * FULL_SCALE_WIDE, 3 * FULL_SCALE_WIDE];
         let mut flat = ramped.clone();
         // current == target means every frame scales by the same constant.
