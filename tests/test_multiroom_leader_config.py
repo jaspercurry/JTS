@@ -95,11 +95,11 @@ def test_is_pipe_config_distinguishes_pipe_from_solo(tmp_path):
     # The emitted shape: quoted filename, 2-space block, 4-space fields.
     ('  playback:\n    type: File\n    filename: "%(fifo)s"\n', True),
     # Quoting and the block's indent are the shared parser's business, not
-    # this predicate's — both used to read False on the hand-rolled scanner.
+    # this predicate's.
     ("  playback:\n    type: 'File'\n    filename: %(fifo)s\n", True),
     ('    playback:\n      type: File\n      filename: "%(fifo)s"\n', True),
-    # A File sink at any OTHER path is not the bond; the filename is matched
-    # EXACTLY, so a fifo-prefixed stale path no longer reads as pipe-shaped.
+    # A File sink at any OTHER path is not the bond: the filename is matched
+    # EXACTLY, so a fifo-prefixed stale path is not pipe-shaped.
     ('  playback:\n    type: File\n    filename: "%(fifo)s.old"\n', False),
     ('  playback:\n    type: File\n    filename: "/dev/null"\n', False),
     ('  playback:\n    type: Alsa\n    device: "jts_ring_playback"\n', False),

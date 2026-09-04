@@ -870,14 +870,14 @@ def _classify_loaded_config(current_path: str | Path) -> dict | None:
 
 
 def _loaded_config_is_program_bake_pipe(current_path: str | Path) -> bool:
-    from jasper.multiroom.leader_config import playback_is_pipe
+    from jasper.camilla_config_contract import (
+        devices_playback_is_pipe,
+        read_camilla_devices_config,
+    )
     from jasper.multiroom.reconcile import SNAPFIFO
 
-    try:
-        text = Path(current_path).read_text()
-    except OSError:
-        return False
-    return playback_is_pipe(text, SNAPFIFO)
+    devices = read_camilla_devices_config(current_path) or {}
+    return devices_playback_is_pipe(devices, SNAPFIFO)
 
 
 def _loaded_config_is_stale_program_bake_pipe(current_path: str | Path) -> bool:
