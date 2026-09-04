@@ -55,7 +55,12 @@ from contextlib import suppress
 from http import HTTPStatus
 from typing import Any, Callable
 
-from ._common import JsonBodyError, read_json_object, terminate_async_process
+from ._common import (
+    JsonBodyError,
+    read_json_object,
+    reset_session_locked,
+    terminate_async_process,
+)
 from .balance_level import DEFAULT_LOCK_FRAMES, MicLevelTracker
 
 from jasper.audio_measurement.correction_lane import exec_correction_play
@@ -122,22 +127,14 @@ def _bump_activity_locked() -> None:
 
 
 def _reset_locked(error: str = "") -> None:
-    next_session_token = int(_state.get("session_token", 0)) + 1
-    ramp = _state.get("ramp")
-    if ramp and ramp.get("proc") is not None:
-        terminate_async_process(ramp["proc"])
-    release = _state.get("release_window")
-    _state.update({
-        "phase": "idle", "error": error, "members": None,
-        "locks": {}, "ramp": None, "session_token": next_session_token,
-        "release_window": None,
-        "recommendation": None, "applied": None,
-        "meter": MicLevelTracker(), "meter_floor": None,
-        "meter_target": None, "floor_wait_started_at": None,
-        "volume_guard": None,
-    })
-    if release is not None:
-        release()
+    reset_session_locked(
+        _state,
+        {"locks": {}, "recommendation": None, "applied": None,
+         "meter": MicLevelTracker(), "meter_floor": None, "meter_target": None,
+         "floor_wait_started_at": None, "volume_guard": None},
+        proc_key="ramp",
+        error=error,
+    )
 
 
 def _volume_guard_context(hostname: str, members: dict):

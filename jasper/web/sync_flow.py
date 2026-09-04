@@ -25,7 +25,11 @@ from jasper.audio_measurement.correction_lane import exec_correction_play
 from jasper.measurement_window import HeldWindow
 from jasper.log_event import log_event
 
-from ._common import close_awaitable, terminate_async_process
+from ._common import (
+    close_awaitable,
+    reset_session_locked,
+    terminate_async_process,
+)
 from .pair_flow import members_by_channel, resolve_pair
 
 logger = logging.getLogger("jasper.web.sync")
@@ -51,23 +55,12 @@ _state: dict[str, Any] = {
 
 
 def _reset_locked(error: str = "") -> None:
-    next_session_token = int(_state.get("session_token", 0)) + 1
-    playback = _state.get("playback")
-    if playback and playback.get("proc") is not None:
-        terminate_async_process(playback["proc"])
-    release = _state.get("release_window")
-    _state.update({
-        "phase": "idle",
-        "error": error,
-        "members": None,
-        "result": None,
-        "recommendation": None,
-        "playback": None,
-        "session_token": next_session_token,
-        "release_window": None,
-    })
-    if release is not None:
-        release()
+    reset_session_locked(
+        _state,
+        {"result": None, "recommendation": None},
+        proc_key="playback",
+        error=error,
+    )
 
 
 def _owns_session_locked(session_token: int, *, phase: str) -> bool:

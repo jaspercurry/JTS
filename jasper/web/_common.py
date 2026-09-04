@@ -709,6 +709,36 @@ def terminate_async_process(proc: Any) -> None:
         proc.terminate()
 
 
+def reset_session_locked(
+    state: dict[str, Any],
+    fields: dict[str, Any],
+    *,
+    proc_key: str,
+    error: str = "",
+) -> None:
+    """Return a measurement flow's session ``state`` to idle, clearing the
+    child held under ``proc_key``; call under the flow's own lock, with
+    ``fields`` carrying that flow's schema delta. Every step is
+    non-blocking — a reap would need the background loop, which deadlocks
+    against a playback watcher waiting on the caller's lock.
+    """
+    holder = state.get(proc_key)
+    if holder:
+        terminate_async_process(holder.get("proc"))
+    release = state.get("release_window")
+    state.update({
+        "phase": "idle",
+        "error": error,
+        "members": None,
+        "session_token": int(state.get("session_token", 0)) + 1,
+        "release_window": None,
+        proc_key: None,
+        **fields,
+    })
+    if release is not None:
+        release()
+
+
 # Upper bound on a wizard form body. Every wizard POST here is a small
 # urlencoded form (a handful of short fields); the largest realistic body
 # is a pasted token or SSID list, far under this. nginx caps uploads at 1m
