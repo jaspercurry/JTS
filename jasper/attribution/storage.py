@@ -87,25 +87,6 @@ def bundle_evidence_ref(artifact: Any, session: SessionIdentity) -> EvidenceRef:
         ) from exc
 
 
-def publish_finding_set(
-    store: Any, *, capture_session_id: str, phase: str, finding_set: FindingSet
-) -> Any:
-    """Publish one phase's findings into the session bundle.
-
-    Returns the store's ``ArtifactIdentity``. Raises
-    :class:`FindingStorageError` on any store refusal — the fail-soft boundary
-    belongs at the caller.
-    """
-
-    if not isinstance(finding_set, FindingSet):
-        raise FindingStorageError("finding_set must be a FindingSet")
-    path = findings_relative_path(capture_session_id, phase)
-    try:
-        return store.publish_json_artifact(path, finding_set.to_dict())
-    except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        raise FindingStorageError(f"could not publish findings: {exc}") from exc
-
-
 def read_finding_set(
     store: Any,
     *,
@@ -198,7 +179,6 @@ __all__ = [
     "bundle_evidence_ref",
     "findings_artifact_path",
     "findings_relative_path",
-    "publish_finding_set",
     "read_finding_set",
     "verify_finding_evidence",
 ]

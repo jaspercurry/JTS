@@ -52,7 +52,6 @@ from .storage import (
     FindingStorageError,
     bundle_evidence_ref,
     findings_relative_path,
-    publish_finding_set,
     read_finding_set,
     verify_finding_evidence,
 )
@@ -90,7 +89,6 @@ __all__ = [
     "position_evidence_block",
     "promote_carve_outs",
     "promote_level_frame_disagreement",
-    "publish_finding_set",
     "read_finding_set",
     "read_session_identity",
     "stamp_session_identity",

@@ -1316,7 +1316,9 @@ def test_cloud_publisher_writes_one_artifact_per_group_through_the_real_store(
         info["bundle_dir"], expected_session_id=info["session_id"]
     )
     refs: dict = {}
-    publish_cloud = v2host.bind_cloud_publisher(store, "cap_cloud_session", refs)
+    publish_cloud = v2host.bind_cloud_publisher(
+        store, "cap_cloud_session", refs, asyncio.run
+    )
 
     measure_result = {
         "available": True,
@@ -8112,6 +8114,9 @@ class _RecordingEvidenceStore:
         self.published.append((relpath, payload))
         return SimpleNamespace(fingerprint="fp-check")
 
+    def identify_artifact(self, relpath):
+        return SimpleNamespace(relative_path=relpath, fingerprint="fp-check")
+
 
 def test_check_evidence_artifact_carries_the_per_role_level_solve():
     """`check.json` is the session's durable record of what MEASURE was about
@@ -8122,7 +8127,7 @@ def test_check_evidence_artifact_carries_the_per_role_level_solve():
 
     store = _RecordingEvidenceStore()
     publish_check, _publish_candidate, refs = v2host.bind_evidence_publishers(
-        store, "capture-session"
+        store, "capture-session", asyncio.run
     )
     plan = GainPlan(
         gain_db={"woofer": -19.0, "tweeter": -31.0},
@@ -8160,7 +8165,7 @@ def test_check_evidence_artifact_tolerates_a_plan_without_solves():
 
     store = _RecordingEvidenceStore()
     publish_check, _publish_candidate, _refs = v2host.bind_evidence_publishers(
-        store, "capture-session"
+        store, "capture-session", asyncio.run
     )
     publish_check(
         GainPlan(

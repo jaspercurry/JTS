@@ -41,8 +41,8 @@ __all__ = [
     "BankedRecordStore",
 ]
 
-#: Also spelled as bare literals in ``jasper.web.correction_crossover_v2``'s
-#: publisher bindings; this store is their writer.
+#: The two artifact kinds no producer names for itself: a check bundle and a
+#: cloud group are plain dicts, so their discriminator is spelled here.
 CHECK_EVIDENCE_KIND = "jts_crossover_v2_check_evidence"
 CLOUD_EVIDENCE_KIND = "jts_crossover_v2_cloud_evidence"
 
@@ -65,6 +65,11 @@ class _Route:
 
     relative_path: Callable[[str, Mapping[str, Any]], str]
     enveloped: bool
+    #: Keys a caller supplies to ROUTE the record and that the file does not
+    #: carry, taken back off the way ``kind`` is. Without this a routing key
+    #: would be written, and the store would not be a drop-in for the publisher
+    #: whose bytes its readers already know.
+    routing_keys: tuple[str, ...] = ()
     stamp_identity: bool = False
     verify: Callable[[Mapping[str, Any], Mapping[str, Any]], None] | None = None
 
@@ -129,11 +134,12 @@ _ROUTES: dict[str, _Route] = {
         enveloped=False,
         verify=_verify_receipt,
     ),
-    # The CALLER injects ``phase``: ``FindingSet.to_dict()`` carries none and
-    # ``from_mapping`` ignores top-level keys it does not know.
+    # The CALLER injects ``phase`` to route on; the file is exactly
+    # ``FindingSet.to_dict()``, which carries none.
     FINDING_SET_SCHEMA: _Route(
         lambda capture, r: findings_relative_path(capture, _required(r, "phase")),
         enveloped=False,
+        routing_keys=("phase",),
     ),
 }
 
@@ -218,8 +224,12 @@ class BankedRecordStore:
         discriminator: str,
         measure: str | None,
     ) -> Mapping[str, Any]:
+        record = {
+            key: value for key, value in record.items()
+            if key not in route.routing_keys
+        }
         if not route.enveloped:
-            return dict(record)
+            return record
         owned = [key for key in _ENVELOPE_KEYS if key in record]
         if owned:
             raise ValueError(
