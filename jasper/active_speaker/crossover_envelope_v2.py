@@ -714,8 +714,8 @@ def _flatness_details_lines(status: Mapping[str, Any]) -> list[str]:
 
     Reads the cloud group's spec gauge — ``spec_flatness_gauge`` of the same
     ``evaluate_flat_spec`` report ``/state``, the doctor check and the bundle
-    artifact read — copied through ``_compact_cloud_status``, so the number here
-    and the number in the report are the same bytes.
+    artifact read — copied through :func:`compact_cloud_status` below, so the
+    number here and the number in the report are the same bytes.
 
     **The choice is WHICH CLOUD EXISTS, not which tier** (#1965): post-apply
     cloud if there is one, otherwise the pre-apply cloud. A tier test was right

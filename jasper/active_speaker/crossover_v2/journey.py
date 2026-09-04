@@ -312,8 +312,9 @@ class CommissionJourney:
                 # Everything before VERIFY accepted but not yet applied ⇒ an
                 # apply is pending. Unreached by any shipped session since the
                 # two-stage split: stage 1 has no VERIFY in its plan and stage 2
-                # is constructed applied; the wizard's ``_phase_from_state``
-                # routes those two shapes.
+                # is constructed applied; the wizard's
+                # ``crossover_envelope_v2.crossover_v2_phase`` routes those two
+                # shapes.
                 if (
                     phase == PHASE_VERIFY
                     and PHASE_MEASURE in self._accepted
