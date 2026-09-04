@@ -22,7 +22,9 @@ from pathlib import Path
 from typing import Any
 
 from ._logging import CLI_LOG_FORMAT
-from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED
+from ._refusal import (
+    EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, read_source_bytes,
+)
 # The beside-the-round output rule, reused rather than restated: a live
 # session bundle is daemon-owned, so a view defaulting inside it raises
 # PermissionError for the operator (#3498).
@@ -293,12 +295,6 @@ def _print_packet_summary(summary: dict[str, Any]) -> None:
         )
 
 
-def _read_payload(path: str) -> bytes:
-    if path == "-":
-        return sys.stdin.buffer.read()
-    return Path(path).read_bytes()
-
-
 def _gate(
     args: argparse.Namespace,
 ) -> tuple[
@@ -315,7 +311,7 @@ def _gate(
     ``CrossoverEvidencePacketError``/``OSError`` (exit 1).
     """
     packet = _load_packet(args)
-    payload = _read_payload(args.prescription)
+    payload = read_source_bytes(args.prescription)
     document = read_prescription_bytes(payload)
     prescription: BlendPrescription | DriverPrescription | None
     classifications: tuple[FeatureVerdict, ...] | None = None

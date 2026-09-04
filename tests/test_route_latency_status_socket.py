@@ -101,8 +101,9 @@ def test_read_status_socket_or_none_fails_soft_when_absent(tmp_path, caplog):
 
 def test_canonical_socket_paths_match_daemon_conventions():
     # Pin the well-known control-socket paths so a daemon move updates one
-    # place. These mirror the two live route-health owners.
+    # place.
     assert status_socket.FANIN_STATUS_SOCKET == "/run/jasper-fanin/control.sock"
+    assert status_socket.MUX_CONTROL_SOCKET_PATH == "/run/jasper-mux/control.sock"
     assert status_socket.OUTPUTD_STATUS_SOCKET == "/run/jasper-outputd/control.sock"
 
 

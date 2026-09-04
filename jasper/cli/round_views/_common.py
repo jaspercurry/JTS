@@ -167,11 +167,13 @@ def _write(
 
 
 def refused_by_name(
-    reason: str, detail: Mapping[str, Any], *, code: int = EXIT_REFUSED
+    reason: str, detail: Mapping[str, Any] | str, *, code: int = EXIT_REFUSED
 ) -> int:
     """An instrument that refuses BY NAME publishes its own name and its
-    evidence here, never this tool's coarser stage bucket."""
-    return failed(code, reason, json.dumps(detail, sort_keys=True, default=str))
+    evidence here — fields, or a sentence — never this tool's stage bucket."""
+    if not isinstance(detail, str):
+        detail = json.dumps(detail, sort_keys=True, default=str)
+    return failed(code, reason, detail)
 
 
 def default_out(inputs: RoundInputs, round_dir: Path, name: str) -> Path:
@@ -194,8 +196,7 @@ def default_out(inputs: RoundInputs, round_dir: Path, name: str) -> Path:
 def resolved_out(round_dir: Path, artifact: str) -> Path:
     """Where a view lands beside a round it read WITHOUT the round resolver.
 
-    The gate ladder and the close reference read a bundle subtree the resolver
-    cannot place; a round it cannot place still gets its artifact.
+    A round the resolver cannot place still gets its artifact, beside itself.
     """
     try:
         return default_out(round_inputs(round_dir), round_dir, artifact)
