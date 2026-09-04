@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from . import home_assistant as _ha_env
+from . import volume_persistence as _volume_persistence
 from .camilla_config_contract import DEFAULT_CAMILLA_PORT
 from .librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
 from .mics.xvf3800 import CHIP_AEC_ENABLED_ENV
@@ -902,10 +903,7 @@ class Config:
             ha_verify_ssl=_env_bool(_ha_env.ENV_VERIFY_SSL, True),
             # Persistent speaker-volume file. Read at boot to restore
             # CamillaDSP main_volume, written on every change.
-            volume_state_path=_env(
-                "JASPER_VOLUME_STATE_PATH",
-                "/var/lib/jasper/speaker_volume.json",
-            ),
+            volume_state_path=_volume_persistence.configured_path(),
             # If the persisted volume is older than this at boot AND
             # outside [safe_low, safe_high], clamp it into that band.
             # Within-session restarts (deploys, fast crash recovery)

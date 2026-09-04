@@ -1162,14 +1162,10 @@ class Mux:
         from .speaker_name import runtime_name as speaker_runtime_name
         from .volume_coordinator import VolumeCoordinator
         from .volume_persistence import VolumePersistence
+        from .volume_persistence import configured_path as volume_state_path
 
         camilla = primary_controller()
-        persistence = VolumePersistence(
-            os.environ.get(
-                "JASPER_VOLUME_STATE_PATH",
-                "/var/lib/jasper/speaker_volume.json",
-            ),
-        )
+        persistence = VolumePersistence(volume_state_path())
         backend = RendererClient(librespot_state_path=self._librespot_state_path)
         coordinator = VolumeCoordinator(
             camilla=camilla,

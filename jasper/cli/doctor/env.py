@@ -81,10 +81,12 @@ def check_state_dir_group_writable(cfg: Config) -> CheckResult:
     OTHER daemon doesn't own then can't be written ("attempt to write a readonly
     database" — the 2026-06-19 incident). UMask=0007 on the daemons + the install
     heal keep these 0660; this flags drift before it bites."""
-    return _classify_state_group_write(Path(cfg.usage_db))
+    return _classify_state_group_write(Path(cfg.usage_db), Path(cfg.volume_state_path))
 
 
-def _classify_state_group_write(usage_db: Path) -> CheckResult:
+def _classify_state_group_write(
+    usage_db: Path, volume_state_path: Path | None = None
+) -> CheckResult:
     """Path-parameterized core of ``check_state_dir_group_writable`` — unit
     testable with tmp files (mirrors the resilience/renderers ``_classify_*``
     doctor helpers)."""
@@ -92,13 +94,13 @@ def _classify_state_group_write(usage_db: Path) -> CheckResult:
     import stat as _stat
 
     state_dir = usage_db.parent
-    candidates = (
+    candidates = [
         usage_db,
         state_dir / "conversation_history.db",
         state_dir / "timers.db",
         state_dir / "wake-events" / "wake-events.sqlite3",
-        state_dir / "speaker_volume.json",
-    )
+        *([volume_state_path] if volume_state_path is not None else []),
+    ]
     bad: list[str] = []
     checked = 0
     for p in candidates:

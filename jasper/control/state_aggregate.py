@@ -843,12 +843,9 @@ def _read_persisted_volume() -> tuple[int | None, float | None]:
     """The persisted listening level and main volume, in that order."""
     from ..volume_coordinator import VolumeState
     from ..volume_persistence import VolumePersistence
+    from ..volume_persistence import configured_path as volume_state_path
 
-    path = os.environ.get(
-        "JASPER_VOLUME_STATE_PATH",
-        "/var/lib/jasper/speaker_volume.json",
-    )
-    record = VolumePersistence(path).load()
+    record = VolumePersistence(volume_state_path()).load()
     if record is None:
         return None, None
     return (

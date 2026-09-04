@@ -5,7 +5,7 @@
 """The single home for atomic text-file writes in JTS.
 
 The codebase persists small bits of runtime state to disk all over
-(``mic_mute.env``, ``speaker_volume.json``, the multiroom reconciler's
+(``mic_mute.env``, the volume-state file, the multiroom reconciler's
 derived-args env file, …). Every one of those wants the SAME guarantee: a
 reader either sees the OLD file or the COMPLETE new file, never a torn or
 half-written one. That is a tempfile-in-the-same-directory + ``os.replace``
