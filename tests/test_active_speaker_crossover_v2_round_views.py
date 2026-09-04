@@ -1056,6 +1056,41 @@ def test_cli_per_seat_writes_seats_including_absent_verify_reason(tmp_path):
     assert payload["verify_pose"]["reason"]
 
 
+def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
+    from jasper.cli import round_views as cli
+
+    round_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+    assert cli.main(["per-seat", str(round_dir)]) == 0
+
+    assert cli.main(["inventory", str(round_dir)]) == 0
+    payload = json.loads((round_dir / "inventory.json").read_text())
+    rows = {row["artifact"]: row for row in payload["artifacts"]}
+
+    assert rows["per_seat.json"]["present"] is True
+
+    missing = rows["directivity.json"]
+    assert missing["present"] is False
+    assert missing["produced_by"] == "jasper-round-views directivity <this-round>"
+    assert missing["producer_needs_another_round"] is False
+    assert missing["path"] == str(round_dir / "directivity.json")
+    # The producer it named writes the artifact it named as missing.
+    assert cli.main(["directivity", str(round_dir)]) == 0
+    assert Path(missing["path"]).is_file()
+
+    # A view whose subcommand takes MORE than this round says so, and places
+    # this round in the slot that writes the artifact beside it — frozen
+    # grades the TARGET. Run as one round it is an invocation argparse rejects.
+    multi = rows["frozen_reference.json"]
+    assert multi["produced_by"] == (
+        "jasper-round-views frozen <other-round> <this-round>"
+    )
+    assert multi["producer_needs_another_round"] is True
+    with pytest.raises(SystemExit):
+        cli.main(["frozen", str(round_dir)])
+
+
 def test_cli_frequency_writes_the_shared_web_contract(tmp_path):
     from jasper.cli.round_views import main
 
