@@ -70,6 +70,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .. import identity
 from ..control import household_credential
+from ..control.client import CONTROL_PORT
 from ..mdns import browse_once
 from ..multiroom.airplay_latency import with_airplay_latency_fit
 from ..multiroom.config import DEFAULT_CROSSOVER_HZ, is_private_or_loopback_ipv4
@@ -105,9 +106,6 @@ ROOMS_PAGE_CSS_HREF = "/assets/rooms/rooms.css"
 # Fully-qualified with the trailing `.local.` per the python-zeroconf contract.
 CONTROL_MDNS_TYPE = "_jasper-control._tcp.local."
 
-# jasper-control's HTTP port, used when an instance resolves without an SRV
-# port. The management UI is on port 80 (nginx), so click-through URLs stay bare.
-CONTROL_HTTP_PORT = 8780
 CONTROL_HTTP_TIMEOUT_SEC = 5.0
 PEER_RESPONSE_MAX_BYTES = 64 * 1024
 
@@ -250,7 +248,7 @@ def _peer_label(props: dict, server: str, full_name: str) -> str:
 
 def _discover_speakers(timeout: float = DISCOVERY_TIMEOUT_SEC) -> list[dict]:
     """Best-effort mDNS-SD browse of `_jasper-control._tcp`, at most one
-    {name, hostname, room, address, port} dict per service name. Fail-soft:
+    {name, hostname, room, address} dict per service name. Fail-soft:
     [] on any failure, so the page renders an empty state and never 500s.
 
     Self is NOT filtered here — the caller does that against self_addresses,
@@ -270,7 +268,6 @@ def _discover_speakers(timeout: float = DISCOVERY_TIMEOUT_SEC) -> list[dict]:
                 "hostname": _hostname_label(svc.server),
                 "room": (svc.txt.get("room") or "").strip(),
                 "address": str(svc.addresses[0]),
-                "port": int(svc.port or CONTROL_HTTP_PORT),
             }
         )
     return out
@@ -662,7 +659,7 @@ def post_grouping_to_member(
         except ValueError:
             return False, f"not an IP address: {addr!r}"
         return False, f"refusing non-LAN target {addr}"
-    url = f"http://{target}:{CONTROL_HTTP_PORT}/grouping/set"
+    url = f"http://{target}:{CONTROL_PORT}/grouping/set"
     headers = {"Content-Type": "application/json"}
     if token:
         headers["X-JTS-Token"] = token
@@ -848,7 +845,7 @@ def _get_remote_json_result(
     timeout: float,
 ) -> tuple[dict | None, str | None]:
     """GET one bounded peer JSON object with a small diagnostic result."""
-    url = f"http://{target}:{CONTROL_HTTP_PORT}{path}"
+    url = f"http://{target}:{CONTROL_PORT}{path}"
     req = urllib.request.Request(url, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:

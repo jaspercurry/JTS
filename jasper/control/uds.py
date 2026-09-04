@@ -106,7 +106,7 @@ async def _mux_socket_command(
     # asyncio.timeout(), NOT asyncio.wait_for(): on CPython <= 3.11 wait_for
     # SWALLOWS a CancelledError that arrives in the same tick its awaited
     # future completes (Lib/asyncio/tasks.py: `except CancelledError: if
-    # fut.done(): return fut.result()`). correction/coordinator.py's
+    # fut.done(): return fut.result()`). measurement_window.py's
     # _refresh_measurement_gate_lease calls this from a cancellation-only
     # `while True:` that measurement_window()'s finally cancels and then
     # awaits unboundedly -- a swallowed cancel here makes that task immortal

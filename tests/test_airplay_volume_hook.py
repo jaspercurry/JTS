@@ -59,20 +59,23 @@ def test_flock_is_available_on_linux():
         assert _FLOCK is not None
 
 
-def _hook_env(runtime_dir: Path, port: int | None = None) -> dict[str, str]:
-    env = {
-        "PATH": _HOOK_PATH,
-        "RUNTIME_DIRECTORY": str(runtime_dir),
-    }
+def _hook_env(runtime_dir: Path) -> dict[str, str]:
+    return {"PATH": _HOOK_PATH, "RUNTIME_DIRECTORY": str(runtime_dir)}
+
+
+def _hook_argv(*args: str, port: int | None = None) -> list[str]:
+    """The hook's argv, with the optional control-base override appended
+    when a stub is in play — the seam shairport never uses."""
+    argv = ["sh", str(HOOK), *args]
     if port is not None:
-        env["JASPER_CONTROL_PORT"] = str(port)
-    return env
+        argv.append(f"http://127.0.0.1:{port}")
+    return argv
 
 
 def _run_hook(*args: str, runtime_dir: Path, port: int | None = None) -> None:
     subprocess.run(
-        ["sh", str(HOOK), *args],
-        env=_hook_env(runtime_dir, port),
+        _hook_argv(*args, port=port),
+        env=_hook_env(runtime_dir),
         check=True,
         timeout=60,
     )
@@ -280,7 +283,7 @@ def _fire_burst(
     Messages are scheduled against an absolute clock, so Popen's own cost
     doesn't stretch the burst the assertions are written about.
     """
-    env = _hook_env(runtime_dir, port)
+    env = _hook_env(runtime_dir)
     started = time.monotonic()
     running = []
     for index, percent in enumerate(percents):
@@ -288,7 +291,7 @@ def _fire_burst(
         if delay > 0:
             time.sleep(delay)
         running.append(
-            subprocess.Popen(["sh", str(HOOK), _db_for(percent)], env=env)
+            subprocess.Popen(_hook_argv(_db_for(percent), port=port), env=env)
         )
     for process in running:
         assert process.wait(timeout=60) == 0

@@ -21,18 +21,18 @@ gate's own docstring owns why.
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 from typing import Any
 
-from jasper.audio_runtime_plan import (
-    OUTPUTD_DEFAULT_CONTENT_FORMAT as _OUTPUTD_DEFAULT_CONTENT_FORMAT,
-)
 from jasper.env_file import read_value
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     COUPLING_SHM_RING,
+    OUTPUTD_CONTENT_FORMAT_ENV_VAR,
+    OUTPUTD_DEFAULT_CONTENT_FORMAT,
     coupling_value_removed,
     resolve_coupling,
 )
@@ -82,9 +82,9 @@ def _read_snapshot(path: str | Path) -> _EnvSnapshot:
 # refuse the arm for a wire the daemon has in fact declared, which is the wrong
 # refusal — the right one is a COMPARISON against the resolved wire.
 #
-# The format default is owned by jasper.audio_runtime_plan; see its comment
-# beside OUTPUTD_DEFAULT_CONTENT_FORMAT for why it does not follow the resolver.
-_OUTPUTD_CONTENT_FORMAT_ENV_VAR = "JASPER_OUTPUTD_CONTENT_FORMAT"
+# The format key and its default are owned by jasper.fanin_coupling; see the
+# comment beside OUTPUTD_DEFAULT_CONTENT_FORMAT for why it does not follow the
+# resolver.
 _OUTPUTD_ACTIVE_CHANNELS_ENV_VAR = "JASPER_OUTPUTD_ACTIVE_CHANNELS"
 _OUTPUTD_DEFAULT_CONTENT_CHANNELS = 2
 
@@ -137,12 +137,10 @@ class LoadedCamillaGraph:
     """ONE snapshot of the CamillaDSP graph the durable statefile points at.
 
     A snapshot object rather than three field reads: the width gate compares a
-    lane's device, format and channels together, and reading them one at a time
-    through :func:`jasper.camilla_config_contract.read_camilla_device_field`
-    would re-open the file per field — three answers that need not come from one
-    revision of it. ``devices`` is
-    :func:`~jasper.camilla_config_contract.parse_camilla_devices_config`'s subset
-    over that single read.
+    lane's device, format and channels together, and one file read per field
+    gives three answers that need not come from one revision of it. ``devices``
+    is :func:`~jasper.camilla_config_contract.parse_camilla_devices_config`'s
+    subset over that single read.
 
     ``note`` is empty when the graph WAS read and non-empty saying why not
     otherwise. It is never an exception: a box with no statefile yet is the
@@ -229,6 +227,15 @@ def load_topology_for_wire():
         return load_output_topology_strict()
     except (OutputTopologyError, OSError, ValueError, ImportError):
         return None
+
+
+def saved_topology_reader() -> Callable[[], Any]:
+    """A :func:`load_topology_for_wire` that touches the disk at most once.
+
+    One pass hands the same reader to every consumer, so the axes that need the
+    saved topology share a single read and the axes that do not read nothing.
+    """
+    return cache(lambda: load_topology_for_wire())
 
 
 def _effective_env_value(
@@ -415,11 +422,11 @@ def ring_wire_declarations(
         )
     except ValueError:
         outputd_channels = None
-    outputd_format_raw = read_value(outputd_text, _OUTPUTD_CONTENT_FORMAT_ENV_VAR)
+    outputd_format_raw = read_value(outputd_text, OUTPUTD_CONTENT_FORMAT_ENV_VAR)
     outputd_format = (
         outputd_format_raw.strip()
         if outputd_format_raw and outputd_format_raw.strip()
-        else _OUTPUTD_DEFAULT_CONTENT_FORMAT
+        else OUTPUTD_DEFAULT_CONTENT_FORMAT
     )
     return (
         RingWireDeclaration(
@@ -474,7 +481,7 @@ def ring_wire_declarations(
                 ""
                 if armed
                 else (
-                    f"{_OUTPUTD_CONTENT_FORMAT_ENV_VAR} still declares "
+                    f"{OUTPUTD_CONTENT_FORMAT_ENV_VAR} still declares "
                     "whatever the hardware reconciler last rendered until it "
                     "re-emits on arm, so the format axis is not compared "
                     "before arming"
@@ -1220,7 +1227,7 @@ def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
     next arm refuses again, this time from ``ring_edge_width_ready``, naming the
     graph. So the remedy is the whole ladder, graph first — and in the
     ``sudo /opt/jasper/.venv/bin/…`` spelling the doctor's own rollback ladder
-    uses (``jasper/cli/doctor/audio_runtime.py``), because these two strings are
+    uses (``jasper/cli/doctor/audio_runtime_ring.py``), because these two strings are
     operator-copied text for the same three rungs and only that spelling pastes
     into a shell and works.
 

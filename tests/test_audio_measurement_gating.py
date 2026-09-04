@@ -31,16 +31,8 @@ reflection's own level), and weaker reflections or 20 dB SNR are, BY DESIGN,
 not reliably caught by a delta-only synthetic test. This file pins the
 reliable envelope and separately pins the graceful (never-silent,
 never-wrong-applied) fallback when nothing crosses threshold.
-
-(An earlier version of this docstring cited "missing a reflection is the
-dangerous direction; raise K, not lower it" as standing guidance. That was
-measured backwards and corrected in #1983 — see
-``test_the_threshold_tuning_guidance_does_not_point_the_wrong_way``, which
-pins the correction in the module the guidance actually lives in.)
 """
 from __future__ import annotations
-
-import inspect
 
 import numpy as np
 import pytest
@@ -90,50 +82,53 @@ def test_consult_table_constants_pinned():
     assert gating.NEAR_FIELD_EXEMPT == "near_field"
 
 
-def test_the_threshold_tuning_guidance_does_not_point_the_wrong_way():
-    """#1983 — this comment is production guidance, and it was backwards.
+def test_moving_k_off_the_shipped_operating_point_costs_the_evidence_band():
+    """#1983 — both directions of K are lossy, observed through the fragment.
 
-    It used to say "raise K, not lower it, if field corpora show misses".
-    Measured on 1,980 annotated RIRs plus 12,750 synthetic injections with
-    the criteria frozen before the run
-    (``captures/detector-certification-20260801`` §4.2), P_D is unimodal
-    with its maximum at the shipped K = 12; raising K makes MISSES
-    monotonically worse (0.662 -> 0.601 -> 0.482 -> 0.277 -> 0.000) while
-    P_FA simultaneously RISES to 0.641. Over 12 -> 20 dB both error rates
-    degrade together — strictly dominated.
-
-    An operator or agent following the old sentence would have made the
-    detector worse in both directions, so this pins the correction rather
-    than trusting a comment to stay fixed. It is asserted on the source
-    text because a comment is the only artifact the defect lived in.
+    Module guidance used to read "raise K, not lower it", which is backwards
+    in both directions. Per :data:`~jasper.audio_measurement.gating`'s
+    ``REFLECTION_THRESHOLD_DB`` block, raising K past the P_D peak is
+    strictly dominated (both error rates degrade together), and K = 12 is the
+    hardware FLOOR of the range that reproduces this speaker's anatomy, not
+    merely a corpus optimum. Both costs are pinned here rather than only the
+    optimistic one.
     """
-    source = inspect.getsource(gating)
-    upper = source.upper()
+    n, p = int(0.030 * SR), 500
 
-    assert "DO NOT RAISE K" in upper, (
-        "the corrected directive is missing — see #1983"
-    )
-    assert "STRICTLY DOMINATED" in upper
-    assert "CAPTURES/DETECTOR-CERTIFICATION-20260801" in upper, (
-        "the corrected guidance must cite the measurement it rests on"
-    )
-    # Both failure directions named, not just the optimistic one — naming
-    # only "a miss over-claims LF validity" is what let the old advice look
-    # reasonable (certification §5).
-    assert "MISS" in upper and "FALSE DETECT" in upper
+    # RAISING K lowers the level a candidate must climb back over, so a
+    # horn/baffle-scale feature the shipped bar excludes starts gating. The
+    # certification's kurtosis challenger did exactly this on the real
+    # 646 us feature (§5); the window collapses and the validity floor lands
+    # inside the 2 kHz crossover's evidence band, destroying it. The feature
+    # sits at -14 dB so both probes below clear the hysteresis level by 2 dB
+    # rather than tying with it.
+    early, _ = _delta_ir_with_reflection(n, p, 4.0, -6.0)
+    early[p + int(round(0.646e-3 * SR))] = 10 ** (-14 / 20)
 
-    # The old advice may still be QUOTED, since a reader who met it
-    # elsewhere needs to know it was superseded — but only ever as
-    # something being corrected, never as standing guidance.
-    stale = "raise K, not lower it"
-    start = 0
-    while (found := source.find(stale, start)) != -1:
-        context = source[max(0, found - 400) : found + 400]
-        assert "backwards" in context, (
-            f"{stale!r} appears at offset {found} without being marked "
-            "superseded — see #1983; it is wrong above the shipped K=12"
-        )
-        start = found + 1
+    _gated, shipped = gating.gate_impulse_response(early, SR)
+    assert shipped["floor_source"] == gating.FLOOR_MEASURED
+    assert shipped["window_ms"] == pytest.approx(4.0, abs=0.2)
+    assert shipped["f_valid_floor_hz"] < 300.0
+
+    _gated, raised = gating.gate_impulse_response(early, SR, threshold_db=16.0)
+    assert raised["floor_source"] == gating.FLOOR_MEASURED
+    assert raised["window_ms"] < 1.0
+    assert raised["f_valid_floor_hz"] > 1500.0
+
+    # LOWERING K raises that level past a real domestic bounce, which is then
+    # missed: the window sits at the search ceiling and the record over-claims
+    # validity an octave below the truth. §WO-6 measured the same shape on
+    # hardware — 13/13 at K = 12, 10/13 at K = 11, 0/13 at K = 10.
+    bounce, _ = _delta_ir_with_reflection(n, p, 3.6, -11.5)
+
+    _gated, found = gating.gate_impulse_response(bounce, SR)
+    assert found["floor_source"] == gating.FLOOR_MEASURED
+    assert found["window_ms"] == pytest.approx(3.6, abs=0.2)
+
+    _gated, missed = gating.gate_impulse_response(bounce, SR, threshold_db=10.0)
+    assert missed["floor_source"] == gating.FLOOR_SEARCH_BOUND
+    assert missed["window_ms"] == pytest.approx(gating.SEARCH_T_MAX_MS)
+    assert missed["f_valid_floor_hz"] < found["f_valid_floor_hz"]
 
 
 def test_gating_contract_constants_pinned():
@@ -173,34 +168,41 @@ def test_prominence_vote_operating_point_pinned():
     assert gating.REFLECTION_THRESHOLD_DB == 12.0
 
 
-def test_the_prominence_ceiling_records_that_hardware_set_it():
+def test_raising_q_to_the_corpus_optimum_rejects_the_speakers_own_reflection():
     """#1969 / WO-6 — the corpus alone points the wrong way on this knob.
 
-    Picked on corpus statistics alone the vote wants ~13.5 dB, which
-    measured 6.6x fewer false alarms — and rejects this speaker's one
-    independently corroborated room reflection (1.275 ms, woofer branch) on
-    **13 of 13** real captures. A future reader looking only at the corpus
-    table would raise Q and break the instrument on real hardware, so the
-    reason lives in the source beside the number.
+    Picked on corpus statistics alone the vote wants Q = 13.5, which measured
+    6.6x fewer false alarms — and rejects this speaker's one independently
+    corroborated room reflection (1.275 ms, woofer branch) on 13 of 13 real
+    captures. The fixture reproduces that reflection's arrival and its
+    measured envelope prominence (9.25 dB median, 8.86 dB minimum) on a
+    deterministic floor, so the ceiling is observable in the fragment.
 
-    Asserted on the source text because a comment is the only artifact that
-    can carry the "why" to whoever edits the constant — the same rule
-    ``test_the_threshold_tuning_guidance_does_not_point_the_wrong_way``
-    applies to K.
+    The opposite direction — lowering Q brings the early false detects back —
+    is pinned by
+    ``test_the_vote_rejects_the_early_fire_the_bare_threshold_accepts``.
     """
-    source = inspect.getsource(gating)
-    upper = source.upper()
+    n, p = int(0.030 * SR), 500
+    # A sign-alternating floor has an exactly flat moving-RMS envelope, so
+    # the candidate's prominence over it is set by construction rather than
+    # by a seed: 0.046 puts it at 9.24 dB, the real reflection's median.
+    ir = _delta_ir(n, p)
+    span = np.arange(p + 1, p + int(round(8.0e-3 * SR)))
+    ir[span] = 0.046 * np.where(span % 2 == 0, 1.0, -1.0)
+    ir[p + int(round(1.275e-3 * SR))] = 10 ** (-8 / 20)
 
-    assert "DO NOT RAISE Q" in upper, (
-        "the prominence ceiling's directive is missing — see WO-6"
-    )
-    # The measurement that sets the ceiling, not just an assertion of it.
-    assert "13/13" in source
-    assert "1.275" in source
-    # Both failure directions, as with K: naming only one is what makes a
-    # one-sided rule look reasonable.
-    assert "LOWER Q" in upper and "HIGHER Q" in upper
-    assert "CAPTURES/DETECTOR-CERTIFICATION-20260801" in upper
+    _gated, shipped = gating.gate_impulse_response(ir, SR)
+    assert shipped["floor_source"] == gating.FLOOR_MEASURED
+    arrival_ms = shipped["first_reflection_ms"] - shipped["direct_peak_ms"]
+    assert arrival_ms == pytest.approx(1.275, abs=0.1)
+
+    _gated, raised = gating.gate_impulse_response(ir, SR, prominence_db=13.5)
+    assert raised["floor_source"] == gating.FLOOR_SEARCH_BOUND
+    assert raised["window_ms"] == pytest.approx(gating.SEARCH_T_MAX_MS)
+    # The cost of the rejection is an over-claim, not a refusal: the window
+    # stretches to the 7 ms ceiling, so the floor lands well below what the
+    # real span supports.
+    assert raised["f_valid_floor_hz"] < shipped["f_valid_floor_hz"]
 
 
 # ---------- f_valid_floor_hz formula ------------------------------------------

@@ -288,7 +288,7 @@ async def test_arbitrate_acquire_drain_aborts_when_mic_muted():
 
 async def test_arbitrate_acquire_drain_aborts_when_measurement_active():
     """Same shape as mute — measurement_pause is a deliberate
-    'stop listening' signal from the room-correction coordinator."""
+    'stop listening' signal from an open measurement window."""
     from jasper.voice_daemon import State
     wl = _make_wake_loop(peering_enabled=False)
     wl._mic_muted = False

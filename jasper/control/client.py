@@ -61,9 +61,14 @@ def _connect_host(bind_host: str) -> str:
     return host
 
 
+#: The jasper-control port, for this box and for every peer. It is not
+#: configurable: the Avahi advert, nginx's proxy_pass blocks and the peer
+#: URL builders all carry this same literal, so a box that moved its
+#: listener would be unreachable to its own front end and its siblings.
+CONTROL_PORT = 8780
+
 DEFAULT_HOST = _connect_host(os.environ.get("JASPER_CONTROL_HOST", "127.0.0.1"))
-DEFAULT_PORT = int(os.environ.get("JASPER_CONTROL_PORT") or "8780")
-DEFAULT_BASE_URL = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
+DEFAULT_BASE_URL = f"http://{DEFAULT_HOST}:{CONTROL_PORT}"
 DEFAULT_TIMEOUT = 2.0
 
 
@@ -119,7 +124,7 @@ def _request(
     parts = urlsplit(base_url)
     conn = http.client.HTTPConnection(
         parts.hostname or DEFAULT_HOST,
-        parts.port or DEFAULT_PORT,
+        parts.port or CONTROL_PORT,
         timeout=timeout,
     )
     try:

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Guarded active-speaker startup config load and rollback.
+"""Guarded active-speaker startup config load, rollback, and anchor re-emit.
 
 This is the first active-speaker slice that may reload CamillaDSP.
 `load_protected_startup_config`/`rollback_protected_startup_config` still
@@ -11,43 +11,33 @@ they keep the side-effect boundary deliberately small: validate the staged
 muted/protected startup candidate, require path-safety evidence, load through
 the existing DSP apply lifecycle, and persist a rollback target.
 
-The module has since grown a second, guarded lifecycle for per-driver
-commissioning (`load_driver_commissioning_config`,
-`load_summed_commissioning_config`, `rollback_driver_commissioning_config`)
-that swaps the RUNNING graph and is a precondition for the audible
-driver/summed test ramp — see those functions' own docstrings for their
-narrower safety contract.
+The per-driver/summed commissioning lifecycle, which swaps the RUNNING graph,
+lives in `commission_load`.
 """
 
 from __future__ import annotations
 
-import asyncio
+import argparse
 import json
 import logging
 import math
+import stat
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from jasper.atomic_io import atomic_write_json
-from jasper.camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
 from jasper.control.restart_broker import manage_units
 from jasper.dsp_apply import (
     CamillaConfigValidationResult,
     DspApplyError,
     apply_dsp_config,
-    same_config_file,
     validate_camilla_config,
 )
-from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology, channel_identity_report
 
 from ._common import gate as _gate, issue as _issue
-from .camilla_yaml import (
-    COMMISSIONING_FILTER_MODE,
-    COMMISSIONING_HEADROOM_DB,
-    STARTUP_MUTE_GAIN_DB,
-)
 from .calibration_level import (
     MIN_TEST_LEVEL_DBFS,
     load_calibration_level_state,
@@ -64,30 +54,18 @@ from .path_safety import (
     topology_target_signature,
     validate_startup_load_evidence_binding,
 )
-from .graph_evidence import (
-    running_commission_evidence,
-    running_graph_matches_staged_anchor,
-)
 from .startup_hold import (
     hold_staged_startup,
     release_staged_startup_hold,
     startup_hold_marker_path,
 )
-from ..fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
+from .runtime_contract import (
+    GRAPH_ALL_MUTED_ACTIVE_STARTUP,
+    safe_graph_for_current_topology,
+)
 from .safe_playback import load_safe_playback_state
-from .state_paths import (  # noqa: F401  ENV names re-exported for the package façade
-    COMMISSION_LOAD_STATE_ENV,
-    STARTUP_LOAD_STATE_ENV,
-    commission_load_state_path,
-    startup_load_state_path,
-)
-from .staging import (
-    COMMISSIONING_TRANSPORT_GATE_ID,
-    SUMMED_COMMISSION_TARGET_ROLE,
-    load_staged_startup_config,
-    prepare_driver_commissioning_config,
-    staged_config_path,
-)
+from .state_paths import baseline_profile_state_path, startup_load_state_path
+from .staging import load_staged_startup_config
 
 logger = logging.getLogger(__name__)
 
@@ -96,28 +74,8 @@ STARTUP_LOAD_PREFLIGHT_KIND = "jts_active_speaker_startup_load_preflight"
 STARTUP_LOAD_STATE_KIND = "jts_active_speaker_startup_load_state"
 AUDIO_HARDWARE_RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
 
-COMMISSION_LOAD_PREFLIGHT_KIND = "jts_active_speaker_commission_load_preflight"
-COMMISSION_LOAD_STATE_KIND = "jts_active_speaker_commission_load_state"
-COMMISSION_LOAD_SCHEMA_VERSION = 1
-
-# _live_confirm convergence poll (load_driver_commissioning_config): CamillaDSP
-# acks the inline SetConfig before its readback side reflects the new graph, so
-# the post-load safety read can transiently return the staged all-muted anchor
-# (hardware-reproduced 2026-07-15 on JTS3: ~22 ms after the apply). Re-read on
-# this interval until the readback stops matching the anchor, bounded by the
-# budget so a load that never takes effect fails closed in a few seconds
-# instead of hanging apply_dsp_config's writer lock.
-LIVE_CONFIRM_POLL_INTERVAL_S = 0.15
-LIVE_CONFIRM_CONVERGENCE_BUDGET_S = 5.0
-
 PathLoader = Callable[[str], Awaitable[bool]]
 ConfigPathReader = Callable[[], Awaitable[str | None]]
-# Reads back the RUNNING CamillaDSP graph as raw YAML (active_raw over the
-# websocket) — distinct from ConfigPathReader, which returns only the persisted
-# config file path. The transient commissioning load applies inline configs that
-# leave the persisted path unchanged, so the live-safety check needs the graph,
-# not the path.
-RunningConfigReader = Callable[[], Awaitable[str | None]]
 
 
 def _utc_now() -> str:
@@ -1136,1200 +1094,388 @@ async def rollback_protected_startup_config(
     return {"rollback": payload}
 
 
-# ---------------------------------------------------------------------------
-# Guarded per-driver commissioning load (gap-1 slice 2b-ii)
-# ---------------------------------------------------------------------------
-#
-# `load_protected_startup_config` (above) loads the DURABLE all-muted staged
-# boot config and persists it as the config file path CamillaDSP reboots into.
-# Per-driver commissioning is different: it loads a TRANSIENT config that unmutes
-# one driver, and the boot config MUST stay all-muted (crash-recovery-MUTED).
-# The two transactions share
-# the same shape (snapshot → preflight gate → apply_dsp_config load with rollback)
-# but differ in TWO safety-critical ways:
-#
-#  1. Transport. The injected `load_config` here is the INLINE loader
-#     (`CamillaController.set_active_config_raw` of the file's contents), NOT the
-#     path-persisting `set_config_file_path`. Inline apply changes the running
-#     graph WITHOUT repointing CamillaDSP's persisted `config_file_path`, so the
-#     outputd statefile keeps pointing at the all-muted staged boot config. That
-#     makes crash-recovery-MUTED *structural*: a crash mid-commissioning reboots
-#     into everything-muted because the statefile was never touched. (S3.)
-#  2. Live confirm. Because the persisted path no longer reflects the running
-#     graph, the post-load check reads the RUNNING graph back over the websocket
-#     (`read_running_config` → active_raw) and asserts the mask/high-pass against
-#     it with `running_commission_evidence` — the "assert the HP is present in the
-#     RUNNING pipeline, not just the file" gate. The readback is a bounded
-#     convergence poll (CamillaDSP acks the inline load before active_raw
-#     reflects it — see LIVE_CONFIRM_POLL_INTERVAL_S), never a single shot. A
-#     failed live check rolls back to the staged anchor inside the apply
-#     transaction.
-#
-# Evidence is re-derived at load time by re-running
-# `prepare_driver_commissioning_config` (S2): the load never trusts a persisted or
-# browser-supplied verdict. Scope: the audible mask is the target's whole role on
-# the single active speaker group (mono jts3 = one output); per-SIDE isolation is
-# a future selector (S1, see prepare's docstring).
+def startup_anchor_from_decision(decision: Any) -> Any | None:
+    """The decision's operative graph, when it IS the all-muted startup anchor.
 
-
-def _commission_base_state(path: Path) -> dict[str, Any]:
-    return _base_load_state(
-        path,
-        schema_version=COMMISSION_LOAD_SCHEMA_VERSION,
-        kind=COMMISSION_LOAD_STATE_KIND,
-        extra={
-            "target": {},
-            "runtime_status": {},
-        },
-    )
-
-
-def load_commission_load_state(
-    *,
-    state_path: str | Path | None = None,
-) -> dict[str, Any]:
-    """Return the latest per-driver commissioning load/rollback state."""
-
-    path = commission_load_state_path(state_path)
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return _commission_base_state(path)
-    if not isinstance(payload, dict):
-        return _commission_base_state(path)
-    state = _commission_base_state(path)
-    state.update(payload)
-    state["state_path"] = str(path)
-    state["loaded"] = state.get("status") == "loaded"
-    state["rollback_available"] = bool(
-        state.get("loaded") and state.get("previous_config_path")
-    )
-    state["issues"] = [
-        _normalise_issue(issue)
-        for issue in state.get("issues", [])
-        if isinstance(issue, dict)
-    ]
-    return state
-
-
-def _record_commission_state(
-    payload: dict[str, Any],
-    *,
-    state_path: str | Path | None = None,
-) -> None:
-    path = commission_load_state_path(state_path)
-    payload = dict(payload)
-    payload["state_path"] = str(path)
-    payload["updated_at"] = payload.get("updated_at") or _utc_now()
-    atomic_write_json(
-        path,
-        payload,
-        mode=0o640,
-        group_from_parent=True,
-    )
-
-
-def _commission_state_payload(
-    *,
-    status: str,
-    candidate_config_path: str | None,
-    active_config_path: str | None,
-    last_action: str,
-    previous_config_path: str | None = None,
-    target: dict[str, Any] | None = None,
-    audible_evidence: dict[str, Any] | None = None,
-    live_evidence: dict[str, Any] | None = None,
-    durable_statefile_target: str | None = None,
-    durable_statefile_intact: bool | None = None,
-    preflight: dict[str, Any] | None = None,
-    dsp_apply: dict[str, Any] | None = None,
-    issues: list[dict[str, str]] | None = None,
-) -> dict[str, Any]:
-    loaded = status == "loaded"
-    return {
-        "artifact_schema_version": COMMISSION_LOAD_SCHEMA_VERSION,
-        "kind": COMMISSION_LOAD_STATE_KIND,
-        "status": status,
-        "updated_at": _utc_now(),
-        "loaded": loaded,
-        "candidate_config_path": candidate_config_path,
-        "active_config_path": active_config_path,
-        "previous_config_path": previous_config_path,
-        "rollback_available": bool(loaded and previous_config_path),
-        "last_action": last_action,
-        "target": target or {},
-        "audible_evidence": _compact_evidence(audible_evidence),
-        "live_evidence": _compact_evidence(live_evidence),
-        "durable_statefile_target": durable_statefile_target,
-        "durable_statefile_intact": durable_statefile_intact,
-        "preflight_status": (preflight or {}).get("status"),
-        "dsp_apply": dsp_apply,
-        "issues": issues or [],
-    }
-
-
-def _compact_evidence(evidence: dict[str, Any] | None) -> dict[str, Any]:
-    if not isinstance(evidence, dict):
-        return {}
-    payload = {
-        "passed": bool(evidence.get("passed")),
-        "checks": dict(evidence.get("checks") or {}),
-    }
-    for key in (
-        "audible_outputs",
-        "muted_outputs",
-        "tweeter_outputs",
-        "audible_tweeter_outputs",
-        "protective_highpass_hz",
+    Two safe-graph statuses can put a box on that anchor, and they differ only in
+    where the graph came from: ``preserve_current`` (the loaded graph already is
+    it) and ``select_active_startup`` (the persisted staged candidate is it). The
+    classification is checked rather than the status alone, because
+    ``preserve_current`` is also how an APPROVED runtime graph and a
+    driver-domain baseline are preserved — keying on the status would let this
+    command re-stage over a box that is on neither.
+    """
+    graph = {
+        "preserve_current": decision.current_graph,
+        "select_active_startup": decision.fallback_graph,
+    }.get(decision.status)
+    if (
+        graph is not None
+        and graph.allowed
+        and graph.classification == GRAPH_ALL_MUTED_ACTIVE_STARTUP
     ):
-        if key in evidence:
-            payload[key] = evidence.get(key)
-    return payload
+        return graph
+    return None
 
 
-def _commission_live_mask(state: dict[str, Any]) -> dict[str, Any]:
-    """Return the saved mask needed to re-prove a transient commission load.
-
-    Newer state files persist the compact mask from the original off-device
-    evidence. Older files only have the target output; those are deliberately
-    treated as stale because they cannot prove every non-target output is muted.
-    """
-
-    evidence = state.get("audible_evidence")
-    if not isinstance(evidence, dict):
-        evidence = {}
-    live_evidence = state.get("live_evidence")
-    if not isinstance(live_evidence, dict):
-        live_evidence = {}
-    target = state.get("target")
-    if not isinstance(target, dict):
-        target = {}
-
-    audible = evidence.get("audible_outputs") or live_evidence.get("audible_outputs")
-    muted = evidence.get("muted_outputs") or live_evidence.get("muted_outputs")
-    tweeters = evidence.get("tweeter_outputs") or live_evidence.get("tweeter_outputs")
-    hp_hz = (
-        evidence.get("protective_highpass_hz")
-        if "protective_highpass_hz" in evidence
-        else live_evidence.get("protective_highpass_hz")
-    )
-    if audible is None:
-        audible = target.get("audible_outputs")
-    return {
-        "audible_outputs": audible if isinstance(audible, list) else [],
-        "muted_outputs": muted if isinstance(muted, list) else [],
-        "tweeter_outputs": tweeters if isinstance(tweeters, list) else [],
-        "protective_highpass_hz": hp_hz,
-        "complete": isinstance(audible, list)
-        and isinstance(muted, list)
-        and isinstance(tweeters, list),
-    }
-
-
-def commission_load_runtime_status(
-    state: dict[str, Any],
-    running_config_raw: str | None,
-) -> dict[str, Any]:
-    """Compare persisted commission-load state to the live Camilla graph.
-
-    Per-driver commissioning is intentionally transient: it is uploaded with
-    CamillaDSP's inline ``SetConfig`` path and the durable statefile remains
-    pointed at the all-muted startup graph. Therefore the JSON state is only
-    true while the live graph still proves the saved mask. A service restart,
-    Camilla restart, or returned browser session can leave the JSON behind; this
-    helper fails closed and reports that as ``stale``.
-    """
-
-    status = str(state.get("status") or "idle")
-    if status != "loaded":
-        return {
-            "kind": "jts_active_speaker_commission_load_runtime_status",
-            "status": status,
-            "loaded": False,
-            "stale": False,
-            "checks": {"persisted_loaded": False},
-            "issues": [],
-        }
-
-    mask = _commission_live_mask(state)
-    checks = {
-        "persisted_loaded": True,
-        "mask_evidence_complete": bool(mask["complete"]),
-    }
-    live: dict[str, Any] = {}
-    if mask["complete"]:
-        live = running_commission_evidence(
-            running_config_raw,
-            audible_outputs=mask["audible_outputs"],
-            muted_outputs=mask["muted_outputs"],
-            tweeter_outputs=mask["tweeter_outputs"],
-            protective_hp_hz=mask["protective_highpass_hz"],
-            expected_headroom_db=COMMISSIONING_HEADROOM_DB,
+def describe_safe_graph_for_refusal(decision: Any) -> str:
+    """What this box was actually found on, in one line an operator can act on."""
+    seen = [
+        f"{label}={graph.classification}"
+        for label, graph in (
+            ("current", decision.current_graph),
+            ("preferred", decision.preferred_graph),
+            ("fallback", decision.fallback_graph),
         )
-        checks["live_mask_and_highpass"] = bool(live.get("passed"))
-    else:
-        checks["live_mask_and_highpass"] = False
-    loaded = all(checks.values())
-    issue = None if loaded else _issue(
-        "blocker",
-        "commission_live_state_stale",
-        (
-            "the saved driver test session no longer matches the live "
-            "CamillaDSP graph; start the tone again to re-open it"
-        ),
-    )
-    return {
-        "kind": "jts_active_speaker_commission_load_runtime_status",
-        "status": "loaded" if loaded else "stale",
-        "loaded": loaded,
-        "stale": not loaded,
-        "checks": checks,
-        "live_evidence": _compact_evidence(live),
-        "target": state.get("target") or {},
-        "issues": [issue] if issue else [],
-    }
+        if graph is not None
+    ]
+    detail = f"safe-graph status={decision.status}"
+    if seen:
+        detail += " (" + ", ".join(seen) + ")"
+    return detail
 
 
-def commission_load_state_with_runtime_status(
-    state: dict[str, Any],
-    runtime_status: dict[str, Any],
-) -> dict[str, Any]:
-    """Overlay read-only live status onto persisted commission-load state."""
+def _relocate_validation_evidence(
+    validation: Any, proof_path: Path, target: Path
+) -> Any:
+    """Re-point a validation result's own path fields from the proof dir to the target.
 
-    out = dict(state)
-    out["runtime_status"] = runtime_status
-    if state.get("status") == "loaded" and runtime_status.get("status") == "stale":
-        out["status"] = "stale"
-        out["loaded"] = False
-        out["rollback_available"] = False
-        out["issues"] = [
-            *[
-                issue
-                for issue in out.get("issues", [])
-                if isinstance(issue, dict)
-            ],
-            *runtime_status.get("issues", []),
+    ``validate_camilla_config`` records the file it was handed — ``path`` on
+    every return branch, and the same string inside ``argv`` when the camilladsp
+    binary exists. The anchor is proved in a temporary directory that is deleted
+    before the metadata lands, so publishing the result verbatim would record a
+    path that cannot exist. The VERDICT is about bytes that are now at ``target``,
+    so the verdict travels and its locations are corrected with it.
+
+    Substring replacement over ``argv`` rather than a rebuilt command line: the
+    argv belongs to the validator, and guessing its shape here would be a second
+    place that knows how it invokes camilladsp.
+    """
+    if not isinstance(validation, Mapping):
+        return validation
+    proof, dest = str(proof_path), str(target)
+    relocated = dict(validation)
+    if relocated.get("path") == proof:
+        relocated["path"] = dest
+    argv = relocated.get("argv")
+    if isinstance(argv, list):
+        relocated["argv"] = [
+            dest if arg == proof else arg for arg in argv
         ]
-    return out
+    return relocated
 
 
-def mark_commission_load_state_stale(
-    state: dict[str, Any],
-    runtime_status: dict[str, Any],
-    *,
-    state_path: str | Path | None = None,
-) -> dict[str, Any]:
-    """Persist that a previously loaded transient commission graph has expired."""
+def reemit_staged_startup_anchor(
+    args: argparse.Namespace, topology: Any, device: str, source: str
+) -> int:
+    """Re-stage the all-muted startup ANCHOR against ``device``. Step 1, no baseline.
 
-    payload = commission_load_state_with_runtime_status(state, runtime_status)
-    payload["last_action"] = "stale_detected"
-    payload["runtime_status"] = runtime_status
-    _record_commission_state(payload, state_path=state_path)
-    return load_commission_load_state(state_path=state_path)
+    The fleet-typical composite box is mid-commission by design: it has no
+    APPLIED baseline, and its boot graph is the all-muted staged startup graph.
+    Its ring arm needs the same first step every roleful box needs — the GRAPH
+    moves first, so ``jasper-audio-hardware-reconcile`` has a loaded graph to
+    derive the endpoint marker FROM. Refusing here left that box with no step 1
+    at all, and therefore no way onto (or off) the ring.
 
+    DERIVED FROM PERSISTED STATE ONLY. The re-stage reads the box's own saved
+    design draft and crossover preview — the same two files
+    ``jasper.active_speaker.web_commissioning._stage_startup_config`` reads when
+    it is handed neither a preset nor a preview. The operator supplies exactly
+    one thing, ``--endpoint``, which is the act that breaks the marker<->graph
+    fixed point; nothing else about the graph is operator-supplied.
 
-def _read_statefile_config_path(statefile_path: str | Path | None) -> str | None:
-    """Return the config_path the outputd/CamillaDSP statefile boots into."""
+    NOTHING LIVE IS TOUCHED UNTIL THE GRAPH PROVES. The staged artifact sits at a
+    FIXED path, so writing it IS moving the boot graph — there is no separate
+    pointer to gate on. So the re-stage runs against a temporary directory
+    first, with the real CamillaDSP validation, and only the exact bytes that
+    proved are published over the live artifact. A refusal leaves the box's
+    existing anchor untouched, which mirrors the applied path's "a refusal
+    writes nothing at all".
 
-    return read_camilla_statefile_config_path(statefile_path)
+    SINGLE-FLIGHT AGAINST A LIVE COMMISSION LOAD. The path this publishes over is
+    not only the boot graph — it is the universal RE-MUTE anchor of the audible
+    commissioning flow. ``load_driver_commissioning_config`` records it as
+    ``previous_config_path``, and four controls reload exactly it: the
+    commission-load rollback, ``commission-rollback``, ``commission-ramp abort``,
+    and the operator's own by-ear ``commission-ramp ack --outcome too_loud``.
+    Moving it to a different endpoint while a driver is armed at level would
+    re-point the operator's stop button at a graph whose device this box may not
+    be arming yet. So this refuses while a commission load is active, mirroring
+    the refusal ``_cmd_commission_load`` already makes for the same shared
+    artifact; ``--force`` is the same escape hatch there. Roll back first.
 
-
-def build_driver_commission_load_preflight(
-    topology: OutputTopology,
-    *,
-    speaker_group_id: str,
-    role: str,
-    calibration_level: dict[str, Any] | None = None,
-    staged_config: dict[str, Any] | None = None,
-    preset: Any = None,
-    crossover_preview: dict[str, Any] | None = None,
-    playback_device: str | None = None,
-    audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
-    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
-    filter_mode: str = COMMISSIONING_FILTER_MODE,
-    path_safety_evidence_path: str | Path | None = None,
-    current_config_path: str | Path | None = None,
-    config_dir: str | Path | None = None,
-    config_path: str | Path | None = None,
-    require_physical_identity: bool = True,
-    validate: Callable[[str | Path], CamillaConfigValidationResult] = (
-        validate_camilla_config
-    ),
-) -> dict[str, Any]:
-    """Deterministic preflight for the guarded per-driver commissioning load.
-
-    Two independent proofs must both hold: (a) the speaker is ready to load an
-    active config and the all-muted staged config is a valid rollback anchor —
-    reuses :func:`build_startup_load_preflight` (path-safety, calibration floor,
-    physical identity, no active tone playback); (b) the per-driver candidate is
-    safe — re-runs :func:`prepare_driver_commissioning_config` so the evidence is
-    fresh, never persisted or browser-supplied (S2).
+    A STALE ``loaded`` RECORD REFUSES TOO, and that is expected rather than a
+    bug to route around. The state file is durable
+    (``/var/lib/jasper/active_speaker_commission_load.json``) while per-driver
+    commissioning is deliberately transient, so a reboot or a CamillaDSP restart
+    mid-commission leaves ``status="loaded"`` on disk with nothing loaded. This
+    reads that record RAW — no live-graph consult — because the whole point of
+    the command is to work with CamillaDSP down, and
+    ``commission_load_runtime_status`` (what ``commission-rollback`` and the web
+    wizard overlay to report ``stale``) needs the running graph to answer. The
+    way past a stale record is ``--force``, or a ``commission-rollback`` /
+    wizard visit, which reconcile the record against the live graph.
     """
+    import tempfile
 
-    staged = (
-        staged_config
-        if isinstance(staged_config, dict)
-        else load_staged_startup_config()
+    # Deferred: commission_load imports this module at module scope.
+    from jasper.active_speaker.commission_load import load_commission_load_state
+    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.runtime_contract import write_camilla_statefile
+    from jasper.active_speaker.staging import (
+        StagedAnchorLockContended,
+        stage_protected_startup_config,
+        staged_anchor_lock,
+        staged_config_path,
+        staged_metadata_path,
     )
-    startup = build_startup_load_preflight(
-        topology,
-        staged_config=staged,
-        calibration_level=calibration_level,
-        path_safety_evidence_path=path_safety_evidence_path,
-        current_config_path=current_config_path,
-        require_physical_identity=require_physical_identity,
-        validate=validate,
-    )
-    prepare = prepare_driver_commissioning_config(
-        topology,
-        speaker_group_id=speaker_group_id,
-        role=role,
-        preset=preset,
-        crossover_preview=crossover_preview,
-        playback_device=playback_device,
-        audible_gain_db=audible_gain_db,
-        volume_limit_db=volume_limit_db,
-        filter_mode=filter_mode,
-        config_dir=config_dir,
-        config_path=config_path,
-        validate=validate,
-    )
+    from jasper.atomic_io import atomic_write_json, atomic_write_text
 
-    speaker_ready = bool(startup.get("load_allowed"))
-    prepared = prepare.get("status") == "prepared"
-    audible_passed = bool((prepare.get("audible_evidence") or {}).get("passed"))
-    candidate = prepare.get("config") or {}
-    candidate_present = bool(candidate.get("exists"))
-    transport_gate = next(
-        (
-            gate
-            for gate in prepare.get("required_gates") or []
-            if isinstance(gate, dict)
-            and gate.get("id") == COMMISSIONING_TRANSPORT_GATE_ID
-        ),
-        None,
-    )
-    # Absent gate reads as supported: this is a rendering mirror, and inventing a
-    # failure from a missing field would block a box no owner refused.
-    transport_supported = (
-        bool(transport_gate.get("passed")) if transport_gate else True
-    )
-
-    # THE RING THIS GRAPH NAMES IS FED AND READ (#2412). The gate above is a
-    # MIRROR of Gate 1, which proves the emitted graph's two ends name one
-    # transport. Gate 1 lives in a PURE BUILDER and deliberately reads no daemon
-    # env, so it proves coherence and not liveness: a ring/ring graph on a box
-    # whose fan-in parked on a coupling it refuses, or whose outputd endpoint
-    # was never armed, is self-consistent and passes it. That graph then loads
-    # cleanly and plays to nobody — the sweep excites Ring A while nothing fills
-    # it and nothing reads it, with every daemon healthy. This is the live half,
-    # and it stands HERE because a config prepared on an unarmed box is
-    # harmless while a LOAD on one is the silent sweep, and this preflight is
-    # the last thing that runs before an audible load.
-    #
-    # TWO CONJUNCTS, TWO OWNERS, TWO REMEDIES, deliberately not collapsed into
-    # one "transport not ready" blocker: three causes behind one string is how
-    # an operator learns to ignore the string. The coupling lives in
-    # `fanin.env`, whose single writer is `jasper-fanin-coupling-reconcile`; the
-    # ACTIVE-endpoint marker lives in `outputd.env`, whose single writer is
-    # `jasper-audio-hardware-reconcile`. Two files, two reconcilers, two facts.
-    # Both are read through the predicate that already owns each — coupling in
-    # `jasper.fanin.ring_health`, marker in `jasper.fanin_coupling` — so this
-    # site hand-rolls neither, and both read their FILE FRESH rather than
-    # `os.environ`: this preflight runs inside the long-lived control daemon and
-    # the socket-activated wizards, which never `EnvironmentFile=`d either file
-    # and stay alive across a reconcile, so `os.environ` is a stale reader of
-    # both keys.
-    from jasper.fanin_coupling import RING_PCM_DEVICES, ring_active_endpoint_armed
-
-    candidate_playback_device = candidate.get("playback_device")
-    transport_is_ring = candidate_playback_device in RING_PCM_DEVICES
-    ring_feed_armed = True
-    ring_endpoint_armed = True
-    if transport_is_ring:
-        # Lazy, and NOT to break a cycle — there is none. `ring_health`
-        # is large and this module is imported by the socket-activated
-        # wizards, which reach this branch only on a ring box. The PATH is
-        # passed rather than defaulted because a default argument binds the
-        # constant at import time, so passing it is what makes the read follow
-        # the module constant at CALL time.
-        from jasper.fanin.ring_health import FANIN_ENV_PATH, persisted_coupling_feeds_ring
-
-        # A CORRUPTED FILE IS AN UNARMED TRANSPORT, NOT A TRACEBACK. A non-UTF-8
-        # byte raises `UnicodeDecodeError` — a `ValueError`, not an `OSError` —
-        # and on a Pi that is the ordinary shape of SD-card corruption or a
-        # write truncated by a power cut. Crashing here withholds exactly the
-        # blocker that names the reconciler which REWRITES the bad file.
-        #
-        # Caught HERE and not in the shared readers, which the doctor and the
-        # reconcilers also call: the observed-broken path is this call site.
-        # Both conjuncts fail together because a decode failure says nothing
-        # about which file was bad; both remedies are safe to run, and inventing
-        # a per-file verdict from an exception that carries none would be a guess.
-        try:
-            ring_feed_armed = persisted_coupling_feeds_ring(FANIN_ENV_PATH)
-            ring_endpoint_armed = ring_active_endpoint_armed()
-        except (OSError, ValueError):
-            ring_feed_armed = ring_endpoint_armed = False
-    transport_armed = ring_feed_armed and ring_endpoint_armed
-    unarmed_conjuncts = [
-        text
-        for armed, text in (
-            (ring_feed_armed, "fan-in is not coupled to it"),
-            (ring_endpoint_armed, "the output endpoint is not armed onto it"),
-        )
-        if not armed
-    ]
-
-    gates = [
-        _gate(
-            "speaker_ready_for_active_load",
-            label="Speaker and all-muted rollback anchor are ready for an active load",
-            passed=speaker_ready,
-            message=(
-                "Speaker, path-safety, and staged rollback anchor are ready"
-                if speaker_ready
-                else "Resolve protected startup-load blockers before commissioning"
+    # Single-flight (see SINGLE-FLIGHT above). Checked BEFORE the stage, so a
+    # refused run does no work and touches nothing at all.
+    existing = load_commission_load_state()
+    if existing.get("status") == "loaded" and not args.force:
+        refusal = {
+            "status": "refused",
+            "reason": "commission_load_active",
+            "active_target": existing.get("target"),
+            "candidate_config_path": existing.get("candidate_config_path"),
+            "next_step": (
+                "A per-driver commissioning config is loaded, and this command "
+                "republishes the all-muted anchor that commission-rollback / "
+                "commission-ramp abort / `ack --outcome too_loud` reload. Run "
+                "`commission-rollback` first, or pass --force."
             ),
-        ),
-        _gate(
-            "commissioning_candidate_prepared",
-            label="Per-driver commissioning config is prepared",
-            passed=prepared,
-            message=(
-                "Per-driver commissioning config is prepared"
-                if prepared
-                else "Resolve per-driver commissioning preparation blockers"
-            ),
-        ),
-        _gate(
-            "commissioning_protection_while_audible",
-            label="Per-driver protection-while-audible evidence passed",
-            passed=audible_passed,
-            message=(
-                "Only the target is audible and its protection is intact"
-                if audible_passed
-                else "Per-driver protection-while-audible evidence did not pass"
-            ),
-        ),
-        _gate(
-            "commissioning_candidate_present",
-            label="Generated commissioning config exists on disk",
-            passed=candidate_present,
-            message=(
-                "Generated commissioning config is on disk"
-                if candidate_present
-                else "Generated commissioning config is missing"
-            ),
-        ),
-        # LIFTED, not re-derived (#2344). `prepare_driver_commissioning_config`
-        # owns whether commissioning can emit on this box's transport; this
-        # mirrors its answer at the level consumers actually walk. The /sound/
-        # renderer reads only the top-level `required_gates` and never descends
-        # into `prepare`, so a gate that stayed nested was a gate no household
-        # ever saw. `load_allowed` is unchanged: the same condition already
-        # fails `prepared` below, so this is a rendering surface, not a new gate.
-        _gate(
-            COMMISSIONING_TRANSPORT_GATE_ID,
-            label="Commissioning emits on a transport this graph can carry",
-            passed=transport_supported,
-            message=str(
-                (transport_gate or {}).get("message")
-                or "Commissioning emits on the active ALSA lane"
-            ),
-        ),
-        _gate(
-            "commissioning_transport_armed",
-            label="The transport this commissioning graph names is fed and read",
-            passed=transport_armed,
-            message=(
-                (
-                    "The ring this graph plays into is fed by fan-in and read "
-                    "by the output daemon"
-                    if transport_is_ring
-                    else "Commissioning loads onto the active ALSA lane"
-                )
-                if transport_armed
-                else (
-                    "This graph plays into the ring, but "
-                    + " and ".join(unarmed_conjuncts)
-                )
-            ),
-        ),
-    ]
-    issues: list[dict[str, str]] = []
-    issues.extend(
-        _normalise_issue(issue)
-        for issue in startup.get("issues", [])
-        if isinstance(issue, dict)
-    )
-    issues.extend(
-        _normalise_issue(issue)
-        for issue in prepare.get("issues", [])
-        if isinstance(issue, dict)
-    )
-    # One issue per FAILED conjunct, each carrying its OWN reconciler's remedy.
-    # The household copy behind the two codes is the same sentence, but the
-    # operator's two remedies are not interchangeable and a box can need both.
-    if not ring_feed_armed:
-        issues.append(_issue(
-            "blocker",
-            "commissioning_ring_feed_unarmed",
-            "this speaker's driver test plays into the ring, but fan-in is not "
-            "coupled to it, so nothing fills it and the test would measure "
-            "silence. Arm the coupling with `sudo /opt/jasper/.venv/bin/"
-            "jasper-fanin-coupling-reconcile shm_ring`.",
-        ))
-    if not ring_endpoint_armed:
-        issues.append(_issue(
-            "blocker",
-            "commissioning_active_endpoint_unarmed",
-            "this speaker's driver test plays into the ring, but the output "
-            "endpoint is not armed onto it, so nothing reads it and the test "
-            "would measure silence. Arm the endpoint with `sudo systemctl "
-            "start jasper-audio-hardware-reconcile`, then re-arm the speaker.",
-        ))
-    load_allowed = (
-        speaker_ready
-        and prepared
-        and audible_passed
-        and candidate_present
-        and all(gate["passed"] for gate in gates)
-    )
-    return {
-        "artifact_schema_version": COMMISSION_LOAD_SCHEMA_VERSION,
-        "kind": COMMISSION_LOAD_PREFLIGHT_KIND,
-        "status": "ready" if load_allowed else "blocked",
-        "load_allowed": load_allowed,
-        "target": prepare.get("target") or {},
-        "candidate_config_path": candidate.get("path"),
-        "audible_evidence": prepare.get("audible_evidence") or {},
-        "startup_preflight": startup,
-        "prepare": prepare,
-        "required_gates": gates,
-        "issues": issues,
-        "next_step": (
-            "Ready to load the per-driver commissioning config into the running "
-            "CamillaDSP graph. The durable boot config stays all-muted."
-            if load_allowed
-            else "Resolve per-driver commissioning load blockers before reloading."
-        ),
-    }
+        }
+        if args.json:
+            print(json.dumps(refusal, indent=2, sort_keys=True))
+        else:
+            print("Re-emit refused: a per-driver commissioning load is active.")
+            print(f"  active target: {existing.get('target')}")
+            print(f"  {refusal['next_step']}")
+        return 1
 
+    design_draft = load_design_draft()
+    crossover_preview = load_crossover_preview(current_design_draft=design_draft)
 
-async def load_driver_commissioning_config(
-    topology: OutputTopology,
-    *,
-    speaker_group_id: str,
-    role: str,
-    load_config: PathLoader,
-    read_running_config: RunningConfigReader,
-    get_current_config_path: ConfigPathReader,
-    calibration_level: dict[str, Any] | None = None,
-    preset: Any = None,
-    crossover_preview: dict[str, Any] | None = None,
-    playback_device: str | None = None,
-    audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
-    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
-    filter_mode: str = COMMISSIONING_FILTER_MODE,
-    path_safety_evidence_path: str | Path | None = None,
-    staged_config: dict[str, Any] | None = None,
-    config_dir: str | Path | None = None,
-    config_path: str | Path | None = None,
-    statefile_path: str | Path | None = None,
-    state_path: str | Path | None = None,
-    reconcile_output_hardware: bool = True,
-    require_physical_identity: bool = True,
-    validate: Callable[[str | Path], CamillaConfigValidationResult] = (
-        validate_camilla_config
-    ),
-) -> dict[str, Any]:
-    """Load a per-driver commissioning config into the RUNNING CamillaDSP graph.
-
-    Transient and rollback-able: applies the prepared config with the INLINE
-    loader (``load_config`` = ``set_active_config_raw`` of the file's contents) so
-    the durable boot config / outputd statefile stay pointed at the all-muted
-    staged config (crash-recovery-MUTED). After the apply, the RUNNING graph is
-    read back (``read_running_config``) — polled until it stops matching the
-    staged anchor, bounded by ``LIVE_CONFIRM_CONVERGENCE_BUDGET_S``, because
-    CamillaDSP acks the inline load before the readback reflects the new
-    graph — and re-asserted with :func:`running_commission_evidence`; a failed
-    check rolls back to the staged
-    anchor. ``get_current_config_path`` reads the persisted statefile path (for
-    the path-safety binding + the durable-statefile S3 fact), NOT the running
-    graph.
-
-    Precondition: the active graph (the staged all-muted config) is already live
-    via :func:`load_protected_startup_config`. Commissioning swaps the running
-    graph at the same width. The first arm waits for the output-hardware
-    reconciler so outputd is reading the active lane before the audible ramp can
-    start; later same-target ramp updates may skip that reconciler because they
-    only change the transient CamillaDSP gain/mask, not the output lane.
-    """
-
-    try:
-        prior_config_path = await get_current_config_path()
-    except Exception as exc:  # noqa: BLE001
-        issue = _issue(
-            "blocker",
-            "current_config_snapshot_failed",
-            f"could not read current CamillaDSP config path: {type(exc).__name__}",
-        )
-        payload = _commission_state_payload(
-            status="failed",
-            candidate_config_path=None,
-            active_config_path=None,
-            previous_config_path=None,
-            last_action="load_failed",
-            issues=[issue],
-        )
-        _record_commission_state(payload, state_path=state_path)
-        return {"preflight": None, "load": payload}
-
-    staged = (
-        staged_config
-        if isinstance(staged_config, dict)
-        else load_staged_startup_config()
-    )
-    preflight = build_driver_commission_load_preflight(
-        topology,
-        speaker_group_id=speaker_group_id,
-        role=role,
-        calibration_level=calibration_level,
-        staged_config=staged,
-        preset=preset,
-        crossover_preview=crossover_preview,
-        playback_device=playback_device,
-        audible_gain_db=audible_gain_db,
-        volume_limit_db=volume_limit_db,
-        filter_mode=filter_mode,
-        path_safety_evidence_path=path_safety_evidence_path,
-        current_config_path=prior_config_path,
-        config_dir=config_dir,
-        config_path=config_path,
-        require_physical_identity=require_physical_identity,
-        validate=validate,
-    )
-    target = preflight.get("target") or {}
-    candidate_path = preflight.get("candidate_config_path")
-    evidence = preflight.get("audible_evidence") or {}
-    staged_path = (staged.get("config") or {}).get("path") or str(staged_config_path())
-    # WHICH TRANSPORT THE SWAP LANDED ON (#2412 Wave 4), so the journal can tell
-    # "the swap failed" from "the swap failed ON THE RING" — the one new failure
-    # mode commissioning-on-the-ring introduces. Read off the candidate the
-    # preflight already resolved, which is the same field its own
-    # `commissioning_transport_armed` gate keys on, so the gate's verdict and
-    # this line can never name two different transports for one load.
-    load_transport = (
-        TRANSPORT_RING
-        if ((preflight.get("prepare") or {}).get("config") or {}).get(
-            "playback_device"
-        )
-        in RING_PCM_DEVICES
-        else "-"
-    )
-
-    if not preflight.get("load_allowed"):
-        payload = _commission_state_payload(
-            status="blocked",
-            candidate_config_path=candidate_path,
-            active_config_path=None,
-            previous_config_path=staged_path,
-            last_action="load_blocked",
-            target=target,
-            audible_evidence=evidence,
-            preflight=preflight,
-            issues=[
-                _normalise_issue(issue)
-                for issue in preflight.get("issues", [])
-                if isinstance(issue, dict)
-            ],
-        )
-        _record_commission_state(payload, state_path=state_path)
-        logger.info(
-            "event=active_speaker.driver_commission_load result=blocked group=%s role=%s blockers=%d",
-            speaker_group_id,
-            role,
-            len(payload["issues"]),
-        )
-        return {"preflight": preflight, "load": payload}
-
-    if not Path(str(staged_path)).exists():
-        issue = _issue(
-            "blocker",
-            "commission_rollback_anchor_missing",
-            f"all-muted staged rollback anchor does not exist: {staged_path}",
-        )
-        payload = _commission_state_payload(
-            status="blocked",
-            candidate_config_path=candidate_path,
-            active_config_path=None,
-            previous_config_path=str(staged_path),
-            last_action="load_blocked",
-            target=target,
-            audible_evidence=evidence,
-            preflight=preflight,
-            issues=[issue],
-        )
-        _record_commission_state(payload, state_path=state_path)
-        logger.info(
-            "event=active_speaker.driver_commission_load result=blocked reason=rollback_anchor_missing anchor=%s",
-            staged_path,
-        )
-        return {"preflight": preflight, "load": payload}
-
-    # Precondition gate: the persisted (boot / rollback-anchor) config must
-    # ALREADY be the all-muted staged config (loaded by load_protected_startup_config
-    # at Stage 4 via set_config_file_path). Commissioning swaps the running graph
-    # at the same width and rolls back to this anchor; running it when the boot
-    # config is an unrelated graph (a stereo/correction config) is not a safe
-    # transition. Fail closed rather than swap blindly.
-    if not same_config_file(prior_config_path, staged_path):
-        issue = _issue(
-            "blocker",
-            "commission_active_graph_not_staged",
-            (
-                "per-driver commissioning requires the all-muted staged config to be "
-                f"the persisted boot config first; current persisted config is "
-                f"{prior_config_path or '(none)'}"
-            ),
-        )
-        payload = _commission_state_payload(
-            status="blocked",
-            candidate_config_path=candidate_path,
-            active_config_path=None,
-            previous_config_path=str(staged_path),
-            last_action="load_blocked",
-            target=target,
-            audible_evidence=evidence,
-            preflight=preflight,
-            issues=[issue],
-        )
-        _record_commission_state(payload, state_path=state_path)
-        logger.info(
-            "event=active_speaker.driver_commission_load result=blocked reason=active_graph_not_staged current=%s anchor=%s",
-            prior_config_path,
-            staged_path,
-        )
-        return {"preflight": preflight, "load": payload}
-
-    captured: dict[str, Any] = {"evidence": evidence}
-
-    def _emit_in_lock() -> None:
-        # apply_dsp_config runs this inside its writer lock, immediately before
-        # validate+load. Re-emitting the candidate here (rather than trusting the
-        # file the preflight wrote) closes the write→read window on the shared
-        # commissioning path: no concurrent prepare can overwrite the candidate
-        # between gate and load, and the live-confirm mask is re-derived fresh.
-        # `run_config_check=False` — apply_dsp_config's own validate(candidate)
-        # is the load-time syntax gate; the preflight already ran the full check.
-        fresh = prepare_driver_commissioning_config(
+    with tempfile.TemporaryDirectory(prefix="jts-reemit-anchor-") as tmp:
+        proof_dir = Path(tmp)
+        payload = stage_protected_startup_config(
             topology,
-            speaker_group_id=speaker_group_id,
-            role=role,
-            preset=preset,
             crossover_preview=crossover_preview,
-            playback_device=playback_device,
-            audible_gain_db=audible_gain_db,
-            volume_limit_db=volume_limit_db,
-            filter_mode=filter_mode,
-            config_dir=config_dir,
-            config_path=config_path,
-            run_config_check=False,
-            validate=validate,
+            playback_device=device,
+            config_dir=proof_dir,
+            metadata_path=proof_dir / "staged_metadata.json",
         )
-        if fresh.get("status") != "prepared" or not (
-            fresh.get("audible_evidence") or {}
-        ).get("passed"):
-            raise RuntimeError(
-                "per-driver commissioning config no longer prepares cleanly under lock"
+        blockers = [
+            issue
+            for issue in payload.get("issues") or []
+            if isinstance(issue, Mapping) and issue.get("severity") == "blocker"
+        ]
+        if payload.get("status") != "staged" or blockers:
+            print(
+                "ERROR: could not re-stage the all-muted startup anchor against "
+                f"{device}; NOTHING was written"
             )
-        captured["evidence"] = fresh.get("audible_evidence") or {}
+            for issue in blockers:
+                print(
+                    f"  [{issue.get('severity')}] {issue.get('code')}: "
+                    f"{issue.get('message') or issue.get('detail')}"
+                )
+            return 1
 
-    async def _live_confirm() -> None:
-        # Runs inside apply_dsp_config's lock, after the inline load. Raising here
-        # rolls the running graph back to the staged anchor INSIDE the lock, so
-        # both safety checks below fail closed atomically.
-        live_evidence = captured["evidence"]
-        # (1) The RUNNING graph (read back over the websocket, not the file) must
-        #     match the intended per-driver mask + keep the protective high-pass.
-        #     CamillaDSP acks the inline SetConfig before the readback reflects
-        #     the new graph (hardware-reproduced 2026-07-15: the first read
-        #     ~22 ms after the load still returned the staged all-muted anchor),
-        #     so poll until the readback stops matching the anchor — bounded by
-        #     LIVE_CONFIRM_CONVERGENCE_BUDGET_S — and only then let the safety
-        #     evidence decide. A readback that NEVER leaves the anchor is a
-        #     load/convergence failure, distinct from a safety failure: the
-        #     operator remedy is "the load didn't take", not "the graph is
-        #     unsafe".
-        started = time.monotonic()
-        attempts = 0
-        converged = False
-        live: dict[str, Any] = {"passed": False, "checks": {}}
+        proof_path = Path(payload["config"]["path"])
+        yaml = proof_path.read_text(encoding="utf-8")
+
+        # RE-PROOF before any byte lands, exactly as the applied path re-proves —
+        # and through the SAME host that will select this graph at the next
+        # deploy or CamillaDSP restart. Asking the selector rather than the
+        # classifier directly is what makes the answer mean "this box will boot
+        # from it", not merely "these bytes classify". It also keeps
+        # `persisted_candidate` classification owned by one function
+        # (`tests/test_active_speaker_cli.py` pins that), instead of teaching a
+        # second caller the evidence-pairing rules.
+        #
+        # The proof graph goes in as `current_config_path` so the selector judges
+        # THESE bytes. Left to its default it would read the statefile — the box's
+        # existing anchor — and happily preserve the very graph being replaced.
+        # The staged metadata is the proof run's own, so the graph is judged
+        # against the evidence that describes it rather than the outgoing set.
+        proof_decision = safe_graph_for_current_topology(
+            topology,
+            current_config_path=proof_path,
+            applied_baseline_path=baseline_profile_state_path(
+                args.applied_baseline_state
+            ),
+            staged_metadata_path=Path(payload["metadata_path"]),
+            # There is no applied baseline on this path by definition; saying so
+            # keeps a missing-baseline read out of the decision entirely.
+            consider_applied_baseline=False,
+        )
+        graph = startup_anchor_from_decision(proof_decision)
+        selected = proof_decision.selected_config_path
+        if graph is None or selected != str(proof_path):
+            print(
+                "ERROR: the re-staged startup anchor did not re-prove as "
+                f"{GRAPH_ALL_MUTED_ACTIVE_STARTUP}; NOTHING was written"
+            )
+            print(f"  found:  {describe_safe_graph_for_refusal(proof_decision)}")
+            for issue in proof_decision.issues:
+                print(
+                    f"  [{issue.get('severity')}] {issue.get('code')}: "
+                    f"{issue.get('message')}"
+                )
+            return 1
+
+        if args.out:
+            preview_path = Path(args.out)
+            if not preview_path.parent.exists():
+                print(f"ERROR: parent directory does not exist: {preview_path.parent}")
+                return 1
+            atomic_write_text(preview_path, yaml, mode=0o640)
+            return _report_startup_anchor_reemit(
+                args,
+                device=device,
+                source=source,
+                classification=graph.classification,
+                yaml=yaml,
+                written_path=preview_path,
+                preview=True,
+                statefile_written=False,
+            )
+
+        # Publish the PROVEN bytes. YAML first, then the metadata that locates
+        # it. Both orders are recoverable — the anchor's path is FIXED, so
+        # metadata written first would locate the previous, still-valid bytes
+        # rather than nothing — but this order keeps the interleaved window
+        # pointing at a graph whose evidence is at worst one revision stale,
+        # instead of at bytes its evidence has never described.
+        #
+        # Second writer of this pair; the first is the /sound wizard's own
+        # staging (`stage_protected_startup_config`). Both halves go out under
+        # the pair's shared `staged_anchor_lock`, so an interleaved run can no
+        # longer leave one graph's metadata over another's bytes (#2518). The
+        # proof run above deliberately stays outside the hold: it writes only
+        # into its temp directory, and holding the live lock across a full
+        # re-stage plus CamillaDSP validation would make a /sound/ save wait on
+        # work that publishes nothing. A /sound/ stage that lands between the
+        # proof and this publish is therefore overwritten wholesale — last pair
+        # wins, and each pair stays internally consistent, which is the property
+        # #2518 asks for.
+        target = staged_config_path()
+        meta_target = staged_metadata_path()
         try:
-            while True:
-                attempts += 1
+            with staged_anchor_lock(target, source="baseline-reemit"):
                 try:
-                    running_raw = await read_running_config()
-                except Exception as exc:  # noqa: BLE001
-                    captured["live"] = {
-                        "passed": False,
-                        "checks": {"running_config_readable": False},
-                    }
-                    raise RuntimeError(
-                        f"could not read back the running CamillaDSP graph: {type(exc).__name__}"
-                    ) from exc
-                live = running_commission_evidence(
-                    running_raw,
-                    audible_outputs=live_evidence.get("audible_outputs", []),
-                    muted_outputs=live_evidence.get("muted_outputs", []),
-                    tweeter_outputs=live_evidence.get("tweeter_outputs", []),
-                    protective_hp_hz=live_evidence.get("protective_highpass_hz"),
-                    tweeter_highpass_name=str(
-                        live_evidence.get("tweeter_highpass_name") or ""
+                    target_mode = stat.S_IMODE(target.stat().st_mode)
+                except OSError:
+                    target_mode = 0o640
+                atomic_write_text(
+                    target,
+                    yaml,
+                    mode=target_mode,
+                    group_from_parent=True,
+                    durable=True,
+                )
+                # Every field that names a LOCATION is rewritten — the three
+                # top-level ones and the validation result's own `path`/`argv`,
+                # which `validate_camilla_config` builds from whatever file it
+                # was handed and which would otherwise publish the deleted proof
+                # directory. Nothing reads those two today
+                # (`_staged_candidate_ready` takes only `status`), so this is
+                # evidence honesty rather than behaviour — but published
+                # evidence naming a path that cannot exist is exactly the kind
+                # of thing a later reader trusts. Every remaining field
+                # describes the graph itself and is location-independent, so the
+                # published evidence stays the evidence that proved.
+                published = dict(payload)
+                published["metadata_path"] = str(meta_target)
+                published["config"] = {
+                    **payload["config"],
+                    "path": str(target),
+                    "basename": target.name,
+                    "validation": _relocate_validation_evidence(
+                        payload["config"].get("validation"), proof_path, target
                     ),
-                    tweeter_highpass_order=int(
-                        live_evidence.get("tweeter_highpass_order") or 4
-                    ),
-                    expected_headroom_db=COMMISSIONING_HEADROOM_DB,
+                }
+                # durable=True to match the graph write above: this file is what
+                # LOCATES the graph, so losing it to a power cut while the
+                # durable half survives leaves the box off its anchor until
+                # someone re-stages. It parks silent and still takes deploys,
+                # but the two halves should survive together.
+                atomic_write_json(
+                    meta_target,
+                    published,
+                    mode=0o640,
+                    group_from_parent=True,
+                    durable=True,
                 )
-                captured["live"] = live
-                if live["passed"] or not running_graph_matches_staged_anchor(
-                    running_raw,
-                    audible_outputs=live_evidence.get("audible_outputs", []),
-                ):
-                    # Converged: the running graph is no longer the staged
-                    # anchor (or already passes) — the evidence verdict is real.
-                    converged = True
-                    break
-                if time.monotonic() - started >= LIVE_CONFIRM_CONVERGENCE_BUDGET_S:
-                    break
-                await asyncio.sleep(LIVE_CONFIRM_POLL_INTERVAL_S)
-        finally:
-            log_event(
-                logger,
-                "active_speaker.driver_commission_live_confirm",
-                group=speaker_group_id,
-                role=role,
-                attempts=attempts,
-                elapsed_ms=round((time.monotonic() - started) * 1000.0),
-                converged=converged,
+        except StagedAnchorLockContended as exc:
+            print(
+                "ERROR: another writer is publishing the startup anchor "
+                f"({exc}); NOTHING was written"
             )
-        if not converged:
-            raise RuntimeError(
-                "running graph never switched off the staged all-muted anchor "
-                f"within {LIVE_CONFIRM_CONVERGENCE_BUDGET_S:.1f}s — commissioning "
-                "load did not take effect"
-            )
-        if not live["passed"]:
-            failed = sorted(
-                code for code, ok in live.get("checks", {}).items() if not ok
-            )
-            raise RuntimeError(
-                "running CamillaDSP graph failed live commissioning safety: "
-                + ", ".join(failed)
-            )
-        # (2) S3: the durable boot config / outputd statefile MUST still point at
-        #     the all-muted staged config — the transient graph is in RUNNING
-        #     CamillaDSP only. Structurally guaranteed by the inline transport
-        #     (set_active_config_raw never repoints the persisted path); a drift
-        #     here means something else moved it, so fail closed (reboot would
-        #     otherwise come up on the transient config — crash-recovery-MUTED).
-        durable_target = _read_statefile_config_path(statefile_path)
-        captured["durable_target"] = durable_target
-        captured["durable_intact"] = (
-            None if durable_target is None else same_config_file(durable_target, staged_path)
-        )
-        if durable_target is not None and not captured["durable_intact"]:
-            raise RuntimeError(
-                f"durable CamillaDSP statefile drifted to {durable_target}, expected "
-                f"the all-muted staged boot config {staged_path}"
-            )
+            return 1
 
-    try:
-        apply_state = await apply_dsp_config(
-            source="active_speaker_driver_commission_load",
-            candidate_path=str(candidate_path),
-            prior_config_path=str(staged_path),
-            load_config=load_config,
-            # Inline transport: the persisted path stays the staged anchor, so the
-            # running graph never equals the candidate path. Skip apply's
-            # path-confirm; the live read-back below is the real confirm.
-            get_current_config_path=None,
-            prepare=_emit_in_lock,
-            persist=_live_confirm,
-            validate=validate,
-        )
-    except DspApplyError as exc:
-        payload = _commission_state_payload(
-            status="failed",
-            candidate_config_path=candidate_path,
-            active_config_path=None,
-            previous_config_path=str(staged_path),
-            last_action="load_failed",
-            target=target,
-            audible_evidence=evidence,
-            live_evidence=captured.get("live"),
-            durable_statefile_target=captured.get("durable_target"),
-            durable_statefile_intact=captured.get("durable_intact"),
-            preflight=preflight,
-            dsp_apply=exc.state.to_dict(),
-            issues=[
-                _issue(
-                    "blocker",
-                    "driver_commission_load_failed",
-                    f"CamillaDSP commissioning load failed (rolled back to staged): {exc}",
-                )
-            ],
-        )
-        _record_commission_state(payload, state_path=state_path)
-        # Surface the safety reason (live-mask drift / missing HP / statefile
-        # drift / unreadable graph) in the journal, not just the state file — the
-        # journal is the operator's first debug surface.
-        reason = exc.state.persist_error or exc.state.load_error or str(exc)
-        logger.warning(
-            "event=active_speaker.driver_commission_load result=failed candidate=%s anchor=%s "
-            "rolled_back=%s reason=%s transport=%s",
-            candidate_path,
-            staged_path,
-            getattr(exc.state, "rollback_succeeded", None),
-            reason,
-            load_transport,
-        )
-        return {"preflight": preflight, "load": payload}
+        statefile = Path(args.statefile)
+        statefile_written = False
+        if read_camilla_statefile_config_path(statefile) != str(target):
+            write_camilla_statefile(statefile, target)
+            statefile_written = True
 
-    # live-confirm + S3 both passed inside the lock.
-    payload = _commission_state_payload(
-        status="loaded",
-        candidate_config_path=str(candidate_path),
-        active_config_path=apply_state.active_config_path or str(candidate_path),
-        previous_config_path=str(staged_path),
-        last_action="load",
-        target=target,
-        audible_evidence=evidence,
-        live_evidence=captured.get("live"),
-        durable_statefile_target=captured.get("durable_target"),
-        durable_statefile_intact=captured.get("durable_intact"),
-        preflight=preflight,
-        dsp_apply=apply_state.to_dict(),
-        issues=[],
-    )
-    if not reconcile_output_hardware:
-        payload["output_reconcile"] = {
-            "status": "skipped",
-            "reason": "same_active_output_lane",
-            "unit": AUDIO_HARDWARE_RECONCILE_UNIT,
-        }
-        _record_commission_state(payload, state_path=state_path)
-        logger.info(
-            "event=active_speaker.driver_commission_load action=output_reconcile "
-            "status=skipped reason=same_active_output_lane"
+        return _report_startup_anchor_reemit(
+            args,
+            device=device,
+            source=source,
+            classification=graph.classification,
+            yaml=yaml,
+            written_path=target,
+            preview=False,
+            statefile_written=statefile_written,
         )
-        logger.info(
-            "event=active_speaker.driver_commission_load result=loaded candidate=%s anchor=%s "
-            "durable_intact=%s op_id=%s transport=%s",
-            candidate_path,
-            staged_path,
-            captured.get("durable_intact"),
-            apply_state.op_id,
-            load_transport,
-        )
-        return {"preflight": preflight, "load": payload}
 
-    if not _trigger_audio_hardware_reconcile(
-        source="active_speaker_driver_commission_load"
-    ):
-        payload = _commission_state_payload(
-            status="failed",
-            candidate_config_path=str(candidate_path),
-            active_config_path=apply_state.active_config_path or str(candidate_path),
-            previous_config_path=str(staged_path),
-            last_action="output_reconcile_failed",
-            target=target,
-            audible_evidence=evidence,
-            live_evidence=captured.get("live"),
-            durable_statefile_target=captured.get("durable_target"),
-            durable_statefile_intact=captured.get("durable_intact"),
-            preflight=preflight,
-            dsp_apply=apply_state.to_dict(),
-            issues=[
-                _issue(
-                    "blocker",
-                    "commission_output_hardware_reconcile_failed",
-                    "could not switch outputd to the active driver lane before tone playback",
-                )
-            ],
-        )
-        payload["output_reconcile"] = {
-            "status": "failed",
-            "unit": AUDIO_HARDWARE_RECONCILE_UNIT,
-        }
-        _record_commission_state(payload, state_path=state_path)
-        logger.warning(
-            "event=active_speaker.driver_commission_load result=failed candidate=%s anchor=%s "
-            "reason=output_hardware_reconcile_failed op_id=%s transport=%s",
-            candidate_path,
-            staged_path,
-            apply_state.op_id,
-            load_transport,
-        )
-        return {"preflight": preflight, "load": payload}
-    payload["output_reconcile"] = {
-        "status": "succeeded",
-        "unit": AUDIO_HARDWARE_RECONCILE_UNIT,
+
+def _report_startup_anchor_reemit(
+    args: argparse.Namespace,
+    *,
+    device: str,
+    source: str,
+    classification: str,
+    yaml: str,
+    written_path: Path,
+    preview: bool,
+    statefile_written: bool,
+) -> int:
+    payload = {
+        "playback_device": device,
+        "playback_device_source": source,
+        "classification": classification,
+        "preview": preview,
+        "written_path": str(written_path),
+        "statefile_path": str(args.statefile),
+        "statefile_written": statefile_written,
+        "bytes": len(yaml),
+        "reemitted": "staged_startup_anchor",
     }
-    _record_commission_state(payload, state_path=state_path)
-    logger.info(
-        "event=active_speaker.driver_commission_load result=loaded candidate=%s anchor=%s "
-        "durable_intact=%s op_id=%s transport=%s",
-        candidate_path,
-        staged_path,
-        captured.get("durable_intact"),
-        apply_state.op_id,
-        load_transport,
-    )
-    return {"preflight": preflight, "load": payload}
-
-
-async def load_summed_commissioning_config(
-    topology: OutputTopology,
-    *,
-    speaker_group_id: str,
-    load_config: PathLoader,
-    read_running_config: RunningConfigReader,
-    get_current_config_path: ConfigPathReader,
-    calibration_level: dict[str, Any] | None = None,
-    preset: Any = None,
-    crossover_preview: dict[str, Any] | None = None,
-    playback_device: str | None = None,
-    audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
-    path_safety_evidence_path: str | Path | None = None,
-    staged_config: dict[str, Any] | None = None,
-    config_dir: str | Path | None = None,
-    config_path: str | Path | None = None,
-    statefile_path: str | Path | None = None,
-    state_path: str | Path | None = None,
-    reconcile_output_hardware: bool = True,
-    validate: Callable[[str | Path], CamillaConfigValidationResult] = (
-        validate_camilla_config
-    ),
-) -> dict[str, Any]:
-    """Load the combined-driver commissioning graph into RUNNING CamillaDSP.
-
-    Public semantic wrapper for the validation-card summed check. It reuses the
-    same masked commissioning runtime as per-driver bring-up so rollback,
-    durable all-muted boot anchoring, live graph read-back, and hardware
-    reconcile behavior stay identical.
-    """
-
-    payload = await load_driver_commissioning_config(
-        topology,
-        speaker_group_id=speaker_group_id,
-        role=SUMMED_COMMISSION_TARGET_ROLE,
-        calibration_level=calibration_level,
-        load_config=load_config,
-        read_running_config=read_running_config,
-        get_current_config_path=get_current_config_path,
-        preset=preset,
-        crossover_preview=crossover_preview,
-        playback_device=playback_device,
-        audible_gain_db=audible_gain_db,
-        path_safety_evidence_path=path_safety_evidence_path,
-        staged_config=staged_config,
-        config_dir=config_dir,
-        config_path=config_path,
-        statefile_path=statefile_path,
-        state_path=state_path,
-        reconcile_output_hardware=reconcile_output_hardware,
-        validate=validate,
-    )
-    payload["operation"] = "summed_commissioning"
-    return payload
-
-
-async def rollback_driver_commissioning_config(
-    *,
-    load_config: PathLoader,
-    state_path: str | Path | None = None,
-    validate: Callable[[str | Path], CamillaConfigValidationResult] = (
-        validate_camilla_config
-    ),
-) -> dict[str, Any]:
-    """Reload the all-muted staged config, ending a per-driver commissioning load.
-
-    Re-applies the durable boot config into the RUNNING graph (inline, same as
-    the load), returning the speaker to everything-muted. The rollback target
-    is always the staged anchor — every commission load records
-    ``previous_config_path`` as exactly this same path, never a distinct one —
-    so it is derived fresh here rather than trusted from a prior load's
-    recorded state.
-    """
-
-    current_state = load_commission_load_state(state_path=state_path)
-    staged_path = str(staged_config_path())
-    if not Path(staged_path).exists():
-        issue = _issue(
-            "blocker",
-            "commission_rollback_config_missing",
-            f"rollback config no longer exists: {staged_path}",
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    print(f"Re-staged all-muted startup anchor against playback_device={device}")
+    print(f"  source:         {source}")
+    print(f"  classification: {classification}")
+    print(f"  bytes:          {len(yaml)}")
+    if preview:
+        print(f"  PREVIEW only:   {written_path}")
+        print("  (live artifact, staged metadata and statefile untouched)")
+    else:
+        print(f"  wrote:          {written_path}")
+        print(
+            "  statefile:      "
+            + (
+                f"repointed -> {written_path}"
+                if statefile_written
+                else "already correct"
+            )
         )
-        payload = _commission_state_payload(
-            status="rollback_failed",
-            candidate_config_path=current_state.get("candidate_config_path"),
-            active_config_path=current_state.get("active_config_path"),
-            last_action="rollback_failed",
-            target=current_state.get("target"),
-            issues=[issue],
-        )
-        _record_commission_state(payload, state_path=state_path)
-        return {"rollback": payload}
-
-    try:
-        apply_state = await apply_dsp_config(
-            source="active_speaker_driver_commission_rollback",
-            candidate_path=staged_path,
-            prior_config_path=None,
-            get_current_config_path=None,
-            load_config=load_config,
-            validate=validate,
-        )
-    except Exception as exc:  # noqa: BLE001
-        dsp_state = exc.state.to_dict() if isinstance(exc, DspApplyError) else None
-        payload = _commission_state_payload(
-            status="rollback_failed",
-            candidate_config_path=current_state.get("candidate_config_path"),
-            active_config_path=current_state.get("active_config_path"),
-            last_action="rollback_failed",
-            target=current_state.get("target"),
-            dsp_apply=dsp_state,
-            issues=[
-                _issue(
-                    "blocker",
-                    "commission_rollback_failed",
-                    f"CamillaDSP commissioning rollback failed: {exc}",
-                )
-            ],
-        )
-        _record_commission_state(payload, state_path=state_path)
-        logger.warning(
-            "event=active_speaker.driver_commission_rollback result=failed target=%s error=%s",
-            staged_path,
-            type(exc).__name__,
-        )
-        return {"rollback": payload}
-
-    payload = _commission_state_payload(
-        status="rolled_back",
-        candidate_config_path=current_state.get("candidate_config_path"),
-        active_config_path=apply_state.active_config_path or staged_path,
-        last_action="rollback",
-        target=current_state.get("target"),
-        dsp_apply=apply_state.to_dict(),
-    )
-    _record_commission_state(payload, state_path=state_path)
-    logger.info(
-        "event=active_speaker.driver_commission_rollback result=rolled_back target=%s op_id=%s",
-        staged_path,
-        apply_state.op_id,
-    )
-    return {"rollback": payload}
+    return 0

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Mapping
 
 import numpy as np
 
+from .contracts import TrimStrategy
 from .plan_assembly import LevelConsistency, LinearizationPlan
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -74,6 +75,15 @@ class LinearizationState:
     verdict", never "the estimators agreed"."""
     linearized_predicted_sum: tuple[np.ndarray, np.ndarray] | None = None
     realized_level_match: "RealizedLevelMatch | None" = None
+    trim_strategy: TrimStrategy | None = None
+    """Which pair :func:`~.intervention.decide_trim` committed, carried across
+    the commit seam so the proposal states it instead of re-deriving it from
+    ``outcome`` (which cannot tell an anchored commit from a resolved one).
+    ``None`` where no pair was committed, and where a trim pin displaced the
+    one that was."""
+    anchor_drift_db: float | None = None
+    """dB between the ripple scan's tweeter trim and the anchor's — the
+    quantity the strategy turned on. Set and cleared with the strategy."""
 
     @classmethod
     def from_plan(cls, plan: LinearizationPlan) -> "LinearizationState":
@@ -86,6 +96,8 @@ class LinearizationState:
             level_consistency=plan.level_consistency,
             linearized_predicted_sum=plan.linearized_predicted_sum,
             realized_level_match=plan.realized_level_match,
+            trim_strategy=None if plan.trim is None else plan.trim.strategy,
+            anchor_drift_db=None if plan.trim is None else plan.trim.anchor_drift_db,
         )
 
     @property

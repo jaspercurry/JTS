@@ -2,16 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The play transaction contract: ready → admit → lock → play → restore, for one
-stimulus. :mod:`.program_transaction` is the implementation behind it.
-
-A named boundary inside ``measure``, not a fifth verb (ruling S1). ``run``
+"""The play transaction contract: ready → admit → lock → play → restore, for
+one stimulus. :mod:`.program_transaction` is the implementation (a named
+boundary inside ``measure``, not a fifth verb — See ADR-0228 #1). ``run``
 returns the capture's path because a host that plays and records on one box
-holds the recording INSIDE this transaction; a remote microphone answers through
-the capture-source seam instead. ``ready`` carries the *"the microphone is at
-position P"* precondition, so nothing below this seam branches on who moved the
-mic (MS-17). The stage vocabulary is engine-internal and never reaches a front
-end.
+holds the recording INSIDE this transaction; a remote microphone answers
+through the capture-source seam instead. ``ready`` carries the mic-position
+precondition, so nothing below this seam branches on who moved the mic (See
+ADR-0228 #8). Stage vocabulary is engine-internal, never reaching a front end.
 """
 
 from __future__ import annotations
@@ -34,10 +32,10 @@ __all__ = [
     "PlaybackTransaction",
 ]
 
-#: The mover-agnostic mic-position precondition (MS-17) is satisfied here and
-#: nowhere else.
+#: The mover-agnostic mic-position precondition is satisfied here and nowhere
+#: else. See ADR-0228 #8.
 STAGE_READY = "ready"
-#: MS-4: a stimulus enters pre-DSP, never through the post-crossover active ring.
+#: A stimulus enters pre-DSP, never the post-crossover active ring (ADR-0231 §3).
 STAGE_ADMIT = "admit"
 #: The declared level is held for this stimulus. Proving the fader agrees is the
 #: session's volume-claim slot's job, taken before this transaction is called
@@ -118,7 +116,7 @@ class PlaybackTransaction(Protocol):
     pose commands none; ``prompt`` is what the mover was told, ``""`` where none
     was issued. ``level_db`` is the session's one declared fader level;
     ``stimulus_dbfs`` is this rung's stimulus level, ``None`` for the program's
-    own — a ladder moves the stimulus and never the claim (ruling S8).
+    own — a ladder moves the stimulus and never the claim (See ADR-0228 #6).
 
     Never raises for a measurement problem: an exception here would strand the
     session and lose the restore. An exception remains correct for a programming

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The read-only measurement CLIs' shared exit-code rule and its output.
+"""The tuning CLIs' shared exit-code rule and its output.
 
 A failure is an output, not an error, and there are three of them: the
 instrument REFUSED a round it could read, the input was UNREADABLE, or the
@@ -11,15 +11,23 @@ sentence goes to stderr, and the exit code says which of the three it was,
 because that is what tells an operator where to go. The record's shape is
 stated once, in docs/tuning-operator-runbook.md's "Exit codes".
 
-``jasper-declare-geometry`` is deliberately outside this: it is a ``set`` /
-``show`` config door run under sudo by the person holding the tape measure,
-so it prints human text and keeps its own ``EXIT_NOT_FOUND``.
+Every tool in the runbook's tool menu takes its codes from here; a tool whose
+own failures are finer-grained than three says so in its ``reason`` slug,
+never by numbering them itself. :data:`OWN_EXIT_VOCABULARY` names who does not.
 """
 from __future__ import annotations
 
 import json
 import sys
-from typing import Any
+from typing import Any, Callable, TypeVar
+
+_T = TypeVar("_T")
+
+#: The one tool-menu module that keeps its own numbering: a human-only sudo
+#: ``set``/``show`` config door.
+OWN_EXIT_VOCABULARY = frozenset({
+    "jasper.cli.declare_geometry",
+})
 
 EXIT_OK = 0
 #: The instrument declined a round it could read.
@@ -29,9 +37,9 @@ EXIT_UNREADABLE = 2
 #: The work was done and the result could not be filed.
 EXIT_WRITE_FAILED = 3
 
-#: The word each failing code publishes as ``status``. Internal: callers name
-#: the CODE and this picks the word, so the two can never disagree.
-_STATUS_BY_CODE = {
+#: The word each failing code publishes as ``status``: callers name the CODE
+#: and this picks the word, so the two can never disagree.
+STATUS_BY_CODE = {
     EXIT_REFUSED: "refused",
     EXIT_UNREADABLE: "unreadable",
     EXIT_WRITE_FAILED: "unwritable",
@@ -56,22 +64,28 @@ def failed(exit_code: int, reason: str, detail: str) -> int:
     """One failing stage, published under the word its code owns."""
 
     return refused(
-        reason, detail, exit_code=exit_code, status=_STATUS_BY_CODE[exit_code]
+        reason, detail, exit_code=exit_code, status=STATUS_BY_CODE[exit_code]
     )
 
 
-def fail_with_payload(
-    message: str, payload: dict[str, Any], *, as_json: bool, code: int
-) -> int:
-    """The ``--json``-gated variant: a sentence always, the record on request.
+class StageFailed(Exception):
+    """A failure a stage claimed, carrying that stage's exit code."""
 
-    Three tools publish an ``{"ok": false, ...}`` record only when the caller
-    asked for one. Converging that contract with :func:`failed`'s is a
-    follow-on; this is the one implementation of the contract they have.
-    """
+    def __init__(self, code: int, cause: Exception) -> None:
+        super().__init__(str(cause))
+        self.code = code
 
-    print(message, file=sys.stderr)
-    if as_json:
-        json.dump(payload, sys.stdout, indent=1)
-        sys.stdout.write("\n")
-    return code
+
+def stage(
+    code: int,
+    errors: tuple[type[Exception], ...],
+    fn: Callable[..., _T],
+    *args: Any,
+    **kwargs: Any,
+) -> _T:
+    """Run one stage; what it raises from ``errors`` gets that stage's code."""
+
+    try:
+        return fn(*args, **kwargs)
+    except errors as exc:
+        raise StageFailed(code, exc) from exc

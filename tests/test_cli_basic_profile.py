@@ -257,7 +257,7 @@ def test_a_door_refusal_reaches_stdout_whole(capsys, applied_state):
 def test_a_door_that_does_not_answer_is_not_a_traceback(capsys):
     opener = _FakeOpener({cli.REVIEW_PATH: "<html>the wizard is starting"})
 
-    assert _run(["review"], opener) == cli.EXIT_TRANSPORT
+    assert _run(["review"], opener) == cli.EXIT_UNREADABLE
     err = capsys.readouterr().err
     assert err.strip()
     # A lost READ changed nothing, so it must not send the reader to check.
@@ -269,7 +269,7 @@ def test_a_lost_apply_answer_does_not_claim_the_apply_failed(capsys):
     after the graph loaded is indistinguishable here from one lost before."""
     opener = _opener(save_and_apply="<html>502 bad gateway")
 
-    assert _run(["apply"], opener) == cli.EXIT_TRANSPORT
+    assert _run(["apply"], opener) == cli.EXIT_UNREADABLE
     assert cli.LOST_ANSWER_ADVICE in capsys.readouterr().err
 
 

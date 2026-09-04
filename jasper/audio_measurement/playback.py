@@ -884,7 +884,7 @@ async def _play_wav_source(
             level=logging.WARNING,
         )
         raise PlaybackError(
-            "could not start aplay",
+            f"could not start aplay: {exc}",
             code=PlaybackFailureCode.START_FAILED,
             wav_path=path,
             alsa_device=alsa_device,
@@ -1307,8 +1307,7 @@ def ensure_bandlimited_noise_wav(
 
     Band-limiting uses ``scipy.signal`` (Butterworth) rather than a hand-rolled
     FFT brick-wall mask: scipy is already a project dependency (pyproject
-    ``scipy>=1.13``, e.g. ``scipy.signal.iirpeak`` in the correction path), so
-    this adds NO new dependency.
+    ``scipy>=1.13``), so this adds NO new dependency.
     """
 
     if type(seed) is not int:
@@ -1469,7 +1468,7 @@ class TonePlayer:
                 level=logging.WARNING,
             )
             raise PlaybackError(
-                "could not start continuous-tone aplay",
+                f"could not start continuous-tone aplay: {exc}",
                 code=PlaybackFailureCode.START_FAILED,
                 wav_path=self._wav_path,
                 alsa_device=self._alsa_device,

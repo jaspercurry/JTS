@@ -9,13 +9,16 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from . import home_assistant as _ha_env
+from .camilla_config_contract import DEFAULT_CAMILLA_PORT
 from .librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
 from .mics.xvf3800 import CHIP_AEC_ENABLED_ENV
 from .assistant_loudness import (
     DEFAULT_PROFILE_PATH as DEFAULT_ASSISTANT_LOUDNESS_PROFILE_PATH,
 )
 from .speaker_name import runtime_name as _speaker_runtime_name
-from .spotify_oauth import default_spotify_redirect_uri
+from .google_oauth import resolved_google_redirect_uri
+from .identity import resolve_hostname
+from .spotify_oauth import resolved_spotify_redirect_uri
 from .tts_routing import FANIN_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
 from .usage import (
     DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER,
@@ -485,7 +488,7 @@ class Config:
         # Speaker hostname is the single source of truth for "where do
         # other devices reach this speaker?" — read first so URL
         # defaults below can derive from it.
-        hostname = _env("JASPER_HOSTNAME", "jts.local")
+        hostname = resolve_hostname()
         weather_default_location = _env("JASPER_DEFAULT_LOCATION", "").strip()
         weather_default_lat = _env_optional_float("JASPER_WEATHER_LAT")
         weather_default_lon = _env_optional_float("JASPER_WEATHER_LON")
@@ -716,7 +719,7 @@ class Config:
                 "JASPER_SERVER_VAD_PREFIX_MS", 300,
             ),
             camilla_host=_env("JASPER_CAMILLA_HOST", "127.0.0.1"),
-            camilla_port=_env_int("JASPER_CAMILLA_PORT", 1234),
+            camilla_port=_env_int("JASPER_CAMILLA_PORT", DEFAULT_CAMILLA_PORT),
             duck_db=_env_float("JASPER_DUCK_DB", -25.0),
             duck_transport=_env("JASPER_DUCK_TRANSPORT", "fanin").strip().lower(),
             # Pre-response idle watchdog: closes the turn after this
@@ -798,23 +801,10 @@ class Config:
                 "JASPER_LIBRESPOT_STATE", DEFAULT_LIBRESPOT_STATE,
             ),
             spotify_client_id=_env("SPOTIFY_CLIENT_ID"),
-            # The redirect URI is the URL Spotify bounces the OAuth
-            # code back to. It must be an exact match for one of the
-            # URIs registered in the user's Spotify Developer App.
-            # Default is the canonical bounce page on GitHub Pages
-            # (separate public repo `jaspercurry/spotify-oauth-callback`),
-            # with `?host=` carrying the speaker's hostname so a single
-            # hosted page works for any speaker. For `manual` mode (no
-            # external infrastructure), override to
-            # "http://127.0.0.1:8888/callback" — the loopback exception
-            # Spotify still allows.
-            spotify_redirect_uri=(
-                _env(
-                    "SPOTIFY_REDIRECT_URI",
-                    default_spotify_redirect_uri(hostname),
-                )
-                or default_spotify_redirect_uri(hostname)
-            ),
+            # For `manual` mode (no external infrastructure), set
+            # SPOTIFY_REDIRECT_URI to "http://127.0.0.1:8888/callback" —
+            # the loopback exception Spotify still allows.
+            spotify_redirect_uri=resolved_spotify_redirect_uri(),
             # Legacy single-user cache. Read once at startup for the
             # one-shot migration into the new multi-account layout
             # (see jasper.accounts.maybe_migrate_legacy); after the
@@ -848,12 +838,7 @@ class Config:
             # member refresh tokens are stored under google_accounts_path.
             google_client_id=_env("GOOGLE_CLIENT_ID"),
             google_client_secret=_env("GOOGLE_CLIENT_SECRET"),
-            google_redirect_uri=_env(
-                # Bounce page (jaspercurry/google-oauth-callback) — see
-                # jasper.web.google_setup.default_redirect_uri for why.
-                "GOOGLE_REDIRECT_URI",
-                f"https://jaspercurry.github.io/google-oauth-callback/?host={hostname}",
-            ),
+            google_redirect_uri=resolved_google_redirect_uri(),
             # WS1 Phase 4a — the Google OAuth token tree (per-member refresh
             # tokens + Gmail/Calendar identities) moved out of the shared
             # /var/lib/jasper StateDirectory into the group-`jasper-secrets`

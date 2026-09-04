@@ -7,7 +7,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from jasper.correction import peq, strategy, target
+from jasper.audio_measurement import peq
+from jasper.correction import strategy, target
+
+from tests.test_audio_measurement_peq import _rbj_peaking_db
 
 
 def _log_freqs(n: int = 480) -> np.ndarray:
@@ -288,3 +291,64 @@ def test_boosts_capped_and_crossover_exclusion_each_own_their_reduction():
     # Nothing shipped: every proposed boost was either capped away or excluded.
     assert design.peqs == []
     assert design.report["predicted"]["total_positive_boost_db"] == 0.0
+
+
+def test_predicted_overlay_matches_realized_biquads_on_peak_null_pair():
+    """The fix's actual purpose: the predicted overlay now tracks what
+    CamillaDSP realizes. On a 63 Hz peak + adjacent 80 Hz null — where the
+    old ~1.4x-too-wide bell over-stated how far the cut's skirt drove the
+    null — the predicted post-correction curve matches the real RBJ biquad
+    realization within ~0.1 dB in-band (pre-fix this gap was ~0.77 dB).
+
+    NOTE: predicted.max_abs_db stays slightly negative and prediction_worse
+    still fires here — cutting a peak 0.35 octaves from a null genuinely
+    deepens the null; that is real acoustics, not a prediction artifact.
+    The fix corrects the PREDICTION's accuracy, not that physical fact."""
+    freqs = _log_freqs()
+    fs = 48000.0
+    measured = (
+        _rbj_peaking_db(freqs, 63.0, 4.0, 6.0, fs)
+        + _rbj_peaking_db(freqs, 80.0, 4.0, -6.0, fs)
+    )
+    design = strategy.design_correction(
+        measured, freqs, strategy_choice="balanced",
+    )
+    assert len(design.peqs) >= 1
+    realized = measured.copy()
+    for p in design.peqs:
+        realized += _rbj_peaking_db(freqs, p.freq, p.q, p.gain, fs)
+    band = (freqs >= 40.0) & (freqs <= 200.0)
+    gap = float(np.max(np.abs(design.predicted_db[band] - realized[band])))
+    assert gap < 0.1
+
+
+# ---------- target curve sanity --------------------------------------------
+
+
+def test_flat_target_is_zero():
+    freqs = _log_freqs()
+    assert (target.flat_target(freqs) == 0).all()
+
+
+def test_harman_target_subbass_shelf():
+    """+4 dB at 40 Hz, 0 dB by 100 Hz, descending above."""
+    freqs = np.array([20.0, 40.0, 60.0, 100.0, 1000.0, 10000.0])
+    db = target.harman_target(freqs)
+    assert db[0] == 4.0  # 20 Hz
+    assert db[1] == 4.0  # 40 Hz
+    assert db[2] == 4.0  # 60 Hz (boundary)
+    assert abs(db[3]) < 0.1  # 100 Hz
+    # -1 dB/octave from 100 Hz: at 1000 Hz that's -log2(10) ≈ -3.32
+    assert abs(db[4] + np.log2(10)) < 0.1
+    # at 10 kHz: -log2(100) ≈ -6.64
+    assert abs(db[5] + np.log2(100)) < 0.1
+
+
+def test_house_curve_interpolates():
+    freqs = np.array([20.0, 1000.0, 10000.0])
+    flat = target.house_curve(freqs, warmth=0.0)
+    full = target.house_curve(freqs, warmth=1.0)
+    half = target.house_curve(freqs, warmth=0.5)
+    assert (flat == 0).all()
+    # half should be midway between flat and full at every frequency.
+    assert np.allclose(half, 0.5 * full)

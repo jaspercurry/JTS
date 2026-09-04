@@ -29,9 +29,9 @@ from jasper.active_speaker.crossover_v2.contracts import (
 from jasper.active_speaker.crossover_v2.program_transaction import ProgramForStimulus
 from jasper.cli import measure
 from jasper.cli.measure import (
-    EXIT_INPUT,
     EXIT_OK,
     EXIT_REFUSED,
+    EXIT_UNREADABLE,
     REFUSE_CANDIDATE_ID_REQUIRED,
     REFUSE_GRAPH_LOST,
     REFUSE_NO_MIC,
@@ -189,10 +189,75 @@ def test_the_flag_refusal_exits_as_an_input_error(capsys):
         ["--kind", MEASURE_KIND_CANDIDATE, "--level-matched", "--json"]
     )
 
-    assert code == EXIT_INPUT
+    assert code == EXIT_UNREADABLE
     assert json.loads(capsys.readouterr().out)["reason"] == (
         REFUSE_CANDIDATE_ID_REQUIRED
     )
+
+
+def _stub_box_reads(monkeypatch, *, preview_status: str) -> None:
+    """The global reads ``read_box_declaration`` makes before the gate."""
+    from jasper import output_topology
+    from jasper.active_speaker import crossover_preview, design_draft
+
+    monkeypatch.setattr(
+        output_topology, "load_output_topology", lambda *a, **k: object()
+    )
+    monkeypatch.setattr(
+        output_topology, "topology_is_subless_passive_mains", lambda _t: False
+    )
+    monkeypatch.setattr(design_draft, "load_design_draft", lambda **kw: {})
+    monkeypatch.setattr(
+        crossover_preview,
+        "load_crossover_preview",
+        lambda **kw: {"status": preview_status},
+    )
+
+
+def test_the_door_carries_the_conductor_gates_rather_than_a_second_opinion(
+    monkeypatch,
+):
+    """``read_box_declaration`` consumes ``resolve_conductor_context`` — the
+    gates AND the sentence. It used to re-derive a subset of them, so a box the
+    wizard refused could still be measured from the command line."""
+    from jasper.active_speaker.crossover_v2 import conductor_context
+    from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
+
+    _stub_box_reads(monkeypatch, preview_status="ready_for_protected_staging")
+    monkeypatch.setattr(conductor_context, "conductor_status", dict)
+
+    def _refuse(_status):
+        raise CrossoverV2Refused("the tweeter target is missing")
+
+    monkeypatch.setattr(conductor_context, "resolve_conductor_context", _refuse)
+
+    with pytest.raises(measure.BoxNotMeasurable) as excinfo:
+        measure.read_box_declaration()
+
+    assert excinfo.value.reason == measure.REFUSE_BOX_NOT_READY
+    assert excinfo.value.detail == "the tweeter target is missing"
+
+
+def test_a_preview_that_is_not_staged_refuses_before_the_gate_is_reached(
+    monkeypatch,
+):
+    """The door measures the box as DECLARED. ``resolve_conductor_context``
+    runs ``ensure_crossover_preview_ready``, which REGENERATES a stale preview
+    — setup under a measurement's name — so an unstaged preview has to refuse
+    before the gate, not be repaired by it."""
+    from jasper.active_speaker.crossover_v2 import conductor_context
+
+    _stub_box_reads(monkeypatch, preview_status="stale")
+    monkeypatch.setattr(
+        conductor_context,
+        "conductor_status",
+        lambda: pytest.fail("the session-open gate must not be reached"),
+    )
+
+    with pytest.raises(measure.BoxNotMeasurable) as excinfo:
+        measure.read_box_declaration()
+
+    assert excinfo.value.reason == measure.REFUSE_BOX_NOT_READY
 
 
 # --------------------------------------------------------------------------- #
@@ -266,7 +331,7 @@ def speaker(tmp_path, monkeypatch):
     """A whole measurable speaker: real everything but the DSP and the audio."""
     from jasper.active_speaker import bundles
     from jasper.active_speaker.crossover_v2 import program_transaction
-    from jasper.correction import coordinator
+    from jasper import measurement_window as coordinator
     from jasper.volume_owner import VolumeOwner, install_volume_owner
     from jasper.web import correction_crossover_v2_wired as wired
 

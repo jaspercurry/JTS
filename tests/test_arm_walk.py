@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Hardware-free coverage for ``jasper-arm-walk``.
+"""Hardware-free coverage for ``jasper-angle-capture serve`` and its loop.
 
 Every safety sentence the harness's docstrings make is a test here: power before
 every walk move, the envelope clamp, the park-and-verify on each exit path, the
@@ -39,7 +39,8 @@ import pytest
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import arm_walk as aw
 from jasper.active_speaker import wizard_client as wc
-from jasper.cli import arm_walk as cli
+from jasper.cli import _refusal as refusal
+from jasper.cli import angle_capture as cli
 
 ROOT = Path(__file__).resolve().parents[1]
 TURNTABLE_SCRIPT = ROOT / "experiments" / "usb-turntable" / "jts_turntable.py"
@@ -434,9 +435,9 @@ def test_a_sigterm_still_parks():
     assert mover.moves == [0]
 
 
-def test_the_cli_turns_sigterm_into_that_systemexit():
+def test_the_handler_turns_sigterm_into_that_systemexit():
     with _own_signals():
-        cli._install_park_on_signals()
+        aw.install_park_on_signals()
         handler = signal.getsignal(signal.SIGTERM)
         with pytest.raises(SystemExit) as excinfo:
             handler(signal.SIGTERM, None)
@@ -445,11 +446,37 @@ def test_the_cli_turns_sigterm_into_that_systemexit():
 
 def test_the_first_signal_disarms_both_so_a_second_cannot_land():
     with _own_signals():
-        cli._install_park_on_signals()
+        aw.install_park_on_signals()
         with pytest.raises(SystemExit):
             signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
         for sig in aw.PARK_ON_SIGNALS:
             assert signal.getsignal(sig) is signal.SIG_IGN
+
+
+def test_a_park_signal_leaves_serve_on_128_plus_signum(monkeypatch, capsys):
+    """The one ending `serve` does not publish a record for -- through `main`.
+
+    Its exit contract is the shared 0/1/3 with the stall in the record; a signal
+    ending is the exception, and it goes out as the shell's own 128+signum with
+    NOTHING on stdout. `scripts/run-crossover-round.py`'s fall back to the bare
+    rc rides on exactly that, so it is pinned here rather than assumed.
+    """
+    def _signalled(self):
+        os.kill(os.getpid(), signal.SIGTERM)
+        # The handler fires at the interpreter's next check, which this sleep
+        # guarantees; reaching past it means it never ran.
+        time.sleep(1.0)
+        raise AssertionError("the park handler never fired")
+
+    monkeypatch.setattr(aw.ArmWalk, "run", _signalled)
+    with _own_signals(), pytest.raises(SystemExit) as excinfo:
+        cli.main(["serve", "--attest-rig-clear", "--hostname", "jts3.local"])
+
+    assert excinfo.value.code == aw.SIGNAL_EXIT_BASE + int(signal.SIGTERM) == 143
+    out = capsys.readouterr()
+    assert out.out == ""
+    # The summary still reaches stderr: it is printed in the walk's `finally`.
+    assert "no positions were released" in out.err
 
 
 def test_every_park_signal_is_installed_and_named_by_its_own_exit_code():
@@ -461,7 +488,7 @@ def test_every_park_signal_is_installed_and_named_by_its_own_exit_code():
     every dropped link left the arm wherever it stood.
     """
     with _own_signals():
-        cli._install_park_on_signals()
+        aw.install_park_on_signals()
         for sig in aw.PARK_ON_SIGNALS:
             handler = signal.getsignal(sig)
             assert callable(handler), sig
@@ -470,7 +497,7 @@ def test_every_park_signal_is_installed_and_named_by_its_own_exit_code():
             assert excinfo.value.code == aw.SIGNAL_EXIT_BASE + int(sig)
             assert aw.EXIT_NAMES[aw.SIGNAL_EXIT_BASE + int(sig)].endswith("_parked")
             # Re-arm for the next iteration: the first fire disarms them all.
-            cli._install_park_on_signals()
+            aw.install_park_on_signals()
     assert signal.SIGHUP in aw.PARK_ON_SIGNALS
 
 
@@ -485,8 +512,8 @@ def test_a_real_sighup_runs_the_park_rather_than_killing_the_process():
     child = textwrap.dedent(f"""
         import sys, time
         sys.path.insert(0, {str(ROOT)!r})
-        from jasper.cli.arm_walk import _install_park_on_signals
-        _install_park_on_signals()
+        from jasper.active_speaker.arm_walk import install_park_on_signals
+        install_park_on_signals()
         try:
             open(sys.argv[1], "w").write("ready")
             while True:
@@ -537,7 +564,7 @@ def test_a_second_signal_during_the_park_cannot_abandon_the_arm():
     mover = Signalling()
     trail = _RecordingTrail()
     with _own_signals():
-        cli._install_park_on_signals()
+        aw.install_park_on_signals()
         with pytest.raises(SystemExit):
             _walk(mover, Terminating([_QUIET]), trail=trail).run()
     assert mover.moves == [0]
@@ -564,7 +591,7 @@ def test_the_park_runs_once():
     # so that guard can no longer notice a leak in it -- and ``ast.walk`` reaches
     # a function-body import, which is exactly the shape a lazy import would
     # take.
-    "jasper/cli/arm_walk.py",
+    "jasper/cli/angle_capture.py",
 ])
 def test_the_adapter_is_a_subprocess_and_never_an_import(module):
     """``experiments/`` is not a package product code may depend on.
@@ -667,9 +694,9 @@ def test_without_the_attestation_nothing_moves():
         aw.TurntableMover(run=fake_run).move_to(7)
 
 
-def test_the_cli_requires_the_attestation():
+def test_serve_requires_the_attestation():
     with pytest.raises(SystemExit):
-        cli.build_parser().parse_args(["--hostname", "jts3.local"])
+        cli.build_parser().parse_args(["serve", "--hostname", "jts3.local"])
 
 
 def test_an_adapter_that_does_not_answer_json_is_a_failed_move():
@@ -1299,11 +1326,15 @@ def test_the_summary_names_every_release():
 # --------------------------------------------------------------------------- #
 
 
-def test_the_cli_refuses_a_settle_under_the_floor(capsys):
+def test_serve_refuses_a_settle_under_the_floor(capsys):
+    """The loop's own refusal, published under the SHARED refused code."""
     assert cli.main([
-        "--attest-rig-clear", "--hostname", "jts3.local", "--settle-s", "5",
-    ]) == aw.EXIT_REFUSED
-    assert "floor" in capsys.readouterr().err
+        "serve", "--attest-rig-clear", "--hostname", "jts3.local",
+        "--settle-s", "5",
+    ]) == refusal.EXIT_REFUSED
+    out = capsys.readouterr()
+    assert "floor" in out.err
+    assert json.loads(out.out)["reason"] == "walk_refused"
 
 
 @pytest.mark.parametrize("raw,expected", [
@@ -1312,19 +1343,50 @@ def test_the_cli_refuses_a_settle_under_the_floor(capsys):
     (" 7 , -7 ", (7, -7)),
     ("", ()),
 ])
-def test_the_cli_parses_whole_degrees(raw, expected):
-    assert cli._angles(raw) == expected
+def test_serve_parses_whole_degrees(raw, expected):
+    assert cli._expect_angles(raw) == expected
 
 
 @pytest.mark.parametrize("raw", ["7.5", "0.4", "seven"])
-def test_the_cli_never_rounds_an_angle(raw):
+def test_serve_never_rounds_an_angle(raw):
     with pytest.raises(Exception):
-        cli._angles(raw)
+        cli._expect_angles(raw)
 
 
-def test_the_console_script_is_installed():
+#: Every verdict ``run`` can RETURN. The parked trio leaves through the signal
+#: handler's own ``sys.exit`` instead, so it never reaches the mapping below.
+_STALL_CODES = sorted(set(aw.EXIT_NAMES) - {
+    aw.EXIT_OK, aw.EXIT_HANGUP_PARKED, aw.EXIT_INTERRUPTED_PARKED,
+    aw.EXIT_TERMINATED_PARKED,
+})
+
+
+@pytest.mark.parametrize("code", _STALL_CODES)
+def test_every_stall_leaves_as_refused_under_its_own_name(code, monkeypatch, capsys):
+    """The loop's rich verdict becomes reason + the shared 1, never a new code."""
+    monkeypatch.setattr(aw.ArmWalk, "run", lambda self: code)
+    monkeypatch.setattr(aw, "install_park_on_signals", lambda: None)
+    assert cli.main([
+        "serve", "--attest-rig-clear", "--hostname", "jts3.local",
+    ]) == refusal.EXIT_REFUSED
+    assert json.loads(capsys.readouterr().out)["reason"] == aw.EXIT_NAMES[code]
+
+
+def test_a_clean_walk_leaves_as_the_shared_ok(monkeypatch, capsys):
+    monkeypatch.setattr(aw.ArmWalk, "run", lambda self: aw.EXIT_OK)
+    monkeypatch.setattr(aw, "install_park_on_signals", lambda: None)
+    assert cli.main([
+        "serve", "--attest-rig-clear", "--hostname", "jts3.local",
+    ]) == refusal.EXIT_OK
+    err = capsys.readouterr().err
+    assert "finished: ok" in err
+    # The park never raises, so no line here may claim the arm came home.
+    assert "parked" not in err
+
+
+def test_the_retired_console_script_is_gone():
     text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'jasper-arm-walk = "jasper.cli.arm_walk:main"' in text
+    assert "jasper-arm-walk" not in text
 
 
 # --------------------------------------------------------------------------- #

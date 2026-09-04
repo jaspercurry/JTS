@@ -911,7 +911,7 @@ def test_sound_page_island_serves_the_compilers_crossover_vocabulary(
         DEFAULT_FILTER_TYPE,
         DEFAULT_SLOPE_DB_PER_OCTAVE,
     )
-    from jasper.active_speaker.staging import (
+    from jasper.active_speaker.declaration_vocabulary import (
         supported_declaration_filter_types,
         supported_declaration_slopes_db_per_octave,
     )
@@ -1552,6 +1552,7 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
 
 _COMMISSION_CODE_MODULES = (
     "jasper/active_speaker/staging.py",
+    "jasper/active_speaker/commission_load.py",
     "jasper/active_speaker/startup_load.py",
     "jasper/active_speaker/commission_ramp.py",
     "jasper/active_speaker/web_commissioning.py",
@@ -1803,7 +1804,7 @@ def test_every_preflight_gate_id_has_household_copy():
     import ast
 
     repo = Path(__file__).resolve().parent.parent
-    source = (repo / "jasper" / "active_speaker" / "startup_load.py").read_text()
+    source = (repo / "jasper" / "active_speaker" / "commission_load.py").read_text()
     tree = ast.parse(source)
     builder = next(
         node
@@ -1826,9 +1827,9 @@ def test_every_preflight_gate_id_has_household_copy():
             # A gate id held in a module constant (the shared transport gate id
             # imported from staging). Resolve it through the module namespace
             # rather than re-parsing its source.
-            from jasper.active_speaker import startup_load
+            from jasper.active_speaker import commission_load
 
-            value = getattr(startup_load, arg.id, None)
+            value = getattr(commission_load, arg.id, None)
             assert isinstance(value, str), (
                 f"preflight gate id {arg.id!r} is not a resolvable module "
                 "constant; this walk would silently skip it"
@@ -6248,12 +6249,11 @@ async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
     FakeVolumeFloorToneRunner.instances.clear()
     fake = FakeVolumeCamilla(db=-18.0, muted=True)
     _install_floor_tone_owner(fake)
-    session = volume_floor_tone._VolumeFloorToneSession()
+    session = volume_floor_tone.VolumeFloorToneSession()
 
-    payload = await sound_setup._audition_volume_floor(
+    payload = await session.start_or_update(
         {"volume_floor_db": -24.0},
         camilla_factory=lambda: fake,
-        session=session,
         runner_factory=FakeVolumeFloorToneRunner,
     )
 
@@ -6276,10 +6276,9 @@ async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
     assert fake.muted is False
     assert not settings_path.exists()
 
-    payload = await sound_setup._audition_volume_floor(
+    payload = await session.start_or_update(
         {"volume_floor_db": -36.0},
         camilla_factory=lambda: fake,
-        session=session,
         runner_factory=FakeVolumeFloorToneRunner,
     )
 
@@ -6293,10 +6292,9 @@ async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
     assert fake.db == pytest.approx(-36.0)
     assert fake.muted is False
 
-    stop_payload = await sound_setup._stop_volume_floor_tone(
+    stop_payload = await session.stop(
         camilla_factory=lambda: fake,
         reason="stop",
-        session=session,
     )
 
     assert stop_payload == {
@@ -6331,21 +6329,19 @@ async def test_audition_volume_floor_update_survives_a_withdrawn_owner(
     FakeVolumeFloorToneRunner.instances.clear()
     fake = FakeVolumeCamilla(db=-18.0, muted=False)
     _install_floor_tone_owner(fake)
-    session = volume_floor_tone._VolumeFloorToneSession()
+    session = volume_floor_tone.VolumeFloorToneSession()
 
-    await sound_setup._audition_volume_floor(
+    await session.start_or_update(
         {"volume_floor_db": -24.0},
         camilla_factory=lambda: fake,
-        session=session,
         runner_factory=FakeVolumeFloorToneRunner,
     )
     held_db = fake.db
     install_volume_owner(None)
 
-    payload = await sound_setup._audition_volume_floor(
+    payload = await session.start_or_update(
         {"volume_floor_db": -36.0},
         camilla_factory=lambda: fake,
-        session=session,
         runner_factory=FakeVolumeFloorToneRunner,
     )
 
@@ -6361,6 +6357,35 @@ def _dominant_frequency_hz(samples: np.ndarray, sample_rate: int) -> float:
     bins = np.fft.rfftfreq(len(samples), d=1.0 / sample_rate)
     peak = int(np.argmax(np.abs(spectrum)))
     return float(bins[peak])
+
+
+async def test_camilla_op_lock_is_released_when_a_waiter_is_cancelled():
+    """A cancelled waiter must not strand the CamillaDSP op lock: every later
+    audition and stop would block forever with the fader down at the floor."""
+    session = volume_floor_tone.VolumeFloorToneSession()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hold() -> None:
+        async with session._camilla_op():
+            entered.set()
+            await release.wait()
+
+    async def take() -> None:
+        async with session._camilla_op():
+            pass
+
+    holder = asyncio.create_task(hold())
+    await asyncio.wait_for(entered.wait(), timeout=2.0)
+    waiter = asyncio.create_task(take())
+    await asyncio.sleep(0.1)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    release.set()
+    await holder
+
+    await asyncio.wait_for(take(), timeout=2.0)
 
 
 def test_volume_floor_reference_tone_uses_low_mid_high_sequence(
@@ -6396,31 +6421,28 @@ async def test_volume_floor_stop_stops_runner_before_slow_update_restore(
     FakeVolumeFloorToneRunner.instances.clear()
     fake = BlockingVolumeCamilla(block_on_volume_call=2)
     _install_floor_tone_owner(fake)
-    session = volume_floor_tone._VolumeFloorToneSession()
+    session = volume_floor_tone.VolumeFloorToneSession()
 
-    await sound_setup._audition_volume_floor(
+    await session.start_or_update(
         {"volume_floor_db": -24.0},
         camilla_factory=lambda: fake,
-        session=session,
         runner_factory=FakeVolumeFloorToneRunner,
     )
     runner = FakeVolumeFloorToneRunner.instances[0]
 
     update_task = asyncio.create_task(
-        sound_setup._audition_volume_floor(
+        session.start_or_update(
             {"volume_floor_db": -36.0},
             camilla_factory=lambda: fake,
-            session=session,
             runner_factory=FakeVolumeFloorToneRunner,
         )
     )
     await asyncio.wait_for(fake.volume_call_entered.wait(), timeout=1.0)
 
     stop_task = asyncio.create_task(
-        sound_setup._stop_volume_floor_tone(
+        session.stop(
             camilla_factory=lambda: fake,
             reason="stop",
-            session=session,
         )
     )
     await asyncio.sleep(0)

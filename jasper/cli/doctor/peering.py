@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from ...env_load import read_env_file_state
 from ...peering.config import PEERING_OFF_VALUES, PEERING_ON_VALUES
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
@@ -25,20 +26,15 @@ def check_peering_mode() -> CheckResult:
     `warn`/`fail` cases catch broken env files only."""
     label = "peering: mode"
     p = Path("/var/lib/jasper/peering.env")
-    if not p.exists():
+    env = read_env_file_state(str(p))
+    if env.status == "missing":
         return CheckResult(
             label, "ok",
             "off (default) — enable at http://<hostname>/rooms/",
         )
-    raw = ""
-    try:
-        for line in p.read_text().splitlines():
-            line = line.strip()
-            if line.startswith("JASPER_PEERING="):
-                raw = line.split("=", 1)[1].strip().strip("'\"").lower()
-                break
-    except OSError as e:
-        return CheckResult(label, "warn", f"can't read {p}: {e}")
+    if env.status == "unreadable":
+        return CheckResult(label, "warn", f"can't read {p}: {env.error}")
+    raw = env.values.get("JASPER_PEERING", "").lower()
     if raw in PEERING_OFF_VALUES:
         return CheckResult(label, "ok", "off (configured)")
     if raw in PEERING_ON_VALUES:

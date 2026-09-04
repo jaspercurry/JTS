@@ -28,7 +28,6 @@ from jasper.audio_runtime_plan import (
     FANIN_INPUT_RESAMPLER_KEY,
     FANIN_INPUT_RESAMPLER_LANE_KEY,
     FANIN_USB_DIRECT_PERIOD_KEY,
-    OUTPUTD_CONTENT_BRIDGE_KEY,
     ROUTE_BITPERFECT_DECLARED,
     ROUTE_CORRECTED_48K,
     ROUTE_USB_LOW_LATENCY_48K,
@@ -49,11 +48,9 @@ from jasper.audio_runtime_plan import (
     output_endpoint_evidence_from_statefiles,
     resolve_audio_route_profile,
     route_owned_env_actions,
-    TRANSPORT_OFF_RING,
-    TRANSPORT_SHM_RING,
 )
 from jasper.transport_coherence import (
-    transport_coherence_errors,
+    transport_coherence_report,
     transport_topology_for_coupling,
 )
 from jasper.camilla_config_contract import (
@@ -64,6 +61,9 @@ from jasper.env_load import EnvFileState
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     COUPLING_SHM_RING,
+    OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
+    TRANSPORT_DAC_CONTENT_RING,
+    TRANSPORT_OFF_RING,
     coupling_capture_kwargs_from_env,
 )
 
@@ -731,7 +731,7 @@ def test_the_system_plan_reads_both_of_outputds_env_layers(monkeypatch, tmp_path
         output_hardware_state_path=str(tmp_path / "output_hardware.json"),
     )
 
-    assert plan.transport_topology.name == audio_plan.TRANSPORT_DAC_CONTENT_RING
+    assert plan.transport_topology.name == TRANSPORT_DAC_CONTENT_RING
     assert plan.outputd_env["JASPER_OUTPUTD_DAC_CONTENT_LANE"] == "1"
 
 
@@ -834,7 +834,7 @@ def test_usb_low_latency_route_rejects_any_non_ring_bridge_literal():
     ):
         plan = build_audio_runtime_plan(
             base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-            outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: bridge},
+            outputd_env={OUTPUTD_CONTENT_BRIDGE_ENV_VAR: bridge},
             route_mode="solo",
         )
 
@@ -848,7 +848,7 @@ def test_usb_low_latency_route_rejects_any_non_ring_bridge_literal():
     # the token the reconciler writes, and the ABSENCE that resolves to the
     # same running transport on a box it has not written yet. A control staged
     # on `direct` would sit inside the refused set above and pass vacuously.
-    for outputd_env in ({OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring"}, {}):
+    for outputd_env in ({OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring"}, {}):
         ok = build_audio_runtime_plan(
             base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
             outputd_env=outputd_env,
@@ -1276,7 +1276,7 @@ def test_an_unwritten_coupling_key_is_the_ring():
     deleted, so a healthy box the reconciler had not written yet was described
     as running one. Undeclared IS the ring — on both ends."""
     for coupling in (None, "", "   "):
-        assert transport_topology_for_coupling(coupling).name == TRANSPORT_SHM_RING
+        assert transport_topology_for_coupling(coupling).name == COUPLING_SHM_RING
 
 
 def test_the_retired_aloop_active_lane_has_no_registered_capture_pairing(capsys):
@@ -1508,7 +1508,7 @@ def test_usb_low_latency_accepts_coherent_shm_ring_pair():
     plan = build_audio_runtime_plan(
         base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
         fanin_env={COUPLING_ENV_VAR: COUPLING_SHM_RING},
-        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring"},
+        outputd_env={OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring"},
         route_mode="solo",
     )
     assert plan.route_policy_errors == ()
@@ -1530,7 +1530,7 @@ def test_coherent_shm_ring_preserves_camilla_device_mismatch_errors(tmp_path):
     plan = build_audio_runtime_plan(
         base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
         fanin_env={COUPLING_ENV_VAR: COUPLING_SHM_RING},
-        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring"},
+        outputd_env={OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring"},
         route_mode="solo",
         correction_config_path=str(config),
     )
@@ -1545,7 +1545,7 @@ def test_usb_low_latency_rejects_partial_ring_flip_fanin_only():
     plan = build_audio_runtime_plan(
         base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
         fanin_env={COUPLING_ENV_VAR: COUPLING_SHM_RING},
-        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "direct"},
+        outputd_env={OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "direct"},
         route_mode="solo",
     )
     assert plan.route_policy_errors
@@ -1557,7 +1557,7 @@ def test_usb_low_latency_rejects_partial_ring_flip_outputd_only():
     plan = build_audio_runtime_plan(
         base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
         fanin_env={COUPLING_ENV_VAR: "loopback"},
-        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring"},
+        outputd_env={OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring"},
         route_mode="solo",
     )
     assert plan.route_policy_errors
@@ -1568,7 +1568,7 @@ def test_usb_low_latency_accepts_the_one_transport():
     plan = build_audio_runtime_plan(
         base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
         fanin_env={COUPLING_ENV_VAR: COUPLING_SHM_RING},
-        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: COUPLING_SHM_RING},
+        outputd_env={OUTPUTD_CONTENT_BRIDGE_ENV_VAR: COUPLING_SHM_RING},
         route_mode="solo",
     )
     assert plan.route_policy_errors == ()
@@ -1620,14 +1620,14 @@ def test_transport_coherence_shm_ring_format_axis_is_quiet_with_no_outputd_evide
     from jasper.fanin_coupling import RING_WIRE_FORMAT
 
     assert DEFAULT_PLAYBACK_FORMAT != RING_WIRE_FORMAT
-    errors = transport_coherence_errors(
+    errors = transport_coherence_report(
         coupling=COUPLING_SHM_RING,
-        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring"},
+        outputd_env={OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring"},
         camilla_devices={
             "capture_device": "jts_ring_capture",
             "playback_device": "jts_ring_playback",
         },
-    )
+    ).errors
     assert errors == ()
 
 
@@ -1654,17 +1654,17 @@ def test_transport_coherence_shm_ring_flags_a_ring_end_that_declares_another_wir
             period_frames=coupling.RING_SLOT_FRAMES,
         ),
     )
-    errors = transport_coherence_errors(
+    errors = transport_coherence_report(
         coupling=COUPLING_SHM_RING,
         outputd_env={
-            OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring",
+            OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring",
             "JASPER_OUTPUTD_CONTENT_FORMAT": "S16_LE",
         },
         camilla_devices={
             "capture_device": "jts_ring_capture",
             "playback_device": "jts_ring_playback",
         },
-    )
+    ).errors
     assert len(errors) == 1
     assert "S16_LE" in errors[0] and "S32_LE" in errors[0]
 
@@ -1767,17 +1767,17 @@ def test_shm_ring_format_axis_fails_on_a_sheared_outputd_declaration(monkeypatch
             period_frames=fc.RING_SLOT_FRAMES,
         ),
     )
-    errors = transport_coherence_errors(
+    errors = transport_coherence_report(
         coupling=COUPLING_SHM_RING,
         outputd_env={
-            OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring",
+            OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring",
             "JASPER_OUTPUTD_CONTENT_FORMAT": "S32_LE",
         },
         camilla_devices={
             "capture_device": "jts_ring_capture",
             "playback_device": "jts_ring_playback",
         },
-    )
+    ).errors
     assert len(errors) == 1
     assert "JASPER_OUTPUTD_CONTENT_FORMAT='S32_LE'" in errors[0]
     assert "S16_LE" in errors[0]
@@ -1799,17 +1799,17 @@ def test_shm_ring_format_axis_is_quiet_when_the_declaration_agrees(monkeypatch):
         ),
     )
     assert (
-        transport_coherence_errors(
+        transport_coherence_report(
             coupling=COUPLING_SHM_RING,
             outputd_env={
-                OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring",
+                OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring",
                 "JASPER_OUTPUTD_CONTENT_FORMAT": "S16_LE",
             },
             camilla_devices={
                 "capture_device": "jts_ring_capture",
                 "playback_device": "jts_ring_playback",
             },
-        )
+        ).errors
         == ()
     )
 
@@ -1818,14 +1818,14 @@ def test_shm_ring_format_axis_is_quiet_when_outputd_declares_nothing():
     # An end this function cannot see is not a contradiction — the module's
     # missing-evidence doctrine, same as an absent Camilla config.
     assert (
-        transport_coherence_errors(
+        transport_coherence_report(
             coupling=COUPLING_SHM_RING,
-            outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring"},
+            outputd_env={OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring"},
             camilla_devices={
                 "capture_device": "jts_ring_capture",
                 "playback_device": "jts_ring_playback",
             },
-        )
+        ).errors
         == ()
     )
 
@@ -1851,10 +1851,10 @@ def test_shm_ring_channel_axis_fails_on_a_sheared_camilla_config(monkeypatch):
             period_frames=fc.RING_SLOT_FRAMES,
         ),
     )
-    errors = transport_coherence_errors(
+    errors = transport_coherence_report(
         coupling=COUPLING_SHM_RING,
         outputd_env={
-            OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring",
+            OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring",
             "JASPER_OUTPUTD_CONTENT_FORMAT": "S16_LE",
         },
         camilla_devices={
@@ -1863,7 +1863,7 @@ def test_shm_ring_channel_axis_fails_on_a_sheared_camilla_config(monkeypatch):
             "capture_channels": 2,
             "playback_channels": 6,
         },
-    )
+    ).errors
     assert len(errors) == 1
     assert "playback channels=2" in errors[0]
     assert "declares 6" in errors[0]
@@ -1885,10 +1885,10 @@ def test_shm_ring_channel_axis_is_quiet_when_camilla_agrees(monkeypatch):
         ),
     )
     assert (
-        transport_coherence_errors(
+        transport_coherence_report(
             coupling=COUPLING_SHM_RING,
             outputd_env={
-                OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring",
+                OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring",
                 "JASPER_OUTPUTD_CONTENT_FORMAT": "S16_LE",
             },
             camilla_devices={
@@ -1897,7 +1897,7 @@ def test_shm_ring_channel_axis_is_quiet_when_camilla_agrees(monkeypatch):
                 "capture_channels": 2,
                 "playback_channels": 2,
             },
-        )
+        ).errors
         == ()
     )
 
@@ -1984,7 +1984,7 @@ def test_a_bonded_member_resolves_its_own_shape_and_declares_no_ring_b():
         "shm_ring", outputd_env=_MARKER_ARMED_ENV
     )
 
-    assert topology.name == audio_plan.TRANSPORT_DAC_CONTENT_RING
+    assert topology.name == TRANSPORT_DAC_CONTENT_RING
     assert topology.outputd_content_source == "alsa"
     assert "camilla_playback_device" not in topology.camilla_to_outputd
     assert topology.camilla_to_outputd["path"] == DAC_CONTENT_RING_FILE
@@ -2060,7 +2060,7 @@ def test_the_marker_beside_a_declared_bridge_is_a_coherence_error():
         transport_coherence.transport_topology_for_coupling(
             "shm_ring", outputd_env=_CONTRADICTED_ENV
         ).name
-        == audio_plan.TRANSPORT_OFF_RING
+        == TRANSPORT_OFF_RING
     )
 
 
@@ -2110,3 +2110,48 @@ def test_an_undeclared_bridge_under_a_ring_plan_is_coherent(marker):
     )
 
     assert [e for e in report.errors if "must move together" in e] == [], report
+
+
+def test_a_shared_topology_reader_reads_once_and_changes_no_verdict(monkeypatch):
+    """The pass-scoped saved-topology reader is an optimization, not a verdict.
+
+    The ACTIVE ring's width is the one axis that reads the saved topology, so an
+    armed endpoint is where a pass would otherwise read it once per consumer.
+    """
+    import jasper.fanin.ring_health as rh
+
+    outputd_env = {
+        "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT": "1",
+        "JASPER_OUTPUTD_SHM_RING_PATH": "/dev/shm/jts-ring/active-content.ring",
+    }
+    reads: list[int] = []
+
+    def _load():
+        reads.append(1)
+        return None
+
+    # Built BEFORE the patch on purpose: the reader must look its loader up
+    # when it reads, not capture the one that existed when it was made.
+    read_saved_topology = rh.saved_topology_reader()
+    monkeypatch.setattr(transport_coherence, "load_topology_for_wire", _load)
+    monkeypatch.setattr(rh, "load_topology_for_wire", _load)
+
+    unshared = transport_coherence.transport_coherence_report(
+        coupling="shm_ring", outputd_env=outputd_env
+    )
+    assert len(reads) == 1
+
+    reads.clear()
+    shared = transport_coherence.transport_coherence_report(
+        coupling="shm_ring",
+        outputd_env=outputd_env,
+        read_saved_topology=read_saved_topology,
+    )
+    transport_coherence.transport_topology_for_coupling(
+        "shm_ring",
+        outputd_env=outputd_env,
+        read_saved_topology=read_saved_topology,
+    )
+
+    assert shared == unshared
+    assert len(reads) == 1

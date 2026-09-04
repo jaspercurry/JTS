@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import jasper.active_speaker.commission_load as commission_load_mod
 import jasper.active_speaker.startup_load as startup_load_mod
 from jasper.active_speaker.startup_hold import startup_hold_marker_path
 from jasper.active_speaker.calibration_level import calibration_level_payload
@@ -154,15 +155,15 @@ def test_startup_and_commission_load_artifacts_own_independent_schema_versions(
     tmp_path: Path,
 ):
     assert startup_load_mod.STARTUP_LOAD_SCHEMA_VERSION == 1
-    assert startup_load_mod.COMMISSION_LOAD_SCHEMA_VERSION == 1
+    assert commission_load_mod.COMMISSION_LOAD_SCHEMA_VERSION == 1
     assert not hasattr(startup_load_mod, "SCHEMA_VERSION")
 
     monkeypatch.setattr(startup_load_mod, "STARTUP_LOAD_SCHEMA_VERSION", 2)
-    monkeypatch.setattr(startup_load_mod, "COMMISSION_LOAD_SCHEMA_VERSION", 3)
+    monkeypatch.setattr(commission_load_mod, "COMMISSION_LOAD_SCHEMA_VERSION", 3)
     assert startup_load_mod._base_state(tmp_path / "startup.json")[
         "artifact_schema_version"
     ] == 2
-    assert startup_load_mod._commission_base_state(tmp_path / "commission.json")[
+    assert commission_load_mod._commission_base_state(tmp_path / "commission.json")[
         "artifact_schema_version"
     ] == 3
 

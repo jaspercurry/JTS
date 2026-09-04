@@ -1345,7 +1345,7 @@ def test_a_rejected_ripple_polish_reaches_the_durable_candidate_evidence(monkeyp
     # A polish beyond the coupled bound, so the guard rejects it.
     excursion_db = _pa.REALIZED_LEVEL_MATCH_TOLERANCE_DB + 1.0
     monkeypatch.setattr(
-        _pa, "solve_ripple_optimal_trim",
+        _pa.dispatch, "solve_ripple_optimal_trim",
         lambda *a, **kw: (kw["seed_trim_db"] + excursion_db, 0.0, kw["seed_trim_db"]),
     )
     analysis = _analyzed(-450.0)
@@ -1561,34 +1561,6 @@ def test_the_prior_defaults_to_absent():
     """A construction site that predates this field runs the automatic path."""
     assert MeasurementPriors().explicit_alignment_delay_us is None
     assert MeasurementPriors().explicit_alignment_polarity_sign is None
-
-
-def test_a_pinned_basin_survives_a_swept_corner():
-    """``priors.candidate_priors``'s claim, for the basin as for the delay.
-
-    Which basin the drivers sum in is a fact about how they are wired, not
-    about where the corner sits, so an Fc sweep re-points the corner and carries
-    the pin. ``candidate_priors`` is a ``dataclasses.replace``, so this holds
-    structurally — and is pinned because the docstring in
-    :mod:`~jasper.active_speaker.crossover_v2.priors` says it, and a
-    re-spelled constructor there would drop the field with nothing failing.
-    """
-    from jasper.active_speaker.branch_chain import sections_by_role
-    from jasper.active_speaker.crossover_v2 import priors as _priors
-
-    preset = ActiveSpeakerPreset.from_mapping(_two_way_preset())
-    base = MeasurementPriors(
-        crossover_fc_hz=FC_HZ,
-        explicit_alignment_delay_us=-450.0,
-        explicit_alignment_polarity_sign=-1,
-    )
-    swept = _priors.candidate_priors(
-        base, 1847.7, sections_by_role(preset.crossover_regions),
-    )
-
-    assert swept.crossover_fc_hz == 1847.7 != base.crossover_fc_hz
-    assert swept.explicit_alignment_delay_us == -450.0
-    assert swept.explicit_alignment_polarity_sign == -1
 
 
 # --------------------------------------------------------------------------- #

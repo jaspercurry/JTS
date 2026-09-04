@@ -1546,7 +1546,7 @@ def _valid_udp_endpoint(value: object) -> bool:
 
 def _read_outputd_status_for_aec_reference() -> dict | None:
     """Reuse outputd doctor's bounded STATUS reader with fail-soft policy."""
-    from .audio_runtime import _outputd_status_payload
+    from .audio_runtime_outputd import _outputd_status_payload
 
     status = _outputd_status_payload()
     return status if isinstance(status, dict) else None

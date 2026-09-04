@@ -181,14 +181,22 @@ class WizardClient:
         return block if status == 200 else {}
 
     def open_session(
-        self, tier: str, *, stage: str = STAGE_MEASURE
+        self,
+        tier: str,
+        *,
+        stage: str = STAGE_MEASURE,
+        prescriptions: Mapping[str, Any] | None = None,
     ) -> tuple[int, Any]:
         """Open the measuring session, or the post-apply verify. ``tier`` is ignored for verify:
         stage 2 reads the instrument the MEASURING session already recorded.
+
+        ``prescriptions`` are the session-open door documents (alignment,
+        topology) under their owners' own keys, sent as read -- the gate that
+        judges one is the open's, at the far end.
         """
         if stage == STAGE_POST_APPLY:
             return self.post_json(VERIFY_PATH, {STAGE_KEY: STAGE_POST_APPLY})
-        return self.post_json(SESSION_PATH, {"tier": tier})
+        return self.post_json(SESSION_PATH, {"tier": tier, **(prescriptions or {})})
 
     def apply(self, expected_fingerprint: str) -> tuple[int, Any]:
         """The bare POST. The gate is :func:`apply_by_fingerprint`, not this. No inline

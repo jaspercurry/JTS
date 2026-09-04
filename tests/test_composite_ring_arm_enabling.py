@@ -423,12 +423,12 @@ def test_a_composite_may_not_arm_the_ring_at_the_narrow_wire(monkeypatch):
     composite arm that rode such a pin onto the ring, without this gate, would
     quantize the post-crossover per-driver program from 32 to 16 bits.
     """
-    from jasper.fanin import coupling_reconcile
+    from jasper.fanin.ring_health import composite_ring_wire_ready
 
     monkeypatch.setattr(
         "jasper.fanin_coupling.read_declared_ring_wire_format", lambda: "S16_LE"
     )
-    ok, detail = coupling_reconcile.composite_ring_wire_ready(_composite_active_2way())
+    ok, detail = composite_ring_wire_ready(_composite_active_2way())
     assert ok is False
     assert "S16_LE" in detail
     # The remedy text: "remove JASPER_FANIN_RING_WIRE_FORMAT (or set it to
@@ -455,17 +455,17 @@ def test_the_narrow_wire_remedy_names_the_WHOLE_three_step_ladder(monkeypatch):
     missing.
 
     The SPELLING is pinned too, in the `sudo /opt/jasper/.venv/bin/…` form the
-    doctor's own rollback ladder uses (`jasper/cli/doctor/audio_runtime.py`).
+    doctor's own rollback ladder uses (`jasper/cli/doctor/audio_runtime_ring.py`).
     Both strings are operator-copied text for the same three rungs, and only
     that spelling pastes into a shell and works — a bare `jasper-active-speaker`
     is not on an operator's PATH.
     """
-    from jasper.fanin import coupling_reconcile
+    from jasper.fanin.ring_health import composite_ring_wire_ready
 
     monkeypatch.setattr(
         "jasper.fanin_coupling.read_declared_ring_wire_format", lambda: "S16_LE"
     )
-    _, detail = coupling_reconcile.composite_ring_wire_ready(_composite_active_2way())
+    _, detail = composite_ring_wire_ready(_composite_active_2way())
     for command in (
         "sudo /opt/jasper/.venv/bin/jasper-active-speaker baseline-reemit "
         "--endpoint ring",
@@ -482,21 +482,21 @@ def test_a_composite_at_the_wide_wire_passes_the_rule(monkeypatch):
     monkeypatch.setattr(
         "jasper.fanin_coupling.read_declared_ring_wire_format", lambda: "S32_LE"
     )
-    from jasper.fanin import coupling_reconcile
+    from jasper.fanin.ring_health import composite_ring_wire_ready
 
-    ok, detail = coupling_reconcile.composite_ring_wire_ready(_composite_active_2way())
+    ok, detail = composite_ring_wire_ready(_composite_active_2way())
     assert ok is True
     assert "S32_LE" in detail
 
 
 def test_the_wide_wire_rule_leaves_every_non_composite_box_alone(monkeypatch):
     """jts3's roleful DAC8x arm and every stereo-ring box keep today's wire."""
-    from jasper.fanin import coupling_reconcile
+    from jasper.fanin.ring_health import composite_ring_wire_ready
 
     monkeypatch.setattr(
         "jasper.fanin_coupling.read_declared_ring_wire_format", lambda: "S16_LE"
     )
-    ok, detail = coupling_reconcile.composite_ring_wire_ready(None)
+    ok, detail = composite_ring_wire_ready(None)
     assert ok is True
     assert "does not apply" in detail
 

@@ -21,7 +21,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Mapping, Sequence, TypedDict, cast
+from typing import Any, Callable, Literal, Mapping, Sequence, TypedDict, cast
 
 from jasper.audio_hardware.dac import by_id as dac_profile_by_id
 from jasper.audio_hardware.dac import camilla_floor_for, latency_floor_for
@@ -40,55 +40,22 @@ from jasper.camilla_config_contract import (
     read_camilla_devices_config,
 )
 from jasper.env_load import read_env_file_state
+from jasper.fanin.ring_health import saved_topology_reader
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
-    COUPLING_SHM_RING,
+    OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     OUTPUTD_CONTENT_BRIDGE_SHM_RING,
+    TransportTopology,
     capture_half,
     coupling_value_removed,
     dac_content_lane_marker_armed,
     outputd_content_is_central_ring,
     resolve_coupling,
 )
-
-# The named transport SHAPES. ``TransportTopology.name`` is the discriminator
-# every consumer matches on, so each distinct transport gets its own name rather
-# than a shared name with a device threaded through it: an exhaustive match over
-# named shapes fails LOUD on one nobody handled, where a threaded device value
-# shears silently through five call sites.
-#
-# ``shm_ring_active`` is selected on the PERSISTED COUPLING plus the reconciler's
-# endpoint MARKER — deliberately NOT on the observed ``camilla_playback_device``.
-# Selecting on the observed device would make
-# :func:`jasper.transport_coherence.transport_coherence_report`' playback
-# comparison vacuous: it would derive the expectation from the very value it is
-# checking, so a Camilla graph pointed at the wrong ring would define itself
-# correct.
-TRANSPORT_SHM_RING = COUPLING_SHM_RING
-TRANSPORT_SHM_RING_ACTIVE = "shm_ring_active"
-# One END of the box is off the one transport (ADR-0100) — the LEGACY FIFO
-# spelling of the round-trip ``dac_content`` lane, which outputd requires
-# ``CONTENT_BRIDGE=direct`` for, or a coupling/bridge a daemon parks on. Not a
-# second route: jasper.control.transport_park is what names such a box. The
-# ring MARKER's shape is NOT this one — see TRANSPORT_DAC_CONTENT_RING below,
-# which is served.
-TRANSPORT_OFF_RING = "off_ring"
-# A DUMB bonded member: outputd's content comes off the dac-content RETURN ring
-# and no CENTRAL post-DSP ring is attached at all. Its own shape rather than
-# TRANSPORT_OFF_RING, which would drop a healthy bonded member into the arm
-# whose comparisons assume nothing is feeding outputd — while Ring A is still
-# live on this box and must keep being compared.
-TRANSPORT_DAC_CONTENT_RING = "dac_content_ring"
-# Every named shape, so an exhaustive consumer can assert it handled one.
-TRANSPORT_SHAPES = frozenset(
-    (
-        TRANSPORT_OFF_RING,
-        TRANSPORT_SHM_RING,
-        TRANSPORT_SHM_RING_ACTIVE,
-        TRANSPORT_DAC_CONTENT_RING,
-    )
+from jasper.transport_coherence import (
+    transport_coherence_report,
+    transport_topology_for_coupling,
 )
-
 
 DEFAULT_BASE_ENV_PATH = "/etc/jasper/jasper.env"
 DEFAULT_OUTPUTD_ENV_PATH = "/var/lib/jasper/outputd.env"
@@ -107,13 +74,6 @@ DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES = 3072
 # (rust/jasper-outputd/src/config.rs, pinned equal by
 # test_packaged_outputd_defaults_match_the_rust_daemon).
 PACKAGED_OUTPUTD_DEFAULT_SOURCE = "packaged outputd default"
-OUTPUTD_CONTENT_BRIDGE_KEY = "JASPER_OUTPUTD_CONTENT_BRIDGE"
-# The width outputd assumes on its content upstream when
-# JASPER_OUTPUTD_CONTENT_FORMAT is absent or empty: outputd's own documented
-# default, the pre-flip S16 lane, NOT whatever the resolver would pick for this
-# box. A reader that follows the resolver here would refuse an arm for a wire
-# the daemon has in fact declared.
-OUTPUTD_DEFAULT_CONTENT_FORMAT = "S16_LE"
 MAX_LOW_LATENCY_CORRECTION_GROUP_DELAY_FRAMES = 512
 FANIN_INPUT_BUFFER_KEY = "JASPER_FANIN_INPUT_BUFFER_FRAMES"
 DEFAULT_FANIN_INPUT_BUFFER_FRAMES = 4096
@@ -268,26 +228,6 @@ class RuntimeEnvAction:
         if self.action == "set":
             out["value"] = self.value
         return out
-
-
-@dataclass(frozen=True)
-class TransportTopology:
-    """Resolved audio transport topology for status/doctor surfaces."""
-
-    name: str
-    fanin_to_camilla: Mapping[str, Any]
-    camilla_to_outputd: Mapping[str, Any]
-    camilla: Mapping[str, Any]
-    outputd_content_source: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "fanin_to_camilla": dict(self.fanin_to_camilla),
-            "camilla_to_outputd": dict(self.camilla_to_outputd),
-            "camilla": dict(self.camilla),
-            "outputd_content_source": self.outputd_content_source,
-        }
 
 
 @dataclass(frozen=True)
@@ -1028,20 +968,17 @@ def _route_policy_errors(
     coupling: str | None,
     outputd_env: Mapping[str, str],
     camilla_devices: Mapping[str, Any] | None = None,
+    read_saved_topology: Callable[[], Any] | None = None,
 ) -> tuple[tuple[str, str], ...]:
     """Route-policy refusals as ``(reason_code, message)`` pairs."""
-    # Function-local: jasper.transport_coherence imports the transport shape
-    # constants and TransportTopology from this module at import time, so this
-    # module may only reach back into it from inside a call.
-    from jasper.transport_coherence import transport_coherence_errors
-
     errors = [
         (ROUTE_POLICY_TRANSPORT_INCOHERENT, message)
-        for message in transport_coherence_errors(
+        for message in transport_coherence_report(
             coupling=coupling,
             outputd_env=outputd_env,
             camilla_devices=camilla_devices,
-        )
+            read_saved_topology=read_saved_topology,
+        ).errors
     ]
     if route.route_id != ROUTE_USB_LOW_LATENCY_48K:
         return tuple(errors)
@@ -1096,12 +1033,12 @@ def _route_policy_errors(
         # an absent or blank value, so a refusal here always has a literal to
         # name.
         raw_bridge = str(
-            outputd_env.get(OUTPUTD_CONTENT_BRIDGE_KEY) or ""
+            outputd_env.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR) or ""
         ).strip().lower()
         errors.append((
             ROUTE_POLICY_OUTPUTD_OFF_RING,
             f"{ROUTE_USB_LOW_LATENCY_48K} requires "
-            f"{OUTPUTD_CONTENT_BRIDGE_KEY}={OUTPUTD_CONTENT_BRIDGE_SHM_RING}; "
+            f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}={OUTPUTD_CONTENT_BRIDGE_SHM_RING}; "
             f"{raw_bridge} is not the one transport",
         ))
     return tuple(errors)
@@ -1300,8 +1237,6 @@ def build_audio_runtime_plan(
 ) -> AudioRuntimePlan:
     """Resolve audio knobs from operator env, generated env, profile, defaults."""
 
-    from jasper.transport_coherence import transport_topology_for_coupling
-
     base_values = dict(base_env or {})
     outputd_values = dict(outputd_env or {})
     fanin_values = dict(fanin_env or {})
@@ -1407,10 +1342,12 @@ def build_audio_runtime_plan(
         )
     settings.append(coupling_setting)
     camilla_devices = read_camilla_devices_config(correction_config_path)
+    read_saved_topology = saved_topology_reader()
     topology = transport_topology_for_coupling(
         str(coupling_setting.value),
         fanin_env=fanin_values,
         outputd_env=outputd_layered,
+        read_saved_topology=read_saved_topology,
     )
     correction_latency = correction_latency_eligibility_for_config(
         correction_config_path
@@ -1438,6 +1375,7 @@ def build_audio_runtime_plan(
         ),
         outputd_env=outputd_layered,
         camilla_devices=camilla_devices,
+        read_saved_topology=read_saved_topology,
     )
     return AudioRuntimePlan(
         profile_id=profile_id or "unknown",

@@ -75,6 +75,9 @@ from jasper.identity import CROSSOVER_PAGE_PATH
 
 CAMPAIGN_ANGLES = [0, 7, -7, 22, -22]
 
+#: argparse's own usage exit, which is not this tool's exit vocabulary.
+ARGPARSE_USAGE_EXIT = 2
+
 # One banked anchor, and the vendor header that makes it absolute. The level
 # the receipt must print is ``ANCHOR_DB_SPL`` -- a walk drives at the anchor.
 ANCHOR_DB_SPL = 77.5
@@ -836,7 +839,7 @@ def test_a_filesystem_failure_is_its_own_exit_code(slot, monkeypatch, capsys):
 
     monkeypatch.setattr(spool, "atomic_write_text", _boom)
     args = cli.build_parser().parse_args(["stage", "--angles", "0"])
-    assert cli._cmd_stage(args) == cli.EXIT_STAGE_FAILED
+    assert cli._cmd_stage(args) == cli.EXIT_WRITE_FAILED
     assert "read-only file system" in capsys.readouterr().err
 
 
@@ -856,7 +859,7 @@ def test_withdraw_honors_the_same_exit_code_contract(slot, monkeypatch, capsys):
 
     monkeypatch.setattr(type(path), "unlink", _deny)
     args = cli.build_parser().parse_args(["withdraw", "--json"])
-    assert cli._cmd_withdraw(args) == cli.EXIT_STAGE_FAILED
+    assert cli._cmd_withdraw(args) == cli.EXIT_WRITE_FAILED
     out = capsys.readouterr()
     assert json.loads(out.out)["reason"] == "stage_failed"
     assert "Permission denied" in out.err
@@ -1015,7 +1018,9 @@ def test_a_malformed_invocation_is_a_usage_error(argv):
         # itself while the geometry rules need the parsed values to judge.
         cli._build_request(cli.build_parser().parse_args(["plan", *argv]))
 
-    assert excinfo.value.code == cli.EXIT_REFUSED
+    # argparse's OWN usage exit, not this tool's vocabulary: the invocation
+    # never reached a door that could refuse it.
+    assert excinfo.value.code == ARGPARSE_USAGE_EXIT
 
 
 def test_mutation_the_two_doors_cannot_both_be_open(slot):

@@ -13,7 +13,7 @@ is a predicate over inputs alone (**input predicate**) belongs to no unit.
 
 That taxonomy is the counting method behind the plan's analysis claim, so it is
 pinned mechanically here rather than restated in prose: the classification below
-comes from a fresh ``ast.parse`` of the module, never from a hand-kept list.
+comes from a fresh ``ast.parse`` of the package, never from a hand-kept list.
 
 Adding a ``ProgramAnalysis`` field, or a fifth construction site, turns this red
 on purpose — both are changes that re-open the unit table, and the table is what
@@ -29,7 +29,7 @@ import ast
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SOURCE = REPO_ROOT / "jasper" / "audio_measurement" / "program_analysis.py"
+SOURCE = REPO_ROOT / "jasper" / "audio_measurement" / "program_analysis"
 
 PASSTHROUGH = "passthrough"
 PROJECTION = "projection"
@@ -49,7 +49,11 @@ CONSTRUCTION_SITE_OWNERS = frozenset(
 
 
 def _module() -> ast.Module:
-    return ast.parse(SOURCE.read_text(encoding="utf-8"), filename=str(SOURCE))
+    """The package read as one tree: the split is by phase, the census is not."""
+    body: list[ast.stmt] = []
+    for path in sorted(SOURCE.glob("*.py")):
+        body.extend(ast.parse(path.read_text(encoding="utf-8"), filename=str(path)).body)
+    return ast.Module(body=body, type_ignores=[])
 
 
 def _declared_fields(tree: ast.Module) -> tuple[str, ...]:

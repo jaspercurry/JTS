@@ -84,7 +84,7 @@ FANIN_STATUS_CONSUMERS: dict[str, set[str]] = {
         "watchdog", "last_progress_age_ms", "pings_skipped",
     },
     # check_fanin_service
-    "jasper/cli/doctor/audio_runtime.py": {
+    "jasper/cli/doctor/audio_runtime_fanin.py": {
         "output", "pcm", "frames_written", "xrun_count",
         "inputs", "label", "input_buffer_frames",
         "watchdog", "last_progress_age_ms",
@@ -172,13 +172,25 @@ def test_fanin_control_command_vocabulary_matches_mux():
 
 def test_control_socket_paths_agree_across_processes(monkeypatch):
     """fan-in's control socket path is a hardcoded Rust constant (its
-    config.rs reads no env override) and every Python consumer hardcodes the
-    same literal; outputd's unit pins the env explicitly. If either daemon
-    moves its socket, every consumer here moves with it in the same PR.
+    config.rs reads no env override) and outputd's unit pins the env
+    explicitly. Every Python consumer below resolves the shared constant, so
+    the VALUE each process will connect to is asserted here: if either daemon
+    moves its socket, every consumer moves with it in the same PR.
+
+    Two are deliberately absent. ``jasper.correction.runtime_integrity`` still
+    spells the outputd path itself (measurement corner). ``jasper.mux`` resolves
+    ``JASPER_FANIN_CONTROL_SOCKET`` at import time, so an operator exercising
+    that documented override would redden this; its default IS the shared
+    constant by construction, and ``tests/test_mux.py`` owns the override.
     """
-    from jasper.correction.runtime_integrity import FANIN_CONTROL_SOCKET
-    from jasper.fanin.status import FANIN_STATUS_SOCKET
+    from jasper import audio_validation
+    from jasper.cli import system_soak
+    from jasper.cli.doctor import audio_runtime_fanin, audio_runtime_outputd
+    from jasper.control import grouping_supervisor
+    from jasper.correction import runtime_integrity
+    from jasper.fanin import status as fanin_status
     from jasper.peering.config import PEERING_UDS_PATH
+    from jasper.route_latency import status_socket, tap_client
 
     from .doctor_test_support import _fresh_cfg
 
@@ -186,28 +198,25 @@ def test_control_socket_paths_agree_across_processes(monkeypatch):
     outputd_sock = "/run/jasper-outputd/control.sock"
 
     assert f'"{fanin_sock}"' in FANIN_CONFIG_RS.read_text()
-    assert FANIN_STATUS_SOCKET == fanin_sock
-    assert FANIN_CONTROL_SOCKET == FANIN_STATUS_SOCKET
-    for rel in (
-        "jasper/mux.py",
-        "jasper/control/airplay_health.py",
-        "jasper/cli/doctor/audio_runtime.py",
-        "jasper/cli/system_soak.py",
-    ):
-        assert fanin_sock in (REPO / rel).read_text(), (
-            f"{rel} no longer pins the fan-in control socket {fanin_sock}"
-        )
-
     unit = (REPO / "deploy" / "systemd" / "jasper-outputd.service").read_text()
     assert f'Environment="JASPER_OUTPUTD_CONTROL_SOCKET={outputd_sock}"' in unit
-    for rel in (
-        "jasper/audio_validation.py",
-        "jasper/cli/doctor/audio_runtime.py",
-        "jasper/cli/system_soak.py",
-    ):
-        assert outputd_sock in (REPO / rel).read_text(), (
-            f"{rel} no longer pins the outputd control socket {outputd_sock}"
-        )
+
+    assert {
+        status_socket.FANIN_STATUS_SOCKET,
+        fanin_status.FANIN_STATUS_SOCKET,
+        runtime_integrity.FANIN_CONTROL_SOCKET,
+        tap_client.FANIN_CONTROL_SOCKET,
+        audio_runtime_fanin.FANIN_STATUS_SOCKET,
+        system_soak.STATUS_SOCKETS["fanin"],
+    } == {fanin_sock}
+    assert {
+        status_socket.OUTPUTD_STATUS_SOCKET,
+        runtime_integrity.OUTPUTD_CONTROL_SOCKET,
+        grouping_supervisor.OUTPUTD_CONTROL_SOCKET,
+        audio_runtime_outputd._OUTPUTD_STATUS_SOCKET,
+        str(audio_validation.DEFAULT_OUTPUTD_STATUS_SOCKET),
+        system_soak.STATUS_SOCKETS["outputd"],
+    } == {outputd_sock}
 
     # voice connects where jasper-control's peering daemon binds.
     monkeypatch.delenv("JASPER_PEERING_UDS", raising=False)

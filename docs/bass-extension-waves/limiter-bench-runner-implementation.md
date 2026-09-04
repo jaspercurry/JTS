@@ -56,7 +56,7 @@ Building the runner is authorized — gate 1 (the amendment is merged) is done. 
      what stays blocked. Implement it exactly.
 3. Read the reuse machinery (the wave-4 prompt's "Required reading" is the deeper
    index — [`wave-4-commissioning-backend.md`](wave-4-commissioning-backend.md)):
-   `measurement_window()` (`jasper/correction/coordinator.py`); the two-boundary
+   `measurement_window()` (`jasper/measurement_window.py`); the two-boundary
    admission chain (`jasper/audio_measurement/excitation_admission.py` +
    `admitted_playback.py`); `MeasurementRamp` / `safe_playback`
    (`jasper/audio_measurement/ramp.py`); the located
@@ -88,7 +88,7 @@ Building the runner is authorized — gate 1 (the amendment is merged) is done. 
 - Producer `jasper.bass_extension.limiter_evidence.produce_limiter_thresholds`,
   `LimiterThresholdSet`, `LimiterEvidenceRefusal` exist and are frozen. You emit
   a bundle it can consume; you never modify it.
-- `measurement_window` in `jasper/correction/coordinator.py`; `admit_excitation`
+- `measurement_window` in `jasper/measurement_window.py`; `admit_excitation`
   / `ExcitationRequest` / `ExcitationLimits` / `ProtectionEvidence` in
   `jasper/audio_measurement/excitation_admission.py`.
 - `record_artifact` / `write_json_artifact` in

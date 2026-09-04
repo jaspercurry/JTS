@@ -21,10 +21,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Final, TypedDict, cast
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
+from typing import Any, Final, TypedDict, cast
 
 # Environment selector. Read at config-emit time and at fan-in daemon startup.
 COUPLING_ENV_VAR = "JASPER_FANIN_CAMILLA_COUPLING"
@@ -225,6 +222,17 @@ DEFAULT_OUTPUTD_RING_PATH = "/dev/shm/jts-ring/content.ring"
 OUTPUTD_RING_SLOTS_ENV_VAR = "JASPER_OUTPUTD_SHM_RING_SLOTS"
 DEFAULT_OUTPUTD_RING_SLOTS = 2
 
+# The width outputd REQUESTS on its content upstream. Single writer:
+# ``jasper-audio-hardware-reconcile``, from
+# :func:`content_lane_format_for_coupling`.
+OUTPUTD_CONTENT_FORMAT_ENV_VAR = "JASPER_OUTPUTD_CONTENT_FORMAT"
+# The width outputd assumes when that key is absent or empty: outputd's own
+# documented default (``rust/jasper-outputd/src/config.rs``), the pre-flip S16
+# lane, NOT whatever :func:`resolve_ring_wire` would pick for this box. A reader
+# that followed the resolver here would refuse an arm for a wire the daemon has
+# in fact declared.
+OUTPUTD_DEFAULT_CONTENT_FORMAT = "S16_LE"
+
 # Ring B playback device. CamillaDSP writes its post-DSP stereo program to this
 # ALSA ioplug device (the WRITE direction of the same ``jts_ring`` plugin whose
 # CAPTURE direction is ``jts_ring_capture``). Its wire is whatever
@@ -268,6 +276,72 @@ DEFAULT_OUTPUTD_ACTIVE_RING_PATH = "/dev/shm/jts-ring/active-content.ring"
 # biconditional "the active ring path may be read ONLY by an armed active
 # endpoint, and an armed active endpoint may read ONLY the active ring path".
 OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR = "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT"
+
+
+# ---------------------------------------------------------------------------
+# The named transport SHAPES. ``TransportTopology.name`` is the discriminator
+# every consumer matches on, so each distinct transport gets its own name rather
+# than a shared name with a device threaded through it: an exhaustive match over
+# named shapes fails LOUD on one nobody handled, where a threaded device value
+# shears silently through five call sites.
+#
+# ``shm_ring_active`` is selected on the PERSISTED COUPLING plus the reconciler's
+# endpoint MARKER — deliberately NOT on the observed ``camilla_playback_device``.
+# Selecting on the observed device would make
+# :func:`jasper.transport_coherence.transport_coherence_report`' playback
+# comparison vacuous: it would derive the expectation from the very value it is
+# checking, so a Camilla graph pointed at the wrong ring would define itself
+# correct.
+TRANSPORT_SHM_RING_ACTIVE = "shm_ring_active"
+# One END of the box is off the one transport (ADR-0100) — the LEGACY FIFO
+# spelling of the round-trip ``dac_content`` lane, which outputd requires
+# ``CONTENT_BRIDGE=direct`` for, or a coupling/bridge a daemon parks on. Not a
+# second route: jasper.control.transport_park is what names such a box. The
+# ring MARKER's shape is NOT this one — see TRANSPORT_DAC_CONTENT_RING below,
+# which is served.
+TRANSPORT_OFF_RING = "off_ring"
+# A DUMB bonded member: outputd's content comes off the dac-content RETURN ring
+# and no CENTRAL post-DSP ring is attached at all. Its own shape rather than
+# TRANSPORT_OFF_RING, which would drop a healthy bonded member into the arm
+# whose comparisons assume nothing is feeding outputd — while Ring A is still
+# live on this box and must keep being compared.
+TRANSPORT_DAC_CONTENT_RING = "dac_content_ring"
+# Every named shape, so an exhaustive consumer can assert it handled one.
+TRANSPORT_SHAPES = frozenset(
+    (
+        TRANSPORT_OFF_RING,
+        COUPLING_SHM_RING,
+        TRANSPORT_SHM_RING_ACTIVE,
+        TRANSPORT_DAC_CONTENT_RING,
+    )
+)
+# Every shape whose post-DSP hop is an SHM ring CamillaDSP drives. Membership,
+# never a ``==`` on one name: a consumer that tested only ``shm_ring`` would
+# silently take its OFF-RING arm on an active-ring box, which is the D5
+# permanent-red-line shape. The dac-content shape is NOT a member: its post-DSP
+# hop is a ring, but CamillaDSP does not drive it, so every camilla-endpoint
+# comparison in this set is meaningless there.
+RING_TRANSPORT_SHAPES = frozenset((COUPLING_SHM_RING, TRANSPORT_SHM_RING_ACTIVE))
+
+
+@dataclass(frozen=True)
+class TransportTopology:
+    """Resolved audio transport topology for status/doctor surfaces."""
+
+    name: str
+    fanin_to_camilla: Mapping[str, Any]
+    camilla_to_outputd: Mapping[str, Any]
+    camilla: Mapping[str, Any]
+    outputd_content_source: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "fanin_to_camilla": dict(self.fanin_to_camilla),
+            "camilla_to_outputd": dict(self.camilla_to_outputd),
+            "camilla": dict(self.camilla),
+            "outputd_content_source": self.outputd_content_source,
+        }
 
 
 def ring_active_endpoint_armed(env: "Mapping[str, str] | None" = None) -> bool:

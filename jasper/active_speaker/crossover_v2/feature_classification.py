@@ -2,17 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""What KIND of feature is that, read from a banked verdict — and nothing else.
-
-The verdict FORMAT, not the pipeline: nothing here runs a test or computes a
-number, and :mod:`.feature_classifier` is the instrument that produces one
-(``docs/active-speaker-tuning-layers-design.md`` stage P3 rule 1). The
-verdict strings are the 2026-08-19 lab's character for character —
-re-spelling one would stop matching every record already on disk.
-``defect-*`` is necessary and NOT sufficient (run-log §9.2): the two bars
-remove features that sign of filter is the wrong instrument for, they do not
-recommend. A row that cannot be typed is dropped, never turned into an
-``ambiguous`` verdict.
+"""What KIND of feature is that, read from a banked verdict — nothing else.
+The verdict FORMAT, not the pipeline: :mod:`.feature_classifier` computes the
+number (``docs/active-speaker-tuning-layers-design.md`` stage P3 rule 1).
+Verdict strings are the 2026-08-19 lab's spelling, character for character —
+re-spelling would stop matching records on disk. ``defect-*`` is necessary,
+NOT sufficient (run-log §9.2): the two bars remove features sign-of-filter is
+the wrong instrument for; they do not recommend. An untypeable row is
+dropped, never turned into ``ambiguous``.
 """
 
 from __future__ import annotations

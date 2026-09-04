@@ -30,8 +30,10 @@ from collections import deque
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..local_sources.registry import local_source_lifecycles
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
+from ..route_latency.status_socket import OUTPUTD_STATUS_SOCKET
 from ..fanin.latency_mode import PRESETS, classify_runtime
 from ..source_intent import read_source_intents
 from .airplay_health import (
@@ -53,7 +55,6 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 ROUTE_INTERVAL_SEC = 60.0
-OUTPUTD_SOCKET = "/run/jasper-outputd/control.sock"
 LOCAL_STATUS_TIMEOUT_SEC = 1.0
 FANIN_STALE_MS = 5000
 OUTPUTD_STALE_MS = 3000
@@ -237,7 +238,7 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 
 
 def _read_local_status(
-    socket_path: str = OUTPUTD_SOCKET,
+    socket_path: str = OUTPUTD_STATUS_SOCKET,
     timeout_sec: float = LOCAL_STATUS_TIMEOUT_SEC,
     max_bytes: int = MAX_STATUS_BYTES,
 ) -> dict[str, Any] | None:
@@ -1630,6 +1631,88 @@ def _fresh_dac_delay_ms(dac: Mapping[str, Any]) -> float | None:
     return float(delay)
 
 
+# AirPlay drop attribution: network vs internal:receiver, for an
+# airplay.input_unavailable incident on a ring-armed lane (jts4-class
+# Zero 2 W). A closed token set — "unknown" is a first-class, expected
+# answer, not a failure to classify.
+ATTRIBUTION_NETWORK_RATIO = 0.35
+ATTRIBUTION_RECEIVER_RATIO = 0.70
+_ATTRIBUTION_RECEIVER_STOPPED_STATES = frozenset({"T", "D", "Z"})
+_ATTRIBUTION_LABELS = {
+    "network": (
+        "Audio stopped arriving over Wi-Fi (sender paused, or the link dropped)"
+    ),
+    "internal:receiver": (
+        "Audio arrived but the receiver on this speaker did not play it"
+    ),
+    "unknown": "Not enough evidence to say",
+}
+
+
+def _input_attribution(
+    airplay: Mapping[str, Any],
+    active_source: str | None,
+) -> dict[str, Any] | None:
+    """Network vs internal:receiver verdict, evaluated only for AirPlay on a
+    ring-armed lane. Rules, first match wins:
+
+    1. no ring block, no baseline, baseline <= 0, or no link sample ->
+       unknown
+    2. receiver stopped/swapping (state T/D/Z, or majflt this tick) ->
+       internal:receiver (checked first: a stalled receiver in TCP mode
+       also collapses rx, so this must outrank the rate rule)
+    3. rx rate < NETWORK_RATIO * baseline -> network
+    4. rx rate >= RECEIVER_RATIO * baseline -> internal:receiver
+    5. else -> unknown
+
+    UDP RcvbufErrors is system-wide (any process' socket can overflow it)
+    and cannot implicate shairport-sync specifically, so its delta is
+    surfaced as evidence only, never a verdict rule.
+    """
+    if active_source != Source.AIRPLAY.value:
+        return None
+    current = _mapping(airplay.get("current"))
+    fanin = _mapping(current.get("fanin"))
+    source_input = _mapping(_mapping(fanin.get("inputs")).get(Source.AIRPLAY.value))
+    ring = _mapping(source_input.get("ring"))
+    link = _mapping(current.get("link"))
+    receiver = _mapping(link.get("receiver"))
+
+    baseline = _finite_number(link.get("rx_bytes_per_sec_baseline"))
+    rx_rate = _finite_number(link.get("rx_bytes_per_sec"))
+    state = receiver.get("state")
+    majflt_rate = _finite_number(receiver.get("majflt_per_sec"))
+    rcvbuf_delta = _finite_number(link.get("udp_rcvbuf_errors_delta"))
+
+    if not ring or baseline is None or baseline <= 0 or rx_rate is None:
+        verdict = "unknown"
+    elif state in _ATTRIBUTION_RECEIVER_STOPPED_STATES or (
+        majflt_rate is not None and majflt_rate > 0
+    ):
+        verdict = "internal:receiver"
+    elif rx_rate < ATTRIBUTION_NETWORK_RATIO * baseline:
+        verdict = "network"
+    elif rx_rate >= ATTRIBUTION_RECEIVER_RATIO * baseline:
+        verdict = "internal:receiver"
+    else:
+        verdict = "unknown"
+
+    details = [_detail("Verdict", _ATTRIBUTION_LABELS[verdict])]
+    if rx_rate is not None and baseline:
+        details.append(_detail(
+            "Link rate",
+            f"{rx_rate:.0f} B/s (baseline {baseline:.0f} B/s)",
+        ))
+    if state is not None:
+        details.append(_detail("Receiver state", state))
+    packet_rate = _finite_number(link.get("udp_in_datagrams_per_sec"))
+    if packet_rate is not None:
+        details.append(_detail("Packets in", f"{float(packet_rate):.0f}/s"))
+    if rcvbuf_delta is not None and rcvbuf_delta > 0:
+        details.append(_detail("UDP recv buffer errors", f"+{int(rcvbuf_delta)}"))
+    return {"verdict": verdict, "details": details[:5]}
+
+
 def _incident_context(
     airplay: Mapping[str, Any],
     outputd: Mapping[str, Any] | None,
@@ -1643,11 +1726,15 @@ def _incident_context(
         if active_source is not None else {}
     )
     output = _mapping(_mapping(outputd).get("dac"))
-    return {
+    context: dict[str, Any] = {
         "clock_mode": _mapping(fanin.get("host_clock")).get("ladder"),
         "input": {"rms_dbfs": source_input.get("rms_dbfs")},
         "output": {"snd_pcm_delay_ms": _fresh_dac_delay_ms(output)},
     }
+    attribution = _input_attribution(airplay, active_source)
+    if attribution is not None:
+        context["attribution"] = attribution
+    return context
 
 
 def _receiver_latency(
@@ -1831,8 +1918,24 @@ def _incident_impact(issue: Mapping[str, Any]) -> str:
     }.get(str(issue.get("impact")), "Audio quality may have been affected.")
 
 
+_AIRPLAY_INPUT_UNAVAILABLE_KEY = f"{Source.AIRPLAY.value}.input_unavailable"
+_LIKELY_AREA_BY_VERDICT = {
+    "network": "Wi-Fi link to this speaker",
+    "internal:receiver": "AirPlay receiver on this speaker",
+}
+
+
 def _likely_area(issue: Mapping[str, Any]) -> str:
     key = str(issue.get("key") or "")
+    if key == _AIRPLAY_INPUT_UNAVAILABLE_KEY:
+        attribution = _mapping(
+            _mapping(_mapping(issue.get("context")).get("started")).get(
+                "attribution",
+            ),
+        )
+        area = _LIKELY_AREA_BY_VERDICT.get(str(attribution.get("verdict")))
+        if area is not None:
+            return area
     if key.startswith("path.outputd"):
         return "Final output stage"
     if key.startswith(("path.fanin", "path.camilla", "path.transport")):
@@ -1850,6 +1953,14 @@ def _likely_area(issue: Mapping[str, Any]) -> str:
 def _incident_evidence(issue: Mapping[str, Any]) -> list[dict[str, str]]:
     evidence: list[dict[str, str]] = []
     context = _mapping(_mapping(issue.get("context")).get("started"))
+    if issue.get("key") == _AIRPLAY_INPUT_UNAVAILABLE_KEY:
+        attribution_details = _mapping(context.get("attribution")).get("details")
+        if isinstance(attribution_details, list):
+            evidence.extend(
+                _detail(str(row["label"]), str(row["value"]))
+                for row in attribution_details
+                if isinstance(row, Mapping) and row.get("label") and row.get("value")
+            )
     if context.get("clock_mode"):
         evidence.append(_detail("Clock mode", context["clock_mode"]))
     input_context = _mapping(context.get("input"))
@@ -2239,6 +2350,7 @@ def compose_audio_health(
                 "summary_30m": copy.deepcopy(ap.get("summary_30m")),
                 "storm": copy.deepcopy(ap.get("storm")),
             },
+            "link": copy.deepcopy(current.get("link")),
         },
     }
 
@@ -2261,7 +2373,7 @@ class AudioHealthSampler:
         incident_store: IncidentStore | None = None,
         time_fn: Callable[[], float] = time.time,
         camilla_host: str = "127.0.0.1",
-        camilla_port: int = 1234,
+        camilla_port: int = DEFAULT_CAMILLA_PORT,
     ) -> None:
         self._sample_interval = sample_interval_sec
         self._route_interval = route_interval_sec

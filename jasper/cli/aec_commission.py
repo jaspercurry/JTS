@@ -67,7 +67,7 @@ from jasper.chip_aec.record import (
 from jasper.chip_aec.policy import STATUS_APPROVED, static_dac_qualification
 from jasper.chip_aec.shipped import render_entry
 from jasper.cli import aec_init
-from jasper.correction.coordinator import (
+from jasper.measurement_window import (
     HeldWindow,
     MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC,
     MEASUREMENT_HOLD_COMMAND_TIMEOUT_SEC,

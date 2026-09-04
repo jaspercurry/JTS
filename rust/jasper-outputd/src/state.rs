@@ -2611,8 +2611,9 @@ mod tests {
 
     #[test]
     fn snapshot_json_emits_every_key_the_python_status_consumers_read() {
-        // jasper/audio_validation.py and jasper/cli/doctor/audio_runtime.py read
-        // STATUS through fail-soft `.get()` chains, so a renamed key never throws
+        // jasper/audio_validation.py and
+        // jasper/cli/doctor/audio_runtime_outputd.py read STATUS through
+        // fail-soft `.get()` chains, so a renamed key never throws
         // — it degrades to null and quietly blanks a check. Built on the box shape
         // that emits every optional block (chip-reference writer armed and
         // observing, UDP reference target set) so no key is missing merely because

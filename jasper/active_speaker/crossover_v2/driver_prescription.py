@@ -4,47 +4,12 @@
 
 """ONE driver's full-band shape correction, prescribed from outside.
 
-The per-driver intake for the prescriber loop, whose only other door reaches
-the SUMMED blend region. It rides the blend gate's lifecycle — same posture,
-same shared exception type, same packet-fingerprint anchoring, same one-owner
-response format, same fail-closed never-clamped rule, same spool. What differs
-is what a proposal may say and what it is measured against.
-
-Three rules govern this door.
-
-* The route is fixed: a prescription of this class lands in
-  :data:`LINEARIZATION_CANDIDATE_FIELD` and nowhere else
-  (``docs/active-speaker-tuning-layers-design.md`` stage P3 rule 3).
-* MERGE BY ROLE: a document's named roles replace those roles, unnamed roles
-  are untouched. The field has two producers — the Layer-1a fit writes every
-  eligible role — so this is a real question the blend class never had.
-* Every admission bar is SHAPE. The classification vouch is DISCLOSED, never
-  refused (#2863): a vouch is a prediction about whether a filter will help,
-  and the measurement decides. A hard bound here is for hearing or hardware
-  and nothing else, which is why the cut depth ceilings and the POLICY min-Q
-  floor are gone (ADR-0207) — a cut cannot clip, and the round's own measured
-  verify with auto-restore is the net. What still bounds a cut's width is the
-  evaluator's own :data:`~jasper.sound.profile.EVALUABLE_Q_MIN`/``_MAX``.
-
-A boost's whole cost is MAXIMUM SPL: it is charged by
-``camilla_yaml.linearization_headroom_db`` and absorbed by
-``active_baseline_headroom``, which attenuates the program before the split, so
-a boosted graph delivers no more absolute level than an unboosted one.
-:data:`DRIVER_MAX_COMPOSED_BOOST_DB` on the evaluated per-role cascade is what
-sizes the class, bounding that spend at :data:`MAX_SPL_SPEND_BOUND_DB` = 13.0
-dB. The emitter's 12 dB rail, the per-driver soft-clip limiters and the runtime
-contract's re-proof are unchanged and are not this class's to weaken.
-
-Every bound with a source is RESTATED here rather than imported, on
-``camilla_yaml``'s lockstep rule: this gate independently re-validates a
-document the fit engine did not write, so inheriting the engine's policy
-constant would let a change there move what an outside reader may propose.
-``tests/test_crossover_v2_driver_prescription.py`` pins each pair numerically.
-
-The band a filter must sit in is the DRIVER's own declared band — not the
-crossover region and not the radiating band — because a cut past the handoff
-still reaches the sum and spends no headroom (#2523). See
-:func:`driver_passbands_from_safety_profile`.
+The per-driver intake for the prescriber loop; :mod:`.blend_prescription`
+owns the sibling door onto the SUMMED region — same lifecycle, exception
+type, packet-fingerprint anchoring, spool. Every admission bar is SHAPE: the
+classification vouch DISCLOSES, never refuses (#2863). The band is the
+DRIVER's declared band (:func:`driver_passbands_from_safety_profile`), not
+the crossover region — a cut past the handoff still spends no headroom (#2523).
 """
 
 from __future__ import annotations
@@ -59,7 +24,9 @@ import numpy as np
 # Leaf of the crossover_v2 DAG. Facts about the graph — the ONE biquad
 # evaluator, the emitter's filter vocabulary, the shelf steepness it actually
 # spells, the trim floor, the declared protection edges — are CONSUMED here,
-# the opposite of the lockstep rule the policy bounds below follow.
+# the opposite of the lockstep rule the policy bounds below follow: bounds
+# with a source are RESTATED, not imported;
+# tests/test_crossover_v2_driver_prescription.py pins each pair.
 from jasper.active_speaker.branch_chain import (
     CHAIN_GRID_HZ,
     HEADROOM_MARGIN_DB,
@@ -107,6 +74,8 @@ from .feature_classification import (
 DriverPassbands = Mapping[str, tuple[float, float]]
 
 __all__ = [
+    "DECLARED_TILT_BOUND_DB_PER_OCTAVE",
+    "DECLARED_TILT_FIELD",
     "DRIVER_MAX_BOOST_Q",
     "DRIVER_MAX_COMPOSED_BOOST_DB",
     "DRIVER_MAX_FILTERS_PER_ROLE",
@@ -118,6 +87,8 @@ __all__ = [
     "DRIVER_PRESCRIPTION_REFUSAL_REASONS",
     "DRIVER_PRESCRIPTION_TOO_LARGE",
     "DRIVER_PRESCRIPTION_SCHEMA_VERSION",
+    "EXPECTED_DELTA_BOUND_DB",
+    "EXPECTED_DELTA_FIELD",
     "LINEARIZATION_CANDIDATE_FIELD",
     "MAX_SPL_SPEND_BOUND_DB",
     "ClassificationBasis",
@@ -174,6 +145,17 @@ RATIONALE_MAX_CHARS = 1_200
 #: of it reaches CamillaDSP.
 LINEARIZATION_CANDIDATE_FIELD = "linearization"
 
+#: Key names; the door, the candidate stamp and ``round_views`` all read these.
+EXPECTED_DELTA_FIELD = "expected_delta_db"
+DECLARED_TILT_FIELD = "declared_tilt_db_per_octave"
+
+#: Unit check, not a bar on optimism: a pooled-RMS move wider than this dB is
+#: a percentage or a frequency in the wrong slot.
+EXPECTED_DELTA_BOUND_DB = 30.0
+
+#: The bound above read as a slope over the ~10 graded octaves, dB/octave.
+DECLARED_TILT_BOUND_DB_PER_OCTAVE = 3.0
+
 
 # --------------------------------------------------------------------------- #
 # bounds — every one restored from the engine that already emits into this seam
@@ -218,7 +200,7 @@ DRIVER_MIN_CUT_DB = 0.5
 #: the rail the fit engine emits up to, restated on this module's lockstep rule.
 #: A prescription at this ceiling is therefore emittable rather than accepted
 #: here and refused downstream. Equal to
-#: :data:`DRIVER_MAX_COMPOSED_BOOST_DB` (ruling R8), so two boost filters both
+#: :data:`DRIVER_MAX_COMPOSED_BOOST_DB` (ADR-0207), so two boost filters both
 #: at this rail can never clear the composed cap — each alone reads 12.0 there
 #: and skirt overlap only adds (two Q-8 boosts a third of an octave apart still
 #: compose to 12.7802). The composed cap binds every multi-filter boost; this
@@ -226,7 +208,7 @@ DRIVER_MIN_CUT_DB = 0.5
 DRIVER_MAX_FILTER_BOOST_DB = 12.0
 
 #: Ceiling on the COMPOSED boost's peak over one role's passband, dB. POLICY
-#: (ruling R8) — the one bound here restored from no neighbour, since the fit
+#: (ADR-0207) — the one bound here restored from no neighbour, since the fit
 #: engine leaves total boost deliberately unbounded.
 #:
 #: It sizes the whole class's cost, and carries that weight ONLY because
@@ -286,7 +268,7 @@ MAX_SPL_SPEND_BOUND_DB = DRIVER_MAX_COMPOSED_BOOST_DB + HEADROOM_MARGIN_DB
 
 #: Slack on the COMPOSED BOOST comparison alone, dB, so the evaluator's own
 #: double-precision residue cannot decide a policy question. Needed only
-#: because ruling R8 made :data:`DRIVER_MAX_FILTER_BOOST_DB` and
+#: because ruling R8 (ADR-0207) made :data:`DRIVER_MAX_FILTER_BOOST_DB` and
 #: :data:`DRIVER_MAX_COMPOSED_BOOST_DB` the SAME number: a single filter at the
 #: rail composes to it exactly in arithmetic, and the biquad evaluates it to a
 #: residue whose SIGN depends on centre frequency and Q. Swept over 4,000
@@ -337,6 +319,7 @@ FILTER_Q_OUT_OF_RANGE = "driver_filter_q_out_of_range"
 FILTER_BOOST_TOO_HIGH = "driver_filter_boost_too_high"
 COMPOSED_BOOST_EXCEEDED = "driver_composed_boost_exceeded"
 TRIM_PIN_MALFORMED = "driver_trim_pin_malformed"
+DRIVER_EXPECTATION_MALFORMED = "driver_expectation_malformed"
 
 # A refusal this door can no longer give is DELETED from this set rather than
 # left registered-but-unreachable, because a prescriber reads it as
@@ -358,6 +341,7 @@ DRIVER_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     FILTER_BOOST_TOO_HIGH,
     COMPOSED_BOOST_EXCEEDED,
     TRIM_PIN_MALFORMED,
+    DRIVER_EXPECTATION_MALFORMED,
 })
 
 #: Top-level fields a proposal may carry. Anything else is refused rather than
@@ -370,6 +354,8 @@ _PRESCRIPTION_FIELDS = frozenset({
     "prescriber",
     "filters",
     "pinned_trim_db",
+    EXPECTED_DELTA_FIELD,
+    DECLARED_TILT_FIELD,
     "rationale",
     # Written BY the gate, accepted on the way back in so a durable block
     # round-trips through this parser. A request that supplies them is
@@ -504,6 +490,13 @@ class DriverPrescription:
     pinned_trim_db: tuple[tuple[str, float], ...] = ()
     #: The prescriber's own words. NEVER parsed for behaviour.
     rationale: str = ""
+    #: Predicted move in ``jasper-round-views frozen``'s pooled per-role RMS
+    #: deviation, dB, negative for flatter. ``None`` is not pre-registered,
+    #: never a predicted zero. Read by no gate (doctrine §1).
+    expected_delta_db: float | None = None
+    #: The declared voicing tilt, dB/octave, negative for a downward in-room
+    #: tilt (methodology §8). Read by no gate.
+    declared_tilt_db_per_octave: float | None = None
 
     @property
     def roles(self) -> tuple[str, ...]:
@@ -551,6 +544,8 @@ class DriverPrescription:
             "displaced_filters": self.displaced_filters,
             "displaced_boost_db": self.displaced_boost_db,
             "displaced_boost_role": self.displaced_boost_role,
+            EXPECTED_DELTA_FIELD: self.expected_delta_db,
+            DECLARED_TILT_FIELD: self.declared_tilt_db_per_octave,
             "rationale": self.rationale,
         }
 
@@ -840,8 +835,8 @@ def _check_bounds(
     Returns ``"boost"`` when any gain is positive, else ``"cut"`` — the one
     producer of the receipt's class field. A document may mix signs; the class
     names what it is capable of, and each filter is bounded by its OWN sign,
-    magnitude ceiling and width. Neither sign has a magnitude FLOOR:
-    :func:`_subaudible_filters` counts what used to be refused.
+    magnitude ceiling and width. Neither sign has a magnitude FLOOR: a
+    sub-threshold filter is counted, not refused, by :func:`_subaudible_filters`.
     """
     for position, entry in enumerate(filters):
         role = str(entry["role"])
@@ -1155,6 +1150,29 @@ def _rationale(raw: Any) -> tuple[str, int]:
     return text[:RATIONALE_MAX_CHARS], max(0, len(text) - RATIONALE_MAX_CHARS)
 
 
+def _pre_registration(raw: Mapping[str, Any]) -> tuple[float | None, float | None]:
+    """Refused rather than dropped, for :func:`_parse_pinned_trim`'s reason: a
+    value outside the bound was never written by this door."""
+    def declared(field: str, bound: float) -> float | None:
+        value = raw.get(field)
+        if value is None:
+            return None
+        number = _finite_or_none(value)
+        if number is None or abs(number) > bound:
+            _refuse(
+                DRIVER_EXPECTATION_MALFORMED,
+                f"{field} must be a finite number between {-bound:g} and "
+                f"{bound:g}, got {value!r}",
+                field=field, bound=bound,
+            )
+        return number
+
+    return (
+        declared(EXPECTED_DELTA_FIELD, EXPECTED_DELTA_BOUND_DB),
+        declared(DECLARED_TILT_FIELD, DECLARED_TILT_BOUND_DB_PER_OCTAVE),
+    )
+
+
 def _parse_pinned_trim(
     raw: Any, filters: Sequence[Mapping[str, Any]]
 ) -> tuple[tuple[str, float], ...]:
@@ -1333,6 +1351,7 @@ def read_driver_prescription(
         filters, pinned_trim_db, fingerprint, model, operator, rationale,
         rationale_dropped,
     ) = _parse_prescription(raw)
+    expected_delta_db, declared_tilt = _pre_registration(raw)
 
     if not isinstance(packet_fingerprint, str) or not packet_fingerprint:
         _refuse(
@@ -1400,6 +1419,8 @@ def read_driver_prescription(
         displaced_boost_db=displaced_boost_db,
         displaced_boost_role=displaced_boost_role,
         rationale=rationale,
+        expected_delta_db=expected_delta_db,
+        declared_tilt_db_per_octave=declared_tilt,
     )
     driver_prescription_route(prescription)
     return prescription
@@ -1464,6 +1485,14 @@ def driver_prescription_to_candidate_fields(
         if isinstance(role, str) and role.strip()
     }
     pinned_roles = {role for role, _db in prescription.pinned_trim_db}
+    pre_registration = {
+        key: value
+        for key, value in (
+            (EXPECTED_DELTA_FIELD, prescription.expected_delta_db),
+            (DECLARED_TILT_FIELD, prescription.declared_tilt_db_per_octave),
+        )
+        if value is not None
+    }
     for role in prescription.roles:
         entry: dict[str, Any] = {
             "filters": [dict(f) for f in prescription.filters_for(role)],
@@ -1471,6 +1500,8 @@ def driver_prescription_to_candidate_fields(
                 "model": prescription.prescriber_model,
                 "operator": prescription.prescriber_operator,
                 PACKET_FINGERPRINT_FIELD: prescription.packet_fingerprint,
+                # Omitted, never null: a null here reads as a predicted zero.
+                **pre_registration,
             },
         }
         # The BIT, never the number: the pinned value is the candidate's own
@@ -1506,6 +1537,7 @@ def driver_prescription_from_mapping(raw: Any) -> DriverPrescription | None:
         filters, pinned_trim_db, fingerprint, model, operator, rationale, _dropped = (
             _parse_prescription(raw)
         )
+        expected_delta_db, declared_tilt = _pre_registration(raw)
     except BlendPrescriptionRefused:
         return None
     bands = _passbands_from_mapping(raw.get("passbands_hz") if isinstance(raw, Mapping) else None)
@@ -1522,6 +1554,8 @@ def driver_prescription_from_mapping(raw: Any) -> DriverPrescription | None:
         prescriber_operator=operator,
         passbands_hz=bands,
         rationale=rationale,
+        expected_delta_db=expected_delta_db,
+        declared_tilt_db_per_octave=declared_tilt,
     )
 
 
@@ -1610,6 +1644,17 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "otherwise rides a level it was not shaped against. A trim you "
                 "name is CARRIED, never re-solved, and it is never a "
                 "measurement of this round"
+            ),
+            EXPECTED_DELTA_FIELD: (
+                "PRE-REGISTER the move you expect in `jasper-round-views "
+                "frozen`'s pooled per-role RMS deviation: dB, negative for "
+                f"flatter, at most {EXPECTED_DELTA_BOUND_DB:g}. It gates nothing"
+            ),
+            DECLARED_TILT_FIELD: (
+                "the voicing tilt you are DECLARING: dB/octave, negative for "
+                "a downward in-room tilt, magnitude at most "
+                f"{DECLARED_TILT_BOUND_DB_PER_OCTAVE:g}. Declare one whenever "
+                "you apply one — undeclared it reads as a defect next round"
             ),
             "rationale": (
                 f"free text. The first {RATIONALE_MAX_CHARS} characters are "

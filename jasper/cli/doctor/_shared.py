@@ -4,29 +4,19 @@
 
 """Shared primitives for the jasper-doctor check package.
 
-This is the base layer every per-domain check module imports
-from. It holds, **verbatim from the original**
-``jasper/cli/doctor.py``:
+The base layer every per-domain check module imports from: the
+:class:`CheckResult` dataclass, the crash-isolation harness that keeps one
+crashing check from aborting a run, ``_run``, and the helpers used by more than
+one domain. The JTS daemon ``STATUS`` control-socket reader is NOT here — that
+is :mod:`jasper.route_latency.status_socket`, which every domain module imports
+directly.
 
-- the :class:`CheckResult` dataclass and the ``DoctorCheck``
-  type alias (the union that lets a list entry be either a bare
-  callable or a ``(label, callable)`` tuple);
-- the crash-isolation harness (``_run_doctor_check`` /
-  ``_run_async_doctor_check`` / ``_normalize_doctor_check`` /
-  ``_check_name`` / ``_crashed_check_result`` and the
-  secret-redacting ``_exception_detail``), unchanged so one
-  crashing check still cannot abort the run;
-- ``_run`` (the subprocess wrapper) and ``_parse_env_file``;
-- ANSI colour constants and the chip-AEC passive check set;
-- the genuinely cross-cutting helpers used by more than one
-  domain (``_sha256_file``, ``_meminfo_kb``,
-  ``_systemctl_show_property``, ``_pid_of_unit``,
-  ``_service_runtime_states`` + ``_RUNTIME_STATE_UNITS``,
-  ``_loopback_playback_active``).
-
-No logic changed in the split. Names that tests patch (e.g.
-``_run``) stay importable here and are re-imported into each
-domain module, so a check reads them from its own namespace."""
+``_run`` is re-imported into the domain modules that call it, so a check
+resolves it in its OWN namespace and a test patch must target that module, not
+this one. Such a patch reaches only that module's own calls: a helper defined
+HERE resolves ITS dependencies in this module's globals, so ``_run`` stays
+bound here on the ``_pid_of_unit``, ``_systemctl_show_property`` and
+``_service_runtime_states`` paths."""
 from __future__ import annotations
 
 import grp

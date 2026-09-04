@@ -38,6 +38,7 @@ import os
 from dataclasses import dataclass
 
 from . import identity_state, speaker_name
+from .http_security import DEFAULT_MANAGEMENT_HOSTNAME
 from .peering import config as peering_config
 
 logger = logging.getLogger(__name__)
@@ -48,9 +49,9 @@ logger = logging.getLogger(__name__)
 PEER_ID_FILE = peering_config.PEER_ID_FILE
 
 # Default mDNS hostname when neither the environment nor identity.env names
-# one. Matches every other surface (the wizards, control_advert) so identity
-# agrees with them.
-DEFAULT_HOSTNAME = "jts.local"
+# one. The same name the management-host allowlist defaults to, from its
+# owner, so a bare speaker is reachable at the name identity prints.
+DEFAULT_HOSTNAME = DEFAULT_MANAGEMENT_HOSTNAME
 
 # Legacy env var from the pre-identity peering room. Read here only as a
 # fallback so an older install still surfaces a room.
@@ -122,15 +123,15 @@ def resolve_hostname() -> str:
     ``JASPER_HOSTNAME`` into it (deploy/bin/jasper-identity-reconcile,
     ``CONFIGURED_HOSTNAME``).
 
-    Read through :func:`jasper.identity_state.snapshot` rather than by
-    spelling the file's key here: ``identity_state`` owns identity.env's
-    vocabulary, and it is total, so this stays total too.
+    Read through :func:`jasper.identity_state.configured_hostname` rather
+    than by spelling the file's key here: ``identity_state`` owns
+    identity.env's vocabulary and its stat-keyed cache, and it is total,
+    so this stays total and cheap enough to call per URL built.
     """
     configured = os.environ.get("JASPER_HOSTNAME", "").strip()
     if configured:
         return configured
-    recorded = str(identity_state.snapshot().get("configured_hostname") or "").strip()
-    return recorded or DEFAULT_HOSTNAME
+    return identity_state.configured_hostname() or DEFAULT_HOSTNAME
 
 
 #: Where a human goes to run or apply a crossover round.
@@ -147,7 +148,7 @@ SOUND_SETUP_PAGE_PATH = "/sound/setup/"
 def speaker_url(path: str) -> str:
     """A handoff URL for THIS speaker. TOTAL — never raises.
 
-    Through :func:`read_identity`, so ``jts3.local`` never prints as
+    Through :func:`resolve_hostname`, so ``jts3.local`` never prints as
     ``jts.local`` and sends its reader to a different box — silently, because
     that name usually resolves to something.
 
@@ -156,7 +157,7 @@ def speaker_url(path: str) -> str:
     configured, so an orientation verb built on it would fail on a bench
     speaker that has never been given an API key.
     """
-    return f"http://{read_identity().hostname}{path}"
+    return f"http://{resolve_hostname()}{path}"
 
 
 def read_identity() -> SpeakerIdentity:

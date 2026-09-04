@@ -39,7 +39,7 @@ a DIFFERENT graph, and pooling the two would classify a mixture.
 
 It lives here rather than under :mod:`jasper.audio_measurement` because
 ``tests/test_correction_boundary_ssot.py``'s
-``test_audio_measurement_imports_neither_consumer_package`` forbids that
+``test_package_boundary_holds`` forbids that
 package importing ``jasper.active_speaker``, which this module does for the
 verdict register and the phase names. **If you are about to move this
 module, read that test first.**
@@ -133,6 +133,7 @@ __all__ = [
     "classify_round",
     "load_round_captures",
     "load_round_pose_curves",
+    "summary_lines",
 ]
 
 
@@ -729,8 +730,8 @@ class RoundPoseCurve:
 
     Read from :func:`~.spatial.pose_curve_record`'s magnitude+phase bank
     (ruling S3) through the same reader :mod:`.delay_landscape` and
-    ``jasper-delay-sweep`` already use — never a raw lateral WAV, and never a
-    second tree-walker over the bundle (house ruling R11). ``band_hz`` is the
+    ``jasper-round-views delay-landscape`` already use — never a raw lateral
+    WAV, and never a second tree-walker over the bundle (house ruling R11). ``band_hz`` is the
     role's own driven sweep band, parsed by
     :func:`~.position_cycle.parse_curve_magnitude`.
     """
@@ -2431,3 +2432,22 @@ def classify_round(
         "pose_bank": _pose_bank_block(pose_curves),
         "rows": rows,
     }
+
+
+def summary_lines(artifact: Mapping[str, Any]) -> list[str]:
+    """One line per classified feature, under the round's controls disclosure.
+
+    Here rather than in the CLI so the columns and the artifact they read stay
+    in one module: an exit-0 round whose known-answer controls failed must not
+    read as a clean one, which is what the first line says when there is one.
+    """
+    lines = []
+    if artifact["controls_disclosure"] is not None:
+        lines.append(f"  controls: {artifact['controls_disclosure']}")
+    lines.extend(
+        f"  {row['hz']:8.0f} Hz  {row['classification']:<34} "
+        f"{row['confidence']:>6}  egd={row['egd_verdict']:<14} "
+        f"gate={row['gate_verdict']:<7} depth={row['depth_db']:.2f} dB"
+        for row in artifact["rows"]
+    )
+    return lines

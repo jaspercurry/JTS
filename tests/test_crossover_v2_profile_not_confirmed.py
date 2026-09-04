@@ -63,6 +63,7 @@ from jasper.active_speaker.program_playback import (
     ProgramPlaybackError,
     ProgramPlaybackRefused,
 )
+from jasper.active_speaker.crossover_v2 import conductor_context as v2ctx
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_setup
 from tests.crossover_v2_fixtures import fake_measurement_mic
@@ -325,7 +326,7 @@ def test_missing_profile_never_tells_the_household_to_review_limits():
     the household to review the limits names a panel that is not on the page.
     This state keeps the pre-gate's original, correct action."""
 
-    assert v2host.profile_refusal_code("missing") == REASON_PROGRAM_PROFILE_MISSING
+    assert v2ctx.profile_refusal_code("missing") == REASON_PROGRAM_PROFILE_MISSING
     spec = REASON_REGISTRY[REASON_PROGRAM_PROFILE_MISSING]
     copy = spec.message.lower()
     assert "review the limits" not in copy
@@ -343,7 +344,7 @@ def test_incomplete_profile_asks_for_the_values_not_a_save_that_changes_nothing(
     state."""
 
     assert (
-        v2host.profile_refusal_code("incomplete") == REASON_PROGRAM_PROFILE_INCOMPLETE
+        v2ctx.profile_refusal_code("incomplete") == REASON_PROGRAM_PROFILE_INCOMPLETE
     )
     spec = REASON_REGISTRY[REASON_PROGRAM_PROFILE_INCOMPLETE]
     copy = spec.message.lower()
@@ -363,7 +364,7 @@ def test_every_other_evaluation_status_is_cleared_by_saving(status):
     ``unconfirmed`` is deliberately absent: the evaluation no longer produces
     it, because saving the declaration IS declaring it."""
 
-    assert v2host.profile_refusal_code(status) == REASON_PROGRAM_PROFILE_NOT_CONFIRMED
+    assert v2ctx.profile_refusal_code(status) == REASON_PROGRAM_PROFILE_NOT_CONFIRMED
 
 
 def test_hard_stop_screen_renders_the_reasons_own_action():
@@ -447,7 +448,7 @@ def session_open(monkeypatch):
     monkeypatch.setattr(
         commission_wiring, "resolve_capture_preset", lambda topo: preset
     )
-    monkeypatch.setattr(v2host, "ensure_crossover_preview_ready", lambda: None)
+    monkeypatch.setattr(v2ctx, "ensure_crossover_preview_ready", lambda: None)
 
     calls: dict[str, list[Any]] = {"evidence_store": [], "open_capture": []}
 

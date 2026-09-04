@@ -92,6 +92,7 @@ from .capture_plan import (
     fingerprint_mapping,
 )
 from jasper.output_hardware import published_dac_id
+from jasper.route_latency.status_socket import OUTPUTD_STATUS_SOCKET
 
 logger = logging.getLogger("jasper-wake-corpus-web")
 
@@ -842,7 +843,7 @@ def _dac_reference_context(
             "control_socket": env_value(
                 env,
                 "JASPER_OUTPUTD_CONTROL_SOCKET",
-                "/run/jasper-outputd/control.sock",
+                OUTPUTD_STATUS_SOCKET,
                 process_env=process_env,
             ),
         },

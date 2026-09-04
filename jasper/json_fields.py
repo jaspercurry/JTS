@@ -6,7 +6,8 @@
 
 Artifact modules keep ownership of their schemas and error classes. This leaf
 only centralizes the repeated scalar/container rules used while turning an
-untyped JSON mapping into those domain models.
+untyped JSON mapping into those domain models. It stays I/O-free — reading an
+artifact off disk is ``atomic_io.read_json_mapping``.
 """
 
 from __future__ import annotations

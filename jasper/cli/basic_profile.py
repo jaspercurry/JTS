@@ -59,6 +59,8 @@ from jasper.active_speaker.baseline_profile import (
 )
 from jasper.identity import read_identity
 
+from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE
+
 #: The basic-profile door at its EXTERNAL path. nginx's ``location
 #: /sound/setup/`` proxies to jasper-web on ``127.0.0.1:8784/`` with the prefix
 #: stripped (deploy/nginx-jasper.conf), which is why the backend's own
@@ -79,18 +81,6 @@ CSRF_PAGE_PATH = "/sound/setup/"
 #: the pre-flight refusal below so one condition has one name whichever side
 #: catches it (jasper/web/sound_setup.py's finish-commissioning payload).
 FINGERPRINT_MISMATCH_CODE = "baseline_candidate_fingerprint_mismatch"
-
-#: The door answered. Everything printed is that answer.
-EXIT_OK = 0
-#: The door's answer was LOST -- unreachable, or an answer that was not a
-#: payload. On the review read nothing could have changed. On the apply POST
-#: the outcome is genuinely unknown: the route has no try/except around its own
-#: answer, so a connection dropped after the graph was loaded looks exactly
-#: like one dropped before it.
-EXIT_TRANSPORT = 1
-#: A refusal -- the door's, or this tool's own pre-flight one. The JSON naming
-#: it is on stdout. A refusal is an answer, so nothing was applied.
-EXIT_REFUSED = 2
 
 #: Said whenever an apply's answer is lost, because "it failed" is a claim this
 #: tool cannot make there and the applied record is what can settle it.
@@ -406,14 +396,15 @@ def build_parser() -> argparse.ArgumentParser:
             "EXIT CODES\n"
             "  0  the door answered; `review` printed the candidate, or\n"
             "     `apply` put it on the speaker\n"
-            "  2  refused -- the door's refusal payload, or this tool's own\n"
-            "     pre-flight fingerprint refusal, printed as JSON on stdout.\n"
-            "     A refusal is an answer, so nothing was applied\n"
-            "  1  the answer was LOST (wrong --hostname, the daemon is\n"
-            "     down, a dropped connection); stderr names which round\n"
-            "     trip. `review` only reads, so nothing changed there --\n"
-            "     but a lost answer to the apply POST does NOT mean the\n"
-            "     apply failed. Run `review` and read the applied state"
+            "  1  EXIT_REFUSED -- the door's refusal payload, or this\n"
+            "     tool's own pre-flight fingerprint refusal, printed as\n"
+            "     JSON on stdout. A refusal is an answer, so nothing was\n"
+            "     applied\n"
+            "  2  EXIT_UNREADABLE -- the answer was LOST (wrong --hostname,\n"
+            "     the daemon is down, a dropped connection); stderr names\n"
+            "     which round trip. `review` only reads, so nothing changed\n"
+            "     there -- but a lost answer to the apply POST does NOT mean\n"
+            "     the apply failed. Run `review` and read the applied state"
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -458,7 +449,11 @@ def main(argv: Sequence[str] | None = None, *, opener: Any | None = None) -> int
         print(f"the basic-profile door's answer was lost: {exc}", file=sys.stderr)
         if exc.path == SAVE_AND_APPLY_PATH:
             print(LOST_ANSWER_ADVICE, file=sys.stderr)
-        return EXIT_TRANSPORT
+        # UNREADABLE and not a refusal: there was no answer to read. On the
+        # apply POST the outcome is genuinely unknown -- the route has no
+        # try/except around its own answer, so a connection dropped after the
+        # graph was loaded looks exactly like one dropped before it.
+        return EXIT_UNREADABLE
 
 
 if __name__ == "__main__":  # pragma: no cover - console-script entry point

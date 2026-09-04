@@ -17,6 +17,7 @@ whatever the emitted graph ran during its capture. Units are in every name.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -31,7 +32,6 @@ PREDICTION_KIND = "jts_forward_model_prediction"
 PREDICTION_SCHEMA_VERSION = 1
 
 REFUSAL_UNSUPPORTED = "forward_model_unsupported"
-REFUSAL_NO_CURVE_PAIR = "forward_model_no_banked_curve_pair"
 REFUSAL_GRID_DISAGREES = "forward_model_branch_grids_disagree"
 
 #: Nothing measured judged this prediction. What a bare prediction always is:
@@ -144,9 +144,9 @@ class PredictedSum:
 
     ``predicted_db`` is on ``freqs_hz``, the banked pair's own shared grid.
     Outside :attr:`sum_band_hz` neither driver was swept and the prediction is
-    the floor rather than a response — a reader compares inside that band. The
-    serialized ``acceptance`` is :data:`ACCEPTANCE_NOT_RUN` by construction:
-    :func:`predict_sum` compares against nothing.
+    the floor rather than a response — a reader compares inside that band.
+    Whether a measurement judged it is the CONTAINING record's field, since
+    :func:`predict_sum` compares against nothing and cannot answer it.
     """
 
     freqs_hz: np.ndarray
@@ -162,17 +162,57 @@ class PredictedSum:
             "predicted_db": [float(db) for db in self.predicted_db],
             "sum_band_hz": [float(edge) for edge in self.sum_band_hz],
             "take_path": self.take_path,
-            "acceptance": acceptance_block(None),
         }
 
 
-def load_branch_pair(
-    bundle_dir: Path,
+def candidate_from_json(
+    path: str | Path | None,
     *,
-    phase: str,
-    position_deg: int,
-    woofer_role: str = DRIVER_ROLE_WOOFER,
-    tweeter_role: str = DRIVER_ROLE_TWEETER,
+    polarity_sign: int | None = None,
+    residual_delay_us: float | None = None,
+) -> SummationCandidate:
+    """One candidate from its JSON source plus the two single-value overrides.
+
+    No ``path`` is an uncorrected, untrimmed, in-phase pair at zero residual
+    delay. The two overrides WIN over the file when given, so a held-EQ
+    postdiction varies only the delay: the same candidate file, one flag moved.
+    Raises ``OSError``, ``ValueError`` or ``TypeError`` for a source that is not
+    a readable JSON object of the shape :class:`SummationCandidate` documents;
+    every message names ``path``, since the operator has more than one file open.
+    """
+    raw: Mapping[str, Any] = {}
+    if path is not None:
+        try:
+            loaded = json.loads(Path(path).read_text())
+        except ValueError as exc:
+            raise ValueError(f"{path}: {exc}") from exc
+        if not isinstance(loaded, Mapping):
+            raise ValueError(f"{path}: candidate JSON must be an object")
+        raw = loaded
+    filters = raw.get("filters_by_role") or {}
+    trims = raw.get("trim_db_by_role") or {}
+    if not isinstance(filters, Mapping) or not isinstance(trims, Mapping):
+        raise ValueError(
+            f"{path}: filters_by_role and trim_db_by_role must be objects"
+        )
+    return SummationCandidate(
+        filters_by_role={
+            str(role): list(entries) for role, entries in filters.items()
+        },
+        trim_db_by_role={str(role): float(db) for role, db in trims.items()},
+        polarity_sign=int(
+            raw.get("polarity_sign", 1) if polarity_sign is None else polarity_sign
+        ),
+        residual_delay_us=float(
+            raw.get("residual_delay_us", 0.0)
+            if residual_delay_us is None
+            else residual_delay_us
+        ),
+    )
+
+
+def load_branch_pair(
+    bundle_dir: Path, *, phase: str, position_deg: int
 ) -> BranchPair | None:
     """The latest banked take carrying BOTH roles, as complex transfers.
 
@@ -189,7 +229,7 @@ def load_branch_pair(
         Path(bundle_dir),
         phase=phase,
         position_deg=position_deg,
-        roles=(woofer_role, tweeter_role),
+        roles=(DRIVER_ROLE_WOOFER, DRIVER_ROLE_TWEETER),
     )
     if found is None:
         return None
@@ -203,18 +243,20 @@ def load_branch_pair(
         # would sum bins that are not the same frequency, and the result would
         # still look like a spectrum.
         raise ForwardModelError(
-            f"{take_path}: the {woofer_role!r} and {tweeter_role!r} curves "
-            "disagree about their frequency grid",
+            f"{take_path}: the {DRIVER_ROLE_WOOFER!r} and "
+            f"{DRIVER_ROLE_TWEETER!r} curves disagree about their frequency grid",
             reason=REFUSAL_GRID_DISAGREES,
             detail={"take_path": take_path},
         )
     return BranchPair(
         freqs_hz=woofer[0],
-        woofer_role=woofer_role,
-        tweeter_role=tweeter_role,
+        woofer_role=DRIVER_ROLE_WOOFER,
+        tweeter_role=DRIVER_ROLE_TWEETER,
         woofer_tf=woofer[1],
         tweeter_tf=tweeter[1],
-        band_hz_by_role={woofer_role: woofer[2], tweeter_role: tweeter[2]},
+        band_hz_by_role={
+            DRIVER_ROLE_WOOFER: woofer[2], DRIVER_ROLE_TWEETER: tweeter[2],
+        },
         take_path=take_path,
     )
 
@@ -325,13 +367,13 @@ __all__ = [
     "PREDICTION_KIND",
     "PREDICTION_SCHEMA_VERSION",
     "REFUSAL_GRID_DISAGREES",
-    "REFUSAL_NO_CURVE_PAIR",
     "REFUSAL_UNSUPPORTED",
     "BranchPair",
     "ForwardModelError",
     "PredictedSum",
     "SummationCandidate",
     "acceptance_block",
+    "candidate_from_json",
     "load_branch_pair",
     "predict_sum",
     "predicted_minus_measured_db",

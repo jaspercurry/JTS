@@ -22,6 +22,7 @@ from jasper.cli.aec_bridge_config import (
     resolve_usb_mic_source,
     validate_mic_device,
 )
+from tests._sounddevice_stub import stub_sounddevice
 
 
 def test_validate_mic_device_raises_before_bridge_starts(monkeypatch):
@@ -31,7 +32,7 @@ def test_validate_mic_device_raises_before_bridge_starts(monkeypatch):
     sd_mod.query_devices.side_effect = ValueError(
         "No input device matching 'Array'"
     )
-    monkeypatch.setattr(aec_bridge_config, "sd", sd_mod)
+    stub_sounddevice(monkeypatch, sd_mod)
 
     with pytest.raises(MicDeviceUnavailable):
         validate_mic_device()

@@ -11,15 +11,17 @@ preserved. No check logic changed in the split."""
 from __future__ import annotations
 
 import errno
-import json
 import re
 import shutil
-import socket
 import subprocess
 import sys
 from pathlib import Path
 
 from ...env_load import parse_env_text
+from ...route_latency.status_socket import (
+    OUTPUTD_STATUS_SOCKET,
+    read_status_socket_or_none,
+)
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
@@ -27,40 +29,6 @@ from ._shared import (
     _parse_systemd_environment,
     _run,
 )
-
-_OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
-
-
-def _read_outputd_status(
-    socket_path: str = _OUTPUTD_STATUS_SOCKET,
-) -> dict | None:
-    """Best-effort local outputd STATUS read for grouping verdicts."""
-    sock: socket.socket | None = None
-    try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(2.0)
-        sock.connect(socket_path)
-        sock.sendall(b"STATUS\n")
-        chunks: list[bytes] = []
-        while True:
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            chunks.append(chunk)
-    except OSError:
-        return None
-    finally:
-        if sock is not None:
-            try:
-                sock.close()
-            except OSError:
-                pass
-    try:
-        payload = json.loads(b"".join(chunks).decode("utf-8", errors="replace"))
-    except json.JSONDecodeError:
-        return None
-    return payload if isinstance(payload, dict) else None
-
 
 def _devices_rate_adjust_from_text(text: str) -> bool | None:
     """``devices.enable_rate_adjust`` from a CamillaDSP config — True/False, or
@@ -198,7 +166,9 @@ def check_grouping_pair_lock() -> CheckResult:
         stream_clients=stream_clients,
         self_name=_self_client_name(),
         want_stream=SNAP_STREAM_ID,
-        local_outputd_status=_read_outputd_status(),
+        local_outputd_status=read_status_socket_or_none(
+            OUTPUTD_STATUS_SOCKET, timeout=2.0
+        ),
     )
     pair_lock = runtime.get("pair_lock") or {}
     status = str(pair_lock.get("status") or "unknown")
@@ -545,8 +515,11 @@ def check_grouping_leader_pipe() -> CheckResult:
     an empty FIFO and every member (including the leader's own round-trip)
     hears silence while every unit shows green. The silent-wrong-config
     class this check exists for."""
+    from ...camilla_config_contract import (
+        devices_playback_is_pipe,
+        read_camilla_devices_config,
+    )
     from ...multiroom.config import is_active_leader, load_config
-    from ...multiroom.leader_config import playback_is_pipe
     from ...multiroom.reconcile import SNAPFIFO
     from .correction import _active_camilla_config_path
 
@@ -561,12 +534,13 @@ def check_grouping_leader_pipe() -> CheckResult:
     path = Path(config_path)
     if not path.exists():
         return CheckResult(label, "warn", f"active config missing: {config_path}")
-    try:
-        is_pipe = playback_is_pipe(path.read_text(), SNAPFIFO)
-    except OSError as e:
-        return CheckResult(label, "warn", f"could not read {config_path}: {e}")
+    devices = read_camilla_devices_config(path)
+    if devices is None:
+        return CheckResult(
+            label, "warn", f"no readable devices block in {config_path}"
+        )
 
-    if not is_pipe:
+    if not devices_playback_is_pipe(devices, SNAPFIFO):
         return CheckResult(
             label, "warn",
             f"{config_path} does not write the snapserver pipe ({SNAPFIFO}) "
@@ -1035,7 +1009,7 @@ def check_grouping_pair_channels() -> CheckResult:
     try:
         resp = control_client.get(
             "/grouping",
-            base_url=f"http://{cfg.leader_addr}:8780",
+            base_url=f"http://{cfg.leader_addr}:{control_client.CONTROL_PORT}",
             timeout=2.0,
         )
         leader = parse_grouping_response(resp.json()) or {}

@@ -4,66 +4,13 @@
 
 """N takes at ONE pose: how they are staged, and how they read back.
 
-A staged arm walk is an ORDERED list of stops, and two stops at the same angle
-are two ADJACENT stops rather than two walks — the microphone moves once per
-angle.  That is not a new property: :func:`.angle_capture.both_at` already ships
-it ("Both regimes at each angle, PAIRED so the microphone moves once per
-angle"), and :class:`~jasper.active_speaker.angle_capture.AngleCaptureRequest`
-holds its stops as an ordered tuple with no uniqueness rule.  So *taking N
-captures at one pose in one walk* needs no new machinery on the speaker at all —
-it needs the staged list to say so.
-
-Two halves, and nothing else:
-
-* :func:`expand_angle_spec` / :func:`staged_stops` — the staged list, with each
-  angle repeated N times adjacently, and how many stops that is.
-* :func:`position_cycle_document` / :func:`read_position_cycle` — the index a
-  round banks beside its evidence, DERIVED from that evidence, and its strict
-  reader.
-
-**Why the expansion is a STRING transform.**  The angle vocabulary has exactly
-one validator (:func:`~jasper.active_speaker.angle_capture._validated_angle`,
-reached through ``jasper-angle-capture stage``), and its whole point is that
-nothing coerces on the way there — ``0.4`` truncating to ``0`` turns a pose just
-off the axis into an on-axis capture.  A laptop-side expansion that parsed the
-angles to repeat them would be a second reader of that vocabulary, and the day
-it disagreed it would disagree silently.  So each comma-separated token is
-repeated VERBATIM, and whatever the operator wrote still reaches the one
-validator that judges it.  Empty fields are DROPPED rather than refused, which
-is :func:`jasper.cli.angle_capture._parse_angles`' own rule (``for field in
-raw.split(",") if field.strip()``) — a trailing comma is tolerated there, and a
-laptop that refused it would be that second, stricter reader by another route.
-
-**The index is DERIVED, never authored — this file writes down no fact of its
-own.**  The speaker already stamps the true pose on every accepted take:
-:func:`~jasper.active_speaker.crossover_v2.spatial.lateral_pose_record` carries
-the signed ``position_deg``, the ``index``/``attempt``/``take_id`` identity, the
-``role``, the ``regime`` and the ``wav_sha256`` verifier;
-``crossover_v2_flow._retain_lateral_pose`` hands it to retention; the web host
-publishes it through the evidence store, which lands it at
-``{EVIDENCE_ROOT}/artifacts/crossover_v2/{capture}/positions/{take_id}.json``
-inside the bundle; and ``bank-crossover-round.sh`` tars that whole bundle tree
-into the round directory.  A laptop-written mapping would therefore be a SECOND
-writer of one fact — the runner's *intent* beside the speaker's *record* — and
-the two disagree exactly when it matters (a rejected take, a retake, a walk the
-session refused at take time and ran its ordinary shape instead).
-
-So :func:`position_cycle_document` reads those banked records and projects them.
-Every value in the document it returns can be found under
-:data:`_BANKED_POSITIONS_GLOB`; nothing in it is computed from what the round
-MEANT to stage.  What the document adds is convenience: one sorted
-index at the round root, instead of a glob over a nested per-take tree that also
-holds the cloud group's positions.  When the banked evidence cannot support the
-index, this refuses and names exactly what was missing — it never falls back to
-intent.
-
-**Why an index is worth having at all.**  The pose IS banked; nothing SURFACED
-it.  ``round_views`` reads the *cloud* positions block, so a lateral walk's
-bearings — the numbers a take-per-pose comparison is made of — sat on disk in
-per-take sidecars that no view opened.  The evidence packet now opens them
-through :func:`read_lateral_take` below, which is this module's own accept rule
-rather than a second reading of it; this index remains the convenient sorted
-form of the same records.
+A staged walk repeats a pose's stop ADJACENTLY rather than as a separate walk,
+so the microphone moves once per angle (:func:`.angle_capture.both_at` ships
+the same pairing). :func:`expand_angle_spec` / :func:`staged_stops` build and
+count that staged list; :func:`position_cycle_document` /
+:func:`read_position_cycle` derive the round's index from banked evidence,
+never from what the round meant to stage — a laptop-written mapping would be
+a second writer that could disagree with the speaker's record.
 """
 
 from __future__ import annotations
@@ -141,23 +88,26 @@ class PositionCycleError(ValueError):
 
 
 def expand_angle_spec(angles: str, per_position: int) -> str:
-    """``"0,7"`` at 3 takes -> ``"0,0,0,7,7,7"`` — tokens repeated VERBATIM.
+    """``"0,7"`` at 3 takes -> ``"0,0,0,7,7,7"`` — tokens repeated VERBATIM, never parsed.
 
-    Adjacent rather than interleaved, because the whole value of N takes at one
-    pose is that nothing moved between them: ``0,7,0,7,0,7`` would walk the arm
-    six times and measure the drift this exists to hold still.
+    Adjacent rather than interleaved: the whole value of N takes at one pose is
+    that nothing moved between them, so ``0,7,0,7,0,7`` would walk the arm six
+    times and measure the drift this exists to hold still. Tokens are repeated
+    as text rather than parsed to floats — the angle vocabulary has exactly one
+    validator (:func:`~jasper.active_speaker.angle_capture._validated_angle`)
+    and a laptop-side parse could silently disagree with it (``0.4`` truncating
+    to ``0`` turns an off-axis pose into an on-axis one).
 
-    ``per_position=1`` returns the surviving tokens rejoined, which is what makes
-    the expansion safe to run on every staged round rather than only on cycled
-    ones. Empty fields are dropped and surrounding whitespace stripped — the
-    seam's own rule, see the module docstring — and the token's own text is
-    otherwise untouched.
+    ``per_position=1`` returns the surviving tokens rejoined, so this is safe to
+    run on every staged round, not only cycled ones. Empty fields are dropped
+    and whitespace stripped, matching
+    :func:`jasper.cli.angle_capture._parse_angles`.
 
-    Raises :class:`PositionCycleError` for ``per_position < 1``. There is
-    deliberately no upper bound: how many stops a session can carry is the
-    plan's own ceiling (``angle_capture.session_lateral_walk``'s
-    ``WALK_OVER_CAPTURE_CAPACITY``), and a second, lower bound invented on the
-    laptop would refuse walks the speaker would have taken.
+    Raises :class:`PositionCycleError` for ``per_position < 1``. No upper
+    bound: the ceiling is the plan's own
+    (``angle_capture.session_lateral_walk``'s ``WALK_OVER_CAPTURE_CAPACITY``),
+    and a second, lower bound invented on the laptop would refuse walks the
+    speaker would have taken.
     """
     if per_position < 1:
         raise PositionCycleError(
@@ -192,6 +142,37 @@ def staged_stops(angles: str) -> int:
 # --------------------------------------------------------------------------- #
 
 
+def take_artifact_path(bundle_dir: str | Path, take_path: str) -> Path:
+    """Where one banked take lives, from the bundle and the row's own pointer.
+
+    The ONE composition of that path. ``take_path`` is bundle-relative BELOW
+    ``{EVIDENCE_ROOT}/artifacts/`` — the form
+    :func:`~.record_index.bundle_measurements` rows carry and
+    :func:`read_pose_curve_pair` returns — so a caller holding one must not
+    prepend the prefix itself.
+    """
+    return Path(bundle_dir) / EVIDENCE_ROOT / "artifacts" / take_path
+
+
+def take_phase_composition(bundle_dir: str | Path, take_path: str) -> str | None:
+    """Which composition the take's curves carry, or ``None`` on a legacy take.
+
+    Read off the record (``phase_composition``), never re-derived from the
+    phase that was commanded: which phase ran and whether the analysis composed
+    the configured crossover in are two facts, and
+    docs/tuning-methodology.md section 4 step 1 turns on the second. A take
+    that states neither — banked before the field, or captured with no
+    protection to retain — reads ``None``, never one of the two.
+    """
+
+    try:
+        raw = json.loads(take_artifact_path(bundle_dir, take_path).read_text())
+    except (OSError, ValueError):
+        return None
+    stated = raw.get("phase_composition") if isinstance(raw, Mapping) else None
+    return stated if isinstance(stated, str) and stated else None
+
+
 def read_lateral_take(path: Path) -> dict[str, Any] | None:
     """One banked ``positions/{take_id}.json`` as a lateral take, or ``None``.
 
@@ -202,16 +183,13 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
     ``bank_take`` serves both groups into the same directory, and this reader
     wants one of them.
 
-    **The rule is phase, and the reason is NOT "only a pose has a bearing".**
-    It was, until the 2026-08-24 geometry ruling made
-    :func:`~.spatial.cloud_position_record` stamp its own ``position_deg`` —
-    so a cloud seat would now pass a bearing-shaped filter and land in a
-    per-driver walk's take list. What separates them is what they ARE: a
-    lateral pose is a per-driver measurement, a cloud seat is a summed sweep
-    judged by gating and ripple, and they carry different columns
-    (:data:`_TAKE_FIELDS` names a ``regime`` no cloud record has). Filtering on
-    :data:`~.journey.PHASE_LATERAL` says that directly instead of resting on a
-    field-presence coincidence that has already stopped being one.
+    **The rule is phase, not bearing presence** —
+    :func:`~.spatial.cloud_position_record` also stamps ``position_deg``, so a
+    cloud seat would pass a bearing-shaped filter too. What separates them is
+    what they ARE: a lateral pose is a per-driver measurement, a cloud seat is
+    a summed sweep judged by gating and ripple, and they carry different
+    columns (:data:`_TAKE_FIELDS` names a ``regime`` no cloud record has).
+    Filtering on :data:`~.journey.PHASE_LATERAL` says that directly.
 
     One corrupt sidecar must not cost a reader the takes that are fine, so
     nothing here raises; what is MISSING is decided by the caller, from what
@@ -290,7 +268,7 @@ def parse_curve_magnitude(
     mapping cannot supply that subset. A consumer's stricter requirement
     (phase, a role check, raising instead of skipping) layers on top; this is
     the one place "what a banked magnitude curve means" is decided, so the
-    delay-sweep reader and the feature classifier cannot drift apart on it.
+    delay-landscape reader and the feature classifier cannot drift apart on it.
     """
     try:
         freqs = np.asarray([float(hz) for hz in curve["freqs_hz"]], dtype=float)
@@ -353,7 +331,6 @@ def read_pose_curve_pair(
     round that measured one driver is an ordinary shape.
     """
 
-    artifacts = Path(bundle_dir) / EVIDENCE_ROOT / "artifacts"
     for row in reversed(
         bundle_measurements(
             bundle_dir,
@@ -362,7 +339,9 @@ def read_pose_curve_pair(
             vertical_deg=vertical_deg,
         )
     ):
-        curves = read_take_curves(artifacts / row.path, phase=phase)
+        curves = read_take_curves(
+            take_artifact_path(bundle_dir, row.path), phase=phase,
+        )
         if curves is None:
             continue
         by_role = {str(curve.get("role")): curve for curve in curves}
@@ -415,11 +394,10 @@ def read_entry_baseline_take(path: Path) -> dict[str, Any] | None:
     :data:`~.journey.PHASE_ENTRY_BASELINE` says what this take IS, exactly as
     that reader's own note argues.
 
-    **This is the DURABLE full copy of the entry baseline** (fragment ``02``
-    duplication #2). The flow state file carries the same arrays for the
-    duration of one round and is rewritten on the next persist; this take is
-    write-once, so a banked round can still be re-graded — which is ruling S3's
-    *"every analysis is re-runnable offline, forever, without re-measuring."*
+    **This is the DURABLE full copy of the entry baseline.** The flow state
+    file carries the same arrays for the duration of one round and is
+    rewritten on the next persist; this take is write-once, so a banked round
+    can still be re-graded (ruling S3, ADR-0228).
 
     ``None`` for everything that is not one — unreadable, not a JSON object,
     not a position-evidence record, a different phase, or a record from before
@@ -463,9 +441,8 @@ def _banked_take_records(round_dir: Path) -> tuple[list[dict[str, Any]], list[st
     for bundle in sorted(
         path for path in round_dir.glob(_BANKED_BUNDLE_GLOB) if path.is_dir()
     ):
-        artifacts = bundle / EVIDENCE_ROOT / "artifacts"
         for row in bundle_measurements(bundle, phase=PHASE_LATERAL):
-            path = artifacts / row.path
+            path = take_artifact_path(bundle, row.path)
             take = read_lateral_take(path)
             if take is None:
                 continue

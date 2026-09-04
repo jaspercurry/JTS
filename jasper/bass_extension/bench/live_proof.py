@@ -12,7 +12,7 @@ is the executor's concern, not this module's. This keeps every proof here
 hardware-free testable by construction.
 
 R6a's element (i) reuses
-``jasper.correction.coordinator._measurement_gate_held`` verbatim — the exact
+``jasper.measurement_window._measurement_gate_held`` verbatim — the exact
 predicate the amendment names — rather than re-deriving the mux-label /
 gate-owner comparison. Elements (ii)-(iv) are this module's own, over the
 fan-in STATUS field names verified against
@@ -25,7 +25,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from jasper.correction.coordinator import MEASUREMENT_FANIN_LABEL, _measurement_gate_held
+from jasper.measurement_window import MEASUREMENT_FANIN_LABEL, _measurement_gate_held
 
 from .derivation import ArtifactHeader
 
@@ -35,12 +35,12 @@ from .derivation import ArtifactHeader
 FANIN_MIX_CHANNELS = 2
 FANIN_MIX_BITS_PER_SAMPLE = 16
 
-# MEASUREMENT_FANIN_LABEL is imported from jasper.correction.coordinator
+# MEASUREMENT_FANIN_LABEL is imported from jasper.measurement_window
 # (not re-declared): the bench runner reuses measurement_window() unchanged,
 # so it reuses that exact fan-in label too — there is no caller-specific
 # owner/label parameter on measurement_window(), and re-declaring the
 # literal here would be a second source of truth that could silently drift
-# from coordinator.py's.
+# from jasper/measurement_window.py's.
 
 
 class IngressProofError(ValueError):

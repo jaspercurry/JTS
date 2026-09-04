@@ -586,7 +586,7 @@ def check_crossover_v2_cloud_pipeline() -> CheckResult:
         # PR-5: the worst deviation, from the same spec report ``overall``
         # above came from — "spec=fail" alone cannot tell an operator apart a
         # speaker 0.1 dB over its tolerance from one 9 dB over. Read, never
-        # re-derived (``_compact_cloud_status``'s ``flatness`` is a verbatim
+        # re-derived (``compact_cloud_status``'s ``flatness`` is a verbatim
         # copy of ``spec_flatness_gauge``'s dict).
         flatness = entry.get("flatness")
         worst = flatness.get("max_db") if isinstance(flatness, dict) else None
@@ -876,7 +876,7 @@ def check_measurement_hold() -> CheckResult:
     of "a measurement is live" — while it is up, source-observed volume writes
     (a host moving its USB slider) are declined so they cannot walk the fader a
     sweep is holding, and every other measurement is refused. It renews every
-    ``coordinator.MEASUREMENT_LEASE_REFRESH_SEC`` and lapses on its own
+    ``measurement_window.MEASUREMENT_LEASE_REFRESH_SEC`` and lapses on its own
     ``MEASUREMENT_HOLD_TTL_SEC`` after that, so a crashed holder recovers with
     no operator step and this check has nothing to reap.
 

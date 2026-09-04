@@ -22,12 +22,13 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
-from jasper.active_speaker import web_commissioning, web_measurement
+from jasper.active_speaker import web_commissioning
 from jasper.active_speaker.commissioning_run import (
     CommissioningRunHandle,
     CommissioningRunStore,
 )
 from jasper.active_speaker.capture_geometry import comparison_set_valid
+from jasper.active_speaker.crossover_v2.conductor_context import conductor_status
 from jasper.active_speaker.crossover_level_run import (
     PHONE_TRANSPORT_GRACE_S,
     state_path as _level_run_state_path,
@@ -1154,34 +1155,6 @@ def claim_commissioning_run_owner() -> CommissioningRunHandle | None:
     return _COMMISSIONING_RUN_STORE.claim_owner()
 
 
-def begin_commissioning_run(
-    comparison_set: Mapping[str, Any],
-) -> CommissioningRunHandle:
-    """Bind a fresh durable run to one authoritative comparison session."""
-
-    if not comparison_set_valid(comparison_set):
-        raise ValueError("commissioning comparison set is invalid")
-    session_id = comparison_set.get("bundle_session_id")
-    session_fingerprint = comparison_set.get("fingerprint")
-    if not isinstance(session_id, str) or not session_id.strip():
-        raise ValueError(
-            "commissioning run requires a fresh production evidence bundle"
-        )
-    if (
-        not isinstance(session_fingerprint, str)
-        or len(session_fingerprint) != 64
-        or any(
-            character not in "0123456789abcdef"
-            for character in session_fingerprint
-        )
-    ):
-        raise ValueError("commissioning comparison identity is unavailable")
-    return _COMMISSIONING_RUN_STORE.replace_current(
-        session_id=session_id,
-        session_fingerprint=session_fingerprint,
-    )
-
-
 def commissioning_run_status(
     comparison_set: Mapping[str, Any] | None,
     *,
@@ -1374,23 +1347,15 @@ def commissioning_region_status() -> dict[str, Any]:
 def status_payload() -> dict[str, Any]:
     """Return active-crossover targets and saved measurement evidence."""
 
-    payload = web_measurement.status_payload()
+    payload = conductor_status()
     payload["commission"] = web_commissioning.commission_status_payload()
-    # Layer-A gate: `active` means "this speaker has an inter-driver crossover
-    # to tune". Read off the SUMMED targets alone, which only `active_2_way` /
-    # `active_3_way` groups have; a subless `full_range_passive` speaker carries
-    # a driver target too, so counting those would flip the flag wrongly.
     targets_raw = payload.get("targets")
     targets: dict[str, Any] = targets_raw if isinstance(targets_raw, dict) else {}
     driver_count = len(targets.get("drivers") or [])
     summed_count = len(targets.get("summed") or [])
-    payload["active"] = bool(summed_count)
     from jasper.active_speaker.baseline_profile import (
         load_applied_baseline_profile_state,
     )
-    from jasper.active_speaker.setup_status import read_active_speaker_setup_status
-
-    payload["setup"] = read_active_speaker_setup_status()
     # The envelope gates the measurement flow on the driver safety profile's
     # own confirmed-and-current verdict (evaluate_driver_safety_profile), not
     # on "protected setup" readiness alone: JTS3 hardware evidence showed an
@@ -1412,18 +1377,6 @@ def status_payload() -> dict[str, Any]:
             )
         except (OSError, RuntimeError, TypeError, ValueError):
             payload["driver_safety_profile_evaluation"] = None
-        # The envelope's "speaker_setup" gate needs to tell "anchored
-        # mid-sequence by design" (PR #1523's crash-safe staged-config
-        # posture between capture attempts) apart from "setup genuinely
-        # unfinished". The capture-entry stash's presence IS that sequence
-        # boundary — see capture_entry_anchor's module docstring and
-        # crossover_envelope._setup_ready. pending_entry() is fail-soft
-        # (returns None on an unreadable/malformed stash), so a read
-        # failure here degrades to the pre-#1523 strict gate rather than a
-        # false bypass.
-        from jasper.active_speaker.capture_entry_anchor import pending_entry
-
-        payload["capture_entry_pending"] = pending_entry() is not None
     # Level evidence is tied to the immutable profile that is actually loaded,
     # not the mutable next-design candidate. Capturing the first driver updates
     # candidate evidence and must not invalidate the safe active graph or its

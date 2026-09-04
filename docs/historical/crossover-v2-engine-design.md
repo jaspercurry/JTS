@@ -323,7 +323,7 @@ an organ; when session state or a seam starts being read in an organ it belongs
 in the session file.
 
 **Analysis = pure functions.** `analyze_program_capture` in
-[`program_analysis.py`](../../jasper/audio_measurement/program_analysis.py) maps
+[`program_analysis/`](../../jasper/audio_measurement/program_analysis/) maps
 `(ExcitationProgram, WAV, cal, geometry, priors) → ProgramAnalysis` with no
 hidden state, so every verdict is reproducible offline from the stored
 artifacts.
@@ -475,7 +475,7 @@ host-adjacent, and renaming them would rewrite a durable shape for cosmetics.
     it per branch for the capture-SNR verdict. The clamp's contract, its named
     residual, and why an EMPTY window still cannot enfranchise an unexcited row
     are **code-owned**: read `branch_snr_band_hz`'s docstring in
-    [`program_analysis.py`](../../jasper/audio_measurement/program_analysis.py).
+    [`program_analysis/`](../../jasper/audio_measurement/program_analysis/).
 15. **A prescribed round is opened AT what it was prescribed, and never inherits
     one.** Four things can be prescribed — blend and driver stage through
     `jasper-crossover-prescriber`; alignment and topology arrive as request-body
@@ -513,11 +513,11 @@ Design prose lives in each module's docstring. What that index does not cover:
 | [`delta_probe.py`](../../jasper/active_speaker/delta_probe.py) | The realized-vs-commanded map for an applied correction change, and its four verdicts. |
 | [`web/correction_crossover_v2.py`](../../jasper/web/correction_crossover_v2.py) | The web host: endpoint bindings, durable v2 state, the real seams, apply/restore, `resolve_conductor_context`, `persist_conductor_state`. |
 | [`web/correction_crossover_v2_republish.py`](../../jasper/web/correction_crossover_v2_republish.py) | The republish door: re-publish a banked candidate by fingerprint so apply can reach it. |
-| [`web/correction_crossover_v2_relay.py`](../../jasper/web/correction_crossover_v2_relay.py) | The relay capture provider: plan-walk hosting, the phone phase ladder, purge grace, link-TTL policy. |
+| `web/correction_crossover_v2_relay.py` (deleted; ADR-0222) | The relay capture provider: plan-walk hosting, the phone phase ladder, purge grace, link-TTL policy. |
 | [`web/correction_crossover_v2_wired.py`](../../jasper/web/correction_crossover_v2_wired.py) | The WIRED capture provider: source resolution, the local plan walk, the answer mint. |
 | [`audio_measurement/wired_capture.py`](../../jasper/audio_measurement/wired_capture.py) | The wired capture engine: registry-anchored device probe, parameterized S32_LE ALSA capture with exact gap accounting, the ≥128-zero dropout scan, 32-bit WAV encode. |
 | [`audio_measurement/program.py`](../../jasper/audio_measurement/program.py) | The excitation-program model and its composers. Pure data, no safety decisions. |
-| [`audio_measurement/program_analysis.py`](../../jasper/audio_measurement/program_analysis.py) | The pure analysis: locate/segment, drift, gated transfer functions, the configured-Fc composition, prediction, VERIFY tracking. |
+| [`audio_measurement/program_analysis/`](../../jasper/audio_measurement/program_analysis/) | The pure analysis: locate/segment, drift, gated transfer functions, the configured-Fc composition, prediction, VERIFY tracking. |
 | [`audio_measurement/timeline_slip.py`](../../jasper/audio_measurement/timeline_slip.py) | The sub-sample timeline-step gate and the residual per-driver phase exposure it cannot close (`SLIP_GATE_SAMPLES`). |
 | [`audio_measurement/spatial_combine.py`](../../jasper/audio_measurement/spatial_combine.py) | The spatial-cloud combiner and the echo/geometry diagnostics. numpy only. |
 | [`audio_measurement/interference_nulls.py`](../../jasper/audio_measurement/interference_nulls.py) | The interference-null identification gate and the per-position variance classifier. |

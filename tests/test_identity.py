@@ -107,6 +107,20 @@ def test_read_identity_hostname_ignores_a_blank_recorded_hostname(
     assert identity.read_identity().hostname == identity.DEFAULT_HOSTNAME
 
 
+def test_speaker_url_uses_the_recorded_hostname_when_env_is_unset(
+    monkeypatch, tmp_path,
+):
+    """An off-unit CLI builds handoff URLs for the box it runs on, not for
+    whatever "jts.local" happens to resolve to."""
+    identity_file = tmp_path / "identity.env"
+    identity_file.write_text(
+        "JASPER_IDENTITY_CONFIGURED_HOSTNAME=jts3.local\n", encoding="utf-8",
+    )
+    monkeypatch.delenv("JASPER_HOSTNAME", raising=False)
+    monkeypatch.setenv("JASPER_IDENTITY_FILE", str(identity_file))
+    assert identity.speaker_url("/sound/") == "http://jts3.local/sound/"
+
+
 def test_read_identity_peer_id_empty_on_missing_file(monkeypatch, tmp_path):
     monkeypatch.setattr(identity, "PEER_ID_FILE", str(tmp_path / "nope"))
     assert identity.read_identity().peer_id == ""

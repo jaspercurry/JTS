@@ -168,14 +168,15 @@ _IDENTITY_FIELDS = (
 
 #: Where a round's banked feature classification lives, if one was banked.
 #: One name shared by the instrument that writes it (:mod:`.feature_classifier`
-#: via ``jasper-classify-features``), this packet, and the gate that acts on
+#: via ``jasper-round-views classify-features``), this packet, and the gate
+#: that acts on
 #: it. No stage of a round writes it automatically — it is an offline run — so
 #: its absence is an ordinary reported ``source_absent``.
 CLASSIFICATION_ARTIFACT = "feature_classification.json"
 
 #: The round's banked harmonic-distortion reading, beside the classification.
 #: Same posture as :data:`CLASSIFICATION_ARTIFACT`; written offline by
-#: ``jasper-read-distortion`` over :mod:`.harmonic_evidence`. Defined HERE
+#: ``jasper-round-views distortion`` over :mod:`.harmonic_evidence`. Defined HERE
 #: rather than in that module because it imports this one (for
 #: :data:`RING_SIDECAR_GLOB`): the packet owns the names of what it reads.
 HARMONICS_ARTIFACT = "harmonic_distortion.json"
@@ -519,7 +520,7 @@ def round_program_dir(
     ``<session_dir>/crossover_v2/<capture>/``, which is where the product's sole
     producer (``_play`` in :mod:`jasper.web.correction_crossover_v2`) actually
     writes them — ``evidence/v1/artifacts/`` carries no ``*_program.wav``.
-    Shared with :mod:`jasper.cli.classify_features` and
+    Shared with :mod:`jasper.cli.round_views.classify_features` and
     :func:`~.round_views._find_program_wav` so the location fact has one owner.
     """
     phases = tuple(phases)
@@ -1345,7 +1346,7 @@ def _harmonics_uncertainty(orders: Iterable[int]) -> dict[str, Any]:
 def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
     """The round's banked H2/H3 reading, copied through with its declarations.
 
-    Verbatim: the instrument that produced it (``jasper-read-distortion``, over
+    Verbatim: the instrument that produced it (``jasper-round-views distortion``, over
     :mod:`.harmonic_evidence`) owns what the numbers mean. What this adds is
     the uncertainty declarations the artifact does not carry.
 
@@ -2614,7 +2615,8 @@ def _not_evaluated(
             "reason": (
                 "no feature classification is banked for this round. The "
                 "instrument that produces one runs offline over a round's "
-                "banked captures (jasper-classify-features) and nobody ran it "
+                "banked captures (jasper-round-views classify-features) and "
+                "nobody ran it "
                 "here. The positional bar in the response format is the "
                 "deterministic stand-in for the BLEND boost class; the "
                 "per-driver class refuses, either sign, rather than standing in"

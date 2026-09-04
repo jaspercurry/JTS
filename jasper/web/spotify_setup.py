@@ -98,7 +98,7 @@ from ..spotify_router import (
 )
 from ..spotify_oauth import (
     SPOTIFY_OAUTH_CALLBACK_BASE as _SHARED_SPOTIFY_OAUTH_CALLBACK_BASE,
-    default_spotify_redirect_uri as _default_bounce_redirect_uri,
+    resolved_spotify_redirect_uri,
 )
 from ..spotify_uri import parse_playlist_uri, playlist_id_from_uri
 from ..log_event import log_event
@@ -157,14 +157,10 @@ DEFAULT_MANUAL_REDIRECT_URI = "http://127.0.0.1:8888/callback"
 
 
 def _redirect_uri_for_mode(mode: str, cfg: dict[str, Any]) -> str:
-    """Resolve the redirect URI string for the given mode, honouring
-    the cfg-level overrides (which come from env vars at startup)."""
+    """The redirect URI for `mode`, as resolved into cfg at startup."""
     if mode == "manual":
         return cfg.get("manual_redirect_uri") or DEFAULT_MANUAL_REDIRECT_URI
-    return (
-        cfg.get("bounce_redirect_uri")
-        or _default_bounce_redirect_uri(cfg.get("hostname") or "jts.local")
-    )
+    return cfg["bounce_redirect_uri"]
 
 
 # In-memory pending-flow store:
@@ -1409,7 +1405,6 @@ def make_server(
     registry_path: str = DEFAULT_REGISTRY_PATH,
     bounce_redirect_uri: str | None = None,
     manual_redirect_uri: str = DEFAULT_MANUAL_REDIRECT_URI,
-    hostname: str = "jts.local",
 ) -> ThreadingHTTPServer:
     """Build a configured server. `target` is either a pre-bound
     socket.socket (systemd handoff), an (host, port) tuple, or an
@@ -1419,7 +1414,7 @@ def make_server(
     cfg = _build_cfg(
         registry_path=registry_path,
         bounce_redirect_uri=(
-            bounce_redirect_uri or _default_bounce_redirect_uri(hostname)
+            bounce_redirect_uri or resolved_spotify_redirect_uri()
         ),
         manual_redirect_uri=manual_redirect_uri,
     )
@@ -1437,15 +1432,15 @@ def main(argv: list[str] | None = None) -> int:
         "--registry",
         default=os.environ.get("JASPER_SPOTIFY_ACCOUNTS_PATH", DEFAULT_REGISTRY_PATH),
     )
-    hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
     parser.add_argument(
         "--bounce-redirect-uri",
-        default=os.environ.get(
-            "JASPER_SPOTIFY_BOUNCE_REDIRECT_URI",
-            _default_bounce_redirect_uri(hostname),
+        default=(
+            os.environ.get("JASPER_SPOTIFY_BOUNCE_REDIRECT_URI")
+            or resolved_spotify_redirect_uri()
         ),
-        help="HTTPS redirect URI for bounce mode. Defaults to the "
-             "canonical hosted page with `?host=${JASPER_HOSTNAME}`.",
+        help="HTTPS redirect URI for bounce mode. Defaults to "
+             "SPOTIFY_REDIRECT_URI when set, else the hosted bounce page "
+             "for this speaker's resolved hostname.",
     )
     parser.add_argument(
         "--manual-redirect-uri",
@@ -1465,7 +1460,6 @@ def main(argv: list[str] | None = None) -> int:
         registry_path=args.registry,
         bounce_redirect_uri=args.bounce_redirect_uri,
         manual_redirect_uri=args.manual_redirect_uri,
-        hostname=hostname,
     )
     logger.info(
         "jasper-web listening on http://%s:%d",

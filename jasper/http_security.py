@@ -149,9 +149,10 @@ def is_allowed_management_host(
     if _is_avahi_suffix_of_local_hostname(normalized):
         return True
     # Names the identity reconciler observed this speaker actually
-    # answering to (/var/lib/jasper/identity.env) — covers shapes the
-    # static rules can't derive, e.g. a stale JASPER_HOSTNAME after an
-    # operator rename. Lazy import: identity_state imports
+    # answering to (/var/lib/jasper/identity.env): the OS hostname and
+    # Avahi's post-collision FQDN, which the rules above cannot derive
+    # once `hostname` and the advertised name diverge. Lazy import:
+    # identity_state imports
     # normalize_host from this module at load time, so importing it
     # here at module level would be a cycle. Missing file → empty set
     # (fresh install / dev checkout) → exactly the static behavior.

@@ -25,6 +25,7 @@ distances are DECLARED by the caller, never read from the sidecar, which pins
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -90,12 +91,13 @@ __all__ = [
     "compare_impulse_responses",
     "compare_rounds",
     "declared_clean_window_ms",
+    "summary_lines",
 ]
 
 CLOSE_REFERENCE_SCHEMA_VERSION = 1
 
 #: The tool a reader re-runs to reproduce a report.
-GENERATED_BY = "jasper-close-reference"
+GENERATED_BY = "jasper-round-views close-reference"
 
 #: Transform length for the residual and reference spectra. Fixed, so bin
 #: density never varies with the gate length being compared; the padding is
@@ -625,3 +627,48 @@ def compare_rounds(
             and abs(close_capture.mark_distance_m - close_m) > 1e-9)
     )
     return report
+
+
+def _band_line(row: Mapping[str, Any]) -> str:
+    """One graded band: its span, its verdict, and the two figures behind it."""
+    graded = row["graded_band_hz"]
+    span = f"{graded[0]:.0f}-{graded[1]:.0f} Hz" if graded else "not graded"
+    rms, residual = row["rms_delta_db"], row["residual_rel_direct_db"]
+    return (
+        f"{span}: {row['verdict']}"
+        + (f" ({row['unresolved_reason']})" if row["unresolved_reason"] else "")
+        + (
+            ""
+            if rms is None or residual is None
+            else f", close-vs-far RMS {rms:.2f} dB "
+                 f"(tolerance {row['tolerance_db']:.1f}), residual "
+                 f"{residual:.1f} dB"
+        )
+    )
+
+
+def summary_lines(report: Mapping[str, Any]) -> list[str]:
+    """The alignment, each window's gate, then one line per band, for a caller
+    to print. The alignment leads because no verdict under it means anything
+    if the subtraction was aligned on the wrong peak.
+    """
+    alignment = report["alignment"]
+    lo, hi = report["validity"]["comparison_band_hz"]
+    lines = [
+        f"aligned to {alignment['residual_lag_us']:.2f} us residual "
+        f"(measured {alignment['measured_shift_us']:.1f} us vs geometric "
+        f"{alignment['geometric_delay_us']:.1f} us, confidence "
+        f"{alignment['confidence']:.2f}); comparison band "
+        f"{lo:.0f}-{hi:.0f} Hz"
+    ]
+    for window in report["windows"]:
+        declared = window["declared_clean_window_ms"]
+        lines.append(
+            f"  {window['name']} gated at {window['gate_ms']:.2f} ms "
+            f"({window['gate_source']}); declared clean window "
+            + ("undeclared" if declared is None else f"{declared:.2f} ms")
+        )
+        lines += [
+            f"  {window['name']} {_band_line(row)}" for row in window["bands"]
+        ]
+    return lines

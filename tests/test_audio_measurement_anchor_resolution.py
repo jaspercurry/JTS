@@ -765,7 +765,7 @@ def test_the_shipped_analyzer_called_this_capture_a_wiring_fault(monkeypatch):
     the bug, so the pair cannot both stay green.
     """
     monkeypatch.setattr(
-        "jasper.audio_measurement.program_analysis._earliest_strong_peak",
+        "jasper.audio_measurement.program_analysis.locate._earliest_strong_peak",
         _full_band_locate,
     )
     prog = _incident_program()
@@ -792,7 +792,7 @@ def test_the_near_tie_guard_alone_turns_that_verdict_into_a_retake(monkeypatch):
     could not attribute is not evidence about how a speaker is wired.
     """
     monkeypatch.setattr(
-        "jasper.audio_measurement.program_analysis._earliest_strong_peak",
+        "jasper.audio_measurement.program_analysis.locate._earliest_strong_peak",
         _full_band_locate,
     )
     prog = _incident_program()
@@ -957,7 +957,7 @@ def test_ambiguity_needs_BOTH_readings_corroborated(
     """
     scores = iter(witness_scores)
     monkeypatch.setattr(
-        "jasper.audio_measurement.program_analysis._locate_in_window",
+        "jasper.audio_measurement.program_analysis.locate._locate_in_window",
         lambda capture, stim, scheduled, n, *, sample_rate: (
             scheduled, next(scores), 0.5
         ),
@@ -1025,7 +1025,7 @@ def test_the_ratio_brackets_the_two_measured_populations(monkeypatch):
     prog = _incident_program()
     healthy = _anchor_separation(prog, _incident_room(prog, tone_rms=QUIET_TONE_RMS))
     monkeypatch.setattr(
-        "jasper.audio_measurement.program_analysis._earliest_strong_peak",
+        "jasper.audio_measurement.program_analysis.locate._earliest_strong_peak",
         _full_band_locate,
     )
     unattributed = _anchor_separation(
@@ -1074,7 +1074,7 @@ def test_the_guard_compares_a_ratio_and_not_a_difference(
     """
     presence = iter(presences)
     monkeypatch.setattr(
-        "jasper.audio_measurement.program_analysis._locate_in_window",
+        "jasper.audio_measurement.program_analysis.locate._locate_in_window",
         lambda capture, stim, scheduled, n, *, sample_rate: (
             scheduled, 0.99, next(presence)
         ),
@@ -1114,7 +1114,7 @@ def test_the_separation_is_flat_across_room_level(monkeypatch):
         f"a resolved anchor fell near the guard: {resolved}"
     )
     monkeypatch.setattr(
-        "jasper.audio_measurement.program_analysis._earliest_strong_peak",
+        "jasper.audio_measurement.program_analysis.locate._earliest_strong_peak",
         _full_band_locate,
     )
     # The mis-locking half of the ramp only (below ~0.10 the full-band locate
@@ -1160,7 +1160,7 @@ def test_a_mislocking_room_has_already_failed_a_rung_below(monkeypatch):
     at all; the companion below asserts the shipped locate produces none.
     """
     monkeypatch.setattr(
-        "jasper.audio_measurement.program_analysis._earliest_strong_peak",
+        "jasper.audio_measurement.program_analysis.locate._earliest_strong_peak",
         _full_band_locate,
     )
     prog = _incident_program()
@@ -1210,7 +1210,7 @@ def test_a_corrected_anchor_can_also_be_ambiguous(monkeypatch):
     """
     presences = iter((0.9000, 0.9007))
     monkeypatch.setattr(
-        "jasper.audio_measurement.program_analysis._locate_in_window",
+        "jasper.audio_measurement.program_analysis.locate._locate_in_window",
         lambda capture, stim, scheduled, n, *, sample_rate: (
             scheduled, 0.99, next(presences)
         ),
@@ -1231,7 +1231,7 @@ def test_the_anchor_event_reports_the_ambiguity_it_found(monkeypatch):
     not what the locate said it was.
     """
     monkeypatch.setattr(
-        "jasper.audio_measurement.program_analysis._earliest_strong_peak",
+        "jasper.audio_measurement.program_analysis.locate._earliest_strong_peak",
         _full_band_locate,
     )
     prog = _incident_program()
@@ -1352,7 +1352,7 @@ def test_the_peakedness_margin_prefers_the_EMPTY_window(monkeypatch, caplog):
     """
     scores = iter((_FIELD_LO, _FIELD_HI))
     monkeypatch.setattr(
-        "jasper.audio_measurement.program_analysis._locate_in_window",
+        "jasper.audio_measurement.program_analysis.locate._locate_in_window",
         lambda capture, stim, scheduled, n, *, sample_rate: (
             scheduled, *next(scores)
         ),

@@ -598,7 +598,7 @@ def _validate_correction_peqs(
         out.append({"freq_hz": freq, "q": q, "gain_db": gain})
 
     # Boost-stacking headroom rule: adjacent boosts sum. Mirrors
-    # jasper.correction.peq.total_max_boost_db's concern.
+    # jasper.audio_measurement.peq.total_max_boost_db's concern.
     if total_boost > max_total_boost + 1e-9:
         issues.append(_issue(
             "fail",

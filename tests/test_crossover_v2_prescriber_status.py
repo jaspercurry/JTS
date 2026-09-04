@@ -324,25 +324,27 @@ def test_the_packet_discloses_the_trim_the_round_re_solved(tmp_path, capsys):
         json.dumps(applied_profile(corrections={"tweeter": {"gain_db": -1.361}}))
     )
 
+    artifact = tmp_path / "packet.json"
     code = cli.main([
         "packet", str(session),
         "--state", str(state_path),
         "--applied-profile", str(applied),
+        "--out", str(artifact),
     ])
-    out, err = capsys.readouterr()
+    out, _ = capsys.readouterr()
 
     assert code == cli.EXIT_OK
-    trim = json.loads(out)["incumbent"]["trim"]["tweeter"]
+    trim = json.loads(artifact.read_text())["incumbent"]["trim"]["tweeter"]
     assert trim == {
         "applied_db": -1.361,
         "round_resolved_db": -2.105,
         "delta_db": pytest.approx(-2.105 - (-1.361)),
         "pinned_this_round": False,
     }
-    # The same numbers reach the operator's terminal, not only the JSON.
-    assert "trim tweeter: applied -1.36 dB, round resolved -2.10 dB" in err
-    assert "-0.74 dB" in err
-    assert "pinned" not in err
+    # The same numbers reach the operator's terminal, not only the document.
+    assert "trim tweeter: applied -1.36 dB, round resolved -2.10 dB" in out
+    assert "-0.74 dB" in out
+    assert "pinned" not in out
 
 
 def _receipt_with_incumbent(session: Path, incumbent: Any) -> None:
@@ -731,7 +733,7 @@ def test_an_unreadable_bundle_still_reports_and_says_which_half_failed(
 
     code, payload = _status([str(tmp_path / "not-a-bundle")], capsys)
 
-    assert code == cli.EXIT_EVIDENCE_UNREADABLE
+    assert code == cli.EXIT_UNREADABLE
     assert payload["packet_error"]
     assert payload["staged"]["pending"] is True
     assert payload["banked"]["available"] is False
@@ -746,7 +748,7 @@ def test_a_virgin_speaker_orients_with_no_session_dir_at_all(capsys):
     """
     code, payload = _status([], capsys)
 
-    assert code == cli.EXIT_EVIDENCE_UNREADABLE
+    assert code == cli.EXIT_UNREADABLE
     assert payload["packet_error"]
     assert payload["banked"]["available"] is False
     assert payload["banked"]["reason"] == payload["packet_error"]
@@ -795,7 +797,8 @@ def test_a_missing_classification_names_the_instrument_that_banks_it(
     _, payload = _status([str(session), "--drivers", str(draft)], capsys)
 
     assert any(
-        "jasper-classify-features" in action for action in payload["next_actions"]
+        "jasper-round-views classify-features" in action
+        for action in payload["next_actions"]
     )
 
 

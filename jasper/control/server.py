@@ -45,7 +45,9 @@ from jasper.log_event import log_event
 if TYPE_CHECKING:
     from ..volume_coordinator import VolumeState
 
+from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..http_security import management_read_allowed, mutating_request_allowed
+from .client import CONTROL_PORT
 from ..atomic_io import locked_update_env_file
 from ..audio_quality import (  # noqa: F401 - route-mixin dependency exports
     apply_requested_converter as _apply_audio_quality,
@@ -544,7 +546,6 @@ _outputd_status = _state_aggregate._outputd_status
 _clamp_db = _volume_ops._clamp_db
 _db_to_percent = _volume_ops._db_to_percent
 _percent_to_db = _volume_ops._percent_to_db
-_spotify_redirect_uri = _volume_ops._spotify_redirect_uri
 _read_volume_state = _volume_ops.read_volume_state
 
 
@@ -2236,8 +2237,7 @@ def main(argv: list[str] | None = None) -> int:
         help="bind host (default 0.0.0.0 — LAN-reachable)",
     )
     parser.add_argument(
-        "--port", type=int,
-        default=int(os.environ.get("JASPER_CONTROL_PORT", "8780")),
+        "--port", type=int, default=CONTROL_PORT,
     )
     parser.add_argument(
         "--camilla-host",
@@ -2245,7 +2245,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--camilla-port", type=int,
-        default=int(os.environ.get("JASPER_CAMILLA_PORT", "1234")),
+        default=int(os.environ.get("JASPER_CAMILLA_PORT", DEFAULT_CAMILLA_PORT)),
     )
     parser.add_argument(
         "--voice-socket",

@@ -302,7 +302,10 @@ jobs:
     needs: [classify, python-policy]
     if: ${{ needs.classify.outputs.lane == 'full' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The full lane ran 27m43s for 25,774 tests on 2026-09-04 and three
+    # sibling runs were cancelled at the old 30-minute limit; headroom until
+    # the suite's late-run descriptor exhaustion is fixed.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:

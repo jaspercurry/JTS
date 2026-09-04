@@ -147,10 +147,10 @@ def bounded_env_int(
 
 
 def parse_env_text(text: str) -> dict[str, str]:
-    """Parse shell-style KEY=VALUE env file text.
+    """Parse shell-style KEY=VALUE env file text, as systemd resolves it.
 
-    Strips surrounding single or double quotes; ignores blanks and
-    lines starting with ``#``.
+    Strips matching surrounding quotes; ignores blanks and ``#`` lines.
+    Not ``atomic_io._parse_env_text``, which keeps quotes for round-trips.
     """
     out: dict[str, str] = {}
     for raw in text.splitlines():

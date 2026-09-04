@@ -11,7 +11,7 @@ the web front end, so a third mover — phone-guided, or whatever comes next —
 added with zero engine edits.
 
 Same family as ``tests/test_correction_boundary_ssot.py``'s
-``test_audio_measurement_imports_neither_consumer_package``: an AST walk, not a
+``test_package_boundary_holds``: an AST walk, not a
 grep, so a deferred import inside a function body is caught exactly like a
 top-level one.
 
@@ -53,7 +53,6 @@ FORBIDDEN_HEADS: tuple[tuple[str, ...], ...] = (("experiments",), ("jasper", "we
 ARM_MODULES_THAT_MUST_EXIST: tuple[str, ...] = (
     "jasper/active_speaker/arm_walk.py",
     "jasper/active_speaker/angle_capture.py",
-    "jasper/cli/arm_walk.py",
     "jasper/cli/angle_capture.py",
     "jasper/web/__init__.py",
 )

@@ -44,6 +44,11 @@ import os
 from pathlib import Path
 
 from .. import atomic_io
+from ..camilla_config_contract import (
+    devices_playback_is_pipe,
+    parse_camilla_devices_config,
+    read_camilla_devices_config,
+)
 from ..log_event import log_event
 from .config import GroupingConfig
 from .member_config import member_camilla_kwargs
@@ -86,11 +91,7 @@ def _is_pipe_config(path: str) -> bool:
     rejects missing files."""
     from .reconcile import SNAPFIFO
 
-    try:
-        text = Path(path).read_text()
-    except OSError:
-        return False
-    return playback_is_pipe(text, SNAPFIFO)
+    return devices_playback_is_pipe(read_camilla_devices_config(path) or {}, SNAPFIFO)
 
 
 def read_stash(path: str = PRIOR_STASH) -> str | None:
@@ -351,34 +352,18 @@ async def restore_solo_config(*, camilla_factory=_camilla) -> str | None:
 
 def playback_is_pipe(text: str, fifo: str) -> bool:
     """True when a CamillaDSP config's ``devices.playback`` block is a
-    File sink writing ``fifo`` — the bonded-leader pipe. Scans the exact
-    shape our emitters generate (a 2-space ``playback:`` line, 4-space
-    fields)."""
-    in_playback = False
-    saw_file = False
-    saw_fifo = False
-    for line in text.splitlines():
-        if line.rstrip() == "  playback:":
-            in_playback = True
-            continue
-        if in_playback:
-            if line.startswith("    "):
-                field = line.strip()
-                if field == "type: File":
-                    saw_file = True
-                elif field.startswith("filename:") and fifo in field:
-                    saw_fifo = True
-            else:
-                in_playback = False
-    return saw_file and saw_fifo
+    File sink writing ``fifo`` — the bonded-leader pipe. The text-taking
+    face of :func:`devices_playback_is_pipe`, for the one caller that holds
+    config text rather than a path."""
+    return devices_playback_is_pipe(parse_camilla_devices_config(text), fifo)
 
 
 def active_leader_pipe_path() -> str:
     """``SNAPFIFO`` when the ACTIVE CamillaDSP config writes the
     snapserver pipe, else ``""``. The producer-liveness signal for
     runtime health (/state + jasper-doctor): daemon-adjacent truth —
-    CamillaDSP's own statefile names the loaded config, and the config
-    text says whether it writes the pipe — never a mirror of env
+    CamillaDSP's own statefile names the loaded config, and that config's
+    own devices block says whether it writes the pipe — never a mirror of env
     intent (the retired ``SNAPFIFO_PRODUCER_WIRED`` lesson). Total:
     any read failure resolves to ``""`` (degraded — fail visible)."""
     # The statefile's one reader — the ``JASPER_CAMILLA_STATEFILE`` override,
@@ -391,16 +376,10 @@ def active_leader_pipe_path() -> str:
     # correction module imports it outright.
     from jasper.active_speaker.environment import read_camilla_statefile_config_path
 
-    config_path = read_camilla_statefile_config_path()
-    if not config_path:
-        return ""
-    try:
-        config_text = Path(config_path).read_text()
-    except OSError:
-        return ""
     from .reconcile import SNAPFIFO
 
-    return SNAPFIFO if playback_is_pipe(config_text, SNAPFIFO) else ""
+    devices = read_camilla_devices_config(read_camilla_statefile_config_path()) or {}
+    return SNAPFIFO if devices_playback_is_pipe(devices, SNAPFIFO) else ""
 
 
 # ---------- sync wrappers for the oneshot reconciler ----------

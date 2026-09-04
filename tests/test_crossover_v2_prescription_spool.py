@@ -34,7 +34,6 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
-from jasper.active_speaker.crossover_v2 import attempt_grading
 from jasper.active_speaker.crossover_v2 import prescription_spool as spool
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_CANDIDATE_FIELD,
@@ -1254,7 +1253,7 @@ def test_the_stage_verb_refuses_without_the_state_it_reads_the_ordinal_from(
 
     code = cli.main(["stage", str(tmp_path), "--prescription", str(document)])
 
-    assert code == cli.EXIT_EVIDENCE_UNREADABLE
+    assert code == cli.EXIT_UNREADABLE
     assert "--state is required" in capsys.readouterr().err
     assert not spool.staged_prescription_pending()
 
@@ -1330,7 +1329,7 @@ def test_a_stage_that_cannot_write_is_its_own_exit_code(tmp_path, monkeypatch):
         "--prescription", str(document),
     ])
 
-    assert code == cli.EXIT_STAGE_FAILED
+    assert code == cli.EXIT_WRITE_FAILED
 
 
 def test_propose_and_stage_run_the_same_gate(tmp_path, monkeypatch):
@@ -2020,6 +2019,40 @@ def test_a_pinned_trim_ships_and_an_unpinned_one_is_still_solved(
     )
 
 
+def _round_state(tmp_path, monkeypatch, *, pin: Any = None) -> Any:
+    """The linearization state ``build_candidate`` returned for one round."""
+    _stage_driver(tmp_path, ordinal=9, pinned_trim_db=pin)
+    taken = spool.take_staged_prescription(
+        round_ordinal=9, accepts=spool.STAGEABLE_KINDS
+    ).prescription
+    return _prescribed_round(monkeypatch, taken).state
+
+
+def test_a_pinned_trim_clears_the_committed_pair_the_round_no_longer_ships(
+    tmp_path, monkeypatch,
+):
+    """The pin replaces what ``decide_trim`` committed, so the record goes too.
+
+    ``LinearizationState.trim_strategy`` is what the proposal quotes instead of
+    guessing from ``outcome``; a pinned round ships the document's number, so a
+    state still naming the solved pair would put a false commitment on the
+    receipt — the 2026-08-10 defect's shape.
+    """
+    pinned = _round_state(
+        tmp_path / "pinned", monkeypatch, pin={"tweeter": _PINNED_TWEETER_DB}
+    )
+    control = _round_state(tmp_path / "control", monkeypatch)
+
+    assert control.trim_strategy is not None
+    assert control.anchor_drift_db is not None
+    assert pinned.trim_strategy is None
+    assert pinned.anchor_drift_db is None
+    assert pinned.outcome == control.outcome, (
+        "the fit's verdict is unchanged; only the record of WHICH pair it "
+        "committed goes with the trim the pin replaced"
+    )
+
+
 def test_a_pinned_trim_is_charged_headroom_at_the_value_that_ships(
     tmp_path, monkeypatch,
 ):
@@ -2396,8 +2429,8 @@ def test_a_narrow_prescribed_cut_clears_the_prescribed_classs_own_bar(
     assert not any("required_db=0.5" in line for line in prescribed_lines)
     assert any("required_db=0.5" in line for line in automatic_lines)
     assert not any("required_db=0.0" in line for line in automatic_lines)
-    assert attempt_grading.PRESCRIBED_NON_WORSENING_DB == 0.0
-    assert attempt_grading.PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB == 0.5
+    assert flow.PRESCRIBED_NON_WORSENING_DB == 0.0
+    assert flow.PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB == 0.5
 
 
 def test_a_prescription_predicted_to_worsen_is_banked_and_measured_anyway(
