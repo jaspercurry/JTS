@@ -40,6 +40,7 @@ from pathlib import Path
 import pytest
 
 from jasper.control import household_credential
+from jasper.mdns import DiscoveredService
 from jasper.web import rooms_setup
 
 from ._web_test_helpers import FakeHandler
@@ -740,6 +741,29 @@ def test_discover_speakers_swallows_failure(monkeypatch):
     empty directory, never 500s). Simulated at the asyncio.run boundary."""
     monkeypatch.setattr(rooms_setup.asyncio, "run", _raise_run)
     assert rooms_setup._discover_speakers() == []
+
+
+def test_discover_speakers_record_carries_no_port(monkeypatch):
+    """A discovered peer is recorded as {name, hostname, room, address}. The
+    SRV port is deliberately not carried: every JTS speaker advertises
+    jasper-control on PEER_CONTROL_PORT (deploy/avahi/jasper-control.service
+    hardcodes it), so peer URLs are built from that one constant."""
+    svc = DiscoveredService(
+        name="JTS jasper-control on jts3._jasper-control._tcp.local.",
+        server="jts3.local.",
+        addresses=("192.168.1.9",),
+        port=9999,
+        txt={"name": "Living Room", "room": "bedroom"},
+    )
+    monkeypatch.setattr(rooms_setup, "browse_once", lambda *a, **k: [svc])
+    assert rooms_setup._discover_speakers() == [
+        {
+            "name": "Living Room",
+            "hostname": "jts3",
+            "room": "bedroom",
+            "address": "192.168.1.9",
+        }
+    ]
 
 
 def test_rooms_json_renders_empty_directory_when_discovery_fails(monkeypatch):
