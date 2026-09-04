@@ -6,16 +6,14 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import math
 import os
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Mapping
-from typing import Any, Callable, Sequence, TypeVar
+from typing import Any, Callable, NamedTuple, Sequence, TypeVar
 
 from .. import identity_state
 from ..accessories import status as accessory_status
@@ -994,7 +992,6 @@ def _round_levels(levels: Sequence[float] | None) -> list[float | None] | None:
 
 
 async def _camilla_status(*, host: str, port: int) -> dict[str, Any]:
-    """Volume, levels and the loaded config path, or an all-null section."""
     from ..camilla import CamillaController
 
     status: dict[str, Any] = {
@@ -1041,24 +1038,14 @@ async def _camilla_status(*, host: str, port: int) -> dict[str, Any]:
         return status
 
 
-async def _airplay_playing() -> bool | None:
-    # Shared probe owns the subprocess hygiene (kill-on-timeout so a
-    # DBus stall can't leak one busctl per /state poll; spawn OSError
-    # → None instead of 500ing the whole fail-soft aggregate).
-    return await mpris.shairport_playing(timeout=2.0)
-
-
-async def _voice_status(
-    socket_command: Callable[..., Any], socket_path: str
-) -> dict | None:
-    """Probe jasper-voice's UDS STATUS endpoint, fail-soft."""
+async def _voice_status(cmd: Callable[..., Any], socket_path: str) -> dict | None:
     try:
-        return await socket_command(socket_path, "STATUS", timeout=2.0)
-    except (FileNotFoundError, OSError, asyncio.TimeoutError, RuntimeError):
+        return await cmd(socket_path, "STATUS", timeout=2.0)
+    except (OSError, RuntimeError):
         return None
 
 
-async def _ha_status(snapshot: Callable[[], dict[str, Any]] | None) -> dict:
+def _ha_status(snapshot: Callable[[], dict[str, Any]] | None) -> dict:
     """HA status for /state via the child-process cache boundary.
 
     The cache reads the wizard env-file signature fresh, so saves are
@@ -1073,29 +1060,10 @@ async def _ha_status(snapshot: Callable[[], dict[str, Any]] | None) -> dict:
         return _ha_failed_status()
 
 
-async def _fanin_status(local_status_json: Callable[..., Any]) -> dict | None:
-    """Probe the jasper-fanin daemon's UDS STATUS endpoint.
-
-    ``None`` when the daemon is down or unhealthy, the socket is absent,
-    the probe times out, or the response isn't valid JSON. Fail-soft like
-    ``_voice_status``; jasper-doctor owns the actionable failure.
-    """
-    return await local_status_json("/run/jasper-fanin/control.sock")
-
-
-async def _mux_status(socket_command: Callable[..., Any]) -> dict | None:
-    """Probe the mux's source-arbitration STATUS endpoint, fail-soft."""
+async def _mux_status(cmd: Callable[..., Any]) -> dict | None:
     try:
-        return await socket_command("STATUS", timeout=1.0)
-    except (
-        FileNotFoundError,
-        ConnectionRefusedError,
-        asyncio.TimeoutError,
-        OSError,
-        RuntimeError,
-        ValueError,
-        json.JSONDecodeError,
-    ):
+        return await cmd("STATUS", timeout=1.0)
+    except (OSError, RuntimeError, ValueError):
         return None
 
 
@@ -1108,67 +1076,18 @@ async def _aec_status(full_status: Callable[[], dict]) -> dict | None:
         return None
 
 
-@dataclass(frozen=True)
-class _Probes:
-    """One /state pass's cross-daemon fan-out, in the order it is gathered.
-
-    Every field is already fail-soft: a probe that could not answer carries
-    its own null section rather than raising.
-    """
+class _Probes(NamedTuple):
+    """Built positionally: field order IS the gather order, ``ha_status`` last."""
 
     camilla: dict[str, Any]
     airplay: bool | None
     voice: dict | None
-    ha_status: dict[str, Any]
     fanin: dict | None
     outputd: dict | None
     mux: dict | None
     aec: dict | None
     wifi_guardian: dict[str, Any]
-
-
-async def _probe_all(
-    *,
-    camilla_host: str,
-    camilla_port: int,
-    voice_socket_path: str,
-    voice_socket_command: Callable[..., Any],
-    mux_socket_command: Callable[..., Any],
-    local_status_json: Callable[..., Any],
-    aec_full_status: Callable[[], dict],
-    ha_status_snapshot: Callable[[], dict[str, Any]] | None,
-) -> _Probes:
-    """Run every slow /state probe in parallel under one liveness budget.
-
-    The probes themselves never raise; only the budget does.
-    """
-    try:
-        probes = await asyncio.wait_for(
-            asyncio.gather(
-                _camilla_status(host=camilla_host, port=camilla_port),
-                _airplay_playing(),
-                _voice_status(voice_socket_command, voice_socket_path),
-                _ha_status(ha_status_snapshot),
-                _fanin_status(local_status_json),
-                _outputd_status(local_status_json=local_status_json),
-                _mux_status(mux_socket_command),
-                _aec_status(aec_full_status),
-                _wifi_guardian_snapshot(),
-            ),
-            timeout=_STATE_AGGREGATE_BUDGET_SEC,
-        )
-    except asyncio.TimeoutError:
-        # A probe blew past its own ceiling. Fail loud (the handler turns this
-        # into a 502) rather than hang a bounded worker forever; the cheap
-        # /healthz probe stays answerable so this can't manufacture a reboot.
-        log_event(
-            logger,
-            "state.aggregate_timeout",
-            budget_sec=_STATE_AGGREGATE_BUDGET_SEC,
-            level=logging.WARNING,
-        )
-        raise
-    return _Probes(*probes)
+    ha_status: dict[str, Any]
 
 
 async def _get_state(
@@ -1214,16 +1133,37 @@ async def _get_state(
     ) or (None, None)
     sound_profile = _soft_read("sound profile state probe failed", _read_sound_profile)
 
-    probes = await _probe_all(
-        camilla_host=camilla_host,
-        camilla_port=camilla_port,
-        voice_socket_path=voice_socket_path,
-        voice_socket_command=voice_socket_command,
-        mux_socket_command=mux_socket_command,
-        local_status_json=local_status_json,
-        aec_full_status=aec_full_status,
-        ha_status_snapshot=ha_status_snapshot,
-    )
+    ha_status = _ha_status(ha_status_snapshot)
+    try:
+        gathered = await asyncio.wait_for(
+            asyncio.gather(
+                _camilla_status(host=camilla_host, port=camilla_port),
+                # The shared mpris probe owns the subprocess hygiene
+                # (kill-on-timeout so a DBus stall can't leak one busctl per
+                # /state poll; spawn OSError → None instead of 500ing the whole
+                # fail-soft aggregate).
+                mpris.shairport_playing(timeout=2.0),
+                _voice_status(voice_socket_command, voice_socket_path),
+                local_status_json("/run/jasper-fanin/control.sock"),
+                _outputd_status(local_status_json=local_status_json),
+                _mux_status(mux_socket_command),
+                _aec_status(aec_full_status),
+                _wifi_guardian_snapshot(),
+            ),
+            timeout=_STATE_AGGREGATE_BUDGET_SEC,
+        )
+    except asyncio.TimeoutError:
+        # A probe blew past its own ceiling. Fail loud (the handler turns this
+        # into a 502) rather than hang a bounded worker forever; the cheap
+        # /healthz probe stays answerable so this can't manufacture a reboot.
+        log_event(
+            logger,
+            "state.aggregate_timeout",
+            budget_sec=_STATE_AGGREGATE_BUDGET_SEC,
+            level=logging.WARNING,
+        )
+        raise
+    probes = _Probes(*gathered, ha_status=ha_status)
 
     spotify = _spotify_state()
     if sound_profile is not None:
