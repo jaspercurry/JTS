@@ -42,6 +42,7 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.crossover_v2.contracts import (
     DESIGN_AXIS_DEG,
     DRIVER_ROLES,
@@ -96,9 +97,29 @@ def _spec_from_args(args: argparse.Namespace) -> Any:
     )
 
 
+def _take_phase_composition(bundle_dir: Path, take_path: str) -> str | None:
+    """Which composition the take's curves carry, or ``None`` on a legacy take.
+
+    Read off the record (``spatial.phase_composition``), never re-derived from
+    ``--phase``: which phase was commanded and whether the analysis composed
+    the configured crossover in are two facts, and §4 step 1 turns on the
+    second. A take that states neither — banked before the field, or captured
+    with no protection to retain — reads ``None``, never one of the two.
+    """
+
+    try:
+        raw = json.loads(
+            (bundle_dir / EVIDENCE_ROOT / "artifacts" / take_path).read_text()
+        )
+    except (OSError, ValueError):
+        return None
+    stated = raw.get("phase_composition") if isinstance(raw, Mapping) else None
+    return stated if isinstance(stated, str) and stated else None
+
+
 def _landscape_from_bank(
     args: argparse.Namespace,
-) -> tuple[DelayLandscape, str] | int:
+) -> tuple[DelayLandscape, str, str | None] | int:
     """The banked landscape both verbs read, or the exit code that refused it.
 
     ``confirm`` recomputes rather than reading ``propose``'s artifact: a
@@ -143,7 +164,7 @@ def _landscape_from_bank(
         # Verbatim: a bank that cannot carry a null at Fc is a finding about
         # the bank, and the module that decided it owns the sentence.
         return failed(EXIT_REFUSED, REFUSE_LANDSCAPE, str(exc))
-    return landscape, take_path
+    return landscape, take_path, _take_phase_composition(bundle_dir, take_path)
 
 
 def _bank(payload: Any, out: str | None, default_path: Path) -> Path | int:
@@ -162,11 +183,13 @@ def _cmd_propose(args: argparse.Namespace) -> int:
     computed = _landscape_from_bank(args)
     if isinstance(computed, int):
         return computed
-    landscape, take_path = computed
+    landscape, take_path, composition = computed
 
     payload = {
         "status": "proposed",
         "take_path": take_path,
+        "phase": args.phase,
+        "phase_composition": composition,
         "landscape": landscape.to_dict(),
         # The landscape's own spec, never a second build from the same flags:
         # the staged coordinate must come from the grid that proposed it.
@@ -187,7 +210,7 @@ def _cmd_confirm(args: argparse.Namespace) -> int:
     computed = _landscape_from_bank(args)
     if isinstance(computed, int):
         return computed
-    landscape, take_path = computed
+    landscape, take_path, composition = computed
 
     rows_dir = Path(args.bundle_dir) / NULL_RUNS_DIR
     graded = _graded_rows(rows_dir, fc_hz=args.fc_hz)
@@ -207,6 +230,7 @@ def _cmd_confirm(args: argparse.Namespace) -> int:
         "landscape": landscape.to_dict(),
         "take_path": take_path,
         "phase": args.phase,
+        "phase_composition": composition,
         "position_deg": args.position_deg,
         "null_runs_dir": str(rows_dir),
         "graded_rows": graded,

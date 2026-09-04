@@ -66,6 +66,7 @@ def _bank(
     position_deg: int = 0,
     kind: str = POSITION_EVIDENCE_KIND,
     take_id: str = "p0_a01",
+    composition: str | None = None,
 ) -> Path:
     """A bundle carrying one banked take, at the path the store writes.
 
@@ -85,6 +86,7 @@ def _bank(
             "phase": phase,
             "take_id": take_id,
             "position_deg": position_deg,
+            **({"phase_composition": composition} if composition else {}),
             "curves": curves,
         }),
         encoding="utf-8",
@@ -269,6 +271,32 @@ def test_a_lateral_pose_answers_when_the_caller_asks_for_one(
     code, payload, err = _propose(bundle, capsys, "--phase", PHASE_LATERAL)
     assert code == 0
     assert payload["landscape"]["best_coordinate_us"] == pytest.approx(200.0, abs=50.0)
+
+
+def test_the_proposal_echoes_the_composition_its_take_was_banked_under(
+    tmp_path, capsys,
+) -> None:
+    """docs/tuning-methodology.md §4 step 1, stated by the tool.
+
+    Whether the analysis divided the emitted protection out and multiplied the
+    configured crossover in is a fact about the take, not about `--phase`, and
+    a protection-retained optimum is contaminated evidence. So the proposal
+    echoes what the take stamped — and `None` for a take banked before the
+    field existed, which is unknown rather than either one.
+    """
+
+    curves = [_curve("woofer", arrival_us=200.0), _curve("tweeter")]
+    stated = _bank(
+        tmp_path / "stated", curves=curves, composition="crossover_composed",
+    )
+    legacy = _bank(tmp_path / "legacy", curves=curves)
+
+    _code, proposed, _err = _propose(stated, capsys)
+    _code, unstamped, _err = _propose(legacy, capsys)
+
+    assert proposed["phase"] == PHASE_MEASURE
+    assert proposed["phase_composition"] == "crossover_composed"
+    assert unstamped["phase_composition"] is None
 
 
 def test_the_spec_the_door_builds_is_the_shared_one(tmp_path) -> None:

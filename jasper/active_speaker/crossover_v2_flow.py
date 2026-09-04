@@ -2487,8 +2487,21 @@ class CrossoverV2Session:
                     baseline_fingerprint=(
                         baseline.graph_fingerprint if baseline is not None else ""
                     ),
+                    phase_composition=self._phase_composition(analysis),
                 ),
                 **self._capture_stamp(result),
+            ),
+        )
+
+    def _phase_composition(self, analysis: ProgramAnalysis) -> str:
+        """What a banked take says its curves carry — see
+        :func:`~jasper.active_speaker.crossover_v2.spatial.phase_composition`.
+        Here because whether protection was EMITTED is this session's fact.
+        """
+        return _spatial.phase_composition(
+            analysis,
+            protection_emitted=(
+                self._measurement_protection_sections_by_role is not None
             ),
         )
 
@@ -2754,7 +2767,7 @@ class CrossoverV2Session:
         )
         # Outside the lock below, unlike the cloud's in-lock retention: this writes
         # nothing any close reads.
-        self._retain_lateral_pose(pose, prompt, result)
+        self._retain_lateral_pose(pose, prompt, result, analysis)
         # ONE critical section for retain + close: the candidate build reads the whole
         # walk, and a half-landed retain would fit a session that never existed.
         with self._close_lock:
@@ -2768,7 +2781,11 @@ class CrossoverV2Session:
             return PhaseVerdict(True, payload=payload)
 
     def _retain_lateral_pose(
-        self, pose: LateralPose, prompt: CloudPositionPrompt, result: Any,
+        self,
+        pose: LateralPose,
+        prompt: CloudPositionPrompt,
+        result: Any,
+        analysis: ProgramAnalysis,
     ) -> None:
         """Bank one accepted pose's WAV + sidecar. Fail-soft; never a gate."""
         self._seams.bank_take(
@@ -2778,7 +2795,10 @@ class CrossoverV2Session:
                 position_deg=position_angle_deg(prompt),
                 vertical_deg=position_elevation_deg(prompt),
                 lateral_consumer=self._lateral_consumer,
-                claim=self._lateral_claim(pose.index),
+                claim=replace(
+                    self._lateral_claim(pose.index),
+                    phase_composition=self._phase_composition(analysis),
+                ),
                 **self._capture_stamp(result),
             ),
         )
