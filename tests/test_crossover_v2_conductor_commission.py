@@ -833,7 +833,7 @@ def test_the_measure_sweep_fit_rides_the_snapshot():
 
     # Round-trips through the exact JSON encoding ``save_v2_state`` uses, so
     # no float precision is lost across the real persistence path — the same
-    # encoding ``jasper-read-distortion --state`` later reads back.
+    # encoding ``jasper-round-views distortion --state`` later reads back.
     roundtripped = json.loads(json.dumps(snap.to_dict()))["measure_sweep_durations_s"]
     assert roundtripped == pytest.approx(expected)
 

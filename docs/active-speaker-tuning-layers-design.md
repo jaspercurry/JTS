@@ -1360,7 +1360,7 @@ heading: what is absent there is a *guard*, not the capture it guards.
    S7, as the optimizer over it was earlier, by ruling R1; RE-LANDED
    2026-08-31 by Wave 6 ticket 6.7, this time with the consumers S7 found
    missing (the 3.8 banked-solo loader, the 4.5 verify delta, and the
-   `jasper-forward-model` door).**
+   `jasper-round-views forward-model` door).**
    The complex-summation predictor was `crossover_v2/forward_model.py`
    (`driver_plants` / `branch_operator` / `predict_sum`, plus the
    `XoverCandidate` it predicted for). It was pure and fixture-tested. The

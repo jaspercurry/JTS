@@ -76,12 +76,16 @@ import numpy as np
 from ..profile import DRIVER_ROLES_BY_WAY
 from .evidence_packet import (
     HARMONICS_ARTIFACT,
+    NO_ROUND_ARTIFACTS_REASON,
     RING_SIDECAR_GLOB,
     _applied_profile_source,
+    round_artifact_dir,
 )
 from .journey import PHASE_MEASURE
 
 __all__ = [
+    "DEFAULT_BANDS_HZ",
+    "DEFAULT_FULL_RANGE_BAND_HZ",
     "FIDELITY_FIELDS",
     "FIDELITY_TOLERANCE",
     "HARMONICS_ARTIFACT",
@@ -96,8 +100,10 @@ __all__ = [
     "STATE_UNREADABLE",
     "HarmonicEvidenceRefused",
     "banked_roles",
+    "read_bundle_harmonics",
     "read_round_harmonics",
     "rebuild_measure_program",
+    "round_bands_hz",
 ]
 
 #: Bumped when a field changes MEANING, never for an additive widening — the
@@ -114,6 +120,17 @@ HARMONICS_ARTIFACT_KIND = "jts_crossover_v2_harmonic_distortion"
 #: ANALYSIS kernel will separate, this one is the product's choice of what
 #: to publish.
 HARMONIC_ORDERS: tuple[int, ...] = (2, 3)
+
+#: The shipped MEASURE driver bands for a PAIR. A default, not a constant: a
+#: wrong pair fails the ``program_id`` proof rather than misreading the round.
+DEFAULT_BANDS_HZ: dict[str, tuple[float, float]] = {
+    "woofer": (150.0, 4000.0),
+    "tweeter": (1600.0, 20000.0),
+}
+
+#: The 1-way default: the whole measurable span in Hz, since a passive main's
+#: own declared band is not derivable here.
+DEFAULT_FULL_RANGE_BAND_HZ: tuple[float, float] = (150.0, 20000.0)
 
 #: Excitation frequencies the rows are sampled at. A fixed ladder rather than
 #: the full FFT grid, because this document is read by an LLM operator and
@@ -306,6 +323,30 @@ def banked_roles(state: Mapping[str, Any]) -> tuple[str, ...]:
     banked = set(gains) if isinstance(gains, Mapping) else set()
     roles = DRIVER_ROLES_BY_WAY.get(len(banked), ())
     return roles if set(roles) == banked else ()
+
+
+def round_bands_hz(
+    state: Mapping[str, Any], overrides: Mapping[str, tuple[float, float]]
+) -> dict[str, tuple[float, float]]:
+    """The band each role THIS round swept, keyed by role.
+
+    Roles come from :func:`banked_roles`, the same set
+    :func:`rebuild_measure_program` composes against, so no caller can hand it
+    a shape it will only refuse. Refuses rather than dropping a role it cannot
+    place, which would compose a program silently missing a sweep.
+    """
+    roles = banked_roles(state)
+    if not roles or not overrides.keys() >= set(roles):
+        gains = state.get("gain_plan_db")
+        raise HarmonicEvidenceRefused(
+            STATE_UNREADABLE,
+            {
+                "missing": "a band for every role this round's gain plan names",
+                "gain_plan_roles": sorted(gains) if isinstance(gains, Mapping) else [],
+                "bands_offered": sorted(overrides),
+            },
+        )
+    return {role: overrides[role] for role in roles}
 
 
 def rebuild_measure_program(
@@ -1115,3 +1156,49 @@ def read_round_harmonics(
         "calibration": calibration_note,
         "roles": blocks,
     }
+
+
+def read_bundle_harmonics(
+    bundle_dir: Path,
+    dumps_dir: Path,
+    state_path: Path,
+    band_overrides: Mapping[str, tuple[float, float]],
+    *,
+    calibration_path: Path | None = None,
+    applied_profile_path: Path | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    """One bundle's round (``info.json`` beside ``evidence/v1/artifacts/``),
+    resolved by :func:`~.evidence_packet.round_artifact_dir` so the reading
+    lands where the packet reader looks. Raises ``OSError``/``ValueError`` for
+    what cannot be read, :class:`HarmonicEvidenceRefused` on a decline.
+    """
+    round_dir, why = round_artifact_dir(bundle_dir)
+    if round_dir is None:
+        if why == NO_ROUND_ARTIFACTS_REASON:
+            why += (
+                " — the bundle must hold info.json beside "
+                "evidence/v1/artifacts/crossover_v2/<capture-session-id>/"
+            )
+        raise ValueError(why)
+
+    info = json.loads((bundle_dir / "info.json").read_text())
+    state = json.loads(state_path.read_text())
+    if not isinstance(state, dict):
+        raise ValueError(f"the flow state at {state_path} is not a JSON object")
+    session_id = info.get("session_id") if isinstance(info, dict) else None
+
+    artifact = read_round_harmonics(
+        round_dir,
+        dumps_dir,
+        state,
+        round_bands_hz(state, band_overrides),
+        session_id=session_id if isinstance(session_id, str) else None,
+        # The file's CONTENTS, not a parsed curve: the sign convention it must
+        # be read under comes from the microphone this round's own captures
+        # recorded through, which only the instrument can see.
+        calibration_text=(
+            calibration_path.read_text() if calibration_path is not None else None
+        ),
+        applied_profile_path=applied_profile_path,
+    )
+    return round_dir, artifact
