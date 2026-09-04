@@ -48,12 +48,18 @@ from jasper.active_speaker.crossover_v2.delay_landscape import (
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL, PHASE_MEASURE
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.delay_sweep import sweep_spec
-from jasper.cli._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, failed, stage
+from jasper.cli._refusal import (
+    EXIT_OK,
+    EXIT_REFUSED,
+    EXIT_UNREADABLE,
+    StageFailed,
+    failed,
+    stage,
+)
 
 from ..null_door import NULL_RUNS_DIR
 from ._common import (
     ARTIFACT_BY_VIEW,
-    REASON_UNREADABLE,
     _ROUND_TOOL_ERRORS,
     _write,
     default_out,
@@ -62,14 +68,13 @@ from ._common import (
 REFUSE_NO_ROWS = "delay_confirm_no_measured_rows"
 
 
-def _landscape_from_bank(
-    args: argparse.Namespace,
-) -> BankedLandscape | int:
-    """The engine's read of the bank, with its refusals as this door's exits.
+def _landscape_from_bank(args: argparse.Namespace) -> BankedLandscape:
+    """The engine's read of the bank, with its exits as this family's.
 
-    ``DelayLandscapeError`` is caught before the broader read errors because it
-    subclasses ``ValueError``: a bank that READ and could not carry a landscape
-    is a refusal that names itself, not an unreadable round.
+    A round that could not be READ exits through the LOAD stage;
+    :class:`DelayLandscapeError` is re-raised ahead of that because it
+    subclasses ``ValueError`` — a bank that read and could not carry a
+    landscape refuses by name, and each verb publishes that name.
     """
 
     try:
@@ -86,25 +91,17 @@ def _landscape_from_bank(
             phase=args.phase,
             position_deg=args.position_deg,
         )
-    except DelayLandscapeError as exc:
-        return failed(EXIT_REFUSED, exc.refusal_reason, str(exc))
+    except DelayLandscapeError:
+        raise
     except _ROUND_TOOL_ERRORS as exc:
-        return failed(EXIT_UNREADABLE, REASON_UNREADABLE, str(exc))
+        raise StageFailed(EXIT_UNREADABLE, exc) from exc
 
 
 def _bank(payload: Any, args: argparse.Namespace) -> Path | None:
-    """File the artifact where ``inventory`` reads it; :func:`main` owns what
-    could not.
-
-    ``--out`` names a FILE here, never ``-``: both verbs print their summary on
-    stdout, so a report written there too would interleave with it — so the
-    operator's path is resolved here and handed down as the default.
-
-    The default is ``default_out``'s, the one rule the rest of this family
-    files under, so a LIVE session bundle's view lands beside the caller rather
-    than in the daemon's directory (#3498). A bundle that resolver cannot place
-    at all still lands in the bundle, which is where the reverse-null lane has
-    always looked for it.
+    """``--out`` names a FILE here, never ``-``: both verbs print their own
+    document on stdout. The default is ``default_out``'s, so a LIVE bundle's
+    view lands beside the caller (#3498) and a bundle that resolver cannot
+    place lands in the bundle.
     """
 
     bundle_dir = Path(args.bundle_dir)
@@ -119,10 +116,10 @@ def _bank(payload: Any, args: argparse.Namespace) -> Path | None:
 
 
 def _cmd_delay_landscape(args: argparse.Namespace) -> int:
-    computed = _landscape_from_bank(args)
-    if isinstance(computed, int):
-        return computed
-    landscape, take_path, composition = computed
+    try:
+        landscape, take_path, composition = _landscape_from_bank(args)
+    except DelayLandscapeError as exc:
+        return failed(EXIT_REFUSED, exc.refusal_reason, str(exc))
 
     payload = {
         "status": "proposed",
@@ -142,10 +139,10 @@ def _cmd_delay_landscape(args: argparse.Namespace) -> int:
 
 
 def _cmd_delay_confirm(args: argparse.Namespace) -> int:
-    computed = _landscape_from_bank(args)
-    if isinstance(computed, int):
-        return computed
-    landscape, take_path, composition = computed
+    try:
+        landscape, take_path, composition = _landscape_from_bank(args)
+    except DelayLandscapeError as exc:
+        return failed(EXIT_REFUSED, exc.refusal_reason, str(exc))
 
     rows_dir = Path(args.bundle_dir) / NULL_RUNS_DIR
     graded = stage(
