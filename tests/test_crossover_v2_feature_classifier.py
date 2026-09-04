@@ -1325,6 +1325,27 @@ def test_the_artifact_states_every_threshold_it_used(peak_artifact):
     )
 
 
+def test_the_operator_summary_is_one_line_per_row_under_any_disclosure(
+    peak_artifact,
+):
+    """What the view prints, owned beside the artifact whose columns it reads.
+
+    A round whose controls passed has no disclosure line, so the lines ARE the
+    rows; a failed suite prepends exactly one line, because an exit-0 round
+    that gave up its phase class must not read as a clean one.
+    """
+    clean = fx.summary_lines(peak_artifact)
+    assert len(clean) == len(peak_artifact["rows"])
+    assert all(f"{row['hz']:.0f} Hz" in line for row, line in zip(peak_artifact["rows"], clean))
+    assert all(row["classification"] in line for row, line in zip(peak_artifact["rows"], clean))
+
+    disclosed = fx.summary_lines(
+        {**peak_artifact, "controls_disclosure": fx.CONTROLS_FAILED_DISCLOSURE}
+    )
+    assert disclosed[1:] == clean
+    assert fx.CONTROLS_FAILED_DISCLOSURE in disclosed[0]
+
+
 def test_timing_scatter_reports_that_it_did_not_run(peak_artifact):
     """No repeated angle means no pair, and an unmeasured dimension says so."""
     timing = peak_artifact["timing_scatter"]

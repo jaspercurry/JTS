@@ -34,6 +34,7 @@ from jasper.active_speaker.crossover_v2.feature_classifier import (
     classify_round,
     load_round_captures,
     load_round_pose_curves,
+    summary_lines,
 )
 from jasper.active_speaker.crossover_v2.ring_projection import (
     RingProjectionRefused,
@@ -145,11 +146,8 @@ def _cmd_classify_features(args: argparse.Namespace) -> int:
             EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, _classify, args, programs_dir
         )
     except (FeatureClassificationRefused, RingProjectionRefused) as refusal:
-        # An instrument that refuses BY NAME publishes its own name, and the
-        # directory actually read alongside it: PROGRAM_MISSING's
-        # ``programs_present`` is scoped to whichever directory resolution
-        # landed on, and a refusal that did not say which starts the very
-        # wrong-directory hunt this instrument exists to end.
+        # The instrument's own reason, and the directory actually read: a
+        # refusal that named neither starts a wrong-directory hunt.
         return failed(EXIT_REFUSED, refusal.reason, json.dumps(
             {**refusal.detail, "programs_dir": str(programs_dir)},
             sort_keys=True, default=str,
@@ -158,23 +156,12 @@ def _cmd_classify_features(args: argparse.Namespace) -> int:
     written = _write(
         artifact, args.out, round_dir / ARTIFACT_BY_VIEW[args.command].artifact
     )
-    rows = artifact["rows"]
-    print(
-        f"classify-features: {len(rows)} feature(s) from "
+    summary = (
+        f"classify-features: {len(artifact['rows'])} feature(s) from "
         f"{artifact['measurement']['n_captures']} capture(s)"
-        f"{f' -> {written}' if written else ''}",
-        file=sys.stderr,
+        f"{f' -> {written}' if written else ''}"
     )
-    # An exit-0 round whose controls failed must not read as a clean one.
-    if artifact["controls_disclosure"] is not None:
-        print(f"  controls: {artifact['controls_disclosure']}", file=sys.stderr)
-    for row in rows:
-        print(
-            f"  {row['hz']:8.0f} Hz  {row['classification']:<34} "
-            f"{row['confidence']:>6}  egd={row['egd_verdict']:<14} "
-            f"gate={row['gate_verdict']:<7} depth={row['depth_db']:.2f} dB",
-            file=sys.stderr,
-        )
+    print("\n".join([summary, *summary_lines(artifact)]), file=sys.stderr)
     return EXIT_OK
 
 
