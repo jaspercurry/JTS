@@ -654,12 +654,8 @@ def test_no_test_module_imports_the_conductor_test_file():
     conductor-specific tests undeletable while the conductor is being dissolved.
     The fixtures now live in ``tests/crossover_v2_fixtures.py``; this asserts
     nobody re-creates the blocker, when a new importer would be an easy and
-    invisible thing to add.
-
-    The conductor tests themselves were later split along their section
-    banners into ``tests/test_crossover_v2_conductor_<topic>.py``; the guard
-    now matches that whole family by prefix so the split does not retire the
-    ratchet it was pinning.
+    invisible thing to add; the guard matches the whole
+    ``test_crossover_v2_conductor*`` family by prefix.
 
     Prose mentions are fine and deliberately not matched — several modules cite
     the file(s) in a docstring to say where a behaviour is pinned. Only a real
