@@ -104,6 +104,23 @@ def test_build_google_routes_client_requires_key_and_origin():
     assert google_routes.build_google_routes_client(ENV) is not None
 
 
+def test_setup_url_hostname_source_follows_the_injected_mapping(
+    monkeypatch, tmp_path,
+):
+    """An injected mapping is answered from that mapping alone — a caller
+    resolving a config for another environment must not be handed this box's
+    name. Only the default path asks the tree's one hostname resolver."""
+    identity_file = tmp_path / "identity.env"
+    identity_file.write_text(
+        "JASPER_IDENTITY_CONFIGURED_HOSTNAME=jts9.local\n", encoding="utf-8",
+    )
+    monkeypatch.setenv("JASPER_IDENTITY_FILE", str(identity_file))
+    monkeypatch.delenv("JASPER_HOSTNAME", raising=False)
+
+    assert google_routes.config_status(ENV).setup_url == "jts3.local/transit"
+    assert google_routes.config_status().setup_url == "jts9.local/transit"
+
+
 def test_default_mode_falls_back_to_transit_when_invalid():
     mode, valid = google_routes.default_travel_mode({
         **ENV,

@@ -67,13 +67,11 @@ def normalize_host(value: str | None) -> str:
 
 
 def _configured_hostnames(configured_hostname: str | None = None) -> set[str]:
-    # An explicit argument still wins; otherwise the ONE resolver answers,
-    # so this guard and every URL the speaker builds agree on its name.
-    # Lazy import: jasper.identity takes DEFAULT_MANAGEMENT_HOSTNAME from
-    # this module at load time, so a module-level import here would cycle.
-    from .identity import resolve_hostname
-
-    configured = normalize_host(configured_hostname or resolve_hostname())
+    configured = normalize_host(
+        configured_hostname
+        or os.environ.get("JASPER_HOSTNAME")
+        or DEFAULT_MANAGEMENT_HOSTNAME,
+    )
     names = {"localhost"}
     local_hostname = normalize_host(socket.gethostname())
     if local_hostname:
@@ -151,9 +149,10 @@ def is_allowed_management_host(
     if _is_avahi_suffix_of_local_hostname(normalized):
         return True
     # Names the identity reconciler observed this speaker actually
-    # answering to (/var/lib/jasper/identity.env) — covers shapes the
-    # static rules can't derive, e.g. a stale JASPER_HOSTNAME after an
-    # operator rename. Lazy import: identity_state imports
+    # answering to (/var/lib/jasper/identity.env): the OS hostname and
+    # Avahi's post-collision FQDN, which the rules above cannot derive
+    # once `hostname` and the advertised name diverge. Lazy import:
+    # identity_state imports
     # normalize_host from this module at load time, so importing it
     # here at module level would be a cycle. Missing file → empty set
     # (fresh install / dev checkout) → exactly the static behavior.
