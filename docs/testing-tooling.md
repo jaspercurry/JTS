@@ -1122,7 +1122,8 @@ Read the journal, not the code: `event=correction.crossover_v2_angle_walk_taken`
 
 ## Lab-arm walk harness
 
-`jasper-arm-walk` ([`jasper/cli/arm_walk.py`](../jasper/cli/arm_walk.py), loop in
+`jasper-angle-capture serve`
+([`jasper/cli/angle_capture.py`](../jasper/cli/angle_capture.py), loop in
 [`arm_walk.py`](../jasper/active_speaker/arm_walk.py)) is what actually WALKS a
 live measurement session with the lab turntable arm: the session publishes
 `relay.position_pending` and holds every begin until something POSTs
@@ -1134,8 +1135,8 @@ Runs **on the speaker**, in the foreground, one run per walk:
 ```sh
 # stage the walk first (angle-walk door, above), then start this, THEN open the
 # session — the first poll is what checks a walk is still waiting.
-sudo -u pi /opt/jasper/.venv/bin/jasper-arm-walk \
-    --attest-rig-clear --hostname jts3.local \
+sudo -u pi /opt/jasper/.venv/bin/jasper-angle-capture serve \
+    --mover turntable --attest-rig-clear --hostname jts3.local \
     --expect-angles 7,-7,22,-22 \
     --trail /tmp/arm-walk.jsonl
 ```
@@ -1144,7 +1145,7 @@ sudo -u pi /opt/jasper/.venv/bin/jasper-arm-walk \
   `pi` is what the shipped turntable unit runs as (`User=pi` plus `dialout`).
   **`--hostname` is required** and is the speaker's own name — it becomes the
   `Host:` header, without which the wizard's management-host guard refuses the
-  loopback read (see `rc 14`).
+  loopback read (see `status_unreachable`).
 - One turn of the loop: poll → power preflight → move → measured settle (30 s
   default) → `position-ready`. The adapter runs as a **subprocess** at
   `/opt/jasper/experiments/usb-turntable/jts_turntable.py` (`--tool` points at a
@@ -1160,30 +1161,31 @@ sudo -u pi /opt/jasper/.venv/bin/jasper-arm-walk \
 
 | invariant | what it does |
 |---|---|
-| power before every WALK move | any current flag, since-boot flag, or unreadable reading voids the run — stop, park, `rc 3`. The PARK's own move is deliberately not re-checked (the walk is often parking *because* of a power sign); it still passes the adapter's own preflight |
+| power before every WALK move | any current flag, since-boot flag, or unreadable reading voids the run — stop, park, `power_void`. The PARK's own move is deliberately not re-checked (the walk is often parking *because* of a power sign); it still passes the adapter's own preflight |
 | ±45° clamp | belt-and-braces over the adapter's refusal, so an out-of-envelope target is NAMED here instead of surfacing as a subprocess failure |
 | park and verify on every exit | clean finish, exception, or any of `PARK_ON_SIGNALS`. The check is a MAGNITUDE — the readback's sign is negated upstream |
 | `set-zero` is unreachable | `power`, `position` and `offset` are the complete verb set |
 | the settle never goes under 10 s | refused at configuration AND checked against the settle actually MEASURED |
 
-**Exit codes are the contract** — one distinct code per failure class, mapped by
-`EXIT_NAMES` and tabulated in the
-[operator runbook](tuning-operator-runbook.md)'s "Exit codes". Four are worth
-knowing before a run:
+**The stall NAME is the contract, not a number.** `serve` exits the shared
+`0/1/3` every tool in the menu does; the loop's own distinct verdict per failure
+class (`EXIT_NAMES`) rides out as the refusal record's `reason`, on stdout and
+in the stderr sentence. Four are worth knowing before a run:
 
-- **A walk ends when its session does** (`rc 0` complete, `rc 15` stopped,
-  `rc 7` failed, read off the same poll's `relay.status`) — but a terminal
+- **A walk ends when its session does** (clean, `session_stopped`,
+  `session_failed`, read off the same poll's `relay.status`) — but a terminal
   status is only this walk's verdict once it has read its session LIVE. The
   wizard keeps ONE relay slot and keeps the FINISHED session's block in it, and
   a walk is launched BEFORE its session opens, so round N+1's first polls read
   round N's terminal block.
-- **A release is a request, and `13` is the session saying no** — a `409`,
-  `403`, `400` or a POST that never arrived all mean *no capture began*.
-- **`14` is almost always the wrong `--hostname`**; a single unreadable poll is
-  absorbed, a whole `unreadable_ceiling_s` of them is its own named exit.
+- **A release is a request, and `release_rejected` is the session saying no** —
+  a `409`, `403`, `400` or a POST that never arrived all mean *no capture began*.
+- **`status_unreachable` is almost always the wrong `--hostname`**; a single
+  unreadable poll is absorbed, a whole `unreadable_ceiling_s` of them is its own
+  named stall.
 - **`--expect-angles` is how a walk that never runs is caught**: any unserved
-  angle becomes `rc 10`, and with no session yet in flight a walk must still be
-  staged (`rc 9`).
+  angle becomes `walk_not_taken`, and with no session yet in flight a walk must
+  still be staged (`walk_not_staged`).
 
 **A signal stops the walk once — and SIGHUP is one of them**, since a remote
 walk is stopped by its ssh transport going away and Python's default for SIGHUP
@@ -1202,7 +1204,7 @@ from one call site.
 
 [`scripts/run-crossover-round.py`](../scripts/run-crossover-round.py) runs ONE
 crossover-v2 round end to end from the laptop, composing `jasper-angle-capture
-stage`, `jasper-arm-walk`, the wizard's endpoints and
+stage`, `jasper-angle-capture serve`, the wizard's endpoints and
 `bank-crossover-round.sh`. It builds nothing new on the Pi.
 
 ```sh
@@ -1236,7 +1238,7 @@ both are required to measure.
   the staged stop count is only a floor. Pass it only when a WALK has to close a
   wired stage's held set.
 - **Phase order.** The walk is launched *before* the session opens, because
-  `jasper-arm-walk`'s first poll is what checks a staged walk is still waiting,
+  `serve`'s first poll is what checks a staged walk is still waiting,
   and only with `--attest-rig-clear` — the attestation is the operator's.
   `--angles` / `--regime` / `--expect-angles` are forwarded as written; bounds
   and vocabulary are the seam's. A walk staged by an aborted round stays staged.
@@ -1263,8 +1265,9 @@ both are required to measure.
 - **Completion is polled, not slept**: the runner waits for the session id to
   move off the pre-open one *and* for the phase to leave the running set (every
   capture phase plus `closing` and `applying`).
-- **No verdict is re-mapped.** `jasper-arm-walk`'s exit code rides through under
-  its own name (`arm_walk_exit=6 arm_walk_exit_name=stuck`), and
+- **No verdict is re-mapped.** `serve`'s exit code rides through beside the
+  stall IT named, read off its refusal record (`arm_walk_exit=1
+  arm_walk_exit_name=stuck`), and
   `bank-crossover-round.sh`'s `0/3/4` decides the round. A failing walk stops the
   round *before* banking, and the runner prints the one bank command that keeps
   the evidence sitting on the Pi. Its own exit codes are `EXIT_NAMES` in the

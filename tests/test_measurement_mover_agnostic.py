@@ -53,7 +53,6 @@ FORBIDDEN_HEADS: tuple[tuple[str, ...], ...] = (("experiments",), ("jasper", "we
 ARM_MODULES_THAT_MUST_EXIST: tuple[str, ...] = (
     "jasper/active_speaker/arm_walk.py",
     "jasper/active_speaker/angle_capture.py",
-    "jasper/cli/arm_walk.py",
     "jasper/cli/angle_capture.py",
     "jasper/web/__init__.py",
 )

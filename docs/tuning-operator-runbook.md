@@ -322,11 +322,12 @@ seconds of every remote session.
 5. Repeat. Analysis, apply and verify are unchanged.
 
 **Steps 3–5 have a shipped implementation for the lab turntable arm:**
-`jasper-arm-walk` ([`arm_walk.py`](../jasper/active_speaker/arm_walk.py), CLI in
-[`cli/arm_walk.py`](../jasper/cli/arm_walk.py)) polls the envelope over loopback,
-drives the turntable adapter as a subprocess, and posts `/position-ready` — with
-the power preflight, the ±45° envelope clamp, the measured settle and the
-park-and-verify held in code. It is opt-in and foreground: nothing starts it. See
+`jasper-angle-capture serve` ([`arm_walk.py`](../jasper/active_speaker/arm_walk.py),
+CLI in [`cli/angle_capture.py`](../jasper/cli/angle_capture.py)) polls the
+envelope over loopback, drives the turntable adapter as a subprocess, and posts
+`/position-ready` — with the power preflight, the ±45° envelope clamp, the
+measured settle and the park-and-verify held in code. It is opt-in and
+foreground: nothing starts it. See
 [`testing-tooling.md`](testing-tooling.md#lab-arm-walk-harness).
 
 **The WIRED capture source is the default, and it changes steps 1–2.** A
@@ -353,8 +354,8 @@ walk's own fact), and a retake the walk cannot serve is journalled as
 the hold as a walkthrough — the spot's counter, the plan's own instruction, and
 one control that posts the release — then the held set's Save / Record-again
 where the phone's confirm screen would have been. Nothing else is needed: no
-`jasper-arm-walk`, no CSRF dance, no second device. Left unattended a hold still
-expires after `REMOTE_POSITION_HOLD_BUDGET_S` (600 s) as
+`jasper-angle-capture serve`, no CSRF dance, no second device. Left unattended
+a hold still expires after `REMOTE_POSITION_HOLD_BUDGET_S` (600 s) as
 `position_hold_expired`: loud, named, self-recovering, but a wasted session.
 
 The walkthrough follows the HOLD, not the transport — it renders when
@@ -428,8 +429,7 @@ nothing durable · **mutating** = changes what the speaker plays ·
 |---|---|---|---|
 | `jasper-basic-profile review\|apply` | Review and apply the basic profile -- the chosen crossover plus per-driver trim, delay and polarity, with no linearization and no blend correction. Replaces the live tune; deletes no evidence. | mutating-with-gates | `jasper/cli/basic_profile.py` |
 | `jasper-seat-level` | Ramp the measurement volume until a calibrated mic at the seat reads the target dB SPL, then bank that volume as the crossover session's measurement reference. PRECONDITION: the mic's Sens Factor is quoted at MAXIMUM capture volume — confirm `amixer -c <card>` shows the capture control at 100%, or every absolute SPL below is wrong by the shortfall. | measured | `jasper/cli/seat_level.py` |
-| `jasper-angle-capture plan\|stage\|withdraw` | State one angle walk, see what it resolves to, and leave it for the next measurement session. | mutating (`stage` writes; `plan`/`withdraw` do not) | `jasper/cli/angle_capture.py` |
-| `jasper-arm-walk` | Serve a crossover-v2 measurement session's position gate with the lab turntable arm: poll, move, settle, report the microphone in place. Parks the arm at 0 deg on every exit. | measured | `jasper/cli/arm_walk.py` |
+| `jasper-angle-capture plan\|stage\|withdraw\|serve` | State one angle walk, see what it resolves to, leave it for the next measurement session, and serve it with the lab arm. | mutating (`stage` writes, `serve` moves the arm; `plan`/`withdraw` do not) | `jasper/cli/angle_capture.py` |
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber status\|packet\|propose\|stage` | Emit one crossover round's evidence packet, read a prescription back through the strict gate, and say where this speaker stands. | advisory (`stage` mutates) | `jasper/cli/crossover_prescriber.py` |
 | `jasper-round open\|wait\|apply\|bank` | Open, wait on, apply and bank a crossover round from the speaker itself. The three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate, plus the bank that files a finished session in the on-box campaign home. | mutating-with-gates (`open`/`apply`/`bank` write; `wait` does not) | `jasper/cli/round.py` |
@@ -614,7 +614,7 @@ was mistaken for.
 ## Exit codes
 
 **One vocabulary, four numbers, one owner** — `jasper/cli/_refusal.py`. Every
-tool in the menu above except `jasper-arm-walk` (see below;
+tool in the menu above except `jasper-declare-geometry` (see below;
 `_refusal.OWN_EXIT_VOCABULARY` is the list) exits `0` when it did what it
 says, `1` when the instrument REFUSED a round it could read, `2` when the
 input was UNREADABLE, and `3` when the work was done and the result could not
@@ -638,21 +638,24 @@ mean the apply failed — run `review` and read the applied state.
 One door is deliberately outside the record's shape.
 `jasper-declare-geometry` is a human-only sudo `set`/`show` config door that
 prints text, not JSON, and keeps `2` = `EXIT_NOT_FOUND` (`show` before
-anything was declared).
+anything was declared) — it is the one entry in `OWN_EXIT_VOCABULARY`.
 
-Three surfaces carry their own numbering, so resolve those against what
-produced them: `jasper-arm-walk` (`0`, `3`–`15`, plus `129`/`130`/`143` parked
-by SIGHUP/SIGINT/SIGTERM — `EXIT_NAMES` in
-`jasper/active_speaker/arm_walk.py`), `scripts/run-crossover-round.py` (`0`,
-`3`–`12`; `EXIT_NAMES` in that file) and `scripts/bank-crossover-round.sh`
-(`0`, `1`, `3`, `4`; its own header block).
+Two surfaces carry their own numbering, so resolve those against what
+produced them: `scripts/run-crossover-round.py` (`0`, `3`–`12`; `EXIT_NAMES` in
+that file) and `scripts/bank-crossover-round.sh` (`0`, `1`, `3`, `4`; its own
+header block). `jasper-angle-capture serve` is NOT one of them: it exits the
+shared numbers and publishes its loop's own verdict (`EXIT_NAMES` in
+`jasper/active_speaker/arm_walk.py` — `stuck`, `walk_not_staged`,
+`session_stopped`, …) as the record's `reason`. A walk stopped by a signal
+still leaves on `129`/`130`/`143`, the shell's own spelling, with the arm
+parked.
 
 Two traps worth knowing before you branch on a number:
 
 - **The round runner collapses its sub-tools' codes.** Any nonzero stage rc
   becomes `3`; any nonzero walk rc becomes `5` (except ssh's own `255`, which
   becomes `12`); every nonzero bank rc becomes `9`. The sub-tool's real rc and
-  its own name survive **only in the trail** (`angle_capture_exit`,
+  the stall it named survive **only in the trail** (`angle_capture_exit`,
   `arm_walk_exit` / `arm_walk_exit_name`, `bank_exit`). Read the trail, not `$?`,
   when you need to know *why* a phase failed.
 - **`2` is also argparse's usage exit, for every Python tool here.** A

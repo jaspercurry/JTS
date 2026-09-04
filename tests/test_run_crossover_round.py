@@ -306,8 +306,7 @@ def checkout(tmp_path: Path):
         remote="${*: -1}"
         printf '%s\\n' "$*" >> "$FAKE_SSH_LOG"
         case "$remote" in
-            *jasper-angle-capture*) exit "${FAKE_STAGE_EXIT:-0}" ;;
-            *jasper-arm-walk*)
+            *"jasper-angle-capture serve"*)
                 # Is a PTY allocated? That is what decides whether the remote
                 # hears anything at all when this client dies.
                 pty=""
@@ -326,13 +325,19 @@ def checkout(tmp_path: Path):
                 wait "$REMOTE"
                 exit $?
                 ;;
+            *jasper-angle-capture*) exit "${FAKE_STAGE_EXIT:-0}" ;;
         esac
         exit 0
         """)
-    # The ordinary remote: ends on its own with the walk's exit code.
+    # The ordinary remote: ends on its own with the walk's exit code, and
+    # publishes `serve`'s refusal sentence when it is stopping short -- that
+    # line, not the rc, is where the stall name lives now.
     _executable(tmp_path / "remote-quick", """\
         #!/usr/bin/env bash
         sleep "${FAKE_WALK_SLEEP:-0}"
+        if [ -n "${FAKE_WALK_REASON:-}" ]; then
+            printf 'refused (%s): the turntable walk stopped\\n' "$FAKE_WALK_REASON" >&2
+        fi
         exit "${FAKE_WALK_EXIT:-0}"
         """)
     return repo, fake_bin, tmp_path
@@ -416,7 +421,9 @@ def test_the_staged_walk_and_the_arm_walk_carry_what_the_operator_wrote(
 
     assert proc.returncode == 0, proc.stderr
     stage_cmd = next(line for line in ssh_lines if "jasper-angle-capture" in line)
-    walk_cmd = next(line for line in ssh_lines if "jasper-arm-walk" in line)
+    walk_cmd = next(
+        line for line in ssh_lines if "jasper-angle-capture serve" in line
+    )
     assert "stage --mover arm" in stage_cmd
     assert "--angles=0,7,-7" in stage_cmd and "--regime=per_driver" in stage_cmd
     assert "--attest-rig-clear" in walk_cmd
@@ -514,7 +521,7 @@ def test_without_an_attestation_no_walk_is_launched(checkout, wizard, tmp_path):
     )
 
     assert proc.returncode == 0, proc.stderr
-    assert not any("jasper-arm-walk" in line for line in ssh_lines)
+    assert not any("jasper-angle-capture serve" in line for line in ssh_lines)
     assert len(bank_lines) == 1  # the rest of the round still runs
 
 
@@ -583,7 +590,9 @@ def test_the_walk_gets_the_expectations_the_operator_wrote_not_the_expansion(
     )
 
     assert proc.returncode == 0, proc.stderr
-    walk_cmd = next(line for line in ssh_lines if "jasper-arm-walk" in line)
+    walk_cmd = next(
+        line for line in ssh_lines if "jasper-angle-capture serve" in line
+    )
     assert "--expect-angles 7,-7" in walk_cmd
     assert "--complete-after 9" in walk_cmd
 
@@ -1318,7 +1327,7 @@ def test_a_round_with_no_graded_spec_prints_no_flatness_block(checkout, tmp_path
 def test_a_failing_arm_walk_stops_the_round_and_keeps_its_own_name(
     checkout, wizard, tmp_path
 ):
-    """``jasper-arm-walk``'s rc rides through untranslated, and nothing banks."""
+    """The rc AND the stall `serve` named ride through, and nothing banks."""
     trail = tmp_path / "trail.jsonl"
     # Exports a speaker that is NOT the one .env.local names, so the printed
     # bank command can only carry `caller.invalid` if the prefix is really
@@ -1328,12 +1337,13 @@ def test_a_failing_arm_walk_stops_the_round_and_keeps_its_own_name(
         checkout, wizard,
         ["--campaign", str(tmp_path / "camp"), "--label", "r1", "--trail", str(trail),
          *MEASURE_ARGS],
-        FAKE_WALK_EXIT="6", PI_HOST="caller.invalid", PI_USER="caller-user",
+        FAKE_WALK_EXIT="1", FAKE_WALK_REASON="stuck",
+        PI_HOST="caller.invalid", PI_USER="caller-user",
     )
 
     assert proc.returncode == 5  # EXIT_WALK — this runner's own phase code
     row = next(r for r in _trail(trail) if r["step"] == "walk")
-    assert row["arm_walk_exit"] == 6 and row["arm_walk_exit_name"] == "stuck"
+    assert row["arm_walk_exit"] == 1 and row["arm_walk_exit_name"] == "stuck"
     assert bank_lines == []
     # The evidence is still on the Pi, and the operator is told how to keep it
     # — WITH this round's own speaker on the front. Without that prefix the
@@ -1352,7 +1362,7 @@ def test_an_ssh_transport_failure_is_not_reported_as_the_arms_fault(
 ):
     """255 is ssh's code, and the harness cannot produce it.
 
-    Its exit codes are 0-15 plus 128+signum, so within this runner 255 is
+    Its exit codes are the shared 0/1/3 plus 128+signum, so within 255 is
     unambiguously the link failing. Calling that ``walk_failed`` on the line an
     operator reads would send them to the rig to look at an arm that never
     misbehaved.
@@ -1374,18 +1384,46 @@ def test_an_ssh_transport_failure_is_not_reported_as_the_arms_fault(
     assert bank_lines == []
 
 
-def test_the_walk_exit_names_come_from_the_harness_except_ssh_own():
-    """Every code the harness owns keeps ITS name; only 255 is relabelled."""
+# The chatter ahead of this run's own output. The non-ASCII row is the point of
+# the parametrization: ``since_byte`` is an ``st_size``, so slicing the decoded
+# text by it overshoots by one position per multi-byte character upstream.
+@pytest.mark.parametrize("earlier", [
+    "some earlier chatter\n",
+    "moved to +22° — settling\n",
+])
+def test_the_walk_exit_name_is_read_from_the_record_not_from_the_code(
+    tmp_path, earlier
+):
+    """``serve`` exits 0/1/3, so the STALL has to come off its refusal line."""
     runner = _runner()
+    log = tmp_path / "walk.log"
 
-    from jasper.active_speaker.arm_walk import EXIT_NAMES
+    assert runner._walk_exit_name(255, log) == "ssh_transport_failed"
+    # utf-8 explicitly, because the offset below is `len(...encode())` and the
+    # fixed reader decodes as utf-8: letting the locale pick would make this
+    # case pass or break on the host's encoding rather than on the code.
+    log.write_text(
+        earlier + "refused (walk_not_staged): nothing was staged\n"
+        "refused (stuck): the turntable walk stopped at loop code 6\n",
+        encoding="utf-8",
+    )
+    # The LAST refusal, and only when the walk actually stopped short.
+    assert runner._walk_exit_name(1, log) == "stuck"
+    assert runner._walk_exit_name(0, log) == "ok"
+    # Parked by a signal, or killed: no record to read, so the rc is all there
+    # is -- guessed at by nobody.
+    assert runner._walk_exit_name(143, tmp_path / "absent.log") == "143"
+    # ...and a re-run under the same label never inherits the previous run's
+    # reason: only bytes written after the launch are this walk's.
+    assert runner._walk_exit_name(143, log, log.stat().st_size) == "143"
 
-    assert runner._walk_exit_name(255) == "ssh_transport_failed"
-    assert 255 not in EXIT_NAMES  # ...so nothing was overridden to say it
-    for code, name in EXIT_NAMES.items():
-        assert runner._walk_exit_name(code) == name
-    # A code nobody claims is passed through as itself rather than guessed at.
-    assert runner._walk_exit_name(99) == "99"
+    # ...and the offset is BYTES, which is what `st_size` hands over. Sliced as
+    # CHARACTERS it runs PAST the boundary by one position per multi-byte
+    # character upstream — straight through this run's own refusal line, whose
+    # reason then degrades to the bare rc.
+    rerun = tmp_path / "rerun.log"
+    rerun.write_bytes(earlier.encode() + b"refused (stuck): stopped short\n")
+    assert runner._walk_exit_name(1, rerun, len(earlier.encode())) == "stuck"
 
 
 def test_a_refused_stage_stops_before_anything_opens(checkout, wizard, tmp_path):
@@ -1396,7 +1434,7 @@ def test_a_refused_stage_stops_before_anything_opens(checkout, wizard, tmp_path)
     )
 
     assert proc.returncode == 3  # EXIT_STAGE
-    assert not any("jasper-arm-walk" in line for line in ssh_lines)
+    assert not any("jasper-angle-capture serve" in line for line in ssh_lines)
     posts = wizard.seen().posts
     assert posts == () and bank_lines == []
 
@@ -1417,7 +1455,7 @@ def test_an_aborted_round_hangs_up_its_walk_and_the_walk_PARKS(checkout, tmp_pat
     """The whole chain, end to end, with nothing modelled away.
 
     The remote here is the REAL signal handling — a process that installs
-    ``jasper.cli.arm_walk``'s own park handlers and writes a marker from the
+    ``arm_walk.install_park_on_signals``' own handlers and writes a marker from the
     ``finally`` those handlers unwind into. So this asserts what an operator
     cares about: after an aborted round, the arm went home.
 
@@ -1435,9 +1473,9 @@ def test_an_aborted_round_hangs_up_its_walk_and_the_walk_PARKS(checkout, tmp_pat
     _executable(tmp_path / "remote-walk", f"""#!{sys.executable}
 import sys, time
 sys.path.insert(0, {str(ROOT)!r})
-from jasper.cli.arm_walk import _install_park_on_signals
+from jasper.active_speaker.arm_walk import install_park_on_signals
 
-_install_park_on_signals()
+install_park_on_signals()
 try:
     open({str(remote_ready)!r}, "w").write("ready")
     while True:
@@ -1656,7 +1694,9 @@ def test_the_speakers_own_name_is_the_host_header_and_the_walks_hostname(
     )
 
     assert proc.returncode == 0, proc.stderr
-    walk_cmd = next(line for line in ssh_lines if "jasper-arm-walk" in line)
+    walk_cmd = next(
+        line for line in ssh_lines if "jasper-angle-capture serve" in line
+    )
     assert "--hostname jts9.local" in walk_cmd
     # ...and it is what actually went out on the wire. Asserting only the ssh
     # argument would have let a wrong Host header pass under this test's name.
@@ -1817,13 +1857,6 @@ def _runner():
     finally:
         sys.modules.pop(spec.name, None)
     return runner
-
-
-def test_the_arm_walk_exit_vocabulary_is_the_walks_own():
-    """The paths and phases themselves are pinned by ``tests/test_cli_round.py``."""
-    from jasper.active_speaker.arm_walk import EXIT_NAMES
-
-    assert _runner().ARM_WALK_EXIT_NAMES is EXIT_NAMES
 
 
 def test_an_apply_whose_answer_is_lost_is_not_reported_as_a_wizard_refusal(

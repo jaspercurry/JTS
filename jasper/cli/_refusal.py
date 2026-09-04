@@ -23,12 +23,10 @@ from typing import Any, Callable, TypeVar
 
 _T = TypeVar("_T")
 
-#: The two tool-menu modules that keep their own numbering: a human-only sudo
-#: ``set``/``show`` config door, and a long-running mover service whose stall
-#: and signal codes are ``jasper/active_speaker/arm_walk.py``'s ``EXIT_NAMES``.
+#: The one tool-menu module that keeps its own numbering: a human-only sudo
+#: ``set``/``show`` config door.
 OWN_EXIT_VOCABULARY = frozenset({
     "jasper.cli.declare_geometry",
-    "jasper.cli.arm_walk",
 })
 
 EXIT_OK = 0
