@@ -74,6 +74,7 @@ from .active_speaker_fixtures import (
     PASSIVE_ONLY_DAC_LABEL,
     register_passive_only_dac,
 )
+from ._hat_eeprom import write_hat_eeprom
 from ._web_test_helpers import (
     json_post_with_csrf,
     make_csrf_session,
@@ -1216,10 +1217,7 @@ def test_i2s_hat_payload_offers_only_the_undetectable_hats(monkeypatch, tmp_path
     assert payload["shared_usb_data_port"] is True
     assert payload["warnings"] == []
 
-    hat_dir.mkdir()
-    (hat_dir / "vendor").write_bytes(b"HiFiBerry\x00")
-    (hat_dir / "product").write_bytes(b"StudioDAC8x\x00")
-    (hat_dir / "uuid").write_bytes(b"uuid\x00")
+    write_hat_eeprom(hat_dir, product="StudioDAC8x")
     detected = sound_setup._i2s_hat_payload(intent_path=intent, hat_dir=hat_dir)
 
     assert detected["detected_profile_id"] == "hifiberry_dac8x_studio"
@@ -1228,10 +1226,13 @@ def test_i2s_hat_payload_offers_only_the_undetectable_hats(monkeypatch, tmp_path
     )
     assert "hifiberry_dac8x_studio" not in {e["id"] for e in detected["profiles"]}
 
+    # A board the reconciler will not manage reports no detection either.
     hardware.clear()
     hardware["usb_data_role"] = {"board_topology": "unsupported"}
     unsupported = sound_setup._i2s_hat_payload(intent_path=intent, hat_dir=hat_dir)
     assert unsupported["available"] is False
+    assert unsupported["detected_profile_id"] is None
+    assert unsupported["detected_label"] == ""
 
 
 def test_i2s_hat_payload_surfaces_a_boot_config_collision(monkeypatch, tmp_path):

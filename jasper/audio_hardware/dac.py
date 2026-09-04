@@ -628,10 +628,10 @@ HIFIBERRY_DAC8X_STUDIO = DacProfile(
     # still prints `dtoverlay=hifiberry-dac8x`; it predates that support, and
     # the kernel is the authority for what a board actually presents.
     #
-    # `render_i2s_hat_boot_config` can manage this overlay too (any
-    # `connection == "i2s"` profile is eligible; the per-box intent file
-    # picks one, explicit opt-in only). It also feeds
-    # `configured_i2s_overlays()`, the registered-overlay set USB port-role
+    # `render_i2s_hat_boot_config` manages this overlay: `hat_products` below
+    # makes this row the one a fitted Studio DAC8x resolves to, and the
+    # reconciler writes the line without an operator step (ADR-0234). It also
+    # feeds `configured_i2s_overlays()`, the registered-overlay set USB port-role
     # resolution intersects config.txt against — so with the wrong value a
     # correctly-configured Studio box read as "no I2S HAT present".
     dtoverlay="hifiberry-studio-dac8x",

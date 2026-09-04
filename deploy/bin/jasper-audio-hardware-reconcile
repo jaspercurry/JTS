@@ -476,14 +476,16 @@ reconcile_i2s_hat_boot() {
         log_event "i2s_hat_apply" "result=error error=boot_config_published_not_durable"
         return 0
     fi
-    log_event "i2s_hat_apply" "result=${changed:-unknown} profile=${I2S_HAT_DESIRED_PROFILE:-auto}"
+    log_event "i2s_hat_apply" "result=${changed:-unknown} profile=${I2S_HAT_DESIRED_PROFILE:-none}"
 }
 
 sync_i2s_hat_reboot_marker() {
-    # Any registered I2S profile, not just InnoMaker: a HAT can be the
-    # composite's child device rather than the top-level profile_id, so
-    # only the DESIRED id needs a child-devices lookup -- it is the one
-    # id this reconcile pass actually knows to look for.
+    # State, not edge: install-time reconcile can write the detected HAT's boot
+    # line before this service ever runs, so "changed this pass" is false while
+    # the kernel still runs the old overlay. The marker tracks desired-vs-
+    # observed instead. Any registered I2S profile, not just InnoMaker: a HAT
+    # can be the composite's child device rather than the top-level profile_id,
+    # so only the DESIRED id needs a child-devices lookup.
     local desired="$I2S_HAT_DESIRED_PROFILE" observed="$OBSERVED_OUTPUT_PROFILE_ID"
     [[ -n "$I2S_HAT_BOOT_CHANGED" && "$OBSERVED_OUTPUT_VALID" == "1" ]] || return 0
     [[ -n "$desired" && "$OBSERVED_OUTPUT_PAYLOAD" == *'"child_devices": ['*"\"device_id\": \"$desired\""*']'* ]] &&
@@ -492,7 +494,9 @@ sync_i2s_hat_reboot_marker() {
         rm -f -- "$I2S_HAT_REBOOT_REQUIRED_PATH"
         return 0
     fi
-    [[ "$I2S_HAT_BOOT_CHANGED" == "true" ]] || return 0
+    # No HAT desired: whatever DAC is attached is not a pending boot change,
+    # so only this pass having cleared the managed block pends a reboot.
+    [[ -n "$desired" || "$I2S_HAT_BOOT_CHANGED" == "true" ]] || return 0
     install -d -m 0755 "$(dirname "$I2S_HAT_REBOOT_REQUIRED_PATH")"
     install -m 0644 /dev/null "$I2S_HAT_REBOOT_REQUIRED_PATH"
 }

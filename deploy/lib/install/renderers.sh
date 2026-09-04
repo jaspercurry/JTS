@@ -336,11 +336,15 @@ EOF
     # Keep the owned data-role block last so the role parser sees one final,
     # deterministic [all] decision and a second install is byte-identical.
     local python="${JASPER_SYSTEM_PYTHON:-python3}"
+    # Never fatal under `set -e`: a non-durable publish (74) already wrote the
+    # file, and a refused overlay collision exits 0 with its own stderr event.
+    # The reconcile service re-runs this on every boot either way.
     PYTHONPATH="${REPO_DIR}" "$python" -m jasper.audio_hardware.usb_port_role \
         --reconcile-boot \
         --model-file "${JASPER_PI_MODEL_FILE:-/proc/device-tree/model}" \
         --boot-config "$cfg" \
-        --udc-class-dir "${JASPER_UDC_CLASS_DIR:-/sys/class/udc}"
+        --udc-class-dir "${JASPER_UDC_CLASS_DIR:-/sys/class/udc}" ||
+        echo "event=install.usb_role_reconcile_incomplete status=$?" >&2
 }
 
 tune_wifi_for_airplay() {

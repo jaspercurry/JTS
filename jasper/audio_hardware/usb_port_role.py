@@ -343,6 +343,26 @@ def detected_i2s_hat_profile(
     return profile
 
 
+def selectable_i2s_hat_profiles() -> tuple[DacProfile, ...]:
+    """The HATs an operator names by hand: boot-managed, no EEPROM of their own.
+
+    A profile declaring ``hat_products`` is resolved from the fitted HAT
+    instead, so it is neither offered by the wizard nor honoured in the intent
+    file (ADR-0234).
+    """
+
+    return tuple(
+        profile
+        for profile in all_profiles()
+        if is_boot_managed_i2s_profile(profile) and not profile.hat_products
+    )
+
+
+def _selectable_i2s_profile(profile_id: str) -> DacProfile | None:
+    profile = _registered_i2s_profile(profile_id)
+    return None if profile is None or profile.hat_products else profile
+
+
 def read_i2s_hat_intent(
     path: str | Path = DEFAULT_I2S_HAT_INTENT_PATH,
 ) -> str | None:
@@ -361,7 +381,10 @@ def read_i2s_hat_intent(
         return None
     if _registered_i2s_profile(choice) is None:
         raise ValueError("I2S HAT intent names an unsupported profile")
-    return choice
+    # A HAT that declares its own EEPROM product is resolved from the fitted
+    # hardware only, so a saved intent naming one is void rather than an error
+    # -- the operator can no longer write one, but an old file may say it.
+    return choice if _selectable_i2s_profile(choice) is not None else None
 
 
 def write_i2s_hat_intent(
@@ -370,12 +393,14 @@ def write_i2s_hat_intent(
 ) -> None:
     """Persist the desired I2S HAT profile, or an explicit "none" marker.
 
-    ``profile_id=None`` writes the key with an empty value rather than
-    removing the file: an explicitly-saved "none" (the operator chose
-    unmanaged) is a distinct, persisted state from the file never having
-    existed at all (reconcile_boot_config's opt-in gate — #i2s-hat-intent).
+    Only a HAT that cannot identify itself may be named here; a profile
+    declaring ``hat_products`` is refused because detection is its only
+    source (ADR-0234). ``profile_id=None`` writes the key with an empty value
+    rather than removing the file: an explicitly-saved "none" (the operator
+    chose unmanaged) is a distinct, persisted state from the file never
+    having existed at all.
     """
-    if profile_id is not None and _registered_i2s_profile(profile_id) is None:
+    if profile_id is not None and _selectable_i2s_profile(profile_id) is None:
         raise ValueError(f"unsupported I2S audio-HAT profile: {profile_id!r}")
     atomic_write_text(
         Path(path),

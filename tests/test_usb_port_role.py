@@ -22,8 +22,11 @@ from jasper.audio_hardware.usb_port_role import (
     render_boot_config,
     render_i2s_hat_boot_config,
     resolve_usb_port_role,
+    selectable_i2s_hat_profiles,
     write_i2s_hat_intent,
 )
+
+from ._hat_eeprom import write_hat_eeprom
 
 
 ZERO = "Raspberry Pi Zero 2 W Rev 1.0"
@@ -35,6 +38,7 @@ HOST = "[all]\ndtoverlay=dwc2,dr_mode=host\n"
 
 I2S_PROFILES = tuple(p for p in all_profiles() if p.connection == "i2s")
 I2S_PROFILE_IDS = tuple(p.id for p in I2S_PROFILES)
+SELECTABLE_PROFILES = selectable_i2s_hat_profiles()
 
 
 def _boot_paths(
@@ -48,14 +52,6 @@ def _boot_paths(
     config.write_text(boot_config, encoding="utf-8")
     udc.mkdir()
     return model, config, intent, hat, udc
-
-
-def _write_hat_eeprom(hat_dir: Path, product: str) -> Path:
-    hat_dir.mkdir(exist_ok=True)
-    (hat_dir / "vendor").write_bytes(b"HiFiBerry\x00")
-    (hat_dir / "product").write_text(product, encoding="utf-8")
-    (hat_dir / "uuid").write_text("uuid", encoding="utf-8")
-    return hat_dir
 
 
 def _serialized_role(**overrides) -> dict[str, object]:
@@ -193,7 +189,9 @@ def test_studio_dac8x_overlay_is_recognized_as_a_registered_i2s_hat() -> None:
     ) == ()
 
 
-@pytest.mark.parametrize("profile", I2S_PROFILES, ids=I2S_PROFILE_IDS)
+@pytest.mark.parametrize(
+    "profile", SELECTABLE_PROFILES, ids=[p.id for p in SELECTABLE_PROFILES]
+)
 def test_i2s_hat_intent_round_trip(tmp_path: Path, profile) -> None:
     intent = tmp_path / "i2s_hat.env"
 
@@ -213,15 +211,22 @@ def test_i2s_hat_intent_round_trip(tmp_path: Path, profile) -> None:
 def test_i2s_hat_intent_rejects_unsupported_profiles(tmp_path: Path) -> None:
     intent = tmp_path / "i2s_hat.env"
     non_i2s_id = next(p.id for p in all_profiles() if p.connection != "i2s")
+    detectable_id = next(p.id for p in I2S_PROFILES if p.hat_products)
 
     intent.write_text("JASPER_I2S_HAT_PROFILE=other_hat\n", encoding="utf-8")
     with pytest.raises(ValueError):
         read_i2s_hat_intent(intent)
 
-    with pytest.raises(ValueError):
-        write_i2s_hat_intent(non_i2s_id, intent)
-    with pytest.raises(ValueError):
-        write_i2s_hat_intent("not_a_real_profile", intent)
+    for refused in (non_i2s_id, "not_a_real_profile", detectable_id):
+        with pytest.raises(ValueError):
+            write_i2s_hat_intent(refused, intent)
+
+    # A detectable profile saved by an older build is void, not an error:
+    # detection is its only source now (ADR-0234).
+    intent.write_text(
+        f"JASPER_I2S_HAT_PROFILE={detectable_id}\n", encoding="utf-8"
+    )
+    assert read_i2s_hat_intent(intent) is None
 
 
 @pytest.mark.parametrize("profile", I2S_PROFILES, ids=I2S_PROFILE_IDS)
@@ -520,7 +525,7 @@ def test_i2s_hat_desired_profile_resolution_order(
 
     model, config, intent, hat, udc = _boot_paths(tmp_path, boot_config=boot_config)
     if hat_product is not None:
-        _write_hat_eeprom(hat, hat_product)
+        write_hat_eeprom(hat, product=hat_product)
     if intent_profile is not None:
         write_i2s_hat_intent(intent_profile, intent)
     hand_written = config.read_text(encoding="utf-8").count("dtoverlay=hifiberry-dac8x")

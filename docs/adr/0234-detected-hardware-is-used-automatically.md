@@ -21,10 +21,15 @@
   no `hat_products`, plus "None / unmanaged". There is no save/restore/undo
   machinery, no detected-suggestion hint and no "use detected" action — a
   detected HAT is reported read-only ("Detected: <label> — managed
-  automatically") and the picker is not rendered. The refusal PR #3922
-  introduced is unchanged: when any registered I2S overlay is hand-written
-  outside JTS's managed block, nothing is written and the collision is
-  reported instead.
+  automatically") and the picker is not rendered. Detection is the *only*
+  source for a profile that declares `hat_products`: the intent file refuses
+  to store one, and an intent saved by an older build that names one is void
+  rather than an error. The refusal PR #3922 introduced is unchanged: when any
+  registered I2S overlay is hand-written outside JTS's managed block, nothing
+  is written and the collision is reported instead. The reboot marker follows
+  from state, not from an edge — desired-versus-observed, since the
+  install-time reconcile can write the boot line before the service ever runs
+  a pass that would see it change.
 - **Consequences:** An EEPROM-bearing HAT needs no wizard step on any box —
   fit it, boot, and the managed `dtoverlay=` block follows the silicon.
   The wizard shrinks to the one case that needs a human. A box carrying a

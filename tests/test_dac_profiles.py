@@ -28,6 +28,8 @@ from jasper.audio_hardware.dac import (
     LatencyFloor,
 )
 
+from ._hat_eeprom import write_hat_eeprom
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -304,11 +306,8 @@ def test_hat_eeprom_reader_reports_none_when_no_hat_node_exists(
 def test_hat_eeprom_reader_strips_devicetree_nul_terminators(
     tmp_path: Path,
 ) -> None:
-    (tmp_path / "vendor").write_bytes(b"HiFiBerry\x00")
-    (tmp_path / "product").write_bytes(b"StudioDAC8x\x00")
-    (tmp_path / "uuid").write_bytes(
-        b"be3b8164-dd7b-48fc-ab27-79dd7c641980\x00\n"
-    )
+    write_hat_eeprom(tmp_path, product="StudioDAC8x")
+
     assert read_hat_eeprom(tmp_path) == _DAC8X_STUDIO_HAT
 
 
@@ -317,7 +316,7 @@ def test_hat_eeprom_reader_keeps_a_partially_published_node(
 ) -> None:
     """A blank field is an answer, not a failure — it just matches no row."""
 
-    (tmp_path / "vendor").write_bytes(b"HiFiBerry\x00")
+    write_hat_eeprom(tmp_path, uuid=None)
     partial = read_hat_eeprom(tmp_path)
 
     assert partial == HatEeprom(vendor="HiFiBerry", product="", uuid="")
