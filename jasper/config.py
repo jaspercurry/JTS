@@ -16,7 +16,8 @@ from .assistant_loudness import (
     DEFAULT_PROFILE_PATH as DEFAULT_ASSISTANT_LOUDNESS_PROFILE_PATH,
 )
 from .speaker_name import runtime_name as _speaker_runtime_name
-from .spotify_oauth import default_spotify_redirect_uri
+from .identity import resolve_hostname
+from .spotify_oauth import resolved_spotify_redirect_uri
 from .tts_routing import FANIN_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
 from .usage import (
     DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER,
@@ -486,7 +487,7 @@ class Config:
         # Speaker hostname is the single source of truth for "where do
         # other devices reach this speaker?" — read first so URL
         # defaults below can derive from it.
-        hostname = _env("JASPER_HOSTNAME", "jts.local")
+        hostname = resolve_hostname()
         weather_default_location = _env("JASPER_DEFAULT_LOCATION", "").strip()
         weather_default_lat = _env_optional_float("JASPER_WEATHER_LAT")
         weather_default_lon = _env_optional_float("JASPER_WEATHER_LON")
@@ -799,23 +800,10 @@ class Config:
                 "JASPER_LIBRESPOT_STATE", DEFAULT_LIBRESPOT_STATE,
             ),
             spotify_client_id=_env("SPOTIFY_CLIENT_ID"),
-            # The redirect URI is the URL Spotify bounces the OAuth
-            # code back to. It must be an exact match for one of the
-            # URIs registered in the user's Spotify Developer App.
-            # Default is the canonical bounce page on GitHub Pages
-            # (separate public repo `jaspercurry/spotify-oauth-callback`),
-            # with `?host=` carrying the speaker's hostname so a single
-            # hosted page works for any speaker. For `manual` mode (no
-            # external infrastructure), override to
-            # "http://127.0.0.1:8888/callback" — the loopback exception
-            # Spotify still allows.
-            spotify_redirect_uri=(
-                _env(
-                    "SPOTIFY_REDIRECT_URI",
-                    default_spotify_redirect_uri(hostname),
-                )
-                or default_spotify_redirect_uri(hostname)
-            ),
+            # For `manual` mode (no external infrastructure), set
+            # SPOTIFY_REDIRECT_URI to "http://127.0.0.1:8888/callback" —
+            # the loopback exception Spotify still allows.
+            spotify_redirect_uri=resolved_spotify_redirect_uri(),
             # Legacy single-user cache. Read once at startup for the
             # one-shot migration into the new multi-account layout
             # (see jasper.accounts.maybe_migrate_legacy); after the

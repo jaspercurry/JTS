@@ -60,6 +60,7 @@ from ..google_creds import (
     default_token_path_for,
     save_token,
 )
+from ..identity import resolve_hostname
 from ..log_event import log_event
 from ._common import (
     begin_request,
@@ -124,7 +125,7 @@ _BOUNCE_REDIRECT_URI_BASE = (
 def default_redirect_uri() -> str:
     """Default OAuth redirect URI for this speaker — the bounce page
     parameterised with our mDNS hostname."""
-    hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
+    hostname = resolve_hostname()
     return f"{_BOUNCE_REDIRECT_URI_BASE}?host={hostname}"
 
 

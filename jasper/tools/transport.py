@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 
+from ..identity import resolve_hostname
 from ..music_sources import SOURCE_TO_ACTIVE_KEY, Source
 from ..bluetooth.avrcp import bluetooth_avrcp_call as _bluetooth_call
 from ..renderer import airplay_now_playing
@@ -220,7 +220,7 @@ def make_transport_dispatcher(renderer, router):
         source = await _detect_source(renderer)
         logger.info("transport dispatch: action=%s source=%s", action, source)
         # Used in two failure messages below; resolve once.
-        hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
+        hostname = resolve_hostname()
         try:
             if source == "airplay":
                 matched = await _resolve_airplay_account(router)

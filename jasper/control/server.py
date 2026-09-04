@@ -546,7 +546,6 @@ _outputd_status = _state_aggregate._outputd_status
 _clamp_db = _volume_ops._clamp_db
 _db_to_percent = _volume_ops._db_to_percent
 _percent_to_db = _volume_ops._percent_to_db
-_spotify_redirect_uri = _volume_ops._spotify_redirect_uri
 _read_volume_state = _volume_ops.read_volume_state
 
 

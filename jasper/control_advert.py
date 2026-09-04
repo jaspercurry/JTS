@@ -55,9 +55,9 @@ deploy/install.sh must not break because mDNS could not be re-rendered. A later
 from __future__ import annotations
 
 import logging
-import os
 
 from . import avahi_service
+from .identity import resolve_hostname
 from .avahi_service import RenderResult
 from .log_event import log_event
 
@@ -107,7 +107,7 @@ def _resolve_name(name: str | None) -> str:
             resolved = ""
     resolved = (resolved or "").strip()
     if not resolved:
-        resolved = os.environ.get("JASPER_HOSTNAME", "jts.local").strip() or "jts.local"
+        resolved = resolve_hostname()
     return resolved
 
 

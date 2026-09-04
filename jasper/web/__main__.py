@@ -257,7 +257,6 @@ def _make_spotify_server(target: object) -> object:
             "JASPER_SPOTIFY_MANUAL_REDIRECT_URI",
             spotify_setup.DEFAULT_MANUAL_REDIRECT_URI,
         ),
-        hostname=os.environ.get("JASPER_HOSTNAME", "jts.local"),
     )
 
 
