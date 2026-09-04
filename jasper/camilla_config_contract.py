@@ -439,12 +439,11 @@ def ensure_volume_limit_db(value: float) -> float:
     """Validate a ``devices.volume_limit`` value against the JTS safety
     ceiling and return it as a float.
 
-    0 dB is the project-wide hard software ceiling (see AGENTS.md
-    "Renderer architecture"): generated configs must never let the main
-    fader boost above full scale. Mirrors the
-    guard in ``jasper.active_speaker.camilla_yaml`` so every JTS config
-    emitter rejects a positive limit at build time instead of shipping a
-    loud-output hazard to CamillaDSP. Raises ``ValueError`` — config
+    0 dB is the project-wide hard software ceiling (AGENTS.md
+    non-negotiable 1): generated configs must never let the main fader
+    boost above full scale. Both JTS emitter families (``jasper.sound``
+    and ``jasper.active_speaker``) route their build-time refusal through
+    here, so the threshold has one home. Raises ``ValueError`` — config
     generation is a programming/caller error surface, not a runtime
     degrade-gracefully path.
     """

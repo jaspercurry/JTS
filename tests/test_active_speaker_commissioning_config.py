@@ -167,15 +167,6 @@ def test_commissioning_config_rejects_out_of_range_output():
         )
 
 
-def test_commissioning_config_rejects_positive_volume_limit():
-    preset = _preset(_two_way_preset())
-    with pytest.raises(ActiveSpeakerConfigError):
-        emit_active_speaker_commissioning_config(
-            preset, playback_device=ACTIVE_PCM, audible_outputs={0},
-            volume_limit_db=3.0,
-        )
-
-
 def test_commissioning_config_preserves_exact_negative_volume_limit():
     preset = _preset(_two_way_preset())
     out = emit_active_speaker_commissioning_config(

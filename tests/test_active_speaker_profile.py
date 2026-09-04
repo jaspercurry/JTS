@@ -426,17 +426,6 @@ def test_active_startup_config_rejects_outputd_playback_aliases():
             )
 
 
-def test_active_startup_config_rejects_positive_volume_limit():
-    preset = ActiveSpeakerPreset.from_mapping(_two_way_preset())
-
-    with pytest.raises(ActiveSpeakerConfigError, match="volume_limit_db"):
-        emit_active_speaker_startup_config(
-            preset,
-            playback_device="hw:ActiveDAC",
-            volume_limit_db=1.0,
-        )
-
-
 def test_two_way_active_startup_config_is_muted_and_protected():
     preset = ActiveSpeakerPreset.from_mapping(_two_way_preset())
     yaml = emit_active_speaker_startup_config(

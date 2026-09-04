@@ -34,6 +34,7 @@ from jasper.camilla_config_contract import (
     SHELF_Q_EMIT_DECIMALS,
     FilterSpec,
     PeqFilter,
+    ensure_volume_limit_db,
     resolve_camilla_latency_for_devices,
     resolve_enable_rate_adjust,
     total_positive_boost_db,
@@ -408,6 +409,14 @@ def _finite_float(value: float, field_name: str) -> float:
     if not math.isfinite(out):
         raise ActiveSpeakerConfigError(f"{field_name} must be finite")
     return out
+
+
+def _assert_volume_limit(volume_limit_db: float) -> None:
+    """Restate the shared 0 dB software ceiling in this module's error type."""
+    try:
+        ensure_volume_limit_db(volume_limit_db)
+    except ValueError as e:
+        raise ActiveSpeakerConfigError(str(e)) from e
 
 
 def _positive_int(value: int, field_name: str) -> int:
@@ -2098,8 +2107,7 @@ def emit_active_speaker_startup_config(
         limiter_clip_limit_db,
         "limiter_clip_limit_db",
     )
-    if volume_limit_db > 0:
-        raise ActiveSpeakerConfigError("volume_limit_db must not exceed 0 dB")
+    _assert_volume_limit(volume_limit_db)
     if startup_headroom_db < 0 or startup_headroom_db > 80:
         raise ActiveSpeakerConfigError("startup_headroom_db must be between 0 and 80")
     if limiter_clip_limit_db < -120 or limiter_clip_limit_db > 0:
@@ -2269,8 +2277,7 @@ def emit_active_speaker_parked_config(
     chunksize = _positive_int(chunksize, "chunksize")
     target_level = _positive_int(target_level, "target_level")
     volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
-    if volume_limit_db > 0:
-        raise ActiveSpeakerConfigError("volume_limit_db must not exceed 0 dB")
+    _assert_volume_limit(volume_limit_db)
 
     filter_lines: list[str] = []
     pipeline_lines = [
@@ -2672,8 +2679,7 @@ def emit_active_speaker_commissioning_config(
     startup_headroom_db = _finite_float(startup_headroom_db, "startup_headroom_db")
     limiter_clip_limit_db = _finite_float(limiter_clip_limit_db, "limiter_clip_limit_db")
     audible_gain_db = _finite_float(audible_gain_db, "audible_gain_db")
-    if volume_limit_db > 0:
-        raise ActiveSpeakerConfigError("volume_limit_db must not exceed 0 dB")
+    _assert_volume_limit(volume_limit_db)
     if startup_headroom_db < 0 or startup_headroom_db > 80:
         raise ActiveSpeakerConfigError("startup_headroom_db must be between 0 and 80")
     if limiter_clip_limit_db < -120 or limiter_clip_limit_db > 0:
@@ -3294,8 +3300,7 @@ def emit_active_speaker_program_config(
         protective_hp_min_slope_db_per_octave,
         "protective_hp_min_slope_db_per_octave",
     )
-    if volume_limit_db > 0:
-        raise ActiveSpeakerConfigError("volume_limit_db must not exceed 0 dB")
+    _assert_volume_limit(volume_limit_db)
     if limiter_clip_limit_db < -120 or limiter_clip_limit_db > 0:
         raise ActiveSpeakerConfigError(
             "limiter_clip_limit_db must be between -120 and 0 dB"
@@ -3583,8 +3588,7 @@ def emit_active_speaker_baseline_config(
         "limiter_clip_limit_db",
     )
     output_trim_db = _finite_float(output_trim_db, "output_trim_db")
-    if volume_limit_db > 0:
-        raise ActiveSpeakerConfigError("volume_limit_db must not exceed 0 dB")
+    _assert_volume_limit(volume_limit_db)
     if baseline_headroom_db < 0 or baseline_headroom_db > 40:
         raise ActiveSpeakerConfigError("baseline_headroom_db must be between 0 and 40")
     if limiter_clip_limit_db < -120 or limiter_clip_limit_db > 0:
@@ -3809,8 +3813,7 @@ def emit_active_speaker_driver_domain_config(
         limiter_clip_limit_db,
         "limiter_clip_limit_db",
     )
-    if volume_limit_db > 0:
-        raise ActiveSpeakerConfigError("volume_limit_db must not exceed 0 dB")
+    _assert_volume_limit(volume_limit_db)
     if limiter_clip_limit_db < -120 or limiter_clip_limit_db > 0:
         raise ActiveSpeakerConfigError(
             "limiter_clip_limit_db must be between -120 and 0 dB"
