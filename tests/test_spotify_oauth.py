@@ -2,12 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Contract tests for the shared Spotify OAuth callback default."""
+"""Contract tests for the shared OAuth callback defaults."""
 from __future__ import annotations
 
 import ast
 from pathlib import Path
 
+import pytest
+
+from jasper.google_oauth import GOOGLE_OAUTH_CALLBACK_BASE
 from jasper.spotify_oauth import (
     SPOTIFY_OAUTH_CALLBACK_BASE,
     default_spotify_redirect_uri,
@@ -32,6 +35,28 @@ def _docstring_nodes(tree: ast.AST) -> set[ast.Constant]:
         ):
             nodes.add(first.value)
     return nodes
+
+
+@pytest.fixture(scope="module")
+def string_constants_by_module() -> dict[str, list[str]]:
+    """Every non-docstring string constant under jasper/, keyed by module.
+
+    Parsed once: the owner pin below asks this same tree one question per
+    callback base, and re-parsing all of jasper/ per parameter is the whole
+    runtime of this file.
+    """
+    by_module: dict[str, list[str]] = {}
+    for path in sorted((REPO_ROOT / "jasper").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        docstrings = _docstring_nodes(tree)
+        by_module[path.relative_to(REPO_ROOT).as_posix()] = [
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and node not in docstrings
+            and isinstance(node.value, str)
+        ]
+    return by_module
 
 
 def test_default_spotify_redirect_uri_preserves_exact_hostname() -> None:
@@ -84,18 +109,19 @@ def test_resolved_spotify_redirect_uri_uses_the_recorded_hostname(
     )
 
 
-def test_callback_base_literal_has_one_python_owner() -> None:
-    owners: list[str] = []
-    for path in sorted((REPO_ROOT / "jasper").rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        docstrings = _docstring_nodes(tree)
-        if any(
-            isinstance(node, ast.Constant)
-            and node not in docstrings
-            and isinstance(node.value, str)
-            and SPOTIFY_OAUTH_CALLBACK_BASE in node.value
-            for node in ast.walk(tree)
-        ):
-            owners.append(path.relative_to(REPO_ROOT).as_posix())
-
-    assert owners == ["jasper/spotify_oauth.py"]
+@pytest.mark.parametrize(
+    "base, owner",
+    [
+        (SPOTIFY_OAUTH_CALLBACK_BASE, "jasper/spotify_oauth.py"),
+        (GOOGLE_OAUTH_CALLBACK_BASE, "jasper/google_oauth.py"),
+    ],
+)
+def test_callback_base_literal_has_one_python_owner(
+    base: str, owner: str, string_constants_by_module: dict[str, list[str]],
+) -> None:
+    owners = [
+        module
+        for module, strings in string_constants_by_module.items()
+        if any(base in value for value in strings)
+    ]
+    assert owners == [owner]

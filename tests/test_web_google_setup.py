@@ -56,7 +56,6 @@ def test_public_surface_present():
     assert callable(google_setup._setup_wizard_html)
     assert callable(google_setup._redirect_uri_page_html)
     assert callable(google_setup._management_html)
-    assert callable(google_setup.default_redirect_uri)
 
 
 # ---------------------------------------------------------------------------
