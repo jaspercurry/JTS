@@ -150,7 +150,10 @@ def os_environ_get(name: str) -> str | None:
 
 
 def test_state_group_write_no_files_is_ok(tmp_path):
-    assert _classify_state_group_write(tmp_path / "usage.db").status == "ok"
+    res = _classify_state_group_write(
+        tmp_path / "usage.db", tmp_path / "speaker_volume.json"
+    )
+    assert res.status == "ok"
 
 
 @pytest.mark.parametrize(
@@ -169,7 +172,9 @@ def test_state_group_write_verdicts(monkeypatch, tmp_path, name, mode, status):
     target.write_text("x", encoding="utf-8")
     target.chmod(mode)
 
-    res = _classify_state_group_write(tmp_path / "usage.db")
+    res = _classify_state_group_write(
+        tmp_path / "usage.db", tmp_path / "speaker_volume.json"
+    )
 
     assert res.status == status
     # A warn must name the offending file so the operator knows what to chmod.
@@ -179,6 +184,24 @@ def test_state_group_write_verdicts(monkeypatch, tmp_path, name, mode, status):
 
 def test_state_group_write_check_is_registered():
     assert "check_state_dir_group_writable" in _registered_check_names()
+
+
+@pytest.mark.parametrize("mode, status", [(0o640, "warn")], ids=["group-readonly"])
+def test_state_group_write_checks_configured_volume_path(
+    monkeypatch, tmp_path, mode, status
+):
+    """volume_state_path is whatever the caller passes, not a hardcoded
+    filename — an override at a non-default name/location is still
+    checked (JASPER_VOLUME_STATE_PATH)."""
+    _pretend_group_is_jasper(monkeypatch)
+    volume_state_path = tmp_path / "custom" / "vol_state.json"
+    volume_state_path.parent.mkdir()
+    volume_state_path.write_text("x", encoding="utf-8")
+    volume_state_path.chmod(mode)
+
+    res = _classify_state_group_write(tmp_path / "usage.db", volume_state_path)
+
+    assert res.status == status
 
 
 # ---------- check_state_dir: os.access(W_OK) always reports jasper-doctor's

@@ -84,9 +84,7 @@ def check_state_dir_group_writable(cfg: Config) -> CheckResult:
     return _classify_state_group_write(Path(cfg.usage_db), Path(cfg.volume_state_path))
 
 
-def _classify_state_group_write(
-    usage_db: Path, volume_state_path: Path | None = None
-) -> CheckResult:
+def _classify_state_group_write(usage_db: Path, volume_state_path: Path) -> CheckResult:
     """Path-parameterized core of ``check_state_dir_group_writable`` — unit
     testable with tmp files (mirrors the resilience/renderers ``_classify_*``
     doctor helpers)."""
@@ -99,7 +97,7 @@ def _classify_state_group_write(
         state_dir / "conversation_history.db",
         state_dir / "timers.db",
         state_dir / "wake-events" / "wake-events.sqlite3",
-        *([volume_state_path] if volume_state_path is not None else []),
+        volume_state_path,
     ]
     bad: list[str] = []
     checked = 0

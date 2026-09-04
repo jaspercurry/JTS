@@ -495,12 +495,8 @@ class VolumePersistence:
 
 
 def configured_path() -> str:
-    """The volume-state file this box uses: JASPER_VOLUME_STATE_PATH or the default.
-
-    Reads the environment fresh on every call — long-lived daemons must not
-    cache this from os.environ at import or init time.
-    """
-    return os.environ.get("JASPER_VOLUME_STATE_PATH", VolumePersistence.DEFAULT_PATH)
+    """JASPER_VOLUME_STATE_PATH or the default."""
+    return os.environ.get("JASPER_VOLUME_STATE_PATH") or VolumePersistence.DEFAULT_PATH
 
 
 def _regress_percent(
