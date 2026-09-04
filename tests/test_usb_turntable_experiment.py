@@ -1695,9 +1695,9 @@ def test_turntable_product_surface_is_the_stop_hook_and_the_opt_in_walk() -> Non
 
     Four of them are the hot-plug stop hook (a udev rule, its unit, and the
     install steps that ship both). The rest are the opt-in lab harness
-    ``jasper-arm-walk`` — its loop and its CLI, which drive the adapter as a
-    SUBPROCESS at the installed path and never import it, the CLI naming the
-    stop unit only to cite the `User=pi` identity it borrows — plus the one
+    ``jasper-angle-capture serve`` — its loop and its CLI, which drive the
+    adapter as a SUBPROCESS at the installed path and never import it, the CLI
+    naming the stop unit only to cite the `User=pi` identity it borrows — plus the one
     comment in the angle seam that says where its +/-45 arm envelope comes
     from. Nothing here starts on its own: no timer, no daemon, no voice tool.
     """
@@ -1734,7 +1734,7 @@ def test_turntable_product_surface_is_the_stop_hook_and_the_opt_in_walk() -> Non
         "deploy/udev/99-jasper-turntable-autostop.rules",
         "jasper/active_speaker/arm_walk.py",
         "jasper/active_speaker/angle_capture.py",
-        "jasper/cli/arm_walk.py",
+        "jasper/cli/angle_capture.py",
     }
 
 

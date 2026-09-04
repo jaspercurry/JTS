@@ -193,8 +193,8 @@ refuses boosts and routes them to the driver door), and **per-driver
 linearization is blind across the blend region**, which has its own owner and
 its own bounded tool. Bank the plant before you touch a filter.
 
-**Positioning.** With an arm on the rig, `jasper-arm-walk` moves it. Without
-one, `jasper-angle-capture stage --program baseline --size express` (or
+**Positioning.** With an arm on the rig, `jasper-angle-capture serve` moves it.
+Without one, `jasper-angle-capture stage --program baseline --size express` (or
 `--size full`) banks a named pose table for the next session and prints the
 price and a handoff URL; hand that URL to the household, then poll
 `jasper-crossover-prescriber status` until the walk's takes appear under
@@ -332,9 +332,9 @@ how the coordinate is chosen.
    driver's. The LATERAL phase skips that composition deliberately and keeps the
    protection phase. **Which of the two you got is stamped on the take**, as
    `phase_composition` (`crossover_composed` or `protection_retained`), and
-   `jasper-delay-sweep propose` echoes it beside the phase it read — so the
-   proposal states it rather than you. A take that states neither — banked
-   before the field, or captured with no protection emitted to retain — reads
+   `jasper-round-views delay-landscape` echoes it beside the phase it read —
+   so the proposal states it rather than you. A take that states neither —
+   banked before the field, or captured with no protection emitted to retain — reads
    as unknown, never as either one. Still treat a protection-retained optimum
    as contaminated until the acoustic confirm disposes of it.
 2. **Propose, from evidence already banked.** Ruling S3 banks magnitude *and*
@@ -420,11 +420,11 @@ schedule, the geometry seed and the selectors — decision content, no DSP of it
 own. `crossover_v2/delay_landscape.py` is the propose half and the grader;
 `camilla_yaml.emit_active_speaker_program_config`'s `measurement_delays_us` puts
 a candidate delay in the measurement graph and **that emitter only**. Offline,
-`jasper-delay-sweep propose <bundle> --fc-hz N` reads that round's per-driver
-curves through the measurement index, prints the computed optimum, and hands
-back the `jasper-angle-capture stage` lines that confirm it. It opens no device
-and plays nothing. `jasper-delay-sweep confirm <bundle> --fc-hz N` then grades
-the `null_runs/` rows those coordinates were played at against the same
+`jasper-round-views delay-landscape <bundle> --fc-hz N` reads that round's
+per-driver curves through the measurement index, prints the computed optimum,
+and hands back the `jasper-angle-capture stage` lines that confirm it. It opens
+no device and plays nothing. `jasper-round-views delay-confirm <bundle> --fc-hz N` then
+grades the `null_runs/` rows those coordinates were played at against the same
 landscape and banks the verdict as `delay_confirmation.json`.
 
 **Price orders the queue; it never empties it.** A delay the confirmation
@@ -510,13 +510,13 @@ division of labour.
    the speaker and with a room path that did not move. Rotation adjudicates.
 
 **Either discriminator can be UNAVAILABLE, and that is a third answer, not a
-negative one.** Both run over a round's capture WAVs in the `dumps/` ring —
-`jasper-classify-features` requires `--dumps` — and excess group delay is
-recomputed from the impulse response, not read off a curve, so a round with no
-WAVs can never be classified afterwards. A wired round banks its own capture
-WAVs, so build the ring from the bundle with `jasper-project-ring <bundle-dir>
---out <ring>` and hand that `--out` path to `--dumps`. What is genuinely gone
-is a round whose WAVs were never banked at all. When the inputs are absent the
+negative one.** Both run over a round's capture WAVs in the `dumps/` ring, and excess group
+delay is recomputed from the impulse response, not read off a curve, so a round
+with no WAVs can never be classified afterwards. A wired round banks its own
+capture WAVs, and `jasper-round-views classify-features <bundle-dir>` projects
+the ring out of the bundle itself, so no ring has to be built first (`--dumps`
+names one that already exists). What is genuinely gone is a round whose WAVs
+were never banked at all. When the inputs are absent the
 surfaces say so rather than guess: the
 packet's `feature_classification` block reports `available: false` beside a
 `status` / `reason` / `field` triple, and discriminator 2 already has its own
@@ -703,13 +703,14 @@ module docstring, which states the discriminator once. It licenses no filter —
 it is evidence for an attribution argument, never a verdict or an EQ
 instruction.
 
-**Rung 3 — `jasper-close-reference`: how much of the far read was the room?**
+**Rung 3 — `jasper-round-views close-reference`: how much of the far read was
+the room?**
 Only once rung 2 says room and the feature is worth one more capture. Ask
-`jasper-close-reference distance --driver-diameter-in D --fc-hz FC` where to
-stand the mic; the human takes that capture (the close-reference program row is
-#3498's amendment item 1 and is not built, so today you declare the distance
-yourself); then `jasper-close-reference compare --far-round A --close-round B
---close-m M`. Read `alignment.trusted` before any band, then each
+`jasper-round-views close-reference --distance --driver-diameter-in D --fc-hz FC`
+where to stand the mic; the human takes that capture (the close-reference
+program row is #3498's amendment item 1 and is not built, so today you declare
+the distance yourself); then `jasper-round-views close-reference --far-round A
+--close-round B --close-m M`. Read `alignment.trusted` before any band, then each
 `windows[].bands[].verdict`: `agreement` says the far read was already
 speaker-dominated there, `room_dominated` prices the room's share, `unresolved`
 names which input was missing. It still prescribes nothing.

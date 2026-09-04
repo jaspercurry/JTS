@@ -123,7 +123,7 @@ HAND_WALKED = (TIER_FULL, TIER_EXPRESS)
 #: opens on two of them since the 2026-08-24 geometry ruling: VERIFY's anchor at
 #: the mark, whose sweep the tracking verdict consumes, and then the first pose
 #: of ``CLOUD_VERIFY_POSE_PROMPTS``, whose sweep joins the post-apply GROUP. The
-#: microphone does not move between them, and ``jasper-arm-walk``'s
+#: microphone does not move between them, and ``jasper-angle-capture serve``'s
 #: ``--expect-angles`` compares SETS, so a repeat adds nothing to state there.
 STAGE1_ANGLES = (0, -7, 7, -22, 22, 0)
 STAGE2_ANGLES = (0, 0, -7, 7, -22, 22)
@@ -1098,7 +1098,7 @@ def test_the_post_apply_walk_serves_the_design_axis_as_a_prompted_pose():
     * the GATE is given a target for it, so a driver waiting on
       ``position_pending`` is released rather than left holding;
     * the set of bearings this plan publishes CONTAINS 0, which is what
-      ``jasper-arm-walk --expect-angles`` compares against (it matches a set, so
+      ``serve --expect-angles`` compares against (it matches a set, so
       the anchor's repeat neither helps nor hurts).
     """
     plan = _stage2(TIER_REMOTE)

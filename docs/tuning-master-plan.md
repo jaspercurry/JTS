@@ -83,13 +83,13 @@ executed under both.
    fencing, not the distance: the artifact keeps its own kind and schema
    version so it can be lifted whole, the evidence blocks stay prose-free, and
    no code path in JTS reads the strings for any decision.
-9. **Naming: "arm" means the physical rig** (`jasper-arm-walk`) — never a
-   DSP variant. DSP variants under test are **candidates**; a tournament
-   round runs a **candidate cycle** at each pose. Forward-only for new work;
-   ticket 2.8's subject sweep trued up the DSP-variant prose it covered
-   (`alignment_prescription` is now at zero). The rule binds this program's
-   vocabulary, not the word: unrelated senses survive deliberately across
-   the tree and a sweeper should leave them alone — one ring/coupling
+9. **Naming: "arm" means the physical rig** (`jasper-angle-capture serve`) —
+   never a DSP variant. DSP variants under test are **candidates**; a
+   tournament round runs a **candidate cycle** at each pose. Forward-only for
+   new work; ticket 2.8's subject sweep trued up the DSP-variant prose it
+   covered (`alignment_prescription` is now at zero). The rule binds this
+   program's vocabulary, not the word: unrelated senses survive deliberately
+   across the tree and a sweeper should leave them alone — one ring/coupling
    arming transaction as a noun (`coupling_reconcile`'s "the arm's outputd
    restart" and "an arm or a disarm"; the `test_ring_anchor_arm_acceptance`
    and `test_composite_ring_arm_enabling` modules), a branch or case of a
@@ -216,7 +216,7 @@ ratified rulings. Constants land in code as the named program definitions;
   `null_walk` is the bounded delay stepping's decision content — spec,
   schedule, scoring, selection — and `active_speaker.delay_sweep` bounds
   one walk and states the depth bars it is read against.
-  `jasper-delay-sweep propose` is the operator door onto the computed
+  `jasper-round-views delay-landscape` is the operator door onto the computed
   optimum. A delay is found by compute-then-confirm
   (`crossover_v2.delay_landscape`), which proposes the coordinate from
   banked complex transfers and confirms it with three staged takes; the
@@ -595,7 +595,8 @@ run: the banked flat-campaign rounds re-read through 6.1–6.3 (+6.10–6.11),
 validating the new fields on known data and mapping the incumbent's
 features to mechanisms, so the recommissioning campaign opens with its
 priors measured.
-6.1 Gate-ladder exposure: `jasper-classify-features` grows a gates-list
+6.1 Gate-ladder exposure: `jasper-round-views classify-features` grows a
+    gates-list
     flag wired to `classify_round(gates_ms=...)`, and the artifact's
     per-rung rows (center/depth per gate, per feature) are verified
     readable — rungs above `SEARCH_T_MAX_MS` deliberately re-admit
@@ -737,7 +738,8 @@ priors measured.
 
 SSH in (cloud agent, laptop, or on-Pi) → `jasper-crossover-prescriber
 status` → read the evidence packet + operator notes (quarantined) → run or
-re-run deterministic views (`jasper-classify-features`, `jasper-round-views`)
+re-run deterministic views (`jasper-round-views classify-features` and the
+rest of `jasper-round-views`)
 → propose up to ~3 candidate prescriptions; each passes a door, compiles,
 banks its expected delta → hand the human the tournament program URL
 (hostname-derived); they move the mic pose-to-pose while candidates cycle →

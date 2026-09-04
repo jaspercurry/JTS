@@ -23,12 +23,10 @@ from typing import Any, Callable, TypeVar
 
 _T = TypeVar("_T")
 
-#: The two tool-menu modules that keep their own numbering: a human-only sudo
-#: ``set``/``show`` config door, and a long-running mover service whose stall
-#: and signal codes are ``jasper/active_speaker/arm_walk.py``'s ``EXIT_NAMES``.
+#: The one tool-menu module that keeps its own numbering: a human-only sudo
+#: ``set``/``show`` config door.
 OWN_EXIT_VOCABULARY = frozenset({
     "jasper.cli.declare_geometry",
-    "jasper.cli.arm_walk",
 })
 
 EXIT_OK = 0
@@ -68,23 +66,6 @@ def failed(exit_code: int, reason: str, detail: str) -> int:
     return refused(
         reason, detail, exit_code=exit_code, status=STATUS_BY_CODE[exit_code]
     )
-
-
-def fail_with_payload(
-    message: str, payload: dict[str, Any], *, as_json: bool, code: int
-) -> int:
-    """The ``--json``-gated variant: a sentence always, the record on request.
-
-    Two tools publish an ``{"ok": false, ...}`` record only when the caller
-    asked for one. Converging that contract with :func:`failed`'s is a
-    follow-on; this is the one implementation of the contract they have.
-    """
-
-    print(message, file=sys.stderr)
-    if as_json:
-        json.dump(payload, sys.stdout, indent=1)
-        sys.stdout.write("\n")
-    return code
 
 
 class StageFailed(Exception):

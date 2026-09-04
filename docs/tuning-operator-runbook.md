@@ -124,7 +124,7 @@ exist.
    ran it, so a second packet fingerprints differently and the prescription
    written against the first is refused against it.
 3. **Re-run the deterministic views** as needed:
-   `jasper-classify-features <bundle-dir> --dumps <ring>` files
+   `jasper-round-views classify-features <bundle-dir>` files
    `feature_classification.json` into the round dir — classification wants a
    summed-system capture, so verify-shaped rounds classify and a MEASURE-only
    or lateral ring refuses by name, with a per-take `captures` table saying
@@ -322,11 +322,12 @@ seconds of every remote session.
 5. Repeat. Analysis, apply and verify are unchanged.
 
 **Steps 3–5 have a shipped implementation for the lab turntable arm:**
-`jasper-arm-walk` ([`arm_walk.py`](../jasper/active_speaker/arm_walk.py), CLI in
-[`cli/arm_walk.py`](../jasper/cli/arm_walk.py)) polls the envelope over loopback,
-drives the turntable adapter as a subprocess, and posts `/position-ready` — with
-the power preflight, the ±45° envelope clamp, the measured settle and the
-park-and-verify held in code. It is opt-in and foreground: nothing starts it. See
+`jasper-angle-capture serve` ([`arm_walk.py`](../jasper/active_speaker/arm_walk.py),
+CLI in [`cli/angle_capture.py`](../jasper/cli/angle_capture.py)) polls the
+envelope over loopback, drives the turntable adapter as a subprocess, and posts
+`/position-ready` — with the power preflight, the ±45° envelope clamp, the
+measured settle and the park-and-verify held in code. It is opt-in and
+foreground: nothing starts it. See
 [`testing-tooling.md`](testing-tooling.md#lab-arm-walk-harness).
 
 **The WIRED capture source is the default, and it changes steps 1–2.** A
@@ -353,8 +354,8 @@ walk's own fact), and a retake the walk cannot serve is journalled as
 the hold as a walkthrough — the spot's counter, the plan's own instruction, and
 one control that posts the release — then the held set's Save / Record-again
 where the phone's confirm screen would have been. Nothing else is needed: no
-`jasper-arm-walk`, no CSRF dance, no second device. Left unattended a hold still
-expires after `REMOTE_POSITION_HOLD_BUDGET_S` (600 s) as
+`jasper-angle-capture serve`, no CSRF dance, no second device. Left unattended
+a hold still expires after `REMOTE_POSITION_HOLD_BUDGET_S` (600 s) as
 `position_hold_expired`: loud, named, self-recovering, but a wasted session.
 
 The walkthrough follows the HOLD, not the transport — it renders when
@@ -428,16 +429,11 @@ nothing durable · **mutating** = changes what the speaker plays ·
 |---|---|---|---|
 | `jasper-basic-profile review\|apply` | Review and apply the basic profile -- the chosen crossover plus per-driver trim, delay and polarity, with no linearization and no blend correction. Replaces the live tune; deletes no evidence. | mutating-with-gates | `jasper/cli/basic_profile.py` |
 | `jasper-seat-level` | Ramp the measurement volume until a calibrated mic at the seat reads the target dB SPL, then bank that volume as the crossover session's measurement reference. PRECONDITION: the mic's Sens Factor is quoted at MAXIMUM capture volume — confirm `amixer -c <card>` shows the capture control at 100%, or every absolute SPL below is wrong by the shortfall. | measured | `jasper/cli/seat_level.py` |
-| `jasper-angle-capture plan\|stage\|withdraw` | State one angle walk, see what it resolves to, and leave it for the next measurement session. | mutating (`stage` writes; `plan`/`withdraw` do not) | `jasper/cli/angle_capture.py` |
-| `jasper-arm-walk` | Serve a crossover-v2 measurement session's position gate with the lab turntable arm: poll, move, settle, report the microphone in place. Parks the arm at 0 deg on every exit. | measured | `jasper/cli/arm_walk.py` |
+| `jasper-angle-capture plan\|stage\|withdraw\|serve` | State one angle walk, see what it resolves to, leave it for the next measurement session, and serve it with the lab arm. | mutating (`stage` writes, `serve` moves the arm; `plan`/`withdraw` do not) | `jasper/cli/angle_capture.py` |
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber status\|packet\|propose\|stage` | Emit one crossover round's evidence packet, read a prescription back through the strict gate, and say where this speaker stands. | advisory (`stage` mutates) | `jasper/cli/crossover_prescriber.py` |
 | `jasper-round open\|wait\|apply\|bank` | Open, wait on, apply and bank a crossover round from the speaker itself. The three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate, plus the bank that files a finished session in the on-box campaign home. | mutating-with-gates (`open`/`apply`/`bank` write; `wait` does not) | `jasper/cli/round.py` |
-| `jasper-round-views entry\|frozen\|per-seat\|repeat\|repeat-floor\|agreement\|co-metrics\|directivity\|cloud-binding\|forward-model\|spec-sweep\|gate-sweep\|frequency\|distortion\|inventory` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability and the banked repeat floor, per-seat agreement, audibility co-metrics, measured per-angle directivity, whether the cloud's null evidence bound the linearization fit, what a candidate would measure from the banked per-driver solos, the gate window ladder and the sweep read onto the spec verdict, the shared frequency view, the H2/H3 distortion reading, and an inventory of which of those a round already carries — over banked rounds and live sessions. | advisory | `jasper/cli/round_views.py` |
-| `jasper-project-ring` | Re-project a banked round into the capture ring that jasper-classify-features and jasper-round-views distortion read. | mutating (projects evidence; changes nothing played) | `jasper/cli/project_ring.py` |
-| `jasper-classify-features` | Classify a banked round's features as minimum-phase driver defects, interference, or the room — controls first. | advisory | `jasper/cli/classify_features.py` |
-| `jasper-delay-sweep propose\|confirm` | Propose an inter-driver delay from banked curves, then grade the acoustic confirmation against it. Computes only; plays nothing. | advisory (plays nothing) | `jasper/cli/delay_sweep.py` |
-| `jasper-close-reference distance\|compare` | Correct a close capture to the far distance and say, band by band, how much of the far read was the room. Computes only; plays nothing and opens no device. | advisory (plays nothing) | `jasper/cli/close_reference.py` |
+| `jasper-round-views entry\|frozen\|per-seat\|repeat\|repeat-floor\|agreement\|co-metrics\|directivity\|cloud-binding\|forward-model\|spec-sweep\|gate-sweep\|frequency\|distortion\|classify-features\|close-reference\|delay-landscape\|delay-confirm\|inventory` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability and the banked repeat floor, per-seat agreement, audibility co-metrics, measured per-angle directivity, whether the cloud's null evidence bound the linearization fit, what a candidate would measure from the banked per-driver solos, the gate window ladder and the sweep read onto the spec verdict, the shared frequency view, the H2/H3 distortion reading, whether a feature is a driver defect or the room, how much of a far read was the room, the inter-driver delay landscape and its acoustic confirmation, and an inventory of which of those a round already carries — over banked rounds and live sessions. | advisory (classify-features projects a ring into the bundle) | `jasper/cli/round_views/__init__.py` |
 | `jasper-null` | Play the summed reverse null and bank one row per coordinate. Measures only; grades nothing. | measured | `jasper/cli/null_door.py` |
 | `jasper-audition start\|stop\|status` | Play this speaker at a reduced DSP layer, then put it back | mutating (runtime only; durable graph untouched -- ADR-0193) | `jasper/cli/audition.py` |
 | `jasper-declare-geometry set\|show` | Declare measurement rig geometry (speaker/mic heights, distance, optional ceiling) so entanglement_floor_hz has a provenance-labeled, non-measured source on rigs where the measured reflection finder structurally never fires -- see issue #3502. | advisory (`set` writes; `show` does not) | `jasper/cli/declare_geometry.py` |
@@ -498,7 +494,7 @@ constants"** section, their single source of truth; ticket 3.7 turns them into
 code.
 
 **The delay lane is three acts, and the middle one is not optional.**
-`jasper-delay-sweep propose` reads and prints; `jasper-null` plays the
+`jasper-round-views delay-landscape` reads and prints; `jasper-null` plays the
 coordinates it printed and banks a row for each; the alignment door applies.
 Before grading a confirmation, check what the graph will actually play: the
 candidate delay arrives through the measurement-graph emitter, but the branch
@@ -618,7 +614,7 @@ was mistaken for.
 ## Exit codes
 
 **One vocabulary, four numbers, one owner** — `jasper/cli/_refusal.py`. Every
-tool in the menu above except `jasper-arm-walk` (see below;
+tool in the menu above except `jasper-declare-geometry` (see below;
 `_refusal.OWN_EXIT_VOCABULARY` is the list) exits `0` when it did what it
 says, `1` when the instrument REFUSED a round it could read, `2` when the
 input was UNREADABLE, and `3` when the work was done and the result could not
@@ -626,8 +622,7 @@ be FILED; the failing number names the stage that failed, which is what tells
 you where to go.
 
 **The number is the contract; the record beside it is per tool.** The
-round-grading family — `jasper-round-views`, `jasper-delay-sweep`,
-`jasper-close-reference` — prints
+round-grading family — `jasper-round-views` — prints
 `{"status": "refused" | "unreadable" | "unwritable", "reason":
 "<tool_named_slug>", "detail": "<text>"}` on stdout and one `<status>
 (<reason>): <detail>` sentence on stderr, `status` and code always agreeing.
@@ -640,27 +635,27 @@ exits `2` with `answer_lost` when the daemon did not answer and `2` with
 trip that lost it on stderr. In both, a lost answer to an apply POST does NOT
 mean the apply failed — run `review` and read the applied state.
 
-Two doors are deliberately outside the record's shape.
+One door is deliberately outside the record's shape.
 `jasper-declare-geometry` is a human-only sudo `set`/`show` config door that
 prints text, not JSON, and keeps `2` = `EXIT_NOT_FOUND` (`show` before
-anything was declared); and `jasper-project-ring` /
-`jasper-classify-features` print an older `{"ok": false, ...}` record, and only
-under `--json`, so it does not line up field-for-field with the shape above.
-Converging that second shape is a follow-on.
+anything was declared) — it is the one entry in `OWN_EXIT_VOCABULARY`.
 
-Three surfaces carry their own numbering, so resolve those against what
-produced them: `jasper-arm-walk` (`0`, `3`–`15`, plus `129`/`130`/`143` parked
-by SIGHUP/SIGINT/SIGTERM — `EXIT_NAMES` in
-`jasper/active_speaker/arm_walk.py`), `scripts/run-crossover-round.py` (`0`,
-`3`–`12`; `EXIT_NAMES` in that file) and `scripts/bank-crossover-round.sh`
-(`0`, `1`, `3`, `4`; its own header block).
+Two surfaces carry their own numbering, so resolve those against what
+produced them: `scripts/run-crossover-round.py` (`0`, `3`–`12`; `EXIT_NAMES` in
+that file) and `scripts/bank-crossover-round.sh` (`0`, `1`, `3`, `4`; its own
+header block). `jasper-angle-capture serve` is NOT one of them: it exits the
+shared numbers and publishes its loop's own verdict (`EXIT_NAMES` in
+`jasper/active_speaker/arm_walk.py` — `stuck`, `walk_not_staged`,
+`session_stopped`, …) as the record's `reason`. A walk stopped by a signal
+still leaves on `129`/`130`/`143`, the shell's own spelling, with the arm
+parked.
 
 Two traps worth knowing before you branch on a number:
 
 - **The round runner collapses its sub-tools' codes.** Any nonzero stage rc
   becomes `3`; any nonzero walk rc becomes `5` (except ssh's own `255`, which
   becomes `12`); every nonzero bank rc becomes `9`. The sub-tool's real rc and
-  its own name survive **only in the trail** (`angle_capture_exit`,
+  the stall it named survive **only in the trail** (`angle_capture_exit`,
   `arm_walk_exit` / `arm_walk_exit_name`, `bank_exit`). Read the trail, not `$?`,
   when you need to know *why* a phase failed.
 - **`2` is also argparse's usage exit, for every Python tool here.** A
@@ -918,8 +913,8 @@ the absence.
 
 **Rounds banked before a take carried its own analysis have no `diagnostic`
 block**, so `capture_snr` is honestly absent for them. Those corpora keep
-their `dumps/` tree, which is what `jasper-classify-features --dumps` and
-`jasper-round-views distortion --dumps` still open — they want the capture WAVs, and
+their `dumps/` tree, which is what `jasper-round-views classify-features
+--dumps` and `jasper-round-views distortion --dumps` still open — they want the capture WAVs, and
 no banked record holds those.
 
 ### Reading the gate and the reflector path honestly
@@ -1114,17 +1109,18 @@ than re-deriving it.
 
 ### Reading a close-reference comparison
 
-`jasper-close-reference` corrects a capture taken close to the woofer back to
-the far distance and asks, band by band, how much of the far read was the room.
-Two verbs, both offline: `distance` sizes the capture, `compare` reads the pair.
-Neither opens a device. Exit codes: `0` done, `1` refused, `2` the round could
-not be read. When it is worth a capture, and what a verdict licenses, are
+`jasper-round-views close-reference` corrects a capture taken close to the
+woofer back to the far distance and asks, band by band, how much of the far
+read was the room. One view, two modes, both offline: `--distance` sizes the
+capture, the comparison reads the pair. Neither opens a device. Exit codes: `0`
+done, `1` refused, `2` the round could not be read, `3` compared and the report
+could not be filed. When it is worth a capture, and what a verdict licenses, are
 [`tuning-methodology.md`](tuning-methodology.md) §6a's.
 
-**`distance` answers "where do I stand the mic".** It takes the driver diameter
-(`--driver-diameter-in` or `--driver-diameter-mm` — **mm wins if both are
-given**) and `--fc-hz` (argparse-required; the diameter is not, and its absence
-refuses `close_reference_no_driver_diameter` instead).
+**`--distance` answers "where do I stand the mic".** It takes the driver
+diameter (`--driver-diameter-in` or `--driver-diameter-mm`, never both) and
+`--fc-hz`; without either it is a usage error, and it reads no round and writes
+no artifact.
 `distance_m` / `distance_in` is the recommendation:
 the piston far-field term `2a²/λ` at `band_top_hz` (= `fc_hz/2`) plus
 `k_margin` = 2 driver diameters, and **the margin term dominates** — the
@@ -1135,7 +1131,7 @@ placement is loose. `far_field_ceiling_hz` is where a mic that close goes
 near-field — a **ceiling**, because closing in costs you the top, not the
 bottom.
 
-**`compare` needs both rounds and the close distance you declared.**
+**A comparison needs both rounds and the close distance you declared.**
 `--far-round` / `--close-round` take a banked round directory (the one holding
 `bundle/`) or the bundle itself; `--far-capture` / `--close-capture` name a take
 id or WAV stem, defaulting to the on-axis summed take. `--close-m` is
@@ -1145,7 +1141,9 @@ distance until #3498's close-reference program row exists. `--far-m` defaults to
 1.0. `--fc-hz` and a diameter cap the band; `--geometry` (default
 `/var/lib/jasper/measurement_geometry.json`) supplies the derived windows and is
 **not** a refusal when absent; `--far-gate-ms` / `--close-gate-ms` override
-them; `--out` also writes the report.
+them. The report lands as `close_reference.json` beside the FAR round — beside
+the caller, session-prefixed, for an unbanked bundle; `--out` writes it
+elsewhere (`-` for stdout).
 
 **Read the validity band first — it is where the answer can exist at all.**
 
