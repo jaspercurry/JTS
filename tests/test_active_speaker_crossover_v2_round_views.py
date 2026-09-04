@@ -1195,6 +1195,10 @@ def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
     with pytest.raises(SystemExit):
         cli.main(["frozen", str(round_dir)])
 
+    assert rows["gate_sweep.json"]["produced_by"] == (
+        "jasper-round-views gate-sweep <this-round>"
+    )
+
 
 def test_cli_frequency_writes_the_shared_web_contract(tmp_path):
     from jasper.cli.round_views import main
@@ -2348,6 +2352,115 @@ def test_cli_spec_sweep_writes_the_verdict_carrying_its_gate_read(tmp_path):
     assert spec["overall_passed"] == banked.overall_passed
     assert low["max_deviation_hz"] == banked.bands[0].max_deviation_hz
     assert low["passed"] == banked.bands[0].passed
+
+
+# --------------------------------------------------------------------------- #
+# gate-sweep: the ladder itself, over the round's own captures
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def gate_sweep_round(tmp_path):
+    return bank_capture_round(
+        tmp_path, [_pose_ir(i, late_copy_ms=8.0) for i in range(3)]
+    )
+
+
+def test_cli_gate_sweep_writes_its_report_beside_the_round(gate_sweep_round):
+    from jasper.cli import round_views as cli
+
+    rc = cli.main(["gate-sweep", str(gate_sweep_round), "--rungs-ms", "5", "20"])
+
+    assert rc == cli.EXIT_OK
+    report = json.loads(
+        (gate_sweep_round / cli.ARTIFACT_BY_VIEW["gate-sweep"].artifact).read_text()
+    )
+    assert report["frame"]["rungs_ms"] == [5.0, 20.0]
+    assert len(report["poses"]) == 3
+
+
+def test_cli_gate_sweep_out_puts_the_report_where_it_is_told(
+    gate_sweep_round, tmp_path
+):
+    from jasper.cli import round_views as cli
+
+    elsewhere = tmp_path / "sweep.json"
+    rc = cli.main(
+        ["gate-sweep", str(gate_sweep_round), "--rungs-ms", "5", "20",
+         "--out", str(elsewhere)]
+    )
+
+    assert rc == cli.EXIT_OK
+    assert elsewhere.is_file()
+    assert not (
+        gate_sweep_round / cli.ARTIFACT_BY_VIEW["gate-sweep"].artifact
+    ).exists()
+
+
+def test_cli_gate_sweep_at_hz_reports_the_named_bin(gate_sweep_round):
+    from jasper.cli import round_views as cli
+
+    rc = cli.main(
+        ["gate-sweep", str(gate_sweep_round), "--rungs-ms", "5", "20",
+         "--at-hz", "800"]
+    )
+
+    assert rc == cli.EXIT_OK
+    report = json.loads(
+        (gate_sweep_round / cli.ARTIFACT_BY_VIEW["gate-sweep"].artifact).read_text()
+    )
+    (feature,) = report["features"]
+    assert feature["requested_hz"] == 800.0
+
+
+def test_cli_gate_sweep_refusal_names_the_missing_input(tmp_path, capsys):
+    """The ladder's own refusal reaches the operator under ITS reason, not the
+    stage bucket: which input was missing is the answer."""
+    from jasper.cli import round_views as cli
+
+    assert cli.main(["gate-sweep", str(tmp_path)]) == cli.EXIT_REFUSED
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "refused"
+    assert payload["reason"] == REFUSE_NO_CAPTURES
+
+
+@pytest.mark.parametrize(
+    "argv", [["--rungs-ms", "7"], ["--at-hz", "100"]],
+    ids=["one-rung-ladder", "bin-off-the-analysis-grid"],
+)
+def test_cli_gate_sweep_an_unusable_request_is_the_unreadable_exit(
+    gate_sweep_round, capsys, argv
+):
+    from jasper.cli import round_views as cli
+
+    rc = cli.main(["gate-sweep", str(gate_sweep_round), *argv])
+
+    assert rc == cli.EXIT_UNREADABLE
+    assert not (
+        gate_sweep_round / cli.ARTIFACT_BY_VIEW["gate-sweep"].artifact
+    ).exists()
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "unreadable"
+    assert payload["reason"] == cli.REASON_UNREADABLE
+
+
+def test_cli_gate_sweep_an_unwritable_out_is_the_write_exit(gate_sweep_round, capsys):
+    """The round read and the sweep ran; only the filing failed."""
+    from jasper.cli import round_views as cli
+
+    blocker = gate_sweep_round / "not-a-dir"
+    blocker.write_text("")
+
+    rc = cli.main(
+        ["gate-sweep", str(gate_sweep_round), "--rungs-ms", "5", "20",
+         "--out", str(blocker / "x.json")]
+    )
+
+    assert rc == cli.EXIT_WRITE_FAILED
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "unwritable"
+    assert payload["reason"] == cli.REASON_UNWRITABLE
 
 
 # --------------------------------------------------------------------------- #
