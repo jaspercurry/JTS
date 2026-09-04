@@ -495,7 +495,7 @@ def test_prompt_states_the_crossover_vocabulary_the_saver_accepts() -> None:
     ``SUPPORTED_CROSSOVER_TYPES`` / ``SUPPORTED_LR_ORDERS`` reaches this
     surface too.
     """
-    from jasper.active_speaker.staging import (
+    from jasper.active_speaker.declaration_vocabulary import (
         supported_declaration_filter_types,
         supported_declaration_slopes_db_per_octave,
     )

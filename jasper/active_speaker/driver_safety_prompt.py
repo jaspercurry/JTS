@@ -169,7 +169,7 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
     # it is saved, so asking for a vocabulary the saver rejects is an invisible
     # deadlock. Imported inside the call because this module is the research
     # surface, not an audio-graph consumer.
-    from .staging import (
+    from .declaration_vocabulary import (
         supported_declaration_filter_types,
         supported_declaration_slopes_db_per_octave,
     )

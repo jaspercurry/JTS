@@ -37,7 +37,7 @@ from jasper.active_speaker.crossover_declaration import (
     preset_crossover_geometry,
 )
 from jasper.active_speaker.profile import CrossoverRegion, DriverSpec
-from jasper.active_speaker.staging import (
+from jasper.active_speaker.declaration_vocabulary import (
     _slope_to_lr_order,
     declaration_filter_type,
     declaration_slope_db_per_octave,

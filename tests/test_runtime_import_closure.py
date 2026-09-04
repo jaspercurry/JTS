@@ -7,12 +7,15 @@
 Structural, not behavioural: the walk reads ``ast`` import nodes, so it sees
 the edge a convenience re-export adds before anyone runs the code. Two
 questions per module — what its own file imports at any depth, and what its
-module-scope import closure executes.
+module-scope import closure executes. A third asks the same walk whether
+every relative import in ``jasper/active_speaker`` resolves from its own
+module depth, which is what a relocated def gets wrong.
 """
 
 from __future__ import annotations
 
 import ast
+import importlib.util
 from pathlib import Path
 from typing import Iterator
 
@@ -152,6 +155,9 @@ def _offenders(modules: set[str]) -> list[str]:
     )
 
 
+ACTIVE_SPEAKER_SOURCES = sorted((REPO_ROOT / "jasper/active_speaker").rglob("*.py"))
+
+
 TRUTH_LAYER_MODULES = TRUTH_LAYER + tuple(
     sorted(
         _dotted(path)
@@ -165,6 +171,7 @@ def test_the_walk_sees_a_real_import_graph():
     """A walker that returned nothing would satisfy every assertion below."""
 
     assert len(TRUTH_LAYER_MODULES) >= 40
+    assert len(ACTIVE_SPEAKER_SOURCES) >= 40
     closure = _closure("jasper.active_speaker.runtime_contract")
     assert len(closure) >= 20
     assert "jasper.active_speaker.profile" in closure
@@ -189,3 +196,73 @@ def test_the_truth_layer_never_imports_the_runtime(module):
     assert path is not None, f"{module} does not exist"
     assert _offenders(_imports(path, deferred=True)) == []
     assert _offenders(_closure(module)) == []
+
+
+def _bound_names(path: Path) -> set[str] | None:
+    """Every name ``path``'s module scope binds; ``None`` if it cannot be read.
+
+    ``None`` for a module that answers names dynamically -- a module-level
+    ``__getattr__`` or a star import binds what no walk can enumerate, and
+    guessing there would fail a legitimate import.
+    """
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name == "__getattr__":
+                return None
+            names.add(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if alias.name == "*":
+                    return None
+                names.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(node, ast.Assign):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return names
+
+
+@pytest.mark.parametrize("path", ACTIVE_SPEAKER_SOURCES, ids=_dotted)
+def test_every_relative_import_resolves_from_its_own_depth(path):
+    """A def moved between modules leaves relative imports naming the old one.
+
+    Both halves of that: the module the import names must exist at this
+    module's depth, and it must still bind the names asked of it. Deferred
+    imports execute on a path the suite stubs out, so either mistake survives
+    a green run and fails first on hardware as an ImportError no caller
+    classifies. Resolved against the checkout rather than ``find_spec``, which
+    executes the parent packages it walks through.
+    """
+
+    package = _dotted(path)
+    if path.name != "__init__.py":
+        package = package.rpartition(".")[0]
+    unresolved = []
+    for node in _import_nodes(
+        ast.parse(path.read_text(encoding="utf-8")).body, deferred=True
+    ):
+        if not isinstance(node, ast.ImportFrom) or not node.level:
+            continue
+        try:
+            dotted = importlib.util.resolve_name(
+                "." * node.level + (node.module or ""), package
+            )
+        except (ImportError, ValueError) as exc:
+            unresolved.append(f"line {node.lineno}: {exc}")
+            continue
+        target = _module_path(dotted)
+        if target is None:
+            unresolved.append(f"line {node.lineno}: {dotted}")
+            continue
+        bound = _bound_names(target)
+        if bound is None:
+            continue
+        unresolved.extend(
+            f"line {node.lineno}: {dotted}.{alias.name}"
+            for alias in node.names
+            if alias.name not in bound and _module_path(f"{dotted}.{alias.name}") is None
+        )
+    assert not unresolved, "; ".join(unresolved)
