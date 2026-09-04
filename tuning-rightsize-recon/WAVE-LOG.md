@@ -151,3 +151,21 @@
 - CI: three distinct spawn-bound failures during this wave, all under fd/process exhaustion late in the suite — `test_airplay_volume_hook.py` reconnect-timing, `test_arm_walk.py` SIGHUP-park `TimeoutExpired`, `test_wifi_guardian_script.py` retrying spawns on EMFILE/EAGAIN — none in the diffs that hit them; each stood down once and re-ran green. A leak diagnosis over the subprocess/socket/thread-heavy test files is running; the fix is a real PR once the leaking fixtures are named.
 
 - WAVE 3 W ROWS LANDED: 8 rows on `main` across two integration PRs (#3990 → 8a65013 carrying 3.8/3.4/3.5/3.9; #3997 → c84def4 carrying 3.1/3.2b/3.3/3.6). 3.7 (NN) HELD for the owner hardware pass; 3.10 (NN) needed no PR; 3.2 stopped on a false premise, replaced by 3.2b.
+
+## 2026-09-04 wave 7 = follow-ups from waves 2–3 (orchestrator session_01R8RQ2FPdsucCApERfUqwH3)
+
+Five mechanical rows, file-disjoint, one integration branch (#4021 → main 77970f7). Each: in-lane `/simplify` + `/code-review`, orchestrator read on the report.
+
+| Row | Change | PR | Verdict |
+|---|---|---|---|
+| 7.1 | `round_views/delay.py`, `classify_features.py` consume `_common.refused_by_name` (detail: fields or sentence) and `resolved_out`; `distortion.py` had no local arm (caught centrally) | #4016 | premise false for 1 of 3, correctly left |
+| 7.2 | four spellings of the mux control socket path → `route_latency/status_socket.MUX_CONTROL_SOCKET_PATH`; `uds` re-reads it; cross-process pin covers the Rust literal | #4017 | homed by import-closure argument (mux binds it; `uds` would pull `jasper.control` into the voice process) |
+| 7.3 | `audio_measurement` → `cli` boundary pinned (one `PACKAGE_BOUNDARIES` token; fails closed on a deferred import) | #4012 | +1/−1 |
+| 7.4 | `reemit_staged_startup_anchor` returns `ReemitAnchorReport`; CLI renders; stdout/stderr byte-identical over 13 branches | #4020 | source +33, disclosed |
+| 7.5 | three path-or-stdin JSON readers → `_refusal.read_source_bytes` / `read_json_source`; runner flags accept `-` | #4019 | net +8, 3→1 duplication |
+
+Verified, not shipped: `CommissioningRunStore.replace_current` SPENT (~275 lines; test at commissioning_service.py:611 must be re-expressed against `claim_owner()`); fourth reader at `cli/aec_sweep_config.py:33`; `tests/test_ring_active_endpoint.py:4180` asserts on source text.
+
+CI fd exhaustion: two measured passes (7,097 chunked; 10,533 of 26,095 single-process at CI's invocation minus `-n 4`) found no per-test accumulator; fd 13→17. CI runs four xdist workers against a tight runner ulimit; the back half of the suite is unmeasured. Only real gap: `tests/test_conversation_history.py` never closes `ConversationStore` (fixture teardown, GC-recovered). No fix PR.
+
+Lessons: `git checkout --ours` on a generated file or a doc reinstates what a lane removed and drops lane prose — merge three-way, then regenerate. Lane worktrees go under the session scratchpad, not `mktemp -d` in /tmp (path collision between agents).
