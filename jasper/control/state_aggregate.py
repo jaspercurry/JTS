@@ -349,11 +349,11 @@ def _coupling_state(
     try:
         from pathlib import Path
 
-        from ..audio_runtime_plan import TRANSPORT_DAC_CONTENT_RING
         from ..fanin.ring_health import FANIN_ENV_PATH, persisted_coupling_feeds_ring
         from ..fanin_coupling import (
             COUPLING_ENV_VAR,
             OUTPUTD_CONTENT_BRIDGE_SHM_RING,
+            TRANSPORT_DAC_CONTENT_RING,
             dac_content_marker_contradicted,
             dac_content_ring_served,
             outputd_content_is_central_ring,

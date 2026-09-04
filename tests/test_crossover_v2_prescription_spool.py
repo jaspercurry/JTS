@@ -34,7 +34,6 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
-from jasper.active_speaker.crossover_v2 import attempt_grading
 from jasper.active_speaker.crossover_v2 import prescription_spool as spool
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_CANDIDATE_FIELD,
@@ -2430,8 +2429,8 @@ def test_a_narrow_prescribed_cut_clears_the_prescribed_classs_own_bar(
     assert not any("required_db=0.5" in line for line in prescribed_lines)
     assert any("required_db=0.5" in line for line in automatic_lines)
     assert not any("required_db=0.0" in line for line in automatic_lines)
-    assert attempt_grading.PRESCRIBED_NON_WORSENING_DB == 0.0
-    assert attempt_grading.PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB == 0.5
+    assert flow.PRESCRIBED_NON_WORSENING_DB == 0.0
+    assert flow.PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB == 0.5
 
 
 def test_a_prescription_predicted_to_worsen_is_banked_and_measured_anyway(

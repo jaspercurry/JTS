@@ -51,21 +51,6 @@ from jasper.fanin_coupling import (
     outputd_content_is_central_ring,
     resolve_coupling,
 )
-# Re-export until every consumer below imports these from jasper.fanin_coupling
-# directly; delete this block only once that list is empty. Deleting it with an
-# entry still on the list breaks that file's import.
-#   jasper/cli/doctor/audio_runtime.py — TRANSPORT_DAC_CONTENT_RING,
-#     TRANSPORT_SHM_RING, TRANSPORT_SHM_RING_ACTIVE, plus TRANSPORT_SHAPES named
-#     in its prose
-#   tests/test_doctor_audio_runtime.py — TRANSPORT_SHM_RING (and whichever file
-#     inherits that import if the doctor test file is split)
-#   jasper/control/state_aggregate.py — TRANSPORT_DAC_CONTENT_RING
-from jasper.fanin_coupling import (
-    TRANSPORT_DAC_CONTENT_RING as TRANSPORT_DAC_CONTENT_RING,
-    TRANSPORT_SHAPES as TRANSPORT_SHAPES,
-    TRANSPORT_SHM_RING as TRANSPORT_SHM_RING,
-    TRANSPORT_SHM_RING_ACTIVE as TRANSPORT_SHM_RING_ACTIVE,
-)
 from jasper.transport_coherence import (
     transport_coherence_report,
     transport_topology_for_coupling,

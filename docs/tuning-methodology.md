@@ -165,11 +165,11 @@ proves nothing. Measured null depth decides `POLARITY_KEEP` vs `POLARITY_INVERT`
 touching nothing, and take the spread as your instrument's noise floor. **Act
 only on differences larger than it**, and state it in the receipt beside any
 delta you claim. Bank it rather than re-deriving it by hand:
-`jasper-round-views repeat-floor <N repeat rounds> --out repeat-floor.json`
-writes the record wherever `--out` says; put that file on the speaker at
-`/var/lib/jasper/active_speaker_repeat_floor.json` (or beside a banked round
-as `repeat-floor.json`) and the packet reads it from there. Two spreads exist
-and they never pool: `compute_sigma_curve` is in-capture at one pose, `positions.cross_seat_sigma.per_bin_sigma_db` is
+`sudo -n /opt/jasper/.venv/bin/jasper-round-views repeat-floor <N repeat rounds>
+--install` publishes the record at
+`/var/lib/jasper/active_speaker_repeat_floor.json`, where the packet reads it;
+add `--out repeat-floor.json` to keep a copy beside a banked round. Two
+spreads exist and they never pool: `compute_sigma_curve` is in-capture at one pose, `positions.cross_seat_sigma.per_bin_sigma_db` is
 cross-seat and declared `unseparated`. Say which one you used. (The runbook's
 "Reading σ honestly" owns how to read them.)
 
@@ -421,8 +421,9 @@ a candidate delay in the measurement graph and **that emitter only**. Offline,
 `jasper-delay-sweep propose <bundle> --fc-hz N` reads that round's per-driver
 curves through the measurement index, prints the computed optimum, and hands
 back the `jasper-angle-capture stage` lines that confirm it. It opens no device
-and plays nothing. Grading the confirmation is not wired: no banked take
-records the delay coordinate it was played at.
+and plays nothing. `jasper-delay-sweep confirm <bundle> --fc-hz N` then grades
+the `null_runs/` rows those coordinates were played at against the same
+landscape and banks the verdict as `delay_confirmation.json`.
 
 **Price orders the queue; it never empties it.** A delay the confirmation
 resolved is a measured physical error, so it gets applied — through the

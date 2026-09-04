@@ -14,7 +14,7 @@ answer, so an operator can grade the round they just ran without banking it
 first (#3498). This module calls the product view and writes the result as
 JSON — into a BANKED round's own directory by default, so the artifact travels
 with the evidence it was computed from, and beside the CALLER for a live
-session bundle, which belongs to the daemon (:func:`_default_out`). Per the
+session bundle, which belongs to the daemon (:func:`default_out`). Per the
 same "who prints the sentence" boundary :mod:`jasper.cli.crossover_prescriber`
 already keeps for its own JSON output.
 
@@ -36,15 +36,16 @@ Subcommands:
 * ``repeat <round-dir> [<round-dir> ...]`` — session-to-session spread of
   the pooled honest figures (the stop criterion). Writes
   ``repeatability.json`` for the FIRST round.
-* ``repeat-floor <round-dir> <round-dir> [...] --out PATH`` — the same
-  spread, banked as the durable record the evidence packet's
+* ``repeat-floor <round-dir> <round-dir> [...] (--install | --out PATH)`` —
+  the same spread, banked as the durable record the evidence packet's
   ``in_capture_repeat_floor`` reads and derives the stopping plateau/benefit
-  margin from. The rounds must be touched-nothing fixed-pose repeats. This
-  tool only WRITES the record where ``--out`` says (required: it runs on a
-  laptop over banked directories, and the speaker's own path is not a
-  default it can assume); the operator then places that file at the
-  on-speaker path, from which ``bank-crossover-round.sh`` pulls it beside
-  every later round as ``repeat-floor.json``.
+  margin from. The rounds must be touched-nothing fixed-pose repeats.
+  ``--install`` publishes it at the on-speaker path, from which
+  ``bank-crossover-round.sh`` pulls it beside every later round as
+  ``repeat-floor.json``; ``--out`` writes the same record somewhere else
+  (beside a banked round, say). At least one is required: running on a laptop
+  over banked directories, the speaker's path is a destination to ask for,
+  never one to assume.
 * ``agreement <round-dir>`` — per-position sign/magnitude testimony for
   every feature in the trusted sweep, built from the same per-seat curves
   ``per-seat`` computes. Writes ``agreement.json``.
@@ -85,7 +86,7 @@ Subcommands:
   is resolved, never graded, and each ``produced_by`` places it in the slot
   that writes the artifact beside it. Presence is read at the path each view
   writes with no ``--out``, so a LIVE session bundle's artifacts are looked
-  for beside the caller, not in the bundle (:func:`_default_out`). Writes
+  for beside the caller, not in the bundle (:func:`default_out`). Writes
   ``inventory.json``.
 
 Every subcommand accepts ``--out PATH`` to write somewhere else instead
@@ -183,7 +184,7 @@ class ViewArtifact(NamedTuple):
 #: subcommands take their default output path from this table and
 #: ``inventory`` names each missing artifact's producer from the same one, so
 #: there is no second list to drift. ``repeat-floor`` is absent because it
-#: publishes to a required ``--out`` instead of beside the round.
+#: publishes to ``--install`` or ``--out`` instead of beside the round.
 ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "entry": ViewArtifact("entry_state_grade.json"),
     "frozen": ViewArtifact("frozen_reference.json", TAKES_AFTER_ANOTHER),
@@ -279,7 +280,7 @@ def _write(payload: Any, out: str | None, default_path: Path) -> Path | None:
     return _stage(EXIT_WRITE_FAILED, (OSError,), write_report, payload, out, default_path)
 
 
-def _default_out(inputs: RoundInputs, round_dir: Path, name: str) -> Path:
+def default_out(inputs: RoundInputs, round_dir: Path, name: str) -> Path:
     """Where a view lands when the operator named no ``--out``.
 
     A BANKED round tree is the operator's own directory, so its views stay
@@ -298,7 +299,7 @@ def _default_out(inputs: RoundInputs, round_dir: Path, name: str) -> Path:
 
 def _view_out(args: argparse.Namespace, round_: BankedRound) -> Path:
     """This subcommand's own artifact path, from :data:`ARTIFACT_BY_VIEW`."""
-    return _default_out(
+    return default_out(
         round_.inputs, round_.round_dir, ARTIFACT_BY_VIEW[args.command].artifact
     )
 
@@ -307,7 +308,7 @@ def _frequency_default_out(source: Path) -> Path:
     """:func:`_cmd_frequency`'s own default: it takes sources the round
     resolver does not (a JSON document, a bundle that banked no round), so it
     reads the live shape directly — under the same rule as
-    :func:`_default_out`, never inside a daemon-owned session bundle.
+    :func:`default_out`, never inside a daemon-owned session bundle.
     """
     name = ARTIFACT_BY_VIEW["frequency"].artifact
     if not source.is_dir():
@@ -429,21 +430,39 @@ def _record_path(value: str) -> Path:
     return Path(value)
 
 
+#: ``--install``'s destination is a 0770 StateDirectory owned by the daemon's
+#: user, so the login account cannot write it unaided.
+_INSTALL_SUDO_HINT = f" — run it with sudo -n /opt/jasper/.venv/bin/{PROG} ..."
+
+
 def _cmd_repeat_floor(args: argparse.Namespace) -> int:
-    path = args.out
+    destinations: list[tuple[Path, str]] = []
+    if args.out is not None:
+        destinations.append((args.out, ""))
+    if args.install:
+        destinations.append((_REPEAT_FLOOR_DEFAULT_PATH, _INSTALL_SUDO_HINT))
+    if not destinations:
+        args.parser.error("nowhere to publish: pass --install, --out PATH, or both")
     rounds = _load_rounds(args.round_dirs)
     payload = derive_repeat_floor(
         repeatability_spread(rounds),
         rounds=[repeat_floor_provenance(round_dir, banked) for round_dir, banked in rounds],
     )
-    record = _stage(
-        EXIT_WRITE_FAILED, (OSError,), write_repeat_floor, payload, state_path=path
-    )
-    thresholds = stopping_thresholds(record)
-    aggregate = record["metrics"][SHIPPED_POOL_METRIC]
+    for path, hint in destinations:
+        try:
+            write_repeat_floor(payload, state_path=path)
+        except OSError as exc:  # an unwritable destination is the WRITE exit
+            detail = f"{path}: {exc}"
+            raise _StageFailed(
+                EXIT_WRITE_FAILED,
+                OSError(detail + hint if isinstance(exc, PermissionError) else detail),
+            ) from exc
+    thresholds = stopping_thresholds(payload)
+    aggregate = payload["metrics"][SHIPPED_POOL_METRIC]
     print(
-        f"repeat-floor: {record['n_repeats']} round(s); {SHIPPED_POOL_METRIC} "
-        f"sd={aggregate['sd_db']:.4g} dB; thresholds={thresholds} -> {path}",
+        f"repeat-floor: {payload['n_repeats']} round(s); {SHIPPED_POOL_METRIC} "
+        f"sd={aggregate['sd_db']:.4g} dB; thresholds={thresholds} -> "
+        + ", ".join(str(path) for path, _ in destinations),
         file=sys.stderr,
     )
     return EXIT_OK
@@ -658,7 +677,7 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
     inputs = _stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, round_dir)
     artifacts: list[dict[str, Any]] = []
     for view, spec in ARTIFACT_BY_VIEW.items():
-        path = _default_out(inputs, round_dir, spec.artifact)
+        path = default_out(inputs, round_dir, spec.artifact)
         artifacts.append({
             "artifact": spec.artifact,
             "path": str(path),
@@ -672,7 +691,7 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
         "artifacts": artifacts,
     }
     written = _write(
-        payload, args.out, _default_out(inputs, round_dir, INVENTORY_ARTIFACT)
+        payload, args.out, default_out(inputs, round_dir, INVENTORY_ARTIFACT)
     )
     missing = [row["produced_by"] for row in artifacts if not row["present"]]
     print(
@@ -729,8 +748,8 @@ def build_parser() -> argparse.ArgumentParser:
             "     repeat floor from a single round)\n"
             "  2  EXIT_UNREADABLE -- the round or source could not be\n"
             "     read into a comparable view\n"
-            "  3  EXIT_WRITE_FAILED -- graded, but --out could not be\n"
-            "     written\n"
+            "  3  EXIT_WRITE_FAILED -- graded, but the destination could\n"
+            "     not be written\n"
             "  1-3 print \"<status> (<reason>): <detail>\" on stderr and the\n"
             "     same record as JSON on stdout"
         ),
@@ -767,15 +786,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="two or more TOUCHED-NOTHING fixed-pose repeat round directories",
     )
     repeat_floor.add_argument(
-        "--out", required=True, type=_record_path,
+        "--install", action="store_true",
         help=(
-            "where to write the record; place it on the speaker at "
-            f"{_REPEAT_FLOOR_DEFAULT_PATH} so bank-crossover-round.sh pulls it "
-            "beside every later round, or beside a banked round as "
-            "repeat-floor.json"
+            f"publish it on the speaker at {_REPEAT_FLOOR_DEFAULT_PATH}, from "
+            "which bank-crossover-round.sh pulls it beside every later round; "
+            "needs sudo"
         ),
     )
-    repeat_floor.set_defaults(func=_cmd_repeat_floor)
+    repeat_floor.add_argument(
+        "--out", default=None, type=_record_path,
+        help=(
+            "also write the record here, e.g. beside a banked round as "
+            "repeat-floor.json; at least one of --install/--out is required"
+        ),
+    )
+    repeat_floor.set_defaults(func=_cmd_repeat_floor, parser=repeat_floor)
 
     agreement = sub.add_parser("agreement", help="per-seat sign/magnitude testimony for every feature")
     agreement.add_argument("round_dir", help=_ROUND_DIR_HELP)

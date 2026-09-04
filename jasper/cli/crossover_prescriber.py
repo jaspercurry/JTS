@@ -4,11 +4,12 @@
 
 """Serve one round's evidence, take a prescription back, and stage it.
 
-``packet`` emits the evidence, ``propose`` reads an answer back through the
-strict gate, ``stage`` runs the SAME gate and banks it, ``status`` only
-reports. No model client, API key or network lives here. Emit the packet ONCE
-and pass it as ``--packet <file>``; a rebuild fingerprints differently. Exit
-codes: 0 accepted, 1 evidence unreadable, 2 refused, 3 staging failed.
+``packet`` writes the evidence beside the round, ``propose`` reads an answer
+back through the strict gate, ``stage`` runs the SAME gate and banks it,
+``status`` only reports. No model client, API key or network lives here. Emit
+the packet ONCE and pass that file as ``--packet <file>``; a rebuild
+fingerprints differently. Exit codes: 0 accepted, 1 evidence unreadable,
+2 refused, 3 staging failed.
 """
 
 from __future__ import annotations
@@ -21,6 +22,10 @@ from pathlib import Path
 from typing import Any
 
 from ._logging import CLI_LOG_FORMAT
+# The beside-the-round output rule, reused rather than restated: a live
+# session bundle is daemon-owned, so a view defaulting inside it raises
+# PermissionError for the operator (#3498).
+from .round_views import default_out
 
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_PRESCRIPTION_MALFORMED,
@@ -196,56 +201,97 @@ def _evidence_source_error(args: argparse.Namespace) -> str | None:
     )
 
 
+#: What ``packet`` writes when no ``--out`` names somewhere else. Deliberately
+#: NOT a :data:`~jasper.cli.round_views.ARTIFACT_BY_VIEW` row: that table is
+#: keyed by ``jasper-round-views`` subcommand, and its ``inventory`` verb
+#: renders every key as that tool's own producer.
+PACKET_ARTIFACT = "packet.json"
+
+
 def _cmd_packet(args: argparse.Namespace) -> int:
-    """Emit one round's evidence packet."""
+    """Write one round's evidence packet beside it and summarise what landed.
+
+    The document is a file rather than a stream because every downstream verb
+    takes it as ``--packet <file>``: a second build fingerprints differently,
+    so the emitted copy is the evidence.
+    """
     try:
         packet = _load_packet(args)
-    except CrossoverEvidencePacketError as exc:
+        blob = json.dumps(
+            packet, indent=None if args.compact else 2, sort_keys=True
+        ) + "\n"
+        round_dir = Path(args.session_dir)
+        out = (
+            Path(args.out)
+            if args.out
+            else default_out(round_inputs(round_dir), round_dir, PACKET_ARTIFACT)
+        )
+        out.write_text(blob)
+    # ``OSError`` beside the packet's own error for the same reason
+    # ``_cmd_status`` pairs them: the write is now the ordinary path, and an
+    # unwritable round directory must reach the operator as this tool's
+    # refusal rather than a traceback.
+    except (CrossoverEvidencePacketError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_EVIDENCE_UNREADABLE
-    blob = json.dumps(packet, indent=None if args.compact else 2, sort_keys=True)
-    if args.out:
-        Path(args.out).write_text(blob + "\n")
-        print(f"wrote {args.out} ({len(blob)} bytes)", file=sys.stderr)
+    summary = _packet_summary(packet, out, len(blob))
+    if args.json:
+        print(json.dumps(summary, indent=2, sort_keys=True))
     else:
-        print(blob)
-    if not args.json:
-        _print_packet_summary(packet)
+        _print_packet_summary(summary)
     return EXIT_OK
 
 
-def _print_packet_summary(packet: dict[str, Any]) -> None:
-    """The four things a reader should see before trusting the document.
+def _packet_summary(
+    packet: dict[str, Any], artifact: Path, size_bytes: int
+) -> dict[str, Any]:
+    """The document reduced to what a reader needs before opening it.
 
-    Printed to stderr so it never contaminates a piped packet.
+    Availability is read off the packet's own per-block ``available`` flags, so
+    a block added to the builder reaches this summary with no edit here. No
+    curve is ever named: the arrays live in the artifact.
     """
-    region = packet.get("crossover_region") or {}
+    return {
+        "artifact": str(artifact),
+        "bytes": size_bytes,
+        "packet_fingerprint": packet.get("packet_fingerprint"),
+        "round_id": (packet.get("session") or {}).get("round_id"),
+        "blocks": {
+            name: bool(block.get("available"))
+            for name, block in sorted(packet.items())
+            if isinstance(block, dict) and "available" in block
+        },
+        "not_evaluated": [
+            entry.get("field") for entry in packet.get("not_evaluated") or []
+        ],
+        "trim": (packet.get("incumbent") or {}).get("trim") or {},
+    }
+
+
+def _print_packet_summary(summary: dict[str, Any]) -> None:
+    """:func:`_packet_summary` as lines, so ``--json`` and a terminal agree."""
     print(
-        f"packet {packet.get('packet_fingerprint', '')[:16]} "
-        f"session={(packet.get('session') or {}).get('bundle_session_id')}",
-        file=sys.stderr,
+        f"packet {(summary['packet_fingerprint'] or '')[:16]} "
+        f"round={summary['round_id']} -> {summary['artifact']} "
+        f"({summary['bytes']} bytes)"
     )
+    blocks = summary["blocks"]
+    absent = [name for name, available in blocks.items() if not available]
     print(
-        "  region: "
-        + (
-            f"{region.get('band_hz')}"
-            if region.get("available")
-            else f"unavailable ({region.get('reason')})"
-        ),
-        file=sys.stderr,
+        f"  blocks: {len(blocks) - len(absent)}/{len(blocks)} available"
+        + (f"; unavailable: {', '.join(absent)}" if absent else "")
     )
-    for entry in packet.get("not_evaluated") or []:
-        print(f"  not evaluated: {entry.get('field')} — {entry.get('reason')}", file=sys.stderr)
-    trim = (packet.get("incumbent") or {}).get("trim") or {}
-    for role, numbers in sorted(trim.items()):
-        applied_db, resolved_db = numbers.get("applied_db"), numbers.get("round_resolved_db")
+    if summary["not_evaluated"]:
+        print(f"  not evaluated: {', '.join(summary['not_evaluated'])}")
+    for role, numbers in sorted(summary["trim"].items()):
+        applied_db = numbers.get("applied_db")
+        resolved_db = numbers.get("round_resolved_db")
         if applied_db is None or resolved_db is None:
             continue
         pinned = " (pinned this round)" if numbers.get("pinned_this_round") else ""
         print(
             f"  trim {role}: applied {applied_db:+.2f} dB, round resolved "
-            f"{resolved_db:+.2f} dB (Δ {numbers['delta_db']:+.2f} dB){pinned}",
-            file=sys.stderr,
+            f"{resolved_db:+.2f} dB (Δ {numbers['delta_db']:+.2f} dB){pinned}"
         )
 
 
@@ -1201,11 +1247,13 @@ def build_parser() -> argparse.ArgumentParser:
             "    finding out about a refusal, it does not avoid the gate\n"
             "\n"
             "EXAMPLE -- emit the packet ONCE, then judge against that file\n"
-            "  jasper-crossover-prescriber packet captures/.../session-1 \\\n"
-            "      --out packet.json\n"
-            "  jasper-crossover-prescriber propose --packet packet.json \\\n"
+            "  jasper-crossover-prescriber packet rounds/round-3\n"
+            "      # writes rounds/round-3/packet.json and prints the path\n"
+            "  jasper-crossover-prescriber propose \\\n"
+            "      --packet rounds/round-3/packet.json \\\n"
             "      --prescription my_prescription.json\n"
-            "  jasper-crossover-prescriber stage --packet packet.json \\\n"
+            "  jasper-crossover-prescriber stage \\\n"
+            "      --packet rounds/round-3/packet.json \\\n"
             "      --prescription my_prescription.json --state flow_state.json\n"
             "\n"
             "  The fingerprint the document echoes is the file's, so it\n"
@@ -1246,17 +1294,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     packet = sub.add_parser(
         "packet",
-        help="emit the evidence packet for one banked round",
+        help=(
+            f"write one round's evidence packet to {PACKET_ARTIFACT} beside "
+            "it and summarise what landed"
+        ),
     )
     _add_evidence_args(packet)
-    packet.add_argument("--out", default=None, help="write the packet here instead of stdout")
+    packet.add_argument(
+        "--out",
+        default=None,
+        help=(
+            f"a PATH to write the packet to instead of {PACKET_ARTIFACT} "
+            "beside the round (a live session bundle is daemon-owned, so its "
+            "default lands in the current directory instead). No `-` stdout "
+            "shorthand: a whole packet on a terminal is what the default "
+            "artifact exists to stop"
+        ),
+    )
     packet.add_argument(
         "--compact", action="store_true", help="emit the packet without indentation"
     )
     packet.add_argument(
         "--json",
         action="store_true",
-        help="suppress the human summary on stderr",
+        help="emit the summary as JSON",
     )
     packet.set_defaults(func=_cmd_packet)
 

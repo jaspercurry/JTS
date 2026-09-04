@@ -93,7 +93,9 @@ the prescriber CLI **plus the session-open request body** — the doors are a
 prescription class, not a CLI verb. Blend and driver arrive at
 `jasper-crossover-prescriber stage`; alignment and topology arrive as
 request-body keys on `POST /crossover/v2/session` and are judged at session open
-(#2773). Both surfaces are cataloged in
+(#2773) — sent by `run-crossover-round.py --alignment-prescription` /
+`--topology-prescription`, or by the same two flags on `jasper-round open`,
+which also take `-` for stdin. Both surfaces are cataloged in
 [`testing-tooling.md`](testing-tooling.md#crossover-prescriber-harness).
 
 **A way-1 (`full_range_passive`) speaker runs the same nine steps with fewer
@@ -111,15 +113,16 @@ exist.
    staged / applied state and the possible next actions, read from the same
    builders the doors read. `status` orients rather than prescribes: it is the
    fourth verb, not a door.
-2. **Read the round.** `jasper-crossover-prescriber packet` → one versioned JSON
-   document per banked round (`--compact` to drop indentation, `--json` to
-   suppress the human summary on stderr). This is the evidence surface; it is a
-   **computed view**, so rebuild it per ROUND rather than carrying one across
-   rounds. **Within one round, emit it once to a file** (`--out packet.json`)
-   and hand that file to steps 4 and 5 with `--packet`: a rebuild resolves
-   `--drivers`/`--applied-profile` against whichever machine ran it, so a second
-   packet fingerprints differently and the prescription written against the
-   first is refused against it.
+2. **Read the round.** `jasper-crossover-prescriber packet` writes one versioned
+   JSON document to `packet.json` beside the round and prints only a summary of
+   it — fingerprint, round id, per-block availability, where it landed
+   (`--out` names another path, `--compact` drops indentation, `--json` emits
+   that summary as JSON). This is the evidence surface; it is a **computed
+   view**, so rebuild it per ROUND rather than carrying one across rounds.
+   **Within one round, hand that one file** to steps 4 and 5 with `--packet`: a
+   rebuild resolves `--drivers`/`--applied-profile` against whichever machine
+   ran it, so a second packet fingerprints differently and the prescription
+   written against the first is refused against it.
 3. **Re-run the deterministic views** as needed:
    `jasper-classify-features <bundle-dir> --dumps <ring>` files
    `feature_classification.json` into the round dir — classification wants a
@@ -131,10 +134,10 @@ exist.
    `jasper-round-views frozen | per-seat | repeat | agreement | frequency`
    grades it.
 4. **Propose.** Author the prescription JSON yourself, then
-   `jasper-crossover-prescriber propose --packet packet.json --prescription -`
-   — a true dry run sharing the whole gate with `stage`.
-5. **Stage.** `jasper-crossover-prescriber stage --packet packet.json --state
-   <flow-state> --prescription -` writes the
+   `jasper-crossover-prescriber propose --packet <round-dir>/packet.json
+   --prescription -` — a true dry run sharing the whole gate with `stage`.
+5. **Stage.** `jasper-crossover-prescriber stage --packet
+   <round-dir>/packet.json --state <flow-state> --prescription -` writes the
    single-slot mailbox at
    `/var/lib/jasper/active_speaker_crossover_v2_prescription.json`, consumed on
    take. One slot, last write wins, logged.
@@ -143,9 +146,10 @@ exist.
    URL, hostname-derived; they move the mic pose to pose.
    *(on the box)* `jasper-round open --tier <tier>` then `jasper-round wait` —
    the same two wizard verbs, over the same transport, for when there is no
-   laptop on the network. It stages no walk (that stays `jasper-angle-capture`)
-   and banks nothing: `jasper-round-bank <session-dir>` banks the finished
-   session into the campaign home
+   laptop on the network, and it carries the alignment and topology doors on
+   the open like the laptop runner does. It stages no walk (that stays
+   `jasper-angle-capture`) and banks nothing: `jasper-round-bank
+   <session-dir>` banks the finished session into the campaign home
    (`/var/lib/jasper/active_speaker/campaigns/<round-id>/`), where it outlives
    session retention and `jasper-round-views` reads it. That home is
    operator-pruned — nothing evicts a banked round; `jasper-doctor` discloses
@@ -434,7 +438,7 @@ nothing durable · **mutating** = changes what the speaker plays ·
 | `jasper-project-ring` | Re-project a banked round into the capture ring that jasper-classify-features and jasper-read-distortion read. | mutating (projects evidence; changes nothing played) | `jasper/cli/project_ring.py` |
 | `jasper-classify-features` | Classify a banked round's features as minimum-phase driver defects, interference, or the room — controls first. | advisory | `jasper/cli/classify_features.py` |
 | `jasper-read-distortion` | Read H2/H3 out of a banked round's MEASURE captures, relative to the fundamental, at the drive each capture used. | advisory | `jasper/cli/read_distortion.py` |
-| `jasper-delay-sweep propose` | Propose an inter-driver delay from banked curves. Computes only; plays nothing. | advisory (plays nothing) | `jasper/cli/delay_sweep.py` |
+| `jasper-delay-sweep propose\|confirm` | Propose an inter-driver delay from banked curves, then grade the acoustic confirmation against it. Computes only; plays nothing. | advisory (plays nothing) | `jasper/cli/delay_sweep.py` |
 | `jasper-forward-model predict\|verify-delta` | Predict a candidate's summed response from banked per-driver solos. Computes only; plays nothing and opens no device. | advisory (plays nothing) | `jasper/cli/forward_model.py` |
 | `jasper-gate-sweep` | Sweep a banked round's gate window and report, per spec band and declared pose, what moves with the window. Computes only; plays nothing. | advisory (plays nothing) | `jasper/cli/gate_sweep.py` |
 | `jasper-close-reference distance\|compare` | Correct a close capture to the far distance and say, band by band, how much of the far read was the room. Computes only; plays nothing and opens no device. | advisory (plays nothing) | `jasper/cli/close_reference.py` |
