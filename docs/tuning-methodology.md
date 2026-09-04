@@ -510,13 +510,13 @@ division of labour.
    the speaker and with a room path that did not move. Rotation adjudicates.
 
 **Either discriminator can be UNAVAILABLE, and that is a third answer, not a
-negative one.** Both run over a round's capture WAVs in the `dumps/` ring —
-`jasper-classify-features` requires `--dumps` — and excess group delay is
-recomputed from the impulse response, not read off a curve, so a round with no
-WAVs can never be classified afterwards. A wired round banks its own capture
-WAVs, so build the ring from the bundle with `jasper-project-ring <bundle-dir>
---out <ring>` and hand that `--out` path to `--dumps`. What is genuinely gone
-is a round whose WAVs were never banked at all. When the inputs are absent the
+negative one.** Both run over a round's capture WAVs in the `dumps/` ring, and excess group
+delay is recomputed from the impulse response, not read off a curve, so a round
+with no WAVs can never be classified afterwards. A wired round banks its own
+capture WAVs, and `jasper-round-views classify-features <bundle-dir>` projects
+the ring out of the bundle itself, so no ring has to be built first (`--dumps`
+names one that already exists). What is genuinely gone is a round whose WAVs
+were never banked at all. When the inputs are absent the
 surfaces say so rather than guess: the
 packet's `feature_classification` block reports `available: false` beside a
 `status` / `reason` / `field` triple, and discriminator 2 already has its own

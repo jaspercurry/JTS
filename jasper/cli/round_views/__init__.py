@@ -49,6 +49,7 @@ from jasper.cli._refusal import (
 )
 
 from . import (
+    classify_features,
     cloud_binding,
     distortion,
     forward_model,
@@ -94,7 +95,7 @@ __all__ = [
 #: The view families, in the order their subcommands are offered.
 _FAMILIES = (
     grades, repeat, seats, cloud_binding, forward_model, sweeps, frequency,
-    distortion, inventory,
+    distortion, classify_features, inventory,
 )
 
 
@@ -109,9 +110,10 @@ def build_parser() -> argparse.ArgumentParser:
             "the cloud's null evidence bound the linearization fit, what a "
             "candidate would measure from the banked per-driver solos, the "
             "gate window ladder and the sweep read onto the spec verdict, the "
-            "shared frequency view, the H2/H3 distortion reading, and an "
-            "inventory of which of those a "
-            "round already carries — over banked rounds and live sessions."
+            "shared frequency view, the H2/H3 distortion reading, whether a "
+            "feature is a driver defect or the room, and an inventory of "
+            "which of those a round already carries — over banked rounds "
+            "and live sessions."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -119,9 +121,6 @@ def build_parser() -> argparse.ArgumentParser:
             "  - frozen/repeat/repeat-floor need MULTIPLE round directories\n"
             "    (a baseline plus a target, or two-or-more rounds);\n"
             "    entry/per-seat/agreement grade a single round\n"
-            "  - to classify a feature's likely CAUSE -- that is\n"
-            "    jasper-classify-features; this tool grades curves, not\n"
-            "    defects\n"
             "\n"
             "EXAMPLES\n"
             "  jasper-round-views frequency captures/.../session-1/round-3\n"

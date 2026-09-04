@@ -70,23 +70,6 @@ def failed(exit_code: int, reason: str, detail: str) -> int:
     )
 
 
-def fail_with_payload(
-    message: str, payload: dict[str, Any], *, as_json: bool, code: int
-) -> int:
-    """The ``--json``-gated variant: a sentence always, the record on request.
-
-    Two tools publish an ``{"ok": false, ...}`` record only when the caller
-    asked for one. Converging that contract with :func:`failed`'s is a
-    follow-on; this is the one implementation of the contract they have.
-    """
-
-    print(message, file=sys.stderr)
-    if as_json:
-        json.dump(payload, sys.stdout, indent=1)
-        sys.stdout.write("\n")
-    return code
-
-
 class StageFailed(Exception):
     """A failure a stage claimed, carrying that stage's exit code."""
 

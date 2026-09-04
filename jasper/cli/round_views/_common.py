@@ -12,6 +12,7 @@ import argparse
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from jasper.active_speaker.crossover_v2.evidence_packet import CLASSIFICATION_ARTIFACT
 from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS
 from jasper.active_speaker.crossover_v2.harmonic_evidence import HARMONICS_ARTIFACT
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs
@@ -30,7 +31,7 @@ from jasper.cli._report import write_report
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
-AUTHORITY_TIER = "advisory"
+AUTHORITY_TIER = "advisory (classify-features projects a ring into the bundle)"
 
 #: What every round-directory positional takes, said once. Both shapes, named
 #: in the order an operator meets them: the live one is what a round leaves on
@@ -49,7 +50,8 @@ PROG = "jasper-round-views"
 TAKES_THIS_ROUND = "<this-round>"
 TAKES_AFTER_ANOTHER = "<other-round> <this-round>"
 TAKES_BEFORE_ANOTHER = "<this-round> <other-round>"
-TAKES_BUNDLE_AND_RING = "<this-round's bundle> --dumps <ring> --state <flow-state>"
+TAKES_THIS_BUNDLE = "<this-round's bundle>"
+TAKES_BUNDLE_AND_RING = f"{TAKES_THIS_BUNDLE} --dumps <ring> --state <flow-state>"
 
 
 class ViewArtifact(NamedTuple):
@@ -82,10 +84,13 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "spec-sweep": ViewArtifact("spec_gate_sensitivity.json"),
     "gate-sweep": ViewArtifact("gate_sweep.json"),
     "frequency": ViewArtifact("frequency_view.json"),
-    # The packet owns this name, so the row takes that constant rather than a
-    # second spelling of it.
+    # The packet owns these two names, so the rows take those constants rather
+    # than a second spelling of them.
     "distortion": ViewArtifact(
         HARMONICS_ARTIFACT, TAKES_BUNDLE_AND_RING, in_artifact_dir=True
+    ),
+    "classify-features": ViewArtifact(
+        CLASSIFICATION_ARTIFACT, TAKES_THIS_BUNDLE, in_artifact_dir=True
     ),
 }
 

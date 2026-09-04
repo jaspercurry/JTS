@@ -797,7 +797,8 @@ def test_a_missing_classification_names_the_instrument_that_banks_it(
     _, payload = _status([str(session), "--drivers", str(draft)], capsys)
 
     assert any(
-        "jasper-classify-features" in action for action in payload["next_actions"]
+        "jasper-round-views classify-features" in action
+        for action in payload["next_actions"]
     )
 
 
