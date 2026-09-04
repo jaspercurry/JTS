@@ -148,8 +148,8 @@ EXIT_SESSION_STOPPED = 15
 
 #: Signals that stop a walk THROUGH its park rather than around it. SIGHUP is
 #: the remote spelling (an ssh transport going away hangs up the process
-#: group). :func:`jasper.cli.arm_walk._install_park_on_signals` installs
-#: them and exits ``SIGNAL_EXIT_BASE + signum``.
+#: group). :func:`install_park_on_signals` installs them and exits
+#: ``SIGNAL_EXIT_BASE + signum``.
 PARK_ON_SIGNALS: tuple[signal.Signals, ...] = (
     signal.SIGHUP, signal.SIGINT, signal.SIGTERM,
 )
@@ -179,6 +179,33 @@ EXIT_NAMES: Mapping[int, str] = {
     EXIT_INTERRUPTED_PARKED: "interrupted_parked",
     EXIT_TERMINATED_PARKED: "terminated_parked",
 }
+
+
+def install_park_on_signals() -> None:
+    """The FIRST SIGHUP/SIGTERM/SIGINT becomes ``SystemExit``; the rest are ignored.
+
+    :meth:`ArmWalk.run` parks in a ``finally`` that a bare default SIGTERM
+    would skip, abandoning the arm wherever the walk stopped. SIGHUP is in the
+    set because it is how a REMOTE walk is stopped: sshd hangs up the process
+    group when the transport goes away, and Python's default for SIGHUP is
+    death without unwinding.
+
+    Disarming on the first fire is the other half: the unwind IS the park, and
+    the park drives the adapter as a subprocess, so a handler still armed
+    during it would raise a second ``SystemExit`` mid-travel and abandon the
+    arm at an unknown angle. The park is bounded by the adapter's own
+    subprocess timeout; ``SIGKILL`` remains the escape hatch.
+    """
+    def _stop_once(signum: int, _frame: object) -> None:
+        for sig in PARK_ON_SIGNALS:
+            signal.signal(sig, signal.SIG_IGN)
+        # 128 + signum, the shell's own spelling for "ended by this signal", so
+        # the three endings stay distinguishable in a trail. EXIT_NAMES names
+        # them; SIGNAL_EXIT_BASE is where the rule lives.
+        sys.exit(SIGNAL_EXIT_BASE + signum)
+
+    for sig in PARK_ON_SIGNALS:
+        signal.signal(sig, _stop_once)
 
 
 class ArmWalkRefused(Exception):

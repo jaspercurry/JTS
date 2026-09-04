@@ -659,7 +659,7 @@ function walkKey(prompt, pending, yielded) {
 // The walkthrough: which spot, in the capture plan's own words, and the
 // control that says the microphone is there (#2881). Reads
 // `capture.position_pending` — the hold the position gate publishes, which until
-// now only `jasper-arm-walk` ever rendered.
+// now only `jasper-angle-capture serve` ever rendered.
 //
 // Transport-agnostic by construction: NOTHING here tests which source the
 // session opened on. What it tests is `hand_released` — the server's own

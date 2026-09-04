@@ -83,7 +83,8 @@ executed under both.
    fencing, not the distance: the artifact keeps its own kind and schema
    version so it can be lifted whole, the evidence blocks stay prose-free, and
    no code path in JTS reads the strings for any decision.
-9. **Naming: "arm" means the physical rig** (`jasper-arm-walk`) — never a
+9. **Naming: "arm" means the physical rig** (`jasper-angle-capture serve`)
+   — never a
    DSP variant. DSP variants under test are **candidates**; a tournament
    round runs a **candidate cycle** at each pose. Forward-only for new work;
    ticket 2.8's subject sweep trued up the DSP-variant prose it covered

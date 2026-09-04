@@ -10,7 +10,7 @@ Every campaign has rebuilt this as a chain of throwaway shell — ``stage1.sh``
 launches a walk driver, sleeps, POSTs the session open, greps a log for
 "released index=N", sleeps again; ``cycle.sh`` does the same around the verify
 and then banks. The pieces those scripts drove are all product now
-(``jasper-angle-capture``, ``jasper-arm-walk``, ``bank-crossover-round.sh``,
+(``jasper-angle-capture``, ``bank-crossover-round.sh``,
 the wizard's own endpoints), so this composes them instead of re-implementing
 them. It builds NOTHING new on the Pi.
 
@@ -32,7 +32,7 @@ becomes a request at all.
 One measurement stage, in order::
 
     stage the walk   ssh … jasper-angle-capture stage --mover arm   (--angles)
-    launch the walk  ssh … jasper-arm-walk                (--attest-rig-clear)
+    launch the walk  ssh … jasper-angle-capture serve     (--attest-rig-clear)
     open the session POST /correction/crossover/v2/{session,verify}
     await the walk   the arm harness exits; its rc is the walk's verdict
     await the stage  poll the envelope until this session's phases are accepted
@@ -75,7 +75,7 @@ the convenient sorted form at the round root, which is why a round whose bundle
 carries no lateral takes gets a named refusal here rather than a document
 assembled from intent.
 
-The walk starts BEFORE the open because ``jasper-arm-walk``'s first poll is
+The walk starts BEFORE the open because ``jasper-angle-capture serve``'s first poll is
 what checks a staged walk is still waiting — see its module docstring. It is
 launched only when ``--attest-rig-clear`` is given: the attestation is the
 operator's to make and this runner never invents one. Without it the round runs
@@ -83,10 +83,10 @@ the same phases minus the walk, for a human-moved or ordinary session -- and
 ``--angles`` is refused outright, because the walk it would stage is an ARM
 walk that nothing would serve.
 
-**Nothing here re-maps another tool's verdict.** ``jasper-arm-walk``'s exit
-codes and ``bank-crossover-round.sh``'s 0/3/4 are reported verbatim, by
-their owners' own names, as the deciding value on this runner's own per-phase
-exit code. A failing walk stops the round before it banks: the walk's rc is
+**Nothing here re-maps another tool's verdict.** ``jasper-angle-capture
+serve``'s exit code and the stall it named, and ``bank-crossover-round.sh``'s
+0/3/4, are reported verbatim, by their owners' own names, as the deciding
+value on this runner's own per-phase exit code. A failing walk stops the round before it banks: the walk's rc is
 the verdict, and a bank on top of it would be a second one.
 
 **The examples below pass no ``--complete-after``, and that is the recipe.**
@@ -141,6 +141,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -161,7 +162,6 @@ except ModuleNotFoundError as exc:
         raise
     from scripts import _pi_target
 
-from jasper.active_speaker.arm_walk import EXIT_NAMES as ARM_WALK_EXIT_NAMES
 from jasper.active_speaker.wizard_client import (
     CSRF_PAGE_PATH,
     REASON_ANSWER_LOST,
@@ -228,8 +228,9 @@ EXIT_OK = 0
 EXIT_STAGE = 3
 #: ``POST …/v2/session`` did not open. The wizard's own words are on the line.
 EXIT_OPEN = 4
-#: The arm walk did not finish clean. ``jasper-arm-walk``'s rc and ITS name for
-#: that rc are the deciding value; nothing is re-mapped and nothing is banked.
+#: The arm walk did not finish clean. ``jasper-angle-capture serve``'s rc and
+#: the stall IT named are the deciding value; nothing is re-mapped and nothing
+#: is banked.
 EXIT_WALK = 5
 #: ``POST …/v2/verify`` did not open.
 EXIT_VERIFY = 6
@@ -285,7 +286,7 @@ class NoTarget(RuntimeError):
 class Trail:
     """A step line on stdout and the same fields as a JSONL row.
 
-    The same shape ``jasper-arm-walk``'s trail holds, and for the same reason:
+    The same shape ``serve``'s own trail holds, and for the same reason:
     one call site, so what an operator reads and what a later analysis parses
     can never disagree about a number. This one prints instead of writing to a
     journal — it runs on the laptop, where there is no journal to write to.
@@ -535,7 +536,7 @@ def launch_walk(
     log_path: Path,
     trail: Trail,
 ) -> subprocess.Popen[bytes]:
-    """``jasper-arm-walk`` on the Pi, in the background, output to ``log_path``.
+    """``jasper-angle-capture serve`` on the Pi, backgrounded, output to ``log_path``.
 
     ``-tt`` forces a remote PTY, and that PTY is the whole mechanism by which
     stopping the LOCAL client stops the REMOTE walk: killing an ssh client only
@@ -552,11 +553,12 @@ def launch_walk(
     # ``pi``, not ``target.user``: the walk drives the turntable adapter, which
     # opens a serial port, so the identity is the one holding ``dialout`` --
     # ``User=pi`` in the shipped jasper-turntable-autostop@.service, which
-    # jasper-arm-walk's own docstring names as load-bearing. An operator who
-    # ssh's in as somebody else still needs the walk to run as pi. Do not
-    # "fix" this to follow the ssh user.
+    # ``serve``'s own help names as load-bearing. An operator who ssh's in as
+    # somebody else still needs the walk to run as pi. Do not "fix" this to
+    # follow the ssh user.
     argv = [
-        f"sudo -u pi {PI_VENV_BIN}/jasper-arm-walk",
+        f"sudo -u pi {PI_VENV_BIN}/jasper-angle-capture serve",
+        "--mover turntable",
         "--attest-rig-clear",
         f"--hostname {shlex.quote(target.hostname)}",
     ]
@@ -620,16 +622,37 @@ def stop_walk(proc: subprocess.Popen[bytes], trail: Trail) -> None:
 
 
 #: ssh's own "the transport failed" code. It is not a walk verdict and the
-#: harness cannot produce it — its codes are 0-15 plus 128+signum — so naming
-#: it ``walk_failed`` would blame the arm for a dropped link.
+#: harness cannot produce it — its codes are the shared 0/1/3 plus 128+signum —
+#: so naming it ``walk_failed`` would blame the arm for a dropped link.
 SSH_TRANSPORT_EXIT = 255
 
+#: ``serve``'s one-sentence refusal as it lands in the walk log. The stall name
+#: is READ from the record rather than derived from the rc: ``serve`` exits the
+#: shared 0/1/3 (jasper/cli/_refusal.py), so the number no longer distinguishes
+#: ``stuck`` from ``walk_not_staged`` — only the ``reason`` does.
+_SERVE_REFUSAL = re.compile(r"^refused \(([a-z_]+)\):", re.MULTILINE)
 
-def _walk_exit_name(code: int) -> str:
-    """The walk's own name for its rc, or ssh's for the one ssh owns."""
+
+def _walk_exit_name(code: int, log_path: Path, since_byte: int = 0) -> str:
+    """The stall the walk named, or ssh's own name for the code ssh owns.
+
+    ``since_byte`` is where THIS run's output starts: the log is opened for
+    append, so a re-run under the same ``--label`` sits behind the previous
+    run's refusal and would otherwise inherit its reason.
+    """
     if code == SSH_TRANSPORT_EXIT:
         return "ssh_transport_failed"
-    return ARM_WALK_EXIT_NAMES.get(code, str(code))
+    if code == 0:
+        return "ok"
+    try:
+        named = _SERVE_REFUSAL.findall(
+            log_path.read_text(errors="ignore")[since_byte:]
+        )
+    except OSError:
+        named = []
+    # No refusal in the log is the signal-parked ending (128+signum, printed by
+    # nobody) or a walk killed outright: the rc is then all there is to report.
+    return named[-1] if named else str(code)
 
 
 def await_stage(
@@ -1015,6 +1038,8 @@ def run_round(args: argparse.Namespace, target: Target, wizard: WizardClient,
             return EXIT_STAGE
 
     walk: subprocess.Popen[bytes] | None = None
+    walk_log = args.campaign / f"{args.label}-arm-walk.log"
+    walk_log_start = walk_log.stat().st_size if walk_log.exists() else 0
     if args.attest_rig_clear:
         args.campaign.mkdir(parents=True, exist_ok=True)
         walk = launch_walk(
@@ -1022,7 +1047,7 @@ def run_round(args: argparse.Namespace, target: Target, wizard: WizardClient,
             expect_angles=args.expect_angles,
             complete_after=args.complete_after,
             settle_s=args.settle_s,
-            log_path=args.campaign / f"{args.label}-arm-walk.log",
+            log_path=walk_log,
             trail=trail,
         )
 
@@ -1042,7 +1067,9 @@ def run_round(args: argparse.Namespace, target: Target, wizard: WizardClient,
             walk_ok = walk_rc == 0
             trail.emit(
                 "walk", ok=walk_ok, arm_walk_exit=walk_rc,
-                arm_walk_exit_name=_walk_exit_name(walk_rc),
+                arm_walk_exit_name=_walk_exit_name(
+                    walk_rc, walk_log, walk_log_start
+                ),
             )
             if not walk_ok:
                 _say_bank_by_hand(dest, since, target)
@@ -1263,7 +1290,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--attest-rig-clear", action="store_true",
         help=(
-            "YOUR attestation, forwarded to jasper-arm-walk: the arm's travel "
+            "YOUR attestation, forwarded to the walk: the arm's travel "
             "is clear and the saved zero is the acoustic axis. Without it no "
             "walk is launched — this runner never attests on your behalf — "
             "and --angles is refused, since nothing would serve the walk it "
@@ -1272,15 +1299,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--expect-angles", default="",
-        help="passed through to jasper-arm-walk: the angles the walk must serve",
+        help="passed through to the walk: the angles it must serve",
     )
     parser.add_argument(
         "--complete-after", type=int, default=None,
-        help="passed through to jasper-arm-walk: releases before it closes the group",
+        help="passed through to the walk: releases before it closes the group",
     )
     parser.add_argument(
         "--settle-s", type=float, default=None,
-        help="passed through to jasper-arm-walk: settle after each move",
+        help="passed through to the walk: settle after each move",
     )
     parser.add_argument(
         "--hostname", default=None,
