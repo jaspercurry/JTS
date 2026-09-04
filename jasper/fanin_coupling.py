@@ -285,10 +285,6 @@ OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR = "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT"
 # named shapes fails LOUD on one nobody handled, where a threaded device value
 # shears silently through five call sites.
 #
-# The plain-ring shape IS :data:`COUPLING_SHM_RING`, spelled by that name
-# everywhere rather than aliased: a shape whose token is the coupling's token is
-# one fact, and a second name for it can only drift.
-#
 # ``shm_ring_active`` is selected on the PERSISTED COUPLING plus the reconciler's
 # endpoint MARKER — deliberately NOT on the observed ``camilla_playback_device``.
 # Selecting on the observed device would make
