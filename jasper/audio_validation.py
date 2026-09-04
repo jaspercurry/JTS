@@ -50,6 +50,7 @@ from .control import client as control
 from .env_load import parse_env_file
 from .log_event import log_event
 from .output_hardware import published_dac_id
+from .route_latency.status_socket import OUTPUTD_STATUS_SOCKET
 
 
 CURRENT_SCHEMA_VERSION = 1
@@ -76,7 +77,7 @@ DEFAULT_CHIP_POLL_INTERVAL_SECONDS = 5.0
 DEFAULT_SYSTEM_ENV_PATH = Path("/etc/jasper/jasper.env")
 DEFAULT_BUILD_MANIFEST_PATH = Path("/var/lib/jasper/build.txt")
 DEFAULT_BRIDGE_STATS_PATH = Path("/run/jasper/aec_bridge_stats.json")
-DEFAULT_OUTPUTD_STATUS_SOCKET = Path("/run/jasper-outputd/control.sock")
+DEFAULT_OUTPUTD_STATUS_SOCKET = Path(OUTPUTD_STATUS_SOCKET)
 DEFAULT_CHIP_WAKE_LEGS = ("on",)
 CHIP_AEC_PROFILE_READBACK_COMMANDS = (
     "SHF_BYPASS",

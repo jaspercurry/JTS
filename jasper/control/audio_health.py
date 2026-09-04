@@ -33,6 +33,7 @@ from typing import Any
 from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..local_sources.registry import local_source_lifecycles
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
+from ..route_latency.status_socket import OUTPUTD_STATUS_SOCKET
 from ..fanin.latency_mode import PRESETS, classify_runtime
 from ..source_intent import read_source_intents
 from .airplay_health import (
@@ -54,7 +55,7 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 ROUTE_INTERVAL_SEC = 60.0
-OUTPUTD_SOCKET = "/run/jasper-outputd/control.sock"
+OUTPUTD_SOCKET = OUTPUTD_STATUS_SOCKET
 LOCAL_STATUS_TIMEOUT_SEC = 1.0
 FANIN_STALE_MS = 5000
 OUTPUTD_STALE_MS = 3000
