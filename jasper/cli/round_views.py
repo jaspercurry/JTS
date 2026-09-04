@@ -110,7 +110,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, NamedTuple, Sequence
 
@@ -146,7 +145,11 @@ from jasper.active_speaker.repeat_floor import (
     write_repeat_floor,
 )
 from jasper.active_speaker.crossover_v2.frequency_view import frequency_run
-from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS, sweep_round
+from jasper.active_speaker.crossover_v2.gate_sweep import (
+    DEFAULT_RUNGS_MS,
+    summary_lines,
+    sweep_round,
+)
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, round_inputs
 from jasper.cli._refusal import (
@@ -607,26 +610,6 @@ def _cmd_spec_sweep(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _gate_sweep_line(label: str, entry: Mapping[str, Any]) -> str:
-    """One swept band or named bin: the verdict, and what it turned on.
-
-    The routes are printed with the verdict because a reader who sees
-    ``moved`` without them cannot tell a room-owned feature apart from one
-    that only a single route flagged.
-    """
-    verdict = entry["window_verdict"]
-    reasons = ", ".join(entry["window_verdict_reasons"])
-    sensitivity = entry["sensitivity"]
-    if sensitivity is None:
-        return f"{label} {verdict.upper()} (no sensitivity: {reasons})"
-    return (
-        f"{label} {verdict.upper()} sigma x"
-        f"{sensitivity['sigma_growth_ratio']:.2f}, window "
-        f"{sensitivity['corrected_delta_db']:+.2f} dB"
-        + (f" ({reasons})" if reasons else "")
-    )
-
-
 def _cmd_gate_sweep(args: argparse.Namespace) -> int:
     round_dir = Path(args.round_dir)
     try:
@@ -635,42 +618,21 @@ def _cmd_gate_sweep(args: argparse.Namespace) -> int:
             rungs_ms=args.rungs_ms, at_hz=args.at_hz or (),
         )
     except RoundCapturesRefused as exc:
-        # The ladder runs before the round is RESOLVED so its own named
-        # refusal — which input was missing — is what reaches the operator,
-        # rather than the resolver's coarser "unreadable round".
+        # The ladder's own named refusal, never the resolver's coarser bucket.
         return failed(
             EXIT_REFUSED, exc.reason,
             json.dumps(exc.detail, sort_keys=True, default=str),
         )
     artifact = ARTIFACT_BY_VIEW[args.command].artifact
     try:
-        # The ladder reads raw captures, so it also accepts a bundle subtree
-        # the round resolver cannot place; such a directory is then its own
-        # answer for where the report lands.
+        # The ladder also reads a bundle subtree the resolver cannot place.
         beside = default_out(round_inputs(round_dir), round_dir, artifact)
     except RoundViewsError:
         beside = round_dir / artifact
     written = _write(report, args.out, beside)
-    # Each label carries the bin actually READ: a band anchors on its own
-    # deepest bin, which is not in general its most window-divergent one, and
-    # an --at-hz request is snapped to the nearest analysis-grid bin.
-    entries = [
-        (
-            f"{band['band_hz'][0]:g}-{band['band_hz'][1]:g} Hz"
-            + (
-                "" if band.get("worst_bin_hz") is None
-                else f" (worst bin {band['worst_bin_hz']:.1f} Hz)"
-            ),
-            band,
-        )
-        for band in report["bands"]
-    ] + [
-        (f"{f['requested_hz']:g} Hz (bin {f['bin_hz']:.1f} Hz)", f)
-        for f in report["features"]
-    ]
     print(
         "gate-sweep [evidence only, no grade moves]: "
-        + "; ".join(_gate_sweep_line(label, entry) for label, entry in entries)
+        + "; ".join(summary_lines(report))
         + (f" -> {written}" if written else ""),
         file=sys.stderr,
     )

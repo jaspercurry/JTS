@@ -1061,3 +1061,40 @@ def sweep_round(
         ],
         "sigma_map": _sigma_map(grid, sigma, rungs),
     }
+
+
+def summary_lines(report: Mapping[str, Any]) -> list[str]:
+    """One line per swept band and per named bin, for a caller to print.
+
+    Each label carries the bin actually READ: a band anchors on its own
+    deepest bin, which is not in general its most window-divergent one, and an
+    ``at_hz`` request is snapped to the nearest analysis-grid bin. The routes
+    print with the verdict because ``moved`` without them cannot be told apart
+    from a feature only one route flagged.
+    """
+    labelled: list[tuple[str, Mapping[str, Any]]] = []
+    for band in report["bands"]:
+        label = f"{band['band_hz'][0]:g}-{band['band_hz'][1]:g} Hz"
+        worst_bin_hz = band.get("worst_bin_hz")
+        if worst_bin_hz is not None:
+            label += f" (worst bin {worst_bin_hz:.1f} Hz)"
+        labelled.append((label, band))
+    labelled += [
+        (f"{feature['requested_hz']:g} Hz (bin {feature['bin_hz']:.1f} Hz)", feature)
+        for feature in report["features"]
+    ]
+
+    lines = []
+    for label, entry in labelled:
+        verdict = entry["window_verdict"].upper()
+        reasons = ", ".join(entry["window_verdict_reasons"])
+        sensitivity = entry["sensitivity"]
+        if sensitivity is None:
+            lines.append(f"{label} {verdict} (no sensitivity: {reasons})")
+            continue
+        lines.append(
+            f"{label} {verdict} sigma x{sensitivity['sigma_growth_ratio']:.2f}, "
+            f"window {sensitivity['corrected_delta_db']:+.2f} dB"
+            + (f" ({reasons})" if reasons else "")
+        )
+    return lines
