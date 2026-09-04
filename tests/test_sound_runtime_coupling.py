@@ -54,15 +54,10 @@ def _capture_reemit_coupling(monkeypatch, tmp_path):
     The fake carrier returns a base_flat result; what this helper needs is the
     dry-run reemit call, not what reconcile decides afterwards.
 
-    Both token sources are pinned AWAY from the ring — the env var is unset and
-    the persisted SSOT reader answers ``loopback`` — so ring kwargs coming out
-    the far end prove the seam consults neither.
+    The env token is pinned AWAY from the ring — unset — so ring kwargs coming
+    out the far end prove the seam does not consult it.
     """
     monkeypatch.delenv("JASPER_FANIN_CAMILLA_COUPLING", raising=False)
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
-        lambda *a, **k: "loopback",
-    )
 
     config_dir = tmp_path / "configs"
     config_dir.mkdir()

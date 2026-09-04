@@ -71,41 +71,28 @@ from jasper.fanin_coupling import (
 )
 from jasper.log_event import log_event
 
-# Compatibility re-exports, pending the external import sites moving (#3116).
 from jasper.fanin.ring_health import (
-    FANIN_ENV_PATH as FANIN_ENV_PATH,
-    JASPER_ENV_PATH as JASPER_ENV_PATH,
-    OUTPUTD_ENV_PATH as OUTPUTD_ENV_PATH,
-    LoadedCamillaGraph as LoadedCamillaGraph,
-    RING_A as RING_A,
-    RING_ACTIVE as RING_ACTIVE,
-    RING_B as RING_B,
-    RingWireDeclaration as RingWireDeclaration,
-    FaninRingSlotsResolution as FaninRingSlotsResolution,
-    _EnvSnapshot as _EnvSnapshot,
-    _OUTPUTD_ACTIVE_CHANNELS_ENV_VAR as _OUTPUTD_ACTIVE_CHANNELS_ENV_VAR,
-    _OUTPUTD_DEFAULT_CONTENT_CHANNELS as _OUTPUTD_DEFAULT_CONTENT_CHANNELS,
-    _anchor_is_all_muted as _anchor_is_all_muted,
-    _effective_env_value as _effective_env_value,
-    _read_snapshot as _read_snapshot,
-    _staged_anchor_identity as _staged_anchor_identity,
-    _wire_channels_for_ring as _wire_channels_for_ring,
-    active_ring_endpoint_proof as active_ring_endpoint_proof,
-    composite_ring_wire_ready as composite_ring_wire_ready,
+    _anchor_is_all_muted,
+    _EnvSnapshot,
+    _read_snapshot,
+    _staged_anchor_identity,
+    FANIN_ENV_PATH,
+    OUTPUTD_ENV_PATH,
+    read_loaded_camilla_graph,
+    resolve_effective_fanin_ring_slots,
+    resolve_effective_fanin_wire_format,
+    ring_assets_ready,
+    ring_edge_width_ready,
+    ring_endpoint_anchor_converged,
+    ring_topology_ready,
+    ring_wire_caps_ready,
+)
+
+# Nothing below reads these two; jasper/fanin/converge and jasper/fanin_coupling
+# BIND them on this module, so moving one is a behaviour change, not a rename.
+from jasper.fanin.ring_health import (
     graph_at_active_ring_endpoint as graph_at_active_ring_endpoint,
-    graph_wire_declarations as graph_wire_declarations,
-    load_topology_for_wire as load_topology_for_wire,
-    read_loaded_camilla_graph as read_loaded_camilla_graph,
-    read_persisted_coupling as read_persisted_coupling,
-    resolve_effective_fanin_ring_slots as resolve_effective_fanin_ring_slots,
-    resolve_effective_fanin_wire_format as resolve_effective_fanin_wire_format,
-    resolve_wire_for_gate as resolve_wire_for_gate,
-    ring_assets_ready as ring_assets_ready,
-    ring_edge_width_ready as ring_edge_width_ready,
-    ring_endpoint_anchor_converged as ring_endpoint_anchor_converged,
-    ring_topology_ready as ring_topology_ready,
-    ring_wire_caps_ready as ring_wire_caps_ready,
-    ring_wire_declarations as ring_wire_declarations,
+    JASPER_ENV_PATH as JASPER_ENV_PATH,
 )
 
 logger = logging.getLogger(__name__)
@@ -130,7 +117,7 @@ AUDIO_HARDWARE_RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
 # target, not vocabulary.
 _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV = "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE"
 
-# Cross-invocation serialization of the reconcile ENTRY verbs (#1233 follow-up).
+# Cross-invocation serialization of the reconcile ENTRY verbs.
 # NOT under /run/jasper — that is jasper-voice's RuntimeDirectory, reaped on
 # every voice stop; a reaped+recreated lock file would hand a second holder a
 # fresh inode and defeat the exclusion exactly during deploys. Top-level /run is
@@ -166,7 +153,7 @@ class CouplingResult:
 
 
 # A DELIBERATE restart must not spend a daemon's CRASH-recovery start budget
-# (ADR-0103, #2175): every restart this reconciler issues is a config-apply, but
+# (ADR-0103): every restart this reconciler issues is a config-apply, but
 # systemd counts it in the same StartLimitBurst window, and jasper-fanin /
 # jasper-outputd escalate an exhausted window straight to
 # StartLimitAction=reboot. ``systemctl reset-failed`` clears the failed latch AND
@@ -474,7 +461,7 @@ def _daemon_op_ceiling_sec(
 # Entry-lock wait (10 s), convergence gate/graph/applied-record reads (4 s), and
 # the anchor-branch re-emit (25 s: staged-anchor lock 15 s + camilladsp --check
 # 10 s) — the three in-process figures jasper-fanin-coupling-auto.service's own
-# tally has carried since #1252, which no broker multiplier touches.
+# tally carries, which no broker multiplier touches.
 _COUPLING_AUTO_NON_DAEMON_WORK_SEC = 39.0
 
 
@@ -575,7 +562,7 @@ def _reconcile_camilla(
     — fails.
 
     NO acceptance here survives a payload that came over the STATEFILE
-    (``transport=statefile``, #2664). That payload's ``current_config_path`` is
+    (``transport=statefile``). That payload's ``current_config_path`` is
     the durable pointer rather than the daemon's answer, and this rung's contract
     is "re-emit AND LOAD" — with CamillaDSP down nothing was loaded. One guard
     ahead of all three branches, so the rule cannot be true of one acceptance and
@@ -608,8 +595,8 @@ def _reconcile_camilla(
         # (``cam.get_config_file_path`` over CamillaDSP's websocket), not the
         # statefile's — the statefile has several other writers and can name a
         # graph the running daemon does not hold, which would let one moved
-        # mid-arm report ``converged_anchor`` while CamillaDSP still writes the
-        # lane the ring replaced (the #2364 silence class).
+        # mid-arm report ``converged_anchor`` while CamillaDSP still writes
+        # the lane the ring replaced — the box goes silent.
         converged, anchor_detail = ring_endpoint_anchor_converged(
             loaded_config_path=payload.get("current_config_path")
         )
@@ -796,8 +783,8 @@ def reconcile_coupling(
     restart is best-effort: a failure is logged and never changes the pass's
     verdict, because the coupling IS converged either way.
     """
-    # REMOVE once no box carries a refused coupling token: since #3655 that is
-    # the only `before` state whose width this pass can move.
+    # REMOVE once no box carries a refused coupling token: that is the only
+    # `before` state whose width this pass can move.
     before = _assistant_width_token(env_path)
     result = _converge_ring(
         reason=reason,
@@ -2104,9 +2091,9 @@ def _run_entry_verb(args) -> int:
 
     load_env_files()
 
-    # Converge the ACTIVE endpoint before the ring convergence reads it
-    # (#2285 P7). Inside the entry flock, so it can never interleave with another
-    # pass. UNATTENDED PATH ONLY, and skipped under --no-apply, which promises
+    # Converge the ACTIVE endpoint before the ring convergence reads it.
+    # Inside the entry flock, so it can never interleave with another pass.
+    # UNATTENDED PATH ONLY, and skipped under --no-apply, which promises
     # env-only staging. A refusal is NOT an abort: it leaves the box as it found
     # it and the box parks under its own name if nothing carries its program.
     if args.auto and not args.no_apply:

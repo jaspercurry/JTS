@@ -34,6 +34,7 @@ from jasper.env_file import read_value
 from jasper.fanin import coupling_auto as ca
 from jasper.fanin import coupling_reconcile as cr
 from jasper.fanin import latency_mode as lm
+from jasper.fanin.ring_health import read_persisted_coupling
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     COUPLING_SHM_RING,
@@ -787,7 +788,7 @@ def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
     restarts: list[str] = []
     _auto(fanin, outputd, gadget=False, restarts=restarts)
     assert read_value(fanin.read_text(), "JASPER_FANIN_RING_SLOTS") == "2"
-    assert cr.read_persisted_coupling(fanin) == COUPLING_SHM_RING
+    assert read_persisted_coupling(fanin) == COUPLING_SHM_RING
 
 
 def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
@@ -818,7 +819,7 @@ def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypa
     _auto(fanin, outputd, gadget=False, restarts=restarts)
 
     assert read_value(fanin.read_text(), "JASPER_FANIN_RING_SLOTS") == "2"
-    assert cr.read_persisted_coupling(fanin) == COUPLING_SHM_RING
+    assert read_persisted_coupling(fanin) == COUPLING_SHM_RING
 
 
 # --------------------------------------------------------------------------

@@ -918,12 +918,10 @@ def test_buffer_health_resolves_the_wire_with_the_boxs_topology(monkeypatch):
     a shear on a box whose Ring B legitimately carries a different width — the
     doctor contradicting the reconciler that armed it.
     """
-    import jasper.fanin.coupling_reconcile as cr
     import jasper.fanin.ring_health as rh
     import jasper.fanin_coupling as fc
 
     sentinel = object()
-    monkeypatch.setattr(cr, "load_topology_for_wire", lambda: sentinel)
     monkeypatch.setattr(rh, "load_topology_for_wire", lambda: sentinel)
     seen: list[object] = []
 
