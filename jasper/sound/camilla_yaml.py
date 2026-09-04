@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from jasper.atomic_io import atomic_write_text
+from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
@@ -699,7 +699,7 @@ pipeline:
             raise FileNotFoundError(
                 f"parent directory does not exist: {out_path.parent}"
             )
-        _atomic_write_text(out_path, yaml)
+        atomic_write_text(out_path, yaml, mode=CONFIG_FILE_MODE)
         right_note = (
             f" room_peqs_right={len(room_peqs_right)}"
             if room_peqs_right is not None
@@ -889,7 +889,7 @@ def emit_flat_outputd_cutover_config(
 # The flat cutover config is read by whoever loads it (CamillaDSP, the runtime
 # contract's classifier, the camillagui config browser), not only by a
 # group-jasper daemon, so it is world-readable — wider than the 0640 the
-# ordinary sound configs get from `_atomic_write_text`.
+# ordinary sound configs get from `CONFIG_FILE_MODE`.
 FLAT_CUTOVER_MODE = 0o644
 
 
@@ -985,20 +985,6 @@ def render_flat_cutover_configs(
             RenderedFlatConfig(path=path, text=text, changed=not unchanged)
         )
     return FlatCutoverRender(config_dir=directory, rendered=tuple(rendered))
-
-
-def _atomic_write_text(path: Path, text: str) -> None:
-    # Sound configs (including the bonded-leader pipe config grouping_leader.yml)
-    # are read off-disk by the non-root jasper-control /state leader-pipe health
-    # check (active_leader_pipe_path scans the active config for the snapserver
-    # pipe sink). Keep them group-readable (0640, group jasper via the setgid
-    # configs dir) or that check goes blind under the WS1 non-root drop and the
-    # leader falsely reports the bond "degraded — stream is silent" while audio
-    # flows. Mirrors jasper.active_speaker.camilla_yaml._atomic_write_text (the
-    # active-speaker emitter already widens for the same non-root reason); this
-    # is the sibling writer that was missed. The canonical atomic_write_text also
-    # replaces the hand-rolled tempfile+rename (no wider-permission window).
-    atomic_write_text(path, text, mode=0o640)
 
 
 def sound_config_path(config_dir: str | Path) -> Path:

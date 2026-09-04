@@ -59,6 +59,7 @@ from jasper.log_event import log_event
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "CONFIG_FILE_MODE",
     "advisory_file_lock",
     "atomic_write_json",
     "atomic_write_text",
@@ -313,6 +314,12 @@ def atomic_write_text(
                 error=cleanup_exc,
             )
         raise
+
+
+# Group-readable so the non-root jasper-control reader can read sound
+# configs; group jasper comes from the target directory's setgid bit, not
+# from this mode.
+CONFIG_FILE_MODE = 0o640
 
 
 def atomic_write_json(

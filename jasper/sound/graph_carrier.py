@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from jasper.atomic_io import atomic_write_text
+from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
 from jasper.audio_runtime_plan import EmitSoundConfigKwargs, apply_capture_precedence
 from jasper.fanin_coupling import capture_half
 from jasper.sound.camilla_yaml import (
@@ -354,7 +354,7 @@ class _ProgramBakeCarrier(_SoundOrCorrectionCarrier):
                 raise FileNotFoundError(
                     f"parent directory does not exist: {out_path.parent}"
                 )
-            atomic_write_text(out_path, yaml, mode=0o640)
+            atomic_write_text(out_path, yaml, mode=CONFIG_FILE_MODE)
         return ReemitResult(yaml=yaml, room_peq_count=len(room_peqs))
 
 
@@ -619,7 +619,7 @@ def _recompose_active_baseline_with_eq(
             raise FileNotFoundError(
                 f"parent directory does not exist: {target.parent}"
             )
-        atomic_write_text(target, yaml, mode=0o640)
+        atomic_write_text(target, yaml, mode=CONFIG_FILE_MODE)
     return yaml
 
 
