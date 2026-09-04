@@ -1861,13 +1861,6 @@ async def test_connection_lost_marks_active_turn_lost():
 
 # ---------------------------------------------------------------------------
 # Initial-connect retry budget — startup-resilience under network races.
-#
-# Covers the 2026-05-23 bug: the daemon raced WiFi recovery from an
-# unclean shutdown at boot, the OpenAI WebSocket couldn't resolve DNS
-# during the WiFi-down window, the (then) 5-retry cap exhausted in
-# ~15 s of wall-time, and the daemon exited permanently. Fix replaced
-# the retry count with a time budget so transient network conditions
-# can recover before we give up.
 # ---------------------------------------------------------------------------
 
 
