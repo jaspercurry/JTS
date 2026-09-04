@@ -1790,27 +1790,19 @@ def _verify_frame_from_tracking(
     Rendered on EVERY outcome: a PASS is exactly the case where an unstated
     tilt lets a reader take instrument agreement for model agreement.
 
-    ``None`` means no frame was measured, never that the frames matched.
-    Tilt-removed keys are omitted individually rather than defaulted to their
-    raw twins (a beside-number equal to its twin would read as a measurement).
-    ``pivot_hz``/``n_bins``/``band_hz`` travel because a two-parameter fit over
-    few bins is ill-conditioned and ``frame_fit`` reports the span instead of a
-    confidence policy.
-
-    ``None`` when no tracking comparison ran, or when the frame could not be
-    fitted. The tilt-removed keys are omitted individually rather than
-    defaulted to their raw twins, because a beside-number equal to its twin
-    would read as "removing the frame changed nothing".
+    ``None`` when no tracking comparison ran or the frame could not be fitted
+    — never that the frames matched. Tilt-removed keys are omitted
+    individually rather than defaulted to their raw twins, because a
+    beside-number equal to its twin would read as "removing the frame changed
+    nothing". ``pivot_hz``/``n_bins``/``band_hz`` travel because a
+    two-parameter fit over few bins or a narrow span is ill-conditioned and
+    :mod:`jasper.audio_measurement.frame_fit` reports that span rather than
+    inventing a confidence policy — they also disclose WHICH bins the frame
+    was estimated from, the notch-excluded, validity-floor-clamped set.
 
     ``max_db_tilt_removed`` is the twin of the NOTCH-EXCLUDED max, matching
     what :func:`_verify_evidence_from_tracking` calls ``max_db``: a second
     spelling would invite comparing two numbers over different bin sets.
-
-    ``pivot_hz``/``n_bins``/``band_hz`` travel too, because a two-parameter fit
-    over few bins or a narrow span is ill-conditioned and
-    :mod:`jasper.audio_measurement.frame_fit` reports that span rather than
-    inventing a confidence policy. They also disclose WHICH bins the frame was
-    estimated from — the notch-excluded, validity-floor-clamped set.
     """
     frame = tracking.get("frame")
     if not isinstance(frame, Mapping):

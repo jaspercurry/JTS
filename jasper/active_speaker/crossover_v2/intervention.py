@@ -7,12 +7,9 @@
 :func:`plan_linearization` assembles this repository's existing pure DSP
 primitives into one candidate's prescription; no fitter, solver, or estimator
 is reimplemented here. Equal inputs give equal outputs — nothing is written,
-logged, or mutated, and no clock is read. Journal lines are returned as data
-(:class:`JournalRecord`) for the host to emit under its own session identity.
-
-Dependency direction: this module imports the DSP primitives,
-:mod:`.contracts` and :mod:`.plan_assembly`. It must never import
-:mod:`jasper.active_speaker.crossover_v2_flow` (the flow imports *this*) or
+logged or mutated, no clock is read, and journal lines return as data
+(:class:`JournalRecord`) for the host to emit. Must never import
+:mod:`jasper.active_speaker.crossover_v2_flow` (which imports this module) or
 anything under :mod:`jasper.web`.
 """
 
@@ -106,7 +103,6 @@ class PlannerError(CrossoverV2ContractError):
     """
 
 
-
 class PlannerInputError(PlannerError):
     """A required planner input is missing or malformed."""
 
@@ -181,9 +177,8 @@ LINEARIZATION_TRIM_SANITY_MARGIN_DB = 6.0
 #: non-positive and the output limiters and volume rail sit downstream.
 MIN_TRIM_SANITY_MARGIN_RATIO = 2.0
 
-# SIGMA_TOLERABLE_DB (per-tier sigma-tolerance table) is imported above from
-# linearization_envelope, which owns it -- see the import block near the top
-# of this file.
+# SIGMA_TOLERABLE_DB (per-tier sigma-tolerance table) is owned by
+# linearization_envelope and re-exported here via the import above.
 
 
 # --------------------------------------------------------------------------- #
@@ -683,7 +678,6 @@ def anchor_trims(
     }
     shift = max(0.0, max(unnormalized.values()))
     return {r: v - shift for r, v in unnormalized.items()}, shift
-
 
 
 # --------------------------------------------------------------------------- #

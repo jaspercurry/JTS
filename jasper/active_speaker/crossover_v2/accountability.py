@@ -4,13 +4,12 @@
 
 """Whether a built candidate may be PROPOSED at all.
 
-Three disclosures and no refusals, most-specific-first: whether the two
-per-driver level estimates agree with each other, then the realized
-inter-driver level, then the spec-graded prediction. Order is the decision —
-each step is a narrower diagnosis of the one after it, so when more than one is
-true the earliest cause is the one named, and the journal is in emission order.
-This module DECIDES and does not act; the session owns every irreversible half.
-See docs/adr/0003-prediction-gate-frame.md.
+Three disclosures and no refusals, most-specific-first: the two per-driver
+level estimates against each other, then the realized inter-driver level,
+then the spec-graded prediction. Order is the decision — each step is a
+narrower diagnosis of the one after it, so the earliest true cause is the one
+named, journal in emission order. This module DECIDES and does not act; the
+session owns every irreversible half. See docs/adr/0003-prediction-gate-frame.md.
 """
 
 from __future__ import annotations
