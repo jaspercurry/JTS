@@ -55,7 +55,7 @@ from contextlib import suppress
 from http import HTTPStatus
 from typing import Any, Callable
 
-from ._common import JsonBodyError, read_json_object
+from ._common import JsonBodyError, read_json_object, terminate_async_process
 from .balance_level import DEFAULT_LOCK_FRAMES, MicLevelTracker
 
 from jasper.audio_measurement.correction_lane import exec_correction_play
@@ -125,7 +125,7 @@ def _reset_locked(error: str = "") -> None:
     next_session_token = int(_state.get("session_token", 0)) + 1
     ramp = _state.get("ramp")
     if ramp and ramp.get("proc") is not None:
-        _terminate_proc(ramp["proc"])
+        terminate_async_process(ramp["proc"])
     release = _state.get("release_window")
     _state.update({
         "phase": "idle", "error": error, "members": None,
@@ -138,13 +138,6 @@ def _reset_locked(error: str = "") -> None:
     })
     if release is not None:
         release()
-
-
-def _terminate_proc(proc: Any) -> None:
-    try:
-        proc.terminate()
-    except ProcessLookupError:
-        pass
 
 
 def _volume_guard_context(hostname: str, members: dict):
@@ -460,7 +453,7 @@ def _complete_lock_locked(
             None,
             None,
         )
-    _terminate_proc(ramp["proc"])
+    terminate_async_process(ramp["proc"])
     _state["ramp"] = None
     _state["locks"][channel] = {
         "offset_s": offset, "drive_dbfs": drive}
@@ -612,7 +605,7 @@ def handle_ramp(
         elif _state["ramp"] is not None:
             abort_error = "a ramp is already playing"
         if abort_error:
-            _terminate_proc(proc)
+            terminate_async_process(proc)
             log_event(
                 logger,
                 "balance.ramp_start_aborted",

@@ -25,6 +25,7 @@ from jasper.audio_measurement.correction_lane import exec_correction_play
 from jasper.measurement_window import HeldWindow
 from jasper.log_event import log_event
 
+from ._common import close_awaitable, terminate_async_process
 from .pair_flow import members_by_channel, resolve_pair
 
 logger = logging.getLogger("jasper.web.sync")
@@ -53,10 +54,7 @@ def _reset_locked(error: str = "") -> None:
     next_session_token = int(_state.get("session_token", 0)) + 1
     playback = _state.get("playback")
     if playback and playback.get("proc") is not None:
-        try:
-            playback["proc"].terminate()
-        except ProcessLookupError:
-            pass
+        terminate_async_process(playback["proc"])
     release = _state.get("release_window")
     _state.update({
         "phase": "idle",
@@ -165,13 +163,6 @@ async def _start_playback(wav_path: str):
     )
 
 
-def _terminate_proc(proc: Any) -> None:
-    try:
-        proc.terminate()
-    except ProcessLookupError:
-        pass
-
-
 async def _watch_playback(proc) -> None:
     await proc.wait()
     with _lock:
@@ -271,7 +262,7 @@ def handle_play(run_async: Callable, schedule: Callable) -> tuple[dict, int]:
         elif _state["playback"] is not None:
             abort_error = "sync marker already playing"
         if abort_error:
-            _terminate_proc(proc)
+            terminate_async_process(proc)
             log_event(
                 logger,
                 "sync.play_start_aborted",
@@ -285,7 +276,10 @@ def handle_play(run_async: Callable, schedule: Callable) -> tuple[dict, int]:
         schedule(watcher)
     except RuntimeError as e:
         watcher.close()
-        _terminate_proc(proc)
+        terminate_async_process(proc)
+        # The one site that must know the marker is actually gone before it
+        # answers: reap through the runner, and SIGKILL a child that sat
+        # through the SIGTERM rather than leave it playing into the room.
         reaped = False
         wait_coro = proc.wait()
         try:
@@ -297,12 +291,10 @@ def handle_play(run_async: Callable, schedule: Callable) -> tuple[dict, int]:
             RuntimeError,
             OSError,
         ):
-            close = getattr(wait_coro, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except RuntimeError:
-                    pass
+            with suppress(RuntimeError):
+                close_awaitable(wait_coro)
+            with suppress(ProcessLookupError):
+                proc.kill()
         with _lock:
             playback = _state.get("playback") or {}
             if (
