@@ -27,7 +27,6 @@ from jasper.active_speaker.driver_safety import (
     SUPPORTED_PROTECTION_KINDS,
     DriverSafetyProfileError,
     _V2_RESEARCH_DRIVER_FIELDS,
-    build_driver_research_prompt,
     build_driver_research_request,
     build_driver_safety_profile,
     driver_research_targets,
@@ -35,6 +34,7 @@ from jasper.active_speaker.driver_safety import (
     validate_driver_research_request,
     validate_driver_research_result_shape,
 )
+from jasper.active_speaker.driver_safety_prompt import build_driver_research_prompt
 from jasper.active_speaker.driver_protection import (
     LOW_LIMIT_PLAUSIBILITY_FACTOR,
     driver_low_limit_plausibility_band_hz,
@@ -610,7 +610,7 @@ def test_prompt_scopes_provenance_to_the_five_limit_setting_keys() -> None:
     """Per-field provenance across every field is what turned a data reply into
     an essay. Only the keys that bound what the speaker may excite carry it."""
 
-    from jasper.active_speaker.driver_safety import _PROMPT_PROVENANCE_KEYS
+    from jasper.active_speaker.driver_safety_prompt import _PROMPT_PROVENANCE_KEYS
 
     topology = mono_output_topology(card_id=None)
     prompt = build_driver_research_prompt(

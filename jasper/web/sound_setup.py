@@ -1891,10 +1891,8 @@ def _active_speaker_driver_research_request_payload(
 ) -> dict[str, Any]:
     """Build the silent, target-bound research request and copyable prompt."""
 
-    from jasper.active_speaker.driver_safety import (
-        build_driver_research_prompt,
-        build_driver_research_request,
-    )
+    from jasper.active_speaker.driver_safety import build_driver_research_request
+    from jasper.active_speaker.driver_safety_prompt import build_driver_research_prompt
     from jasper.active_speaker.design_draft import (
         normalise_manual_settings,
         normalise_operator_inputs,

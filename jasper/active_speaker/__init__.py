@@ -132,7 +132,7 @@ _LAZY_ATTRS: dict[str, str] = {
     "build_crossover_preview": "crossover_preview",
     "build_design_draft": "design_draft",
     "build_driver_commission_load_preflight": "startup_load",
-    "build_driver_research_prompt": "driver_safety",
+    "build_driver_research_prompt": "driver_safety_prompt",
     "build_driver_research_request": "driver_safety",
     "build_driver_safety_profile": "driver_safety",
     "build_passive_mains_preset": "staging",
