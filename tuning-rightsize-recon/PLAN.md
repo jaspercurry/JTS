@@ -1,6 +1,6 @@
 # Tuning right-sizing — plan of record
 
-**Status:** active. Wave 1 MERGED to main 2026-09-03 (#3837, 0649334a). Wave 2 not started. Owner-approved direction:
+**Status:** active. Waves 1–3 merged (see §9). Wave 4 not started; start from HANDOFF-W4.md. Owner-approved direction:
 per-concern branches, one PR each, `/simplify` + `/code-review` before merge,
 merge in waves so CI is not run once per PR.
 **Owner:** jaspercurry. **Orchestrating session:**
@@ -332,6 +332,25 @@ mechanics, the exclusion list, the prose bar, deletion rules, report format.
   follows. Owner rulings added: deletion needs a SPENT/SUPERSEDED/PROMOTE
   verdict, not just a grep; build every capability toward the CLI + artifact +
   runbook-menu + methodology-pointer shape; JSON bundles, no database.
+- 2026-09-04 01:35Z: **wave 3 merged** — 12 PRs merged individually (no
+  integration PR for code; one for the three prose lanes, #3948), +1554 / −2043
+  on main. Landed: doctrine §1 tool pointers (#3935); `jasper-round-views
+  inventory` with one artifact table (#3939); façade → `state_paths`, shim
+  gone (#3942); driver_protection → ADR-0227 (#3943); attempts-loop orphans
+  SPENT (#3951); gating getsource pins → behaviour pins (#3947); six dead
+  defs with verdicts (#3869); crossover_v2 prose third and FINAL pass
+  (#3948, 5,422 → 5,105 prose lines; the package is at the constraint floor —
+  the prose program is closed); row 2.1 re-scoped and done — `correction` is
+  now a leaf of `active_speaker` (peq → audio_measurement #3946; commissioning
+  → playback core #3949; coordinator → `jasper/measurement_window.py` +
+  boundary pin #3952); row 2.4 step 1 (`_status.py` 858 → 240, #3950).
+  Plan corrections: row 2.1's cycle was already gone (PR #3542); row 2.4 is
+  ten ordered steps (web-twin-map.md), steps 6 and 10 non-negotiable tier.
+  Not done by decision: further prose, t3, 2.6, 2.7, Phases 3–5. Gates that
+  paid: Opus constants review on every prose PR (all three accepted PRs had
+  one compressed-into-false sentence); two-pass /code-review on relocations
+  (caught three un-relevelled deferred imports that would have killed every
+  measurement window on hardware). Wave-4 handoff: HANDOFF-W4.md.
 - Wave 3 and the verification checklist for a fresh agent:
   `tuning-rightsize-recon/HANDOFF-PROMPT.md`.
 - 2026-09-03 18:55Z: **wave 2 merged** — PR #3914 → main f2920ee04 (100 files,

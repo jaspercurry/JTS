@@ -1,5 +1,7 @@
 # Handoff prompt — JTS tuning right-size, wave 3 onward
 
+> **Superseded for wave 4 onward by `HANDOFF-W4.md` in this directory** (wave 3 landed 2026-09-04). Kept for the record.
+
 Paste everything below this line into a fresh Claude Code session on the JTS
 repo. It is written for that agent, not for the owner.
 
