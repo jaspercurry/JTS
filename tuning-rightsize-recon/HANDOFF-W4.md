@@ -1,5 +1,7 @@
 # Handoff — JTS tuning right-size, wave 4 onward
 
+> **Direction note (2026-09-04):** the owner handed wave 4 to a fresh-eyes reorientation (deep audit → TARGET.md → PLAN-FRESH-EYES.md, all in this directory). Read this file as backlog evidence and mechanics lessons, not as the plan.
+
 Written by the wave-3 orchestrator (session_015N7EavRVFCHwXkKTPLEJNF) for the
 next orchestrating agent. Read AGENTS.md at HEAD first, then this file, then
 `EXEC-W3.md` (the sub-agent brief; reuse it with the prefix bumped to `w4-`)

@@ -1,6 +1,6 @@
 # Tuning right-sizing — plan of record
 
-**Status:** active. Waves 1–3 merged (see §9). Wave 4 not started; start from HANDOFF-W4.md. Owner-approved direction:
+**Status:** active. Waves 1–3 merged (see §9). Wave 4 not started. Direction handed to a fresh-eyes reorientation (2026-09-04) whose deliverables land here as AUDIT-FRESH-EYES.md, TARGET.md, PLAN-FRESH-EYES.md; HANDOFF-W4.md remains the backlog evidence. Owner-approved direction:
 per-concern branches, one PR each, `/simplify` + `/code-review` before merge,
 merge in waves so CI is not run once per PR.
 **Owner:** jaspercurry. **Orchestrating session:**
