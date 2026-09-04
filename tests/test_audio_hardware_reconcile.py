@@ -805,6 +805,35 @@ def test_published_not_durable_boot_change_still_sets_marker(tmp_path: Path):
     assert "error=boot_config_published_not_durable" in result.stderr
 
 
+def test_record_change_with_i2s_apply_error_restarts_dac_init_before_exit(
+    tmp_path: Path,
+):
+    """The first-ever pass always writes a changed record (an absent record
+    reads as empty), so a same-pass I2S HAT apply error is enough to exercise
+    the gap: the exit-74 early return sits between the record write and
+    gate_role_services, so the pin restart the changed record earned has to
+    fire at the exit site itself, not only from gate_role_services."""
+    fake_python = tmp_path / "python"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        "case \"$*\" in\n"
+        "*usb_port_role*) echo '{\"board_topology\": \"separate_host_ports\", "
+        "\"i2s_hat_profile\": \"innomaker_hifi_amp_pro\", "
+        "\"i2s_hat_boot_config_changed\": true, "
+        "\"boot_config_published_not_durable\": true}'; exit 74;;\n"
+        f'esac\nexec "{sys.executable}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    result = _run_reconcile(
+        tmp_path, "", extra_env={"JASPER_OUTPUT_HARDWARE_PYTHON": str(fake_python)}
+    )
+
+    assert result.returncode == 74
+    assert "--no-block restart jasper-dac-init.service" in _systemctl_log(tmp_path)
+
+
 # --- identity: what the registry says reaches env, template and record --------
 
 

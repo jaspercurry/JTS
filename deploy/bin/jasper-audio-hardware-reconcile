@@ -1427,6 +1427,7 @@ render_asound_if_needed() {
         # same reason: nothing has been stopped or restarted yet, while
         # continuing would restart outputd against an asound.conf naming a
         # different DAC than the outputd.env this pass already committed.
+        restart_dac_init_for_record_change
         exit 78
     fi
     mv "$tmp" "$ASOUND_TEMPLATE"
@@ -1594,24 +1595,36 @@ render_ring_conf_if_needed() {
         "result=${result:-unknown} output_dac_id=${OUTPUT_DAC_ID} period_frames=${period:-none} previous_period_frames=${previous:-none} sample_format=${sample_format:-none} ring_a_channels=${channels_a:-none} ring_b_channels=${channels_b:-none} ring_active_channels=${channels_active:-none} topology=${topology:-none} reason=${reason:-none} ring_conf=$(jasper_asound_log_token "$conf")"
 }
 
+# The mixer pin is restarted only when the record it reads CHANGED —
+# including the boot where it ran before any record existed — because
+# RemainAfterExit makes a plain `start` a no-op otherwise, and a restart per
+# pass would spawn an interpreter on every udev sound event (ADR-0226).
+# --no-block: the unit is ordered Before= camilla and the renderers, and a
+# blocking job would make this pass wait on whatever else is moving there.
+# Called both from gate_role_services and from every early exit between the
+# record write and gate_role_services (a same-pass I2S HAT apply error or a
+# rejected/failed render/env candidate), so a pass that aborts there still
+# restarts the pin its own changed record earned — the record itself may no
+# longer differ by the time a later pass reaches gate_role_services.
+restart_dac_init_for_record_change() {
+    [[ "$OUTPUT_HARDWARE_RECORD_CHANGED" == "1" ]] || return 0
+    "$SYSTEMCTL" reset-failed jasper-dac-init.service 2>/dev/null || true
+    "$SYSTEMCTL" --no-block restart jasper-dac-init.service || true
+    log_event "dac_init_restarted" "output_dac_id=${OUTPUT_DAC_ID:-unknown}"
+}
+
 gate_role_services() {
     local apple_output=0
     if [[ ( "$OUTPUT_DAC_ID" == "apple_usb_c_dongle" || "$OUTPUT_DAC_ID" == "dual_apple_usb_c_dac_4ch" ) && "$APPLE_DONGLE_PRESENT" == "1" ]]; then
         apple_output=1
     fi
     # The mixer pin is enabled on every box: which controls a DAC pins is the
-    # registry's answer, and jasper-dac-init is where it is asked. It re-runs
-    # only when the record it reads CHANGED — including the boot where it ran
-    # before any record existed — because RemainAfterExit makes `start` a no-op
-    # otherwise, and a restart per pass would spawn an interpreter on every
-    # udev sound event (ADR-0226). --no-block: the unit is ordered Before=
-    # camilla and the renderers, and a blocking job would make this pass wait
-    # on whatever else is moving there.
+    # registry's answer, and jasper-dac-init is where it is asked.
     "$SYSTEMCTL" enable jasper-dac-init.service
-    "$SYSTEMCTL" reset-failed jasper-dac-init.service 2>/dev/null || true
     if [[ "$OUTPUT_HARDWARE_RECORD_CHANGED" == "1" ]]; then
-        "$SYSTEMCTL" --no-block restart jasper-dac-init.service || true
+        restart_dac_init_for_record_change
     else
+        "$SYSTEMCTL" reset-failed jasper-dac-init.service 2>/dev/null || true
         "$SYSTEMCTL" start jasper-dac-init.service || true
     fi
     if [[ "$apple_output" == "1" ]]; then
@@ -2012,7 +2025,10 @@ rm -f -- "$RECONCILE_STAMP_PATH" "$RECONCILE_DEGRADED_MARKER"
 reconcile_i2s_hat_boot
 observe_output_hardware_state 1
 sync_i2s_hat_reboot_marker
-[[ "$I2S_HAT_APPLY_ERROR" != "1" ]] || exit 74
+if [[ "$I2S_HAT_APPLY_ERROR" == "1" ]]; then
+    restart_dac_init_for_record_change
+    exit 74
+fi
 apply_observed_single_policy
 apply_observed_composite_policy
 
@@ -2092,10 +2108,12 @@ if [[ "$OUTPUTD_ENV_STAGE_REJECTED" == "1" ]]; then
     # Every remaining call site that can stop a unit is downstream of this exit —
     # gate_role_services (`disable --now`), restart_audio_if_needed, and the
     # unrecognized-DAC park_output_audio — so validating before it is free and no
-    # unit needs restoring. The loud signal is unchanged: exit 78 fails the unit,
-    # and `outputd_env_invalid preserved=1 detail=...` names the contradiction.
+    # output unit needs restoring (the mixer pin below is not one of those).
+    # The loud signal is unchanged: exit 78 fails the unit, and
+    # `outputd_env_invalid preserved=1 detail=...` names the contradiction.
     log_event "outputd_candidate_rejected" \
         "action=preserve_runtime_env services=unchanged output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD}"
+    restart_dac_init_for_record_change
     exit 78
 fi
 repair_generated_env_permissions
@@ -2129,6 +2147,7 @@ if converge_runtime_graph; then
         runtime_converge_failed=1
         log_event "runtime_graph" \
             "result=failed reason=post_convergence_outputd_env_rejected action=preserve_preliminary_env"
+        restart_dac_init_for_record_change
         exit 78
     fi
 else
