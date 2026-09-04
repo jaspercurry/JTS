@@ -11,7 +11,7 @@ several attenuators sit on the real audio chain:
         × bt_avrcp_vol × camilla_main_volume → DAC
 
 This module owns which one the number applies to. One canonical state
-persists in /var/lib/jasper/speaker_volume.json, interpreted by
+persists at ``volume_persistence.configured_path()``, interpreted by
 ``VolumeState`` as ``listening_level`` plus temporary mute intent. Spotify
 and Bluetooth are push-mode: their own protocol sliders carry
 `listening_level` and CamillaDSP stays at 0 dB, asserting `main_mute` at 0%
@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -57,6 +56,7 @@ from .bluealsa_probe import active_transport_path
 from .volume_owner import VolumeOwner
 from .volume_persistence import (
     VolumePersistence,
+    configured_path as volume_state_path,
     db_to_percent,
     percent_to_db,
     regress_listening_level_if_stale,
@@ -2790,12 +2790,7 @@ def install_env_canonical_target_provider() -> None:
 
         coord = VolumeCoordinator(
             camilla=primary_controller(),
-            persistence=VolumePersistence(
-                os.environ.get(
-                    "JASPER_VOLUME_STATE_PATH",
-                    "/var/lib/jasper/speaker_volume.json",
-                )
-            ),
+            persistence=VolumePersistence(volume_state_path()),
             backend=RendererClient(
                 librespot_state_path=librespot_state.configured_path(),
             ),

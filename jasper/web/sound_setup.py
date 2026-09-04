@@ -1176,15 +1176,11 @@ async def _reconcile_volume_curve_after_settings(
     from jasper.renderer import RendererClient
     from jasper.volume_coordinator import VolumeCoordinator
     from jasper.volume_persistence import VolumePersistence
+    from jasper.volume_persistence import configured_path as volume_state_path
 
     coord = VolumeCoordinator(
         camilla=camilla_factory(),
-        persistence=VolumePersistence(
-            os.environ.get(
-                "JASPER_VOLUME_STATE_PATH",
-                "/var/lib/jasper/speaker_volume.json",
-            )
-        ),
+        persistence=VolumePersistence(volume_state_path()),
         backend=RendererClient(
             librespot_state_path=librespot_state.configured_path(),
         ),

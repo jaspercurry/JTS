@@ -109,6 +109,7 @@ _UNCODIFIED = {
     "JASPER_SYSTEM_ENV_FILE",
     "JASPER_TIMER_DB",
     "JASPER_VOLUME_DIAGNOSTICS_PATH",
+    "JASPER_VOLUME_STATE_PATH",
     "JASPER_WAKE_CORPUS_BRIDGE_ENV",
     "JASPER_WAKE_EVENTS_DIR",
     # Product intent has a fixed canonical path; this override only lets the

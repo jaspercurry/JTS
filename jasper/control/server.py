@@ -14,7 +14,7 @@ in `_make_handler`; `do_GET`/`do_POST` own dispatch in one place.
   the daemon's already-correctly-gained TtsPlayout.
 
 Volume dispatch builds a fresh VolumeCoordinator per call: it reads the
-canonical volume state from /var/lib/jasper/speaker_volume.json, applies
+canonical volume state (`volume_persistence.configured_path()`), applies
 the change, dispatches the derived effective level to the active source
 (or CamillaDSP when idle), and persists it. This daemon runs no inbound
 observers — that's voice_daemon's job; both converge through persistence

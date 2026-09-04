@@ -71,13 +71,9 @@ def read_volume_state() -> "VolumeState":
     """
     from ..volume_coordinator import VolumeState
     from ..volume_persistence import VolumePersistence
+    from ..volume_persistence import configured_path as volume_state_path
 
-    persistence = VolumePersistence(
-        os.environ.get(
-            "JASPER_VOLUME_STATE_PATH",
-            "/var/lib/jasper/speaker_volume.json",
-        ),
-    )
+    persistence = VolumePersistence(volume_state_path())
     return VolumeState.from_record(persistence.load())
 
 
@@ -202,14 +198,10 @@ async def _with_coordinator(
     from ..speaker_name import runtime_name as _speaker_runtime_name
     from ..volume_coordinator import VolumeCoordinator
     from ..volume_persistence import VolumePersistence
+    from ..volume_persistence import configured_path as volume_state_path
 
     camilla = CamillaController(host=camilla_host, port=camilla_port)
-    persistence = VolumePersistence(
-        os.environ.get(
-            "JASPER_VOLUME_STATE_PATH",
-            "/var/lib/jasper/speaker_volume.json",
-        ),
-    )
+    persistence = VolumePersistence(volume_state_path())
     backend = RendererClient(
         librespot_state_path=librespot_state.configured_path(),
     )
