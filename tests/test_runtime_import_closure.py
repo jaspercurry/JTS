@@ -5,14 +5,16 @@
 """The tuning truth layer imports nothing from the product runtime.
 
 Structural, not behavioural: the walk reads ``ast`` import nodes, so it sees
-the edge a convenience re-export adds before anyone runs the code. Two
-questions per module — what its own file imports at any depth, and what its
-module-scope import closure executes.
+the edge a convenience re-export adds before anyone runs the code. Three
+questions per module — what its own file imports at any depth, whether every
+relative import still resolves, and what its module-scope import closure
+executes.
 """
 
 from __future__ import annotations
 
 import ast
+from importlib.util import resolve_name
 from pathlib import Path
 from typing import Iterator
 
@@ -188,3 +190,32 @@ def test_the_truth_layer_never_imports_the_runtime(module):
     assert path is not None, f"{module} does not exist"
     assert _offenders(_imports(path, deferred=True)) == []
     assert _offenders(_closure(module)) == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    sorted((REPO_ROOT / "jasper" / "active_speaker").rglob("*.py")),
+    ids=lambda path: str(path.relative_to(REPO_ROOT / "jasper" / "active_speaker")),
+)
+def test_active_speaker_relative_imports_resolve(path):
+    """A def moved between modules leaves no dangling ``from .gone import x``.
+
+    The suite stubs these callers, so only the walk sees it — at module scope
+    and, the half a caller grep misses, inside a function body. Resolution is
+    ``_module_path``, not ``find_spec``: a spec lookup executes the target's
+    parent package, so an absent optional dependency would surface here as a
+    dangling import.
+    """
+
+    package = _dotted(path)
+    if path.name != "__init__.py":
+        package = package.rpartition(".")[0]
+    unresolved = []
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in _import_nodes(tree.body, deferred=True):
+        if not isinstance(node, ast.ImportFrom) or not node.level:
+            continue
+        target = resolve_name("." * node.level + (node.module or ""), package)
+        if _module_path(target) is None:
+            unresolved.append(target)
+    assert unresolved == []

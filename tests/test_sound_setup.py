@@ -1552,6 +1552,7 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
 
 _COMMISSION_CODE_MODULES = (
     "jasper/active_speaker/staging.py",
+    "jasper/active_speaker/commission_load.py",
     "jasper/active_speaker/startup_load.py",
     "jasper/active_speaker/commission_ramp.py",
     "jasper/active_speaker/web_commissioning.py",
@@ -1803,7 +1804,7 @@ def test_every_preflight_gate_id_has_household_copy():
     import ast
 
     repo = Path(__file__).resolve().parent.parent
-    source = (repo / "jasper" / "active_speaker" / "startup_load.py").read_text()
+    source = (repo / "jasper" / "active_speaker" / "commission_load.py").read_text()
     tree = ast.parse(source)
     builder = next(
         node
@@ -1826,9 +1827,9 @@ def test_every_preflight_gate_id_has_household_copy():
             # A gate id held in a module constant (the shared transport gate id
             # imported from staging). Resolve it through the module namespace
             # rather than re-parsing its source.
-            from jasper.active_speaker import startup_load
+            from jasper.active_speaker import commission_load
 
-            value = getattr(startup_load, arg.id, None)
+            value = getattr(commission_load, arg.id, None)
             assert isinstance(value, str), (
                 f"preflight gate id {arg.id!r} is not a resolvable module "
                 "constant; this walk would silently skip it"
