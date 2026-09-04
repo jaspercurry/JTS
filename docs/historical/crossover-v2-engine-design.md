@@ -513,7 +513,7 @@ Design prose lives in each module's docstring. What that index does not cover:
 | [`delta_probe.py`](../../jasper/active_speaker/delta_probe.py) | The realized-vs-commanded map for an applied correction change, and its four verdicts. |
 | [`web/correction_crossover_v2.py`](../../jasper/web/correction_crossover_v2.py) | The web host: endpoint bindings, durable v2 state, the real seams, apply/restore, `resolve_conductor_context`, `persist_conductor_state`. |
 | [`web/correction_crossover_v2_republish.py`](../../jasper/web/correction_crossover_v2_republish.py) | The republish door: re-publish a banked candidate by fingerprint so apply can reach it. |
-| [`web/correction_crossover_v2_relay.py`](../../jasper/web/correction_crossover_v2_relay.py) | The relay capture provider: plan-walk hosting, the phone phase ladder, purge grace, link-TTL policy. |
+| `web/correction_crossover_v2_relay.py` (deleted; ADR-0222) | The relay capture provider: plan-walk hosting, the phone phase ladder, purge grace, link-TTL policy. |
 | [`web/correction_crossover_v2_wired.py`](../../jasper/web/correction_crossover_v2_wired.py) | The WIRED capture provider: source resolution, the local plan walk, the answer mint. |
 | [`audio_measurement/wired_capture.py`](../../jasper/audio_measurement/wired_capture.py) | The wired capture engine: registry-anchored device probe, parameterized S32_LE ALSA capture with exact gap accounting, the ≥128-zero dropout scan, 32-bit WAV encode. |
 | [`audio_measurement/program.py`](../../jasper/audio_measurement/program.py) | The excitation-program model and its composers. Pure data, no safety decisions. |

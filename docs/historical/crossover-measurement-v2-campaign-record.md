@@ -2311,7 +2311,7 @@ prefill, so every step carries a `PHASE_LADDER_START_SKEW_S` bias
 *intended* to land late rather than early. **ON-DEVICE:** that interval has
 not been measured; the skew is a safe-direction estimate, not a guarantee,
 and is named in
-[`jasper/web/correction_crossover_v2_relay.py`](../../jasper/web/correction_crossover_v2_relay.py).
+`jasper/web/correction_crossover_v2_relay.py` (deleted; ADR-0222).
 Measure it on hardware before tuning, and prefer an observed playback start
 over a smaller guess.
 
