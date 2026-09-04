@@ -778,10 +778,11 @@ The target is **flat design-axis / listening-window over the trusted zone**,
 optionally with a gentle downward in-room tilt — and if you apply one, **declare
 it in the driver document's `declared_tilt_db_per_octave`** (negative for
 downward; `jasper-round-views frozen` echoes it), because an undeclared tilt is
-indistinguishable from a defect on the next round's receipt. The tilt is a preference finding, not a law: it shifts toward
-flat for a dead room or a high-directivity speaker, toward more tilt for a live
-one. Do **not** equalise sound power flat — for any normally narrowing speaker
-that makes the on-axis too bright.
+indistinguishable from a defect on the next round's receipt. The tilt is a
+preference finding, not a law: it shifts toward flat for a dead room or a
+high-directivity speaker, toward more tilt for a live one. Do **not** equalise
+sound power flat — for any normally narrowing speaker that makes the on-axis
+too bright.
 
 **Never buy flatness by filling non-minimum-phase dips.** A curve flattened that
 way is a worse speaker with a better graph. Peaks are more audible than dips:

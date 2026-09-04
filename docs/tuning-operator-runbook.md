@@ -465,7 +465,7 @@ surfaces every tuning tool sits beside:
 | **alignment door** | pin delay / polarity | mutating-with-gates | session-open key `alignment_prescription` |
 | **topology door** | pin Fc / order | mutating-with-gates | session-open key `topology_prescription` |
 | **blend door** | cuts in the summed blend region | mutating-with-gates | spool |
-| **driver door** | per-driver cuts and boosts, an optional per-role trim pin (`pinned_trim_db` — a trim you name is carried, not re-solved), and the two declared numbers `expected_delta_db` and `declared_tilt_db_per_octave`, which gate nothing and come back out of `jasper-round-views frozen` | mutating-with-gates | spool |
+| **driver door** | per-driver cuts and boosts, an optional per-role trim pin (`pinned_trim_db`), and two declared numbers (`expected_delta_db`, `declared_tilt_db_per_octave`) that gate nothing and are echoed by `jasper-round-views frozen` | mutating-with-gates | spool |
 | republish a banked candidate | make any banked candidate live again by its own fingerprint | mutating-with-gates | `POST /crossover/v2/republish` |
 | go back to the previous tuning | republish the prior candidate by its fingerprint, then apply it — the same two doors above, aimed backwards | mutating-with-gates | `POST /crossover/v2/republish` + `POST /crossover/v2/apply` |
 | decline | reject a reviewed candidate ("keep current sound") | mutating | `POST /crossover/v2/decline` |

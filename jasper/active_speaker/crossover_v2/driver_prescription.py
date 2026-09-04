@@ -145,21 +145,15 @@ RATIONALE_MAX_CHARS = 1_200
 #: of it reaches CamillaDSP.
 LINEARIZATION_CANDIDATE_FIELD = "linearization"
 
-#: The pre-registration pair, by key name. Held here rather than spelled at
-#: each reader because the door writes them, the candidate carries them and
-#: ``round_views`` echoes them, and three literals is how the three drift.
+#: Key names; the door, the candidate stamp and ``round_views`` all read these.
 EXPECTED_DELTA_FIELD = "expected_delta_db"
 DECLARED_TILT_FIELD = "declared_tilt_db_per_octave"
 
-#: Widest ``expected_delta_db`` the door admits, dB. Not a bar on optimism but
-#: a UNIT check — the metric predicted is a pooled RMS deviation, so a number
-#: wider than the whole magnitude span a graded curve occupies is a percentage
-#: or a frequency in the wrong slot.
+#: Unit check, not a bar on optimism: a pooled-RMS move wider than this dB is
+#: a percentage or a frequency in the wrong slot.
 EXPECTED_DELTA_BOUND_DB = 30.0
 
-#: Widest ``declared_tilt_db_per_octave`` the door admits, dB/octave — the
-#: bound above read as a slope over the ~10 graded octaves. A voicing tilt is a
-#: small fraction of it (methodology §8).
+#: The bound above read as a slope over the ~10 graded octaves, dB/octave.
 DECLARED_TILT_BOUND_DB_PER_OCTAVE = 3.0
 
 
@@ -496,18 +490,12 @@ class DriverPrescription:
     pinned_trim_db: tuple[tuple[str, float], ...] = ()
     #: The prescriber's own words. NEVER parsed for behaviour.
     rationale: str = ""
-    #: The PRE-REGISTERED expectation: how far this document predicts
-    #: ``jasper-round-views frozen``'s pooled per-role RMS deviation
-    #: (``FrozenReferenceResult.frozen``, dB) will move between the round this
-    #: is staged for and the round it is graded against — negative is flatter,
-    #: that view's own sign. ``None`` is "nothing was pre-registered", never a
-    #: predicted zero. Read by no gate: it moves no limit and no grade, and
-    #: exists so the next round's receipt can subtract it (doctrine §1).
+    #: Predicted move in ``jasper-round-views frozen``'s pooled per-role RMS
+    #: deviation, dB, negative for flatter. ``None`` is not pre-registered,
+    #: never a predicted zero. Read by no gate (doctrine §1).
     expected_delta_db: float | None = None
-    #: The voicing tilt the operator DECLARES, dB/octave, negative for a
-    #: downward in-room tilt. Declared rather than measured, so that an applied
-    #: tilt is not read as a defect on the next round's receipt (methodology
-    #: §8). Also read by no gate.
+    #: The declared voicing tilt, dB/octave, negative for a downward in-room
+    #: tilt (methodology §8). Read by no gate.
     declared_tilt_db_per_octave: float | None = None
 
     @property
@@ -1163,13 +1151,8 @@ def _rationale(raw: Any) -> tuple[str, int]:
 
 
 def _pre_registration(raw: Mapping[str, Any]) -> tuple[float | None, float | None]:
-    """The two declared numbers, or ``None`` each for "nothing was declared".
-
-    Applied by BOTH doors for :func:`_parse_pinned_trim`'s reason: a banked
-    value outside these bounds could never have been produced by the door that
-    wrote it. REFUSED rather than dropped — a pre-registration that vanished on
-    a typo reads on the next receipt as a round nobody predicted.
-    """
+    """Refused rather than dropped, for :func:`_parse_pinned_trim`'s reason: a
+    value outside the bound was never written by this door."""
     def declared(field: str, bound: float) -> float | None:
         value = raw.get(field)
         if value is None:
@@ -1502,7 +1485,6 @@ def driver_prescription_to_candidate_fields(
         if isinstance(role, str) and role.strip()
     }
     pinned_roles = {role for role, _db in prescription.pinned_trim_db}
-    # Not ``field``: this function already binds that name to the route key.
     pre_registration = {
         key: value
         for key, value in (
@@ -1518,10 +1500,7 @@ def driver_prescription_to_candidate_fields(
                 "model": prescription.prescriber_model,
                 "operator": prescription.prescriber_operator,
                 PACKET_FINGERPRINT_FIELD: prescription.packet_fingerprint,
-                # The pre-registration rides the stamp that already says WHO
-                # asked, so the round banks what was predicted beside what it
-                # measured. Omitted when nothing was declared: a null here
-                # would read as a predicted zero.
+                # Omitted, never null: a null here reads as a predicted zero.
                 **pre_registration,
             },
         }
@@ -1667,20 +1646,15 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "measurement of this round"
             ),
             EXPECTED_DELTA_FIELD: (
-                "PRE-REGISTER your prediction: how far this document should "
-                "move `jasper-round-views frozen`'s pooled per-role RMS "
-                "deviation against the round it is graded against, dB, "
-                "negative for flatter, magnitude at most "
-                f"{EXPECTED_DELTA_BOUND_DB:g}. That view echoes it beside the "
-                "measured move and their difference. It gates nothing; "
-                "leaving it out pre-registers nothing"
+                "PRE-REGISTER the move you expect in `jasper-round-views "
+                "frozen`'s pooled per-role RMS deviation: dB, negative for "
+                f"flatter, at most {EXPECTED_DELTA_BOUND_DB:g}. It gates nothing"
             ),
             DECLARED_TILT_FIELD: (
-                "the voicing tilt you are DECLARING, dB/octave, negative for a "
-                "downward in-room tilt, magnitude at most "
+                "the voicing tilt you are DECLARING: dB/octave, negative for "
+                "a downward in-room tilt, magnitude at most "
                 f"{DECLARED_TILT_BOUND_DB_PER_OCTAVE:g}. Declare one whenever "
-                "you apply one: an undeclared tilt is indistinguishable from a "
-                "defect on the next round's receipt. It gates nothing"
+                "you apply one — undeclared it reads as a defect next round"
             ),
             "rationale": (
                 f"free text. The first {RATIONALE_MAX_CHARS} characters are "

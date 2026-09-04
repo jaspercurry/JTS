@@ -40,8 +40,7 @@ from jasper.active_speaker.repeat_floor import SHIPPED_POOL_METRIC
 from jasper.active_speaker.crossover_v2 import forward_model, position_cycle
 from jasper.active_speaker.crossover_v2.contracts import DESIGN_AXIS_DEG
 from jasper.active_speaker.crossover_v2.driver_prescription import (
-    DECLARED_TILT_FIELD,
-    EXPECTED_DELTA_FIELD,
+    DECLARED_TILT_FIELD, EXPECTED_DELTA_FIELD,
 )
 from jasper.active_speaker.crossover_v2.durable_state import (
     verify_measured_curve_from_state,
@@ -645,30 +644,19 @@ def _grade_positions(
 
 
 def _round_candidate(banked: BankedRound) -> dict[str, Any]:
-    """The round's own ``candidate.json``, or ``{}`` when its bundle names no
-    single round-artifact directory."""
+    """The round's own ``candidate.json``, or ``{}``."""
     artifact_dir, _why = round_artifact_dir(banked.session_dir)
     return {} if artifact_dir is None else _read_candidate(artifact_dir)
 
 
 def _banked_pre_registration(banked: BankedRound) -> dict[str, float]:
-    """What the round's staged prescription PREDICTED, off its own candidate.
-
-    ``prescribed_by`` is the per-role stamp
-    :func:`~.driver_prescription.driver_prescription_to_candidate_fields`
-    writes, and every role of one document carries the same pair, so the first
-    role that declared either answers for the document. ``{}`` for a round with
-    no candidate, no prescription, or nothing pre-registered — this view
-    DISCLOSES the pair and grades nothing by it.
-    """
-    linearization = _mapping(_round_candidate(banked).get("linearization"))
-    for entry in linearization.values():
+    """What the round's prescription pre-registered, off the candidate's
+    ``prescribed_by`` stamp — every role carries the same pair, so the first wins."""
+    for entry in _mapping(_round_candidate(banked).get("linearization")).values():
         stamp = _mapping(_mapping(entry).get("prescribed_by"))
         declared = {
-            key: float(value)
-            for key in (EXPECTED_DELTA_FIELD, DECLARED_TILT_FIELD)
-            if isinstance(value := stamp.get(key), (int, float))
-            and not isinstance(value, bool)
+            key: float(v) for key in (EXPECTED_DELTA_FIELD, DECLARED_TILT_FIELD)
+            if isinstance(v := stamp.get(key), (int, float)) and type(v) is not bool
         }
         if declared:
             return declared
@@ -680,21 +668,15 @@ class FrozenReferenceResult:
     """One target round graded twice: as shipped, and frozen to the baseline's
     per-position reference levels.
 
-    ``baseline``, ``shipped`` and ``frozen`` are ``{role: pooled_rms_db}``. The
-    freeze removes the one degree of freedom §8.9 found compensating a
-    prescribed cut's level loss — grading each config against its OWN
-    reference. ``target_own_refs`` / ``baseline_refs`` are the per-position
-    levels each half actually used, so a caller can audit the freeze rather
-    than trust it.
+    ``baseline``/``shipped``/``frozen`` are ``{role: pooled_rms_db}``. The freeze
+    removes the one degree of freedom §8.9 found compensating a prescribed cut's
+    level loss — grading each config against its OWN reference.
+    ``target_own_refs`` / ``baseline_refs`` are the per-position levels each half
+    actually used, so a caller can audit the freeze rather than trust it.
 
-    ``measured_delta_db`` is the loop's answer: ``frozen - baseline`` per role,
-    both halves graded under the TARGET's frame against the baseline's
-    reference levels, negative for flatter. It is ``{}`` — never a substituted
-    zero — when a baseline seat is not evaluable under that frame.
-    ``expected_delta_db`` and ``declared_tilt_db_per_octave`` are what the
-    target round's prescription pre-registered, ``None`` when it declared
-    nothing, and ``expected_minus_measured_db`` is the subtraction — all three
-    DISCLOSURE, never a verdict.
+    ``measured_delta_db`` is ``frozen - baseline`` per role under the target's
+    frame, ``{}`` when a baseline seat is not evaluable under it. It, the two
+    declared fields and ``expected_minus_measured_db`` are DISCLOSURE only.
     """
 
     baseline_round_dir: str
@@ -712,14 +694,11 @@ class FrozenReferenceResult:
 
     @property
     def expected_minus_measured_db(self) -> dict[str, float] | None:
-        """Per role, the pre-registration minus what the round measured, or
-        ``None`` when nothing was pre-registered."""
-        if self.expected_delta_db is None:
+        """Per role, or ``None`` when nothing was pre-registered."""
+        expected = self.expected_delta_db
+        if expected is None:
             return None
-        return {
-            role: self.expected_delta_db - measured
-            for role, measured in self.measured_delta_db.items()
-        }
+        return {r: expected - m for r, m in self.measured_delta_db.items()}
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -740,10 +719,8 @@ class FrozenReferenceResult:
 
 
 def frozen_reference_grade(baseline: BankedRound, target: BankedRound) -> FrozenReferenceResult:
-    """Grade ``target`` twice — shipped, and frozen to ``baseline``'s
-    per-position reference levels — and difference the frozen half against the
-    baseline's own grade, beside whatever the target's prescription
-    pre-registered.
+    """Grade ``target`` twice: shipped, and frozen to ``baseline``'s per-position
+    reference levels — then difference the frozen half against the baseline.
 
     ``target`` may be the same round as ``baseline`` (frozen == shipped by
     construction then). Raises :class:`RoundViewsError` when either round banked
@@ -769,21 +746,14 @@ def frozen_reference_grade(baseline: BankedRound, target: BankedRound) -> Frozen
     }
     shipped_pooled, shipped_positions = _grade_positions(positions, report, None)
     frozen_pooled, frozen_positions = _grade_positions(positions, report, baseline_refs)
-    # The comparand: the baseline's own curves at the TARGET's seats, graded
-    # under the TARGET's frame and the same ``baseline_refs`` the frozen half
-    # used, so the difference below is the curves and nothing else. Graded on
-    # the baseline's own frame or over its own seat list it would fold an
-    # exclusion interval or a re-measured seat into the delta.
-    seats = {position.position_id for position in positions}
+    # Target seats, target frame, same ``baseline_refs``: only curves differ.
+    comparand = tuple(
+        p for p in baseline.graded_positions if p.position_id in target_own_refs
+    )
     try:
-        baseline_pooled, _positions = _grade_positions(
-            tuple(p for p in baseline.graded_positions if p.position_id in seats),
-            report, baseline_refs,
-        )
+        baseline_pooled, _ = _grade_positions(comparand, report, baseline_refs)
     except RoundViewsError:
-        # A DISCLOSURE may not take the grade down: a baseline seat the
-        # target's frame cannot evaluate leaves the delta unreported.
-        baseline_pooled = {}
+        baseline_pooled = {}  # A disclosure may not take the grade down.
     declared = _banked_pre_registration(target)
     return FrozenReferenceResult(
         baseline_round_dir=str(baseline.round_dir),
@@ -793,8 +763,7 @@ def frozen_reference_grade(baseline: BankedRound, target: BankedRound) -> Frozen
         baseline=baseline_pooled,
         measured_delta_db={
             role: value - baseline_pooled[role]
-            for role, value in frozen_pooled.items()
-            if role in baseline_pooled
+            for role, value in frozen_pooled.items() if role in baseline_pooled
         },
         shipped_positions=shipped_positions,
         frozen_positions=frozen_positions,
