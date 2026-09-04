@@ -36,17 +36,23 @@ SHARED_RULE = tuple(
 )
 
 
+def _sources(module_name: str) -> list[Path]:
+    """This tool's own source: one module, or every module of a package."""
+
+    leaf = CLI_DIR / module_name.rsplit(".", 1)[-1]
+    return sorted(leaf.glob("*.py")) if leaf.is_dir() else [leaf.with_suffix(".py")]
+
+
 def _declared_exit_names(module_name: str) -> set[str]:
     """The ``EXIT_*`` names this module assigns at module scope.
 
     Annotated assignments count too: ``EXIT_FOO: int = 4`` is the same drift.
     """
 
-    path = CLI_DIR / f"{module_name.rsplit('.', 1)[-1]}.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     targets = [
         target
-        for node in tree.body
+        for path in _sources(module_name)
+        for node in ast.parse(path.read_text(encoding="utf-8"), filename=str(path)).body
         for target in (
             node.targets if isinstance(node, ast.Assign)
             else [node.target] if isinstance(node, ast.AnnAssign)

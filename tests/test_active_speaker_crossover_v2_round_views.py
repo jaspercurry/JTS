@@ -1328,7 +1328,7 @@ def test_cli_repeat_floor_install_publishes_at_the_on_speaker_path(tmp_path, mon
         position_curves={"cloud_verify_02": ("onax", _flat_curve(ripple_db=1.2))},
     )
     installed = tmp_path / "state" / "active_speaker_repeat_floor.json"
-    monkeypatch.setattr(cli, "_REPEAT_FLOOR_DEFAULT_PATH", installed)
+    monkeypatch.setattr(cli.repeat, "_REPEAT_FLOOR_DEFAULT_PATH", installed)
     out = tmp_path / "repeat-floor.json"
 
     assert cli.main(["repeat-floor", str(r1), str(r2), "--install", "--out", str(out)]) == 0
@@ -1351,7 +1351,7 @@ def test_cli_repeat_floor_install_exits_write_failed_on_an_unwritable_path(
     )
     blocker = tmp_path / "not-a-dir"
     blocker.write_text("")
-    monkeypatch.setattr(cli, "_REPEAT_FLOOR_DEFAULT_PATH", blocker / "floor.json")
+    monkeypatch.setattr(cli.repeat, "_REPEAT_FLOOR_DEFAULT_PATH", blocker / "floor.json")
 
     assert cli.main(["repeat-floor", str(r1), str(r2), "--install"]) == cli.EXIT_WRITE_FAILED
     assert json.loads(capsys.readouterr().out)["status"] == "unwritable"
@@ -1402,7 +1402,7 @@ def test_a_payload_the_strict_writer_rejects_is_not_a_filesystem_problem(
     def _strict(*_args, **_kwargs):
         raise ValueError("Out of range float values are not JSON compliant")
 
-    monkeypatch.setattr(cli, "write_report", _strict)
+    monkeypatch.setattr(cli._common, "write_report", _strict)
 
     rc = cli.main(["per-seat", str(round_dir)])
 
@@ -1425,7 +1425,7 @@ def test_an_entry_grade_over_a_packet_missing_its_block_reads_as_unreadable(
     round_dir = _make_round_dir(
         tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
     )
-    read = cli.load_banked_round
+    read = cli._common.load_banked_round
 
     def _without_the_block(path):
         banked = read(path)
@@ -1434,7 +1434,7 @@ def test_an_entry_grade_over_a_packet_missing_its_block_reads_as_unreadable(
             packet={k: v for k, v in banked.packet.items() if k != "entry_baseline"},
         )
 
-    monkeypatch.setattr(cli, "load_banked_round", _without_the_block)
+    monkeypatch.setattr(cli._common, "load_banked_round", _without_the_block)
 
     rc = cli.main(["entry", str(round_dir)])
 
@@ -2749,3 +2749,61 @@ def test_cli_cloud_binding_writes_the_view_into_the_round_dir(tmp_path, capsys):
     assert payload["refit_vs_banked_db"] < payload["tolerance_db"]
     woofer = next(r for r in payload["roles"] if r["role"] == "woofer")
     assert any(b["cloud_excluded"] and b["delta_db"] > 1.0 for b in woofer["bands"])
+
+
+def test_every_import_in_the_round_views_package_resolves():
+    """Each view module's imports, module-scope AND deferred, name something
+    importable — the pin a mis-levelled relative import trips.
+
+    The subcommand tests below stub what a view calls, so a wrong ``.``-level
+    inside one would surface only on the operator's real invocation.
+    """
+    import ast
+    import importlib
+    import importlib.util
+
+    from jasper.cli import round_views as cli
+
+    def resolves(name: str) -> bool:
+        """A module, or a name a real module exposes.
+
+        ``find_spec`` answers ``None`` for a MISSING child of a real package
+        and raises for a child of a non-package, so neither result alone tells
+        a bad module path from a plain ``from module import attribute``; the
+        attribute is what the fallback checks, on the parent it just resolved.
+        """
+        try:
+            if importlib.util.find_spec(name) is not None:
+                return True
+        except (AttributeError, ImportError, ValueError):
+            pass
+        parent, _, leaf = name.rpartition(".")
+        if not parent:
+            return False
+        try:
+            return hasattr(importlib.import_module(parent), leaf)
+        except ImportError:
+            return False
+
+    package = cli.__name__
+    unresolved = []
+    for path in sorted(Path(cli.__file__).parent.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                base = (
+                    importlib.util.resolve_name(
+                        "." * node.level + (node.module or ""), package
+                    )
+                    if node.level
+                    else node.module
+                )
+                names = [base, *(f"{base}.{alias.name}" for alias in node.names)]
+            else:
+                continue
+            unresolved += [
+                f"{path.name}: {name}" for name in names if not resolves(name)
+            ]
+
+    assert unresolved == []
