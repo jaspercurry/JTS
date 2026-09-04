@@ -8,7 +8,7 @@ Every tool in the runbook's tool menu (``scripts/generate-tuning-tool-menu.py``'
 roster) takes ``EXIT_*`` from that module rather than numbering its own failures.
 A tool that re-declares a code drifts silently: the same number came to mean
 "refused" in one tool and "unreadable" in the next, which is what this pins shut.
-Two doors are deliberately outside and named here, once.
+Who is exempt is ``_refusal.OWN_EXIT_VOCABULARY``'s to say, not this file's.
 """
 from __future__ import annotations
 
@@ -29,26 +29,20 @@ assert _spec is not None and _spec.loader is not None
 _menu = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_menu)
 
-#: By module stem: the exit names that module may own, and why. Everything
-#: else in ``jasper/cli`` imports them (``_refusal.py``'s docstring agrees).
-OWN_VOCABULARY = {
-    # A human-only sudo `set`/`show` config door: `show` before anything was
-    # declared is not an unreadable input.
-    "declare_geometry": {"EXIT_NOT_FOUND"},
-}
-
-#: The one tool whose codes are a family of its own: a long-running mover
-#: service whose stall codes and signal exits live in
-#: ``jasper/active_speaker/arm_walk.py``'s ``EXIT_NAMES``.
-OWN_FAMILY = ("jasper.cli.arm_walk",)
+SHARED_RULE = tuple(
+    name
+    for name in _menu.TUNING_TOOL_MODULES
+    if name not in _refusal.OWN_EXIT_VOCABULARY
+)
 
 
-def _declared_exit_names(path: Path) -> set[str]:
+def _declared_exit_names(module_name: str) -> set[str]:
     """The ``EXIT_*`` names this module assigns at module scope.
 
     Annotated assignments count too: ``EXIT_FOO: int = 4`` is the same drift.
     """
 
+    path = CLI_DIR / f"{module_name.rsplit('.', 1)[-1]}.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     targets = [
         target
@@ -66,16 +60,12 @@ def _declared_exit_names(path: Path) -> set[str]:
     }
 
 
-@pytest.mark.parametrize(
-    "path",
-    [p for p in sorted(CLI_DIR.glob("*.py")) if p.name != "_refusal.py"],
-    ids=lambda p: p.stem,
-)
-def test_no_cli_numbers_its_own_exits(path: Path) -> None:
-    assert _declared_exit_names(path) <= OWN_VOCABULARY.get(path.stem, set())
+@pytest.mark.parametrize("module_name", SHARED_RULE)
+def test_no_tuning_cli_numbers_its_own_exits(module_name: str) -> None:
+    assert _declared_exit_names(module_name) == set()
 
 
-@pytest.mark.parametrize("module_name", _menu.TUNING_TOOL_MODULES)
+@pytest.mark.parametrize("module_name", SHARED_RULE)
 def test_every_tuning_cli_exit_name_is_the_shared_constant(module_name: str) -> None:
     """The names a tool exposes are ``_refusal``'s, with its values.
 
@@ -83,14 +73,18 @@ def test_every_tuning_cli_exit_name_is_the_shared_constant(module_name: str) -> 
     equality check: a module cannot satisfy both by re-typing the numbers.
     """
 
-    if module_name in OWN_FAMILY:
-        pytest.skip("its own stall-code family, named in _refusal.py's docstring")
     module = importlib.import_module(module_name)
-    own = OWN_VOCABULARY.get(module_name.rsplit(".", 1)[-1], set())
-    names = {name for name in vars(module) if name.startswith("EXIT_")} - own
+    names = {name for name in vars(module) if name.startswith("EXIT_")}
     assert names, f"{module_name} names no exit code"
     for name in names:
         assert getattr(module, name) is getattr(_refusal, name)
+
+
+@pytest.mark.parametrize("module_name", sorted(_refusal.OWN_EXIT_VOCABULARY))
+def test_the_exempt_modules_are_real_and_in_the_menu(module_name: str) -> None:
+    """An exemption for a tool that left the menu is an exemption to delete."""
+
+    assert module_name in _menu.TUNING_TOOL_MODULES
 
 
 @pytest.mark.parametrize(("code", "status"), sorted(_refusal.STATUS_BY_CODE.items()))

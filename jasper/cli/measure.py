@@ -33,7 +33,6 @@ from jasper.cli._refusal import (
     EXIT_OK,
     EXIT_REFUSED,
     EXIT_UNREADABLE,
-    EXIT_WRITE_FAILED,
     STATUS_BY_CODE,
 )
 from jasper.log_event import log_event
@@ -54,9 +53,6 @@ REFUSE_SPEC_INVALID = "measure_spec_invalid"
 REFUSE_BOX_NOT_READY = "measure_box_not_ready"
 #: No measurement microphone answered, so nothing would record the stimulus.
 REFUSE_NO_MIC = "measure_no_wired_mic"
-#: The evidence bundle would not open, so no take could be filed. Nothing is
-#: wrong with the request, which is why this is not a refusal.
-REFUSE_TAKE_UNFILED = "measure_take_unfiled"
 #: ``--level-matched`` on a box whose banked evidence names no trims. Refused
 #: at open, where an operator can still act on it.
 REFUSE_NO_LEVEL_EVIDENCE = "measure_no_level_match_evidence"
@@ -654,8 +650,6 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
     from jasper.active_speaker.bundles import open_bundle
     from jasper.active_speaker.commissioning_evidence_store import (
         CommissioningEvidenceStore,
-        CommissioningEvidenceStoreError,
-        CommissioningEvidenceStoreErrorCode,
     )
     from jasper.active_speaker.crossover_v2.composition import bind_engine_seams
     from jasper.active_speaker.crossover_v2.door import measurement_door
@@ -709,25 +703,17 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
             config_dir=config_dir,
             gate_owner=DOOR_GATE_OWNER,
         ) as door:
-            try:
-                info = open_bundle(box.topology, calibration_id="")
-                if not isinstance(info, Mapping) or not info.get("session_id"):
-                    raise BoxNotMeasurable(
-                        REFUSE_BOX_NOT_READY,
-                        "could not open a commissioning evidence bundle for "
-                        "this session",
-                    )
-                store = CommissioningEvidenceStore.open(
-                    Path(str(info["bundle_dir"])),
-                    expected_session_id=str(info["session_id"]),
+            info = open_bundle(box.topology, calibration_id="")
+            if not isinstance(info, Mapping) or not info.get("session_id"):
+                raise BoxNotMeasurable(
+                    REFUSE_BOX_NOT_READY,
+                    "could not open a commissioning evidence bundle for this "
+                    "session",
                 )
-            except OSError as exc:
-                # Typed as the store's own failure, which is what it is: the
-                # evidence directory would not open. Its siblings raised
-                # inside the session already carry this type.
-                raise CommissioningEvidenceStoreError(
-                    CommissioningEvidenceStoreErrorCode.PERSIST_FAILED, str(exc)
-                ) from exc
+            store = CommissioningEvidenceStore.open(
+                Path(str(info["bundle_dir"])),
+                expected_session_id=str(info["session_id"]),
+            )
             capture = WiredStimulusCapture(
                 device=device, bundle_dir=Path(store.bundle_dir),
             )
@@ -987,9 +973,6 @@ def _restore_failed(exc: MeasureRestoreFailed) -> int:
 
 
 def _cmd_measure(args: argparse.Namespace) -> int:
-    from jasper.active_speaker.commissioning_evidence_store import (
-        CommissioningEvidenceStoreError,
-    )
     from jasper.active_speaker.crossover_v2.door import MeasurementDoorRefused
 
     try:
@@ -998,21 +981,8 @@ def _cmd_measure(args: argparse.Namespace) -> int:
         return _refused(
             exc.reason, exc.detail, json_output=args.json, code=EXIT_UNREADABLE
         )
-    # Its own stage: an ``OSError`` here is a declaration that would not read,
-    # which is a different place to send the operator than the run below.
     try:
-        box = read_box_declaration()
-    except (BoxNotMeasurable, MeasurementDoorRefused) as exc:
-        return _refused(
-            exc.reason, exc.detail, json_output=args.json, code=EXIT_REFUSED
-        )
-    except OSError as exc:
-        return _refused(
-            REFUSE_BOX_NOT_READY, str(exc),
-            json_output=args.json, code=EXIT_UNREADABLE,
-        )
-    try:
-        payload = asyncio.run(_measure(specs, box))
+        payload = asyncio.run(_measure(specs, read_box_declaration()))
     except MeasureInterrupted as exc:
         return _interrupted(exc)
     except MeasureRestoreFailed as exc:
@@ -1020,15 +990,6 @@ def _cmd_measure(args: argparse.Namespace) -> int:
     except (BoxNotMeasurable, MeasurementDoorRefused) as exc:
         return _refused(
             exc.reason, exc.detail, json_output=args.json, code=EXIT_REFUSED
-        )
-    except CommissioningEvidenceStoreError as exc:
-        # The evidence bundle would not open: nothing is wrong with the
-        # request, so this sends the operator to the filesystem rather than
-        # to the flags. Its in-session siblings abort as an interrupt above,
-        # where there are banked ids to report.
-        return _refused(
-            REFUSE_TAKE_UNFILED, str(exc),
-            json_output=args.json, code=EXIT_WRITE_FAILED,
         )
     print(json.dumps(payload, indent=2, sort_keys=True, default=str))
     return EXIT_OK
@@ -1076,10 +1037,7 @@ def build_parser() -> argparse.ArgumentParser:
             "     with --json\n"
             "  2  EXIT_UNREADABLE -- the request could not even be built: a\n"
             "     second --position, a variant axis with no --candidate-id,\n"
-            "     a malformed --specs file\n"
-            "  3  EXIT_WRITE_FAILED -- the evidence bundle would not open,\n"
-            "     so no take could be filed; the bundle directory is the\n"
-            "     place to look"
+            "     a malformed --specs file"
         ),
     )
     parser.add_argument("--kind", choices=MEASURE_KINDS, required=True)

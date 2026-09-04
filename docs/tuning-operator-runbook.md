@@ -622,10 +622,12 @@ was mistaken for.
 ## Exit codes
 
 **One vocabulary, four numbers, one owner** — `jasper/cli/_refusal.py`. Every
-tool in the menu above exits `0` when it did what it says, `1` when the
-instrument REFUSED a round it could read, `2` when the input was UNREADABLE,
-and `3` when the work was done and the result could not be FILED; the failing
-number names the stage that failed, which is what tells you where to go.
+tool in the menu above except `jasper-arm-walk` (see below;
+`_refusal.OWN_EXIT_VOCABULARY` is the list) exits `0` when it did what it
+says, `1` when the instrument REFUSED a round it could read, `2` when the
+input was UNREADABLE, and `3` when the work was done and the result could not
+be FILED; the failing number names the stage that failed, which is what tells
+you where to go.
 
 **The number is the contract; the record beside it is per tool.** The
 round-grading family — `jasper-round-views`, `jasper-gate-sweep`,

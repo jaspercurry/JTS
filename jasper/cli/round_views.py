@@ -104,7 +104,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Callable, NamedTuple, Sequence, TypeVar
+from typing import Any, NamedTuple, Sequence
 
 from jasper.active_speaker.crossover_v2.round_views import (
     AGREEMENT_TESTIFY_MIN,
@@ -144,12 +144,12 @@ from jasper.cli._refusal import (
     EXIT_REFUSED,
     EXIT_UNREADABLE,
     EXIT_WRITE_FAILED,
+    _stage,
+    _StageFailed,
     failed,
 )
 from jasper.cli._report import write_report
 from jasper.cli.gate_sweep import add_rungs_ms_argument
-
-_T = TypeVar("_T")
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
@@ -235,29 +235,6 @@ _REASON_BY_CODE = {
     EXIT_UNREADABLE: REASON_UNREADABLE,
     EXIT_WRITE_FAILED: REASON_UNWRITABLE,
 }
-
-
-class _StageFailed(Exception):
-    """A failure a stage claimed, carrying that stage's exit code."""
-
-    def __init__(self, code: int, cause: Exception) -> None:
-        super().__init__(str(cause))
-        self.code = code
-
-
-def _stage(
-    code: int,
-    errors: tuple[type[Exception], ...],
-    fn: Callable[..., _T],
-    *args: Any,
-    **kwargs: Any,
-) -> _T:
-    """Run one stage; what it raises from ``errors`` gets that stage's code."""
-
-    try:
-        return fn(*args, **kwargs)
-    except errors as exc:
-        raise _StageFailed(code, exc) from exc
 
 
 def _load_round(round_dir: str | Path) -> BankedRound:

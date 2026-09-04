@@ -38,8 +38,16 @@ from jasper.active_speaker.crossover_v2.gate_sweep import (
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 
 from ._logging import configure_verbose_logging
-from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, failed
-from ._report import file_report
+from ._refusal import (
+    EXIT_OK,
+    EXIT_REFUSED,
+    EXIT_UNREADABLE,
+    EXIT_WRITE_FAILED,
+    _stage,
+    _StageFailed,
+    failed,
+)
+from ._report import write_report
 
 #: Named like every other refusal here: the input that was missing.
 REFUSE_UNUSABLE_REQUEST = "gate_sweep_unusable_request"
@@ -84,12 +92,10 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
             EXIT_REFUSED, exc.reason,
             json.dumps(exc.detail, sort_keys=True, default=str),
         )
-    out = file_report(
-        report, args.out, round_dir / DEFAULT_OUT_NAME,
-        reason=REFUSE_UNWRITABLE_OUT, make_parents=True,
+    out = _stage(
+        EXIT_WRITE_FAILED, (OSError,), write_report,
+        report, args.out, round_dir / DEFAULT_OUT_NAME, make_parents=True,
     )
-    if isinstance(out, int):
-        return out
     print(json.dumps({"status": "swept", "out": str(out or "-")}, indent=2, sort_keys=True))
     for band in report["bands"]:
         label = f"  {band['band_hz'][0]:g}-{band['band_hz'][1]:g} Hz"
@@ -205,6 +211,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure_verbose_logging(verbose=args.verbose)
     try:
         return int(args.func(args))
+    except _StageFailed as staged:
+        return failed(staged.code, REFUSE_UNWRITABLE_OUT, str(staged))
     except ValueError as exc:
         return failed(EXIT_UNREADABLE, REFUSE_UNUSABLE_REQUEST, str(exc))
     except OSError as exc:
