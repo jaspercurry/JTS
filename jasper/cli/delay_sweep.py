@@ -42,7 +42,6 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.crossover_v2.contracts import (
     DESIGN_AXIS_DEG,
     DRIVER_ROLES,
@@ -56,7 +55,10 @@ from jasper.active_speaker.crossover_v2.delay_landscape import (
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import round_artifact_dir
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL, PHASE_MEASURE
-from jasper.active_speaker.crossover_v2.position_cycle import read_pose_curve_pair
+from jasper.active_speaker.crossover_v2.position_cycle import (
+    read_pose_curve_pair,
+    take_artifact_path,
+)
 from jasper.active_speaker.delay_sweep import sweep_spec
 from jasper.audio_measurement.null_walk import NullWalkError
 
@@ -108,9 +110,7 @@ def _take_phase_composition(bundle_dir: Path, take_path: str) -> str | None:
     """
 
     try:
-        raw = json.loads(
-            (bundle_dir / EVIDENCE_ROOT / "artifacts" / take_path).read_text()
-        )
+        raw = json.loads(take_artifact_path(bundle_dir, take_path).read_text())
     except (OSError, ValueError):
         return None
     stated = raw.get("phase_composition") if isinstance(raw, Mapping) else None
