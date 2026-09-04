@@ -2916,9 +2916,7 @@ def test_the_convergence_walk_clears_the_validator_the_reconciler_actually_runs(
     # different speaker.
     import jasper.ring_assets as ring_assets_module
     from jasper.camilla_config_contract import parse_camilla_devices_config
-    from jasper.fanin import coupling_reconcile as cr
 
-    monkeypatch.setattr(cr, "load_topology_for_wire", lambda: topology)
     monkeypatch.setattr(
         "jasper.fanin.ring_health.load_topology_for_wire", lambda: topology
     )
@@ -2995,10 +2993,8 @@ def _first_arm_on_a_stereo_ring_box(tmp_path, capsys, monkeypatch, *, graph_yaml
     ring's width is the one per-topology axis of that shape, so a box with no
     saved topology would be answering about a different speaker.
     """
-    from jasper.fanin import coupling_reconcile as cr
 
     topology = _active_topology("mono", "active_2_way")
-    monkeypatch.setattr(cr, "load_topology_for_wire", lambda: topology)
     monkeypatch.setattr(
         "jasper.fanin.ring_health.load_topology_for_wire", lambda: topology
     )

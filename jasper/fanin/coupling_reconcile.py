@@ -88,15 +88,11 @@ from jasper.fanin.ring_health import (
     ring_wire_caps_ready,
 )
 
-# Nothing below reads these; they are re-exported because callers BIND them on
-# this module and would not see a ring_health-side patch: jasper/fanin/converge
-# and jasper/fanin_coupling resolve them here through lazy imports, and the ring
-# tests monkeypatch them here. Moving one is a behaviour change, not a rename.
+# Nothing below reads these two; jasper/fanin/converge and jasper/fanin_coupling
+# BIND them on this module, so moving one is a behaviour change, not a rename.
 from jasper.fanin.ring_health import (
     graph_at_active_ring_endpoint as graph_at_active_ring_endpoint,
     JASPER_ENV_PATH as JASPER_ENV_PATH,
-    load_topology_for_wire as load_topology_for_wire,
-    read_persisted_coupling as read_persisted_coupling,
 )
 
 logger = logging.getLogger(__name__)
