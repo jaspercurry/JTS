@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Operator door onto the inter-driver reverse-null delay: the PROPOSE half.
+"""Operator door onto the inter-driver reverse-null delay: compute, then grade.
 
-One verb, offline:
+Two verbs, both offline:
 
 ``propose``
     Read a banked round's per-driver curves, complex-sum them across the whole
@@ -12,11 +12,16 @@ One verb, offline:
     playing. **No audio plays and no device is opened** — an existing MEASURE
     bank answers this today.
 
+``confirm``
+    Re-compute that same landscape and grade it against the rows ``jasper-null``
+    banked under ``<bundle>/null_runs/``, so the model's optimum is answered by
+    the room rather than believed.
+
 The method of record is compute-then-confirm
-(:mod:`jasper.active_speaker.crossover_v2.delay_landscape`). This is its first
-step; the second is staging the printed coordinates with
-``jasper-angle-capture stage --delayed-role R --delay-us N``, which
-``propose`` prints ready to run.
+(:mod:`jasper.active_speaker.crossover_v2.delay_landscape`). Between the two
+verbs sits the acoustic step: stage the printed coordinates with
+``jasper-angle-capture stage --delayed-role R --delay-us N``, which ``propose``
+prints ready to run, and play them with ``jasper-null``.
 
 **A refusal is an output, not an error.** Banked curves whose shared band does
 not bracket Fc cannot support a null there, and the sentence saying so is
@@ -32,9 +37,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from jasper.active_speaker.crossover_v2.contracts import (
     DESIGN_AXIS_DEG,
@@ -45,6 +51,7 @@ from jasper.active_speaker.crossover_v2.delay_landscape import (
     DelayLandscape,
     DelayLandscapeError,
     compute_landscape,
+    confirmation_verdict,
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import round_artifact_dir
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL, PHASE_MEASURE
@@ -53,7 +60,14 @@ from jasper.active_speaker.delay_sweep import sweep_spec
 from jasper.audio_measurement.null_walk import NullWalkError
 
 from ._logging import configure_verbose_logging
-from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, failed
+from ._refusal import (
+    EXIT_OK,
+    EXIT_REFUSED,
+    EXIT_UNREADABLE,
+    EXIT_WRITE_FAILED,
+    failed,
+)
+from ._report import write_report
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
@@ -62,6 +76,14 @@ AUTHORITY_TIER = "advisory (plays nothing)"
 REFUSE_NO_ROUND = "delay_propose_no_round"
 REFUSE_NO_CURVES = "delay_propose_no_banked_curves"
 REFUSE_LANDSCAPE = "delay_propose_landscape_unsupported"
+REFUSE_NO_ROWS = "delay_confirm_no_measured_rows"
+REFUSE_UNWRITABLE_OUT = "delay_sweep_unwritable_out"
+
+LANDSCAPE_OUT_NAME = "delay_landscape.json"
+CONFIRMATION_OUT_NAME = "delay_confirmation.json"
+#: Where ``jasper-null`` banks one JSON row per played coordinate
+#: (jasper/cli/null_door.py).
+NULL_RUNS_DIR = "null_runs"
 
 
 def _spec_from_args(args: argparse.Namespace) -> Any:
@@ -74,7 +96,16 @@ def _spec_from_args(args: argparse.Namespace) -> Any:
     )
 
 
-def _cmd_propose(args: argparse.Namespace) -> int:
+def _landscape_from_bank(
+    args: argparse.Namespace,
+) -> tuple[DelayLandscape, str] | int:
+    """The banked landscape both verbs read, or the exit code that refused it.
+
+    ``confirm`` recomputes rather than reading ``propose``'s artifact: a
+    verdict must grade the coordinates against the curves they were staged
+    from, not against whatever file happens to sit beside the round.
+    """
+
     bundle_dir = Path(args.bundle_dir)
     spec = _spec_from_args(args)
     lower_role = spec.negative_delay_target
@@ -112,18 +143,156 @@ def _cmd_propose(args: argparse.Namespace) -> int:
         # Verbatim: a bank that cannot carry a null at Fc is a finding about
         # the bank, and the module that decided it owns the sentence.
         return failed(EXIT_REFUSED, REFUSE_LANDSCAPE, str(exc))
+    return landscape, take_path
 
-    print(json.dumps({
+
+def _bank(payload: Any, out: str | None, default_path: Path) -> Path | int:
+    """File the artifact beside the round, or the exit code that could not."""
+
+    target = Path(out) if out else default_path
+    try:
+        write_report(payload, None, target, make_parents=True)
+    except OSError as exc:
+        # The bank read and the landscape computed; only the filing failed.
+        return failed(EXIT_WRITE_FAILED, REFUSE_UNWRITABLE_OUT, str(exc))
+    return target
+
+
+def _cmd_propose(args: argparse.Namespace) -> int:
+    computed = _landscape_from_bank(args)
+    if isinstance(computed, int):
+        return computed
+    landscape, take_path = computed
+
+    payload = {
         "status": "proposed",
         "take_path": take_path,
         "landscape": landscape.to_dict(),
+        # The landscape's own spec, never a second build from the same flags:
+        # the staged coordinate must come from the grid that proposed it.
         "confirm_with": [
-            _stage_command(spec.dsp_candidate(coordinate), args)
+            _stage_command(landscape.spec.dsp_candidate(coordinate), args)
             for coordinate in landscape.confirmation_coordinates_us
         ],
-    }, indent=2, sort_keys=True))
+    }
+    out = _bank(payload, args.out, Path(args.bundle_dir) / LANDSCAPE_OUT_NAME)
+    if isinstance(out, int):
+        return out
+    print(json.dumps({**payload, "out": str(out)}, indent=2, sort_keys=True))
     print(_optimum_line(landscape), file=sys.stderr)
     return EXIT_OK
+
+
+def _cmd_confirm(args: argparse.Namespace) -> int:
+    computed = _landscape_from_bank(args)
+    if isinstance(computed, int):
+        return computed
+    landscape, take_path = computed
+
+    rows_dir = Path(args.bundle_dir) / NULL_RUNS_DIR
+    graded = _graded_rows(rows_dir, fc_hz=args.fc_hz)
+    if not graded:
+        return failed(
+            EXIT_REFUSED,
+            REFUSE_NO_ROWS,
+            f"{rows_dir}: no measured inverted row at fc={args.fc_hz:g} Hz; "
+            "play the propose coordinates with jasper-null --bundle-dir first",
+        )
+
+    depths = _depth_by_coordinate(graded)
+    verdict = confirmation_verdict(landscape, depths)
+    payload = {
+        "status": "confirmed",
+        "verdict": verdict,
+        "landscape": landscape.to_dict(),
+        "take_path": take_path,
+        "phase": args.phase,
+        "position_deg": args.position_deg,
+        "null_runs_dir": str(rows_dir),
+        "graded_rows": graded,
+    }
+    out = _bank(payload, args.out, Path(args.bundle_dir) / CONFIRMATION_OUT_NAME)
+    if isinstance(out, int):
+        return out
+    print(json.dumps({
+        "status": "confirmed",
+        "verdict": verdict["verdict"],
+        "computed_optimum_us": verdict["computed_optimum_us"],
+        "measured_null_depth_db": verdict["measured_null_depth_db"],
+        "measured_minus_predicted_db": verdict["measured_minus_predicted_db"],
+        "prescribable_delay_us": verdict["prescribable_delay_us"],
+        "graded_rows": len(graded),
+        "out": str(out),
+    }, indent=2, sort_keys=True))
+    print(_verdict_line(verdict, depths), file=sys.stderr)
+    return EXIT_OK
+
+
+def _graded_rows(rows_dir: Path, *, fc_hz: float) -> list[dict[str, Any]]:
+    """The banked rows this landscape can be graded against, in path order.
+
+    Three filters, each because the remainder is not the same quantity: a
+    refused row has no depth, an in-phase row read the summed corner rather
+    than the reverse null, and a row played at another corner was read at
+    other shoulders. A row that will not parse is skipped rather than fatal —
+    an interrupted run leaves a half-written last row, and the coordinates
+    before it are still evidence.
+    """
+
+    graded: list[dict[str, Any]] = []
+    for path in sorted(rows_dir.glob("*.json")):
+        try:
+            row = json.loads(path.read_text(encoding="utf-8"))
+            if row.get("status") != "measured" or row.get("polarity") != "inverted":
+                continue
+            if not math.isclose(float(row["fc_hz"]), fc_hz, rel_tol=1e-6):
+                continue
+            entry = {
+                "row": path.name,
+                "delay_us": float(row["delay_us"]),
+                "depth_db": float(row["depth_db"]),
+                "delayed_role": row.get("delayed_role"),
+                "inverted_role": row.get("inverted_role"),
+                "position_deg": row.get("position_deg"),
+            }
+        except (AttributeError, KeyError, TypeError, ValueError):
+            continue
+        graded.append(entry)
+    return graded
+
+
+def _depth_by_coordinate(graded: Sequence[Mapping[str, Any]]) -> dict[float, float]:
+    """One depth per coordinate: the deepest of a repeat.
+
+    Near the optimum the corner level is second-order flat in delay, so the
+    shallow member of a repeat pair is bounded by the run's own sigma rather
+    than by the coordinate. Every row stays visible in ``graded_rows``.
+    """
+
+    depths: dict[float, float] = {}
+    for row in graded:
+        coordinate = float(row["delay_us"])
+        depth = float(row["depth_db"])
+        depths[coordinate] = max(depths.get(coordinate, depth), depth)
+    return depths
+
+
+def _verdict_line(verdict: Mapping[str, Any], depths: Mapping[float, float]) -> str:
+    """The grade, the depth at the optimum and the deepest one, in one line."""
+
+    at_optimum = verdict["measured_null_depth_db"]
+    measured = (
+        "not measured there" if at_optimum is None else
+        f"{at_optimum:.1f} dB "
+        f"(delta {verdict['measured_minus_predicted_db']:+.1f} dB)"
+    )
+    deepest_us, deepest_db = max(depths.items(), key=lambda item: item[1])
+    return (
+        f"{verdict['verdict']}: optimum {verdict['computed_optimum_us']:g} us "
+        f"predicted {verdict['predicted_null_depth_db']:.1f} dB, measured "
+        f"{measured}; deepest {deepest_db:.1f} dB at {deepest_us:g} us over "
+        f"{len(depths)} coordinates"
+    )
 
 
 def _optimum_line(landscape: DelayLandscape) -> str:
@@ -186,47 +355,9 @@ def _stage_command(candidate: Any, args: argparse.Namespace) -> str:
     )
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="jasper-delay-sweep",
-        description=(
-            "Propose an inter-driver delay from banked curves. Computes only; "
-            "plays nothing."
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "PURPOSE\n"
-            "  Complex-sum a banked round's per-driver curves across the\n"
-            "  delay grid and print the computed optimum plus the\n"
-            "  jasper-angle-capture stage lines that confirm it.\n"
-            "\n"
-            "WHEN NOT TO USE\n"
-            "  - to actually confirm a delay acoustically -- pipe this\n"
-            "    command's \"confirm_with\" lines into jasper-angle-capture\n"
-            "    stage, then run jasper-null; propose only says where the\n"
-            "    null SHOULD be, it plays nothing itself\n"
-            "  - on a round with no per-driver curves at the requested\n"
-            "    --phase and --position-deg -- refused by name\n"
-            "    (REFUSE_NO_CURVES) rather than guessed\n"
-            "\n"
-            "EXAMPLE\n"
-            "  jasper-delay-sweep propose captures/.../session-1/round-3 \\\n"
-            "      --fc-hz 1800\n"
-            "\n"
-            "EXIT CODES\n"
-            "  0  EXIT_OK -- proposed; the optimum and confirm_with lines\n"
-            "     are printed\n"
-            "  1  EXIT_REFUSED -- no round at bundle_dir, no matching\n"
-            "     curves, or the landscape could not carry a null at Fc;\n"
-            "     \"refused (<reason>): <detail>\" on stderr, and as the\n"
-            "     JSON \"status\": \"refused\"\n"
-            "  2  EXIT_UNREADABLE -- the bundle could not be read (OSError)"
-        ),
-    )
-    parser.add_argument("--verbose", action="store_true")
-    sub = parser.add_subparsers(dest="command", required=True)
+def _add_landscape_arguments(child: argparse.ArgumentParser, *, out_name: str) -> None:
+    """The bundle, the corner and the pose — the landscape both verbs compute."""
 
-    child = sub.add_parser("propose")
     child.add_argument(
         "bundle_dir",
         help="a commissioning bundle directory (the one holding info.json "
@@ -259,7 +390,63 @@ def build_parser() -> argparse.ArgumentParser:
         help="the bearing whose take is read; the reverse null is a "
              "design-axis act",
     )
+    child.add_argument(
+        "--out", default=None,
+        help=f"where to bank the artifact (default: <bundle_dir>/{out_name})",
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="jasper-delay-sweep",
+        description=(
+            "Propose an inter-driver delay from banked curves, then grade the "
+            "acoustic confirmation against it. Computes only; plays nothing."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "PURPOSE\n"
+            "  propose: complex-sum a banked round's per-driver curves across\n"
+            "  the delay grid and print the computed optimum plus the\n"
+            "  jasper-angle-capture stage lines that confirm it.\n"
+            "  confirm: grade the rows jasper-null banked under\n"
+            "  <bundle_dir>/null_runs/ against that same landscape.\n"
+            "\n"
+            "WHEN NOT TO USE\n"
+            "  - to actually confirm a delay acoustically -- pipe propose's\n"
+            "    \"confirm_with\" lines into jasper-angle-capture stage, then\n"
+            "    run jasper-null; neither verb here plays anything\n"
+            "  - on a round with no per-driver curves at the requested\n"
+            "    --phase and --position-deg -- refused by name\n"
+            "    (REFUSE_NO_CURVES) rather than guessed\n"
+            "\n"
+            "EXAMPLE\n"
+            "  jasper-delay-sweep propose captures/.../session-1/round-3 \\\n"
+            "      --fc-hz 1800\n"
+            "  jasper-delay-sweep confirm captures/.../session-1/round-3 \\\n"
+            "      --fc-hz 1800\n"
+            "\n"
+            "EXIT CODES\n"
+            "  0  EXIT_OK -- proposed or graded; the artifact was written\n"
+            "  1  EXIT_REFUSED -- no round at bundle_dir, no matching\n"
+            "     curves, the landscape could not carry a null at Fc, or\n"
+            "     (confirm) no measured null_runs row at that corner;\n"
+            "     \"refused (<reason>): <detail>\" on stderr, and as the\n"
+            "     JSON \"status\": \"refused\"\n"
+            "  2  EXIT_UNREADABLE -- the bundle could not be read (OSError)\n"
+            "  3  EXIT_WRITE_FAILED -- computed, but --out could not be written"
+        ),
+    )
+    parser.add_argument("--verbose", action="store_true")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    child = sub.add_parser("propose")
+    _add_landscape_arguments(child, out_name=LANDSCAPE_OUT_NAME)
     child.set_defaults(func=_cmd_propose)
+
+    child = sub.add_parser("confirm")
+    _add_landscape_arguments(child, out_name=CONFIRMATION_OUT_NAME)
+    child.set_defaults(func=_cmd_confirm)
     return parser
 
 
