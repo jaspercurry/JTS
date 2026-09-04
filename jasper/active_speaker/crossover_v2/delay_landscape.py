@@ -20,7 +20,7 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, NamedTuple, Sequence
 
 from jasper.active_speaker.delay_sweep import (
     ROBUST_NULL_DEPTH_DB,
@@ -36,10 +36,16 @@ from jasper.audio_measurement.analysis import (
 )
 from jasper.audio_measurement.null_walk import NullWalkError, NullWalkSpec
 
+from .contracts import POLARITY_INVERTED
+from .evidence_packet import round_artifact_dir
+from .position_cycle import read_pose_curve_pair, take_phase_composition
+
 LANDSCAPE_KIND = "jts_inter_driver_delay_landscape"
 LANDSCAPE_SCHEMA_VERSION = 1
 
 REFUSAL_UNSUPPORTED = "delay_landscape_unsupported"
+REFUSAL_NO_ROUND = "delay_landscape_no_round"
+REFUSAL_NO_BANKED_CURVES = "delay_landscape_no_banked_curves"
 REFUSAL_FC_OUTSIDE_OVERLAP = "shoulder_overlap_excludes_fc"
 REFUSAL_SHOULDER_RUN_UP = "shoulder_run_up_too_short"
 
@@ -429,6 +435,101 @@ def compute_landscape(
     )
 
 
+class BankedLandscape(NamedTuple):
+    """One bundle's landscape, and the take it was read off."""
+
+    landscape: DelayLandscape
+    take_path: str
+    phase_composition: str | None
+
+
+def landscape_from_bank(
+    bundle_dir: Path,
+    *,
+    spec: NullWalkSpec,
+    inverted_role: str,
+    phase: str,
+    position_deg: int,
+) -> BankedLandscape:
+    """The banked landscape both operator verbs read.
+
+    Every way this cannot answer raises :class:`DelayLandscapeError` under its
+    own ``refusal_reason``, so the slugs a caller publishes have one owner
+    here rather than a second set beside the door. The CONFIRM half recomputes
+    through this rather than reading the proposal's artifact: a verdict must
+    grade the coordinates against the curves they were staged from, not
+    against whatever file happens to sit beside the round.
+    """
+
+    lower_role = spec.negative_delay_target
+    upper_role = spec.positive_delay_target
+
+    round_dir, why = round_artifact_dir(bundle_dir)
+    if round_dir is None:
+        raise DelayLandscapeError(
+            f"{bundle_dir}: {why}; bundle_dir must hold info.json beside "
+            "evidence/v1/artifacts/crossover_v2/<capture>/",
+            reason=REFUSAL_NO_ROUND,
+        )
+
+    found = read_pose_curve_pair(
+        bundle_dir, phase=phase, position_deg=position_deg,
+        roles=(lower_role, upper_role),
+    )
+    if found is None:
+        raise DelayLandscapeError(
+            f"{bundle_dir}: no {phase} take at {position_deg} deg carries "
+            f"curves for both {lower_role!r} and {upper_role!r}",
+            reason=REFUSAL_NO_BANKED_CURVES,
+        )
+    lower_curve, upper_curve, take_path = found
+
+    landscape = compute_landscape(
+        lower_curve, upper_curve, spec=spec, inverted_role=inverted_role,
+    )
+    return BankedLandscape(
+        landscape, take_path, take_phase_composition(bundle_dir, take_path)
+    )
+
+
+def confirmation_stage_commands(
+    landscape: DelayLandscape, *, position_deg: int, inverted_role: str
+) -> list[str]:
+    """The ``jasper-angle-capture stage`` lines that play this landscape.
+
+    One per confirmation coordinate, built from the landscape's OWN
+    ``dsp_candidate`` — which maps a signed grid coordinate onto the
+    executable (role, non-negative delay) pair — so the staged coordinate
+    comes from the grid that proposed it and no caller forms a second opinion
+    about which branch moves.
+
+    The zero coordinate carries NO delay flags. ``delay_target`` is ``None``
+    there because neither branch is delayed, and ``MeasureSpec`` refuses a
+    half-stated pair, so a line naming a role with 0 us would be refused at the
+    door it was printed for.
+
+    Every line carries ``--level-matched``, including the zero coordinate.
+    These are reverse-null confirmations, and a null between branches ~10 dB
+    apart in sensitivity is bounded by that gap however well the coordinate is
+    chosen — so a confirm line that did not ask for the level match would be
+    printing a measurement whose answer the graph had already decided.
+    """
+
+    head = (
+        f"jasper-angle-capture stage --angles {position_deg} "
+        f"--polarity {POLARITY_INVERTED} --inverted-role {inverted_role} "
+        "--level-matched"
+    )
+    lines = []
+    for coordinate in landscape.confirmation_coordinates_us:
+        candidate = landscape.spec.dsp_candidate(coordinate)
+        lines.append(head if candidate.delay_target is None else (
+            f"{head} --delayed-role {candidate.delay_target} "
+            f"--delay-us {candidate.delay_us:g}"
+        ))
+    return lines
+
+
 def graded_null_rows(rows_dir: Path, *, fc_hz: float) -> list[dict[str, Any]]:
     """The banked ``null_runs`` rows this landscape can be graded against.
 
@@ -606,14 +707,19 @@ __all__ = [
     "PHASE_OVERLAY_ADDITIVE_DEG",
     "PHASE_OVERLAY_TIGHT_DEG",
     "REFUSAL_FC_OUTSIDE_OVERLAP",
+    "REFUSAL_NO_BANKED_CURVES",
+    "REFUSAL_NO_ROUND",
     "REFUSAL_SHOULDER_RUN_UP",
     "REFUSAL_UNSUPPORTED",
     "VERDICT_MODEL_BROKE",
     "VERDICT_NO_EVIDENCE",
+    "BankedLandscape",
     "DelayLandscape",
     "DelayLandscapeError",
     "compute_landscape",
+    "confirmation_stage_commands",
     "confirmation_verdict",
+    "landscape_from_bank",
     "curve_shoulder_span",
     "depth_by_coordinate",
     "graded_null_rows",
