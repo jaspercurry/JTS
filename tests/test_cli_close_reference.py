@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""``jasper-close-reference``: the door, its refusals and its exit codes.
+"""``jasper-round-views close-reference``: the door, its refusals and its
+exit codes.
 
 The physics is pinned in ``test_crossover_v2_close_reference.py``. What is
 pinned here is the door: a capture bound to its program by CONTENT (#3504
@@ -13,7 +14,6 @@ frame.
 
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
 
@@ -31,12 +31,10 @@ from jasper.active_speaker.crossover_v2.round_captures import (
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.sweep import synchronized_swept_sine
-from jasper.cli.close_reference import (
-    AUTHORITY_TIER,
+from jasper.cli.round_views import (
+    ARTIFACT_BY_VIEW,
     EXIT_WRITE_FAILED,
-    REFUSE_NO_DRIVER_DIAMETER,
-    REFUSE_UNWRITABLE_OUT,
-    _cmd_distance,
+    REASON_UNWRITABLE,
     build_parser,
     main,
 )
@@ -92,7 +90,7 @@ def _compare_argv(
     """Every invocation names a geometry path, so no test reads /var/lib."""
     far, close = rounds
     return [
-        "compare", "--far-round", str(far), "--close-round", str(close),
+        "close-reference", "--far-round", str(far), "--close-round", str(close),
         "--close-m", "0.30", "--far-m", "1.0", "--fc-hz", "6000",
         "--driver-diameter-in", "5.5", "--out", str(out),
         "--geometry", str(geometry or out.parent / "undeclared.json"),
@@ -104,7 +102,7 @@ def test_compare_publishes_its_frame_and_its_binding(rounds, tmp_path, capsys):
     assert main(_compare_argv(rounds, out)) == EXIT_OK
     report = json.loads(out.read_text())["close_reference"]
     assert report["schema_version"] == 1
-    assert report["generated_by"] == "jasper-close-reference"
+    assert report["generated_by"] == "jasper-round-views close-reference"
     assert set(report["frame"]) >= {
         "window_kind", "taper_fraction", "gate_lead_ms", "smooth_fraction",
         "detrend_fraction", "grid_hz", "n_fft", "alignment_band_hz",
@@ -115,7 +113,17 @@ def test_compare_publishes_its_frame_and_its_binding(rounds, tmp_path, capsys):
     assert report["geometry"]["declared_distance_source"] == "caller"
     assert report["geometry"]["sidecar_mark_distance_m"]["close"] == 1.0
     assert report["geometry"]["sidecar_disagrees"] is True
-    assert json.loads(capsys.readouterr().out)["status"] == "compared"
+
+
+def test_with_no_out_the_report_lands_beside_the_far_round(rounds, tmp_path):
+    """The far read is what the comparison explains, so its artifact travels
+    with it -- and ``inventory`` reads presence at that path."""
+    far, close = rounds
+    assert main([
+        "close-reference", "--far-round", str(far), "--close-round", str(close),
+        "--close-m", "0.30", "--geometry", str(tmp_path / "undeclared.json"),
+    ]) == EXIT_OK
+    assert (far / ARTIFACT_BY_VIEW["close-reference"].artifact).is_file()
 
 
 def test_an_ungraded_band_publishes_null_not_a_non_json_constant(
@@ -154,24 +162,32 @@ def test_an_ungraded_band_publishes_null_not_a_non_json_constant(
 @pytest.mark.parametrize(
     "argv",
     [
-        ["distance", "--fc-hz", "2500"],
-        ["distance", "--fc-hz", "2500",
+        # naming both units is a usage error, not a silent precedence rule
+        ["--distance", "--fc-hz", "2500",
          "--driver-diameter-in", "5.5", "--driver-diameter-mm", "140"],
-        ["compare", "--far-round", "a", "--close-round", "b", "--close-m", "0.3",
-         "--driver-diameter-in", "5.5", "--driver-diameter-mm", "140"],
+        # each mode refuses without its own inputs, the other mode's not being
+        # a substitute
+        ["--distance", "--fc-hz", "2500"],
+        ["--distance", "--driver-diameter-in", "5.5"],
+        # --distance compares nothing: a comparison's inputs beside it would
+        # exit 0 having neither compared nor filed
+        ["--distance", "--driver-diameter-in", "5.5", "--fc-hz", "2500",
+         "--far-round", "a", "--close-round", "b", "--close-m", "0.3"],
+        ["--far-round", "a", "--close-round", "b"],
+        ["--close-m", "0.3", "--fc-hz", "2500"],
     ],
 )
-def test_the_driver_diameter_takes_one_unit_or_the_other(argv):
-    """Naming both units is a usage error, not a silent precedence rule."""
+def test_each_mode_refuses_without_its_own_inputs(argv):
     with pytest.raises(SystemExit) as excinfo:
-        build_parser().parse_args(argv)
+        main(["close-reference", *argv])
     assert excinfo.value.code == 2
 
 
-def test_compare_still_runs_without_any_declared_diameter():
-    """The control on the refusal above: only ``distance`` needs a diameter."""
+def test_a_comparison_still_runs_without_any_declared_diameter():
+    """The control on the usage errors above: only ``--distance`` needs one."""
     args = build_parser().parse_args(
-        ["compare", "--far-round", "a", "--close-round", "b", "--close-m", "0.3"]
+        ["close-reference", "--far-round", "a", "--close-round", "b",
+         "--close-m", "0.3"]
     )
     assert args.driver_diameter_in is None and args.driver_diameter_mm is None
 
@@ -241,30 +257,16 @@ def test_an_unwritable_out_is_named_not_a_traceback(rounds, tmp_path, capsys):
     assert rc == EXIT_WRITE_FAILED
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "unwritable"
-    assert payload["reason"] == REFUSE_UNWRITABLE_OUT
+    assert payload["reason"] == REASON_UNWRITABLE
 
 
-def test_distance_verb_prints_both_terms(capsys):
-    assert main(["distance", "--driver-diameter-in", "5.5", "--fc-hz", "2500"]) == EXIT_OK
+def test_the_distance_flag_prints_both_terms(capsys):
+    assert main(
+        ["close-reference", "--distance", "--driver-diameter-in", "5.5",
+         "--fc-hz", "2500"]
+    ) == EXIT_OK
     record = json.loads(capsys.readouterr().out)["distance"]
     assert record["distance_in"] == pytest.approx(12.4, abs=0.1)
     assert record["margin_term_m"] > record["far_field_term_m"]
     assert record["placement_tolerance_db"] > 0.0
 
-
-def test_distance_refuses_by_name_when_a_namespace_omits_the_diameter(capsys):
-    """Argparse's required group protects the ordinary CLI call; this is the
-    fallback for a hand-built ``Namespace`` (or an ``-O``-stripped assert)
-    that reaches ``_cmd_distance`` without going through it."""
-    args = argparse.Namespace(
-        driver_diameter_in=None, driver_diameter_mm=None, fc_hz=2500.0
-    )
-    assert _cmd_distance(args) == EXIT_REFUSED
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "refused"
-    assert payload["reason"] == REFUSE_NO_DRIVER_DIAMETER
-
-
-def test_the_tool_menu_can_render_this_tool():
-    assert AUTHORITY_TIER == "advisory (plays nothing)"
-    assert build_parser().prog == "jasper-close-reference"

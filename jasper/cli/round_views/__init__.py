@@ -32,7 +32,6 @@ codes" state the numbers and the record's shape, so neither is repeated here.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from typing import Sequence
 
@@ -49,6 +48,7 @@ from jasper.cli._refusal import (
 )
 
 from . import (
+    close_reference,
     cloud_binding,
     distortion,
     forward_model,
@@ -70,6 +70,7 @@ from ._common import (
     _ROUND_TOOL_ERRORS,
     add_rungs_ms_argument,
     default_out,
+    refused_by_name,
 )
 from .forward_model import ACCEPTANCE_RUNS
 
@@ -94,7 +95,7 @@ __all__ = [
 #: The view families, in the order their subcommands are offered.
 _FAMILIES = (
     grades, repeat, seats, cloud_binding, forward_model, sweeps, frequency,
-    distortion, inventory,
+    distortion, close_reference, inventory,
 )
 
 
@@ -109,8 +110,8 @@ def build_parser() -> argparse.ArgumentParser:
             "the cloud's null evidence bound the linearization fit, what a "
             "candidate would measure from the banked per-driver solos, the "
             "gate window ladder and the sweep read onto the spec verdict, the "
-            "shared frequency view, the H2/H3 distortion reading, and an "
-            "inventory of which of those a "
+            "shared frequency view, the H2/H3 distortion reading, how much of "
+            "a far read was the room, and an inventory of which of those a "
             "round already carries — over banked rounds and live sessions."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -163,11 +164,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except HarmonicEvidenceRefused as refusal:
         # An instrument that refuses BY NAME publishes its own name here rather
         # than this tool's stage bucket, and its evidence as the detail.
-        return failed(
-            EXIT_REFUSED,
-            refusal.reason,
-            json.dumps(refusal.evidence, sort_keys=True, default=str),
-        )
+        return refused_by_name(refusal.reason, refusal.evidence)
     except _ROUND_TOOL_ERRORS as exc:
         # What no stage claimed: the round READ, and the view then declined to
         # grade it. That is the refusal exit, not an unreadable one.

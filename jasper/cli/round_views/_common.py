@@ -9,12 +9,14 @@ publisher, and the flags more than one subcommand takes.
 from __future__ import annotations
 
 import argparse
+import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, NamedTuple
 
 from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS
 from jasper.active_speaker.crossover_v2.harmonic_evidence import HARMONICS_ARTIFACT
-from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs
+from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, round_inputs
 from jasper.active_speaker.crossover_v2.round_views import (
     BankedRound,
     RoundViewsError,
@@ -24,6 +26,7 @@ from jasper.cli._refusal import (
     EXIT_REFUSED,
     EXIT_UNREADABLE,
     EXIT_WRITE_FAILED,
+    failed,
     stage,
 )
 from jasper.cli._report import write_report
@@ -50,6 +53,7 @@ TAKES_THIS_ROUND = "<this-round>"
 TAKES_AFTER_ANOTHER = "<other-round> <this-round>"
 TAKES_BEFORE_ANOTHER = "<this-round> <other-round>"
 TAKES_BUNDLE_AND_RING = "<this-round's bundle> --dumps <ring> --state <flow-state>"
+TAKES_FAR_AND_CLOSE = "--far-round <this-round> --close-round <other-round> --close-m M"
 
 
 class ViewArtifact(NamedTuple):
@@ -82,6 +86,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "spec-sweep": ViewArtifact("spec_gate_sensitivity.json"),
     "gate-sweep": ViewArtifact("gate_sweep.json"),
     "frequency": ViewArtifact("frequency_view.json"),
+    "close-reference": ViewArtifact("close_reference.json", TAKES_FAR_AND_CLOSE),
     # The packet owns this name, so the row takes that constant rather than a
     # second spelling of it.
     "distortion": ViewArtifact(
@@ -148,6 +153,14 @@ def _write(payload: Any, out: str | None, default_path: Path) -> Path | None:
     return stage(EXIT_WRITE_FAILED, (OSError,), write_report, payload, out, default_path)
 
 
+def refused_by_name(
+    reason: str, detail: Mapping[str, Any], *, code: int = EXIT_REFUSED
+) -> int:
+    """An instrument that refuses BY NAME publishes its own name and its
+    evidence here, never this tool's coarser stage bucket."""
+    return failed(code, reason, json.dumps(detail, sort_keys=True, default=str))
+
+
 def default_out(inputs: RoundInputs, round_dir: Path, name: str) -> Path:
     """Where a view lands when the operator named no ``--out``.
 
@@ -163,6 +176,18 @@ def default_out(inputs: RoundInputs, round_dir: Path, name: str) -> Path:
     if inputs.banked:
         return round_dir / name
     return Path.cwd() / f"{inputs.session_dir.name}-{name}"
+
+
+def resolved_out(round_dir: Path, artifact: str) -> Path:
+    """Where a view lands beside a round it read WITHOUT the round resolver.
+
+    The gate ladder and the close reference read a bundle subtree the resolver
+    cannot place; a round it cannot place still gets its artifact.
+    """
+    try:
+        return default_out(round_inputs(round_dir), round_dir, artifact)
+    except RoundViewsError:
+        return round_dir / artifact
 
 
 def _view_out(args: argparse.Namespace, round_: BankedRound) -> Path:

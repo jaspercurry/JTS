@@ -703,13 +703,14 @@ module docstring, which states the discriminator once. It licenses no filter —
 it is evidence for an attribution argument, never a verdict or an EQ
 instruction.
 
-**Rung 3 — `jasper-close-reference`: how much of the far read was the room?**
+**Rung 3 — `jasper-round-views close-reference`: how much of the far read was
+the room?**
 Only once rung 2 says room and the feature is worth one more capture. Ask
-`jasper-close-reference distance --driver-diameter-in D --fc-hz FC` where to
-stand the mic; the human takes that capture (the close-reference program row is
-#3498's amendment item 1 and is not built, so today you declare the distance
-yourself); then `jasper-close-reference compare --far-round A --close-round B
---close-m M`. Read `alignment.trusted` before any band, then each
+`jasper-round-views close-reference --distance --driver-diameter-in D --fc-hz FC`
+where to stand the mic; the human takes that capture (the close-reference
+program row is #3498's amendment item 1 and is not built, so today you declare
+the distance yourself); then `jasper-round-views close-reference --far-round A
+--close-round B --close-m M`. Read `alignment.trusted` before any band, then each
 `windows[].bands[].verdict`: `agreement` says the far read was already
 speaker-dominated there, `room_dominated` prices the room's share, `unresolved`
 names which input was missing. It still prescribes nothing.

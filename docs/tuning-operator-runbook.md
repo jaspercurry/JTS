@@ -433,11 +433,10 @@ nothing durable · **mutating** = changes what the speaker plays ·
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber status\|packet\|propose\|stage` | Emit one crossover round's evidence packet, read a prescription back through the strict gate, and say where this speaker stands. | advisory (`stage` mutates) | `jasper/cli/crossover_prescriber.py` |
 | `jasper-round open\|wait\|apply\|bank` | Open, wait on, apply and bank a crossover round from the speaker itself. The three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate, plus the bank that files a finished session in the on-box campaign home. | mutating-with-gates (`open`/`apply`/`bank` write; `wait` does not) | `jasper/cli/round.py` |
-| `jasper-round-views entry\|frozen\|per-seat\|repeat\|repeat-floor\|agreement\|co-metrics\|directivity\|cloud-binding\|forward-model\|spec-sweep\|gate-sweep\|frequency\|distortion\|inventory` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability and the banked repeat floor, per-seat agreement, audibility co-metrics, measured per-angle directivity, whether the cloud's null evidence bound the linearization fit, what a candidate would measure from the banked per-driver solos, the gate window ladder and the sweep read onto the spec verdict, the shared frequency view, the H2/H3 distortion reading, and an inventory of which of those a round already carries — over banked rounds and live sessions. | advisory | `jasper/cli/round_views/__init__.py` |
+| `jasper-round-views entry\|frozen\|per-seat\|repeat\|repeat-floor\|agreement\|co-metrics\|directivity\|cloud-binding\|forward-model\|spec-sweep\|gate-sweep\|frequency\|distortion\|close-reference\|inventory` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability and the banked repeat floor, per-seat agreement, audibility co-metrics, measured per-angle directivity, whether the cloud's null evidence bound the linearization fit, what a candidate would measure from the banked per-driver solos, the gate window ladder and the sweep read onto the spec verdict, the shared frequency view, the H2/H3 distortion reading, how much of a far read was the room, and an inventory of which of those a round already carries — over banked rounds and live sessions. | advisory | `jasper/cli/round_views/__init__.py` |
 | `jasper-project-ring` | Re-project a banked round into the capture ring that jasper-classify-features and jasper-round-views distortion read. | mutating (projects evidence; changes nothing played) | `jasper/cli/project_ring.py` |
 | `jasper-classify-features` | Classify a banked round's features as minimum-phase driver defects, interference, or the room — controls first. | advisory | `jasper/cli/classify_features.py` |
 | `jasper-delay-sweep propose\|confirm` | Propose an inter-driver delay from banked curves, then grade the acoustic confirmation against it. Computes only; plays nothing. | advisory (plays nothing) | `jasper/cli/delay_sweep.py` |
-| `jasper-close-reference distance\|compare` | Correct a close capture to the far distance and say, band by band, how much of the far read was the room. Computes only; plays nothing and opens no device. | advisory (plays nothing) | `jasper/cli/close_reference.py` |
 | `jasper-null` | Play the summed reverse null and bank one row per coordinate. Measures only; grades nothing. | measured | `jasper/cli/null_door.py` |
 | `jasper-audition start\|stop\|status` | Play this speaker at a reduced DSP layer, then put it back | mutating (runtime only; durable graph untouched -- ADR-0193) | `jasper/cli/audition.py` |
 | `jasper-declare-geometry set\|show` | Declare measurement rig geometry (speaker/mic heights, distance, optional ceiling) so entanglement_floor_hz has a provenance-labeled, non-measured source on rigs where the measured reflection finder structurally never fires -- see issue #3502. | advisory (`set` writes; `show` does not) | `jasper/cli/declare_geometry.py` |
@@ -626,8 +625,7 @@ be FILED; the failing number names the stage that failed, which is what tells
 you where to go.
 
 **The number is the contract; the record beside it is per tool.** The
-round-grading family — `jasper-round-views`, `jasper-delay-sweep`,
-`jasper-close-reference` — prints
+round-grading family — `jasper-round-views`, `jasper-delay-sweep` — prints
 `{"status": "refused" | "unreadable" | "unwritable", "reason":
 "<tool_named_slug>", "detail": "<text>"}` on stdout and one `<status>
 (<reason>): <detail>` sentence on stderr, `status` and code always agreeing.
@@ -1114,17 +1112,18 @@ than re-deriving it.
 
 ### Reading a close-reference comparison
 
-`jasper-close-reference` corrects a capture taken close to the woofer back to
-the far distance and asks, band by band, how much of the far read was the room.
-Two verbs, both offline: `distance` sizes the capture, `compare` reads the pair.
-Neither opens a device. Exit codes: `0` done, `1` refused, `2` the round could
-not be read. When it is worth a capture, and what a verdict licenses, are
+`jasper-round-views close-reference` corrects a capture taken close to the
+woofer back to the far distance and asks, band by band, how much of the far
+read was the room. One view, two modes, both offline: `--distance` sizes the
+capture, the comparison reads the pair. Neither opens a device. Exit codes: `0`
+done, `1` refused, `2` the round could not be read, `3` compared and the report
+could not be filed. When it is worth a capture, and what a verdict licenses, are
 [`tuning-methodology.md`](tuning-methodology.md) §6a's.
 
-**`distance` answers "where do I stand the mic".** It takes the driver diameter
-(`--driver-diameter-in` or `--driver-diameter-mm` — **mm wins if both are
-given**) and `--fc-hz` (argparse-required; the diameter is not, and its absence
-refuses `close_reference_no_driver_diameter` instead).
+**`--distance` answers "where do I stand the mic".** It takes the driver
+diameter (`--driver-diameter-in` or `--driver-diameter-mm`, never both) and
+`--fc-hz`; without either it is a usage error, and it reads no round and writes
+no artifact.
 `distance_m` / `distance_in` is the recommendation:
 the piston far-field term `2a²/λ` at `band_top_hz` (= `fc_hz/2`) plus
 `k_margin` = 2 driver diameters, and **the margin term dominates** — the
@@ -1135,7 +1134,7 @@ placement is loose. `far_field_ceiling_hz` is where a mic that close goes
 near-field — a **ceiling**, because closing in costs you the top, not the
 bottom.
 
-**`compare` needs both rounds and the close distance you declared.**
+**A comparison needs both rounds and the close distance you declared.**
 `--far-round` / `--close-round` take a banked round directory (the one holding
 `bundle/`) or the bundle itself; `--far-capture` / `--close-capture` name a take
 id or WAV stem, defaulting to the on-axis summed take. `--close-m` is
@@ -1145,7 +1144,9 @@ distance until #3498's close-reference program row exists. `--far-m` defaults to
 1.0. `--fc-hz` and a diameter cap the band; `--geometry` (default
 `/var/lib/jasper/measurement_geometry.json`) supplies the derived windows and is
 **not** a refusal when absent; `--far-gate-ms` / `--close-gate-ms` override
-them; `--out` also writes the report.
+them. The report lands as `close_reference.json` beside the FAR round — beside
+the caller, session-prefixed, for an unbanked bundle; `--out` writes it
+elsewhere (`-` for stdout).
 
 **Read the validity band first — it is where the answer can exist at all.**
 
