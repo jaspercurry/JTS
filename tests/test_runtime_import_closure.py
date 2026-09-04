@@ -174,8 +174,8 @@ def _offenders(modules: set[str]) -> list[str]:
 TRUTH_LAYER_MODULES = TRUTH_LAYER + tuple(
     sorted(
         _dotted(path)
-        for path in (REPO_ROOT / "jasper" / "audio_measurement").glob("*.py")
-        if path.name != "__init__.py"
+        for path in (REPO_ROOT / "jasper" / "audio_measurement").rglob("*.py")
+        if _dotted(path) != "jasper.audio_measurement"
     )
 )
 

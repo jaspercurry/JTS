@@ -311,7 +311,7 @@ def test_the_scans_reported_ripple_is_that_same_helper_at_its_own_trim():
         return value
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(pa, "ripple_at_trim", spy)
+        mp.setattr(pa.response, "ripple_at_trim", spy)
         trim_t, ripple_db, _seed = pa.solve_ripple_optimal_trim(
             freqs, w_tf, t_tf, fc_hz,
             lo_hz=fc_hz / 2.0, hi_hz=fc_hz * 2.0,

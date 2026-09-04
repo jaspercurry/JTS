@@ -97,7 +97,6 @@ def test_noqa_debt_does_not_grow() -> None:
 MAX_LINES_BY_PATH = {
     "jasper/active_speaker/crossover_v2_flow.py": 15_000,
     "jasper/web/correction_crossover_v2.py": 10_000,
-    "jasper/audio_measurement/program_analysis.py": 8_000,
     "jasper/active_speaker/crossover_envelope_v2.py": 5_000,
     "jasper/web/correction_crossover_v2_wired.py": 2_000,
     "jasper/audio_measurement/wired_capture.py": 1_000,
