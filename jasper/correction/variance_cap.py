@@ -56,7 +56,7 @@ def allowed_depth_db(std_db: Any, *, base_max_cut_db: float) -> np.ndarray:
     """Per-frequency cut floor, dB, non-positive, on ``std_db``'s own grid.
 
     ``base_max_cut_db`` is the strategy's scalar floor (negative). The result is
-    the array :func:`jasper.correction.peq.design_peq` accepts as
+    the array :func:`jasper.audio_measurement.peq.design_peq` accepts as
     ``max_cut_db``.
     """
     return np.asarray(base_max_cut_db * depth_fraction(std_db), dtype=np.float64)
@@ -107,10 +107,11 @@ def no_correction_mask(
     A bin qualifies when its allowed depth is shallower than the strategy's
     smallest worthwhile filter. The caller must REMOVE these bins from the
     designer's residual rather than pass the allowance through:
-    :func:`jasper.correction.peq.design_peq` ``break``s out of its greedy loop
-    when the tallest remaining peak clamps below ``min_filter_gain_db``, which
-    would forfeit every stable peak underneath it. The tail only: a bin
-    qualifies above 48 dB of cross-position sigma for ``safe``, 120 dB for
+    :func:`jasper.audio_measurement.peq.design_peq` ``break``s out of its
+    greedy loop when the tallest remaining peak clamps below
+    ``min_filter_gain_db``, which would forfeit every stable peak underneath
+    it. The tail only: a bin qualifies above 48 dB of cross-position sigma
+    for ``safe``, 120 dB for
     ``balanced`` and 144 dB for ``assertive``.
     """
     return np.asarray(depth_db, dtype=np.float64) > -abs(min_filter_gain_db)
@@ -211,8 +212,8 @@ def plan_depth_cap(
     """Plan one design run's per-frequency cut ceiling from cross-position spread.
 
     Returns ``(allowed_depth_db, disclosure)`` — the array to hand
-    :func:`jasper.correction.peq.design_peq` as ``max_cut_db``, or ``None``
-    when no cap could be planned, in which case the disclosure says why.
+    :func:`jasper.audio_measurement.peq.design_peq` as ``max_cut_db``, or
+    ``None`` when no cap could be planned, in which case the disclosure says why.
     Refusing is never an error and never raises. ``base_max_cut_db`` must be
     deeper than ``min_filter_gain_db``, otherwise every frequency would be
     marked undesignable; that is refused instead. ``band_mask`` scopes the

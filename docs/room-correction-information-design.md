@@ -532,7 +532,7 @@ web handler, Room session host, Active host, or CamillaDSP controller.
 | Room level adapters | `jasper.correction.level_match`; local fallback in `jasper.correction.autolevel` | Capture session minting or HTTP responses |
 | Tuning paid call and spend cap | `jasper.web.correction_tuning` | Acceptance authority or live apply |
 | Capture transport | `jasper.active_speaker.crossover_v2.sweep_spec.CaptureSpec` | Position, target, or verdict semantics |
-| Target and filter policy | `jasper.correction.strategy` / `jasper.correction.peq` | Browser-selected unbounded values |
+| Target and filter policy | `jasper.correction.strategy` / `jasper.audio_measurement.peq` | Browser-selected unbounded values |
 | Positive-boost accounting | `jasper.camilla_config_contract.total_positive_boost_db` | Product sequencing |
 | Bass-management corner | `jasper.camilla_emit`, read through bass-management adapters | Room-owned duplicate constants |
 | Active eligibility receipt | `jasper.active_speaker` | Room inference, repair, or per-driver validation |

@@ -19,7 +19,7 @@ silently capped a raised ceiling rather than failing loudly.
 
 Why this module lives in ``audio_measurement`` and not ``correction``:
 ``correction`` and ``active_speaker`` import **each other** (for example
-``active_speaker.linearization_fit`` imports ``correction.peq``, while
+``active_speaker.seat_level_ramp`` imports ``correction.coordinator``, while
 ``correction.runtime_safety`` imports ``active_speaker.runtime_contract``), so
 neither one is "below" the other and homing a shared constant in either would
 be an arbitrary pick that some consumer has to reach sideways for.

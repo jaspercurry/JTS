@@ -87,7 +87,7 @@ delta).
   `[20, 350]` — corrected-narrow-stated-wide, live on the household
   surface today. RC1 fixes this (the one named exception to its
   behavior-identical promise).
-- Vocabulary: peaking bells only (`correction/peq.py`, greedy
+- Vocabulary: peaking bells only (`audio_measurement/peq.py`, greedy
   peak-fit); shelves exist only in the taste layer. The round-trip
   reader `extract_room_peqs_from_config_text` regex-matches peaking
   blocks only — a new room-layer filter type is **silently dropped**
@@ -338,7 +338,7 @@ lanes (`-p no:randomly`).
   (i) the SSOT is homed in **`audio_measurement`, not `correction`**.
   The reason is *not* a strict layer order — `correction` and
   `active_speaker` import each other in both directions
-  (`active_speaker.linearization_fit` -> `correction.peq`;
+  (`active_speaker.seat_level_ramp` -> `correction.coordinator`;
   `correction.runtime_safety` -> `active_speaker.runtime_contract`),
   so neither is below the other. The property that actually earns the
   home is narrower and verified: `audio_measurement` is **imported by

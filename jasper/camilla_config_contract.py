@@ -477,8 +477,8 @@ def total_positive_boost_db(filters: Iterable[PeqFilter]) -> float:
     is the one canonical definition of "how much can these boosts clip",
     shared by the room-correction headroom trim
     (``jasper.sound.camilla_yaml``) and the PEQ boost-cap check
-    (``jasper.correction.peq.total_max_boost_db``). Any object exposing a
-    numeric ``.gain`` is accepted — the correction ``PEQ`` is structurally
+    (``jasper.audio_measurement.peq.total_max_boost_db``). Any object exposing a
+    numeric ``.gain`` is accepted — the designer's ``PEQ`` is structurally
     compatible with ``PeqFilter`` here.
     """
     return max(0.0, sum(f.gain for f in filters if f.gain > 0.0))
