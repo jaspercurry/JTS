@@ -1208,178 +1208,6 @@ def _point_at_topology_and_config(monkeypatch, tmp_path, topology, config_text, 
     return _point_at_config(monkeypatch, tmp_path, config_text, name=name)
 
 
-def test_active_speaker_runtime_graph_fails_flat_graph_without_a_saved_layout(
-    monkeypatch, tmp_path
-):
-    from tests.test_active_speaker_runtime_contract import _flat_yaml, _topology
-
-    _point_at_topology_and_config(
-        monkeypatch, tmp_path, _topology([]), _flat_yaml(), "outputd-cutover.yml",
-    )
-
-    r = doctor.check_active_speaker_runtime_graph()
-
-    assert r.status == "fail"
-    assert r.reason == audio.REASON_GRAPH_UNSAFE
-
-
-def test_active_speaker_runtime_graph_warns_when_unconfigured_is_parked(
-    monkeypatch, tmp_path
-):
-    """Fresh/reset topology is intentional silence with one next action."""
-    from jasper.active_speaker.runtime_contract import build_parked_muted_graph
-    from tests.test_active_speaker_runtime_contract import _topology
-
-    topology = _topology([])
-    text, graph = build_parked_muted_graph(topology)
-    assert graph.allowed
-    _point_at_topology_and_config(
-        monkeypatch, tmp_path, topology, text, "speaker_setup_parked.yml",
-    )
-
-    r = doctor.check_active_speaker_runtime_graph()
-
-    assert r.status == "warn"
-    assert r.reason == audio.REASON_GRAPH_PARKED_SILENT
-    assert r.speaker_silent is True
-
-
-def test_active_speaker_runtime_graph_fails_incomplete_nonroleful_layout(
-    monkeypatch, tmp_path
-):
-    """Parked is not a healthy substitute for an invalid passive layout."""
-    from dataclasses import replace
-
-    from jasper.active_speaker.runtime_contract import build_parked_muted_graph
-    from tests.test_active_speaker_runtime_contract import _full_range_stereo
-
-    complete = _full_range_stereo()
-    topology = replace(
-        complete,
-        speaker_groups=tuple(
-            replace(
-                group,
-                channels=tuple(
-                    replace(channel, physical_output_index=None)
-                    if group.kind == "right"
-                    else channel
-                    for channel in group.channels
-                ),
-            )
-            for group in complete.speaker_groups
-        ),
-    )
-    text, graph = build_parked_muted_graph(topology)
-    assert graph.allowed
-    _point_at_topology_and_config(
-        monkeypatch, tmp_path, topology, text, "speaker_setup_parked.yml",
-    )
-
-    r = doctor.check_active_speaker_runtime_graph()
-
-    assert r.status == "fail"
-    assert r.reason == audio.REASON_GRAPH_LAYOUT_INCOMPLETE
-
-
-def test_active_speaker_runtime_graph_fails_corrupt_saved_topology(
-    monkeypatch,
-    tmp_path,
-):
-    topology_path = tmp_path / "output_topology.json"
-    topology_path.write_text("{not json", encoding="utf-8")
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-
-    r = doctor.check_active_speaker_runtime_graph()
-
-    assert r.status == "fail"
-    assert r.reason == audio.REASON_TOPOLOGY_UNREADABLE
-    # An unreadable topology is not proof of silence — it is proof of not
-    # knowing, so this branch must not claim it (#2471).
-    assert r.speaker_silent is False
-
-
-def test_active_speaker_runtime_graph_fails_flat_graph_on_tweeter_topology(
-    monkeypatch,
-    tmp_path,
-):
-    from tests.test_active_speaker_runtime_contract import (
-        _active_topology,
-        _flat_yaml,
-    )
-
-    _point_at_topology_and_config(
-        monkeypatch,
-        tmp_path,
-        _active_topology("mono", "active_2_way"),
-        _flat_yaml(),
-        "outputd-cutover.yml",
-    )
-
-    r = doctor.check_active_speaker_runtime_graph()
-
-    assert r.status == "fail"
-    assert r.reason == audio.REASON_GRAPH_UNSAFE
-
-
-def test_active_speaker_runtime_graph_accepts_staged_active_startup(
-    monkeypatch,
-    tmp_path,
-):
-    from tests.test_active_speaker_runtime_contract import (
-        _active_topology,
-        _active_yaml,
-        _staged_metadata,
-    )
-
-    topology = _active_topology("mono", "active_2_way")
-    config = _point_at_topology_and_config(
-        monkeypatch,
-        tmp_path,
-        topology,
-        _active_yaml("mono", 2, frozenset()),
-        "active_speaker_staged_startup.yml",
-    )
-    metadata = tmp_path / "active_speaker_staged_config.json"
-    metadata.write_text(
-        json.dumps(_staged_metadata(topology, config)),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH", str(metadata))
-
-    r = doctor.check_active_speaker_runtime_graph()
-
-    assert r.status == "ok"
-    assert r.reason == ""
-    # A legal graph is not silence: the flag stays off (#2471).
-    assert r.speaker_silent is False
-
-
-def test_active_speaker_runtime_graph_warns_when_parked(monkeypatch, tmp_path):
-    # #2135: a declared-but-uncommissioned roleful topology is seeded a parked
-    # (DAC-less, all-muted) graph so the deploy can finish. Nothing is broken and
-    # nothing is audible, so this is a WARN, not a fail.
-    from jasper.active_speaker.runtime_contract import build_parked_muted_graph
-    from tests.test_active_speaker_runtime_contract import _active_topology
-
-    topology = _active_topology("mono", "active_2_way")
-    text, graph = build_parked_muted_graph(topology)
-    assert graph.allowed
-    _point_at_topology_and_config(
-        monkeypatch, tmp_path, topology, text, "active_speaker_parked.yml",
-    )
-
-    r = doctor.check_active_speaker_runtime_graph()
-
-    assert r.status == "warn"
-    assert r.reason == audio.REASON_GRAPH_PARKED_SILENT
-    # #2471: this is the speaker-is-silent state, so the summary composer must
-    # be able to name it instead of ending on "warning(s) — non-critical".
-    assert r.speaker_silent is True
-
-
-# ---------------------------------------------- active speaker topology blockers
-
-
 def _blocker_bearing_roleful_topology():
     """A roleful topology whose tweeter has no DAC output assigned."""
     from dataclasses import replace
@@ -1404,58 +1232,205 @@ def _blocker_bearing_roleful_topology():
     )
 
 
-# #2471: exactly one of the six branches proves the speaker emits nothing. The
-# probe-failure branch has blockers but could not classify the graph, so it does
-# not know; the not-parked branch knows the box is playing.
-_SILENT_BLOCKER_REASONS = frozenset({audio.REASON_TOPOLOGY_BLOCKERS_PARKED})
+def _incomplete_passive_topology():
+    """A passive stereo layout whose right channels have no DAC output."""
+    from dataclasses import replace
+
+    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+
+    complete = _full_range_stereo()
+    return replace(
+        complete,
+        speaker_groups=tuple(
+            replace(
+                group,
+                channels=tuple(
+                    replace(channel, physical_output_index=None)
+                    if group.kind == "right"
+                    else channel
+                    for channel in group.channels
+                ),
+            )
+            for group in complete.speaker_groups
+        ),
+    )
 
 
-def _assert_blocker_branch(result, reason: str) -> None:
-    assert result.reason == reason
-    assert result.speaker_silent is (reason in _SILENT_BLOCKER_REASONS)
+def _stage_parked(monkeypatch, tmp_path, topology):
+    """Point the box at the independently PROVED parked graph for ``topology``."""
+    from jasper.active_speaker.runtime_contract import build_parked_muted_graph
+
+    text, graph = build_parked_muted_graph(topology)
+    assert graph.allowed, "fixture must stage a proved parked graph"
+    _point_at_topology_and_config(
+        monkeypatch, tmp_path, topology, text, "active_speaker_parked.yml",
+    )
 
 
-def test_topology_blockers_ok_without_roleful_outputs(monkeypatch, tmp_path):
-    from tests.test_active_speaker_runtime_contract import _topology
-
-    _save_topology(monkeypatch, tmp_path, _topology([]))
-
-    r = doctor.check_active_speaker_topology_blockers()
-
-    assert r.status == "skipped"
-    _assert_blocker_branch(r, audio.REASON_TOPOLOGY_NOT_ROLEFUL)
+def _stage_corrupt_topology(monkeypatch, tmp_path):
+    topology_path = tmp_path / "output_topology.json"
+    topology_path.write_text("{not json", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
 
 
-def test_topology_blockers_ok_when_a_clean_roleful_layout_is_parked(
-    monkeypatch, tmp_path
-):
-    # Parked but CLEAN: `check_active_speaker_runtime_graph` already warns about
-    # the parked state itself. This check speaks only to unresolved blockers, so
-    # a clean layout must stay quiet rather than adding a second warning.
+def _stage_complete_passive_layout(monkeypatch, tmp_path):
+    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+
+    _save_topology(monkeypatch, tmp_path, _full_range_stereo())
+
+
+def _stage_unreadable_statefile(monkeypatch, tmp_path):
     from tests.test_active_speaker_runtime_contract import _active_topology
 
     _save_topology(monkeypatch, tmp_path, _active_topology("mono", "active_2_way"))
-
-    r = doctor.check_active_speaker_topology_blockers()
-
-    assert r.status == "ok"
-    _assert_blocker_branch(r, audio.REASON_TOPOLOGY_NO_BLOCKERS)
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "gone-statefile.yml"))
 
 
-def test_topology_blockers_warns_on_a_parked_layout(monkeypatch, tmp_path):
-    # #2145: this state used to abort every deploy, which was its own loud
-    # notification. It now parks and deploys, so the doctor carries the signal.
-    # WARN, never FAIL: doctor exits non-zero only on fails, and a parked box
-    # must stay deployable.
-    _save_topology(monkeypatch, tmp_path, _blocker_bearing_roleful_topology())
+def _stage_missing_config(monkeypatch, tmp_path):
+    from tests.test_active_speaker_runtime_contract import _active_topology
 
-    r = doctor.check_active_speaker_topology_blockers()
-
-    assert r.status == "warn"
-    _assert_blocker_branch(r, audio.REASON_TOPOLOGY_BLOCKERS_PARKED)
+    _save_topology(monkeypatch, tmp_path, _active_topology("mono", "active_2_way"))
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {tmp_path / 'gone.yml'}\n")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
 
 
-def test_topology_blockers_exits_are_capability_aware(monkeypatch, tmp_path):
+def _stage_unconfigured_parked(monkeypatch, tmp_path):
+    from tests.test_active_speaker_runtime_contract import _topology
+
+    _stage_parked(monkeypatch, tmp_path, _topology([]))
+
+
+def _stage_roleful_parked(monkeypatch, tmp_path):
+    from tests.test_active_speaker_runtime_contract import _active_topology
+
+    _stage_parked(monkeypatch, tmp_path, _active_topology("mono", "active_2_way"))
+
+
+def _stage_blocker_bearing_parked(monkeypatch, tmp_path):
+    _stage_parked(monkeypatch, tmp_path, _blocker_bearing_roleful_topology())
+
+
+def _stage_incomplete_passive_parked(monkeypatch, tmp_path):
+    _stage_parked(monkeypatch, tmp_path, _incomplete_passive_topology())
+
+
+def _stage_flat_graph_without_a_layout(monkeypatch, tmp_path):
+    from tests.test_active_speaker_runtime_contract import _flat_yaml, _topology
+
+    _point_at_topology_and_config(
+        monkeypatch, tmp_path, _topology([]), _flat_yaml(), "outputd-cutover.yml",
+    )
+
+
+def _stage_flat_graph_on_a_tweeter_layout(monkeypatch, tmp_path):
+    from tests.test_active_speaker_runtime_contract import _active_topology, _flat_yaml
+
+    _point_at_topology_and_config(
+        monkeypatch,
+        tmp_path,
+        _active_topology("mono", "active_2_way"),
+        _flat_yaml(),
+        "outputd-cutover.yml",
+    )
+
+
+def _stage_staged_active_startup(monkeypatch, tmp_path):
+    from tests.test_active_speaker_runtime_contract import (
+        _active_topology,
+        _active_yaml,
+        _staged_metadata,
+    )
+
+    topology = _active_topology("mono", "active_2_way")
+    config = _point_at_topology_and_config(
+        monkeypatch,
+        tmp_path,
+        topology,
+        _active_yaml("mono", 2, frozenset()),
+        "active_speaker_staged_startup.yml",
+    )
+    metadata = tmp_path / "active_speaker_staged_config.json"
+    metadata.write_text(json.dumps(_staged_metadata(topology, config)), encoding="utf-8")
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH", str(metadata))
+
+
+@pytest.mark.parametrize(
+    "stage, status, reason, silent",
+    [
+        (_stage_corrupt_topology, "fail", audio.REASON_TOPOLOGY_UNREADABLE, False),
+        (
+            _stage_complete_passive_layout, "ok",
+            audio.REASON_GRAPH_PASSIVE_LAYOUT, False,
+        ),
+        (
+            _stage_unreadable_statefile, "fail",
+            audio.REASON_CAMILLA_STATEFILE_UNREADABLE, False,
+        ),
+        (_stage_missing_config, "fail", audio.REASON_CAMILLA_CONFIG_MISSING, False),
+        (
+            _stage_unconfigured_parked, "warn",
+            audio.REASON_GRAPH_PARKED_SILENT, True,
+        ),
+        (_stage_roleful_parked, "warn", audio.REASON_GRAPH_PARKED_SILENT, True),
+        (
+            _stage_blocker_bearing_parked, "warn",
+            audio.REASON_GRAPH_PARKED_SILENT, True,
+        ),
+        # Parked over an unfixable layout: a `fail` that is also provably
+        # silent, which the summary line supports (#2471).
+        (
+            _stage_incomplete_passive_parked, "fail",
+            audio.REASON_GRAPH_LAYOUT_INCOMPLETE, True,
+        ),
+        (
+            _stage_flat_graph_without_a_layout, "fail",
+            audio.REASON_GRAPH_UNSAFE, False,
+        ),
+        (
+            _stage_flat_graph_on_a_tweeter_layout, "fail",
+            audio.REASON_GRAPH_UNSAFE, False,
+        ),
+        (_stage_staged_active_startup, "ok", "", False),
+    ],
+    ids=lambda value: getattr(value, "__name__", None),
+)
+def test_active_speaker_runtime_graph_branches(
+    monkeypatch, tmp_path, stage, status, reason, silent
+):
+    """One row per outcome of the merged check.
+
+    ``speaker_silent`` rides along because only the parked branch may claim it
+    (#2471): an unreadable topology is proof of not knowing, and a legal graph
+    is not silence.
+    """
+    stage(monkeypatch, tmp_path)
+
+    r = doctor.check_active_speaker_runtime_graph()
+
+    assert (r.status, r.reason, r.speaker_silent) == (status, reason, silent)
+
+
+def test_active_speaker_runtime_graph_names_the_blockers_it_is_parked_over(
+    monkeypatch, tmp_path
+):
+    """Parking is gated on the missing startup graph, not on the blockers, so
+    the parked row still has to name the layout blockers a household must clear.
+    Asserted on the contract's own blocker CODES, not on the sentence."""
+    from jasper.active_speaker.runtime_contract import classify_output_contract
+
+    topology = _blocker_bearing_roleful_topology()
+    _stage_parked(monkeypatch, tmp_path, topology)
+    codes = [str(issue["code"]) for issue in classify_output_contract(topology).issues]
+    assert codes, "fixture must carry at least one topology blocker"
+
+    r = doctor.check_active_speaker_runtime_graph()
+
+    assert r.reason == audio.REASON_GRAPH_PARKED_SILENT
+    assert all(code in r.detail for code in codes)
+
+
+def test_active_speaker_runtime_graph_exits_are_capability_aware(monkeypatch, tmp_path):
     """The doctor detail must resolve the exits through the OWNED helper.
 
     The one deliberate `detail` assertion in this file: which of two equal-status
@@ -1496,7 +1471,7 @@ def test_topology_blockers_exits_are_capability_aware(monkeypatch, tmp_path):
                     "identity_verified": True,
                 },
                 {
-                    # Unassigned -> the topology-level blocker this check reports.
+                    # Unassigned -> the topology-level blocker this row names.
                     "role": "tweeter",
                     "physical_output_index": None,
                     "identity_verified": True,
@@ -1510,88 +1485,14 @@ def test_topology_blockers_exits_are_capability_aware(monkeypatch, tmp_path):
     })
     # The fixture is only meaningful if the helper and the constant DISAGREE.
     assert parked_muted_exits(topology) != PARKED_MUTED_EXITS
-    _save_topology(monkeypatch, tmp_path, topology)
+    _stage_parked(monkeypatch, tmp_path, topology)
 
-    r = doctor.check_active_speaker_topology_blockers()
+    r = doctor.check_active_speaker_runtime_graph()
 
-    assert r.status == "warn"
-    _assert_blocker_branch(r, audio.REASON_TOPOLOGY_BLOCKERS_PARKED)
+    assert r.reason == audio.REASON_GRAPH_PARKED_SILENT
     # Follows the helper, and therefore does NOT offer the impossible action.
     assert parked_muted_exits(topology) in r.detail
     assert PARKED_MUTED_EXITS not in r.detail
-
-
-def test_topology_blockers_warn_survives_a_failed_selection_probe(
-    monkeypatch, tmp_path
-):
-    """The blockers are this check's finding; the parked/not-parked split is
-    only how it phrases them, so a probe that raises must still warn."""
-    from jasper.active_speaker import runtime_contract
-
-    _save_topology(monkeypatch, tmp_path, _blocker_bearing_roleful_topology())
-
-    def _boom(*_args, **_kwargs):
-        raise OSError("statefile unreadable")
-
-    monkeypatch.setattr(
-        runtime_contract, "safe_graph_for_current_topology", _boom
-    )
-
-    r = doctor.check_active_speaker_topology_blockers()
-
-    assert r.status == "warn"
-    _assert_blocker_branch(r, audio.REASON_TOPOLOGY_BLOCKERS_PROBE_FAILED)
-
-
-def test_topology_blockers_defers_when_the_speaker_is_not_parked(
-    monkeypatch, tmp_path
-):
-    # A blocker-bearing topology that is NOT parked is already reported by
-    # `check_active_speaker_runtime_graph` (it blocks the deploy). Repeating it
-    # here would be a second voice for one fact, so this branch defers.
-    from jasper.active_speaker import runtime_contract
-    from jasper.active_speaker.runtime_contract import (
-        SafeGraphDecision,
-        classify_output_contract,
-    )
-
-    topology = _blocker_bearing_roleful_topology()
-    _save_topology(monkeypatch, tmp_path, topology)
-
-    def _blocked(*_args, **_kwargs):
-        return SafeGraphDecision(
-            status="blocked",
-            selected_config_path=None,
-            reason="test double",
-            topology_contract=classify_output_contract(topology),
-        )
-
-    monkeypatch.setattr(
-        runtime_contract, "safe_graph_for_current_topology", _blocked
-    )
-
-    r = doctor.check_active_speaker_topology_blockers()
-
-    assert r.status == "ok"
-    _assert_blocker_branch(r, audio.REASON_TOPOLOGY_BLOCKERS_NOT_PARKED)
-
-
-def test_topology_blockers_fails_on_an_unloadable_topology(monkeypatch, tmp_path):
-    """Three checks read this artifact; the other two restate the parse error,
-    so this one fails (it cannot answer its question) and points instead."""
-    from jasper.output_topology import OutputTopologyError, load_output_topology_strict
-
-    topology_path = tmp_path / "output_topology.json"
-    topology_path.write_text("{not json at all", encoding="utf-8")
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    # Prove the fixture actually reaches the branch under test.
-    with pytest.raises(OutputTopologyError):
-        load_output_topology_strict()
-
-    r = doctor.check_active_speaker_topology_blockers()
-
-    assert r.status == "fail"
-    _assert_blocker_branch(r, audio.REASON_TOPOLOGY_UNREADABLE)
 
 
 # ------------------------------------------------------------- sound profile
