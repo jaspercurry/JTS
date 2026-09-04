@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from jasper.active_speaker.wizard_client import (
@@ -103,6 +104,43 @@ def _emit(receipt: Mapping[str, Any], *, json_output: bool) -> None:
         print(f"  {key:<30}{value}")
 
 
+def _read_document(path: str) -> Any:
+    """One prescription document, from a file or ``-`` for stdin."""
+    try:
+        raw = sys.stdin.read() if path == "-" else Path(path).read_text()
+        return json.loads(raw)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{path}: {exc}") from exc
+
+
+def _prescription_doors(args: argparse.Namespace) -> dict[str, Any]:
+    """The alignment and topology documents, under the keys the host reads.
+
+    Passed through as read: the gate that judges a prescription is the session
+    open's own, and a second one here would be a weaker copy of it.
+    """
+    # The two key constants' modules pull numpy and scipy in, which is why both
+    # the guard and the deferred import are here: an ordinary open must not pay
+    # for a door it is not carrying (ADR-0226).
+    if not (args.alignment_prescription or args.topology_prescription):
+        return {}
+    from jasper.active_speaker.crossover_v2.alignment_prescription import (
+        ALIGNMENT_PRESCRIPTION_KEY,
+    )
+    from jasper.active_speaker.crossover_v2.topology_prescription import (
+        TOPOLOGY_PRESCRIPTION_KEY,
+    )
+
+    return {
+        key: _read_document(path)
+        for key, path in (
+            (ALIGNMENT_PRESCRIPTION_KEY, args.alignment_prescription),
+            (TOPOLOGY_PRESCRIPTION_KEY, args.topology_prescription),
+        )
+        if path
+    }
+
+
 def _cmd_open(client: WizardClient, args: argparse.Namespace) -> int:
     """One stage open. The tier is stated, never inherited (#2639).
 
@@ -121,7 +159,18 @@ def _cmd_open(client: WizardClient, args: argparse.Namespace) -> int:
             json_output=args.json,
         )
         return EXIT_REFUSED
-    http, payload = client.open_session(args.tier or "", stage=args.stage)
+    try:
+        prescriptions = {} if post_apply else _prescription_doors(args)
+    except ValueError as exc:
+        _emit(
+            {"verb": "open", "status": "blocked", "stage": args.stage,
+             "reason": REASON_OPEN_REFUSED, "detail": str(exc)},
+            json_output=args.json,
+        )
+        return EXIT_REFUSED
+    http, payload = client.open_session(
+        args.tier or "", stage=args.stage, prescriptions=prescriptions
+    )
     block = client.v2_block() if http == 200 else {}
     _emit(
         {
@@ -276,6 +325,17 @@ def build_parser() -> argparse.ArgumentParser:
             "(default: %%(default)s)" % (STAGE_MEASURE, STAGE_POST_APPLY)
         ),
     )
+    for door in ("alignment", "topology"):
+        opener.add_argument(
+            f"--{door}-prescription",
+            metavar="PATH",
+            default=None,
+            help=(
+                "a JSON document -- a file, or - for stdin -- posted verbatim "
+                f"as this session's {door} prescription. The open's own gate "
+                f"judges it, never this tool; ignored by --stage {STAGE_POST_APPLY}"
+            ),
+        )
     opener.set_defaults(func=_cmd_open)
 
     waiter = sub.add_parser(
