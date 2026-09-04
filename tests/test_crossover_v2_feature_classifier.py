@@ -66,7 +66,7 @@ from jasper.active_speaker.crossover_v2.round_captures import (
     REFUSE_RADIATED_BAND_MISSING,
 )
 from jasper.active_speaker.crossover_v2.gate_sweep import analysis_grid as sweep_grid
-from jasper.cli import classify_features as cli
+from jasper.cli import round_views as cli
 
 SR = 48000
 SESSION_ID = "bundle5essi0n"
@@ -487,7 +487,7 @@ def test_the_cli_gates_ms_flag_reaches_the_banked_artifact(tmp_path, capsys):
     """
     bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
     code = cli.main([
-        str(bundle), "--dumps", str(dumps),
+        "classify-features", str(bundle), "--dumps", str(dumps),
         "--at", str(RESONANCE_HZ),
         "--gates-ms", "3", "--gates-ms", "9", "--gates-ms", "11",
     ])
@@ -511,7 +511,7 @@ def test_a_single_rung_ladder_refuses_the_ladder_by_name_and_still_classifies(
     """
     bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
     code = cli.main([
-        str(bundle), "--dumps", str(dumps),
+        "classify-features", str(bundle), "--dumps", str(dumps),
         "--at", str(RESONANCE_HZ), "--gates-ms", "7",
     ])
     assert code == cli.EXIT_OK
@@ -1476,7 +1476,9 @@ def test_the_cli_reads_banked_lateral_poses_into_persistence(tmp_path, capsys):
                 "phase_deg": [0.0] * banked_curve.freqs_hz.size,
             }],
         )
-    code = cli.main([str(bundle), "--dumps", str(dumps), "--at", str(RESONANCE_HZ)])
+    code = cli.main(
+        ["classify-features", str(bundle), "--dumps", str(dumps), "--at", str(RESONANCE_HZ)]
+    )
     assert code == cli.EXIT_OK
     round_dir, _ = round_artifact_dir(bundle)
     assert round_dir is not None
@@ -1666,7 +1668,7 @@ def test_a_quiet_delayed_copy_stays_minimum_phase():
 
 def test_the_cli_files_the_verdict_where_the_packet_reads_it(tmp_path, capsys):
     bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
-    code = cli.main([str(bundle), "--dumps", str(dumps)])
+    code = cli.main(["classify-features", str(bundle), "--dumps", str(dumps)])
     assert code == cli.EXIT_OK
     round_dir, _ = round_artifact_dir(bundle)
     assert round_dir is not None
@@ -1685,7 +1687,7 @@ def test_the_cli_classifies_a_bank_shape_round(tmp_path, capsys):
     failure synthetically and asserts it is now classified instead.
     """
     bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0), bank_shape=True)
-    code = cli.main([str(bundle), "--dumps", str(dumps)])
+    code = cli.main(["classify-features", str(bundle), "--dumps", str(dumps)])
     assert code == cli.EXIT_OK
     round_dir, _ = round_artifact_dir(bundle)
     assert round_dir is not None
@@ -1773,29 +1775,30 @@ def test_a_program_missing_refusal_names_the_directory_it_actually_read(
     ``programs_present: ['verify']`` about a directory holding zero WAVs --
     because the message named ``round_dir`` while the count came from
     whichever directory the resolver actually read (here, the sibling, not
-    round_dir). Both the stderr line and the --json payload must name that
-    directory, or this instrument's own refusal starts the very
-    wrong-directory hunt it exists to end.
+    round_dir). The published refusal must name that directory, or this
+    instrument's own refusal starts the very wrong-directory hunt it exists
+    to end.
     """
     bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0), bank_shape=True)
     (bundle / "crossover_v2/wired-TEST/cloud_verify_program.wav").unlink()
-    code = cli.main([str(bundle), "--dumps", str(dumps), "--json"])
+    code = cli.main(["classify-features", str(bundle), "--dumps", str(dumps)])
     assert code == cli.EXIT_REFUSED
     captured = capsys.readouterr()
     assert "crossover_v2/wired-TEST" in captured.err
     payload = json.loads(captured.out)
     assert payload["reason"] == fx.PROGRAM_MISSING
     # The exact shape the gate demonstrated on a real bundle: programs_present
-    # names only what the SIBLING carried, and the payload must now also say
+    # names only what the SIBLING carried, and the record must now also say
     # that the sibling -- not evidence/'s round_dir -- is what was read.
-    assert payload["detail"]["programs_present"] == ["verify_program.wav"]
-    assert payload["programs_dir"] == "crossover_v2/wired-TEST"
+    detail = json.loads(payload["detail"])
+    assert detail["programs_present"] == ["verify_program.wav"]
+    assert detail["programs_dir"].endswith("crossover_v2/wired-TEST")
 
 
 def test_a_refusal_exits_two_and_banks_nothing(tmp_path, capsys):
     """A refusal must not leave a file a later reader would act on."""
     bundle, dumps = _bundle(tmp_path, _flat_ir())
-    code = cli.main([str(bundle), "--dumps", str(dumps), "--json"])
+    code = cli.main(["classify-features", str(bundle), "--dumps", str(dumps)])
     assert code == cli.EXIT_REFUSED
     round_dir, _ = round_artifact_dir(bundle)
     assert round_dir is not None
@@ -1817,7 +1820,7 @@ def test_failed_controls_exit_zero_and_bank_their_own_disclosure(
     """
     monkeypatch.setattr(fx, "CONTROL_MAX_FALSE_POSITIVE_US", 0.0)
     bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
-    code = cli.main([str(bundle), "--dumps", str(dumps)])
+    code = cli.main(["classify-features", str(bundle), "--dumps", str(dumps)])
     assert code == cli.EXIT_OK
     round_dir, _ = round_artifact_dir(bundle)
     assert round_dir is not None
@@ -1833,7 +1836,9 @@ def test_failed_controls_exit_zero_and_bank_their_own_disclosure(
 def test_a_bundle_with_two_rounds_is_refused_rather_than_guessed_at(tmp_path, capsys):
     bundle, dumps = _bundle(tmp_path, _flat_ir())
     (bundle / "evidence/v1/artifacts/crossover_v2/wired-OTHER").mkdir(parents=True)
-    assert cli.main([str(bundle), "--dumps", str(dumps)]) == cli.EXIT_UNREADABLE
+    assert cli.main(
+        ["classify-features", str(bundle), "--dumps", str(dumps)]
+    ) == cli.EXIT_UNREADABLE
     err = capsys.readouterr().err
     # Nit from the #2796 gate: the both-shapes guidance belongs on the
     # "structure missing entirely" refusal, not here -- this bundle's
@@ -1855,7 +1860,7 @@ def test_a_dir_matching_neither_shape_names_both_in_its_refusal(tmp_path, capsys
     bundle, dumps = _bundle(tmp_path, _flat_ir(), bank_shape=True)
     programs_leaf = bundle / "crossover_v2/wired-TEST"
     assert programs_leaf.is_dir()
-    code = cli.main([str(programs_leaf), "--dumps", str(dumps)])
+    code = cli.main(["classify-features", str(programs_leaf), "--dumps", str(dumps)])
     assert code == cli.EXIT_UNREADABLE
     err = capsys.readouterr().err
     assert "evidence/v1/artifacts/crossover_v2" in err

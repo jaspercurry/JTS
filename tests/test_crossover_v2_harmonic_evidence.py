@@ -1012,7 +1012,7 @@ def _ring(tmp_path: Path, rows: Sequence[tuple[str, str, str | None]]) -> Path:
 def test_both_readers_of_the_capture_ring_take_the_same_directory(tmp_path):
     """``--dumps`` means ONE directory across two tools, proven on one ring.
 
-    ``jasper-round-views distortion`` and ``jasper-classify-features`` both take the
+    ``jasper-round-views distortion`` and ``classify-features`` both take the
     ring ROOT — the ``dumps/wav/`` beside ``dumps/sidecar/`` split a
     pre-removal bank produced. An operator who had to know which tool wanted
     the parent would eventually hand one of them the wrong path and get a

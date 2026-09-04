@@ -595,7 +595,8 @@ run: the banked flat-campaign rounds re-read through 6.1–6.3 (+6.10–6.11),
 validating the new fields on known data and mapping the incumbent's
 features to mechanisms, so the recommissioning campaign opens with its
 priors measured.
-6.1 Gate-ladder exposure: `jasper-classify-features` grows a gates-list
+6.1 Gate-ladder exposure: `jasper-round-views classify-features` grows a
+    gates-list
     flag wired to `classify_round(gates_ms=...)`, and the artifact's
     per-rung rows (center/depth per gate, per feature) are verified
     readable — rungs above `SEARCH_T_MAX_MS` deliberately re-admit
@@ -737,7 +738,8 @@ priors measured.
 
 SSH in (cloud agent, laptop, or on-Pi) → `jasper-crossover-prescriber
 status` → read the evidence packet + operator notes (quarantined) → run or
-re-run deterministic views (`jasper-classify-features`, `jasper-round-views`)
+re-run deterministic views (`jasper-round-views classify-features` and the
+rest of `jasper-round-views`)
 → propose up to ~3 candidate prescriptions; each passes a door, compiles,
 banks its expected delta → hand the human the tournament program URL
 (hostname-derived); they move the mic pose-to-pose while candidates cycle →

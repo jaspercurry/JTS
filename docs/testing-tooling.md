@@ -799,8 +799,11 @@ ever deletes an already-pulled file.
 - **The speaker-side capture-dump ring is gone.** Every accepted capture's WAV
   and provenance now ride the session bundle's own banked take records; corpora
   banked before the removal keep their `dumps/` tree. To feed a
-  `--dumps`-taking tool from a modern bank, rebuild the layout with
-  `jasper-project-ring <bundle-dir> --out <ring>`.
+  `--dumps`-taking tool from a modern bank, project the layout out of the
+  bundle with `jasper-round-views classify-features <bundle-dir>`, which
+  writes it to `<bundle-dir>/ring` before it classifies — so a round with no
+  summed capture to classify still leaves the ring behind, under the exit-1
+  refusal that says it had nothing to classify.
 
 ---
 
@@ -912,8 +915,9 @@ that corner and order first. Owners:
 
 ## Feature-classification instrument
 
-`jasper-classify-features`
-([`jasper/cli/classify_features.py`](../jasper/cli/classify_features.py) over
+`jasper-round-views classify-features`
+([`jasper/cli/round_views/classify_features.py`](../jasper/cli/round_views/classify_features.py)
+over
 [`feature_classifier.py`](../jasper/active_speaker/crossover_v2/feature_classifier.py))
 answers the question a magnitude curve cannot: is that bump a **minimum-phase
 driver defect** (a filter is at least the right kind of tool), a
@@ -924,15 +928,15 @@ offline over captures a round already banked and files
 the evidence packet reads it.
 
 ```sh
-jasper-classify-features <bundle-dir> --dumps <capture-ring> [--json]
-jasper-classify-features <bundle-dir> --dumps <ring> --walk-log logs/walk-1.jsonl
-jasper-classify-features <bundle-dir> --dumps <ring> --at 1037 --at 4149
+jasper-round-views classify-features <bundle-dir>
+jasper-round-views classify-features <bundle-dir> --walk-log logs/walk-1.jsonl
+jasper-round-views classify-features <bundle-dir> --dumps <ring> --at 1037 --at 4149
 ```
 
-- `--dumps` is a banked capture ring, scoped to this round by the bundle's own
-  `session_id`, so a ring holding several rounds needs no flag to be split
-  correctly. A round banked today has no ring of its own — rebuild one with
-  `jasper-project-ring <bundle-dir> --out <ring>`
+- The capture ring is scoped to this round by the bundle's own `session_id`, so
+  a ring holding several rounds needs no flag to be split correctly. A round
+  banked today has no ring of its own, so one is projected out of the bundle
+  into `<bundle-dir>/ring` unless `--dumps` names a ring that already exists
   (see [Crossover-v2 round banking](#crossover-v2-round-banking)).
 - `--walk-log` gives the timing test repeated angles from a turntable trail;
   `--at` classifies exactly those frequencies instead of detecting them.

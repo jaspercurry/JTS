@@ -922,7 +922,8 @@ def _next_actions(
             # action is the same either way, and the reason tells them apart.
             out.append(
                 "no readable feature classification for this round "
-                f"({classification['reason']}) — run `jasper-classify-features`; "
+                f"({classification['reason']}) — run "
+                "`jasper-round-views classify-features`; "
                 "without it no per-driver filter can be shown to be aimed at a "
                 "driver defect"
             )
