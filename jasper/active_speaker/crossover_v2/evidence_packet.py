@@ -175,7 +175,7 @@ CLASSIFICATION_ARTIFACT = "feature_classification.json"
 
 #: The round's banked harmonic-distortion reading, beside the classification.
 #: Same posture as :data:`CLASSIFICATION_ARTIFACT`; written offline by
-#: ``jasper-read-distortion`` over :mod:`.harmonic_evidence`. Defined HERE
+#: ``jasper-round-views distortion`` over :mod:`.harmonic_evidence`. Defined HERE
 #: rather than in that module because it imports this one (for
 #: :data:`RING_SIDECAR_GLOB`): the packet owns the names of what it reads.
 HARMONICS_ARTIFACT = "harmonic_distortion.json"
@@ -1345,7 +1345,7 @@ def _harmonics_uncertainty(orders: Iterable[int]) -> dict[str, Any]:
 def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
     """The round's banked H2/H3 reading, copied through with its declarations.
 
-    Verbatim: the instrument that produced it (``jasper-read-distortion``, over
+    Verbatim: the instrument that produced it (``jasper-round-views distortion``, over
     :mod:`.harmonic_evidence`) owns what the numbers mean. What this adds is
     the uncertainty declarations the artifact does not carry.
 

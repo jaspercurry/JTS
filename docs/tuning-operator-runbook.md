@@ -129,7 +129,7 @@ exist.
    summed-system capture, so verify-shaped rounds classify and a MEASURE-only
    or lateral ring refuses by name, with a per-take `captures` table saying
    why;
-   `jasper-read-distortion <bundle-dir> --dumps <ring> --state <flow-state>`
+   `jasper-round-views distortion <bundle-dir> --dumps <ring> --state <flow-state>`
    files `harmonic_distortion.json` beside it;
    `jasper-round-views frozen | per-seat | repeat | agreement | frequency`
    grades it.
@@ -433,10 +433,9 @@ nothing durable · **mutating** = changes what the speaker plays ·
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber status\|packet\|propose\|stage` | Emit one crossover round's evidence packet, read a prescription back through the strict gate, and say where this speaker stands. | advisory (`stage` mutates) | `jasper/cli/crossover_prescriber.py` |
 | `jasper-round open\|wait\|apply\|bank` | Open, wait on, apply and bank a crossover round from the speaker itself. The three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate, plus the bank that files a finished session in the on-box campaign home. | mutating-with-gates (`open`/`apply`/`bank` write; `wait` does not) | `jasper/cli/round.py` |
-| `jasper-round-views entry\|frozen\|per-seat\|repeat\|repeat-floor\|agreement\|co-metrics\|directivity\|cloud-binding\|spec-sweep\|gate-sweep\|frequency\|inventory` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability and the banked repeat floor, per-seat agreement, audibility co-metrics, measured per-angle directivity, whether the cloud's null evidence bound the linearization fit, the gate window ladder and the sweep read onto the spec verdict, the shared frequency view, and an inventory of which of those a round already carries — over banked rounds and live sessions. | advisory | `jasper/cli/round_views.py` |
-| `jasper-project-ring` | Re-project a banked round into the capture ring that jasper-classify-features and jasper-read-distortion read. | mutating (projects evidence; changes nothing played) | `jasper/cli/project_ring.py` |
+| `jasper-round-views entry\|frozen\|per-seat\|repeat\|repeat-floor\|agreement\|co-metrics\|directivity\|cloud-binding\|spec-sweep\|gate-sweep\|frequency\|distortion\|inventory` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability and the banked repeat floor, per-seat agreement, audibility co-metrics, measured per-angle directivity, whether the cloud's null evidence bound the linearization fit, the gate window ladder and the sweep read onto the spec verdict, the shared frequency view, the H2/H3 distortion reading, and an inventory of which of those a round already carries — over banked rounds and live sessions. | advisory | `jasper/cli/round_views.py` |
+| `jasper-project-ring` | Re-project a banked round into the capture ring that jasper-classify-features and jasper-round-views distortion read. | mutating (projects evidence; changes nothing played) | `jasper/cli/project_ring.py` |
 | `jasper-classify-features` | Classify a banked round's features as minimum-phase driver defects, interference, or the room — controls first. | advisory | `jasper/cli/classify_features.py` |
-| `jasper-read-distortion` | Read H2/H3 out of a banked round's MEASURE captures, relative to the fundamental, at the drive each capture used. | advisory | `jasper/cli/read_distortion.py` |
 | `jasper-delay-sweep propose\|confirm` | Propose an inter-driver delay from banked curves, then grade the acoustic confirmation against it. Computes only; plays nothing. | advisory (plays nothing) | `jasper/cli/delay_sweep.py` |
 | `jasper-forward-model predict\|verify-delta` | Predict a candidate's summed response from banked per-driver solos. Computes only; plays nothing and opens no device. | advisory (plays nothing) | `jasper/cli/forward_model.py` |
 | `jasper-close-reference distance\|compare` | Correct a close capture to the far distance and say, band by band, how much of the far read was the room. Computes only; plays nothing and opens no device. | advisory (plays nothing) | `jasper/cli/close_reference.py` |
@@ -645,7 +644,7 @@ mean the apply failed — run `review` and read the applied state.
 Two doors are deliberately outside the record's shape.
 `jasper-declare-geometry` is a human-only sudo `set`/`show` config door that
 prints text, not JSON, and keeps `2` = `EXIT_NOT_FOUND` (`show` before
-anything was declared); and `jasper-read-distortion` / `jasper-project-ring` /
+anything was declared); and `jasper-project-ring` /
 `jasper-classify-features` print an older `{"ok": false, ...}` record, and only
 under `--json`, so it does not line up field-for-field with the shape above.
 Converging that second shape is a follow-on.
@@ -865,7 +864,7 @@ grading currency.
 
 ### Reading harmonics honestly
 
-`jasper-read-distortion` files `harmonic_distortion.json` into the round dir and
+`jasper-round-views distortion` files `harmonic_distortion.json` into the round dir and
 the packet's `harmonics` block carries it. Absent that run the block refuses and
 `not_evaluated` names it — an empty block means nobody read the round, not that
 the round is clean. `h2_below_fundamental_db` is that order's level **minus the
@@ -921,7 +920,7 @@ the absence.
 **Rounds banked before a take carried its own analysis have no `diagnostic`
 block**, so `capture_snr` is honestly absent for them. Those corpora keep
 their `dumps/` tree, which is what `jasper-classify-features --dumps` and
-`jasper-read-distortion --dumps` still open — they want the capture WAVs, and
+`jasper-round-views distortion --dumps` still open — they want the capture WAVs, and
 no banked record holds those.
 
 ### Reading the gate and the reflector path honestly

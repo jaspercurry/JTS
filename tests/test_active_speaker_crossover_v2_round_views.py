@@ -1178,7 +1178,7 @@ def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
     missing = rows["directivity.json"]
     assert missing["present"] is False
     assert missing["produced_by"] == "jasper-round-views directivity <this-round>"
-    assert missing["producer_needs_another_round"] is False
+    assert missing["producer_needs_more_than_this_round"] is False
     assert missing["path"] == str(round_dir / "directivity.json")
     # The producer it named writes the artifact it named as missing.
     assert cli.main(["directivity", str(round_dir)]) == 0
@@ -1191,12 +1191,19 @@ def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
     assert multi["produced_by"] == (
         "jasper-round-views frozen <other-round> <this-round>"
     )
-    assert multi["producer_needs_another_round"] is True
+    assert multi["producer_needs_more_than_this_round"] is True
     with pytest.raises(SystemExit):
         cli.main(["frozen", str(round_dir)])
 
     assert rows["gate_sweep.json"]["produced_by"] == (
         "jasper-round-views gate-sweep <this-round>"
+    )
+
+    # A view the evidence packet reads is read back where THAT reader looks —
+    # inside the round's own artifact directory, never beside the round.
+    assert rows["harmonic_distortion.json"]["path"] == str(
+        round_dir / "bundle/sess1/evidence/v1/artifacts/crossover_v2/cap1"
+        / "harmonic_distortion.json"
     )
 
 

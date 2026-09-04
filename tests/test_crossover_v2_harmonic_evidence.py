@@ -41,6 +41,7 @@ from jasper.active_speaker.crossover_v2.feature_classification import (
 )
 from jasper.audio_measurement.distortion import DriveLevel, HarmonicReading
 from jasper.audio_measurement.sweep import synchronized_sweep_metadata
+from jasper.cli._refusal import EXIT_REFUSED
 
 ORDERS = (2, 3)
 
@@ -856,7 +857,7 @@ def test_a_below_one_cycle_banked_duration_refuses_honestly_instead_of_raising()
     """The CLI-visible half of the should-fix: ``rebuild_measure_program``
     must reach the named ``program_not_reproducible`` refusal, never an
     escaped ``ValueError`` — that escape used to mis-classify the round at
-    ``jasper-read-distortion`` as ``EXIT_UNREADABLE`` instead of
+    ``jasper-round-views distortion`` as ``EXIT_UNREADABLE`` instead of
     ``EXIT_REFUSED``.
 
     The state file DOES carry a ``measure_sweep_durations_s`` entry here —
@@ -1011,7 +1012,7 @@ def _ring(tmp_path: Path, rows: Sequence[tuple[str, str, str | None]]) -> Path:
 def test_both_readers_of_the_capture_ring_take_the_same_directory(tmp_path):
     """``--dumps`` means ONE directory across two tools, proven on one ring.
 
-    ``jasper-read-distortion`` and ``jasper-classify-features`` both take the
+    ``jasper-round-views distortion`` and ``jasper-classify-features`` both take the
     ring ROOT — the ``dumps/wav/`` beside ``dumps/sidecar/`` split a
     pre-removal bank produced. An operator who had to know which tool wanted
     the parent would eventually hand one of them the wrong path and get a
@@ -1162,13 +1163,13 @@ def test_a_null_reading_never_reaches_json_as_a_number():
 
 def test_the_artifact_name_has_one_owner():
     """The writer, the reader and the CLI resolve one spelling."""
-    from jasper.cli import read_distortion
+    from jasper.cli.round_views import ARTIFACT_BY_VIEW
 
     assert he.HARMONICS_ARTIFACT == HARMONICS_ARTIFACT == "harmonic_distortion.json"
-    assert read_distortion.HARMONICS_ARTIFACT is HARMONICS_ARTIFACT
+    assert ARTIFACT_BY_VIEW["distortion"].artifact is HARMONICS_ARTIFACT
 
 
-def test_the_distortion_door_composes_the_shape_the_round_actually_swept():
+def test_the_distortion_door_composes_the_shape_the_round_actually_swept(tmp_path):
     """Both directions, because a derivation that answered ``full_range`` for
     every round would break every 2-way one — and the 1-way arm is then driven
     all the way through the rebuild, which proves itself against the banked
@@ -1182,14 +1183,14 @@ def test_the_distortion_door_composes_the_shape_the_round_actually_swept():
         PILOT_LEVEL_DELTA_DB,
         courtesy_prelude_for_phase,
     )
-    from jasper.cli import read_distortion
+    from jasper.cli.round_views import build_parser, main
 
-    band = read_distortion.DEFAULT_FULL_RANGE_BAND_HZ
+    band = he.DEFAULT_FULL_RANGE_BAND_HZ
     overrides = {
         "woofer": (150.0, 4000.0), "tweeter": (1600.0, 20000.0), "full_range": band,
     }
 
-    assert read_distortion.round_bands_hz(
+    assert he.round_bands_hz(
         {"gain_plan_db": {"woofer": -6.0, "tweeter": -31.2}}, overrides,
     ) == {"woofer": (150.0, 4000.0), "tweeter": (1600.0, 20000.0)}
     # A state that names no roles, or roles that are not a shape any speaker
@@ -1197,8 +1198,19 @@ def test_the_distortion_door_composes_the_shape_the_round_actually_swept():
     # and never quietly reduced to the roles that happen to match.
     for state in ({}, {"gain_plan_db": {"woofer": -6.0, "horn": -31.2}}):
         with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
-            read_distortion.round_bands_hz(state, overrides)
+            he.round_bands_hz(state, overrides)
         assert excinfo.value.reason == he.STATE_UNREADABLE
+    # And the verb publishes that named refusal as the refused exit, rather
+    # than letting an instrument's own exception reach the operator raw.
+    bundle = tmp_path / "bundle"
+    (bundle / "evidence/v1/artifacts/crossover_v2/cap-1").mkdir(parents=True)
+    (bundle / "info.json").write_text(json.dumps({"session_id": "s-1"}))
+    flow_state = tmp_path / "flow_state.json"
+    flow_state.write_text(json.dumps({"gain_plan_db": {"woofer": -6.0, "horn": -31.2}}))
+    assert main([
+        "distortion", str(bundle), "--dumps", str(tmp_path),
+        "--state", str(flow_state),
+    ]) == EXIT_REFUSED
 
     program = build_measure_program(
         {"full_range": -11.0},
@@ -1212,7 +1224,7 @@ def test_the_distortion_door_composes_the_shape_the_round_actually_swept():
         "gain_plan_db": {"full_range": -11.0},
         "candidate": {"program_id": program.program_id},
     }
-    bands = read_distortion.round_bands_hz(state, overrides)
+    bands = he.round_bands_hz(state, overrides)
 
     assert bands == {"full_range": band}
     rebuilt, downstream, _prelude = he.rebuild_measure_program(state, bands)
@@ -1221,8 +1233,9 @@ def test_the_distortion_door_composes_the_shape_the_round_actually_swept():
 
     # A 1-way round measured on a non-default band gets an operator remedy,
     # same as the pair's --woofer-band / --tweeter-band.
-    args = read_distortion.build_parser().parse_args(
-        ["bundle", "--dumps", "d", "--state", "s", "--full-range-band", "45:18000"],
+    args = build_parser().parse_args(
+        ["distortion", "bundle", "--dumps", "d", "--state", "s",
+         "--full-range-band", "45:18000"],
     )
     assert args.full_range_band == (45.0, 18000.0)
 
