@@ -433,13 +433,12 @@ nothing durable · **mutating** = changes what the speaker plays ·
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber status\|packet\|propose\|stage` | Emit one crossover round's evidence packet, read a prescription back through the strict gate, and say where this speaker stands. | advisory (`stage` mutates) | `jasper/cli/crossover_prescriber.py` |
 | `jasper-round open\|wait\|apply\|bank` | Open, wait on, apply and bank a crossover round from the speaker itself. The three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate, plus the bank that files a finished session in the on-box campaign home. | mutating-with-gates (`open`/`apply`/`bank` write; `wait` does not) | `jasper/cli/round.py` |
-| `jasper-round-views entry\|frozen\|per-seat\|repeat\|repeat-floor\|agreement\|co-metrics\|directivity\|cloud-binding\|spec-sweep\|frequency\|inventory` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability and the banked repeat floor, per-seat agreement, audibility co-metrics, measured per-angle directivity, whether the cloud's null evidence bound the linearization fit, the gate sweep read onto the spec verdict, the shared frequency view, and an inventory of which of those a round already carries — over banked rounds and live sessions. | advisory | `jasper/cli/round_views.py` |
+| `jasper-round-views entry\|frozen\|per-seat\|repeat\|repeat-floor\|agreement\|co-metrics\|directivity\|cloud-binding\|spec-sweep\|gate-sweep\|frequency\|inventory` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability and the banked repeat floor, per-seat agreement, audibility co-metrics, measured per-angle directivity, whether the cloud's null evidence bound the linearization fit, the gate window ladder and the sweep read onto the spec verdict, the shared frequency view, and an inventory of which of those a round already carries — over banked rounds and live sessions. | advisory | `jasper/cli/round_views.py` |
 | `jasper-project-ring` | Re-project a banked round into the capture ring that jasper-classify-features and jasper-read-distortion read. | mutating (projects evidence; changes nothing played) | `jasper/cli/project_ring.py` |
 | `jasper-classify-features` | Classify a banked round's features as minimum-phase driver defects, interference, or the room — controls first. | advisory | `jasper/cli/classify_features.py` |
 | `jasper-read-distortion` | Read H2/H3 out of a banked round's MEASURE captures, relative to the fundamental, at the drive each capture used. | advisory | `jasper/cli/read_distortion.py` |
 | `jasper-delay-sweep propose\|confirm` | Propose an inter-driver delay from banked curves, then grade the acoustic confirmation against it. Computes only; plays nothing. | advisory (plays nothing) | `jasper/cli/delay_sweep.py` |
 | `jasper-forward-model predict\|verify-delta` | Predict a candidate's summed response from banked per-driver solos. Computes only; plays nothing and opens no device. | advisory (plays nothing) | `jasper/cli/forward_model.py` |
-| `jasper-gate-sweep` | Sweep a banked round's gate window and report, per spec band and declared pose, what moves with the window. Computes only; plays nothing. | advisory (plays nothing) | `jasper/cli/gate_sweep.py` |
 | `jasper-close-reference distance\|compare` | Correct a close capture to the far distance and say, band by band, how much of the far read was the room. Computes only; plays nothing and opens no device. | advisory (plays nothing) | `jasper/cli/close_reference.py` |
 | `jasper-null` | Play the summed reverse null and bank one row per coordinate. Measures only; grades nothing. | measured | `jasper/cli/null_door.py` |
 | `jasper-audition start\|stop\|status` | Play this speaker at a reduced DSP layer, then put it back | mutating (runtime only; durable graph untouched -- ADR-0193) | `jasper/cli/audition.py` |
@@ -629,7 +628,7 @@ be FILED; the failing number names the stage that failed, which is what tells
 you where to go.
 
 **The number is the contract; the record beside it is per tool.** The
-round-grading family — `jasper-round-views`, `jasper-gate-sweep`,
+round-grading family — `jasper-round-views`,
 `jasper-delay-sweep`, `jasper-close-reference`, `jasper-forward-model` — prints
 `{"status": "refused" | "unreadable" | "unwritable", "reason":
 "<tool_named_slug>", "detail": "<text>"}` on stdout and one `<status>
@@ -979,14 +978,14 @@ every one is `null` on a report nothing stamped.
 
 | Field | What it says |
 |---|---|
-| `sigma_growth_ratio`, `gate_sensitivity_db` | same discriminator as `jasper-gate-sweep`'s `sensitivity` block — see "Reading a gate sweep" below, not restated here. |
+| `sigma_growth_ratio`, `gate_sensitivity_db` | same discriminator as `jasper-round-views gate-sweep`'s `sensitivity` block — see "Reading a gate sweep" below, not restated here. |
 | `n_valid_rungs` | how many ladder rungs were resolution-valid at that bin — the denominator behind the two above. Present even when they are `null`. |
 | `gate_sensitivity_note` | why there is no number. **Read this first.** A `not_swept_` prefix means the ladder never ran (`not_swept_single_pose`, `not_swept_band_not_evaluable`, `not_swept_captures_unreadable`, `not_swept_bin_outside_analysis_grid`); a bare slug is the ladder's own refusal after running (`insufficient_valid_rungs`, `short_rung_sigma_is_zero`). Not measured is not the same as measured and inconclusive. |
 | `gate_sensitivity_detail` | beside a `not_swept_single_pose` / `not_swept_captures_unreadable` note only: the `RoundCapturesRefused` this round hit — `reason` plus its own evidence — so what was actually missing survives the bucket slug. `null` otherwise, swept or not. |
 | `gate_window_verdict`, `gate_window_verdict_reasons` | this band's own `window_verdict` / `window_verdict_reasons`, stamped at the same worst bin — see "Reading a gate sweep" below, not restated here. |
 | `gate_sweep_frame` | *(on the report)* the window shape, ladder, smoothing, grid and resolution bars every number above is stated in. One capture and one feature read a different depth under each defensible frame, so a sensitivity quoted without this one is the frame's number, not the room's. |
 
-Only `jasper-gate-sweep --at-hz <bin>` still answers for a bin the verdict did
+Only `jasper-round-views gate-sweep --at-hz <bin>` still answers for a bin the verdict did
 not flag; the flagged one is already on the report.
 
 **The reflector path is the ladder's tau times the speed of sound.** The
@@ -1007,7 +1006,7 @@ the reflector is at the microphone. Do not read the absence as a near reflector.
 
 ### Reading a gate sweep
 
-`jasper-gate-sweep <round_dir>` deconvolves every summed capture in a banked
+`jasper-round-views gate-sweep <round_dir>` deconvolves every summed capture in a banked
 round, gates each one at a ladder of window lengths (`--rungs-ms`, default
 `3 4 5 7 9 12 20`), and publishes what moved with the window. It plays nothing
 and writes only its report — `<round_dir>/gate_sweep.json` unless `--out` says
@@ -1107,7 +1106,7 @@ its own gate ladder; the packet's `per_bin_sigma_db` is computed elsewhere from
 the packet's own member curves. Compare the two as ratios across rungs or not at
 all.
 
-**Worked example, banked.** `jasper-gate-sweep` reproduces P1's hand analysis of
+**Worked example, banked.** `jasper-round-views gate-sweep` reproduces P1's hand analysis of
 the r9 and day-1 seat clouds to within the two grids' bin centres, and the
 banked run records where its headline ratio differs from P1's quoted 3→20 ms
 figure and why — including the 358 Hz row, whose valid rungs start where σ has

@@ -75,7 +75,7 @@ from jasper.cli._refusal import (
     EXIT_WRITE_FAILED,
     fail_with_payload,
 )
-from jasper.cli.gate_sweep import add_rungs_ms_argument
+from jasper.cli.round_views import add_rungs_ms_argument
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).

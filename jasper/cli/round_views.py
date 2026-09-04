@@ -4,7 +4,7 @@
 
 """Operator entry point for the round-grading comparison views (issue #2769).
 
-One console script, twelve subcommands — each a thin argparse wrapper over
+One console script, one subcommand per view — each a thin argparse wrapper over
 :mod:`jasper.active_speaker.crossover_v2.round_views`, which owns every
 number this tool prints. A round directory is EITHER a banked round tree or
 a live session bundle still on the speaker
@@ -56,8 +56,15 @@ Subcommands:
   rungs were resolution-valid, and the frame all three are stated in.
   Disclosure only — no grade moves, and every field is a re-reading of the
   spec report the round already banked. Writes
-  ``spec_gate_sensitivity.json``. Reach for ``jasper-gate-sweep --at-hz``
-  only for a bin this verdict did NOT flag.
+  ``spec_gate_sensitivity.json``. Reach for ``gate-sweep --at-hz`` only
+  for a bin this verdict did NOT flag.
+* ``gate-sweep <round-dir>`` — the window ladder itself, over every summed
+  capture the round banked: per spec band and per declared pose, what moves
+  as the gate admits the room and what does not (#3495), with ``--at-hz``
+  naming bins beside each band's own deepest one. What sigma growth MEANS is
+  :mod:`~jasper.active_speaker.crossover_v2.gate_sweep`'s, not restated here.
+  Writes ``gate_sweep.json``. Evidence for an attribution argument, never an
+  EQ instruction.
 * ``frequency <source-a> [<source-b>]`` — the renderer-neutral frequency view
   shared with the JTS web page. A source may be a banked round, a session
   bundle, or a JSON measurement/analysis document.
@@ -138,6 +145,12 @@ from jasper.active_speaker.repeat_floor import (
     write_repeat_floor,
 )
 from jasper.active_speaker.crossover_v2.frequency_view import frequency_run
+from jasper.active_speaker.crossover_v2.gate_sweep import (
+    DEFAULT_RUNGS_MS,
+    summary_lines,
+    sweep_round,
+)
+from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, round_inputs
 from jasper.cli._refusal import (
     EXIT_OK,
@@ -149,7 +162,6 @@ from jasper.cli._refusal import (
     stage,
 )
 from jasper.cli._report import write_report
-from jasper.cli.gate_sweep import add_rungs_ms_argument
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
@@ -195,6 +207,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "directivity": ViewArtifact("directivity.json"),
     "cloud-binding": ViewArtifact("cloud_binding.json"),
     "spec-sweep": ViewArtifact("spec_gate_sensitivity.json"),
+    "gate-sweep": ViewArtifact("gate_sweep.json"),
     "frequency": ViewArtifact("frequency_view.json"),
 }
 
@@ -597,6 +610,35 @@ def _cmd_spec_sweep(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_gate_sweep(args: argparse.Namespace) -> int:
+    round_dir = Path(args.round_dir)
+    try:
+        report = stage(
+            EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, sweep_round, round_dir,
+            rungs_ms=args.rungs_ms, at_hz=args.at_hz or (),
+        )
+    except RoundCapturesRefused as exc:
+        # The ladder's own named refusal, never the resolver's coarser bucket.
+        return failed(
+            EXIT_REFUSED, exc.reason,
+            json.dumps(exc.detail, sort_keys=True, default=str),
+        )
+    artifact = ARTIFACT_BY_VIEW[args.command].artifact
+    try:
+        # The ladder also reads a bundle subtree the resolver cannot place.
+        beside = default_out(round_inputs(round_dir), round_dir, artifact)
+    except RoundViewsError:
+        beside = round_dir / artifact
+    written = _write(report, args.out, beside)
+    print(
+        "gate-sweep [evidence only, no grade moves]: "
+        + "; ".join(summary_lines(report))
+        + (f" -> {written}" if written else ""),
+        file=sys.stderr,
+    )
+    return EXIT_OK
+
+
 def _frequency_source(path: Path):
     """One round, bundle, or JSON document as a neutral frequency run."""
 
@@ -681,6 +723,29 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def add_rungs_ms_argument(
+    parser: argparse.ArgumentParser, *, flag: str = "--rungs-ms",
+    dest: str | None = None, repeatable: bool = False,
+) -> None:
+    """The gate ladder flag, so the shipped ladder has one owner.
+
+    ``repeatable=True`` defaults to ``None``, never the shipped rungs: an
+    argparse ``append`` over a non-empty default ADDS to it, not replaces it.
+    """
+    shipped = " ".join(f"{r:g}" for r in DEFAULT_RUNGS_MS)
+    if repeatable:
+        parser.add_argument(
+            flag, type=float, action="append", default=None, dest=dest,
+            metavar="MS",
+            help=f"one rung in ms, repeatable; replaces the ladder ({shipped})",
+        )
+        return
+    parser.add_argument(
+        flag, type=float, nargs="+", default=list(DEFAULT_RUNGS_MS), dest=dest,
+        metavar="MS", help=f"gate ladder, in milliseconds (default: {shipped})",
+    )
+
+
 def _add_norm_band_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--norm-lo", type=float, default=400.0, help="normalisation band low edge, Hz (default 400)")
     parser.add_argument("--norm-hi", type=float, default=8000.0, help="normalisation band high edge, Hz (default 8000)")
@@ -695,9 +760,9 @@ def build_parser() -> argparse.ArgumentParser:
             "repeatability and the banked repeat floor, per-seat agreement, "
             "audibility co-metrics, measured per-angle directivity, whether "
             "the cloud's null evidence bound the linearization fit, the gate "
-            "sweep read onto the spec verdict, the shared frequency view, and "
-            "an inventory of which of those a round already carries — over "
-            "banked rounds and live sessions."
+            "window ladder and the sweep read onto the spec verdict, the "
+            "shared frequency view, and an inventory of which of those a "
+            "round already carries — over banked rounds and live sessions."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -823,6 +888,23 @@ def build_parser() -> argparse.ArgumentParser:
     add_rungs_ms_argument(spec_sweep)
     spec_sweep.add_argument("--out", default=None, help="write the result here (- for stdout)")
     spec_sweep.set_defaults(func=_cmd_spec_sweep)
+
+    gate_sweep = sub.add_parser(
+        "gate-sweep",
+        help="sweep the gate window over this round's own captures — room or speaker, evidence only",
+    )
+    gate_sweep.add_argument("round_dir", help=_ROUND_DIR_HELP)
+    add_rungs_ms_argument(gate_sweep)
+    gate_sweep.add_argument(
+        "--at-hz", type=float, nargs="+", default=None, metavar="HZ",
+        help=(
+            "also read these frequencies, whatever each band's deepest bin is "
+            "(the spec verdict's worst bin belongs here); each is snapped to "
+            "the nearest analysis-grid bin"
+        ),
+    )
+    gate_sweep.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    gate_sweep.set_defaults(func=_cmd_gate_sweep)
 
     frequency = sub.add_parser("frequency", help="build the shared frequency-response view")
     frequency.add_argument(

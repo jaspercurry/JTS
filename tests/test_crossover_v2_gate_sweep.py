@@ -321,6 +321,30 @@ def test_the_frame_every_number_is_stated_in_is_published(
     assert frame["rungs_ms"] == list(gate_sweep.DEFAULT_RUNGS_MS)
 
 
+def test_the_summary_lines_label_the_bin_actually_read(
+    anchored_reports: tuple[dict, dict],
+) -> None:
+    """One line per band then per named bin, each carrying the bin it read: a
+    band's own worst bin, and a named request beside the grid bin it snapped
+    to. The unresolved anchor exercises the no-sensitivity branch."""
+    _plain, anchored = anchored_reports
+    lines = gate_sweep.summary_lines(anchored)
+
+    assert len(lines) == len(anchored["bands"]) + len(anchored["features"])
+    low = anchored["bands"][0]
+    assert lines[0].startswith(
+        f"{low['band_hz'][0]:g}-{low['band_hz'][1]:g} Hz "
+        f"(worst bin {low['worst_bin_hz']:.1f} Hz) "
+        f"{low['window_verdict'].upper()} "
+    )
+    named, unresolved = anchored["features"]
+    assert lines[-2].startswith(
+        f"{named['requested_hz']:g} Hz (bin {named['bin_hz']:.1f} Hz) "
+    )
+    assert unresolved["sensitivity"] is None
+    assert "no sensitivity" in lines[-1]
+
+
 def test_a_named_frequency_is_read_the_way_a_worst_bin_is(
     anchored_reports: tuple[dict, dict],
 ) -> None:

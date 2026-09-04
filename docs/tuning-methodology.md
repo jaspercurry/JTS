@@ -551,7 +551,7 @@ provenance stated — never vetoes:
   the gate's.**
   [Geometry, not convention: the comb spacing is the arrival delay's reciprocal.]
 - `gate_rungs` / `gate_sensitivity` — the window ladder, run by the gate-sweep
-  engine (`jasper-gate-sweep`; when to reach for it is §6a below and its
+  engine (`jasper-round-views gate-sweep`; when to reach for it is §6a below and its
   field-by-field guide is the runbook's "Reading a gate sweep", neither
   restated here — and a classification row's ladder numbers are in that
   report's frame, not this section's `depth_db` frame). `gate_rungs` is every
@@ -633,7 +633,7 @@ why the reader that stamps them is offline:
 writes the graded verdict carrying all five to
 `<round-dir>/spec_gate_sensitivity.json`. Read `gate_sensitivity_note` first: a
 `not_swept_` prefix means the ladder never ran, a bare slug means it ran and
-declined. `jasper-gate-sweep --at-hz` is now only for a bin the verdict did
+declined. `jasper-round-views gate-sweep --at-hz` is now only for a bin the verdict did
 *not* flag.
 
 **Prefer cuts; keep boosts modest and probe-verified.** The realization probe
@@ -691,9 +691,9 @@ and the failing band's own `room_entangled_below_hz` for how far up the
 reservation reaches. A feature above the entanglement floor needs no ladder —
 measured window-invariance and directivity already carry it.
 
-**Rung 2 — `jasper-gate-sweep`: is this feature the room or the speaker?**
+**Rung 2 — `jasper-round-views gate-sweep`: is this feature the room or the speaker?**
 Run it on a banked verify or cloud round (across-pose σ needs two poses):
-`jasper-gate-sweep <round_dir> --at-hz <max_deviation_hz> --out <path>`.
+`jasper-round-views gate-sweep <round_dir> --at-hz <max_deviation_hz> --out <path>`.
 Always pass `--at-hz` the failing band's own `max_deviation_hz` — a band's
 automatic `worst_bin_hz` is its DEEPEST bin, which is not in general its most
 window-divergent one. Read `features[].sensitivity.sigma_growth_ratio`,
