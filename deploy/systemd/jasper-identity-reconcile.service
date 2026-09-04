@@ -5,6 +5,12 @@ Description=Snapshot the speaker's effective mDNS identity to /var/lib/jasper/id
 # if it isn't, so this is an ordering hint, not a hard requirement.
 After=avahi-daemon.service
 Wants=avahi-daemon.service
+# jasper.identity.resolve_hostname reads this snapshot FIRST, and a reader
+# that resolves at start freezes the answer for its lifetime (jasper-voice's
+# Config.from_env -> cfg.hostname; jasper-control's management-host
+# allowlist). Refresh the record before they read it; the timer below still
+# carries the 5-minute self-heal for a rename that lands mid-uptime.
+Before=jasper-voice.service jasper-control.service jasper-web.service
 
 [Service]
 Type=oneshot

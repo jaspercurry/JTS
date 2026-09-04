@@ -58,7 +58,7 @@ def test_read_identity_hostname_defaults_when_unset(monkeypatch, tmp_path):
     assert identity.read_identity().hostname == "jts.local"
 
 
-def test_read_identity_hostname_falls_back_to_recorded_configured_hostname(
+def test_read_identity_hostname_reads_the_recorded_configured_hostname(
     monkeypatch, tmp_path,
 ):
     """A CLI run over ssh gets no EnvironmentFile, so JASPER_HOSTNAME is unset
@@ -79,15 +79,30 @@ def test_read_identity_hostname_falls_back_to_recorded_configured_hostname(
     assert identity.read_identity().hostname == "jts3.local"
 
 
-def test_read_identity_hostname_env_wins_over_recorded(monkeypatch, tmp_path):
-    """A daemon's EnvironmentFile is fresher than the reconciler's 5-minute
-    snapshot, so a set JASPER_HOSTNAME wins over the recorded one."""
+def test_read_identity_hostname_recorded_wins_over_the_process_env(
+    monkeypatch, tmp_path,
+):
+    """The record is re-read fresh; a process environment is frozen at unit
+    start. After a rename the reconciler rewrites the file, so a daemon that
+    has not restarted must answer with the new name, not the one it booted
+    with."""
     identity_file = tmp_path / "identity.env"
     identity_file.write_text(
-        "JASPER_IDENTITY_CONFIGURED_HOSTNAME=stale.local\n", encoding="utf-8",
+        "JASPER_IDENTITY_CONFIGURED_HOSTNAME=jts5.local\n", encoding="utf-8",
     )
-    monkeypatch.setenv("JASPER_HOSTNAME", "jts5.local")
+    monkeypatch.setenv("JASPER_HOSTNAME", "stale.local")
     monkeypatch.setenv("JASPER_IDENTITY_FILE", str(identity_file))
+    assert identity.read_identity().hostname == "jts5.local"
+
+
+def test_read_identity_hostname_uses_the_env_when_no_record_exists(
+    monkeypatch, tmp_path,
+):
+    """A box that has never run the reconciler has no file at all — a fresh
+    install's first boot, or a dev checkout. The unit's EnvironmentFile must
+    still answer there, or every such box would report the bare default."""
+    monkeypatch.setenv("JASPER_IDENTITY_FILE", str(tmp_path / "absent.env"))
+    monkeypatch.setenv("JASPER_HOSTNAME", "jts5.local")
     assert identity.read_identity().hostname == "jts5.local"
 
 

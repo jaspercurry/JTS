@@ -26,10 +26,10 @@ what Avahi actually advertises after RFC 6762 collision renames, as
 snapshotted by ``jasper-identity-reconcile`` into
 ``/var/lib/jasper/identity.env``. Intended vs observed disagreeing is
 exactly the drift the reconciler surfaces; consumers pick the side
-they mean. The hostname fallback below crosses to that file for the
-one value it records on the *intended* side — the reconciler's
-snapshot of ``JASPER_HOSTNAME`` — and never for the observed names,
-so the split holds.
+they mean. ``resolve_hostname`` below crosses to that file for the one
+value it records on the *intended* side — the reconciler's snapshot of
+``JASPER_HOSTNAME`` — and never for the observed names, so the split
+holds.
 """
 from __future__ import annotations
 
@@ -109,29 +109,34 @@ def _resolve_room() -> str:
 
 
 def resolve_hostname() -> str:
-    """mDNS hostname with process-env-wins precedence (never raises).
+    """mDNS hostname with file-wins precedence (never raises).
 
-      1. JASPER_HOSTNAME in the process environment
-      2. the reconciler's recorded CONFIGURED hostname from identity.env
+      1. the reconciler's recorded CONFIGURED hostname from identity.env
+      2. JASPER_HOSTNAME in the process environment
       3. DEFAULT_HOSTNAME
 
-    Step 2 is what makes a CLI honest. ``JASPER_HOSTNAME`` reaches a daemon
-    through its unit's ``EnvironmentFile=``; a command run over ssh gets no
-    such file, so env-or-literal alone printed ``jts.local`` on every box.
-    ``identity.env`` is the one file a bare shell can reach that records the
-    same intent, because ``jasper-identity-reconcile`` snapshots
-    ``JASPER_HOSTNAME`` into it (deploy/bin/jasper-identity-reconcile,
-    ``CONFIGURED_HOSTNAME``).
+    Step 1 is ``jasper-identity-reconcile``'s snapshot of what
+    ``/etc/jasper/jasper.env`` says, re-read fresh per call, so a rename
+    reaches a running daemon within one reconciler period instead of being
+    frozen at unit start — the rule wizard/reconciler-owned files carry
+    everywhere else. The ordering that makes it safe on a cold boot lives
+    in the unit: ``jasper-identity-reconcile.service`` is enabled by
+    install and runs ``Before=`` jasper-voice / jasper-control /
+    jasper-web, so the record is refreshed before any of them reads it.
+
+    Step 2 covers a box that has never run the reconciler (fresh install,
+    dev checkout): identity.env is absent, step 1 yields "", and a
+    daemon still gets its unit's ``EnvironmentFile=`` value.
 
     Read through :func:`jasper.identity_state.configured_hostname` rather
     than by spelling the file's key here: ``identity_state`` owns
     identity.env's vocabulary and its stat-keyed cache, and it is total,
     so this stays total and cheap enough to call per URL built.
     """
-    configured = os.environ.get("JASPER_HOSTNAME", "").strip()
-    if configured:
-        return configured
-    return identity_state.configured_hostname() or DEFAULT_HOSTNAME
+    recorded = identity_state.configured_hostname()
+    if recorded:
+        return recorded
+    return os.environ.get("JASPER_HOSTNAME", "").strip() or DEFAULT_HOSTNAME
 
 
 #: Where a human goes to run or apply a crossover round.

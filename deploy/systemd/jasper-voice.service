@@ -20,7 +20,7 @@ After=jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-
 # jasper-aec-reconcile already owns whether the bridge runs; it writes and
 # removes the matching drop-in beside those calls. After= stays: it is pure
 # ordering and costs nothing when the bridge is absent.
-Wants=network-online.target jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-accessory-reconcile.service
+Wants=network-online.target jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-accessory-reconcile.service jasper-identity-reconcile.service
 
 # Cap the crash-restart spiral. On 2026-05-10 we found NRestarts=9032
 # accumulated silently because the daemon kept hitting transient

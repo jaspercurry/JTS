@@ -1254,6 +1254,10 @@ start_streambox_runtime_units() {
     systemctl enable --now jasper-wifi-recover.timer
     systemctl enable jasper-bootloop-guard.service
     systemctl enable --now jasper-identity-reconcile.timer
+    # The oneshot itself must be enabled, not only started: daemons that
+    # resolve the hostname order themselves After= it, and an un-enabled
+    # unit is never pulled into the boot transaction.
+    systemctl enable jasper-identity-reconcile.service
     systemctl start jasper-identity-reconcile.service || \
         echo "  (identity reconcile failed — non-fatal; doctor will flag)"
     systemctl restart jasper-control.service
@@ -1876,6 +1880,10 @@ install_systemd_units() {
     # one-shot service `start` keeps identity fresh immediately so the
     # allowlist/doctor don't wait for the first timer tick.
     systemctl enable --now jasper-identity-reconcile.timer
+    # The oneshot itself must be enabled, not only started: daemons that
+    # resolve the hostname order themselves After= it, and an un-enabled
+    # unit is never pulled into the boot transaction.
+    systemctl enable jasper-identity-reconcile.service
     systemctl start jasper-identity-reconcile.service || \
         echo "  (identity reconcile failed — non-fatal; doctor will flag)"
     echo

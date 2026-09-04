@@ -4,7 +4,7 @@ Description=Jasper streambox web setup service (renderer/DSP + assistant wizards
 # deploy/jasper-web-streambox.socket. The service exits after 10 min idle.
 Requires=jasper-web.socket
 After=jasper-web.socket network-online.target time-sync.target
-Wants=network-online.target time-sync.target
+Wants=network-online.target time-sync.target jasper-identity-reconcile.service
 StartLimitIntervalSec=600
 StartLimitBurst=20
 

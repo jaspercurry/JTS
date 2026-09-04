@@ -346,13 +346,14 @@ def _isolate_seat_level_reference(tmp_path_factory, monkeypatch):
 def _isolate_identity_file(tmp_path_factory, monkeypatch):
     """Point the reconciler's identity snapshot at a per-test (absent) file.
 
-    ``jasper.identity.resolve_hostname`` falls back to the
+    ``jasper.identity.resolve_hostname`` takes its answer from the
     ``JASPER_HOSTNAME`` that ``jasper-identity-reconcile`` records in
-    /var/lib/jasper/identity.env, so on a real speaker that file — not the
-    codified default — would decide every hostname a test leaves unset.
-    Absent here means the hermetic ``DEFAULT_HOSTNAME`` baseline; a test that
-    exercises a RECORDED hostname re-points the same env var at a file it
-    wrote, which is the override the daemon-side reader honours too.
+    /var/lib/jasper/identity.env before anything else, so on a real speaker
+    that file — not the codified default, and not the process environment —
+    would decide every hostname a test leaves unset. Absent here means the
+    hermetic env-or-``DEFAULT_HOSTNAME`` baseline; a test that exercises a
+    RECORDED hostname re-points the same env var at a file it wrote, which
+    is the override the daemon-side reader honours too.
     """
     monkeypatch.setenv(
         "JASPER_IDENTITY_FILE",
