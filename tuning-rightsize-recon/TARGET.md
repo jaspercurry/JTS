@@ -63,7 +63,9 @@ composition, σ kind (each σ names `kind`), the §6a rung reached
 ## Boundaries, as an import rule
 
 `audio_measurement` imports no `active_speaker`, `correction`, `web`, `cli`
-(pinned: `tests/test_runtime_import_closure.py`). `active_speaker` imports no
+(`active_speaker`/`correction` pinned by `tests/test_correction_boundary_ssot.py`'s
+audio_measurement row; `web` pinned by `tests/test_runtime_import_closure.py`'s
+FORBIDDEN list, which does not cover `cli` — unpinned). `active_speaker` imports no
 `web`, `cli`, `correction` (pinned for `correction` and for `crossover_v2`→`web`
 in `tests/test_correction_boundary_ssot.py`; extend to all of `active_speaker`).
 `cli` imports no `web` (new row). `correction` imports `active_speaker` only
