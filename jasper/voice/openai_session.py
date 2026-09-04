@@ -94,18 +94,8 @@ logger = logging.getLogger(__name__)
 OPENAI_AUDIO_RATE_HZ = 24000
 DAEMON_MIC_RATE_HZ = 16000
 
-# Initial-connect retry budget. MUST stay a wall-clock budget, never an attempt
-# count: at boot this daemon races WiFi recovery, so any fixed number of tries
-# can be spent while name resolution is still failing, leaving the speaker
-# silent with nothing left to retry. Retries run for the whole budget
-# (exponential backoff with jitter via ``reconnect_backoff_delay``, the shape
-# the post-connect supervisor also uses), and exhaustion MUST raise so the exit
-# is non-zero — systemd's ``Restart=on-failure`` is the outer loop that grants
-# the next budget. See deploy/systemd/jasper-voice.service and ADR-0146.
-#
-# Override via ``JASPER_OPENAI_INITIAL_CONNECT_BUDGET_SEC``. Production
-# values are wired in the constructor's ``initial_connect_budget_sec``
-# default — tests pass a small value (or 0 for "single attempt").
+# Override via ``JASPER_OPENAI_INITIAL_CONNECT_BUDGET_SEC``.
+# See :meth:`OpenAIRealtimeConnection._open_session_with_retry`.
 DEFAULT_INITIAL_CONNECT_BUDGET_SEC = 600.0
 
 # Default reasoning effort for ``gpt-realtime-2``. Smart-speaker queries
@@ -1392,10 +1382,13 @@ class OpenAIRealtimeConnection:
             process exits non-zero and systemd's ``Restart=on-failure``
             spawns a fresh process with another full budget.
 
-        The budget covers cumulative wall-time, NOT a fixed retry
-        count — a slow-to-resolve DNS lookup that takes 5 s per
-        attempt and a fast WS-reset that's instant get the same
-        amount of patience.
+        The budget MUST stay cumulative wall-time and never become a
+        retry count: at boot this daemon races WiFi recovery, so a
+        fixed number of tries can be spent while name resolution is
+        still failing, leaving the speaker silent with nothing left to
+        retry. Exhaustion MUST raise for the same reason — a clean exit
+        would leave systemd nothing to restart. See
+        deploy/systemd/jasper-voice.service and ADR-0103.
 
         Structured logging: ``event=openai.initial_connect.{...}`` so
         the boot-time funnel is greppable in journalctl alongside the
