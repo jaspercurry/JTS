@@ -22,12 +22,13 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
-from jasper.active_speaker import web_commissioning, web_measurement
+from jasper.active_speaker import web_commissioning
 from jasper.active_speaker.commissioning_run import (
     CommissioningRunHandle,
     CommissioningRunStore,
 )
 from jasper.active_speaker.capture_geometry import comparison_set_valid
+from jasper.active_speaker.crossover_v2.conductor_context import conductor_status
 from jasper.active_speaker.crossover_level_run import (
     PHONE_TRANSPORT_GRACE_S,
     state_path as _level_run_state_path,
@@ -1374,23 +1375,15 @@ def commissioning_region_status() -> dict[str, Any]:
 def status_payload() -> dict[str, Any]:
     """Return active-crossover targets and saved measurement evidence."""
 
-    payload = web_measurement.status_payload()
+    payload = conductor_status()
     payload["commission"] = web_commissioning.commission_status_payload()
-    # Layer-A gate: `active` means "this speaker has an inter-driver crossover
-    # to tune". Read off the SUMMED targets alone, which only `active_2_way` /
-    # `active_3_way` groups have; a subless `full_range_passive` speaker carries
-    # a driver target too, so counting those would flip the flag wrongly.
     targets_raw = payload.get("targets")
     targets: dict[str, Any] = targets_raw if isinstance(targets_raw, dict) else {}
     driver_count = len(targets.get("drivers") or [])
     summed_count = len(targets.get("summed") or [])
-    payload["active"] = bool(summed_count)
     from jasper.active_speaker.baseline_profile import (
         load_applied_baseline_profile_state,
     )
-    from jasper.active_speaker.setup_status import read_active_speaker_setup_status
-
-    payload["setup"] = read_active_speaker_setup_status()
     # The envelope gates the measurement flow on the driver safety profile's
     # own confirmed-and-current verdict (evaluate_driver_safety_profile), not
     # on "protected setup" readiness alone: JTS3 hardware evidence showed an

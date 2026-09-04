@@ -152,12 +152,48 @@ def _imported_module(path: Path, node: ast.ImportFrom) -> str:
     return ".".join([*base, *([node.module] if node.module else [])])
 
 
+#: The imports a row still admits, and why each one is not yet removable.
+#: Keyed by package, then by the importing file; an entry is a promise that the
+#: symbol genuinely belongs to the front end it is reached in, not a parking
+#: space. Removing one is the work; adding one owes the row's own argument.
+BOUNDARY_ALLOWLIST: dict[str, dict[str, frozenset[str]]] = {
+    "jasper/cli": {
+        # `WiredStimulusCapture` mints the household calibration REFERENCE
+        # through the web host it imports late (`_mint_and_place`), which is
+        # host policy; the engine owns only the protocol it satisfies.
+        "jasper/cli/measure.py": frozenset(
+            {"jasper.web.correction_crossover_v2_wired"}
+        ),
+        # `crossover_v2_status_block` is the web ADAPTER over the engine's
+        # status projection — the loaded state, volume plan, review decision
+        # and republish admission it supplies are the host's. The `GRADE_*`
+        # vocabulary is declared beside the producer that selects it, and
+        # `DEFERRED_EXIT_LOG_PERIOD_SEC` belongs to the very service these
+        # checks read the journal of.
+        "jasper/cli/doctor/correction.py": frozenset({
+            "jasper.web._systemd",
+            "jasper.web.correction_crossover_v2",
+            "jasper.web.correction_crossover_v2_status",
+        }),
+    },
+}
+
+
 def _upward_imports(
     package: str, forbidden: tuple[tuple[str, ...], ...]
-) -> list[str]:
-    """Sites in ``package`` importing anything under a ``forbidden`` prefix."""
+) -> tuple[list[str], set[tuple[str, str]]]:
+    """Sites in ``package`` importing under a ``forbidden`` prefix, plus the
+    allowlist entries those sites used.
+
+    ``ast.walk`` rather than ``tree.body``: a deferred (function-body) import
+    reaches exactly as far as a module-scope one, and a relocation that leaves
+    one behind is the failure this scan exists to catch.
+    """
+    allowed = BOUNDARY_ALLOWLIST.get(package, {})
     offenders: list[str] = []
+    used: set[tuple[str, str]] = set()
     for path in sorted((REPO_ROOT / package).rglob("*.py")):
+        rel = str(path.relative_to(REPO_ROOT))
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             names: list[str] = []
@@ -166,10 +202,13 @@ def _upward_imports(
             elif isinstance(node, ast.ImportFrom):
                 names = [_imported_module(path, node)]
             for name in names:
-                if tuple(name.split(".")[:2]) in forbidden:
-                    rel = path.relative_to(REPO_ROOT)
-                    offenders.append(f"{rel}:{node.lineno}: imports {name}")
-    return offenders
+                if tuple(name.split(".")[:2]) not in forbidden:
+                    continue
+                if name in allowed.get(rel, frozenset()):
+                    used.add((rel, name))
+                    continue
+                offenders.append(f"{rel}:{node.lineno}: imports {name}")
+    return offenders, used
 
 
 @pytest.mark.parametrize("relative", ROUTED_FILES)
@@ -225,6 +264,11 @@ PACKAGE_BOUNDARIES: tuple[tuple[str, tuple[tuple[str, ...], ...], str], ...] = (
         (("jasper", "correction"),),
         "correction is the layer above; the engine must not reach up into it",
     ),
+    (
+        "jasper/cli",
+        (("jasper", "web"),),
+        "the CLI is a front end beside the wizard, not a client of one",
+    ),
 )
 
 
@@ -249,12 +293,23 @@ def test_package_boundary_holds(package, forbidden, why):
     offending import out, or re-argue where the SSOT belongs. Do not just
     delete this test.
     """
-    offenders = _upward_imports(package, forbidden)
+    offenders, used = _upward_imports(package, forbidden)
     assert not offenders, (
         f"{package} must not import "
         + " or ".join(".".join(prefix) for prefix in forbidden)
         + f" — {why}:\n"
         + "\n".join(offenders)
+    )
+    # An allowlist entry nobody imports pre-authorizes the very edge this row
+    # exists to catch, so the row stays pinned at exactly the state it was left.
+    stale = {
+        (rel, name)
+        for rel, names in BOUNDARY_ALLOWLIST.get(package, {}).items()
+        for name in names
+    } - used
+    assert not stale, (
+        f"{package}: allowlist entries no longer imported — delete them:\n"
+        + "\n".join(f"{rel}: {name}" for rel, name in sorted(stale))
     )
 
 
@@ -272,7 +327,7 @@ def test_crossover_v2_imports_no_web_front_end():
     `jasper/web/correction_crossover_v2.py`, so a unit that needs it must have
     it lifted rather than reach up for it.
     """
-    offenders = _upward_imports(
+    offenders, _used = _upward_imports(
         "jasper/active_speaker/crossover_v2", (("jasper", "web"),)
     )
     assert not offenders, (

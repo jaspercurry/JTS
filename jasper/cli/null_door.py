@@ -142,10 +142,12 @@ def _context() -> Any:
     from the applied profile. A corner typed on a command line is a claim about
     the graph, and the graph can answer for itself.
     """
-    from jasper.web.correction_crossover_backend import status_payload
-    from jasper.web.correction_crossover_v2 import resolve_conductor_context
+    from jasper.active_speaker.crossover_v2.conductor_context import (
+        conductor_status,
+        resolve_conductor_context,
+    )
 
-    return resolve_conductor_context(status_payload())
+    return resolve_conductor_context(conductor_status())
 
 
 def _level_trims(context: Any) -> tuple[dict[str, float], str]:
