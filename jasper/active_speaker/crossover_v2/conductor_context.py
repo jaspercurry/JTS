@@ -115,6 +115,20 @@ class V2ConductorContext:
         default_factory=dict
     )
 
+    def declared_band(self, role: str) -> Any | None:
+        """This role's declared ``FrequencyBand``, or ``None`` if it has none.
+
+        By NAME. ``roles_bands`` is ordered lowest-driver-first and the program
+        builders depend on that; a caller wanting ONE named role's band should
+        not have to restate the ordering, because a positional read of a
+        clamp's floor and ceiling silently SWAPS them if the tuple is
+        reordered, where a wrong-role read of a single band cannot.
+        """
+        return next(
+            (entry.band for entry in self.roles_bands if entry.role == role),
+            None,
+        )
+
 
 def profile_refusal_code(evaluation_status: str) -> str:
     """Map a :class:`~jasper.active_speaker.driver_safety.DriverSafetyProfileEvaluation`
