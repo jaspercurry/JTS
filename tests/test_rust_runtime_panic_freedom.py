@@ -316,7 +316,7 @@ ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
         "always sizes the buffer correctly."
     ),
     (
-        "jasper-fanin/src/mixer.rs",
+        "jasper-fanin/src/mixer/dsp.rs",
         "sum.len(), input.len()",
     ): (
         "Buffer-sizing invariant on the per-period mix accumulator "
@@ -325,7 +325,7 @@ ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
         "period size."
     ),
     (
-        "jasper-fanin/src/mixer.rs",
+        "jasper-fanin/src/mixer/dsp.rs",
         "channels >= 1",
     ): (
         "ramp_program_duck's channels argument is the daemon's own fixed "
@@ -333,7 +333,7 @@ ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
         "supplied."
     ),
     (
-        "jasper-fanin/src/mixer.rs",
+        "jasper-fanin/src/mixer/dsp.rs",
         "sum.len(), out.len()",
     ): (
         "saturate_to_i16, same shape as mix_into above (\"Pulled out for "
@@ -341,7 +341,7 @@ ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
         "period buffers."
     ),
     (
-        "jasper-fanin/src/mixer.rs",
+        "jasper-fanin/src/mixer/dsp.rs",
         "a spine-scale lane may only enter a spine-scale sum",
     ): (
         "Numeric-scale invariant on mix_into_wide (U2 / #2223): a lane whose "
@@ -386,7 +386,7 @@ ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
         "period) instead of aborting the audio daemon over a wiring bug."
     ),
     (
-        "jasper-fanin/src/mixer.rs",
+        "jasper-fanin/src/mixer/dsp.rs",
         "out.len(), sum.len() * WIDE_BYTES_PER_SAMPLE",
     ): (
         "fill_wide_ring_payload, the S32LE-ring twin of saturate_to_i16 "

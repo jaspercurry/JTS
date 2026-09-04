@@ -1068,7 +1068,9 @@ persisted by
 contract "records what the operator is trying to build and any externally
 researched driver facts" and deliberately does not compile filters or authorize
 playback. The externally-researched half arrives through the driver-research
-prompt owned by
+prompt in
+[`driver_safety_prompt.py`](../jasper/active_speaker/driver_safety_prompt.py),
+against the request and result contract owned by
 [`driver_safety.py`](../jasper/active_speaker/driver_safety.py)
 (`driver_research_targets`, `validate_driver_research_result_shape`,
 `finalise_research_result`), which is decision 9's rule in code: it asks for the

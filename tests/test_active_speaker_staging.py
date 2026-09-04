@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 import yaml as yaml_lib
 
+import jasper.active_speaker.declaration_vocabulary as vocabulary_mod
 import jasper.active_speaker.staging as staging_mod
 from jasper.active_speaker import (
     STAGED_STARTUP_CONFIG_KIND,
@@ -42,7 +43,7 @@ from jasper.active_speaker.profile import (
     SUPPORTED_LR_ORDERS,
     ActiveSpeakerConfigError,
 )
-from jasper.active_speaker.staging import (
+from jasper.active_speaker.declaration_vocabulary import (
     declared_filter_type_compiles,
     declared_slope_db_per_octave_compiles,
     supported_declaration_filter_types,
@@ -342,7 +343,7 @@ def test_offered_filter_types_are_one_per_supported_target_type() -> None:
 
     assert len(offered) == len(SUPPORTED_CROSSOVER_TYPES)
     assert {
-        staging_mod._normalise_filter_type(spelling) for spelling in offered
+        vocabulary_mod._normalise_filter_type(spelling) for spelling in offered
     } == SUPPORTED_CROSSOVER_TYPES
 
 
@@ -351,7 +352,7 @@ def test_offered_slopes_are_one_per_supported_order_ascending() -> None:
 
     assert list(offered) == sorted(offered)
     assert {
-        staging_mod._slope_to_lr_order(slope) for slope in offered
+        vocabulary_mod._slope_to_lr_order(slope) for slope in offered
     } == SUPPORTED_LR_ORDERS
 
 
@@ -363,7 +364,7 @@ def test_a_supported_filter_with_no_declared_spelling_is_loud(monkeypatch) -> No
     raise, not a shorter list.
     """
     monkeypatch.setattr(
-        staging_mod,
+        vocabulary_mod,
         "SUPPORTED_CROSSOVER_TYPES",
         SUPPORTED_CROSSOVER_TYPES | {"Bessel"},
     )
@@ -403,7 +404,7 @@ def test_preview_defaults_are_members_of_the_offer() -> None:
 
 def test_an_alias_for_an_unsupported_filter_is_not_a_filter(monkeypatch) -> None:
     """``"lr"`` is an alias, not a second owner of what compiles."""
-    monkeypatch.setattr(staging_mod, "SUPPORTED_CROSSOVER_TYPES", {"Bessel"})
+    monkeypatch.setattr(vocabulary_mod, "SUPPORTED_CROSSOVER_TYPES", {"Bessel"})
 
     assert not declared_filter_type_compiles("LR")
     assert not declared_filter_type_compiles("Linkwitz-Riley")
