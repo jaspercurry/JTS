@@ -68,9 +68,10 @@ __all__ = [
 FC_SAME_HZ_TOL = 0.05
 
 #: Slopes this close are the same declared slope. Tighter than the frequency
-#: tolerance on purpose: ``staging._slope_to_lr_order`` compiles exactly 12 /
-#: 24 / 48 dB/octave and refuses anything 0.01 away, so a looser tolerance here
-#: could call two slopes the same that compile to different orders.
+#: tolerance on purpose: ``declaration_vocabulary._slope_to_lr_order`` compiles
+#: exactly 12 / 24 / 48 dB/octave and refuses anything 0.01 away, so a looser
+#: tolerance here could call two slopes the same that compile to different
+#: orders.
 SLOPE_SAME_DB_TOL = 0.005
 
 #: The role whose declared protection floor bounds a crossover corner, spelled
@@ -122,7 +123,7 @@ class CrossoverGeometry:
         """Whether both name the same filter, asked of the module that compiles
         it — a household's ``"LR"`` is not a crossover change."""
 
-        from .staging import same_declared_filter_type
+        from .declaration_vocabulary import same_declared_filter_type
 
         return same_declared_filter_type(self.filter_type, other.filter_type)
 
@@ -186,7 +187,10 @@ def preset_crossover_geometry(
     compiles to. Each is a real refusal — the alternative is guessing.
     """
 
-    from .staging import declaration_filter_type, declaration_slope_db_per_octave
+    from .declaration_vocabulary import (
+        declaration_filter_type,
+        declaration_slope_db_per_octave,
+    )
 
     regions = tuple(getattr(preset, "crossover_regions", None) or ())
     if len(regions) != 1:

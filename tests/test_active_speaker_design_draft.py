@@ -26,7 +26,7 @@ from jasper.active_speaker.design_draft import (
     declared_driver_sensitivities,
     declared_effective_driver_sensitivities,
 )
-from jasper.active_speaker.staging import (
+from jasper.active_speaker.declaration_vocabulary import (
     supported_declaration_filter_types,
     supported_declaration_slopes_db_per_octave,
 )

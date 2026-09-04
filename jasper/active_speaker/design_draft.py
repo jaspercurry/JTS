@@ -255,7 +255,7 @@ def _crossover_filter_type(raw: Any, field_name: str) -> str | None:
     ``crossover_declaration`` reaches for it this way.
     """
 
-    from .staging import (
+    from .declaration_vocabulary import (
         declared_filter_type_compiles,
         supported_declaration_filter_types,
     )
@@ -279,7 +279,7 @@ def _crossover_slope_db_per_octave(raw: Any, field_name: str) -> float | None:
     supported filter order compiles to.
     """
 
-    from .staging import (
+    from .declaration_vocabulary import (
         declared_slope_db_per_octave_compiles,
         supported_declaration_slopes_db_per_octave,
     )
