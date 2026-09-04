@@ -966,7 +966,7 @@ instrument runs: `tests/test_crossover_v2_feature_classifier.py`.
 
 ## Round-grading comparison views
 
-`jasper-round-views` ([`jasper/cli/round_views.py`](../jasper/cli/round_views.py),
+`jasper-round-views` ([`jasper/cli/round_views/`](../jasper/cli/round_views/),
 core in [`round_views.py`](../jasper/active_speaker/crossover_v2/round_views.py)):
 
 ```sh
