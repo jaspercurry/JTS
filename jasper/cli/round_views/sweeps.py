@@ -25,25 +25,14 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 from typing import Any
 
 from jasper.active_speaker.crossover_v2.gate_sweep import summary_lines, sweep_round
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
-from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
-from jasper.active_speaker.crossover_v2.round_views import (
-    RoundViewsError,
-    spec_with_gate_sensitivity,
-)
-from jasper.cli._refusal import (
-    EXIT_OK,
-    EXIT_REFUSED,
-    EXIT_UNREADABLE,
-    failed,
-    stage,
-)
+from jasper.active_speaker.crossover_v2.round_views import spec_with_gate_sensitivity
+from jasper.cli._refusal import EXIT_OK, EXIT_UNREADABLE, stage
 
 from ._common import (
     ARTIFACT_BY_VIEW,
@@ -53,7 +42,8 @@ from ._common import (
     _view_out,
     _write,
     add_rungs_ms_argument,
-    default_out,
+    refused_by_name,
+    resolved_out,
 )
 
 def _band_sweep_line(band: Any) -> str:
@@ -101,17 +91,11 @@ def _cmd_gate_sweep(args: argparse.Namespace) -> int:
         )
     except RoundCapturesRefused as exc:
         # The ladder's own named refusal, never the resolver's coarser bucket.
-        return failed(
-            EXIT_REFUSED, exc.reason,
-            json.dumps(exc.detail, sort_keys=True, default=str),
-        )
-    artifact = ARTIFACT_BY_VIEW[args.command].artifact
-    try:
-        # The ladder also reads a bundle subtree the resolver cannot place.
-        beside = default_out(round_inputs(round_dir), round_dir, artifact)
-    except RoundViewsError:
-        beside = round_dir / artifact
-    written = _write(report, args.out, beside)
+        return refused_by_name(exc.reason, exc.detail)
+    written = _write(
+        report, args.out,
+        resolved_out(round_dir, ARTIFACT_BY_VIEW[args.command].artifact),
+    )
     print(
         "gate-sweep [evidence only, no grade moves]: "
         + "; ".join(summary_lines(report))
