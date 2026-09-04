@@ -429,7 +429,7 @@ def _open_prepared(monkeypatch, prepared: Any) -> tuple[Any, dict[str, Any]]:
 
 def _stage_1(monkeypatch) -> tuple[Any, dict[str, Any]]:
     prepared = v2host.prepare_v2_session(
-        {}, status=_status(), run_async=None, camilla_factory=None
+        {}, status=_status(), run_async=asyncio.run, camilla_factory=None
     )
     return _open_prepared(monkeypatch, prepared)
 
@@ -441,7 +441,7 @@ def _stage_2(monkeypatch, *, camilla_factory: Any = None) -> tuple[Any, dict[str
     ``crossover_v2_round_harness._stub_restore_doors``.
     """
     prepared = v2host.prepare_v2_session(
-        {}, status=_status(), run_async=None, camilla_factory=camilla_factory,
+        {}, status=_status(), run_async=asyncio.run, camilla_factory=camilla_factory,
         verify_only=True,
     )
     return _open_prepared(monkeypatch, prepared)
@@ -578,6 +578,9 @@ class _RecordingCheckStore:
 
     def publish_json_artifact(self, relpath: str, payload: Any) -> Any:
         self.published.append((relpath, payload))
+        return SimpleNamespace(fingerprint="fp-check-pin")
+
+    def identify_artifact(self, relpath: str) -> Any:
         return SimpleNamespace(fingerprint="fp-check-pin")
 
 
@@ -892,7 +895,7 @@ def test_a_delay_prescription_crosses_from_the_request_body_to_the_bridge(monkey
     """
     prepared = v2host.prepare_v2_session(
         {"alignment_prescription": dict(_PRESCRIPTION_BODY)},
-        status=_status(), run_async=None, camilla_factory=None,
+        status=_status(), run_async=asyncio.run, camilla_factory=None,
     )
     conductor, _state = _open_prepared(monkeypatch, prepared)
     assert conductor.alignment_prescription_record["delay_us"] == -450.0
@@ -961,7 +964,7 @@ def test_a_prescribed_basin_reaches_the_fit_only_when_it_was_pinned(
         body["polarity"] = polarity
     prepared = v2host.prepare_v2_session(
         {"alignment_prescription": body},
-        status=_status(), run_async=None, camilla_factory=None,
+        status=_status(), run_async=asyncio.run, camilla_factory=None,
     )
     conductor, _state = _open_prepared(monkeypatch, prepared)
 
@@ -982,7 +985,7 @@ def test_an_unknown_basin_refuses_the_session_before_it_opens(value):
     with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
         v2host.prepare_v2_session(
             {"alignment_prescription": {**_PRESCRIPTION_BODY, "polarity": value}},
-            status=_status(), run_async=None, camilla_factory=None,
+            status=_status(), run_async=asyncio.run, camilla_factory=None,
         )
 
     assert "prescription_polarity_invalid" in str(excinfo.value)
@@ -1000,7 +1003,7 @@ def test_an_out_of_lobe_prescription_refuses_the_session_before_it_opens(monkeyp
     with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
         v2host.prepare_v2_session(
             {"alignment_prescription": {**_PRESCRIPTION_BODY, "delay_us": 0.0}},
-            status=_status(), run_async=None, camilla_factory=None,
+            status=_status(), run_async=asyncio.run, camilla_factory=None,
         )
     assert "prescription_out_of_lobe" in str(excinfo.value)
 
@@ -1036,7 +1039,7 @@ def test_the_tap_asks_the_preset_for_its_own_declared_window(monkeypatch):
         }
         return v2host.prepare_v2_session(
             {"alignment_prescription": body},
-            status=_status(), run_async=None, camilla_factory=None,
+            status=_status(), run_async=asyncio.run, camilla_factory=None,
         )
 
     # One microsecond past the declaration is refused, by the window's name.
@@ -1959,7 +1962,7 @@ def _real_seam_session(monkeypatch, cam_factory=None, graph=None) -> dict:
 
     monkeypatch.setattr(v2host, "bind_v2_engine_seams", _twin_graph_binder)
     prepared = v2host.prepare_v2_session(
-        {}, status=_status(), run_async=None, camilla_factory=cam_factory,
+        {}, status=_status(), run_async=asyncio.run, camilla_factory=cam_factory,
     )
     conductor, _state = _open_prepared(monkeypatch, prepared)
     captured["conductor"] = conductor

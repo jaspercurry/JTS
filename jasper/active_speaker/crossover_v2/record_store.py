@@ -4,12 +4,12 @@
 
 """The record seam filled: where a session's evidence lands.
 
-:class:`~.session_seams.RecordStore`'s one method writes to the write-once
-commissioning evidence bundle, on the paths the shipped ``V2FlowSeams``
-publishers wrote, so ``position_cycle``, ``evidence_packet`` and
-``candidate_bank`` find the same files. The id a record is banked under IS its
-store-relative path (ADR-0198). Store errors propagate unwrapped: fail-soft
-belongs in a named caller-side wrapper, never here and never a flag.
+:class:`~.session_seams.RecordStore`'s one method writes every kind of a
+session's evidence to the write-once commissioning bundle, so
+``position_cycle``, ``evidence_packet`` and ``candidate_bank`` find the same
+files. The id a record is banked under IS its store-relative path (ADR-0198).
+Store errors propagate unwrapped: fail-soft belongs in a named caller-side
+wrapper, never here and never a flag.
 """
 
 from __future__ import annotations
@@ -41,8 +41,8 @@ __all__ = [
     "BankedRecordStore",
 ]
 
-#: Also spelled as bare literals in ``jasper.web.correction_crossover_v2``'s
-#: publisher bindings; this store is their writer.
+#: The two artifact kinds no producer names for itself: a check bundle and a
+#: cloud group are plain dicts, so their discriminator is spelled here.
 CHECK_EVIDENCE_KIND = "jts_crossover_v2_check_evidence"
 CLOUD_EVIDENCE_KIND = "jts_crossover_v2_cloud_evidence"
 
@@ -65,6 +65,9 @@ class _Route:
 
     relative_path: Callable[[str, Mapping[str, Any]], str]
     enveloped: bool
+    #: Keys a caller supplies to ROUTE the record and that the file does not
+    #: carry, taken back off the way ``kind`` is.
+    routing_keys: tuple[str, ...] = ()
     stamp_identity: bool = False
     verify: Callable[[Mapping[str, Any], Mapping[str, Any]], None] | None = None
 
@@ -75,20 +78,20 @@ def _round_dir(capture_session_id: str) -> str:
 
 
 def _verify_candidate(
-    record: Mapping[str, Any], reopened: Mapping[str, Any],
+    written: Mapping[str, Any], reopened: Mapping[str, Any],
 ) -> None:
     """The apply path's own tamper check: a candidate must survive exact reopen."""
     if MeasuredCrossoverCandidate.from_mapping(
         reopened
-    ).fingerprint != record.get("fingerprint"):
+    ).fingerprint != written.get("fingerprint"):
         raise RuntimeError("published measured candidate changed on exact readback")
 
 
 def _verify_receipt(
-    record: Mapping[str, Any], reopened: Mapping[str, Any],
+    written: Mapping[str, Any], reopened: Mapping[str, Any],
 ) -> None:
     """R21's accept-receipt pattern: a receipt is what it says it is."""
-    if reopened != dict(record):
+    if reopened != dict(written):
         raise RuntimeError("published round receipt changed on exact readback")
 
 
@@ -129,11 +132,12 @@ _ROUTES: dict[str, _Route] = {
         enveloped=False,
         verify=_verify_receipt,
     ),
-    # The CALLER injects ``phase``: ``FindingSet.to_dict()`` carries none and
-    # ``from_mapping`` ignores top-level keys it does not know.
+    # The CALLER injects ``phase`` to route on; the file is exactly
+    # ``FindingSet.to_dict()``, which carries none.
     FINDING_SET_SCHEMA: _Route(
         lambda capture, r: findings_relative_path(capture, _required(r, "phase")),
         enveloped=False,
+        routing_keys=("phase",),
     ),
 }
 
@@ -196,9 +200,7 @@ class BankedRecordStore:
         route = self._route(discriminator)
         relative = route.relative_path(self.capture_session_id, record)
         payload = self._payload(record, route, discriminator, measure)
-        await asyncio.to_thread(
-            self._publish, relative, payload, record, route,
-        )
+        await asyncio.to_thread(self._publish, relative, payload, route)
         return relative
 
     # --------------------------------------------------------------- internals
@@ -218,8 +220,9 @@ class BankedRecordStore:
         discriminator: str,
         measure: str | None,
     ) -> Mapping[str, Any]:
+        record = {k: v for k, v in record.items() if k not in route.routing_keys}
         if not route.enveloped:
-            return dict(record)
+            return record
         owned = [key for key in _ENVELOPE_KEYS if key in record]
         if owned:
             raise ValueError(
@@ -254,12 +257,11 @@ class BankedRecordStore:
         )
 
     def _publish(
-        self,
-        relative: str,
-        payload: Mapping[str, Any],
-        record: Mapping[str, Any],
-        route: _Route,
+        self, relative: str, payload: Mapping[str, Any], route: _Route,
     ) -> None:
         artifact = self.evidence.publish_json_artifact(relative, payload)
         if route.verify is not None:
-            route.verify(record, self.evidence.reopen_json_artifact(artifact))
+            # The PAYLOAD, not the record it came from: a route's verify asks
+            # whether what was written comes back, and the two differ wherever
+            # the store owns keys the caller supplied.
+            route.verify(payload, self.evidence.reopen_json_artifact(artifact))

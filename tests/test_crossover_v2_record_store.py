@@ -348,6 +348,23 @@ def _finding_set() -> dict[str, Any]:
     }
 
 
+async def test_a_banked_finding_set_is_exactly_what_its_reader_expects(real_store):
+    """The findings route's ``phase`` ROUTES the record; it is not payload.
+
+    ``FindingSet.to_dict()`` carries no phase, so a routing key left in the file
+    would make the store a non-drop-in for the publisher whose bytes the
+    bundle's readers already know.
+    """
+    built = FindingSet(
+        session=SessionIdentity(session_id="bundle-1"), produced_by="test",
+        findings=(),
+    )
+
+    record_id = await real_store.bank({**built.to_dict(), "phase": "cloud_measure"})
+
+    assert _banked_file(real_store, record_id) == built.to_dict()
+
+
 def _fold_records() -> list[tuple[str, dict[str, Any], str]]:
     """All SIX routes: the five publishers' kinds plus the position take.
 

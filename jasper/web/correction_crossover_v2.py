@@ -56,7 +56,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import (
     TYPE_CHECKING, Any, Callable, Mapping, MutableMapping, NoReturn, Sequence,
-    cast,
+    TypeVar, cast,
 )
 
 from jasper.atomic_io import atomic_write_text
@@ -2780,58 +2780,109 @@ def open_v2_evidence_store(topology: Any) -> tuple[Any, str]:
     return store, session_id
 
 
+_T = TypeVar("_T")
+
+
+def _record_store(store: Any, capture_session_id: str) -> Any:
+    """THE durable-write seam for this session's evidence (ADR-0227 §12).
+
+    A frozen dataclass over the same bundle, so the binders that each build one
+    are one writer constructed several times and never several authorities.
+    """
+    from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
+
+    return BankedRecordStore(evidence=store, capture_session_id=capture_session_id)
+
+
+def _bank(
+    records: Any, run_async: Any, record: Mapping[str, Any],
+) -> tuple[str, Any]:
+    """Bank one record; answer its store id and the artifact it wrote.
+
+    The store owns the path, the envelope, the discriminator and the
+    reopen-and-compare, and answers with the id that finds the record again;
+    the identity every ``refs`` column and every citation needs is re-read from
+    it. Driven through ``run_async`` because the publishing seams are
+    synchronous all the way up from ``consume_capture``, on a worker thread.
+    """
+    from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
+
+    record_id = str(run_async(records.bank(record)))
+    return record_id, records.evidence.identify_artifact(
+        f"{EVIDENCE_ROOT}/artifacts/{record_id}"
+    )
+
+
+def _bank_findings(
+    records: Any, run_async: Any, *, phase: str, finding_set: Any,
+) -> Any:
+    """Bank one phase's finding set; answer the artifact it wrote.
+
+    ``phase`` rides the record to ROUTE it — per phase and not per session,
+    because the two groups close at different times and the store is write-once
+    — and the route takes it back off: the file is ``FindingSet.to_dict()``.
+    """
+    _, artifact = _bank(
+        records, run_async, {**finding_set.to_dict(), "phase": phase},
+    )
+    return artifact
+
+
+def _fail_soft(work: Callable[[], _T], *, event: str, **fields: Any) -> _T | None:
+    """Run one durable write; log ``event`` and answer ``None`` if it refused.
+
+    The fail-soft boundary, at the caller and never in the store (ADR-0227
+    §12): the store stays strict — ``publish_json_artifact`` raises rather than
+    dropping an artifact — so every OTHER caller keeps the strictness it was
+    built for. Each caller passes its own shipped event name and fields.
+    """
+    try:
+        return work()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        log_event(logger, event, level=logging.WARNING, exc_info=True, **fields)
+        return None
+
+
 def bind_evidence_publishers(
-    store: Any, capture_session_id: str
+    store: Any, capture_session_id: str, run_async: Any
 ) -> tuple[Callable[[Any, Mapping[str, Any]], None], Callable[[Any], None], dict[str, Any]]:
     """Real ``publish_check`` / ``publish_candidate`` seams (§5.6).
 
-    CHECK publishes the ambient report + solved gain plan; MEASURE publishes
-    the full candidate dict and re-opens it through
+    CHECK banks the ambient report + solved gain plan; MEASURE banks the full
+    candidate dict, which the store re-opens through
     ``MeasuredCrossoverCandidate.from_mapping`` — the same tamper check the
     apply path runs, so a candidate that cannot survive exact reopen never
     becomes reviewable. Artifact fingerprints land in the returned ``refs``
     mapping (persisted into the durable state for the status surface).
+
+    Neither is fail-soft, and that is the shipped behaviour: a CHECK or MEASURE
+    whose evidence did not land has nothing for the household to review.
     """
+    from jasper.active_speaker.crossover_v2.record_store import CHECK_EVIDENCE_KIND
+
+    records = _record_store(store, capture_session_id)
     refs: dict[str, Any] = {"bundle_session_id": store.session_id}
 
     def publish_check(gain_plan: Any, ambient_report: Mapping[str, Any]) -> None:
-        artifact = store.publish_json_artifact(
-            f"crossover_v2/{capture_session_id}/check.json",
-            {
-                "schema_version": 1,
-                "kind": "jts_crossover_v2_check_evidence",
-                "capture_session_id": capture_session_id,
-                "gain_plan_db": dict(gain_plan.gain_db),
-                "predicted_peak_dbfs": gain_plan.predicted_peak_dbfs,
-                "snr_floor_ok": gain_plan.snr_floor_ok,
-                # #1825: the per-role derivation behind ``gain_plan_db`` —
-                # which limit chose each driver's MEASURE level and the
-                # ambient evidence it rests on. Empty for a legacy plan that
-                # carries no solves (never a claim that nothing moved).
-                "role_solves": {
-                    role: solve.to_dict()
-                    for role, solve in (gain_plan.role_solves or {}).items()
-                },
-                "ambient_report": dict(ambient_report),
+        _, artifact = _bank(records, run_async, {
+            "kind": CHECK_EVIDENCE_KIND,
+            "gain_plan_db": dict(gain_plan.gain_db),
+            "predicted_peak_dbfs": gain_plan.predicted_peak_dbfs,
+            "snr_floor_ok": gain_plan.snr_floor_ok,
+            # #1825: the per-role derivation behind ``gain_plan_db`` — which
+            # limit chose each driver's MEASURE level and the ambient evidence
+            # it rests on. Empty for a legacy plan that carries no solves
+            # (never a claim that nothing moved).
+            "role_solves": {
+                role: solve.to_dict()
+                for role, solve in (gain_plan.role_solves or {}).items()
             },
-        )
+            "ambient_report": dict(ambient_report),
+        })
         refs["check_artifact"] = artifact.fingerprint
 
     def publish_candidate(candidate: Any) -> None:
-        from jasper.active_speaker.measured_crossover_candidate import (
-            MeasuredCrossoverCandidate,
-        )
-
-        artifact = store.publish_json_artifact(
-            f"crossover_v2/{capture_session_id}/candidate.json",
-            candidate.to_dict(),
-        )
-        reopened_raw = store.reopen_json_artifact(artifact)
-        reopened = MeasuredCrossoverCandidate.from_mapping(reopened_raw)
-        if reopened.fingerprint != candidate.fingerprint:
-            raise RuntimeError(
-                "published measured candidate changed on exact readback"
-            )
+        _, artifact = _bank(records, run_async, candidate.to_dict())
         refs["candidate_artifact"] = artifact.fingerprint
         log_event(
             logger,
@@ -2845,37 +2896,25 @@ def bind_evidence_publishers(
 
 
 def bind_round_receipt(
-    store: Any, capture_session_id: str, refs: dict[str, Any]
+    store: Any, capture_session_id: str, refs: dict[str, Any], run_async: Any
 ) -> Callable[[Mapping[str, Any]], str]:
     """The conductor's ``publish_round_receipt`` seam (#2291).
 
-    Writes ONE immutable receipt per round as a bundle artifact at
-    ``crossover_v2/<capture_session_id>/round_receipt.json``, through
-    :meth:`publish_json_artifact` + reopen-and-compare — the R21 accept-receipt
-    pattern verbatim (``commissioning_verification._receipt``). That store is
-    write-once, canonical-JSON, fsync'd (file **and** parent directory) and
-    tamper-checked on the way out, which is what a receipt needs and what a
-    ``/var/lib/jasper/*.json`` file is not. It also puts the receipt beside
-    ``check.json``, ``candidate.json`` and the retained positions — the
-    artifacts its own ``evidence_identities`` name, which is what makes them
-    resolvable at all.
+    Banks ONE immutable receipt per round, which puts it beside ``check.json``,
+    ``candidate.json`` and the retained positions — the artifacts its own
+    ``evidence_identities`` name, which is what makes them resolvable at all.
+    The store runs the R21 accept-receipt reopen-and-compare at the write
+    (``record_store._verify_receipt``).
 
-    Raises rather than swallowing: the store is deliberately strict, and the
-    fail-soft boundary is the round coordinator's own receipt writer
+    Raises rather than swallowing: the fail-soft boundary is the round
+    coordinator's own receipt writer
     (:func:`jasper.active_speaker.crossover_v2.coordinator.run_round` catches
-    it), the same shape :func:`bind_cloud_publisher` takes. Keeping the
-    boundary there preserves the strictness for every other caller of this
-    store. :func:`bind_position_retention` is the ONE that catches inside
-    itself, and says why.
+    it), the same shape :func:`bind_cloud_publisher` takes.
     """
+    records = _record_store(store, capture_session_id)
 
     def publish_round_receipt(receipt: Mapping[str, Any]) -> str:
-        artifact = store.publish_json_artifact(
-            f"crossover_v2/{capture_session_id}/round_receipt.json", dict(receipt)
-        )
-        reopened = store.reopen_json_artifact(artifact)
-        if reopened != dict(receipt):
-            raise RuntimeError("published round receipt changed on exact readback")
+        _, artifact = _bank(records, run_async, dict(receipt))
         refs["round_receipt_artifact"] = artifact.fingerprint
         return str(artifact.fingerprint)
 
@@ -2908,25 +2947,16 @@ def bind_position_retention(
     ``spatial_combine.PositionCapture.position_id``, so a flagged or outlying
     position can be named back to the household in PR-4's report.
 
-    **The JSON half goes through the record store, which is the writer this
-    function used to be.** ``BankedRecordStore`` files a position take at the
-    same path and imports ``POSITION_EVIDENCE_KIND`` rather than re-spelling
-    the discriminator, so the reader's constant and the writer's literal can no
-    longer drift apart. It also names the artifact from ``record["take_id"]``
-    instead of re-minting one from the position id, which is what the entry
-    baseline's doubled take id was: that record's ``position_id`` IS its take
-    id, so a second mint appended a second ``_aNN``.
+    The JSON half goes through the record store (ADR-0227 §12), which names the
+    artifact from ``record["take_id"]`` rather than re-minting one from the
+    position id: that record's ``position_id`` IS its take id, so a second mint
+    appended a second ``_aNN``.
 
-    **This is the fail-soft boundary, and the only one.** It lives at the
-    binding rather than in the conductor because the store stays strict —
-    ``publish_json_artifact`` raises ``CommissioningEvidenceStoreError``
-    (a ``RuntimeError``) rather than
-    silently dropping an artifact, and a WAV write raises ``OSError`` — so
-    every OTHER caller of that store keeps the strictness it was built for,
-    while a full disk here cannot turn an acoustically-good capture into a
-    retake. The WARN keeps its shipped event name so a log search spans the
-    move. ``bundles.register_capture`` is the one write this does not have to
-    guard: every public write in that module already fail-softs.
+    **Fail-soft through :func:`_fail_soft`**, at the binding rather than in the
+    conductor: a WAV write raises ``OSError``, and a full disk here must not
+    turn an acoustically-good capture into a retake.
+    ``bundles.register_capture`` is the one write this does not have to guard:
+    every public write in that module already fail-softs.
 
     ``provenance`` (optional, keyword-only) is the recorder the ANALYZE seam
     hands this one forward through — not the play seam's own. It is drained
@@ -2954,33 +2984,18 @@ def bind_position_retention(
         capture_artifact_relpath,
         register_capture,
     )
-    from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
     from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_LATERAL
-    from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
 
-    # The same store ``bind_v2_engine_seams`` binds as the engine's record
-    # seam, constructed here rather than shared because the two binders take
-    # their arguments at two different call sites. It is a frozen dataclass
-    # over the same bundle and the same state file, so this is one writer
-    # constructed twice and never two authorities.
-    records = BankedRecordStore(
-        evidence=store,
-        capture_session_id=capture_session_id,
-    )
+    records = _record_store(store, capture_session_id)
 
     def bank_take(result: Any, metadata: Mapping[str, Any]) -> str:
-        try:
-            return _bank_one_take(result, metadata)
-        except (OSError, RuntimeError, TypeError, ValueError):
-            log_event(
-                logger, "correction.crossover_v2_position_retain_failed",
-                level=logging.WARNING,
-                session_id=str(metadata.get("session_id") or ""),
-                phase=str(metadata.get("phase") or ""),
-                position_id=str(metadata.get("take_id") or ""),
-                exc_info=True,
-            )
-            return ""
+        return _fail_soft(
+            lambda: _bank_one_take(result, metadata),
+            event="correction.crossover_v2_position_retain_failed",
+            session_id=str(metadata.get("session_id") or ""),
+            phase=str(metadata.get("phase") or ""),
+            position_id=str(metadata.get("take_id") or ""),
+        ) or ""
 
     def _bank_one_take(result: Any, metadata: Mapping[str, Any]) -> str:
         wav = getattr(result, "wav", None)
@@ -3066,12 +3081,9 @@ def bind_position_retention(
         blocks = evidence.take() if evidence is not None else None
         if blocks:
             record.update(blocks)
-        # The store owns the envelope, the path and the discriminator. Driven
-        # through ``run_async`` because the retention path is synchronous all
-        # the way up from ``consume_capture`` — it runs on a capture worker
-        # thread, and site B holds the conductor's ``_close_lock`` across this
-        # call exactly as it held the direct write this replaces.
-        record_id = str(run_async(records.bank(record)))
+        # Site B holds the conductor's ``_close_lock`` across this call exactly
+        # as it held the direct write this replaces.
+        record_id, artifact = _bank(records, run_async, record)
         positions = refs.setdefault("position_artifacts", [])
         # WO-1 (attribution plan §6): the per-position WAV path AND its
         # SHA-256 ride the durable state, not only the bundle sidecar, "so
@@ -3088,11 +3100,8 @@ def bind_position_retention(
             # Still the artifact FINGERPRINT and not ``bank``'s store id. F9
             # (the join, #3193) left the two un-bridged because nothing reads
             # this column yet; W1-d's index is what will want the path, and it
-            # can have it then. Re-identified rather than returned because the
-            # store hands back the id that finds a record, not its digest.
-            "artifact": store.identify_artifact(
-                f"{EVIDENCE_ROOT}/artifacts/{record_id}"
-            ).fingerprint,
+            # can have it then.
+            "artifact": artifact.fingerprint,
             "wav_path": wav_rel,
             "wav_sha256": str(record.get("wav_sha256") or ""),
         })
@@ -3126,8 +3135,8 @@ def v2_session_identity(store: Any, capture_session_id: str) -> Any:
 
 
 def _publish_findings(
-    store: Any,
-    capture_session_id: str,
+    records: Any,
+    run_async: Any,
     phase: str,
     result: Mapping[str, Any],
     cloud_artifact: Any,
@@ -3136,7 +3145,7 @@ def _publish_findings(
     """Promote this group's excluded-band records to findings and persist them.
 
     WO-1's write half. The findings cite the cloud artifact **that was just
-    published** — the exact bytes the carve-out records were read from — so
+    banked** — the exact bytes the carve-out records were read from — so
     the citation is verifiable and, being a bundle artifact, is bound to the
     same lifetime the finding is (Q-C).
 
@@ -3145,44 +3154,41 @@ def _publish_findings(
     own boundary handles them. Findings are different:
     plan §3.4 makes them *optional evidence artifacts* — "a session with no
     findings behaves exactly as it does today" — so a findings failure must
-    not turn a successfully-published cloud group into a logged failure. The
+    not turn a successfully-banked cloud group into a logged failure. The
     cloud artifact above is already durable by the time this runs.
     """
 
     from jasper.attribution.findings import FindingSet
     from jasper.attribution.promotion import PRODUCED_BY, promote_carve_outs
-    from jasper.attribution.storage import (
-        bundle_evidence_ref,
-        publish_finding_set,
-    )
+    from jasper.attribution.storage import bundle_evidence_ref
 
-    try:
-        identity = v2_session_identity(store, capture_session_id)
+    capture_session_id = records.capture_session_id
+
+    def _publish() -> tuple[Any, int]:
+        identity = v2_session_identity(records.evidence, capture_session_id)
         findings = promote_carve_outs(
             result.get("carve_outs"),
             session=identity,
             cites=(bundle_evidence_ref(cloud_artifact, identity),),
         )
-        artifact = publish_finding_set(
-            store,
-            capture_session_id=capture_session_id,
-            phase=phase,
+        return _bank_findings(
+            records, run_async, phase=phase,
             finding_set=FindingSet(
                 session=identity,
                 produced_by=PRODUCED_BY,
                 findings=findings,
             ),
-        )
-    except (OSError, RuntimeError, TypeError, ValueError):
-        log_event(
-            logger,
-            "correction.crossover_v2_findings_publish_failed",
-            level=logging.WARNING,
-            capture_session_id=capture_session_id,
-            phase=phase,
-            exc_info=True,
-        )
+        ), len(findings)
+
+    published = _fail_soft(
+        _publish,
+        event="correction.crossover_v2_findings_publish_failed",
+        capture_session_id=capture_session_id,
+        phase=phase,
+    )
+    if published is None:
         return
+    artifact, findings_banked = published
     refs.setdefault("finding_artifacts", {})[phase] = artifact.fingerprint
     # No household projection here, deliberately — see
     # :func:`_bank_household_findings`. A carve-out finding's ``household_copy``
@@ -3198,7 +3204,7 @@ def _publish_findings(
         "correction.crossover_v2_findings_published",
         capture_session_id=capture_session_id,
         phase=phase,
-        findings=len(findings),
+        findings=findings_banked,
     )
 
 
@@ -3226,7 +3232,7 @@ def _bank_household_findings(
     artifact stays the record; the state carries what a screen renders.
 
     **The read-back is itself the honesty check.** Going out through
-    ``publish_finding_set`` and straight back in through ``read_finding_set``
+    the record store and straight back in through ``read_finding_set``
     means only a set that survives the strict reopen — schema, session binding,
     and (``verify_evidence`` defaults True) a re-hash of every bundle citation
     — reaches a household. A finding whose support could not be confirmed
@@ -3305,7 +3311,7 @@ def _bank_household_findings(
 
 
 def bind_findings_publisher(
-    store: Any, capture_session_id: str, refs: dict[str, Any]
+    store: Any, capture_session_id: str, refs: dict[str, Any], run_async: Any
 ) -> Callable[[Mapping[str, Any]], None]:
     """The real ``publish_findings`` seam — the #1866 frame-gate finding.
 
@@ -3342,22 +3348,20 @@ def bind_findings_publisher(
     tune.
     """
 
+    records = _record_store(store, capture_session_id)
+
     def publish_findings(record: Mapping[str, Any]) -> None:
         from jasper.active_speaker.commissioning_evidence_store import (
             EVIDENCE_ROOT,
         )
-        from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
         from jasper.attribution.findings import FindingSet
         from jasper.attribution.promotion import (
             PRODUCED_BY_LEVEL_FRAME,
             promote_level_frame_disagreement,
         )
-        from jasper.attribution.storage import (
-            bundle_evidence_ref,
-            publish_finding_set,
-        )
+        from jasper.attribution.storage import bundle_evidence_ref
 
-        try:
+        def _publish() -> Any:
             identity = v2_session_identity(store, capture_session_id)
             finding = promote_level_frame_disagreement(
                 record,
@@ -3373,30 +3377,27 @@ def bind_findings_publisher(
                 ),
             )
             # A record the promoter refused is already logged by it, with the
-            # reason. Publishing an EMPTY set here would be a lie of a
-            # different shape — "attribution ran and found nothing" — about a
-            # session whose gate found something and said so in the journal.
+            # reason. Banking an EMPTY set here would be a lie of a different
+            # shape — "attribution ran and found nothing" — about a session
+            # whose gate found something and said so in the journal.
             if finding is None:
-                return
-            artifact = publish_finding_set(
-                store,
-                capture_session_id=capture_session_id,
-                phase=PHASE_MEASURE,
+                return None
+            return _bank_findings(
+                records, run_async, phase=PHASE_MEASURE,
                 finding_set=FindingSet(
                     session=identity,
                     produced_by=PRODUCED_BY_LEVEL_FRAME,
                     findings=(finding,),
                 ),
             )
-        except (OSError, RuntimeError, TypeError, ValueError):
-            log_event(
-                logger,
-                "correction.crossover_v2_findings_publish_failed",
-                level=logging.WARNING,
-                capture_session_id=capture_session_id,
-                phase=PHASE_MEASURE,
-                exc_info=True,
-            )
+
+        artifact = _fail_soft(
+            _publish,
+            event="correction.crossover_v2_findings_publish_failed",
+            capture_session_id=capture_session_id,
+            phase=PHASE_MEASURE,
+        )
+        if artifact is None:
             return
         refs.setdefault("finding_artifacts", {})[PHASE_MEASURE] = (
             artifact.fingerprint
@@ -3423,51 +3424,37 @@ def bind_findings_publisher(
 
 
 def bind_cloud_publisher(
-    store: Any, capture_session_id: str, refs: dict[str, Any]
+    store: Any, capture_session_id: str, refs: dict[str, Any], run_async: Any
 ) -> Callable[[str, Mapping[str, Any]], None]:
     """The real ``publish_cloud`` seam (flat-linearization plan PR-4).
 
     One JSON artifact PER CLOSED GROUP — ``crossover_v2/<session>/<phase>.json``
     (``cloud_measure.json`` / ``cloud_verify.json``), never a single shared
-    ``cloud.json`` across both groups. The evidence store is write-once (a
-    repeated path is a ``PATH_CONFLICT`` refusal — see
-    :func:`bind_position_retention`'s own docstring), and the pre-apply and
-    post-apply groups close at genuinely different times in the SAME
-    session, so a single shared path would collide on the second group's
-    write. This is a mechanism deviation from the work order's literal
+    ``cloud.json`` across both groups: the store is write-once and the
+    pre-apply and post-apply groups close at genuinely different times in the
+    SAME session, so a shared path would collide on the second group's write.
+    This is a mechanism deviation from the work order's literal
     ``crossover_v2/<session>/cloud.json`` path, recorded here rather than
-    silently matched — the per-group content (mask/registry/spec/geometry)
-    is exactly what was asked for either way.
+    silently matched — the per-group content (mask/registry/spec/geometry) is
+    exactly what was asked for either way.
 
-    Fail-soft at the CALLER (``CrossoverV2Session._run_cloud_pipeline``):
-    this function does not swallow failures itself — a full disk or a
-    write-once conflict must surface as an exception here so the conductor's
-    own boundary can log and continue rather than every OTHER caller of this
-    store losing its strictness. :func:`bind_position_retention` is the
-    opposite, deliberately: its conductor-side boundary moved INTO the binding
-    when the flow's retention sites lifted onto the record store, so it catches
-    where this one raises.
+    Fail-soft at the CALLER (``CrossoverV2Session._run_cloud_pipeline``): a
+    full disk or a write-once conflict must surface as an exception here so the
+    conductor's own boundary can log and continue.
+    :func:`bind_position_retention` is the opposite, deliberately: its boundary
+    is at the binding, so it catches where this one raises.
     """
+    from jasper.active_speaker.crossover_v2.record_store import CLOUD_EVIDENCE_KIND
+
+    records = _record_store(store, capture_session_id)
 
     def publish_cloud(phase: str, result: Mapping[str, Any]) -> None:
-        from jasper.attribution.session_identity import stamp_session_identity
-
-        payload = stamp_session_identity(
-            {
-                "schema_version": 1,
-                "kind": "jts_crossover_v2_cloud_evidence",
-                "capture_session_id": capture_session_id,
-                "phase": phase,
-                **dict(result),
-            },
-            v2_session_identity(store, capture_session_id),
-        )
-        artifact = store.publish_json_artifact(
-            f"crossover_v2/{capture_session_id}/{phase}.json", payload
-        )
+        _, artifact = _bank(records, run_async, {
+            "kind": CLOUD_EVIDENCE_KIND, "phase": phase, **dict(result),
+        })
         cloud_artifacts = refs.setdefault("cloud_artifacts", {})
         cloud_artifacts[phase] = artifact.fingerprint
-        _publish_findings(store, capture_session_id, phase, result, artifact, refs)
+        _publish_findings(records, run_async, phase, result, artifact, refs)
 
     return publish_cloud
 
@@ -5096,16 +5083,20 @@ def bind_v2_stage_seams(
             evidence_store, capture_session_id, refs, run_async,
             provenance=banked_provenance, evidence=banked_evidence,
         ),
-        publish_cloud=bind_cloud_publisher(evidence_store, capture_session_id, refs),
+        publish_cloud=bind_cloud_publisher(
+            evidence_store, capture_session_id, refs, run_async
+        ),
         # #2291's round receipt. Bound on both stages rather than gated on a
         # capability: only the stage that GRADES a round ever calls it, and a
         # binding that exists everywhere cannot be the reason a receipt went
         # unwritten on the stage that needed it.
         publish_round_receipt=bind_round_receipt(
-            evidence_store, capture_session_id, refs
+            evidence_store, capture_session_id, refs, run_async
         ),
         publish_findings=(
-            bind_findings_publisher(evidence_store, capture_session_id, refs)
+            bind_findings_publisher(
+                evidence_store, capture_session_id, refs, run_async
+            )
             if CAPABILITY_FINDINGS in capabilities.provides else None
         ),
         rollback=(
@@ -6081,7 +6072,7 @@ def prepare_v2_session(
         # so a caller-configured cloud is covered too.
         session_volume_plan().set_wall_clock_ceiling_s(ceiling_s)
         publish_check, publish_candidate, refs = bind_evidence_publishers(
-            evidence_store, capture_session_id
+            evidence_store, capture_session_id, run_async
         )
         # Written by the play seam, read by analyze.
         capture_provenance = CaptureProvenanceRecorder()
