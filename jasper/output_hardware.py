@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -32,8 +33,10 @@ from .audio_hardware.dac import (
     DacProfile,
     HIFIBERRY_DAC8X_ID,
     HIFIBERRY_DAC8X_STUDIO_ID,
+    MixerControl,
     all_profiles as _all_dac_profiles,
     by_id as _dac_profile_by_id,
+    mixer_control_groups_for,
     profile_for_card_label as _dac_profile_for_card_label,
 )
 from .audio_hardware.hat_eeprom import HatEeprom, read_hat_eeprom
@@ -788,6 +791,81 @@ def load_state(path: str | Path | None = None) -> OutputHardwareState | None:
     if raw.get("kind") != OUTPUT_HARDWARE_STATE_KIND:
         return None
     return OutputHardwareState.from_mapping(raw)
+
+
+# `amixer cget` prints an integer control's own range, then its value, then the
+# TLV it publishes:
+#     ; type=INTEGER,access=rw---R--,values=1,min=0,max=254,step=1
+#     : values=206
+#     | dBminmax-min=-103.00dB,max=24.00dB
+# Both bounds of each scale come out of ONE match: half a scale read as a whole
+# one resolves a unity target to the top of the range, which on a HiFiBerry
+# Studio is +24 dB.
+_CGET_RANGE_RE = re.compile(
+    r"^\s*;\s*type=INTEGER,[^\n]*\bmin=(-?\d+),max=(-?\d+)", re.M
+)
+_CGET_TLV_MINMAX_RE = re.compile(
+    r"dBminmax(?:mute)?-min=(-?[\d.]+)dB,max=(-?[\d.]+)dB"
+)
+
+
+def mixer_index_for_db(cget_output: str, target_db: float) -> int | None:
+    """The control index ``target_db`` lands on, or None if the TLV cannot say.
+
+    ``SNDRV_CTL_TLVT_DB_MINMAX`` maps a control's own value range linearly onto
+    ``[min_db, max_db]``. The one conversion in the tree: ``jasper-dac-init``
+    resolves the index it writes through it, and ``jasper-doctor`` resolves the
+    index it expects to read back. Any other TLV form is unreadable to both, and
+    an unreadable scale is never guessed at.
+    """
+
+    span = _CGET_RANGE_RE.search(cget_output)
+    tlv = _CGET_TLV_MINMAX_RE.search(cget_output)
+    if span is None or tlv is None:
+        return None
+    value_min, value_max = int(span.group(1)), int(span.group(2))
+    db_min, db_max = float(tlv.group(1)), float(tlv.group(2))
+    if value_max <= value_min or db_max <= db_min:
+        return None
+    scaled = value_min + (target_db - db_min) * (value_max - value_min) / (
+        db_max - db_min
+    )
+    return math.floor(min(max(scaled, value_min), value_max) + 0.5)
+
+
+def mixer_pins_for_state(
+    state: OutputHardwareState | None,
+) -> tuple[tuple[str, MixerControl], ...]:
+    """``(card_id, control)`` for every mixer pin the OBSERVED profile declares.
+
+    The one place the registry's per-child mixer policy is paired with the
+    cards the reconciler actually saw, so ``jasper-dac-init`` applies and
+    ``jasper-doctor`` verifies the same list. Keyed on
+    :attr:`OutputHardwareState.observed_profile_id`, not the driven lane: a
+    hardware gain stage is worth pinning whenever the board is present, and a
+    partial record still names the card it saw.
+    """
+
+    if state is None:
+        return ()
+    profile_id = state.observed_profile_id
+    if profile_id is None:
+        return ()
+    groups = mixer_control_groups_for(profile_id)
+    if not groups:
+        return ()
+    if len(groups) == 1:
+        cards: list[str] = [state.selected_card_id or ""]
+    else:
+        cards = [child.card_id for child in state.child_devices]
+    # strict: a composite whose observed cards do not match its declared
+    # children is a mismatch to report, never a list to silently shorten.
+    return tuple(
+        (card, control)
+        for controls, card in zip(groups, cards, strict=True)
+        if card
+        for control in controls
+    )
 
 
 def active_dac_profile_id(path: str | Path | None = None) -> str | None:

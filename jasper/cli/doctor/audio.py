@@ -12,9 +12,8 @@ import shutil
 import socket
 from pathlib import Path
 from ...audio_hardware.dac import (
-    APPLE_USB_C_DONGLE_ID,
+    MixerControl,
     by_id as _dac_profile_for,
-    mixer_control_groups_for as _dac_mixer_control_groups_for,
 )
 from ...camilla import CamillaController, CamillaUnavailable
 from ...camilla_config_contract import (
@@ -31,6 +30,8 @@ from ...output_hardware import (
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
     OutputHardwareState,
     load_state as _load_output_hardware_state,
+    mixer_index_for_db as _mixer_index_for_db,
+    mixer_pins_for_state as _mixer_pins_for_state,
 )
 from ...mic_presence import MicPresence, read_mic_presence
 from ._registry import doctor_check
@@ -832,72 +833,92 @@ def check_apple_dongle_audio() -> CheckResult:
         "check analog loads on the 3.5mm jack(s).",
     )
 
-@doctor_check(order=22, group="audio", exclusive_group="audio-probe")
-def check_dongle_headphone_at_max() -> CheckResult:
-    """The Apple dongle's analog Headphone control should be pinned at
-    100%. Anything lower throws away analog headroom that we'd rather
-    have available to the digital chain — main_volume in CamillaDSP is
-    the user-facing knob, the dongle is meant to be a pass-through
-    ceiling.
+_AMIXER_PERCENT_RE = re.compile(r"\[(\d+)%\]")
+_CGET_VALUE_RE = re.compile(r"^\s*:\s*values=([^,\s]+)", re.M)
+_CGET_ITEM_RE = re.compile(r"^\s*;\s*Item #(\d+) '(.*)'\s*$", re.M)
 
-    `jasper-dac-init.service` sets this on every boot; if it's drifted,
-    this check catches it — a Headphone control left low (e.g. 40%,
-    -36 dB) costs audible loudness with nothing else red."""
+
+def _mixer_pin_problem(card_id: str, control: MixerControl) -> str | None:
+    """None when this pin is held, else a short ``card:control=observed``.
+
+    A pin that cannot be read or parsed is reported as not held: an
+    unverifiable hardware gain stage is the condition this check exists for.
+    """
+
+    if control.target_percent is not None:
+        probe = _run(["amixer", "-c", card_id, "sget", control.name])
+        if probe.returncode != 0:
+            return f"{card_id}:{control.name}=unreadable"
+        percents = _AMIXER_PERCENT_RE.findall(probe.stdout)
+        if not percents:
+            return f"{card_id}:{control.name}=unparsed"
+        # Every channel amixer prints, not just the first: one leg of a stereo
+        # pair left low is the same lost loudness as both.
+        off = [pct for pct in percents if int(pct) != control.target_percent]
+        if off:
+            return f"{card_id}:{control.name}={','.join(off)}%"
+        if control.unmute and "[off]" in probe.stdout:
+            return f"{card_id}:{control.name}=muted"
+        return None
+    probe = _run(["amixer", "-c", card_id, "cget", f"name={control.name}"])
+    if probe.returncode != 0:
+        return f"{card_id}:{control.name}=unreadable"
+    match = _CGET_VALUE_RE.search(probe.stdout)
+    if match is None or not match.group(1).lstrip("-").isdigit():
+        return f"{card_id}:{control.name}=unparsed"
+    observed = int(match.group(1))
+    if control.target_db is not None:
+        expected = _mixer_index_for_db(probe.stdout, control.target_db)
+        if expected is None:
+            return f"{card_id}:{control.name}=no_db_scale"
+        if observed != expected:
+            return f"{card_id}:{control.name}={observed}!={expected}"
+        return None
+    items = {name: int(index) for index, name in _CGET_ITEM_RE.findall(probe.stdout)}
+    expected_item = items.get(control.target_enum or "")
+    if expected_item is None:
+        return f"{card_id}:{control.name}=no_such_item"
+    if observed != expected_item:
+        return f"{card_id}:{control.name}={observed}!={expected_item}"
+    return None
+
+
+@doctor_check(order=22, group="audio", exclusive_group="audio-probe")
+def check_dac_mixer_pins() -> CheckResult:
+    """Every mixer control the observed output DAC's profile declares must sit
+    at its declared pin. JTS owns gain in CamillaDSP (main_volume), so a
+    hardware stage anywhere else is either lost loudness — an Apple dongle's
+    Headphone left at 40% costs 36 dB with nothing else red — or, on a Studio
+    board whose driver writes no defaults of its own, unrequested gain of up
+    to +24 dB.
+
+    `jasper-dac-init.service` applies these at boot and after every reconcile
+    pass; this check is what catches a pin that did not hold."""
     state = _output_hardware_state_or_none()
     dac_id = _observed_output_dac_id(state)
-    control_groups = _dac_mixer_control_groups_for(APPLE_USB_C_DONGLE_ID)
-    if not _apple_output_profile_active(dac_id) or not control_groups:
+    pins = _mixer_pins_for_state(state)
+    if not pins:
         return CheckResult(
-            "Dongle headphone gain", "ok",
-            f"skipped — active output DAC is {dac_id}",
+            "DAC mixer pins", "ok",
+            f"skipped — output DAC {dac_id} declares no pinned mixer controls",
         )
-    control = next(
-        (
-            item for item in control_groups[0]
-            if item.name == "Headphone" and item.target_percent is not None
-        ),
-        None,
-    )
-    if control is None:
+    problems = [
+        problem
+        for card_id, control in pins
+        if (problem := _mixer_pin_problem(card_id, control)) is not None
+    ]
+    if problems:
+        extra = len(problems) - 4
+        suffix = f", +{extra} more" if extra > 0 else ""
         return CheckResult(
-            "Dongle headphone gain",
-            "ok",
-            f"skipped — active output DAC profile {dac_id} has no Headphone target",
-        )
-
-    target_pct = int(control.target_percent or 100)
-    cards = _apple_dongle_cards_from_state(state)
-    low_cards: list[str] = []
-    for card_id in cards:
-        p = _run(["amixer", "-c", card_id, "sget", control.name])
-        if p.returncode != 0:
-            return CheckResult(
-                "Dongle headphone gain", "fail",
-                f"amixer -c {card_id} sget {control.name} failed — dongle not "
-                f"enumerated as card {card_id!r}?",
-            )
-        # amixer prints "Front Left: Playback NN [PP%] [-DD.DDdB] [on]";
-        # we want PP. If both channels are present, expect them equal.
-        pcts = re.findall(r"\[(\d+)%\]", p.stdout)
-        if not pcts:
-            return CheckResult(
-                "Dongle headphone gain", "warn",
-                f"Could not parse percent from amixer output for {card_id} "
-                "(format change?).",
-            )
-        pct = int(pcts[0])
-        if pct < target_pct:
-            low_cards.append(f"{card_id}:{pct}%")
-    if low_cards:
-        return CheckResult(
-            "Dongle headphone gain", "warn",
-            f"Headphone control below {target_pct}% ({', '.join(low_cards)}). "
-            "Run `sudo systemctl start jasper-dac-init` to pin at 100%.",
+            "DAC mixer pins", "fail",
+            f"{len(problems)} of {len(pins)} declared mixer pins are not held "
+            f"on {dac_id} ({', '.join(problems[:4])}{suffix}). "
+            "Run `sudo systemctl restart jasper-dac-init`.",
         )
     return CheckResult(
-        "Dongle headphone gain", "ok",
-        f"Headphone at {target_pct}% on {len(cards)} Apple card(s) "
-        "(analog ceiling open)",
+        "DAC mixer pins", "ok",
+        f"{len(pins)} declared mixer pins held on {dac_id}",
     )
 
 

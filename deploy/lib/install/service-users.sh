@@ -161,9 +161,9 @@ create_jasper_service_users() {
         usermod -aG bluetooth jasper-web 2>/dev/null || true
     fi
     # WS1 Tier-B DAC mixer slice — jasper-recon is the non-root service user
-    # for hardware reconcilers that only need ALSA mixer access. The first use
-    # is Apple dongle Headphone control pinning (`jasper-dac-init` and
-    # `jasper-headphone-monitor`): primary group `jasper`, supplementary `audio`
+    # for hardware reconcilers that only need ALSA mixer access: the declared
+    # DAC mixer pins (`jasper-dac-init`) and the Apple dongle drift monitor
+    # (`jasper-headphone-monitor`). Primary group `jasper`, supplementary `audio`
     # for /dev/snd/controlC* access. No sudo/polkit grant is attached here.
     if ! getent passwd jasper-recon >/dev/null 2>&1; then
         useradd -r -M -s /usr/sbin/nologin -g jasper -G audio jasper-recon

@@ -4,51 +4,118 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Pin the Apple USB-C dongle Headphone mixer control to 100%.
+# Apply the mixer pins the classified output DAC profile declares, so neither
+# an `alsactl restore` nor a driver that writes no defaults of its own leaves a
+# hardware gain stage anywhere but its pin.
 #
-# Usage: jasper-dac-init [card|auto] [control]
-#
-# The service may be enabled on non-Apple-DAC systems. In auto mode it
-# detects the Apple dongle at runtime and exits cleanly when absent.
+# The registry owns WHICH controls are pinned and to what, the reconciler's
+# /run record owns WHICH CARD carries them: one interpreter resolves both into
+# ready-made `amixer` arguments — dB targets through the same
+# jasper.output_hardware conversion the doctor verifies with — and this script
+# only runs them.
 
 set -uo pipefail
 
-CONFIGURED_CARD="${1:-auto}"
-CONTROL="${2:-Headphone}"
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-APPLE_DONGLE_LIB="${JASPER_APPLE_DONGLE_LIB:-}"
-if [[ -z "$APPLE_DONGLE_LIB" ]]; then
-    if [[ -r "${SCRIPT_DIR}/../lib/jasper-apple-dongle.sh" ]]; then
-        APPLE_DONGLE_LIB="${SCRIPT_DIR}/../lib/jasper-apple-dongle.sh"
-    else
-        APPLE_DONGLE_LIB="/usr/local/lib/jasper/jasper-apple-dongle.sh"
-    fi
+DEFAULT_PYTHON="python3"
+if [[ -x /opt/jasper/.venv/bin/python ]]; then
+    DEFAULT_PYTHON="/opt/jasper/.venv/bin/python"
 fi
-# shellcheck disable=SC1090  # runtime path is repo-sibling or installed fallback
-if [[ ! -r "$APPLE_DONGLE_LIB" ]] || ! source "$APPLE_DONGLE_LIB"; then
-    echo "event=apple_dongle.dac_init.failed reason=common_lib_unavailable" >&2
-    exit 1
-fi
+PYTHON="${JASPER_OUTPUT_HARDWARE_PYTHON:-$DEFAULT_PYTHON}"
 
-# bash 3.2 (macOS, where this is tested) has no `mapfile`.
-CARDS=()
-while IFS= read -r CARD; do
-    CARDS+=("$CARD")
-done < <(resolve_cards)
-if [[ "${#CARDS[@]}" -eq 0 ]]; then
-    echo "event=apple_dongle.dac_init.skip reason=not_detected configured_card=${CONFIGURED_CARD} control=${CONTROL}"
+failed=0
+
+log() {
+    printf 'event=dac_init.%s %s\n' "$1" "$2"
+}
+
+if ! command -v "$PYTHON" >/dev/null 2>&1; then
+    log skip "reason=python_unavailable"
     exit 0
 fi
 
-failed=0
-for CARD in "${CARDS[@]}"; do
-    [[ -n "$CARD" ]] || continue
-    if amixer -c "$CARD" -- sset "$CONTROL" 100% unmute >/dev/null 2>&1; then
-        echo "event=apple_dongle.dac_init.pinned card=${CARD} control=${CONTROL} value=100"
+# One tab-separated line per pin: card, control name, then the `amixer`
+# arguments. The resolver names its own skip/failure reasons on stderr, which
+# is why that stream is deliberately not swallowed.
+pins="$("$PYTHON" - <<'PY'
+import subprocess
+import sys
+
+from jasper.output_hardware import (
+    load_state,
+    mixer_index_for_db,
+    mixer_pins_for_state,
+    state_path,
+)
+
+
+def event(kind: str, detail: str) -> None:
+    print(f"event=dac_init.{kind} {detail}", file=sys.stderr)
+
+
+# A record that is ABSENT is a boot that has not reconciled yet, and the
+# reconciler restarts this unit once it writes one. A record that is present
+# but unreadable is an unknown gain stage, which is not a state to succeed on.
+if not state_path().exists():
+    event("skip", "reason=no_record")
+    raise SystemExit(0)
+state = load_state()
+if state is None:
+    event("failed", "reason=record_unusable")
+    raise SystemExit(1)
+
+pins = mixer_pins_for_state(state)
+if not pins:
+    event("skip", "reason=no_declared_pins")
+    raise SystemExit(0)
+
+unresolved = False
+for card, control in pins:
+    if control.target_percent is not None:
+        args = ["--", "sset", control.name, f"{control.target_percent}%"]
+        if control.unmute:
+            args.append("unmute")
+    elif control.target_enum is not None:
+        # `amixer cset` resolves an enumerated control by item name.
+        args = ["cset", f"name={control.name}", control.target_enum]
+    else:
+        probe = subprocess.run(
+            ["amixer", "-c", card, "cget", f"name={control.name}"],
+            capture_output=True,
+            text=True,
+        )
+        index = (
+            mixer_index_for_db(probe.stdout, control.target_db)
+            if probe.returncode == 0
+            else None
+        )
+        if index is None:
+            event(
+                "failed",
+                f"card={card} control={control.name.replace(' ', '_')} "
+                "reason=scale_unreadable",
+            )
+            unresolved = True
+            continue
+        args = ["cset", f"name={control.name}", str(index)]
+    print("\t".join([card, control.name, *args]))
+raise SystemExit(1 if unresolved else 0)
+PY
+)"
+resolve_status=$?
+
+while IFS=$'\t' read -r -a pin; do
+    [[ "${#pin[@]}" -ge 3 ]] || continue
+    applied="${pin[*]:2}"
+    if amixer -c "${pin[0]}" "${pin[@]:2}" >/dev/null 2>&1; then
+        log pinned "card=${pin[0]} control=${pin[1]// /_} applied=${applied// /_}"
     else
-        echo "event=apple_dongle.dac_init.failed card=${CARD} control=${CONTROL} reason=amixer_nonzero" >&2
+        log failed "card=${pin[0]} control=${pin[1]// /_} reason=amixer_nonzero" >&2
         failed=1
     fi
-done
+done <<<"$pins"
+
+if [[ "$resolve_status" != "0" ]]; then
+    failed=1
+fi
 
 exit "$failed"

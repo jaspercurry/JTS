@@ -11,10 +11,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 LIB = ROOT / "deploy/lib/jasper-apple-dongle.sh"
-SCRIPTS = (
-    ROOT / "deploy/bin/jasper-dac-init",
-    ROOT / "deploy/bin/jasper-headphone-monitor",
-)
+MONITOR = ROOT / "deploy/bin/jasper-headphone-monitor"
 
 
 def _resolve(tmp_path: Path, configured: str, aplay_output: str) -> list[str]:
@@ -57,28 +54,18 @@ def test_auto_detects_every_apple_dongle_card(tmp_path: Path) -> None:
     assert _resolve(tmp_path, "auto", listing) == ["AppleA", "AppleB"]
 
 
-def test_both_consumers_source_the_shared_owner() -> None:
-    for script in SCRIPTS:
-        source = script.read_text()
-        assert "jasper-apple-dongle.sh" in source
-        assert 'source "$APPLE_DONGLE_LIB"' in source
-        assert "detect_apple_cards()" not in source
-        assert "resolve_cards()" not in source
-
-
 def test_missing_library_fails_loudly_without_running_forever(tmp_path: Path) -> None:
     env = dict(os.environ)
     env["JASPER_APPLE_DONGLE_LIB"] = str(tmp_path / "missing.sh")
-    for script in SCRIPTS:
-        result = subprocess.run(
-            ["bash", str(script)],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=10,
-        )
-        assert result.returncode == 1
-        assert "reason=common_lib_unavailable" in result.stderr
+    result = subprocess.run(
+        ["bash", str(MONITOR)],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+    assert result.returncode == 1
+    assert "reason=common_lib_unavailable" in result.stderr
 
 
 def test_full_and_streambox_installers_stage_the_library() -> None:
