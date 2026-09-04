@@ -2940,7 +2940,7 @@ async def _active_speaker_load_summed_commissioning_config(
     """Load the transient all-drivers-live commissioning graph for one check."""
 
     from jasper.active_speaker.staging import load_staged_startup_config
-    from jasper.active_speaker.startup_load import load_summed_commissioning_config
+    from jasper.active_speaker.commission_load import load_summed_commissioning_config
 
     cam = camilla_factory()
     staged = load_staged_startup_config()
@@ -2986,7 +2986,7 @@ async def _active_speaker_rollback_summed_commissioning_config(
     *,
     camilla_factory: Callable[[], Any],
 ) -> dict[str, Any]:
-    from jasper.active_speaker.startup_load import rollback_driver_commissioning_config
+    from jasper.active_speaker.commission_load import rollback_driver_commissioning_config
 
     cam = camilla_factory()
     load_config, _, _ = commission_seams(cam)
@@ -3486,7 +3486,7 @@ async def _active_speaker_commission_load_payload(
     graph at the protected floor (silent). Operator-only, single-flight."""
 
     from jasper.active_speaker.staging import load_staged_startup_config
-    from jasper.active_speaker.startup_load import (
+    from jasper.active_speaker.commission_load import (
         commission_load_runtime_status,
         commission_load_state_with_runtime_status,
         load_commission_load_state,
@@ -3654,7 +3654,7 @@ async def _active_speaker_commission_rollback_payload(
 
     from jasper.active_speaker.commission_ramp import clear_pending_ramp_step
     from jasper.active_speaker.safe_playback import stop_safe_playback_session
-    from jasper.active_speaker.startup_load import rollback_driver_commissioning_config
+    from jasper.active_speaker.commission_load import rollback_driver_commissioning_config
 
     tone_stop = _active_speaker_stop_commission_tone(reason="commission_rollback")
     cam = camilla_factory()
@@ -3913,7 +3913,7 @@ async def _active_speaker_commission_state_payload(
         load_ramp_state,
     )
     from jasper.active_speaker.safe_playback import load_safe_playback_state
-    from jasper.active_speaker.startup_load import (
+    from jasper.active_speaker.commission_load import (
         commission_load_runtime_status,
         commission_load_state_with_runtime_status,
         load_commission_load_state,
@@ -4568,7 +4568,7 @@ async def _active_speaker_finish_commissioning_payload(
         )
         try:
             from jasper.active_speaker.commission_ramp import load_ramp_state
-            from jasper.active_speaker.startup_load import load_commission_load_state
+            from jasper.active_speaker.commission_load import load_commission_load_state
 
             ramp_state = load_ramp_state()
             commission_load = load_commission_load_state()

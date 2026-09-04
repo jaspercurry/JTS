@@ -838,7 +838,7 @@ def _ring_transport_state(monkeypatch, tmp_path, *, coupling, marker: str):
 
 
 def _ring_load_preflight(topology, preset, out_dir, device=RING_ACTIVE_PLAYBACK_DEVICE):
-    from jasper.active_speaker.startup_load import (
+    from jasper.active_speaker.commission_load import (
         build_driver_commission_load_preflight,
     )
 

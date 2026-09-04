@@ -748,7 +748,7 @@ def issue_protection_evidence(
         # unsatisfiable. This proves COHERENCE, not liveness: it reads no env,
         # so a ring/ring graph on a LOOPBACK-coupled box passes here. The
         # liveness conjunct is `commissioning_transport_armed` in
-        # `startup_load.build_driver_commission_load_preflight` (#2412 Wave 3).
+        # `commission_load.build_driver_commission_load_preflight` (#2412 Wave 3).
         # The samplerate conjunct below is a separate axis; the ring does not
         # alter the graph's sample rate.
         "capture_route_current": (

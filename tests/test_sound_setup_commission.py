@@ -75,10 +75,11 @@ def _web_commission_env(monkeypatch, tmp_path, controller: _FakeController) -> d
     monkeypatch.setattr(
         "jasper.active_speaker.staging.load_staged_startup_config", lambda: staged
     )
-    monkeypatch.setattr(
-        "jasper.active_speaker.startup_load.load_staged_startup_config",
-        lambda: staged,
-    )
+    for module in ("commission_load", "startup_load"):
+        monkeypatch.setattr(
+            f"jasper.active_speaker.{module}.load_staged_startup_config",
+            lambda: staged,
+        )
     monkeypatch.setattr(
         "jasper.active_speaker.staging.commissioning_config_path",
         lambda **kwargs: tmp_path / "commission.yml",
@@ -523,7 +524,7 @@ def test_commission_state_payload_is_idle_and_read_only(monkeypatch, tmp_path):
     )
     # The state read must NOT run the preflight (which emits the candidate YAML).
     monkeypatch.setattr(
-        "jasper.active_speaker.startup_load.build_driver_commission_load_preflight",
+        "jasper.active_speaker.commission_load.build_driver_commission_load_preflight",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("preflight on a read")),
     )
     payload = asyncio.run(
@@ -614,10 +615,11 @@ def test_commission_load_refreshes_stale_anchor_after_identity_confirmation(
         "jasper.active_speaker.staging.load_staged_startup_config",
         lambda: staged_holder["payload"],
     )
-    monkeypatch.setattr(
-        "jasper.active_speaker.startup_load.load_staged_startup_config",
-        lambda: staged_holder["payload"],
-    )
+    for module in ("commission_load", "startup_load"):
+        monkeypatch.setattr(
+            f"jasper.active_speaker.{module}.load_staged_startup_config",
+            lambda: staged_holder["payload"],
+        )
 
     setup_order: list[str] = []
     monkeypatch.setattr(

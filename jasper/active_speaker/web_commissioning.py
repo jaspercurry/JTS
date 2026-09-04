@@ -5,8 +5,8 @@
 """Shared web/operator orchestration for active-speaker measurement tests.
 
 The active-speaker domain already owns the safety state machines:
-``startup_load`` loads guarded graphs, ``commission_ramp`` gates audible driver
-steps, and ``safe_playback`` records floor confirmation. This module wires those
+``commission_load`` loads guarded graphs, ``commission_ramp`` gates audible
+driver steps, and ``safe_playback`` records floor confirmation. This module wires those
 pieces into one reusable operator service so HTTPS correction can run the same
 measurement prerequisites without importing the `/sound/` page module.
 """
@@ -62,13 +62,15 @@ from jasper.active_speaker.staging import (
     load_staged_startup_config,
     stage_protected_startup_config,
 )
-from jasper.active_speaker.startup_load import (
+from jasper.active_speaker.commission_load import (
     load_commission_load_state,
     load_driver_commissioning_config,
-    load_protected_startup_config,
-    load_startup_load_state,
     load_summed_commissioning_config,
     rollback_driver_commissioning_config,
+)
+from jasper.active_speaker.startup_load import (
+    load_protected_startup_config,
+    load_startup_load_state,
     staged_topology_match_status,
 )
 from jasper.active_speaker.topology_tone import build_summed_topology_tone_plan

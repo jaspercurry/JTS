@@ -40,7 +40,7 @@ from jasper.active_speaker.runtime_contract import (
 )
 from jasper.active_speaker.runtime_convergence import compose_selected_flat_graph
 from jasper.active_speaker.staging import load_staged_startup_config
-from jasper.active_speaker.startup_load import (
+from jasper.active_speaker.commission_load import (
     build_driver_commission_load_preflight,
     load_commission_load_state,
     load_driver_commissioning_config,
