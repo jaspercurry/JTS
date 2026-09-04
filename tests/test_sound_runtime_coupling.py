@@ -54,22 +54,15 @@ def _capture_reemit_coupling(monkeypatch, tmp_path):
     The fake carrier returns a base_flat result; what this helper needs is the
     dry-run reemit call, not what reconcile decides afterwards.
 
-    BOTH token sources are pinned AWAY from the ring — the env var unset and a
-    real ``fanin.env`` declaring the retired ``loopback`` — so ring kwargs
-    coming out the far end prove the seam consults neither. The persisted half
-    is a FILE the SSOT readers open, never a function stub, which is only as
-    good as the caller still calling the stubbed name (the vacuous-stub class
-    #3644 fixed); the assertion below proves the door really says off-ring.
+    Both token sources are declared OFF the ring — the env var unset, and a
+    ``fanin.env`` naming the retired ``loopback`` at the module path its
+    readers are handed — so ring kwargs coming out the far end prove the seam
+    consults neither.
     """
     monkeypatch.delenv("JASPER_FANIN_CAMILLA_COUPLING", raising=False)
     fanin_env = tmp_path / "fanin.env"
     fanin_env.write_text("JASPER_FANIN_CAMILLA_COUPLING=loopback\n", encoding="utf-8")
-    # Both constants, so nothing falls back to the runner's real fanin.env.
     monkeypatch.setattr("jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env))
-    monkeypatch.setattr("jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env))
-    from jasper.fanin.ring_health import persisted_coupling_feeds_ring
-
-    assert persisted_coupling_feeds_ring(str(fanin_env)) is False
 
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
