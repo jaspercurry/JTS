@@ -10,7 +10,6 @@ here may be imported by a module earlier in that chain.
 """
 from __future__ import annotations
 
-import json
 import os
 import re
 import time
@@ -304,19 +303,18 @@ def check_fanin_service() -> CheckResult:
     last_error: OSError | None = None
     for attempt in range(2):
         try:
-            data = read_status_socket(FANIN_STATUS_SOCKET, timeout=2.0)
+            data = read_status_socket(
+                FANIN_STATUS_SOCKET, timeout=_FANIN_STATUS_TIMEOUT_SECONDS
+            )
             break
         # A reply that arrived but did not parse is not retried: only an
         # unreachable socket is worth a second attempt.
-        except json.JSONDecodeError as e:
+        except ValueError as e:
             return CheckResult(
                 "jasper-fanin service",
                 "fail",
-                f"active but UDS STATUS returned invalid JSON: {e}",
-            )
-        except ValueError as e:
-            return CheckResult(
-                "jasper-fanin service", "fail", f"active but UDS {e}"
+                f"active but UDS STATUS is not a JSON object "
+                f"({type(e).__name__}: {e})",
             )
         except OSError as e:
             last_error = e
@@ -566,17 +564,36 @@ def _host_clock_health_from_status(data: dict[str, object]) -> CheckResult:
     )
 
 
+#: Seconds, TOTAL deadline for one doctor probe of fan-in's STATUS socket.
+#: One value for every probe: they all fail soft, so a slower answer is worth
+#: more than a faster verdict.
+_FANIN_STATUS_TIMEOUT_SECONDS = 2.0
+
+
+def _fanin_status() -> dict | Exception:
+    """fan-in's STATUS reply, or the exception that stopped it.
+
+    Returned rather than raised: every caller reports the failure in its own
+    words and severity, and none of them re-raise.
+    """
+    try:
+        return read_status_socket(
+            FANIN_STATUS_SOCKET, timeout=_FANIN_STATUS_TIMEOUT_SECONDS
+        )
+    except (OSError, ValueError) as e:
+        return e
+
+
 @doctor_check(order=51.52, group="audio")
 def check_fanin_host_clock() -> CheckResult:
     """Report persistent USB host-clock recovery/fallback with exact cause."""
-    try:
-        data = read_status_socket(FANIN_STATUS_SOCKET)
-    except (OSError, TimeoutError, json.JSONDecodeError, ValueError) as e:
+    data = _fanin_status()
+    if isinstance(data, Exception):
         # Reachability belongs to the preceding mandatory fan-in service check.
         return CheckResult(
             "USB host clock",
             "ok",
-            f"not probed ({type(e).__name__}); see jasper-fanin service check",
+            f"not probed ({type(data).__name__}); see jasper-fanin service check",
         )
     return _host_clock_health_from_status(data)
 
@@ -596,13 +613,12 @@ def check_fanin_tts_drops() -> CheckResult:
       - warn when protocol errors or dropped audio > 0 since fan-in start.
     """
     name = "fan-in TTS delivery"
-    try:
-        data = read_status_socket(FANIN_STATUS_SOCKET, timeout=2.0)
-    except (OSError, json.JSONDecodeError, ValueError) as e:
+    data = _fanin_status()
+    if isinstance(data, Exception):
         return CheckResult(
             name,
             "ok",
-            f"not probed ({type(e).__name__}); fan-in reachability is "
+            f"not probed ({type(data).__name__}); fan-in reachability is "
             "covered by the 'jasper-fanin service' check",
         )
 
@@ -664,13 +680,12 @@ def check_fanin_ring_stall() -> CheckResult:
         vs no-reader drop split and the last stall duration.
     """
     name = "fan-in ring stall"
-    try:
-        data = read_status_socket(FANIN_STATUS_SOCKET, timeout=2.0)
-    except (OSError, json.JSONDecodeError, ValueError) as e:
+    data = _fanin_status()
+    if isinstance(data, Exception):
         return CheckResult(
             name,
             "ok",
-            f"not probed ({type(e).__name__}); fan-in reachability is "
+            f"not probed ({type(data).__name__}); fan-in reachability is "
             "covered by the 'jasper-fanin service' check",
         )
 

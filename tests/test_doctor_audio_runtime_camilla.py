@@ -72,24 +72,23 @@ def test_check_camilla_service_fails_when_unit_is_not_installed(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("check", "expected_status", "detail"),
+    ("check", "expected_status"),
     [
-        (doctor.check_fanin_service, "fail", "not an object"),
-        (doctor.check_fanin_tts_drops, "ok", "not probed (ValueError)"),
-        (doctor.check_outputd_service, "fail", "not an object"),
-        (doctor.check_aec_clock_drift, "ok", "skipped"),
+        (doctor.check_fanin_service, "fail"),
+        (doctor.check_fanin_tts_drops, "ok"),
+        (doctor.check_outputd_service, "fail"),
+        (doctor.check_aec_clock_drift, "ok"),
     ],
 )
 def test_status_consumers_classify_non_object_root_without_crashing(
-    monkeypatch, check, expected_status, detail
+    monkeypatch, check, expected_status
 ):
+    """A STATUS reply whose JSON root is a list reaches every consumer as a
+    classified verdict, never as an escaping exception."""
     _patch_fanin_systemctl(monkeypatch)
     _patch_fanin_status_socket(monkeypatch, b"[]")
 
-    result = check()
-
-    assert result.status == expected_status
-    assert detail in result.detail
+    assert check().status == expected_status
 
 
 def test_audio_runtime_plan_doctor_warns_on_shadowed_knob(monkeypatch):

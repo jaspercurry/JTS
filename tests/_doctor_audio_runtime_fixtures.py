@@ -14,51 +14,7 @@ from jasper.cli.doctor import (
 )
 
 from .doctor_test_support import record_active_dac
-
-
-class _FakeSocket:
-    def __init__(
-        self,
-        payload: bytes = b"",
-        error: OSError | None = None,
-        *,
-        chunks: list[bytes] | None = None,
-        recv_error: OSError | None = None,
-    ):
-        self._chunks = list(chunks) if chunks is not None else [payload, b""]
-        self._error = error
-        self._recv_error = recv_error
-        self.timeout = None
-        self.connected_path = None
-        self.sent: list[bytes] = []
-        self.recv_sizes: list[int] = []
-        self.closed = False
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        self.close()
-
-    def settimeout(self, timeout):
-        self.timeout = timeout
-
-    def connect(self, path):
-        self.connected_path = path
-        if self._error is not None:
-            raise self._error
-
-    def sendall(self, data):
-        self.sent.append(data)
-
-    def recv(self, size):
-        self.recv_sizes.append(size)
-        if self._recv_error is not None:
-            raise self._recv_error
-        return self._chunks.pop(0)
-
-    def close(self):
-        self.closed = True
+from .status_socket_fixtures import FakeStatusSocket
 
 
 def _fake_systemctl(enabled: str, active: str):
@@ -222,7 +178,7 @@ def _patch_fanin_status_socket(monkeypatch, payload: bytes):
     monkeypatch.setattr(
         doctor.socket,
         "socket",
-        lambda *a, **kw: _FakeSocket(payload=payload),
+        lambda *a, **kw: FakeStatusSocket(payload=payload),
     )
     try:
         decoded = json.loads(payload.decode("utf-8"))

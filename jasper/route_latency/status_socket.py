@@ -41,7 +41,11 @@ from jasper.log_event import log_event
 
 logger = logging.getLogger("jasper.route_latency.status_socket")
 
-DEFAULT_STATUS_TIMEOUT_SECONDS = 1.0
+# Seconds, TOTAL deadline for connect + send + every recv. 3.0 because the
+# reader used to arm 1.0 s per operation, so a boot-time caller on the
+# 415 MB Pi Zero 2 W keeps the same worst-case budget it had before the
+# deadline was made total.
+DEFAULT_STATUS_TIMEOUT_SECONDS = 3.0
 _RECV_CHUNK_BYTES = 65536
 # A daemon's STATUS reply is a few KiB; the cap bounds what a wedged or
 # runaway writer can make a caller buffer on a 1 GB Pi.
