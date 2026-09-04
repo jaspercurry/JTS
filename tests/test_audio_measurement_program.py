@@ -1020,7 +1020,7 @@ def test_program_and_journey_phase_values_stay_identical():
     * **Journey side.** The values land in ``session_phases`` /
       ``accepted_phases`` in the on-disk flow state
       (``correction_crossover_v2.DEFAULT_V2_STATE_PATH``), which
-      ``_phase_from_state`` reads back.
+      ``crossover_v2_phase`` reads back.
 
     So if this fails, the question is not "which spelling is nicer" but "what
     migrates the artifacts already on disk".
