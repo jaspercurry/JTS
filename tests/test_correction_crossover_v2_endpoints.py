@@ -39,6 +39,9 @@ import pytest
 from jasper.active_speaker.driver_protection import (
     PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE,
 )
+from jasper.active_speaker.crossover_v2.conductor_context import (
+    V2ConductorContext,
+)
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_APPLYING,
     PHASE_CHECK,
@@ -8685,29 +8688,35 @@ def _topology_pin(**overrides: Any) -> dict[str, Any]:
     return body
 
 
-def _pinnable_context() -> SimpleNamespace:
+def _pinnable_context(roles_bands=None) -> V2ConductorContext:
     """A conductor context whose DECLARATIONS admit ``_topology_pin()``.
 
-    Stubbed rather than resolved from a live topology for the reason
+    Built directly rather than resolved from a live topology for the reason
     ``test_prepare_refuses_unrepresentable_confirmed_protection_before_bundle``
     above stubs the same seam: the resolver's own wiring has its own suite
     (``tests/test_correction_crossover_v2_conductor_context.py``), and what
     these tests are about is what the preparer DOES with a context, not how it
-    obtains one. Every field below is one the preparer reads before its two
-    prescription gates answer.
+    obtains one. The real type, not a namespace, because the preparer asks it
+    for a declaration BY ROLE. ``roles_bands`` is a parameter so a test can
+    hand over the same two declarations in the other order.
     """
-    return SimpleNamespace(
+    return V2ConductorContext(
         preset=_preset(),
         # The corner this speaker is commissioned at — the answer a pinned
         # round must NOT get, and the answer an unpinned one must.
         fc_hz=FC_HZ,
-        roles_bands=tuple(_roles()),
+        roles_bands=tuple(_roles() if roles_bands is None else roles_bands),
         radiating_diameter_mm_by_role={"woofer": _DECLARED_WOOFER_DIAMETER_MM},
         safety_profile=_PIN_SAFETY_PROFILE,
         role_targets={"woofer": "fp-woofer", "tweeter": "fp-tweeter"},
         driver_caps_dbfs=dict(CAPS),
+        driver_sweep_duration_limits_s={"woofer": 6.0, "tweeter": 6.0},
         session_volume_db=SESSION_VOLUME_DB,
+        driver_spacing_m=0.0,
         topology=SimpleNamespace(topology_id="t-pin"),
+        playback_device="hw:Test",
+        role_channels={"woofer": 0, "tweeter": 1},
+        sound_design_revision=1,
     )
 
 
@@ -9149,6 +9158,47 @@ def test_an_inadmissible_pin_refuses_at_the_tap_before_any_side_effect(
     # operator asked for a candidate, and a silently different candidate is
     # worse than none because its receipt would carry the candidate's name.
     assert "6500" in str(excinfo.value)
+    assert v2host.load_v2_state() is None
+
+
+def test_the_door_reads_its_two_declared_bands_by_role_not_by_position(
+    monkeypatch,
+):
+    """Read positionally, the reversed pair declares a 150 Hz floor and a
+    20 kHz ceiling, so both corners below would be admitted instead of refused.
+    """
+    from jasper.active_speaker.crossover_v2.fc_sweep import (
+        FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
+        FC_REJECT_BELOW_DECLARED_FLOOR,
+    )
+
+    _arm_stage_1(monkeypatch)
+    woofer_first = _roles()
+    # What the resolver would emit if ``DRIVER_ROLES_BY_WAY[2]`` were reordered:
+    # the same two declarations, re-enumerated onto the program channels.
+    tweeter_first = [
+        replace(entry, channel=channel)
+        for channel, entry in enumerate(reversed(woofer_first))
+    ]
+
+    def _refusal(roles_bands, fc_hz: float) -> str:
+        monkeypatch.setattr(
+            v2host, "resolve_conductor_context",
+            lambda _status: _pinnable_context(roles_bands=roles_bands),
+        )
+        with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+            v2host.prepare_v2_session(
+                {"topology_prescription": _topology_pin(fc_hz=fc_hz)},
+                status={}, run_async=None, camilla_factory=None,
+            )
+        return excinfo.value.__cause__.reason
+
+    for fc_hz, reason in (
+        (200.0, FC_REJECT_BELOW_DECLARED_FLOOR),
+        (6500.0, FC_REJECT_ABOVE_LOWER_DRIVER_BAND),
+    ):
+        assert _refusal(woofer_first, fc_hz) == reason
+        assert _refusal(tweeter_first, fc_hz) == reason
     assert v2host.load_v2_state() is None
 
 

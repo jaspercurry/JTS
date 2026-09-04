@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from jasper.log_event import log_event
 
@@ -31,6 +31,9 @@ from .refusal_copy import (
     REASON_SPEAKER_SHAPE_UNSUPPORTED,
     CrossoverV2Refused,
 )
+
+if TYPE_CHECKING:
+    from jasper.audio_measurement.program import FrequencyBand
 
 __all__ = [
     "V2ConductorContext",
@@ -114,6 +117,13 @@ class V2ConductorContext:
     measurement_band_hz_by_role: Mapping[str, tuple[float, float]] = field(
         default_factory=dict
     )
+
+    def declared_band(self, role: str) -> FrequencyBand | None:
+        """This role's declared ``FrequencyBand``, or ``None``."""
+        return next(
+            (entry.band for entry in self.roles_bands if entry.role == role),
+            None,
+        )
 
 
 def profile_refusal_code(evaluation_status: str) -> str:

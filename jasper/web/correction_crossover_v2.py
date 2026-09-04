@@ -5711,38 +5711,45 @@ def prepare_v2_session(
         # the round it is gating cannot support.
         #
         # Every bound it applies is a DECLARATION, asked of the module that owns
-        # it: the two role bands a corner is admissible within (read positionally,
-        # in the order this context builds them — woofer first) and the upper
-        # driver's declared protective high-pass slope. The ka/beaming onset rides
-        # along as DISCLOSURE only (#1675 makes it guidance, and no admissibility
-        # bound anywhere reads it).
+        # it: the two role bands a corner is admissible within (each looked up by
+        # role) and the upper driver's declared protective high-pass slope. The
+        # ka/beaming onset rides along as DISCLOSURE only (#1675 makes it
+        # guidance, and no admissibility bound anywhere reads it).
         #
         # The declarations are gathered ONLY for a request that carries a pin, and
         # that branch is deliberate rather than an optimisation. Several of this
         # context's fields are read nowhere else on this path; deriving them
         # unconditionally would make an ORDINARY round's session-open depend on
-        # declarations it is not using — including a positional read of
-        # ``roles_bands`` — so a context shaped for a decision this round does not
-        # take could fail a round that never asked for one.
+        # declarations it is not using, so a context shaped for a decision this
+        # round does not take could fail a round that never asked for one.
         raw_topology = (raw or {}).get(TOPOLOGY_PRESCRIPTION_KEY)
         topology_prescription = None
         if raw_topology is not None:
             # The declarations below are a TWO-role reading: a 1-way main passes
-            # ``None`` and the reader refuses on the way count instead.
-            pair = (
-                context.roles_bands if len(context.roles_bands) == 2
-                and "tweeter" in context.role_targets else ()
+            # ``None`` and the reader refuses on the way count instead. Which
+            # band is the floor and which the ceiling is a question about ROLES,
+            # so both are fetched by name rather than by tuple position. The WAY
+            # COUNT is what keeps a 3-way out — it declares both roles too.
+            two_way = (
+                len(context.roles_bands) == 2
+                and "tweeter" in context.role_targets
             )
+            tweeter_band = context.declared_band("tweeter") if two_way else None
+            woofer_band = context.declared_band("woofer") if two_way else None
             woofer_diameter_mm = context.radiating_diameter_mm_by_role.get("woofer")
             try:
                 topology_prescription = read_topology_prescription(
                     raw_topology,
-                    declared_floor_hz=pair[1].band.lower_hz if pair else None,
-                    lower_driver_ceiling_hz=pair[0].band.upper_hz if pair else None,
+                    declared_floor_hz=(
+                        None if tweeter_band is None else tweeter_band.lower_hz
+                    ),
+                    lower_driver_ceiling_hz=(
+                        None if woofer_band is None else woofer_band.upper_hz
+                    ),
                     minimum_slope_db_per_octave=(
                         resolve_driver_protection_slope_db_per_octave(
                             context.safety_profile, context.role_targets["tweeter"],
-                        ) if pair else None
+                        ) if two_way else None
                     ),
                     beaming_ceiling_hz=(
                         None if woofer_diameter_mm is None
