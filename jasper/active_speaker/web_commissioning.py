@@ -78,6 +78,7 @@ from jasper.active_speaker.topology_tone import build_summed_topology_tone_plan
 # one reader) so a spawn and the payload reporting it can never disagree in
 # steady state about which transport the box is on.
 from jasper.audio_measurement.correction_lane import (
+    CORRECTION_TONE_DIR,
     correction_play_device,
 )
 from jasper.camilla import CamillaUnavailable
@@ -593,13 +594,14 @@ def _commission_tone_wav_path(
     frequency_hz: float,
     duration_s: float = COMMISSION_TONE_DURATION_S,
 ) -> Path:
-    from jasper.correction.playback import _ensure_tone_wav
+    from jasper.audio_measurement.playback import ensure_sine_wav
 
-    return _ensure_tone_wav(
+    return ensure_sine_wav(
         freq_hz=frequency_hz,
         duration_s=duration_s,
         dbfs=COMMISSION_TONE_SOURCE_DBFS,
         sample_rate=COMMISSION_TONE_SAMPLE_RATE,
+        cache_dir=CORRECTION_TONE_DIR,
     )
 
 
@@ -2133,26 +2135,26 @@ async def _play_summed_commission_tone(
             commissioning_load=load_payload,
         )
 
-    from jasper.correction.playback import play_sweep
+    from jasper.audio_measurement.playback import play_wav
 
     fanin_gate: dict[str, Any] | None = None
     rollback: dict[str, Any] | None = None
     rollback_issue: dict[str, str] | None = None
     try:
         fanin_gate = await _commission_tone_select_fanin_lane_async()
-        # Off-loop playback: ``play_sweep`` runs ``aplay`` via
+        # Off-loop playback: ``play_wav`` runs ``aplay`` via
         # ``asyncio.create_subprocess_exec`` and awaits it, so the shared
         # correction loop stays responsive (status polls, SSE progress, the
         # safe-playback TTL deadman) for the whole stimulus instead of being
         # blocked by a synchronous ``subprocess.run``. Same command/device/
         # WAV pattern as the capture-sweep path above, but a tighter
         # ``duration_s + 1.0`` deadman bound (capture-sweep above uses
-        # ``duration_s + 5.0``); ``play_sweep`` raises ``SweepPlaybackError``
+        # ``duration_s + 5.0``); ``play_wav`` raises ``SweepPlaybackError``
         # (a ``RuntimeError``) on non-zero exit or timeout, caught below.
         # Resolved ONCE for this operation: the spawn and the payload
         # reporting it use the same transport answer.
         alsa_device = correction_play_device()
-        await play_sweep(
+        await play_wav(
             wav_path,
             alsa_device=alsa_device,
             timeout_s=duration_s + 1.0,

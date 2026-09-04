@@ -22,7 +22,10 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
-from jasper.audio_measurement.correction_lane import popen_correction_play
+from jasper.audio_measurement.correction_lane import (
+    CORRECTION_TONE_DIR,
+    popen_correction_play,
+)
 from jasper.log_event import log_event
 from jasper.sound.settings import SoundSettings, load_sound_settings
 from jasper.volume_curve import percent_to_db
@@ -49,10 +52,7 @@ def _volume_floor_tone_wav_path() -> Path:
     """
 
     cache_dir = Path(
-        os.environ.get(
-            "JASPER_VOLUME_FLOOR_TONE_DIR",
-            "/var/lib/jasper/correction/tones",
-        )
+        os.environ.get("JASPER_VOLUME_FLOOR_TONE_DIR", str(CORRECTION_TONE_DIR))
     )
     cache_dir.mkdir(parents=True, exist_ok=True)
     freq_key = "-".join(str(int(freq)) for freq in VOLUME_FLOOR_TONE_FREQS_HZ)

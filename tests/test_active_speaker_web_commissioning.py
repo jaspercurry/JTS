@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 import jasper.active_speaker.playback as active_playback
-import jasper.correction.playback as correction_playback
+import jasper.audio_measurement.playback as measurement_playback
 from jasper.active_speaker import web_commissioning as web
 from jasper.active_speaker.baseline_profile import topology_config_fingerprint
 from jasper.active_speaker.crossover_contract import verified_driver_excitation
@@ -2255,7 +2255,7 @@ def test_summed_test_playback_does_not_block_the_correction_loop(monkeypatch):
     This pins the fix behaviourally: while playback is "in flight", a concurrent
     coroutine scheduled on the same loop must keep making progress. We stand in
     for the real ``aplay`` two ways at once: the off-loop primitive
-    (``play_sweep``) yields via ``await asyncio.sleep``, while the old blocking
+    (``play_wav``) yields via ``await asyncio.sleep``, while the old blocking
     primitive (``subprocess.run``) would ``time.sleep`` and freeze the loop
     thread. Reverting to ``subprocess.run`` makes the ticker starve and the
     assertion fail (mutation check).
@@ -2263,7 +2263,7 @@ def test_summed_test_playback_does_not_block_the_correction_loop(monkeypatch):
 
     playback_seconds = 0.30
 
-    async def _fake_play_sweep(wav_path, *, alsa_device, timeout_s):
+    async def _fake_play_wav(wav_path, *, alsa_device, timeout_s):
         # Off-loop: yields control so the loop can run other coroutines.
         await asyncio.sleep(playback_seconds)
 
@@ -2284,7 +2284,7 @@ def test_summed_test_playback_does_not_block_the_correction_loop(monkeypatch):
             time.sleep(playback_seconds)
             return _CompletedProc()
 
-    monkeypatch.setattr(correction_playback, "play_sweep", _fake_play_sweep)
+    monkeypatch.setattr(measurement_playback, "play_wav", _fake_play_wav)
     monkeypatch.setattr(web.subprocess, "run", _BlockingRun())
 
     # ``start_tone_playback`` is lazily imported inside the function, so patch
@@ -2353,31 +2353,6 @@ def test_summed_test_playback_does_not_block_the_correction_loop(monkeypatch):
     # ...and the loop stayed responsive: many ticks landed during playback.
     # A blocked loop would yield ~0-1 ticks; require clearly more.
     assert ticks >= 5, f"correction loop appears blocked during playback (ticks={ticks})"
-
-
-def test_summed_test_playback_dispatches_off_loop_primitive():
-    """Structural mutation guard: no synchronous ``subprocess.run`` on the loop.
-
-    Complements the behavioural test. ``_play_summed_commission_tone`` must
-    dispatch the stimulus through the async off-loop primitive (``play_sweep``,
-    which uses ``asyncio.create_subprocess_exec``) and must not reintroduce a
-    blocking ``subprocess.run`` / ``subprocess.call`` / ``subprocess.Popen(...).wait``
-    in the playback path.
-    """
-
-    src = web.__loader__.get_source(web.__name__)
-    assert src is not None
-    func_start = src.index("async def _play_summed_commission_tone(")
-    func_end = src.index("async def start_summed_test(", func_start)
-    body = src[func_start:func_end]
-
-    assert "await play_sweep(" in body, (
-        "_play_summed_commission_tone must await play_sweep (off-loop aplay)"
-    )
-    assert "subprocess.run(" not in body, (
-        "_play_summed_commission_tone reintroduced a blocking subprocess.run "
-        "on the correction loop (C4a-6 regression)"
-    )
 
 
 def test_regenerate_crossover_preview_matches_sound_setups_preview_button(

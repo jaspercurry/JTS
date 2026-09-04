@@ -17,6 +17,7 @@ from pathlib import Path
 
 from jasper.audio_measurement.correction_lane import (
     CORRECTION_SUBSTREAM as CORRECTION_SUBSTREAM,
+    CORRECTION_TONE_DIR,
     correction_play_device,
 )
 from jasper.audio_measurement.playback import (
@@ -31,7 +32,7 @@ from jasper.audio_measurement.playback import (
 )
 
 
-DEFAULT_TONE_DIR = Path("/var/lib/jasper/correction/tones")
+DEFAULT_TONE_DIR = CORRECTION_TONE_DIR
 
 # The lane device is not a constant: it is this box's armed-vs-unarmed
 # transport, resolved per call by correction_play_device()

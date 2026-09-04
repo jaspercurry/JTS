@@ -884,7 +884,7 @@ async def _play_wav_source(
             level=logging.WARNING,
         )
         raise PlaybackError(
-            "could not start aplay",
+            f"could not start aplay: {exc}",
             code=PlaybackFailureCode.START_FAILED,
             wav_path=path,
             alsa_device=alsa_device,
@@ -1468,7 +1468,7 @@ class TonePlayer:
                 level=logging.WARNING,
             )
             raise PlaybackError(
-                "could not start continuous-tone aplay",
+                f"could not start continuous-tone aplay: {exc}",
                 code=PlaybackFailureCode.START_FAILED,
                 wav_path=self._wav_path,
                 alsa_device=self._alsa_device,
