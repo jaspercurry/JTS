@@ -1672,9 +1672,8 @@ durable state and evidence key on, and the host owns the mapping onto the
 persisted failure codes — the provider speaks only the flow's reason
 vocabulary. The contract itself lives in
 [jasper/active_speaker/crossover_v2/capture_source.py](../jasper/active_speaker/crossover_v2/capture_source.py)
-(do not restate it here); the relay provider's private choreography is
-[jasper/web/correction_crossover_v2_relay.py](../jasper/web/correction_crossover_v2_relay.py),
-and the wired (Pi-mic) provider is the seam's next occupant.
+(do not restate it here); the relay provider was deleted (ADR-0222) and the
+wired (Pi-mic) provider is the seam's occupant.
 
 ## Speaker-class applicability (#1671)
 
