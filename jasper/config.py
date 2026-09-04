@@ -16,6 +16,7 @@ from .assistant_loudness import (
     DEFAULT_PROFILE_PATH as DEFAULT_ASSISTANT_LOUDNESS_PROFILE_PATH,
 )
 from .speaker_name import runtime_name as _speaker_runtime_name
+from .google_oauth import resolved_google_redirect_uri
 from .identity import resolve_hostname
 from .spotify_oauth import resolved_spotify_redirect_uri
 from .tts_routing import FANIN_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
@@ -837,12 +838,7 @@ class Config:
             # member refresh tokens are stored under google_accounts_path.
             google_client_id=_env("GOOGLE_CLIENT_ID"),
             google_client_secret=_env("GOOGLE_CLIENT_SECRET"),
-            google_redirect_uri=_env(
-                # Bounce page (jaspercurry/google-oauth-callback) — see
-                # jasper.web.google_setup.default_redirect_uri for why.
-                "GOOGLE_REDIRECT_URI",
-                f"https://jaspercurry.github.io/google-oauth-callback/?host={hostname}",
-            ),
+            google_redirect_uri=resolved_google_redirect_uri(),
             # WS1 Phase 4a — the Google OAuth token tree (per-member refresh
             # tokens + Gmail/Calendar identities) moved out of the shared
             # /var/lib/jasper StateDirectory into the group-`jasper-secrets`
