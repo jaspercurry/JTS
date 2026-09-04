@@ -93,7 +93,9 @@ the prescriber CLI **plus the session-open request body** — the doors are a
 prescription class, not a CLI verb. Blend and driver arrive at
 `jasper-crossover-prescriber stage`; alignment and topology arrive as
 request-body keys on `POST /crossover/v2/session` and are judged at session open
-(#2773). Both surfaces are cataloged in
+(#2773) — sent by `run-crossover-round.py --alignment-prescription` /
+`--topology-prescription`, or by the same two flags on `jasper-round open`,
+which also take `-` for stdin. Both surfaces are cataloged in
 [`testing-tooling.md`](testing-tooling.md#crossover-prescriber-harness).
 
 **A way-1 (`full_range_passive`) speaker runs the same nine steps with fewer
@@ -143,9 +145,10 @@ exist.
    URL, hostname-derived; they move the mic pose to pose.
    *(on the box)* `jasper-round open --tier <tier>` then `jasper-round wait` —
    the same two wizard verbs, over the same transport, for when there is no
-   laptop on the network. It stages no walk (that stays `jasper-angle-capture`)
-   and banks nothing: `jasper-round-bank <session-dir>` banks the finished
-   session into the campaign home
+   laptop on the network, and it carries the alignment and topology doors on
+   the open like the laptop runner does. It stages no walk (that stays
+   `jasper-angle-capture`) and banks nothing: `jasper-round-bank
+   <session-dir>` banks the finished session into the campaign home
    (`/var/lib/jasper/active_speaker/campaigns/<round-id>/`), where it outlives
    session retention and `jasper-round-views` reads it. That home is
    operator-pruned — nothing evicts a banked round; `jasper-doctor` discloses
