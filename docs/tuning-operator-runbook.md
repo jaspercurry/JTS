@@ -148,8 +148,8 @@ exist.
    the same two wizard verbs, over the same transport, for when there is no
    laptop on the network, and it carries the alignment and topology doors on
    the open like the laptop runner does. It stages no walk (that stays
-   `jasper-angle-capture`) and banks nothing: `jasper-round-bank
-   <session-dir>` banks the finished session into the campaign home
+   `jasper-angle-capture`); `jasper-round bank <session-dir>` banks the
+   finished session into the campaign home
    (`/var/lib/jasper/active_speaker/campaigns/<round-id>/`), where it outlives
    session retention and `jasper-round-views` reads it. That home is
    operator-pruned — nothing evicts a banked round; `jasper-doctor` discloses
@@ -432,9 +432,8 @@ nothing durable · **mutating** = changes what the speaker plays ·
 | `jasper-arm-walk` | Serve a crossover-v2 measurement session's position gate with the lab turntable arm: poll, move, settle, report the microphone in place. Parks the arm at 0 deg on every exit. | measured | `jasper/cli/arm_walk.py` |
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber status\|packet\|propose\|stage` | Emit one crossover round's evidence packet, read a prescription back through the strict gate, and say where this speaker stands. | advisory (`stage` mutates) | `jasper/cli/crossover_prescriber.py` |
-| `jasper-round open\|wait\|apply` | Open, wait on and apply a crossover round from the speaker itself. The same three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate. | mutating-with-gates (`open`/`apply` write; `wait` does not) | `jasper/cli/round.py` |
+| `jasper-round open\|wait\|apply\|bank` | Open, wait on, apply and bank a crossover round from the speaker itself. The three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate, plus the bank that files a finished session in the on-box campaign home. | mutating-with-gates (`open`/`apply`/`bank` write; `wait` does not) | `jasper/cli/round.py` |
 | `jasper-round-views entry\|frozen\|per-seat\|repeat\|repeat-floor\|agreement\|co-metrics\|directivity\|cloud-binding\|spec-sweep\|frequency\|inventory` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability and the banked repeat floor, per-seat agreement, audibility co-metrics, measured per-angle directivity, whether the cloud's null evidence bound the linearization fit, the gate sweep read onto the spec verdict, the shared frequency view, and an inventory of which of those a round already carries — over banked rounds and live sessions. | advisory | `jasper/cli/round_views.py` |
-| `jasper-round-bank` | Bank one live commissioning session into the on-box campaign home, where it outlives session retention. | mutating (copies evidence; changes nothing played) | `jasper/cli/round_bank.py` |
 | `jasper-project-ring` | Re-project a banked round into the capture ring that jasper-classify-features and jasper-read-distortion read. | mutating (projects evidence; changes nothing played) | `jasper/cli/project_ring.py` |
 | `jasper-classify-features` | Classify a banked round's features as minimum-phase driver defects, interference, or the room — controls first. | advisory | `jasper/cli/classify_features.py` |
 | `jasper-read-distortion` | Read H2/H3 out of a banked round's MEASURE captures, relative to the fundamental, at the drive each capture used. | advisory | `jasper/cli/read_distortion.py` |
