@@ -935,7 +935,7 @@ _ALOOP_CARD_ID = "Loopback"
 _ALOOP_PCM_DIRS = ("pcm0p", "pcm0c", "pcm1p", "pcm1c")
 
 #: `pcm_substreams=8` in deploy/modprobe.d/snd-aloop.conf — pairs 0..7. Pinned
-#: against that file by tests/test_doctor_audio_runtime.py.
+#: against that file by tests/test_doctor_audio_runtime_fanin.py.
 _ALOOP_SUBSTREAMS = 8
 
 #: Cap on how many offenders are spelled out in the FAIL detail, so a

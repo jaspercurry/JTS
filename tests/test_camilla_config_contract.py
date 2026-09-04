@@ -721,6 +721,7 @@ devices:
   playback:
     type: File
     channels: 2
+    device: "outputd_content_playback"
     filename: "/run/jasper-outputd/content.pipe"
 filters:
 """
@@ -733,6 +734,9 @@ filters:
         # The playback sink's own `type` must never be read as the capture's.
         (_TWO_BLOCK_CFG, "playback", "type", "File"),
         (_TWO_BLOCK_CFG, "playback", "filename", "/run/jasper-outputd/content.pipe"),
+        (_TWO_BLOCK_CFG, "playback", "device", "outputd_content_playback"),
+        # The capture block has no `device`, and the lookup must stop at the
+        # sibling boundary rather than falling through to playback's.
         (_TWO_BLOCK_CFG, "capture", "device", None),
         ("filters:\n  x: 1\n", "capture", "type", None),
     ],

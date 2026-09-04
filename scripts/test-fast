@@ -185,9 +185,9 @@ while IFS= read -r changed; do
       ;;
     jasper/*/*.py)
       # issue #3142: a module nested a directory deeper than the top-level
-      # package (jasper/cli/doctor/audio_runtime.py) only had `package`
-      # ("cli") and `module` ("audio_runtime") to route with -- neither
-      # matches the doctor family's tests/test_doctor_<module>.py
+      # package (jasper/cli/doctor/audio_runtime_camilla.py) only had
+      # `package` ("cli") and `module` ("audio_runtime_camilla") to route
+      # with -- neither matches the doctor family's tests/test_doctor_<module>.py
       # convention, so a doctor-only production change selected zero of
       # its tests here and surfaced 36 red only in CI. `parent` is the
       # immediate containing directory (equal to `package` when the file

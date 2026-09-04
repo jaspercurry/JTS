@@ -10,7 +10,8 @@ This package is the decomposed form of the original single-file
 name that external code or the test-suite imports resolve from
 this ``__init__`` exactly as they did from the old module — the
 checks were re-homed into per-domain modules
-(:mod:`~jasper.cli.doctor.audio`, :mod:`~jasper.cli.doctor.audio_runtime`,
+(:mod:`~jasper.cli.doctor.audio`,
+:mod:`~jasper.cli.doctor.audio_runtime_camilla`,
 :mod:`~jasper.cli.doctor.network`,
 …) and the cross-cutting harness/helpers into
 :mod:`~jasper.cli.doctor._shared`, then re-exported here.
