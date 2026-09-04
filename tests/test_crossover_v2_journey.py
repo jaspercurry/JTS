@@ -647,17 +647,22 @@ def test_no_domain_module_imports_the_host_or_the_legacy_flow():
 
 
 def test_no_test_module_imports_the_conductor_test_file():
-    """#2291 5c-i's own result, held: the conductor test file has no importers.
+    """#2291 5c-i's own result, held: the conductor test files have no importers.
 
     It had eighteen. They reached it for twenty-five fixture symbols — including
     all three Phase-0 characterization pins — which is what made a file of
     conductor-specific tests undeletable while the conductor is being dissolved.
     The fixtures now live in ``tests/crossover_v2_fixtures.py``; this asserts
-    nobody re-creates the blocker between here and the deletion, when a new
-    importer would be an easy and invisible thing to add.
+    nobody re-creates the blocker, when a new importer would be an easy and
+    invisible thing to add.
+
+    The conductor tests themselves were later split along their section
+    banners into ``tests/test_crossover_v2_conductor_<topic>.py``; the guard
+    now matches that whole family by prefix so the split does not retire the
+    ratchet it was pinning.
 
     Prose mentions are fine and deliberately not matched — several modules cite
-    the file in a docstring to say where a behaviour is pinned. Only a real
+    the file(s) in a docstring to say where a behaviour is pinned. Only a real
     ``import`` counts.
 
     **Every ``*.py`` under ``tests/``, not just ``test_*.py``.** The highest-
@@ -667,8 +672,8 @@ def test_no_test_module_imports_the_conductor_test_file():
     ``test_*`` glob cannot see it. Helper modules and ``conftest.py`` are in
     scope for the same reason.
 
-    Both import spellings count: the absolute ``tests.test_crossover_v2_conductor``
-    and the relative ``from .test_crossover_v2_conductor import …``. The
+    Both import spellings count: the absolute ``tests.test_crossover_v2_conductor*``
+    and the relative ``from .test_crossover_v2_conductor* import …``. The
     relative form has no precedent in this suite, which is exactly why a guard
     keyed only to the absolute one would be the easy thing to slip past.
     """
@@ -678,31 +683,34 @@ def test_no_test_module_imports_the_conductor_test_file():
     assert len(modules) >= 50, f"expected the test suite, saw {len(modules)}"
     assert tests_dir / "crossover_v2_fixtures.py" in modules
 
-    absolute = "tests.test_crossover_v2_conductor"
-    relative = "test_crossover_v2_conductor"
+    absolute_prefix = "tests.test_crossover_v2_conductor"
+    relative_prefix = "test_crossover_v2_conductor"
 
-    def names_the_conductor_file(node: ast.AST) -> bool:
+    def names_a_conductor_file(node: ast.AST) -> bool:
         if isinstance(node, ast.ImportFrom):
-            return node.module == (relative if node.level else absolute)
+            module = node.module or ""
+            prefix = relative_prefix if node.level else absolute_prefix
+            return module.startswith(prefix)
         if isinstance(node, ast.Import):
-            return any(alias.name == absolute for alias in node.names)
+            return any(alias.name.startswith(absolute_prefix) for alias in node.names)
         return False
 
     offenders: dict[str, list[int]] = {}
     for module in modules:
-        if module.name == "test_crossover_v2_conductor.py":
+        if module.name.startswith("test_crossover_v2_conductor"):
             continue
         text = module.read_text()
-        # Coverage-preserving fast path: an import that names the module has to
-        # spell it, in either spelling. Parsing all ~825 modules unconditionally
-        # cost this one guard several seconds; a dynamically-built import would
-        # escape the AST check below with or without this line.
-        if relative not in text:
+        # Coverage-preserving fast path: an import that names a conductor file
+        # has to spell the prefix, in either spelling. Parsing all ~825
+        # modules unconditionally cost this one guard several seconds; a
+        # dynamically-built import would escape the AST check below with or
+        # without this line.
+        if relative_prefix not in text:
             continue
         tree = ast.parse(text, filename=str(module))
         lines = [
             node.lineno for node in ast.walk(tree)
-            if names_the_conductor_file(node)
+            if names_a_conductor_file(node)
         ]
         if lines:
             offenders[module.name] = lines
