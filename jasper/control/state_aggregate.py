@@ -1090,6 +1090,150 @@ class _Probes(NamedTuple):
     ha_status: dict[str, Any]
 
 
+class _Sections(NamedTuple):
+    spotify: dict[str, Any]
+    sound_profile: dict[str, Any] | None
+    speaker_name: Any
+    usbsink: dict[str, Any] | None
+    voice_status: dict[str, Any]
+    voice_session: bool
+    active_source: Any
+    volume_policy: Any
+    grouping: Any
+    active_speaker_setup: Any
+    audition: Any
+    bass_extension: Any
+    transit: Any
+    output_hardware: Any
+    audio_graph: Any
+    tools: Any
+    chat: Any
+    research: Any
+    mic_presence: Any
+
+
+def _read_sections(
+    probes: _Probes,
+    *,
+    sound_profile: dict[str, Any] | None,
+    listening_level: int | None,
+    persisted_main_volume_db: float | None,
+    read_transit_state_func: Callable[[], dict],
+    service_states_snapshot: Callable[[], dict[str, dict[str, Any]]] | None,
+) -> _Sections:
+    # Lazy, as in `_get_state`: jasper-control must not pull jasper.voice.* at
+    # module load.
+    from ..mic_presence import read_mic_presence
+    from ..speaker_name import read_state as read_speaker_name_state
+
+    spotify = _spotify_state()
+    if sound_profile is not None:
+        runtime = _sound_runtime_status(
+            sound_profile,
+            probes.camilla.get("active_config_path"),
+        )
+        sound_profile["runtime"] = runtime
+        # Top-level aliases for consumers that need only the running truth
+        # and do not want to parse the nested runtime object.
+        sound_profile["runtime_state"] = runtime["state"]
+        sound_profile["runtime_active"] = runtime["active"]
+        sound_profile["active_config_path"] = runtime["active_config_path"]
+    speaker_name = read_speaker_name_state()
+    # USB Audio Input — fourth renderer. Fan-in owns the live DIRECT lane;
+    # kernel UDC state owns host connection.
+    usbsink = _build_usbsink_renderer_state(
+        probes.fanin,
+        host_connected=udc_host_connected(
+            os.environ.get("JASPER_UDC_CLASS_DIR", DEFAULT_UDC_CLASS_DIR),
+        ),
+    )
+    voice_status = probes.voice or {}
+    voice_session = bool(probes.voice) and voice_status.get("state") == "SESSION"
+    active_source = _active_source(
+        voice_session=voice_session,
+        mux_status=probes.mux,
+        spotify_playing=spotify["playing"],
+        airplay_playing=probes.airplay,
+        usbsink_playing=bool(usbsink and usbsink.get("playing")),
+    )
+    return _Sections(
+        spotify=spotify,
+        sound_profile=sound_profile,
+        speaker_name=speaker_name,
+        usbsink=usbsink,
+        voice_status=voice_status,
+        voice_session=voice_session,
+        active_source=active_source,
+        volume_policy=build_volume_policy_snapshot(
+            active_source=active_source,
+            listening_level=listening_level,
+            main_volume_db=probes.camilla["main_volume_db"],
+            persisted_main_volume_db=persisted_main_volume_db,
+            mux_status=probes.mux,
+            diagnostics=_read_volume_diagnostics(),
+        ),
+        grouping=with_airplay_latency_fit(_soft_read(
+            "grouping state read failed",
+            lambda: read_grouping_state(local_outputd_reader=lambda: probes.outputd),
+        )),
+        active_speaker_setup=_soft_read(
+            "active speaker setup status read failed",
+            lambda: read_active_speaker_setup_status(
+                active_config_path=probes.camilla.get("active_config_path"),
+            ),
+            exc=(OSError, RuntimeError, TypeError, ValueError, KeyError),
+        ),
+        audition=_soft_read(
+            "audition state read failed",
+            _read_audition_state,
+            exc=(ImportError, OSError, RuntimeError, TypeError, ValueError),
+        ),
+        bass_extension=_soft_read(
+            "bass extension profile state read failed",
+            _read_bass_extension,
+            exc=(
+                ImportError,
+                OSError,
+                RuntimeError,
+                TypeError,
+                ValueError,
+                KeyError,
+                AttributeError,
+            ),
+        ),
+        transit=_soft_read("transit state read failed", read_transit_state_func),
+        output_hardware=_soft_read(
+            "output hardware state read failed", _read_output_hardware,
+        ),
+        audio_graph=_audio_graph_state(
+            fanin_status=probes.fanin,
+            outputd_status=probes.outputd,
+            service_states=(
+                _soft_read(
+                    "service state snapshot read failed", service_states_snapshot
+                )
+                if service_states_snapshot
+                else None
+            ),
+        ),
+        tools=_soft_read("tool catalog state read failed", _read_tool_catalog),
+        # Conversation history is a read-only Feature surface. Settings are
+        # wizard-owned and read fresh; the SQLite store is opened read-only so
+        # jasper-control cannot create or mutate jasper-voice's DB.
+        chat=_soft_read(
+            "conversation history state read failed",
+            _conversation_history_state,
+            exc=(ImportError, OSError, RuntimeError, ValueError),
+        ),
+        research=_soft_read(
+            "research state read failed",
+            lambda: _research_state(voice_status.get("research")),
+            exc=(ImportError, OSError, RuntimeError, ValueError),
+        ),
+        mic_presence=read_mic_presence(),
+    )
+
+
 async def _get_state(
     *,
     camilla_host: str,
@@ -1109,11 +1253,9 @@ async def _get_state(
     """Aggregate state across daemons for GET /state. Each section
     fails soft — voice unreachable or Camilla restarting reports null
     in the affected section instead of erroring out
-    the whole response. Slow probes fan out in parallel so the call
-    completes in ~200 ms typical."""
+    the whole response."""
     from datetime import datetime, timezone
 
-    from ..speaker_name import read_state as _read_speaker_name_state
     from ..voice.provider_state import (
         read_active_model_from_env_files,
         read_active_provider_state,
@@ -1165,112 +1307,14 @@ async def _get_state(
         raise
     probes = _Probes(*gathered, ha_status=ha_status)
 
-    spotify = _spotify_state()
-    if sound_profile is not None:
-        runtime = _sound_runtime_status(
-            sound_profile,
-            probes.camilla.get("active_config_path"),
-        )
-        sound_profile["runtime"] = runtime
-        # Top-level aliases for consumers that need only the running truth
-        # and do not want to parse the nested runtime object.
-        sound_profile["runtime_state"] = runtime["state"]
-        sound_profile["runtime_active"] = runtime["active"]
-        sound_profile["active_config_path"] = runtime["active_config_path"]
-    speaker_name_state = _read_speaker_name_state()
-
-    # USB Audio Input — fourth renderer. Fan-in owns the live DIRECT lane;
-    # kernel UDC state owns host connection.
-    usbsink_state = _build_usbsink_renderer_state(
-        probes.fanin,
-        host_connected=udc_host_connected(
-            os.environ.get("JASPER_UDC_CLASS_DIR", DEFAULT_UDC_CLASS_DIR),
-        ),
-    )
-
-    voice_status = probes.voice or {}
-    voice_session = bool(probes.voice) and voice_status.get("state") == "SESSION"
-    active_source = _active_source(
-        voice_session=voice_session,
-        mux_status=probes.mux,
-        spotify_playing=spotify["playing"],
-        airplay_playing=probes.airplay,
-        usbsink_playing=bool(usbsink_state and usbsink_state.get("playing")),
-    )
-
-    volume_policy = build_volume_policy_snapshot(
-        active_source=active_source,
+    sections = _read_sections(
+        probes,
+        sound_profile=sound_profile,
         listening_level=listening_level,
-        main_volume_db=probes.camilla["main_volume_db"],
         persisted_main_volume_db=persisted_main_volume_db,
-        mux_status=probes.mux,
-        diagnostics=_read_volume_diagnostics(),
+        read_transit_state_func=read_transit_state_func,
+        service_states_snapshot=service_states_snapshot,
     )
-
-    grouping_state = with_airplay_latency_fit(_soft_read(
-        "grouping state read failed",
-        lambda: read_grouping_state(local_outputd_reader=lambda: probes.outputd),
-    ))
-    active_speaker_setup = _soft_read(
-        "active speaker setup status read failed",
-        lambda: read_active_speaker_setup_status(
-            active_config_path=probes.camilla.get("active_config_path"),
-        ),
-        exc=(OSError, RuntimeError, TypeError, ValueError, KeyError),
-    )
-    audition_state = _soft_read(
-        "audition state read failed",
-        _read_audition_state,
-        exc=(ImportError, OSError, RuntimeError, TypeError, ValueError),
-    )
-    bass_extension_state = _soft_read(
-        "bass extension profile state read failed",
-        _read_bass_extension,
-        exc=(
-            ImportError,
-            OSError,
-            RuntimeError,
-            TypeError,
-            ValueError,
-            KeyError,
-            AttributeError,
-        ),
-    )
-    transit_state = _soft_read("transit state read failed", read_transit_state_func)
-    output_hardware_state = _soft_read(
-        "output hardware state read failed", _read_output_hardware,
-    )
-    service_states = (
-        _soft_read("service state snapshot read failed", service_states_snapshot)
-        if service_states_snapshot
-        else None
-    )
-
-    audio_graph_state = _audio_graph_state(
-        fanin_status=probes.fanin,
-        outputd_status=probes.outputd,
-        service_states=service_states,
-    )
-    tools_state = _soft_read("tool catalog state read failed", _read_tool_catalog)
-
-    # Conversation history is a read-only Feature surface. Settings are
-    # wizard-owned and read fresh; the SQLite store is opened read-only so
-    # jasper-control cannot create or mutate jasper-voice's DB.
-    chat_state = _soft_read(
-        "conversation history state read failed",
-        _conversation_history_state,
-        exc=(ImportError, OSError, RuntimeError, ValueError),
-    )
-    research_state = _soft_read(
-        "research state read failed",
-        lambda: _research_state(voice_status.get("research")),
-        exc=(ImportError, OSError, RuntimeError, ValueError),
-    )
-
-    # Lazy import (mirrors read_active_provider_state above) so jasper-control
-    # doesn't pull jasper.voice.* at module load.
-    from ..mic_presence import read_mic_presence
-    mic_presence = read_mic_presence()
 
     return {
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
@@ -1286,15 +1330,15 @@ async def _get_state(
             ),
             "provider_status": active_provider.status,
             "provider_error": active_provider.detail or None,
-            "session_active": voice_session,
-            **{key: voice_status.get(key) for key in _VOICE_STATUS_DIRECT_KEYS},
+            "session_active": sections.voice_session,
+            **{k: sections.voice_status.get(k) for k in _VOICE_STATUS_DIRECT_KEYS},
             "barge_in": {
                 "enabled": (
                     read_barge_in_enabled(active_provider.provider)
                     if active_provider.provider else False
                 ),
                 **{
-                    field: voice_status.get(status_key)
+                    field: sections.voice_status.get(status_key)
                     for field, status_key in _VOICE_STATUS_NESTED_FIELDS.items()
                 },
             },
@@ -1303,41 +1347,41 @@ async def _get_state(
             # parked voice for a missing microphone ("intentionally idle, no
             # mic", NOT "crashed"). Same read as the `microphone` block below,
             # so the boolean and the rich record cannot disagree.
-            "parked_no_mic": mic_presence.parked,
+            "parked_no_mic": sections.mic_presence.parked,
         },
         # The reconciler's one canonical mic record (jasper.mic_presence), so a
         # client renders "no microphone" as a fact rather than inferring it
         # from voice.reachable:false.
-        "microphone": mic_presence.as_dict(),
+        "microphone": sections.mic_presence.as_dict(),
         "audio": {
             "main_volume_db": probes.camilla["main_volume_db"],
             "listening_level_percent": listening_level,
-            "volume_policy": volume_policy,
+            "volume_policy": sections.volume_policy,
             "playback_rms_dbfs": probes.camilla["playback_rms_dbfs"],
             "playback_peak_dbfs": probes.camilla["playback_peak_dbfs"],
             "clipped_samples": probes.camilla["clipped_samples"],
             "camilla_active_config_path": probes.camilla["active_config_path"],
-            "sound": sound_profile,
-            "output_hardware": output_hardware_state,
+            "sound": sections.sound_profile,
+            "output_hardware": sections.output_hardware,
         },
-        "audio_graph": audio_graph_state,
-        "active_speaker_setup": active_speaker_setup,
-        "audition": audition_state,
-        "bass_extension": bass_extension_state,
+        "audio_graph": sections.audio_graph,
+        "active_speaker_setup": sections.active_speaker_setup,
+        "audition": sections.audition,
+        "bass_extension": sections.bass_extension,
         "renderers": {
-            "spotify": spotify,
+            "spotify": sections.spotify,
             "airplay": (
                 None if probes.airplay is None else {"playing": probes.airplay}
             ),
             # null when the feature is disabled (no state file), so a
             # consumer can show "off" as distinct from "idle".
-            "usbsink": usbsink_state,
+            "usbsink": sections.usbsink,
         },
         "speaker_name": {
-            "name": speaker_name_state.name,
-            "source": speaker_name_state.source,
+            "name": sections.speaker_name.name,
+            "source": sections.speaker_name.source,
         },
-        "active_source": active_source,
+        "active_source": sections.active_source,
         # Fan-in's UDS STATUS snapshot, verbatim. null only when the
         # daemon/socket is unavailable.
         "fanin": probes.fanin,
@@ -1404,23 +1448,23 @@ async def _get_state(
         # ({applicable: false} unless this speaker is an active bonded leader).
         # enabled=True with a non-null error is the fail-LOUD "configured but
         # broken" state. See jasper/multiroom/state.py + airplay_latency.py.
-        "grouping": grouping_state,
+        "grouping": sections.grouping,
         # {packs: [{id, label, enabled}]} read fresh from the wizard-owned
         # transit.env. Mirrors the daemon's enabled_pack_ids on both absent
         # (all) and present-empty (none). See jasper/transit/state.py.
-        "transit": transit_state,
+        "transit": sections.transit,
         # Which subsystems are at DEBUG + the shared auto-expiry countdown.
         "debug": debug_control.snapshot(),
         # Read fresh from /run/jasper/tools.json + the wizard-owned
         # tool_state.env by jasper.tool_catalog_view (never os.environ).
         # jasper-doctor's check_tool_catalog owns the actionable warn.
-        "tools": tools_state,
+        "tools": sections.tools,
         # null when the read-side store is unavailable while capture is
         # enabled, or the read itself failed. See jasper.conversation_history.
-        "chat": chat_state,
+        "chat": sections.chat,
         # Async research summary. Counts and timestamps only; no prompt or
         # answer text leaves the local store through /state.
-        "research": research_state,
+        "research": sections.research,
         # The open measurement window as this process sees it — an in-memory
         # read of its own self-expiring copy, not a probe. `held_for_s` is
         # what jasper-doctor's check_measurement_hold reads: `expires_in_s`
