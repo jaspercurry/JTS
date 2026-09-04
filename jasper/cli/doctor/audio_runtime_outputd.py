@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable
+from typing import Any
 
 from ._registry import doctor_check
 from ._shared import CheckResult, _read_status_socket_bytes, _run
@@ -267,6 +269,7 @@ def _outputd_buffer_health(
     content_buffer: object,
     dac_buffer: object,
     period_frames: int,
+    read_saved_topology: Callable[[], Any] | None = None,
 ) -> str | CheckResult:
     """Validate the content hop's buffer geometry and return ring detail.
 
@@ -356,7 +359,8 @@ def _outputd_buffer_health(
             # channel counts are PER-TOPOLOGY axes, so resolving with ``None``
             # would answer the shipped stereo declaration and FAIL a box whose
             # post-DSP ring legitimately carries a different width.
-            wire = resolve_ring_wire(load_topology_for_wire())
+            read = read_saved_topology or load_topology_for_wire
+            wire = resolve_ring_wire(read())
             # WHICH ring outputd attached decides which width it is held to: an
             # armed ACTIVE endpoint reads the post-crossover per-driver ring,
             # whose width is ``ring_active_channels``. An armed endpoint whose
@@ -477,6 +481,7 @@ def _outputd_transport_health(
     sink_mode: object,
     active_channels: int | None,
     expected_dac_pcm: str,
+    read_saved_topology: Callable[[], Any] | None = None,
 ) -> tuple[str, str, str, str] | CheckResult:
     """Validate outputd's live topology, endpoint coherence, PCMs, and references.
 
@@ -506,7 +511,9 @@ def _outputd_transport_health(
     # half this check is about. Its resolved SHAPE is the content hop's class —
     # the ALSA lane, the central ring, or a bonded member's return ring — and
     # everything below branches on that rather than on a second marker read.
-    topology = transport_topology_for_coupling(outputd_env=outputd_env)
+    topology = transport_topology_for_coupling(
+        outputd_env=outputd_env, read_saved_topology=read_saved_topology
+    )
     expected_content_source = topology.outputd_content_source
     actual_content_source = content.get("source")
     if actual_content_source != expected_content_source:
@@ -539,6 +546,7 @@ def _outputd_transport_health(
         transport_report = transport_coherence_report(
             outputd_env=live_outputd_env,
             camilla_devices=endpoint_evidence.devices,
+            read_saved_topology=read_saved_topology,
         )
         if transport_report.errors:
             return CheckResult(
@@ -602,6 +610,8 @@ def check_outputd_service() -> CheckResult:
     outputd owns the physical DAC, so disabled/inactive is a real audio-path
     failure.
     """
+    from jasper.fanin.ring_health import saved_topology_reader
+
     service_failure = _outputd_service_state_failure()
     if service_failure is not None:
         return service_failure
@@ -618,6 +628,7 @@ def check_outputd_service() -> CheckResult:
         )
     sink_mode = data.get("sink_mode") or "single_alsa"
     outputd_env = _outputd_reconciled_env()
+    read_saved_topology = saved_topology_reader()
     active_channels = _outputd_active_channels_from_env(outputd_env)
     active_single_alsa = sink_mode == "single_alsa" and active_channels is not None
     expected_dac_pcm = (
@@ -647,6 +658,7 @@ def check_outputd_service() -> CheckResult:
         sink_mode=sink_mode,
         active_channels=active_channels,
         expected_dac_pcm=expected_dac_pcm,
+        read_saved_topology=read_saved_topology,
     )
     if isinstance(transport_health, CheckResult):
         return transport_health
@@ -688,6 +700,7 @@ def check_outputd_service() -> CheckResult:
         content_buffer=content_buffer,
         dac_buffer=dac_buffer,
         period_frames=period_frames,
+        read_saved_topology=read_saved_topology,
     )
     if isinstance(buffer_health, CheckResult):
         return buffer_health

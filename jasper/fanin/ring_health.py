@@ -21,8 +21,9 @@ gate's own docstring owns why.
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -228,6 +229,15 @@ def load_topology_for_wire():
         return load_output_topology_strict()
     except (OutputTopologyError, OSError, ValueError, ImportError):
         return None
+
+
+def saved_topology_reader() -> Callable[[], Any]:
+    """A :func:`load_topology_for_wire` that touches the disk at most once.
+
+    One pass hands the same reader to every consumer, so the axes that need the
+    saved topology share a single read and the axes that do not read nothing.
+    """
+    return cache(load_topology_for_wire)
 
 
 def _effective_env_value(
