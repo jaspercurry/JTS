@@ -126,31 +126,15 @@ def test_usb_network_iface_present_no_carrier(monkeypatch, tmp_path):
     assert block["address"] == PLAN.device_address
 
 
-def test_usb_network_kill_switch_is_case_insensitive_exact_literal(
-    monkeypatch, tmp_path,
-):
-    """Only the exact literal 'disabled' (case-insensitive) turns the
-    reported `enabled` off; any other value stays enabled — mirrors
-    JASPER_SHAIRPORT_SUPERVISOR / JASPER_SYSTEM_SUPERVISOR."""
+def test_usb_network_enabled_field_follows_the_kill_switch(monkeypatch, tmp_path):
+    """The reported `enabled` is jasper.usbgadget.network_wanted's verdict;
+    tests/test_usbgadget_status.py pins the literal parsing itself."""
     _patch_sys_class_net(monkeypatch, tmp_path)
 
-    monkeypatch.setenv("JASPER_USB_NETWORK", "DISABLED")
+    monkeypatch.setenv("JASPER_USB_NETWORK", "disabled")
     assert state_aggregate._usb_network_snapshot()["enabled"] is False
 
-    monkeypatch.setenv("JASPER_USB_NETWORK", "disabled-typo")
-    assert state_aggregate._usb_network_snapshot()["enabled"] is True
-
-    monkeypatch.setenv("JASPER_USB_NETWORK", "off")
-    assert state_aggregate._usb_network_snapshot()["enabled"] is True
-
-    # Whitespace-decorated near-miss: a stray space breaks the exact-literal
-    # match and STAYS enabled, matching jasper-usbgadget-up's raw (untrimmed)
-    # comparison so bash and Python never disagree (review core-7). The
-    # fail-safe direction: a stray space must not silently drop the fallback
-    # network.
-    monkeypatch.setenv("JASPER_USB_NETWORK", " disabled ")
-    assert state_aggregate._usb_network_snapshot()["enabled"] is True
-    monkeypatch.setenv("JASPER_USB_NETWORK", "disabled ")
+    monkeypatch.setenv("JASPER_USB_NETWORK", "enabled")
     assert state_aggregate._usb_network_snapshot()["enabled"] is True
 
 
@@ -170,13 +154,6 @@ def test_usb_network_carrier_read_error_fails_soft(monkeypatch, tmp_path):
     assert block["iface_present"] is True
     assert block["carrier"] is False
     assert block["address"] == PLAN.device_address
-
-
-def test_usb_network_wanted_helper_matches_snapshot_enabled_field(monkeypatch):
-    monkeypatch.setenv("JASPER_USB_NETWORK", "disabled")
-    assert state_aggregate._usb_network_wanted() is False
-    monkeypatch.delenv("JASPER_USB_NETWORK", raising=False)
-    assert state_aggregate._usb_network_wanted() is True
 
 
 def test_usb_network_plan_failure_reports_no_fabricated_desired_address(

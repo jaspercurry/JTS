@@ -25,7 +25,12 @@ import os
 import subprocess
 from pathlib import Path
 from ...install_profile import is_streambox_install_profile, read_install_profile
-from ...memory_policy import memory_headroom_thresholds
+from ...memory_policy import (
+    DISK_FAIL_PERCENT,
+    DISK_WARN_PERCENT,
+    disk_usage,
+    memory_headroom_thresholds,
+)
 from ...wake_events import (
     DEFAULT_MAX_AUDIO_BYTES as _DEFAULT_WAKE_EVENTS_MAX_AUDIO_BYTES,
 )
@@ -372,28 +377,26 @@ def check_audio_path_no_swap() -> CheckResult:
 # operator who raises the warn knob can never accidentally suppress the
 # fail.
 
-_DEFAULT_DISK_WARN_PERCENT = 85
-_DISK_FAIL_PERCENT = 95
 _GIB = 1024 ** 3
 
 
 def _disk_warn_percent() -> int:
-    """Operator-tunable WARN threshold (percent used). Falls back to the
-    85% default on unset / unparseable / out-of-range values so a fat-
-    fingered env line can't silently disable the warning. The FAIL
-    threshold (95%) is fixed — it is the "writes are about to fail"
-    line, not a preference."""
+    """Operator-tunable WARN threshold (percent used). Falls back to
+    ``DISK_WARN_PERCENT`` on unset / unparseable / out-of-range values so a
+    fat-fingered env line can't silently disable the warning. The FAIL
+    threshold is fixed — it is the "writes are about to fail" line, not a
+    preference."""
     raw = os.environ.get("JASPER_DISK_WARN_PERCENT", "").strip()
     if not raw:
-        return _DEFAULT_DISK_WARN_PERCENT
+        return DISK_WARN_PERCENT
     try:
         value = int(raw)
     except ValueError:
-        return _DEFAULT_DISK_WARN_PERCENT
+        return DISK_WARN_PERCENT
     # Keep it strictly below the fail line and above 0 so the band is
     # always meaningful.
-    if value <= 0 or value >= _DISK_FAIL_PERCENT:
-        return _DEFAULT_DISK_WARN_PERCENT
+    if value <= 0 or value >= DISK_FAIL_PERCENT:
+        return DISK_WARN_PERCENT
     return value
 
 
@@ -402,48 +405,38 @@ def check_disk_space() -> CheckResult:
     """WARN/FAIL on root-filesystem fullness before writes start failing.
 
     A full root partition is the failure that turns a routine power-cut
-    into ext4 corruption (the 2026-05-23 incident class). os.statvfs is
-    POSIX-portable and needs no subprocess. Uses f_bavail (blocks
-    available to a non-root user) for the free figure so the number
-    matches what the daemons — none of which run as root for their data
-    writes — actually have, but computes "% used" from total vs free so
-    the reserved-blocks pool doesn't read as usable headroom.
+    into ext4 corruption (the 2026-05-23 incident class).
 
-    Skips cleanly (ok) when os.statvfs is unavailable (non-POSIX dev
-    host) — same skip-on-not-applicable posture as the /proc and /sys
-    checks above. The path and the numbers are the only detail, so it is
-    inherently secret-free."""
+    Skips cleanly when the filesystem cannot be measured (non-POSIX dev
+    host, zero-sized) — same skip-on-not-applicable posture as the /proc
+    and /sys checks above. The path and the numbers are the only detail, so
+    it is inherently secret-free."""
     path = "/"
-    statvfs = getattr(os, "statvfs", None)
-    if statvfs is None:
-        return CheckResult(
-            "disk space", "skipped", "os.statvfs unavailable — skipped (not POSIX?)",
-            reason=REASON_DISK_NOT_POSIX,
-        )
     try:
-        st = statvfs(path)
+        usage = disk_usage(path)
     except OSError as e:
         return CheckResult(
             "disk space", "warn",
             f"couldn't statvfs {path}: {e.__class__.__name__}",
             reason=REASON_DISK_STATVFS_FAILED,
         )
-    total = st.f_blocks * st.f_frsize
-    if total <= 0:
+    if usage is None:
+        return CheckResult(
+            "disk space", "skipped", "os.statvfs unavailable — skipped (not POSIX?)",
+            reason=REASON_DISK_NOT_POSIX,
+        )
+    if usage.total_bytes <= 0:
         return CheckResult(
             "disk space", "skipped", f"{path}: zero-sized",
             reason=REASON_DISK_ZERO_SIZED,
         )
-    free = st.f_bavail * st.f_frsize
-    used = total - free
-    pct_used = (used * 100) // total
-    free_gib = free / _GIB
+    pct_used = int(usage.percent_used)
     warn_pct = _disk_warn_percent()
-    summary = f"{path}: {pct_used}% used, {free_gib:.1f} GiB free"
-    if pct_used >= _DISK_FAIL_PERCENT:
+    summary = f"{path}: {pct_used}% used, {usage.free_bytes / _GIB:.1f} GiB free"
+    if pct_used >= DISK_FAIL_PERCENT:
         return CheckResult(
             "disk space", "fail",
-            summary + f" — {_DISK_FAIL_PERCENT}%+ full; writes will start "
+            summary + f" — {DISK_FAIL_PERCENT}%+ full; writes will start "
             "failing and an unclean power-cut risks ext4 corruption. Free "
             "space now (prune /var/lib/jasper/wake-events, old correction "
             "sessions, journal: `journalctl --vacuum-size=100M`).",

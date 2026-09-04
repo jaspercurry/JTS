@@ -21,6 +21,7 @@ import pytest
 from jasper.cli import doctor
 from jasper.cli.doctor import _evidence
 from jasper.cli.doctor import memory as doctor_memory
+from jasper import memory_policy
 
 from .doctor_test_support import _make_unit_states_fake
 
@@ -272,6 +273,48 @@ def _fake_statvfs(*, total_bytes: int, free_bytes: int, frsize: int = 4096):
     return fake
 
 
+# ------------------------------ memory_policy.disk_usage (the shared reader
+# every disk consumer — this check, /state.resilience.disk, and the sampler —
+# reads through, so they share the fixture above)
+
+
+@pytest.mark.parametrize(
+    "total_bytes, free_bytes, expected",
+    [
+        (64 * 1024**3, 16 * 1024**3, (64 * 1024**3, 16 * 1024**3, 75.0)),
+        # f_bavail excludes the root-reserved pool, and percent-used comes from
+        # total-vs-free, so those reserved blocks read as used, not headroom.
+        (100 * 4096, 0, (100 * 4096, 0, 100.0)),
+        # A filesystem reporting no blocks is measurable but empty of meaning:
+        # zero total, never a divide.
+        (0, 0, (0, 0, 0.0)),
+    ],
+    ids=["mixed", "no-available-blocks", "zero-sized"],
+)
+def test_disk_usage_reads_total_available_and_percent(
+    total_bytes, free_bytes, expected
+):
+    fake = _fake_statvfs(total_bytes=total_bytes, free_bytes=free_bytes)
+
+    with patch.object(memory_policy.os, "statvfs", fake):
+        usage = memory_policy.disk_usage("/")
+
+    assert usage is not None
+    assert (usage.total_bytes, usage.free_bytes, usage.percent_used) == expected
+    assert usage.path == "/"
+
+
+def test_disk_usage_is_none_without_statvfs_and_propagates_read_errors():
+    def boom(path):
+        raise OSError("denied")
+
+    with patch.object(memory_policy.os, "statvfs", None, create=True):
+        assert memory_policy.disk_usage("/") is None
+    with patch.object(memory_policy.os, "statvfs", boom):
+        with pytest.raises(OSError):
+            memory_policy.disk_usage("/")
+
+
 @pytest.mark.parametrize(
     "value, expected",
     [
@@ -317,7 +360,7 @@ def test_check_disk_space_verdicts(
     total = total_gib * 1024**3
     fake = _fake_statvfs(total_bytes=total, free_bytes=int(free_fraction * total))
 
-    with patch.object(doctor_memory.os, "statvfs", fake):
+    with patch.object(memory_policy.os, "statvfs", fake):
         r = doctor.check_disk_space()
 
     assert r.status == status
@@ -326,7 +369,7 @@ def test_check_disk_space_verdicts(
 
 
 def test_check_disk_space_skips_on_a_non_posix_host():
-    with patch.object(doctor_memory.os, "statvfs", None, create=True):
+    with patch.object(memory_policy.os, "statvfs", None, create=True):
         r = doctor.check_disk_space()
         assert r.status == "skipped"
         assert r.reason == doctor_memory.REASON_DISK_NOT_POSIX
@@ -336,7 +379,7 @@ def test_check_disk_space_warns_on_statvfs_oserror():
     def boom(path):
         raise OSError("nope")
 
-    with patch.object(doctor_memory.os, "statvfs", boom):
+    with patch.object(memory_policy.os, "statvfs", boom):
         r = doctor.check_disk_space()
         assert r.status == "warn"
         assert r.reason == doctor_memory.REASON_DISK_STATVFS_FAILED
@@ -344,7 +387,7 @@ def test_check_disk_space_warns_on_statvfs_oserror():
 
 def test_check_disk_space_skips_a_zero_sized_filesystem():
     with patch.object(
-        doctor_memory.os, "statvfs", _fake_statvfs(total_bytes=0, free_bytes=0)
+        memory_policy.os, "statvfs", _fake_statvfs(total_bytes=0, free_bytes=0)
     ):
         r = doctor.check_disk_space()
         assert r.status == "skipped"
@@ -603,7 +646,7 @@ def test_disk_snapshot_shape():
 
     fake = _fake_statvfs(total_bytes=64 * 1024**3, free_bytes=16 * 1024**3)
 
-    with patch.object(state_aggregate.os, "statvfs", fake):
+    with patch.object(memory_policy.os, "statvfs", fake):
         assert state_aggregate._disk_snapshot("/") == {
             "path": "/",
             "percent_used": 75,
@@ -628,5 +671,5 @@ def test_disk_snapshot_is_none_when_the_read_is_unusable(statvfs):
         "zero-total": _fake_statvfs(total_bytes=0, free_bytes=0),
     }[statvfs]
 
-    with patch.object(state_aggregate.os, "statvfs", replacement, create=True):
+    with patch.object(memory_policy.os, "statvfs", replacement, create=True):
         assert state_aggregate._disk_snapshot("/") is None

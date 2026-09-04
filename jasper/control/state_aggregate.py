@@ -24,6 +24,7 @@ from ..audio_quality import (
     read_active_converter as _read_active_audio_converter,
     read_state as _read_audio_quality_state,
 )
+from ..memory_policy import disk_usage
 from ..music_sources import MUSIC_SOURCE_SPECS
 from ..fanin.status import (
     FANIN_INPUT_SOURCE_DIRECT,
@@ -34,7 +35,11 @@ from ..source_state import (
     usbsink_direct_muted,
     usbsink_direct_rms_dbfs,
 )
-from ..usbgadget import DEFAULT_UDC_CLASS_DIR, udc_host_connected
+from ..usbgadget import (
+    DEFAULT_UDC_CLASS_DIR,
+    network_wanted,
+    udc_host_connected,
+)
 from ..usb_network import (
     DEFAULT_PENDING_PATH as USB_NETWORK_PENDING_PATH,
     IPv4Observation,
@@ -593,48 +598,27 @@ def _active_speaker_parked_snapshot() -> dict[str, Any]:
 def _disk_snapshot(path: str = "/") -> dict[str, Any] | None:
     """Root-filesystem fullness for /state.resilience — fail-soft.
 
-    Returns ``{path, percent_used, free_gib, total_gib}``, or ``None`` on any
-    error (non-POSIX dev host, statvfs failure). jasper-doctor's
-    ``check_disk_space`` owns the actionable warn/fail thresholds. Uses
-    f_bavail (non-root-available blocks) for free space so the figure matches
-    what the daemons can actually write, but derives percent-used from
-    total-vs-free so reserved blocks don't read as headroom."""
-    statvfs = getattr(os, "statvfs", None)
-    if statvfs is None:
-        return None
+    Returns ``{path, percent_used, free_gib, total_gib}``, or ``None`` when the
+    filesystem cannot be measured (non-POSIX dev host, statvfs failure,
+    zero-sized). jasper-doctor's ``check_disk_space`` owns the actionable
+    warn/fail thresholds."""
     try:
-        st = statvfs(path)
-        total = st.f_blocks * st.f_frsize
-        if total <= 0:
-            return None
-        free = st.f_bavail * st.f_frsize
-        gib = 1024 ** 3
-        return {
-            "path": path,
-            "percent_used": ((total - free) * 100) // total,
-            "free_gib": round(free / gib, 1),
-            "total_gib": round(total / gib, 1),
-        }
+        usage = disk_usage(path)
     except Exception:  # noqa: BLE001
         logger.debug("disk snapshot read failed", exc_info=True)
         return None
+    if usage is None or usage.total_bytes <= 0:
+        return None
+    gib = 1024 ** 3
+    return {
+        "path": usage.path,
+        "percent_used": int(usage.percent_used),
+        "free_gib": round(usage.free_bytes / gib, 1),
+        "total_gib": round(usage.total_bytes / gib, 1),
+    }
 
 
 USB_NETWORK_IFACE = "usb0"
-
-
-def _usb_network_wanted() -> bool:
-    """Mirror ``jasper-usbgadget-up``'s network kill-switch read.
-
-    Read fresh from ``os.environ`` on every call (never cached) — this daemon
-    is not restarted when the kill switch flips. Unless ``JASPER_USB_NETWORK``
-    is the exact literal ``disabled`` (case-insensitive), network is wanted —
-    same convention as ``JASPER_SHAIRPORT_SUPERVISOR`` /
-    ``JASPER_SYSTEM_SUPERVISOR``. NOT stripped, matching
-    ``jasper-usbgadget-up``'s raw comparison so a whitespace-decorated
-    ``" disabled"`` stays enabled in both."""
-    raw = os.environ.get("JASPER_USB_NETWORK", "enabled")
-    return raw.lower() != "disabled"
 
 
 def _usb_network_snapshot() -> dict[str, Any]:
@@ -649,7 +633,7 @@ def _usb_network_snapshot() -> dict[str, Any]:
     interface while desired address/subnet/version/fingerprint come only from
     the validated installer-owned plan; a missing or corrupt plan reports those
     as null rather than fabricating an address."""
-    enabled = _usb_network_wanted()
+    enabled = network_wanted()
     iface_root = Path("/sys/class/net") / USB_NETWORK_IFACE
     iface_present = False
     carrier = False
