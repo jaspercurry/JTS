@@ -264,7 +264,7 @@ def test_clamp_bounds_and_spec_edge_are_the_ssots_values():
 PACKAGE_BOUNDARIES: tuple[tuple[str, tuple[tuple[str, ...], ...], str], ...] = (
     (
         "jasper/audio_measurement",
-        (("jasper", "correction"), ("jasper", "active_speaker")),
+        (("jasper", "correction"), ("jasper", "active_speaker"), ("jasper", "cli")),
         "that is what makes it a valid home for the boundary SSOT",
     ),
     (
