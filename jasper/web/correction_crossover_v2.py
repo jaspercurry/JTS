@@ -5728,7 +5728,8 @@ def prepare_v2_session(
             # The declarations below are a TWO-role reading: a 1-way main passes
             # ``None`` and the reader refuses on the way count instead. Which
             # band is the floor and which the ceiling is a question about ROLES,
-            # so both are fetched by name rather than by tuple position.
+            # so both are fetched by name rather than by tuple position. The WAY
+            # COUNT is what keeps a 3-way out — it declares both roles too.
             two_way = (
                 len(context.roles_bands) == 2
                 and "tweeter" in context.role_targets

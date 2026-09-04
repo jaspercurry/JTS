@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from jasper.log_event import log_event
 
@@ -31,6 +31,9 @@ from .refusal_copy import (
     REASON_SPEAKER_SHAPE_UNSUPPORTED,
     CrossoverV2Refused,
 )
+
+if TYPE_CHECKING:
+    from jasper.audio_measurement.program import FrequencyBand
 
 __all__ = [
     "V2ConductorContext",
@@ -115,15 +118,8 @@ class V2ConductorContext:
         default_factory=dict
     )
 
-    def declared_band(self, role: str) -> Any | None:
-        """This role's declared ``FrequencyBand``, or ``None`` if it has none.
-
-        By NAME. ``roles_bands`` is ordered lowest-driver-first and the program
-        builders depend on that; a caller wanting ONE named role's band should
-        not have to restate the ordering, because a positional read of a
-        clamp's floor and ceiling silently SWAPS them if the tuple is
-        reordered, where a wrong-role read of a single band cannot.
-        """
+    def declared_band(self, role: str) -> FrequencyBand | None:
+        """This role's declared ``FrequencyBand``, or ``None``."""
         return next(
             (entry.band for entry in self.roles_bands if entry.role == role),
             None,

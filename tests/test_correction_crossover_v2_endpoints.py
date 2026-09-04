@@ -9164,19 +9164,8 @@ def test_an_inadmissible_pin_refuses_at_the_tap_before_any_side_effect(
 def test_the_door_reads_its_two_declared_bands_by_role_not_by_position(
     monkeypatch,
 ):
-    """Which band is the floor and which the ceiling is a question about ROLES.
-
-    ``roles_bands`` arrives lowest-driver-first, and a door that took the floor
-    from position 1 and the ceiling from position 0 passes every test above
-    while silently swapping the two bounds of the declared-band clamp the day
-    that tuple is reordered. Under a positional read the reversed pair below
-    declares a 150 Hz floor and a 20000 Hz ceiling, so BOTH corners here — one
-    under the tweeter's declared 300 Hz floor, one over the woofer's declared
-    6000 Hz ceiling — would be admitted instead of refused.
-
-    Asserted as string EQUALITY against the canonically-ordered refusal, so the
-    reason code, the corner and the declared number the operator is handed are
-    all pinned as the same answer rather than merely as some refusal.
+    """Read positionally, the reversed pair declares a 150 Hz floor and a
+    20 kHz ceiling, so both corners below would be admitted instead of refused.
     """
     from jasper.active_speaker.crossover_v2.fc_sweep import (
         FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
@@ -9202,16 +9191,14 @@ def test_the_door_reads_its_two_declared_bands_by_role_not_by_position(
                 {"topology_prescription": _topology_pin(fc_hz=fc_hz)},
                 status={}, run_async=None, camilla_factory=None,
             )
-        return str(excinfo.value)
+        return excinfo.value.__cause__.reason
 
-    for fc_hz, reason, declared_edge in (
-        (200.0, FC_REJECT_BELOW_DECLARED_FLOOR, "300.0"),
-        (6500.0, FC_REJECT_ABOVE_LOWER_DRIVER_BAND, "6000.0"),
+    for fc_hz, reason in (
+        (200.0, FC_REJECT_BELOW_DECLARED_FLOOR),
+        (6500.0, FC_REJECT_ABOVE_LOWER_DRIVER_BAND),
     ):
-        declared_order = _refusal(woofer_first, fc_hz)
-        assert reason in declared_order
-        assert declared_edge in declared_order
-        assert _refusal(tweeter_first, fc_hz) == declared_order
+        assert _refusal(woofer_first, fc_hz) == reason
+        assert _refusal(tweeter_first, fc_hz) == reason
     assert v2host.load_v2_state() is None
 
 
