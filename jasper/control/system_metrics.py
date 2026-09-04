@@ -36,6 +36,7 @@ import time
 from array import array
 from typing import Any
 
+from ..memory_policy import disk_usage
 from ..service_units import (
     EXTRA_SERVICE_GROUPS,
     JASPER_SERVICE_GROUPS,
@@ -493,16 +494,15 @@ class SystemSampler:
 
     @staticmethod
     def _read_disk() -> tuple[float, float]:
-        """Returns (used_pct, total_gb) for the root filesystem."""
+        """Returns (used_pct, total_gb) for the root filesystem, (0.0, 0.0)
+        when it cannot be measured."""
         try:
-            s = os.statvfs("/")
+            usage = disk_usage("/")
         except OSError:
             return 0.0, 0.0
-        if s.f_blocks == 0:
+        if usage is None or usage.total_bytes <= 0:
             return 0.0, 0.0
-        used_pct = (1.0 - s.f_bavail / s.f_blocks) * 100.0
-        total_gb = (s.f_blocks * s.f_frsize) / (1024 ** 3)
-        return used_pct, total_gb
+        return usage.percent_used, usage.total_bytes / (1024 ** 3)
 
     @staticmethod
     def _read_uptime() -> float:

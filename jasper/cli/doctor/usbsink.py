@@ -41,7 +41,11 @@ from jasper.music_sources import Source
 from jasper.output_hardware import current_usb_data_role
 from jasper.route_latency.status_socket import FANIN_STATUS_SOCKET
 from jasper.source_intent import source_intent_enabled
-from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR, udc_host_connected
+from jasper.usbgadget import (
+    DEFAULT_UDC_CLASS_DIR,
+    network_wanted,
+    udc_host_connected,
+)
 from jasper.usb_mic import (
     RELAY_STATUS_FRESH_SECONDS,
     RELAY_STATUS_PATH,
@@ -251,38 +255,6 @@ def _usb_data_role() -> UsbPortRoleState:
     """`current_usb_data_role()`, read once per doctor run — every check in
     this module asks the same fact."""
     return evidence.get("usb_data_role", current_usb_data_role)
-
-
-def _network_wanted() -> bool:
-    """Mirror the network half of the shared gadget truth table.
-
-    The table itself lives in ``deploy/usbsink/jasper-usbgadget-compose.sh``,
-    which ``jasper-usbgadget-{wanted,up,converge}`` all source; this is the
-    deliberate SECOND implementation, in Python, so the doctor can report on a
-    composition it did not compute.
-
-    Network is wanted unless the kill switch is the exact literal
-    ``disabled`` (case-insensitive); any other value is treated as
-    enabled, same as ``JASPER_SHAIRPORT_SUPERVISOR`` /
-    ``JASPER_SYSTEM_SUPERVISOR``. Read from ``os.environ`` (not a fresh
-    file parse) because ``jasper.env_load`` already unions
-    ``/etc/jasper/jasper.env`` into ``os.environ`` at CLI startup —
-    the same convention every other doctor env read in this package uses.
-    The shell side reaches the same value the same way: the fragment reads
-    that one key out of the same file when nothing supplied it in the
-    environment, parsing it exactly as ``parse_env_text`` does.
-
-    NOT stripped: the shell table matches the RAW environment value (no trim), so
-    a whitespace-decorated ``" disabled"`` is a warned near-miss that STAYS
-    enabled in bash. The Python readers must agree byte-for-byte, or
-    check_usbgadget_composition would false-fail when bash composed ncm but
-    Python thought the kill switch was set. The fail-safe
-    direction is deliberate: a stray space must never silently drop the
-    default-on fallback network when hardware permits it. Pinned by
-    tests/test_usbgadget_script.py's
-    literal matrix (bash) and test_doctor_usbsink.py (Python)."""
-    raw = os.environ.get("JASPER_USB_NETWORK", "enabled")
-    return raw.lower() != "disabled"
 
 
 class _AudioIntent(NamedTuple):
@@ -1137,7 +1109,7 @@ def check_usbgadget_composition() -> CheckResult:
             reason=REASON_COMPOSITION_NO_UDC,
         )
 
-    want_network = _network_wanted()
+    want_network = network_wanted()
     audio = _audio_wanted()
     if audio.reason == REASON_SOURCE_INTENT_INVALID:
         return CheckResult(

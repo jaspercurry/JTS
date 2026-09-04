@@ -2,12 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Import-light observed state for the composite USB gadget.
+"""Import-light composition intent and observed state for the USB gadget.
 
 The gadget owner binds ConfigFS to a Linux UDC; the kernel then exposes the
 host-side connection state below ``/sys/class/udc``.  Management surfaces use
-this helper instead of depending on a second daemon to copy that kernel truth
-into a JSON file.
+these helpers instead of depending on a second daemon to copy that kernel truth
+into a JSON file, and instead of re-implementing the shell truth table that
+decides which functions the gadget composes.
 """
 from __future__ import annotations
 
@@ -42,4 +43,21 @@ def udc_host_connected(
     return False
 
 
-__all__ = ["DEFAULT_UDC_CLASS_DIR", "udc_host_connected"]
+def network_wanted() -> bool:
+    """Return whether the USB management network is wanted.
+
+    Unless ``JASPER_USB_NETWORK`` is the exact literal ``disabled``
+    (case-insensitive) the network is wanted — the same convention as
+    ``JASPER_SHAIRPORT_SUPERVISOR`` / ``JASPER_SYSTEM_SUPERVISOR``. The value is
+    NOT stripped, matching the raw comparison in the shell truth table
+    (``deploy/usbsink/jasper-usbgadget-compose.sh``): a whitespace-decorated
+    ``" disabled"`` stays enabled on both sides, because a stray space must
+    never silently drop the fallback network. Read from ``os.environ`` on every
+    call — ``jasper.env_load`` unions ``/etc/jasper/jasper.env`` into it at
+    startup, and a long-lived daemon is not restarted when the switch flips.
+    """
+
+    return os.environ.get("JASPER_USB_NETWORK", "enabled").lower() != "disabled"
+
+
+__all__ = ["DEFAULT_UDC_CLASS_DIR", "network_wanted", "udc_host_connected"]

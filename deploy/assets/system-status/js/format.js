@@ -208,8 +208,8 @@ export function temperatureDisplay(tempC, throttledNow, throttledHistory) {
   };
 }
 
-// 85% warn / 95% danger mirror jasper-doctor's `_DEFAULT_DISK_WARN_PERCENT` /
-// `_DISK_FAIL_PERCENT` (jasper/cli/doctor/memory.py), pinned equal by
+// 85% warn / 95% danger mirror `DISK_WARN_PERCENT` / `DISK_FAIL_PERCENT`
+// (jasper/memory_policy.py), pinned equal by
 // tests/test_system_status_thresholds.py — same dashboard↔doctor agreement the
 // memory tile keeps. A full root partition is the failure that turns a routine
 // power-cut into ext4 corruption, so danger fires before writes start failing.

@@ -18,6 +18,7 @@ from pathlib import Path
 
 from jasper.identity import resolve_hostname
 from jasper.output_hardware import current_usb_data_role
+from jasper.usbgadget import network_wanted
 from jasper.usb_network import (
     DEFAULT_DNSMASQ_PATH,
     DEFAULT_NM_PATH,
@@ -709,25 +710,6 @@ USBNET_DHCP_UNIT = "jasper-usbnet-dhcp.service"
 USBNET_SYS_CLASS_NET = Path("/sys/class/net")
 
 
-def _usb_network_wanted() -> bool:
-    """Mirror ``jasper-usbgadget-up``'s network kill-switch read.
-
-    Duplicated (rather than imported) from
-    ``jasper.cli.doctor.usbsink._network_wanted`` on purpose — no other
-    pair of domain modules in this package imports checks/helpers from
-    each other (each reads its own env directly), and the predicate is a
-    single two-line string comparison, so a cross-module import would add
-    coupling for no real de-duplication. Kept byte-identical in
-    intent: unless the kill switch is the exact literal ``disabled``
-    (case-insensitive), network is wanted — same convention as
-    ``JASPER_SHAIRPORT_SUPERVISOR`` / ``JASPER_SYSTEM_SUPERVISOR``. NOT
-    stripped, to match ``jasper-usbgadget-up``'s raw (untrimmed) comparison so
-    a whitespace-decorated ``" disabled"`` stays enabled in both (review
-    core-7) — a stray space must never silently drop the fallback network."""
-    raw = os.environ.get("JASPER_USB_NETWORK", "enabled")
-    return raw.lower() != "disabled"
-
-
 def _usbnet_iface_present() -> bool:
     return (USBNET_SYS_CLASS_NET / USBNET_IFACE).is_dir()
 
@@ -825,7 +807,7 @@ def check_usbnet_interface() -> CheckResult:
     "nothing plugged in". No carrier on an existing ``usb0`` is the normal
     nothing-plugged-in state and reports ok."""
     label = "USB management network (usb0)"
-    if not _usb_network_wanted():
+    if not network_wanted():
         if _usbnet_iface_present():
             return CheckResult(
                 label, "warn",
