@@ -12,7 +12,8 @@
   fictional non-Studio DAC8x — but the row's prose attributed it to "JTS3
   known-good" without saying so, and the Studio row's prose called this
   configuration a "misroute" needing correction, when it is the vendor-
-  documented config and has run S32_LE for months at zero xruns. On
+  documented config: S32_LE has been declared on it since early August (one
+  three-window soak, plus daily use since), zero DAC xruns observed. On
   rpi-6.18.y and later, the kernel makes the Studio driver stack
   (`hifiberry-studio-dac8x` → `hifiberry_studio.c`) unroutable on its own:
   every board in the Studio family presents the single card name "Hifiberry
@@ -32,8 +33,11 @@
   product string (`vendor`/`product`, e.g. `HiFiBerry`/`StudioDAC8x`) is the
   discriminator that closes the 6.18 label collision for the unified
   "Hifiberry Studio Soundcard" name; PR #3917 adds the `hat_products` /
-  `eeprom_gated_card_matches` fields on the Studio row that consume it. The
-  Studio hardware's own gain stage is pinned at 0 dB / unmuted via the
+  `eeprom_gated_card_matches` fields on the Studio row that consume it.
+  PR #3922 generalizes the I2S HAT intent selector beyond InnoMaker so
+  `hifiberry_dac8x_studio` can be set through it; Phase 1 step 3 below
+  depends on that PR having merged. The Studio hardware's own gain stage
+  is pinned at 0 dB / unmuted via the
   registry's `mixer_controls`; PR #3924 adds that pin. The Studio row keeps
   the global default floors/format/commissioning/chip-AEC (no per-board
   measurement) until the jts3 Studio soak below runs; the removal condition
@@ -46,27 +50,36 @@
      `asound.state`.
   2. Delete the hand-written base `dtoverlay=hifiberry-dac8x` line from
      `config.txt`.
-  3. Set the I2S HAT intent to `hifiberry_dac8x_studio` and deploy.
-  4. Reboot; expect the park (no measured floor/format yet on this row).
+  3. Set the I2S HAT intent to `hifiberry_dac8x_studio` and deploy (needs
+     PR #3922). Manual fallback if #3922 has not merged: after deleting the
+     base line in step 2, hand-edit `config.txt` to add
+     `dtoverlay=hifiberry-studio-dac8x` directly.
+  4. Reboot; expect the park on a roleful box only (flat boxes don't park):
+     the Studio row declares no `latency_floor`, so `latency_floor_for`
+     returns `None`, the ring conf.d is not rendered, and
+     `active_ring_endpoint_proof` fails (#2575).
   5. Run silent probes; confirm the hardware volume pin took effect.
-  6. Declare provisional floors/format on the Studio row from the probe
-     results.
+  6. Record the probe results (format, `hw-params`) in the PR that declares
+     them — there is no provisional/validated state on `DacProfile` itself,
+     so nothing in the registry changes yet.
   7. One-off full-payload topology save that keeps the existing speaker
      groups.
-  8. Soak via `jasper-audio-hw-validate hifiberry_dac8x_outputd_stability`.
+  8. Soak via
+     `jasper-audio-hw-validate --profile hifiberry_dac8x_outputd_stability`.
   9. Recheck the chip-AEC delay.
-  10. Flip the Studio row from provisional to validated.
+  10. One registry change lands the soak's outcome: flip
+      floors/format/commissioning/chip-AEC on the Studio row together, and
+      update the floorless-DAC contract tests in the same PR.
 
   **Rollback:** restore the `config.txt` overlay line and the topology
   backup, reboot.
 - **Consequences:** The base row's evidence prose now says what silicon and
   driver stack it was measured on, so a future reader does not need to
   reconstruct that jts3 was Studio hardware from git history. The Studio
-  row's provisional status is explicit and load-bearing rather than
-  aspirational — floors/format/commissioning/chip-AEC on that row stay
-  defaulted, and the doctor/floorless-DAC contract tests that assert the
-  Studio row ships no floor keep passing, until the soak above lands and
-  flips them. jts3 loses its months of base-row soak history at the driver
+  row stays floorless — no measured floor, format, commissioning, or
+  chip-AEC — and the doctor/floorless-DAC contract tests that assert that
+  keep passing, until step 10's single registry change lands and updates
+  them together. jts3 loses its months of base-row soak history at the driver
   level when it migrates — ADR-0106 already establishes that verification
   artifacts don't migrate in place, so the Studio row starts its own
   evidence base from Phase 1 rather than inheriting the base row's. Until

@@ -533,12 +533,10 @@ HIFIBERRY_DAC8X = DacProfile(
     ),
     camilla_floor=CamillaFloor(chunksize=256, target_level=1536),
     # Hardware evidence: `aplay --dump-hw-params` on jts3 — Studio silicon
-    # under this base overlay/driver — reports FORMAT S16_LE/S24_LE/S32_LE
-    # at rates up to 192 kHz, and a raw `hw:` S32_LE 2ch open succeeded with
-    # a clean recovery (banked
-    # 2026-08-07, wide-output-path plan §2 evidence base — NOT gate G0b,
-    # which is the separate snd-aloop `hw:Loopback` pair test). The DAC8x
-    # uses four 192kHz/24-bit Burr-Brown DAC chips (HiFiBerry's published
+    # under this base overlay/driver, see ADR-0232 — reports FORMAT
+    # S16_LE/S24_LE/S32_LE at rates up to 192 kHz, and a raw `hw:` S32_LE
+    # 2ch open succeeded with a clean recovery. The DAC8x uses four
+    # 192kHz/24-bit Burr-Brown DAC chips (HiFiBerry's published
     # datasheet); the S32_LE word's bottom byte beyond that 24-bit
     # resolution spans <= -138.5 dBFS — sub-analog at any plausible silicon
     # depth, so this datasheet inference is not load-bearing for safety even
@@ -650,31 +648,27 @@ HIFIBERRY_DAC8X_STUDIO = DacProfile(
     # format this field declares) but do NOT share a driver, so that shared
     # family is a plausible expectation, not proof.
     #
-    # KNOWN LIMITATION: this profile is reachable by auto-detection on
-    # Trixie's rpi-6.12.y kernel, where the driver names the card "HiFiBerry
-    # Studio DAC8x". It is NOT reachable on rpi-6.18.y and later: the renamed
-    # `hifiberry_studio.c` driver presents every board in the Studio family —
-    # the 8-channel Studio DAC8x and the 2-channel Studio Digi/AES alike —
-    # under the single card name "Hifiberry Studio Soundcard", carrying no
-    # DAC8x token and no width. Matching that shared name here would let a
-    # 2-channel Digi classify as this 8-channel profile, so this profile
-    # deliberately does not claim it: on those kernels a Studio DAC8x resolves
-    # to "unknown" and parks until the HAT EEPROM product string closes the
-    # gap (`hat_products`, `eeprom_gated_card_matches`; see ADR-0232).
+    # On Trixie's rpi-6.12.y kernel, `supported_card_matches` above claims
+    # this profile directly: the driver names the card "HiFiBerry Studio
+    # DAC8x". On rpi-6.18.y and later, the renamed `hifiberry_studio.c`
+    # driver presents every board in the Studio family — the 8-channel
+    # Studio DAC8x and the 2-channel Studio Digi/AES alike — under the
+    # single shared card name "Hifiberry Studio Soundcard", carrying no
+    # DAC8x token and no width, so the label alone cannot tell them apart.
+    # `eeprom_gated_card_matches` claims that shared label for this profile
+    # ONLY when the HAT EEPROM product string is in `hat_products` (see
+    # ADR-0232) — a 2-channel Digi's different EEPROM product never matches,
+    # so it cannot be classified as this 8-channel profile. Without a
+    # readable EEPROM match, a 6.18.y Studio DAC8x resolves to "unknown" and
+    # parks rather than being guessed from the shared label.
     #
     # One case is irreducible by label matching: a Studio board configured
     # with `dtoverlay=hifiberry-dac8x` (what HiFiBerry's own datasheet
     # prescribes) loads the base driver and presents the base card name, so it
     # classifies as `hifiberry_dac8x` and inherits that row's S32_LE and
     # approved chip-AEC. That is not a misroute: the box genuinely IS running
-    # the base driver, on the vendor-documented config, and jts3 ran exactly
-    # this way for months at zero DAC xruns — see the base row's own evidence.
-    # A Studio board that instead loads THIS driver and gets misclassified as
-    # the base profile would declare S32_LE it cannot open: outputd's
-    # `final_sink_startup` wrapper fails closed on that (ALSA's `hw_params`
-    # install refuses an unsupported format, and the wrapper's readback
-    # comparison catches a driver that silently negotiated something else),
-    # so it parks (exit 78) rather than playing wrong.
+    # the base driver, on the vendor-documented config — see the base row's
+    # own evidence.
     #
     # NO latency_floor is declared, so this profile ships the conservative
     # global CamillaDSP/outputd default rather than a measured one. It is the
