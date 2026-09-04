@@ -21,7 +21,9 @@
 //! consumer clamps.
 
 mod direct_capture;
+mod dsp;
 mod lane_fade;
+mod pcm_open;
 mod ring_capture;
 
 use std::mem::MaybeUninit;
@@ -47,32 +49,18 @@ use crate::xrun_log::{XrunEvent, XrunSource};
 
 use direct_capture::{read_direct_and_render, DirectCapture};
 pub use direct_capture::{DirectObservability, DrainStats};
+use dsp::{
+    apply_gain_to_sum, duck_step_per_frame, fill_wide_ring_payload, mix_into, mix_into_wide,
+    ramp_program_duck, saturate_to_i16, WIDE_BYTES_PER_SAMPLE,
+};
 use lane_fade::LaneFade;
+use pcm_open::{errno_of, open_direct_capture, open_direct_input, open_input, spine_read_buf};
 use ring_capture::read_ring_and_render;
 pub use ring_capture::RingLaneObservability;
 
 /// Stereo, on both ends: the renderer ingress lanes carry 2 channels and so
 /// does the ring this daemon publishes to. Not configurable.
 pub const CHANNELS: u32 = 2;
-
-/// PCM sample format for this daemon's snd-aloop capture lanes — the
-/// per-renderer inputs, the only aloop lanes left since ADR-0100.
-///
-/// Lane ingress is NOT its own width axis: it is this box's one resolved wire
-/// ([`Config::program_wire_is_wide`]), the same fact that decides the program
-/// ring's payload and the assistant wire.
-///
-/// snd-aloop pins both halves of a cable to one format, so the renderer
-/// aliases' slaves in `deploy/alsa/asoundrc.jasper` declare the same width and
-/// move with this; `tests/test_fanin_wiring.py` and `check_fanin_asound_wiring`
-/// pin that side.
-fn lane_capture_format(program_wire_is_wide: bool) -> Format {
-    if program_wire_is_wide {
-        Format::S32LE
-    } else {
-        Format::S16LE
-    }
-}
 
 /// Sentinel for "no ALSA playback delay sample has landed", which since
 /// ADR-0100 is every period: this daemon opens no playback PCM to sample. It
@@ -155,20 +143,6 @@ const DIRECT_PERIOD_FRAMES: u32 = 256;
 /// that was asked for.
 const DIRECT_BUFFER_MIN_PERIODS: u32 = 3;
 const DIRECT_BUFFER_MIN_FRAMES: u32 = 768;
-
-/// Compute the direct capture buffer for a given open period, honoring the
-/// deep-buffer safety floor (≥ `DIRECT_BUFFER_MIN_PERIODS` periods AND ≥
-/// `DIRECT_BUFFER_MIN_FRAMES`), then rounded UP to a whole period multiple so
-/// the negotiated geometry is period-aligned (a fractional buffer would shear;
-/// `direct_open_params_ok` rejects it). Pure so the floor math is unit-testable
-/// without ALSA.
-fn resolve_direct_buffer_frames(period: u32) -> u32 {
-    let by_periods = period.saturating_mul(DIRECT_BUFFER_MIN_PERIODS);
-    let floor = by_periods.max(DIRECT_BUFFER_MIN_FRAMES);
-    // Round up to the next whole period so buffer % period == 0.
-    let period = period.max(1);
-    floor.div_ceil(period).saturating_mul(period)
-}
 
 /// Number of fixed histogram buckets for the drain-entry avail distribution.
 /// Boundaries at 64-frame steps: `[0,64) [64,128) [128,192) [192,256)
@@ -2257,220 +2231,6 @@ impl ProgramWidth {
     }
 }
 
-/// Accumulate one lane's i16 period into the sum at the sum's own scale, with
-/// saturating arithmetic. Pulled out for unit testability — no ALSA needed.
-///
-/// `Narrow` adds the sample as-is; `Wide` promotes it with the shared,
-/// information-preserving `widen_i16_to_i32` first.
-fn mix_into(sum: &mut [i64], input: &[i16], width: ProgramWidth) {
-    debug_assert_eq!(sum.len(), input.len());
-    match width {
-        ProgramWidth::Narrow => {
-            for (s, &i) in sum.iter_mut().zip(input) {
-                *s = s.saturating_add(i as i64);
-            }
-        }
-        ProgramWidth::Wide => {
-            for (s, &i) in sum.iter_mut().zip(input) {
-                *s = s.saturating_add(jasper_resampler::widen_i16_to_i32(i) as i64);
-            }
-        }
-    }
-}
-
-/// Accumulate one lane's **already spine-scale** period into the sum — the USB
-/// DIRECT lane on a wide wire (#2223), the only producer with more than 16
-/// significant bits to contribute. Nothing is shifted and nothing is narrowed,
-/// so the low word a hi-res host sends survives from `readi` to the summed
-/// write.
-///
-/// Only meaningful against a [`ProgramWidth::Wide`] sum: a narrow sum is in the
-/// i16 scale and adding a spine-scale sample to it would be 96 dB of gain. The
-/// mixer picks the pairing per lane from the ONE resolved width, and the
-/// `debug_assert` states that contract for anyone who wires a new caller.
-fn mix_into_wide(sum: &mut [i64], input: &[i32], width: ProgramWidth) {
-    debug_assert_eq!(sum.len(), input.len());
-    debug_assert_eq!(
-        width,
-        ProgramWidth::Wide,
-        "a spine-scale lane may only enter a spine-scale sum",
-    );
-    for (s, &i) in sum.iter_mut().zip(input) {
-        *s = s.saturating_add(i as i64);
-    }
-}
-
-/// Apply a period-stable gain to the accumulated program sum. Used
-/// after pre-duck content metering so the assistant loudness baseline
-/// tracks the listener-facing content, not the temporary ducked level.
-///
-/// Width-dispatched. A linear gain commutes with the promotion, so the two arms
-/// are the same operation on paper — but not in floating point, and not at the
-/// rails:
-///
-/// **The rails.** `Narrow` keeps the `i32` clamp, where it is unreachable (a
-/// narrow sum of every lane is ~2^18 and a duck only ever attenuates). `Wide`
-/// drops it: a spine-scale sum LEGITIMATELY exceeds `i32::MAX` — that headroom
-/// above full scale is the reason the accumulator is `i64` — and the duck's
-/// whole job is to pull such a sum back into range. Clamping to `i32` first
-/// would spend the headroom before the duck could use it, turning a recoverable
-/// over-full-scale sum into a clipped one. Saturation is the consumer's job
-/// (`saturate_to_i16` / `clamp_sum_to_spine`), where it can see the value that
-/// is actually leaving.
-///
-/// **The mantissa.** `f32` carries 24 bits, so `sum as f32` at spine scale
-/// discards the bottom bits before the multiply happens — the same reason
-/// `apply_gain` exists beside `apply_gain_i16`. `Wide` computes in `f64`, whose
-/// 53-bit mantissa represents every `i32` (and every reachable sum) exactly.
-/// `Narrow` stays `f32`: a narrow sum is under 2^24, so `f32` holds it exactly,
-/// and an `f64` product can round differently in the last place — identical
-/// arithmetic is not identical bytes.
-///
-/// Rust's float→int cast saturates, so the `Wide` arm needs no `i64` clamp of
-/// its own; a product that overflowed would land on the rails rather than wrap.
-fn apply_gain_to_sum(sum: &mut [i64], gain: f32, width: ProgramWidth) {
-    match width {
-        ProgramWidth::Narrow => {
-            for sample in sum {
-                *sample = ((*sample as f32) * gain)
-                    .round()
-                    .clamp(i32::MIN as f32, i32::MAX as f32) as i64;
-            }
-        }
-        ProgramWidth::Wide => {
-            for sample in sum {
-                *sample = ((*sample as f64) * f64::from(gain)).round() as i64;
-            }
-        }
-    }
-}
-
-/// Per-frame linear-gain slew such that a full 0.0→1.0 traversal takes
-/// `ms` milliseconds at `sample_rate`. Floored so a misconfigured 0 can't
-/// divide by zero (config validation already bounds `ms >= 1`).
-fn duck_step_per_frame(ms: u32, sample_rate: u32) -> f32 {
-    let frames = (ms.max(1) as f32) * (sample_rate.max(1) as f32) / 1000.0;
-    1.0 / frames.max(1.0)
-}
-
-/// Glide `current` toward `target` and apply the gliding gain to the
-/// interleaved program sum, one linear step per frame. Ducking DOWN uses
-/// `attack_step`; releasing UP uses `release_step`. The clamp to `target`
-/// means it never overshoots and lands exactly, so callers can compare
-/// `current == target` to detect a settled duck. Returns the updated
-/// `current` for the caller to persist across periods.
-///
-/// A ~25 dB program duck that switches level in one sample injects a broadband
-/// click and a "pump" into music playing under a short earcon/cue; ramping the
-/// edges removes both.
-///
-/// Width-dispatched for exactly the reasons [`apply_gain_to_sum`] documents —
-/// this is the same multiply with a per-frame gain, and its steady state is
-/// asserted equal to that function's.
-fn ramp_program_duck(
-    sum: &mut [i64],
-    channels: usize,
-    mut current: f32,
-    target: f32,
-    attack_step: f32,
-    release_step: f32,
-    width: ProgramWidth,
-) -> f32 {
-    debug_assert!(channels >= 1);
-    let frames = sum.len() / channels;
-    for f in 0..frames {
-        if current > target {
-            current = (current - attack_step).max(target);
-        } else if current < target {
-            current = (current + release_step).min(target);
-        }
-        if current != 1.0 {
-            let base = f * channels;
-            match width {
-                ProgramWidth::Narrow => {
-                    for s in &mut sum[base..base + channels] {
-                        *s = ((*s as f32) * current)
-                            .round()
-                            .clamp(i32::MIN as f32, i32::MAX as f32)
-                            as i64;
-                    }
-                }
-                ProgramWidth::Wide => {
-                    for s in &mut sum[base..base + channels] {
-                        *s = ((*s as f64) * f64::from(current)).round() as i64;
-                    }
-                }
-            }
-        }
-    }
-    current
-}
-
-/// Clamp the sum back to i16 for an S16 consumer — the narrow ring wire and the
-/// assistant content meter. Pulled out for unit testability.
-///
-/// `Narrow` is a bare clamp: the sum is already in the i16 numeric scale, so the
-/// only question is saturation.
-///
-/// `Wide` has 16 more bits to shed, and sheds them with the shared
-/// [`jasper_resampler::narrow_i32_to_i16_round`] — a round-to-nearest quantizer,
-/// NOT a truncating shift. It inverts `widen_i16_to_i32` exactly, so a wide sum
-/// built only from promoted i16 lanes narrows back to the identical bytes the
-/// narrow sum would have produced; a wide sum carrying real low bits rounds
-/// rather than stepping half an LSB toward −∞ on every sample.
-fn saturate_to_i16(sum: &[i64], out: &mut [i16], width: ProgramWidth) {
-    debug_assert_eq!(sum.len(), out.len());
-    match width {
-        ProgramWidth::Narrow => {
-            for (o, &s) in out.iter_mut().zip(sum) {
-                *o = s.clamp(i16::MIN as i64, i16::MAX as i64) as i16;
-            }
-        }
-        ProgramWidth::Wide => {
-            for (o, &s) in out.iter_mut().zip(sum) {
-                *o = jasper_resampler::narrow_i32_to_i16_round(clamp_sum_to_spine(s));
-            }
-        }
-    }
-}
-
-/// Saturate one accumulator sample into the i32 spine range.
-///
-/// The sum accumulates in `i64` for headroom (see [`ProgramWidth`]); every
-/// consumer of a WIDE sum — the ring payload and the i16 narrowing above — needs
-/// it back inside i32 first, and this is the one place that clamp lives.
-#[inline]
-fn clamp_sum_to_spine(sum_sample: i64) -> i32 {
-    sum_sample.clamp(i32::MIN as i64, i32::MAX as i64) as i32
-}
-
-/// Bytes one sample occupies on an S32LE ring wire.
-const WIDE_BYTES_PER_SAMPLE: usize = 4;
-
-/// Fill an S32LE ring slot payload from the period's mix sum.
-///
-/// A wide wire implies a [`ProgramWidth::Wide`] sum (`Mixer::new` refuses to run
-/// any other pairing), so the sum is ALREADY in the wire's own spine scale: the
-/// only conversion left is the `i64`→`i32` saturation the accumulator's headroom
-/// made necessary, plus the explicit little-endian byte order. Because the
-/// promotion happens at each lane's sum entry, a lane with more than 16
-/// significant bits puts them here intact, while a period built only from i16
-/// lanes lands on exactly the bytes the narrow payload would carry —
-/// `wide_payload_is_information_equivalent_to_the_narrow_payload` pins that.
-///
-/// `out` is the preallocated `ring_wide_payload` — `4 * sum.len()` bytes,
-/// sized once at construction from the same `period_samples` that sizes
-/// `sum_buf`, so this allocates nothing. `to_le_bytes` states the wire's
-/// little-endianness rather than inheriting the host's, and the 4-byte
-/// `copy_from_slice` cannot fail: `chunks_exact_mut(4)` yields exactly 4-byte
-/// chunks and `to_le_bytes` returns exactly 4 bytes.
-fn fill_wide_ring_payload(sum: &[i64], out: &mut [u8]) {
-    debug_assert_eq!(out.len(), sum.len() * WIDE_BYTES_PER_SAMPLE);
-    for (chunk, &s) in out.chunks_exact_mut(WIDE_BYTES_PER_SAMPLE).zip(sum) {
-        chunk.copy_from_slice(&clamp_sum_to_spine(s).to_le_bytes());
-    }
-}
-
 fn input_selected(selected_input: i32, input_index: usize, label: &str) -> bool {
     selected_input == -1 || selected_input == input_index as i32 || label == MEASUREMENT_LANE
 }
@@ -2657,47 +2417,6 @@ fn build_lane_resampler(label: &str, config: &Config) -> Option<LaneResampler> {
     }
 }
 
-fn open_input(
-    pcm_name: &str,
-    label: &str,
-    config: &Config,
-    resampler: Option<LaneResampler>,
-) -> Result<Input> {
-    // Non-blocking so a silent renderer's substream doesn't stall the work loop;
-    // read_input handles -EAGAIN as "no data, treat as silence".
-    let pcm = PCM::new(pcm_name, Direction::Capture, true)
-        .with_context(|| format!("opening capture PCM {}", pcm_name))?;
-    configure_pcm(&pcm, config, config.input_buffer_frames)
-        .with_context(|| format!("configuring capture PCM {}", pcm_name))?;
-    // Start the stream so reads return data (or EAGAIN) instead of
-    // blocking forever in the PREPARED state.
-    pcm.start()
-        .with_context(|| format!("starting capture PCM {}", pcm_name))?;
-    let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
-    Ok(Input {
-        pcm: Some(pcm),
-        direct: None,
-        direct_opener: None,
-        ring: None,
-        ring_attacher: None,
-        label: label.to_string(),
-        pcm_name: pcm_name.to_string(),
-        read_buf: vec![0i16; period_samples],
-        read_buf_wide: spine_read_buf(config.program_wire_is_wide(), period_samples),
-        xrun_count: Arc::new(AtomicU64::new(0)),
-        frames_read: Arc::new(AtomicU64::new(0)),
-        rms_dbfs_x100: Arc::new(AtomicI32::new((RMS_DBFS_FLOOR * 100.0) as i32)),
-        catchup_resync_frames: Arc::new(AtomicU64::new(0)),
-        catchup_events: Arc::new(AtomicU64::new(0)),
-        resampler,
-        trim: TrimControl::new(),
-        muted: Arc::new(AtomicBool::new(false)),
-        direct_obs: None,
-        ring_obs: None,
-        lane_fade: LaneFade::for_lane(label, config.sample_rate),
-    })
-}
-
 /// Zero a lane's period buffer from `from_sample` on — whichever width the lane
 /// holds its period in.
 ///
@@ -2710,228 +2429,6 @@ pub(super) fn silence_period(narrow: &mut [i16], wide: &mut [i32], from_sample: 
     } else {
         wide[from_sample..].fill(0);
     }
-}
-
-/// A lane's SPINE-SCALE period buffer — allocated on a wide wire, empty on a
-/// narrow one. The ONE place that decides, for every lane source (aloop, ring,
-/// USB direct), whether that lane carries its period at spine scale.
-///
-/// Non-empty `read_buf_wide` is not merely a buffer — it is the lane's OWN
-/// width switch, read by the drain (which side of the capture fork), by the
-/// render (which `render_period`), and by the sum (which entry). Inverting it
-/// points every one of those at the wrong scale at once, which is why the
-/// decision is a testable pure helper rather than an inline `if` on a `&Config`.
-/// An empty `Vec` has no capacity, so a narrow box allocates nothing.
-fn spine_read_buf(program_wire_is_wide: bool, period_samples: usize) -> Vec<i32> {
-    if program_wire_is_wide {
-        vec![0i32; period_samples]
-    } else {
-        Vec::new()
-    }
-}
-
-/// Build the USB DIRECT lane. Opens `hw:UAC2Gadget` (or the override) with the
-/// proven envelope; on failure the lane starts `Absent` and renders silence with
-/// a bounded reopen retry, so a gadget-absent box never fails the daemon. The
-/// aloop substream is NOT opened (`pcm: None`): this lane's audio comes only
-/// from the gadget capture. Never returns `Err` — the fail-hard "every input
-/// required" contract is exempted for this lane alone.
-fn open_direct_input(
-    label: &str,
-    pcm_name: &str,
-    config: &Config,
-    resampler: Option<LaneResampler>,
-) -> Input {
-    let device = config.usb_direct_device.clone();
-    let open_period = config.usb_direct_period_frames;
-    // The buffer the lane ACTUALLY negotiated at open; the request is
-    // `resolve_direct_buffer_frames(open_period)`, but the kernel may round
-    // `set_buffer_size_near` up, so seed from the request and overwrite with the
-    // negotiated size on a successful open. Absent-at-startup keeps the request
-    // as a best-effort placeholder (present=false makes the number advisory).
-    let buffer_frames = Arc::new(AtomicU64::new(
-        resolve_direct_buffer_frames(open_period) as u64
-    ));
-    let present = Arc::new(AtomicBool::new(false));
-    let opens = Arc::new(AtomicU64::new(0));
-    let retries = Arc::new(AtomicU64::new(0));
-    let direct = match open_direct_capture(&device, open_period) {
-        Ok((pcm, negotiated_buffer)) => {
-            present.store(true, Ordering::Relaxed);
-            opens.fetch_add(1, Ordering::Relaxed);
-            buffer_frames.store(negotiated_buffer as u64, Ordering::Relaxed);
-            info!(
-                "event=fanin.usb_direct.present device={} period_frames={} buffer_frames={} (initial open) opens=1 retries=0",
-                device, open_period, negotiated_buffer,
-            );
-            DirectCapture::Present(pcm)
-        }
-        Err(e) => {
-            // Gadget absent at startup (source not yet advertised, unplugged
-            // host, or another process holds hw:UAC2Gadget). Not fatal: the lane
-            // renders silence and retries on its own cadence.
-            warn!(
-                "event=fanin.usb_direct.absent device={} errno={} detail={:#} (startup; will retry ~every {}s)",
-                device,
-                errno_of(&e),
-                e,
-                DIRECT_REOPEN_RETRY_PERIODS * (config.period_frames as u64) / (config.sample_rate.max(1) as u64),
-            );
-            DirectCapture::Absent {
-                periods_until_retry: DIRECT_REOPEN_RETRY_PERIODS,
-            }
-        }
-    };
-    let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
-    let read_buf_wide = spine_read_buf(config.program_wire_is_wide(), period_samples);
-    // The deferred device-open channel (#2533). Spawned at construction, before
-    // `main` calls `mlockall`, like every other fan-in helper thread. A spawn
-    // failure leaves the lane WITHOUT self-heal rather than restoring an inline
-    // `snd_pcm_open` inside the render loop's 5.33 ms period budget.
-    let reopen_pending = Arc::new(AtomicBool::new(false));
-    let direct_opener = match direct_capture::DirectOpener::spawn(Arc::clone(&reopen_pending)) {
-        Ok(opener) => Some(opener),
-        Err(e) => {
-            warn!(
-                "event=fanin.usb_direct.opener_unavailable device={} detail={} — the gadget \
-                 capture will NOT be reopened after a loss until fan-in restarts (audio \
-                 unaffected; the lane renders silence)",
-                device, e,
-            );
-            None
-        }
-    };
-    Input {
-        // The direct lane does NOT open its aloop substream — its only source
-        // is the gadget capture in `direct`.
-        pcm: None,
-        direct: Some(direct),
-        direct_opener,
-        ring: None,
-        ring_attacher: None,
-        label: label.to_string(),
-        pcm_name: pcm_name.to_string(),
-        read_buf: vec![0i16; period_samples],
-        read_buf_wide,
-        xrun_count: Arc::new(AtomicU64::new(0)),
-        frames_read: Arc::new(AtomicU64::new(0)),
-        rms_dbfs_x100: Arc::new(AtomicI32::new((RMS_DBFS_FLOOR * 100.0) as i32)),
-        catchup_resync_frames: Arc::new(AtomicU64::new(0)),
-        catchup_events: Arc::new(AtomicU64::new(0)),
-        resampler,
-        trim: TrimControl::new(),
-        muted: Arc::new(AtomicBool::new(false)),
-        direct_obs: Some(DirectObservability {
-            device,
-            period_frames: open_period,
-            buffer_frames,
-            present,
-            streaming: Arc::new(AtomicBool::new(false)),
-            stream_starts: Arc::new(AtomicU64::new(0)),
-            stream_stops: Arc::new(AtomicU64::new(0)),
-            notify_attempts: Arc::new(AtomicU64::new(0)),
-            notify_failures: Arc::new(AtomicU64::new(0)),
-            opens,
-            retries,
-            reopen_pending,
-            reopens: Arc::new(AtomicU64::new(0)),
-            zero_avail_streak: Arc::new(AtomicU64::new(0)),
-            frames_flowed_since_open: Arc::new(AtomicBool::new(false)),
-            liveness_last_checked_drain: Arc::new(AtomicU64::new(0)),
-            card_gen_reopens: Arc::new(AtomicU64::new(0)),
-            drain_stats: DrainStats::new(),
-        }),
-        ring_obs: None,
-        lane_fade: LaneFade::for_lane(label, config.sample_rate),
-    }
-}
-
-/// Open the USB DIRECT capture PCM with the hardware-validated gadget envelope —
-/// deliberately NOT fanin's aloop-tuned `configure_pcm`, which sets an exact
-/// buffer. S32_LE 2ch 48k, `set_period_size(open_period, Nearest)`,
-/// `set_buffer_size_near(resolve_direct_buffer_frames(open_period))`, then the
-/// post-negotiation checks. `open_period` is 256 (the on-device-proven value) or
-/// the `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES` override. Non-blocking and
-/// `start()`ed so reads return data / EAGAIN.
-///
-/// Returns `(open PCM, negotiated buffer frames)`; the second element is the live
-/// `hwp.get_buffer_size()`, so STATUS reports the buffer the PCM is really
-/// running rather than the requested size. On failure returns an `alsa::Error`
-/// the caller maps to the `Absent` state.
-fn open_direct_capture(
-    device: &str,
-    open_period: u32,
-) -> std::result::Result<(PCM, u32), alsa::Error> {
-    let want_buffer = resolve_direct_buffer_frames(open_period);
-    let pcm = PCM::new(device, Direction::Capture, true)?;
-    let negotiated_buffer;
-    {
-        let hwp = HwParams::any(&pcm)?;
-        hwp.set_channels(CHANNELS)?;
-        hwp.set_rate(SAMPLE_RATE_HZ, ValueOr::Nearest)?;
-        hwp.set_format(Format::S32LE)?;
-        hwp.set_access(Access::RWInterleaved)?;
-        hwp.set_period_size(open_period as i64, ValueOr::Nearest)?;
-        hwp.set_buffer_size_near(want_buffer as i64)?;
-        let rate = hwp.get_rate()?;
-        let period = hwp.get_period_size()? as u32;
-        let buffer = hwp.get_buffer_size()? as u32;
-        pcm.hw_params(&hwp)?;
-        // Rate/period MUST land exactly; the buffer is warn-on-near-mismatch but
-        // must clear the deep-buffer + alignment floor. A validation failure
-        // drops the PCM and returns an error, so the lane goes Absent.
-        if let Err(reason) = direct_open_params_ok(rate, period, buffer, open_period) {
-            warn!(
-                "event=fanin.usb_direct.open_rejected device={} rate={} period={} buffer={} reason={}",
-                device, rate, period, buffer, reason,
-            );
-            // An errno-bearing alsa::Error keeps the caller's Absent-path log
-            // shape consistent. EINVAL = "negotiated an unusable geometry".
-            return Err(alsa::Error::new("direct_open_params", libc::EINVAL));
-        }
-        if buffer != want_buffer {
-            warn!(
-                "event=fanin.usb_direct.buffer_near device={} requested_frames={} negotiated_frames={}",
-                device, want_buffer, buffer,
-            );
-        }
-        negotiated_buffer = buffer;
-    }
-    pcm.start()?;
-    Ok((pcm, negotiated_buffer))
-}
-
-/// Pure post-negotiation validation of the direct capture geometry,
-/// unit-testable without ALSA. Rate must be exactly 48000 and period exactly the
-/// requested `want_period`; buffer must clear the deep-buffer floor (≥
-/// `DIRECT_BUFFER_MIN_PERIODS` periods AND ≥ `DIRECT_BUFFER_MIN_FRAMES`) and be
-/// a whole multiple of the period, since a fractional buffer would shear.
-/// Returns the rejection reason string on failure.
-fn direct_open_params_ok(
-    rate: u32,
-    period: u32,
-    buffer: u32,
-    want_period: u32,
-) -> std::result::Result<(), String> {
-    if rate != SAMPLE_RATE_HZ {
-        return Err(format!("rate {rate} != 48000"));
-    }
-    if period != want_period {
-        return Err(format!("period {period} != {want_period}"));
-    }
-    let min_buffer = period
-        .saturating_mul(DIRECT_BUFFER_MIN_PERIODS)
-        .max(DIRECT_BUFFER_MIN_FRAMES);
-    if buffer < min_buffer {
-        return Err(format!(
-            "buffer {buffer} < deep-buffer floor ({min_buffer}: max({}×period, {}))",
-            DIRECT_BUFFER_MIN_PERIODS, DIRECT_BUFFER_MIN_FRAMES,
-        ));
-    }
-    if period == 0 || buffer % period != 0 {
-        return Err(format!("buffer {buffer} not period-aligned to {period}"));
-    }
-    Ok(())
 }
 
 /// Shared taxonomy for every non-blocking ALSA read/query in this mixer.
@@ -2962,35 +2459,6 @@ fn classify_pcm_errno(errno: i32) -> PcmIoFate {
 /// and the pure validator agree. Distinct from `config.sample_rate` on purpose:
 /// the gadget capture is a FIXED 48 kHz endpoint, not a configurable fan-in knob.
 const SAMPLE_RATE_HZ: u32 = 48_000;
-
-/// Pull the errno out of an `alsa::Error` for logging. It matches the `libc::E*`
-/// constants the read paths compare against.
-fn errno_of(e: &alsa::Error) -> i32 {
-    e.errno()
-}
-
-fn configure_pcm(pcm: &PCM, config: &Config, buffer_frames: u32) -> Result<()> {
-    // HwParams must be dropped before pcm.hw_params() is called, hence the
-    // nested scope.
-    {
-        let hwp = HwParams::any(pcm).context("creating HwParams::any")?;
-        hwp.set_channels(CHANNELS)
-            .with_context(|| format!("set_channels({})", CHANNELS))?;
-        hwp.set_rate(config.sample_rate, ValueOr::Nearest)
-            .with_context(|| format!("set_rate({})", config.sample_rate))?;
-        let format = lane_capture_format(config.program_wire_is_wide());
-        hwp.set_format(format)
-            .with_context(|| format!("set_format({:?})", format))?;
-        hwp.set_access(Access::RWInterleaved)
-            .context("set_access(RWInterleaved)")?;
-        hwp.set_period_size(config.period_frames as i64, ValueOr::Nearest)
-            .with_context(|| format!("set_period_size({})", config.period_frames))?;
-        hwp.set_buffer_size(buffer_frames as i64)
-            .with_context(|| format!("set_buffer_size({})", buffer_frames))?;
-        pcm.hw_params(&hwp).context("installing HwParams")?;
-    }
-    Ok(())
-}
 
 /// Read and throw away up to `periods` whole periods, returning the frames
 /// discarded. On non-blocking capture, `readi` returns `Err(EAGAIN)` the instant
@@ -3568,6 +3036,9 @@ fn read_into_resampler_and_render(
 
 #[cfg(test)]
 mod tests {
+    use super::pcm_open::{
+        direct_open_params_ok, lane_capture_format, resolve_direct_buffer_frames,
+    };
     use super::*;
 
     // Pure-function tests for the mix math. No ALSA needed.
