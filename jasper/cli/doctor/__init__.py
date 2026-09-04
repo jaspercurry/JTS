@@ -4,17 +4,9 @@
 
 """``jasper-doctor`` — preflight diagnostic CLI (package entry).
 
-This package is the decomposed form of the original single-file
-``jasper/cli/doctor.py``. The console-script entry point
-(``jasper-doctor = jasper.cli.doctor:main``) and every public
-name that external code or the test-suite imports resolve from
-this ``__init__`` exactly as they did from the old module — the
-checks were re-homed into per-domain modules
-(:mod:`~jasper.cli.doctor.audio`,
-:mod:`~jasper.cli.doctor.audio_runtime_camilla`,
-:mod:`~jasper.cli.doctor.network`,
-…) and the cross-cutting harness/helpers into
-:mod:`~jasper.cli.doctor._shared`, then re-exported here.
+Every public name external code and the test-suite import resolves from
+this ``__init__``; the checks themselves live in per-domain modules and
+the harness in :mod:`~jasper.cli.doctor._shared`.
 
 Usage:
     sudo /opt/jasper/.venv/bin/jasper-doctor             # one shot
@@ -22,17 +14,11 @@ Usage:
     sudo /opt/jasper/.venv/bin/jasper-doctor --watch -i 2  # loop, 2s
 
 The doctor reads ``/etc/jasper/jasper.env`` and (if present)
-``/var/lib/jasper/voice_provider.env`` itself. Returns 0 if all
-critical checks pass, 1 otherwise. --watch never returns by
-itself; exits 0 on Ctrl-C.
+``/var/lib/jasper/voice_provider.env`` itself. Exit 0 if all critical
+checks pass, 1 otherwise; --watch exits 0 on Ctrl-C.
 
-Check membership and order are owned by the registry
-(:mod:`~jasper.cli.doctor._registry`): each check is registered
-with an explicit ``order=`` equal to its index in the original
-hand-ordered list, and :func:`run_async` rebuilds the exact same
-``DoctorCheck`` sequence from it (bare callables vs.
-``(label, lambda: fn(cfg))`` tuples preserved), so displayed
-order, labels, and crash-path labels are unchanged."""
+Check membership and order are owned by
+:mod:`~jasper.cli.doctor._registry`."""
 from __future__ import annotations
 
 import argparse
@@ -51,6 +37,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Awaitable, Callable, Optional
 from ...camilla_config_contract import DEFAULT_CAMILLA_PORT
+from ...librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
+from ...volume_persistence import configured_path as volume_state_path
 from ...config import Config
 from ...env_load import load_env_files as _load_env_files
 from ...identity import resolve_hostname
@@ -63,12 +51,18 @@ from ...speaker_name import runtime_name as _speaker_runtime_name
 from ...spotify_oauth import resolved_spotify_redirect_uri
 from ...usage import DEFAULT_USAGE_DB
 
+from ._evidence import evidence
 from ._registry import doctor_check, registered_checks
 from ._shared import (
     BOLD,
     CheckResult,
+    DIM,
     DoctorCheck,
     GREEN,
+    REASON_CHECK_TIMED_OUT,
+    REASON_CONFIG_ERROR,
+    REASON_DOCTOR_CRASHED,
+    REASON_NOT_INSTALLED,
     RED,
     RESET,
     YELLOW,
@@ -83,13 +77,12 @@ from ._shared import (
     _meminfo_kb,
     _normalize_doctor_check,
     _parse_env_file,
-    _pid_of_unit,
     _run,
     _run_async_doctor_check,
     _run_doctor_check,
-    _service_runtime_states,
     _sha256_file,
-    _systemctl_show_property,
+    check_row,
+    summarize,
 )
 from . import env as env
 from .env import (
@@ -117,6 +110,8 @@ from . import audio_runtime_ring as audio_runtime_ring
 from . import boot_config as boot_config
 from .audio_runtime_fanin import (
     check_fanin_binary_installed,
+    _asound_non_comment_text,
+    _asound_pcm_block,
     _FANIN_EXPECTED_ALOOP_INPUTS,
     check_fanin_asound_wiring,
     check_fanin_coupling,
@@ -127,7 +122,6 @@ from .audio_runtime_fanin import (
 from .audio_runtime_outputd import (
     _OUTPUTD_EXPECTED_DAC_PCM,
     _OUTPUTD_EXPECTED_DUAL_DAC_PCM,
-    _OUTPUTD_STATUS_SOCKET,
     check_outputd_service,
     check_aec_clock_drift,
 )
@@ -156,7 +150,6 @@ from .audio import (
     check_camilla_volume_limit,
     check_camilla_ring_chunk_fits,
     check_active_speaker_runtime_graph,
-    check_active_speaker_topology_blockers,
     _sound_profile_path,
     check_sound_profile,
     check_dsp_apply_state,
@@ -214,8 +207,6 @@ from .memory import (
     _AUDIO_PATH_UNITS,
     _AUDIO_VMSWAP_WARN_KB,
     check_audio_path_no_swap,
-    _DEFAULT_DISK_WARN_PERCENT,
-    _DISK_FAIL_PERCENT,
     _disk_warn_percent,
     check_disk_space,
     _STORAGE_WALK_MAX_ENTRIES,
@@ -263,7 +254,6 @@ from .aec import (
 )
 from . import usbsink as usbsink
 from .usbsink import (
-    _systemd_is_active,
     _module_loaded,
     check_usb_data_role,
     check_usbsink_state,
@@ -373,12 +363,22 @@ _STREAMBOX_OMITTED_DOCTOR_CHECKS = frozenset({
 })
 
 
-def _profile_skip_result(entry, *, reason: str) -> CheckResult:
-    label = entry.label or _check_name(entry.func)
-    return CheckResult(label, "ok", reason)
+def _registered_check_name(entry) -> str:
+    """One naming rule for every calling convention, so a check cannot be
+    named one thing on a full box and another on a streambox."""
+    return entry.label or _check_name(entry.func)
 
 
-def _doctor_skip_reason(entry, install_profile: str) -> str:
+def _profile_skip_result(entry, *, detail: str) -> CheckResult:
+    return CheckResult(
+        _registered_check_name(entry),
+        "skipped",
+        detail,
+        reason=REASON_NOT_INSTALLED,
+    )
+
+
+def _doctor_skip_detail(entry, install_profile: str) -> str:
     role = install_role_for_profile(install_profile)
     if role == STREAMBOX_INSTALL_PROFILE and (
         entry.group in _STREAMBOX_OMITTED_DOCTOR_GROUPS
@@ -394,8 +394,13 @@ __all__ = [
     "_load_env_files",
     "BOLD",
     "CheckResult",
+    "DIM",
     "DoctorCheck",
     "GREEN",
+    "REASON_CHECK_TIMED_OUT",
+    "REASON_CONFIG_ERROR",
+    "REASON_DOCTOR_CRASHED",
+    "REASON_NOT_INSTALLED",
     "RED",
     "RESET",
     "YELLOW",
@@ -410,13 +415,10 @@ __all__ = [
     "_meminfo_kb",
     "_normalize_doctor_check",
     "_parse_env_file",
-    "_pid_of_unit",
     "_run",
     "_run_async_doctor_check",
     "_run_doctor_check",
-    "_service_runtime_states",
     "_sha256_file",
-    "_systemctl_show_property",
     "env",
     "voice",
     "audio",
@@ -476,10 +478,11 @@ __all__ = [
     "check_apple_dongle_audio",
     "check_dac_mixer_pins",
     "check_fanin_binary_installed",
+    "_asound_non_comment_text",
+    "_asound_pcm_block",
     "_FANIN_EXPECTED_ALOOP_INPUTS",
     "_OUTPUTD_EXPECTED_DAC_PCM",
     "_OUTPUTD_EXPECTED_DUAL_DAC_PCM",
-    "_OUTPUTD_STATUS_SOCKET",
     "check_audio_runtime_plan",
     "check_camilla_service",
     "check_fanin_asound_wiring",
@@ -493,7 +496,6 @@ __all__ = [
     "check_camilla_volume_limit",
     "check_camilla_ring_chunk_fits",
     "check_active_speaker_runtime_graph",
-    "check_active_speaker_topology_blockers",
     "_sound_profile_path",
     "check_sound_profile",
     "check_dsp_apply_state",
@@ -538,8 +540,6 @@ __all__ = [
     "_AUDIO_PATH_UNITS",
     "_AUDIO_VMSWAP_WARN_KB",
     "check_audio_path_no_swap",
-    "_DEFAULT_DISK_WARN_PERCENT",
-    "_DISK_FAIL_PERCENT",
     "_disk_warn_percent",
     "check_disk_space",
     "_STORAGE_WALK_MAX_ENTRIES",
@@ -578,7 +578,6 @@ __all__ = [
     "_check_dtln_model_assets",
     "check_xvf_firmware_6ch",
     "check_xvf_mixer_state",
-    "_systemd_is_active",
     "_module_loaded",
     "check_usb_data_role",
     "check_usbsink_state",
@@ -683,12 +682,9 @@ def render(results: list[CheckResult]) -> int:
     for r in results:
         if r.status == "ok":
             color, mark = GREEN, "✓"
+        elif r.status == "skipped":
+            color, mark = DIM, "-"
         else:
-            # Read inside this arm, so an `ok` result's `speaker_silent` is
-            # never read at all. That makes the field's warn/fail scope true by
-            # construction rather than by convention: a check returning `ok`
-            # while asserting silence contradicts itself, and the summary must
-            # not repeat the contradiction.
             silent = silent or r.speaker_silent
             if r.status == "warn":
                 color, mark = YELLOW, "!"
@@ -698,15 +694,10 @@ def render(results: list[CheckResult]) -> int:
                 fails += 1
         print(f"  {color}{mark}{RESET} {r.name:24s} {r.detail}")
     print()
-    # #2471: a parked speaker's warn used to end the run on "non-critical",
-    # which is the one thing it is not — the household hears nothing. The
-    # silence LEADS the line, because it outranks every count behind it and
-    # because no count can be misread as attributing it to the wrong result.
-    # It is one phrase for a warn and for a fail: the household outcome is the
-    # same either way, and which check said so is already on the lines above.
-    #
-    # Severity rides the WORDS. Colour and exit code keep their single meaning
-    # (red / 1 = something is broken), so a parked box stays deployable (#2145).
+    # Silence leads the summary line, in the same phrase for a warn and a
+    # fail: the household outcome is the same either way. Severity rides the
+    # WORDS — colour and exit code keep their single meaning (red / 1 =
+    # something is broken), so a parked box stays deployable (#2145).
     lead = "the speaker is silent — " if silent else ""
     if fails:
         print(f"{RED}{lead}{fails} failed, {warns} warning(s).{RESET}")
@@ -725,32 +716,30 @@ def _json_payload(
 ) -> dict:
     """The flat /system-dashboard schema — one row per check."""
     payload = {
-        "fails": sum(1 for r in results if r.status == "fail"),
-        "warns": sum(1 for r in results if r.status == "warn"),
+        **summarize(results),
         "generated_at_epoch": time.time(),
-        "results": [
-            {
-                "name": r.name,
-                "status": r.status,
-                "detail": r.detail,
-                "reason": r.reason,
-            }
-            for r in results
-        ],
+        "results": [check_row(r) for r in results],
     }
     if duration_sec is not None:
         payload["duration_sec"] = round(duration_sec, 3)
     return payload
 
 
+def _error_payload(error: str, *, detail: str, reason: str) -> dict:
+    """One row, shaped like every row `_json_payload` emits, for a run that
+    produced no results at all (config error, doctor crash)."""
+    return {
+        "error": error,
+        **_json_payload([CheckResult("jasper-doctor", "fail", detail, reason=reason)]),
+    }
+
+
 def _emit_json(payload: dict, out_path: str | None) -> None:
     """Emit the JSON report to stdout, or atomically to ``out_path``.
 
-    ``--out`` is how the non-root jasper-control gets a ROOT-fidelity report
-    (WS1 Phase 3b-2): a root ``jasper-doctor-json.service`` oneshot writes here
-    and jasper-control serves the file at /system/diagnostics. 0640 so the
-    `jasper` group (jasper-control's primary group; the oneshot runs root:jasper)
-    can read it without it being world-readable."""
+    Mode 0640 so the `jasper` group (jasper-control's primary group; the
+    root ``jasper-doctor-json.service`` oneshot that writes here runs
+    root:jasper) can read the report without it being world-readable."""
     import json as _json
     text = _json.dumps(payload)
     if out_path is None:
@@ -766,16 +755,13 @@ def render_json(
     *,
     duration_sec: float | None = None,
 ) -> int:
-    """Machine-readable output for the /system dashboard.
+    """Machine-readable output for the /system dashboard, fetched via
+    /system/diagnostics → jasper-control.
 
-    The web UI fetches this via /system/diagnostics → jasper-control. Returns
-    text-render exit semantics (0 = ok/warn only; 1 = a fail) on the stdout
-    path. With ``out_path`` (the dashboard-capture oneshot), the report lands
-    in the file and we return 0 — the file carries the pass/fail, and a
-    non-zero exit would needlessly flip the oneshot to ``failed``.
-
-    Schema is intentionally flat — one row per check — so the dashboard can
-    render a table without complex per-check logic."""
+    Returns text-render exit semantics (0 = ok/warn only; 1 = a fail) on the
+    stdout path. With ``out_path`` the report lands in the file and this
+    returns 0 — the file carries the pass/fail, and a non-zero exit would
+    needlessly flip the writing oneshot to ``failed``."""
     payload = _json_payload(results, duration_sec=duration_sec)
     _emit_json(payload, out_path)
     if out_path is not None:
@@ -783,10 +769,8 @@ def render_json(
     return 1 if payload["fails"] else 0
 
 def _watch_line(results: list[CheckResult]) -> str:
-    """One-line summary for --watch mode. Counts + first non-ok name so
-    a glance tells the operator whether something flipped since the last
-    iteration. Timestamp on the front so the line is meaningful when
-    redirected to a file."""
+    """One-line summary for --watch mode: timestamp, counts, first non-ok
+    name."""
     fails = [r for r in results if r.status == "fail"]
     warns = [r for r in results if r.status == "warn"]
     ts = time.strftime("%H:%M:%S")
@@ -858,11 +842,9 @@ def _doctor_check_timeout() -> float:
 def _local_audio_config_from_env() -> SimpleNamespace:
     """Cfg surface for profiles that run local audio without a voice brain.
 
-    Streambox installs intentionally do not require a
-    voice provider. Keep this namespace to the attributes retained doctor
-    checks actually read, so jasper-doctor can still validate local audio,
-    renderer, correction, memory, network, and web health without pulling
-    the full voice Config into small-device profiles.
+    Streambox installs deliberately require no voice provider, so this
+    namespace carries only the attributes the retained checks read rather
+    than the full voice ``Config``.
     """
     hostname = resolve_hostname()
     spotify_client_id = os.environ.get("SPOTIFY_CLIENT_ID", "")
@@ -870,6 +852,10 @@ def _local_audio_config_from_env() -> SimpleNamespace:
         usage_db=os.environ.get("JASPER_USAGE_DB", DEFAULT_USAGE_DB),
         camilla_host=os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"),
         camilla_port=_env_int_for_doctor("JASPER_CAMILLA_PORT", DEFAULT_CAMILLA_PORT),
+        volume_state_path=volume_state_path(),
+        librespot_state_path=os.environ.get(
+            "JASPER_LIBRESPOT_STATE", DEFAULT_LIBRESPOT_STATE,
+        ),
         spotify_client_id=spotify_client_id,
         spotify_redirect_uri=resolved_spotify_redirect_uri(),
         spotify_cache_path=os.environ.get(
@@ -925,38 +911,27 @@ def _build_doctor_checks(
 ) -> list[_RunnableDoctorCheck]:
     checks: list[_RunnableDoctorCheck] = []
     for entry in registered_checks():
-        skip_reason = _doctor_skip_reason(entry, install_profile)
-        if skip_reason:
-            skipped = _profile_skip_result(entry, reason=skip_reason)
-            check = (skipped.name, lambda skipped=skipped: skipped)
-            checks.append(_RunnableDoctorCheck(skipped.name, check))
-            continue
-        fn = entry.func
-        if entry.is_async:
-            name = entry.label or _check_name(fn)  # type: ignore[arg-type]
-            async_check = (
-                (lambda fn=fn, cfg=cfg: fn(cfg))
-                if entry.needs_cfg
-                else (lambda fn=fn: fn())
-            )
+        name = _registered_check_name(entry)
+        skip_detail = _doctor_skip_detail(entry, install_profile)
+        if skip_detail:
+            skipped = _profile_skip_result(entry, detail=skip_detail)
             checks.append(
                 _RunnableDoctorCheck(
-                    name,
-                    async_check,  # type: ignore[arg-type]
-                    is_async=True,
-                    exclusive_group=entry.exclusive_group,
+                    name, (name, lambda skipped=skipped: skipped)
                 )
             )
             continue
-        if entry.needs_cfg:
-            check: DoctorCheck = (entry.label, lambda fn=fn, cfg=cfg: fn(cfg))
-        else:
-            check = fn  # type: ignore[assignment]
-        name, _ = _normalize_doctor_check(check)
+        fn = entry.func
+        call = (
+            (lambda fn=fn, cfg=cfg: fn(cfg))
+            if entry.needs_cfg
+            else (lambda fn=fn: fn())
+        )
         checks.append(
             _RunnableDoctorCheck(
                 name,
-                check,
+                call if entry.is_async else (name, call),
+                is_async=entry.is_async,
                 exclusive_group=entry.exclusive_group,
             )
         )
@@ -981,10 +956,10 @@ async def _run_runnable_with_timeout(
     runnable: _RunnableDoctorCheck,
     timeout: float,
 ) -> CheckResult:
-    # This is an outer row-level guard. `asyncio.to_thread` cannot kill a
-    # worker that is already inside a blocking syscall, and asyncio will wait
-    # for default-executor threads during shutdown. Keep individual blocking
-    # probes bounded with their own subprocess/socket timeouts too.
+    # Outer row-level guard only: `asyncio.to_thread` cannot kill a worker
+    # already inside a blocking syscall, and asyncio waits for
+    # default-executor threads during shutdown. Blocking probes must stay
+    # bounded by their own subprocess/socket timeouts too.
     try:
         return await asyncio.wait_for(
             _run_runnable_doctor_check(runnable),
@@ -995,6 +970,7 @@ async def _run_runnable_with_timeout(
             runnable.name,
             "fail",
             f"check timed out after {timeout:g}s",
+            reason=REASON_CHECK_TIMED_OUT,
         )
 
 
@@ -1044,8 +1020,8 @@ def main() -> None:
              "Refuses if a renderer is currently playing.",
     )
     args = parser.parse_args()
-    # --out is a JSON-to-file capture; it implies --json so the oneshot can
-    # pass `--json --out PATH` (or just `--out PATH`) and always get a report.
+    # --out implies --json so the capture oneshot can pass either
+    # `--json --out PATH` or a bare `--out PATH`.
     if args.out:
         args.json = True
     _load_env_files()
@@ -1055,7 +1031,11 @@ def main() -> None:
     except (RuntimeError, ValueError) as e:
         if args.json:
             _emit_json(
-                {"error": f"config: {e}", "fails": 1, "warns": 0, "results": []},
+                _error_payload(
+                    f"config: {e}",
+                    detail=_exception_detail(e),
+                    reason=REASON_CONFIG_ERROR,
+                ),
                 args.out,
             )
             sys.exit(0 if args.out else 1)
@@ -1075,16 +1055,11 @@ def main() -> None:
         if args.json:
             detail = _exception_detail(e)
             _emit_json(
-                {
-                    "error": f"doctor crashed: {detail}",
-                    "fails": 1,
-                    "warns": 0,
-                    "results": [{
-                        "name": "jasper-doctor",
-                        "status": "fail",
-                        "detail": detail,
-                    }],
-                },
+                _error_payload(
+                    f"doctor crashed: {detail}",
+                    detail=detail,
+                    reason=REASON_DOCTOR_CRASHED,
+                ),
                 args.out,
             )
             sys.exit(0 if args.out else 1)
@@ -1101,15 +1076,14 @@ if __name__ == "__main__":
     main()
 
 async def run_async(cfg: Config | SimpleNamespace) -> list[CheckResult]:
-    """Run every registered check in canonical order and return the results.
+    """Run every registered check and return the results in registry order.
 
-    The registry remains the ordering source of truth. Checks run
-    concurrently because most are subprocess/socket/file probes, but
-    results are gathered in registry order so CLI and dashboard output
-    stay stable. ``exclusive_group=`` registry metadata serializes
-    hardware-sensitive probes within that lane while unrelated checks
-    continue.
+    Checks run concurrently (most are subprocess/socket/file probes) but
+    results are gathered in registry order so CLI and dashboard output stay
+    stable. ``exclusive_group=`` serializes hardware-sensitive probes within
+    that lane while unrelated checks continue.
     """
+    evidence.reset()
     install_profile = read_install_profile()
     checks = _build_doctor_checks(cfg, install_profile)
     semaphore = asyncio.Semaphore(_doctor_max_concurrency())

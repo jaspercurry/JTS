@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the doctor's jasper-outputd checks."""
+"""Unit tests for the jasper-doctor jasper-outputd checks."""
 
 import json
 from pathlib import Path
@@ -11,21 +11,20 @@ import pytest
 
 from jasper import audio_runtime_plan
 from jasper.cli import doctor
-from jasper.cli.doctor import (
-    audio_runtime_outputd,
-)
+from jasper.cli.doctor import audio_runtime_outputd
+from jasper.control import audio_health
 
+from ._doctor_audio_runtime_fixtures import (
+    _fanin_status_payload,
+    _outputd_status_payload,
+    _patch_status_reader,
+    _seed_units,
+)
 from .active_speaker_fixtures import (
     PASSIVE_ONLY_DAC_ID,
     PASSIVE_ONLY_DAC_LABEL,
     register_passive_only_dac,
 )
-from ._doctor_audio_runtime_fixtures import (
-    _outputd_status_payload,
-    _patch_fanin_status_socket,
-    _patch_fanin_systemctl,
-)
-
 
 def _patch_ring_coupled_box(
     monkeypatch,
@@ -46,7 +45,7 @@ def _patch_ring_coupled_box(
     which is what selects the ACTIVE-ring transport shape rather than the
     full-range stereo Ring B — the marker, never the observed device.
 
-    Call this LAST, after ``_patch_fanin_status_socket``: that one points the
+    Call this LAST, after ``_patch_status_reader``: that one points the
     endpoint evidence at the stereo ring, so an earlier call is silently undone.
     """
     from jasper.fanin_coupling import (
@@ -85,25 +84,18 @@ def _patch_ring_coupled_box(
 
 
 def test_outputd_service_fails_when_disabled(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch, enabled="disabled")
+    _seed_units(enabled="disabled")
     r = doctor.check_outputd_service()
     assert r.status == "fail"
-    assert "expected enabled" in r.detail
+    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_UNIT_NOT_ENABLED
 
 
 def test_outputd_service_ok_with_expected_status(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(monkeypatch, _outputd_status_payload())
+    _seed_units()
+    _patch_status_reader(monkeypatch, _outputd_status_payload())
     r = doctor.check_outputd_service()
     assert r.status == "ok", r.detail
-    assert "backend=alsa" in r.detail
-    assert "content_buffer_frames=1024" in r.detail
-    assert "dac_buffer_frames=3072" in r.detail
-    assert "content_empty_periods=2" in r.detail
-    assert "content_eagain_count=1" in r.detail
-    assert "content_source=shm_ring" in r.detail
-    assert "content_bridge=shm_ring" in r.detail
-    assert "speaker_reference_source=outputd_final_electrical" in r.detail
+    assert r.reason == ""
 
 
 def test_the_doctor_reads_outputd_env_through_the_units_own_layering(
@@ -169,8 +161,8 @@ def test_outputd_service_ok_with_shm_ring_content_source(monkeypatch, tmp_path):
     env_path = tmp_path / "outputd.env"
     env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_status_payload(
             content_source="shm_ring",
@@ -185,10 +177,7 @@ def test_outputd_service_ok_with_shm_ring_content_source(monkeypatch, tmp_path):
     r = doctor.check_outputd_service()
 
     assert r.status == "ok"
-    assert "content_source=shm_ring" in r.detail
-    assert "shm_ring_slots=2" in r.detail
-    assert "shm_ring_slot_frames=1024" in r.detail
-    assert "shm_ring_capacity_frames=2048" in r.detail
+    assert r.reason == ""
 
 
 def test_outputd_service_fails_shm_ring_missing_ring_geometry(monkeypatch, tmp_path):
@@ -197,7 +186,7 @@ def test_outputd_service_fails_shm_ring_missing_ring_geometry(monkeypatch, tmp_p
     env_path = tmp_path / "outputd.env"
     env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
-    _patch_fanin_systemctl(monkeypatch)
+    _seed_units()
     payload = json.loads(
         _outputd_status_payload(
             content_source="shm_ring",
@@ -206,12 +195,12 @@ def test_outputd_service_fails_shm_ring_missing_ring_geometry(monkeypatch, tmp_p
         ).decode()
     )
     del payload["content"]["ring"]
-    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
 
     r = doctor.check_outputd_service()
 
     assert r.status == "fail"
-    assert "content.ring" in r.detail
+    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_RING_CONTRACT_MISSING
 
 
 def test_outputd_service_fails_shm_ring_slot_frames_mismatch(monkeypatch, tmp_path):
@@ -220,8 +209,8 @@ def test_outputd_service_fails_shm_ring_slot_frames_mismatch(monkeypatch, tmp_pa
     env_path = tmp_path / "outputd.env"
     env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_status_payload(
             content_source="shm_ring",
@@ -234,7 +223,7 @@ def test_outputd_service_fails_shm_ring_slot_frames_mismatch(monkeypatch, tmp_pa
     r = doctor.check_outputd_service()
 
     assert r.status == "fail"
-    assert "slot_frames" in r.detail
+    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_RING_SLOT_FRAMES_MISMATCH
 
 
 def test_outputd_service_fails_shm_ring_capacity_incoherent(monkeypatch, tmp_path):
@@ -243,8 +232,8 @@ def test_outputd_service_fails_shm_ring_capacity_incoherent(monkeypatch, tmp_pat
     env_path = tmp_path / "outputd.env"
     env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_status_payload(
             content_source="shm_ring",
@@ -257,7 +246,7 @@ def test_outputd_service_fails_shm_ring_capacity_incoherent(monkeypatch, tmp_pat
     r = doctor.check_outputd_service()
 
     assert r.status == "fail"
-    assert "capacity_frames" in r.detail
+    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_RING_CAPACITY_INCOHERENT
 
 
 def test_outputd_service_fails_when_the_daemon_lags_its_own_env(
@@ -274,8 +263,8 @@ def test_outputd_service_fails_when_the_daemon_lags_its_own_env(
     env_path = tmp_path / "outputd.env"
     env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_status_payload(content_source="alsa"),
     )
@@ -283,21 +272,7 @@ def test_outputd_service_fails_when_the_daemon_lags_its_own_env(
     r = doctor.check_outputd_service()
 
     assert r.status == "fail"
-    assert "content.source='alsa'" in r.detail
-    assert "expected 'shm_ring'" in r.detail
-    assert "jasper-fanin-coupling-reconcile" in r.detail
-
-
-# #2285 P2 (A6) retired the snd-aloop ACTIVE lane's outputd capture PAIRING with
-# the endpoint itself, so this shape stopped reporting a capture MISMATCH — there
-# is no registered capture left to mismatch against, and the unpaired-device arm
-# of `transport_coherence_report` reports it instead. Same box, same verdict, a
-# different sentence. Kept as one constant so the two tests that read it cannot
-# drift apart from each other.
-_ROUTE_UNPAIRED = (
-    "post-DSP route has no registered outputd capture for "
-    "Camilla playback='outputd_active_content_playback'"
-)
+    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_CONTENT_SOURCE_MISMATCH
 
 
 def test_outputd_service_ok_with_single_alsa_active_lane(monkeypatch, tmp_path):
@@ -306,8 +281,8 @@ def test_outputd_service_ok_with_single_alsa_active_lane(monkeypatch, tmp_path):
     The width readout is the assertion that matters, and it comes from the env,
     independently of the transport.
     """
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_status_payload(dac_pcm=doctor._OUTPUTD_EXPECTED_DAC_PCM),
     )
@@ -318,7 +293,7 @@ def test_outputd_service_ok_with_single_alsa_active_lane(monkeypatch, tmp_path):
     r = doctor.check_outputd_service()
 
     assert r.status == "ok", r.detail
-    assert "active_channels=2" in r.detail
+    assert r.reason == ""
 
 
 def _patch_disconnected_post_dsp_route(monkeypatch, tmp_path) -> None:
@@ -332,8 +307,8 @@ def _patch_disconnected_post_dsp_route(monkeypatch, tmp_path) -> None:
     env = tmp_path / "outputd-disconnected.env"
     env.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env))
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_status_payload(content_source="alsa", content_buffer_frames=4096),
     )
@@ -417,8 +392,7 @@ def test_outputd_service_fails_when_active_graph_feeds_passive_reader(
     r = doctor.check_outputd_service()
 
     assert r.status == "fail"
-    assert _ROUTE_UNPAIRED in r.detail
-    assert "audio-hardware-reconcile" in r.detail
+    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_TRANSPORT_ROUTE_UNPAIRED
 
 
 def test_route_disconnect_remedy_does_not_recommend_an_impossible_reconcile(
@@ -428,31 +402,32 @@ def test_route_disconnect_remedy_does_not_recommend_an_impossible_reconcile(
     """When the saved layout needs a lane the DAC does not have, running the
     reconciler cannot help — it is already resolving passive correctly. The
     remedy must say what actually clears it instead of sending the operator
-    into a loop."""
+    into a loop.
+
+    Asserted on the remedy STRING because that string is this helper's whole
+    output; the check itself is pinned on status + reason above.
+    """
     register_passive_only_dac(monkeypatch)
     topo_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
     _write_no_lane_active_topology(topo_path)
-    _patch_disconnected_post_dsp_route(monkeypatch, tmp_path)
 
-    r = doctor.check_outputd_service()
+    remedy = audio_runtime_outputd._transport_route_remedy()
 
-    assert r.status == "fail"
-    assert _ROUTE_UNPAIRED in r.detail
-    assert PASSIVE_ONLY_DAC_LABEL in r.detail
-    assert "/sound/setup/" in r.detail
-    assert "audio-hardware-reconcile" not in r.detail
+    assert PASSIVE_ONLY_DAC_LABEL in remedy
+    assert "/sound/setup/" in remedy
+    assert "audio-hardware-reconcile" not in remedy
     # Passive is not a free remedy: it sends full-range into every assigned
     # output, which on an actively-wired cabinet reaches a bare tweeter. An
     # operator following doctor's advice must be told that.
-    assert "full-range audio to every output" in r.detail
-    assert "built-in passive crossover" in r.detail
-    assert "attach an active-capable DAC" in r.detail
+    assert "full-range audio to every output" in remedy
+    assert "built-in passive crossover" in remedy
+    assert "attach an active-capable DAC" in remedy
 
 
 def test_outputd_service_warns_when_transport_evidence_is_unavailable(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(monkeypatch, _outputd_status_payload())
+    _seed_units()
+    _patch_status_reader(monkeypatch, _outputd_status_payload())
     monkeypatch.setattr(
         "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
         lambda *paths: audio_runtime_plan.OutputEndpointEvidence(
@@ -464,20 +439,19 @@ def test_outputd_service_warns_when_transport_evidence_is_unavailable(monkeypatc
     r = doctor.check_outputd_service()
 
     assert r.status == "warn"
-    assert "transport coherence unknown" in r.detail
-    assert "statefile unavailable" in r.detail
+    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_TRANSPORT_EVIDENCE_UNKNOWN
 
 
 def test_outputd_service_ok_when_loudness_is_owned_by_fanin(monkeypatch):
     payload = json.loads(_outputd_status_payload().decode())
     payload.pop("assistant_loudness", None)
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+    _seed_units()
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
 
     r = doctor.check_outputd_service()
 
     assert r.status == "ok"
-    assert "assistant_loudness=fan-in-owned" in r.detail
+    assert r.reason == ""
 
 
 def test_outputd_service_warns_when_gain_exceeds_the_peak_cap(monkeypatch):
@@ -492,18 +466,17 @@ def test_outputd_service_warns_when_gain_exceeds_the_peak_cap(monkeypatch):
             "final_gain_db": -4.0,
         }
     )
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+    _seed_units()
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
 
     r = doctor.check_outputd_service()
 
     assert r.status == "warn"
-    assert "final_gain_db=-4.0" in r.detail
-    assert "peak_cap_gain_db=-6.0" in r.detail
+    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_ASSISTANT_GAIN_OFF_CONTRACT
 
 
 def test_outputd_service_fails_when_dual_apple_status_missing(monkeypatch, tmp_path):
-    _patch_fanin_systemctl(monkeypatch)
+    _seed_units()
     payload = json.loads(
         _outputd_status_payload(
             sink_mode="dual_apple",
@@ -511,17 +484,17 @@ def test_outputd_service_fails_when_dual_apple_status_missing(monkeypatch, tmp_p
         ).decode()
     )
     payload.pop("dual_apple", None)
-    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
     _patch_ring_coupled_box(monkeypatch, tmp_path, active_endpoint=True)
 
     r = doctor.check_outputd_service()
     assert r.status == "fail", r.detail
-    assert "STATUS missing dual_apple runtime health" in r.detail
+    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_DUAL_APPLE_STATUS_MISSING
 
 
 def test_outputd_service_warns_when_dual_apple_pcm_link_missing(monkeypatch, tmp_path):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_status_payload(
             sink_mode="dual_apple",
@@ -540,7 +513,7 @@ def test_outputd_service_warns_when_dual_apple_pcm_link_missing(monkeypatch, tmp
     _patch_ring_coupled_box(monkeypatch, tmp_path, active_endpoint=True)
     r = doctor.check_outputd_service()
     assert r.status == "warn", r.detail
-    assert "not ALSA-linked" in r.detail
+    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_DUAL_APPLE_NOT_LINKED
 
 
 def test_outputd_service_ok_with_dual_apple_status(monkeypatch, tmp_path):
@@ -552,8 +525,8 @@ def test_outputd_service_ok_with_dual_apple_status(monkeypatch, tmp_path):
     a composite naming the passive lane — is the 4ch-over-a-2ch-slave reuse this
     PR rejected as hearing-adjacent. A running composite box is a ring box.
     """
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_status_payload(
             sink_mode="dual_apple",
@@ -563,43 +536,41 @@ def test_outputd_service_ok_with_dual_apple_status(monkeypatch, tmp_path):
     _patch_ring_coupled_box(monkeypatch, tmp_path, active_endpoint=True)
     r = doctor.check_outputd_service()
     assert r.status == "ok", r.detail
-    assert "backend=alsa" in r.detail
-    assert "dual_a_pcm=hw:CARD=A,DEV=0" in r.detail
-    assert "dual_linked=True" in r.detail
+    assert r.reason == ""
 
 
 def test_outputd_service_fails_on_fake_backend(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_status_payload(backend="fake"),
     )
     r = doctor.check_outputd_service()
     assert r.status == "fail"
-    assert "backend='fake'" in r.detail
+    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_BACKEND_NOT_ALSA
 
 
 def test_outputd_service_fails_on_small_runtime_buffers(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_status_payload(dac_buffer_frames=1024),
     )
     r = doctor.check_outputd_service()
     assert r.status == "fail"
-    assert "dac.buffer_frames=1024" in r.detail
+    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_DAC_BUFFER_UNDERSIZED
 
 
 def test_outputd_service_fails_when_reference_contract_missing(monkeypatch):
     payload = json.loads(_outputd_status_payload().decode())
     payload["reference_outputs"] = {}
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+    _seed_units()
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
 
     r = doctor.check_outputd_service()
 
     assert r.status == "fail"
-    assert "speaker_reference_source" in r.detail
+    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_REFERENCE_SOURCE_UNEXPECTED
 
 
 def _outputd_aec_clock_payload(
@@ -642,57 +613,36 @@ def _aec_clock_block(*, verdict: str, status: str, ppm, observe: bool = False) -
     }
 
 
-def test_aec_clock_drift_ok_when_coherent(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
-        monkeypatch,
-        _outputd_aec_clock_payload(
-            aec_clock=_aec_clock_block(verdict="coherent", status="locked", ppm=1.2)
+@pytest.mark.parametrize(
+    "aec_clock",
+    [
+        _aec_clock_block(verdict="coherent", status="locked", ppm=1.2),
+        _aec_clock_block(verdict="compensable", status="locked", ppm=42.0),
+        # Observe mode: the chip-ref writer is armed purely to MEASURE drift on
+        # the software-AEC3 path.
+        _aec_clock_block(
+            verdict="compensable", status="locked", ppm=42.0, observe=True
         ),
+        # The initial lock window. Warning here would cry wolf on every boot,
+        # before the estimator has enough samples.
+        _aec_clock_block(verdict="fallback", status="observing", ppm=None),
+    ],
+)
+def test_aec_clock_drift_ok_for_every_healthy_estimator_state(monkeypatch, aec_clock):
+    _seed_units()
+    _patch_status_reader(
+        monkeypatch, _outputd_aec_clock_payload(aec_clock=aec_clock)
     )
+
     r = doctor.check_aec_clock_drift()
+
     assert r.status == "ok"
-    assert "verdict=coherent" in r.detail
-    assert "chip_ref_sro_ppm=1.2" in r.detail
-    assert "observe=False" in r.detail
-    assert "playback_queue_ms=64.0" in r.detail
-
-
-def test_aec_clock_drift_surfaces_observe_mode(monkeypatch):
-    """Chip-ref observe mode (writer armed purely to MEASURE drift on the
-    software-AEC3 path) is healthy and surfaced in the detail so an operator
-    can tell why the chip-ref writer is running."""
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
-        monkeypatch,
-        _outputd_aec_clock_payload(
-            aec_clock=_aec_clock_block(
-                verdict="compensable", status="locked", ppm=42.0, observe=True
-            )
-        ),
-    )
-    r = doctor.check_aec_clock_drift()
-    assert r.status == "ok"
-    assert "observe=True" in r.detail
-
-
-def test_aec_clock_drift_ok_when_compensable(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
-        monkeypatch,
-        _outputd_aec_clock_payload(
-            aec_clock=_aec_clock_block(verdict="compensable", status="locked", ppm=42.0)
-        ),
-    )
-    r = doctor.check_aec_clock_drift()
-    assert r.status == "ok"
-    assert "verdict=compensable" in r.detail
-    assert "chip_ref_sro_ppm=42.0" in r.detail
+    assert r.reason == ""
 
 
 def test_aec_clock_drift_warns_when_untrusted(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_aec_clock_payload(
             aec_clock=_aec_clock_block(verdict="fallback", status="untrusted", ppm=None)
@@ -700,43 +650,14 @@ def test_aec_clock_drift_warns_when_untrusted(monkeypatch):
     )
     r = doctor.check_aec_clock_drift()
     assert r.status == "warn"
-    assert "cannot be trusted" in r.detail
-    assert "sro_estimator_status=untrusted" in r.detail
-
-
-def test_aec_clock_drift_ok_while_observing(monkeypatch):
-    """The initial lock window (status=observing, which maps to a fallback
-    verdict) is healthy, not a warning — warning there would cry wolf on every
-    boot before the estimator has enough samples."""
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
-        monkeypatch,
-        _outputd_aec_clock_payload(
-            aec_clock=_aec_clock_block(verdict="fallback", status="observing", ppm=None)
-        ),
-    )
-    r = doctor.check_aec_clock_drift()
-    assert r.status == "ok"
-    assert "sro_estimator_status=observing" in r.detail
-
-
-def test_aec_clock_drift_skips_when_chip_ref_not_configured(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
-        monkeypatch,
-        _outputd_aec_clock_payload(chip_ref_pcm=None),
-    )
-    r = doctor.check_aec_clock_drift()
-    assert r.status == "ok"
-    assert "skipped" in r.detail
-    assert "chip reference not configured" in r.detail
+    assert r.reason == audio_runtime_outputd.REASON_AEC_CLOCK_UNTRUSTED
 
 
 def test_aec_clock_drift_warns_when_optional_chip_reference_is_unavailable(
     monkeypatch,
 ):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_aec_clock_payload(
             chip_ref_active=False,
@@ -749,30 +670,37 @@ def test_aec_clock_drift_warns_when_optional_chip_reference_is_unavailable(
     r = doctor.check_aec_clock_drift()
 
     assert r.status == "warn"
-    assert "desired but unavailable" in r.detail
-    assert "speaker playback remains active" in r.detail
-    assert "retries=3" in r.detail
+    assert r.reason == audio_runtime_outputd.REASON_AEC_CLOCK_CHIP_REF_UNAVAILABLE
 
 
-def test_aec_clock_drift_skips_on_pre_layer0_build(monkeypatch):
-    """A chip-ref is present but the outputd build has no aec_clock block."""
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
-        monkeypatch,
-        _outputd_aec_clock_payload(aec_clock=None),
+@pytest.mark.parametrize(
+    "payload_kwargs, reason",
+    [
+        (
+            {"chip_ref_pcm": None},
+            audio_runtime_outputd.REASON_AEC_CLOCK_CHIP_REF_NOT_CONFIGURED,
+        ),
+        # A chip-ref is present but the outputd build has no aec_clock block.
+        ({"aec_clock": None}, audio_runtime_outputd.REASON_AEC_CLOCK_BLOCK_ABSENT),
+    ],
+)
+def test_aec_clock_drift_stands_down_without_an_estimate(
+    monkeypatch, payload_kwargs, reason
+):
+    _seed_units()
+    _patch_status_reader(
+        monkeypatch, _outputd_aec_clock_payload(**payload_kwargs)
     )
     r = doctor.check_aec_clock_drift()
-    assert r.status == "ok"
-    assert "skipped" in r.detail
-    assert "predates aec_clock" in r.detail
+    assert r.status == "skipped"
+    assert r.reason == reason
 
 
 def test_aec_clock_drift_skips_when_outputd_disabled(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch, enabled="disabled")
+    _seed_units(enabled="disabled")
     r = doctor.check_aec_clock_drift()
-    assert r.status == "ok"
-    assert "skipped" in r.detail
-    assert "not enabled" in r.detail
+    assert r.status == "skipped"
+    assert r.reason == audio_runtime_outputd.REASON_AEC_CLOCK_OUTPUTD_NOT_ENABLED
 
 
 # --- the outputd buffer-health check's RING-WIRE branches --------------------
@@ -809,12 +737,12 @@ def _outputd_ring_status(*, fmt="S16_LE", channels=2, period=128, slots=2):
 
 
 def _buffer_health(data, *, period=128, content_hop=None):
-    from jasper.fanin_coupling import COUPLING_SHM_RING
+    from jasper.fanin_coupling import COUPLING_SHM_RING as TRANSPORT_SHM_RING
 
     return audio_runtime_outputd._outputd_buffer_health(
         data,
         data["content"],
-        content_hop=content_hop or COUPLING_SHM_RING,
+        content_hop=content_hop or TRANSPORT_SHM_RING,
         content_buffer=data["content"]["buffer_frames"],
         dac_buffer=period * 4,
         period_frames=period,
@@ -865,34 +793,29 @@ def test_buffer_health_passes_when_the_attached_wire_matches():
     assert "shm_ring_attached=True" in result
 
 
-def test_buffer_health_fails_on_an_attached_format_the_box_does_not_declare():
-    """outputd attached to a Ring B FORMAT nobody declared.
+@pytest.mark.parametrize(
+    "status_kwargs, reason",
+    [
+        # S16_LE is the mismatching FORMAT token: the resolver's default went
+        # WIDE, so an undeclared box's wire IS S32_LE.
+        ({"fmt": "S16_LE"}, audio_runtime_outputd.REASON_OUTPUTD_RING_FORMAT_SHEAR),
+        # The channels axis has teeth independently of the format axis, so the
+        # format is pinned to the box's default to isolate it.
+        (
+            {"fmt": "S32_LE", "channels": 6},
+            audio_runtime_outputd.REASON_OUTPUTD_RING_CHANNELS_SHEAR,
+        ),
+    ],
+    ids=["format", "channels"],
+)
+def test_buffer_health_fails_on_an_attached_wire_the_box_does_not_declare(
+    status_kwargs, reason
+):
+    result = _buffer_health(_outputd_ring_status(**status_kwargs))
 
-    S16_LE is the mismatching token now: the resolver's default went WIDE, so
-    an undeclared box's wire IS S32_LE and S16_LE is what nobody declares.
-    """
-    result = _buffer_health(_outputd_ring_status(fmt="S16_LE"))
     assert not isinstance(result, str), "a wire shear must be a CheckResult, not detail"
     assert result.status == "fail"
-    assert "shm_ring.format='S16_LE'" in result.detail
-    assert "nobody declared" in result.detail
-    # The remedy must name the reconcile that CLEARS the mismatched file — a bare
-    # "redeploy" leaves the stale ring in place and the box parks again.
-    assert "jasper-fanin-coupling-reconcile shm_ring" in result.detail
-
-
-def test_buffer_health_fails_on_an_attached_channel_count_the_box_does_not_declare():
-    """The channels axis has teeth independently of the format axis.
-
-    ``fmt="S32_LE"`` pins the format to the box's default so that axis stays
-    silent — an unpinned S16_LE default would (now) ALSO mismatch the format
-    axis, and this test would no longer isolate the channels comparison.
-    """
-    result = _buffer_health(_outputd_ring_status(fmt="S32_LE", channels=6))
-    assert not isinstance(result, str)
-    assert result.status == "fail"
-    assert "shm_ring.channels=6" in result.detail
-    assert "nobody declared" in result.detail
+    assert result.reason == reason
 
 
 def test_buffer_health_skips_the_wire_comparison_before_attach():
@@ -1087,8 +1010,8 @@ def test_outputd_service_ok_on_a_marker_armed_member(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "jasper.multiroom.reconcile.OUTPUTD_GROUPING_ENV_FILE", str(grouping_env)
     )
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         # What outputd publishes with no CENTRAL ring attached: `alsa`, and a
         # period-sized content buffer with no content.ring sub-block.
@@ -1116,4 +1039,34 @@ def test_outputd_service_ok_on_a_marker_armed_member(monkeypatch, tmp_path):
     r = doctor.check_outputd_service()
 
     assert r.status == "ok", r.detail
-    assert "content_source=alsa" in r.detail
+    assert r.reason == ""
+
+
+@pytest.mark.parametrize(
+    "stale_ms,payload,check",
+    [
+        (
+            audio_health.FANIN_STALE_MS,
+            _fanin_status_payload,
+            lambda: doctor.check_fanin_service(),
+        ),
+        (
+            audio_health.OUTPUTD_STALE_MS,
+            _outputd_status_payload,
+            lambda: doctor.check_outputd_service(),
+        ),
+    ],
+    ids=["fanin", "outputd"],
+)
+@pytest.mark.parametrize("over", [False, True])
+def test_doctor_stale_warning_uses_the_household_threshold(
+    monkeypatch, stale_ms, payload, check, over
+) -> None:
+    """One tolerance for "the transport stopped moving": the doctor must not
+    warn about an age the /system household card still calls healthy."""
+    _seed_units()
+    _patch_status_reader(
+        monkeypatch, payload(progress_age_ms=stale_ms + (1 if over else 0))
+    )
+
+    assert check().status == ("warn" if over else "ok")

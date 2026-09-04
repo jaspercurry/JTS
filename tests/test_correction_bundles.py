@@ -122,6 +122,33 @@ def test_summarize_bundle_reports_size_and_private_raw_audio(tmp_path: Path):
     assert summary["bundle_size_bytes"] >= summary["private_raw_audio_bytes"]
 
 
+@pytest.mark.parametrize(
+    ("max_entries", "expect_truncated"),
+    [(50_000, False), (2, True)],
+    ids=["under_cap", "over_cap"],
+)
+def test_bundle_size_walk_is_bounded_and_discloses_truncation(
+    tmp_path: Path, monkeypatch, max_entries: int, expect_truncated: bool,
+):
+    """jasper-doctor walks every bundle on every run on a 1 GB Pi, so the
+    per-bundle size walk is capped; hitting the cap makes the reported size a
+    lower bound rather than a silent undercount."""
+    bundle = _write_bundle(tmp_path, "capped", started_at=1000)
+    (bundle / "captures").mkdir()
+    for i in range(6):
+        (bundle / "captures" / f"p{i}.wav").write_bytes(b"x" * 8)
+    monkeypatch.setattr(bundles, "BUNDLE_WALK_MAX_ENTRIES", max_entries)
+
+    summary = bundles.summarize_bundle(bundle)
+    collection = bundles.summarize_bundle_collection(tmp_path)
+
+    assert summary["bundle_size_truncated"] is expect_truncated
+    assert collection["truncated"] is expect_truncated
+    assert summary["bundle_size_bytes"] > 0
+    if not expect_truncated:
+        assert summary["bundle_size_bytes"] == collection["total_bundle_size_bytes"]
+
+
 def test_summarize_bundle_collection_reports_storage_and_private_audio(
     tmp_path: Path,
 ):
@@ -166,6 +193,7 @@ def test_list_bundles_treats_missing_or_file_sessions_dir_as_empty(
         "total_bundle_size_bytes": 0,
         "private_raw_audio_count": 0,
         "private_raw_audio_bytes": 0,
+        "truncated": False,
         "old_private_raw_audio_bundle_count": 0,
         "old_private_raw_audio_count": 0,
     }

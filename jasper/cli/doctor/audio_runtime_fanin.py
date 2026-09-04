@@ -2,29 +2,108 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""jasper-doctor checks for jasper-fanin and the snd-aloop lanes it reads.
+"""jasper-doctor checks for the jasper-fanin mixer and its ALSA wiring.
 
 Import direction across the audio-runtime check modules runs one way —
-``audio_runtime_camilla`` -> ``_fanin`` -> ``_outputd`` -> ``_ring`` — so nothing
-here may be imported by a module earlier in that chain.
+``audio_runtime_camilla`` -> ``_fanin`` -> ``_outputd`` -> ``_ring``, so this
+module may import only from ``audio_runtime_camilla``.
+
+Closed vocabulary for this module's `CheckResult.reason`: one snake_case
+constant per distinct decision branch of the checks below, its value unique
+across the doctor and prefixed by the check that emits it. `detail` stays the
+human sentence (free to reword); `reason` is what tests and self-healing
+consumers pin instead (ADR-0233 rule 3).
+
+A branch that formed NO verdict — subsystem not installed, not applicable to
+this box, or the evidence source unreachable so nothing was observed — is
+`skipped` with a reason, never `ok`. An `ok` reason means an actual verdict a
+consumer would branch on (a feature the box turned off, a floor that is
+deliberately not renderable).
 """
 from __future__ import annotations
 
 import os
 import re
-import time
 from pathlib import Path
 
 from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
-from ...camilla_config_contract import (
-    devices_playback_is_pipe,
-    read_camilla_devices_config,
-)
+from ...camilla_config_contract import devices_playback_is_pipe
 from ...fanin_coupling import read_declared_ring_wire_format
-from ...route_latency.status_socket import FANIN_STATUS_SOCKET, read_status_socket
+from ...route_latency.status_socket import FANIN_STALE_MS, FANIN_STATUS_SOCKET
+from ._evidence import evidence
 from ._registry import doctor_check
-from ._shared import CheckResult, _run
-from .correction import _active_camilla_config_path
+from ._shared import CheckResult, _service_state_failure
+from .audio_runtime_camilla import _loaded_device_fields
+
+
+REASON_FANIN_BINARY_MISSING = "fanin_binary_missing"
+REASON_FANIN_BINARY_NOT_EXECUTABLE = "fanin_binary_not_executable"
+
+REASON_ASOUND_CONF_MISSING = "asound_conf_missing"
+REASON_ASOUND_CONF_UNREADABLE = "asound_conf_unreadable"
+REASON_ASOUND_LEGACY_RENDERER_BLOCK = "asound_legacy_renderer_block"
+REASON_ASOUND_LANE_MISSING = "asound_lane_missing"
+REASON_ASOUND_LANE_WRONG_SLAVE = "asound_lane_wrong_slave"
+REASON_ASOUND_LANE_WIDTH_SHEAR = "asound_lane_width_shear"
+REASON_ASOUND_STALE_TOPOLOGY_STATE = "asound_stale_topology_state"
+REASON_ASOUND_RING_WIRE_UNRESOLVED = "asound_ring_wire_unresolved"
+
+REASON_FANIN_UNIT_MISSING = "fanin_unit_missing"
+REASON_FANIN_UNIT_NOT_ENABLED = "fanin_unit_not_enabled"
+REASON_FANIN_INACTIVE = "fanin_inactive"
+REASON_FANIN_STATUS_UNREACHABLE = "fanin_status_unreachable"
+REASON_FANIN_STATUS_MALFORMED = "fanin_status_malformed"
+REASON_FANIN_STATUS_MISSING_OUTPUT = "fanin_status_missing_output"
+REASON_FANIN_STATUS_MISSING_RING = "fanin_status_missing_ring"
+REASON_FANIN_STATUS_MISSING_INPUTS = "fanin_status_missing_inputs"
+REASON_FANIN_STATUS_MISSING_WATCHDOG = "fanin_status_missing_watchdog"
+REASON_FANIN_STATUS_MISSING_INPUT_BUFFER = "fanin_status_missing_input_buffer"
+REASON_FANIN_TRANSPORT_NOT_RING = "fanin_transport_not_ring"
+REASON_FANIN_INPUTS_DRIFTED = "fanin_inputs_drifted"
+REASON_FANIN_PROGRESS_STALE = "fanin_progress_stale"
+REASON_FANIN_INPUT_BUFFER_UNDERSIZED = "fanin_input_buffer_undersized"
+REASON_FANIN_LOUDNESS_TELEMETRY_MISSING = "fanin_loudness_telemetry_missing"
+
+# One loudness contract, two publishers, one code each: the row's check name
+# and its reason must not need reading together to tell them apart.
+REASON_FANIN_ASSISTANT_GAIN_NOT_NUMERIC = "fanin_assistant_gain_not_numeric"
+REASON_FANIN_ASSISTANT_GAIN_OFF_CONTRACT = "fanin_assistant_gain_off_contract"
+
+REASON_FANIN_TTS_NOT_ENABLED = "fanin_tts_not_enabled"
+
+# The secondary fan-in checks stand down when the STATUS socket is unreadable;
+# the mandatory `jasper-fanin service` check owns that failure. One code per
+# check, so a consumer can tell which row stood down.
+REASON_FANIN_TTS_STATUS_NOT_PROBED = "fanin_tts_status_not_probed"
+REASON_FANIN_TTS_LANE_DISABLED = "fanin_tts_lane_disabled"
+REASON_FANIN_TTS_PROTOCOL_ERRORS = "fanin_tts_protocol_errors"
+REASON_FANIN_TTS_AUDIO_DROPPED = "fanin_tts_audio_dropped"
+
+REASON_FANIN_RING_STALL_STATUS_NOT_PROBED = "fanin_ring_stall_status_not_probed"
+REASON_FANIN_RING_STALL_BLOCK_ABSENT = "fanin_ring_stall_block_absent"
+REASON_FANIN_RING_STALL_ACTIVE = "fanin_ring_stall_active"
+
+REASON_HOST_CLOCK_STATUS_NOT_PROBED = "host_clock_status_not_probed"
+REASON_HOST_CLOCK_TELEMETRY_MISSING = "host_clock_telemetry_missing"
+REASON_HOST_CLOCK_DISABLED = "host_clock_disabled"
+REASON_HOST_CLOCK_ACTUATOR_TELEMETRY_MISSING = "host_clock_actuator_telemetry_missing"
+REASON_HOST_CLOCK_PROBE_TELEMETRY_MISSING = "host_clock_probe_telemetry_missing"
+REASON_HOST_CLOCK_ACTUATOR_UNAVAILABLE = "host_clock_actuator_unavailable"
+REASON_HOST_CLOCK_L2_FALLBACK = "host_clock_l2_fallback"
+REASON_HOST_CLOCK_PROBING = "host_clock_probing"
+
+REASON_COUPLING_FILE_ABSENT = "coupling_file_absent"
+REASON_COUPLING_DEVICES_UNPARSED = "coupling_devices_unparsed"
+REASON_COUPLING_TOKEN_UNKNOWN = "coupling_token_unknown"
+REASON_COUPLING_NO_LOADED_CAPTURE = "coupling_no_loaded_capture"
+REASON_COUPLING_GRAPH_NOT_RING = "coupling_graph_not_ring"
+REASON_COUPLING_ACTIVE_LADDER_PENDING = "coupling_active_ladder_pending"
+
+REASON_ALOOP_NOT_LOADED = "aloop_not_loaded"
+REASON_ALOOP_REGISTERED_SET_UNDERIVABLE = "aloop_registered_set_underivable"
+REASON_ALOOP_PROC_UNREADABLE = "aloop_proc_unreadable"
+REASON_ALOOP_UNREGISTERED_SUBSTREAM_OPEN = "aloop_unregistered_substream_open"
+
 
 @doctor_check(order=49, group="audio")
 def check_fanin_binary_installed() -> CheckResult:
@@ -38,6 +117,7 @@ def check_fanin_binary_installed() -> CheckResult:
             "fail",
             f"{path} missing. Re-run install.sh; check cargo build "
             f"output for compilation errors.",
+            reason=REASON_FANIN_BINARY_MISSING,
         )
     if not os.access(path, os.X_OK):
         return CheckResult(
@@ -45,6 +125,7 @@ def check_fanin_binary_installed() -> CheckResult:
             "fail",
             f"{path} present but not executable. Run: "
             f"sudo chmod +x {path}",
+            reason=REASON_FANIN_BINARY_NOT_EXECUTABLE,
         )
     try:
         size_kb = path.stat().st_size // 1024
@@ -106,7 +187,6 @@ def _fanin_expected_inputs(
         (label, rl.expected_fanin_lane_pcm(label, pcm, armed))
         for label, pcm in _FANIN_EXPECTED_ALOOP_INPUTS
     ]
-
 
 
 # The assistant-loudness gain floor, and the only fixed bound the shared Rust
@@ -177,11 +257,21 @@ def check_fanin_asound_wiring() -> CheckResult:
     label = "fan-in ALSA wiring"
     path = Path("/etc/asound.conf")
     if not path.exists():
-        return CheckResult(label, "fail", f"{path} missing — re-run install.sh")
+        return CheckResult(
+            label,
+            "fail",
+            f"{path} missing — re-run install.sh",
+            reason=REASON_ASOUND_CONF_MISSING,
+        )
     try:
         text = path.read_text()
     except OSError as e:
-        return CheckResult(label, "fail", f"can't read {path}: {e}")
+        return CheckResult(
+            label,
+            "fail",
+            f"can't read {path}: {e}",
+            reason=REASON_ASOUND_CONF_UNREADABLE,
+        )
 
     active = _asound_non_comment_text(text)
     legacy_blocks = [
@@ -196,6 +286,7 @@ def check_fanin_asound_wiring() -> CheckResult:
             f"{', '.join(legacy_blocks)}. Fan-in-only installs must "
             f"define private renderer lanes and no jasper_renderer_* "
             f"front end. Re-run deploy/install.sh.",
+            reason=REASON_ASOUND_LEGACY_RENDERER_BLOCK,
         )
 
     # No usbsink_substream write alias: USB audio is DIRECT-captured by
@@ -213,7 +304,7 @@ def check_fanin_asound_wiring() -> CheckResult:
     try:
         wire = read_declared_ring_wire_format()
     except ValueError as e:
-        return CheckResult(label, "fail", str(e))
+        return CheckResult(label, "fail", str(e), reason=REASON_ASOUND_RING_WIRE_UNRESOLVED)
     missing: list[str] = []
     wrong: list[str] = []
     sheared: list[str] = []
@@ -242,12 +333,20 @@ def check_fanin_asound_wiring() -> CheckResult:
                 f"lane width ≠ {wire} (this box's resolved wire): "
                 + ", ".join(sheared)
             )
+        # One row can carry several classes; the reason names the worst, so a
+        # box whose only defect is a width shear says so.
+        drift_reason = (
+            REASON_ASOUND_LANE_MISSING if missing
+            else REASON_ASOUND_LANE_WRONG_SLAVE if wrong
+            else REASON_ASOUND_LANE_WIDTH_SHEAR
+        )
         return CheckResult(
             label,
             "fail",
             "; ".join(parts) + f". Every slave must be 48000/2/{wire} over its "
             "own substream. Re-run deploy/install.sh to restore the fan-in "
             "asoundrc.",
+            reason=drift_reason,
         )
 
     stale_state = Path("/var/lib/jasper/audio_topology.env")
@@ -258,6 +357,7 @@ def check_fanin_asound_wiring() -> CheckResult:
             f"fan-in asoundrc is correct, but stale {stale_state} still "
             f"exists from the retired dmix/fanin switcher. Re-run "
             f"deploy/install.sh to archive/remove it.",
+            reason=REASON_ASOUND_STALE_TOPOLOGY_STATE,
         )
 
     return CheckResult(label, "ok", "renderer/test lanes 0..4")
@@ -273,63 +373,34 @@ def check_fanin_service() -> CheckResult:
         when the live STATUS schema drifts from the production graph.
       - warn when enabled+active but the work loop is stale.
     """
-    enabled = _run(
-        ["systemctl", "is-enabled", "jasper-fanin.service"]
-    ).stdout.strip()
-    active = _run(
-        ["systemctl", "is-active", "jasper-fanin.service"]
-    ).stdout.strip()
+    service_failure = _service_state_failure(
+        "jasper-fanin service",
+        "jasper-fanin.service",
+        missing=REASON_FANIN_UNIT_MISSING,
+        not_enabled=REASON_FANIN_UNIT_NOT_ENABLED,
+        inactive=REASON_FANIN_INACTIVE,
+    )
+    if service_failure is not None:
+        return service_failure
 
-    if enabled in ("disabled", "static", "indirect"):
+    status = evidence.fanin_status()
+    if status.unreachable:
         return CheckResult(
             "jasper-fanin service",
             "fail",
-            f"state={enabled}. Fan-in is mandatory; run: "
-            f"sudo systemctl enable --now jasper-fanin.service",
-        )
-    if enabled == "not-found":
-        return CheckResult(
-            "jasper-fanin service",
-            "fail",
-            "systemd unit not installed. Re-run install.sh.",
-        )
-
-    if active != "active":
-        return CheckResult(
-            "jasper-fanin service",
-            "fail",
-            f"enabled but state={active}. "
-            f"Check: journalctl -u jasper-fanin",
-        )
-
-    last_error: OSError | None = None
-    for attempt in range(2):
-        try:
-            data = read_status_socket(
-                FANIN_STATUS_SOCKET, timeout=_FANIN_STATUS_TIMEOUT_SECONDS
-            )
-            break
-        # A reply that arrived but did not parse is not retried: only an
-        # unreachable socket is worth a second attempt.
-        except ValueError as e:
-            return CheckResult(
-                "jasper-fanin service",
-                "fail",
-                f"active but UDS STATUS is not a JSON object "
-                f"({type(e).__name__}: {e})",
-            )
-        except OSError as e:
-            last_error = e
-            if attempt == 0:
-                time.sleep(0.1)
-    else:
-        return CheckResult(
-            "jasper-fanin service",
-            "fail",
-            f"active but UDS probe at {FANIN_STATUS_SOCKET} failed: {last_error}. "
+            f"active but UDS probe at {FANIN_STATUS_SOCKET} failed: {status.error}. "
             f"Fan-in is mandatory; without STATUS doctor cannot verify "
             f"the live graph, buffers, or watchdog progress. "
             f"check: journalctl -u jasper-fanin | tail",
+            reason=REASON_FANIN_STATUS_UNREACHABLE,
+        )
+    data = status.payload
+    if data is None:
+        return CheckResult(
+            "jasper-fanin service",
+            "fail",
+            f"active but UDS STATUS is unusable: {status.error}",
+            reason=REASON_FANIN_STATUS_MALFORMED,
         )
 
     output = data.get("output", {})
@@ -338,6 +409,7 @@ def check_fanin_service() -> CheckResult:
             "jasper-fanin service",
             "fail",
             "active but STATUS response missing output{}",
+            reason=REASON_FANIN_STATUS_MISSING_OUTPUT,
         )
     # The ring is the only transport a running fan-in can be on (ADR-0100), so
     # the expectation is a constant, NOT a mapping from the persisted file:
@@ -353,6 +425,7 @@ def check_fanin_service() -> CheckResult:
             "expected 'shm_ring' — the SHM ring is fan-in's only transport "
             "toward CamillaDSP. Check journalctl -u jasper-fanin for the "
             "transport it actually opened.",
+            reason=REASON_FANIN_TRANSPORT_NOT_RING,
         )
     ring = output.get("ring")
     if not isinstance(ring, dict):
@@ -362,6 +435,7 @@ def check_fanin_service() -> CheckResult:
             "active but STATUS is missing output.ring metrics — "
             "fan-in is not actually writing Ring A. Check "
             "journalctl -u jasper-fanin for event=fanin.ring.opened.",
+            reason=REASON_FANIN_STATUS_MISSING_RING,
         )
 
     inputs = data.get("inputs")
@@ -370,6 +444,7 @@ def check_fanin_service() -> CheckResult:
             "jasper-fanin service",
             "fail",
             "active but STATUS response missing inputs[]",
+            reason=REASON_FANIN_STATUS_MISSING_INPUTS,
         )
     actual_inputs = [
         (inp.get("label"), inp.get("pcm"))
@@ -385,6 +460,7 @@ def check_fanin_service() -> CheckResult:
             f"{expected_inputs!r}; got {actual_inputs!r}. "
             "Check /var/lib/jasper/fanin.env and "
             "/var/lib/jasper/renderer_lanes.env.",
+            reason=REASON_FANIN_INPUTS_DRIFTED,
         )
 
     progress_age = data.get("watchdog", {}).get(
@@ -395,13 +471,15 @@ def check_fanin_service() -> CheckResult:
             "jasper-fanin service",
             "fail",
             "active but STATUS response missing watchdog state",
+            reason=REASON_FANIN_STATUS_MISSING_WATCHDOG,
         )
-    if progress_age > 1000:
+    if progress_age > FANIN_STALE_MS:
         return CheckResult(
             "jasper-fanin service",
             "warn",
             f"active but last_progress_age_ms={progress_age} "
             f"(work loop may be wedged; watchdog should fire soon)",
+            reason=REASON_FANIN_PROGRESS_STALE,
         )
     frames = output.get("frames_written", 0)
     xruns = output.get("xrun_count", 0)
@@ -411,6 +489,7 @@ def check_fanin_service() -> CheckResult:
             "jasper-fanin service",
             "fail",
             "active but STATUS missing integer input_buffer_frames",
+            reason=REASON_FANIN_STATUS_MISSING_INPUT_BUFFER,
         )
     input_xruns = []
     for inp in data.get("inputs", []):
@@ -428,6 +507,7 @@ def check_fanin_service() -> CheckResult:
             f"4096. AirPlay WiFi burst absorption was validated at 4096; "
             f"check /var/lib/jasper/fanin.env and "
             f"JASPER_FANIN_INPUT_BUFFER_FRAMES.",
+            reason=REASON_FANIN_INPUT_BUFFER_UNDERSIZED,
         )
     tts = data.get("tts", {})
     if not isinstance(tts, dict) or not bool(tts.get("enabled", False)):
@@ -437,6 +517,7 @@ def check_fanin_service() -> CheckResult:
             "active but pre-DSP TTS socket is not enabled. Current "
             "production topology requires TTS/cues to enter jasper-fanin "
             "before CamillaDSP.",
+            reason=REASON_FANIN_TTS_NOT_ENABLED,
         )
 
     tts_detail = "tts_enabled=true"
@@ -448,6 +529,7 @@ def check_fanin_service() -> CheckResult:
             "active with pre-DSP TTS enabled but STATUS is missing "
             "tts.assistant_loudness telemetry; deploy current jasper-fanin "
             "before evaluating TTS loudness.",
+            reason=REASON_FANIN_LOUDNESS_TELEMETRY_MISSING,
         )
     decision_seen = bool(loudness.get("decision_seen", False))
     calibrated = bool(loudness.get("calibrated", False))
@@ -459,6 +541,7 @@ def check_fanin_service() -> CheckResult:
             "active with pre-DSP TTS enabled but "
             "tts.assistant_loudness.decision_seen=true without "
             "numeric final_gain_db.",
+            reason=REASON_FANIN_ASSISTANT_GAIN_NOT_NUMERIC,
         )
     gain_fault = _assistant_gain_fault(loudness)
     if gain_fault is not None:
@@ -467,6 +550,7 @@ def check_fanin_service() -> CheckResult:
             "warn",
             f"active with pre-DSP TTS enabled but "
             f"tts.assistant_loudness.{gain_fault}.",
+            reason=REASON_FANIN_ASSISTANT_GAIN_OFF_CONTRACT,
         )
     tts_detail = (
         f"tts_enabled=true, "
@@ -496,9 +580,15 @@ def _host_clock_health_from_status(data: dict[str, object]) -> CheckResult:
             label,
             "warn",
             "fan-in STATUS has no host_clock object; deploy current jasper-fanin",
+            reason=REASON_HOST_CLOCK_TELEMETRY_MISSING,
         )
     if host_clock.get("enabled") is not True:
-        return CheckResult(label, "ok", "disabled (no host-clock health claim)")
+        return CheckResult(
+            label,
+            "ok",
+            "disabled (no host-clock health claim)",
+            reason=REASON_HOST_CLOCK_DISABLED,
+        )
 
     ladder = str(host_clock.get("ladder") or "unknown")
     reason_value = host_clock.get("fallback_reason")
@@ -506,9 +596,19 @@ def _host_clock_health_from_status(data: dict[str, object]) -> CheckResult:
     actuator = host_clock.get("actuator")
     probe = host_clock.get("probe")
     if not isinstance(actuator, dict):
-        return CheckResult(label, "warn", "enabled but actuator telemetry is missing")
+        return CheckResult(
+            label,
+            "warn",
+            "enabled but actuator telemetry is missing",
+            reason=REASON_HOST_CLOCK_ACTUATOR_TELEMETRY_MISSING,
+        )
     if not isinstance(probe, dict):
-        return CheckResult(label, "warn", "enabled but probe telemetry is missing")
+        return CheckResult(
+            label,
+            "warn",
+            "enabled but probe telemetry is missing",
+            reason=REASON_HOST_CLOCK_PROBE_TELEMETRY_MISSING,
+        )
 
     ready = actuator.get("ready") is True
     capture_generation = actuator.get("capture_generation")
@@ -533,6 +633,7 @@ def _host_clock_health_from_status(data: dict[str, object]) -> CheckResult:
             f"control_generation={control_generation}, ready={ready}; {counters}. "
             "Audio remains on the direct resampler fallback; check "
             "`journalctl -u jasper-fanin | grep host_clock_control` and the UAC2 gadget.",
+            reason=REASON_HOST_CLOCK_ACTUATOR_UNAVAILABLE,
         )
 
     if ladder == "l2_fallback":
@@ -543,6 +644,7 @@ def _host_clock_health_from_status(data: dict[str, object]) -> CheckResult:
             f"capture_generation={capture_generation}, control_generation={control_generation}; "
             f"{counters}. Stop/start creates a new session; a gadget generation "
             "change self-heals automatically.",
+            reason=REASON_HOST_CLOCK_L2_FALLBACK,
         )
 
     phase = probe.get("phase")
@@ -556,6 +658,7 @@ def _host_clock_health_from_status(data: dict[str, object]) -> CheckResult:
             "ok",
             f"recovering: phase={phase}, attempt={attempt}/{max_attempts}, "
             f"generations={capture_generation}/{control_generation}; {counters}",
+            reason=REASON_HOST_CLOCK_PROBING,
         )
 
     return CheckResult(
@@ -566,42 +669,20 @@ def _host_clock_health_from_status(data: dict[str, object]) -> CheckResult:
     )
 
 
-#: `CheckResult.reason` for a loaded CamillaDSP config whose ``devices:`` block
-#: does not parse — the one branch of `check_fanin_coupling` that judges no axis.
-REASON_DEVICES_UNPARSED = "camilla_devices_unparsed"
-
-#: Seconds, TOTAL deadline for one doctor probe of fan-in's STATUS socket.
-#: One value for every probe: they all fail soft, so a slower answer is worth
-#: more than a faster verdict.
-_FANIN_STATUS_TIMEOUT_SECONDS = 2.0
-
-
-def _fanin_status() -> dict | Exception:
-    """fan-in's STATUS reply, or the exception that stopped it.
-
-    Returned rather than raised: every caller reports the failure in its own
-    words and severity, and none of them re-raise.
-    """
-    try:
-        return read_status_socket(
-            FANIN_STATUS_SOCKET, timeout=_FANIN_STATUS_TIMEOUT_SECONDS
-        )
-    except (OSError, ValueError) as e:
-        return e
-
-
 @doctor_check(order=51.52, group="audio")
 def check_fanin_host_clock() -> CheckResult:
     """Report persistent USB host-clock recovery/fallback with exact cause."""
-    data = _fanin_status()
-    if isinstance(data, Exception):
+    status = evidence.fanin_status()
+    if status.payload is None:
         # Reachability belongs to the preceding mandatory fan-in service check.
         return CheckResult(
             "USB host clock",
-            "ok",
-            f"not probed ({type(data).__name__}); see jasper-fanin service check",
+            "skipped",
+            f"not probed ({type(status.error).__name__}); "
+            "see jasper-fanin service check",
+            reason=REASON_HOST_CLOCK_STATUS_NOT_PROBED,
         )
-    return _host_clock_health_from_status(data)
+    return _host_clock_health_from_status(status.payload)
 
 @doctor_check(order=51.5, group="audio")
 def check_fanin_tts_drops() -> CheckResult:
@@ -614,23 +695,32 @@ def check_fanin_tts_drops() -> CheckResult:
     nonzero drop counter means assistant/cue audio audibly skipped.
 
     Returns:
-      - ok when counters are zero, the TTS lane is disabled, or STATUS
-        is unreachable (reachability is owned by 'jasper-fanin service').
+      - ok when counters are zero, or the TTS lane is disabled in this
+        topology.
+      - skipped when STATUS is unreachable (reachability is owned by
+        'jasper-fanin service').
       - warn when protocol errors or dropped audio > 0 since fan-in start.
     """
     name = "fan-in TTS delivery"
-    data = _fanin_status()
-    if isinstance(data, Exception):
+    status = evidence.fanin_status()
+    data = status.payload
+    if data is None:
         return CheckResult(
             name,
-            "ok",
-            f"not probed ({type(data).__name__}); fan-in reachability is "
+            "skipped",
+            f"not probed ({type(status.error).__name__}); fan-in reachability is "
             "covered by the 'jasper-fanin service' check",
+            reason=REASON_FANIN_TTS_STATUS_NOT_PROBED,
         )
 
     tts = data.get("tts")
     if not isinstance(tts, dict) or not tts.get("enabled"):
-        return CheckResult(name, "ok", "TTS lane disabled in this topology")
+        return CheckResult(
+            name,
+            "ok",
+            "TTS lane disabled in this topology",
+            reason=REASON_FANIN_TTS_LANE_DISABLED,
+        )
 
     dropped_frames = int(tts.get("dropped_audio_frames") or 0)
     dropped_commands = int(tts.get("dropped_commands") or 0)
@@ -643,6 +733,7 @@ def check_fanin_tts_drops() -> CheckResult:
             "start — assistant and cue audio may be mute. Check "
             "`journalctl -u jasper-fanin | grep tts_socket.protocol_error` "
             "for a voice/fan-in wire mismatch or malformed client.",
+            reason=REASON_FANIN_TTS_PROTOCOL_ERRORS,
         )
     if dropped_frames == 0 and dropped_commands == 0:
         return CheckResult(
@@ -664,6 +755,7 @@ def check_fanin_tts_drops() -> CheckResult:
         "`journalctl -u jasper-fanin | grep tts_command_dropped` and the "
         "voice daemon's `paced` turn accounting; an unpaced writer or a "
         "pacing regression is the usual cause.",
+        reason=REASON_FANIN_TTS_AUDIO_DROPPED,
     )
 
 
@@ -680,19 +772,21 @@ def check_fanin_ring_stall() -> CheckResult:
     Reachability is owned by the 'jasper-fanin service' check.
 
     Returns:
-      - ok when the ring is draining normally, when STATUS carries no ring
-        block, or when STATUS is unreachable
+      - ok when the ring is draining normally
+      - skipped when STATUS is unreachable or carries no ring block
       - warn when a stall episode is CURRENTLY active, surfacing the stuck-reader
         vs no-reader drop split and the last stall duration.
     """
     name = "fan-in ring stall"
-    data = _fanin_status()
-    if isinstance(data, Exception):
+    status = evidence.fanin_status()
+    data = status.payload
+    if data is None:
         return CheckResult(
             name,
-            "ok",
-            f"not probed ({type(data).__name__}); fan-in reachability is "
+            "skipped",
+            f"not probed ({type(status.error).__name__}); fan-in reachability is "
             "covered by the 'jasper-fanin service' check",
+            reason=REASON_FANIN_RING_STALL_STATUS_NOT_PROBED,
         )
 
     output = data.get("output")
@@ -702,9 +796,10 @@ def check_fanin_ring_stall() -> CheckResult:
         # block itself is FAILed by the 'jasper-fanin service' check.
         return CheckResult(
             name,
-            "ok",
-            "not assessed — STATUS carries no output.ring block; the "
-            "'jasper-fanin service' check owns that failure",
+            "skipped",
+            "STATUS carries no output.ring block; the 'jasper-fanin service' "
+            "check owns that failure",
+            reason=REASON_FANIN_RING_STALL_BLOCK_ABSENT,
         )
 
     stuck = int(ring.get("stuck_reader_drops") or 0)
@@ -724,6 +819,7 @@ def check_fanin_ring_stall() -> CheckResult:
             f"content is dropping ({counts}). Check `journalctl -u jasper-fanin "
             f"| grep event=fanin.ring.stall` and `systemctl status "
             f"jasper-camilla`.",
+            reason=REASON_FANIN_RING_STALL_ACTIVE,
         )
     return CheckResult(name, "ok", f"no active stall ({counts})")
 
@@ -746,7 +842,8 @@ def check_fanin_coupling_value() -> CheckResult:
         text = Path(FANIN_ENV_PATH).read_text(encoding="utf-8")
     except OSError:
         return CheckResult(
-            label, "ok", f"no fanin.env — fan-in serves {COUPLING_SHM_RING}"
+            label, "ok", f"no fanin.env — fan-in serves {COUPLING_SHM_RING}",
+            reason=REASON_COUPLING_FILE_ABSENT,
         )
     # The raw token is read for the MESSAGE only; the verdict is the shared
     # predicate's, so this surface cannot drift from what fan-in serves.
@@ -759,6 +856,7 @@ def check_fanin_coupling_value() -> CheckResult:
             "transport — the ring is the only one. Run: sudo /opt/jasper/.venv/bin/"
             "jasper-fanin-coupling-reconcile --auto to converge the box and clean "
             "the file.",
+            reason=REASON_COUPLING_TOKEN_UNKNOWN,
         )
     return CheckResult(
         label,
@@ -783,10 +881,11 @@ def _requires_roleful_graph() -> bool:
     )
 
     try:
-        return bool(
-            classify_output_contract(load_output_topology_strict())
-            .requires_roleful_graph
-        )
+        # The STRICT loader, not `evidence.output_topology()`: this one raises
+        # on a torn/absent file instead of fail-softing, which is what the
+        # `except` below classifies. Memoized so it stays one read per run.
+        topology = evidence.get("output_topology_strict", load_output_topology_strict)
+        return bool(classify_output_contract(topology).requires_roleful_graph)
     except (OutputTopologyError, OSError, ValueError):
         return False
 
@@ -817,10 +916,9 @@ def check_fanin_coupling() -> CheckResult:
     from jasper.multiroom.reconcile import SNAPFIFO
 
     label = "fan-in coupling"
-    _, active_path = _active_camilla_config_path()
-    fallback = "/var/lib/camilladsp/configs/sound_current.yml"
-    config_path = Path(active_path or fallback)
-    devices = read_camilla_devices_config(config_path) or {}
+    active_path = evidence.camilla_config_path()
+    config_path = Path(active_path or "/var/lib/camilladsp/configs/sound_current.yml")
+    devices = _loaded_device_fields(config_path)
     if not devices and config_path.exists():
         # A config IS loaded and its devices block did not parse (an absent or
         # duplicated top-level `devices:` key, or a file this process cannot
@@ -832,12 +930,17 @@ def check_fanin_coupling() -> CheckResult:
             "capture and playback axes cannot be judged. Check the file's "
             "top-level devices: key, then run: sudo /opt/jasper/.venv/bin/"
             "jasper-sound reconcile-current-dsp",
-            reason=REASON_DEVICES_UNPARSED,
+            reason=REASON_COUPLING_DEVICES_UNPARSED,
         )
     capture = devices.get("capture_type")
     if capture is None:
         # No JTS config loaded yet (fresh box / non-JTS graph).
-        return CheckResult(label, "ok", "no loaded capture to compare")
+        return CheckResult(
+            label,
+            "skipped",
+            "no loaded capture to compare",
+            reason=REASON_COUPLING_NO_LOADED_CAPTURE,
+        )
 
     # WHICH post-DSP ring is EXACTLY ONE answer, taken from the reconciler's
     # marker — not "either is fine". Accepting both would read green through the
@@ -891,11 +994,13 @@ def check_fanin_coupling() -> CheckResult:
         # records, composed from its constant rather than respelled.
         from ...control.transport_park import ACTIVE_ENDPOINT_REMEDY
 
+        coupling_reason = REASON_COUPLING_ACTIVE_LADDER_PENDING
         recovery = (
             f"the ACTIVE-ring ladder, in order: {ACTIVE_ENDPOINT_REMEDY} && "
             "sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring"
         )
     else:
+        coupling_reason = REASON_COUPLING_GRAPH_NOT_RING
         recovery = (
             "run: sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile "
             "shm_ring"
@@ -905,12 +1010,13 @@ def check_fanin_coupling() -> CheckResult:
         "warn",
         "the loaded graph is not this box's ring config: "
         f"{'; '.join(ring_mismatches)}; a stale baseline artifact re-seeded on a "
-        f"camilla restart is the usual cause (finding-5 revert); {recovery}",
+        f"camilla restart is the usual cause; {recovery}",
+        reason=coupling_reason,
     )
 
 
 # ---------------------------------------------------------------------------
-# The aloop-remnant guard (audio-graph consolidation #2285, P9-C; ADR-0100).
+# The aloop-remnant guard (ADR-0100).
 #
 # WHAT IT ASSERTS. Every OPEN aloop substream has a REGISTERED purpose, where
 # the registered set is DERIVED — never restated — from the one place that
@@ -924,11 +1030,17 @@ def check_fanin_coupling() -> CheckResult:
 # ring-armed renderer lane still RESERVES its aloop pair, so the registered set
 # must not flap with arming state.
 #
-# Pairs 5, 6 and 7 are absent because no owner names them: P9-C deleted pair 5's
-# PCM definitions and ADR-0100 deleted pairs 6 and 7's, so an open pair in that
-# range has resurrected a deleted lane. That is the FAIL. They stay reserved
+# Pairs 5, 6 and 7 are absent because no owner names them: their PCM
+# definitions are gone, so an open pair in that range has resurrected a
+# deleted lane. That is the FAIL. They stay reserved
 # rather than reclaimed, per deploy/modprobe.d/snd-aloop.conf: pcm_substreams
 # stays 8 so no surviving pair renumbers.
+#
+# BOUNDED. At most 4 PCM directories x `_ALOOP_SUBSTREAMS` status reads (32
+# small procfs files), plus one `comm`/`cgroup` read per offender, capped at
+# `_ALOOP_OFFENDER_DETAIL_CAP` offenders in the message.
+#
+# FAIL-SOFT. An unreadable /proc is `warn`, never an exception and never a FAIL.
 #
 # SERIALIZED. `exclusive_group="audio-probe"` shares a lane with
 # `check_renderer_device_resolvable` (renderers.py), which opens real PCMs with
@@ -1037,7 +1149,7 @@ def check_aloop_registered_substreams() -> CheckResult:
 
     See the header comment above for the rationale; the statuses:
 
-    - snd-aloop absent            -> ok (no remnant on this box)
+    - snd-aloop absent            -> skipped (no remnant on this box)
     - registered set underivable  -> warn (never a shrunken set)
     - /proc unreadable            -> warn (fail-soft; never a FAIL)
     - every open pair registered  -> ok, reporting the remnant's current size
@@ -1049,9 +1161,10 @@ def check_aloop_registered_substreams() -> CheckResult:
     if not card_dir.is_dir():
         return CheckResult(
             label,
-            "ok",
+            "skipped",
             f"snd-aloop not loaded ({card_dir} absent) — no aloop remnant "
             "on this box",
+            reason=REASON_ALOOP_NOT_LOADED,
         )
 
     derived = _derive_registered_pairs()
@@ -1063,6 +1176,7 @@ def check_aloop_registered_substreams() -> CheckResult:
             "constant (_FANIN_EXPECTED_ALOOP_INPUTS in this module) — each "
             "entry must be an 'hw:Loopback,<device>,<sub>' triple. The "
             "remnant's scope cannot be verified.",
+            reason=REASON_ALOOP_REGISTERED_SET_UNDERIVABLE,
         )
     registered_pairs = derived
 
@@ -1106,6 +1220,7 @@ def check_aloop_registered_substreams() -> CheckResult:
             f"snd-aloop card present at {card_dir} but no substream status "
             f"was readable ({unreadable} read error(s)) — the remnant's scope "
             "could not be verified",
+            reason=REASON_ALOOP_PROC_UNREADABLE,
         )
 
     if offenders:
@@ -1117,13 +1232,14 @@ def check_aloop_registered_substreams() -> CheckResult:
             "fail",
             "snd-aloop substream(s) open with no registered purpose in this "
             f"phase: {'; '.join(shown)}{suffix}. Only fan-in's five capture "
-            "lanes (pairs 0-4) are registered: pair 5's PCM definitions were "
-            "DELETED by #2285 P9-C, and pairs 6 and 7's by ADR-0100 when the "
-            "content lane and the summed music output both moved to SHM rings. "
+            "lanes (pairs 0-4) are registered; pairs 5, 6 and 7 have no PCM "
+            "definitions left to open (ADR-0100 moved the content lane and the "
+            "summed music output to SHM rings). "
             "A holder there means a rolled-back binary or a stale "
             "/etc/asound.conf resurrected a deleted lane. Identify the process "
             "above, stop it, and re-run `bash scripts/deploy-to-pi.sh` to "
             "restore the shipped ALSA config.",
+            reason=REASON_ALOOP_UNREGISTERED_SUBSTREAM_OPEN,
         )
 
     open_pairs = sorted(registered_open)

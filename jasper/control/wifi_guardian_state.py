@@ -18,15 +18,15 @@ dict, never raises, includes a top-level `enabled` field so consumers
 can distinguish "feature off / no stash yet" from "feature on, here's
 the latest state."
 
-The PSK is never read from the stash by this module. Only SSID +
-key_mgmt + last-action metadata. WS1 Phase 3b-2: jasper-control runs non-root
-and the PSK-bearing stash stays 0600, so the SSID read fails-soft to None for
-the non-root caller — ``enabled`` (from a stat) + ``active_ssid`` (nmcli) +
-``last_action`` (journal) still carry the resilience story without the PSK.
+The PSK is never read from the stash by this module — only SSID + key_mgmt +
+last-action metadata. jasper-control runs non-root and the PSK-bearing stash
+stays 0600, so the SSID read fails soft to None for that caller: ``enabled``
+(from a stat) + ``active_ssid`` (nmcli) + ``last_action`` (journal) still
+carry the resilience story without the PSK.
 
-Cost: ~30 ms typical (one stat() + one nmcli + one journalctl call).
-Called from the `/state` aggregator which already runs ~200 ms parallel
-probes, so fits well inside the budget.
+Cost: one stat() plus up to two nmcli calls and one journalctl call, each
+capped at 3 s, so a wedged nmcli or journal holds a `/state` aggregation for
+up to that per call.
 """
 from __future__ import annotations
 
@@ -39,6 +39,8 @@ from jasper.log_event import log_event
 
 from ..wifi_guardian_persistence import (
     DEFAULT_PATH as _DEFAULT_STASH,
+    NMCLI_ACTIVE_WIFI_FIELDS,
+    active_wifi_connection,
     read_stash,
 )
 
@@ -70,7 +72,7 @@ def _active_ssid() -> str | None:
     so all failure paths report "unknown" rather than raising."""
     try:
         proc = subprocess.run(
-            ["nmcli", "-t", "-f", "NAME,TYPE", "connection",
+            ["nmcli", "-t", "-f", NMCLI_ACTIVE_WIFI_FIELDS, "connection",
              "show", "--active"],
             capture_output=True, text=True, timeout=3,
         )
@@ -78,12 +80,7 @@ def _active_ssid() -> str | None:
         return None
     if proc.returncode != 0:
         return None
-    active_name: str | None = None
-    for raw in proc.stdout.splitlines():
-        parts = raw.split(":", 1)
-        if len(parts) == 2 and parts[1] in ("802-11-wireless", "wifi"):
-            active_name = parts[0]
-            break
+    active_name, _device = active_wifi_connection(proc.stdout)
     if not active_name:
         return None
     # Resolve to actual SSID (netplan-seeded profile NAMEs can differ).
@@ -192,18 +189,14 @@ def snapshot() -> dict[str, Any]:
     }
 
     stash_path = _stash_path()
-    # `enabled` = the guardian is armed. Derive it from the stash file's
-    # EXISTENCE (a stat — which the non-root jasper-control can do via the
-    # group-traversable dir), NOT from reading it: the stash holds the WiFi PSK
-    # and stays owner-only 0600. WS1 Phase 3b-2 keeps the PSK out of the `jasper`
-    # group — jasper-control needs only the SSID, never the PSK value.
+    # `enabled` = the guardian is armed. Derived from the stash file's
+    # EXISTENCE (a stat, which the non-root jasper-control can do via the
+    # group-traversable dir), not from reading it: the stash holds the WiFi
+    # PSK and stays owner-only 0600.
     out["enabled"] = os.path.exists(stash_path)
-    # Only attempt the read when we can actually read the file. The non-root
-    # jasper-control cannot read the 0600 PSK stash — gate on os.access so
-    # read_stash (which logs a permission WARNING on EACCES) is never even called
-    # on the expected-denied path, instead of spamming /state polls. When the
-    # SSID is unavailable, active_ssid (nmcli) + last_action (journal) carry the
-    # drift story without the PSK.
+    # The non-root jasper-control cannot read the 0600 PSK stash, so gate on
+    # os.access: read_stash logs a permission WARNING on EACCES, and that
+    # expected-denied path would otherwise spam every /state poll.
     stash = None
     if os.access(stash_path, os.R_OK):
         try:

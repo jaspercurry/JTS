@@ -2,37 +2,37 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the doctor's SHM-ring transport and lane checks."""
+"""Unit tests for the jasper-doctor shared-memory-ring checks."""
 
-from pathlib import Path
-
-import pytest
-
-from jasper.cli import doctor
 import os
 import struct
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
+
 from jasper.audio_hardware.dac import (
     HIFIBERRY_DAC8X_STUDIO_ID,
     LatencyFloor,
     latency_floor_for,
 )
-from jasper.cli.doctor import (
-    audio_runtime_ring,
-)
+from jasper.cli import doctor
+from jasper.cli.doctor import _evidence, audio_runtime_ring
+from jasper.cli.doctor._evidence import evidence
 from jasper.fanin_coupling import (
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_PLAYBACK_DEVICE,
 )
+from jasper.route_latency.status_socket import FANIN_STATUS_SOCKET
 
-from .doctor_test_support import record_active_dac
 from ._doctor_audio_runtime_fixtures import (
     _outputd_status_payload,
-    _patch_fanin_status_socket,
-    _patch_fanin_systemctl,
-    _stage_floor_conf,
+    _patch_status_reader,
+    _seed_units,
 )
+from .doctor_test_support import record_active_dac
+from .test_doctor_audio_runtime_camilla import _silent_camilla_recover_park
 
 
 def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
@@ -57,13 +57,17 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
     from jasper.audio_runtime_plan import (
         output_endpoint_evidence_from_statefiles as _real_endpoint_evidence,
     )
+    from jasper.cli.doctor import audio_runtime_ring as _audio_runtime
     from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 
     # ONE on-disk statefile pair drives BOTH halves — no stubbed evidence
-    # resolution. Canning the endpoint evidence for half one and the loaded
-    # config reader for half two feeds the two surfaces from independent
-    # fixtures, which lets them disagree about the box without reddening
-    # anything. Same bytes to both, or the guard is theatre.
+    # resolution. The first version of this guard canned
+    # `output_endpoint_evidence_from_statefiles` for half one and
+    # `_loaded_playback_device` for half two, which meant the two surfaces were
+    # fed by two independent fixtures and could disagree about the box without
+    # reddening anything. That is precisely how the gap this de-duplication
+    # inherited (the split check reading one statefile while the deleted note
+    # read two) survived unseen. Same bytes to both, or the guard is theatre.
     config = tmp_path / "loaded.yml"
     config.write_text(
         "devices:\n"
@@ -76,10 +80,7 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
     statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
     absent = tmp_path / "crossover-statefile.yml"
 
-    monkeypatch.setattr(
-        audio_runtime_ring, "_active_camilla_config_path",
-        lambda: (str(statefile), str(config)),
-    )
+    evidence.seed("camilla_config", (str(statefile), str(config)))
     monkeypatch.setattr(
         "jasper.audio_runtime_plan.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
     )
@@ -94,12 +95,12 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(outputd_env))
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
+    _seed_units()
+    _patch_status_reader(
         monkeypatch,
         _outputd_status_payload(content_source="alsa", content_buffer_frames=4096),
     )
-    # `_patch_fanin_status_socket` also cans `output_endpoint_evidence_from_statefiles`
+    # `_patch_status_reader` also cans `output_endpoint_evidence_from_statefiles`
     # from the STATUS payload — convenient for the checks whose subject is the
     # payload, and fatal for this one, whose subject IS the evidence resolution.
     # Put the real reader back so both halves resolve the statefiles above.
@@ -112,50 +113,40 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
 
     # Half one: outputd no longer restates the split.
     assert r.status == "ok", r.detail
-    assert "arm waypoint" not in r.detail
+    assert r.reason == ""
 
-    # Half two: the check that OWNS the split still fails on it, with the
-    # remedy — off the same statefile half one just read.
-    split = audio_runtime_ring.check_ring_split_transport()
+    # Half two: the check that OWNS the split still fails on it — off the same
+    # statefile half one just read.
+    split = _audio_runtime.check_ring_split_transport()
 
     assert split.status == "fail", split.detail
-    assert "jasper-fanin-coupling-reconcile shm_ring" in split.detail
-    # #2285 P2: the retired rollback endpoint must never be printed as a
-    # remediation — argparse rejects it, and a command the operator cannot run
-    # is worse than none, because they do the work of trying it.
-    assert "--endpoint aloop" not in split.detail
+    assert split.reason == _audio_runtime.REASON_SPLIT_RING_UNCONSUMED
 
 
 # ---- renderer ring lanes: the unarmed fleet default is healthy ----------
 
 
-def test_unarmed_renderer_lanes_report_ok(monkeypatch):
-    """An unarmed box (the fleet default) is healthy, not failing.
+def test_unarmed_renderer_lanes_report_skipped(monkeypatch):
+    """An unarmed box (the fleet default) formed no verdict, and is not failing.
 
-    The doctor's status vocabulary is ok|warn|fail (CheckResult.status),
-    and render() maps anything else to a red X through its else-branch.
-    The first ship of this check returned a novel "skip" for the unarmed
-    branch, which made EVERY unarmed box render a failure and exit 1
-    (AGENTS.md: "Returns 0 if all critical checks pass"). Unarmed/
-    unconfigured-is-ok is the established doctor convention —
-    check_chip_reference (this same domain), Spotify auth and Google
-    integrations all return ok + a skipped-style detail.
+    ADR-0233 rule 3: a check that did not run says `skipped`, never `ok`. It
+    must also stay exit-0 — the next test drives the same result through the
+    real render path to pin that.
     """
     import jasper.renderer_lanes as rl
 
     monkeypatch.setattr(rl, "read_armed_labels", lambda *a, **kw: ())
     result = doctor.audio_runtime_ring.check_renderer_ring_lanes()
-    assert result.status == "ok"
-    assert "no renderer lane armed" in result.detail
-    assert "fleet default" in result.detail
+    assert result.status == "skipped"
+    assert result.reason == audio_runtime_ring.REASON_RENDERER_LANES_UNARMED
 
 
 def test_unarmed_renderer_lanes_exit_zero_through_render(monkeypatch, capsys):
     """The fleet-wide repro, inverted into a guard: drive the unarmed
     result through the doctor's REAL render/exit path and require exit 0.
     A status outside the vocabulary reaches render()'s else-branch and
-    becomes exit 1 — exactly how the "skip" ship failed — so this pin
-    breaks on the defect CLASS, not just today's literal."""
+    becomes exit 1, so this pin breaks on the defect CLASS, not just
+    today's literal."""
     import jasper.renderer_lanes as rl
 
     monkeypatch.setattr(rl, "read_armed_labels", lambda *a, **kw: ())
@@ -193,25 +184,18 @@ def test_armed_on_demand_lane_resting_state_is_healthy(monkeypatch):
     ring after an arm; applying it to an on-demand lane would put a
     standing false warning on every armed box.
 
-    The detail must also CARRY the carve-out's stated residual: resting
-    and broken-at-open are byte-identical to this check, so the healthy
-    line must hint at the unproven writer path rather than implying it
-    was verified (an operator reading "ok" as "the lane works" would be
-    over-reading — the hint is what keeps the reading honest)."""
+    Stated residual: resting and broken-at-open are byte-identical to
+    this check, so the ok does not prove the writer path."""
     import jasper.renderer_lanes as rl
 
     monkeypatch.setattr(rl, "read_armed_labels", lambda *a, **kw: ("correction",))
-    monkeypatch.setattr(
-        doctor.audio_runtime_ring,
-        "_fanin_status",
-        lambda: {"inputs": [_resting_ring_entry("correction")]},
+    evidence.seed(
+        f"status:{FANIN_STATUS_SOCKET}",
+        _evidence.StatusRead({"inputs": [_resting_ring_entry("correction")]}),
     )
     result = doctor.audio_runtime_ring.check_renderer_ring_lanes()
     assert result.status == "ok"
-    assert "on-demand" in result.detail
-    assert "no measurement played yet" in result.detail
-    assert "a writer that cannot open looks identical here" in result.detail
-    assert "run a measurement to confirm" in result.detail
+    assert result.reason == ""
 
 
 def test_armed_daemon_lane_never_fed_still_warns(monkeypatch):
@@ -223,21 +207,38 @@ def test_armed_daemon_lane_never_fed_still_warns(monkeypatch):
     monkeypatch.setattr(
         rl, "read_armed_labels", lambda *a, **kw: ("spotify", "correction")
     )
-    monkeypatch.setattr(
-        doctor.audio_runtime_ring,
-        "_fanin_status",
-        lambda: {
-            "inputs": [
-                _resting_ring_entry("spotify"),
-                _resting_ring_entry("correction"),
-            ]
-        },
+    evidence.seed(
+        f"status:{FANIN_STATUS_SOCKET}",
+        _evidence.StatusRead(
+            {
+                "inputs": [
+                    _resting_ring_entry("spotify"),
+                    _resting_ring_entry("correction"),
+                ]
+            }
+        ),
     )
     result = doctor.audio_runtime_ring.check_renderer_ring_lanes()
     assert result.status == "warn"
-    assert "spotify" in result.detail and "NEVER FED" in result.detail
-    assert "librespot.service" in result.detail
-    assert "correction:" not in result.detail  # no correction problem entry
+    # The daemon lane is the problem; the on-demand lane beside it is not.
+    assert result.reason == audio_runtime_ring.REASON_RENDERER_LANE_NEVER_FED
+
+
+# ===========================================================================
+# check_ring_conf_floor_render
+#
+# Compares two facts, each read from its owner: the active DAC profile's
+# DECLARED LatencyFloor (the DAC registry) and the period_frames the ring
+# conf.d pins (the file). The ring slot IS one outputd DAC period, so a box
+# whose DAC declares a floor should have that floor rendered into its conf.d
+# by jasper-audio-hardware-reconcile. A DAC with no declared floor is ok by
+# RULE, not by luck — the shipped conf.d default stands.
+# ===========================================================================
+
+SHIPPED_RING_CONF = (
+    Path(__file__).resolve().parents[1]
+    / "deploy" / "alsa" / "conf.d" / "60-jts-ring.conf"
+)
 
 # A registered profile that declares NO LatencyFloor, so the no-floor branches
 # below exercise the real registry rather than a synthetic id. Asserted rather
@@ -254,33 +255,15 @@ assert latency_floor_for(NO_FLOOR_DAC_ID) is None, (
 )
 
 
-def test_skips_when_no_active_dac_is_recorded(monkeypatch, tmp_path):
-    """The env's JASPER_AUDIO_DAC_ID is not consulted: with no record there is
-    no declared floor to render (the missing record is another check's warn)."""
-    monkeypatch.setenv("JASPER_AUDIO_DAC_ID", "apple_usb_c_dongle")
-    monkeypatch.setattr(audio_runtime_ring, "_JTS_RING_CONF_D", str(tmp_path / "60-jts-ring.conf"))
-
-    result = audio_runtime_ring.check_ring_conf_floor_render()
-
-    assert result.status == "ok"
-    assert "names no active DAC" in result.detail
-
-
-def test_skips_when_the_recorded_dac_is_only_partially_present(
-    monkeypatch, tmp_path
-):
-    """A partial single-DAC record is not ACTIVE (the reconciler does not
-    drive it), so this renders the same ok/skipped branch as no record at
-    all — the conf.d floor is never read for a DAC the reconciler only
-    observed, even though the conf.d file itself exists on disk."""
-    _stage_floor_conf(
-        monkeypatch, tmp_path, dac_id="apple_usb_c_dongle", status="partial"
-    )
-
-    result = audio_runtime_ring.check_ring_conf_floor_render()
-
-    assert result.status == "ok"
-    assert "names no active DAC" in result.detail
+def _stage_floor_conf(monkeypatch, tmp_path, *, dac_id, conf_text=None, status="ready"):
+    conf = tmp_path / "60-jts-ring.conf"
+    if conf_text is None:
+        conf.write_bytes(SHIPPED_RING_CONF.read_bytes())
+    else:
+        conf.write_text(conf_text, encoding="utf-8")
+    monkeypatch.setattr(audio_runtime_ring, "_JTS_RING_CONF_D", str(conf))
+    record_active_dac(dac_id, status=status)
+    return conf
 
 
 def _conf_text(period_frames):
@@ -299,34 +282,29 @@ def _synthetic_floor(period_frames):
     )
 
 
-def test_ok_when_the_dac_declares_no_floor(monkeypatch, tmp_path):
-    # State 1: nothing to render — the shipped default stands by rule.
-    _stage_floor_conf(monkeypatch, tmp_path, dac_id=NO_FLOOR_DAC_ID)
-
-    result = audio_runtime_ring.check_ring_conf_floor_render()
-
-    assert result.status == "ok"
-    assert "no latency floor" in result.detail
-    assert "shipped default" in result.detail
-
-
-def test_ok_when_the_conf_matches_the_declared_floor(monkeypatch, tmp_path):
-    # State 2: the golden Apple case — the declared floor IS the shipped 128.
-    _stage_floor_conf(monkeypatch, tmp_path, dac_id="apple_usb_c_dongle")
-
-    result = audio_runtime_ring.check_ring_conf_floor_render()
-
-    assert result.status == "ok"
-    assert "128" in result.detail
-    assert "apple_usb_c_dongle" in result.detail
+def _stage_no_active_dac(monkeypatch, tmp_path):
+    """No reconciler record at all. The env's JASPER_AUDIO_DAC_ID is NOT
+    consulted, so there is no declared floor to read (the missing record is
+    another check's warn)."""
+    monkeypatch.setenv("JASPER_AUDIO_DAC_ID", "apple_usb_c_dongle")
+    monkeypatch.setattr(
+        audio_runtime_ring, "_JTS_RING_CONF_D", str(tmp_path / "60-jts-ring.conf")
+    )
 
 
-def test_ok_when_the_floor_exceeds_the_fixed_ring_slot(monkeypatch, tmp_path):
-    # State 4, the product boundary: Ring A's slot is fan-in's COMPILE-TIME
-    # RING_SLOT_FRAMES, so a DAC whose floor is not exactly that never gets a
-    # rendered conf.d this way — shm_ring's floor-optimal period is simply out
-    # of reach here until #2147. That is a documented boundary, NOT drift, so
-    # it reports ok.
+def _stage_partial_record(monkeypatch, tmp_path):
+    """A partial single-DAC record is not ACTIVE (the reconciler does not drive
+    it), so it reaches the same branch as no record at all — even though the
+    conf.d file itself exists on disk."""
+    _stage_floor_conf(
+        monkeypatch, tmp_path, dac_id="apple_usb_c_dongle", status="partial"
+    )
+
+
+def _stage_floor_above_the_slot(monkeypatch, tmp_path):
+    """Ring A's slot is fan-in's COMPILE-TIME RING_SLOT_FRAMES, so a DAC whose
+    floor is not exactly that never gets a rendered conf.d. A documented product
+    boundary, not drift."""
     from jasper.fanin_coupling import RING_SLOT_FRAMES
 
     monkeypatch.setattr(
@@ -336,157 +314,116 @@ def test_ok_when_the_floor_exceeds_the_fixed_ring_slot(monkeypatch, tmp_path):
     )
     _stage_floor_conf(monkeypatch, tmp_path, dac_id="hifiberry_dac8x")
 
-    result = audio_runtime_ring.check_ring_conf_floor_render()
 
-    assert result.status == "ok"
-    # Honest: names both numbers, says what is unavailable and what still works.
-    assert str(2 * RING_SLOT_FRAMES) in result.detail
-    assert str(RING_SLOT_FRAMES) in result.detail
-    assert "shm_ring" in result.detail
-    assert "loopback" not in result.detail.lower()
-    assert "#2147" in result.detail
-
-
-def test_warns_when_the_conf_diverges_from_the_declared_floor(
-    monkeypatch, tmp_path
-):
-    # State 5, real drift: the Apple dongle's floor IS renderable (it equals
-    # RING_SLOT_FRAMES) but this box's conf.d was never rendered to it. Warn,
-    # not fail — an unrendered conf.d is inert until something arms shm_ring
-    # against it, so this is a dormant render gap, not a live fault.
-    _stage_floor_conf(
-        monkeypatch,
-        tmp_path,
-        dac_id="apple_usb_c_dongle",
-        conf_text=_conf_text(1024),
+def _stage_conf_absent(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        audio_runtime_ring, "_JTS_RING_CONF_D", str(tmp_path / "missing.conf")
     )
-
-    result = audio_runtime_ring.check_ring_conf_floor_render()
-
-    assert result.status == "warn"
-    # Names BOTH numbers and the remedy, not a bare "mismatch".
-    assert "128" in result.detail
-    assert "1024" in result.detail
-    assert "jasper-audio-hardware-reconcile" in result.detail
+    record_active_dac("apple_usb_c_dongle")
 
 
 @pytest.mark.parametrize(
-    "conf_text",
+    "stage, status, reason",
     [
+        (
+            _stage_no_active_dac,
+            "skipped",
+            audio_runtime_ring.REASON_RING_FLOOR_NO_ACTIVE_DAC,
+        ),
+        (
+            _stage_partial_record,
+            "skipped",
+            audio_runtime_ring.REASON_RING_FLOOR_NO_ACTIVE_DAC,
+        ),
+        # Nothing to render — the shipped conf.d default stands by rule.
+        (
+            lambda mp, tp: _stage_floor_conf(mp, tp, dac_id=NO_FLOOR_DAC_ID),
+            "ok",
+            audio_runtime_ring.REASON_RING_FLOOR_NOT_DECLARED,
+        ),
+        # The golden Apple case: the declared floor IS the shipped period.
+        (
+            lambda mp, tp: _stage_floor_conf(mp, tp, dac_id="apple_usb_c_dongle"),
+            "ok",
+            audio_runtime_ring.REASON_RING_FLOOR_RENDERED,
+        ),
+        (
+            _stage_floor_above_the_slot,
+            "ok",
+            audio_runtime_ring.REASON_RING_FLOOR_NOT_RENDERABLE,
+        ),
+        # Real drift: a renderable floor this box's conf.d was never rendered
+        # to. Warn, not fail — an unrendered conf.d is inert until something
+        # arms shm_ring against it.
+        (
+            lambda mp, tp: _stage_floor_conf(
+                mp, tp, dac_id="apple_usb_c_dongle", conf_text=_conf_text(1024)
+            ),
+            "warn",
+            audio_runtime_ring.REASON_RING_FLOOR_UNRENDERED,
+        ),
         # Torn: the two PCMs disagree, so there is no single geometry.
-        "pcm.jts_ring_capture {\n    period_frames 128\n}\n"
-        "pcm.jts_ring_playback {\n    period_frames 1024\n}\n",
+        (
+            lambda mp, tp: _stage_floor_conf(
+                mp,
+                tp,
+                dac_id="apple_usb_c_dongle",
+                conf_text=(
+                    "pcm.jts_ring_capture {\n    period_frames 128\n}\n"
+                    "pcm.jts_ring_playback {\n    period_frames 1024\n}\n"
+                ),
+            ),
+            "warn",
+            audio_runtime_ring.REASON_RING_FLOOR_CONF_PERIOD_INDETERMINATE,
+        ),
         # No period_frames line at all.
-        "pcm.jts_ring_capture { type jts_ring }\n",
+        (
+            lambda mp, tp: _stage_floor_conf(
+                mp,
+                tp,
+                dac_id="apple_usb_c_dongle",
+                conf_text="pcm.jts_ring_capture { type jts_ring }\n",
+            ),
+            "warn",
+            audio_runtime_ring.REASON_RING_FLOOR_CONF_PERIOD_INDETERMINATE,
+        ),
+        (
+            _stage_conf_absent,
+            "warn",
+            audio_runtime_ring.REASON_RING_FLOOR_CONF_PERIOD_INDETERMINATE,
+        ),
+    ],
+    ids=[
+        "no_active_dac",
+        "partial_record",
+        "no_declared_floor",
+        "conf_matches_floor",
+        "floor_above_the_slot",
+        "conf_diverges_from_floor",
+        "conf_torn",
+        "conf_has_no_period",
+        "conf_absent",
     ],
 )
-def test_warns_when_the_conf_period_is_indeterminate(
-    monkeypatch, tmp_path, conf_text
+def test_ring_conf_floor_render_verdicts(
+    monkeypatch, tmp_path, stage, status, reason
 ):
-    _stage_floor_conf(
-        monkeypatch, tmp_path, dac_id="apple_usb_c_dongle", conf_text=conf_text
-    )
+    stage(monkeypatch, tmp_path)
 
     result = audio_runtime_ring.check_ring_conf_floor_render()
 
-    assert result.status == "warn"
-    assert "no single period_frames" in result.detail
-    assert "redeploy" in result.detail
-
-
-def test_warns_when_the_conf_is_absent(monkeypatch, tmp_path):
-    monkeypatch.setattr(audio_runtime_ring, "_JTS_RING_CONF_D", str(tmp_path / "missing.conf"))
-    record_active_dac("apple_usb_c_dongle")
-
-    result = audio_runtime_ring.check_ring_conf_floor_render()
-
-    assert result.status == "warn"
-    assert "absent or torn" in result.detail
+    assert result.status == status
+    assert result.reason == reason
 
 
 def test_check_is_registered_in_the_audio_doctor_group():
-    from jasper.cli.doctor import _registry
+    from jasper.cli.doctor._registry import registered_checks
 
     entry = next(
-        c for c in _registry.registered_checks()
-        if c.func is audio_runtime_ring.check_ring_conf_floor_render
+        e for e in registered_checks()
+        if e.func is audio_runtime_ring.check_ring_conf_floor_render
     )
     assert entry.group == "audio"
-
-
-# --- #2294: a floor-blocked box must SAY it cannot ring -----------------------
-
-
-def test_no_floor_detail_names_both_routes_to_a_ring(monkeypatch, tmp_path):
-    """`ok` is right, silence was not (issue #2294) — and neither was the old text.
-
-    A DAC with no declared floor leaves outputd on its PACKAGED default period,
-    which is not the fixed ring slot, so the conf.d has nothing to render. The
-    conf.d is correct either way — hence `ok` — but the household's actual
-    question is "why hasn't this box reached shm_ring?", and before #2294 the
-    answer appeared on no surface.
-
-    The answer it then gave was wrong. It said shm_ring was "unavailable on this
-    box", which is a claim about outputd's RESOLVED period, and this check reads
-    only the DECLARED floor. The two diverge through the operator seam: jts4
-    (InnoMaker HiFi AMP Pro, floorless at the time) armed shm_ring on 2026-08-14
-    with JASPER_OUTPUTD_PERIOD_FRAMES / _DAC_BUFFER_FRAMES hand-set in
-    /etc/jasper/jasper.env. So the detail must name BOTH routes to a ring and
-    claim no impossibility.
-    """
-    from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_PERIOD_FRAMES
-    from jasper.fanin_coupling import RING_SLOT_FRAMES
-
-    _stage_floor_conf(monkeypatch, tmp_path, dac_id=NO_FLOOR_DAC_ID)
-
-    result = audio_runtime_ring.check_ring_conf_floor_render()
-
-    assert result.status == "ok"
-    assert str(DEFAULT_OUTPUTD_PERIOD_FRAMES) in result.detail
-    assert str(RING_SLOT_FRAMES) in result.detail
-    assert "#2147" in result.detail
-    # Route 1: the operator seam, named with the file that carries it.
-    assert "JASPER_OUTPUTD_PERIOD_FRAMES" in result.detail
-    assert "/etc/jasper/jasper.env" in result.detail
-    # Route 2: a declared floor.
-    assert "floor" in result.detail
-    # And NO impossibility claim, on a check that cannot see the resolved period.
-    assert "unavailable" not in result.detail
-
-
-def test_a_floor_above_the_slot_does_not_claim_ineligibility(monkeypatch, tmp_path):
-    """The same falsified claim lived in the floor-exceeds-slot branch.
-
-    A DAC declaring, say, a 256-frame floor gets no rendered conf.d either — but
-    an operator JASPER_OUTPUTD_PERIOD_FRAMES still outranks that floor and can
-    bring the resolved period back to the slot, exactly as it did on jts4. So
-    this branch may say the conf.d is not rendered and name the seam; it may not
-    say the ring is unavailable.
-    """
-    from jasper.fanin_coupling import RING_SLOT_FRAMES
-
-    monkeypatch.setattr(
-        audio_runtime_ring,
-        "latency_floor_for",
-        lambda _id: _synthetic_floor(2 * RING_SLOT_FRAMES),
-    )
-    _stage_floor_conf(monkeypatch, tmp_path, dac_id="hifiberry_dac8x")
-
-    result = audio_runtime_ring.check_ring_conf_floor_render()
-
-    assert result.status == "ok"
-    assert "unavailable" not in result.detail
-    assert "JASPER_OUTPUTD_PERIOD_FRAMES" in result.detail
-
-
-def test_a_matching_floor_does_not_claim_ineligibility(monkeypatch, tmp_path):
-    # The mirror of the above: a box that CAN ring must not be told it cannot.
-    _stage_floor_conf(monkeypatch, tmp_path, dac_id="apple_usb_c_dongle")
-
-    result = audio_runtime_ring.check_ring_conf_floor_render()
-
-    assert result.status == "ok"
-    assert "unavailable" not in result.detail
 
 
 # ===========================================================================
@@ -557,163 +494,95 @@ def _stage_ring_geometry(
     return fanin_env, program
 
 
-def test_a_slot_mismatch_is_assessed_with_no_persisted_coupling(monkeypatch, tmp_path):
-    """Ring A is never inert, so no persisted token may switch this check off.
-
-    The gate this replaces skipped whenever ``JASPER_FANIN_CAMILLA_COUPLING``
-    did not read ``shm_ring`` — which is every box the reconciler has not
-    written yet, on which the graph opens Ring A regardless. A crash-loop-class
-    geometry mismatch went unreported on exactly those boxes.
-    """
-    _stage_ring_geometry(monkeypatch, tmp_path, fanin_env_text="JASPER_FANIN_RING_SLOTS=8\n")
-    res = audio_runtime_ring.check_ring_geometry_coherence()
-    assert res.status == "fail"
-
-
-def test_ok_when_all_three_axes_agree(monkeypatch, tmp_path):
-    _fanin, program = _stage_ring_geometry(monkeypatch, tmp_path)
-    _write_ring(program)
-    res = audio_runtime_ring.check_ring_geometry_coherence()
-    assert res.status == "ok", res.detail
-    assert "n_slots=2" in res.detail
-
-
-def test_ok_detail_reports_the_on_disk_wire(monkeypatch, tmp_path):
-    """The ok detail names the wire it compared, not just the slot geometry.
-
-    A reader that can see the whole header should say what it saw — otherwise
-    "the Python layer can see the wire" is true only inside tests.
-    """
-    _fanin, program = _stage_ring_geometry(monkeypatch, tmp_path)
-    _write_ring(program)
-    res = audio_runtime_ring.check_ring_geometry_coherence()
-    assert res.status == "ok", res.detail
-    assert "S16_LE/2ch" in res.detail
-    assert "48000 Hz" in res.detail
-
-
 @pytest.mark.parametrize(
-    ("kwargs", "axis"),
+    "stage_kwargs, ring_kwargs, status, reason",
     [
-        ({"sample_format": 2}, "sample_format"),
-        ({"channels": 6}, "channels"),
+        # Ring A is never inert, so no persisted token may switch this check
+        # off: the gate this replaces skipped whenever
+        # JASPER_FANIN_CAMILLA_COUPLING did not read shm_ring — every box the
+        # reconciler has not written yet, on which the graph opens Ring A
+        # regardless.
+        (
+            {"fanin_env_text": "JASPER_FANIN_RING_SLOTS=8\n"},
+            None,
+            "fail",
+            audio_runtime_ring.REASON_RING_SLOTS_ENV_CONF_MISMATCH,
+        ),
+        ({}, {}, "ok", ""),
+        # The wire axes are COMPARED, not merely reported: a ring file whose
+        # slots and period match while its format or channel count does not
+        # would otherwise pass every Python guard and surface as CamillaDSP
+        # failing the ioplug attach. `rate` is absent from this table because
+        # the conf.d declares none, so the comparator skips that axis.
+        ({}, {"sample_format": 2}, "fail", audio_runtime_ring.REASON_RING_HEADER_CONF_MISMATCH),
+        ({}, {"channels": 6}, "fail", audio_runtime_ring.REASON_RING_HEADER_CONF_MISMATCH),
+        # Default migration class: stale JASPER_FANIN_RING_SLOTS=8 vs conf.d's 2.
+        (
+            {"fanin_env_text": "JASPER_FANIN_RING_SLOTS=8\n"},
+            {"n_slots": 8},
+            "fail",
+            audio_runtime_ring.REASON_RING_SLOTS_ENV_CONF_MISMATCH,
+        ),
+        # The effective env chain is /etc/jasper/jasper.env then fanin.env, so a
+        # stale base-env value still controls the next fan-in start.
+        (
+            {"jasper_env_text": "JASPER_FANIN_RING_SLOTS=8\n"},
+            {"n_slots": 8},
+            "fail",
+            audio_runtime_ring.REASON_RING_SLOTS_ENV_CONF_MISMATCH,
+        ),
+        # Later EnvironmentFile wins — the reconciler's fix writes exactly this
+        # fanin.env override to neutralize stale base-env residue.
+        (
+            {
+                "fanin_env_text": "JASPER_FANIN_RING_SLOTS=2\n",
+                "jasper_env_text": "JASPER_FANIN_RING_SLOTS=8\n",
+            },
+            {"n_slots": 2},
+            "ok",
+            "",
+        ),
+        # env + conf.d agree, but the on-disk ring is stale on one axis or the
+        # other; the ioplug attach fails on either.
+        ({}, {"n_slots": 8}, "fail", audio_runtime_ring.REASON_RING_HEADER_CONF_MISMATCH),
+        ({}, {"period_frames": 256}, "fail", audio_runtime_ring.REASON_RING_HEADER_CONF_MISMATCH),
+        ({}, {"period_frames": 128}, "ok", ""),
+        # No valid on-disk ring yet (fan-in restarting). Not a hard failure —
+        # the next writer create will be coherent.
+        ({}, None, "warn", audio_runtime_ring.REASON_RING_HEADER_ABSENT),
+        (
+            {"fanin_env_text": "JASPER_FANIN_RING_SLOTS=99\n"},
+            None,
+            "fail",
+            audio_runtime_ring.REASON_RING_SLOTS_ENV_INVALID,
+        ),
+    ],
+    ids=[
+        "assessed_without_a_persisted_coupling",
+        "all_three_axes_agree",
+        "on_disk_format_shears",
+        "on_disk_channels_shear",
+        "fanin_env_disagrees_with_conf",
+        "base_env_disagrees_with_conf",
+        "fanin_env_overrides_stale_base_env",
+        "on_disk_slots_disagree",
+        "on_disk_period_disagrees",
+        "slots_and_period_both_agree",
+        "ring_file_absent",
+        "env_value_invalid",
     ],
 )
-def test_fail_when_the_on_disk_wire_shears(monkeypatch, tmp_path, kwargs, axis):
-    """THE HOLE R5b CLOSED, and this test used to assert it stayed open.
+def test_ring_geometry_coherence_verdicts(
+    monkeypatch, tmp_path, stage_kwargs, ring_kwargs, status, reason
+):
+    _fanin, program = _stage_ring_geometry(monkeypatch, tmp_path, **stage_kwargs)
+    if ring_kwargs is not None:
+        _write_ring(program, **ring_kwargs)
 
-    Its earlier form wrote a 44.1 kHz / 6-channel / S32_LE header — a wire the
-    fleet does not run — and asserted ``ok``, because the wire axes were
-    REPORTED and compared nowhere. That is exactly the silent hole: a ring file
-    whose slots and period match while its format or channel count does not
-    passed every Python guard, and the first symptom would have been CamillaDSP
-    failing the ioplug attach and crash-looping. The inversion is deliberate.
-
-    ``rate`` is NOT in the parametrize list: the conf.d declares no rate, so
-    there is no expected value to compare against and the comparator skips that
-    axis rather than guessing. It stays reported.
-    """
-    _fanin, program = _stage_ring_geometry(monkeypatch, tmp_path)
-    _write_ring(program, **kwargs)
     res = audio_runtime_ring.check_ring_geometry_coherence()
-    assert res.status == "fail", res.detail
-    assert axis in res.detail
-    assert "jasper-fanin-coupling-reconcile" in res.detail
 
-
-def test_fail_when_env_disagrees_with_conf(monkeypatch, tmp_path):
-    # Default migration class: stale JASPER_FANIN_RING_SLOTS=8 vs conf.d's 2.
-    _fanin, program = _stage_ring_geometry(
-        monkeypatch, tmp_path, fanin_env_text="JASPER_FANIN_RING_SLOTS=8\n",
-    )
-    _write_ring(program, n_slots=8)
-    res = audio_runtime_ring.check_ring_geometry_coherence()
-    assert res.status == "fail"
-    assert "2" in res.detail and "8" in res.detail
-    assert "crash-loop" in res.detail.lower()
-
-
-def test_fail_when_base_env_disagrees_with_conf(monkeypatch, tmp_path):
-    # The effective env chain is /etc/jasper/jasper.env, then fanin.env. A stale
-    # base-env value still controls the next fan-in start when fanin.env has no
-    # override, so doctor must not report the product default.
-    _fanin, program = _stage_ring_geometry(
-        monkeypatch,
-        tmp_path,
-        jasper_env_text="JASPER_FANIN_RING_SLOTS=8\n",
-    )
-    _write_ring(program, n_slots=8)
-    res = audio_runtime_ring.check_ring_geometry_coherence()
-    assert res.status == "fail"
-    assert "2" in res.detail and "8" in res.detail
-    assert "crash-loop" in res.detail.lower()
-
-
-def test_ok_when_fanin_env_overrides_stale_base_env(monkeypatch, tmp_path):
-    # Later systemd EnvironmentFile wins. The reconciler's fix writes this exact
-    # fanin.env override to neutralize stale /etc/jasper/jasper.env residue.
-    _fanin, program = _stage_ring_geometry(
-        monkeypatch,
-        tmp_path,
-        fanin_env_text="JASPER_FANIN_RING_SLOTS=2\n",
-        jasper_env_text="JASPER_FANIN_RING_SLOTS=8\n",
-    )
-    _write_ring(program, n_slots=2)
-    res = audio_runtime_ring.check_ring_geometry_coherence()
-    assert res.status == "ok", res.detail
-    assert "n_slots=2" in res.detail
-
-
-def test_fail_when_on_disk_ring_disagrees(monkeypatch, tmp_path):
-    # env + conf.d agree (both 2), but a stale on-disk ring carries 8 slots — the
-    # ioplug attach still fails. Caught as the third axis.
-    _fanin, program = _stage_ring_geometry(monkeypatch, tmp_path)
-    _write_ring(program, n_slots=8)
-    res = audio_runtime_ring.check_ring_geometry_coherence()
-    assert res.status == "fail"
-    assert "on-disk" in res.detail.lower()
-    assert "2" in res.detail and "8" in res.detail
-
-
-def test_fail_when_on_disk_ring_period_disagrees(monkeypatch, tmp_path):
-    # Nit-7: env + conf.d + on-disk n_slots all agree (2), but the on-disk ring's
-    # period_frames is stale (256 vs conf.d 128). The ioplug attach still fails on
-    # the SECOND geometry axis — the slot-only check would miss it. Caught now.
-    _fanin, program = _stage_ring_geometry(monkeypatch, tmp_path)
-    _write_ring(program, period_frames=256)
-    res = audio_runtime_ring.check_ring_geometry_coherence()
-    assert res.status == "fail"
-    assert "period_frames" in res.detail
-    assert "256" in res.detail and "128" in res.detail
-
-
-def test_ok_when_slots_and_period_both_agree(monkeypatch, tmp_path):
-    # The positive: n_slots AND period_frames coherent across env + conf.d + on-disk.
-    _fanin, program = _stage_ring_geometry(monkeypatch, tmp_path)
-    _write_ring(program, period_frames=128)
-    res = audio_runtime_ring.check_ring_geometry_coherence()
-    assert res.status == "ok", res.detail
-    assert "period_frames=128" in res.detail
-
-
-def test_warn_when_ring_file_absent_but_env_conf_agree(monkeypatch, tmp_path):
-    # Armed, env + conf.d agree, but no valid on-disk ring yet (fan-in restarting).
-    # Not a hard failure — the next writer create will be coherent.
-    _stage_ring_geometry(monkeypatch, tmp_path)
-    # No _write_ring — the program.ring path does not exist.
-    res = audio_runtime_ring.check_ring_geometry_coherence()
-    assert res.status == "warn"
-    assert "no valid ring header" in res.detail.lower()
-
-
-def test_fail_when_env_value_invalid(monkeypatch, tmp_path):
-    # An out-of-range JASPER_FANIN_RING_SLOTS is a hard failure while armed.
-    _stage_ring_geometry(
-        monkeypatch, tmp_path, fanin_env_text="JASPER_FANIN_RING_SLOTS=99\n",
-    )
-    res = audio_runtime_ring.check_ring_geometry_coherence()
-    assert res.status == "fail"
-    assert "invalid" in res.detail.lower()
+    assert res.status == status, res.detail
+    assert res.reason == reason
 
 
 # ===========================================================================
@@ -810,14 +679,8 @@ def _probe_must_not_run(monkeypatch):
 
 
 def _fanin_unit_state(monkeypatch, state: str):
-    """Answer `systemctl is-active jasper-fanin.service` with ``state``."""
-    monkeypatch.setattr(
-        audio_runtime_ring,
-        "_run",
-        lambda cmd, timeout=5.0: SimpleNamespace(
-            returncode=0, stdout=f"{state}\n", stderr=""
-        ),
-    )
+    """Answer the run's one ``systemctl show`` with fan-in in ``state``."""
+    _seed_units(active=state)
 
 
 def test_ok_when_all_assets_present(monkeypatch, tmp_path):
@@ -882,24 +745,19 @@ def test_an_ioplug_alsa_cannot_open_is_a_hard_fail(monkeypatch, tmp_path):
     res = audio_runtime_ring.check_ring_platform_assets()
 
     assert res.status == "fail"
-    assert probe_reason in res.detail
+    assert res.reason == audio_runtime_ring.REASON_RING_IOPLUG_UNOPENABLE
 
 
 @pytest.mark.parametrize(
-    "staged, expected_fragments",
+    "staged",
     [
-        ({"so": False}, ["ioplug .so absent", "redeploy"]),
-        ({"conf": False}, ["conf.d absent", "redeploy"]),
-        ({"shm": False}, ["absent", "redeploy"]),
-        (
-            {"so": False, "conf": False, "shm": False},
-            ["ioplug .so absent", "conf.d absent", "redeploy"],
-        ),
+        {"so": False},
+        {"conf": False},
+        {"shm": False},
+        {"so": False, "conf": False, "shm": False},
     ],
 )
-def test_any_missing_asset_is_a_hard_fail(
-    monkeypatch, tmp_path, staged, expected_fragments
-):
+def test_any_missing_asset_is_a_hard_fail(monkeypatch, tmp_path, staged):
     """A missing asset FAILs whatever the persisted file says, and says redeploy.
 
     There is no second transport to degrade onto: the graph cannot resolve its
@@ -911,8 +769,7 @@ def test_any_missing_asset_is_a_hard_fail(
     _probe_must_not_run(monkeypatch)
     res = audio_runtime_ring.check_ring_platform_assets()
     assert res.status == "fail"
-    for fragment in expected_fragments:
-        assert fragment in res.detail.lower() or fragment in res.detail
+    assert res.reason == audio_runtime_ring.REASON_RING_ASSET_MISSING
 
 
 # --- _jts_ring_pcm_resolves (the open-probe helper) -------------------
@@ -1138,10 +995,7 @@ def test_a_missing_asset_fails_whatever_the_persisted_token_says(
     def _verdict(label):
         res = audio_runtime_ring.check_ring_platform_assets()
         assert res.status == "fail", label
-        assert "missing" in res.detail.lower(), label
-        # The retired claim is asserted ABSENT: it is worse than silence.
-        assert "loopback" not in res.detail.lower(), label
-        assert "inert" not in res.detail.lower(), label
+        assert res.reason == audio_runtime_ring.REASON_RING_ASSET_MISSING, label
 
     _verdict("persisted token not rewritten yet")
     _arm_ring(monkeypatch)
@@ -1325,7 +1179,7 @@ def test_writer_lock_guard_ok_with_one_writer(monkeypatch, tmp_path):
     result = _run_guard(monkeypatch, root)
 
     assert result.status == "ok"
-    assert "no ring has more than one live writer" in result.detail
+    assert result.reason == ""
 
 
 def test_writer_lock_guard_ok_when_nothing_holds_a_lock(monkeypatch, tmp_path):
@@ -1340,8 +1194,7 @@ def test_writer_lock_guard_ok_when_nothing_holds_a_lock(monkeypatch, tmp_path):
 def test_writer_lock_guard_fails_on_two_live_writers(monkeypatch, tmp_path):
     """POSITIVE CONTROL: the recorded residual. One incumbent holding the
     UNLINKED inode plus a fresh writer on a re-created file at the same
-    pathname — two live writers, no log line between them — is `fail`, and the
-    detail names both pids and which one is orphaned."""
+    pathname — two live writers, no log line between them — is `fail`."""
     root = _fake_proc(
         tmp_path,
         {
@@ -1353,10 +1206,7 @@ def test_writer_lock_guard_fails_on_two_live_writers(monkeypatch, tmp_path):
     result = _run_guard(monkeypatch, root)
 
     assert result.status == "fail"
-    assert "TWO LIVE WRITERS" in result.detail
-    assert "pid 41 (lock file unlinked)" in result.detail
-    assert "pid 42" in result.detail
-    assert _LOCK in result.detail
+    assert result.reason == audio_runtime_ring.REASON_WRITER_LOCK_TWO_WRITERS
 
 
 def test_writer_lock_guard_fails_on_two_writers_without_an_unlink(
@@ -1369,6 +1219,7 @@ def test_writer_lock_guard_fails_on_two_writers_without_an_unlink(
     result = _run_guard(monkeypatch, root)
 
     assert result.status == "fail"
+    assert result.reason == audio_runtime_ring.REASON_WRITER_LOCK_TWO_WRITERS
 
 
 def test_writer_lock_guard_ignores_a_contender_that_gave_up(monkeypatch, tmp_path):
@@ -1409,8 +1260,7 @@ def test_writer_lock_guard_warns_on_a_lone_orphaned_holder(monkeypatch, tmp_path
     result = _run_guard(monkeypatch, root)
 
     assert result.status == "warn"
-    assert "UNLINKED" in result.detail
-    assert "pid 41" in result.detail
+    assert result.reason == audio_runtime_ring.REASON_WRITER_LOCK_ORPHANED
 
 
 def test_writer_lock_guard_warns_when_proc_is_partially_unreadable(
@@ -1427,7 +1277,7 @@ def test_writer_lock_guard_warns_when_proc_is_partially_unreadable(
         (root / "77" / "fd").chmod(0o755)
 
     assert result.status == "warn"
-    assert "partially blind" in result.detail
+    assert result.reason == audio_runtime_ring.REASON_WRITER_LOCK_PROC_UNREADABLE
 
 
 def test_writer_lock_guard_ignores_locks_outside_the_ring_dir(monkeypatch, tmp_path):
@@ -1518,7 +1368,12 @@ def _arrange(
     device would let the two halves of that union drift apart without any test
     noticing — which is exactly how the pre-#2285 gap between this check and
     `check_outputd_service`'s transport note survived unseen.
+
+    Re-arranging the box mid-test drops what the run already learned about the
+    previous one: the doctor reads each evidence source once per RUN, and a
+    fixture that rewrites the same paths is a new run.
     """
+    evidence.reset()
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text(
         f"JASPER_OUTPUTD_CONTENT_BRIDGE={bridge}\n", encoding="utf-8"
@@ -1551,9 +1406,7 @@ def _arrange(
             f"config_path: {tmp_path / 'deleted-config.yml'}\n", encoding="utf-8"
         )
     crossover = _write_pair(tmp_path, "crossover", crossover_playback_device)
-    monkeypatch.setattr(
-        audio_runtime_ring, "_active_camilla_config_path", lambda: (str(primary), None)
-    )
+    evidence.seed("camilla_config", (str(primary), None))
     monkeypatch.setattr(
         "jasper.audio_runtime_plan.DEFAULT_CAMILLA2_STATEFILE_PATH", str(crossover)
     )
@@ -1576,11 +1429,7 @@ def test_a_stranded_ring_fails_loudly(monkeypatch, tmp_path, playback_device) ->
     result = audio_runtime_ring.check_ring_split_transport()
 
     assert result.status == "fail", result
-    # The remedy must be the EXPLICIT ARM command (the §4.2 mode-split
-    # contract), not a rollback: there is no longer a rollback direction, and
-    # for a roleful box `loopback` is the park rather than a destination.
-    assert "jasper-fanin-coupling-reconcile shm_ring" in result.detail
-    assert "loopback" not in result.detail
+    assert result.reason == audio_runtime_ring.REASON_SPLIT_RING_UNCONSUMED
 
 
 def test_a_bridge_waiting_on_a_ring_nobody_writes_fails_too(
@@ -1597,7 +1446,7 @@ def test_a_bridge_waiting_on_a_ring_nobody_writes_fails_too(
     result = audio_runtime_ring.check_ring_split_transport()
 
     assert result.status == "fail", result
-    assert "jasper-fanin-coupling-reconcile shm_ring" in result.detail
+    assert result.reason == audio_runtime_ring.REASON_SPLIT_RING_UNFED
 
 
 def test_a_bonded_follower_on_the_stereo_ring_is_not_a_split(
@@ -1624,7 +1473,9 @@ def test_a_bonded_follower_on_the_stereo_ring_is_not_a_split(
         grouped_park=True,
     )
 
-    assert audio_runtime_ring.check_ring_split_transport().status == "ok"
+    result = audio_runtime_ring.check_ring_split_transport()
+    assert result.status == "skipped"
+    assert result.reason == audio_runtime_ring.REASON_SPLIT_GROUPED_DAC_CONTENT_LANE
 
 
 def test_a_marker_armed_member_on_the_stereo_ring_is_not_a_split(
@@ -1649,7 +1500,8 @@ def test_a_marker_armed_member_on_the_stereo_ring_is_not_a_split(
     )
 
     result = audio_runtime_ring.check_ring_split_transport()
-    assert result.status == "ok", result
+    assert result.status == "skipped", result
+    assert result.reason == audio_runtime_ring.REASON_SPLIT_BONDED_RETURN_RING
 
     # CONTROL: the identical pair with the marker cleared is still the split it
     # has always been, so what is carved out is the marker and not the shape.
@@ -1679,8 +1531,8 @@ def test_the_marker_stand_down_needs_a_cleared_bridge(monkeypatch, tmp_path) -> 
             marker_armed=True,
         )
         result = audio_runtime_ring.check_ring_split_transport()
-        assert result.status == "ok", (playback, result)
-        assert "transport-park" in result.detail, (playback, result)
+        assert result.status == "skipped", (playback, result)
+        assert result.reason == audio_runtime_ring.REASON_SPLIT_MARKER_CONTRADICTED
 
 
 # --- Per-conjunct pins. A two-term conjunction passes a single-conjunct test
@@ -1757,7 +1609,7 @@ def test_a_program_bake_in_the_primary_does_not_hide_the_ring_in_camilla2(
     result = audio_runtime_ring.check_ring_split_transport()
 
     assert result.status == "fail", result
-    assert "jasper-fanin-coupling-reconcile shm_ring" in result.detail
+    assert result.reason == audio_runtime_ring.REASON_SPLIT_RING_UNCONSUMED
 
 
 def test_a_primary_statefile_pointing_at_a_deleted_config_does_not_hide_the_split(
@@ -1817,6 +1669,7 @@ def _arrange_projection(monkeypatch, tmp_path, *, env_lines: str):
     under test includes the read itself. Nothing else is arranged — the bridge
     that gates this check lives in this same file.
     """
+    evidence.reset()
     env = tmp_path / "outputd.env"
     env.write_text(env_lines, encoding="utf-8")
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env))
@@ -1857,10 +1710,7 @@ def test_a_ring_path_lagging_its_marker_fails_with_the_runnable_remedy(
     result = audio_runtime_ring.check_active_ring_path_projection()
 
     assert result.status == "fail", result
-    assert carried in result.detail
-    assert derived in result.detail
-    # Runnable, and the same pass the ladder's own next step runs.
-    assert "jasper-fanin-coupling-reconcile shm_ring" in result.detail
+    assert result.reason == audio_runtime_ring.REASON_RING_PATH_LAGS_MARKER
 
 
 def test_a_converged_ring_pair_is_ok(monkeypatch, tmp_path) -> None:
@@ -1901,10 +1751,74 @@ def test_the_two_ladder_checks_partition_the_bridge(monkeypatch, tmp_path) -> No
     # Off the ring bridge outputd never reads the ring path, so the projection
     # check stands down — and the split check is the one that owns anything
     # wrong on this side.
-    assert audio_runtime_ring.check_active_ring_path_projection().status == "ok"
+    stood_down = audio_runtime_ring.check_active_ring_path_projection()
+    assert stood_down.status == "skipped"
+    assert stood_down.reason == audio_runtime_ring.REASON_RING_PATH_NOT_CENTRAL_RING
 
     _arrange(
         monkeypatch, tmp_path, bridge=RING_BRIDGE,
         playback_device=RING_PLAYBACK_DEVICE,
     )
     assert audio_runtime_ring.check_ring_split_transport().status == "ok"
+
+
+def _silent_split_transport(monkeypatch, tmp_path):
+    _arrange(
+        monkeypatch,
+        tmp_path,
+        bridge=DIRECT_BRIDGE,
+        playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+    )
+    return audio_runtime_ring.check_ring_split_transport
+
+
+def _silent_ring_path_projection(monkeypatch, tmp_path):
+    _arrange_projection(
+        monkeypatch,
+        tmp_path,
+        env_lines=(
+            "JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n"
+            "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1\n"
+            "JASPER_OUTPUTD_SHM_RING_PATH=/dev/shm/jts-ring/content.ring\n"
+        ),
+    )
+    return audio_runtime_ring.check_active_ring_path_projection
+
+
+def _silent_ring_transport_park(monkeypatch, tmp_path):
+    from jasper.control import transport_park
+
+    monkeypatch.setattr(
+        transport_park,
+        "snapshot",
+        lambda *a, **k: {
+            "status": "parked",
+            "parked": True,
+            "parks": [{"park_class": "mono_full_range", "detail": "d"}],
+        },
+    )
+    return audio_runtime_ring.check_ring_transport_park
+
+
+@pytest.mark.parametrize(
+    "arrange",
+    [
+        _silent_split_transport,
+        _silent_ring_path_projection,
+        _silent_camilla_recover_park,
+        _silent_ring_transport_park,
+    ],
+    ids=lambda fn: fn.__name__,
+)
+def test_a_check_that_asserts_silence_carries_speaker_silent(
+    monkeypatch, tmp_path, arrange
+) -> None:
+    """A branch whose whole finding is "the household hears nothing" must say so
+    in the structured field, not only in its prose — `render` and the dashboard
+    lead their summary with it."""
+    check = arrange(monkeypatch, tmp_path)
+
+    result = check()
+
+    assert result.status == "fail", result
+    assert result.speaker_silent is True

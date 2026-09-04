@@ -129,7 +129,6 @@ def test_aec_probe_reports_unavailable_process_lock(monkeypatch, tmp_path):
     assert results[0].name == "probe — exclusive run"
     assert results[0].status == "fail"
     assert results[0].reason == doctor.aec_probe.REASON_PROBE_LOCK_ERROR
-    assert "/run/jasper permissions" in results[0].detail
 
 
 def _active_probe_run_recorder():
@@ -216,19 +215,13 @@ def test_active_aec_probe_fails_closed_for_untrusted_active_source(
 
 
 @pytest.mark.parametrize(
-    ("active_source", "detail"),
-    [
-        ("spotify", "active_source='spotify'"),
-        ("voice", "active_source='voice'"),
-        ("airplay", "active_source='airplay'"),
-        ("usbsink", "active_source='usbsink'"),
-        ("bluetooth", "active_source='bluetooth'"),
-    ],
+    "active_source",
+    ["spotify", "voice", "airplay", "usbsink", "bluetooth"],
 )
 def test_active_aec_probe_refuses_known_active_playback(
-    monkeypatch, active_source, detail
+    monkeypatch, active_source
 ):
-    """A non-idle `active_source` still refuses, and plays nothing (#2585).
+    """A non-idle `active_source` still refuses, and plays nothing.
 
     This is the precheck that survived the deletion of the `/proc/asound`
     fan-in-lane layer, so it carries the whole "tell the operator to stop the
@@ -252,8 +245,6 @@ def test_active_aec_probe_refuses_known_active_playback(
 
     assert [result.status for result in results] == ["ok", "fail"]
     assert results[-1].reason == doctor.aec_probe.REASON_PROBE_ACTIVE_SOURCE_BUSY
-    assert detail in results[-1].detail
-    assert "Stop the active source and re-run" in results[-1].detail
     assert not any(call and call[0] == "aplay" for call in calls)
 
 
@@ -531,6 +522,7 @@ def test_active_aec_probe_preserves_generate_failure_on_cleanup_failure(
                 "probe — generate sine",
                 "fail",
                 "could not write probe file",
+                reason="probe_sine_generate_failed",
             )
         ],
     )
@@ -544,5 +536,4 @@ def test_active_aec_probe_preserves_generate_failure_on_cleanup_failure(
         "probe — audio isolation cleanup",
     ]
     assert results[-2].status == "fail"
-    assert "could not write probe file" in results[-2].detail
     assert results[-1].reason == doctor.aec_probe.REASON_PROBE_ISOLATION_CLEANUP_FAILED

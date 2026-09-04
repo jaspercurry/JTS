@@ -51,6 +51,13 @@ RAW_AUDIO_DIRS = ("captures", "noise", "repeat_captures")
 # to force a full hash check of every artifact.
 DEFAULT_MAX_SHA_VERIFY_BYTES = 1 * 1024 * 1024
 
+# Bound the per-bundle size walk: jasper-doctor summarizes every bundle on
+# every run on a 1 GB Pi, so a runaway or corrupted bundle directory must not
+# turn a health probe into an I/O storm. Same order as the doctor's storage
+# walk (jasper.cli.doctor.memory._STORAGE_WALK_MAX_ENTRIES). Hitting the cap
+# makes the reported size a lower bound, disclosed as `bundle_size_truncated`.
+BUNDLE_WALK_MAX_ENTRIES = 50_000
+
 @dataclass(frozen=True)
 class BundleIssue:
     code: str
@@ -65,15 +72,19 @@ class BundleIssue:
         }
 
 
-def _bundle_byte_size(bundle_dir: Path) -> int:
+def _bundle_byte_size(bundle_dir: Path, *, max_entries: int) -> tuple[int, bool]:
+    """Sum file sizes under ``bundle_dir``, returning ``(bytes, truncated)``."""
+
     total = 0
-    for path in bundle_dir.rglob("*"):
+    for seen, path in enumerate(bundle_dir.rglob("*"), start=1):
+        if seen > max_entries:
+            return total, True
         if path.is_file():
             try:
                 total += path.stat().st_size
             except OSError:
                 continue
-    return total
+    return total, False
 
 
 def _private_raw_audio_paths(bundle_dir: Path) -> list[Path]:
@@ -239,7 +250,11 @@ def summarize_bundle(bundle_dir: Path) -> dict[str, Any]:
             raw_audio_bytes += path.stat().st_size
         except OSError:
             continue
-    info["bundle_size_bytes"] = _bundle_byte_size(bundle_dir)
+    size_bytes, size_truncated = _bundle_byte_size(
+        bundle_dir, max_entries=BUNDLE_WALK_MAX_ENTRIES,
+    )
+    info["bundle_size_bytes"] = size_bytes
+    info["bundle_size_truncated"] = size_truncated
     info["private_raw_audio_count"] = len(raw_audio_paths)
     info["private_raw_audio_bytes"] = raw_audio_bytes
     return info
@@ -320,6 +335,9 @@ def summarize_bundle_collection(
     return {
         "bundle_count": len(summaries),
         "latest_bundle": summaries[0] if summaries else None,
+        "truncated": any(
+            bool(summary.get("bundle_size_truncated")) for summary in summaries
+        ),
         "total_bundle_size_bytes": sum(
             int(summary.get("bundle_size_bytes") or 0) for summary in summaries
         ),

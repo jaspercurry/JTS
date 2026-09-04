@@ -4,64 +4,35 @@
 
 """jasper-doctor checks — privilege-separation read access.
 
-WS1 dropped jasper-control/-mux/-voice/-input and the whole
-nginx-fronted wizard family (-web/-chat-web/-correction-web/-bluetooth-web/
--system-web, which share one ``jasper-web`` account) to non-root; the USB mic
-relay likewise runs under its own non-secret-bearing ``jasper-usbmic``
-identity (all use primary group ``jasper``). A config or
-state file written ``0600`` root-only is then **unreadable** by the owning
-daemon — and because every one of these reads is fail-soft (a caught
-``OSError`` mapped to a benign default), a permission failure looks *identical*
-to "not configured / healthy". The daemon keeps running with blank state and
-nothing surfaces.
+The jasper-* service daemons run non-root under primary group ``jasper``. A
+config or state file written ``0600`` root-only is then unreadable by the
+owning daemon — and because those reads are fail-soft (a caught ``OSError``
+mapped to a benign default), a permission failure looks *identical* to "not
+configured / healthy". This module verifies, per daemon, that each file its
+code reads at runtime really is readable by that daemon's uid + group set,
+and WARNs with the file and mode instead of letting it degrade silently.
 
-That bug class has already bitten twice:
+``os.access`` cannot answer that: jasper-doctor runs as root, and
+``os.access`` tests the *caller's* permissions. Each check ``stat()``s the
+path and reasons about the daemon's own identity (uid, primary gid,
+supplementary gids resolved from the unit's live ``systemctl show``
+directives) against the file's owner / group / mode bits.
 
-- **#900** — ``grouping_leader.yml`` (and the sound configs) were left ``0600``
-  by ``emit_sound_config``'s hand-rolled tempfile writer. jasper-control reads
-  the active CamillaDSP config off-disk (``active_leader_pipe_path``) for the
-  bonded-leader producer-liveness signal; the unreadable file resolved to
-  ``""`` and ``/state`` reported a *bonded leader* "degraded — the stream is
-  silent" while audio was flowing.
-- **#901** — ``bt_roles.json`` was published ``0600`` by ``RoleStore._write``.
-  No active denial (only jasper-web reads it), but latent the moment any
-  non-root ``jasper``-group daemon needs it.
+Scope is coarse and canonical: :data:`MANIFEST` lists the load-bearing reads
+per daemon — the security gates, the SSOT files each daemon re-reads fresh,
+and the CamillaDSP configs — under the group-``jasper`` trees
+``/var/lib/jasper`` and ``/var/lib/camilladsp``. It is not an exhaustive read
+trace, and it excludes the secret compartments (see
+:mod:`~jasper.cli.doctor.secret_compartments`).
+``tests/test_doctor_privsep.py`` drift-pins it against the systemd units so it
+cannot fall behind a unit edit or a new non-root daemon.
 
-Nothing structural stopped the *next* writer from re-introducing it. This
-module is that structural guard: for every non-root daemon it verifies that
-each file the daemon's own code reads at runtime is actually readable by that
-daemon's uid + group set, failing **loud** (WARN, with the exact file + mode)
-at ``jasper-doctor`` / install time instead of silently degrading.
-
-**Why this can't use ``os.access``.** ``jasper-doctor`` runs as **root**, so
-``os.access`` (which tests the *caller's* permissions) would report every file
-readable. Instead each check ``stat()``s the path and reasons about the
-*daemon's* identity (uid, primary gid, supplementary gids — resolved from the
-unit's live ``systemctl show`` directives) against the file's owner / group /
-mode bits. This mirrors ``env.check_state_dir_group_writable`` (the *write*-side
-sibling at order 23.5); this module is the *read* complement.
-
-**Scope (confirmed with the owner): coarse + canonical, group-``jasper`` trees
-only.** :data:`MANIFEST` lists the load-bearing reads per daemon — the security
-gates, the SSOT files each daemon re-reads *fresh* (it is not restarted on a
-wizard save), and the CamillaDSP configs of the #900/#901 family — under
-``/var/lib/jasper`` and ``/var/lib/camilladsp`` (group ``jasper``). It is *not*
-an exhaustive read trace, and it deliberately excludes the secret compartments
-(``jasper-secrets`` / ``jasper-intsecrets``), whose own group ownership is a
-separate concern. The manifest is drift-pinned against the systemd units by
-``tests/test_doctor_privsep.py`` so it cannot fall behind a unit edit
-or a newly-added non-root daemon.
-
-The ``household_secret`` file gets a dedicated check
-(:func:`check_household_secret_readable`): a *present-but-unreadable* secret
-means the device-to-device ``/grouping/set`` auth gate has silently
-fail-safe-**opened** (``household_credential.verify`` treats an unreadable
-secret as "not paired" and accepts any caller). That degraded posture is
-invisible to the existing ``grouping.check_grouping_household_credential``,
-which keys on ``is_paired()`` — and ``is_paired()`` collapses *absent* and
-*unreadable* into the same ``""``. This check is pure observability of the
-ratified fail-safe-open behaviour; it does
-not change ``household_credential.py``.
+The ``household_secret`` file gets its own check
+(:func:`check_household_secret_readable`) because present-but-unreadable
+there means the device-to-device ``/grouping/set`` gate has silently
+fail-safe-OPENED, which ``grouping.check_grouping_household_credential``
+cannot see: it keys on ``is_paired()``, which collapses absent and unreadable
+into the same ``""``.
 """
 from __future__ import annotations
 
@@ -70,23 +41,37 @@ import grp
 import os
 import pwd
 import stat as _stat
-import subprocess
 from dataclasses import dataclass, field
 
 from ...accessories.mic_env import DEFAULT_ACCESSORY_MIC_ENV_FILE
+from ._evidence import evidence
 from ._registry import doctor_check
-from ._shared import CheckResult, _run
+from ._shared import REASON_SYSTEMCTL_UNAVAILABLE, CheckResult
+
+# Machine-stable codes naming which branch of a privsep check produced a
+# result (AGENTS.md: tests pin status + reason, never detail prose).
+REASON_UNIT_NOT_INSTALLED = "daemon_reads_unit_not_installed"
+REASON_UNIT_RUNS_AS_ROOT = "daemon_reads_unit_runs_as_root"
+REASON_USER_NOT_RESOLVABLE = "daemon_reads_user_not_resolvable"
+REASON_NO_DECLARED_INPUTS = "daemon_reads_no_declared_inputs"
+
+REASON_NO_INPUTS_PRESENT = "daemon_reads_no_inputs_present"
+REASON_INPUTS_UNREADABLE = "daemon_reads_unreadable"
+REASON_INPUTS_READABLE = "daemon_reads_readable"
+
+REASON_HOUSEHOLD_SECRET_ABSENT = "household_secret_absent"
+REASON_HOUSEHOLD_SECRET_READABLE = "household_secret_readable"
+REASON_HOUSEHOLD_SECRET_UNREADABLE = "household_secret_unreadable"
 
 
 @dataclass(frozen=True)
 class DaemonReadSpec:
     """One non-root daemon's declared runtime read-set + expected identity.
 
-    ``unit`` is the systemd unit name (no ``.service``). ``unit_file`` is the
-    repo-relative path to the canonical *non-root* unit, used by the drift test
-    to pin ``user`` / ``group`` / ``supplementary_groups`` against the committed
-    directives. ``paths`` is the COARSE canonical read-set — concrete paths or
-    globs the daemon's own code opens for reading at runtime.
+    ``unit`` carries no ``.service`` suffix. ``unit_file`` is the
+    repo-relative path to the canonical *non-root* unit, which the drift test
+    pins ``user`` / ``group`` / ``supplementary_groups`` against. ``paths``
+    are concrete paths or globs the daemon's own code opens for reading.
     """
 
     unit: str
@@ -97,10 +82,9 @@ class DaemonReadSpec:
     paths: tuple[str, ...] = field(default_factory=tuple)
 
 
-# COARSE + CANONICAL, group-`jasper` trees only. See module docstring for the
-# scope decision. household_secret is intentionally NOT listed here — it has the
-# dedicated check_household_secret_readable below (distinct fail-safe-open
-# semantics), and listing it twice would double-report.
+# Coarse + canonical, group-`jasper` trees only (see module docstring).
+# household_secret is deliberately absent: check_household_secret_readable
+# below owns it, and listing it twice would double-report.
 MANIFEST: tuple[DaemonReadSpec, ...] = (
     DaemonReadSpec(
         unit="jasper-control",
@@ -110,11 +94,9 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         supplementary_groups=(
             "systemd-journal",
             "jasper-intsecrets",
-            # #2786: read access to /dev/shm/jts-ring/grouping.ring's shared
-            # header for /state's grouping `ring` block. Read-only in use; the
-            # unit file carries the full rationale. Not in `paths` below — that
-            # set is scoped to the group-`jasper` state trees this check
-            # reasons about, and /dev/shm is a different group entirely.
+            # Read access to /dev/shm/jts-ring/grouping.ring's shared header
+            # for /state's grouping `ring` block. Not in `paths` below: that
+            # set is scoped to the group-`jasper` state trees.
             "jts-ring",
         ),
         paths=(
@@ -134,8 +116,8 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             # so a 0600 regression silently degrades the dashboard sound card.
             "/var/lib/jasper/sound_profile.json",
             "/var/lib/jasper/sound_settings.json",
-            # The #900 surface: statefile -> active CamillaDSP config, read for
-            # the bonded-leader producer-liveness signal.
+            # Statefile -> active CamillaDSP config, read for the
+            # bonded-leader producer-liveness signal.
             "/var/lib/camilladsp/outputd-statefile.yml",
             "/var/lib/camilladsp/configs/*.yml",
         ),
@@ -154,15 +136,13 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             "systemd-journal",
             "jasper-secrets",
             "jasper-intsecrets",
-            # U3/P6c: /dev/shm/jts-ring write access for the wizard-spawned
-            # correction-lane aplay children. Exercised only while this
-            # box's correction lane is armed — unarmed boxes spawn on the
-            # aloop alias and touch no ring; the ring-file mode rides the
-            # spawn helper's umask either way.
+            # /dev/shm/jts-ring write access for the wizard-spawned
+            # correction-lane aplay children, exercised only while this box's
+            # correction lane is armed.
             "jts-ring",
         ),
         paths=(
-            # EQ editor + the #900 sound config family.
+            # EQ editor + the sound config family.
             "/var/lib/camilladsp/configs/*.yml",
             # Wizard SSOT / status files re-read fresh on page render.
             "/var/lib/jasper/voice_provider.env",
@@ -170,18 +150,17 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             "/var/lib/jasper/transit.env",
             "/var/lib/jasper/speaker_name.env",
             "/var/lib/jasper/tool_state.env",
-            # The #901 file: jasper-web hosts the bluetooth engine (web/
-            # bluetooth_setup.py -> bluetooth.engine.RoleStore.load), which reads
-            # bt_roles.json — jasper-control does NOT read it.
+            # jasper-web hosts the bluetooth engine (web/bluetooth_setup.py ->
+            # bluetooth.engine.RoleStore.load), which reads bt_roles.json;
+            # jasper-control does NOT read it.
             "/var/lib/jasper/bt_roles.json",
             # /sound/ wizard reads the active profile + global settings.
             "/var/lib/jasper/sound_profile.json",
             "/var/lib/jasper/sound_settings.json",
-            # The two Layer-A stores the /sound/ design page renders from. The
+            # The two stores the /sound/ design page renders from. The
             # crossover-accept seam writes both from the ROOT correction-web
-            # process, so an unreadable one here is not hypothetical: it shipped
-            # (2026-08-21), and the only symptom was a design page that rendered
-            # empty against a store the API reported "unreadable" at revision 0.
+            # process, so an unreadable one here renders the page empty against
+            # a store the API reports "unreadable" at revision 0.
             "/var/lib/jasper/active_speaker_design_draft.json",
             "/var/lib/jasper/active_speaker_crossover_preview.json",
         ),
@@ -209,9 +188,8 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             # The graphs /correction/ validates, applies, and rolls back.
             "/var/lib/camilladsp/configs/*.yml",
             # Written by whichever commissioning arm measured first — /sound/
-            # as jasper-web, or this unit. The root era could read either;
-            # after the drop an unreadable one reads as "no measurements" and
-            # silently discards the household's captures.
+            # as jasper-web, or this unit. An unreadable one reads as "no
+            # measurements" and silently discards the household's captures.
             "/var/lib/jasper/active_speaker_measurements.json",
             "/var/lib/jasper/active_speaker_design_draft.json",
             "/var/lib/jasper/active_speaker_crossover_preview.json",
@@ -230,7 +208,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         group="jasper",
         supplementary_groups=("bluetooth",),
         paths=(
-            # The #901 file again, from its other reader. RoleStore.set() LOADS
+            # bt_roles.json from its other reader. RoleStore.set() LOADS
             # before it writes, so unreadable here does not degrade — it
             # republishes an empty map and forgets every device's handler.
             "/var/lib/jasper/bt_roles.json",
@@ -280,13 +258,11 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             "/var/lib/jasper/mic_mute.env",
         ),
     ),
-    # jasper-input watches /dev/input/event* (kernel I/O, 'input' supplementary
-    # group) and calls jasper-control over localhost HTTP. Its one on-disk read
-    # is the accessory reconciler's published mic sources, which decide whether
-    # this process also runs an accessory mic adapter task (ADR-0225) — an
-    # unreadable file costs the box its remote microphone. The adapter's
-    # 'bluetooth' grant is not declared here because the unit does not declare
-    # it either (see the unit file); _resolve_identity picks it up from the
+    # jasper-input's one on-disk read is the accessory reconciler's published
+    # mic sources, which decide whether this process also runs an accessory mic
+    # adapter task (ADR-0225); an unreadable file costs the box its remote
+    # microphone. The adapter's 'bluetooth' grant is absent here because the
+    # unit does not declare it either — _resolve_identity picks it up from the
     # user's own group memberships.
     DaemonReadSpec(
         unit="jasper-input",
@@ -313,30 +289,24 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
 
 _SPEC_BY_UNIT: dict[str, DaemonReadSpec] = {s.unit: s for s in MANIFEST}
 
-# Non-root jasper-* units deliberately OUT of this check's scope. These run as
-# `jasper-recon` (the reconciler tier — short-lived oneshots/monitors that own
-# their own writes), not the Tier-A service daemons in MANIFEST above. The
-# drift test enumerates every `User=jasper-*` unit and requires each to be
-# either in MANIFEST or here, so a genuinely new non-root daemon can't be
-# added without a conscious scope decision.
+# Non-root jasper-* units deliberately OUT of scope: they run as
+# `jasper-recon` (short-lived oneshots/monitors owning their own writes), not
+# the service daemons in MANIFEST. The drift test requires every
+# `User=jasper-*` unit to appear in MANIFEST or here, so a new non-root daemon
+# cannot be added without a scope decision.
 OUT_OF_SCOPE_NONROOT_UNITS: frozenset[str] = frozenset(
     {"jasper-dac-init", "jasper-headphone-monitor", "jasper-usbsink"}
 )
 
 
-# --------------------------------------------------------------------------- #
-# Pure, hardware-free core (unit-tested directly with synthetic identities).
-# --------------------------------------------------------------------------- #
 def _is_glob(pattern: str) -> bool:
     return any(c in pattern for c in "*?[")
 
 
 def _process_can_read(st: os.stat_result, uid: int, gids: frozenset[int]) -> bool:
     """Could a process with ``uid`` and supplementary group set ``gids`` read
-    the ``stat``'d file? Standard POSIX owner/group/other precedence — owner
-    bits win if the process owns the file, else group bits if it shares the
-    file's group, else the other bits. (root/uid 0 is never one of our daemons,
-    so no CAP_DAC_READ_SEARCH special-case is needed.)"""
+    the ``stat``'d file? POSIX owner/group/other precedence; uid 0 is never
+    one of these daemons, so no CAP_DAC_READ_SEARCH special case."""
     if st.st_uid == uid:
         return bool(st.st_mode & _stat.S_IRUSR)
     if st.st_gid in gids:
@@ -368,13 +338,11 @@ def _classify_readable_inputs(
     stat_fn=os.stat,
     glob_fn=_glob.glob,
 ) -> CheckResult:
-    """Core of the per-daemon read check, path + identity parameterized so it is
-    unit-testable with tmp files and synthetic identities (mirrors
-    ``env._classify_state_group_write``).
+    """Core of the per-daemon read check, path + identity parameterized.
 
-    Absent paths are skipped (absent = "not configured yet", not the bug class —
-    the bug is *present-but-unreadable*). Globs expand via ``glob_fn``. Returns
-    WARN naming each unreadable file + its mode, else OK.
+    Absent paths are skipped — absent means "not configured yet", while the
+    bug class is present-but-unreadable. Returns WARN naming each unreadable
+    file + its mode, else OK.
     """
     unreadable: list[str] = []
     checked = 0
@@ -389,7 +357,10 @@ def _classify_readable_inputs(
             if not _process_can_read(st, uid, gids):
                 unreadable.append(_describe(match, st))
     if not checked:
-        return CheckResult(label, "ok", f"no declared inputs present yet ({user})")
+        return CheckResult(
+            label, "skipped", f"no declared inputs present yet ({user})",
+            reason=REASON_NO_INPUTS_PRESENT,
+        )
     if unreadable:
         shown = unreadable[:6]
         overflow = len(unreadable) - len(shown)
@@ -402,8 +373,12 @@ def _classify_readable_inputs(
             + "; ".join(shown)
             + " — expected group `jasper`-readable (0640); the writer must emit "
             "mode 0o640 (atomic_write_text(mode=0o640)). Re-deploy after fixing.",
+            reason=REASON_INPUTS_UNREADABLE,
         )
-    return CheckResult(label, "ok", f"{checked} input(s) readable by {user}")
+    return CheckResult(
+        label, "ok", f"{checked} input(s) readable by {user}",
+        reason=REASON_INPUTS_READABLE,
+    )
 
 
 def _household_secret_verdict(
@@ -417,6 +392,7 @@ def _household_secret_verdict(
             label,
             "ok",
             f"present and readable by {user} — /grouping/set auth gate is enforced",
+            reason=REASON_HOUSEHOLD_SECRET_READABLE,
         )
     return CheckResult(
         label,
@@ -426,57 +402,56 @@ def _household_secret_verdict(
         "(household_credential.verify treats an unreadable secret as 'not paired' "
         "and accepts any X-JTS-Household). Expected group `jasper`-readable (0640); "
         "re-deploy to heal.",
+        reason=REASON_HOUSEHOLD_SECRET_UNREADABLE,
     )
 
 
-# --------------------------------------------------------------------------- #
-# Runtime identity resolution (on-Pi; degrades to skip off the Pi).
-# --------------------------------------------------------------------------- #
-def _unit_runtime_identity(unit: str) -> dict[str, str] | None:
-    """``LoadState`` / ``User`` / ``Group`` / ``SupplementaryGroups`` from
-    ``systemctl show`` for ``unit``, or ``None`` when systemctl is unavailable
-    (dev / non-Linux host) so callers can fall through to a skipped-ok path.
+# Every User/Group/SupplementaryGroups lookup below batches over this SAME
+# tuple, so `evidence.unit_property`'s memoization makes it one
+# `systemctl show` per property for the whole run, however many daemons ask.
+_MANIFEST_UNITS: tuple[str, ...] = tuple(s.unit for s in MANIFEST)
+_MANIFEST_UNIT_NAMES: tuple[str, ...] = tuple(f"{u}.service" for u in _MANIFEST_UNITS)
 
-    Reads the *runtime* identity, not the manifest's, so the streambox
-    jasper-web (which runs as root) self-skips and any live unit edit is
-    honoured."""
-    try:
-        proc = _run(
-            [
-                "systemctl",
-                "show",
-                "-p",
-                "LoadState",
-                "-p",
-                "User",
-                "-p",
-                "Group",
-                "-p",
-                "SupplementaryGroups",
-                f"{unit}.service",
-            ]
-        )
-    except (OSError, subprocess.SubprocessError):
+
+def _manifest_unit_property_map(prop: str) -> dict[str, str] | None:
+    """{unit: value} for one property outside SHOW_PROPERTIES (User, Group,
+    SupplementaryGroups), read once per run for the whole manifest. None when
+    systemctl is unavailable or the reply shape is wrong."""
+    values = evidence.unit_property(prop, _MANIFEST_UNIT_NAMES)
+    if values is None:
         return None
-    fields: dict[str, str] = {}
-    for line in proc.stdout.splitlines():
-        key, sep, value = line.partition("=")
-        if sep:
-            fields[key.strip()] = value.strip()
-    return fields or None
+    return dict(zip(_MANIFEST_UNITS, values))
+
+
+def _unit_runtime_identity(unit: str) -> dict[str, str] | None:
+    """``LoadState`` / ``User`` / ``Group`` / ``SupplementaryGroups`` for
+    ``unit``, or ``None`` when systemctl is unavailable (dev / non-Linux
+    host) so callers can fall through to a skipped-ok path.
+
+    Reads the *runtime* identity, not the manifest's, so a unit that runs as
+    root self-skips and any live unit edit is honoured."""
+    state = evidence.unit_state(f"{unit}.service")
+    if state is None:
+        return None
+    fields: dict[str, str] = {"LoadState": state.get("load_state") or ""}
+    for prop in ("User", "Group", "SupplementaryGroups"):
+        prop_map = _manifest_unit_property_map(prop)
+        if prop_map is None:
+            return None
+        fields[prop] = prop_map.get(unit, "")
+    return fields
 
 
 def _resolve_identity(
     user: str, group: str, supplementary_groups: tuple[str, ...]
 ) -> tuple[int, frozenset[int]] | None:
     """Resolve ``user`` to ``(uid, {gids})`` — the full group set a process
-    started as ``user`` with primary ``group`` + ``supplementary_groups`` would
-    hold. Returns ``None`` if the user does not exist on this host (dev box).
+    started as ``user`` with primary ``group`` + ``supplementary_groups``
+    would hold, or ``None`` if the user does not exist on this host.
 
-    The gid set is the union of the user's group-database memberships
-    (``os.getgrouplist``) and the unit's declared primary + supplementary groups
-    — a safe superset so a correctly group-readable file is never falsely
-    flagged unreadable."""
+    The gid set unions the user's group-database memberships with the unit's
+    declared groups: a safe superset, so a correctly group-readable file is
+    never falsely flagged unreadable."""
     try:
         pw = pwd.getpwnam(user)
     except KeyError:
@@ -505,19 +480,31 @@ def _resolve_runtime(
     resolved."""
     info = _unit_runtime_identity(unit)
     if info is None:
-        return CheckResult(label, "ok", "systemctl unavailable — skipped (not Linux?)")
+        return CheckResult(
+            label, "skipped", "systemctl unavailable — skipped (not Linux?)",
+            reason=REASON_SYSTEMCTL_UNAVAILABLE,
+        )
     if info.get("LoadState", "") in ("not-found", "masked"):
-        return CheckResult(label, "ok", f"{unit} not installed (skipped)")
+        return CheckResult(
+            label, "skipped", f"{unit} not installed",
+            reason=REASON_UNIT_NOT_INSTALLED,
+        )
     user = info.get("User", "").strip()
     if user in ("", "root"):
-        return CheckResult(label, "ok", f"{unit} runs as root (reads all inputs; n/a)")
+        return CheckResult(
+            label, "skipped", f"{unit} runs as root (reads all inputs; n/a)",
+            reason=REASON_UNIT_RUNS_AS_ROOT,
+        )
     resolved = _resolve_identity(
         user,
         info.get("Group", "").strip() or "jasper",
         tuple(info.get("SupplementaryGroups", "").split()),
     )
     if resolved is None:
-        return CheckResult(label, "ok", f"user {user!r} not resolvable — skipped")
+        return CheckResult(
+            label, "skipped", f"user {user!r} not resolvable — skipped",
+            reason=REASON_USER_NOT_RESOLVABLE,
+        )
     uid, gids = resolved
     return uid, gids, user
 
@@ -530,8 +517,14 @@ def _check_daemon(unit: str) -> CheckResult:
         # read-less daemon needs no identity resolution beyond that.
         info = _unit_runtime_identity(unit)
         if info is not None and info.get("LoadState", "") in ("not-found", "masked"):
-            return CheckResult(label, "ok", f"{unit} not installed (skipped)")
-        return CheckResult(label, "ok", f"{unit} declares no on-disk inputs (n/a)")
+            return CheckResult(
+                label, "skipped", f"{unit} not installed",
+                reason=REASON_UNIT_NOT_INSTALLED,
+            )
+        return CheckResult(
+            label, "skipped", f"{unit} declares no on-disk inputs",
+            reason=REASON_NO_DECLARED_INPUTS,
+        )
     resolved = _resolve_runtime(unit, label)
     if isinstance(resolved, CheckResult):
         return resolved
@@ -541,16 +534,15 @@ def _check_daemon(unit: str) -> CheckResult:
 
 @doctor_check(order=23.55, group="privsep")
 def check_control_readable_inputs() -> CheckResult:
-    """jasper-control must be able to read its runtime inputs (the #900 surface
-    + the SSOT files it re-reads fresh + the CSRF token). See module docstring."""
+    """jasper-control must be able to read its runtime inputs: the CamillaDSP
+    configs, the SSOT files it re-reads fresh, and the CSRF token."""
     return _check_daemon("jasper-control")
 
 
 @doctor_check(order=23.56, group="privsep")
 def check_web_readable_inputs() -> CheckResult:
     """jasper-web must be able to read the camilla configs + wizard SSOT/status
-    files it renders (the #901 bt_roles.json surface). Skips on streambox, where
-    jasper-web runs as root."""
+    files it renders. Skips on streambox, where jasper-web runs as root."""
     return _check_daemon("jasper-web")
 
 
@@ -624,7 +616,10 @@ def check_household_secret_readable() -> CheckResult:
     try:
         st = os.stat(path)
     except OSError:
-        return CheckResult(label, "ok", "absent — this speaker is not paired (n/a)")
+        return CheckResult(
+            label, "skipped", "absent — this speaker is not paired",
+            reason=REASON_HOUSEHOLD_SECRET_ABSENT,
+        )
     resolved = _resolve_runtime("jasper-control", label)
     if isinstance(resolved, CheckResult):
         return resolved

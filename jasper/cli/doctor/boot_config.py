@@ -4,11 +4,10 @@
 
 """Doctor check: the saved I2S DAC's overlay line is still in boot config.
 
-Nothing else in the doctor reads ``config.txt`` — every other hardware check
-sees only what the reconciler last *observed* on the bus. A removed
-``dtoverlay=`` line does not change that observation until the next reboot
-(#2575), so a box can run for days on a DAC the kernel will not re-attach the
-next time it boots. This check reads the saved topology's declared DAC and
+Every other hardware check sees only what the reconciler last *observed* on
+the bus, and a removed ``dtoverlay=`` line does not change that observation
+until the next reboot (#2575) — so a box can run for days on a DAC the kernel
+will not re-attach. This check reads the saved topology's declared DAC and
 warns ahead of that reboot instead of after it.
 """
 from __future__ import annotations

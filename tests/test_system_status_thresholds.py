@@ -17,8 +17,11 @@ from pathlib import Path
 
 import pytest
 
-from jasper.cli.doctor.memory import _DEFAULT_DISK_WARN_PERCENT, _DISK_FAIL_PERCENT
-from jasper.memory_policy import memory_headroom_thresholds
+from jasper.memory_policy import (
+    DISK_FAIL_PERCENT,
+    DISK_WARN_PERCENT,
+    memory_headroom_thresholds,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEM_JS = ROOT / "deploy" / "assets" / "system-status" / "js"
@@ -209,16 +212,15 @@ def test_dashboard_memory_disk_thresholds_match_jasper_doctor() -> None:
     the dashboard's in JS and asserts they're identical, so a future change to
     one side fails CI until both move together. Memory's source of truth is
     ``jasper.memory_policy.memory_headroom_thresholds``; disk's is
-    ``_DEFAULT_DISK_WARN_PERCENT`` / ``_DISK_FAIL_PERCENT`` in
-    ``jasper/cli/doctor/memory.py``.
+    ``DISK_WARN_PERCENT`` / ``DISK_FAIL_PERCENT`` in the same module.
     """
     node = shutil.which("node")
     if not node:
         pytest.skip("Node.js unavailable; the doctor-alignment guard needs it")
 
     sizes = [416, 1024, 2048, 8192, 16384]
-    warn_pct = _DEFAULT_DISK_WARN_PERCENT
-    fail_pct = _DISK_FAIL_PERCENT
+    warn_pct = DISK_WARN_PERCENT
+    fail_pct = DISK_FAIL_PERCENT
     script = f"""
       import {{ readFileSync }} from "node:fs";
       const src = readFileSync({json.dumps(str(FORMAT_JS))}, "utf8");

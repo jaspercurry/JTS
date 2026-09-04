@@ -2,93 +2,89 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the doctor's CamillaDSP-graph checks and runtime plan."""
+"""Unit tests for the jasper-doctor CamillaDSP-graph checks."""
 
 import pytest
 
 from jasper import audio_runtime_plan
 from jasper.cli import doctor
-from jasper.output_hardware import (
-    APPLE_USB_C_DONGLE_DEVICE_ID,
-)
 from jasper.cli.doctor import (
     audio_runtime_camilla,
+    audio_runtime_fanin,
+    audio_runtime_outputd,
 )
+from jasper.cli.doctor._evidence import evidence
+from jasper.output_hardware import APPLE_USB_C_DONGLE_DEVICE_ID
 
 from ._doctor_audio_runtime_fixtures import (
-    _fake_systemctl,
-    _patch_fanin_status_socket,
-    _patch_fanin_systemctl,
+    _patch_status_reader,
+    _seed_units,
 )
-
-
-def _patch_camilla_systemctl(monkeypatch, *, enabled="enabled", active="active"):
-    monkeypatch.setattr(
-        doctor.audio_runtime_camilla, "_run", _fake_systemctl(enabled, active)
-    )
 
 
 def test_check_camilla_service_ok_when_enabled_and_active(monkeypatch):
-    _patch_camilla_systemctl(monkeypatch)
+    _seed_units()
 
     result = doctor.check_camilla_service()
 
     assert result.status == "ok"
-    assert result.detail == "enabled and active"
-
-
-def test_check_camilla_service_fails_on_a_clean_stop(monkeypatch):
-    """The #2163 state: enabled, cleanly inactive, never `failed`.
-
-    `check_service_runtime_state` returns ok for this, and
-    `check_camilla_websocket` reports it as an unreachable websocket.
-    """
-    _patch_camilla_systemctl(monkeypatch, active="inactive")
-
-    result = doctor.check_camilla_service()
-
-    assert result.status == "fail"
-    assert "enabled but state=inactive" in result.detail
-    assert "jasper-camilla-recover" in result.detail
-
-
-def test_check_camilla_service_fails_when_disabled(monkeypatch):
-    _patch_camilla_systemctl(monkeypatch, enabled="disabled", active="inactive")
-
-    result = doctor.check_camilla_service()
-
-    assert result.status == "fail"
-    assert "state=disabled" in result.detail
-    assert "systemctl enable --now jasper-camilla.service" in result.detail
-
-
-def test_check_camilla_service_fails_when_unit_is_not_installed(monkeypatch):
-    _patch_camilla_systemctl(monkeypatch, enabled="not-found", active="inactive")
-
-    result = doctor.check_camilla_service()
-
-    assert result.status == "fail"
-    assert "not installed" in result.detail
 
 
 @pytest.mark.parametrize(
-    ("check", "expected_status"),
+    "enabled, active, reason",
     [
-        (doctor.check_fanin_service, "fail"),
-        (doctor.check_fanin_tts_drops, "ok"),
-        (doctor.check_outputd_service, "fail"),
-        (doctor.check_aec_clock_drift, "ok"),
+        # The clean-stop state (#2163): enabled, cleanly inactive, never
+        # `failed`, so neither check_service_runtime_state nor
+        # check_camilla_websocket names it.
+        ("enabled", "inactive", audio_runtime_camilla.REASON_CAMILLA_INACTIVE),
+        ("disabled", "inactive", audio_runtime_camilla.REASON_CAMILLA_UNIT_NOT_ENABLED),
+        ("not-found", "inactive", audio_runtime_camilla.REASON_CAMILLA_UNIT_MISSING),
+    ],
+)
+def test_check_camilla_service_failures(monkeypatch, enabled, active, reason):
+    _seed_units(enabled=enabled, active=active)
+
+    result = doctor.check_camilla_service()
+
+    assert result.status == "fail"
+    assert result.reason == reason
+
+
+@pytest.mark.parametrize(
+    ("check", "expected_status", "expected_reason"),
+    [
+        (
+            doctor.check_fanin_service,
+            "fail",
+            audio_runtime_fanin.REASON_FANIN_STATUS_MALFORMED,
+        ),
+        (
+            doctor.check_fanin_tts_drops,
+            "skipped",
+            audio_runtime_fanin.REASON_FANIN_TTS_STATUS_NOT_PROBED,
+        ),
+        (
+            doctor.check_outputd_service,
+            "fail",
+            audio_runtime_outputd.REASON_OUTPUTD_STATUS_MALFORMED,
+        ),
+        (
+            doctor.check_aec_clock_drift,
+            "skipped",
+            audio_runtime_outputd.REASON_AEC_CLOCK_STATUS_UNAVAILABLE,
+        ),
     ],
 )
 def test_status_consumers_classify_non_object_root_without_crashing(
-    monkeypatch, check, expected_status
+    monkeypatch, check, expected_status, expected_reason
 ):
-    """A STATUS reply whose JSON root is a list reaches every consumer as a
-    classified verdict, never as an escaping exception."""
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(monkeypatch, b"[]")
+    _seed_units()
+    _patch_status_reader(monkeypatch, b"[]")
 
-    assert check().status == expected_status
+    result = check()
+
+    assert result.status == expected_status
+    assert result.reason == expected_reason
 
 
 def test_audio_runtime_plan_doctor_warns_on_shadowed_knob(monkeypatch):
@@ -107,7 +103,7 @@ def test_audio_runtime_plan_doctor_warns_on_shadowed_knob(monkeypatch):
     r = doctor.check_audio_runtime_plan()
 
     assert r.status == "warn"
-    assert "one knob has two homes" in r.detail
+    assert r.reason == audio_runtime_camilla.REASON_AUDIO_PLAN_WARNINGS
 
 
 def test_audio_runtime_plan_doctor_reports_policy_and_emitted_apart(
@@ -143,8 +139,8 @@ def test_audio_runtime_plan_doctor_reports_policy_and_emitted_apart(
     r = doctor.check_audio_runtime_plan()
 
     assert r.status == "ok"
-    assert "camilla_policy=1024/2048" in r.detail
-    assert "camilla_emitted=256/1536" in r.detail
+    assert r.reason == ""
+    assert plan.camilla_emitted is not None
 
 
 def test_audio_runtime_plan_doctor_passes_a_ring_armed_bonded_box(monkeypatch):
@@ -195,7 +191,54 @@ def test_audio_runtime_plan_doctor_fails_usb_route_with_legacy_lab_transport(
     r = doctor.check_audio_runtime_plan()
 
     assert r.status == "fail"
-    assert "is not the one transport" in r.detail
+    assert r.reason == audio_runtime_camilla.REASON_AUDIO_PLAN_ERRORS
+
+
+_RAWFILE_DEVICES = """\
+devices:
+  capture:
+    type: RawFile
+    filename: "/run/jasper-fanin/camilla.pipe"
+  playback:
+    type: File
+    filename: "/run/jasper-outputd/content.pipe"
+filters:
+"""
+
+_ALSA_DEVICES = _RAWFILE_DEVICES.replace(
+    'type: RawFile\n    filename: "/run/jasper-fanin/camilla.pipe"',
+    'type: Alsa\n    device: "plug:jasper_capture"',
+)
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        # A RawFile capture beside a File playback: the playback sink must not
+        # be misread as the capture type.
+        (_RAWFILE_DEVICES, {"capture_type": "RawFile", "playback_type": "File"}),
+        (_ALSA_DEVICES, {"capture_type": "Alsa", "playback_type": "File"}),
+        # No devices block at all is "nothing to compare", not a wrong answer.
+        ("filters:\n  x: 1\n", {}),
+    ],
+    ids=["rawfile", "alsa", "no-devices-block"],
+)
+def test_loaded_device_fields_reads_every_lane_from_one_config(
+    tmp_path, text, expected
+):
+    cfg = tmp_path / "c.yml"
+    cfg.write_text(text)
+
+    fields = audio_runtime_camilla._loaded_device_fields(cfg)
+
+    assert {k: fields.get(k) for k in expected} == expected
+    if not expected:
+        assert fields == {}
+
+
+def test_loaded_device_fields_is_empty_for_a_config_that_is_not_there(tmp_path):
+    assert audio_runtime_camilla._loaded_device_fields(tmp_path / "gone.yml") == {}
+    assert audio_runtime_camilla._loaded_device_fields(None) == {}
 
 
 # --- D-list survey finding 1 / wide-output-path PR-1: playback format check --
@@ -239,9 +282,7 @@ filters:
 def _run_format_check(monkeypatch, tmp_path, cfg_text):
     cfg = tmp_path / "sound_current.yml"
     cfg.write_text(cfg_text)
-    monkeypatch.setattr(
-        audio_runtime_camilla, "_active_camilla_config_path", lambda: (cfg.parent, str(cfg))
-    )
+    evidence.seed("camilla_config", (cfg.parent, str(cfg)))
     return audio_runtime_camilla.check_camilla_playback_format()
 
 
@@ -252,7 +293,7 @@ def test_playback_format_ok_when_alsa_lane_matches_the_wide_default(
     # DEFAULT_PLAYBACK_FORMAT, S32_LE since PR-6.
     res = _run_format_check(monkeypatch, tmp_path, _S32_PLAYBACK_CFG)
     assert res.status == "ok"
-    assert "S32_LE" in res.detail
+    assert res.reason == ""
 
 
 def test_playback_format_fails_on_a_half_flipped_narrow_alsa_lane(
@@ -265,22 +306,20 @@ def test_playback_format_fails_on_a_half_flipped_narrow_alsa_lane(
     # rather than convert. Red doctor line instead of silence.
     res = _run_format_check(monkeypatch, tmp_path, _S16_PLAYBACK_CFG)
     assert res.status == "fail"
-    assert "S16_LE" in res.detail
-    assert "S32_LE" in res.detail
-    assert "DEFAULT_PLAYBACK_FORMAT" in res.detail
+    assert res.reason == audio_runtime_camilla.REASON_PLAYBACK_FORMAT_MISMATCH
 
 
-def test_playback_format_ok_when_no_config_loaded(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        audio_runtime_camilla, "_active_camilla_config_path", lambda: (tmp_path, None)
-    )
+def test_playback_format_skipped_when_no_config_loaded(monkeypatch, tmp_path):
+    evidence.seed("camilla_config", (tmp_path, None))
     res = audio_runtime_camilla.check_camilla_playback_format()
-    assert res.status == "ok"
+    assert res.status == "skipped"
+    assert res.reason == audio_runtime_camilla.REASON_PLAYBACK_FORMAT_NO_CONFIG
 
 
-def test_playback_format_ok_when_config_has_no_format_field(monkeypatch, tmp_path):
+def test_playback_format_skipped_when_config_has_no_format_field(monkeypatch, tmp_path):
     res = _run_format_check(monkeypatch, tmp_path, "filters:\n")
-    assert res.status == "ok"
+    assert res.status == "skipped"
+    assert res.reason == audio_runtime_camilla.REASON_PLAYBACK_FORMAT_FIELD_ABSENT
 
 
 # --- NIT1 (PR-1 gate review): the check is lane-aware, keyed on playback type -
@@ -350,16 +389,18 @@ def _pin_ring_wire_narrow(monkeypatch, tmp_path):
     so the pin neither leaks from nor needs the developer host's real
     ``/var/lib/jasper/fanin.env``.
     """
+    import jasper.fanin.coupling_reconcile as coupling_reconcile
+    import jasper.fanin.ring_health as ring_health
     from jasper.fanin_coupling import RING_WIRE_FORMAT_ENV_VAR
 
     fanin_env = tmp_path / "fanin.env"
     fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=S16_LE\n", encoding="utf-8")
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
-    )
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
-    )
+    # BOTH modules imported before either is patched: coupling_reconcile
+    # re-exports ring_health's constant, so patching ring_health first and
+    # letting monkeypatch import coupling_reconcile afterwards would record the
+    # PATCHED value as its original and leak the tmp path into later tests.
+    monkeypatch.setattr(ring_health, "FANIN_ENV_PATH", str(fanin_env))
+    monkeypatch.setattr(coupling_reconcile, "FANIN_ENV_PATH", str(fanin_env))
 
 
 def test_playback_format_ok_for_an_armed_ring_pinned_narrow_on_an_otherwise_wide_box(
@@ -391,8 +432,7 @@ def test_playback_format_ok_for_an_armed_ring_pinned_narrow_on_an_otherwise_wide
     assert RING_PLAYBACK_DEVICE in _S16_RING_PLAYBACK_CFG
     res = _run_format_check(monkeypatch, tmp_path, _S16_RING_PLAYBACK_CFG)
     assert res.status == "ok"
-    assert "S16_LE" in res.detail
-    assert "resolve_ring_wire" in res.detail
+    assert res.reason == ""
 
 
 def test_playback_format_fails_on_a_ring_config_that_drifted_wide(
@@ -418,9 +458,7 @@ def test_playback_format_fails_on_a_ring_config_that_drifted_wide(
     _pin_ring_wire_narrow(monkeypatch, tmp_path)
     res = _run_format_check(monkeypatch, tmp_path, _S32_RING_PLAYBACK_CFG)
     assert res.status == "fail"
-    assert "S32_LE" in res.detail
-    assert "S16_LE" in res.detail
-    assert "resolve_ring_wire" in res.detail
+    assert res.reason == audio_runtime_camilla.REASON_PLAYBACK_FORMAT_MISMATCH
 
 
 def test_playback_format_ok_for_file_sink_pinned_narrow_while_the_lane_is_wide(
@@ -440,7 +478,7 @@ def test_playback_format_ok_for_file_sink_pinned_narrow_while_the_lane_is_wide(
     assert DEFAULT_PIPE_SINK_FORMAT != DEFAULT_PLAYBACK_FORMAT
     res = _run_format_check(monkeypatch, tmp_path, _S16_FILE_PLAYBACK_CFG)
     assert res.status == "ok"
-    assert "S16_LE" in res.detail
+    assert res.reason == ""
 
 
 def test_playback_format_fails_on_a_deliberately_wide_file_sink_config(
@@ -452,9 +490,41 @@ def test_playback_format_fails_on_a_deliberately_wide_file_sink_config(
     # which is exactly the confusion the lane split has to get right.
     res = _run_format_check(monkeypatch, tmp_path, _S32_FILE_PLAYBACK_CFG)
     assert res.status == "fail"
-    assert "S32_LE" in res.detail
-    assert "S16_LE" in res.detail
-    assert "DEFAULT_PIPE_SINK_FORMAT" in res.detail
+    assert res.reason == audio_runtime_camilla.REASON_PLAYBACK_FORMAT_MISMATCH
+
+
+def test_expected_playback_format_names_one_owner_per_lane(monkeypatch, tmp_path):
+    """WHICH constant owns the width, lane by lane.
+
+    The check reports one mismatch reason for all three lanes, so the lane
+    split is pinned here, on the resolver whose whole output is that pair.
+    """
+    from jasper.camilla_config_contract import (
+        DEFAULT_PIPE_SINK_FORMAT,
+        DEFAULT_PLAYBACK_FORMAT,
+    )
+    from jasper.fanin_coupling import (
+        RING_ACTIVE_PLAYBACK_DEVICE,
+        RING_PLAYBACK_DEVICE,
+        resolve_ring_wire,
+    )
+
+    _pin_ring_wire_narrow(monkeypatch, tmp_path)
+    ring_wire = resolve_ring_wire().sample_format
+    assert ring_wire != DEFAULT_PLAYBACK_FORMAT
+
+    assert audio_runtime_camilla._expected_playback_format("File", None) == (
+        DEFAULT_PIPE_SINK_FORMAT,
+        "DEFAULT_PIPE_SINK_FORMAT",
+    )
+    for device in (RING_PLAYBACK_DEVICE, RING_ACTIVE_PLAYBACK_DEVICE):
+        assert audio_runtime_camilla._expected_playback_format("Alsa", device) == (
+            ring_wire,
+            "resolve_ring_wire",
+        )
+    assert audio_runtime_camilla._expected_playback_format(
+        "Alsa", "outputd_content_playback"
+    ) == (DEFAULT_PLAYBACK_FORMAT, "DEFAULT_PLAYBACK_FORMAT")
 
 
 def test_no_doctor_remedy_names_a_coupling_the_cli_rejects():
@@ -478,7 +548,6 @@ def test_no_doctor_remedy_names_a_coupling_the_cli_rejects():
     rule that makes this safe is one the doctor already keeps: the word after
     this command name is always its ARGUMENT, never English prose.
     """
-
     import re
     from pathlib import Path
 
@@ -509,3 +578,18 @@ def test_no_doctor_remedy_names_a_coupling_the_cli_rejects():
             f"the doctor prints `jasper-fanin-coupling-reconcile {token}`, which "
             "the CLI rejects"
         )
+
+
+def _silent_camilla_recover_park(monkeypatch, tmp_path):
+    from jasper.control import camilla_recover_state
+
+    monkeypatch.setattr(
+        camilla_recover_state,
+        "snapshot",
+        lambda *a, **k: {
+            "status": "parked",
+            "parked": True,
+            "reason": "camilla_start_failed",
+        },
+    )
+    return audio_runtime_camilla.check_camilla_recover_park

@@ -654,7 +654,8 @@ def _walk_every_surface(result, monkeypatch) -> dict:
         "state_overall_passed": compact[PHASE_CLOUD_VERIFY]["overall_passed"],
         "state_validity_floor_hz": compact[PHASE_CLOUD_VERIFY]["validity_floor_hz"],
         "state_spec_bands": compact[PHASE_CLOUD_VERIFY]["spec_bands"],
-        "doctor_detail": doctor.detail,
+        "doctor_status": doctor.status,
+        "doctor_reason": doctor.reason,
         "spec": result["spec"],
         "pipeline_validity_floor_hz": result.get("validity_floor_hz"),
         # PR-7: the tolerance-corridor reference, and the chart's own curve
@@ -710,8 +711,17 @@ def _assert_one_number_everywhere(views: dict) -> None:
     assert f"{gauge['max_hz']:.0f} Hz" in rendered
     assert f"{gauge['rms_db']:.2f} dB" in rendered
 
-    # N-1: the doctor quotes the same worst deviation, to the digit.
-    assert f"worst={gauge['max_db']:+.2f}dB" in views["doctor_detail"]
+    # N-1: the doctor's verdict is derived from the same spec verdict, not a
+    # re-graded one (AGENTS.md/ADR-0233 rule 3 pins status+reason, not the
+    # doctor's prose — which used to be pinned digit-for-digit here).
+    from jasper.cli.doctor import correction as doctor_correction
+
+    if spec["overall_passed"] is False:
+        assert views["doctor_status"] == "warn"
+        assert views["doctor_reason"] == doctor_correction.REASON_CLOUD_VERIFY_SPEC_FAILED
+    else:
+        assert views["doctor_status"] == "ok"
+        assert views["doctor_reason"] == ""
 
     # PR-7: the before/after chart's own inputs are the SAME report, not a
     # fourth derivation. reference_db is the corridor's center line;

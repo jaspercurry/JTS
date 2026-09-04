@@ -5,38 +5,100 @@
 """jasper-doctor checks for jasper-outputd, the final output owner.
 
 Import direction across the audio-runtime check modules runs one way —
-``audio_runtime_camilla`` -> ``_fanin`` -> ``_outputd`` -> ``_ring`` — so nothing
-here may be imported by a module earlier in that chain.
+``audio_runtime_camilla`` -> ``_fanin`` -> ``_outputd`` -> ``_ring``, so this
+module may not import from ``audio_runtime_ring``.
+
+Closed vocabulary for this module's `CheckResult.reason`: one snake_case
+constant per distinct decision branch of the checks below, its value unique
+across the doctor and prefixed by the check that emits it. `detail` stays the
+human sentence (free to reword); `reason` is what tests and self-healing
+consumers pin instead (ADR-0233 rule 3).
+
+A branch that formed NO verdict — subsystem not installed, not applicable to
+this box, or the evidence source unreachable so nothing was observed — is
+`skipped` with a reason, never `ok`. An `ok` reason means an actual verdict a
+consumer would branch on (a feature the box turned off, a floor that is
+deliberately not renderable).
 """
 from __future__ import annotations
 
-import json
 import os
-from collections.abc import Callable
 from typing import Any
 
-from ...route_latency.status_socket import (
-    OUTPUTD_STATUS_SOCKET as _OUTPUTD_STATUS_SOCKET,
-    read_status_socket,
-)
+from ...route_latency.status_socket import OUTPUTD_STALE_MS, OUTPUTD_STATUS_SOCKET
+from ._evidence import evidence
 from ._registry import doctor_check
-from ._shared import CheckResult, _run
+from ._shared import (
+    REASON_SYSTEMCTL_UNAVAILABLE,
+    CheckResult,
+    _service_state_failure,
+)
 from .audio_runtime_fanin import _assistant_gain_fault
+
+REASON_OUTPUTD_UNIT_MISSING = "outputd_unit_missing"
+REASON_OUTPUTD_UNIT_NOT_ENABLED = "outputd_unit_not_enabled"
+REASON_OUTPUTD_INACTIVE = "outputd_inactive"
+REASON_OUTPUTD_STATUS_UNREACHABLE = "outputd_status_unreachable"
+REASON_OUTPUTD_STATUS_MALFORMED = "outputd_status_malformed"
+REASON_OUTPUTD_STATUS_MISSING_CONTENT = "outputd_status_missing_content"
+REASON_OUTPUTD_STATUS_MISSING_DAC = "outputd_status_missing_dac"
+REASON_OUTPUTD_STATUS_MISSING_WATCHDOG = "outputd_status_missing_watchdog"
+REASON_OUTPUTD_BACKEND_NOT_ALSA = "outputd_backend_not_alsa"
+REASON_OUTPUTD_SAMPLE_RATE_UNEXPECTED = "outputd_sample_rate_unexpected"
+REASON_OUTPUTD_PERIOD_FRAMES_MISSING = "outputd_period_frames_missing"
+REASON_OUTPUTD_PROGRESS_STALE = "outputd_progress_stale"
+REASON_OUTPUTD_TTS_OVER_BUDGET = "outputd_tts_over_budget"
+REASON_OUTPUTD_XRUN_RATE_SUSTAINED = "outputd_xrun_rate_sustained"
+REASON_OUTPUTD_CONTENT_SOURCE_MISMATCH = "outputd_content_source_mismatch"
+REASON_OUTPUTD_TRANSPORT_ROUTE_UNPAIRED = "outputd_transport_route_unpaired"
+REASON_OUTPUTD_TRANSPORT_EVIDENCE_UNKNOWN = "outputd_transport_evidence_unknown"
+REASON_OUTPUTD_DAC_PCM_MISMATCH = "outputd_dac_pcm_mismatch"
+REASON_OUTPUTD_REFERENCE_CONTRACT_MISSING = "outputd_reference_contract_missing"
+REASON_OUTPUTD_REFERENCE_SOURCE_UNEXPECTED = "outputd_reference_source_unexpected"
+REASON_OUTPUTD_CONTENT_BUFFER_UNDERSIZED = "outputd_content_buffer_undersized"
+REASON_OUTPUTD_DAC_BUFFER_UNDERSIZED = "outputd_dac_buffer_undersized"
+REASON_OUTPUTD_RING_CONTRACT_MISSING = "outputd_ring_contract_missing"
+REASON_OUTPUTD_RING_SLOTS_INVALID = "outputd_ring_slots_invalid"
+REASON_OUTPUTD_RING_SLOT_FRAMES_MISMATCH = "outputd_ring_slot_frames_mismatch"
+REASON_OUTPUTD_RING_CAPACITY_INCOHERENT = "outputd_ring_capacity_incoherent"
+REASON_OUTPUTD_RING_FORMAT_SHEAR = "outputd_ring_format_shear"
+REASON_OUTPUTD_RING_CHANNELS_SHEAR = "outputd_ring_channels_shear"
+REASON_OUTPUTD_DUAL_APPLE_STATUS_MISSING = "outputd_dual_apple_status_missing"
+REASON_OUTPUTD_DUAL_APPLE_PCM_MISSING = "outputd_dual_apple_pcm_missing"
+REASON_OUTPUTD_DUAL_APPLE_PCMS_IDENTICAL = "outputd_dual_apple_pcms_identical"
+REASON_OUTPUTD_DUAL_APPLE_DELAY_EXCEEDED = "outputd_dual_apple_delay_exceeded"
+REASON_OUTPUTD_DUAL_APPLE_NOT_LINKED = "outputd_dual_apple_not_linked"
+REASON_OUTPUTD_ASSISTANT_GAIN_NOT_NUMERIC = "outputd_assistant_gain_not_numeric"
+REASON_OUTPUTD_ASSISTANT_GAIN_OFF_CONTRACT = "outputd_assistant_gain_off_contract"
+
+REASON_AEC_CLOCK_OUTPUTD_NOT_ENABLED = "aec_clock_outputd_not_enabled"
+REASON_AEC_CLOCK_OUTPUTD_INACTIVE = "aec_clock_outputd_inactive"
+REASON_AEC_CLOCK_STATUS_UNAVAILABLE = "aec_clock_status_unavailable"
+REASON_AEC_CLOCK_REFERENCE_OUTPUTS_MISSING = "aec_clock_reference_outputs_missing"
+REASON_AEC_CLOCK_CHIP_REF_NOT_CONFIGURED = "aec_clock_chip_ref_not_configured"
+REASON_AEC_CLOCK_BLOCK_ABSENT = "aec_clock_block_absent"
+REASON_AEC_CLOCK_CHIP_REF_UNAVAILABLE = "aec_clock_chip_ref_unavailable"
+REASON_AEC_CLOCK_UNTRUSTED = "aec_clock_untrusted"
 
 _OUTPUTD_EXPECTED_DAC_PCM = "outputd_dac"
 
 _OUTPUTD_EXPECTED_DUAL_DAC_PCM = "dual_apple_usb_c_dac_4ch"
 
-
 def _outputd_reconciled_env() -> dict[str, str]:
-    """outputd's env as its own unit layers it, read fresh.
+    """outputd's env as its own unit layers it, read once per doctor run.
 
     :func:`jasper.env_load.outputd_reconciled_env` plus the
     ``JASPER_OUTPUTD_ENV_FILE`` operator seam; nothing else.
     """
-    from ...env_load import outputd_reconciled_env
 
-    return outputd_reconciled_env(os.environ.get("JASPER_OUTPUTD_ENV_FILE") or None)
+    def read() -> dict[str, str]:
+        from ...env_load import outputd_reconciled_env
+
+        return outputd_reconciled_env(
+            os.environ.get("JASPER_OUTPUTD_ENV_FILE") or None
+        )
+
+    return evidence.get("outputd_reconciled_env", read)
 
 
 def _outputd_active_channels_from_env(env: dict[str, str]) -> int | None:
@@ -111,6 +173,7 @@ def _outputd_dual_apple_health(
                 "jasper-outputd",
                 "fail",
                 "STATUS missing dual_apple runtime health for dual sink",
+                reason=REASON_OUTPUTD_DUAL_APPLE_STATUS_MISSING,
             )
         dual_a_pcm = dual.get("dac_a_pcm")
         dual_b_pcm = dual.get("dac_b_pcm")
@@ -119,18 +182,21 @@ def _outputd_dual_apple_health(
                 "jasper-outputd",
                 "fail",
                 "dual_apple.dac_a_pcm is missing",
+                reason=REASON_OUTPUTD_DUAL_APPLE_PCM_MISSING,
             )
         if not isinstance(dual_b_pcm, str) or not dual_b_pcm:
             return CheckResult(
                 "jasper-outputd",
                 "fail",
                 "dual_apple.dac_b_pcm is missing",
+                reason=REASON_OUTPUTD_DUAL_APPLE_PCM_MISSING,
             )
         if dual_a_pcm == dual_b_pcm:
             return CheckResult(
                 "jasper-outputd",
                 "fail",
                 "dual_apple DAC A/B PCMs are identical",
+                reason=REASON_OUTPUTD_DUAL_APPLE_PCMS_IDENTICAL,
             )
         dual_linked = bool(dual.get("linked", False))
         delay_delta = dual.get("delay_delta_frames")
@@ -146,6 +212,7 @@ def _outputd_dual_apple_health(
                 "fail",
                 "dual_apple delay delta exceeds runtime budget: "
                 f"error={delay_error} max={max_delay}",
+                reason=REASON_OUTPUTD_DUAL_APPLE_DELAY_EXCEEDED,
             )
         if not dual_linked:
             dual_warning = "dual Apple PCMs are not ALSA-linked"
@@ -159,58 +226,26 @@ def _outputd_dual_apple_health(
     return active_detail, dual_detail, dual_warning
 
 
-def _outputd_service_state_failure() -> CheckResult | None:
-    """Return the actionable systemd failure, or ``None`` when active."""
-    enabled = _run(
-        ["systemctl", "is-enabled", "jasper-outputd.service"]
-    ).stdout.strip()
-    if enabled == "not-found":
-        return CheckResult(
-            "jasper-outputd",
-            "fail",
-            "systemd unit is not installed. Re-run install.sh.",
-        )
-    if enabled not in {"enabled", "static"}:
-        return CheckResult(
-            "jasper-outputd",
-            "fail",
-            f"systemd unit is {enabled or 'unknown'}; expected enabled "
-            "for the outputd mainline topology.",
-        )
-    active = _run(
-        ["systemctl", "is-active", "jasper-outputd.service"]
-    ).stdout.strip()
-    if active != "active":
-        return CheckResult(
-            "jasper-outputd",
-            "fail",
-            f"service state={active or 'unknown'}. "
-            "Check: journalctl -u jasper-outputd",
-        )
-    return None
-
-
 def _outputd_status_payload() -> dict[str, object] | CheckResult:
     """Load and validate the STATUS transport envelope."""
-    try:
-        data = read_status_socket(_OUTPUTD_STATUS_SOCKET, timeout=2.0)
-    except OSError as exc:
+    status = evidence.outputd_status()
+    if status.unreachable:
         return CheckResult(
             "jasper-outputd",
             "fail",
-            f"active but STATUS probe at {_OUTPUTD_STATUS_SOCKET} failed: {exc}. "
-            "Without STATUS doctor cannot verify DAC ownership, buffers, "
-            "xruns, or work-loop progress.",
+            f"active but STATUS probe at {OUTPUTD_STATUS_SOCKET} failed: "
+            f"{status.error}. Without STATUS doctor cannot verify DAC "
+            "ownership, buffers, xruns, or work-loop progress.",
+            reason=REASON_OUTPUTD_STATUS_UNREACHABLE,
         )
-    except json.JSONDecodeError as exc:
+    if status.payload is None:
         return CheckResult(
             "jasper-outputd",
             "fail",
-            f"active but STATUS returned invalid JSON: {exc}",
+            f"active but STATUS is unusable: {status.error}",
+            reason=REASON_OUTPUTD_STATUS_MALFORMED,
         )
-    except ValueError as exc:
-        return CheckResult("jasper-outputd", "fail", f"active but {exc}")
-    return data
+    return status.payload
 
 
 def _outputd_content_bridge_detail(data: dict[str, object]) -> str:
@@ -239,6 +274,7 @@ def _outputd_loudness_health(data: dict[str, object]) -> str | CheckResult:
             "warn",
             "active but assistant_loudness.decision_seen=true without "
             "numeric final_gain_db.",
+            reason=REASON_OUTPUTD_ASSISTANT_GAIN_NOT_NUMERIC,
         )
     gain_fault = _assistant_gain_fault(loudness)
     if gain_fault is not None:
@@ -246,6 +282,7 @@ def _outputd_loudness_health(data: dict[str, object]) -> str | CheckResult:
             "jasper-outputd",
             "warn",
             f"active but assistant_loudness.{gain_fault}.",
+            reason=REASON_OUTPUTD_ASSISTANT_GAIN_OFF_CONTRACT,
         )
     return (
         f"assistant_loudness_decision={decision_seen}, "
@@ -256,6 +293,18 @@ def _outputd_loudness_health(data: dict[str, object]) -> str | CheckResult:
 
 
 
+def _saved_topology_for_wire() -> Any:
+    """The saved topology the ring wire's per-topology axes resolve against,
+    read once per doctor run (ADR-0233 rule 4).
+
+    Fail-soft to ``None`` like every other consumer of this fact — a box with no
+    saved layout still has a shipped wire declaration to compare against.
+    """
+    from jasper.fanin.ring_health import load_topology_for_wire
+
+    return evidence.get("saved_topology_for_wire", load_topology_for_wire)
+
+
 def _outputd_buffer_health(
     data: dict[str, object],
     content: dict[str, object],
@@ -264,7 +313,6 @@ def _outputd_buffer_health(
     content_buffer: object,
     dac_buffer: object,
     period_frames: int,
-    read_saved_topology: Callable[[], Any] | None = None,
 ) -> str | CheckResult:
     """Validate the content hop's buffer geometry and return ring detail.
 
@@ -293,6 +341,7 @@ def _outputd_buffer_health(
                 "fail",
                 f"shm_ring content.buffer_frames={content_buffer!r}; expected >= "
                 f"one period ({period_frames})",
+                reason=REASON_OUTPUTD_CONTENT_BUFFER_UNDERSIZED,
             )
         ring = content.get("ring")
         if not isinstance(ring, dict):
@@ -301,6 +350,7 @@ def _outputd_buffer_health(
                 "fail",
                 "content.source='shm_ring' but STATUS missing content.ring geometry "
                 "contract (n_slots/slot_frames/capacity_frames). Redeploy outputd.",
+                reason=REASON_OUTPUTD_RING_CONTRACT_MISSING,
             )
         ring_slots = ring.get("slots")
         ring_slot_frames = ring.get("slot_frames")
@@ -311,6 +361,7 @@ def _outputd_buffer_health(
                 "fail",
                 f"shm_ring content.ring.slots={ring_slots!r}; expected >= 2 "
                 "(ping-pong minimum)",
+                reason=REASON_OUTPUTD_RING_SLOTS_INVALID,
             )
         if not isinstance(ring_slot_frames, int) or ring_slot_frames != period_frames:
             return CheckResult(
@@ -319,6 +370,7 @@ def _outputd_buffer_health(
                 f"shm_ring content.ring.slot_frames={ring_slot_frames!r}; expected "
                 f"== dac.period_frames ({period_frames}) — the ring slot must match "
                 "the DAC period.",
+                reason=REASON_OUTPUTD_RING_SLOT_FRAMES_MISMATCH,
             )
         expected_capacity = ring_slots * ring_slot_frames
         if not isinstance(ring_capacity, int) or ring_capacity != expected_capacity:
@@ -327,6 +379,7 @@ def _outputd_buffer_health(
                 "fail",
                 f"shm_ring content.ring.capacity_frames={ring_capacity!r}; expected "
                 f"n_slots*slot_frames ({expected_capacity})",
+                reason=REASON_OUTPUTD_RING_CAPACITY_INCOHERENT,
             )
         # A transient empty ring is normal (idle), so occupancy/attach are
         # surfaced in the detail without gating on them.
@@ -346,7 +399,6 @@ def _outputd_buffer_health(
         # its own declaration, which proves nothing about a ring that does not
         # exist yet.
         if ring_attached and isinstance(shm_ring_block, dict):
-            from jasper.fanin.ring_health import load_topology_for_wire
             from jasper.fanin_coupling import resolve_ring_wire
 
             # TOPOLOGY-THREADED, like every reconciler gate that compares this
@@ -354,8 +406,7 @@ def _outputd_buffer_health(
             # channel counts are PER-TOPOLOGY axes, so resolving with ``None``
             # would answer the shipped stereo declaration and FAIL a box whose
             # post-DSP ring legitimately carries a different width.
-            read = read_saved_topology or load_topology_for_wire
-            wire = resolve_ring_wire(read())
+            wire = resolve_ring_wire(_saved_topology_for_wire())
             # WHICH ring outputd attached decides which width it is held to: an
             # armed ACTIVE endpoint reads the post-crossover per-driver ring,
             # whose width is ``ring_active_channels``. An armed endpoint whose
@@ -377,6 +428,7 @@ def _outputd_buffer_health(
                     f"{ring_label} geometry nobody declared. Run: sudo /opt/jasper/"
                     ".venv/bin/jasper-fanin-coupling-reconcile shm_ring (it clears "
                     "a wire-mismatched ring file before re-arming).",
+                    reason=REASON_OUTPUTD_RING_FORMAT_SHEAR,
                 )
             if (
                 observed_channels is not None
@@ -391,6 +443,7 @@ def _outputd_buffer_health(
                     f"attached to {ring_label} geometry nobody declared. Run: sudo "
                     "/opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring "
                     "(it clears a wire-mismatched ring file before re-arming).",
+                    reason=REASON_OUTPUTD_RING_CHANNELS_SHEAR,
                 )
         ring_detail = (
             f", shm_ring_slots={ring_slots}, shm_ring_slot_frames={ring_slot_frames}"
@@ -415,6 +468,7 @@ def _outputd_buffer_health(
             "fail",
             f"content.buffer_frames={content_buffer!r}; expected >= "
             f"2 x period ({period_frames})",
+            reason=REASON_OUTPUTD_CONTENT_BUFFER_UNDERSIZED,
         )
     if not isinstance(dac_buffer, int) or dac_buffer < period_frames * 2:
         return CheckResult(
@@ -422,6 +476,7 @@ def _outputd_buffer_health(
             "fail",
             f"dac.buffer_frames={dac_buffer!r}; expected >= "
             f"2 x period ({period_frames})",
+            reason=REASON_OUTPUTD_DAC_BUFFER_UNDERSIZED,
         )
 
     return ring_detail
@@ -441,9 +496,7 @@ def _transport_route_remedy() -> str:
         UnrecognizedDacProfile,
         active_lane_capability_gap,
     )
-    from jasper.output_topology import load_output_topology
-
-    gap = active_lane_capability_gap(load_output_topology())
+    gap = active_lane_capability_gap(evidence.output_topology())
     if isinstance(gap, ActiveLaneCapabilityGap):
         return (
             f". {gap.device_label} does not support the active speaker lane, so "
@@ -476,7 +529,6 @@ def _outputd_transport_health(
     sink_mode: object,
     active_channels: int | None,
     expected_dac_pcm: str,
-    read_saved_topology: Callable[[], Any] | None = None,
 ) -> tuple[str, str, str, str] | CheckResult:
     """Validate outputd's live topology, endpoint coherence, PCMs, and references.
 
@@ -507,7 +559,7 @@ def _outputd_transport_health(
     # the ALSA lane, the central ring, or a bonded member's return ring — and
     # everything below branches on that rather than on a second marker read.
     topology = transport_topology_for_coupling(
-        outputd_env=outputd_env, read_saved_topology=read_saved_topology
+        outputd_env=outputd_env, read_saved_topology=_saved_topology_for_wire
     )
     expected_content_source = topology.outputd_content_source
     actual_content_source = content.get("source")
@@ -520,6 +572,7 @@ def _outputd_transport_health(
             f"{bridge!r} in outputd's own env — the running daemon is on an older "
             "env than the file. Run jasper-fanin-coupling-reconcile --auto to "
             "restart outputd onto it.",
+            reason=REASON_OUTPUTD_CONTENT_SOURCE_MISMATCH,
         )
     live_outputd_env = dict(outputd_env)
     endpoint_evidence = output_endpoint_evidence_from_statefiles(
@@ -541,13 +594,14 @@ def _outputd_transport_health(
         transport_report = transport_coherence_report(
             outputd_env=live_outputd_env,
             camilla_devices=endpoint_evidence.devices,
-            read_saved_topology=read_saved_topology,
+            read_saved_topology=_saved_topology_for_wire,
         )
         if transport_report.errors:
             return CheckResult(
                 "jasper-outputd",
                 "fail",
                 "; ".join(transport_report.errors) + _transport_route_remedy(),
+                reason=REASON_OUTPUTD_TRANSPORT_ROUTE_UNPAIRED,
             )
         # Notes are deliberately not elevated: each has an OWNING check that
         # FAILs on the same state with a runnable remedy, and both read PERSISTED
@@ -564,6 +618,7 @@ def _outputd_transport_health(
             "fail",
             f"dac.pcm={dac.get('pcm')!r}; expected {expected_dac_pcm!r} "
             f"for sink_mode={sink_mode!r}, active_channels={active_channels!r}",
+            reason=REASON_OUTPUTD_DAC_PCM_MISMATCH,
         )
     reference_outputs = data.get("reference_outputs")
     if not isinstance(reference_outputs, dict):
@@ -571,6 +626,7 @@ def _outputd_transport_health(
             "jasper-outputd",
             "fail",
             "STATUS missing reference_outputs speaker-reference contract",
+            reason=REASON_OUTPUTD_REFERENCE_CONTRACT_MISSING,
         )
     speaker_reference_source = reference_outputs.get("speaker_reference_source")
     if speaker_reference_source != "outputd_final_electrical":
@@ -579,6 +635,7 @@ def _outputd_transport_health(
             "fail",
             "reference_outputs.speaker_reference_source="
             f"{speaker_reference_source!r}; expected 'outputd_final_electrical'",
+            reason=REASON_OUTPUTD_REFERENCE_SOURCE_UNEXPECTED,
         )
     reference_detail = (
         "speaker_reference_source=outputd_final_electrical, "
@@ -605,9 +662,13 @@ def check_outputd_service() -> CheckResult:
     outputd owns the physical DAC, so disabled/inactive is a real audio-path
     failure.
     """
-    from jasper.fanin.ring_health import saved_topology_reader
-
-    service_failure = _outputd_service_state_failure()
+    service_failure = _service_state_failure(
+        "jasper-outputd",
+        "jasper-outputd.service",
+        missing=REASON_OUTPUTD_UNIT_MISSING,
+        not_enabled=REASON_OUTPUTD_UNIT_NOT_ENABLED,
+        inactive=REASON_OUTPUTD_INACTIVE,
+    )
     if service_failure is not None:
         return service_failure
     status_payload = _outputd_status_payload()
@@ -620,10 +681,10 @@ def check_outputd_service() -> CheckResult:
             "jasper-outputd",
             "fail",
             f"active but backend={data.get('backend')!r}; expected 'alsa'",
+            reason=REASON_OUTPUTD_BACKEND_NOT_ALSA,
         )
     sink_mode = data.get("sink_mode") or "single_alsa"
     outputd_env = _outputd_reconciled_env()
-    read_saved_topology = saved_topology_reader()
     active_channels = _outputd_active_channels_from_env(outputd_env)
     active_single_alsa = sink_mode == "single_alsa" and active_channels is not None
     expected_dac_pcm = (
@@ -638,12 +699,14 @@ def check_outputd_service() -> CheckResult:
             "jasper-outputd",
             "fail",
             "STATUS missing content{}",
+            reason=REASON_OUTPUTD_STATUS_MISSING_CONTENT,
         )
     if not isinstance(dac, dict):
         return CheckResult(
             "jasper-outputd",
             "fail",
             "STATUS missing dac{}",
+            reason=REASON_OUTPUTD_STATUS_MISSING_DAC,
         )
     transport_health = _outputd_transport_health(
         data,
@@ -653,7 +716,6 @@ def check_outputd_service() -> CheckResult:
         sink_mode=sink_mode,
         active_channels=active_channels,
         expected_dac_pcm=expected_dac_pcm,
-        read_saved_topology=read_saved_topology,
     )
     if isinstance(transport_health, CheckResult):
         return transport_health
@@ -681,12 +743,14 @@ def check_outputd_service() -> CheckResult:
             "jasper-outputd",
             "fail",
             f"dac.sample_rate={sample_rate!r}; expected 48000",
+            reason=REASON_OUTPUTD_SAMPLE_RATE_UNEXPECTED,
         )
     if not isinstance(period_frames, int) or period_frames <= 0:
         return CheckResult(
             "jasper-outputd",
             "fail",
             "STATUS missing positive dac.period_frames",
+            reason=REASON_OUTPUTD_PERIOD_FRAMES_MISSING,
         )
     buffer_health = _outputd_buffer_health(
         data,
@@ -695,7 +759,6 @@ def check_outputd_service() -> CheckResult:
         content_buffer=content_buffer,
         dac_buffer=dac_buffer,
         period_frames=period_frames,
-        read_saved_topology=read_saved_topology,
     )
     if isinstance(buffer_health, CheckResult):
         return buffer_health
@@ -711,6 +774,7 @@ def check_outputd_service() -> CheckResult:
             "jasper-outputd",
             "fail",
             "STATUS response missing watchdog.last_progress_age_ms",
+            reason=REASON_OUTPUTD_STATUS_MISSING_WATCHDOG,
         )
     content_xruns = int(content.get("xrun_count", 0) or 0)
     dac_xruns = int(dac.get("xrun_count", 0) or 0)
@@ -737,18 +801,20 @@ def check_outputd_service() -> CheckResult:
     if isinstance(loudness_health, CheckResult):
         return loudness_health
     loudness_detail = loudness_health
-    if progress_age > 1000:
+    if progress_age > OUTPUTD_STALE_MS:
         return CheckResult(
             "jasper-outputd",
             "warn",
             f"active but last_progress_age_ms={progress_age} "
             "(work loop may be wedged; watchdog should fire soon)",
+            reason=REASON_OUTPUTD_PROGRESS_STALE,
         )
     if dual_warning is not None:
         return CheckResult(
             "jasper-outputd",
             "warn",
             f"active but {dual_warning}. {dual_detail.lstrip(', ')}",
+            reason=REASON_OUTPUTD_DUAL_APPLE_NOT_LINKED,
         )
     if tts_over_budget or tts_pending > 48000 * 2:
         return CheckResult(
@@ -757,6 +823,7 @@ def check_outputd_service() -> CheckResult:
             f"active but tts.pending_frames={tts_pending} (>2s). "
             f"over_budget_streak_ms={tts_over_budget_streak_ms}. "
             "TTS producer may be outrunning outputd playback.",
+            reason=REASON_OUTPUTD_TTS_OVER_BUDGET,
         )
     if xrun_warning is not None:
         return CheckResult(
@@ -767,8 +834,14 @@ def check_outputd_service() -> CheckResult:
             "CPU contention (jasper-camilla RT scheduling), DAC buffer sizing "
             "(JASPER_OUTPUTD_DAC_BUFFER_FRAMES), and "
             "`journalctl -u jasper-outputd | grep xrun`.",
+            reason=REASON_OUTPUTD_XRUN_RATE_SUSTAINED,
         )
     status = "warn" if transport_evidence_warning else "ok"
+    evidence_reason = (
+        REASON_OUTPUTD_TRANSPORT_EVIDENCE_UNKNOWN
+        if transport_evidence_warning
+        else ""
+    )
     transport_detail = (
         f", {transport_evidence_warning}" if transport_evidence_warning else ""
     )
@@ -795,6 +868,7 @@ def check_outputd_service() -> CheckResult:
         f"{dual_detail}"
         f"{ring_detail}"
         f"{transport_detail}",
+        reason=evidence_reason,
     )
 
 @doctor_check(order=52.6, group="audio")
@@ -805,40 +879,65 @@ def check_aec_clock_drift() -> CheckResult:
     SRO (sample-rate-offset) estimator's verdict, ppm, and latency budget. Purely
     diagnostic; no audio path depends on it.
 
-      - skip (ok + "skipped — …") when outputd is disabled/inactive, STATUS is
-        unreachable or invalid, the chip reference is not configured, or the
-        aec_clock block is absent.
+      - skipped when outputd is disabled/inactive, STATUS is unreachable or
+        invalid, the chip reference is not configured, or the aec_clock block
+        is absent.
       - warn only when sro_estimator_status == "untrusted".
       - ok otherwise: coherent, compensable (a real steady offset, the expected
         state on independent-clock DACs like the HiFiBerry), and observing
         (still measuring) are all healthy.
     """
     label = "AEC clock drift"
-    enabled = _run(
-        ["systemctl", "is-enabled", "jasper-outputd.service"]
-    ).stdout.strip()
-    if enabled in {"not-found", "disabled", ""}:
-        return CheckResult(label, "ok", "skipped — jasper-outputd not enabled")
-    active = _run(
-        ["systemctl", "is-active", "jasper-outputd.service"]
-    ).stdout.strip()
-    if active != "active":
-        return CheckResult(label, "ok", "skipped — jasper-outputd not active")
+    state = evidence.unit_state("jasper-outputd.service")
+    if state is None:
+        return CheckResult(
+            label,
+            "skipped",
+            "systemctl unavailable — skipped (not Linux?)",
+            reason=REASON_SYSTEMCTL_UNAVAILABLE,
+        )
+    if state.get("load_state") == "not-found" or state.get(
+        "unit_file_state"
+    ) not in ("enabled", "enabled-runtime"):
+        return CheckResult(
+            label,
+            "skipped",
+            "jasper-outputd not enabled",
+            reason=REASON_AEC_CLOCK_OUTPUTD_NOT_ENABLED,
+        )
+    if state.get("active_state") != "active":
+        return CheckResult(
+            label,
+            "skipped",
+            "jasper-outputd not active",
+            reason=REASON_AEC_CLOCK_OUTPUTD_INACTIVE,
+        )
 
-    try:
-        data = read_status_socket(_OUTPUTD_STATUS_SOCKET, timeout=2.0)
-    except OSError as e:
-        return CheckResult(label, "ok", f"skipped — STATUS unreachable: {e}")
-    except json.JSONDecodeError:
-        return CheckResult(label, "ok", "skipped — STATUS returned invalid JSON")
-    except ValueError as e:
-        return CheckResult(label, "ok", f"skipped — {e}")
+    read = evidence.outputd_status()
+    data = read.payload
+    if data is None:
+        return CheckResult(
+            label,
+            "skipped",
+            f"STATUS unusable: {read.error}",
+            reason=REASON_AEC_CLOCK_STATUS_UNAVAILABLE,
+        )
 
     reference_outputs = data.get("reference_outputs")
     if not isinstance(reference_outputs, dict):
-        return CheckResult(label, "ok", "skipped — STATUS missing reference_outputs")
+        return CheckResult(
+            label,
+            "skipped",
+            "STATUS missing reference_outputs",
+            reason=REASON_AEC_CLOCK_REFERENCE_OUTPUTS_MISSING,
+        )
     if reference_outputs.get("chip_ref_pcm") is None:
-        return CheckResult(label, "ok", "skipped — chip reference not configured")
+        return CheckResult(
+            label,
+            "skipped",
+            "chip reference not configured",
+            reason=REASON_AEC_CLOCK_CHIP_REF_NOT_CONFIGURED,
+        )
     chip_ref_writer = reference_outputs.get("chip_ref_writer")
     if isinstance(chip_ref_writer, dict) and not bool(
         chip_ref_writer.get("active", chip_ref_writer.get("enabled", False))
@@ -858,11 +957,13 @@ def check_aec_clock_drift() -> CheckResult:
             f"(status={writer_status}, "
             f"open_errors={chip_ref_writer.get('open_error_count')}, "
             f"retries={chip_ref_writer.get('retry_count')})",
+            reason=REASON_AEC_CLOCK_CHIP_REF_UNAVAILABLE,
         )
     aec_clock = reference_outputs.get("aec_clock")
     if not isinstance(aec_clock, dict):
         return CheckResult(
-            label, "ok", "skipped — outputd build predates aec_clock observation"
+            label, "skipped", "outputd build predates aec_clock observation",
+            reason=REASON_AEC_CLOCK_BLOCK_ABSENT,
         )
 
     verdict = aec_clock.get("verdict")
@@ -889,5 +990,6 @@ def check_aec_clock_drift() -> CheckResult:
             label,
             "warn",
             f"chip-AEC clock drift cannot be trusted: {reason}. {detail}",
+            reason=REASON_AEC_CLOCK_UNTRUSTED,
         )
     return CheckResult(label, "ok", detail)

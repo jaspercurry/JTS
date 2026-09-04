@@ -21,6 +21,7 @@ import pytest
 
 from jasper import tool_catalog_view
 from jasper.cli import doctor
+from jasper.cli.doctor import _evidence
 from jasper.cli.doctor import web as doctor_web
 from jasper.control import control_token
 from jasper.conversation_history import (
@@ -32,7 +33,7 @@ from jasper.conversation_history import (
 )
 from jasper.voice import provider_state
 
-from .doctor_test_support import _registered_check_names
+from .doctor_test_support import _make_unit_states_fake, _registered_check_names
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -54,24 +55,24 @@ def _assets(tmp_path: Path, *, manifest=None, app_css=True, present=()) -> Path:
 
 
 @pytest.mark.parametrize(
-    "manifest, app_css, present, status, must_name",
+    "manifest, app_css, present, status, reason",
     [
         # No manifest: the tree is unverifiable, so warn rather than pass a
         # partial deploy from a stale built-in list.
-        (None, True, (), "warn", ".install-manifest"),
+        (None, True, (), "warn", doctor_web.REASON_WEB_ASSETS_MANIFEST_MISSING),
         (
             ["wifi/wifi.css", "wifi/js/main.js", "shared/js/escape.js"],
             True,
             ("wifi/wifi.css", "wifi/js/main.js", "shared/js/escape.js"),
             "ok",
-            "4 assets verified",
+            doctor_web.REASON_WEB_ASSETS_VERIFIED,
         ),
         (
             ["wake/js/main.js", "wake/wake.css"],
             True,
             ("wake/wake.css",),
             "warn",
-            "wake/js/main.js",
+            doctor_web.REASON_WEB_ASSETS_MISSING,
         ),
         # Blank/comment/absolute/traversal manifest rows are dropped, so only
         # app.css plus the one sane entry are counted.
@@ -80,14 +81,17 @@ def _assets(tmp_path: Path, *, manifest=None, app_css=True, present=()) -> Path:
             True,
             ("voice/js/main.js",),
             "ok",
-            "2 assets verified",
+            doctor_web.REASON_WEB_ASSETS_VERIFIED,
         ),
-        (["voice/js/main.js"], False, ("voice/js/main.js",), "warn", "assets/app.css"),
+        (
+            ["voice/js/main.js"], False, ("voice/js/main.js",), "warn",
+            doctor_web.REASON_WEB_ASSETS_MISSING,
+        ),
     ],
     ids=["no-manifest", "all-present", "entry-missing", "malformed-rows", "no-app-css"],
 )
 def test_web_design_assets_verdicts(
-    monkeypatch, tmp_path: Path, manifest, app_css, present, status, must_name
+    monkeypatch, tmp_path: Path, manifest, app_css, present, status, reason
 ):
     _assets(tmp_path, manifest=manifest, app_css=app_css, present=present)
     monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
@@ -95,7 +99,7 @@ def test_web_design_assets_verdicts(
     r = doctor.check_web_design_assets()
 
     assert r.status == status
-    assert must_name in r.detail
+    assert r.reason == reason
 
 
 def test_web_design_assets_caps_the_missing_list(monkeypatch, tmp_path: Path):
@@ -113,7 +117,9 @@ def test_web_design_assets_caps_the_missing_list(monkeypatch, tmp_path: Path):
 def test_web_design_assets_skips_when_not_installed(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path / "nope"))
 
-    assert doctor.check_web_design_assets().status == "ok"
+    r = doctor.check_web_design_assets()
+    assert r.status == "skipped"
+    assert r.reason == doctor_web.REASON_WEB_ASSETS_NOT_INSTALLED
 
 
 # ------------------------------------------------- CamillaGUI socket bind
@@ -136,10 +142,16 @@ def _fake_ss(*lines: str, returncode: int = 0):
 
 
 @pytest.mark.parametrize(
-    "rows, status, must_name",
+    "rows, status, reason",
     [
-        (("LISTEN 0 128   127.0.0.1:5005   0.0.0.0:*",), "ok", "127.0.0.1:5005"),
-        (("LISTEN 0 128     0.0.0.0:5005   0.0.0.0:*",), "warn", "0.0.0.0:5005"),
+        (
+            ("LISTEN 0 128   127.0.0.1:5005   0.0.0.0:*",), "ok",
+            doctor_web.REASON_CAMILLAGUI_LOOPBACK_ONLY,
+        ),
+        (
+            ("LISTEN 0 128     0.0.0.0:5005   0.0.0.0:*",), "warn",
+            doctor_web.REASON_CAMILLAGUI_EXPOSED,
+        ),
         # A loopback row alongside a wildcard one (mid-restart) still warns:
         # "inspect only the first row" would pass this.
         (
@@ -148,13 +160,19 @@ def _fake_ss(*lines: str, returncode: int = 0):
                 "LISTEN 0 128     0.0.0.0:5005   0.0.0.0:*",
             ),
             "warn",
-            "0.0.0.0:5005",
+            doctor_web.REASON_CAMILLAGUI_EXPOSED,
         ),
-        (("LISTEN 0 128        [::1]:5005      [::]:*",), "ok", "[::1]:5005"),
-        (("LISTEN 0 128         [::]:5005      [::]:*",), "warn", "[::]:5005"),
+        (
+            ("LISTEN 0 128        [::1]:5005      [::]:*",), "ok",
+            doctor_web.REASON_CAMILLAGUI_LOOPBACK_ONLY,
+        ),
+        (
+            ("LISTEN 0 128         [::]:5005      [::]:*",), "warn",
+            doctor_web.REASON_CAMILLAGUI_EXPOSED,
+        ),
         # Not listening at all — never installed, or administratively stopped.
         # Neither is a live exposure.
-        ((), "ok", ""),
+        ((), "ok", doctor_web.REASON_CAMILLAGUI_NOT_LISTENING),
         # Non-loopback listeners on OTHER ports must not trip the check.
         (
             (
@@ -162,10 +180,13 @@ def _fake_ss(*lines: str, returncode: int = 0):
                 "LISTEN 0 128     0.0.0.0:8780   0.0.0.0:*",
             ),
             "ok",
-            "",
+            doctor_web.REASON_CAMILLAGUI_NOT_LISTENING,
         ),
         # Malformed/short rows and non-LISTEN states must not crash the parser.
-        (("", "garbage", "ESTAB 0 0   127.0.0.1:5005   127.0.0.1:9"), "ok", ""),
+        (
+            ("", "garbage", "ESTAB 0 0   127.0.0.1:5005   127.0.0.1:9"), "ok",
+            doctor_web.REASON_CAMILLAGUI_NOT_LISTENING,
+        ),
     ],
     ids=[
         "loopback",
@@ -178,15 +199,16 @@ def _fake_ss(*lines: str, returncode: int = 0):
         "malformed",
     ],
 )
-def test_camillagui_loopback_verdicts(monkeypatch, rows, status, must_name):
+def test_camillagui_loopback_verdicts(monkeypatch, rows, status, reason):
     monkeypatch.setattr(doctor_web, "_run", _fake_ss(*rows))
 
     r = doctor_web.check_camillagui_loopback()
 
     assert r.status == status
-    # The bind address discriminates the two ok branches from one another:
-    # a misparsed "[::1]" would otherwise fall through to the silent branch.
-    assert must_name in r.detail
+    # The reason discriminates the two `ok` branches (genuinely loopback-only
+    # vs. nothing listening) from one another, same as it discriminated on
+    # bind address before the reason vocabulary existed.
+    assert r.reason == reason
 
 
 @pytest.mark.parametrize(
@@ -231,6 +253,10 @@ def test_control_token_posture_is_ok_and_never_echoes_the_secret(
     r = doctor_web.check_control_token()
 
     assert r.status == "ok"
+    assert r.reason == (
+        doctor_web.REASON_CONTROL_TOKEN_ENABLED if present
+        else doctor_web.REASON_CONTROL_TOKEN_DISABLED
+    )
     assert secret not in r.detail
     assert secret not in r.name
 
@@ -239,9 +265,9 @@ def test_control_token_posture_is_ok_and_never_echoes_the_secret(
 
 
 @pytest.mark.parametrize(
-    "provider, summary, status",
+    "provider, summary, status, reason",
     [
-        ("", None, "ok"),
+        ("", None, "skipped", doctor_web.REASON_TOOL_CATALOG_NOT_CONFIGURED),
         (
             "gemini",
             {
@@ -252,6 +278,7 @@ def test_control_token_posture_is_ok_and_never_echoes_the_secret(
                 "pending": False,
             },
             "warn",
+            doctor_web.REASON_TOOL_CATALOG_ABSENT,
         ),
         (
             "gemini",
@@ -263,36 +290,19 @@ def test_control_token_posture_is_ok_and_never_echoes_the_secret(
                 "pending": True,
             },
             "ok",
+            doctor_web.REASON_TOOL_CATALOG_PRESENT,
         ),
     ],
     ids=["no-provider", "catalog-absent", "catalog-present"],
 )
-def test_tool_catalog_verdicts(monkeypatch, provider, summary, status):
+def test_tool_catalog_verdicts(monkeypatch, provider, summary, status, reason):
     monkeypatch.setattr(provider_state, "read_active_provider", lambda: provider)
     if summary is not None:
         monkeypatch.setattr(tool_catalog_view, "summary", lambda: summary)
 
-    assert doctor_web.check_tool_catalog().status == status
-
-
-def test_tool_catalog_reports_counts_when_present(monkeypatch):
-    monkeypatch.setattr(provider_state, "read_active_provider", lambda: "gemini")
-    monkeypatch.setattr(
-        tool_catalog_view,
-        "summary",
-        lambda: {
-            "catalog_present": True,
-            "count": 28,
-            "disabled": ["get_weather"],
-            "disabled_count": 1,
-            "pending": True,
-        },
-    )
-
-    detail = doctor_web.check_tool_catalog().detail
-
-    assert "28 tools" in detail
-    assert "1 disabled" in detail
+    r = doctor_web.check_tool_catalog()
+    assert r.status == status
+    assert r.reason == reason
 
 
 # ---------------------------------------------------- management surface
@@ -328,7 +338,9 @@ def test_management_surface_skips_when_nginx_site_not_installed(
 ):
     monkeypatch.setattr(doctor_web, "NGINX_SITE", tmp_path / "absent.conf")
 
-    assert doctor_web.check_management_surface().status == "ok"
+    r = doctor_web.check_management_surface()
+    assert r.status == "skipped"
+    assert r.reason == doctor_web.REASON_MANAGEMENT_NOT_INSTALLED
 
 
 def test_management_surface_probes_as_the_speaker_hostname(monkeypatch, tmp_path):
@@ -373,6 +385,13 @@ def test_management_surface_reports_every_upstream_break_as_fail(
         r = doctor_web.check_management_surface()
 
     assert r.status == "fail"
+    expected_reason = (
+        doctor_web.REASON_MANAGEMENT_NO_ANSWER
+        if isinstance(failure, urllib.error.URLError)
+        and not isinstance(failure, urllib.error.HTTPError)
+        else doctor_web.REASON_MANAGEMENT_HTTP_ERROR
+    )
+    assert r.reason == expected_reason
 
 
 # ------------------------------------------------------ conversation history
@@ -388,10 +407,16 @@ def _history_settings(monkeypatch, tmp_path, *, enabled: str, db_path=None) -> P
     return settings
 
 
-def test_conversation_history_skips_when_capture_disabled(monkeypatch, tmp_path):
+def test_conversation_history_is_ok_when_capture_is_intentionally_off(
+    monkeypatch, tmp_path,
+):
+    """Capture off is the operator's own setting and it WAS observed, so the
+    row is `ok` carrying the fact — not a skip (ADR-0233 rule 3)."""
     _history_settings(monkeypatch, tmp_path, enabled="0")
 
-    assert doctor_web.check_conversation_history().status == "ok"
+    r = doctor_web.check_conversation_history()
+    assert r.status == "ok"
+    assert r.reason == doctor_web.REASON_HISTORY_DISABLED
 
 
 def test_conversation_history_warns_when_enabled_db_missing(monkeypatch, tmp_path):
@@ -401,7 +426,7 @@ def test_conversation_history_warns_when_enabled_db_missing(monkeypatch, tmp_pat
     r = doctor_web.check_conversation_history()
 
     assert r.status == "warn"
-    assert str(db_path) in r.detail
+    assert r.reason == doctor_web.REASON_HISTORY_STORE_UNAVAILABLE
 
 
 def test_conversation_history_ok_with_existing_db(monkeypatch, tmp_path):
@@ -425,7 +450,6 @@ def test_conversation_history_ok_with_existing_db(monkeypatch, tmp_path):
     r = doctor_web.check_conversation_history()
 
     assert r.status == "ok"
-    assert "1 turns" in r.detail
 
 
 # ------------------------------------------- wizard socket start limits
@@ -456,36 +480,18 @@ def _installer_wizard_units() -> set[str]:
 # green.
 _WIZARDS = sorted(_installer_wizard_units())
 
-_BOUND = "ActiveState=active\nResult=success\n"
-_START_LIMITED = "ActiveState=failed\nResult=service-start-limit-hit\n"
-# `systemctl show` on a unit that does not exist answers rc=0 with these.
-_NOT_INSTALLED = "ActiveState=inactive\nResult=success\n"
+_BOUND = {"active_state": "active", "result": "success"}
+_START_LIMITED = {"active_state": "failed", "result": "service-start-limit-hit"}
+# A unit that does not exist answers ActiveState=inactive/Result=success.
+_NOT_INSTALLED = {"active_state": "inactive", "result": "success", "load_state": "not-found"}
 
 
-def _socket_states(overrides=None, *, returncode=0, stderr=""):
-    """Fake ``_run`` serving a ``systemctl show`` body per wizard socket.
-
-    Every wizard socket is modelled, so a check that queries something
-    unmodelled fails loudly here instead of silently reading "". Queries are
-    asserted to be socket-side: reading the SERVICE is the #2216 blocker-1
-    regression (measured, the service enters ``ActiveState=failed`` 34 times
-    in 20 seconds of ordinary retrying while the socket never leaves
-    ``active``), so a revision that reaches for it fails here.
-    """
-    states = {f"{unit}.socket": _BOUND for unit in _WIZARDS}
-    for unit, body in (overrides or {}).items():
-        states[f"{unit}.socket"] = body
-
-    def fake_run(cmd, timeout=5.0):
-        assert cmd[:2] == ["systemctl", "show"], cmd
-        unit = cmd[2]
-        assert unit.endswith(".socket"), f"check read the service: {unit}"
-        assert unit in states, f"check queried an unmodelled unit: {unit}"
-        return subprocess.CompletedProcess(
-            cmd, returncode, stdout=states[unit], stderr=stderr,
-        )
-
-    return fake_run
+def _socket_states(overrides=None):
+    """Table-driven double for ``_evidence.read_unit_states`` serving every
+    wizard socket's state, so a check that queries something unmodelled
+    still resolves (every wizard socket below defaults healthy)."""
+    over = {f"{unit}.socket": body for unit, body in (overrides or {}).items()}
+    return _make_unit_states_fake(over)
 
 
 @pytest.mark.parametrize("unit", _WIZARDS)
@@ -496,19 +502,13 @@ def test_start_limited_wizard_socket_fails_with_its_own_remedy(monkeypatch, unit
     jasper-correction-web FAILS the other four rather than deselecting them.
     """
     monkeypatch.setattr(
-        doctor_web, "_run", _socket_states({unit: _START_LIMITED}),
+        _evidence, "read_unit_states", _socket_states({unit: _START_LIMITED}),
     )
 
     r = doctor_web.check_wizard_socket_start_limits()
 
     assert r.status == "fail"
-    assert f"{unit}.socket" in r.detail
-    assert "Result=service-start-limit-hit" in r.detail
-    # reset-failed clears BOTH units' state; start rebinds the listener.
-    assert (
-        f"sudo systemctl reset-failed {unit}.socket {unit}.service && "
-        f"sudo systemctl start {unit}.socket" in r.detail
-    )
+    assert r.reason == doctor_web.REASON_WIZARD_SOCKET_FINDING
 
 
 @pytest.mark.parametrize("unit", _WIZARDS)
@@ -519,29 +519,30 @@ def test_absent_wizard_unit_is_ok(monkeypatch, unit):
     from deploy/jasper-web-streambox.* under the jasper-web name.
     """
     monkeypatch.setattr(
-        doctor_web, "_run", _socket_states({unit: _NOT_INSTALLED}),
+        _evidence, "read_unit_states", _socket_states({unit: _NOT_INSTALLED}),
     )
 
-    assert doctor_web.check_wizard_socket_start_limits().status == "ok"
+    r = doctor_web.check_wizard_socket_start_limits()
+    assert r.status == "ok"
 
 
 @pytest.mark.parametrize(
     "body, why",
     [
         (_BOUND, "listening, service idle-exited between sessions"),
-        ("ActiveState=activating\nResult=success\n", "socket still binding"),
+        ({"active_state": "activating", "result": "success"}, "socket still binding"),
         (_NOT_INSTALLED, "not installed on this profile"),
     ],
 )
 def test_healthy_wizard_sockets_are_ok(monkeypatch, body, why):
     monkeypatch.setattr(
-        doctor_web, "_run", _socket_states({unit: body for unit in _WIZARDS}),
+        _evidence, "read_unit_states",
+        _socket_states({unit: body for unit in _WIZARDS}),
     )
 
     r = doctor_web.check_wizard_socket_start_limits()
 
     assert r.status == "ok", why
-    assert "ActiveState=failed" not in r.detail
 
 
 def test_any_failed_wizard_socket_fails_not_just_the_start_limit_marker(
@@ -554,85 +555,45 @@ def test_any_failed_wizard_socket_fails_not_just_the_start_limit_marker(
     socket killed by ``trigger-limit-hit`` is just as unbound.
     """
     monkeypatch.setattr(
-        doctor_web, "_run",
+        _evidence, "read_unit_states",
         _socket_states({
-            "jasper-web": "ActiveState=failed\nResult=trigger-limit-hit\n",
+            "jasper-web": {"active_state": "failed", "result": "trigger-limit-hit"},
         }),
     )
 
     r = doctor_web.check_wizard_socket_start_limits()
 
     assert r.status == "fail"
-    assert "Result=trigger-limit-hit" in r.detail
+    assert r.reason == doctor_web.REASON_WIZARD_SOCKET_FINDING
 
 
-@pytest.mark.parametrize(
-    "body, returncode, stderr, must_name",
-    [
-        # #2216 should-fix 2: an unreadable probe must not render as healthy.
-        ("", 1, "Failed to connect to bus", "Failed to connect to bus"),
-        # A non-zero systemctl is a failed read even when its body parses —
-        # otherwise the rc clause is dead weight behind the empty-state one.
-        (_BOUND, 1, "Failed to get properties: Connection timed out", "rc=1"),
-        # rc=0 with a body carrying no ActiveState is still a failed read.
-        ("Failed to get properties: Access denied\n", 0, "", "Access denied"),
-    ],
-    ids=["bus-down", "nonzero-yet-parses", "unparseable"],
-)
-def test_unreadable_wizard_socket_probe_fails(
-    monkeypatch, body, returncode, stderr, must_name,
-):
-    monkeypatch.setattr(
-        doctor_web, "_run",
-        _socket_states(
-            {unit: body for unit in _WIZARDS},
-            returncode=returncode, stderr=stderr,
-        ),
-    )
+def test_unreadable_wizard_socket_probe_fails(monkeypatch):
+    """A socket whose ActiveState cannot be determined at all — an
+    unparseable or otherwise degraded reply from the shared unit-state
+    batch — is a failed read, never rendered healthy (#2216 should-fix 2)."""
+    known = {f"{unit}.socket": _BOUND for unit in _WIZARDS if unit != "jasper-web"}
+
+    def fake(units, *, timeout):
+        return {u: known[u] for u in units if u in known}
+
+    monkeypatch.setattr(_evidence, "read_unit_states", fake)
 
     r = doctor_web.check_wizard_socket_start_limits()
 
     assert r.status == "fail"
-    assert must_name in r.detail
-
-
-def test_one_timed_out_wizard_probe_still_reads_the_rest(monkeypatch):
-    """A wedged D-Bus hangs these reads — the sweep must survive the first one.
-
-    Uncaught, ``TimeoutExpired`` aborts into the harness's generic crashed-check
-    result and loses every per-unit finding, on exactly the failure this check
-    exists to diagnose.
-    """
-    hangs, wedged = _WIZARDS[0], _WIZARDS[1]
-    serve = _socket_states({wedged: _START_LIMITED})
-
-    def fake_run(cmd, timeout=5.0):
-        if cmd[2] == f"{hangs}.socket":
-            raise subprocess.TimeoutExpired(cmd, 5.0)
-        return serve(cmd, timeout=timeout)
-
-    monkeypatch.setattr(doctor_web, "_run", fake_run)
-
-    r = doctor_web.check_wizard_socket_start_limits()
-
-    assert r.status == "fail"
-    assert f"{hangs}.socket" in r.detail
-    # The finding the sweep would have lost by aborting on the timeout.
-    assert f"sudo systemctl reset-failed {wedged}.socket" in r.detail
+    assert r.reason == doctor_web.REASON_WIZARD_SOCKET_FINDING
 
 
 def test_wizard_socket_start_limits_skips_without_systemctl(monkeypatch):
     """Dev host: no systemd to be unhealthy. Matches every sibling's wording."""
-
-    def raises(cmd, timeout=5.0):
-        raise FileNotFoundError("systemctl not found")
-
-    monkeypatch.setattr(doctor_web, "_run", raises)
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", lambda units, *, timeout: None,
+    )
 
     r = doctor_web.check_wizard_socket_start_limits()
 
-    assert r.status == "ok"
-    assert "skipped" in r.detail
+    assert r.status == "skipped"
+    assert r.reason == doctor_web.REASON_SYSTEMCTL_UNAVAILABLE
 
 
 def test_swept_units_match_the_installers_wizard_family():

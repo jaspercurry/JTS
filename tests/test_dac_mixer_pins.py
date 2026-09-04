@@ -405,4 +405,4 @@ def test_doctor_skips_a_dac_that_declares_no_pins(monkeypatch) -> None:
     record_dac("hifiberry_dac8x", "Card")
     monkeypatch.setattr(audio, "_run", fail_probe)
 
-    assert doctor.check_dac_mixer_pins().status == "ok"
+    assert doctor.check_dac_mixer_pins().status == "skipped"

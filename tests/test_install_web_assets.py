@@ -218,8 +218,8 @@ def test_real_repo_assets_round_trip_through_doctor(monkeypatch, tmp_path: Path)
 
     monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(web_root))
     result = doctor_web.check_web_design_assets()
-    assert result.status == "ok", result.detail
-    assert MANIFEST_NAME in result.detail
+    assert result.status == "ok"
+    assert result.reason == doctor_web.REASON_WEB_ASSETS_VERIFIED
 
     manifest = (web_root / "assets" / MANIFEST_NAME).read_text().splitlines()
     # Spot-pin the load-bearing entries: the design system, the fonts it

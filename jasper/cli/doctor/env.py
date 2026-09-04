@@ -2,12 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""jasper-doctor checks — env domain.
-
-Re-homed verbatim from the original monolithic
-``jasper/cli/doctor.py``; see ``jasper/cli/doctor/__init__.py``
-for the package overview and ``_registry.py`` for how order is
-preserved. No check logic changed in the split."""
+"""jasper-doctor checks — env domain."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -15,11 +10,23 @@ from ...config import Config
 from ._registry import doctor_check
 from ._shared import CheckResult, _group_writable_dir
 
+# Machine-stable codes naming which branch of an env check produced a result
+# (AGENTS.md: tests pin status + reason, never detail prose).
+REASON_ENV_FILE_MISSING = "env_file_missing"
+REASON_SPEAKER_NAME_UNPARSEABLE = "speaker_name_unparseable"
+REASON_STATE_DIR_MISSING = "state_dir_missing"
+REASON_STATE_DIR_STAT_FAILED = "state_dir_stat_failed"
+REASON_STATE_DIR_NOT_WRITABLE = "state_dir_not_writable"
+REASON_STATE_GROUP_WRITE_VIOLATION = "state_group_write_violation"
+
 @doctor_check(order=0, group="env")
 def check_env_file() -> CheckResult:
     p = Path("/etc/jasper/jasper.env")
     if not p.exists():
-        return CheckResult("env file", "fail", f"{p} missing — re-run install.sh")
+        return CheckResult(
+            "env file", "fail", f"{p} missing — re-run install.sh",
+            reason=REASON_ENV_FILE_MISSING,
+        )
     wizard = Path("/var/lib/jasper/voice_provider.env")
     if wizard.exists():
         return CheckResult("env file", "ok", f"{p} (+ wizard {wizard.name})")
@@ -36,6 +43,7 @@ def check_speaker_name() -> CheckResult:
             "speaker name",
             "warn",
             f"{p} exists but could not be parsed; using {state.name!r}",
+            reason=REASON_SPEAKER_NAME_UNPARSEABLE,
         )
     return CheckResult(
         "speaker name",
@@ -45,23 +53,24 @@ def check_speaker_name() -> CheckResult:
 
 @doctor_check(order=23, group="env", label="state dir", needs_cfg=True)
 def check_state_dir(cfg: Config) -> CheckResult:
-    """``os.access(p, os.W_OK)`` cannot answer this: jasper-doctor runs as
-    root, and ``os.access`` reports every path writable to the *caller*
-    regardless of its actual mode. Uses the same group/mode predicate as
-    ``audio.check_camilla_configs_writable`` and
-    ``correction.check_correction_state_dirs``, but with
+    """The state dir must be writable by the non-root jasper-* daemons.
+
     ``require_setgid=False``: ``ensure_state_dir`` (install.sh) leaves this
-    dir plain ``root:jasper 0770``, not setgid — every writer here
-    (jasper-voice, jasper-mux, …) already declares ``Group=jasper`` in its
-    own systemd unit, so new entries get the right group from the writer's
-    own identity rather than needing setgid inheritance from the parent."""
+    dir plain ``root:jasper 0770``, and every writer already declares
+    ``Group=jasper`` in its own unit, so new entries get the right group from
+    the writer's identity rather than by setgid inheritance."""
     p = Path(cfg.usage_db).parent
     if not p.exists():
-        return CheckResult("state dir", "warn", f"{p} missing (will be created on first run)")
+        return CheckResult(
+            "state dir", "warn", f"{p} missing (will be created on first run)",
+            reason=REASON_STATE_DIR_MISSING,
+        )
     try:
         st = p.stat()
     except OSError as exc:
-        return CheckResult("state dir", "fail", f"{p}: {exc}")
+        return CheckResult(
+            "state dir", "fail", f"{p}: {exc}", reason=REASON_STATE_DIR_STAT_FAILED,
+        )
     writable, group_name = _group_writable_dir(
         st, expected_group="jasper", require_setgid=False
     )
@@ -70,24 +79,23 @@ def check_state_dir(cfg: Config) -> CheckResult:
             "state dir", "fail",
             f"{p} not writable by the non-root jasper-* daemons "
             f"(group={group_name} mode={oct(st.st_mode & 0o7777)})",
+            reason=REASON_STATE_DIR_NOT_WRITABLE,
         )
     return CheckResult("state dir", "ok", str(p))
 
 @doctor_check(order=23.5, group="env", label="state group-write", needs_cfg=True)
 def check_state_dir_group_writable(cfg: Config) -> CheckResult:
     """The shared, multi-writer state files must be group-`jasper` AND
-    group-writable. jasper-voice and jasper-mux co-own StateDirectory=jasper, so
-    whichever restarts last re-chowns the tree to its own user; a 0644 file the
-    OTHER daemon doesn't own then can't be written ("attempt to write a readonly
-    database" — the 2026-06-19 incident). UMask=0007 on the daemons + the install
-    heal keep these 0660; this flags drift before it bites."""
+    group-writable. jasper-voice and jasper-mux co-own
+    StateDirectory=jasper, so whichever restarts last re-chowns the tree to
+    its own user, and a 0644 file the OTHER daemon does not own then cannot
+    be written. UMask=0007 plus the install heal keep these 0660; this flags
+    the drift before it bites."""
     return _classify_state_group_write(Path(cfg.usage_db), Path(cfg.volume_state_path))
 
 
 def _classify_state_group_write(usage_db: Path, volume_state_path: Path) -> CheckResult:
-    """Path-parameterized core of ``check_state_dir_group_writable`` — unit
-    testable with tmp files (mirrors the resilience/renderers ``_classify_*``
-    doctor helpers)."""
+    """Path-parameterized core of ``check_state_dir_group_writable``."""
     import grp
     import stat as _stat
 
@@ -123,6 +131,7 @@ def _classify_state_group_write(usage_db: Path, volume_state_path: Path) -> Chec
             "state group-write", "warn",
             "not group-`jasper`-writable: " + ", ".join(bad)
             + " — re-deploy to heal (daemons set UMask=0007)",
+            reason=REASON_STATE_GROUP_WRITE_VIOLATION,
         )
     return CheckResult(
         "state group-write", "ok",

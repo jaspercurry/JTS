@@ -5,34 +5,117 @@
 """Fixtures and payload builders shared by the audio-runtime test files."""
 
 import json
-from pathlib import Path
 
 from jasper import audio_runtime_plan
 from jasper.cli import doctor
-from jasper.cli.doctor import (
-    audio_runtime_ring,
+from jasper.cli.doctor import _evidence
+from jasper.cli.doctor._evidence import evidence
+
+#: Every unit the audio-runtime checks ask about, so a seeded run never falls
+#: through to a real ``systemctl show`` for one of them.
+_AUDIO_UNITS = (
+    "jasper-fanin.service",
+    "jasper-camilla.service",
+    "jasper-outputd.service",
 )
 
-from .doctor_test_support import record_active_dac
-from .status_socket_fixtures import FakeStatusSocket
+
+def _seed_units(*, enabled="enabled", active="active"):
+    """Seed the run's ONE ``systemctl show`` (ADR-0233 rule 4).
+
+    ``enabled="not-found"`` is systemd's answer for a unit it does not have,
+    which the batched reader reports as ``load_state``, not as a file state.
+    """
+    evidence.seed(
+        "units",
+        {
+            unit: (
+                {
+                    "unit": unit,
+                    "load_state": "not-found",
+                    "unit_file_state": None,
+                    "active_state": "inactive",
+                }
+                if enabled == "not-found"
+                else {
+                    "unit": unit,
+                    "load_state": "loaded",
+                    "unit_file_state": enabled,
+                    "active_state": active,
+                }
+            )
+            for unit in _AUDIO_UNITS
+        },
+    )
 
 
-def _fake_systemctl(enabled: str, active: str):
-    def fake_run(cmd, *args, **kwargs):
-        stdout = ""
-        if cmd[:2] == ["systemctl", "is-enabled"]:
-            stdout = enabled + "\n"
-        elif cmd[:2] == ["systemctl", "is-active"]:
-            stdout = active + "\n"
-        return type("P", (), {"stdout": stdout, "stderr": "", "returncode": 0})()
+_FANIN_RING_BLOCK = {
+    "path": "/dev/shm/jts-ring/program.ring",
+    "slots": 2,
+    "wire_format": "S32_LE",
+    "channels": 2,
+    "occupancy": 1,
+    "published": 4242,
+    "full_waits": 0,
+    "stuck_reader_drops": 0,
+    "drop_no_reader": 0,
+    "stall_active": False,
+    "last_stall_ms": 0,
+}
 
-    return fake_run
 
-
-def _patch_fanin_systemctl(monkeypatch, *, enabled="enabled", active="active"):
-    """Answer systemctl for every check module that reads a unit's state."""
-    for module in (doctor.audio_runtime_fanin, doctor.audio_runtime_outputd):
-        monkeypatch.setattr(module, "_run", _fake_systemctl(enabled, active))
+def _fanin_status_payload(
+    *,
+    input_buffer_frames: int = 4096,
+    progress_age_ms: int = 2,
+    transport: str = "shm_ring",
+    ring: dict | None = _FANIN_RING_BLOCK,
+) -> bytes:
+    """A fan-in STATUS payload. Defaults to the ONLY shape a live daemon can
+    report: transport=shm_ring with a ring block. Pass ``ring=None`` to build
+    the malformed no-ring-block shape."""
+    output = {
+        "transport": transport,
+        "frames_written": 1234,
+        "xrun_count": 0,
+    }
+    if ring is not None:
+        output["ring"] = dict(ring)
+    return json.dumps(
+        {
+            "input_buffer_frames": input_buffer_frames,
+            "output": output,
+            "inputs": [
+                {"label": label, "pcm": pcm, "xrun_count": 0}
+                for label, pcm in doctor._FANIN_EXPECTED_ALOOP_INPUTS
+            ],
+            "tts": {
+                "enabled": True,
+                "pending_frames": 0,
+                "max_pending_frames": 96000,
+                "budget_frames": 96000,
+                "dropped_commands": 0,
+                "dropped_audio_frames": 0,
+                "flush_requests": 0,
+                "flushed_frames": 0,
+                "assistant_loudness": {
+                    "content_short_lufs": -31.2,
+                    "content_anchor_lufs": -30.8,
+                    "decision_seen": False,
+                    "calibrated": False,
+                    "profile_confidence": 0.0,
+                    "baseline_lufs": None,
+                    "target_lufs": None,
+                    "source_lufs": None,
+                    "source_peak_dbfs": None,
+                    "requested_gain_db": None,
+                    "peak_cap_gain_db": None,
+                    "final_gain_db": None,
+                },
+            },
+            "watchdog": {"last_progress_age_ms": progress_age_ms},
+        }
+    ).encode()
 
 
 def _outputd_status_payload(
@@ -174,12 +257,22 @@ def _outputd_status_payload(
     return json.dumps(payload).encode()
 
 
-def _patch_fanin_status_socket(monkeypatch, payload: bytes):
-    monkeypatch.setattr(
-        doctor.socket,
-        "socket",
-        lambda *a, **kw: FakeStatusSocket(payload=payload),
-    )
+def _patch_status_reader(monkeypatch, payload: bytes):
+    """Answer this run's ONE read of each daemon STATUS socket with ``payload``.
+
+    The seam is the evidence cache's reader, so several checks over one daemon
+    still cost one read (ADR-0233 rule 4), and the reader's own contract —
+    raise on unparseable bytes, raise on a non-object root — is preserved here
+    so the callers' classification branches stay under test.
+    """
+
+    def fake_read(path, *, timeout):
+        parsed = json.loads(payload.decode("utf-8"))
+        if not isinstance(parsed, dict):
+            raise ValueError("STATUS response root is not an object")
+        return parsed
+
+    monkeypatch.setattr(_evidence, "read_status_socket", fake_read)
     try:
         decoded = json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -205,31 +298,3 @@ def _patch_fanin_status_socket(monkeypatch, payload: bytes):
             }
         ),
     )
-
-
-# ===========================================================================
-# check_ring_conf_floor_render
-#
-# Compares two facts, each read from its owner: the active DAC profile's
-# DECLARED LatencyFloor (the DAC registry) and the period_frames the ring
-# conf.d pins (the file). The ring slot IS one outputd DAC period, so a box
-# whose DAC declares a floor should have that floor rendered into its conf.d
-# by jasper-audio-hardware-reconcile. A DAC with no declared floor is ok by
-# RULE, not by luck — the shipped conf.d default stands.
-# ===========================================================================
-
-SHIPPED_RING_CONF = (
-    Path(__file__).resolve().parents[1]
-    / "deploy" / "alsa" / "conf.d" / "60-jts-ring.conf"
-)
-
-
-def _stage_floor_conf(monkeypatch, tmp_path, *, dac_id, conf_text=None, status="ready"):
-    conf = tmp_path / "60-jts-ring.conf"
-    if conf_text is None:
-        conf.write_bytes(SHIPPED_RING_CONF.read_bytes())
-    else:
-        conf.write_text(conf_text, encoding="utf-8")
-    monkeypatch.setattr(audio_runtime_ring, "_JTS_RING_CONF_D", str(conf))
-    record_active_dac(dac_id, status=status)
-    return conf

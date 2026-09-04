@@ -19,7 +19,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from jasper.cli import doctor
+from jasper.cli.doctor import _evidence
 from jasper.cli.doctor import memory as doctor_memory
+from jasper import memory_policy
+
+from .doctor_test_support import _make_unit_states_fake
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -37,20 +41,20 @@ def _mock_meminfo(values: dict[str, int]):
 
 
 @pytest.mark.parametrize(
-    "profile, status",
+    "profile, status, reason",
     [
-        ("full", "warn"),
+        ("full", "warn", doctor_memory.REASON_RAM_UNDERSIZED),
         # Streambox is the deliberately-light tier a Zero 2 W resolves to, so
         # the board-size warn is a false positive there; live pressure stays
         # covered SKU-agnostically by check_memory_headroom.
-        ("streambox", "ok"),
+        ("streambox", "ok", doctor_memory.REASON_RAM_STREAMBOX_TIER),
         # A marker-read glitch must not silently suppress the warn on a real
         # full speaker: _install_profile_is_streambox fails toward False.
-        (OSError("marker unreadable"), "warn"),
+        (OSError("marker unreadable"), "warn", doctor_memory.REASON_RAM_UNDERSIZED),
     ],
     ids=["full", "streambox", "profile-unreadable"],
 )
-def test_check_ram_warns_only_for_an_undersized_full_install(profile, status):
+def test_check_ram_warns_only_for_an_undersized_full_install(profile, status, reason):
     kwargs = (
         {"side_effect": profile}
         if isinstance(profile, Exception)
@@ -63,7 +67,7 @@ def test_check_ram_warns_only_for_an_undersized_full_install(profile, status):
         r = doctor.check_ram()
 
     assert r.status == status
-    assert ("recommend 2GB Pi 5" in r.detail) is (status == "warn")
+    assert r.reason == reason
 
 
 # ------------------------------------------------------- check_memory_headroom
@@ -101,7 +105,9 @@ def test_memory_headroom_thresholds_scale_with_total_ram(
 
 def test_memory_headroom_warns_when_meminfo_is_unreadable():
     with patch("builtins.open", side_effect=OSError("permission denied")):
-        assert doctor.check_memory_headroom().status == "warn"
+        r = doctor.check_memory_headroom()
+        assert r.status == "warn"
+        assert r.reason == doctor_memory.REASON_MEMORY_HEADROOM_UNREADABLE
 
 
 # ------------------------------------------------------- check_zram_size_ratio
@@ -147,7 +153,9 @@ def test_check_zram_size_ratio_verdicts(zram_bytes, rpi_swap_installed, status):
 def test_check_zram_size_ratio_skips_without_a_zram_device():
     """Dev host / older RPi OS — no /sys/block/zram0."""
     with patch("pathlib.Path.read_text", side_effect=FileNotFoundError):
-        assert doctor.check_zram_size_ratio().status == "ok"
+        r = doctor.check_zram_size_ratio()
+        assert r.status == "skipped"
+        assert r.reason == doctor_memory.REASON_ZRAM_ABSENT
 
 
 # ------------------------------------------------------ audio-slice protection
@@ -160,7 +168,7 @@ def test_check_zram_size_ratio_skips_without_a_zram_device():
         # Without the memory controller the slices' MemorySwapMax=0 is a no-op,
         # so the audio protection is simply gone: fail, not warn.
         ("cpu io pids\n", True, "fail"),
-        (None, False, "ok"),  # no /sys/fs/cgroup — not Linux
+        (None, False, "skipped"),  # no /sys/fs/cgroup — not Linux
     ],
     ids=["enabled", "disabled", "dev-host"],
 )
@@ -199,18 +207,28 @@ def test_audio_path_units_cover_every_protected_slice_unit():
     assert len(doctor._AUDIO_PATH_UNITS) == len(set(doctor._AUDIO_PATH_UNITS))
 
 
-def test_audio_path_no_swap_is_ok_when_every_daemon_is_swap_free():
-    pids = [str(2001 + i) for i, _ in enumerate(doctor._AUDIO_PATH_UNITS)]
-    with patch.object(
-        doctor_memory, "_systemctl_show_property", return_value=pids
-    ), patch(
+def _audio_unit_states_fake(pids: dict[str, int]):
+    overrides = {
+        f"{unit}.service": {"main_pid": pid} for unit, pid in pids.items()
+    }
+    return _make_unit_states_fake(overrides)
+
+
+def test_audio_path_no_swap_is_ok_when_every_daemon_is_swap_free(monkeypatch):
+    pids = {unit: 2001 + i for i, unit in enumerate(doctor._AUDIO_PATH_UNITS)}
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", _audio_unit_states_fake(pids),
+    )
+    with patch(
         "pathlib.Path.read_text",
         lambda self: "Name:\tfake\nVmRSS:\t100000 kB\nVmSwap:\t0 kB\n",
     ):
-        assert doctor.check_audio_path_no_swap().status == "ok"
+        r = doctor.check_audio_path_no_swap()
+        assert r.status == "ok"
+        assert r.reason == doctor_memory.REASON_AUDIO_PATH_ALL_SWAP_FREE
 
 
-def test_audio_path_no_swap_names_the_swapped_daemon_and_amount():
+def test_audio_path_no_swap_names_the_swapped_daemon_and_amount(monkeypatch):
     """The 2026-05-24 signature: aec-bridge holding 42 MB of VmSwap."""
 
     def fake_read(self):
@@ -218,23 +236,27 @@ def test_audio_path_no_swap_names_the_swapped_daemon_and_amount():
         swap = "43056" if pid == "2003" else "0"
         return f"Name:\tfoo\nVmRSS:\t100000 kB\nVmSwap:\t{swap} kB\n"
 
-    pids = [
-        "2003" if unit == "jasper-aec-bridge" else str(3000 + i)
+    pids = {
+        unit: 2003 if unit == "jasper-aec-bridge" else 3000 + i
         for i, unit in enumerate(doctor._AUDIO_PATH_UNITS)
-    ]
-    with patch.object(
-        doctor_memory, "_systemctl_show_property", return_value=pids
-    ), patch("pathlib.Path.read_text", fake_read):
+    }
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", _audio_unit_states_fake(pids),
+    )
+    with patch("pathlib.Path.read_text", fake_read):
         r = doctor.check_audio_path_no_swap()
 
     assert r.status == "warn"
-    assert "jasper-aec-bridge" in r.detail
-    assert "43056" in r.detail
+    assert r.reason == doctor_memory.REASON_AUDIO_SWAP_DETECTED
 
 
-def test_audio_path_no_swap_is_ok_without_systemctl():
-    with patch.object(doctor_memory, "_systemctl_show_property", return_value=None):
-        assert doctor.check_audio_path_no_swap().status == "ok"
+def test_audio_path_no_swap_is_ok_without_systemctl(monkeypatch):
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", lambda units, *, timeout: None,
+    )
+    r = doctor.check_audio_path_no_swap()
+    assert r.status == "ok"
+    assert r.reason == doctor_memory.REASON_AUDIO_PATH_SOME_NOT_RUNNING
 
 
 # ------------------------------------------------------------ check_disk_space
@@ -249,6 +271,48 @@ def _fake_statvfs(*, total_bytes: int, free_bytes: int, frsize: int = 4096):
         return SimpleNamespace(f_blocks=blocks, f_bavail=avail, f_frsize=frsize)
 
     return fake
+
+
+# ------------------------------ memory_policy.disk_usage (the shared reader
+# every disk consumer — this check, /state.resilience.disk, and the sampler —
+# reads through, so they share the fixture above)
+
+
+@pytest.mark.parametrize(
+    "total_bytes, free_bytes, expected",
+    [
+        (64 * 1024**3, 16 * 1024**3, (64 * 1024**3, 16 * 1024**3, 75.0)),
+        # f_bavail excludes the root-reserved pool, and percent-used comes from
+        # total-vs-free, so those reserved blocks read as used, not headroom.
+        (100 * 4096, 0, (100 * 4096, 0, 100.0)),
+        # A filesystem reporting no blocks is measurable but empty of meaning:
+        # zero total, never a divide.
+        (0, 0, (0, 0, 0.0)),
+    ],
+    ids=["mixed", "no-available-blocks", "zero-sized"],
+)
+def test_disk_usage_reads_total_available_and_percent(
+    total_bytes, free_bytes, expected
+):
+    fake = _fake_statvfs(total_bytes=total_bytes, free_bytes=free_bytes)
+
+    with patch.object(memory_policy.os, "statvfs", fake):
+        usage = memory_policy.disk_usage("/")
+
+    assert usage is not None
+    assert (usage.total_bytes, usage.free_bytes, usage.percent_used) == expected
+    assert usage.path == "/"
+
+
+def test_disk_usage_is_none_without_statvfs_and_propagates_read_errors():
+    def boom(path):
+        raise OSError("denied")
+
+    with patch.object(memory_policy.os, "statvfs", None, create=True):
+        assert memory_policy.disk_usage("/") is None
+    with patch.object(memory_policy.os, "statvfs", boom):
+        with pytest.raises(OSError):
+            memory_policy.disk_usage("/")
 
 
 @pytest.mark.parametrize(
@@ -276,19 +340,19 @@ def test_disk_warn_percent_clamps_to_a_sane_band(monkeypatch, value, expected):
 
 
 @pytest.mark.parametrize(
-    "total_gib, free_fraction, warn_percent, status, must_name",
+    "total_gib, free_fraction, warn_percent, status, reason",
     [
-        (64, 40 / 64, None, "ok", "37% used"),
-        (32, 0.12, None, "warn", "88% used"),
-        (16, 0.03, None, "fail", "97% used"),
+        (64, 40 / 64, None, "ok", ""),
+        (32, 0.12, None, "warn", doctor_memory.REASON_DISK_NEAR_FULL),
+        (16, 0.03, None, "fail", doctor_memory.REASON_DISK_FULL),
         # Fail always wins, even with the warn knob set above the fail line
         # (which itself snaps back to 85).
-        (16, 0.04, "99", "fail", "96% used"),
+        (16, 0.04, "99", "fail", doctor_memory.REASON_DISK_FULL),
     ],
     ids=["plenty", "over-warn", "over-fail", "fail-beats-custom-warn"],
 )
 def test_check_disk_space_verdicts(
-    monkeypatch, total_gib, free_fraction, warn_percent, status, must_name
+    monkeypatch, total_gib, free_fraction, warn_percent, status, reason
 ):
     monkeypatch.delenv("JASPER_DISK_WARN_PERCENT", raising=False)
     if warn_percent is not None:
@@ -296,32 +360,38 @@ def test_check_disk_space_verdicts(
     total = total_gib * 1024**3
     fake = _fake_statvfs(total_bytes=total, free_bytes=int(free_fraction * total))
 
-    with patch.object(doctor_memory.os, "statvfs", fake):
+    with patch.object(memory_policy.os, "statvfs", fake):
         r = doctor.check_disk_space()
 
     assert r.status == status
-    assert must_name in r.detail
-    assert r.detail.startswith("/:")
+    if reason:
+        assert r.reason == reason
 
 
 def test_check_disk_space_skips_on_a_non_posix_host():
-    with patch.object(doctor_memory.os, "statvfs", None, create=True):
-        assert doctor.check_disk_space().status == "ok"
+    with patch.object(memory_policy.os, "statvfs", None, create=True):
+        r = doctor.check_disk_space()
+        assert r.status == "skipped"
+        assert r.reason == doctor_memory.REASON_DISK_NOT_POSIX
 
 
 def test_check_disk_space_warns_on_statvfs_oserror():
     def boom(path):
         raise OSError("nope")
 
-    with patch.object(doctor_memory.os, "statvfs", boom):
-        assert doctor.check_disk_space().status == "warn"
+    with patch.object(memory_policy.os, "statvfs", boom):
+        r = doctor.check_disk_space()
+        assert r.status == "warn"
+        assert r.reason == doctor_memory.REASON_DISK_STATVFS_FAILED
 
 
 def test_check_disk_space_skips_a_zero_sized_filesystem():
     with patch.object(
-        doctor_memory.os, "statvfs", _fake_statvfs(total_bytes=0, free_bytes=0)
+        memory_policy.os, "statvfs", _fake_statvfs(total_bytes=0, free_bytes=0)
     ):
-        assert doctor.check_disk_space().status == "ok"
+        r = doctor.check_disk_space()
+        assert r.status == "skipped"
+        assert r.reason == doctor_memory.REASON_DISK_ZERO_SIZED
 
 
 # ------------------------------------------- _bounded_dir_size + storage checks
@@ -421,13 +491,15 @@ def test_storage_checks_warn_over_their_threshold(
 
     assert r.status == status
     if status == "warn":
-        assert warn_env in r.detail
+        assert r.reason == doctor_memory.REASON_STORAGE_OVER_THRESHOLD
 
 
-def test_correction_storage_absent_dir_is_ok(monkeypatch, tmp_path):
+def test_correction_storage_absent_dir_is_skipped(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(tmp_path / "never"))
 
-    assert doctor.check_correction_storage().status == "ok"
+    r = doctor.check_correction_storage()
+    assert r.status == "skipped"
+    assert r.reason == doctor_memory.REASON_STORAGE_ABSENT
 
 
 def test_wake_events_warn_threshold_scales_with_the_configured_cap(
@@ -512,30 +584,43 @@ def _journald(monkeypatch, *, booted=True, storage="persistent", eff_cap="500M",
 
 
 @pytest.mark.parametrize(
-    "kwargs, status, must_name",
+    "kwargs, status, reason",
     [
-        ({}, "ok", "214.0M"),  # persistent, cap matches, usage surfaced
-        ({"booted": False}, "ok", ""),
-        ({"storage": "volatile"}, "warn", ""),
-        ({"storage": "volatile", "installed_cap": None}, "warn", ""),
+        ({}, "ok", ""),  # persistent, cap matches, usage surfaced
+        ({"booted": False}, "skipped", doctor_memory.REASON_JOURNALD_NOT_BOOTED),
+        (
+            {"storage": "volatile"}, "warn",
+            doctor_memory.REASON_JOURNALD_NOT_PERSISTENT,
+        ),
+        (
+            {"storage": "volatile", "installed_cap": None}, "warn",
+            doctor_memory.REASON_JOURNALD_NOT_PERSISTENT,
+        ),
         # A later drop-in shrank the effective cap under the installed one.
-        ({"eff_cap": "200M"}, "warn", "200M"),
+        (
+            {"eff_cap": "200M"}, "warn",
+            doctor_memory.REASON_JOURNALD_CAP_REGRESSED,
+        ),
         # Effective larger than installed is never a regression.
         ({"eff_cap": "1G"}, "ok", ""),
         # systemd-analyze unavailable: the installed drop-in alone is enough.
-        ({"storage": None, "eff_cap": None}, "ok", "500M"),
-        ({"storage": None, "eff_cap": None, "installed_cap": None}, "warn", ""),
+        ({"storage": None, "eff_cap": None}, "ok", ""),
+        (
+            {"storage": None, "eff_cap": None, "installed_cap": None}, "warn",
+            doctor_memory.REASON_JOURNALD_CONFIG_UNREADABLE,
+        ),
     ],
     ids=["healthy", "not-booted", "volatile", "volatile-no-dropin", "cap-regressed",
          "cap-raised", "config-unreadable", "no-dropin-no-config"],
 )
-def test_check_journald_persistence_verdicts(monkeypatch, kwargs, status, must_name):
+def test_check_journald_persistence_verdicts(monkeypatch, kwargs, status, reason):
     _journald(monkeypatch, **kwargs)
 
     r = doctor.check_journald_persistence()
 
     assert r.status == status
-    assert must_name in r.detail
+    if reason:
+        assert r.reason == reason
 
 
 def test_check_journald_persistence_is_registered_once_in_the_memory_group():
@@ -561,7 +646,7 @@ def test_disk_snapshot_shape():
 
     fake = _fake_statvfs(total_bytes=64 * 1024**3, free_bytes=16 * 1024**3)
 
-    with patch.object(state_aggregate.os, "statvfs", fake):
+    with patch.object(memory_policy.os, "statvfs", fake):
         assert state_aggregate._disk_snapshot("/") == {
             "path": "/",
             "percent_used": 75,
@@ -586,5 +671,5 @@ def test_disk_snapshot_is_none_when_the_read_is_unusable(statvfs):
         "zero-total": _fake_statvfs(total_bytes=0, free_bytes=0),
     }[statvfs]
 
-    with patch.object(state_aggregate.os, "statvfs", replacement, create=True):
+    with patch.object(memory_policy.os, "statvfs", replacement, create=True):
         assert state_aggregate._disk_snapshot("/") is None

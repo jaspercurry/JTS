@@ -68,7 +68,9 @@ def test_provider_key_warns_on_wrong_prefix(monkeypatch, tmp_path: Path):
         OPENAI_API_KEY="WRONGPREFIX-1234",
     )
 
-    assert doctor.check_provider_key(cfg).status == "warn"
+    r = doctor.check_provider_key(cfg)
+    assert r.status == "warn"
+    assert r.reason == doctor_voice.REASON_PROVIDER_KEY_WRONG_PREFIX
 
 
 def test_provider_key_ignores_dormant_providers(monkeypatch, tmp_path: Path):
@@ -80,7 +82,8 @@ def test_provider_key_ignores_dormant_providers(monkeypatch, tmp_path: Path):
         OPENAI_API_KEY="sk-active1234",
     )
 
-    assert doctor.check_provider_key(cfg).status == "ok"
+    r = doctor.check_provider_key(cfg)
+    assert r.status == "ok"
 
 
 def test_provider_key_checks_the_ssot_provider_not_the_environments(
@@ -102,20 +105,27 @@ def test_provider_key_checks_the_ssot_provider_not_the_environments(
 
     assert r.name == "GEMINI_API_KEY"
     assert r.status == "warn"
+    assert r.reason == doctor_voice.REASON_PROVIDER_KEY_OK_ENV_DRIFT
 
 
 @pytest.mark.parametrize(
-    "state, status",
+    "state, status, reason",
     [
-        (_state("invalid", raw="nope"), "fail"),
-        (_state("unreadable"), "warn"),
-        (_state("missing"), "warn"),
-        (_state("unset"), "warn"),
+        (
+            _state("invalid", raw="nope"), "fail",
+            doctor_voice.REASON_PROVIDER_SELECTION_INVALID,
+        ),
+        (
+            _state("unreadable"), "warn",
+            doctor_voice.REASON_PROVIDER_SELECTION_UNREADABLE,
+        ),
+        (_state("missing"), "warn", doctor_voice.REASON_PROVIDER_NOT_CONFIGURED),
+        (_state("unset"), "warn", doctor_voice.REASON_PROVIDER_NOT_CONFIGURED),
     ],
     ids=["invalid", "unreadable", "file-missing", "unset"],
 )
 def test_provider_key_adjudicates_the_selection_by_status(
-    monkeypatch, state, status
+    monkeypatch, state, status, reason
 ):
     """This check owns the verdict on the selection itself (its neighbours
     defer to it), gated on ActiveProviderState.status — never on the
@@ -131,27 +141,30 @@ def test_provider_key_adjudicates_the_selection_by_status(
     r = doctor.check_provider_key(cfg)  # type: ignore[arg-type]
 
     assert r.status == status
+    assert r.reason == reason
 
 
 @pytest.mark.parametrize(
-    "body, status",
+    "body, status, reason",
     [
-        (None, "fail"),
-        ("gemini\n", "fail"),
-        ("openai\ngrok\ngemini\n", "warn"),
-        (provider_ids_manifest_text(), "ok"),
+        (None, "fail", doctor_voice.REASON_MANIFEST_MISSING),
+        ("gemini\n", "fail", doctor_voice.REASON_MANIFEST_STALE),
+        ("openai\ngrok\ngemini\n", "warn", doctor_voice.REASON_MANIFEST_NONCANONICAL),
+        (provider_ids_manifest_text(), "ok", doctor_voice.REASON_MANIFEST_CURRENT),
     ],
     ids=["absent", "stale", "reordered", "current"],
 )
 def test_voice_provider_ids_manifest_verdicts(
-    monkeypatch, tmp_path: Path, body, status
+    monkeypatch, tmp_path: Path, body, status, reason
 ):
     manifest = tmp_path / "voice_provider_ids"
     if body is not None:
         manifest.write_text(body)
     monkeypatch.setenv("JASPER_VOICE_PROVIDER_IDS_FILE", str(manifest))
 
-    assert doctor.check_voice_provider_ids_manifest().status == status
+    r = doctor.check_voice_provider_ids_manifest()
+    assert r.status == status
+    assert r.reason == reason
 
 
 # ------------------------------------------------------ Spotify Connect check
@@ -198,12 +211,18 @@ def test_spotify_connect_device_consumes_build_result(monkeypatch, tmp_path: Pat
 
 
 @pytest.mark.parametrize(
-    "model, status",
-    [(None, "ok"), ("gemini-9.9-does-not-exist", "warn")],
+    "model, status, reason",
+    [
+        (None, "ok", doctor_voice.REASON_PRICING_MODEL_PRICED),
+        (
+            "gemini-9.9-does-not-exist", "warn",
+            doctor_voice.REASON_PRICING_MODEL_UNPRICED,
+        ),
+    ],
     ids=["priced", "unpriced"],
 )
 def test_pricing_warns_only_for_an_unpriced_active_model(
-    monkeypatch, tmp_path: Path, model, status
+    monkeypatch, tmp_path: Path, model, status, reason
 ):
     """An unpriced active model reads $0 cost, so the spend cap cannot bound it."""
     _ssot(monkeypatch, tmp_path, "gemini")
@@ -213,20 +232,22 @@ def test_pricing_warns_only_for_an_unpriced_active_model(
         lambda provider: model or default_model_id(provider),
     )
 
-    assert doctor.check_pricing().status == status
+    r = doctor.check_pricing()
+    assert r.status == status
+    assert r.reason == reason
 
 
 @pytest.mark.parametrize(
-    "status, verdict",
+    "status, verdict, reason",
     [
-        ("unreadable", "warn"),
-        ("invalid", "warn"),
-        ("missing", "ok"),
-        ("unset", "ok"),
+        ("unreadable", "warn", "REASON_PRICING_MODEL_UNDETERMINED"),
+        ("invalid", "warn", "REASON_PRICING_MODEL_UNDETERMINED"),
+        ("missing", "ok", "REASON_PRICING_MODEL_NOT_CONFIGURED"),
+        ("unset", "ok", "REASON_PRICING_MODEL_NOT_CONFIGURED"),
     ],
 )
 def test_pricing_warns_when_it_could_not_ask_which_model_is_active(
-    monkeypatch, status, verdict
+    monkeypatch, status, verdict, reason
 ):
     """A row that could not resolve its own question reports "can't tell",
     not "fine" — first-time setup (missing/unset) stays ok."""
@@ -234,7 +255,9 @@ def test_pricing_warns_when_it_could_not_ask_which_model_is_active(
         doctor_voice, "read_active_provider_state", lambda: _state(status),
     )
 
-    assert doctor.check_pricing().status == verdict
+    r = doctor.check_pricing()
+    assert r.status == verdict
+    assert r.reason == getattr(doctor_voice, reason)
 
 
 def test_pricing_prices_the_model_the_ssot_provider_resolves_from_files(
@@ -274,6 +297,7 @@ def test_pricing_prices_the_model_the_ssot_provider_resolves_from_files(
     assert seen_providers == ["gemini"]
     assert priced == ["gemini-3.1-flash-live-preview"]
     assert result.status == "ok"
+    assert result.reason == doctor_voice.REASON_PRICING_MODEL_PRICED
 
 
 def _spend_cap_cfg(monkeypatch, tmp_path: Path, cap: str) -> Config:
@@ -294,24 +318,26 @@ def test_check_spend_cap_reports_disabled_not_zero_remaining(
     result = doctor_voice.check_spend_cap(cfg)
 
     assert result.status == "ok"
-    assert "disabled" in result.detail
-    assert "remaining" not in result.detail
+    assert result.reason == doctor_voice.REASON_SPEND_CAP_DISABLED
 
 
-def test_check_spend_cap_detail_names_tuning_ledger_state(
+def test_check_spend_cap_reflects_tuning_ledger_state_in_its_reason(
     tmp_path: Path, monkeypatch
 ):
-    """Household spend folds in correction-web's paid tuning calls, so the
-    operator needs to know whether that sibling ledger is in the total."""
+    """Household spend folds in correction-web's paid tuning calls: no usage
+    at all (including no tuning ledger) is a distinct reason from ordinary
+    remaining-budget reporting once the ledger exists."""
     from jasper.usage import UsageStore, tuning_usage_db_path
 
     cfg = _spend_cap_cfg(monkeypatch, tmp_path, "1.00")
 
-    assert "tuning ledger absent" in doctor_voice.check_spend_cap(cfg).detail
+    r = doctor_voice.check_spend_cap(cfg)
+    assert r.reason == doctor_voice.REASON_SPEND_CAP_NO_USAGE
 
     UsageStore(tuning_usage_db_path(str(tmp_path / "usage.db")))._conn.close()
 
-    assert "includes tuning ledger" in doctor_voice.check_spend_cap(cfg).detail
+    r = doctor_voice.check_spend_cap(cfg)
+    assert r.reason == doctor_voice.REASON_SPEND_CAP_OK
 
 
 # ------------------------------------------------------------- tool packs
@@ -346,17 +372,29 @@ def _drop_last(rt):
 
 
 @pytest.mark.parametrize(
-    "runtime, status, must_name",
+    "runtime, status, reason",
     [
         # Control unreachable / older daemon: report the registry alone.
-        (None, "ok", ""),
-        (_runtime(EXPECTED), "ok", ""),
-        (_runtime(EXPECTED, failed={EXPECTED[2]}), "fail", EXPECTED[2]),
+        (None, "ok", doctor_voice.REASON_TOOL_PACKS_RUNTIME_UNAVAILABLE),
+        (_runtime(EXPECTED), "ok", doctor_voice.REASON_TOOL_PACKS_HEALTHY),
+        (
+            _runtime(EXPECTED, failed={EXPECTED[2]}), "fail",
+            doctor_voice.REASON_TOOL_PACKS_BUILD_FAILED,
+        ),
         # A registry pack absent from the runtime report (daemon predates it).
-        (_drop_last(_runtime(EXPECTED)), "warn", EXPECTED[-1]),
+        (
+            _drop_last(_runtime(EXPECTED)), "warn",
+            doctor_voice.REASON_TOOL_PACKS_MISSING_FROM_RUNTIME,
+        ),
         # A failed pack is the alarm even when another is also absent.
-        (_drop_last(_runtime(EXPECTED, failed={EXPECTED[0]})), "fail", EXPECTED[0]),
-        (_runtime(EXPECTED, skipped={EXPECTED[-1]}), "ok", EXPECTED[-1]),
+        (
+            _drop_last(_runtime(EXPECTED, failed={EXPECTED[0]})), "fail",
+            doctor_voice.REASON_TOOL_PACKS_BUILD_FAILED,
+        ),
+        (
+            _runtime(EXPECTED, skipped={EXPECTED[-1]}), "ok",
+            doctor_voice.REASON_TOOL_PACKS_HEALTHY,
+        ),
     ],
     ids=[
         "runtime-unavailable",
@@ -367,17 +405,11 @@ def _drop_last(rt):
         "gated-off",
     ],
 )
-def test_assess_tool_packs_verdicts(runtime, status, must_name):
+def test_assess_tool_packs_verdicts(runtime, status, reason):
     r = doctor._assess_tool_packs(EXPECTED, runtime)
 
     assert r.status == status
-    assert must_name in r.detail
-
-
-def test_assess_tool_packs_failure_points_at_the_journal_line():
-    r = doctor._assess_tool_packs(EXPECTED, _runtime(EXPECTED, failed={EXPECTED[2]}))
-
-    assert "event=tool_pack.build_failed" in r.detail
+    assert r.reason == reason
 
 
 @pytest.mark.parametrize(
@@ -419,19 +451,23 @@ def test_tool_packs_runtime_reader_parses_the_state_field(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "runtime, status",
-    [(None, "ok"), (_runtime(EXPECTED, failed={EXPECTED[1]}), "fail")],
+    "runtime, status, reason",
+    [
+        (None, "ok", doctor_voice.REASON_TOOL_PACKS_RUNTIME_UNAVAILABLE),
+        (
+            _runtime(EXPECTED, failed={EXPECTED[1]}), "fail",
+            doctor_voice.REASON_TOOL_PACKS_BUILD_FAILED,
+        ),
+    ],
     ids=["registry-only", "runtime-failure"],
 )
-def test_check_tool_packs_wires_the_runtime_reader(monkeypatch, runtime, status):
+def test_check_tool_packs_wires_the_runtime_reader(monkeypatch, runtime, status, reason):
     monkeypatch.setattr(doctor_voice, "_voice_tool_packs_runtime", lambda: runtime)
 
     r = doctor.check_tool_packs()
 
     assert r.status == status
-    if runtime is None:
-        for name in EXPECTED:
-            assert name in r.detail
+    assert r.reason == reason
 
 
 def test_check_tool_packs_is_registered_at_its_reserved_order():

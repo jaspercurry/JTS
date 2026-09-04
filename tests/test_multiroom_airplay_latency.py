@@ -308,12 +308,13 @@ def _patch_doctor(monkeypatch, cfg, frames):
 
 
 def test_doctor_skips_when_not_a_bonded_leader(monkeypatch):
+    from jasper.cli.doctor import grouping as doctor_grouping
     from jasper.cli.doctor.grouping import check_grouping_airplay_latency
 
     _patch_doctor(monkeypatch, _cfg(enabled=False, role=""), frames=None)
     res = check_grouping_airplay_latency()
-    assert res.status == "ok"
-    assert "n/a" in res.detail
+    assert res.status == "skipped"
+    assert res.reason == doctor_grouping.REASON_NOT_APPLICABLE
 
 
 def test_doctor_ok_when_budget_fits(monkeypatch):
@@ -322,23 +323,19 @@ def test_doctor_ok_when_budget_fits(monkeypatch):
     _patch_doctor(monkeypatch, _cfg(buffer_ms=400), frames=None)
     res = check_grouping_airplay_latency()
     assert res.status == "ok"
-    assert "fits" in res.detail
 
 
 def test_doctor_warns_when_budget_too_short(monkeypatch):
+    from jasper.cli.doctor import grouping as doctor_grouping
     from jasper.cli.doctor.grouping import check_grouping_airplay_latency
 
     _patch_doctor(monkeypatch, _cfg(buffer_ms=400), frames=5000)
     res = check_grouping_airplay_latency()
     assert res.status == "warn"
-    assert "residual" in res.detail.lower()
-    assert "buffer_ms" in res.detail
-    # residual is the FULL need (shairport drops the offset): 0.56 s -> 560 ms.
-    # Pins the s->ms scaling in the doctor f-string.
-    assert "560 ms" in res.detail
-    # Remediation must NOT point at a non-existent /rooms buffer_ms control.
-    assert "/rooms" not in res.detail
-    assert "JASPER_GROUPING_BUFFER_MS" in res.detail
+    assert res.reason == doctor_grouping.REASON_AIRPLAY_LATENCY_TIGHT
+    # The s->ms scaling and remediation wording are prose; the underlying
+    # residual math (0.56 s -> 560 ms for this same buffer_ms/frames pair) is
+    # pinned directly against assess_fit in the pure-math tests above.
 
 
 # ---------- AirPlay-health classification of the ground-truth warning ----------

@@ -78,7 +78,7 @@ def test_input_at_0640_group_jasper_passes(tmp_path: Path):
         user="jasper-control",
     )
     assert result.status == "ok", result.detail
-    assert "1 input(s) readable" in result.detail
+    assert result.reason == privsep.REASON_INPUTS_READABLE
 
 
 def test_input_at_0600_root_fails_naming_file_and_mode(tmp_path: Path):
@@ -93,9 +93,7 @@ def test_input_at_0600_root_fails_naming_file_and_mode(tmp_path: Path):
         user="jasper-control",
     )
     assert result.status == "warn", result.detail
-    assert str(f) in result.detail
-    assert "0o600" in result.detail
-    assert "jasper-control cannot read" in result.detail
+    assert result.reason == privsep.REASON_INPUTS_UNREADABLE
 
 
 def test_wrong_group_0640_fails(tmp_path: Path):
@@ -111,7 +109,7 @@ def test_wrong_group_0640_fails(tmp_path: Path):
         user="jasper-web",
     )
     assert result.status == "warn"
-    assert str(f) in result.detail
+    assert result.reason == privsep.REASON_INPUTS_UNREADABLE
 
 
 def test_glob_flags_only_unreadable_member(tmp_path: Path):
@@ -129,6 +127,7 @@ def test_glob_flags_only_unreadable_member(tmp_path: Path):
         user="jasper-control",
     )
     assert result.status == "warn"
+    assert result.reason == privsep.REASON_INPUTS_UNREADABLE
     assert str(bad_cfg) in result.detail
     assert str(ok_cfg) not in result.detail
 
@@ -141,8 +140,8 @@ def test_absent_inputs_are_not_flagged(tmp_path: Path):
         gids=frozenset({777_777}),
         user="jasper-control",
     )
-    assert result.status == "ok"
-    assert "no declared inputs present yet" in result.detail
+    assert result.status == "skipped"
+    assert result.reason == privsep.REASON_NO_INPUTS_PRESENT
 
 
 def test_mixed_present_and_absent_only_checks_present(tmp_path: Path):
@@ -156,7 +155,7 @@ def test_mixed_present_and_absent_only_checks_present(tmp_path: Path):
         user="jasper-web",
     )
     assert result.status == "ok"
-    assert "1 input(s) readable" in result.detail
+    assert result.reason == privsep.REASON_INPUTS_READABLE
 
 
 # --------------------------------------------------------------------------- #
@@ -169,7 +168,7 @@ def test_household_secret_present_unreadable_warns_gate_open(tmp_path: Path):
         st, uid=999_999, gids=frozenset({777_777}), user="jasper-control"
     )
     assert result.status == "warn"
-    assert "fail-safe-OPENED" in result.detail
+    assert result.reason == privsep.REASON_HOUSEHOLD_SECRET_UNREADABLE
 
 
 def test_household_secret_present_readable_ok_gate_enforced(tmp_path: Path):
@@ -179,20 +178,65 @@ def test_household_secret_present_readable_ok_gate_enforced(tmp_path: Path):
         st, uid=999_999, gids=frozenset({st.st_gid}), user="jasper-control"
     )
     assert result.status == "ok"
-    assert "gate is enforced" in result.detail
+    assert result.reason == privsep.REASON_HOUSEHOLD_SECRET_READABLE
 
 
-def test_household_secret_absent_is_ok(tmp_path, monkeypatch):
-    """Absent secret = not paired (ok). This path returns before any systemctl
-    call, so it is fully hardware-free."""
+def test_household_secret_absent_is_skipped(tmp_path, monkeypatch):
+    """Absent secret = not paired, nothing to verify (skipped). This path
+    returns before any systemctl call, so it is fully hardware-free."""
     from jasper.control import household_credential
 
     monkeypatch.setattr(
         household_credential, "SECRET_FILE", str(tmp_path / "nope"), raising=True
     )
     result = privsep.check_household_secret_readable()
-    assert result.status == "ok"
-    assert "not paired" in result.detail
+    assert result.status == "skipped"
+    assert result.reason == privsep.REASON_HOUSEHOLD_SECRET_ABSENT
+
+
+# --------------------------------------------------------------------------- #
+# _unit_runtime_identity — the evidence-cache seams
+# --------------------------------------------------------------------------- #
+def test_unit_runtime_identity_batches_user_group_across_daemons(monkeypatch):
+    """User/Group/SupplementaryGroups are read once for the whole manifest,
+    not once per daemon queried (ADR-0233 rule 4)."""
+    from jasper.cli.doctor import _evidence
+
+    calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def fake_property(prop, units):
+        calls.append((prop, tuple(units)))
+        return [f"{prop}-value" for _ in units]
+
+    def fake_unit_states(units, *, timeout):
+        return {u: {"unit": u, "load_state": "loaded"} for u in units}
+
+    monkeypatch.setattr(_evidence, "_systemctl_show_property", fake_property)
+    monkeypatch.setattr(_evidence, "read_unit_states", fake_unit_states)
+
+    first = privsep._unit_runtime_identity("jasper-control")
+    second = privsep._unit_runtime_identity("jasper-web")
+
+    assert first["User"] == "User-value"
+    assert second["User"] == "User-value"
+    assert sorted(prop for prop, _ in calls) == ["Group", "SupplementaryGroups", "User"]
+
+
+def test_unit_runtime_identity_is_none_when_a_property_is_unreadable(monkeypatch):
+    """A LoadState success with a broken User/Group/SupplementaryGroups read
+    must not misclassify as 'runs as root' or 'not installed' — it is
+    unknown, like a full systemctl failure."""
+    from jasper.cli.doctor import _evidence
+
+    def fake_unit_states(units, *, timeout):
+        return {u: {"unit": u, "load_state": "loaded"} for u in units}
+
+    monkeypatch.setattr(_evidence, "read_unit_states", fake_unit_states)
+    monkeypatch.setattr(
+        _evidence, "_systemctl_show_property", lambda prop, units: None,
+    )
+
+    assert privsep._unit_runtime_identity("jasper-control") is None
 
 
 # --------------------------------------------------------------------------- #
@@ -211,11 +255,11 @@ def test_household_secret_absent_is_ok(tmp_path, monkeypatch):
     ids=lambda fn: fn.__name__,
 )
 def test_decorated_checks_are_total_without_systemctl(monkeypatch, check):
-    """With systemctl unavailable every per-daemon check returns a skip-ok,
+    """With systemctl unavailable every per-daemon check returns a skip,
     never raising — the doctor must stay total on a dev host."""
     monkeypatch.setattr(privsep, "_unit_runtime_identity", lambda unit: None)
 
-    assert check().status == "ok"
+    assert check().status == "skipped"
 
 
 def test_not_installed_unit_skips(monkeypatch):
@@ -225,8 +269,8 @@ def test_not_installed_unit_skips(monkeypatch):
         lambda unit: {"LoadState": "not-found", "User": ""},
     )
     result = privsep.check_voice_readable_inputs()
-    assert result.status == "ok"
-    assert "not installed" in result.detail
+    assert result.status == "skipped"
+    assert result.reason == privsep.REASON_UNIT_NOT_INSTALLED
 
 
 def test_root_unit_skips(monkeypatch):
@@ -237,8 +281,8 @@ def test_root_unit_skips(monkeypatch):
         lambda unit: {"LoadState": "loaded", "User": "root"},
     )
     result = privsep.check_web_readable_inputs()
-    assert result.status == "ok"
-    assert "runs as root" in result.detail
+    assert result.status == "skipped"
+    assert result.reason == privsep.REASON_UNIT_RUNS_AS_ROOT
 
 
 def test_classify_warn_overflow_truncates(tmp_path: Path):
@@ -256,6 +300,8 @@ def test_classify_warn_overflow_truncates(tmp_path: Path):
         user="jasper-control",
     )
     assert result.status == "warn"
+    assert result.reason == privsep.REASON_INPUTS_UNREADABLE
+    # Pure formatting behavior: the shown-list caps at 6 with an overflow marker.
     assert "(+3 more)" in result.detail
 
 

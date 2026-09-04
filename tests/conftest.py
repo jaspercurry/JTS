@@ -167,6 +167,22 @@ def regenerate_goldens(request: pytest.FixtureRequest) -> bool:
 
 
 @pytest.fixture(autouse=True)
+def _reset_doctor_evidence():
+    """The doctor's per-run evidence memo must not leak between tests. Only
+    touched when a test already imported the doctor, so the fixture costs
+    nothing elsewhere."""
+    import sys
+
+    module = sys.modules.get("jasper.cli.doctor._evidence")
+    if module is not None:
+        module.evidence.reset()
+    yield
+    module = sys.modules.get("jasper.cli.doctor._evidence")
+    if module is not None:
+        module.evidence.reset()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_environ():
     """Snapshot os.environ before each test, restore after.
 

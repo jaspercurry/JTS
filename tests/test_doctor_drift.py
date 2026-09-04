@@ -11,40 +11,14 @@ deploy/install.sh installed against what the running kernel and systemd report.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from jasper.cli import doctor
+from jasper.cli.doctor import _evidence
 from jasper.cli.doctor import drift as doctor_drift
 
-
-def _make_systemctl_show_run(
-    property_maps: dict[str, dict[str, str]],
-    *,
-    defaults: dict[str, str],
-    load_map: dict[str, str] | None = None,
-):
-    """Double for the batched ``systemctl show --value`` wire format.
-
-    Real systemctl separates per-unit values with a blank line (``\n\n``)
-    when several units are requested with ``--value``.
-    """
-
-    def fake_run(cmd, **kwargs):
-        prop = cmd[3]
-        units = [c.rsplit(".", 1)[0] for c in cmd[5:]]
-        if prop == "LoadState":
-            values = [(load_map or {}).get(unit, "loaded") for unit in units]
-        else:
-            values_for_property = property_maps.get(prop, {})
-            default = defaults.get(prop, "")
-            values = [values_for_property.get(unit, default) for unit in units]
-        result = MagicMock()
-        result.stdout = "\n\n".join(values) + "\n" if values else "\n"
-        return result
-
-    return fake_run
+from .doctor_test_support import _make_unit_states_fake
 
 
 _OOM_WANT = doctor_drift._UNIT_DIRECTIVES["OOMScoreAdjust"]
@@ -53,43 +27,72 @@ _ON_FAILURE_WANT = doctor_drift._UNIT_DIRECTIVES["OnFailure"]
 
 # Every table unit running, one pid each, so the live half has something to
 # read. Unit i gets pid 1000+i.
-_PID_MAP = {unit: str(1000 + i) for i, unit in enumerate(sorted(_OOM_WANT))}
-_LIVE_OK = {_PID_MAP[unit]: want for unit, want in _OOM_WANT.items()}
+_PID_MAP = {unit: 1000 + i for i, unit in enumerate(sorted(_OOM_WANT))}
+_LIVE_OK = {str(pid): _OOM_WANT[unit] for unit, pid in _PID_MAP.items()}
 
 
-def _healthy_systemd_run(**overrides):
-    """A systemctl double where every table row matches, then apply overrides.
+def _healthy_property_fake(**overrides):
+    """A ``_systemctl_show_property`` double where every directive row
+    matches, then apply overrides.
 
-    ``overrides`` accepts ``oom=``, ``actions=``, ``on_failure=``, ``pids=``
-    and ``load_map=`` partial maps merged over the healthy baseline.
+    ``overrides`` accepts ``oom=``, ``actions=`` and ``on_failure=`` partial
+    maps merged over the healthy baseline (``pids=``/``load_map=`` feed the
+    unit-state double instead — see ``_healthy_unit_states_fake``).
     """
-    return _make_systemctl_show_run(
-        {
-            "OOMScoreAdjust": {**_OOM_WANT, **overrides.get("oom", {})},
-            "StartLimitAction": {**_ACTION_WANT, **overrides.get("actions", {})},
-            "OnFailure": {**_ON_FAILURE_WANT, **overrides.get("on_failure", {})},
-            "MainPID": {**_PID_MAP, **overrides.get("pids", {})},
-        },
-        defaults={
-            "OOMScoreAdjust": "0",
-            "StartLimitAction": "none",
-            "OnFailure": "",
-            "MainPID": "0",
-        },
-        load_map=overrides.get("load_map"),
-    )
+    property_maps = {
+        "OOMScoreAdjust": {**_OOM_WANT, **overrides.get("oom", {})},
+        "StartLimitAction": {**_ACTION_WANT, **overrides.get("actions", {})},
+        "OnFailure": {**_ON_FAILURE_WANT, **overrides.get("on_failure", {})},
+    }
+    defaults = {"OOMScoreAdjust": "0", "StartLimitAction": "none", "OnFailure": ""}
+
+    def fake(prop, units):
+        values_for_property = property_maps.get(prop, {})
+        default = defaults.get(prop, "")
+        return [values_for_property.get(unit, default) for unit in (name.removesuffix('.service') for name in units)]
+
+    return fake
+
+
+def _healthy_unit_states_fake(**overrides):
+    """A ``read_unit_states`` double covering every table unit: LoadState
+    ``loaded`` and one running MainPID each, then apply overrides.
+
+    ``overrides`` accepts ``pids=`` (bare unit -> pid int, 0 = not running)
+    and ``load_map=`` (bare unit -> LoadState string).
+    """
+    pids = {**_PID_MAP, **overrides.get("pids", {})}
+    load_map = overrides.get("load_map") or {}
+    state_overrides = {
+        f"{unit}.service": {
+            "load_state": load_map.get(unit, "loaded"),
+            "main_pid": pids.get(unit, 0),
+        }
+        for unit in sorted(_OOM_WANT)
+    }
+    return _make_unit_states_fake(state_overrides)
 
 
 def _systemd_drift(live=None, **overrides):
-    """Run the systemd drift source against a doubled host."""
+    """Run the systemd drift source against a doubled host.
+
+    Resets the evidence memo first: a test that calls this helper more than
+    once (a different override each time) must not see the first call's
+    cached ``systemctl show`` batch.
+    """
     live = _LIVE_OK if live is None else {**_LIVE_OK, **live}
 
     def fake_read(self):
         return live.get(str(self).split("/")[2], "0") + "\n"
 
-    with patch.object(doctor._shared, "_run",
-                      side_effect=_healthy_systemd_run(**overrides)), \
-         patch("pathlib.Path.read_text", fake_read):
+    _evidence.evidence.reset()
+    with patch.object(
+        _evidence, "_systemctl_show_property",
+        side_effect=_healthy_property_fake(**overrides),
+    ), patch.object(
+        _evidence, "read_unit_states",
+        side_effect=_healthy_unit_states_fake(**overrides),
+    ), patch("pathlib.Path.read_text", fake_read):
         return doctor_drift._systemd_drift()
 
 
@@ -147,7 +150,7 @@ def test_live_oom_drift_is_named_apart_from_unit_file_drift():
     """A correct unit file with a stale running process is a different
     finding with a different remedy, so both are named."""
     unit_ok_live_drifted = _systemd_drift(
-        live={_PID_MAP["jasper-camilla"]: "0"},
+        live={str(_PID_MAP["jasper-camilla"]): "0"},
     )[0]
     assert [(d.item, d.got) for d in unit_ok_live_drifted] == [
         ("jasper-camilla oom_score_adj (live)", "0"),
@@ -155,7 +158,7 @@ def test_live_oom_drift_is_named_apart_from_unit_file_drift():
 
     both = _systemd_drift(
         oom={"jasper-camilla": "0"},
-        live={_PID_MAP["jasper-camilla"]: "0"},
+        live={str(_PID_MAP["jasper-camilla"]): "0"},
     )[0]
     # The unit file is wrong, so its live value is not re-reported.
     assert [d.item for d in both] == ["jasper-camilla OOMScoreAdjust"]
@@ -165,31 +168,35 @@ def test_live_oom_drift_is_named_apart_from_unit_file_drift():
 def test_openssh_listener_self_protection_is_not_live_drift():
     """OpenSSH keeps its privileged listener at -1000 whatever the unit
     says; the unit-file value is authoritative for ssh."""
-    items, _, _ = _systemd_drift(live={_PID_MAP["ssh"]: "-1000"})
+    items, _, _ = _systemd_drift(live={str(_PID_MAP["ssh"]): "-1000"})
     assert items == []
 
 
 def test_stopped_units_are_reported_as_skipped_not_drift():
     healthy_checked = _systemd_drift()[1]
-    items, checked, notes = _systemd_drift(pids={"jasper-voice": "0"})
+    items, checked, notes = _systemd_drift(pids={"jasper-voice": 0})
     assert items == []
     assert checked == healthy_checked - 1
     assert notes
 
 
-@pytest.mark.parametrize("stdout", [None, "", "\n\n\n\n"])
-def test_systemd_drift_skips_when_systemctl_cannot_answer(stdout):
-    """Absent systemctl, and a present one answering nothing (no D-Bus, not
-    booted with systemd, non-zero exit), are both unknown — not "every unit
-    is installed at its systemd default", which fabricates drift on all."""
-    def fake_run(cmd, **kwargs):
-        if stdout is None:
-            raise FileNotFoundError("systemctl not found")
-        result = MagicMock()
-        result.stdout = stdout
-        return result
+def test_systemd_drift_skips_when_systemctl_cannot_answer():
+    """Systemctl absent (dev host, no systemd) is unknown — not "every unit
+    is installed at its systemd default", which fabricates drift on all.
 
-    with patch.object(doctor._shared, "_run", side_effect=fake_run):
+    Before the evidence-cache migration a present systemctl answering
+    nothing for every unit (no D-Bus, a non-zero exit) collapsed into this
+    same branch. Routed through the shared per-run unit-state batch, that
+    now resolves each queried unit independently and reads a genuinely blank
+    batch as "no units found" rather than "systemctl is unavailable" — the
+    same not-installed path ``test_units_this_profile_does_not_install_are_
+    not_drift`` already covers, so that branch no longer exists here to test
+    separately.
+    """
+    _evidence.evidence.reset()
+    with patch.object(
+        _evidence, "read_unit_states", lambda units, *, timeout: None,
+    ):
         items, checked, notes = doctor_drift._systemd_drift()
     assert (items, checked) == ([], 0)
     assert notes
@@ -205,21 +212,22 @@ def test_degraded_directive_read_is_skipped_never_a_silent_pass():
     """A malformed batch read (length mismatch → None) must not be read as
     'no drift' on that directive."""
     healthy_checked = _systemd_drift()[1]
-    healthy = _healthy_systemd_run()
+    healthy_property = _healthy_property_fake()
 
-    def fake_run(cmd, **kwargs):
-        if cmd[3] != "StartLimitAction":
-            return healthy(cmd, **kwargs)
-        units = [c.rsplit(".", 1)[0] for c in cmd[5:]]
-        result = MagicMock()
-        result.stdout = "\n\n".join(["reboot"] * (len(units) - 1)) + "\n"
-        return result
+    def fake_property(prop, units):
+        if prop == "StartLimitAction":
+            return None  # simulates a malformed / length-mismatched reply
+        return healthy_property(prop, units)
 
     def fake_read(self):
         return _LIVE_OK.get(str(self).split("/")[2], "0") + "\n"
 
-    with patch.object(doctor._shared, "_run", side_effect=fake_run), \
-         patch("pathlib.Path.read_text", fake_read):
+    _evidence.evidence.reset()
+    with patch.object(
+        _evidence, "_systemctl_show_property", side_effect=fake_property,
+    ), patch.object(
+        _evidence, "read_unit_states", side_effect=_healthy_unit_states_fake(),
+    ), patch("pathlib.Path.read_text", fake_read):
         items, checked, notes = doctor_drift._systemd_drift()
     # The unreadable directive contributes neither drift nor a match, and the
     # skip is disclosed rather than swallowed.
@@ -291,6 +299,17 @@ def test_missing_or_empty_sysctl_conf_is_drift(tmp_path, monkeypatch, conf):
     assert len(items) == 1
 
 
+_INSTALLED_MGLRU_CONF = (
+    "# comment\nw- /sys/kernel/mm/lru_gen/min_ttl_ms - - - - 1000\n"
+)
+
+
+def _mglru_conf(tmp_path, monkeypatch, text=_INSTALLED_MGLRU_CONF):
+    conf = tmp_path / "jts-mglru.conf"
+    conf.write_text(text)
+    monkeypatch.setattr(doctor_drift, "_MGLRU_TMPFILES_CONF", conf)
+
+
 @pytest.mark.parametrize(
     "live, expect_drift", [("1000", False), ("250", False), ("0", True)],
 )
@@ -301,8 +320,22 @@ def test_mglru_only_the_kernel_default_is_drift(
     knob = tmp_path / "min_ttl_ms"
     knob.write_text(live + "\n")
     monkeypatch.setattr(doctor_drift, "_MGLRU_MIN_TTL", knob)
+    _mglru_conf(tmp_path, monkeypatch)
     items, checked, notes = doctor_drift._mglru_drift()
     assert (bool(items), checked, notes) == (expect_drift, 1, [])
+
+
+def test_mglru_drifted_item_wants_the_installed_conf_value(tmp_path, monkeypatch):
+    """The expected value comes from the conf, not a hardcoded constant."""
+    knob = tmp_path / "min_ttl_ms"
+    knob.write_text("0\n")
+    monkeypatch.setattr(doctor_drift, "_MGLRU_MIN_TTL", knob)
+    _mglru_conf(
+        tmp_path, monkeypatch,
+        "w- /sys/kernel/mm/lru_gen/min_ttl_ms - - - - 750\n",
+    )
+    items, _, _ = doctor_drift._mglru_drift()
+    assert [(d.got, d.want) for d in items] == [("0", "750")]
 
 
 def test_mglru_absent_on_kernels_without_it(tmp_path, monkeypatch):
@@ -325,6 +358,20 @@ def test_mglru_read_failure_is_disclosed_not_reported_as_drift(
         raise OSError("EACCES")
 
     monkeypatch.setattr(Path, "read_text", boom)
+    items, checked, notes = doctor_drift._mglru_drift()
+    assert (items, checked) == ([], 0)
+    assert notes
+
+
+def test_mglru_conf_unreadable_is_disclosed_not_reported_as_drift(
+    tmp_path, monkeypatch,
+):
+    """The kernel default (0) is present, but the conf naming the expected
+    value cannot be read — disclose it, do not guess a "want"."""
+    knob = tmp_path / "min_ttl_ms"
+    knob.write_text("0\n")
+    monkeypatch.setattr(doctor_drift, "_MGLRU_MIN_TTL", knob)
+    monkeypatch.setattr(doctor_drift, "_MGLRU_TMPFILES_CONF", tmp_path / "absent.conf")
     items, checked, notes = doctor_drift._mglru_drift()
     assert (items, checked) == ([], 0)
     assert notes
@@ -363,43 +410,4 @@ def test_drift_verdict_is_warn_only_when_something_drifted():
         [doctor_drift.DriftItem("vm.swappiness", "60", "100", "fix")], 12, [],
     )
     assert drifted.status == "warn"
-    assert "vm.swappiness" in drifted.detail
-
-
-def test_systemctl_show_property_parses_double_newline_separator():
-    """`systemctl show -p X --value u1 u2` separates values with a blank
-    line, not a single newline (verified on the Pi)."""
-    def fake_run(cmd, **kwargs):
-        result = MagicMock()
-        result.stdout = "1001\n\n1002\n\n1003\n"
-        return result
-
-    with patch.object(doctor._shared, "_run", side_effect=fake_run):
-        result = doctor._systemctl_show_property(
-            "MainPID", ["unit-a", "unit-b", "unit-c"],
-        )
-    assert result == ["1001", "1002", "1003"]
-
-
-def test_systemctl_show_property_handles_single_unit():
-    def fake_run(cmd, **kwargs):
-        result = MagicMock()
-        result.stdout = "1234\n"
-        return result
-
-    with patch.object(doctor._shared, "_run", side_effect=fake_run):
-        result = doctor._systemctl_show_property("MainPID", ["unit-a"])
-    assert result == ["1234"]
-
-
-def test_systemctl_show_property_handles_empty_values():
-    def fake_run(cmd, **kwargs):
-        result = MagicMock()
-        result.stdout = "\n\n\n\n\n"
-        return result
-
-    with patch.object(doctor._shared, "_run", side_effect=fake_run):
-        result = doctor._systemctl_show_property(
-            "MainPID", ["unit-a", "unit-b", "unit-c"],
-        )
-    assert result is not None
+    assert drifted.reason == doctor_drift.REASON_SETTINGS_DRIFTED

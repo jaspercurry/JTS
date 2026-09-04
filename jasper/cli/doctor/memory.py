@@ -25,17 +25,61 @@ import os
 import subprocess
 from pathlib import Path
 from ...install_profile import is_streambox_install_profile, read_install_profile
-from ...memory_policy import memory_headroom_thresholds
+from ...memory_policy import (
+    DISK_FAIL_PERCENT,
+    DISK_WARN_PERCENT,
+    disk_usage,
+    memory_headroom_thresholds,
+)
 from ...wake_events import (
     DEFAULT_MAX_AUDIO_BYTES as _DEFAULT_WAKE_EVENTS_MAX_AUDIO_BYTES,
 )
+from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
     _meminfo_kb,
     _run,
-    _systemctl_show_property,
 )
+
+# Machine-stable codes naming which branch of a memory check produced a
+# result (AGENTS.md: tests pin status + reason, never detail prose).
+REASON_RAM_STREAMBOX_TIER = "ram_streambox_tier"
+REASON_RAM_UNDERSIZED = "ram_undersized"
+REASON_RAM_UNREADABLE = "ram_unreadable"
+
+REASON_MEMORY_HEADROOM_UNREADABLE = "memory_headroom_unreadable"
+REASON_MEMORY_HEADROOM_FAIL = "memory_headroom_critical"
+REASON_MEMORY_HEADROOM_WARN = "memory_headroom_tight"
+
+REASON_ZRAM_ABSENT = "zram_absent"
+REASON_ZRAM_UNSIZED = "zram_unsized"
+REASON_ZRAM_RATIO_UNREADABLE = "zram_ratio_unreadable"
+REASON_ZRAM_MANAGED_ELSEWHERE = "zram_managed_elsewhere"
+REASON_ZRAM_OVERSIZED = "zram_oversized"
+
+REASON_CGROUP_NOT_LINUX = "cgroup_not_linux"
+REASON_CGROUP_UNREADABLE = "cgroup_controllers_unreadable"
+REASON_CGROUP_MEMORY_DISABLED = "cgroup_memory_controller_disabled"
+
+REASON_AUDIO_SWAP_DETECTED = "audio_path_swap_detected"
+REASON_AUDIO_PATH_SOME_NOT_RUNNING = "audio_path_some_not_running"
+REASON_AUDIO_PATH_ALL_SWAP_FREE = "audio_path_all_swap_free"
+
+REASON_DISK_NOT_POSIX = "disk_not_posix"
+REASON_DISK_STATVFS_FAILED = "disk_statvfs_failed"
+REASON_DISK_ZERO_SIZED = "disk_zero_sized_filesystem"
+REASON_DISK_FULL = "disk_full"
+REASON_DISK_NEAR_FULL = "disk_near_full"
+
+REASON_STORAGE_ABSENT = "storage_absent"
+REASON_STORAGE_NOT_A_DIR = "storage_not_a_dir"
+REASON_STORAGE_OVER_THRESHOLD = "storage_over_threshold"
+
+REASON_JOURNALD_NOT_BOOTED = "journald_not_systemd_booted"
+REASON_JOURNALD_NOT_PERSISTENT = "journald_not_persistent"
+REASON_JOURNALD_CONFIG_UNREADABLE = "journald_config_unreadable"
+REASON_JOURNALD_CAP_REGRESSED = "journald_retention_cap_regressed"
 
 def _install_profile_is_streambox() -> bool:
     """True when this box runs the streambox tier (local audio, no voice brain).
@@ -70,15 +114,19 @@ def check_ram() -> CheckResult:
                                 f"{mb} MB total (streambox tier; live "
                                 "pressure covered by the memory-headroom "
                                 "check)",
+                                reason=REASON_RAM_STREAMBOX_TIER,
                             )
                         return CheckResult(
                             "RAM", "warn",
                             f"{mb} MB total — recommend 2GB Pi 5 for v1 stack",
+                            reason=REASON_RAM_UNDERSIZED,
                         )
                     return CheckResult("RAM", "ok", f"{mb} MB total")
     except Exception:  # noqa: BLE001
         pass
-    return CheckResult("RAM", "warn", "couldn't read /proc/meminfo")
+    return CheckResult(
+        "RAM", "warn", "couldn't read /proc/meminfo", reason=REASON_RAM_UNREADABLE,
+    )
 
 # "memory-sample" keeps this off the wire while another check is holding a
 # large transient allocation of its own. Today that is voice.py's
@@ -110,6 +158,7 @@ def check_memory_headroom() -> CheckResult:
     if avail_kb is None or total_kb == 0:
         return CheckResult(
             "memory headroom", "warn", "couldn't read /proc/meminfo",
+            reason=REASON_MEMORY_HEADROOM_UNREADABLE,
         )
     avail_mb = avail_kb // 1024
     total_mb = total_kb // 1024
@@ -120,12 +169,14 @@ def check_memory_headroom() -> CheckResult:
             "memory headroom", "fail",
             f"only {avail_mb} MB available ({pct}%) — OOM imminent "
             f"(fail threshold {fail_mb} MB)",
+            reason=REASON_MEMORY_HEADROOM_FAIL,
         )
     if avail_mb < warn_mb:
         return CheckResult(
             "memory headroom", "warn",
             f"only {avail_mb} MB available ({pct}%) — tight "
             f"(warn threshold {warn_mb} MB)",
+            reason=REASON_MEMORY_HEADROOM_WARN,
         )
     return CheckResult(
         "memory headroom", "ok",
@@ -148,13 +199,20 @@ def check_zram_size_ratio() -> CheckResult:
         zram_size_bytes = int(Path("/sys/block/zram0/disksize").read_text().strip())
     except (OSError, ValueError):
         return CheckResult(
-            "zram size", "ok", "no zram0 device (rpi-swap not active)",
+            "zram size", "skipped", "no zram0 device (rpi-swap not active)",
+            reason=REASON_ZRAM_ABSENT,
         )
     if zram_size_bytes == 0:
-        return CheckResult("zram size", "ok", "zram0 present but unsized")
+        return CheckResult(
+            "zram size", "skipped", "zram0 present but unsized",
+            reason=REASON_ZRAM_UNSIZED,
+        )
     total_kb = _meminfo_kb("MemTotal") or 0
     if total_kb == 0:
-        return CheckResult("zram size", "warn", "couldn't compute ratio")
+        return CheckResult(
+            "zram size", "warn", "couldn't compute ratio",
+            reason=REASON_ZRAM_RATIO_UNREADABLE,
+        )
     total_bytes = total_kb * 1024
     pct = (zram_size_bytes * 100) // total_bytes
     zram_mb = zram_size_bytes // (1024 * 1024)
@@ -169,6 +227,7 @@ def check_zram_size_ratio() -> CheckResult:
                 "zram size", "ok",
                 f"{zram_mb} MB ({pct}% of RAM) — managed by a different "
                 f"zram package (rpi-swap not installed); JTS drop-in is inert",
+                reason=REASON_ZRAM_MANAGED_ELSEWHERE,
             )
         return CheckResult(
             "zram size", "warn",
@@ -176,6 +235,7 @@ def check_zram_size_ratio() -> CheckResult:
             f"Stage 1 plan recommends 50%. If the drop-in is present "
             f"(check /etc/rpi/swap.conf.d/50-jts.conf), reboot to apply "
             f"— rpi-swap is a generator (runs at boot, not a service).",
+            reason=REASON_ZRAM_OVERSIZED,
         )
     return CheckResult(
         "zram size", "ok", f"{zram_mb} MB ({pct}% of RAM)",
@@ -201,14 +261,16 @@ def check_cgroup_memory_enabled() -> CheckResult:
     p = Path("/sys/fs/cgroup/cgroup.controllers")
     if not p.exists():
         return CheckResult(
-            "cgroup memory", "ok",
+            "cgroup memory", "skipped",
             "/sys/fs/cgroup not present (not Linux?)",
+            reason=REASON_CGROUP_NOT_LINUX,
         )
     try:
         controllers = p.read_text().strip().split()
     except OSError:
         return CheckResult(
             "cgroup memory", "warn", "couldn't read cgroup.controllers",
+            reason=REASON_CGROUP_UNREADABLE,
         )
     if "memory" not in controllers:
         return CheckResult(
@@ -216,6 +278,7 @@ def check_cgroup_memory_enabled() -> CheckResult:
             "memory controller NOT enabled — audio-slice MemorySwapMax=0 "
             "is silently a no-op. Reboot to apply install.sh's cmdline.txt "
             "edit (cgroup_enable=memory).",
+            reason=REASON_CGROUP_MEMORY_DISABLED,
         )
     return CheckResult(
         "cgroup memory", "ok",
@@ -258,15 +321,10 @@ def check_audio_path_no_swap() -> CheckResult:
     swapped: list[str] = []
     missing: list[str] = []
     units = _audio_path_units()
-    pids_raw = _systemctl_show_property("MainPID", list(units))
-    if pids_raw is None:
-        pids_raw = [""] * len(units)
-    for unit, pid_raw in zip(units, pids_raw):
-        try:
-            pid = int(pid_raw) if pid_raw else 0
-        except ValueError:
-            pid = 0
-        if pid <= 0:
+    for unit in units:
+        state = evidence.unit_state(f"{unit}.service")
+        pid = state.get("main_pid", 0) if state else 0
+        if not pid:
             missing.append(unit)
             continue
         try:
@@ -290,6 +348,7 @@ def check_audio_path_no_swap() -> CheckResult:
             ", ".join(swapped) +
             ". Check Slice= and cgroup_enable=memory; music may glitch "
             "under load until restored.",
+            reason=REASON_AUDIO_SWAP_DETECTED,
         )
     if missing:
         running = len(units) - len(missing)
@@ -297,10 +356,12 @@ def check_audio_path_no_swap() -> CheckResult:
             "audio path no-swap", "ok",
             f"{running} audio daemons running, all swap-free; "
             f"{len(missing)} not running ({', '.join(missing)})",
+            reason=REASON_AUDIO_PATH_SOME_NOT_RUNNING,
         )
     return CheckResult(
         "audio path no-swap", "ok",
         f"all {len(units)} audio-path daemons swap-free",
+        reason=REASON_AUDIO_PATH_ALL_SWAP_FREE,
     )
 
 
@@ -316,28 +377,26 @@ def check_audio_path_no_swap() -> CheckResult:
 # operator who raises the warn knob can never accidentally suppress the
 # fail.
 
-_DEFAULT_DISK_WARN_PERCENT = 85
-_DISK_FAIL_PERCENT = 95
 _GIB = 1024 ** 3
 
 
 def _disk_warn_percent() -> int:
-    """Operator-tunable WARN threshold (percent used). Falls back to the
-    85% default on unset / unparseable / out-of-range values so a fat-
-    fingered env line can't silently disable the warning. The FAIL
-    threshold (95%) is fixed — it is the "writes are about to fail"
-    line, not a preference."""
+    """Operator-tunable WARN threshold (percent used). Falls back to
+    ``DISK_WARN_PERCENT`` on unset / unparseable / out-of-range values so a
+    fat-fingered env line can't silently disable the warning. The FAIL
+    threshold is fixed — it is the "writes are about to fail" line, not a
+    preference."""
     raw = os.environ.get("JASPER_DISK_WARN_PERCENT", "").strip()
     if not raw:
-        return _DEFAULT_DISK_WARN_PERCENT
+        return DISK_WARN_PERCENT
     try:
         value = int(raw)
     except ValueError:
-        return _DEFAULT_DISK_WARN_PERCENT
+        return DISK_WARN_PERCENT
     # Keep it strictly below the fail line and above 0 so the band is
     # always meaningful.
-    if value <= 0 or value >= _DISK_FAIL_PERCENT:
-        return _DEFAULT_DISK_WARN_PERCENT
+    if value <= 0 or value >= DISK_FAIL_PERCENT:
+        return DISK_WARN_PERCENT
     return value
 
 
@@ -346,52 +405,49 @@ def check_disk_space() -> CheckResult:
     """WARN/FAIL on root-filesystem fullness before writes start failing.
 
     A full root partition is the failure that turns a routine power-cut
-    into ext4 corruption (the 2026-05-23 incident class). os.statvfs is
-    POSIX-portable and needs no subprocess. Uses f_bavail (blocks
-    available to a non-root user) for the free figure so the number
-    matches what the daemons — none of which run as root for their data
-    writes — actually have, but computes "% used" from total vs free so
-    the reserved-blocks pool doesn't read as usable headroom.
+    into ext4 corruption (the 2026-05-23 incident class).
 
-    Skips cleanly (ok) when os.statvfs is unavailable (non-POSIX dev
-    host) — same skip-on-not-applicable posture as the /proc and /sys
-    checks above. The path and the numbers are the only detail, so it is
-    inherently secret-free."""
+    Skips cleanly when the filesystem cannot be measured (non-POSIX dev
+    host, zero-sized) — same skip-on-not-applicable posture as the /proc
+    and /sys checks above. The path and the numbers are the only detail, so
+    it is inherently secret-free."""
     path = "/"
-    statvfs = getattr(os, "statvfs", None)
-    if statvfs is None:
-        return CheckResult(
-            "disk space", "ok", "os.statvfs unavailable — skipped (not POSIX?)",
-        )
     try:
-        st = statvfs(path)
+        usage = disk_usage(path)
     except OSError as e:
         return CheckResult(
             "disk space", "warn",
             f"couldn't statvfs {path}: {e.__class__.__name__}",
+            reason=REASON_DISK_STATVFS_FAILED,
         )
-    total = st.f_blocks * st.f_frsize
-    if total <= 0:
-        return CheckResult("disk space", "ok", f"{path}: zero-sized (skipped)")
-    free = st.f_bavail * st.f_frsize
-    used = total - free
-    pct_used = (used * 100) // total
-    free_gib = free / _GIB
+    if usage is None:
+        return CheckResult(
+            "disk space", "skipped", "os.statvfs unavailable — skipped (not POSIX?)",
+            reason=REASON_DISK_NOT_POSIX,
+        )
+    if usage.total_bytes <= 0:
+        return CheckResult(
+            "disk space", "skipped", f"{path}: zero-sized",
+            reason=REASON_DISK_ZERO_SIZED,
+        )
+    pct_used = int(usage.percent_used)
     warn_pct = _disk_warn_percent()
-    summary = f"{path}: {pct_used}% used, {free_gib:.1f} GiB free"
-    if pct_used >= _DISK_FAIL_PERCENT:
+    summary = f"{path}: {pct_used}% used, {usage.free_bytes / _GIB:.1f} GiB free"
+    if pct_used >= DISK_FAIL_PERCENT:
         return CheckResult(
             "disk space", "fail",
-            summary + f" — {_DISK_FAIL_PERCENT}%+ full; writes will start "
+            summary + f" — {DISK_FAIL_PERCENT}%+ full; writes will start "
             "failing and an unclean power-cut risks ext4 corruption. Free "
             "space now (prune /var/lib/jasper/wake-events, old correction "
             "sessions, journal: `journalctl --vacuum-size=100M`).",
+            reason=REASON_DISK_FULL,
         )
     if pct_used >= warn_pct:
         return CheckResult(
             "disk space", "warn",
             summary + f" — over {warn_pct}% warn threshold "
             "(JASPER_DISK_WARN_PERCENT). Reclaim space before it fills.",
+            reason=REASON_DISK_NEAR_FULL,
         )
     return CheckResult("disk space", "ok", summary)
 
@@ -461,12 +517,18 @@ def _storage_check(
 
     Read-only by contract: this reports growth, it never prunes or
     deletes — retention is owned by the wake-event ring and the
-    correction subsystem themselves. Absent dir is ok (the feature just
-    hasn't produced data yet)."""
+    correction subsystem themselves. Absent dir is skipped (the feature
+    just hasn't produced data yet, so there is nothing to observe)."""
     if not path.exists():
-        return CheckResult(label, "ok", f"{path} absent (no data yet)")
+        return CheckResult(
+            label, "skipped", f"{path} absent (no data yet)",
+            reason=REASON_STORAGE_ABSENT,
+        )
     if not path.is_dir():
-        return CheckResult(label, "ok", f"{path} is not a directory (skipped)")
+        return CheckResult(
+            label, "skipped", f"{path} is not a directory",
+            reason=REASON_STORAGE_NOT_A_DIR,
+        )
     total, truncated = _bounded_dir_size(path)
     mib = total / (1024 * 1024)
     floor = "≥" if truncated else ""
@@ -479,6 +541,7 @@ def _storage_check(
             label, "warn",
             detail + f" — over the {warn_mib:.0f} MiB warn threshold "
             f"({knob}). {note}",
+            reason=REASON_STORAGE_OVER_THRESHOLD,
         )
     return CheckResult(label, "ok", detail)
 
@@ -699,7 +762,8 @@ def check_journald_persistence() -> CheckResult:
     Canonical config: deploy/journald/50-jts-persistent-storage.conf."""
     if not _systemd_booted():
         return CheckResult(
-            "journald persistence", "ok", "no systemd — skipped (not a Pi?)",
+            "journald persistence", "skipped", "no systemd — skipped (not a Pi?)",
+            reason=REASON_JOURNALD_NOT_BOOTED,
         )
 
     storage, eff_cap_raw = _journald_effective_config()
@@ -724,6 +788,7 @@ def check_journald_persistence() -> CheckResult:
             "journald persistence", "warn",
             f"Storage={storage}, not persistent — a watchdog reset's "
             f"previous-boot forensics will not survive a reboot.{fix}",
+            reason=REASON_JOURNALD_NOT_PERSISTENT,
         )
 
     # Drop-in absent and effective config unreadable: can't confirm persistence.
@@ -733,6 +798,7 @@ def check_journald_persistence() -> CheckResult:
             "persistent-journal drop-in not installed and effective config "
             "unreadable — watchdog-reset forensics may be volatile. Re-run "
             "install.sh.",
+            reason=REASON_JOURNALD_CONFIG_UNREADABLE,
         )
 
     # 2) Retention cap regressed below what JTS installs.
@@ -745,6 +811,7 @@ def check_journald_persistence() -> CheckResult:
             f"{installed_cap_raw} — the forensics retention window has "
             f"regressed (a later journald drop-in is shrinking it)"
             f"{usage_suffix}.",
+            reason=REASON_JOURNALD_CAP_REGRESSED,
         )
 
     cap_note = eff_cap_raw or installed_cap_raw or "systemd default"

@@ -122,6 +122,12 @@ a.link:hover { text-decoration: underline; text-underline-offset: 2px; }
 .service-name { font-weight: 500; line-height: 1.25; }
 .service-group { margin-top: 2px; font-size: 11px; color: var(--muted); }
 .diag-mark { width: 1.5em; text-align: center; font-weight: 700; }
+.diag-reason {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--muted); white-space: nowrap;
+  max-width: 18ch; overflow: hidden; text-overflow: ellipsis;
+}
+.diag-error { margin: 0 0 8px; }
 .diag-output { margin-top: 4px; }
 
 /* Audio-conversion choice cards */

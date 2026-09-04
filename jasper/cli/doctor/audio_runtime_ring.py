@@ -2,11 +2,23 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""jasper-doctor checks for the SHM ring transport and the lanes on it.
+"""jasper-doctor checks for the shared-memory ring and the lanes that feed it.
 
 Import direction across the audio-runtime check modules runs one way —
-``audio_runtime_camilla`` -> ``_fanin`` -> ``_outputd`` -> ``_ring`` — so nothing
-here may be imported by a module earlier in that chain.
+``audio_runtime_camilla`` -> ``_fanin`` -> ``_outputd`` -> ``_ring``, so this
+module is the last link and may import from all three.
+
+Closed vocabulary for this module's `CheckResult.reason`: one snake_case
+constant per distinct decision branch of the checks below, its value unique
+across the doctor and prefixed by the check that emits it. `detail` stays the
+human sentence (free to reword); `reason` is what tests and self-healing
+consumers pin instead (ADR-0233 rule 3).
+
+A branch that formed NO verdict — subsystem not installed, not applicable to
+this box, or the evidence source unreachable so nothing was observed — is
+`skipped` with a reason, never `ok`. An `ok` reason means an actual verdict a
+consumer would branch on (a feature the box turned off, a floor that is
+deliberately not renderable).
 """
 from __future__ import annotations
 
@@ -15,16 +27,18 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from typing import Any
 
 from ... import ring_assets
 from ...audio_hardware.dac import latency_floor_for
 from ...fanin_coupling import RING_SLOT_FRAMES
 from ...output_hardware import active_dac_profile_id
+from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
-from .audio_runtime_fanin import _fanin_status, _requires_roleful_graph
+from .audio_runtime_camilla import _camilla_statefile
+from .audio_runtime_fanin import _requires_roleful_graph
 from .audio_runtime_outputd import _outputd_reconciled_env
-from .correction import _active_camilla_config_path
 
 # Aliases of the ring_assets SSOT; tests monkeypatch these names.
 _JTS_RING_ALSA_PLUGIN_DIR = ring_assets.RING_ALSA_PLUGIN_DIR
@@ -44,6 +58,64 @@ _JTS_RING_PCMS = (
     ),
 )
 assert tuple(name for name, _tool, _ring in _JTS_RING_PCMS) == ring_assets.RING_CONF_PCMS
+
+REASON_SPLIT_BONDED_RETURN_RING = "split_bonded_return_ring"
+REASON_SPLIT_MARKER_CONTRADICTED = "split_marker_contradicted"
+REASON_SPLIT_GROUPED_DAC_CONTENT_LANE = "split_grouped_dac_content_lane"
+REASON_SPLIT_RING_UNCONSUMED = "split_ring_unconsumed"
+REASON_SPLIT_RING_UNFED = "split_ring_unfed"
+
+REASON_RING_PATH_NOT_CENTRAL_RING = "ring_path_not_central_ring"
+REASON_RING_PATH_LAGS_MARKER = "ring_path_lags_marker"
+
+REASON_RING_ASSET_MISSING = "ring_asset_missing"
+REASON_RING_OPEN_PROBE_SKIPPED = "ring_open_probe_skipped"
+REASON_RING_IOPLUG_UNOPENABLE = "ring_ioplug_unopenable"
+REASON_RING_IOPLUG_ABSENT = "ring_ioplug_absent"
+REASON_RING_IOPLUG_WIRE_UNSUPPORTED = "ring_ioplug_wire_unsupported"
+REASON_RING_IOPLUG_UNVOUCHED = "ring_ioplug_unvouched"
+REASON_RING_IOPLUG_UNREADABLE = "ring_ioplug_unreadable"
+REASON_RING_IOPLUG_STALE = "ring_ioplug_stale"
+
+REASON_WRITER_LOCK_NO_PROC = "writer_lock_no_proc"
+REASON_WRITER_LOCK_TWO_WRITERS = "writer_lock_two_writers"
+REASON_WRITER_LOCK_ORPHANED = "writer_lock_orphaned"
+REASON_WRITER_LOCK_PROC_UNREADABLE = "writer_lock_proc_unreadable"
+
+REASON_RING_READER_STALLED = "ring_reader_stalled"
+REASON_RING_READER_NO_LIVE_RING = "ring_reader_no_live_ring"
+
+REASON_RING_GEOMETRY_MODULES_UNAVAILABLE = "ring_geometry_modules_unavailable"
+REASON_RING_SLOTS_ENV_INVALID = "ring_slots_env_invalid"
+REASON_RING_CONF_SLOTS_INDETERMINATE = "ring_conf_slots_indeterminate"
+REASON_RING_SLOTS_ENV_CONF_MISMATCH = "ring_slots_env_conf_mismatch"
+REASON_RING_HEADER_ABSENT = "ring_header_absent"
+REASON_RING_HEADER_CONF_MISMATCH = "ring_header_conf_mismatch"
+
+REASON_RING_FLOOR_NO_ACTIVE_DAC = "ring_floor_no_active_dac"
+REASON_RING_FLOOR_NOT_DECLARED = "ring_floor_not_declared"
+REASON_RING_FLOOR_NOT_RENDERABLE = "ring_floor_not_renderable"
+REASON_RING_FLOOR_CONF_PERIOD_INDETERMINATE = "ring_floor_conf_period_indeterminate"
+REASON_RING_FLOOR_UNRENDERED = "ring_floor_unrendered"
+REASON_RING_FLOOR_RENDERED = "ring_floor_rendered"
+
+REASON_RENDERER_LANES_UNARMED = "renderer_lanes_unarmed"
+REASON_RENDERER_LANES_STATUS_UNREADABLE = "renderer_lanes_status_unreadable"
+REASON_RENDERER_LANES_STATUS_NO_INPUTS = "renderer_lanes_status_no_inputs"
+REASON_RENDERER_LANE_UNKNOWN_TO_FANIN = "renderer_lane_unknown_to_fanin"
+REASON_RENDERER_LANE_SOURCE_NOT_RING = "renderer_lane_source_not_ring"
+REASON_RENDERER_LANE_RING_BLOCK_MISSING = "renderer_lane_ring_block_missing"
+REASON_RENDERER_LANE_DETACHED = "renderer_lane_detached"
+REASON_RENDERER_LANE_NEVER_FED = "renderer_lane_never_fed"
+
+REASON_TRANSPORT_PARK_EVIDENCE_UNAVAILABLE = "transport_park_evidence_unavailable"
+REASON_TRANSPORT_ENDPOINT_UNPROVEN = "transport_endpoint_unproven"
+REASON_TRANSPORT_CONVERGE_REFUSED = "transport_converge_refused"
+REASON_TRANSPORT_ENDPOINT_ARMED_WITHOUT_ACTIVE_MODE = (
+    "transport_endpoint_armed_without_active_mode"
+)
+REASON_TRANSPORT_TOPOLOGY_UNCLASSIFIED = "transport_topology_unclassified"
+REASON_TRANSPORT_PARKED = "transport_parked"
 
 
 def _jts_ring_path_for(pcm: str) -> str | None:
@@ -87,9 +159,9 @@ def _jts_ring_probeable_pcms() -> list[tuple[str, str]]:
     loses the race still unlinks only what it created, and the ioplug's SPSC
     guard refuses it.
     """
-    if _run(["systemctl", "is-active", "jasper-fanin.service"]).stdout.strip() == (
-        "active"
-    ):
+    # Active, or unknown (no systemctl on this host): fan-in may be writing
+    # Ring A, so nothing is probeable.
+    if evidence.unit_active("jasper-fanin.service") is not False:
         return []
     probeable = []
     for pcm, tool, _ring_basename in _JTS_RING_PCMS:
@@ -160,6 +232,13 @@ def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
     return False, err or f"{tool} exit {proc.returncode}"
 
 
+def _transport_park_snapshot() -> dict[str, Any]:
+    """The park verdict this run, read once for the two checks that consume it."""
+    from ...control import transport_park
+
+    return evidence.get("transport_park", transport_park.snapshot)
+
+
 def _grouped_dac_content_lane_parked() -> bool:
     """Is this box the bonded shape whose post-DSP hop is not a ring at all?
 
@@ -169,7 +248,7 @@ def _grouped_dac_content_lane_parked() -> bool:
     from ...control import transport_park
 
     try:
-        state = transport_park.snapshot()
+        state = _transport_park_snapshot()
     except Exception:  # noqa: BLE001 - a park read must never crash a sibling
         return False
     return any(
@@ -198,7 +277,7 @@ def check_ring_split_transport() -> CheckResult:
     (``rust/jasper-outputd/src/config.rs``) decides what outputd reads and is
     observable from outputd's own env.
 
-    IT IS ALSO THE DETECTION SURFACE FOR AN INTERRUPTED CONVERGENCE (#2285 P7):
+    IT IS ALSO THE DETECTION SURFACE FOR AN INTERRUPTED CONVERGENCE:
     ``jasper.fanin.converge`` moves the graph to the ring and flips the bridge
     seconds later, and a process killed between those leaves exactly this split.
     It self-heals at the next boot, deploy or DAC hotplug.
@@ -244,9 +323,10 @@ def check_ring_split_transport() -> CheckResult:
         # speaker making sound.
         return CheckResult(
             label,
-            "ok",
+            "skipped",
             "bonded member on the dac-content return ring; its content source "
             "is the bond, not this box's post-DSP ring",
+            reason=REASON_SPLIT_BONDED_RETURN_RING,
         )
     if dac_content_marker_contradicted(outputd_env):
         # The marker beside a declared bridge: outputd refuses that pair at
@@ -255,15 +335,19 @@ def check_ring_split_transport() -> CheckResult:
         # `check_ring_transport_park` owns it by name.
         return CheckResult(
             label,
-            "ok",
+            "skipped",
             "dac-content marker declared beside a content bridge; see the "
             "transport-park check",
+            reason=REASON_SPLIT_MARKER_CONTRADICTED,
         )
     if _grouped_dac_content_lane_parked():
         # The LEGACY FIFO shape reads as a split too, and it has an owner:
         # `check_ring_transport_park` names it with its tracked issue.
         return CheckResult(
-            label, "ok", "grouped dac_content lane; see the transport-park check"
+            label,
+            "skipped",
+            "grouped dac_content lane; see the transport-park check",
+            reason=REASON_SPLIT_GROUPED_DAC_CONTENT_LANE,
         )
     # `(unset, = the ring)` rather than a bare `(unset)`: an undeclared bridge IS
     # the ring (config.rs), so a reader who saw only "unset" beside a ring graph
@@ -282,13 +366,12 @@ def check_ring_split_transport() -> CheckResult:
     # program-bake graph in the primary statefile and its real output endpoint in
     # camilla#2's, so a box whose primary names no registered endpoint while
     # camilla#2 names the ACTIVE ring must still be judged. The primary path
-    # comes from `_active_camilla_config_path()` so an operator's
+    # comes from the run's one statefile read so an operator's
     # `JASPER_CAMILLA_STATEFILE` override keeps working.
-    statefile, _ = _active_camilla_config_path()
-    evidence = output_endpoint_evidence_from_statefiles(
-        statefile, DEFAULT_CAMILLA2_STATEFILE_PATH
+    endpoint_evidence = output_endpoint_evidence_from_statefiles(
+        _camilla_statefile(), DEFAULT_CAMILLA2_STATEFILE_PATH
     )
-    playback_device = (evidence.devices or {}).get("playback_device")
+    playback_device = (endpoint_evidence.devices or {}).get("playback_device")
     graph_on_ring = playback_device in (
         RING_PLAYBACK_DEVICE,
         RING_ACTIVE_PLAYBACK_DEVICE,
@@ -301,6 +384,7 @@ def check_ring_split_transport() -> CheckResult:
             f"{playback_device or '(none)'}",
         )
     if graph_on_ring:
+        split_reason = REASON_SPLIT_RING_UNCONSUMED
         stranded = (
             f"the loaded graph writes {playback_device} but "
             f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}={bridge}, which names no "
@@ -308,6 +392,7 @@ def check_ring_split_transport() -> CheckResult:
             "nothing consumes the ring"
         )
     else:
+        split_reason = REASON_SPLIT_RING_UNFED
         stranded = (
             f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}={bridge} but the loaded graph "
             f"writes {playback_device or '(none)'}, so outputd waits on a ring "
@@ -321,6 +406,8 @@ def check_ring_split_transport() -> CheckResult:
         "jasper-fanin-coupling-reconcile shm_ring. (Transient and expected if "
         "an arm ladder is running right now; the ladder's own final doctor pass "
         "is the authoritative read.)",
+        speaker_silent=True,
+        reason=split_reason,
     )
 
 
@@ -371,9 +458,10 @@ def check_active_ring_path_projection() -> CheckResult:
     if not outputd_content_is_central_ring(layered):
         return CheckResult(
             label,
-            "ok",
+            "skipped",
             f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}="
             f"{declared or '(unset)'}; no central ring path to read",
+            reason=REASON_RING_PATH_NOT_CENTRAL_RING,
         )
     # The SUBJECT stays outputd.env's own text: the marker and the ring path are
     # single-writer keys of that file, and `_outputd_ring_path_for` is contracted
@@ -399,6 +487,8 @@ def check_active_ring_path_projection() -> CheckResult:
         "jasper-fanin-coupling-reconcile shm_ring. (Transient and expected if an "
         "arm ladder is running right now; the ladder's own final doctor pass is "
         "the authoritative read.)",
+        speaker_silent=True,
+        reason=REASON_RING_PATH_LAGS_MARKER,
     )
 
 
@@ -445,6 +535,7 @@ def check_ring_platform_assets() -> CheckResult:
             + " — the ring is this box's only transport, so its graph cannot "
             "resolve the ring devices and nothing carries audio; redeploy "
             "(bash scripts/deploy-to-pi.sh) to rebuild them.",
+            reason=REASON_RING_ASSET_MISSING,
         )
 
     present_detail = "ioplug + conf.d + /dev/shm/jts-ring present"
@@ -455,6 +546,7 @@ def check_ring_platform_assets() -> CheckResult:
             "ok",
             f"{present_detail} (open-probe skipped — fan-in is running or a ring "
             "file is in use; see the 'fan-in coupling' and 'ring geometry' checks)",
+            reason=REASON_RING_OPEN_PROBE_SKIPPED,
         )
     failures = []
     for pcm, tool in probeable:
@@ -470,6 +562,7 @@ def check_ring_platform_assets() -> CheckResult:
             + " — a structurally invalid plugin (the -DPIC / arch-mismatch "
             "class) passes a presence check and still cannot carry audio; "
             "redeploy (bash scripts/deploy-to-pi.sh) to rebuild it.",
+            reason=REASON_RING_IOPLUG_UNOPENABLE,
         )
     return CheckResult(
         label,
@@ -533,7 +626,8 @@ def check_ring_ioplug_provenance() -> CheckResult:
     so_path = ring_assets.ring_ioplug_so_path(plugin_dir=_JTS_RING_ALSA_PLUGIN_DIR)
     if not os.path.exists(so_path):
         return CheckResult(
-            label, "ok", f"skipped — {so_path} absent (see 'ring platform')"
+            label, "skipped", f"{so_path} absent (see 'ring platform')",
+            reason=REASON_RING_IOPLUG_ABSENT,
         )
     wire = _resolved_ring_wire()
     if wire is not None:
@@ -549,6 +643,7 @@ def check_ring_ioplug_provenance() -> CheckResult:
                 "lane parks (ADR-0178), catching what would otherwise be a "
                 "CamillaDSP crash-loop at open(). Command: bash "
                 "scripts/deploy-to-pi.sh",
+                reason=REASON_RING_IOPLUG_WIRE_UNSUPPORTED,
             )
     record = ring_assets.read_ring_ioplug_provenance()
     if not record.recorded:
@@ -561,13 +656,15 @@ def check_ring_ioplug_provenance() -> CheckResult:
             "the record because its ioplug build failed — check the deploy "
             "transcript for a jts_ring ioplug build WARN. Redeploy (bash "
             "scripts/deploy-to-pi.sh) to rebuild and record.",
+            reason=REASON_RING_IOPLUG_UNVOUCHED,
         )
     installed = ring_assets.ring_ioplug_so_sha256(
         plugin_dir=_JTS_RING_ALSA_PLUGIN_DIR
     )
     if installed is None:
         return CheckResult(
-            label, "warn", f"{so_path} could not be read to compare against the record"
+            label, "warn", f"{so_path} could not be read to compare against the record",
+            reason=REASON_RING_IOPLUG_UNREADABLE,
         )
     if installed != record.sha256:
         return CheckResult(
@@ -578,6 +675,7 @@ def check_ring_ioplug_provenance() -> CheckResult:
             "the last successful install produced. The ioplug build degrades to a "
             "WARN and leaves the previous .so in place — redeploy and check the "
             "transcript for a jts_ring ioplug build failure.",
+            reason=REASON_RING_IOPLUG_STALE,
         )
     caps = ", ".join(sorted(record.caps)) or "none"
     return CheckResult(
@@ -683,6 +781,7 @@ def check_ring_writer_lock_exclusivity() -> CheckResult:
     Statuses:
       ok    — no lock path has more than one live holder (the normal state,
               including "no writer anywhere" on an unarmed box).
+      skipped — no ``/proc`` on this host, so nothing was swept.
       warn  — a holder's lock file has been UNLINKED out from under it (one
               writer, but exclusivity is already void: the next opener will
               create a fresh inode and will NOT be excluded), or ``/proc`` was
@@ -693,7 +792,12 @@ def check_ring_writer_lock_exclusivity() -> CheckResult:
     """
     label = "ring writer-lock exclusivity"
     if not os.path.isdir(_PROC_ROOT):
-        return CheckResult(label, "ok", f"skipped — no {_PROC_ROOT} on this host")
+        return CheckResult(
+            label,
+            "skipped",
+            f"no {_PROC_ROOT} on this host",
+            reason=REASON_WRITER_LOCK_NO_PROC,
+        )
 
     holders, unreadable = _ring_writer_lock_holders()
     suspects = {path: pids for path, pids in holders.items() if len(pids) > 1}
@@ -731,6 +835,7 @@ def check_ring_writer_lock_exclusivity() -> CheckResult:
                 "it — anything that rm -rf's /dev/shm/jts-ring voids "
                 "exclusivity silently. Stop the extra writer, then re-arm the "
                 "lane.",
+                reason=REASON_WRITER_LOCK_TWO_WRITERS,
             )
 
     orphaned = [
@@ -748,6 +853,7 @@ def check_ring_writer_lock_exclusivity() -> CheckResult:
             f"exclusivity is already void for the next opener — {detail}. "
             "Re-arm the lane to recreate the lock before a second writer "
             "attaches.",
+            reason=REASON_WRITER_LOCK_ORPHANED,
         )
     if unreadable:
         return CheckResult(
@@ -756,6 +862,7 @@ def check_ring_writer_lock_exclusivity() -> CheckResult:
             f"could not read /proc/<pid>/fd for {unreadable} process(es), so "
             "this sweep was partially blind — run jasper-doctor as root for a "
             "complete answer.",
+            reason=REASON_WRITER_LOCK_PROC_UNREADABLE,
         )
     held = sum(len(pids) for pids in holders.values())
     return CheckResult(
@@ -788,8 +895,9 @@ def check_ring_reader_stall() -> CheckResult:
     silent, which covers the unarmed fleet.
 
     Returns:
-      - ok when no ring is stalled (including every unarmed box, where there is
-        nothing to judge)
+      - ok when no ring is stalled
+      - skipped on a box where no ring is being written, so there is nothing
+        to judge
       - warn naming each stalled ring, its two heartbeat ages, and the reader
         daemon to check. WARN not FAIL: the ring self-recovers the instant the
         reader resumes, and the household's remedy is the same either way.
@@ -819,12 +927,13 @@ def check_ring_reader_stall() -> CheckResult:
         if verdict.stalled:
             stalled.append(f"{label}: {verdict.detail}")
     if stalled:
-        return CheckResult(name, "warn", "; ".join(stalled))
+        return CheckResult(name, "warn", "; ".join(stalled), reason=REASON_RING_READER_STALLED)
     if not judged:
         return CheckResult(
             name,
-            "ok",
+            "skipped",
             "no ring is being written (no armed ring on this box, or all idle)",
+            reason=REASON_RING_READER_NO_LIVE_RING,
         )
     return CheckResult(
         name, "ok", f"reader keeping up on {len(judged)} live ring(s): {', '.join(judged)}"
@@ -859,7 +968,12 @@ def check_ring_geometry_coherence() -> CheckResult:
         )
         from jasper.fanin_coupling import RING_SLOTS_ENV_VAR
     except ImportError as e:  # pragma: no cover - always importable in prod
-        return CheckResult(label, "warn", f"ring modules unavailable: {e}")
+        return CheckResult(
+            label,
+            "warn",
+            f"ring modules unavailable: {e}",
+            reason=REASON_RING_GEOMETRY_MODULES_UNAVAILABLE,
+        )
 
     # Axis 1: fan-in's resolved env slot count (fail-loud on a bad value).
     try:
@@ -873,6 +987,7 @@ def check_ring_geometry_coherence() -> CheckResult:
             f"effective {RING_SLOTS_ENV_VAR} from {resolution.source} is invalid: "
             f"{resolution.error}. fan-in will refuse to create Ring A, which is "
             "this box's only transport. Clear the stale value.",
+            reason=REASON_RING_SLOTS_ENV_INVALID,
         )
     fanin_slots = resolution.value
 
@@ -886,6 +1001,7 @@ def check_ring_geometry_coherence() -> CheckResult:
             f"conf.d ({_JTS_RING_CONF_D}) has no single n_slots for "
             f"pcm.{ring_assets.RING_A_CONF_PCM}; Ring A geometry is indeterminate — "
             "redeploy to reinstall the ring conf.d.",
+            reason=REASON_RING_CONF_SLOTS_INDETERMINATE,
         )
     if fanin_slots != conf_slots:
         return CheckResult(
@@ -896,6 +1012,7 @@ def check_ring_geometry_coherence() -> CheckResult:
             "and crash-loops. Run: sudo /opt/jasper/.venv/bin/"
             "jasper-fanin-coupling-reconcile shm_ring (it self-heals a stale env), "
             "or match the two values.",
+            reason=REASON_RING_SLOTS_ENV_CONF_MISMATCH,
         )
 
     # Axis 3: the on-disk ring header (what the writer actually created).
@@ -908,6 +1025,7 @@ def check_ring_geometry_coherence() -> CheckResult:
             f"env + conf.d agree (n_slots={fanin_slots}) but {ring_assets.RING_A_PROGRAM_FILE} "
             "has no valid ring header yet (fan-in restarting / ring cleared). It "
             "will be created coherently on the next fan-in start.",
+            reason=REASON_RING_HEADER_ABSENT,
         )
     # Every axis the ioplug attach compares — n_slots, period_frames,
     # sample_format and channels — through the SAME comparator the coupling
@@ -925,6 +1043,7 @@ def check_ring_geometry_coherence() -> CheckResult:
             "geometry blocks the ioplug attach. Run: sudo "
             "/opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring "
             "(it deletes a geometry-mismatched ring file before re-arming).",
+            reason=REASON_RING_HEADER_CONF_MISMATCH,
         )
     return CheckResult(
         label, "ok",
@@ -946,8 +1065,9 @@ def check_ring_conf_floor_render() -> CheckResult:
     (``latency_floor_for``), the period from the conf.d file itself.
 
     Statuses:
-      ok    — no active DAC in the reconciler's record (nothing to render);
-              no declared floor (the shipped default stands, by rule); a
+      skipped — no active DAC in the reconciler's record, so there is no
+              declared floor to read.
+      ok    — no declared floor (the shipped default stands, by rule); a
               declared floor that is not ``RING_SLOT_FRAMES`` (a product
               boundary, not drift — see below); or the conf.d already
               declares the floor's period.
@@ -986,9 +1106,10 @@ def check_ring_conf_floor_render() -> CheckResult:
     dac_id = active_dac_profile_id()
     if dac_id is None:
         return CheckResult(
-            label, "ok",
-            "skipped — the output-hardware record names no active DAC, so there "
+            label, "skipped",
+            "the output-hardware record names no active DAC, so there "
             "is no declared floor to render",
+            reason=REASON_RING_FLOOR_NO_ACTIVE_DAC,
         )
     floor = latency_floor_for(dac_id)
     # Says "roleful box", NOT "commissioned box": step 1 accepts either roleful
@@ -1027,6 +1148,7 @@ def check_ring_conf_floor_render() -> CheckResult:
             "Until either, this DAC's outputd period stays off the ring slot. "
             "(Issue #2147 would make the ring slot floor-derived and retire "
             "the question.)" + roleful_note,
+            reason=REASON_RING_FLOOR_NOT_DECLARED,
         )
     if floor.outputd_period_frames != RING_SLOT_FRAMES:
         return CheckResult(
@@ -1041,6 +1163,7 @@ def check_ring_conf_floor_render() -> CheckResult:
             "/etc/jasper/jasper.env can produce; absent that override, this "
             "DAC's own floor still governs outputd's period/buffer geometry."
             + roleful_note,
+            reason=REASON_RING_FLOOR_NOT_RENDERABLE,
         )
     conf_period = ring_assets.ring_conf_period_frames(_JTS_RING_CONF_D)
     if conf_period is None:
@@ -1052,6 +1175,7 @@ def check_ring_conf_floor_render() -> CheckResult:
             "period_frames (absent or torn); the ring slot geometry is "
             "indeterminate — redeploy (bash scripts/deploy-to-pi.sh) to "
             "reinstall it.",
+            reason=REASON_RING_FLOOR_CONF_PERIOD_INDETERMINATE,
         )
     if conf_period != floor.outputd_period_frames:
         return CheckResult(
@@ -1063,12 +1187,14 @@ def check_ring_conf_floor_render() -> CheckResult:
             "conf.d. Run: sudo systemctl start "
             "jasper-audio-hardware-reconcile.service (it renders the conf.d from "
             "the declared floor).",
+            reason=REASON_RING_FLOOR_UNRENDERED,
         )
     return CheckResult(
         label,
         "ok",
         f"period_frames={conf_period} matches {dac_id}'s declared latency floor"
         + roleful_note,
+        reason=REASON_RING_FLOOR_RENDERED,
     )
 
 
@@ -1076,7 +1202,8 @@ def check_ring_conf_floor_render() -> CheckResult:
 def check_renderer_ring_lanes() -> CheckResult:
     """Every ARMED renderer-ingress lane is attached, fed, and coherent.
 
-    An unarmed box — the shipped fleet state — reports ``ok``.
+    An unarmed box — the shipped fleet state — reports ``skipped``: there is
+    no armed lane to judge.
 
     On an armed box it answers three questions, which have different remedies:
 
@@ -1100,55 +1227,68 @@ def check_renderer_ring_lanes() -> CheckResult:
     label_name = "renderer ring lanes"
     armed = rl.read_armed_labels()
     if not armed:
-        # "ok", NOT a novel "skip" status: the doctor vocabulary is ok|warn|fail
-        # (CheckResult.status) and render()'s else-branch turns anything unknown
-        # into a red ✗ + exit 1.
-        return CheckResult(label_name, "ok", "no renderer lane armed (fleet default)")
+        return CheckResult(
+            label_name,
+            "skipped",
+            "no renderer lane armed (fleet default)",
+            reason=REASON_RENDERER_LANES_UNARMED,
+        )
 
-    status = _fanin_status()
-    if isinstance(status, Exception):
+    read = evidence.fanin_status()
+    if read.payload is None:
         return CheckResult(
             label_name,
             "warn",
             f"{len(armed)} lane(s) armed ({', '.join(armed)}) but fan-in STATUS is "
-            f"unreadable ({type(status).__name__}) — cannot confirm they are attached",
+            f"unreadable ({type(read.error).__name__}) — cannot confirm they are "
+            "attached",
+            reason=REASON_RENDERER_LANES_STATUS_UNREADABLE,
         )
-    inputs = status.get("inputs")
+    inputs = read.payload.get("inputs")
     if not isinstance(inputs, list):
         return CheckResult(
-            label_name, "warn", "fan-in STATUS carries no inputs[] to judge"
+            label_name, "warn", "fan-in STATUS carries no inputs[] to judge",
+            reason=REASON_RENDERER_LANES_STATUS_NO_INPUTS,
         )
     by_label = {
         inp.get("label"): inp for inp in inputs if isinstance(inp, dict)
     }
 
-    problems: list[str] = []
+    # `(reason, sentence)` pairs: the row reports every lane's sentence and
+    # takes its machine reason from the first problem found.
+    problems: list[tuple[str, str]] = []
     healthy: list[str] = []
     for lane_label in armed:
         entry = by_label.get(lane_label)
         if entry is None:
-            problems.append(
+            problems.append((
+                REASON_RENDERER_LANE_UNKNOWN_TO_FANIN,
                 f"{lane_label}: armed but fan-in reports no such lane — restart "
-                "jasper-fanin to pick up the lane map"
-            )
+                "jasper-fanin to pick up the lane map",
+            ))
             continue
         if entry.get("source") != rl_source_ring():
-            problems.append(
+            problems.append((
+                REASON_RENDERER_LANE_SOURCE_NOT_RING,
                 f"{lane_label}: armed but fan-in reports source="
                 f"{entry.get('source')!r} — jasper-fanin has not restarted since "
-                "the lane map changed"
-            )
+                "the lane map changed",
+            ))
             continue
         ring = entry.get("ring")
         if not isinstance(ring, dict):
-            problems.append(f"{lane_label}: source=ring but no ring{{}} block")
+            problems.append((
+                REASON_RENDERER_LANE_RING_BLOCK_MISSING,
+                f"{lane_label}: source=ring but no ring{{}} block",
+            ))
             continue
         if not ring.get("attached"):
             reason = ring.get("detach_reason", "unknown")
-            problems.append(
+            problems.append((
+                REASON_RENDERER_LANE_DETACHED,
                 f"{lane_label}: DETACHED (reason={reason}, retries="
-                f"{ring.get('retries')}) — {_ring_detach_remedy(str(reason))}"
-            )
+                f"{ring.get('retries')}) — {_ring_detach_remedy(str(reason))}",
+            ))
             continue
         # All-startup empty reads with no filled slot means the renderer has
         # never opened its ring.
@@ -1173,12 +1313,13 @@ def check_renderer_ring_lanes() -> CheckResult:
                     "here; run a measurement to confirm)"
                 )
                 continue
-            problems.append(
+            problems.append((
+                REASON_RENDERER_LANE_NEVER_FED,
                 f"{lane_label}: attached but NEVER FED (startup_empty_reads="
                 f"{startup}, frames_read=0) — the renderer has not opened its "
                 f"ring. Check that {_ring_lane_unit(lane_label)} restarted after "
-                "the arm, and that its ALSA device resolves"
-            )
+                "the arm, and that its ALSA device resolves",
+            ))
             continue
         healthy.append(
             f"{lane_label}(writer_alive={ring.get('writer_alive')}, "
@@ -1187,7 +1328,13 @@ def check_renderer_ring_lanes() -> CheckResult:
         )
 
     if problems:
-        return CheckResult(label_name, "warn", "; ".join(problems))
+        first_reason, _ = problems[0]
+        return CheckResult(
+            label_name,
+            "warn",
+            "; ".join(text for _reason, text in problems),
+            reason=first_reason,
+        )
     return CheckResult(label_name, "ok", "; ".join(healthy))
 
 
@@ -1279,9 +1426,7 @@ def check_ring_transport_park() -> CheckResult:
     """
     label = "ring transport parks"
 
-    from ...control import transport_park
-
-    state = transport_park.snapshot()
+    state = _transport_park_snapshot()
     status = state.get("status")
 
     if status == "unavailable":
@@ -1290,6 +1435,7 @@ def check_ring_transport_park() -> CheckResult:
             "warn",
             "the saved output topology or outputd's env could not be read "
             f"({state.get('error')}) — a transport park cannot be ruled out.",
+            reason=REASON_TRANSPORT_PARK_EVIDENCE_UNAVAILABLE,
         )
 
     if status == "ok":
@@ -1306,6 +1452,7 @@ def check_ring_transport_park() -> CheckResult:
                 "describes it (ADR-0184). Unproven, not parked — nothing is "
                 "claimed to the household. Report the saved layout "
                 "(/sound/setup/) if sound is missing.",
+                reason=REASON_TRANSPORT_ENDPOINT_UNPROVEN,
             )
         refusal = state.get("converge_refused")
         if refusal:
@@ -1319,6 +1466,7 @@ def check_ring_transport_park() -> CheckResult:
                 "graph it already had keeps playing, so nothing is claimed to "
                 "the household. Re-emit the active-speaker baseline onto the "
                 "ring endpoint if sound is missing.",
+                reason=REASON_TRANSPORT_CONVERGE_REFUSED,
             )
         if state.get("endpoint_armed_without_active_modes"):
             # ADR-0189: the marker is armed on a layout that declares no active
@@ -1333,6 +1481,7 @@ def check_ring_transport_park() -> CheckResult:
                 "is loaded keeps playing. A reconcile in flight clears this on "
                 "its next pass; if it persists, report the saved layout "
                 "(/sound/setup/).",
+                reason=REASON_TRANSPORT_ENDPOINT_ARMED_WITHOUT_ACTIVE_MODE,
             )
         return CheckResult(
             label, "ok", "this box is in none of the four named transport parks"
@@ -1346,6 +1495,7 @@ def check_ring_transport_park() -> CheckResult:
             "kind, and none of the four named parks describes it — so it is "
             "neither servable by the single transport nor tracked by an issue "
             "yet. Report the saved layout (/sound/setup/) so it can be named.",
+            reason=REASON_TRANSPORT_TOPOLOGY_UNCLASSIFIED,
         )
 
     parks = state.get("parks") or []
@@ -1365,4 +1515,6 @@ def check_ring_transport_park() -> CheckResult:
         "fail",
         "PARKED — no ring serves this box, so it emits nothing: "
         + "; ".join(named),
+        speaker_silent=True,
+        reason=REASON_TRANSPORT_PARKED,
     )

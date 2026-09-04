@@ -45,9 +45,6 @@ _PROBE_GATE_OWNER = "doctor-aec-probe"
 
 _PROBE_LOCK_PATH = "/run/jasper/doctor-aec-probe.lock"
 
-# Closed vocabulary for this module's `CheckResult.reason` — same convention
-# as `aec.py`'s `_AEC_REASONS` (a separate tuple because the probe is a
-# distinct, explicitly-invoked check set with its own decision branches).
 REASON_PROBE_LOCK_BUSY = "probe_lock_busy"
 REASON_PROBE_LOCK_ERROR = "probe_lock_error"
 REASON_PROBE_BRIDGE_NOT_RUNNING = "probe_bridge_not_running"
@@ -66,27 +63,6 @@ REASON_PROBE_NO_RMS_WINDOWS = "probe_no_rms_windows"
 REASON_PROBE_REF_HEALTHY = "probe_ref_healthy"
 REASON_PROBE_REF_SILENT_MIC_LOUD = "probe_ref_silent_mic_loud"
 REASON_PROBE_BOTH_SILENT = "probe_both_silent"
-
-_AEC_PROBE_REASONS = (
-    REASON_PROBE_LOCK_BUSY,
-    REASON_PROBE_LOCK_ERROR,
-    REASON_PROBE_BRIDGE_NOT_RUNNING,
-    REASON_PROBE_BRIDGE_RUNNING,
-    REASON_PROBE_ACTIVE_SOURCE_UNKNOWN,
-    REASON_PROBE_ACTIVE_SOURCE_BUSY,
-    REASON_PROBE_RENDERERS_IDLE,
-    REASON_PROBE_CONTROL_STATE_UNAVAILABLE,
-    REASON_PROBE_ISOLATION_CLEANUP_FAILED,
-    REASON_PROBE_ISOLATION_UNAVAILABLE,
-    REASON_PROBE_SINE_WRITE_FAILED,
-    REASON_PROBE_APLAY_FAILED,
-    REASON_PROBE_APLAY_OK,
-    REASON_PROBE_JOURNAL_UNREADABLE,
-    REASON_PROBE_NO_RMS_WINDOWS,
-    REASON_PROBE_REF_HEALTHY,
-    REASON_PROBE_REF_SILENT_MIC_LOUD,
-    REASON_PROBE_BOTH_SILENT,
-)
 
 
 class _ProbeLockError(RuntimeError):
@@ -351,18 +327,12 @@ def _play_and_assess_probe() -> list[CheckResult]:
 
     probe_start = datetime.datetime.now(datetime.timezone.utc)
     since = probe_start.strftime("%Y-%m-%d %H:%M:%S UTC")
-    # No euid gate here, by decision (P6c-i): the doctor's documented
-    # contract is a root run (`jasper-doctor --help`: "Run as root."; the
-    # non-root jasper-control gets root fidelity via the oneshot --out
-    # path), skipping is expressed as ok + a skipped detail per the doctor
-    # convention (the one shipped deviation — a novel "skip" status that
-    # render() failed — was fixed in #2397), and no doctor check anywhere
-    # gates on euid — preconditions in this module fail LOUDLY as
-    # CheckResults instead (renderers-idle, loopback-lane,
-    # isolation-window above). An unprivileged run therefore fails this
-    # probe at device open — on the aloop path at /dev/snd (root:audio);
-    # on an armed box, at the correction ring lane — and the guidance
-    # below names the fix.
+    # No euid gate here: the doctor's documented contract is a root run
+    # (`jasper-doctor --help`: "Run as root."); preconditions fail LOUDLY as
+    # CheckResults instead of a silent skip. An unprivileged run therefore
+    # fails this probe at device open — the aloop path at /dev/snd
+    # (root:audio), or the correction ring lane when armed — and the
+    # guidance below names the fix.
     play = run_correction_play(
         _PROBE_SINE_PATH,
         timeout=_PROBE_SINE_DURATION_S + 5.0,

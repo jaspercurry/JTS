@@ -8,6 +8,10 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ...doctor_contract import (
+    REASON_SNAPSHOT_PENDING,
+    REASON_SNAPSHOT_UNAVAILABLE,
+)
 from .. import server as _server
 from ._base import ControlHandlerMixin
 
@@ -206,22 +210,24 @@ class SystemRoutes(ControlHandlerMixin):
     # report immediately and schedules stale/missing refreshes with
     # `systemctl --no-block`, so the dashboard never waits on a live run.
     def _get_system_diagnostics(self) -> None:
-        result_path = _server._diagnostics_result_path()
         body, read_error = _server._read_diagnostics_snapshot(
-            result_path,
-            ttl_seconds=_server._diagnostics_cache_ttl_seconds(),
+            _server._DIAGNOSTICS_RESULT_PATH,
+            ttl_seconds=_server._DIAGNOSTICS_CACHE_TTL_SECONDS,
         )
         if body is None:
-            refresh_started, refresh_error = _server._start_diagnostics_refresh(
-                result_path,
+            refreshing, refresh_error = _server._start_diagnostics_refresh(
+                snapshot_age_seconds=None,
             )
-            if refresh_started:
+            if refreshing:
                 self._send_json(
                     _server._diagnostics_placeholder_result(
                         detail=(
                             "diagnostics snapshot not ready yet; "
                             "background refresh started"
                         ),
+                        status="warn",
+                        reason=REASON_SNAPSHOT_PENDING,
+                        refreshing=True,
                     ),
                 )
                 return
@@ -232,15 +238,17 @@ class SystemRoutes(ControlHandlerMixin):
                         f"{refresh_error}"
                     ),
                     status="fail",
+                    reason=REASON_SNAPSHOT_UNAVAILABLE,
+                    refreshing=False,
                 ),
             )
             return
 
         if body.get("stale"):
-            refresh_started, refresh_error = _server._start_diagnostics_refresh(
-                result_path,
+            refreshing, refresh_error = _server._start_diagnostics_refresh(
+                snapshot_age_seconds=body.get("cache_age_seconds"),
             )
-            body["refreshing"] = refresh_started
+            body["refreshing"] = refreshing
             if refresh_error:
                 _server._append_diagnostics_refresh_failure(body, refresh_error)
         else:

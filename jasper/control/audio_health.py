@@ -35,6 +35,7 @@ from ..local_sources.registry import local_source_lifecycles
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
 from ..route_latency.status_socket import OUTPUTD_STATUS_SOCKET
 from ..fanin.latency_mode import PRESETS, classify_runtime
+from ..route_latency.status_socket import FANIN_STALE_MS, OUTPUTD_STALE_MS
 from ..source_intent import read_source_intents
 from .airplay_health import (
     CAMILLA_UNIT_FULL,
@@ -56,8 +57,6 @@ logger = logging.getLogger(__name__)
 SCHEMA_VERSION = 1
 ROUTE_INTERVAL_SEC = 60.0
 LOCAL_STATUS_TIMEOUT_SEC = 1.0
-FANIN_STALE_MS = 5000
-OUTPUTD_STALE_MS = 3000
 
 # Household register for every sentence this module writes: what is wrong with
 # the household's sound and what they can do about it, never a daemon name, a

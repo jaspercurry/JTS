@@ -5,19 +5,51 @@
 """jasper-doctor checks for the loaded CamillaDSP graph and the runtime plan.
 
 Import direction across the audio-runtime check modules runs one way —
-``audio_runtime_camilla`` -> ``_fanin`` -> ``_outputd`` -> ``_ring`` — so this
+``audio_runtime_camilla`` -> ``_fanin`` -> ``_outputd`` -> ``_ring``, so this
 module may not import from any of the three.
+
+Closed vocabulary for this module's `CheckResult.reason`: one snake_case
+constant per distinct decision branch of the checks below, its value unique
+across the doctor and prefixed by the check that emits it. `detail` stays the
+human sentence (free to reword); `reason` is what tests and self-healing
+consumers pin instead (ADR-0233 rule 3).
+
+A branch that formed NO verdict — subsystem not installed, not applicable to
+this box, or the evidence source unreachable so nothing was observed — is
+`skipped` with a reason, never `ok`. An `ok` reason means an actual verdict a
+consumer would branch on (a feature the box turned off, a floor that is
+deliberately not renderable).
 """
 from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
 
 from ...camilla_config_contract import (
     DEFAULT_PIPE_SINK_FORMAT,
     DEFAULT_PLAYBACK_FORMAT,
+    parse_camilla_devices_config,
     read_camilla_devices_config,
 )
+from ._evidence import evidence
 from ._registry import doctor_check
-from ._shared import CheckResult, _run
+from ._shared import CheckResult, _service_state_failure
 from .correction import _active_camilla_config_path
+
+REASON_CAMILLA_UNIT_MISSING = "camilla_unit_missing"
+REASON_CAMILLA_UNIT_NOT_ENABLED = "camilla_unit_not_enabled"
+REASON_CAMILLA_INACTIVE = "camilla_inactive"
+
+REASON_PLAYBACK_FORMAT_NO_CONFIG = "playback_format_no_config"
+REASON_PLAYBACK_FORMAT_FIELD_ABSENT = "playback_format_field_absent"
+REASON_PLAYBACK_FORMAT_MISMATCH = "playback_format_mismatch"
+
+REASON_AUDIO_PLAN_ERRORS = "audio_plan_errors"
+REASON_AUDIO_PLAN_WARNINGS = "audio_plan_warnings"
+
+REASON_CAMILLA_PARK_RECORD_UNREADABLE = "camilla_park_record_unreadable"
+REASON_CAMILLA_PARK_RECORD_UNINTELLIGIBLE = "camilla_park_record_unintelligible"
+REASON_CAMILLA_GRAPH_PARKED = "camilla_graph_parked"
 
 
 @doctor_check(order=51.1, group="audio")
@@ -36,30 +68,51 @@ def check_camilla_service() -> CheckResult:
       - fail when the unit is missing, disabled, or enabled and not active.
     """
     label = "jasper-camilla service"
-    unit = "jasper-camilla.service"
-    enabled = _run(["systemctl", "is-enabled", unit]).stdout.strip()
-    active = _run(["systemctl", "is-active", unit]).stdout.strip()
-
-    if enabled == "not-found":
-        return CheckResult(
-            label, "fail", "systemd unit not installed. Re-run install.sh."
-        )
-    if enabled in ("disabled", "static", "indirect"):
-        return CheckResult(
-            label,
-            "fail",
-            f"state={enabled}. CamillaDSP is mandatory; run: "
-            f"sudo systemctl enable --now {unit}",
-        )
-    if active != "active":
-        return CheckResult(
-            label,
-            "fail",
-            f"enabled but state={active}. Every source's audio runs through "
-            f"CamillaDSP, so nothing will play until it starts. Check: "
-            f"journalctl -u jasper-camilla -u jasper-camilla-recover",
-        )
+    service_failure = _service_state_failure(
+        label,
+        "jasper-camilla.service",
+        missing=REASON_CAMILLA_UNIT_MISSING,
+        not_enabled=REASON_CAMILLA_UNIT_NOT_ENABLED,
+        inactive=REASON_CAMILLA_INACTIVE,
+    )
+    if service_failure is not None:
+        return service_failure
     return CheckResult(label, "ok", "enabled and active")
+
+
+def _camilla_statefile() -> Path:
+    """The statefile behind :meth:`Evidence.camilla_config_path`, from the same
+    single read (same memo key)."""
+    statefile, _config_path = evidence.get(
+        "camilla_config", _active_camilla_config_path
+    )
+    return statefile
+
+
+def _loaded_device_fields(config_path: Path | str | None) -> dict[str, Any]:
+    """Every ``devices.*`` field the audio-runtime checks compare, keyed
+    ``<block>_<field>``, from ONE read of ``config_path`` per doctor run.
+
+    The loaded graph's fields must all come from the SAME revision of the file:
+    reading them one at a time re-opened it per field and could answer from two
+    revisions. ``config_path`` is a parameter rather than always
+    :meth:`Evidence.camilla_config_path` because ``check_fanin_coupling`` falls
+    back to the shipped config path when the statefile names nothing.
+    """
+    if not config_path:
+        return {}
+    # Normalized, so the two callers' spellings of one path share one memo
+    # entry and one read.
+    path = str(Path(config_path))
+
+    def read() -> dict[str, Any]:
+        active = evidence.camilla_config_path()
+        if active and path == str(Path(active)):
+            text = evidence.camilla_config_text()
+            return dict(parse_camilla_devices_config(text)) if text else {}
+        return dict(read_camilla_devices_config(path) or {})
+
+    return evidence.get(f"camilla_devices:{path}", read)
 
 
 def _expected_playback_format(
@@ -106,21 +159,27 @@ def check_camilla_playback_format() -> CheckResult:
     Keyed on the LOADED CONFIG's own ``device``/``type``, never on the persisted
     coupling, so a box mid-arm reads as whatever the config in front of it says.
 
-    THIS CHECK FAILS OPEN ON A CONFIG IT CANNOT READ (it is cited elsewhere as
-    the detector for a suppressed DSP reconcile): an unreadable/absent
-    statefile, an unresolvable ``config_path``, or a missing
-    ``devices.playback.format`` all return ``ok``. The unreadable half is owned
+    THIS CHECK FORMS NO VERDICT ON A CONFIG IT CANNOT READ: an
+    unreadable/absent statefile, an unresolvable ``config_path``, or a missing
+    ``devices.playback.format`` all return ``skipped``. The unreadable half is owned
     by ``check_correction_current_config`` (``jasper/cli/doctor/correction.py``).
     """
     label = "camilla playback format"
-    _, config_path = _active_camilla_config_path()
+    config_path = evidence.camilla_config_path()
     if config_path is None:
-        return CheckResult(label, "ok", "no loaded config to compare")
-    devices = read_camilla_devices_config(config_path) or {}
+        return CheckResult(
+            label,
+            "skipped",
+            "no loaded config to compare",
+            reason=REASON_PLAYBACK_FORMAT_NO_CONFIG,
+        )
+    devices = _loaded_device_fields(config_path)
     loaded_format = devices.get("playback_format")
     if loaded_format is None:
         return CheckResult(
-            label, "ok", f"{config_path} has no devices.playback.format field"
+            label, "skipped",
+            f"{config_path} has no devices.playback.format field",
+            reason=REASON_PLAYBACK_FORMAT_FIELD_ABSENT,
         )
     playback_type = devices.get("playback_type")
     playback_device = devices.get("playback_device")
@@ -146,6 +205,7 @@ def check_camilla_playback_format() -> CheckResult:
         "force. Regenerate the config (sudo /opt/jasper/.venv/bin/jasper-sound "
         f"reconcile-current-dsp) or investigate why {expected_name} and the "
         "loaded config disagree.",
+        reason=REASON_PLAYBACK_FORMAT_MISMATCH,
     )
 
 
@@ -180,12 +240,14 @@ def check_audio_runtime_plan() -> CheckResult:
             "audio runtime plan",
             "fail",
             summary + "; " + "; ".join(plan.errors),
+            reason=REASON_AUDIO_PLAN_ERRORS,
         )
     if plan.warnings:
         return CheckResult(
             "audio runtime plan",
             "warn",
             summary + "; " + "; ".join(plan.warnings[:3]),
+            reason=REASON_AUDIO_PLAN_WARNINGS,
         )
     return CheckResult("audio runtime plan", "ok", summary)
 
@@ -219,6 +281,7 @@ def check_camilla_recover_park() -> CheckResult:
             f"recovery park record at {state.get('path')} exists but could "
             f"not be read ({state.get('error')}) — a park cannot be ruled "
             "out. Check journalctl -u jasper-camilla-recover.",
+            reason=REASON_CAMILLA_PARK_RECORD_UNREADABLE,
         )
 
     if status == "unintelligible":
@@ -228,6 +291,7 @@ def check_camilla_recover_park() -> CheckResult:
             f"recovery park record at {state.get('path')} is present but "
             "carries no reason (a truncated write) — a park cannot be ruled "
             "out from it. Check journalctl -u jasper-camilla-recover.",
+            reason=REASON_CAMILLA_PARK_RECORD_UNINTELLIGIBLE,
         )
 
     parts = [
@@ -245,4 +309,10 @@ def check_camilla_recover_park() -> CheckResult:
         value = state.get(field)
         if value:
             parts.append(f"{prefix}{value}")
-    return CheckResult(label, "fail", ". ".join(parts))
+    return CheckResult(
+        label,
+        "fail",
+        ". ".join(parts),
+        speaker_silent=True,
+        reason=REASON_CAMILLA_GRAPH_PARKED,
+    )

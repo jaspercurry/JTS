@@ -77,7 +77,7 @@ def test_snapshot_enabled_via_stat_when_psk_unreadable(monkeypatch, stash_path, 
     )
 
     nmcli_responses = iter([
-        _proc(stdout="Home:802-11-wireless\n"),
+        _proc(stdout="802-11-wireless:wlan0:Home\n"),
         _proc(stdout="802-11-wireless.ssid:Home\n"),
     ])
 
@@ -107,8 +107,8 @@ def test_snapshot_steady_state(monkeypatch, stash_path):
     )
 
     nmcli_responses = iter([
-        # connection show --active
-        _proc(stdout="Home:802-11-wireless\n"),
+        # connection show --active (TYPE,DEVICE,NAME)
+        _proc(stdout="802-11-wireless:wlan0:Home\n"),
         # connection show Home (ssid lookup)
         _proc(stdout="802-11-wireless.ssid:Home\n"),
     ])
@@ -142,7 +142,7 @@ def test_snapshot_drift_detected(monkeypatch, stash_path):
     )
 
     nmcli_responses = iter([
-        _proc(stdout="Cafe:802-11-wireless\n"),
+        _proc(stdout="802-11-wireless:wlan0:Cafe\n"),
         _proc(stdout="802-11-wireless.ssid:Cafe\n"),
     ])
 
@@ -211,7 +211,7 @@ def test_snapshot_parses_journalctl_last_action(monkeypatch, stash_path):
     )
 
     nmcli_responses = iter([
-        _proc(stdout="Home:802-11-wireless\n"),
+        _proc(stdout="802-11-wireless:wlan0:Home\n"),
         _proc(stdout="802-11-wireless.ssid:Home\n"),
     ])
 

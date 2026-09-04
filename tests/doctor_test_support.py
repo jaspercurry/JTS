@@ -11,6 +11,48 @@ from jasper.config import Config
 from jasper.output_hardware import OutputCardFact, OutputHardwareState, write_state
 
 
+def _make_unit_states_fake(
+    overrides: dict[str, dict[str, object]] | None = None, *, unavailable: bool = False,
+):
+    """Table-driven double for ``_evidence.read_unit_states`` (also
+    ``jasper.service_units.read_unit_states``, the same function).
+
+    ``overrides`` maps a FULL unit name (e.g. ``"jasper-camilla.service"``)
+    to a partial state dict merged over a healthy default (loaded / active /
+    running, MainPID 0). A unit requested but absent from ``overrides`` gets
+    the healthy default — pass e.g. ``{"load_state": "not-found"}`` to model
+    a unit this profile does not install. ``unavailable=True`` models
+    systemctl itself being absent: every call returns None, as the real
+    reader does on a dev host.
+    """
+    overrides = overrides or {}
+
+    def fake(units, *, timeout):
+        if unavailable:
+            return None
+        out = {}
+        for unit in units:
+            base = {
+                "unit": unit,
+                "load_state": "loaded",
+                "active_state": "active",
+                "sub_state": "running",
+                "unit_file_state": "enabled",
+                "result": "success",
+                "n_restarts": 0,
+                "main_pid": 0,
+                "tasks_current": None,
+                "memory_current_bytes": None,
+                "cpu_usage_nsec": None,
+                "control_group": "",
+            }
+            base.update(overrides.get(unit, {}))
+            out[unit] = base
+        return out
+
+    return fake
+
+
 def _registered_check_names() -> set[str]:
     """Return function names of every check registered via ``run_async``."""
     return {check.func.__name__ for check in doctor.registered_checks()}

@@ -55,6 +55,14 @@ FANIN_STATUS_SOCKET = "/run/jasper-fanin/control.sock"
 MUX_CONTROL_SOCKET_PATH = "/run/jasper-mux/control.sock"
 OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
 
+# Ceilings on each owner's STATUS `watchdog.last_progress_age_ms`, in
+# milliseconds — above them the transport is stale. Fan-in's is deliberately
+# the LOOSER of the two: a stalled fan-in starves CamillaDSP, which empties the
+# ring, so outputd latches deaf at 2 s; tripping fan-in earlier than 5 s would
+# report the symptom ahead of its own cause.
+FANIN_STALE_MS = 5000
+OUTPUTD_STALE_MS = 3000
+
 
 def read_status_socket(path: str, *, timeout: float = DEFAULT_STATUS_TIMEOUT_SECONDS) -> dict[str, Any]:
     """Connect to a JTS ``STATUS\\n`` control socket and return its JSON reply.
