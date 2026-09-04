@@ -95,6 +95,11 @@ Subcommands:
   ``acceptance`` says so.
   Computes only: no audio plays and no device is opened, and applying what it
   predicts stays the prescription doors' job. Writes ``forward_model.json``.
+* ``distortion <bundle-dir> --dumps <ring> --state <flow-state>`` — H2/H3
+  out of a banked round's MEASURE captures, relative to the fundamental, at
+  the drive each capture used. ``<bundle-dir>`` is a commissioning bundle,
+  and its round is resolved by the rule the evidence packet's reader uses, so
+  ``harmonic_distortion.json`` cannot land where that reader does not look.
 * ``inventory <round-dir>`` — which of the named artifacts above this round
   already has, and the subcommand that produces each one it is missing, so
   "was this round ever analysed for X" is read rather than re-run. The round
@@ -157,10 +162,18 @@ from jasper.active_speaker.repeat_floor import (
     write_repeat_floor,
 )
 from jasper.active_speaker.crossover_v2.frequency_view import frequency_run
+from jasper.active_speaker.crossover_v2.evidence_packet import round_artifact_dir
 from jasper.active_speaker.crossover_v2.gate_sweep import (
     DEFAULT_RUNGS_MS,
     summary_lines,
     sweep_round,
+)
+from jasper.active_speaker.crossover_v2.harmonic_evidence import (
+    DEFAULT_BANDS_HZ,
+    DEFAULT_FULL_RANGE_BAND_HZ,
+    HARMONICS_ARTIFACT,
+    HarmonicEvidenceRefused,
+    read_bundle_harmonics,
 )
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, round_inputs
@@ -206,17 +219,25 @@ docs/historical/flat-campaign-2026-08-31.md section 5 for what each postdicts:
 #: beside — the TARGET, ``repeat`` writes beside the FIRST directory, so their
 #: second round sits on opposite sides. A hint carrying ``<other-round>`` is
 #: one this inventory cannot fill, and running it without that round is an
-#: invocation argparse rejects.
+#: invocation argparse rejects — and so is one carrying inputs that live
+#: outside the round tree at all.
 TAKES_THIS_ROUND = "<this-round>"
 TAKES_AFTER_ANOTHER = "<other-round> <this-round>"
 TAKES_BEFORE_ANOTHER = "<this-round> <other-round>"
+TAKES_BUNDLE_AND_RING = "<this-round's bundle> --dumps <ring> --state <flow-state>"
 
 
 class ViewArtifact(NamedTuple):
-    """One view's artifact, and what its subcommand takes to produce it."""
+    """One view's artifact, what its subcommand takes, and where it lands.
+
+    ``in_artifact_dir`` marks the views the evidence PACKET reads: those file
+    into the round's own artifact directory, the only path that reader looks
+    at, rather than beside the round where an operator reads the rest.
+    """
 
     artifact: str
     takes: str = TAKES_THIS_ROUND
+    in_artifact_dir: bool = False
 
 
 #: The artifact each view writes beside the round, declared once: the
@@ -237,6 +258,11 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "spec-sweep": ViewArtifact("spec_gate_sensitivity.json"),
     "gate-sweep": ViewArtifact("gate_sweep.json"),
     "frequency": ViewArtifact("frequency_view.json"),
+    # The packet owns this name, so the row takes that constant rather than a
+    # second spelling of it.
+    "distortion": ViewArtifact(
+        HARMONICS_ARTIFACT, TAKES_BUNDLE_AND_RING, in_artifact_dir=True
+    ),
 }
 
 #: ``inventory``'s own report, named apart from the views it reports on.
@@ -759,21 +785,56 @@ def _cmd_frequency(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_distortion(args: argparse.Namespace) -> int:
+    round_dir, artifact = stage(
+        EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, read_bundle_harmonics,
+        args.bundle_dir, args.dumps, args.state,
+        {
+            "woofer": args.woofer_band,
+            "tweeter": args.tweeter_band,
+            "full_range": args.full_range_band,
+        },
+        calibration_path=args.calibration,
+        applied_profile_path=args.applied_profile,
+    )
+    # The bundle's own round directory, never `default_out`: this reading is
+    # filed where the packet reader looks for it, and that is a banked tree.
+    written = _write(
+        artifact, args.out, round_dir / ARTIFACT_BY_VIEW[args.command].artifact
+    )
+    captures = artifact["captures"]
+    print(
+        f"distortion: H{'/H'.join(str(order) for order in artifact['orders'])} "
+        f"for {len(artifact['roles'])} (capture, role) block(s) from "
+        f"{captures['n_read']} capture(s), {captures['n_refused']} refused"
+        f"{f' -> {written}' if written else ''}",
+        file=sys.stderr,
+    )
+    return EXIT_OK
+
+
 def _cmd_inventory(args: argparse.Namespace) -> int:
     # The round is RESOLVED, never graded: which artifacts sit beside a round
     # is a directory question, and building the evidence packet to answer it
     # would make the cheapest verb here cost the most (415 MB target, ADR-0226).
     round_dir = Path(args.round_dir)
     inputs = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, round_dir)
+    # ``None`` only for a directory holding no round artifacts at all, where
+    # every row below is missing whichever path it is read at.
+    artifact_dir, _why = round_artifact_dir(inputs.session_dir)
     artifacts: list[dict[str, Any]] = []
     for view, spec in ARTIFACT_BY_VIEW.items():
-        path = default_out(inputs, round_dir, spec.artifact)
+        path = (
+            artifact_dir / spec.artifact
+            if spec.in_artifact_dir and artifact_dir is not None
+            else default_out(inputs, round_dir, spec.artifact)
+        )
         artifacts.append({
             "artifact": spec.artifact,
             "path": str(path),
             "present": path.is_file(),
             "produced_by": f"{PROG} {view} {spec.takes}",
-            "producer_needs_another_round": spec.takes != TAKES_THIS_ROUND,
+            "producer_needs_more_than_this_round": spec.takes != TAKES_THIS_ROUND,
         })
     payload = {
         "round_dir": str(round_dir),
@@ -817,6 +878,17 @@ def add_rungs_ms_argument(
     )
 
 
+def _band(text: str) -> tuple[float, float]:
+    """``"150:4000"`` as a band. Raises ``argparse``'s own error type."""
+    try:
+        lo, hi = (float(part) for part in str(text).split(":", 1))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected LO:HI in Hz, got {text!r}") from None
+    if not 0.0 < lo < hi:
+        raise argparse.ArgumentTypeError(f"band must satisfy 0 < lo < hi, got {text!r}")
+    return lo, hi
+
+
 def _add_norm_band_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--norm-lo", type=float, default=400.0, help="normalisation band low edge, Hz (default 400)")
     parser.add_argument("--norm-hi", type=float, default=8000.0, help="normalisation band high edge, Hz (default 8000)")
@@ -833,7 +905,8 @@ def build_parser() -> argparse.ArgumentParser:
             "the cloud's null evidence bound the linearization fit, what a "
             "candidate would measure from the banked per-driver solos, the "
             "gate window ladder and the sweep read onto the spec verdict, the "
-            "shared frequency view, and an inventory of which of those a "
+            "shared frequency view, the H2/H3 distortion reading, and an "
+            "inventory of which of those a "
             "round already carries — over banked rounds and live sessions."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1031,6 +1104,57 @@ def build_parser() -> argparse.ArgumentParser:
     frequency.add_argument("--out", default=None, help="write the result here (- for stdout)")
     frequency.set_defaults(func=_cmd_frequency)
 
+    distortion = sub.add_parser(
+        "distortion",
+        help="read H2/H3 out of a banked round's MEASURE captures, at the drive each used",
+    )
+    distortion.add_argument(
+        "bundle_dir", type=Path,
+        help="commissioning bundle: info.json beside evidence/v1/artifacts/",
+    )
+    distortion.add_argument(
+        "--dumps", type=Path, required=True,
+        help="banked capture ring (sidecar JSON beside its WAV)",
+    )
+    distortion.add_argument(
+        "--state", type=Path, required=True,
+        help=(
+            "THIS round's flow state; its gain_plan_db and candidate.program_id "
+            "rebuild the MEASURE program and prove it. That proof is "
+            "program-vs-STATE only: a state from a DIFFERENT round than "
+            "bundle_dir reads the drive wrong with no refusal"
+        ),
+    )
+    distortion.add_argument(
+        "--applied-profile", type=Path, default=None,
+        help=(
+            "the applied baseline profile JSON, where this round's crossover "
+            "corner is read from — never the flow state's record of a previous "
+            "apply. Absent or unreadable, the round is refused, not read"
+        ),
+    )
+    distortion.add_argument(
+        "--woofer-band", type=_band, default=DEFAULT_BANDS_HZ["woofer"],
+        metavar="LO:HI", help="woofer sweep band in Hz (default %(default)s)",
+    )
+    distortion.add_argument(
+        "--tweeter-band", type=_band, default=DEFAULT_BANDS_HZ["tweeter"],
+        metavar="LO:HI", help="tweeter sweep band in Hz (default %(default)s)",
+    )
+    distortion.add_argument(
+        "--full-range-band", type=_band, default=DEFAULT_FULL_RANGE_BAND_HZ,
+        metavar="LO:HI",
+        help="1-way (passive full-range main) sweep band in Hz, used only "
+             "when the round banked one full-range role (default %(default)s)",
+    )
+    distortion.add_argument(
+        "--calibration", type=Path, default=None,
+        help="microphone calibration file, applied at each curve's OWN "
+             "acoustic frequency; without one the ratios carry the mic's response",
+    )
+    distortion.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    distortion.set_defaults(func=_cmd_distortion)
+
     inventory = sub.add_parser(
         "inventory",
         help="which view artifacts this round has, and what produces each missing one",
@@ -1049,6 +1173,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return int(args.func(args))
     except StageFailed as staged:
         return failed(staged.code, _REASON_BY_CODE[staged.code], str(staged))
+    except HarmonicEvidenceRefused as refusal:
+        # An instrument that refuses BY NAME publishes its own name here rather
+        # than this tool's stage bucket, and its evidence as the detail.
+        return failed(
+            EXIT_REFUSED,
+            refusal.reason,
+            json.dumps(refusal.evidence, sort_keys=True, default=str),
+        )
     except _ROUND_TOOL_ERRORS as exc:
         # What no stage claimed: the round READ, and the view then declined to
         # grade it. That is the refusal exit, not an unreadable one.

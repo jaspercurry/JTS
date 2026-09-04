@@ -75,7 +75,7 @@ def fail_with_payload(
 ) -> int:
     """The ``--json``-gated variant: a sentence always, the record on request.
 
-    Three tools publish an ``{"ok": false, ...}`` record only when the caller
+    Two tools publish an ``{"ok": false, ...}`` record only when the caller
     asked for one. Converging that contract with :func:`failed`'s is a
     follow-on; this is the one implementation of the contract they have.
     """

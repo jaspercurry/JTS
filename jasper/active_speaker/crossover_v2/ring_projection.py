@@ -4,7 +4,7 @@
 
 """Re-project a banked round into the capture-ring layout its two readers want.
 
-``jasper-classify-features`` and ``jasper-read-distortion`` find captures
+``jasper-classify-features`` and ``jasper-round-views distortion`` find captures
 through :data:`~.evidence_packet.RING_SIDECAR_GLOB` — a sidecar JSON beside
 its WAV in a sibling ``wav/`` — the one thing #3285's bank does not carry.
 Two facts the bank spells differently are restated here: stems are
