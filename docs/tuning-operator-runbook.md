@@ -113,15 +113,16 @@ exist.
    staged / applied state and the possible next actions, read from the same
    builders the doors read. `status` orients rather than prescribes: it is the
    fourth verb, not a door.
-2. **Read the round.** `jasper-crossover-prescriber packet` → one versioned JSON
-   document per banked round (`--compact` to drop indentation, `--json` to
-   suppress the human summary on stderr). This is the evidence surface; it is a
-   **computed view**, so rebuild it per ROUND rather than carrying one across
-   rounds. **Within one round, emit it once to a file** (`--out packet.json`)
-   and hand that file to steps 4 and 5 with `--packet`: a rebuild resolves
-   `--drivers`/`--applied-profile` against whichever machine ran it, so a second
-   packet fingerprints differently and the prescription written against the
-   first is refused against it.
+2. **Read the round.** `jasper-crossover-prescriber packet` writes one versioned
+   JSON document to `packet.json` beside the round and prints only a summary of
+   it — fingerprint, round id, per-block availability, where it landed
+   (`--out` names another path, `--compact` drops indentation, `--json` emits
+   that summary as JSON). This is the evidence surface; it is a **computed
+   view**, so rebuild it per ROUND rather than carrying one across rounds.
+   **Within one round, hand that one file** to steps 4 and 5 with `--packet`: a
+   rebuild resolves `--drivers`/`--applied-profile` against whichever machine
+   ran it, so a second packet fingerprints differently and the prescription
+   written against the first is refused against it.
 3. **Re-run the deterministic views** as needed:
    `jasper-classify-features <bundle-dir> --dumps <ring>` files
    `feature_classification.json` into the round dir — classification wants a
@@ -133,10 +134,10 @@ exist.
    `jasper-round-views frozen | per-seat | repeat | agreement | frequency`
    grades it.
 4. **Propose.** Author the prescription JSON yourself, then
-   `jasper-crossover-prescriber propose --packet packet.json --prescription -`
-   — a true dry run sharing the whole gate with `stage`.
-5. **Stage.** `jasper-crossover-prescriber stage --packet packet.json --state
-   <flow-state> --prescription -` writes the
+   `jasper-crossover-prescriber propose --packet <round-dir>/packet.json
+   --prescription -` — a true dry run sharing the whole gate with `stage`.
+5. **Stage.** `jasper-crossover-prescriber stage --packet
+   <round-dir>/packet.json --state <flow-state> --prescription -` writes the
    single-slot mailbox at
    `/var/lib/jasper/active_speaker_crossover_v2_prescription.json`, consumed on
    take. One slot, last write wins, logged.

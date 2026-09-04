@@ -14,7 +14,7 @@ answer, so an operator can grade the round they just ran without banking it
 first (#3498). This module calls the product view and writes the result as
 JSON — into a BANKED round's own directory by default, so the artifact travels
 with the evidence it was computed from, and beside the CALLER for a live
-session bundle, which belongs to the daemon (:func:`_default_out`). Per the
+session bundle, which belongs to the daemon (:func:`default_out`). Per the
 same "who prints the sentence" boundary :mod:`jasper.cli.crossover_prescriber`
 already keeps for its own JSON output.
 
@@ -85,7 +85,7 @@ Subcommands:
   is resolved, never graded, and each ``produced_by`` places it in the slot
   that writes the artifact beside it. Presence is read at the path each view
   writes with no ``--out``, so a LIVE session bundle's artifacts are looked
-  for beside the caller, not in the bundle (:func:`_default_out`). Writes
+  for beside the caller, not in the bundle (:func:`default_out`). Writes
   ``inventory.json``.
 
 Every subcommand accepts ``--out PATH`` to write somewhere else instead
@@ -279,7 +279,7 @@ def _write(payload: Any, out: str | None, default_path: Path) -> Path | None:
     return _stage(EXIT_WRITE_FAILED, (OSError,), write_report, payload, out, default_path)
 
 
-def _default_out(inputs: RoundInputs, round_dir: Path, name: str) -> Path:
+def default_out(inputs: RoundInputs, round_dir: Path, name: str) -> Path:
     """Where a view lands when the operator named no ``--out``.
 
     A BANKED round tree is the operator's own directory, so its views stay
@@ -298,7 +298,7 @@ def _default_out(inputs: RoundInputs, round_dir: Path, name: str) -> Path:
 
 def _view_out(args: argparse.Namespace, round_: BankedRound) -> Path:
     """This subcommand's own artifact path, from :data:`ARTIFACT_BY_VIEW`."""
-    return _default_out(
+    return default_out(
         round_.inputs, round_.round_dir, ARTIFACT_BY_VIEW[args.command].artifact
     )
 
@@ -307,7 +307,7 @@ def _frequency_default_out(source: Path) -> Path:
     """:func:`_cmd_frequency`'s own default: it takes sources the round
     resolver does not (a JSON document, a bundle that banked no round), so it
     reads the live shape directly — under the same rule as
-    :func:`_default_out`, never inside a daemon-owned session bundle.
+    :func:`default_out`, never inside a daemon-owned session bundle.
     """
     name = ARTIFACT_BY_VIEW["frequency"].artifact
     if not source.is_dir():
@@ -658,7 +658,7 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
     inputs = _stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, round_dir)
     artifacts: list[dict[str, Any]] = []
     for view, spec in ARTIFACT_BY_VIEW.items():
-        path = _default_out(inputs, round_dir, spec.artifact)
+        path = default_out(inputs, round_dir, spec.artifact)
         artifacts.append({
             "artifact": spec.artifact,
             "path": str(path),
@@ -672,7 +672,7 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
         "artifacts": artifacts,
     }
     written = _write(
-        payload, args.out, _default_out(inputs, round_dir, INVENTORY_ARTIFACT)
+        payload, args.out, default_out(inputs, round_dir, INVENTORY_ARTIFACT)
     )
     missing = [row["produced_by"] for row in artifacts if not row["present"]]
     print(

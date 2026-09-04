@@ -2814,14 +2814,119 @@ def _write_document(tmp_path: Path, document: Any, name: str = "p.json") -> Path
     return path
 
 
-def test_the_cli_emits_a_packet_and_exits_zero(tmp_path):
+def _banked_round(tmp_path: Path) -> Path:
+    """One bundle in its banked shape: ``<round-dir>/bundle/<session>/``."""
     session, _ = _bundle(tmp_path)
-    code, out, err = _run_cli(["packet", str(session)])
+    round_dir = tmp_path / "round"
+    (round_dir / "bundle").mkdir(parents=True)
+    session.rename(round_dir / "bundle" / session.name)
+    return round_dir
+
+
+def test_the_cli_writes_the_packet_beside_the_round_and_exits_zero(tmp_path):
+    """The packet is a FILE by default, and the terminal gets a summary.
+
+    Every verb downstream takes it as ``--packet <file>`` — a rebuild
+    fingerprints differently — so the ordinary invocation now banks the file
+    the next step names, and the tens of thousands of curve points it carries
+    never reach the terminal.
+    """
+    round_dir = _banked_round(tmp_path)
+
+    code, out, _ = _run_cli(["packet", str(round_dir)])
+
     assert code == cli.EXIT_OK
-    emitted = json.loads(out)
+    artifact = round_dir / cli.PACKET_ARTIFACT
+    emitted = json.loads(artifact.read_text())
     assert emitted["kind"] == "jts_crossover_v2_evidence_packet"
-    # The summary is on stderr so a piped packet is never contaminated.
-    assert "not evaluated:" in err
+    # The arrays really are in the file...
+    assert emitted["positions"]["curve_grid"]["freqs_hz"]
+    # ...and never on stdout, which names the file instead.
+    assert "freqs_hz" not in out
+    assert "magnitude_db" not in out
+    assert str(artifact) in out
+    assert emitted["packet_fingerprint"][:16] in out
+
+
+def test_the_packet_summary_reports_availability_block_by_block(tmp_path):
+    """``--json`` is the same summary, and it is derived from the packet.
+
+    Availability is read off each block's own ``available`` flag rather than a
+    second list of block names here, so a block added to the builder is
+    reported without an edit to the CLI.
+    """
+    round_dir = _banked_round(tmp_path)
+
+    code, out, _ = _run_cli(["packet", str(round_dir), "--json"])
+
+    assert code == cli.EXIT_OK
+    summary = json.loads(out)
+    artifact = round_dir / cli.PACKET_ARTIFACT
+    emitted = json.loads(artifact.read_text())
+    assert summary["artifact"] == str(artifact)
+    assert summary["packet_fingerprint"] == emitted["packet_fingerprint"]
+    assert summary["round_id"] == emitted["session"]["round_id"]
+    # Every reported flag is the packet's own, never a second opinion...
+    assert summary["blocks"] == {
+        name: emitted[name]["available"] for name in summary["blocks"]
+    }
+    # ...over the blocks that declare one — including the classification this
+    # round banked no artifact for, which is the block an LLM asks after first.
+    assert summary["blocks"]["feature_classification"] is False
+    assert summary["blocks"]["crossover_region"] is True
+    assert "positions" in summary["blocks"]
+    # A block that declares no availability is not invented one.
+    assert "privacy" not in summary["blocks"]
+    assert "freqs_hz" not in out
+    assert "magnitude_db" not in out
+
+
+def test_an_explicit_out_overrides_the_default_path(tmp_path):
+    """``--out`` still names the file, and nothing lands beside the round."""
+    round_dir = _banked_round(tmp_path)
+    elsewhere = tmp_path / "elsewhere.json"
+
+    code, out, _ = _run_cli(["packet", str(round_dir), "--out", str(elsewhere)])
+
+    assert code == cli.EXIT_OK
+    assert json.loads(elsewhere.read_text())["kind"] == (
+        "jts_crossover_v2_evidence_packet"
+    )
+    assert not (round_dir / cli.PACKET_ARTIFACT).exists()
+    assert str(elsewhere) in out
+
+
+def test_an_unwritable_artifact_exits_one_rather_than_crashing(tmp_path):
+    """Writing is the ordinary path now, so a failed write is a named exit."""
+    round_dir = _banked_round(tmp_path)
+
+    code, _, err = _run_cli([
+        "packet", str(round_dir), "--out", str(tmp_path / "nope" / "packet.json"),
+    ])
+
+    assert code == cli.EXIT_EVIDENCE_UNREADABLE
+    assert err.startswith("error:")
+
+
+def test_propose_judges_a_document_against_the_file_packet_wrote(
+    tmp_path, monkeypatch
+):
+    """The default artifact IS the ``--packet`` input, with no hand-copying."""
+    round_dir = _banked_round(tmp_path)
+    assert _run_cli(["packet", str(round_dir)])[0] == cli.EXIT_OK
+    artifact = round_dir / cli.PACKET_ARTIFACT
+    document = _write_document(
+        tmp_path, _document([_cut(-1.5)], json.loads(artifact.read_text()))
+    )
+    _never_rebuilds(monkeypatch)
+
+    code, out, _ = _run_cli([
+        "propose", "--packet", str(artifact),
+        "--prescription", str(document), "--json",
+    ])
+
+    assert code == cli.EXIT_OK
+    assert json.loads(out)["accepted"] is True
 
 
 def test_the_cli_accepts_a_prescription_from_a_file_and_exits_zero(tmp_path):
