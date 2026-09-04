@@ -3349,6 +3349,7 @@ class CrossoverV2Session:
         level_frame_finding: Mapping[str, Any] | None,
         realized_branch_level: Mapping[str, Any] | None = None,
         declared_transfer: Any = None,
+        linearization: _LinearizationState | None = None,
     ) -> None:
         """The ONE seam through which a planned candidate becomes real (#2291).
 
@@ -3380,6 +3381,7 @@ class CrossoverV2Session:
                 "tier": self._tier,
                 "speaker_id": self._speaker_id,
             },
+            linearization=linearization,
         )
         self._intervention_proposal = planned
         self._measure_proposal_fingerprint = (
@@ -3419,6 +3421,7 @@ class CrossoverV2Session:
                 built.linearization.realized_branch_level,
                 pair_reason=self._pair_reason,
             ),
+            linearization=built.linearization,
         )
         log_event(
             logger, "correction.crossover_v2_candidate_built",

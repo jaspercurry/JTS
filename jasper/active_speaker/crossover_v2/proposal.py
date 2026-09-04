@@ -15,7 +15,7 @@ candidate — hence :func:`plan_intervention_proposal` refuses instead of raisin
 from __future__ import annotations
 
 import logging
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from jasper.log_event import log_event
 
@@ -29,6 +29,9 @@ from .contracts import (
     PlanRefusal,
     TrimStrategy,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .candidates import LinearizationState
 
 __all__ = [
     "PROPOSAL_CREATED_EVENT",
@@ -56,17 +59,28 @@ _ASSEMBLY_ERRORS = (
 )
 
 
-def trim_strategy_for_outcome(linearization_outcome: Any) -> tuple[TrimStrategy, str]:
-    """Map the persisted ``linearization_outcome`` onto an honest strategy.
+def trim_strategy_for_outcome(
+    linearization_outcome: Any, *, linearization: LinearizationState | None = None,
+) -> tuple[TrimStrategy, str]:
+    """State the committed strategy, from the build's own record where it has one.
 
-    Derived from the artifact string, not from
-    :class:`~.plan_assembly.TrimDecision`: the commit seam holds only a
-    :class:`~.candidates.LinearizationState`, which does not carry the decision.
-    ``"fitted"`` does not encode which pair won the realized-level grading, so
-    it stays :attr:`TrimStrategy.COMMITTED_PAIR_UNRECORDED` rather than being
-    narrowed by guessing.
+    :class:`~.candidates.LinearizationState` carries what
+    :func:`~.intervention.decide_trim` chose, so a build that hands over its own
+    state is quoted rather than second-guessed. An assembly given only the
+    candidate falls back to the ``linearization_outcome`` string, and that
+    string does not encode which pair won the realized-level grading:
+    ``"fitted"`` stays :attr:`TrimStrategy.COMMITTED_PAIR_UNRECORDED` rather
+    than being narrowed by guessing.
     """
 
+    recorded = None if linearization is None else linearization.trim_strategy
+    drift_db = None if linearization is None else linearization.anchor_drift_db
+    if recorded is not None and drift_db is not None:
+        return recorded, (
+            f"the build recorded {recorded.value} as the committed pair; the "
+            f"ripple scan sat {drift_db:.3f} dB from the level-preserving "
+            "anchor."
+        )
     outcome = str(linearization_outcome or "")
     if outcome == LINEARIZATION_OUTCOME_SINGLE_BRANCH:
         return (
@@ -122,6 +136,7 @@ def build_intervention_proposal(
     realized_branch_level: Mapping[str, Any] | None = None,
     evidence_identities: Mapping[str, Any] | None = None,
     diagnostic_findings: Sequence[Mapping[str, Any]] | None = None,
+    linearization: LinearizationState | None = None,
 ) -> InterventionProposal:
     """Gather one already-planned candidate into its proposal contract.
 
@@ -130,6 +145,9 @@ def build_intervention_proposal(
     :func:`plan_intervention_proposal`, which converts that into a refusal. The
     five fields left at their contract defaults are the ones the commit seam
     does not hold — a proposal may not quote a spec report it was never given.
+    ``linearization`` is this build's :class:`~.candidates.LinearizationState`;
+    an assembly without it falls back to the candidate's own artifact string
+    for the trim strategy.
     """
 
     if candidate is None:
@@ -140,7 +158,7 @@ def build_intervention_proposal(
         _candidate_sections(candidate), roles=_candidate_roles(candidate),
     )
     strategy, rationale = trim_strategy_for_outcome(
-        getattr(candidate, "linearization_outcome", "")
+        getattr(candidate, "linearization_outcome", ""), linearization=linearization,
     )
     return InterventionProposal(
         candidate=candidate,
@@ -168,6 +186,7 @@ def plan_intervention_proposal(
     realized_branch_level: Mapping[str, Any] | None = None,
     evidence_identities: Mapping[str, Any] | None = None,
     diagnostic_findings: Sequence[Mapping[str, Any]] | None = None,
+    linearization: LinearizationState | None = None,
 ) -> InterventionProposal | PlanRefusal:
     """:func:`build_intervention_proposal`, but a refusal instead of a raise.
 
@@ -186,6 +205,7 @@ def plan_intervention_proposal(
             realized_branch_level=realized_branch_level,
             evidence_identities=evidence_identities,
             diagnostic_findings=diagnostic_findings,
+            linearization=linearization,
         )
     except _ASSEMBLY_ERRORS as exc:
         refusal = _refusal_for(exc, candidate)

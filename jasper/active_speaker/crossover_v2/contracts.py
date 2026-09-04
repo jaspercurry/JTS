@@ -432,12 +432,14 @@ class TrimStrategy(str, Enum):
     ``trim_rejected`` for a drift observation while the drifted pair was
     committed anyway — the 2026-08-10 defect.
 
-    :attr:`COMMITTED_PAIR_UNRECORDED` is the artifact-derived member: the
-    proposal assembled at the commit seam reads the ``linearization_outcome``
-    string the build stamped on the candidate, which does not record which pair
-    won the realized-level grading, so it states that gap rather than guessing.
-    It has no drift-qualified sibling: the string determines
-    :attr:`ANCHORED_COMMITTED_AFTER_SANITY_DRIFT` precisely, and
+    :attr:`COMMITTED_PAIR_UNRECORDED` is the artifact-derived member. A build
+    carries its committed strategy across the commit seam on
+    :class:`~.candidates.LinearizationState`; only where that record is absent
+    does the proposal fall back to the ``linearization_outcome`` string, which
+    does not record which pair won the realized-level grading, so it states
+    that gap rather than guessing. It has no drift-qualified sibling: the
+    string determines :attr:`ANCHORED_COMMITTED_AFTER_SANITY_DRIFT` precisely,
+    and
     ``tests/test_crossover_v2_proposal.py::test_the_unrecorded_drift_member_is_gone_and_referenced_nowhere``
     keeps that name out of the tree.
     """
