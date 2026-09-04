@@ -220,7 +220,7 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
       3. Enable the Calendar and Gmail APIs.
       4. Create an OAuth client and paste creds here. The registered
          redirect URI is a GitHub Pages bounce page because Google
-         rejects mDNS hostnames — see jasper.google_oauth.
+         rejects mDNS hostnames — see jasper.oauth_redirect.
     """
     redirect_safe = html.escape(redirect_uri)
     if read_only:
