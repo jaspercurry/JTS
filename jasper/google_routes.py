@@ -4,11 +4,12 @@
 
 """Google Routes API client for destination ETA / directions voice tools.
 
-Every reader here — key, origin, travel mode, the speaker's own hostname —
-takes its value from the injected ``env`` mapping, so a caller can resolve a
-config for an environment its own process does not run in. The mapping
-defaults to ``os.environ`` at the two public entry points, and nothing below
-them reaches past it.
+Every reader here — key, origin, travel mode — takes its value from the
+injected ``env`` mapping, so a caller can resolve a config for an environment
+its own process does not run in. The mapping defaults to ``os.environ`` at
+the two public entry points; the speaker's own hostname is the one value that
+does not come from it in that default case, because ``resolve_hostname`` owns
+that precedence for the whole tree.
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from . import location_state
-from .identity import DEFAULT_HOSTNAME
+from .identity import DEFAULT_HOSTNAME, resolve_hostname
 from .log_event import log_event
 from .tools import fence_untrusted
 
@@ -106,7 +107,17 @@ class GoogleRoutesConfigStatus:
         return self.api_key_present and self.origin_present
 
 
-def _setup_url(env: Mapping[str, str]) -> str:
+def _setup_url(env: Mapping[str, str] | None) -> str:
+    """The speaker's own /transit URL.
+
+    ``None`` means this process's own environment, so the ONE resolver
+    answers and this module stops carrying a second spelling of the
+    hostname precedence. An INJECTED mapping is answered from that mapping
+    alone: a caller resolving a config for an environment it does not run
+    in must never be handed this box's identity.
+    """
+    if env is None:
+        return f"{resolve_hostname()}/transit"
     hostname = (env.get("JASPER_HOSTNAME") or "").strip() or DEFAULT_HOSTNAME
     return f"{hostname}/transit"
 
@@ -136,7 +147,7 @@ def config_status(env: Mapping[str, str] | None = None) -> GoogleRoutesConfigSta
         origin_present=origin is not None,
         default_mode=mode,
         default_mode_valid=valid,
-        setup_url=_setup_url(source),
+        setup_url=_setup_url(env),
     )
 
 
@@ -156,7 +167,7 @@ def build_google_routes_client(
             api_key=api_key,
             origin=origin,
             default_mode=mode,
-            setup_url=_setup_url(source),
+            setup_url=_setup_url(env),
         ),
         http=http,
     )
