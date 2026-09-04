@@ -68,11 +68,20 @@ def _lane_resampler_rs_text() -> str:
     return _FANIN_LANE_RESAMPLER_RS.read_text(encoding="utf-8")
 
 
-def _mixer_rs_text() -> str:
+def _mixer_module_rs_texts() -> dict[str, str]:
+    """The mixer module's body, keyed by path under ``rust/jasper-fanin/src``."""
     for path in _FANIN_MIXER_MODULE_RS:
         if not path.exists():
             pytest.skip(f"rust source not present: {path}")
-    return "\n".join(p.read_text(encoding="utf-8") for p in _FANIN_MIXER_MODULE_RS)
+    src = _REPO_ROOT / "rust" / "jasper-fanin" / "src"
+    return {
+        str(path.relative_to(src)): path.read_text(encoding="utf-8")
+        for path in _FANIN_MIXER_MODULE_RS
+    }
+
+
+def _mixer_rs_text() -> str:
+    return "\n".join(_mixer_module_rs_texts().values())
 
 
 def _state_rs_text() -> str:
@@ -386,11 +395,13 @@ def test_fanin_mixer_publishes_slots_and_opens_no_playback_pcm():
     assert "RING_SLOT_FRAMES" in text
 
     code = _rust_code_only(text)
-    assert "Direction::Playback" not in code, (
-        "the fan-in mixer must open no ALSA playback device — the SHM ring is "
-        "the whole output (ADR-0100). (If that hit is inside a TRAILING comment, "
-        "the strip only drops whole-line comments — move it onto its own line.)"
-    )
+    for filename, file_text in _mixer_module_rs_texts().items():
+        assert "Direction::Playback" not in _rust_code_only(file_text), (
+            f"{filename}: the fan-in mixer must open no ALSA playback device — the "
+            "SHM ring is the whole output (ADR-0100). (If that hit is inside a "
+            "TRAILING comment, the strip only drops whole-line comments — move it "
+            "onto its own line.)"
+        )
     # POSITIVE CONTROL: every surviving open is a capture one, so the absence
     # above is a real fact about the opens rather than about an empty string.
     assert _call_sites("PCM::new", code) == code.count("Direction::Capture") > 0, (
@@ -423,7 +434,7 @@ def test_fanin_music_output_tap_stays_deleted():
     """
     sources = {
         "config.rs": _config_rs_text(),
-        "mixer.rs": _mixer_rs_text(),
+        **_mixer_module_rs_texts(),
         "state.rs": _state_rs_text(),
     }
     # Env key, config field, and the opener helper. Three names because the tap
@@ -452,7 +463,7 @@ def test_fanin_music_output_tap_stays_deleted():
     # load-bearing name per file — each the direct neighbour of a deleted one.
     for filename, needle in (
         ("config.rs", "JASPER_FANIN_INPUT_PCMS"),
-        ("mixer.rs", "configure_pcm"),
+        ("mixer/pcm_open.rs", "configure_pcm"),
         ("state.rs", "push_output_json"),
     ):
         code = _rust_code_only(sources[filename])

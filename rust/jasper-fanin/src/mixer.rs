@@ -54,10 +54,7 @@ use dsp::{
     ramp_program_duck, saturate_to_i16, WIDE_BYTES_PER_SAMPLE,
 };
 use lane_fade::LaneFade;
-use pcm_open::{
-    classify_pcm_errno, errno_of, open_direct_capture, open_direct_input, open_input,
-    spine_read_buf, SAMPLE_RATE_HZ,
-};
+use pcm_open::{errno_of, open_direct_capture, open_direct_input, open_input, spine_read_buf};
 use ring_capture::read_ring_and_render;
 pub use ring_capture::RingLaneObservability;
 
@@ -2215,6 +2212,25 @@ pub(crate) enum ProgramWidth {
     Wide,
 }
 
+impl ProgramWidth {
+    /// Resolve the width from THIS BOX's config — the single derivation, from
+    /// [`Config::program_wire_is_wide`], which owns what makes a wire wide.
+    fn from_config(config: &Config) -> Self {
+        ProgramWidth::from_wire_is_wide(config.program_wire_is_wide())
+    }
+
+    /// The pure mapping, split out from [`ProgramWidth::from_config`] so the
+    /// scale choice is testable without constructing a whole `Config`. The
+    /// boolean's own derivation stays in one place.
+    fn from_wire_is_wide(wire_is_wide: bool) -> Self {
+        if wire_is_wide {
+            ProgramWidth::Wide
+        } else {
+            ProgramWidth::Narrow
+        }
+    }
+}
+
 fn input_selected(selected_input: i32, input_index: usize, label: &str) -> bool {
     selected_input == -1 || selected_input == input_index as i32 || label == MEASUREMENT_LANE
 }
@@ -2428,6 +2444,21 @@ enum PcmIoFate {
     /// Any other errno (ENODEV on unplug, etc.) — the device is gone; go Absent.
     Fatal,
 }
+
+fn classify_pcm_errno(errno: i32) -> PcmIoFate {
+    if errno == libc::EAGAIN {
+        PcmIoFate::WouldBlock
+    } else if errno == libc::EPIPE || errno == libc::ESTRPIPE {
+        PcmIoFate::Xrun
+    } else {
+        PcmIoFate::Fatal
+    }
+}
+
+/// The nominal sample rate the direct lane opens at, named so the open envelope
+/// and the pure validator agree. Distinct from `config.sample_rate` on purpose:
+/// the gadget capture is a FIXED 48 kHz endpoint, not a configurable fan-in knob.
+const SAMPLE_RATE_HZ: u32 = 48_000;
 
 /// Read and throw away up to `periods` whole periods, returning the frames
 /// discarded. On non-blocking capture, `readi` returns `Err(EAGAIN)` the instant

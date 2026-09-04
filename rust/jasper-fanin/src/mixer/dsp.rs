@@ -11,25 +11,6 @@
 
 use super::*;
 
-impl ProgramWidth {
-    /// Resolve the width from THIS BOX's config — the single derivation, from
-    /// [`Config::program_wire_is_wide`], which owns what makes a wire wide.
-    pub(super) fn from_config(config: &Config) -> Self {
-        ProgramWidth::from_wire_is_wide(config.program_wire_is_wide())
-    }
-
-    /// The pure mapping, split out from [`ProgramWidth::from_config`] so the
-    /// scale choice is testable without constructing a whole `Config`. The
-    /// boolean's own derivation stays in one place.
-    pub(super) fn from_wire_is_wide(wire_is_wide: bool) -> Self {
-        if wire_is_wide {
-            ProgramWidth::Wide
-        } else {
-            ProgramWidth::Narrow
-        }
-    }
-}
-
 /// Accumulate one lane's i16 period into the sum at the sum's own scale, with
 /// saturating arithmetic. Pulled out for unit testability — no ALSA needed.
 ///

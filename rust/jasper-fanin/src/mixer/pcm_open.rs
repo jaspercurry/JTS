@@ -6,7 +6,8 @@
 //! aloop capture lanes, the USB DIRECT gadget capture, and the pure helpers
 //! that size and validate the geometry they negotiate.
 //!
-//! The surrounding mixer owns the work loop; nothing here runs per period.
+//! Open-time only: the per-period read and render paths, and the error
+//! classifier they share, stay with the mixer's work loop.
 
 use super::*;
 
@@ -305,21 +306,6 @@ pub(super) fn direct_open_params_ok(
     }
     Ok(())
 }
-
-pub(super) fn classify_pcm_errno(errno: i32) -> PcmIoFate {
-    if errno == libc::EAGAIN {
-        PcmIoFate::WouldBlock
-    } else if errno == libc::EPIPE || errno == libc::ESTRPIPE {
-        PcmIoFate::Xrun
-    } else {
-        PcmIoFate::Fatal
-    }
-}
-
-/// The nominal sample rate the direct lane opens at, named so the open envelope
-/// and the pure validator agree. Distinct from `config.sample_rate` on purpose:
-/// the gadget capture is a FIXED 48 kHz endpoint, not a configurable fan-in knob.
-pub(super) const SAMPLE_RATE_HZ: u32 = 48_000;
 
 /// Pull the errno out of an `alsa::Error` for logging. It matches the `libc::E*`
 /// constants the read paths compare against.
