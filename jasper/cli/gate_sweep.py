@@ -43,9 +43,9 @@ from ._refusal import (
     EXIT_REFUSED,
     EXIT_UNREADABLE,
     EXIT_WRITE_FAILED,
-    _stage,
-    _StageFailed,
+    StageFailed,
     failed,
+    stage,
 )
 from ._report import write_report
 
@@ -92,7 +92,7 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
             EXIT_REFUSED, exc.reason,
             json.dumps(exc.detail, sort_keys=True, default=str),
         )
-    out = _stage(
+    out = stage(
         EXIT_WRITE_FAILED, (OSError,), write_report,
         report, args.out, round_dir / DEFAULT_OUT_NAME, make_parents=True,
     )
@@ -211,7 +211,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure_verbose_logging(verbose=args.verbose)
     try:
         return int(args.func(args))
-    except _StageFailed as staged:
+    except StageFailed as staged:
         return failed(staged.code, REFUSE_UNWRITABLE_OUT, str(staged))
     except ValueError as exc:
         return failed(EXIT_UNREADABLE, REFUSE_UNUSABLE_REQUEST, str(exc))

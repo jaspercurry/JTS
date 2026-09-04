@@ -87,7 +87,7 @@ def fail_with_payload(
     return code
 
 
-class _StageFailed(Exception):
+class StageFailed(Exception):
     """A failure a stage claimed, carrying that stage's exit code."""
 
     def __init__(self, code: int, cause: Exception) -> None:
@@ -95,7 +95,7 @@ class _StageFailed(Exception):
         self.code = code
 
 
-def _stage(
+def stage(
     code: int,
     errors: tuple[type[Exception], ...],
     fn: Callable[..., _T],
@@ -107,4 +107,4 @@ def _stage(
     try:
         return fn(*args, **kwargs)
     except errors as exc:
-        raise _StageFailed(code, exc) from exc
+        raise StageFailed(code, exc) from exc

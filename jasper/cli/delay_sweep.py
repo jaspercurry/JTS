@@ -68,9 +68,9 @@ from ._refusal import (
     EXIT_REFUSED,
     EXIT_UNREADABLE,
     EXIT_WRITE_FAILED,
-    _stage,
-    _StageFailed,
+    StageFailed,
     failed,
+    stage,
 )
 from ._report import write_report
 from .null_door import NULL_RUNS_DIR
@@ -174,7 +174,7 @@ def _bank(payload: Any, out: str | None, default_path: Path) -> Path | None:
     stdout, so a report written there too would interleave with it.
     """
 
-    return _stage(
+    return stage(
         EXIT_WRITE_FAILED,
         (OSError,),
         write_report,
@@ -481,7 +481,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure_verbose_logging(verbose=args.verbose)
     try:
         return int(args.func(args))
-    except _StageFailed as staged:
+    except StageFailed as staged:
         return failed(staged.code, REFUSE_UNWRITABLE_OUT, str(staged))
     except NullWalkError as exc:
         print(f"refused: {exc}", file=sys.stderr)
