@@ -331,3 +331,83 @@ fn configure_pcm(pcm: &PCM, config: &Config, buffer_frames: u32) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_open_params_accepts_bridge_envelope() {
+        // Default geometry: period 256, buffer 768 = 3×period (the deep-buffer
+        // floor).
+        assert!(direct_open_params_ok(48_000, 256, 768, 256).is_ok());
+        // Open period 64 with a DEEP buffer (768 = 12 periods, well over the
+        // 3-period + 768-frame floor).
+        assert!(direct_open_params_ok(48_000, 64, 768, 64).is_ok());
+        // A larger negotiated buffer at the default period is fine (period-aligned).
+        assert!(direct_open_params_ok(48_000, 256, 1024, 256).is_ok());
+    }
+
+    #[test]
+    fn direct_open_params_rejects_off_envelope() {
+        // Baseline passes; each of the following fails for the noted reason.
+        assert!(direct_open_params_ok(48_000, 256, 768, 256).is_ok());
+        // Wrong rate.
+        assert!(direct_open_params_ok(44_100, 256, 768, 256).is_err());
+        // Negotiated period drifted from the requested one.
+        assert!(direct_open_params_ok(48_000, 128, 768, 256).is_err());
+        // Buffer below the 768-frame deep floor.
+        assert!(direct_open_params_ok(48_000, 256, 512, 256).is_err());
+        // Buffer not period-aligned.
+        assert!(direct_open_params_ok(48_000, 256, 700, 256).is_err());
+        // A shallow 2-period buffer at period 64 (128 frames) clears 2×period
+        // but not the deep floor.
+        assert!(direct_open_params_ok(48_000, 64, 128, 64).is_err());
+    }
+
+    #[test]
+    fn resolve_direct_buffer_frames_holds_deep_floor() {
+        // Default period lands exactly on the 768-frame floor.
+        assert_eq!(resolve_direct_buffer_frames(256), 768);
+        // Small period is floored to ≥768 AND ≥3 periods, period-aligned:
+        // 64 → 768 (12 periods, 768 ≥ max(192, 768)).
+        assert_eq!(resolve_direct_buffer_frames(64), 768);
+        // A period whose 3× exceeds 768 is driven by the period floor:
+        // 512 → 1536 (3×512), still period-aligned.
+        assert_eq!(resolve_direct_buffer_frames(512), 1536);
+        // 320 → max(960, 768) = 960, already a whole multiple of 320? 960/320=3.
+        assert_eq!(resolve_direct_buffer_frames(320), 960);
+        // A period where the 768 floor is NOT a whole multiple rounds UP:
+        // 200 → max(600, 768)=768 → ceil(768/200)*200 = 4*200 = 800.
+        assert_eq!(resolve_direct_buffer_frames(200), 800);
+        // Every resolved buffer must pass its own validator at that period.
+        for p in [32u32, 64, 128, 200, 256, 320, 512, 1024] {
+            let b = resolve_direct_buffer_frames(p);
+            assert!(
+                direct_open_params_ok(48_000, p, b, p).is_ok(),
+                "resolved buffer {b} must validate at period {p}",
+            );
+        }
+    }
+
+    /// SF-C: the ONE decision that makes a lane spine-scale, and the ALSA open
+    /// format that has to agree with it.
+    ///
+    /// Inverting the buffer points the capture fork, the render, and the sum
+    /// entry at the wrong scale simultaneously, and the `debug_assert` in
+    /// `mix_into_wide` cannot catch it on the Pi — the release profile compiles
+    /// debug assertions out. Inverting the open format is just as silent at
+    /// compile time and louder at runtime: `read_input` picks its typed IO
+    /// handle off the buffer and alsa-lib verifies that handle against the
+    /// PCM's negotiated format, so an aloop lane whose two halves disagreed
+    /// would fail every read. Both are pinned here, where a mutation has to
+    /// fail, and pinned together because they are one decision.
+    #[test]
+    fn a_lanes_wire_decides_its_open_format_and_its_period_buffer_together() {
+        assert_eq!(spine_read_buf(true, 4), vec![0i32; 4]);
+        assert_eq!(lane_capture_format(true), Format::S32LE);
+
+        assert!(spine_read_buf(false, 4).is_empty());
+        assert_eq!(lane_capture_format(false), Format::S16LE);
+    }
+}
