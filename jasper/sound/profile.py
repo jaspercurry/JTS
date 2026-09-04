@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from jasper.atomic_io import write_group_readable_text
+from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
 from jasper.camilla_config_contract import (
     GAINLESS_BIQUAD_TYPES,
     SHELF_Q,
@@ -609,7 +609,7 @@ def save_profile_library(
         )
         + "\n"
     )
-    write_group_readable_text(library_path, data)
+    atomic_write_text(library_path, data, mode=CONFIG_FILE_MODE)
 
 
 def _new_custom_profile_id(existing: Iterable[ProfileLibraryEntry]) -> str:
@@ -1151,4 +1151,4 @@ def save_profile(profile: SoundProfile, path: str | Path | None = None) -> None:
     )
     profile_path.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(profile.to_dict(), indent=2, sort_keys=True) + "\n"
-    write_group_readable_text(profile_path, data)
+    atomic_write_text(profile_path, data, mode=CONFIG_FILE_MODE)

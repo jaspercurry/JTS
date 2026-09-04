@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from jasper.atomic_io import atomic_write_text, write_group_readable_text
+from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
@@ -699,7 +699,7 @@ pipeline:
             raise FileNotFoundError(
                 f"parent directory does not exist: {out_path.parent}"
             )
-        write_group_readable_text(out_path, yaml)
+        atomic_write_text(out_path, yaml, mode=CONFIG_FILE_MODE)
         right_note = (
             f" room_peqs_right={len(room_peqs_right)}"
             if room_peqs_right is not None
@@ -889,7 +889,7 @@ def emit_flat_outputd_cutover_config(
 # The flat cutover config is read by whoever loads it (CamillaDSP, the runtime
 # contract's classifier, the camillagui config browser), not only by a
 # group-jasper daemon, so it is world-readable — wider than the 0640 the
-# ordinary sound configs get from `write_group_readable_text`.
+# ordinary sound configs get from `CONFIG_FILE_MODE`.
 FLAT_CUTOVER_MODE = 0o644
 
 

@@ -59,6 +59,7 @@ from jasper.log_event import log_event
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "CONFIG_FILE_MODE",
     "advisory_file_lock",
     "atomic_write_json",
     "atomic_write_text",
@@ -66,7 +67,6 @@ __all__ = [
     "locked_transform_env_file",
     "locked_update_env_file",
     "read_regular_bytes_nofollow",
-    "write_group_readable_text",
 ]
 
 
@@ -316,14 +316,10 @@ def atomic_write_text(
         raise
 
 
-def write_group_readable_text(path: str | os.PathLike, text: str) -> None:
-    """Atomically write ``text`` to ``path`` at 0640 (group jasper).
-
-    Shared by sound-config writers a non-root peer daemon (jasper-control's
-    ``/state``, the runtime contract's classifier) reads under the WS1
-    non-root drop.
-    """
-    atomic_write_text(path, text, mode=0o640)
+# Group-readable so the non-root jasper-control reader can read sound
+# configs; group jasper comes from the target directory's setgid bit, not
+# from this mode.
+CONFIG_FILE_MODE = 0o640
 
 
 def atomic_write_json(
