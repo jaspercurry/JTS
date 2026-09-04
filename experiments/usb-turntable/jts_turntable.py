@@ -52,10 +52,10 @@ TRAVEL_OFFSET_UNREADABLE = "travel_offset_unreadable"
 # each capped at AUTOSTOP_IO_TIMEOUT: 5 * 1.5s = 7.5s. 8 attempts * 7.5s + 7
 # inter-attempt sleeps * AUTOSTOP_RETRY_SECONDS = 70.5s, under the unit's
 # TimeoutStartSec=90s (deploy/systemd/jasper-turntable-autostop@.service).
-# More attempts buys more real settling time, not a longer per-attempt window:
-# an unapproved startup byte fails synchronize() immediately, it never times
-# out, so a controller still emitting post-power-on noise needs repeated tries
-# rather than a longer wait per try.
+# More attempts buys more real settling time, not a longer per-attempt
+# window: an unapproved startup byte fails synchronize() immediately, it
+# never times out, so a controller still emitting post-power-on noise needs
+# repeated tries rather than a longer wait per try.
 AUTOSTOP_ATTEMPTS = 8
 AUTOSTOP_RETRY_SECONDS = 1.5
 AUTOSTOP_PRODUCT = "MT320RUBL40ProV3"

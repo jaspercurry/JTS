@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Mapping
 
-from jasper.env_load import read_env_file_state
+from jasper.env_load import read_env_file_or_warn
 
 logger = logging.getLogger(__name__)
 
@@ -138,14 +138,6 @@ class PeeringConfig:
         return self.mode is PeeringMode.ON
 
 
-def _read_env_file(path: str) -> Mapping[str, str]:
-    """Read an EnvironmentFile through the dependency-free canonical parser."""
-    state = read_env_file_state(path)
-    if state.status == "unreadable":
-        logger.warning("could not read %s: %s", path, state.error)
-    return state.values
-
-
 def read_state(path: str = PEERING_ENV_FILE) -> dict[str, str]:
     """Read the peering EnvironmentFile as a plain dict.
 
@@ -155,7 +147,7 @@ def read_state(path: str = PEERING_ENV_FILE) -> dict[str, str]:
     unreadable files resolve to ``{}``, matching ``load_config``'s fail-soft
     default-off posture.
     """
-    return dict(_read_env_file(path))
+    return dict(read_env_file_or_warn(path, logger=logger))
 
 
 def state_enabled(state: Mapping[str, str]) -> bool:
@@ -298,7 +290,7 @@ def load_config(
     the daemon at startup. A broken JASPER_PEERING value silently
     resolves to `off` — fail-safe, never fail-on.
     """
-    src = dict(_read_env_file(env_file))
+    src = dict(read_env_file_or_warn(env_file, logger=logger))
     src.update({k: v for k, v in os.environ.items() if k.startswith("JASPER_PEER")})
     if overrides:
         src.update(overrides)

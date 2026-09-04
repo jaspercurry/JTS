@@ -370,7 +370,15 @@ observe_output_hardware_state() {
     local should_write="${1:-0}"
     local payload profile_id profile_status selected_card_id usb_topology usb_desired usb_active usb_available usb_management usb_reason blocker_codes
     local action="observed" write_arg=""
+    local previous_profile_id="" previous_card_id=""
     OBSERVED_OUTPUT_VALID=0
+    # Read BEFORE the write below replaces the record: the identity the mixer
+    # pin depends on (which profile, on which card). An absent record reads as
+    # empty, so a first write counts as a change.
+    if [[ "$should_write" == "1" && -f "$OUTPUT_HARDWARE_STATE_PATH" ]]; then
+        previous_profile_id="$(sed -n 's/.*"profile_id": *"\([^"]*\)".*/\1/p' "$OUTPUT_HARDWARE_STATE_PATH" 2>/dev/null || true)"
+        previous_card_id="$(sed -n 's/.*"selected_card_id": *"\([^"]*\)".*/\1/p' "$OUTPUT_HARDWARE_STATE_PATH" 2>/dev/null || true)"
+    fi
     if [[ "$should_write" == "1" ]]; then
         write_arg="--write"
         action="written"
@@ -413,6 +421,11 @@ print(",".join(
     fi
     OBSERVED_OUTPUT_BLOCKER_CODES="$blocker_codes"
     OBSERVED_OUTPUT_VALID=1
+    if [[ "$should_write" == "1" ]] &&
+        [[ "$profile_id" != "$previous_profile_id" ||
+           "$selected_card_id" != "$previous_card_id" ]]; then
+        OUTPUT_HARDWARE_RECORD_CHANGED=1
+    fi
     OBSERVED_OUTPUT_PAYLOAD="$payload"
     OBSERVED_OUTPUT_PROFILE_ID="$profile_id"
     OBSERVED_OUTPUT_PROFILE_STATUS="$profile_status"
@@ -467,12 +480,15 @@ reconcile_i2s_hat_boot() {
 }
 
 sync_i2s_hat_reboot_marker() {
-    local runtime_enabled=0 desired_enabled=0
+    # Any registered I2S profile, not just InnoMaker: a HAT can be the
+    # composite's child device rather than the top-level profile_id, so
+    # only the DESIRED id needs a child-devices lookup -- it is the one
+    # id this reconcile pass actually knows to look for.
+    local desired="$I2S_HAT_DESIRED_PROFILE" observed="$OBSERVED_OUTPUT_PROFILE_ID"
     [[ -n "$I2S_HAT_BOOT_CHANGED" && "$OBSERVED_OUTPUT_VALID" == "1" ]] || return 0
-    [[ "$OBSERVED_OUTPUT_PROFILE_ID" == "innomaker_hifi_amp_pro" ||
-       "$OBSERVED_OUTPUT_PAYLOAD" == *'"child_devices": ['*'"device_id": "innomaker_hifi_amp_pro"'*']'* ]] && runtime_enabled=1
-    [[ "$I2S_HAT_DESIRED_PROFILE" == "innomaker_hifi_amp_pro" ]] && desired_enabled=1
-    if [[ "$runtime_enabled" == "$desired_enabled" ]]; then
+    [[ -n "$desired" && "$OBSERVED_OUTPUT_PAYLOAD" == *'"child_devices": ['*"\"device_id\": \"$desired\""*']'* ]] &&
+        observed="$desired"
+    if [[ "$observed" == "$desired" ]]; then
         rm -f -- "$I2S_HAT_REBOOT_REQUIRED_PATH"
         return 0
     fi
@@ -848,6 +864,10 @@ OBSERVED_OUTPUT_PROFILE_ID=""
 OBSERVED_OUTPUT_PROFILE_STATUS=""
 OBSERVED_OUTPUT_SELECTED_CARD_ID=""
 OBSERVED_OUTPUT_PAYLOAD=""
+# Set when this pass WROTE a record naming a different profile or card than the
+# one it replaced. The mixer pin reads that record, so it is the one thing that
+# has to re-run it.
+OUTPUT_HARDWARE_RECORD_CHANGED=0
 # Blocker codes from the observed record, comma-joined. The record is where a
 # park's reason is written, so this is what lets `output_parked` name WHY
 # instead of only reporting `recognized=0`.
@@ -1575,9 +1595,27 @@ render_ring_conf_if_needed() {
 }
 
 gate_role_services() {
+    local apple_output=0
     if [[ ( "$OUTPUT_DAC_ID" == "apple_usb_c_dongle" || "$OUTPUT_DAC_ID" == "dual_apple_usb_c_dac_4ch" ) && "$APPLE_DONGLE_PRESENT" == "1" ]]; then
-        "$SYSTEMCTL" enable jasper-dac-init.service jasper-headphone-monitor.service
+        apple_output=1
+    fi
+    # The mixer pin is enabled on every box: which controls a DAC pins is the
+    # registry's answer, and jasper-dac-init is where it is asked. It re-runs
+    # only when the record it reads CHANGED — including the boot where it ran
+    # before any record existed — because RemainAfterExit makes `start` a no-op
+    # otherwise, and a restart per pass would spawn an interpreter on every
+    # udev sound event (ADR-0226). --no-block: the unit is ordered Before=
+    # camilla and the renderers, and a blocking job would make this pass wait
+    # on whatever else is moving there.
+    "$SYSTEMCTL" enable jasper-dac-init.service
+    "$SYSTEMCTL" reset-failed jasper-dac-init.service 2>/dev/null || true
+    if [[ "$OUTPUT_HARDWARE_RECORD_CHANGED" == "1" ]]; then
+        "$SYSTEMCTL" --no-block restart jasper-dac-init.service || true
+    else
         "$SYSTEMCTL" start jasper-dac-init.service || true
+    fi
+    if [[ "$apple_output" == "1" ]]; then
+        "$SYSTEMCTL" enable jasper-headphone-monitor.service
         # Ensure the monitor is running idempotently — do NOT restart it. This
         # gate runs on every udev/reconcile pass, and a deploy's core-audio
         # bounce fires it several times inside the unit's StartLimitIntervalSec;
@@ -1591,8 +1629,8 @@ gate_role_services() {
         "$SYSTEMCTL" start jasper-headphone-monitor.service || true
         log_event "apple_services" "state=enabled output_dac_id=${OUTPUT_DAC_ID}"
     else
-        "$SYSTEMCTL" disable --now jasper-dac-init.service jasper-headphone-monitor.service 2>/dev/null || true
-        "$SYSTEMCTL" reset-failed jasper-dac-init.service jasper-headphone-monitor.service 2>/dev/null || true
+        "$SYSTEMCTL" disable --now jasper-headphone-monitor.service 2>/dev/null || true
+        "$SYSTEMCTL" reset-failed jasper-headphone-monitor.service 2>/dev/null || true
         log_event "apple_services" "state=disabled output_dac_id=${OUTPUT_DAC_ID}"
     fi
 }

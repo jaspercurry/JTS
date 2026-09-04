@@ -36,6 +36,7 @@ take precedence over all of these — useful for one-off probes.
 """
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -183,6 +184,15 @@ def read_env_file_state(path: str) -> EnvFileState:
             error=f"{type(e).__name__}: {e}",
         )
     return EnvFileState(path, parse_env_text(text), "loaded")
+
+
+def read_env_file_or_warn(path: str, *, logger: logging.Logger) -> dict[str, str]:
+    """Read an EnvironmentFile, warning via ``logger`` when it exists but
+    can't be read. Missing files resolve silently to ``{}``."""
+    state = read_env_file_state(path)
+    if state.status == "unreadable":
+        logger.warning("could not read %s: %s", path, state.error)
+    return state.values
 
 
 def parse_env_file(path: str) -> dict[str, str]:

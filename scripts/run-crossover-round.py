@@ -189,6 +189,7 @@ from jasper.active_speaker.crossover_v2.position_cycle import (
 from jasper.active_speaker.crossover_v2.topology_prescription import (
     TOPOLOGY_PRESCRIPTION_KEY,
 )
+from jasper.cli._refusal import read_json_source
 # The seam's OWN composition table — how many stops one angle becomes at a given
 # regime. Imported rather than restated because a second copy is precisely the
 # defect the refusal below exists to prevent: this runner's stop count IS the
@@ -1156,18 +1157,16 @@ def _say_bank_by_hand(dest: Path, since: str, target: Target) -> None:
 
 
 def _json_document(raw: str) -> Any:
-    """One prescription file — ``--alignment-prescription`` or
-    ``--topology-prescription`` — read and parsed at parse time.
+    """A prescription document, read and parsed at parse time.
 
     An unreadable path or malformed JSON is an argument the operator wrote
-    wrongly, so it is argparse's refusal — a sentence and the usage — rather
-    than a traceback from somewhere between a staged walk and an open. What
-    the document SAYS is never judged here; that is the open's own gate.
+    wrongly, so it ends as argparse's refusal — a sentence and the usage —
+    rather than a traceback from between a staged walk and an open.
     """
     try:
-        return json.loads(Path(raw).read_text())
-    except (OSError, ValueError) as exc:
-        raise argparse.ArgumentTypeError(f"{raw}: {exc}") from exc
+        return read_json_source(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1239,18 +1238,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--alignment-prescription", type=_json_document, default=None,
-        metavar="FILE",
+        metavar="PATH",
         help=(
-            "a JSON document posted verbatim as the session's alignment "
-            "prescription; the open's own gate judges it"
+            "a JSON document -- a file, or - for stdin -- posted verbatim as "
+            "the session's alignment prescription; the open's own gate judges it"
         ),
     )
     parser.add_argument(
         "--topology-prescription", type=_json_document, default=None,
-        metavar="FILE",
+        metavar="PATH",
         help=(
-            "a JSON document posted verbatim as the session's topology "
-            "prescription; the open's own gate judges it"
+            "a JSON document -- a file, or - for stdin -- posted verbatim as "
+            "the session's topology prescription; the open's own gate judges it"
         ),
     )
     parser.add_argument(

@@ -82,7 +82,7 @@ from ..atomic_io import atomic_write_text
 from ..control import client as control
 from ..control import control_token
 from ..control.restart_broker import manage_units
-from ..env_load import parse_env_file, read_env_file_state
+from ..env_load import parse_env_file, read_env_file_or_warn
 from ..http_security import management_read_allowed, mutating_request_allowed
 from ..log_event import log_event
 from ..voice.provider_state import read_active_provider
@@ -420,10 +420,7 @@ def read_env_file(path: str) -> dict[str, str]:
     Same shape used by `/var/lib/jasper-intsecrets/spotify_credentials.env` and
     `/var/lib/jasper/voice_provider.env` — both are sourced into
     jasper-voice's environment via systemd's `EnvironmentFile=`."""
-    state = read_env_file_state(path)
-    if state.status == "unreadable":
-        logger.warning("could not read %s: %s", path, state.error)
-    return state.values
+    return read_env_file_or_warn(path, logger=logger)
 
 
 def value_for_env(
@@ -809,6 +806,31 @@ def read_json_object(
     if not isinstance(parsed, dict):
         raise JsonBodyError("non_object", "JSON body must be an object")
     return parsed
+
+
+_JSON_BODY_ERRORS = {
+    "invalid_content_length": "invalid Content-Length",
+    "negative_content_length": "invalid body length",
+    "body_too_large": "invalid body length",
+    "non_object": "body must be a JSON object",
+    "incomplete_body": "incomplete body",
+}
+
+
+def read_json_body(
+    handler: BaseHTTPRequestHandler,
+    *,
+    max_bytes: int,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Wrap :func:`read_json_object` as `(parsed, error)`; exactly one is None."""
+    try:
+        return read_json_object(handler, max_bytes=max_bytes), None
+    except JsonBodyError as exc:
+        fallback = (
+            f"invalid JSON body: {exc.__cause__}"
+            if exc.__cause__ else "invalid JSON body"
+        )
+        return None, _JSON_BODY_ERRORS.get(exc.code, fallback)
 
 
 def read_form(handler: BaseHTTPRequestHandler) -> dict[str, str]:

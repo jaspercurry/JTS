@@ -12,7 +12,7 @@ Closed vocabulary for this module's `CheckResult.reason`: one snake_case
 constant per distinct decision branch of the checks below, its value unique
 across the doctor and prefixed by the check that emits it. `detail` stays the
 human sentence (free to reword); `reason` is what tests and self-healing
-consumers pin instead (ADR-0232 rule 3).
+consumers pin instead (ADR-0233 rule 3).
 
 A branch that formed NO verdict — subsystem not installed, not applicable to
 this box, or the evidence source unreachable so nothing was observed — is

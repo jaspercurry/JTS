@@ -91,22 +91,22 @@ def check_state_dir_group_writable(cfg: Config) -> CheckResult:
     its own user, and a 0644 file the OTHER daemon does not own then cannot
     be written. UMask=0007 plus the install heal keep these 0660; this flags
     the drift before it bites."""
-    return _classify_state_group_write(Path(cfg.usage_db))
+    return _classify_state_group_write(Path(cfg.usage_db), Path(cfg.volume_state_path))
 
 
-def _classify_state_group_write(usage_db: Path) -> CheckResult:
+def _classify_state_group_write(usage_db: Path, volume_state_path: Path) -> CheckResult:
     """Path-parameterized core of ``check_state_dir_group_writable``."""
     import grp
     import stat as _stat
 
     state_dir = usage_db.parent
-    candidates = (
+    candidates = [
         usage_db,
         state_dir / "conversation_history.db",
         state_dir / "timers.db",
         state_dir / "wake-events" / "wake-events.sqlite3",
-        state_dir / "speaker_volume.json",
-    )
+        volume_state_path,
+    ]
     bad: list[str] = []
     checked = 0
     for p in candidates:

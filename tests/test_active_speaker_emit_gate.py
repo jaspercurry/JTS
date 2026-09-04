@@ -50,7 +50,10 @@ from jasper.active_speaker import (
     emit_active_speaker_startup_config,
 )
 import jasper.active_speaker.camilla_yaml as camilla_yaml
-from jasper.active_speaker.camilla_yaml import _assert_pipeline_references_closed
+from jasper.active_speaker.camilla_yaml import (
+    _assert_pipeline_references_closed,
+    emit_active_speaker_parked_config,
+)
 from jasper.active_speaker.graph_safety import (
     TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ,
     output_highpass_protected,
@@ -852,3 +855,56 @@ def test_a_flipped_program_graph_still_passes_every_emit_gate():
     )
 
     _assert_pipeline_references_closed(yaml_text, preset)
+
+
+# --------------------------------------------------------------------------- #
+# Hearing non-negotiable 1 — devices.volume_limit, at every DAC emitter
+# --------------------------------------------------------------------------- #
+
+_VOLUME_LIMIT_EMITTERS = [
+    pytest.param(
+        lambda **kw: emit_active_speaker_startup_config(
+            _preset(), playback_device=ACTIVE_PCM, **kw
+        ),
+        id="startup",
+    ),
+    pytest.param(
+        lambda **kw: emit_active_speaker_parked_config(output_count=2, **kw),
+        id="parked",
+    ),
+    pytest.param(
+        lambda **kw: emit_active_speaker_commissioning_config(
+            _preset(), playback_device=ACTIVE_PCM, **kw
+        ),
+        id="commissioning",
+    ),
+    pytest.param(
+        lambda **kw: emit_active_speaker_program_config(
+            _preset(), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM, **kw
+        ),
+        id="program",
+    ),
+    pytest.param(
+        lambda **kw: emit_active_speaker_baseline_config(
+            _preset(), playback_device=ACTIVE_PCM, baseline_id="clamp", **kw
+        ),
+        id="baseline",
+    ),
+    pytest.param(
+        lambda **kw: emit_active_speaker_driver_domain_config(
+            _preset(), playback_device=ACTIVE_PCM, program_channel="left", **kw
+        ),
+        id="driver_domain",
+    ),
+]
+
+
+@pytest.mark.parametrize("emit", _VOLUME_LIMIT_EMITTERS)
+def test_every_emitter_writes_a_zero_volume_limit_and_refuses_a_boost(
+    emit: Callable[..., str],
+) -> None:
+    # The default emit succeeds, so the only thing that can make the second call
+    # raise is the ceiling itself — no error-prose match needed.
+    assert yaml.safe_load(emit())["devices"]["volume_limit"] == 0.0
+    with pytest.raises(ActiveSpeakerConfigError):
+        emit(volume_limit_db=0.5)

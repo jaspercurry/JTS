@@ -6,7 +6,7 @@
 
 jasper-control's samplers, jasper-doctor and jasper-system-soak all read
 unit state; they read it through here so one roster and one parser exist
-(ADR-0232 rule 1). Stdlib only: the doctor imports this on every run.
+(ADR-0233 rule 1). Stdlib only: the doctor imports this on every run.
 """
 from __future__ import annotations
 

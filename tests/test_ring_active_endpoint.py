@@ -1532,7 +1532,7 @@ def test_the_floor_render_ok_names_the_roleful_reason_a_box_cannot_ring(monkeypa
 
     # The roleful-vs-passive distinction is an additive prose note only (both
     # land in the same REASON_RING_FLOOR_NOT_DECLARED branch) — not a
-    # structured field, so it is not pinned here per AGENTS.md/ADR-0232 rule 3;
+    # structured field, so it is not pinned here per AGENTS.md/ADR-0233 rule 3;
     # the branch itself (why the check reads ok) is.
     monkeypatch.setattr(audio_runtime_ring, "_requires_roleful_graph", lambda: True)
     roleful = audio_runtime_ring.check_ring_conf_floor_render()
@@ -1569,7 +1569,7 @@ def test_the_matching_floor_ok_still_names_the_roleful_reason(monkeypatch, tmp_p
 
     # As above: roleful-vs-passive is an additive prose note, not a distinct
     # reason (both are REASON_RING_FLOOR_RENDERED) — pin the branch, not the
-    # note (AGENTS.md/ADR-0232 rule 3).
+    # note (AGENTS.md/ADR-0233 rule 3).
     monkeypatch.setattr(audio_runtime_ring, "_requires_roleful_graph", lambda: True)
     roleful = audio_runtime_ring.check_ring_conf_floor_render()
     assert roleful.status == "ok"
@@ -1670,7 +1670,7 @@ def test_the_coupling_warn_on_an_armed_box_names_the_forward_ladder_not_a_rollba
     assert result.status == "warn"
     # Roleful -> the forward ladder reason, whether the marker is armed or
     # cleared (the armed/cleared wording difference below is prose the
-    # reason vocabulary does not distinguish; AGENTS.md/ADR-0232 rule 3 pins
+    # reason vocabulary does not distinguish; AGENTS.md/ADR-0233 rule 3 pins
     # status+reason here, not that text).
     assert result.reason == audio_runtime_fanin.REASON_COUPLING_ACTIVE_LADDER_PENDING
 
@@ -3594,6 +3594,49 @@ def _anchor_reemit_harness(
         live_meta=live_meta,
         statefile=statefile,
     )
+
+
+def test_reemit_staged_startup_anchor_reports_facts_and_prints_nothing(
+    monkeypatch, tmp_path, capsys
+):
+    """The engine hands back a report; the operator text is the CLI's (row 7.4).
+
+    Asserted on the report's own fields rather than on printed lines, in both
+    directions — a re-emit and a refusal — because a pin on the text would put
+    the surface concern back into the engine that this boundary took out of it.
+    """
+    from jasper.active_speaker.runtime_contract import GRAPH_ALL_MUTED_ACTIVE_STARTUP
+    from jasper.active_speaker.startup_load import reemit_staged_startup_anchor
+
+    h = _anchor_reemit_harness(monkeypatch, tmp_path)
+    done = reemit_staged_startup_anchor(
+        h.topology,
+        device=RING_ACTIVE_PLAYBACK_DEVICE,
+        source="explicit_endpoint_ring",
+        statefile=h.statefile,
+    )
+    assert done.reason is None, done
+    assert done.classification == GRAPH_ALL_MUTED_ACTIVE_STARTUP, done
+    assert done.written_path == h.live_config, done
+    assert (done.device, done.source) == (
+        RING_ACTIVE_PLAYBACK_DEVICE, "explicit_endpoint_ring",
+    ), done
+    assert done.preview is False and done.statefile_written is True, done
+    assert done.byte_count == len(h.live_config.read_text(encoding="utf-8")), done
+
+    refused = _anchor_reemit_harness(monkeypatch, tmp_path, commission_loaded=True)
+    stopped = reemit_staged_startup_anchor(
+        refused.topology,
+        device=RING_ACTIVE_PLAYBACK_DEVICE,
+        source="explicit_endpoint_ring",
+        statefile=refused.statefile,
+    )
+    assert stopped.reason == "commission_load_active", stopped
+    assert stopped.active_target == "mono/tweeter", stopped
+    assert stopped.written_path is None and stopped.byte_count == 0, stopped
+
+    captured = capsys.readouterr()
+    assert (captured.out, captured.err) == ("", ""), captured
 
 
 def test_baseline_reemit_restages_the_startup_anchor_at_the_ring(

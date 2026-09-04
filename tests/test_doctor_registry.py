@@ -11,7 +11,7 @@ the decorator must reject a duplicate order at registration — a duplicate woul
 silently fall back to import-order tie-breaking, the fragility the registry
 exists to remove.
 
-Output (ADR-0232 rule 3): a status outside the closed set is rejected, every
+Output (ADR-0233 rule 3): a status outside the closed set is rejected, every
 warn/fail row carries a machine-stable `reason` drawn from its module's
 REASON_* constants, and the rows the harness itself produces (crash, timeout,
 profile skip, config error) share one shape and carry a harness reason.
@@ -165,7 +165,7 @@ def _is_symbolic(node: ast.expr | None) -> bool:
 def _reason_names_imported_elsewhere() -> frozenset[str]:
     """REASON_* names one doctor module imports from another.
 
-    A code homed with its reader (ADR-0232 rule 1) is legitimately unused in
+    A code homed with its reader (ADR-0233 rule 1) is legitimately unused in
     the module that declares it, so the unused-constant check has to see the
     consumers."""
     names: set[str] = set()
@@ -233,7 +233,7 @@ def _reason_contract_violations(tree: ast.Module) -> list[str]:
 
 @pytest.mark.parametrize("module_name", _doctor_check_modules())
 def test_reason_codes_are_a_closed_symbolic_vocabulary(module_name):
-    """ADR-0232 rule 3: every warn/fail row carries a machine-stable reason
+    """ADR-0233 rule 3: every warn/fail row carries a machine-stable reason
     drawn from the module's own REASON_* constants, and every declared
     constant is a used, unique lower_snake_case code."""
     violations = _reason_contract_violations(_module_tree(module_name))

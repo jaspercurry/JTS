@@ -712,7 +712,7 @@ def _assert_one_number_everywhere(views: dict) -> None:
     assert f"{gauge['rms_db']:.2f} dB" in rendered
 
     # N-1: the doctor's verdict is derived from the same spec verdict, not a
-    # re-graded one (AGENTS.md/ADR-0232 rule 3 pins status+reason, not the
+    # re-graded one (AGENTS.md/ADR-0233 rule 3 pins status+reason, not the
     # doctor's prose — which used to be pinned digit-for-digit here).
     from jasper.cli.doctor import correction as doctor_correction
 

@@ -199,7 +199,7 @@ def test_household_secret_absent_is_skipped(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 def test_unit_runtime_identity_batches_user_group_across_daemons(monkeypatch):
     """User/Group/SupplementaryGroups are read once for the whole manifest,
-    not once per daemon queried (ADR-0232 rule 4)."""
+    not once per daemon queried (ADR-0233 rule 4)."""
     from jasper.cli.doctor import _evidence
 
     calls: list[tuple[str, tuple[str, ...]]] = []

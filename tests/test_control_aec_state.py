@@ -508,7 +508,7 @@ def test_read_wake_threshold_default_matches_daemon_config(wake_model_file, monk
 def test_audio_profile_status_answers_the_same_on_doctor_and_aec(
     aec_mode_file, wake_model_file, monkeypatch, probe_fails,
 ):
-    """ADR-0232 rule 1: one mic probe and one classifier behind both surfaces,
+    """ADR-0233 rule 1: one mic probe and one classifier behind both surfaces,
     so a box cannot report one profile on /aec and another in jasper-doctor —
     including when the probe fails and both take the same fallback.
 

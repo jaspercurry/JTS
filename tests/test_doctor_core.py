@@ -523,7 +523,7 @@ def test_an_ok_result_cannot_claim_the_speaker_is_silent():
 
     A check returning `ok` while asserting silence contradicts itself. The
     contract rejects the row rather than leaving every consumer to re-filter
-    on status (ADR-0232 rule 3)."""
+    on status (ADR-0233 rule 3)."""
     with pytest.raises(ValueError):
         CheckResult("graph", "ok", "legal", speaker_silent=True)
     with pytest.raises(ValueError):
@@ -531,7 +531,7 @@ def test_an_ok_result_cannot_claim_the_speaker_is_silent():
 
 
 def test_a_warn_or_fail_without_a_reason_is_rejected():
-    """Every warn/fail carries a machine-stable reason (ADR-0232 rule 3)."""
+    """Every warn/fail carries a machine-stable reason (ADR-0233 rule 3)."""
     with pytest.raises(ValueError):
         CheckResult("graph", "warn", "something")
     with pytest.raises(ValueError):

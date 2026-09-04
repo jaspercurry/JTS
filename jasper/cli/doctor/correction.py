@@ -40,7 +40,7 @@ from ...web._systemd import DEFERRED_EXIT_LOG_PERIOD_SEC
 # an `ok` carries one only where the ok itself is a fact a consumer branches on
 # (not-applicable, skipped, an informational sub-state). `detail` stays the
 # human sentence and is free to reword; tests pin `status` and `reason`
-# (ADR-0232 rule 3).
+# (ADR-0233 rule 3).
 
 REASON_WEB_SOCKET_INACTIVE = "correction_web_socket_inactive"
 REASON_WEB_INACTIVE = "correction_web_inactive"
@@ -428,7 +428,7 @@ def check_correction_uploaded_calibration_sign() -> CheckResult:
 
 # The three ways `_active_camilla_config_path` below leaves a caller with no
 # config to read. Homed here, beside the reader, and imported by every doctor
-# module that calls it (ADR-0232 rule 1).
+# module that calls it (ADR-0233 rule 1).
 REASON_CAMILLA_STATEFILE_UNREADABLE = "camilla_statefile_unreadable"
 REASON_CAMILLA_CONFIG_MISSING = "camilla_config_missing"
 REASON_CAMILLA_CONFIG_UNREADABLE = "camilla_config_unreadable"

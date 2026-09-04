@@ -1413,7 +1413,7 @@ def _valid_udp_endpoint(value: object) -> bool:
 
 
 def _read_outputd_status_for_aec_reference() -> dict | None:
-    """The per-run cached outputd STATUS read (ADR-0232 rule 4) — fail-soft."""
+    """The per-run cached outputd STATUS read (ADR-0233 rule 4) — fail-soft."""
     return evidence.outputd_status().payload
 
 

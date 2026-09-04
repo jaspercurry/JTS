@@ -11,8 +11,9 @@ User=pi
 SupplementaryGroups=dialout
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/usr/bin/python3 /opt/jasper/experiments/usb-turntable/jts_turntable.py --port /dev/%I --json hotplug-stop
-# Above the retry loop's 70.5s worst case, whose math lives beside the
-# constants in experiments/usb-turntable/jts_turntable.py.
+# Worst-case retry-loop math (AUTOSTOP_ATTEMPTS/AUTOSTOP_IO_TIMEOUT/
+# AUTOSTOP_RETRY_SECONDS) lives in jts_turntable.py next to those constants;
+# it totals 70.5s, so this stays above that with margin.
 TimeoutStartSec=90s
 StandardOutput=journal
 StandardError=journal

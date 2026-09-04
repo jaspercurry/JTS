@@ -629,8 +629,9 @@ run the same hardware probe, so the registry does not flip it on inference
 alone. The two boards do NOT share an overlay or a driver — the Studio has
 its own `hifiberry-studio-dac8x` overlay and machine driver (raspberrypi/linux,
 2026-01-15) — and the base profile now matches only the one card name its
-own driver emits, so Studio silicon is no longer classified `hifiberry_dac8x`
-and no longer inherits `S32_LE` (#2250). Two residuals stay documented: a
+own driver emits. Studio silicon on the Studio driver stack classifies as
+`hifiberry_dac8x_studio`; under the base overlay it stays on the base row
+(ADR-0232). Two residuals stay documented: a
 Studio board configured with the base overlay is genuinely indistinguishable,
 and on rpi-6.18.y and later the Studio family shares one card name, so a
 Studio DAC8x parks as `unknown` (#2258). The Apple USB-C dongle

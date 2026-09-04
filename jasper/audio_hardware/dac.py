@@ -47,17 +47,44 @@ class MixerControl:
     The registry only declares intent. Scripts such as
     ``jasper-dac-init`` and ``jasper-headphone-monitor`` remain the
     components that actually apply or monitor mixer state.
+
+    Exactly one target is declared, and the target KIND also picks the ALSA
+    namespace ``name`` is resolved in — the two are not independent knobs.
+    ``target_percent`` (with optional ``unmute``) names a SIMPLE mixer
+    element, the alsa-lib abstraction ``amixer sset`` addresses, whose name is
+    the kcontrol name minus its " Playback Volume"/" Playback Switch" suffix.
+    ``target_db`` and ``target_enum`` name a raw kcontrol exactly as the
+    driver declares it, which is what ``amixer cget``/``cset name=`` and
+    ``amixer contents`` use; the dB target is converted to the control's own
+    index through the TLV the control publishes, so no scale data is
+    duplicated here.
     """
 
     name: str
     target_percent: int | None = None
+    target_db: float | None = None
+    target_enum: str | None = None
     unmute: bool = False
 
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ValueError("mixer control name is required")
+        declared = [
+            target
+            for target in (self.target_percent, self.target_db, self.target_enum)
+            if target is not None
+        ]
+        if len(declared) != 1:
+            raise ValueError(
+                f"{self.name}: exactly one mixer target must be declared"
+            )
         if self.target_percent is not None and not 0 <= self.target_percent <= 100:
             raise ValueError("mixer target_percent must be 0..100")
+        if self.unmute and self.target_percent is None:
+            raise ValueError(
+                f"{self.name}: unmute is a simple-mixer switch and only rides "
+                "with target_percent"
+            )
 
 
 @dataclass(frozen=True)
@@ -152,7 +179,6 @@ class DacProfile:
     supports_active_crossover_commissioning: bool = False
     dac_channel_map: tuple[ChannelMapEntry, ...] | None = None
     mixer_controls: tuple[MixerControl, ...] = ()
-    headphone_pinned_100: bool = False
     validation_profile: str | None = None
     chip_aec_qualification: ChipAecQualification = "needs_calibration"
     chip_aec_detail: str = ""
@@ -359,6 +385,23 @@ APPLE_HEADPHONE_CONTROL = MixerControl(
     unmute=True,
 )
 
+# The Studio driver (sound/soc/bcm/hifiberry_studio_dac8x.c) exposes a hardware
+# gain stage and writes NO defaults into it: the level after a boot is whatever
+# the board's MCU happens to hold, and "Master Playback Volume" reaches +24 dB.
+# JTS owns gain in CamillaDSP, so this profile pins its stages at unity and
+# unmuted. Names are the driver's kcontrol names verbatim (what
+# `amixer -c0 contents` prints). The driver registers one Output Ch control per
+# output channel the board's EEPROM reports, so these eight are this profile's
+# board, not a driver constant.
+HIFIBERRY_STUDIO_MIXER_CONTROLS = (
+    MixerControl(name="Master Playback Volume", target_db=0.0),
+    *(
+        MixerControl(name=f"Output Ch{channel} Playback Volume", target_db=0.0)
+        for channel in range(8)
+    ),
+    MixerControl(name="DAC Mute", target_enum="unmuted"),
+)
+
 APPLE_USB_C_DONGLE = DacProfile(
     id=APPLE_USB_C_DONGLE_ID,
     label="Apple USB-C audio adapter",
@@ -371,7 +414,6 @@ APPLE_USB_C_DONGLE = DacProfile(
     supported_card_matches=("usb-c to 3.5mm",),
     usb_ids=("05ac:110a",),
     mixer_controls=(APPLE_HEADPHONE_CONTROL,),
-    headphone_pinned_100=True,
     # A single Apple dongle can carry a mono active 2-way graph over the same
     # width-aware single-ALSA active lane used by wider coherent DACs.
     supports_active_outputd_lane=True,
@@ -447,8 +489,16 @@ HIFIBERRY_DAC8X = DacProfile(
     supports_active_crossover_commissioning=True,
     validation_profile=DAC8X_OUTPUTD_STABILITY_PROFILE,
     chip_aec_qualification="approved",
-    chip_aec_detail="HiFiBerry DAC8x is a measured JTS3 known-good chip-AEC profile",
+    chip_aec_detail=(
+        "HiFiBerry DAC8x is a measured chip-AEC profile: jts3, Studio "
+        "silicon under the base overlay/driver, per HiFiBerry's datasheet"
+    ),
     dtoverlay="hifiberry-dac8x",
+    # This row keys on driver stack (overlay -> driver -> card label), not on
+    # silicon identity: HiFiBerry's own datasheet prescribes this overlay for
+    # DAC8x Studio boards too, so the evidence below is Studio silicon running
+    # the base driver, per that datasheet — see ADR-0232.
+    #
     # Hardware evidence: the same four values the Apple dongle declares, here
     # measured on I2S silicon rather than transferred. A three-window jts3 soak
     # (2026-08-11; operator-local record `captures/r7-jts3-20260811T051852Z/`,
@@ -482,12 +532,11 @@ HIFIBERRY_DAC8X = DacProfile(
         outputd_dac_buffer_frames=256,
     ),
     camilla_floor=CamillaFloor(chunksize=256, target_level=1536),
-    # Hardware evidence: `aplay --dump-hw-params` on jts3's HiFiBerry DAC8x
-    # reports FORMAT S16_LE/S24_LE/S32_LE at rates up to 192 kHz, and a raw
-    # `hw:` S32_LE 2ch open succeeded with a clean recovery (banked
-    # 2026-08-07, wide-output-path plan §2 evidence base — NOT gate G0b,
-    # which is the separate snd-aloop `hw:Loopback` pair test). The DAC8x
-    # uses four 192kHz/24-bit Burr-Brown DAC chips (HiFiBerry's published
+    # Hardware evidence: `aplay --dump-hw-params` on jts3 — Studio silicon
+    # under this base overlay/driver, see ADR-0232 — reports FORMAT
+    # S16_LE/S24_LE/S32_LE at rates up to 192 kHz, and a raw `hw:` S32_LE
+    # 2ch open succeeded with a clean recovery. The DAC8x uses four
+    # 192kHz/24-bit Burr-Brown DAC chips (HiFiBerry's published
     # datasheet); the S32_LE word's bottom byte beyond that 24-bit
     # resolution spans <= -138.5 dBFS — sub-analog at any plausible silicon
     # depth, so this datasheet inference is not load-bearing for safety even
@@ -579,76 +628,58 @@ HIFIBERRY_DAC8X_STUDIO = DacProfile(
     # still prints `dtoverlay=hifiberry-dac8x`; it predates that support, and
     # the kernel is the authority for what a board actually presents.
     #
-    # This field is read, not written: nothing here writes config.txt for a
-    # HiFiBerry (`render_i2s_hat_boot_config` is InnoMaker-only). It feeds
+    # `render_i2s_hat_boot_config` can manage this overlay too (any
+    # `connection == "i2s"` profile is eligible; the per-box intent file
+    # picks one, explicit opt-in only). It also feeds
     # `configured_i2s_overlays()`, the registered-overlay set USB port-role
     # resolution intersects config.txt against — so with the wrong value a
     # correctly-configured Studio box read as "no I2S HAT present".
     dtoverlay="hifiberry-studio-dac8x",
-    # NOT flipped to S32_LE alongside the base DAC8x above (wide-output-path
-    # PR-7), deliberately. The two boards share a DAC-chip family — HiFiBerry's
-    # datasheets describe both as four 192kHz/24-bit Burr-Brown DACs, differing
-    # in the analog output stage (balanced DB25 vs unbalanced RCA) and an added
-    # hardware volume-control chip, none of which touches the digital I2S format
-    # this field declares. That makes the flip PLAUSIBLE but not PROVEN: the base
-    # DAC8x's S32 capability was confirmed by an `aplay --dump-hw-params` open
-    # test on real jts3 hardware (2026-08-07, wide-output-path plan §2 evidence
-    # base — NOT gate G0b, which is the separate snd-aloop `hw:Loopback` pair
-    # test); no DAC8x Studio unit exists in the lab fleet to run that same probe,
-    # and this program's own norm (see PR-8, D9) is a hardware gate before a
-    # format declaration. Flip this once that probe passes on real Studio
-    # hardware. Note the boards do NOT share a driver, so a shared-family
-    # argument is now the only inference available — weaker than it looked when
-    # they were believed to share an overlay.
+    mixer_controls=HIFIBERRY_STUDIO_MIXER_CONTROLS,
+    # NOT flipped to S32_LE alongside the base DAC8x above, deliberately: the
+    # base DAC8x's S32 capability was confirmed by an `aplay --dump-hw-params`
+    # open test on real jts3 hardware, and this program's own norm is a
+    # hardware gate before a format declaration. The Studio driver stack has
+    # never been loaded on a fleet box, so that probe has not run against it —
+    # jts3 migrates to this driver stack in Phase 1 (owner present; see
+    # ADR-0232), and the probe runs then. The two boards share a DAC-chip
+    # family (HiFiBerry's datasheets describe both as four 192kHz/24-bit
+    # Burr-Brown DACs, differing only in the analog output stage and an added
+    # hardware volume-control chip, neither of which touches the digital I2S
+    # format this field declares) but do NOT share a driver, so that shared
+    # family is a plausible expectation, not proof.
     #
-    # KNOWN LIMITATION, dated 2026-08-08 (tracked as #2258): this profile is
-    # reachable by auto-detection on Trixie's rpi-6.12.y kernel, where the
-    # driver names the card "HiFiBerry Studio DAC8x". It is NOT reachable on
-    # rpi-6.18.y and later: commit 99c9dcd72 (2026-07-13) renamed that driver to
-    # `hifiberry_studio.c` and 8905174a9 gave it multi-card/Digi support, after
-    # which every board in the Studio family — the 8-channel Studio DAC8x and
-    # the 2-channel Studio Digi/AES alike — presents the single card name
-    # "Hifiberry Studio Soundcard", carrying no DAC8x token and no width. The
-    # kernel separates them only by an EEPROM UUID it never surfaces in the
-    # label. Matching that shared name here would let a 2-channel Digi be
-    # classified as this 8-channel profile, so this profile deliberately does
-    # not claim it: on those kernels a Studio DAC8x resolves to "unknown" and
-    # parks. Closing that needs a non-label discriminator (HAT EEPROM or the DT
-    # compatible), which is #2258's subject, not this row's.
+    # On Trixie's rpi-6.12.y kernel, `supported_card_matches` above claims
+    # this profile directly: the driver names the card "HiFiBerry Studio
+    # DAC8x". On rpi-6.18.y and later, the renamed `hifiberry_studio.c`
+    # driver presents every board in the Studio family — the 8-channel
+    # Studio DAC8x and the 2-channel Studio Digi/AES alike — under the
+    # single shared card name "Hifiberry Studio Soundcard", carrying no
+    # DAC8x token and no width, so the label alone cannot tell them apart.
+    # `eeprom_gated_card_matches` claims that shared label for this profile
+    # ONLY when the HAT EEPROM product string is in `hat_products` (see
+    # ADR-0232) — a 2-channel Digi's different EEPROM product never matches,
+    # so it cannot be classified as this 8-channel profile. Without a
+    # readable EEPROM match, a 6.18.y Studio DAC8x resolves to "unknown" and
+    # parks rather than being guessed from the shared label.
     #
-    # One residual is irreducible by label matching: a Studio board configured
-    # with `dtoverlay=hifiberry-dac8x` (what HiFiBerry's datasheet still says)
-    # loads the base driver and presents the base card name, so it classifies as
-    # `hifiberry_dac8x` and inherits that row's S32_LE and approved chip-AEC.
-    # Nothing in a card label can distinguish that case — the box genuinely IS
-    # running the base driver. The base profile's own `supported_card_matches`
-    # comment records why the fuzzy matching that made this the DEFAULT outcome
-    # is gone.
-    #
-    # The misroute is not symmetric. Studio hardware classified as the base
-    # profile declares S32_LE: outputd's `final_sink_startup` wrapper
-    # around the DAC PCM open+configure sequence fails closed on that —
-    # ALSA's `hw_params` install inside `configure_pcm` refuses an
-    # unsupported format outright, and the same wrapper's readback
-    # comparison catches a driver that silently negotiated something else —
-    # so a non-S32 Studio board parks (exit 78) rather than playing wrong.
-    # The reverse (base hardware classified as Studio) never parks: S16_LE
-    # is universally supported, so it opens fine and silently declines the
-    # crackle fix, with no error and no signal that it happened.
+    # One case is irreducible by label matching: a Studio board configured
+    # with `dtoverlay=hifiberry-dac8x` (what HiFiBerry's own datasheet
+    # prescribes) loads the base driver and presents the base card name, so it
+    # classifies as `hifiberry_dac8x` and inherits that row's S32_LE and
+    # approved chip-AEC. That is not a misroute: the box genuinely IS running
+    # the base driver, on the vendor-documented config — see the base row's
+    # own evidence.
     #
     # NO latency_floor is declared, so this profile ships the conservative
-    # global CamillaDSP/outputd default rather than a measured one — an absence
-    # stated out loud because it is load-bearing in three places. It is the
+    # global CamillaDSP/outputd default rather than a measured one. It is the
     # standing floorless case the no-floor doctor branch and the floorless-DAC
-    # contract tests are written against (they assert it HERE rather than assume
-    # it, so declaring a floor for this profile fails those guards instead of
-    # quietly making their expectations unreachable — which is exactly what
-    # happened twice: to `HIFIBERRY_DAC8X` in R7a, and to
-    # `INNOMAKER_HIFI_AMP_PRO` when jts4's measured floor landed). It also means
-    # the conf.d ring period is left untouched on this box, so shm_ring is
+    # contract tests are written against, and the conf.d ring period is
     # reachable here only through the operator env seam
-    # (`JASPER_OUTPUTD_PERIOD_FRAMES` in `/etc/jasper/jasper.env`), never from a
-    # declared floor. Measuring one on this silicon is open per-board work.
+    # (`JASPER_OUTPUTD_PERIOD_FRAMES` in `/etc/jasper/jasper.env`).
+    #
+    # Removal condition (ADR-0232): flip floors/format/commissioning/chip-AEC
+    # on this row once the jts3 Studio soak (Phase 1) completes.
 )
 
 INNOMAKER_HIFI_AMP_PRO = DacProfile(
@@ -741,7 +772,6 @@ DUAL_APPLE_USB_C_DAC_4CH = DacProfile(
     requires_same_usb_bus=True,
     supports_active_outputd_lane=True,
     active_outputd_lane_channels=4,
-    headphone_pinned_100=True,
     chip_aec_detail=(
         "dual Apple dongle profile has a measured-sync contract and needs "
         "calibration before arming production chip AEC"
@@ -851,6 +881,17 @@ def all_profiles() -> tuple[DacProfile, ...]:
     """Return all known DAC profiles in stable display order."""
 
     return REGISTRY
+
+
+def is_boot_managed_i2s_profile(profile: DacProfile) -> bool:
+    """Whether a profile is an I2S HAT eligible for the boot overlay line.
+
+    ``dtoverlay`` is required alongside ``connection == "i2s"``: a profile
+    can declare the I2S interface without owning a boot line (none do
+    today, but the two fields are independent, not implied by each other).
+    """
+
+    return profile.connection == "i2s" and bool(profile.dtoverlay)
 
 
 def by_id(profile_id: str) -> DacProfile | None:
@@ -1048,6 +1089,7 @@ __all__ = [
     "HIFIBERRY_DAC8X_ID",
     "HIFIBERRY_DAC8X_STUDIO",
     "HIFIBERRY_DAC8X_STUDIO_ID",
+    "HIFIBERRY_STUDIO_MIXER_CONTROLS",
     "INNOMAKER_HIFI_AMP_PRO",
     "INNOMAKER_HIFI_AMP_PRO_ID",
     "LatencyFloor",
@@ -1060,6 +1102,7 @@ __all__ = [
     "clock_domain_contract_for",
     "clock_domain_label_for",
     "final_edge_format_for",
+    "is_boot_managed_i2s_profile",
     "is_known_profile_id",
     "known_profile_ids",
     "label_for",

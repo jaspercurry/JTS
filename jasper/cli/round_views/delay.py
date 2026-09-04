@@ -46,23 +46,16 @@ from jasper.active_speaker.crossover_v2.delay_landscape import (
     verdict_line,
 )
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL, PHASE_MEASURE
-from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.delay_sweep import sweep_spec
-from jasper.cli._refusal import (
-    EXIT_OK,
-    EXIT_REFUSED,
-    EXIT_UNREADABLE,
-    StageFailed,
-    failed,
-    stage,
-)
+from jasper.cli._refusal import EXIT_OK, EXIT_UNREADABLE, StageFailed, stage
 
 from ..null_door import NULL_RUNS_DIR
 from ._common import (
     ARTIFACT_BY_VIEW,
     _ROUND_TOOL_ERRORS,
     _write,
-    default_out,
+    refused_by_name,
+    resolved_out,
 )
 
 REFUSE_NO_ROWS = "delay_confirm_no_measured_rows"
@@ -99,17 +92,12 @@ def _landscape_from_bank(args: argparse.Namespace) -> BankedLandscape:
 
 def _bank(payload: Any, args: argparse.Namespace) -> Path | None:
     """``--out`` names a FILE here, never ``-``: both verbs print their own
-    document on stdout. The default is ``default_out``'s, so a LIVE bundle's
-    view lands beside the caller (#3498) and a bundle that resolver cannot
-    place lands in the bundle.
+    document on stdout. Where the default lands is :func:`resolved_out`'s.
     """
 
-    bundle_dir = Path(args.bundle_dir)
-    artifact = ARTIFACT_BY_VIEW[args.command].artifact
-    try:
-        beside = default_out(round_inputs(bundle_dir), bundle_dir, artifact)
-    except _ROUND_TOOL_ERRORS:
-        beside = bundle_dir / artifact
+    beside = resolved_out(
+        Path(args.bundle_dir), ARTIFACT_BY_VIEW[args.command].artifact
+    )
     return _write(
         payload, None, Path(args.out) if args.out else beside, make_parents=True,
     )
@@ -119,7 +107,7 @@ def _cmd_delay_landscape(args: argparse.Namespace) -> int:
     try:
         landscape, take_path, composition = _landscape_from_bank(args)
     except DelayLandscapeError as exc:
-        return failed(EXIT_REFUSED, exc.refusal_reason, str(exc))
+        return refused_by_name(exc.refusal_reason, str(exc))
 
     payload = {
         "status": "proposed",
@@ -142,7 +130,7 @@ def _cmd_delay_confirm(args: argparse.Namespace) -> int:
     try:
         landscape, take_path, composition = _landscape_from_bank(args)
     except DelayLandscapeError as exc:
-        return failed(EXIT_REFUSED, exc.refusal_reason, str(exc))
+        return refused_by_name(exc.refusal_reason, str(exc))
 
     rows_dir = Path(args.bundle_dir) / NULL_RUNS_DIR
     graded = stage(
@@ -150,8 +138,7 @@ def _cmd_delay_confirm(args: argparse.Namespace) -> int:
         fc_hz=args.fc_hz,
     )
     if not graded:
-        return failed(
-            EXIT_REFUSED,
+        return refused_by_name(
             REFUSE_NO_ROWS,
             f"{rows_dir}: no measured inverted row at fc={args.fc_hz:g} Hz; "
             "play the delay-landscape coordinates with jasper-null "

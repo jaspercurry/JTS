@@ -51,8 +51,8 @@ _RECV_CHUNK_BYTES = 65536
 # runaway writer can make a caller buffer on a 1 GB Pi.
 _RESPONSE_MAX_BYTES = 1_048_576
 
-# Canonical control-socket paths for the two live route-health owners.
 FANIN_STATUS_SOCKET = "/run/jasper-fanin/control.sock"
+MUX_CONTROL_SOCKET_PATH = "/run/jasper-mux/control.sock"
 OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
 
 # Ceilings on each owner's STATUS `watchdog.last_progress_age_ms`, in
@@ -143,6 +143,7 @@ def read_status_socket_or_none(
 __all__ = [
     "DEFAULT_STATUS_TIMEOUT_SECONDS",
     "FANIN_STATUS_SOCKET",
+    "MUX_CONTROL_SOCKET_PATH",
     "OUTPUTD_STATUS_SOCKET",
     "read_status_socket",
     "read_status_socket_or_none",

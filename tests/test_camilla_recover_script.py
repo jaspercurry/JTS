@@ -308,7 +308,7 @@ def test_park_reason_and_action_reach_the_doctor(tmp_path: Path, monkeypatch):
     assert result.status == "fail"
     assert result.reason == audio_runtime_camilla.REASON_CAMILLA_GRAPH_PARKED
     # The core DSP graph is down: this is exactly the row the dashboard's
-    # summary must lead with (AGENTS.md/ADR-0232 rule 3).
+    # summary must lead with (AGENTS.md/ADR-0233 rule 3).
     assert result.speaker_silent is True
 
 

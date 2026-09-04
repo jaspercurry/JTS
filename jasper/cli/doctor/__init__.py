@@ -38,6 +38,7 @@ from types import SimpleNamespace
 from typing import Awaitable, Callable, Optional
 from ...camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ...librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
+from ...volume_persistence import configured_path as volume_state_path
 from ...config import Config
 from ...env_load import load_env_files as _load_env_files
 from ...identity import resolve_hostname
@@ -144,7 +145,7 @@ from .audio import (
     check_active_speaker_output_hardware_match,
     check_dac_usb_sync_mode,
     check_apple_dongle_audio,
-    check_dongle_headphone_at_max,
+    check_dac_mixer_pins,
     _devices_volume_limit_from_text,
     check_camilla_volume_limit,
     check_camilla_ring_chunk_fits,
@@ -475,7 +476,7 @@ __all__ = [
     "check_active_speaker_output_hardware_match",
     "check_dac_usb_sync_mode",
     "check_apple_dongle_audio",
-    "check_dongle_headphone_at_max",
+    "check_dac_mixer_pins",
     "check_fanin_binary_installed",
     "_asound_non_comment_text",
     "_asound_pcm_block",
@@ -851,6 +852,7 @@ def _local_audio_config_from_env() -> SimpleNamespace:
         usage_db=os.environ.get("JASPER_USAGE_DB", DEFAULT_USAGE_DB),
         camilla_host=os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"),
         camilla_port=_env_int_for_doctor("JASPER_CAMILLA_PORT", DEFAULT_CAMILLA_PORT),
+        volume_state_path=volume_state_path(),
         librespot_state_path=os.environ.get(
             "JASPER_LIBRESPOT_STATE", DEFAULT_LIBRESPOT_STATE,
         ),

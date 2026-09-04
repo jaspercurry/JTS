@@ -159,7 +159,7 @@ _UAC2_CTL_VALUE_RE = re.compile(r"^\s*: values=(\d+)", re.MULTILINE)
 
 
 def _unit_active(unit: str) -> bool:
-    """A unit's ActiveState off the shared evidence cache (ADR-0232 rule 4) —
+    """A unit's ActiveState off the shared evidence cache (ADR-0233 rule 4) —
     the usbsink unit alone is asked about from four checks in this module, so
     this costs one ``systemctl show`` per run rather than one per call.
     Systemctl-unavailable (None) reads as not-active rather than crashing."""

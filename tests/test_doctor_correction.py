@@ -5,7 +5,7 @@
 """Unit tests for the jasper-doctor correction domain.
 
 Every assertion pins ``status`` and ``reason`` — never ``detail`` prose
-(ADR-0232 rule 3). ``correction.REASON_*`` is the closed vocabulary.
+(ADR-0233 rule 3). ``correction.REASON_*`` is the closed vocabulary.
 """
 
 import grp

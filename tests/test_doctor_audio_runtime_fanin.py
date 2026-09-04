@@ -191,7 +191,7 @@ def test_one_doctor_pass_opens_the_fanin_status_socket_once(monkeypatch):
     """Every fan-in STATUS consumer in this module shares ONE read.
 
     The five checks below used to open ``/run/jasper-fanin/control.sock`` five
-    times per run; the evidence cache is what makes that one (ADR-0232 rule 4).
+    times per run; the evidence cache is what makes that one (ADR-0233 rule 4).
     """
     opens: list[str] = []
 

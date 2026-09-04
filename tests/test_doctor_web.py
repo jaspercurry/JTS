@@ -411,7 +411,7 @@ def test_conversation_history_is_ok_when_capture_is_intentionally_off(
     monkeypatch, tmp_path,
 ):
     """Capture off is the operator's own setting and it WAS observed, so the
-    row is `ok` carrying the fact — not a skip (ADR-0232 rule 3)."""
+    row is `ok` carrying the fact — not a skip (ADR-0233 rule 3)."""
     _history_settings(monkeypatch, tmp_path, enabled="0")
 
     r = doctor_web.check_conversation_history()

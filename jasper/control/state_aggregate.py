@@ -833,10 +833,10 @@ def _soft_read(
 def _read_persisted_volume() -> tuple[int | None, float | None]:
     """The persisted listening level and main volume, in that order."""
     from ..volume_coordinator import VolumeState
-    from ..volume_persistence import VolumePersistence, configured_path
+    from ..volume_persistence import VolumePersistence
+    from ..volume_persistence import configured_path as volume_state_path
 
-    path = configured_path()
-    record = VolumePersistence(path).load()
+    record = VolumePersistence(volume_state_path()).load()
     if record is None:
         return None, None
     return (

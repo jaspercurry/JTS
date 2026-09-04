@@ -21,7 +21,7 @@ _AUDIO_UNITS = (
 
 
 def _seed_units(*, enabled="enabled", active="active"):
-    """Seed the run's ONE ``systemctl show`` (ADR-0232 rule 4).
+    """Seed the run's ONE ``systemctl show`` (ADR-0233 rule 4).
 
     ``enabled="not-found"`` is systemd's answer for a unit it does not have,
     which the batched reader reports as ``load_state``, not as a file state.
@@ -261,7 +261,7 @@ def _patch_status_reader(monkeypatch, payload: bytes):
     """Answer this run's ONE read of each daemon STATUS socket with ``payload``.
 
     The seam is the evidence cache's reader, so several checks over one daemon
-    still cost one read (ADR-0232 rule 4), and the reader's own contract —
+    still cost one read (ADR-0233 rule 4), and the reader's own contract —
     raise on unparseable bytes, raise on a non-object root — is preserved here
     so the callers' classification branches stay under test.
     """

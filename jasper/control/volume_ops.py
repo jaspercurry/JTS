@@ -70,11 +70,10 @@ def read_volume_state() -> "VolumeState":
     registry, or OAuth client construction.
     """
     from ..volume_coordinator import VolumeState
-    from ..volume_persistence import VolumePersistence, configured_path
+    from ..volume_persistence import VolumePersistence
+    from ..volume_persistence import configured_path as volume_state_path
 
-    persistence = VolumePersistence(
-        configured_path(),
-    )
+    persistence = VolumePersistence(volume_state_path())
     return VolumeState.from_record(persistence.load())
 
 
@@ -198,12 +197,11 @@ async def _with_coordinator(
     from ..renderer import RendererClient
     from ..speaker_name import runtime_name as _speaker_runtime_name
     from ..volume_coordinator import VolumeCoordinator
-    from ..volume_persistence import VolumePersistence, configured_path
+    from ..volume_persistence import VolumePersistence
+    from ..volume_persistence import configured_path as volume_state_path
 
     camilla = CamillaController(host=camilla_host, port=camilla_port)
-    persistence = VolumePersistence(
-        configured_path(),
-    )
+    persistence = VolumePersistence(volume_state_path())
     backend = RendererClient(
         librespot_state_path=librespot_state.configured_path(),
     )

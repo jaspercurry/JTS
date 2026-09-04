@@ -10,7 +10,8 @@ import json
 import time
 from typing import Any
 
-MUX_CONTROL_SOCKET_PATH = "/run/jasper-mux/control.sock"
+from ..route_latency.status_socket import MUX_CONTROL_SOCKET_PATH
+
 # The one ceiling every local STATUS reader in jasper-control shares.  It is a
 # safety bound on a hostile or wedged local daemon, not a size estimate for any
 # particular payload — set it far above what any daemon actually answers so

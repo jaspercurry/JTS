@@ -495,8 +495,7 @@ class VolumePersistence:
 
 
 def configured_path() -> str:
-    """``JASPER_VOLUME_STATE_PATH`` or the default — the one reader of where
-    the persisted speaker volume lives (ADR-0232 rule 1)."""
+    """JASPER_VOLUME_STATE_PATH or the default."""
     return os.environ.get("JASPER_VOLUME_STATE_PATH") or VolumePersistence.DEFAULT_PATH
 
 

@@ -1,4 +1,4 @@
-# ADR-0232: One reader per fact, two surfaces, one doctor
+# ADR-0233: One reader per fact, two surfaces, one doctor
 
 - **Date:** 2026-09-03
 - **Status:** Accepted

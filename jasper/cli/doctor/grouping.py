@@ -113,7 +113,7 @@ def _devices_rate_adjust_from_text(text: str) -> bool | None:
 
 def _unit_active_word(unit: str) -> str:
     """A unit's ``systemctl is-active`` word, from the shared evidence cache
-    (ADR-0232 rule 4); ``"unknown"`` when systemctl itself is unavailable."""
+    (ADR-0233 rule 4); ``"unknown"`` when systemctl itself is unavailable."""
     state = evidence.unit_state(unit)
     if state is None:
         return "unknown"
@@ -1333,7 +1333,7 @@ def check_crossover_unit_installed() -> CheckResult:
 
     unit = "jasper-camilla-crossover.service"
     # LoadState answers "is the unit installed" off the shared evidence cache
-    # (ADR-0232 rule 1) rather than a dedicated `systemctl cat`; `not-found` /
+    # (ADR-0233 rule 1) rather than a dedicated `systemctl cat`; `not-found` /
     # `masked` are the only "nothing to arm" states — a broken-but-present
     # unit file (`error` / `bad-setting`) still counts as installed.
     state = evidence.unit_state(unit)

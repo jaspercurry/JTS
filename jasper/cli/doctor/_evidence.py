@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Per-run evidence cache for jasper-doctor (ADR-0232 rule 4).
+"""Per-run evidence cache for jasper-doctor (ADR-0233 rule 4).
 
 Each evidence source is read once per run; checks are functions over the
 cache. A reader here owns only the read and its fail-soft shape; the verdict

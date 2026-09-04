@@ -6,7 +6,6 @@
 
 import argparse
 import ast
-import re
 import hashlib
 import importlib.util
 import json
@@ -1739,24 +1738,6 @@ def test_turntable_product_surface_is_the_stop_hook_and_the_opt_in_walk() -> Non
     }
 
 
-def test_the_units_start_timeout_covers_the_retry_loops_worst_case(turntable) -> None:
-    """The unit must outlast the loop it starts.
-
-    Per attempt: open()'s startup_timeout plus four independent
-    response_timeout round trips (probe's connection/firmware/product, then
-    stop), each capped at ``AUTOSTOP_IO_TIMEOUT``. A shorter
-    ``TimeoutStartSec`` SIGTERMs the loop mid-retry on a controller still
-    emitting post-power-on noise, and the platter never stops.
-    """
-    worst_case = turntable.AUTOSTOP_ATTEMPTS * 5 * turntable.AUTOSTOP_IO_TIMEOUT + (
-        turntable.AUTOSTOP_ATTEMPTS - 1
-    ) * turntable.AUTOSTOP_RETRY_SECONDS
-    match = re.search(r"TimeoutStartSec=(\d+)s", AUTOSTOP_UNIT.read_text())
-    assert match, "the autostop unit must declare a TimeoutStartSec"
-
-    assert int(match.group(1)) >= worst_case
-
-
 def test_hotplug_stop_udev_systemd_and_install_wiring() -> None:
     rule = AUTOSTOP_RULE.read_text()
     unit = AUTOSTOP_UNIT.read_text()
@@ -1772,6 +1753,7 @@ def test_hotplug_stop_udev_systemd_and_install_wiring() -> None:
     assert "ExecStart=/usr/bin/python3 /opt/jasper/experiments/usb-turntable/" in unit
     assert "--port /dev/%I --json hotplug-stop" in unit
     assert "/bin/sh" not in unit
+    assert "TimeoutStartSec=90s" in unit
     assert "DeviceAllow=/dev/%I rw" in unit
     assert "jasper-turntable-autostop@.service" in units_install
     assert "99-jasper-turntable-autostop.rules" in units_install

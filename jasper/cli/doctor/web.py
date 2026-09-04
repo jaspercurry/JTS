@@ -262,7 +262,7 @@ def check_conversation_history() -> CheckResult:
     settings = read_settings()
     if not settings.capture_enabled:
         # Off by operator intent, and the off state WAS observed — `ok` with
-        # a reason, not a skip (ADR-0232 rule 3).
+        # a reason, not a skip (ADR-0233 rule 3).
         return CheckResult(
             label, "ok", "capture disabled", reason=REASON_HISTORY_DISABLED,
         )

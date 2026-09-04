@@ -12,7 +12,7 @@ import json
 import stat
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, assert_never
 
 from jasper.active_speaker.profile import (
     ActiveSpeakerConfigError,
@@ -41,6 +41,7 @@ from jasper.active_speaker.runtime_contract import (
 from jasper.active_speaker.runtime_convergence import compose_selected_flat_graph
 from jasper.active_speaker.staging import load_staged_startup_config
 from jasper.active_speaker.startup_load import (
+    ReemitAnchorReport,
     describe_safe_graph_for_refusal,
     reemit_staged_startup_anchor,
     startup_anchor_from_decision,
@@ -441,6 +442,89 @@ def _baseline_reemit_endpoint(
     return resolve_active_playback_device(topology)
 
 
+def _print_startup_anchor_reemit(
+    report: ReemitAnchorReport, args: argparse.Namespace
+) -> int:
+    """Render one anchor re-emit report; operator text lives here, not in the engine."""
+    if report.reason is None:
+        if args.json:
+            print(json.dumps({
+                "playback_device": report.device,
+                "playback_device_source": report.source,
+                "classification": report.classification,
+                "preview": report.preview,
+                "written_path": str(report.written_path),
+                "statefile_path": str(args.statefile),
+                "statefile_written": report.statefile_written,
+                "bytes": report.byte_count,
+                "reemitted": "staged_startup_anchor",
+            }, indent=2, sort_keys=True))
+            return 0
+        print(f"Re-staged all-muted startup anchor against playback_device={report.device}")
+        print(f"  source:         {report.source}")
+        print(f"  classification: {report.classification}")
+        print(f"  bytes:          {report.byte_count}")
+        if report.preview:
+            print(f"  PREVIEW only:   {report.written_path}")
+            print("  (live artifact, staged metadata and statefile untouched)")
+        else:
+            print(f"  wrote:          {report.written_path}")
+            print("  statefile:      " + (
+                f"repointed -> {report.written_path}"
+                if report.statefile_written
+                else "already correct"
+            ))
+        return 0
+
+    if report.reason == "commission_load_active":
+        next_step = (
+            "A per-driver commissioning config is loaded, and this command "
+            "republishes the all-muted anchor that commission-rollback / "
+            "commission-ramp abort / `ack --outcome too_loud` reload. Run "
+            "`commission-rollback` first, or pass --force."
+        )
+        if args.json:
+            print(json.dumps({
+                "status": "refused",
+                "reason": report.reason,
+                "active_target": report.active_target,
+                "candidate_config_path": report.candidate_config_path,
+                "next_step": next_step,
+            }, indent=2, sort_keys=True))
+            return 1
+        print("Re-emit refused: a per-driver commissioning load is active.")
+        print(f"  active target: {report.active_target}")
+        print(f"  {next_step}")
+        return 1
+
+    if report.reason == "stage_failed":
+        print(
+            "ERROR: could not re-stage the all-muted startup anchor against "
+            f"{report.device}; NOTHING was written"
+        )
+    elif report.reason == "reproof_failed":
+        print(
+            "ERROR: the re-staged startup anchor did not re-prove as "
+            f"{GRAPH_ALL_MUTED_ACTIVE_STARTUP}; NOTHING was written"
+        )
+        print(f"  found:  {report.detail}")
+    elif report.reason == "out_parent_missing":
+        print(f"ERROR: parent directory does not exist: {report.detail}")
+    elif report.reason == "lock_contended":
+        print(
+            "ERROR: another writer is publishing the startup anchor "
+            f"({report.detail}); NOTHING was written"
+        )
+    else:
+        assert_never(report.reason)
+    for issue in report.issues:
+        print(
+            f"  [{issue.get('severity')}] {issue.get('code')}: "
+            f"{issue.get('message') or issue.get('detail')}"
+        )
+    return 1
+
+
 def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
     """Re-emit the APPLIED active baseline against a chosen playback endpoint.
 
@@ -541,7 +625,12 @@ def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
             ),
         )
         if startup_anchor_from_decision(decision) is not None:
-            return reemit_staged_startup_anchor(args, topology, device, source)
+            report = reemit_staged_startup_anchor(
+                topology, device=device, source=source, out=args.out,
+                force=args.force, statefile=args.statefile,
+                applied_baseline_state=args.applied_baseline_state,
+            )
+            return _print_startup_anchor_reemit(report, args)
         print(
             "ERROR: no APPLIED active-speaker baseline profile is saved, and this "
             "box is not on the all-muted active startup graph either, so there is "

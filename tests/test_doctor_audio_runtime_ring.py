@@ -129,7 +129,7 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
 def test_unarmed_renderer_lanes_report_skipped(monkeypatch):
     """An unarmed box (the fleet default) formed no verdict, and is not failing.
 
-    ADR-0232 rule 3: a check that did not run says `skipped`, never `ok`. It
+    ADR-0233 rule 3: a check that did not run says `skipped`, never `ok`. It
     must also stay exit-0 — the next test drives the same result through the
     real render path to pin that.
     """

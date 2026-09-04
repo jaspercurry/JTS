@@ -17,7 +17,6 @@ lives in `commission_load`.
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import math
@@ -25,7 +24,7 @@ import stat
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal, NamedTuple
 
 from jasper.atomic_io import atomic_write_json
 from jasper.control.restart_broker import manage_units
@@ -1165,17 +1164,47 @@ def _relocate_validation_evidence(
     return relocated
 
 
+#: Every way the re-emit can decline. Closed so the renderer stays exhaustive.
+ReemitAnchorRefusal = Literal[
+    "commission_load_active", "stage_failed", "reproof_failed",
+    "out_parent_missing", "lock_contended",
+]
+
+
+class ReemitAnchorReport(NamedTuple):
+    """What one startup-anchor re-emit did. The CLI owns how these facts print."""
+
+    device: str
+    source: str
+    reason: ReemitAnchorRefusal | None = None  # None: the anchor was re-emitted
+    classification: str | None = None
+    written_path: Path | None = None
+    preview: bool = False
+    statefile_written: bool = False
+    byte_count: int = 0
+    detail: str | None = None  # the refusing branch's one extra fact
+    issues: tuple[Mapping[str, Any], ...] = ()
+    active_target: str | None = None
+    candidate_config_path: str | None = None
+
+
 def reemit_staged_startup_anchor(
-    args: argparse.Namespace, topology: Any, device: str, source: str
-) -> int:
+    topology: Any,
+    *,
+    device: str,
+    source: str,
+    statefile: str | Path,
+    applied_baseline_state: str | Path | None = None,
+    out: str | Path | None = None,
+    force: bool = False,
+) -> ReemitAnchorReport:
     """Re-stage the all-muted startup ANCHOR against ``device``. Step 1, no baseline.
 
     The fleet-typical composite box is mid-commission by design: it has no
     APPLIED baseline, and its boot graph is the all-muted staged startup graph.
     Its ring arm needs the same first step every roleful box needs — the GRAPH
     moves first, so ``jasper-audio-hardware-reconcile`` has a loaded graph to
-    derive the endpoint marker FROM. Refusing here left that box with no step 1
-    at all, and therefore no way onto (or off) the ring.
+    derive the endpoint marker FROM.
 
     DERIVED FROM PERSISTED STATE ONLY. The re-stage reads the box's own saved
     design draft and crossover preview — the same two files
@@ -1235,26 +1264,12 @@ def reemit_staged_startup_anchor(
     # Single-flight (see SINGLE-FLIGHT above). Checked BEFORE the stage, so a
     # refused run does no work and touches nothing at all.
     existing = load_commission_load_state()
-    if existing.get("status") == "loaded" and not args.force:
-        refusal = {
-            "status": "refused",
-            "reason": "commission_load_active",
-            "active_target": existing.get("target"),
-            "candidate_config_path": existing.get("candidate_config_path"),
-            "next_step": (
-                "A per-driver commissioning config is loaded, and this command "
-                "republishes the all-muted anchor that commission-rollback / "
-                "commission-ramp abort / `ack --outcome too_loud` reload. Run "
-                "`commission-rollback` first, or pass --force."
-            ),
-        }
-        if args.json:
-            print(json.dumps(refusal, indent=2, sort_keys=True))
-        else:
-            print("Re-emit refused: a per-driver commissioning load is active.")
-            print(f"  active target: {existing.get('target')}")
-            print(f"  {refusal['next_step']}")
-        return 1
+    if existing.get("status") == "loaded" and not force:
+        return ReemitAnchorReport(
+            device, source, "commission_load_active",
+            active_target=existing.get("target"),
+            candidate_config_path=existing.get("candidate_config_path"),
+        )
 
     design_draft = load_design_draft()
     crossover_preview = load_crossover_preview(current_design_draft=design_draft)
@@ -1274,16 +1289,9 @@ def reemit_staged_startup_anchor(
             if isinstance(issue, Mapping) and issue.get("severity") == "blocker"
         ]
         if payload.get("status") != "staged" or blockers:
-            print(
-                "ERROR: could not re-stage the all-muted startup anchor against "
-                f"{device}; NOTHING was written"
+            return ReemitAnchorReport(
+                device, source, "stage_failed", issues=tuple(blockers)
             )
-            for issue in blockers:
-                print(
-                    f"  [{issue.get('severity')}] {issue.get('code')}: "
-                    f"{issue.get('message') or issue.get('detail')}"
-                )
-            return 1
 
         proof_path = Path(payload["config"]["path"])
         yaml = proof_path.read_text(encoding="utf-8")
@@ -1305,9 +1313,7 @@ def reemit_staged_startup_anchor(
         proof_decision = safe_graph_for_current_topology(
             topology,
             current_config_path=proof_path,
-            applied_baseline_path=baseline_profile_state_path(
-                args.applied_baseline_state
-            ),
+            applied_baseline_path=baseline_profile_state_path(applied_baseline_state),
             staged_metadata_path=Path(payload["metadata_path"]),
             # There is no applied baseline on this path by definition; saying so
             # keeps a missing-baseline read out of the decision entirely.
@@ -1316,33 +1322,23 @@ def reemit_staged_startup_anchor(
         graph = startup_anchor_from_decision(proof_decision)
         selected = proof_decision.selected_config_path
         if graph is None or selected != str(proof_path):
-            print(
-                "ERROR: the re-staged startup anchor did not re-prove as "
-                f"{GRAPH_ALL_MUTED_ACTIVE_STARTUP}; NOTHING was written"
+            return ReemitAnchorReport(
+                device, source, "reproof_failed",
+                detail=describe_safe_graph_for_refusal(proof_decision),
+                issues=tuple(proof_decision.issues),
             )
-            print(f"  found:  {describe_safe_graph_for_refusal(proof_decision)}")
-            for issue in proof_decision.issues:
-                print(
-                    f"  [{issue.get('severity')}] {issue.get('code')}: "
-                    f"{issue.get('message')}"
-                )
-            return 1
 
-        if args.out:
-            preview_path = Path(args.out)
+        if out:
+            preview_path = Path(out)
             if not preview_path.parent.exists():
-                print(f"ERROR: parent directory does not exist: {preview_path.parent}")
-                return 1
+                return ReemitAnchorReport(
+                    device, source, "out_parent_missing",
+                    detail=str(preview_path.parent),
+                )
             atomic_write_text(preview_path, yaml, mode=0o640)
-            return _report_startup_anchor_reemit(
-                args,
-                device=device,
-                source=source,
-                classification=graph.classification,
-                yaml=yaml,
-                written_path=preview_path,
-                preview=True,
-                statefile_written=False,
+            return ReemitAnchorReport(
+                device, source, classification=graph.classification,
+                written_path=preview_path, preview=True, byte_count=len(yaml),
             )
 
         # Publish the PROVEN bytes. YAML first, then the metadata that locates
@@ -1412,70 +1408,18 @@ def reemit_staged_startup_anchor(
                     durable=True,
                 )
         except StagedAnchorLockContended as exc:
-            print(
-                "ERROR: another writer is publishing the startup anchor "
-                f"({exc}); NOTHING was written"
+            return ReemitAnchorReport(
+                device, source, "lock_contended", detail=str(exc)
             )
-            return 1
 
-        statefile = Path(args.statefile)
+        statefile_path = Path(statefile)
         statefile_written = False
-        if read_camilla_statefile_config_path(statefile) != str(target):
-            write_camilla_statefile(statefile, target)
+        if read_camilla_statefile_config_path(statefile_path) != str(target):
+            write_camilla_statefile(statefile_path, target)
             statefile_written = True
 
-        return _report_startup_anchor_reemit(
-            args,
-            device=device,
-            source=source,
-            classification=graph.classification,
-            yaml=yaml,
-            written_path=target,
-            preview=False,
-            statefile_written=statefile_written,
+        return ReemitAnchorReport(
+            device, source, classification=graph.classification,
+            written_path=target, statefile_written=statefile_written,
+            byte_count=len(yaml),
         )
-
-
-def _report_startup_anchor_reemit(
-    args: argparse.Namespace,
-    *,
-    device: str,
-    source: str,
-    classification: str,
-    yaml: str,
-    written_path: Path,
-    preview: bool,
-    statefile_written: bool,
-) -> int:
-    payload = {
-        "playback_device": device,
-        "playback_device_source": source,
-        "classification": classification,
-        "preview": preview,
-        "written_path": str(written_path),
-        "statefile_path": str(args.statefile),
-        "statefile_written": statefile_written,
-        "bytes": len(yaml),
-        "reemitted": "staged_startup_anchor",
-    }
-    if args.json:
-        print(json.dumps(payload, indent=2, sort_keys=True))
-        return 0
-    print(f"Re-staged all-muted startup anchor against playback_device={device}")
-    print(f"  source:         {source}")
-    print(f"  classification: {classification}")
-    print(f"  bytes:          {len(yaml)}")
-    if preview:
-        print(f"  PREVIEW only:   {written_path}")
-        print("  (live artifact, staged metadata and statefile untouched)")
-    else:
-        print(f"  wrote:          {written_path}")
-        print(
-            "  statefile:      "
-            + (
-                f"repointed -> {written_path}"
-                if statefile_written
-                else "already correct"
-            )
-        )
-    return 0

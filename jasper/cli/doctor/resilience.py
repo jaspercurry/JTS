@@ -24,7 +24,7 @@ from ._shared import (
 # Machine-stable codes naming which branch of a resilience check produced a
 # result (AGENTS.md: tests pin status + reason, never detail prose). A check
 # that genuinely observed nothing (systemctl/jasper-control unreachable)
-# reports "skipped" with a reason rather than "ok" — ADR-0232 rule 3.
+# reports "skipped" with a reason rather than "ok" — ADR-0233 rule 3.
 REASON_UNITS_FAILED_OR_UNSTABLE = "units_failed_or_unstable"
 REASON_UNITS_RESTARTED = "units_restarted"
 

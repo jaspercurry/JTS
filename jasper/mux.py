@@ -95,7 +95,7 @@ from .busctl import system_busctl
 from .control import restart_broker
 from .fanin.control import fanin_command
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
-from .route_latency.status_socket import FANIN_STATUS_SOCKET
+from .route_latency.status_socket import FANIN_STATUS_SOCKET, MUX_CONTROL_SOCKET_PATH
 from .source_state import (
     airplay_playing_observed as airplay_playing,
     bluetooth_playing_observed as bluetooth_playing,
@@ -111,7 +111,6 @@ logger = logging.getLogger(__name__)
 FANIN_CONTROL_SOCKET = os.environ.get(
     "JASPER_FANIN_CONTROL_SOCKET", FANIN_STATUS_SOCKET,
 )
-MUX_CONTROL_SOCKET = "/run/jasper-mux/control.sock"
 # Persisted so a household's manual pin survives the Restart=always
 # deploy/restart cycle. RuntimeDirectory is wiped on restart, so this lives
 # under /var/lib/jasper, not /run.
@@ -1161,12 +1160,11 @@ class Mux:
         from .renderer import RendererClient
         from .speaker_name import runtime_name as speaker_runtime_name
         from .volume_coordinator import VolumeCoordinator
-        from .volume_persistence import VolumePersistence, configured_path
+        from .volume_persistence import VolumePersistence
+        from .volume_persistence import configured_path as volume_state_path
 
         camilla = primary_controller()
-        persistence = VolumePersistence(
-            configured_path(),
-        )
+        persistence = VolumePersistence(volume_state_path())
         backend = RendererClient(librespot_state_path=self._librespot_state_path)
         coordinator = VolumeCoordinator(
             camilla=camilla,
@@ -1449,16 +1447,16 @@ class Mux:
 
     async def _run_control_server(self) -> None:
         try:
-            parent = os.path.dirname(MUX_CONTROL_SOCKET)
+            parent = os.path.dirname(MUX_CONTROL_SOCKET_PATH)
             if parent:
                 os.makedirs(parent, exist_ok=True)
             try:
-                os.unlink(MUX_CONTROL_SOCKET)
+                os.unlink(MUX_CONTROL_SOCKET_PATH)
             except FileNotFoundError:
                 pass
             server = await asyncio.start_unix_server(
                 self._handle_control_client,
-                path=MUX_CONTROL_SOCKET,
+                path=MUX_CONTROL_SOCKET_PATH,
             )
             # 0660: mux runs as the non-root user jasper-mux with primary group
             # `jasper`, so the socket is jasper-mux:jasper and only root plus
@@ -1466,10 +1464,10 @@ class Mux:
             # connect. Best-effort, like the voice / peering sockets' post-bind
             # chmod.
             try:
-                os.chmod(MUX_CONTROL_SOCKET, 0o660)
+                os.chmod(MUX_CONTROL_SOCKET_PATH, 0o660)
             except OSError as e:
                 logger.warning("mux control socket chmod failed: %s", e)
-            logger.info("mux control socket listening at %s", MUX_CONTROL_SOCKET)
+            logger.info("mux control socket listening at %s", MUX_CONTROL_SOCKET_PATH)
             async with server:
                 await server.serve_forever()
         except asyncio.CancelledError:

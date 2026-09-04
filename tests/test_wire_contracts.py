@@ -27,6 +27,7 @@ from jasper.cli.aec_init import RECENT_WRITES_KEY, _reference_writes
 REPO = Path(__file__).resolve().parents[1]
 FANIN_STATE_RS = REPO / "rust" / "jasper-fanin" / "src" / "state.rs"
 FANIN_CONFIG_RS = REPO / "rust" / "jasper-fanin" / "src" / "config.rs"
+FANIN_MAIN_RS = REPO / "rust" / "jasper-fanin" / "src" / "main.rs"
 OUTPUTD_STATE_RS = REPO / "rust" / "jasper-outputd" / "src" / "state.rs"
 
 
@@ -521,8 +522,10 @@ def test_fanin_control_command_vocabulary_matches_mux():
 
 def test_control_socket_paths_agree_across_processes(monkeypatch):
     """fan-in's control socket path is a hardcoded Rust constant (its
-    config.rs reads no env override) and outputd's unit pins the env
-    explicitly. Every Python consumer below resolves the shared constant, so
+    config.rs reads no env override), outputd's unit pins the env explicitly,
+    and mux's is hardcoded on both sides — fan-in's source-notify thread spells
+    it in Rust, so it is pinned against the Python constant here. Every Python
+    consumer below resolves the shared constant, so
     the VALUE each process will connect to is asserted here: if either daemon
     moves its socket, every consumer moves with it in the same PR.
 
@@ -532,10 +535,10 @@ def test_control_socket_paths_agree_across_processes(monkeypatch):
     that documented override would redden this; its default IS the shared
     constant by construction, and ``tests/test_mux.py`` owns the override.
     """
-    from jasper import audio_validation
+    from jasper import audio_validation, mux, renderer
     from jasper.cli import system_soak
     from jasper.cli.doctor import audio_runtime_fanin, audio_runtime_outputd
-    from jasper.control import grouping_supervisor
+    from jasper.control import audio_health, grouping_supervisor, uds
     from jasper.correction import runtime_integrity
     from jasper.fanin import status as fanin_status
     from jasper.peering.config import PEERING_UDS_PATH
@@ -545,8 +548,10 @@ def test_control_socket_paths_agree_across_processes(monkeypatch):
 
     fanin_sock = "/run/jasper-fanin/control.sock"
     outputd_sock = "/run/jasper-outputd/control.sock"
+    mux_sock = "/run/jasper-mux/control.sock"
 
     assert f'"{fanin_sock}"' in FANIN_CONFIG_RS.read_text()
+    assert f'"{mux_sock}"' in FANIN_MAIN_RS.read_text()
     unit = (REPO / "deploy" / "systemd" / "jasper-outputd.service").read_text()
     assert f'Environment="JASPER_OUTPUTD_CONTROL_SOCKET={outputd_sock}"' in unit
 
@@ -566,6 +571,14 @@ def test_control_socket_paths_agree_across_processes(monkeypatch):
         str(audio_validation.DEFAULT_OUTPUTD_STATUS_SOCKET),
         system_soak.STATUS_SOCKETS["outputd"],
     } == {outputd_sock}
+    assert {
+        status_socket.MUX_CONTROL_SOCKET_PATH,
+        mux.MUX_CONTROL_SOCKET_PATH,
+        renderer.MUX_CONTROL_SOCKET_PATH,
+        uds.MUX_CONTROL_SOCKET_PATH,
+        audio_health.MUX_CONTROL_SOCKET_PATH,
+        system_soak.STATUS_SOCKETS["mux"],
+    } == {mux_sock}
 
     # voice connects where jasper-control's peering daemon binds.
     monkeypatch.delenv("JASPER_PEERING_UDS", raising=False)
