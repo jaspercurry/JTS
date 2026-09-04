@@ -4,15 +4,9 @@
 
 """``jasper-doctor`` — preflight diagnostic CLI (package entry).
 
-The console-script entry point
-(``jasper-doctor = jasper.cli.doctor:main``) and every public
-name external code or the test-suite imports resolve from this
-``__init__``: the checks live in per-domain modules
-(:mod:`~jasper.cli.doctor.audio`,
-:mod:`~jasper.cli.doctor.audio_runtime`,
-:mod:`~jasper.cli.doctor.network`, …) and the cross-cutting
-harness/helpers in :mod:`~jasper.cli.doctor._shared`, re-exported
-here.
+Every public name external code and the test-suite import resolves from
+this ``__init__``; the checks themselves live in per-domain modules and
+the harness in :mod:`~jasper.cli.doctor._shared`.
 
 Usage:
     sudo /opt/jasper/.venv/bin/jasper-doctor             # one shot
@@ -20,13 +14,11 @@ Usage:
     sudo /opt/jasper/.venv/bin/jasper-doctor --watch -i 2  # loop, 2s
 
 The doctor reads ``/etc/jasper/jasper.env`` and (if present)
-``/var/lib/jasper/voice_provider.env`` itself. Returns 0 if all
-critical checks pass, 1 otherwise. --watch never returns by
-itself; exits 0 on Ctrl-C.
+``/var/lib/jasper/voice_provider.env`` itself. Exit 0 if all critical
+checks pass, 1 otherwise; --watch exits 0 on Ctrl-C.
 
-Check membership and order are owned by the registry
-(:mod:`~jasper.cli.doctor._registry`); :func:`run_async` builds
-the ``DoctorCheck`` sequence from it."""
+Check membership and order are owned by
+:mod:`~jasper.cli.doctor._registry`."""
 from __future__ import annotations
 
 import argparse
@@ -361,9 +353,8 @@ _STREAMBOX_OMITTED_DOCTOR_CHECKS = frozenset({
 
 
 def _registered_check_name(entry) -> str:
-    """The displayed and crash-path name of a registered check — one rule for
-    every calling convention, so a check cannot be named one thing on a full
-    box and another on a streambox."""
+    """One naming rule for every calling convention, so a check cannot be
+    named one thing on a full box and another on a streambox."""
     return entry.label or _check_name(entry.func)
 
 
@@ -692,15 +683,10 @@ def render(results: list[CheckResult]) -> int:
                 fails += 1
         print(f"  {color}{mark}{RESET} {r.name:24s} {r.detail}")
     print()
-    # #2471: a parked speaker's warn used to end the run on "non-critical",
-    # which is the one thing it is not — the household hears nothing. The
-    # silence LEADS the line, because it outranks every count behind it and
-    # because no count can be misread as attributing it to the wrong result.
-    # It is one phrase for a warn and for a fail: the household outcome is the
-    # same either way, and which check said so is already on the lines above.
-    #
-    # Severity rides the WORDS. Colour and exit code keep their single meaning
-    # (red / 1 = something is broken), so a parked box stays deployable (#2145).
+    # Silence leads the summary line, in the same phrase for a warn and a
+    # fail: the household outcome is the same either way. Severity rides the
+    # WORDS — colour and exit code keep their single meaning (red / 1 =
+    # something is broken), so a parked box stays deployable (#2145).
     lead = "the speaker is silent — " if silent else ""
     if fails:
         print(f"{RED}{lead}{fails} failed, {warns} warning(s).{RESET}")
@@ -729,9 +715,8 @@ def _json_payload(
 
 
 def _error_payload(error: str, *, detail: str, reason: str) -> dict:
-    """The payload for a run that produced no results at all (config error,
-    doctor crash). One row, shaped like every row `_json_payload` emits, so
-    the dashboard has a single row shape to render."""
+    """One row, shaped like every row `_json_payload` emits, for a run that
+    produced no results at all (config error, doctor crash)."""
     return {
         "error": error,
         **_json_payload([CheckResult("jasper-doctor", "fail", detail, reason=reason)]),
@@ -741,11 +726,9 @@ def _error_payload(error: str, *, detail: str, reason: str) -> dict:
 def _emit_json(payload: dict, out_path: str | None) -> None:
     """Emit the JSON report to stdout, or atomically to ``out_path``.
 
-    ``--out`` is how the non-root jasper-control gets a ROOT-fidelity report
-    (WS1 Phase 3b-2): a root ``jasper-doctor-json.service`` oneshot writes here
-    and jasper-control serves the file at /system/diagnostics. 0640 so the
-    `jasper` group (jasper-control's primary group; the oneshot runs root:jasper)
-    can read it without it being world-readable."""
+    Mode 0640 so the `jasper` group (jasper-control's primary group; the
+    root ``jasper-doctor-json.service`` oneshot that writes here runs
+    root:jasper) can read the report without it being world-readable."""
     import json as _json
     text = _json.dumps(payload)
     if out_path is None:
@@ -761,16 +744,13 @@ def render_json(
     *,
     duration_sec: float | None = None,
 ) -> int:
-    """Machine-readable output for the /system dashboard.
+    """Machine-readable output for the /system dashboard, fetched via
+    /system/diagnostics → jasper-control.
 
-    The web UI fetches this via /system/diagnostics → jasper-control. Returns
-    text-render exit semantics (0 = ok/warn only; 1 = a fail) on the stdout
-    path. With ``out_path`` (the dashboard-capture oneshot), the report lands
-    in the file and we return 0 — the file carries the pass/fail, and a
-    non-zero exit would needlessly flip the oneshot to ``failed``.
-
-    Schema is intentionally flat — one row per check — so the dashboard can
-    render a table without complex per-check logic."""
+    Returns text-render exit semantics (0 = ok/warn only; 1 = a fail) on the
+    stdout path. With ``out_path`` the report lands in the file and this
+    returns 0 — the file carries the pass/fail, and a non-zero exit would
+    needlessly flip the writing oneshot to ``failed``."""
     payload = _json_payload(results, duration_sec=duration_sec)
     _emit_json(payload, out_path)
     if out_path is not None:
@@ -778,10 +758,8 @@ def render_json(
     return 1 if payload["fails"] else 0
 
 def _watch_line(results: list[CheckResult]) -> str:
-    """One-line summary for --watch mode. Counts + first non-ok name so
-    a glance tells the operator whether something flipped since the last
-    iteration. Timestamp on the front so the line is meaningful when
-    redirected to a file."""
+    """One-line summary for --watch mode: timestamp, counts, first non-ok
+    name."""
     fails = [r for r in results if r.status == "fail"]
     warns = [r for r in results if r.status == "warn"]
     ts = time.strftime("%H:%M:%S")
@@ -853,11 +831,9 @@ def _doctor_check_timeout() -> float:
 def _local_audio_config_from_env() -> SimpleNamespace:
     """Cfg surface for profiles that run local audio without a voice brain.
 
-    Streambox installs intentionally do not require a
-    voice provider. Keep this namespace to the attributes retained doctor
-    checks actually read, so jasper-doctor can still validate local audio,
-    renderer, correction, memory, network, and web health without pulling
-    the full voice Config into small-device profiles.
+    Streambox installs deliberately require no voice provider, so this
+    namespace carries only the attributes the retained checks read rather
+    than the full voice ``Config``.
     """
     hostname = resolve_hostname()
     spotify_redirect_default = default_spotify_redirect_uri(hostname)
@@ -972,10 +948,10 @@ async def _run_runnable_with_timeout(
     runnable: _RunnableDoctorCheck,
     timeout: float,
 ) -> CheckResult:
-    # This is an outer row-level guard. `asyncio.to_thread` cannot kill a
-    # worker that is already inside a blocking syscall, and asyncio will wait
-    # for default-executor threads during shutdown. Keep individual blocking
-    # probes bounded with their own subprocess/socket timeouts too.
+    # Outer row-level guard only: `asyncio.to_thread` cannot kill a worker
+    # already inside a blocking syscall, and asyncio waits for
+    # default-executor threads during shutdown. Blocking probes must stay
+    # bounded by their own subprocess/socket timeouts too.
     try:
         return await asyncio.wait_for(
             _run_runnable_doctor_check(runnable),
@@ -1036,8 +1012,8 @@ def main() -> None:
              "Refuses if a renderer is currently playing.",
     )
     args = parser.parse_args()
-    # --out is a JSON-to-file capture; it implies --json so the oneshot can
-    # pass `--json --out PATH` (or just `--out PATH`) and always get a report.
+    # --out implies --json so the capture oneshot can pass either
+    # `--json --out PATH` or a bare `--out PATH`.
     if args.out:
         args.json = True
     _load_env_files()
@@ -1092,14 +1068,12 @@ if __name__ == "__main__":
     main()
 
 async def run_async(cfg: Config | SimpleNamespace) -> list[CheckResult]:
-    """Run every registered check in canonical order and return the results.
+    """Run every registered check and return the results in registry order.
 
-    The registry remains the ordering source of truth. Checks run
-    concurrently because most are subprocess/socket/file probes, but
-    results are gathered in registry order so CLI and dashboard output
-    stay stable. ``exclusive_group=`` registry metadata serializes
-    hardware-sensitive probes within that lane while unrelated checks
-    continue.
+    Checks run concurrently (most are subprocess/socket/file probes) but
+    results are gathered in registry order so CLI and dashboard output stay
+    stable. ``exclusive_group=`` serializes hardware-sensitive probes within
+    that lane while unrelated checks continue.
     """
     evidence.reset()
     install_profile = read_install_profile()

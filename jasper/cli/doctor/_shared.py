@@ -4,27 +4,12 @@
 
 """Shared primitives for the jasper-doctor check package.
 
-The base layer every per-domain check module imports from:
-
-- the output contract re-exported from
-  :mod:`jasper.doctor_contract` (``CheckResult``, ``CHECK_STATUSES``,
-  ``check_row``, ``summarize``, and the harness ``REASON_*`` codes)
-  plus the ``DoctorCheck`` type alias (the union that lets a list
-  entry be either a bare callable or a ``(label, callable)`` tuple);
-- the crash-isolation harness (``_run_doctor_check`` /
-  ``_run_async_doctor_check`` / ``_normalize_doctor_check`` /
-  ``_check_name`` / ``_crashed_check_result`` and the
-  secret-redacting ``_exception_detail``), so one crashing check
-  cannot abort the run;
-- ``_run`` (the subprocess wrapper) and ``_parse_env_file``;
-- ANSI colour constants and the chip-AEC passive check set;
-- the cross-cutting helpers used by more than one domain
-  (``_sha256_file``, ``_meminfo_kb``, ``_RUNTIME_STATE_UNITS``,
-  ``_loopback_playback_active``, ``_parked_follower_result``);
-- the reason codes more than one domain emits
-  (``REASON_SYSTEMCTL_UNAVAILABLE``, ``REASON_SOURCE_INTENT_INVALID``,
-  ``REASON_PARKED_BONDED_FOLLOWER``), each declared beside the helper
-  it belongs to."""
+The base layer every per-domain check module imports from: the output
+contract re-exported from :mod:`jasper.doctor_contract`, the
+crash-isolation harness (so one crashing check cannot abort the run),
+the subprocess/env-file wrappers, the ANSI colour constants, and the
+helpers and ``REASON_*`` codes more than one domain uses — each declared
+beside the helper it belongs to."""
 from __future__ import annotations
 
 import grp
@@ -75,9 +60,8 @@ _CHIP_AEC_PASSIVE_REQUIRED_CHECKS = frozenset({
     "chip_convergence",
 })
 
-# The row contract itself lives in `jasper.doctor_contract` (stdlib-only, so
+# The row contract lives in `jasper.doctor_contract` (stdlib-only, so
 # jasper-control can build contract rows without importing this package).
-# Re-exported here so every domain check module keeps one import site.
 DoctorCheck = Callable[[], CheckResult] | tuple[str, Callable[[], CheckResult]]
 
 _EXCEPTION_DETAIL_LIMIT = 240
@@ -129,8 +113,8 @@ async def _run_async_doctor_check(
     except Exception as e:  # noqa: BLE001
         return _crashed_check_result(name, e)
 
-# systemd is absent (a dev laptop, a container): nothing was observed, so
-# every caller of the systemctl helpers below reports `skipped` with this.
+# systemd absent (a dev laptop, a container): nothing was observed, so the
+# callers of the systemctl helpers report `skipped` with this.
 REASON_SYSTEMCTL_UNAVAILABLE = "systemctl_unavailable"
 
 
@@ -162,22 +146,18 @@ def _parse_systemd_environment(text: str) -> dict[str, str]:
 
 
 def _camilla_block_field(text: str, block: str, key: str) -> str | None:
-    """Scan a CamillaDSP config (text) for ``key`` inside the top-level
-    ``block:`` (e.g. ``devices`` / ``mixers``), returning the raw value after
-    the colon (comment + surrounding-quote stripped), or None if the block or
-    key is absent.
+    """The FIRST value of ``key`` inside the top-level ``block:`` of a
+    CamillaDSP config text (comment + surrounding quotes stripped), or None
+    when block or key is absent.
 
     The value is ``""`` for a key whose value is a nested block (a mixer name
-    like ``channel_select:``), so ``_camilla_block_field(...) is not None`` is
-    the presence test. Returns the FIRST match within the block.
+    like ``channel_select:``), so ``... is not None`` is the presence test.
 
-    This is the doctor's DELIBERATELY fail-soft way to read a CamillaDSP config
-    field — a plain line scan that never raises, unlike ``yaml.safe_load`` which
-    can raise on a malformed config (the doctor must stay total). The grouping
-    rate-adjust check uses it for ``devices.enable_rate_adjust``. Block-scoped:
-    a matching key OUTSIDE ``block:`` does not match. Use only for keys that
-    are unambiguous at any depth within their block; depth-sensitive safety
-    fields such as ``devices.volume_limit`` use
+    A deliberately fail-soft line scan that never raises, unlike
+    ``yaml.safe_load`` on a malformed config — the doctor must stay total.
+    Block-scoped, but not depth-scoped: use it only for keys unambiguous at
+    any depth within their block. Depth-sensitive safety fields such as
+    ``devices.volume_limit`` use
     :func:`jasper.camilla_config_contract.parse_camilla_devices_config`."""
     in_block = False
     for raw in text.splitlines():
@@ -204,29 +184,19 @@ def _group_writable_dir(
 
     - group-owned by ``expected_group``;
     - the group WRITE *and* SEARCH/execute bits (``0o030``) — POSIX needs
-      search on a directory, not just write, to add or remove an entry in
-      it, so write alone is not enough;
-    - (when ``require_setgid``) the setgid bit, so a subdirectory a
-      ROOT-run process later creates inside this tree inherits
-      ``expected_group`` from its parent instead of landing group-root (the
-      creator's own primary group) and locking the non-root arm out of that
-      nested path. Only meaningful for trees a root-run writer can add NEW
-      subdirectories to that the non-root arm must also reach — pass
-      ``require_setgid=False`` for a plain state dir whose every writer
-      already declares its own ``Group=`` in its systemd unit, where
-      inheritance is not how that dir gets its group.
+      search on a directory, not just write, to add or remove an entry;
+    - (when ``require_setgid``) the setgid bit, so a subdirectory a ROOT-run
+      process later creates here inherits ``expected_group`` instead of
+      landing group-root and locking the non-root arm out. Pass
+      ``require_setgid=False`` for a dir whose every writer already declares
+      its own ``Group=``, where inheritance is not how it gets its group.
 
-    Returns ``(writable, resolved_group_name)`` so callers can build their
-    own detail message; the name falls back to the numeric gid string when
-    it has no group-database entry.
+    Returns ``(writable, resolved_group_name)``, the name falling back to the
+    numeric gid when it has no group-database entry.
 
-    ``os.access(path, os.W_OK)`` cannot answer this: jasper-doctor and
-    install.sh's helpers run as root, and ``os.access`` reports every path
-    writable to the *caller* regardless of its actual mode — root can write
-    regardless of mode bits. This is the shared predicate for that
-    root-caller blind spot on the write side; ``privsep.py`` /
-    ``secret_compartments.py`` document and solve the identical problem on
-    the read side.
+    ``os.access(path, os.W_OK)`` cannot answer this: the callers run as root,
+    and ``os.access`` reports every path writable to the *caller* whatever
+    its mode.
     """
     try:
         group_name = grp.getgrgid(st.st_gid).gr_name
@@ -245,8 +215,8 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 def _meminfo_kb(field: str) -> int | None:
-    """Read a single field (e.g. 'MemAvailable') from /proc/meminfo
-    in KiB. Returns None on read error."""
+    """One /proc/meminfo field (e.g. 'MemAvailable') in KiB, None on read
+    error."""
     try:
         with open("/proc/meminfo") as f:
             for line in f:
@@ -256,9 +226,8 @@ def _meminfo_kb(field: str) -> int | None:
         return None
     return None
 
-# `jasper.source_intent.source_intent_enabled` raised: the household's
-# per-source intent file is unreadable or malformed, so nothing downstream of
-# it can be judged. Shared by every domain that reads a source intent.
+# The household's per-source intent file is unreadable or malformed, so
+# nothing downstream of it can be judged.
 REASON_SOURCE_INTENT_INVALID = "source_intent_invalid"
 
 REASON_PARKED_BONDED_FOLLOWER = "parked_bonded_follower"
@@ -267,12 +236,10 @@ REASON_PARKED_BONDED_FOLLOWER = "parked_bonded_follower"
 def _parked_as_bonded_follower() -> bool:
     """True when this speaker is an ACTIVE bonded multiroom FOLLOWER.
 
-    The dumb-follower profile parks the renderer/source stack while bonded —
-    those liveness checks must read
-    "parked (bonded follower)" as ok, never as failures against intended
-    state. The same idiom serves PR-B's voice/AEC parking. Fail-open to
-    NOT-parked: a broken read must never silently mask a real failure on
-    a solo speaker."""
+    The dumb-follower profile parks the renderer/source stack while bonded, so
+    liveness checks must read that as ok rather than as a failure against
+    intended state. Fail-open to NOT-parked: a broken read must never mask a
+    real failure on a solo speaker."""
     try:
         from ...multiroom.config import load_config
         from ...multiroom.effective_role import (
@@ -286,9 +253,9 @@ def _parked_as_bonded_follower() -> bool:
 
 def _parked_follower_result(label: str) -> CheckResult | None:
     """The `ok` row a liveness check returns while this speaker is parked as a
-    bonded follower, or None when it is not parked — so the caller falls
-    through to its real probe. The parked state is intended, and it was
-    observed, so it is `ok` with a reason rather than a warn or a skip."""
+    bonded follower, or None so the caller falls through to its real probe.
+    The parked state is intended and was observed, so `ok` with a reason
+    rather than a warn or a skip."""
     if not _parked_as_bonded_follower():
         return None
     return CheckResult(
@@ -314,21 +281,17 @@ _RUNTIME_STATE_UNITS = (
     "bluealsa.service",
     "bluealsa-aplay.service",
     "bt-agent.service",
-    # The fan-in coupling-reconcile oneshots (#1233 follow-up): a failed pass
-    # (e.g. an arm-abort — env written, fan-in restart aborted because camilla
-    # would not stop) parks the unit in `failed` with the evidence only in
-    # `systemctl --failed` + the journal; tracking them here makes it
-    # doctor-visible.
+    # A failed coupling-reconcile pass parks the unit in `failed` with the
+    # evidence only in `systemctl --failed` + the journal; tracking it here
+    # makes that doctor-visible.
     "jasper-fanin-coupling-auto.service",
 )
 
 # Type=oneshot members of the tracked set: `activating` is their NORMAL
-# in-flight state (a reconcile pass running right now), not the stuck-start
-# instability it signals on the long-running daemons above — only a real
-# `failed` end-state should flag them. A genuinely wedged (stuck-activating)
-# oneshot is still caught: its unit's TimeoutStartSec (120s on the one member,
-# jasper-fanin-coupling-auto) fires and moves it to `failed`, which this check
-# then surfaces on the next run.
+# in-flight state, not the stuck-start instability it signals on the
+# long-running daemons above, so only a `failed` end-state flags them. A
+# wedged oneshot is still caught — its TimeoutStartSec (120 s on
+# jasper-fanin-coupling-auto) moves it to `failed`.
 _ONESHOT_RUNTIME_STATE_UNITS = frozenset({
     "jasper-fanin-coupling-auto.service",
 })
@@ -336,48 +299,22 @@ _ONESHOT_RUNTIME_STATE_UNITS = frozenset({
 def _loopback_playback_active() -> bool:
     """True if any renderer is currently writing the music-chain loopback.
 
-    Checked by reading `/proc/asound/Loopback/pcm0p/sub*/status`: an open
-    subdevice prints `state: …\\nowner_pid: …`, a closed one prints the
-    single word `closed`. The presence of any non-closed sub means a
-    renderer (shairport / librespot / bluealsa) is producing right now.
+    Reads `/proc/asound/Loopback/pcm0p/sub*/status`: an open subdevice prints
+    `state: …\\nowner_pid: …`, a closed one the single word `closed`. Only
+    input lanes 0..4 count as "music active" — substream 7 is jasper-fanin's
+    own summed output and may be open while every renderer is idle.
 
-    Substream 7 is jasper-fanin's summed output and may be open even
-    when every renderer is idle — under `loopback` coupling, the one
-    place fan-in still writes the lane since U4/P7-4 dropped the ring
-    arm's aloop mirror. Count only input lanes 0..4 for "music active"
-    so AEC output health does not confuse the daemon's own output with
-    a renderer source. The skip stays unconditional because it has to
-    hold on the coupling where the lane does have a writer.
+    Gates the AEC bridge FAIL: ref-silent windows only diagnose a broken
+    reference chain while music is actually routed through the loopback.
 
-    Used to gate the AEC bridge FAIL: ref-silent windows are only
-    diagnostic of a broken reference chain when music IS being routed
-    through the loopback. When no renderer is writing, ref-silent is
-    the expected state and mic-loud bursts are most likely room voice
-    or ambient noise.
+    Blind spots — False means "no snd-aloop renderer lane is open", NOT
+    "nothing is playing": USB Audio Input is DIRECT-captured by jasper-fanin
+    from hw:UAC2Gadget, and a lane armed for ring ingress writes a
+    per-renderer SHM ring instead of its aloop substream. A caller needing
+    true output silence must consult those too.
 
-    Note the blind spots before using this as "the speaker is silent":
-    it observes only the snd-aloop renderer lanes, and two live sources
-    open none of them —
-
-    * USB Audio Input, DIRECT-captured by jasper-fanin from
-      hw:UAC2Gadget, which opens no playback lane here;
-    * any renderer lane ARMED for ring ingress (U3/P6), which writes a
-      per-renderer SHM ring instead of its aloop substream.
-
-    So False means "no snd-aloop renderer lane is open", NOT "nothing
-    is playing". A caller that needs true output silence must consult
-    fan-in's DIRECT lane and the armed lane set as well.
-
-    RETIREMENT. This reader survives the audio-graph consolidation
-    (#2285) only because the snd-aloop renderer lanes are still a
-    supported configuration — a box on `loopback` coupling, or one whose
-    ring platform never armed, still opens subs 0..4 and this is still
-    the only place that fact lives. It has nothing left to observe once
-    the renderer lanes stop using snd-aloop (every renderer on ring
-    ingress AND the per-renderer aloop PCM definitions deleted); delete
-    it then, together with its two callers' music-active gates. Do not
-    retire it on fleet arming state alone — the fleet being ring-armed
-    is not the code dropping aloop support.
+    Delete once no renderer lane can use snd-aloop any more (#2285),
+    together with its callers' music-active gates.
     """
     from ._evidence import evidence
 

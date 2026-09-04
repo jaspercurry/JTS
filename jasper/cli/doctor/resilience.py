@@ -2,17 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""jasper-doctor checks — resilience domain.
-
-Re-homed verbatim from the original monolithic
-``jasper/cli/doctor.py``; see ``jasper/cli/doctor/__init__.py``
-for the package overview and ``_registry.py`` for how order is
-preserved. No check logic changed in the split.
-
-``check_supervisor_reboot_state`` (order 76) was added after the
-split — it surfaces the T5.2 reboot rate-limit state file the same
-way the sibling resilience state files (WiFi guardian stash,
-wifi-scan-repair) get doctor lines."""
+"""jasper-doctor checks — resilience domain."""
 from __future__ import annotations
 
 import json
@@ -59,12 +49,10 @@ REASON_BOOTLOOP_GUARD_TRIPPED = "bootloop_guard_tripped"
 
 @doctor_check(order=40, group="resilience")
 def check_service_runtime_state() -> CheckResult:
-    """Surface failed units and restart-count changes in one-shot doctor.
+    """Surface failed units and restart-count changes in the one-shot doctor.
 
-    The dashboard shows the same fields continuously, but doctor needs
-    to catch the production risk too: a unit can be start-limited or
-    repeatedly restarting with no live cgroup left for the resource
-    sampler to display."""
+    A unit can be start-limited or repeatedly restarting with no live cgroup
+    left for the dashboard's resource sampler to display."""
     states = evidence.unit_states()
     if states is None:
         return CheckResult(
@@ -89,7 +77,7 @@ def check_service_runtime_state() -> CheckResult:
             active in {"activating", "deactivating"}
             and unit not in _ONESHOT_RUNTIME_STATE_UNITS
         ):
-            # A oneshot sits in `activating` for its whole (normal) run — only
+            # A oneshot sits in `activating` for its whole normal run, so only
             # its `failed` end-state is a finding.
             failed.append(f"{unit} state={active}/{sub or '?'}")
         if n_restarts > 0:
@@ -122,11 +110,8 @@ def _int_field(snapshot: dict[str, Any], key: str) -> int:
 
 
 def _classify_supervisor_snapshots(resilience: dict[str, Any]) -> CheckResult:
-    """Classify ``/state.resilience`` supervisor snapshots for doctor.
-
-    The supervisors already expose their counters in ``/state``; this is
-    the doctor-facing reader so a non-converging repair loop is visible
-    during one-shot diagnostics too.
+    """Classify ``/state.resilience`` supervisor snapshots, so a
+    non-converging repair loop is visible during one-shot diagnostics too.
     """
     issues: list[str] = []
 
@@ -221,13 +206,12 @@ def check_supervisor_runtime_snapshots() -> CheckResult:
     return _classify_supervisor_snapshots(resilience)
 
 
-# vcgencmd get_throttled bit layout (Pi firmware, not ours to rename): raw
-# bit 0 = under-voltage detected now, raw bit 16 = under-voltage has occurred
-# since boot. jasper.control.system_metrics._read_throttled() already splits
-# the raw value into (throttled_now=raw & 0xF, throttled_history=(raw >> 16)
-# & 0xF) before publishing it in /system/snapshot's metrics.current, so the
-# published throttled_history is pre-shifted — its own bit 0 is raw bit 16.
-# Doctor reads that published pair instead of shelling out to vcgencmd itself.
+# vcgencmd get_throttled bit layout (Pi firmware): raw bit 0 = under-voltage
+# now, raw bit 16 = under-voltage since boot.
+# jasper.control.system_metrics._read_throttled() splits the raw value into
+# (throttled_now=raw & 0xF, throttled_history=(raw >> 16) & 0xF) before
+# publishing it, so the published throttled_history is pre-shifted — its own
+# bit 0 is raw bit 16.
 _UNDER_VOLTAGE_NOW_BIT = 0x1
 _UNDER_VOLTAGE_HISTORY_BIT = 0x1
 
@@ -294,19 +278,19 @@ _REBOOT_STATE_FUTURE_SKEW_SEC = 300.0
 
 
 def _classify_reboot_state(path: Path, *, now: float | None = None) -> CheckResult:
-    """Classify the T5.2 persisted reboot rate-limit state at `path`.
+    """Classify the persisted reboot rate-limit state at `path`.
 
-    Split from the check so tests can point it at a tmp file. Granular
-    on purpose — the supervisor's own `_read_reboot_state` deliberately
-    collapses missing/corrupt to None (fail-open), but the doctor's job
-    is to tell the operator WHICH of those states the file is in."""
+    Split from the check so tests can point it at a tmp file. Granular on
+    purpose: the supervisor's own `_read_reboot_state` collapses
+    missing/corrupt to None (fail-open), but the doctor must tell the operator
+    WHICH of those states the file is in."""
     name = "supervisor reboot state"
     now = time.time() if now is None else now
     try:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        # Normal on a fresh install or any Pi the supervisor has never
-        # had to reboot. Not a warning.
+        # Normal on a fresh install, or any Pi the supervisor has never had
+        # to reboot.
         return CheckResult(
             name, "ok", "no supervisor reboot recorded",
             reason=REASON_REBOOT_STATE_ABSENT,
@@ -344,21 +328,18 @@ def _classify_reboot_state(path: Path, *, now: float | None = None) -> CheckResu
     )
 
 
-# 78.5: slots between the last sync check (order=78) and the async
-# CamillaDSP websocket check (order=79), which must sort last — the
-# registry invariant pinned by tests/test_doctor_registry.py.
+# order=78.5 slots between the last sync check (78) and the async CamillaDSP
+# websocket check (79), which must sort last — pinned by
+# tests/test_doctor_registry.py.
 @doctor_check(order=78.5, group="resilience")
 def check_bootloop_guard() -> CheckResult:
-    """Surface the boot-loop guard marker (T5.1 circuit breaker).
+    """Surface the boot-loop guard marker.
 
-    The guard (deploy/bin/jasper-bootloop-guard, oneshot at boot) is
-    fail-open everywhere, so a tripped state — reboot escalation
-    disarmed for this boot via runtime StartLimitAction=none drop-ins
-    — is otherwise only visible in the journal and on /state. Reads
-    the /run marker through the same module jasper-control's /state
-    uses (jasper.control.bootloop_guard_state). A missing or corrupt
-    marker is normal (guard never ran this boot — dev host, fresh
-    install) and reads as armed."""
+    The guard (deploy/bin/jasper-bootloop-guard, oneshot at boot) is fail-open
+    everywhere, so a tripped state — reboot escalation disarmed for this boot
+    via runtime StartLimitAction=none drop-ins — is otherwise visible only in
+    the journal and on /state. A missing or corrupt marker is normal (the
+    guard never ran this boot) and reads as armed."""
     name = "boot-loop guard"
     snap = _bootloop_guard_snapshot()
     if not snap.get("ran"):
@@ -404,12 +385,11 @@ def check_bootloop_guard() -> CheckResult:
 
 @doctor_check(order=76, group="resilience")
 def check_supervisor_reboot_state() -> CheckResult:
-    """Surface the T5.2 reboot rate-limit state file.
+    """Surface the reboot rate-limit state file.
 
-    The supervisor itself reads this file fail-open (missing/corrupt →
-    rate-limit unarmed), which is the right runtime behaviour but means
-    a corrupt or future-dated file is silent in normal operation. The
-    doctor line makes those two states visible: corrupt → the
-    reboot-loop guard is unarmed; future-dated → a genuinely-needed
-    reboot is suppressed until the clock catches up."""
+    The supervisor reads it fail-open (missing/corrupt → rate-limit unarmed),
+    which is the right runtime behaviour but leaves a corrupt or future-dated
+    file silent. This line makes both visible: corrupt → the reboot-loop guard
+    is unarmed; future-dated → a genuinely-needed reboot is suppressed until
+    the clock catches up."""
     return _classify_reboot_state(DEFAULT_REBOOT_STATE_PATH)

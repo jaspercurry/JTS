@@ -10,11 +10,10 @@ surface report Playing right now?" — via the same `busctl` call. The shared
 system-bus subprocess boundary owns the hygiene rules in one place:
 
 - **Kill-on-timeout.** `asyncio.wait_for(proc.communicate(), ...)`
-  cancels the *await*, not the child. Under a DBus stall every probe
-  used to leak one live `busctl` process — and `/state` is polled
-  every 5-7 s by the dashboard, so a sustained stall compounded into
-  an unbounded process pile on a 1 GB Pi. We now SIGKILL the child and
-  reap it before reporting "unknown".
+  cancels the *await*, not the child, so under a DBus stall each probe
+  would leak one live `busctl` process and a repeatedly-polled caller
+  would compound that into a process pile on a 1 GB Pi. The child is
+  SIGKILLed and reaped before reporting "unknown".
 - **Spawn errors are "unknown", not a crash.** `FileNotFoundError` is
   just one member of the OSError family a spawn can raise (EAGAIN /
   ENOMEM under memory pressure are the realistic siblings on a loaded

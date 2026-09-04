@@ -2,12 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""jasper-doctor checks — integrations domain.
-
-Re-homed verbatim from the original monolithic
-``jasper/cli/doctor.py``; see ``jasper/cli/doctor/__init__.py``
-for the package overview and ``_registry.py`` for how order is
-preserved. No check logic changed in the split."""
+"""jasper-doctor checks — integrations domain."""
 from __future__ import annotations
 
 import os
@@ -151,15 +146,10 @@ def check_home_assistant(cfg: Config) -> CheckResult:
     """Verify Home Assistant connectivity for the home_assistant voice tool.
 
     Three states matter:
-      - URL or token not set → ok (skipped, not enabled). The home_assistant
-        tool is gated on both being present.
-      - Both set, but GET /api/ fails (network, auth, 5xx) → fail with an
-        actionable hint pointing at the setup wizard.
+      - URL or token not set → skipped. The tool is gated on both.
+      - Both set, but GET /api/ fails (network, auth, 5xx) → fail with a hint
+        pointing at the setup wizard.
       - Both set, GET /api/ succeeds → ok with the instance name + version.
-
-    Mirrors the skip-if-not-configured pattern of check_google_tokens.
-    Synchronous wrapper around the async probe so it slots into run_async's
-    sync-check list without restructuring.
     """
     import asyncio as _asyncio
 
@@ -179,9 +169,9 @@ def check_home_assistant(cfg: Config) -> CheckResult:
             reason=REASON_HOME_ASSISTANT_IMPORT_FAILED,
         )
     try:
-        # force=True bypasses probe_status's 15s cache — the doctor is
-        # an ad-hoc diagnostic, not a polling consumer, and the user
-        # running `jasper-doctor` expects fresh ground truth.
+        # force=True bypasses probe_status's 15 s cache: the doctor is an
+        # ad-hoc diagnostic, not a polling consumer, and its operator expects
+        # fresh ground truth.
         result = _asyncio.run(probe_status(
             cfg.ha_url, cfg.ha_token,
             force=True,
@@ -212,9 +202,8 @@ def check_home_assistant(cfg: Config) -> CheckResult:
 def check_citibike(cfg: Config) -> CheckResult:
     """Verify Citi Bike GBFS reachability + saved-station resolution.
 
-    Four states (mirrors `check_home_assistant`'s skip-if-not-
-    configured pattern):
-      - No saved stations → ok (skipped). Tool isn't registered.
+    Four states:
+      - No saved stations → skipped. The tool is not registered.
       - Saved stations, GBFS unreachable → fail. Tool will degrade to
         cached / error responses at runtime.
       - Saved stations, GBFS responsive, all saved IDs present in
@@ -227,9 +216,8 @@ def check_citibike(cfg: Config) -> CheckResult:
     """
     label = "Citi Bike"
     setup_url = f"http://{cfg.hostname}/transit"
-    # Read the provider's config from the env directly (the wizard's SSOT,
-    # sourced via env_load) with the same parser the provider uses — transit
-    # config no longer rides typed Config fields.
+    # Transit config does not ride typed Config fields: read the wizard's
+    # SSOT env directly, with the same parser the provider uses.
     from ...citibike import parse_saved_stations
     saved = list(parse_saved_stations(os.environ.get("JASPER_CITIBIKE_STATIONS", "")))
     if not saved:

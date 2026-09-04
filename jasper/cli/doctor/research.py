@@ -25,7 +25,7 @@ def check_research() -> CheckResult:
     provider = snap.get("provider")
     if not isinstance(provider, dict) or provider.get("configured") is not True:
         # No provider configured is the operator's own choice and it WAS
-        # observed — `ok` with a reason, not a skip (ADR-0228 rule 3).
+        # observed: `ok` with a reason, not a skip (ADR-0228 rule 3).
         return CheckResult(
             label, "ok", "disabled (no provider configured)",
             reason=REASON_DISABLED,

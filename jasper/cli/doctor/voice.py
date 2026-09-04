@@ -2,12 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""jasper-doctor checks — voice domain.
-
-Re-homed verbatim from the original monolithic
-``jasper/cli/doctor.py``; see ``jasper/cli/doctor/__init__.py``
-for the package overview and ``_registry.py`` for how order is
-preserved. No check logic changed in the split."""
+"""jasper-doctor checks — voice domain."""
 from __future__ import annotations
 
 import os
@@ -74,18 +69,14 @@ def _provider_api_key_attr(provider_id: str) -> str:
     return f"{provider_id.replace('-', '_')}_api_key"
 
 
-# WHICH provider is active is answered in this module by exactly one
-# authority: the wizard-owned SSOT file, via read_active_provider_state()
-# (jasper.voice.provider_state) — never Config/os.environ, where a
-# calling-shell export outranks the file (jasper.env_load.load_env_files
-# uses setdefault) and would let this process name a different provider
-# than jasper-voice actually runs. Config stays the authority for the API
-# key *given* a provider (check_provider_key). The MODEL given a provider
-# is likewise read from files rather than Config —
-# read_active_model_from_env_files() merges the same env files jasper-voice
-# sources, for the same reason.
+# WHICH provider is active has exactly one authority here: the wizard-owned
+# SSOT file via read_active_provider_state() — never Config/os.environ, where
+# a calling-shell export outranks the file (env_load.load_env_files uses
+# setdefault) and would name a different provider than jasper-voice runs. The
+# model is read from the same files for the same reason; Config stays the
+# authority for the API key GIVEN a provider.
 #
-# Statuses where the file cannot name a provider. check_provider_key
+# The statuses where the file cannot name a provider. check_provider_key
 # adjudicates a bad or unreadable selection; its neighbours defer to it and
 # only report "can't tell".
 _PROVIDER_UNDETERMINED = frozenset({"unreadable", "invalid"})
@@ -93,13 +84,12 @@ _PROVIDER_UNDETERMINED = frozenset({"unreadable", "invalid"})
 
 @doctor_check(order=2, group="voice", label="provider key", needs_cfg=True)
 def check_provider_key(cfg: Config) -> CheckResult:
-    """Check that the active provider's API key is set and has the
-    expected prefix. Other providers' keys are intentionally not
-    checked — they may be set (so the wizard can switch without a
-    re-paste) or not, and either is fine.
+    """Check that the active provider's API key is set and has the expected
+    prefix. Other providers' keys may be set (so the wizard can switch without
+    a re-paste) or not, and either is fine.
 
-    Also the module's adjudicator for the *selection* itself: an
-    unreadable or unsupported SSOT value is reported here, once."""
+    Also the module's adjudicator for the *selection* itself: an unreadable or
+    unsupported SSOT value is reported here, once."""
     state = read_active_provider_state()
     env_provider = cfg.voice_provider
     if state.status == "invalid":
@@ -114,9 +104,8 @@ def check_provider_key(cfg: Config) -> CheckResult:
             reason=REASON_PROVIDER_SELECTION_UNREADABLE,
         )
     if not state.configured:
-        # The file is the canonical home for this selection (.env.example
-        # says so, and the wizard is its only writer), so a provider that
-        # exists only in this process's environment is drift, not config.
+        # The file is the canonical home for this selection, so a provider
+        # that exists only in this process's environment is drift, not config.
         return CheckResult(
             "voice provider key", "warn",
             f"{state.detail}, but this process's environment names "
@@ -128,9 +117,8 @@ def check_provider_key(cfg: Config) -> CheckResult:
     provider = provider_by_id(state.provider)
     assert provider is not None  # read_active_provider_state validated it
     env_name = provider.key_env
-    # Configured vs. inherited, reported distinctly: the key verdict is
-    # always about the SSOT provider, and a disagreeing environment is
-    # itself a finding rather than a silent tiebreak.
+    # The key verdict is always about the SSOT provider; a disagreeing
+    # environment is itself a finding rather than a silent tiebreak.
     drift = (
         ""
         if env_provider == state.provider
@@ -166,13 +154,12 @@ def check_provider_key(cfg: Config) -> CheckResult:
         env_name, "ok", f"{key[:8]}...",
     )
 
-# Imports the module names handed to it on argv, in order, and reports the
-# FIRST one that fails. Run in a child interpreter rather than in-process for
-# two reasons: (1) a fresh process is what jasper-voice actually is, so a
-# module that only imports because the doctor already loaded something is not
-# mistaken for a working provider; (2) the adapters pull in heavy SDKs, and a
-# child frees that on exit instead of carrying it through the rest of the
-# doctor run on a 1 GB Pi. Measured footprint is on the check below.
+# Imports the module names handed to it on argv, in order, reporting the FIRST
+# failure. A child interpreter rather than in-process for two reasons: a fresh
+# process is what jasper-voice actually is, so a module that imports only
+# because the doctor already loaded something is not mistaken for a working
+# provider; and the adapters pull in heavy SDKs a child frees on exit instead
+# of carrying through the rest of the run on a 1 GB Pi.
 _IMPORT_PROBE = (
     "import importlib, sys\n"
     "for name in sys.argv[1:]:\n"
@@ -185,29 +172,19 @@ _IMPORT_PROBE = (
 
 # `-P` (3.11+) stops the interpreter putting the caller's cwd on sys.path.
 # `python -c` sets sys.path[0] = '' by default, so a doctor run started from
-# the rsync checkout (`cd ~/jts && sudo /opt/jasper/.venv/bin/jasper-doctor`)
-# would resolve `jasper.voice.*` from the checkout instead of /opt/jasper —
-# two different copies, per AGENTS.md on the /opt/jasper runtime.
-# That inverts the check: after a mid-install abort leaves the old runtime in
-# place, the fixed checkout would report green while the daemon still loads
-# the broken adapter. The probe needs nothing from cwd.
+# the rsync checkout would resolve `jasper.voice.*` there instead of in the
+# /opt/jasper runtime and report green on a box whose daemon still loads a
+# broken adapter. The probe needs nothing from cwd.
 _PROBE_INTERPRETER_FLAGS = ("-P",)
 
 # The probe must finish INSIDE the doctor's per-row guard
-# (JASPER_DOCTOR_CHECK_TIMEOUT_SECONDS, 15 s by default), which the harness
-# applies to every check with asyncio.wait_for. Two things break when it does
-# not: the row guard reports "check timed out" first, so this check's own
-# could-not-verify warn is unreachable; and the cancelled row releases the
-# memory-sample lock while subprocess.run's child is still resident —
-# reopening exactly the perturbation that lock exists to prevent, in the
-# slow-import case that correlates with memory pressure.
-#
-# Derived from the row guard rather than restated as a second constant, so
-# the two cannot drift. `.env.example` states the same invariant in prose
-# ("Keep this above the low-level probe timeouts") next to the value it
-# ships; tests/test_voice_provider_runtime_imports.py asserts it holds across
-# operator-configured row timeouts, including values small enough that the
-# subtraction alone would not.
+# (JASPER_DOCTOR_CHECK_TIMEOUT_SECONDS, 15 s by default). Two things break
+# otherwise: the row guard reports "check timed out" first, making this
+# check's own could-not-verify warn unreachable; and the cancelled row
+# releases the memory-sample lock while subprocess.run's child is still
+# resident, reopening the perturbation that lock exists to prevent. Derived
+# from the row guard rather than restated as a second constant, so the two
+# cannot drift.
 _IMPORT_PROBE_MARGIN_SEC = 5.0
 _IMPORT_PROBE_MIN_TIMEOUT_SEC = 1.0
 
@@ -215,8 +192,8 @@ _IMPORT_PROBE_MIN_TIMEOUT_SEC = 1.0
 def _import_probe_timeout() -> float:
     """Subprocess timeout for the import probe: strictly below the doctor's
     per-row guard, so the child is always killed by its own timeout first."""
-    # Imported lazily: the doctor package's __init__ imports this module, so
-    # a module-level import would be circular. By call time it is loaded.
+    # Lazy: the doctor package's __init__ imports this module, so a
+    # module-level import would be circular.
     from . import _doctor_check_timeout
     row = _doctor_check_timeout()
     return max(
@@ -225,36 +202,29 @@ def _import_probe_timeout() -> float:
     )
 
 
-# Shares the "memory-sample" exclusive lane with check_memory_headroom. The
-# import child is the largest allocation jasper-doctor makes: measured on a
-# full install (jts3, Pi 5, 2026-08-06), the gemini adapter peaks at 82.8 MB
-# RSS and drops system MemAvailable by ~70 MB for ~1.5 s; the openai adapter
-# plus SDK is 47.6 MB. check_memory_headroom warns below 100 MB available on
-# a 1 GB Pi, so an unserialized probe could trip that threshold itself and
-# report a shortage it created. Serializing the two is cheaper than teaching
-# an operator to discount it.
+# Shares the "memory-sample" exclusive lane with check_memory_headroom: the
+# import child is the largest allocation jasper-doctor makes (the gemini
+# adapter peaks near 83 MB RSS, dropping MemAvailable by ~70 MB for ~1.5 s),
+# and check_memory_headroom warns below 100 MB available on a 1 GB Pi, so an
+# unserialized probe could trip that threshold itself.
 @doctor_check(order=2.5, group="voice", exclusive_group="memory-sample")
 def check_provider_importable() -> CheckResult:
     """Check that the *configured* voice provider's adapter and its
     lazily-imported SDK can actually be imported in this venv.
 
-    Nothing else catches this. The ``/voice`` wizard offers every provider
-    in the catalog and ``switch-voice-provider.sh`` will select any of
-    them, but neither verifies that the selected provider's code loads —
-    so a venv missing one package surfaces only as a jasper-voice that
-    will not start (issue #2197).
+    Neither the ``/voice`` wizard nor ``switch-voice-provider.sh`` verifies
+    that the selected provider's code loads, so a venv missing one package
+    otherwise surfaces only as a jasper-voice that will not start.
 
-    What this asserts, precisely: a fresh interpreter can import each
-    module in the provider's ``runtime_imports``. That covers the two ways
-    the daemon dies on a missing package — ``_make_connection``'s adapter
-    import, and the adapter's own deferred ``from openai import
-    AsyncOpenAI``. It does **not** prove jasper-voice starts (keys, mic,
-    ALSA, network are all separate) and does not open a session.
+    Precisely: a fresh interpreter can import each module in the provider's
+    ``runtime_imports``, covering both ways the daemon dies on a missing
+    package — ``_make_connection``'s adapter import and the adapter's own
+    deferred SDK import. It does NOT prove jasper-voice starts (keys, mic,
+    ALSA, network are separate) and opens no session.
     """
     state = read_active_provider_state()
     if state.status in _PROVIDER_UNDETERMINED:
-        # Not this check's job to adjudicate: check_provider_key and the
-        # /voice wizard already report a bad or unreadable selection. Say
+        # check_provider_key adjudicates a bad or unreadable selection; say
         # "can't tell" rather than inventing a second verdict on it.
         return CheckResult(
             "voice provider imports", "warn",
@@ -300,7 +270,7 @@ def check_provider_importable() -> CheckResult:
         # The child died before it could report (import-time crash, signal).
         crash = (proc.stderr or "").strip().splitlines()
         failure = crash[-1] if crash else "unknown import failure"
-    # Arbitrary text from a child's traceback goes through the doctor's own
+    # Arbitrary text from a child's traceback goes through the doctor's
     # redaction + length policy, not straight into the report.
     failure = redact_secrets(failure)
     if len(failure) > _EXCEPTION_DETAIL_LIMIT:
@@ -364,9 +334,8 @@ def _voice_tool_packs_runtime() -> "list[dict] | None":
     from jasper-control's /state.voice.tool_packs.
 
     None when jasper-control is unreachable or the field is absent (older
-    daemon / voice down) — callers treat None as "can't tell" and fall
-    back to reporting the static registry alone, rather than alarming.
-    Mirrors _voice_wake_legs_runtime (wake.py)."""
+    daemon / voice down) — callers treat None as "can't tell" and report the
+    static registry alone rather than alarming."""
     payload = evidence.control_state().payload
     if not isinstance(payload, dict):
         return None
@@ -383,12 +352,10 @@ def _assess_tool_packs(
     expected: list[str], runtime: "list[dict] | None",
 ) -> CheckResult:
     """Compare the static tool-pack registry against what jasper-voice
-    actually registered at startup. Pure (the runtime list is passed in)
-    so it's unit-testable without the HTTP round-trip — mirrors
-    _assess_wake_legs.
+    actually registered at startup. Pure — the runtime list is passed in.
 
     - runtime None (control unreachable / older daemon): report the
-      registry alone, ok. We can't see runtime, so we don't alarm.
+      registry alone, ok. Runtime is invisible, so this does not alarm.
     - any pack status=="failed": fail — that tool family silently
       vanished from voice.
     - a registry pack absent from the runtime report: warn (the daemon
@@ -445,16 +412,13 @@ def check_tool_packs() -> CheckResult:
     """Reports tool-pack registration health — registered vs. expected,
     flagging any pack that failed to build.
 
-    Tool registration is fault-isolated per pack (jasper.tools.packs
-    register_packs): a pack whose build raises contributes no tools but
-    the daemon starts fine. Without this check that's observable only in
-    the journal (event=tool_pack.build_failed); here a silently-missing
-    tool family surfaces in jasper-doctor and the /system dashboard.
+    Tool registration is fault-isolated per pack: a pack whose build raises
+    contributes no tools but the daemon starts fine, which is otherwise
+    observable only in the journal (event=tool_pack.build_failed).
 
-    Reads the static registry (jasper.tools.packs.TOOL_PACKS) for the
-    expected set and cross-checks it against what jasper-voice actually
-    registered (/state.voice.tool_packs). Fail-soft: if jasper-control is
-    unreachable, reports the registry alone."""
+    Cross-checks the static registry (jasper.tools.packs.TOOL_PACKS) against
+    what jasper-voice actually registered (/state.voice.tool_packs).
+    Fail-soft: with jasper-control unreachable, reports the registry alone."""
     from ...tools.packs import TOOL_PACKS
     expected = [p.name for p in TOOL_PACKS]
     return _assess_tool_packs(expected, _voice_tool_packs_runtime())
@@ -474,14 +438,12 @@ def check_spend_cap(cfg: Config) -> CheckResult:
                 "disabled (JASPER_DAILY_SPEND_CAP_USD=0)",
                 reason=REASON_SPEND_CAP_DISABLED,
             )
-        # The doctor runs as root. Never open a usage DB read-write here:
-        # creating/re-owning it would lock the owning daemon out of its own DB
-        # (open_session would then fail on every wake). household_usage_reader
-        # opens every member read_only. See UsageStore.__init__.
+        # The doctor runs as root: opening a usage DB read-write here would
+        # create or re-own it and lock the owning daemon out of its own DB.
+        # household_usage_reader opens every member read_only.
         tuning_db = tuning_usage_db_path(cfg.usage_db)
-        # "includes tuning ledger" tells the operator household spend now folds
-        # in jasper-correction-web's paid tuning calls, and whether that
-        # sibling file exists yet.
+        # Household spend folds in jasper-correction-web's paid tuning calls;
+        # the note says whether that sibling ledger exists yet.
         ledger_note = (
             "includes tuning ledger"
             if os.path.exists(tuning_db)
@@ -539,10 +501,9 @@ def check_pricing() -> CheckResult:
                 reason=REASON_PRICING_DATA_UNAVAILABLE,
             )
         # Active provider AND model from the merged env files — never from
-        # Config/os.environ, where a shell-exported JASPER_GEMINI_MODEL (or
-        # the OPENAI/GROK siblings) outranks both jasper.env and the wizard
-        # file (env_load.load_env_files uses setdefault) and would make this
-        # row name a model jasper-voice does not actually run.
+        # Config/os.environ, where a shell-exported JASPER_<PROVIDER>_MODEL
+        # outranks both jasper.env and the wizard file (load_env_files uses
+        # setdefault) and would name a model jasper-voice does not run.
         state = read_active_provider_state()
         model = (
             read_active_model_from_env_files(state.provider)

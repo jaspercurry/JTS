@@ -2,12 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""jasper-doctor checks — peering domain.
-
-Re-homed verbatim from the original monolithic
-``jasper/cli/doctor.py``; see ``jasper/cli/doctor/__init__.py``
-for the package overview and ``_registry.py`` for how order is
-preserved. No check logic changed in the split."""
+"""jasper-doctor checks — peering domain."""
 from __future__ import annotations
 
 import shutil
@@ -34,9 +29,9 @@ REASON_DISCOVERY_BROWSE_FAILED = "discovery_browse_failed"
 def check_peering_mode() -> CheckResult:
     """Verify /var/lib/jasper/peering.env is parseable.
 
-    Off by default; the user opts in via /rooms/. We
-    return `ok` for both OFF (deliberate) and ON (configured) — the
-    `warn`/`fail` cases catch broken env files only."""
+    Off by default; the household opts in via /rooms/. Both OFF (deliberate)
+    and ON (configured) are `ok` — the warn cases catch broken env files
+    only."""
     label = "peering: mode"
     p = Path("/var/lib/jasper/peering.env")
     env = read_env_file_state(str(p))
@@ -69,13 +64,12 @@ def check_peering_mode() -> CheckResult:
 
 @doctor_check(order=70, group="peering")
 def check_peering_discovery() -> CheckResult:
-    """Browse `_jasper-peer._udp` to count sibling JTS speakers
-    visible on the LAN.
+    """Browse `_jasper-peer._udp` to count sibling JTS speakers visible on the
+    LAN.
 
-    Informational when peering is OFF (we don't advertise; expected
-    to see zero peers). When peering is ON, this is the smoke test
-    that mDNS-SD is working — if siblings are reachable, this Pi
-    should see them here."""
+    Informational when peering is OFF (this speaker does not advertise, so
+    zero peers is expected). When peering is ON it is the smoke test that
+    mDNS-SD is working."""
     label = "peering: discovery"
     bin_path = shutil.which("avahi-browse")
     if bin_path is None:
@@ -118,11 +112,10 @@ def check_peering_discovery() -> CheckResult:
     )
 
 def _local_peer_id() -> str:
-    """Read /var/lib/jasper/peer_id (returns '' if missing).
+    """Read /var/lib/jasper/peer_id, or '' when missing.
 
-    Best-effort — used by check_peering_discovery to filter ourselves
-    out of the visible-peer count. A missing file is fine (peering
-    template install never ran), the count is just slightly inflated."""
+    Best-effort: check_peering_discovery uses it to drop this speaker from the
+    visible-peer count, and a missing file only inflates that count by one."""
     try:
         return Path("/var/lib/jasper/peer_id").read_text().strip()
     except OSError:
