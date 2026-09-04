@@ -30,11 +30,9 @@ iteration, still a TOTAL re-derived every round::
 
     B_{N+1}(f) = clamp( B_N(f) − k · d_{N+1}(f) ),   k = BLEND_DAMPING = 0.7
 
-Refusals HOLD the incumbent rather than revert (panel ruling, 2026-08-18): an
-instrument that could not measure has no standing to remove a correction
-adopted on measured evidence. :data:`BLEND_NO_INCUMBENT` is the one arm that
-cannot hold: its cost is that it REMOVES an applied correction (``filters=()``),
-reachable only through a corrupt or absent applied profile.
+Refusals HOLD the incumbent rather than revert; :data:`BLEND_NO_INCUMBENT` is
+the one arm that cannot hold, since it REMOVES an applied correction
+(ADR-0231 §2).
 
 Scope tripwire: this reads the summed response against an analytic,
 offset-invariant reference and commands a common-mode filter. Reading a
