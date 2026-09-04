@@ -3615,6 +3615,49 @@ def _anchor_reemit_harness(
     )
 
 
+def test_reemit_staged_startup_anchor_reports_facts_and_prints_nothing(
+    monkeypatch, tmp_path, capsys
+):
+    """The engine hands back a report; the operator text is the CLI's (row 7.4).
+
+    Asserted on the report's own fields rather than on printed lines, in both
+    directions — a re-emit and a refusal — because a pin on the text would put
+    the surface concern back into the engine that this boundary took out of it.
+    """
+    from jasper.active_speaker.runtime_contract import GRAPH_ALL_MUTED_ACTIVE_STARTUP
+    from jasper.active_speaker.startup_load import reemit_staged_startup_anchor
+
+    h = _anchor_reemit_harness(monkeypatch, tmp_path)
+    done = reemit_staged_startup_anchor(
+        h.topology,
+        device=RING_ACTIVE_PLAYBACK_DEVICE,
+        source="explicit_endpoint_ring",
+        statefile=h.statefile,
+    )
+    assert done.reason is None, done
+    assert done.classification == GRAPH_ALL_MUTED_ACTIVE_STARTUP, done
+    assert done.written_path == h.live_config, done
+    assert (done.device, done.source) == (
+        RING_ACTIVE_PLAYBACK_DEVICE, "explicit_endpoint_ring",
+    ), done
+    assert done.preview is False and done.statefile_written is True, done
+    assert done.byte_count == len(h.live_config.read_text(encoding="utf-8")), done
+
+    refused = _anchor_reemit_harness(monkeypatch, tmp_path, commission_loaded=True)
+    stopped = reemit_staged_startup_anchor(
+        refused.topology,
+        device=RING_ACTIVE_PLAYBACK_DEVICE,
+        source="explicit_endpoint_ring",
+        statefile=refused.statefile,
+    )
+    assert stopped.reason == "commission_load_active", stopped
+    assert stopped.active_target == "mono/tweeter", stopped
+    assert stopped.written_path is None and stopped.byte_count == 0, stopped
+
+    captured = capsys.readouterr()
+    assert (captured.out, captured.err) == ("", ""), captured
+
+
 def test_baseline_reemit_restages_the_startup_anchor_at_the_ring(
     monkeypatch, tmp_path
 ):
