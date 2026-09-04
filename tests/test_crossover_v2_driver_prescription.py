@@ -1343,6 +1343,96 @@ def test_the_contract_advertises_the_pin_as_an_optional_top_level_field():
 
 
 # --------------------------------------------------------------------------- #
+# the pre-registration — declared, banked, echoed, and read by no gate
+# --------------------------------------------------------------------------- #
+
+
+def test_a_pre_registered_expectation_is_carried_banked_and_survives_the_reread(
+    packet,
+):
+    """The whole contract: both numbers ride the receipt unchanged, reach the
+    candidate stamp that already says who asked, and come back off a durable
+    read. They move nothing — the same document without them accepts to the
+    identical class, filters and spend."""
+    document = _document(
+        [_cut()], packet, expected_delta_db=-0.75, declared_tilt_db_per_octave=-0.8,
+    )
+
+    prescription = _gate(packet, document)
+    plain = _gate(packet, _document([_cut()], packet))
+
+    assert prescription.expected_delta_db == -0.75
+    assert prescription.declared_tilt_db_per_octave == -0.8
+    banked = prescription.to_dict()
+    assert banked["expected_delta_db"] == -0.75
+    assert banked["declared_tilt_db_per_octave"] == -0.8
+    reread = dp.driver_prescription_from_mapping(banked)
+    assert reread is not None
+    assert reread.expected_delta_db == -0.75
+    assert reread.declared_tilt_db_per_octave == -0.8
+    stamp = driver_prescription_to_candidate_fields(prescription, fitted=None)
+    stamp = stamp[LINEARIZATION_CANDIDATE_FIELD]["tweeter"]["prescribed_by"]
+    assert stamp["expected_delta_db"] == -0.75
+    assert stamp["declared_tilt_db_per_octave"] == -0.8
+    # It grades nothing: every judged field reads the same either way.
+    assert (prescription.prescription_class, prescription.filters) == (
+        plain.prescription_class, plain.filters
+    )
+    assert prescription.composed_boost_db == plain.composed_boost_db
+    assert prescription.unvouched_filters == plain.unvouched_filters
+
+
+@pytest.mark.parametrize("field, value", [
+    ("expected_delta_db", "-0.75"),
+    ("expected_delta_db", True),
+    ("expected_delta_db", float("nan")),
+    ("expected_delta_db", dp.EXPECTED_DELTA_BOUND_DB + 0.01),
+    ("expected_delta_db", -dp.EXPECTED_DELTA_BOUND_DB - 0.01),
+    ("declared_tilt_db_per_octave", {"per_octave": -0.8}),
+    ("declared_tilt_db_per_octave", dp.DECLARED_TILT_BOUND_DB_PER_OCTAVE + 0.01),
+    ("declared_tilt_db_per_octave", -dp.DECLARED_TILT_BOUND_DB_PER_OCTAVE - 0.01),
+])
+def test_a_malformed_pre_registration_is_refused_by_name(packet, field, value):
+    """Refused rather than dropped, and in this door's own vocabulary: a
+    declaration that vanished on a typo reads on the next receipt as a round
+    nobody predicted. The bounds are unit checks — a percentage or a frequency
+    in the slot — not a bar on how much a prescriber may hope for."""
+    with pytest.raises(BlendPrescriptionRefused) as excinfo:
+        _gate(packet, _document([_cut()], packet, **{field: value}))
+
+    assert excinfo.value.reason == dp.DRIVER_EXPECTATION_MALFORMED
+    assert dp.DRIVER_EXPECTATION_MALFORMED in DRIVER_PRESCRIPTION_REFUSAL_REASONS
+
+
+@pytest.mark.parametrize("edge", [None, 0.0])
+def test_a_document_that_declares_nothing_pre_registers_nothing(packet, edge):
+    """Absent is ABSENT, and an explicit zero is a real prediction. A ``None``
+    substituted for a missing key would bank "predicted no change" for every
+    round nobody thought about, and the candidate stamp carries no key at all
+    rather than a null."""
+    over = {} if edge is None else {
+        "expected_delta_db": 0.0, "declared_tilt_db_per_octave": 0.0,
+    }
+
+    prescription = _gate(packet, _document([_cut()], packet, **over))
+
+    assert prescription.expected_delta_db == edge
+    assert prescription.declared_tilt_db_per_octave == edge
+    stamp = driver_prescription_to_candidate_fields(prescription, fitted=None)
+    stamp = stamp[LINEARIZATION_CANDIDATE_FIELD]["tweeter"]["prescribed_by"]
+    assert ("expected_delta_db" in stamp) is (edge is not None)
+
+
+def test_the_contract_advertises_the_pre_registration_as_optional(packet):
+    fmt = dp.driver_prescription_response_format()
+
+    assert {"expected_delta_db", "declared_tilt_db_per_octave"} <= set(
+        fmt["optional_top_level"]
+    )
+    assert dp.DRIVER_EXPECTATION_MALFORMED in fmt["refusal_reasons"]
+
+
+# --------------------------------------------------------------------------- #
 # the classification bar — stage P3 rule 1, and the mutation that proves it
 # --------------------------------------------------------------------------- #
 

@@ -465,7 +465,7 @@ surfaces every tuning tool sits beside:
 | **alignment door** | pin delay / polarity | mutating-with-gates | session-open key `alignment_prescription` |
 | **topology door** | pin Fc / order | mutating-with-gates | session-open key `topology_prescription` |
 | **blend door** | cuts in the summed blend region | mutating-with-gates | spool |
-| **driver door** | per-driver cuts and boosts, and an optional per-role trim pin (`pinned_trim_db` — a trim you name is carried, not re-solved) | mutating-with-gates | spool |
+| **driver door** | per-driver cuts and boosts, an optional per-role trim pin (`pinned_trim_db`), and two declared numbers (`expected_delta_db`, `declared_tilt_db_per_octave`) that gate nothing and are echoed by `jasper-round-views frozen` | mutating-with-gates | spool |
 | republish a banked candidate | make any banked candidate live again by its own fingerprint | mutating-with-gates | `POST /crossover/v2/republish` |
 | go back to the previous tuning | republish the prior candidate by its fingerprint, then apply it — the same two doors above, aimed backwards | mutating-with-gates | `POST /crossover/v2/republish` + `POST /crossover/v2/apply` |
 | decline | reject a reviewed candidate ("keep current sound") | mutating | `POST /crossover/v2/decline` |
@@ -520,7 +520,7 @@ Five prescription doors, one refusal vocabulary each:
 | alignment | 10 | `alignment_prescription.ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS` |
 | topology | 10 | `topology_prescription.TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS` |
 | blend | 15 | `blend_prescription.BLEND_PRESCRIPTION_REFUSAL_REASONS` |
-| driver | 15 | `driver_prescription.DRIVER_PRESCRIPTION_REFUSAL_REASONS` |
+| driver | 16 | `driver_prescription.DRIVER_PRESCRIPTION_REFUSAL_REASONS` |
 | spool | 4 | `prescription_spool.PRESCRIPTION_SPOOL_REFUSAL_REASONS` |
 
 Read the constant, never this count: each frozenset is the door's own list, and

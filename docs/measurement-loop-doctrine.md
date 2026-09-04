@@ -32,9 +32,10 @@ and persist their own accounting under
 - **analyze** — the evidence is read: what the capture says, and what this
   session did not separate.
   Tool: `jasper-crossover-prescriber packet`.
-- **recommend** — pre-registered expectations are stated and the next thing to
-  try is named. Proposing, prescribing and recommending are one act; a final
-  call is that same act with more information behind it.
+- **recommend** — pre-registered expectations are stated (the driver
+  document's `expected_delta_db`) and the next thing to try is named.
+  Proposing, prescribing and recommending are one act; a final call is that
+  same act with more information behind it.
   Tool: `jasper-crossover-prescriber propose`.
 - **loop** — checking that a recommendation held is measuring again (§3).
   Tool: `jasper-round-views frozen`, the re-measure graded against the round it

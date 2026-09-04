@@ -39,6 +39,9 @@ from jasper.active_speaker.flat_spec_views import (
 from jasper.active_speaker.repeat_floor import SHIPPED_POOL_METRIC
 from jasper.active_speaker.crossover_v2 import forward_model, position_cycle
 from jasper.active_speaker.crossover_v2.contracts import DESIGN_AXIS_DEG
+from jasper.active_speaker.crossover_v2.driver_prescription import (
+    DECLARED_TILT_FIELD, EXPECTED_DELTA_FIELD,
+)
 from jasper.active_speaker.crossover_v2.durable_state import (
     verify_measured_curve_from_state,
 )
@@ -640,26 +643,62 @@ def _grade_positions(
     return pooled, per_position
 
 
+def _round_candidate(banked: BankedRound) -> dict[str, Any]:
+    """The round's own ``candidate.json``, or ``{}``."""
+    artifact_dir, _why = round_artifact_dir(banked.session_dir)
+    return {} if artifact_dir is None else _read_candidate(artifact_dir)
+
+
+def _banked_pre_registration(banked: BankedRound) -> dict[str, float]:
+    """What the round's prescription pre-registered, off the candidate's
+    ``prescribed_by`` stamp — every role carries the same pair, so the first wins."""
+    for entry in _mapping(_round_candidate(banked).get("linearization")).values():
+        stamp = _mapping(_mapping(entry).get("prescribed_by"))
+        declared = {
+            key: float(v) for key in (EXPECTED_DELTA_FIELD, DECLARED_TILT_FIELD)
+            if isinstance(v := stamp.get(key), (int, float)) and type(v) is not bool
+        }
+        if declared:
+            return declared
+    return {}
+
+
 @dataclass(frozen=True)
 class FrozenReferenceResult:
     """One target round graded twice: as shipped, and frozen to the baseline's
     per-position reference levels.
 
-    ``shipped`` and ``frozen`` are ``{role: pooled_rms_db}``. The freeze removes
-    the one degree of freedom §8.9 found compensating a prescribed cut's level
-    loss — grading each config against its OWN reference.
+    ``baseline``/``shipped``/``frozen`` are ``{role: pooled_rms_db}``. The freeze
+    removes the one degree of freedom §8.9 found compensating a prescribed cut's
+    level loss — grading each config against its OWN reference.
     ``target_own_refs`` / ``baseline_refs`` are the per-position levels each half
     actually used, so a caller can audit the freeze rather than trust it.
+
+    ``measured_delta_db`` is ``frozen - baseline`` per role under the target's
+    frame, ``{}`` when a baseline seat is not evaluable under it. It, the two
+    declared fields and ``expected_minus_measured_db`` are DISCLOSURE only.
     """
 
     baseline_round_dir: str
     target_round_dir: str
     shipped: dict[str, float]
     frozen: dict[str, float]
+    baseline: dict[str, float]
+    measured_delta_db: dict[str, float]
     shipped_positions: dict[str, float]
     frozen_positions: dict[str, float]
     baseline_refs: dict[str, float]
     target_own_refs: dict[str, float]
+    expected_delta_db: float | None = None
+    declared_tilt_db_per_octave: float | None = None
+
+    @property
+    def expected_minus_measured_db(self) -> dict[str, float] | None:
+        """Per role, or ``None`` when nothing was pre-registered."""
+        expected = self.expected_delta_db
+        if expected is None:
+            return None
+        return {r: expected - m for r, m in self.measured_delta_db.items()}
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -667,16 +706,21 @@ class FrozenReferenceResult:
             "target_round_dir": self.target_round_dir,
             "shipped": self.shipped,
             "frozen": self.frozen,
+            "baseline": self.baseline,
+            "measured_delta_db": self.measured_delta_db,
             "shipped_positions": self.shipped_positions,
             "frozen_positions": self.frozen_positions,
             "baseline_refs": self.baseline_refs,
             "target_own_refs": self.target_own_refs,
+            EXPECTED_DELTA_FIELD: self.expected_delta_db,
+            DECLARED_TILT_FIELD: self.declared_tilt_db_per_octave,
+            "expected_minus_measured_db": self.expected_minus_measured_db,
         }
 
 
 def frozen_reference_grade(baseline: BankedRound, target: BankedRound) -> FrozenReferenceResult:
     """Grade ``target`` twice: shipped, and frozen to ``baseline``'s per-position
-    reference levels.
+    reference levels — then difference the frozen half against the baseline.
 
     ``target`` may be the same round as ``baseline`` (frozen == shipped by
     construction then). Raises :class:`RoundViewsError` when either round banked
@@ -702,15 +746,31 @@ def frozen_reference_grade(baseline: BankedRound, target: BankedRound) -> Frozen
     }
     shipped_pooled, shipped_positions = _grade_positions(positions, report, None)
     frozen_pooled, frozen_positions = _grade_positions(positions, report, baseline_refs)
+    # Target seats, target frame, same ``baseline_refs``: only curves differ.
+    comparand = tuple(
+        p for p in baseline.graded_positions if p.position_id in target_own_refs
+    )
+    try:
+        baseline_pooled, _ = _grade_positions(comparand, report, baseline_refs)
+    except RoundViewsError:
+        baseline_pooled = {}  # A disclosure may not take the grade down.
+    declared = _banked_pre_registration(target)
     return FrozenReferenceResult(
         baseline_round_dir=str(baseline.round_dir),
         target_round_dir=str(target.round_dir),
         shipped=shipped_pooled,
         frozen=frozen_pooled,
+        baseline=baseline_pooled,
+        measured_delta_db={
+            role: value - baseline_pooled[role]
+            for role, value in frozen_pooled.items() if role in baseline_pooled
+        },
         shipped_positions=shipped_positions,
         frozen_positions=frozen_positions,
         baseline_refs=baseline_refs,
         target_own_refs=target_own_refs,
+        expected_delta_db=declared.get(EXPECTED_DELTA_FIELD),
+        declared_tilt_db_per_octave=declared.get(DECLARED_TILT_FIELD),
     )
 
 
@@ -1838,8 +1898,7 @@ def cloud_binding_view(banked: BankedRound) -> CloudBindingView:
     from jasper.active_speaker.profile import CrossoverRegion
 
     round_dir = banked.round_dir
-    artifact_dir, _why = round_artifact_dir(banked.session_dir)
-    candidate = {} if artifact_dir is None else _read_candidate(artifact_dir)
+    candidate = _round_candidate(banked)
     linearization = _mapping(candidate.get("linearization"))
     if not linearization:
         return _not_evaluated(round_dir, CLOUD_BINDING_NO_FIT)
