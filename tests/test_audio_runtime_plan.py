@@ -64,7 +64,6 @@ from jasper.fanin_coupling import (
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     TRANSPORT_DAC_CONTENT_RING,
     TRANSPORT_OFF_RING,
-    TRANSPORT_SHM_RING,
     coupling_capture_kwargs_from_env,
 )
 
@@ -1277,7 +1276,7 @@ def test_an_unwritten_coupling_key_is_the_ring():
     deleted, so a healthy box the reconciler had not written yet was described
     as running one. Undeclared IS the ring — on both ends."""
     for coupling in (None, "", "   "):
-        assert transport_topology_for_coupling(coupling).name == TRANSPORT_SHM_RING
+        assert transport_topology_for_coupling(coupling).name == COUPLING_SHM_RING
 
 
 def test_the_retired_aloop_active_lane_has_no_registered_capture_pairing(capsys):

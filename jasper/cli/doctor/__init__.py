@@ -49,6 +49,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Awaitable, Callable, Optional
+from ...camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ...config import Config
 from ...env_load import load_env_files as _load_env_files
 from ...identity import resolve_hostname
@@ -867,7 +868,7 @@ def _local_audio_config_from_env() -> SimpleNamespace:
     return SimpleNamespace(
         usage_db=os.environ.get("JASPER_USAGE_DB", DEFAULT_USAGE_DB),
         camilla_host=os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"),
-        camilla_port=_env_int_for_doctor("JASPER_CAMILLA_PORT", 1234),
+        camilla_port=_env_int_for_doctor("JASPER_CAMILLA_PORT", DEFAULT_CAMILLA_PORT),
         spotify_client_id=spotify_client_id,
         spotify_redirect_uri=resolved_spotify_redirect_uri(),
         spotify_cache_path=os.environ.get(

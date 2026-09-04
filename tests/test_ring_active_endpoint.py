@@ -750,11 +750,11 @@ def test_the_active_shape_is_selected_by_the_marker_not_by_the_observed_device()
     written by a different owner, which is what gives the comparison something to
     disagree with.
     """
-    from jasper.fanin_coupling import TRANSPORT_SHM_RING, TRANSPORT_SHM_RING_ACTIVE
+    from jasper.fanin_coupling import COUPLING_SHM_RING, TRANSPORT_SHM_RING_ACTIVE
     from jasper.transport_coherence import transport_topology_for_coupling
 
     stereo = transport_topology_for_coupling("shm_ring", outputd_env={})
-    assert stereo.name == TRANSPORT_SHM_RING
+    assert stereo.name == COUPLING_SHM_RING
     assert stereo.camilla_to_outputd["camilla_playback_device"] == RING_PLAYBACK_DEVICE
 
     # The marker alone flips the shape: the observed Camilla playback device is
