@@ -2,12 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""jasper-doctor checks — wake domain.
-
-Re-homed verbatim from the original monolithic
-``jasper/cli/doctor.py``; see ``jasper/cli/doctor/__init__.py``
-for the package overview and ``_registry.py`` for how order is
-preserved. No check logic changed in the split."""
+"""jasper-doctor checks — wake domain."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -46,8 +41,8 @@ REASON_WAKE_LEGS_MATCH = "wake_legs_armed_matches_configured"
 @doctor_check(order=8, group="wake", label="openWakeWord models", needs_cfg=True)
 def check_openwakeword_model(cfg: Config) -> CheckResult:
     # Must precede the openwakeword import; see jasper/openwakeword_guard.py.
-    # jasper-doctor is its own process and never imports jasper.wake, so
-    # without this the check paid the full scikit-learn cost on every run.
+    # jasper-doctor never imports jasper.wake, so without this the check pays
+    # the full scikit-learn cost on every run.
     ensure_openwakeword_import_safe()
     try:
         import openwakeword
@@ -148,10 +143,9 @@ def check_openwakeword_model(cfg: Config) -> CheckResult:
 
 def _voice_wake_legs_runtime() -> "set[str] | None":
     """Wake-leg tokens jasper-voice actually opened, from jasper-control's
-    /state.voice.wake_legs (added with the registry-driven leg wiring).
-    None when jasper-control is unreachable or the field is absent (older
-    daemon / voice down) — callers treat None as "can't tell", not "no
-    legs", and fall back to reporting configured intent."""
+    /state.voice.wake_legs. None when jasper-control is unreachable or the
+    field is absent (older daemon / voice down) — callers treat None as
+    "can't tell", not "no legs", and report configured intent instead."""
     state = evidence.control_state().payload
     if not isinstance(state, dict):
         return None
@@ -170,10 +164,9 @@ def _push_to_talk_only_speaker() -> bool:
     Reads the same two published facts ``_configured_wake_legs``
     (jasper/voice_daemon.py) reads — the AEC reconciler's
     ``JASPER_LOCAL_MIC_PRESENT`` tri-state and the accessory owner's
-    published source file — but not through the same readers: the daemon
-    snapshots them once into ``Config`` at process start, while this
-    rereads them fresh on every call. Neither is re-derived here, and the
-    fresh read is why this still works when jasper-voice is down.
+    published source file — but fresh on every call rather than from the
+    daemon's process-start ``Config`` snapshot, which is why this still
+    works when jasper-voice is down.
 
     Only an explicit "no local mic" counts. ``unknown`` (a custom
     ``JASPER_MIC_DEVICE`` the reconciler declines to resolve) and an absent
@@ -183,8 +176,7 @@ def _push_to_talk_only_speaker() -> bool:
     if local_mic_present_from_env() is not False:
         return False
     # The accessory half comes from its owner's published file, read fresh —
-    # never os.environ, per jasper.mic_presence. mic_presence() is the
-    # documented status-surface reader and never raises.
+    # never os.environ, per jasper.mic_presence. mic_presence() never raises.
     return evidence.mic_presence().accessory_present
 
 def _assess_wake_legs(
@@ -192,32 +184,29 @@ def _assess_wake_legs(
     *, chip_aec: bool = False, chip_aec_150: bool = False,
     chip_aec_210: bool = False, push_to_talk_only: bool = False,
 ) -> CheckResult:
-    """Compare configured wake-leg intent against what jasper-voice
-    actually opened. Pure (the runtime set is passed in) so it's
-    unit-testable without the HTTP round-trip.
+    """Compare configured wake-leg intent against what jasper-voice actually
+    opened. Pure — the runtime set is passed in.
 
     Maps the operator/config vocabulary to jasper.wake_legs tokens: the
-    primary/session master is "on", the "raw" toggle is the chip-direct
-    "off" leg, "dtln" is "dtln", and the optional XVF3800 fixed hardware-AEC
-    beam detectors are "chip_aec_150" / "chip_aec_210". `armed_runtime` is None when
-    the daemon is unreachable — then we report configured intent (the
-    behaviour before the runtime cross-check existed).
+    primary/session master is "on", the "raw" toggle is the chip-direct "off"
+    leg, "dtln" is "dtln", and the optional XVF3800 fixed hardware-AEC beam
+    detectors are "chip_aec_150" / "chip_aec_210". `armed_runtime` is None
+    when the daemon is unreachable, and then only configured intent is
+    reported.
 
-    Chip-AEC is single-chip mutually exclusive with raw/DTLN: when it's on,
-    the reconciler clears the raw/DTLN device vars *regardless* of their
-    booleans (it preserves the booleans as wizard intent), so the effective
-    leg set is the primary "on" carrier plus only the chip beams explicitly
-    enabled in advanced settings. We must NOT expect "off"/"dtln" in that
-    mode, or this check would false-warn that they're "not running" when
-    they are intentionally off.
+    Chip-AEC is mutually exclusive with raw/DTLN: while it is on, the
+    reconciler clears the raw/DTLN device vars regardless of their booleans
+    (which it preserves as wizard intent), so the effective leg set is the
+    primary "on" carrier plus only the chip beams enabled in advanced
+    settings. Expecting "off"/"dtln" there would false-warn that legs
+    intentionally off are "not running".
 
-    `push_to_talk_only` is that shape one step further: a speaker with no
-    room mic and a paired remote arms NO legs at all, so an empty armed set
-    there is the design and not a fault. Reported n/a ahead of the AEC-mode
-    skip because it describes the speaker's permanent shape rather than a
-    mode setting — and because the alternative is a permanent yellow naming
-    three causes (bridge down, wrong firmware, a leg skip) that cannot exist
-    on that box: `wake.leg_skipped` never fires for a leg never planned."""
+    `push_to_talk_only` is that shape one step further: a speaker with no room
+    mic and a paired remote arms NO legs at all, so an empty armed set is the
+    design. Reported ahead of the AEC-mode skip because it describes the
+    speaker's permanent shape rather than a mode setting, and because the
+    alternative is a permanent yellow naming causes that cannot exist on that
+    box — `wake.leg_skipped` never fires for a leg never planned."""
     hint = "Toggle at http://jts.local/wake/ (Wake detection card)."
     if push_to_talk_only:
         return CheckResult(
@@ -286,17 +275,17 @@ def _assess_wake_legs(
 
 @doctor_check(order=53, group="wake")
 def check_wake_legs_configured() -> CheckResult:
-    """Reports which additive wake-detection legs are armed (raw
-    chip-direct, DTLN neural, and the XVF3800 chip-AEC beam legs); the
-    AEC3 master leg is reported separately by check_aec_bridge_running.
+    """Reports which additive wake-detection legs are armed (raw chip-direct,
+    DTLN neural, and the XVF3800 chip-AEC beam legs); check_aec_bridge_running
+    reports the AEC3 master leg.
 
-    Reads configured intent from aec_mode.env and cross-checks it against
-    what jasper-voice actually opened (/state.voice.wake_legs), so a
-    startup leg-skip surfaces here rather than only in the journal.
-    Fail-soft: if jasper-control is unreachable, reports intent alone.
-    Skips cleanly if AEC is disabled — leg booleans are meaningless
-    without the bridge emitting on the UDP ports they consume — and on a
-    push-to-talk-only speaker, where the daemon arms no legs by design."""
+    Cross-checks configured intent from aec_mode.env against what jasper-voice
+    actually opened (/state.voice.wake_legs), so a startup leg-skip surfaces
+    here rather than only in the journal. Fail-soft: with jasper-control
+    unreachable, reports intent alone. Skips when AEC is disabled — leg
+    booleans are meaningless without the bridge emitting on the UDP ports they
+    consume — and on a push-to-talk-only speaker, which arms no legs by
+    design."""
     aec_mode = _aec_mode_setting()
     raw = _wake_leg_setting("JASPER_WAKE_LEG_RAW", True)
     dtln = _wake_leg_setting("JASPER_WAKE_LEG_DTLN", False)
@@ -315,8 +304,8 @@ def check_wake_legs_configured() -> CheckResult:
         ),
         chip_available=_chip_aec_available_for_doctor(),
     )
-    # Only worth a control-plane round-trip when AEC (and thus the legs)
-    # is actually on; _assess_wake_legs returns n/a otherwise.
+    # Only worth a control-plane round-trip when AEC (and thus the legs) is
+    # actually on; _assess_wake_legs skips otherwise.
     armed_runtime = (
         _voice_wake_legs_runtime() if effective.mode == "auto" else None
     )

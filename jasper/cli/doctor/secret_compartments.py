@@ -2,53 +2,42 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""jasper-doctor checks — WS1 Phase 4 secret-compartment on-disk posture.
+"""jasper-doctor checks — secret-compartment on-disk posture.
 
-The *secret-side complement* to :mod:`~jasper.cli.doctor.privsep`. privsep verifies
-a **one-sided** contract — each non-root daemon can READ the group-``jasper`` config
-it needs — and deliberately excludes the secret compartments because a secret has a
-**two-sided** contract that a "more-readable-is-fine" check cannot express:
+The secret-side complement to :mod:`~jasper.cli.doctor.privsep`, which
+verifies a ONE-sided contract (each non-root daemon can read the
+group-``jasper`` config it needs) and excludes the secret compartments
+because a secret's contract is two-sided:
 
-1. **Availability.** The secret must be readable by the daemons IN its compartment.
-   A ``0600``-root or wrong-group secret silently breaks the Gmail / Calendar /
-   Spotify / Home-Assistant tools and looks *identical* to "not configured" — the
-   #900/#901 fail-soft bug class (a caught ``OSError`` → benign default).
-2. **Confidentiality** ("treat secrets as secrets"). The secret must NOT be readable
-   *outside* its compartment. If it regresses to ``o+r`` (world) or group ``jasper``
-   (back in the shared group every daemon holds), the Phase 4 compartmentalization
-   silently dissolves — jasper-mux/-control/-input regain the LLM keys + identity-grade
-   OAuth tokens. privsep's one-sided check **passes** an over-readable secret (more
-   access satisfies "must be readable"), so it structurally cannot catch this. That is
-   why this is a distinct check.
+1. **Availability.** The secret must be readable by the daemons IN its
+   compartment. A ``0600``-root or wrong-group secret silently breaks the
+   Gmail / Calendar / Spotify / Home-Assistant tools and looks identical to
+   "not configured" (a caught ``OSError`` → benign default).
+2. **Confidentiality.** The secret must NOT be readable outside its
+   compartment. Regressed to ``o+r`` or back to the shared ``jasper`` group,
+   the compartmentalization dissolves and every daemon regains the LLM keys
+   and identity-grade OAuth tokens. privsep's one-sided check PASSES an
+   over-readable secret, so it structurally cannot catch this.
 
-WS1 Phase 4 moved the real secrets into two sibling compartments OUTSIDE the
-``/var/lib/jasper`` StateDirectory (whose recursive chown would force them back to
-group ``jasper``) — see :data:`COMPARTMENTS` for each compartment's group,
-directory, member units, and files.
+The secrets live in two sibling compartments OUTSIDE the ``/var/lib/jasper``
+StateDirectory, whose recursive chown would force them back to group
+``jasper`` — see :data:`COMPARTMENTS`. The install/writer code is pinned by
+static tests; this module is the runtime signal for the live box, where a
+manual ``chmod``, a half-applied migration or a backup restore can drift in
+either direction.
 
-Static tests (``test_secret_env_modes``, ``test_install_secrets_migration``,
-``test_systemd_hardening``) pin the install/writer *code*; nothing checked the **live
-box**. A manual ``chmod``, a half-applied migration, a backup restore, or a future
-writer that forgets ``SECRET_ENV_MODE`` drifts on disk with no runtime signal — in
-*either* direction. This module is that runtime signal.
+``os.access`` cannot answer this: jasper-doctor runs as root, so it reports
+every file readable. Each check ``stat()``s the path and reasons about the
+member and non-member *identities* (uid + group set from each unit's live
+``systemctl show``), reusing :mod:`privsep`'s read-side core.
 
-**Why this can't use ``os.access``.** ``jasper-doctor`` runs as **root**, so
-``os.access`` (the *caller's* permissions) reports every file readable. Each check
-``stat()``s the path and reasons about the compartment members' and non-members'
-*identities* (uid + group set, resolved from each unit's live ``systemctl show``),
-exactly like :mod:`privsep`'s read-side core — which this module reuses
-(``_unit_runtime_identity`` / ``_resolve_identity`` / ``_process_can_read``).
+Severity diverges from the rest of the doctor on purpose: under-permission
+(a member daemon cannot read; a re-deploy heals it) WARNs, but over-permission
+(a non-member, or the world, CAN read) FAILs — a confidentiality regression is
+invisible everywhere else and re-tightens only on an explicit re-deploy.
 
-**Severity (confirmed with the owner): a deliberate divergence from the rest of the
-doctor.** Every other permission check WARNs on drift. Here, *under*-permission
-(availability — a member daemon can't read; a re-deploy heals it) WARNs, but
-*over*-permission (a non-member daemon — or the world — CAN read; the compartment has
-silently dissolved) **FAILs** — louder than WARN, because a confidentiality regression
-is invisible everywhere else and re-tightens only on an explicit re-deploy.
-
-**Reports are strictly secret-free** — owner / group / octal-mode / daemon-name only,
-never a byte of the secret (mirrors ``check_control_token`` /
-``check_grouping_household_credential``).
+Reports are strictly secret-free: owner / group / octal-mode / daemon-name
+only, never a byte of the secret.
 """
 from __future__ import annotations
 
@@ -68,24 +57,21 @@ REASON_COMPARTMENT_ABSENT = "compartment_absent"
 REASON_COMPARTMENT_OVER_EXPOSED = "compartment_over_exposed"
 REASON_COMPARTMENT_UNDER_AVAILABLE = "compartment_under_available"
 
-# Reuse privsep's read primitive + runtime identity resolution rather than
-# re-deriving them (the task's "reuse where it helps"). They are the single home
-# for "could a process with this uid + group-set read this stat'd file?" and
-# "what identity does this unit run as?".
+# privsep is the single home for "could a process with this uid + group-set
+# read this stat'd file?" and "what identity does this unit run as?".
 _process_can_read = privsep._process_can_read
 _describe = privsep._describe
 
 
 @dataclass(frozen=True)
 class SecretCompartment:
-    """One Phase 4 secret compartment's on-disk contract.
+    """One secret compartment's on-disk contract.
 
-    ``group`` is the dedicated compartment group; ``directory`` the sibling tree
-    outside the StateDirectory. ``member_units`` are the non-root daemons that MUST
-    be able to read the secrets (the availability side) — the drift test pins this
-    against each unit's ``SupplementaryGroups=``. ``files`` is the canonical set of
-    secret paths (concrete + globs) the compartment holds; absent ones are skipped
-    (absent = "not configured", not the bug class).
+    ``group`` is the dedicated compartment group; ``directory`` the sibling
+    tree outside the StateDirectory. ``member_units`` are the non-root daemons
+    that MUST be able to read the secrets (the availability side); the drift
+    test pins them against each unit's ``SupplementaryGroups=``. Absent
+    ``files`` are skipped — absent means "not configured", not the bug class.
     """
 
     group: str
@@ -94,20 +80,14 @@ class SecretCompartment:
     files: tuple[str, ...] = field(default_factory=tuple)
 
 
-# The universe of leak targets is the Tier-A non-root daemons privsep already
-# models. A compartment's NON-members are this universe minus its members —
-# exactly the daemons Phase 4 documents losing the secret (4a: mux/control/input;
-# 4b: input). Units that intentionally share a compartment-holding Unix identity
-# are members even when their own unit file does not repeat SupplementaryGroups:
-# e.g. jasper-chat-web and the three de-rooted wizard units run as the
-# jasper-web user, and that user is in both compartment groups on disk. Only
-# jasper-correction-web actually reads a compartment file (the tuning LLM key
-# in voice_keys.env); the rest inherit the access with the identity, and the
-# manifest models the effective identity rather than the intent. The
-# recon-tier oneshots
-# (privsep.OUT_OF_SCOPE_NONROOT_UNITS) are in no compartment group and run as
-# jasper-recon, so they are not leak targets; world-exposure is caught by the
-# o-bit test independently.
+# The universe of leak targets is the non-root daemons privsep already models;
+# a compartment's NON-members are this universe minus its members. Units that
+# share a compartment-holding Unix identity are members even when their own
+# unit file does not repeat SupplementaryGroups — the wizard units all run as
+# the jasper-web user, which is in both compartment groups on disk, so the
+# manifest models the effective identity rather than the intent. The recon-tier
+# oneshots (privsep.OUT_OF_SCOPE_NONROOT_UNITS) are in no compartment group, so
+# they are not leak targets; world-exposure is caught by the o-bit test.
 _UNIVERSE_UNITS: tuple[str, ...] = tuple(sorted(s.unit for s in privsep.MANIFEST))
 
 
@@ -124,7 +104,7 @@ COMPARTMENTS: tuple[SecretCompartment, ...] = (
             "jasper-web",
         ),
         files=(
-            # The 3 LLM API keys split out of voice_provider.env (Phase 4a).
+            # The 3 LLM API keys, split out of voice_provider.env.
             "/var/lib/jasper-secrets/voice_keys.env",
             # Google OAuth client secret + the per-account refresh-token tree.
             "/var/lib/jasper-secrets/google_credentials.env",
@@ -188,20 +168,17 @@ def _unique_names(names: list[str]) -> list[str]:
     return out
 
 
-# --------------------------------------------------------------------------- #
-# Pure, hardware-free classifiers (unit-tested with tmp files + synthetic ids).
-# --------------------------------------------------------------------------- #
 def _file_over_exposed_to(
     st: os.stat_result, non_members: list[_Identity]
 ) -> list[str]:
     """Which NON-member daemons (or the world) can read this stat'd file.
 
-    The confidentiality side: any reader outside the compartment means the Phase 4
-    isolation has dissolved. Catches BOTH regressions in one POSIX evaluation —
-    a broad group (e.g. ``jasper``, which every non-member holds, with the group-read
-    bit) and a world-read bit (a non-member that shares no group falls through to the
-    *other* bits). The ``world`` sentinel is added explicitly so the FAIL still fires
-    on a host where the non-member daemons don't resolve (e.g. they aren't installed).
+    The confidentiality side: any reader outside the compartment means the
+    isolation has dissolved. One POSIX evaluation catches both regressions — a
+    broad group (``jasper``, which every non-member holds, plus the group-read
+    bit) and a world-read bit (a non-member sharing no group falls through to
+    the *other* bits). The ``world`` sentinel is added explicitly so the FAIL
+    still fires on a host where the non-member daemons do not resolve.
     """
     exposed: list[str] = []
     if st.st_mode & (_stat.S_IROTH | _stat.S_IWOTH):
@@ -228,14 +205,12 @@ def _classify_compartment(
     stat_fn=os.stat,
     glob_fn=_glob.glob,
 ) -> CheckResult:
-    """Core of a per-compartment check, identity + fs parameterized for unit tests.
+    """Core of a per-compartment check, identity + fs parameterized.
 
-    One ``CheckResult`` aggregates the dir + every present secret file (the "doctor
-    checks stay flat" rule — one result per function, mirroring
-    ``env._classify_state_group_write``). FAIL on any over-exposure (a non-member /
-    the world can read), else WARN on any under-availability or dir drift, else OK.
-    Absent dir → OK (compartment not present / nothing configured). Absent files are
-    skipped (absent ≠ the present-but-drifted bug).
+    One ``CheckResult`` aggregates the dir and every present secret file: FAIL
+    on any over-exposure (a non-member or the world can read), else WARN on any
+    under-availability or dir drift, else OK. An absent dir or file is skipped —
+    absent is "not configured", not the present-but-drifted bug.
     """
     fails: list[str] = []  # over-exposure (confidentiality)
     warns: list[str] = []  # under-availability + dir posture drift
@@ -257,9 +232,8 @@ def _classify_compartment(
         dir_group = str(dir_st.st_gid)
     dir_mode = dir_st.st_mode & 0o7777
 
-    # A non-member that can TRAVERSE (execute) the dir, or any world bit, is the
-    # over-exposure: combined with a file bit it reaches the secret. Reuse the
-    # read primitive against the execute bits by testing each precedence tier.
+    # A non-member that can TRAVERSE (execute) the dir, or any world bit, is
+    # over-exposure: combined with a file bit it reaches the secret.
     dir_world = bool(dir_st.st_mode & (_stat.S_IROTH | _stat.S_IWOTH | _stat.S_IXOTH))
     dir_exposed_to = _unique_names([
         nm.user for nm in non_members if _dir_traversable_by(dir_st, nm.uid, nm.gids)
@@ -336,9 +310,8 @@ def _classify_compartment(
 def _dir_traversable_by(st: os.stat_result, uid: int, gids: frozenset[int]) -> bool:
     """Could a process with ``uid`` + ``gids`` execute (enter) this directory?
 
-    Mirrors ``privsep._process_can_read``'s owner/group/other precedence but on the
-    execute bit — directory traverse, which (with a readable file inside) is what a
-    non-member needs to reach a secret."""
+    Owner/group/other precedence on the execute bit: traverse plus a readable
+    file inside is what a non-member needs to reach a secret."""
     if st.st_uid == uid:
         return bool(st.st_mode & _stat.S_IXUSR)
     if st.st_gid in gids:
@@ -354,9 +327,6 @@ def _truncate(items: list[str], limit: int = 6) -> list[str]:
     return shown
 
 
-# --------------------------------------------------------------------------- #
-# Runtime identity resolution (on-Pi; degrades to skip off the Pi).
-# --------------------------------------------------------------------------- #
 def _systemctl_available() -> bool:
     """True if ``systemctl show`` works on this host. ``_unit_runtime_identity``
     returns ``None`` only when the systemctl subprocess errors (dev / non-Linux
@@ -368,9 +338,9 @@ def _resolve_unit(unit: str) -> _Identity | None:
     """``_Identity`` for a running NON-root ``unit``, or ``None`` to skip it (not
     installed / runs as root / user unresolvable / a transient systemctl miss).
 
-    A root unit resolves to ``None`` deliberately: as a member it reads everything
-    (no availability concern — the streambox jasper-web case), and as a non-member it
-    is root (trusted; root reading a secret is not the compartment leak we guard).
+    A root unit resolves to ``None`` deliberately: as a member it reads
+    everything anyway, and as a non-member it is root — root reading a secret
+    is not the compartment leak this guards.
     """
     info = privsep._unit_runtime_identity(unit)
     if info is None:
@@ -412,16 +382,16 @@ def _check_compartment(group: str) -> CheckResult:
 
 @doctor_check(order=23.6, group="privsep")
 def check_jasper_secrets_compartment() -> CheckResult:
-    """The ``jasper-secrets`` compartment (LLM keys + Google) must be readable by
-    voice+web ONLY. FAIL if a non-member (mux/control/input) or the world can read a
-    secret (confidentiality regressed); WARN if a member can't (availability). Skips
-    when the compartment is absent or systemctl is unavailable."""
+    """The ``jasper-secrets`` compartment (LLM keys + Google) must be readable
+    by voice+web ONLY. FAIL if a non-member or the world can read a secret;
+    WARN if a member cannot. Skips when the compartment is absent or systemctl
+    is unavailable."""
     return _check_compartment("jasper-secrets")
 
 
 @doctor_check(order=23.61, group="privsep")
 def check_jasper_intsecrets_compartment() -> CheckResult:
     """The ``jasper-intsecrets`` compartment (Home Assistant + Spotify) must be
-    readable by voice/control/mux/web ONLY. FAIL if jasper-input or the world can read
-    a secret; WARN if a member can't. Skips when absent / systemctl unavailable."""
+    readable by voice/control/mux/web ONLY. FAIL if a non-member or the world
+    can read a secret; WARN if a member cannot."""
     return _check_compartment("jasper-intsecrets")

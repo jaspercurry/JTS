@@ -229,17 +229,14 @@ def read_notified_frames(
 
 
 # Short TTL cache over the journal read. The negotiated budget changes only
-# per AirPlay session (minutes apart), but the consuming pages poll often
-# (jasper-control's /state ~5 s, the /rooms wizard's /rooms.json ~7 s), each
-# concurrently on its ThreadingHTTPServer. Without this, an active bonded
-# leader would spawn a `journalctl` scanning a verbose 30-min journal on every
-# poll, during the busiest moment (bonded playback) on a 1 GB Pi. The cache
-# caches the fail-soft None too so a wedged journalctl is not hammered.
-# NB: this is module-global, so it is PER PROCESS — and the two consumers run
-# in DIFFERENT daemons (/state in jasper-control, /rooms.json in jasper-web),
-# so each keeps its own cache. Worst case with both pages open on a bonded
-# leader is ~2 reads/TTL per process (~4/min total), not 1 — still negligible.
-# Mirrors the _source_availability_cache pattern in control/state_aggregate.py.
+# per AirPlay session (minutes apart), while the /rooms wizard re-polls
+# /rooms.json every 7 s, each poll concurrent on its ThreadingHTTPServer.
+# Without this, an active bonded leader would spawn a `journalctl` scanning a
+# verbose 30-min journal on every poll, during bonded playback on a 1 GB Pi.
+# The fail-soft None is cached too, so a wedged journalctl is not hammered.
+# Module-global, so PER PROCESS — the two consumers run in DIFFERENT daemons
+# (/state in jasper-control, /rooms.json in jasper-web) and each keeps its own
+# cache, giving ~2 reads/TTL rather than 1 on a bonded leader.
 # Deliberately NOT keyed on bond identity: the is_active_leader gate in
 # bonded_airplay_latency_snapshot suppresses reads entirely while solo/follower,
 # so the only staleness window is a sub-TTL unbond→rebond, whose worst case is a

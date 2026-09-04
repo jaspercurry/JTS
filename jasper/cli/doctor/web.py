@@ -2,12 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""jasper-doctor checks — web domain.
-
-Re-homed verbatim from the original monolithic
-``jasper/cli/doctor.py``; see ``jasper/cli/doctor/__init__.py``
-for the package overview and ``_registry.py`` for how order is
-preserved. No check logic changed in the split."""
+"""jasper-doctor checks — web domain."""
 from __future__ import annotations
 
 import os
@@ -53,9 +48,8 @@ def _manifest_entries(manifest: Path) -> list[str]:
     """Relative asset paths from the installer-written manifest.
 
     install_web_assets (deploy/lib/install/web-assets.sh) writes one
-    assets/-relative path per line. Tolerate anything else — a blank,
-    comment, absolute, or path-traversing line is dropped rather than
-    letting one bad byte distort the check."""
+    assets/-relative path per line; a blank, comment, absolute, or
+    path-traversing line is dropped rather than distorting the check."""
     entries: list[str] = []
     for raw in manifest.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
@@ -69,19 +63,12 @@ def _manifest_entries(manifest: Path) -> list[str]:
 def check_web_design_assets() -> CheckResult:
     """Every installed management-UI static asset must be present.
 
-    install_web_assets records each copied asset (app.css, fonts,
-    per-page CSS + ES modules, the shared cross-page modules) in
-    assets/.install-manifest, and this check verifies the installed
-    tree against it — no hand list to drift as pages migrate. A
-    missing stylesheet renders unstyled-but-visible; a missing JS
-    module blanks the page — and a missing shared module blanks every
-    importing page at once. A missing *manifest* means the asset tree
-    predates the manifest-writing installer (or an install died before
-    reaching it), so the tree can't be verified at all — warn rather
-    than guess from a stale built-in list, which could pass a partial
-    tree as green. All admin-only and non-fatal: redeploy fixes each
-    case. On a non-Pi checkout (no /usr/share/jasper-web) there's
-    nothing to verify."""
+    Verified against assets/.install-manifest, which install_web_assets
+    writes, so no hand list drifts as pages migrate. A missing stylesheet
+    renders unstyled-but-visible; a missing JS module blanks the page, and a
+    missing shared module blanks every importing page. A missing *manifest*
+    warns rather than guessing from a built-in list that could pass a partial
+    tree as green. All admin-only and non-fatal: redeploy fixes each case."""
     web_root = Path(os.environ.get("JASPER_WEB_SHARE_DIR", "/usr/share/jasper-web"))
     if not web_root.is_dir():
         return CheckResult(
@@ -98,8 +85,8 @@ def check_web_design_assets() -> CheckResult:
             "redeploy to write it and verify the asset tree",
             reason=REASON_WEB_ASSETS_MANIFEST_MISSING,
         )
-    # app.css is in the manifest, but pin it explicitly too: it is the
-    # design system itself, and one hardcoded path can't drift.
+    # app.css is in the manifest, but pinned explicitly too: it is the design
+    # system itself, and one hardcoded path cannot drift.
     seen: dict[Path, None] = {assets_root / "app.css": None}
     for entry in _manifest_entries(manifest):
         seen.setdefault(assets_root / entry, None)
@@ -125,8 +112,8 @@ def check_web_design_assets() -> CheckResult:
 
 
 # Probe target for check_management_surface. Module constants so tests can
-# point them at fixtures; the URL is loopback on purpose — the probe runs
-# on-Pi and exercises nginx → wizard → jasper-control, not LAN reachability.
+# point them at fixtures; loopback on purpose — the probe exercises
+# nginx → wizard → jasper-control, not LAN reachability.
 NGINX_SITE = Path("/etc/nginx/sites-enabled/jasper.conf")
 MANAGEMENT_PROBE_URL = "http://127.0.0.1/system/data.json"
 
@@ -147,21 +134,14 @@ def check_management_surface() -> CheckResult:
     """The management UI must answer through nginx under the speaker's
     real hostname.
 
-    Probes /system/data.json on loopback nginx with the resolved
-    speaker hostname as `Host` — the exact path a browser takes (nginx →
+    Probes /system/data.json on loopback nginx with the resolved speaker
+    hostname as `Host` — the exact path a browser takes (nginx →
     socket-activated system wizard → jasper-control behind its
-    management-host guard). Pins the 2026-06-11 regression class
-    closed: the wizard's control client carried `Host: 0.0.0.0:8780`
-    from a seeded bind value and every dashboard poll 403ed, with
-    nothing on the Pi noticing. Any break in the nginx → wizard →
-    control chain (guard rejection, wizard socket misbind, control
-    down) fails here. A 502 is the one status two of those hops share
-    — an unanswered wizard socket and a wizard forwarding its own
-    unreachable-control error are identical from nginx — so that
-    branch names both candidates and hands the wizard one to
-    :func:`check_wizard_socket_start_limits`, instead of attributing it
-    to jasper-control alone (#2465). Skips on a non-Pi checkout (no
-    installed nginx site)."""
+    management-host guard), so any break in that chain (guard rejection,
+    wizard socket misbind, control down) fails here. A 502 is the one status
+    two of those hops share, so that branch names both candidates and hands
+    the wizard one to :func:`check_wizard_socket_start_limits` rather than
+    attributing it to jasper-control alone (#2465)."""
     import urllib.error
     import urllib.request
 
@@ -213,12 +193,9 @@ def check_control_token() -> CheckResult:
     """Report the control-token gate posture (never the secret).
 
     The control token (SECURITY.md) gates jasper-control's high-impact
-    mutations (/system/poweroff, /system/reboot, /mic/mute,
-    /grouping/set) behind an X-JTS-Token header. Production startup normally
-    auto-generates it; disabled means the token file is currently absent or
-    unreadable. This is a *posture* line, not a health failure: ok either way.
-    Strictly secret-free — it reports only whether a non-empty token file exists,
-    never reads or echoes the value."""
+    mutations behind an X-JTS-Token header; disabled means the token file is
+    absent or unreadable. A *posture* line, not a health failure: ok either
+    way, and strictly secret-free — only whether a non-empty file exists."""
     if control_token.token_enforced():
         return CheckResult(
             "control token gate", "ok",
@@ -238,12 +215,11 @@ def check_tool_catalog() -> CheckResult:
     """Report the /tools/ catalog the wizard serves: present, tool count,
     how many the household disabled, and whether a voice restart is pending.
 
-    Skip-if-not-configured: with no voice provider jasper-voice doesn't run
-    (so it never writes the catalog) — ok/skipped, not a failure. With a
-    provider set but no catalog on disk, warn: the wizard renders a "not
-    ready" state and toggles won't take effect until the daemon writes it.
-    Reads the same light view (jasper.tool_catalog_view) the wizard + /state
-    use — never imports the heavy registry."""
+    With no voice provider jasper-voice never writes the catalog, so that is
+    a skip rather than a failure; with a provider set but no catalog on disk,
+    warn — the wizard renders "not ready" and toggles do not take effect.
+    Reads the light view (jasper.tool_catalog_view), never the heavy
+    registry."""
     from ...tool_catalog_view import summary
     from ...voice.provider_state import read_active_provider
 
@@ -317,9 +293,8 @@ def check_conversation_history() -> CheckResult:
         store.close()
 
 
-# Probe target for check_camillagui_loopback (#2319). Module constant,
-# mirroring MANAGEMENT_PROBE_URL above, so tests can point elsewhere;
-# matches deploy/systemd/camillagui.socket's ListenStream port.
+# Probe target for check_camillagui_loopback; matches
+# deploy/systemd/camillagui.socket's ListenStream port.
 CAMILLAGUI_PORT = 5005
 _LOOPBACK_BIND_ADDRESSES = frozenset({"127.0.0.1", "[::1]"})
 
@@ -327,30 +302,19 @@ _LOOPBACK_BIND_ADDRESSES = frozenset({"127.0.0.1", "[::1]"})
 def _camillagui_listen_addresses() -> list[str] | None:
     """Local bind addresses of any live LISTEN socket on CAMILLAGUI_PORT.
 
-    Reads the kernel's actual socket table via `ss`, not the unit file.
-    `systemctl show camillagui.socket -p Listen` reflects the *parsed
-    configuration* — it updates the instant `daemon-reload` re-reads a
-    changed ListenStream=, even before the socket unit is restarted — so it
-    cannot distinguish a genuinely-rebound listener from one still holding
-    its pre-upgrade fd open. That gap is exactly the failure mode this
-    check exists to catch: install.sh's `install_camillagui` restarts (not
-    just starts/enables) the socket on every deploy specifically so a
-    ListenStream= change actually re-binds; `ss` is the ground truth that
-    proves the restart worked rather than trusting it did.
+    Reads the kernel's socket table via `ss`, not the unit file:
+    `systemctl show camillagui.socket -p Listen` reflects the parsed
+    configuration and updates the instant `daemon-reload` re-reads a changed
+    ListenStream=, so it cannot distinguish a rebound listener from one still
+    holding its pre-upgrade fd — the exact failure this check exists to catch.
 
-    Returns None when the `ss` probe itself fails (not found, not
-    executable, a transient fork/resource failure, non-zero exit) so the
-    caller can report "can't verify" rather than silently reading a failed
-    probe as "nothing listening". `OSError` (not just `FileNotFoundError`)
-    is caught so a non-executable `ss` (PermissionError) or a fork failure
-    under memory pressure (OSError ENOMEM) also degrades to warn rather
-    than crashing the whole doctor run — the package's majority convention
-    for subprocess probes like this one (see jasper/cli/doctor/memory.py,
-    correction.py). Returns [] when the probe ran cleanly and found no
-    LISTEN socket on the port — covers both "never installed" and
-    "administratively stopped" (e.g. a hardware runbook's precautionary
-    `systemctl stop camillagui.socket`); either way there is no live
-    exposure to warn about."""
+    None when the `ss` probe itself fails, so the caller reports "can't
+    verify" rather than reading a failed probe as "nothing listening";
+    `OSError` is caught, not just `FileNotFoundError`, so a non-executable
+    `ss` or a fork failure under memory pressure degrades to a warn too.
+    ``[]`` when the probe ran cleanly and found no LISTEN socket — "never
+    installed" and "administratively stopped" alike, neither a live
+    exposure."""
     try:
         proc = _run(["ss", "-H", "-ltn"], timeout=5.0)
     except (subprocess.SubprocessError, FileNotFoundError, OSError):
@@ -362,9 +326,8 @@ def _camillagui_listen_addresses() -> list[str] | None:
         fields = line.split()
         if len(fields) < 4 or fields[0] != "LISTEN":
             continue
-        # "Local Address:Port" — rpartition on the LAST colon so a
-        # bracketed IPv6 address (which contains colons of its own, e.g.
-        # "[::1]:5005") still splits into the right (addr, port) pair.
+        # "Local Address:Port" — rpartition on the LAST colon so a bracketed
+        # IPv6 address ("[::1]:5005") still splits into (addr, port).
         addr, _, port = fields[3].rpartition(":")
         if port == str(CAMILLAGUI_PORT):
             addresses.append(addr)
@@ -375,24 +338,17 @@ def _camillagui_listen_addresses() -> list[str] | None:
 def check_camillagui_loopback() -> CheckResult:
     """CamillaGUI's externally-reachable socket must bind loopback-only.
 
-    #2319: camillagui.socket used to bind 0.0.0.0:5005 directly — an
-    unauthenticated, root-backed listener (ReadWritePaths=/etc/camilladsp)
-    that can author new CamillaDSP configs naming any device and live-apply
-    a graph over CamillaDSP's websocket, reachable from any device on the
-    LAN. The shipped unit now binds 127.0.0.1:5005 instead; reach the GUI
-    with `ssh -L 5005:localhost:5005 <pi-host>` then browse
-    http://localhost:5005/ from the laptop.
+    A non-loopback bind is an unauthenticated, root-backed listener
+    (ReadWritePaths=/etc/camilladsp) that can author CamillaDSP configs
+    naming any device and live-apply a graph, reachable from any LAN device
+    (#2319). The shipped unit binds 127.0.0.1:5005; reach the GUI with
+    `ssh -L 5005:localhost:5005 <pi-host>`.
 
-    Probes the LIVE kernel-level bind via `ss` (see
-    `_camillagui_listen_addresses`), not the unit file, so a restart that
-    silently fails to re-bind is caught rather than masked. Warn, not fail
-    — matches `check_household_secret_readable`'s convention for a security
-    posture that has silently degraded without breaking product function
-    (jasper-doctor's exit code is driven by fails, not warns). Not
-    currently listening is ok, not a failure: it covers both "never
-    installed" (an arch without a CamillaGUI bundle) and "administratively
-    stopped" (e.g. the jts3 hardware runbooks' precaution of stopping the
-    socket for a measurement sequence) — neither is a live exposure."""
+    Probes the live kernel-level bind via `_camillagui_listen_addresses`, not
+    the unit file, so a restart that fails to re-bind is caught. Warn, not
+    fail: a silently degraded security posture that has not broken product
+    function. Not currently listening is ok — neither "never installed" nor
+    "administratively stopped" is a live exposure."""
     label = "CamillaGUI socket bind"
     addresses = _camillagui_listen_addresses()
     if addresses is None:
@@ -416,9 +372,8 @@ def check_camillagui_loopback() -> CheckResult:
             "re-apply the shipped 127.0.0.1 bind",
             reason=REASON_CAMILLAGUI_EXPOSED,
         )
-    # Derived from the observed bind, not hardcoded to "127.0.0.1" — an
-    # [::1]-only bind is equally loopback-only and must not be misreported
-    # as an IPv4 address that isn't actually listening.
+    # Derived from the observed bind, not hardcoded to "127.0.0.1": an
+    # [::1]-only bind is equally loopback-only.
     shown = ", ".join(f"{a}:{CAMILLAGUI_PORT}" for a in sorted(set(addresses)))
     return CheckResult(
         label, "ok", f"loopback-only ({shown})",
@@ -428,15 +383,10 @@ def check_camillagui_loopback() -> CheckResult:
 
 # The socket-activated wizard family, by unit basename (both `<name>.service`
 # and `<name>.socket` derive from each entry). Canonical membership is the
-# installer's WIZARD_UNITS array (deploy/lib/install/systemd-units.sh), which
-# the install/enable/park sweeps iterate; tests/test_doctor_web.py pins this
-# tuple set-equal to it and to the shipped deploy/*.socket files, so a wizard
-# added there cannot silently drop out of this sweep.
-#
-# One name covers both profiles: a streambox installs
-# deploy/jasper-web-streambox.{service,socket} AS jasper-web.{service,socket}
-# (install_streambox_web_unit_files). Every unit below is installed on both
-# profiles, so the sweep probes them identically — no profile branch here.
+# installer's WIZARD_UNITS array (deploy/lib/install/systemd-units.sh);
+# tests/test_doctor_web.py pins this tuple set-equal to it and to the shipped
+# deploy/*.socket files. One name covers both profiles — a streambox installs
+# its own web units under the same jasper-web names — so no profile branch.
 WIZARD_UNITS = (
     "jasper-web",
     "jasper-bluetooth-web",
@@ -445,10 +395,8 @@ WIZARD_UNITS = (
     "jasper-chat-web",
 )
 
-# systemd's own name for "I gave up starting the service this socket triggers",
-# as it appears in `systemctl show <socket> --property=Result`. This check
-# REPORTS it and does not gate on it — see the docstring for why that
-# distinction is load-bearing.
+# systemd's own name for "I gave up starting the service this socket
+# triggers", as it appears in `systemctl show <socket> --property=Result`.
 _START_LIMIT_RESULT = "service-start-limit-hit"
 
 
@@ -459,7 +407,7 @@ def _wizard_socket_state(unit: str) -> tuple[str, str] | None:
 
     ``finding`` is empty when the listener is bound — including when the unit
     is not installed on this profile, which reads as ``ActiveState=inactive``
-    (measured on jts4) rather than erroring.
+    rather than erroring.
     """
     socket_unit = f"{unit}.socket"
     state = evidence.unit_state(socket_unit)
@@ -502,8 +450,7 @@ def check_wizard_socket_start_limits() -> CheckResult:
     reported but never gated on, so a socket killed by any marker (not just
     ``service-start-limit-hit``) still surfaces. A read that fails outright
     (no ``ActiveState`` in the reply) is a ``fail``, never an ``ok`` standing
-    in for "could not tell". See #2465 for why the family needs its own
-    check.
+    in for "could not tell".
     """
     label = "wizard socket start limits"
     observed: list[str] = []

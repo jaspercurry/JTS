@@ -2,18 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The read half every park record shares.
+"""The read half of a park record.
 
-Two shell writers park a daemon out-of-band on a ``/run`` record —
-``jasper-outputd-failure-reconcile`` (ADR-0141) and ``jasper-camilla-recover``
-(ADR-0175) — and each has a Python reader feeding jasper-doctor and
-``/state.resilience``. The open/absent/unreadable/parse preamble is identical
-for both, including its posture: a record that cannot be read is reported
-distinctly from one that is not there, because a permissions regression must
-never read as a healthy speaker.
-
-This module is that preamble, once. Each reader keeps only what is specific to
-its own record's fields.
+``jasper-camilla-recover`` (ADR-0175) parks a daemon out-of-band on a ``/run``
+record, and :mod:`jasper.control.camilla_recover_state` reads it for
+jasper-doctor and ``/state.resilience``. This module owns the
+open/absent/unreadable/parse preamble, including its posture: a record that
+cannot be read is reported distinctly from one that is not there, because a
+permissions regression must never read as a healthy speaker. Each reader
+keeps only what is specific to its own record's fields.
 """
 from __future__ import annotations
 

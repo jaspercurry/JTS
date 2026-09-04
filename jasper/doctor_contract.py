@@ -4,15 +4,11 @@
 
 """The jasper-doctor output contract (ADR-0228 rule 3).
 
-The row shape, the status vocabulary, and the harness-generated reason
-codes — everything a *consumer* of a doctor report needs. Kept stdlib-only
-and free of any `jasper.cli.doctor` import so jasper-control can build and
-count contract rows (its own placeholder and refresh-failure rows) without
-dragging in the check package, whose ``__init__`` imports every domain
-module.
-
-`jasper/cli/doctor/_shared.py` re-exports these names, so the domain check
-modules keep importing them from `._shared`.
+The row shape, the status vocabulary, and the harness-generated reason codes
+— everything a *consumer* of a doctor report needs. Stdlib-only and free of
+any `jasper.cli.doctor` import, so jasper-control can build and count
+contract rows without dragging in the check package, whose ``__init__``
+imports every domain module.
 """
 from __future__ import annotations
 
@@ -64,8 +60,7 @@ class CheckResult:
     # result — required on every warn/fail, optional on ok/skipped. `detail`
     # is the human sentence and its wording may change freely; `reason` is
     # what tests and other automation pin. Each domain module declares its
-    # own closed vocabulary as module-level REASON_* constants; the registry
-    # test enforces that.
+    # own closed vocabulary as module-level REASON_* constants.
     reason: str = ""
 
     def __post_init__(self) -> None:

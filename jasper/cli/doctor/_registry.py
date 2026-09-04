@@ -4,37 +4,25 @@
 
 """Ordered registry for jasper-doctor checks.
 
-Checks live in per-domain modules (``jasper/cli/doctor/audio.py``,
-``network.py``, …) and declare their membership, display order, and
-calling convention here.
-
 Contract:
 
 - **Order is a sparse sort KEY, not a contiguous index.** Orders must be
-  UNIQUE; gaps are intentional. To insert a check between two existing
-  ones, give it any value strictly between their orders (e.g. ``20.5``);
-  nothing else renumbers. Registration happens as each per-domain module
-  is imported by the package ``__init__``; sorting by ``order`` makes the
-  final sequence independent of import order.
+  UNIQUE; gaps are intentional, so a check inserted between two others
+  takes any value strictly between their orders and nothing renumbers.
+  Sorting by ``order`` also makes the sequence independent of the order
+  the per-domain modules were imported in.
 
 - **One naming rule for every entry.** A check's displayed name and its
   crash-path label are both ``entry.label or _check_name(entry.func)``
-  (``check_env_file`` → ``"env file"``), regardless of ``needs_cfg`` /
-  ``is_async``. ``label`` is therefore optional everywhere and always
-  honoured where set.
+  (``check_env_file`` → ``"env file"``), whatever its calling convention.
 
-- **Async and hardware-sensitive checks carry explicit metadata.** A
-  check flagged ``is_async=True`` is awaited directly by the harness.
-  A check with ``exclusive_group=`` may still run while unrelated checks
-  are in flight, but only one check in that group runs at a time. This
-  keeps ALSA/proc evidence probes from observing one another's temporary
-  opens while still allowing the rest of the subprocess-heavy doctor to
-  run concurrently.
+- **Async and hardware-sensitive checks carry explicit metadata.** Only
+  one check in an ``exclusive_group=`` runs at a time, which keeps
+  ALSA/proc evidence probes from observing one another's temporary opens
+  while unrelated checks still run concurrently.
 
-``group=`` is the per-domain dimension. It does not affect order or
-output; it records which subsystem a check belongs to (the same domain
-the check's module name reflects), so the registry can be filtered or
-introspected by domain without re-deriving it from import paths.
+``group=`` is the per-domain dimension: it affects neither order nor
+output, and only records which subsystem a check belongs to.
 """
 from __future__ import annotations
 
@@ -46,11 +34,8 @@ from ._shared import CheckResult
 
 @dataclass(frozen=True)
 class RegisteredCheck:
-    """One registry entry.
-
-    ``func`` is the raw check function; ``needs_cfg`` says whether it
-    takes the ``Config`` argument. ``label`` is the explicit display and
-    crash label; left empty, it is derived from ``func.__name__``.
+    """One registry entry. ``label`` left empty is derived from
+    ``func.__name__``.
     """
 
     order: float
@@ -74,30 +59,23 @@ def doctor_check(
     is_async: bool = False,
     exclusive_group: str = "",
 ) -> Callable[[Callable], Callable]:
-    """Register a doctor check and return it unchanged.
-
-    The decorator is *additive* — it records metadata in the ordered
-    registry and returns the original function object untouched, so the
-    check stays directly importable and unit-testable.
+    """Register a doctor check and return the function object unchanged, so
+    it stays directly importable and unit-testable.
 
     Args:
-        order: sort key in the canonical run sequence — a sparse key, not
-            a contiguous index. To insert between two checks pass a value
-            between their orders (e.g. 20.5); no renumber. Must be unique.
-        group: subsystem/domain the check belongs to. Usually the check's
-            module name, but it need not be — ``drift.py`` registers under
-            ``install``. Organizational metadata only, except that
-            ``__init__._STREAMBOX_OMITTED_DOCTOR_GROUPS`` skips whole
-            groups a streambox does not install; ``install`` is not one of
-            them, so drift checks run on both profiles.
-        label: explicit display/crash label. Leave empty to derive it
-            from ``__name__``.
+        order: sparse sort key in the canonical run sequence; must be unique.
+        group: subsystem/domain the check belongs to. Need not match the
+            module name (``drift.py`` registers under ``install``).
+            Organizational only, except that
+            ``__init__._STREAMBOX_OMITTED_DOCTOR_GROUPS`` skips whole groups
+            a streambox does not install.
+        label: explicit display/crash label; empty derives it from
+            ``__name__``.
         needs_cfg: True iff the check takes the ``Config`` argument.
         is_async: True for checks implemented as async callables.
-        exclusive_group: Optional serialization key for probes that are
-            individually safe but can perturb one another when run at the
-            same instant (for example, ALSA open probes and `/proc/asound`
-            ownership reads). Empty string means no exclusive lane.
+        exclusive_group: serialization key for probes that are individually
+            safe but perturb one another when run at the same instant (ALSA
+            open probes, `/proc/asound` ownership reads). Empty = no lane.
     """
 
     def _register(fn: Callable) -> Callable:
@@ -127,6 +105,5 @@ def doctor_check(
 
 
 def registered_checks() -> list[RegisteredCheck]:
-    """All registered checks in canonical order (sorted by ``order``),
-    independent of the order the per-domain modules were imported in."""
+    """All registered checks sorted by ``order``."""
     return sorted(_REGISTRY, key=lambda c: c.order)
