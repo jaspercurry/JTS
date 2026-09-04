@@ -154,6 +154,25 @@ def take_artifact_path(bundle_dir: str | Path, take_path: str) -> Path:
     return Path(bundle_dir) / EVIDENCE_ROOT / "artifacts" / take_path
 
 
+def take_phase_composition(bundle_dir: str | Path, take_path: str) -> str | None:
+    """Which composition the take's curves carry, or ``None`` on a legacy take.
+
+    Read off the record (``phase_composition``), never re-derived from the
+    phase that was commanded: which phase ran and whether the analysis composed
+    the configured crossover in are two facts, and
+    docs/tuning-methodology.md section 4 step 1 turns on the second. A take
+    that states neither — banked before the field, or captured with no
+    protection to retain — reads ``None``, never one of the two.
+    """
+
+    try:
+        raw = json.loads(take_artifact_path(bundle_dir, take_path).read_text())
+    except (OSError, ValueError):
+        return None
+    stated = raw.get("phase_composition") if isinstance(raw, Mapping) else None
+    return stated if isinstance(stated, str) and stated else None
+
+
 def read_lateral_take(path: Path) -> dict[str, Any] | None:
     """One banked ``positions/{take_id}.json`` as a lateral take, or ``None``.
 
@@ -249,7 +268,7 @@ def parse_curve_magnitude(
     mapping cannot supply that subset. A consumer's stricter requirement
     (phase, a role check, raising instead of skipping) layers on top; this is
     the one place "what a banked magnitude curve means" is decided, so the
-    delay-sweep reader and the feature classifier cannot drift apart on it.
+    delay-landscape reader and the feature classifier cannot drift apart on it.
     """
     try:
         freqs = np.asarray([float(hz) for hz in curve["freqs_hz"]], dtype=float)

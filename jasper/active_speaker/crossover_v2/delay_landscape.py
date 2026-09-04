@@ -16,9 +16,11 @@ clamped into the measured overlap
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass
-from typing import Any, Mapping
+from pathlib import Path
+from typing import Any, Mapping, Sequence
 
 from jasper.active_speaker.delay_sweep import (
     ROBUST_NULL_DEPTH_DB,
@@ -427,6 +429,55 @@ def compute_landscape(
     )
 
 
+def graded_null_rows(rows_dir: Path, *, fc_hz: float) -> list[dict[str, Any]]:
+    """The banked ``null_runs`` rows this landscape can be graded against.
+
+    Three filters, each because the remainder is not the same quantity: a
+    refused row has no depth, an in-phase row read the summed corner rather
+    than the reverse null, and a row played at another corner was read at
+    other shoulders. A row that will not parse is skipped rather than fatal —
+    an interrupted run leaves a half-written last row, and the coordinates
+    before it are still evidence.
+    """
+
+    graded: list[dict[str, Any]] = []
+    for path in sorted(rows_dir.glob("*.json")):
+        try:
+            row = json.loads(path.read_text(encoding="utf-8"))
+            if row.get("status") != "measured" or row.get("polarity") != "inverted":
+                continue
+            if not math.isclose(float(row["fc_hz"]), fc_hz, rel_tol=1e-6):
+                continue
+            entry = {
+                "row": path.name,
+                "delay_us": float(row["delay_us"]),
+                "depth_db": float(row["depth_db"]),
+                "delayed_role": row.get("delayed_role"),
+                "inverted_role": row.get("inverted_role"),
+                "position_deg": row.get("position_deg"),
+            }
+        except (AttributeError, KeyError, TypeError, ValueError):
+            continue
+        graded.append(entry)
+    return graded
+
+
+def depth_by_coordinate(graded: Sequence[Mapping[str, Any]]) -> dict[float, float]:
+    """One depth per coordinate: the deepest of a repeat.
+
+    Near the optimum the corner level is second-order flat in delay, so the
+    shallow member of a repeat pair is bounded by the run's own sigma rather
+    than by the coordinate. Every row stays visible in the banked rows.
+    """
+
+    depths: dict[float, float] = {}
+    for row in graded:
+        coordinate = float(row["delay_us"])
+        depth = float(row["depth_db"])
+        depths[coordinate] = max(depths.get(coordinate, depth), depth)
+    return depths
+
+
 def confirmation_verdict(
     landscape: DelayLandscape,
     measured_null_depth_db: Mapping[float, float],
@@ -501,6 +552,54 @@ def confirmation_verdict(
     }
 
 
+def optimum_line(landscape: DelayLandscape) -> str:
+    """The answer and the basis it was read on, in one operator line.
+
+    Beside the optimum rather than further down the payload: a coordinate read
+    on clamped shoulders is weaker evidence than the same number read on the
+    canonical span, and nothing else on the line says which one this is.
+    """
+
+    span = landscape.shoulders
+    clamped = [
+        side for side, flag in
+        (("lower", span.lower_clamped), ("upper", span.upper_clamped)) if flag
+    ]
+    basis = (
+        f"shoulders {span.used_hz[0]:g}-{span.used_hz[1]:g} Hz "
+        f"({span.used_octaves:.2f} octaves), "
+    )
+    basis += (
+        f"{'+'.join(clamped)} clamped in from canonical "
+        f"{span.canonical_hz[0]:g}-{span.canonical_hz[1]:g} Hz"
+        if clamped else "canonical"
+    )
+    return (
+        f"optimum {landscape.best_coordinate_us:g} us, predicted null "
+        f"{landscape.best_predicted_null_depth_db:.1f} dB — {basis}"
+    )
+
+
+def verdict_line(
+    verdict: Mapping[str, Any], depths: Mapping[float, float]
+) -> str:
+    """The grade, the depth at the optimum and the deepest one, in one line."""
+
+    at_optimum = verdict["measured_null_depth_db"]
+    measured = (
+        "not measured there" if at_optimum is None else
+        f"{at_optimum:.1f} dB "
+        f"(delta {verdict['measured_minus_predicted_db']:+.1f} dB)"
+    )
+    deepest_us, deepest_db = max(depths.items(), key=lambda item: item[1])
+    return (
+        f"{verdict['verdict']}: optimum {verdict['computed_optimum_us']:g} us "
+        f"predicted {verdict['predicted_null_depth_db']:.1f} dB, measured "
+        f"{measured}; deepest {deepest_db:.1f} dB at {deepest_us:g} us over "
+        f"{len(depths)} coordinates"
+    )
+
+
 __all__ = [
     "LANDSCAPE_KIND",
     "MODEL_AGREEMENT_DB",
@@ -516,5 +615,9 @@ __all__ = [
     "compute_landscape",
     "confirmation_verdict",
     "curve_shoulder_span",
+    "depth_by_coordinate",
+    "graded_null_rows",
+    "optimum_line",
     "predicted_null_depth_db",
+    "verdict_line",
 ]

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Behaviour pins for the PROPOSE door onto a banked round.
+"""Behaviour pins for the delay-landscape door onto a banked round.
 
 Three questions, one altitude each: does the door read the bank the store
 actually wrote, does it hand the operator a line they can run, and does a
@@ -20,6 +20,7 @@ import pytest
 from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.delay_landscape import (
+    REFUSAL_FC_OUTSIDE_OVERLAP,
     DelayLandscapeError,
     compute_landscape,
 )
@@ -29,7 +30,7 @@ from jasper.active_speaker.delay_sweep import sweep_spec
 from jasper.audio_measurement.analysis import ShoulderSpan
 from jasper.cli import null_door
 from jasper.cli.angle_capture import build_parser as angle_capture_parser
-from jasper.cli.delay_sweep import main
+from jasper.cli.round_views import main
 
 FC_HZ = 1800.0
 
@@ -95,7 +96,7 @@ def _bank(
 
 
 def _propose(bundle: Path, capsys, *extra):
-    code = main(["propose", str(bundle), "--fc-hz", str(FC_HZ), *extra])
+    code = main(["delay-landscape", str(bundle), "--fc-hz", str(FC_HZ), *extra])
     captured = capsys.readouterr()
     return code, json.loads(captured.out), captured.err
 
@@ -195,7 +196,7 @@ def test_curves_that_cannot_span_the_shoulders_refuse_verbatim(
 
     assert code == 1
     assert payload["status"] == "refused"
-    assert payload["reason"] == "delay_propose_landscape_unsupported"
+    assert payload["reason"] == REFUSAL_FC_OUTSIDE_OVERLAP
 
     # Verbatim, pinned against the module that owns the sentence rather than
     # against a copy of its wording: re-word the refusal there and this still
@@ -219,7 +220,7 @@ def test_a_bundle_with_no_round_refuses_before_it_reads_anything(
 ) -> None:
     code, payload, err = _propose(tmp_path, capsys)
     assert code == 1
-    assert payload["reason"] == "delay_propose_no_round"
+    assert payload["reason"] == "delay_landscape_no_round"
 
 
 def test_a_take_carrying_one_role_is_not_half_an_answer(tmp_path, capsys) -> None:
@@ -230,7 +231,7 @@ def test_a_take_carrying_one_role_is_not_half_an_answer(tmp_path, capsys) -> Non
     bundle = _bank(tmp_path, curves=[_curve("woofer")])
     code, payload, err = _propose(bundle, capsys)
     assert code == 1
-    assert payload["reason"] == "delay_propose_no_banked_curves"
+    assert payload["reason"] == "delay_landscape_no_banked_curves"
 
 
 @pytest.mark.parametrize(
@@ -300,9 +301,9 @@ def test_the_proposal_echoes_the_composition_its_take_was_banked_under(
 
 
 def test_the_spec_the_door_builds_is_the_shared_one(tmp_path) -> None:
-    """`propose` must bound its grid with the same `sweep_spec` the landscape
-    reads its bars from, or the printed coordinates would not be the ones the
-    verdict grades."""
+    """`delay-landscape` must bound its grid with the same `sweep_spec` the
+    landscape reads its bars from, or the printed coordinates would not be the
+    ones the verdict grades."""
 
     spec = sweep_spec(
         crossover_fc_hz=FC_HZ, upper_role="tweeter", lower_role="woofer",
@@ -312,7 +313,7 @@ def test_the_spec_the_door_builds_is_the_shared_one(tmp_path) -> None:
     assert spec.negative_delay_target == "woofer"
 
 
-def test_a_retaken_pose_proposes_off_the_retake_not_the_take_it_replaced(
+def test_a_retaken_pose_reads_the_retake_not_the_take_it_replaced(
     tmp_path, capsys,
 ) -> None:
     """A superseded take stays on disk as the honest walk record, and `take_id`
@@ -373,13 +374,13 @@ def _refused():
 
 
 def _confirm(bundle: Path, capsys, *extra):
-    code = main(["confirm", str(bundle), "--fc-hz", str(FC_HZ), *extra])
+    code = main(["delay-confirm", str(bundle), "--fc-hz", str(FC_HZ), *extra])
     captured = capsys.readouterr()
     return code, json.loads(captured.out), captured.err
 
 
-def test_propose_banks_its_landscape_beside_the_round(tmp_path, capsys) -> None:
-    """The prediction is an artifact, not just stdout: `confirm` is graded
+def test_delay_landscape_banks_itself_beside_the_round(tmp_path, capsys) -> None:
+    """The prediction is an artifact, not just stdout: `delay-confirm` is graded
     against it later, and a number an operator only ever saw scroll past is
     not evidence."""
 
@@ -397,7 +398,7 @@ def test_propose_banks_its_landscape_beside_the_round(tmp_path, capsys) -> None:
 def test_confirm_grades_the_played_rows_against_the_computed_optimum(
     tmp_path, capsys,
 ) -> None:
-    """The loop closes here: the coordinates `propose` printed were played,
+    """The loop closes here: the coordinates `delay-landscape` printed were played,
     `jasper-null` banked a row for each, and the verdict is read off those
     rows rather than off the model that proposed them."""
 

@@ -729,8 +729,8 @@ class RoundPoseCurve:
 
     Read from :func:`~.spatial.pose_curve_record`'s magnitude+phase bank
     (ruling S3) through the same reader :mod:`.delay_landscape` and
-    ``jasper-delay-sweep`` already use — never a raw lateral WAV, and never a
-    second tree-walker over the bundle (house ruling R11). ``band_hz`` is the
+    ``jasper-round-views delay-landscape`` already use — never a raw lateral
+    WAV, and never a second tree-walker over the bundle (house ruling R11). ``band_hz`` is the
     role's own driven sweep band, parsed by
     :func:`~.position_cycle.parse_curve_magnitude`.
     """

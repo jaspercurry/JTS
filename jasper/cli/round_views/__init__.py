@@ -22,7 +22,8 @@ Subcommands: one module per view family, each documenting its own verbs.
 
 Every subcommand accepts ``--out PATH`` to write somewhere else instead
 (``-`` for stdout, except ``repeat-floor``, whose record is published by
-its owning module and so requires a real path), and prints a
+its owning module, and the two ``delay-`` verbs, whose own document already
+occupies stdout — those three require a real path), and prints a
 one-line human summary to stderr either way. On failure the exit code names
 the STAGE that failed and it publishes the shared failure record;
 ``--help``'s EXIT CODES block and docs/tuning-operator-runbook.md's "Exit
@@ -50,6 +51,7 @@ from jasper.cli._refusal import (
 
 from . import (
     cloud_binding,
+    delay,
     distortion,
     forward_model,
     frequency,
@@ -94,7 +96,7 @@ __all__ = [
 #: The view families, in the order their subcommands are offered.
 _FAMILIES = (
     grades, repeat, seats, cloud_binding, forward_model, sweeps, frequency,
-    distortion, inventory,
+    distortion, delay, inventory,
 )
 
 
@@ -109,8 +111,9 @@ def build_parser() -> argparse.ArgumentParser:
             "the cloud's null evidence bound the linearization fit, what a "
             "candidate would measure from the banked per-driver solos, the "
             "gate window ladder and the sweep read onto the spec verdict, the "
-            "shared frequency view, the H2/H3 distortion reading, and an "
-            "inventory of which of those a "
+            "shared frequency view, the H2/H3 distortion reading, the "
+            "inter-driver delay landscape and its acoustic confirmation, and "
+            "an inventory of which of those a "
             "round already carries — over banked rounds and live sessions."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,

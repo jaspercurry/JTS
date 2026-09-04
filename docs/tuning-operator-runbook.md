@@ -433,10 +433,9 @@ nothing durable · **mutating** = changes what the speaker plays ·
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber status\|packet\|propose\|stage` | Emit one crossover round's evidence packet, read a prescription back through the strict gate, and say where this speaker stands. | advisory (`stage` mutates) | `jasper/cli/crossover_prescriber.py` |
 | `jasper-round open\|wait\|apply\|bank` | Open, wait on, apply and bank a crossover round from the speaker itself. The three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate, plus the bank that files a finished session in the on-box campaign home. | mutating-with-gates (`open`/`apply`/`bank` write; `wait` does not) | `jasper/cli/round.py` |
-| `jasper-round-views entry\|frozen\|per-seat\|repeat\|repeat-floor\|agreement\|co-metrics\|directivity\|cloud-binding\|forward-model\|spec-sweep\|gate-sweep\|frequency\|distortion\|inventory` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability and the banked repeat floor, per-seat agreement, audibility co-metrics, measured per-angle directivity, whether the cloud's null evidence bound the linearization fit, what a candidate would measure from the banked per-driver solos, the gate window ladder and the sweep read onto the spec verdict, the shared frequency view, the H2/H3 distortion reading, and an inventory of which of those a round already carries — over banked rounds and live sessions. | advisory | `jasper/cli/round_views/__init__.py` |
+| `jasper-round-views entry\|frozen\|per-seat\|repeat\|repeat-floor\|agreement\|co-metrics\|directivity\|cloud-binding\|forward-model\|spec-sweep\|gate-sweep\|frequency\|distortion\|delay-landscape\|delay-confirm\|inventory` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability and the banked repeat floor, per-seat agreement, audibility co-metrics, measured per-angle directivity, whether the cloud's null evidence bound the linearization fit, what a candidate would measure from the banked per-driver solos, the gate window ladder and the sweep read onto the spec verdict, the shared frequency view, the H2/H3 distortion reading, the inter-driver delay landscape and its acoustic confirmation, and an inventory of which of those a round already carries — over banked rounds and live sessions. | advisory | `jasper/cli/round_views/__init__.py` |
 | `jasper-project-ring` | Re-project a banked round into the capture ring that jasper-classify-features and jasper-round-views distortion read. | mutating (projects evidence; changes nothing played) | `jasper/cli/project_ring.py` |
 | `jasper-classify-features` | Classify a banked round's features as minimum-phase driver defects, interference, or the room — controls first. | advisory | `jasper/cli/classify_features.py` |
-| `jasper-delay-sweep propose\|confirm` | Propose an inter-driver delay from banked curves, then grade the acoustic confirmation against it. Computes only; plays nothing. | advisory (plays nothing) | `jasper/cli/delay_sweep.py` |
 | `jasper-close-reference distance\|compare` | Correct a close capture to the far distance and say, band by band, how much of the far read was the room. Computes only; plays nothing and opens no device. | advisory (plays nothing) | `jasper/cli/close_reference.py` |
 | `jasper-null` | Play the summed reverse null and bank one row per coordinate. Measures only; grades nothing. | measured | `jasper/cli/null_door.py` |
 | `jasper-audition start\|stop\|status` | Play this speaker at a reduced DSP layer, then put it back | mutating (runtime only; durable graph untouched -- ADR-0193) | `jasper/cli/audition.py` |
@@ -498,7 +497,7 @@ constants"** section, their single source of truth; ticket 3.7 turns them into
 code.
 
 **The delay lane is three acts, and the middle one is not optional.**
-`jasper-delay-sweep propose` reads and prints; `jasper-null` plays the
+`jasper-round-views delay-landscape` reads and prints; `jasper-null` plays the
 coordinates it printed and banks a row for each; the alignment door applies.
 Before grading a confirmation, check what the graph will actually play: the
 candidate delay arrives through the measurement-graph emitter, but the branch
@@ -626,8 +625,7 @@ be FILED; the failing number names the stage that failed, which is what tells
 you where to go.
 
 **The number is the contract; the record beside it is per tool.** The
-round-grading family — `jasper-round-views`, `jasper-delay-sweep`,
-`jasper-close-reference` — prints
+round-grading family — `jasper-round-views`, `jasper-close-reference` — prints
 `{"status": "refused" | "unreadable" | "unwritable", "reason":
 "<tool_named_slug>", "detail": "<text>"}` on stdout and one `<status>
 (<reason>): <detail>` sentence on stderr, `status` and code always agreeing.

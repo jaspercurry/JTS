@@ -50,6 +50,7 @@ TAKES_THIS_ROUND = "<this-round>"
 TAKES_AFTER_ANOTHER = "<other-round> <this-round>"
 TAKES_BEFORE_ANOTHER = "<this-round> <other-round>"
 TAKES_BUNDLE_AND_RING = "<this-round's bundle> --dumps <ring> --state <flow-state>"
+TAKES_BUNDLE_AND_FC = "<this-round's bundle> --fc-hz <applied-corner>"
 
 
 class ViewArtifact(NamedTuple):
@@ -82,6 +83,8 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "spec-sweep": ViewArtifact("spec_gate_sensitivity.json"),
     "gate-sweep": ViewArtifact("gate_sweep.json"),
     "frequency": ViewArtifact("frequency_view.json"),
+    "delay-landscape": ViewArtifact("delay_landscape.json", TAKES_BUNDLE_AND_FC),
+    "delay-confirm": ViewArtifact("delay_confirmation.json", TAKES_BUNDLE_AND_FC),
     # The packet owns this name, so the row takes that constant rather than a
     # second spelling of it.
     "distortion": ViewArtifact(
@@ -136,7 +139,9 @@ def _load_round(round_dir: str | Path) -> BankedRound:
     )
 
 
-def _write(payload: Any, out: str | None, default_path: Path) -> Path | None:
+def _write(
+    payload: Any, out: str | None, default_path: Path, *, make_parents: bool = False,
+) -> Path | None:
     """Publish one view. ``OSError`` only, and that is the whole rule.
 
     A ``ValueError`` out of the strict writer is a payload this run should not
@@ -145,7 +150,10 @@ def _write(payload: Any, out: str | None, default_path: Path) -> Path | None:
     filesystem sends them to the wrong place. It falls to :func:`main`.
     """
 
-    return stage(EXIT_WRITE_FAILED, (OSError,), write_report, payload, out, default_path)
+    return stage(
+        EXIT_WRITE_FAILED, (OSError,), write_report, payload, out, default_path,
+        make_parents=make_parents,
+    )
 
 
 def default_out(inputs: RoundInputs, round_dir: Path, name: str) -> Path:

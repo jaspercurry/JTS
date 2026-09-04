@@ -332,9 +332,9 @@ how the coordinate is chosen.
    driver's. The LATERAL phase skips that composition deliberately and keeps the
    protection phase. **Which of the two you got is stamped on the take**, as
    `phase_composition` (`crossover_composed` or `protection_retained`), and
-   `jasper-delay-sweep propose` echoes it beside the phase it read — so the
-   proposal states it rather than you. A take that states neither — banked
-   before the field, or captured with no protection emitted to retain — reads
+   `jasper-round-views delay-landscape` echoes it beside the phase it read —
+   so the proposal states it rather than you. A take that states neither —
+   banked before the field, or captured with no protection emitted to retain — reads
    as unknown, never as either one. Still treat a protection-retained optimum
    as contaminated until the acoustic confirm disposes of it.
 2. **Propose, from evidence already banked.** Ruling S3 banks magnitude *and*
@@ -420,11 +420,11 @@ schedule, the geometry seed and the selectors — decision content, no DSP of it
 own. `crossover_v2/delay_landscape.py` is the propose half and the grader;
 `camilla_yaml.emit_active_speaker_program_config`'s `measurement_delays_us` puts
 a candidate delay in the measurement graph and **that emitter only**. Offline,
-`jasper-delay-sweep propose <bundle> --fc-hz N` reads that round's per-driver
-curves through the measurement index, prints the computed optimum, and hands
-back the `jasper-angle-capture stage` lines that confirm it. It opens no device
-and plays nothing. `jasper-delay-sweep confirm <bundle> --fc-hz N` then grades
-the `null_runs/` rows those coordinates were played at against the same
+`jasper-round-views delay-landscape <bundle> --fc-hz N` reads that round's
+per-driver curves through the measurement index, prints the computed optimum,
+and hands back the `jasper-angle-capture stage` lines that confirm it. It opens
+no device and plays nothing. `jasper-round-views delay-confirm <bundle> --fc-hz N` then
+grades the `null_runs/` rows those coordinates were played at against the same
 landscape and banks the verdict as `delay_confirmation.json`.
 
 **Price orders the queue; it never empties it.** A delay the confirmation
