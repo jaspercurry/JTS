@@ -2130,6 +2130,9 @@ def test_a_shared_topology_reader_reads_once_and_changes_no_verdict(monkeypatch)
         reads.append(1)
         return None
 
+    # Built BEFORE the patch on purpose: the reader must look its loader up
+    # when it reads, not capture the one that existed when it was made.
+    read_saved_topology = rh.saved_topology_reader()
     monkeypatch.setattr(transport_coherence, "load_topology_for_wire", _load)
     monkeypatch.setattr(rh, "load_topology_for_wire", _load)
 
@@ -2139,7 +2142,6 @@ def test_a_shared_topology_reader_reads_once_and_changes_no_verdict(monkeypatch)
     assert len(reads) == 1
 
     reads.clear()
-    read_saved_topology = rh.saved_topology_reader()
     shared = transport_coherence.transport_coherence_report(
         coupling="shm_ring",
         outputd_env=outputd_env,

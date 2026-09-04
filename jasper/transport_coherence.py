@@ -229,8 +229,7 @@ def transport_coherence_report(
     ``TransportTopology`` is the policy source. This function compares its two
     runtime consumers without re-deriving endpoint strings in reconcilers or
     doctor checks. Missing Camilla evidence is not itself an error; a concrete
-    contradiction is. ``read_saved_topology`` is forwarded to
-    :func:`transport_topology_for_coupling`.
+    contradiction is.
 
     Both ring SHAPES take the same branch: :data:`COUPLING_SHM_RING` and
     :data:`TRANSPORT_SHM_RING_ACTIVE` differ in WHICH post-DSP endpoint they

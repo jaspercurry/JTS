@@ -237,7 +237,7 @@ def saved_topology_reader() -> Callable[[], Any]:
     One pass hands the same reader to every consumer, so the axes that need the
     saved topology share a single read and the axes that do not read nothing.
     """
-    return cache(load_topology_for_wire)
+    return cache(lambda: load_topology_for_wire())
 
 
 def _effective_env_value(
