@@ -523,6 +523,23 @@ def test_check_correction_latest_bundle_ok_on_a_golden_collection(
     assert r.reason == ""
 
 
+def test_check_correction_latest_bundle_warns_when_the_walk_was_capped(
+    monkeypatch,
+    tmp_path,
+):
+    """A capped walk makes the storage totals a lower bound, so the row says
+    so rather than reporting the undercount as fact."""
+    sessions = tmp_path / "sessions"
+    write_golden_correction_bundle(sessions, "new", started_at=2000)
+    monkeypatch.setattr(bundles, "BUNDLE_WALK_MAX_ENTRIES", 1)
+    monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(sessions))
+
+    r = doctor.check_correction_latest_bundle()
+
+    assert r.status == "warn"
+    assert r.reason == correction.REASON_LATEST_BUNDLE_SUMMARY_TRUNCATED
+
+
 def test_check_correction_latest_bundle_ok_when_none_recorded(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(tmp_path / "sessions"))
     r = doctor.check_correction_latest_bundle()

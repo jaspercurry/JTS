@@ -23,10 +23,11 @@ from ...audio_profile_state import (
     PROFILE_XVF_CHIP_AEC,
     PROFILE_XVF_CHIP_AEC_TESTING,
     RuntimeAecEnv,
-    build_audio_profile_status,
+    audio_profile_status,
     infer_audio_input_profile,
     normalize_audio_input_profile,
     parse_env_bool,
+    probe_xvf_mic,
     runtime_env_from_mapping,
     validation_profile as _audio_validation_profile,
 )
@@ -210,11 +211,7 @@ def _doctor_audio_input_selection() -> str:
 
 
 def _chip_aec_available_for_doctor() -> bool:
-    try:
-        from ...mics import xvf3800
-        return xvf3800.detect_runtime_profile().chip_aec_supported
-    except Exception:  # noqa: BLE001
-        return False
+    return probe_xvf_mic().chip_aec_supported
 
 def _audio_profile_status_for_doctor(
     *,
@@ -233,47 +230,18 @@ def _audio_profile_status_for_doctor(
         bridge_active = evidence.unit_active("jasper-aec-bridge.service") is True
     if env is None:
         env = _doctor_env_file()
-    runtime = runtime_env_from_mapping(env, process_env=os.environ)
-
-    if mic_probe is None:
-        try:
-            from ...mics import xvf3800
-            runtime_profile = xvf3800.detect_runtime_profile()
-            mic_probe = MicProbe(
-                xvf_present=runtime_profile.present,
-                capture_channels=runtime_profile.capture_channels,
-                recommended_channels=xvf3800.RECOMMENDED_CAPTURE_CHANNELS,
-                display_name=runtime_profile.display_name,
-                alsa_card_name=runtime_profile.alsa_card_name,
-                variant_id=runtime_profile.variant_id,
-                geometry=runtime_profile.geometry,
-                chip_beam_plan=runtime_profile.chip_beam_plan_id,
-                chip_aec_supported=runtime_profile.chip_aec_supported,
-            )
-        except Exception:  # noqa: BLE001
-            mic_probe = MicProbe(
-                xvf_present=False,
-                capture_channels=None,
-                probe_error="firmware probe failed",
-            )
-
-    chip_available = mic_probe.chip_aec_supported
-    profile_selection = _aec_profile_setting()
     testing_requested = (
-        normalize_audio_input_profile(profile_selection, default="")
+        normalize_audio_input_profile(_aec_profile_setting(), default="")
         == PROFILE_XVF_CHIP_AEC_TESTING
     )
     gate = effective_chip_aec_dac_gate(env, testing_requested=testing_requested)
-    status = build_audio_profile_status(
+    return audio_profile_status(
         _doctor_aec_intent(),
-        runtime,
-        mic_probe,
+        runtime_env_from_mapping(env, process_env=os.environ),
         bridge_active=bridge_active,
-        chip_available=chip_available,
+        mic=mic_probe,
         chip_gate=gate.to_dict(),
     )
-    status["chip_aec_gate"] = gate.to_dict()
-    return status
 
 def _assess_audio_profile(status: dict) -> CheckResult:
     profile = status.get("audio_profile") or {}
@@ -294,7 +262,7 @@ def _assess_audio_profile(status: dict) -> CheckResult:
         f"session={mic.get('session_source') or 'unknown'}, "
         f"legs={legs_text}"
     )
-    gate = status.get("chip_aec_gate")
+    gate = profile.get("chip_aec_gate")
     if isinstance(gate, dict):
         detail += (
             f"; chip_aec_gate={gate.get('status') or 'unknown'}"

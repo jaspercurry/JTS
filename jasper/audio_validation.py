@@ -37,6 +37,7 @@ from .audio_profile_state import (
     RuntimeAecEnv,
     build_audio_profile_status,
     parse_env_bool,
+    probe_xvf_mic as _probe_xvf_mic,
     runtime_env_from_mapping,
 )
 from .cli.aec_bridge_telemetry import BRIDGE_STATS_PATH_ENV
@@ -487,30 +488,6 @@ def _intent_from_env(env: Mapping[str, str]) -> AecIntent:
         ),
         profile_selection=env.get("JASPER_AUDIO_INPUT_PROFILE", ""),
     )
-
-
-def _probe_xvf_mic() -> MicProbe:
-    try:
-        from .mics import xvf3800
-
-        runtime_profile = xvf3800.detect_runtime_profile()
-        return MicProbe(
-            xvf_present=runtime_profile.present,
-            capture_channels=runtime_profile.capture_channels,
-            recommended_channels=xvf3800.RECOMMENDED_CAPTURE_CHANNELS,
-            display_name=runtime_profile.display_name,
-            alsa_card_name=runtime_profile.alsa_card_name,
-            variant_id=runtime_profile.variant_id,
-            geometry=runtime_profile.geometry,
-            chip_beam_plan=runtime_profile.chip_beam_plan_id,
-            chip_aec_supported=runtime_profile.chip_aec_supported,
-        )
-    except Exception as e:  # noqa: BLE001 - readiness must fail soft
-        return MicProbe(
-            xvf_present=False,
-            capture_channels=None,
-            probe_error=f"firmware probe failed: {e}",
-        )
 
 
 def _mic_details(mic: MicProbe) -> dict[str, JsonValue]:

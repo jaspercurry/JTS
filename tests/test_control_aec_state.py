@@ -502,6 +502,59 @@ def test_read_wake_threshold_default_matches_daemon_config(wake_model_file, monk
 # ---------- _aec_full_status -----------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "probe_fails", [False, True], ids=["healthy_probe", "failed_probe"],
+)
+def test_audio_profile_status_answers_the_same_on_doctor_and_aec(
+    aec_mode_file, wake_model_file, monkeypatch, probe_fails,
+):
+    """ADR-0228 rule 1: one mic probe and one classifier behind both surfaces,
+    so a box cannot report one profile on /aec and another in jasper-doctor —
+    including when the probe fails and both take the same fallback.
+
+    The chip-AEC DAC gate stays each surface's own resolution (/aec folds mic
+    availability into it), so only its verdict is compared."""
+    aec_mode_file.write_text(
+        "JASPER_AEC_MODE=auto\n"
+        "JASPER_WAKE_LEG_RAW=1\n"
+        "JASPER_WAKE_LEG_CHIP_AEC=1\n"
+        "JASPER_AUDIO_INPUT_PROFILE=xvf_chip_aec\n"
+    )
+    monkeypatch.setattr(doctor.aec, "DEFAULT_AEC_MODE_PATH", aec_mode_file)
+    env = {
+        "JASPER_MIC_DEVICE": "udp:9876",
+        "JASPER_AEC_MIC_DEVICE": "Array",
+        "JASPER_AEC_CHIP_AEC_ENABLED": "1",
+        "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS": "ready",
+        "JASPER_MIC_DEVICE_CHIP_AEC_150": "udp:9887",
+        "JASPER_AUDIO_DAC_ID": "hifiberry_dac8x",
+    }
+    monkeypatch.setattr(aec_endpoints, "_fresh_jasper_env", lambda: env)
+    monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: True)
+    if probe_fails:
+        def _boom():
+            raise OSError("no /proc/asound")
+
+        monkeypatch.setattr("jasper.mics.xvf3800.detect_runtime_profile", _boom)
+    else:
+        _stub_xvf_runtime(monkeypatch)
+
+    endpoint = server._aec_full_status()
+    from_doctor = doctor._audio_profile_status_for_doctor(
+        bridge_active=True, env=env,
+    )
+
+    assert endpoint["microphone"] == from_doctor["microphone"]
+    endpoint_profile = dict(endpoint["audio_profile"])
+    doctor_profile = dict(from_doctor["audio_profile"])
+    assert (
+        endpoint_profile.pop("chip_aec_gate")["status"]
+        == doctor_profile.pop("chip_aec_gate")["status"]
+    )
+    assert endpoint_profile == doctor_profile
+
+
+
 def test_aec_full_status_includes_legs_and_threshold(
     aec_mode_file, wake_model_file, monkeypatch,
 ):
