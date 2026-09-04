@@ -142,6 +142,18 @@ def staged_stops(angles: str) -> int:
 # --------------------------------------------------------------------------- #
 
 
+def take_artifact_path(bundle_dir: str | Path, take_path: str) -> Path:
+    """Where one banked take lives, from the bundle and the row's own pointer.
+
+    The ONE composition of that path. ``take_path`` is bundle-relative BELOW
+    ``{EVIDENCE_ROOT}/artifacts/`` — the form
+    :func:`~.record_index.bundle_measurements` rows carry and
+    :func:`read_pose_curve_pair` returns — so a caller holding one must not
+    prepend the prefix itself.
+    """
+    return Path(bundle_dir) / EVIDENCE_ROOT / "artifacts" / take_path
+
+
 def read_lateral_take(path: Path) -> dict[str, Any] | None:
     """One banked ``positions/{take_id}.json`` as a lateral take, or ``None``.
 
@@ -300,7 +312,6 @@ def read_pose_curve_pair(
     round that measured one driver is an ordinary shape.
     """
 
-    artifacts = Path(bundle_dir) / EVIDENCE_ROOT / "artifacts"
     for row in reversed(
         bundle_measurements(
             bundle_dir,
@@ -309,7 +320,9 @@ def read_pose_curve_pair(
             vertical_deg=vertical_deg,
         )
     ):
-        curves = read_take_curves(artifacts / row.path, phase=phase)
+        curves = read_take_curves(
+            take_artifact_path(bundle_dir, row.path), phase=phase,
+        )
         if curves is None:
             continue
         by_role = {str(curve.get("role")): curve for curve in curves}
@@ -409,9 +422,8 @@ def _banked_take_records(round_dir: Path) -> tuple[list[dict[str, Any]], list[st
     for bundle in sorted(
         path for path in round_dir.glob(_BANKED_BUNDLE_GLOB) if path.is_dir()
     ):
-        artifacts = bundle / EVIDENCE_ROOT / "artifacts"
         for row in bundle_measurements(bundle, phase=PHASE_LATERAL):
-            path = artifacts / row.path
+            path = take_artifact_path(bundle, row.path)
             take = read_lateral_take(path)
             if take is None:
                 continue

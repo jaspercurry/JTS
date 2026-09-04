@@ -330,11 +330,13 @@ how the coordinate is chosen.
    the emitted protection out and multiplies the **configured crossover** in, so
    the curve you propose from carries that crossover's phase rather than a bare
    driver's. The LATERAL phase skips that composition deliberately and keeps the
-   protection phase. **Which of the two you got is recorded on the banked curve
-   nowhere.** So the correction is not automated and not recoverable after the
-   fact: know it from the round you commanded, say which in the proposal, and
-   treat a lateral-phase optimum as protection-contaminated until the acoustic
-   confirm disposes of it.
+   protection phase. **Which of the two you got is stamped on the take**, as
+   `phase_composition` (`crossover_composed` or `protection_retained`), and
+   `jasper-delay-sweep propose` echoes it beside the phase it read — so the
+   proposal states it rather than you. A take that states neither — banked
+   before the field, or captured with no protection emitted to retain — reads
+   as unknown, never as either one. Still treat a protection-retained optimum
+   as contaminated until the acoustic confirm disposes of it.
 2. **Propose, from evidence already banked.** Ruling S3 banks magnitude *and*
    phase for every measured curve, so the two per-driver transfers reconstruct
    exactly. Complex-sum them across `null_walk`'s whole delay grid — one branch

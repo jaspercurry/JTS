@@ -37,6 +37,7 @@ from jasper.audio_measurement.gating import (
 from jasper.audio_measurement.program import (
     KIND_SUMMED_SWEEP,
     KIND_SWEEP,
+    PROGRAM_PHASE_MEASURE,
 )
 from jasper.audio_measurement.program_analysis import INTEGRITY_CHECK_SWEEP_HEARD
 
@@ -120,6 +121,7 @@ __all__ = [
     "take_id_for",
     "TakeClaim",
     "take_kind",
+    "phase_composition",
     "cloud_position_record",
     "pose_curve_record",
     "analysis_curve_records",
@@ -719,6 +721,33 @@ def take_kind(
     return MEASURE_KIND_CANDIDATE
 
 
+def phase_composition(analysis: Any, *, protection_emitted: bool) -> str:
+    """Which composition the curves on this analysis carry, or ``""``.
+
+    ``crossover_composed``: §4.2's ``M*C/P`` ran, so the curve carries the
+    configured crossover's phase rather than the emitted protection's.
+    ``protection_retained``: protection WAS emitted and no composition removed
+    it, which is the lateral walk's deliberate case.
+
+    ``""`` — unstated, never either word — wherever the question was not put:
+    a CHECK or VERIFY capture, whose analyzer never composes and whose
+    ``configured_path_composed`` is therefore a default rather than an answer,
+    and a box that emitted no protection for a curve to retain. Both of those
+    would otherwise read as ``protection_retained``, which is a claim about
+    contamination that is not true of either (docs/tuning-methodology.md §4
+    step 1).
+
+    ``protection_emitted`` is the SESSION's fact — whether the capture graph
+    carried a protective high-pass at all — and is not derivable from the
+    analysis, which sees only whether it was handed priors to divide out.
+    """
+    if analysis.phase != PROGRAM_PHASE_MEASURE:
+        return ""
+    if analysis.configured_path_composed:
+        return "crossover_composed"
+    return "protection_retained" if protection_emitted else ""
+
+
 @dataclass(frozen=True)
 class TakeClaim:
     """What the SESSION claimed around one take, on every record it banks.
@@ -756,6 +785,10 @@ class TakeClaim:
     stimulus_dbfs: float | None = None
     incident: str = ""
     wav_path: str = ""
+    #: Which of :func:`phase_composition`'s two words the banked curves carry.
+    #: ``""`` where it says neither, and ABSENT from the record there: an
+    #: unstated composition must not read as either one.
+    phase_composition: str = ""
 
 
 def _take_identity(
@@ -809,6 +842,12 @@ def _take_identity(
         **(
             {"level_match_trims_db": dict(claim.level_match_trims_db)}
             if claim.level_matched and claim.level_match_trims_db
+            else {}
+        ),
+        # Stated or absent, never a guessed default: see TakeClaim.
+        **(
+            {"phase_composition": claim.phase_composition}
+            if claim.phase_composition
             else {}
         ),
         "level_db": claim.level_db,

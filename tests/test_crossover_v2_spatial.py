@@ -1004,6 +1004,49 @@ def test_an_unmatched_take_states_no_level_match_trims_at_all(builder):
     }
 
 
+@pytest.mark.parametrize(
+    "analysis_phase, composed, protection_emitted, stamped",
+    [
+        (program.PROGRAM_PHASE_MEASURE, True, True, "crossover_composed"),
+        (program.PROGRAM_PHASE_MEASURE, False, True, "protection_retained"),
+        # Nothing was emitted for the curve to retain.
+        (program.PROGRAM_PHASE_MEASURE, False, False, None),
+        # The analyzer that composes never ran, so the flag is a default.
+        (program.PROGRAM_PHASE_VERIFY, False, True, None),
+    ],
+)
+def test_a_take_states_which_phase_composition_its_curves_carry(
+    analysis_phase, composed, protection_emitted, stamped,
+):
+    """docs/tuning-methodology.md §4 step 1's question, answered by the record.
+
+    A MEASURE analysis either divided the emitted protection out and multiplied
+    the configured crossover in or it did not, and the phase COMMANDED does not
+    say which — a lateral walk runs the same analyzer without the priors that
+    compose. So the fact is read off the analysis and stamped, and the delay
+    proposal echoes it instead of the operator stating it by hand.
+
+    Three-valued on purpose, and ABSENT on ``level_match_trims_db``'s terms for
+    the third: a capture whose analyzer never composes and a box that emitted
+    no protection would both otherwise read as ``protection_retained``, which
+    is a contamination claim that is untrue of either.
+    """
+    record = _phase_record(
+        phase=analysis_phase,
+        claim=spatial.TakeClaim(
+            phase_composition=spatial.phase_composition(
+                SimpleNamespace(
+                    phase=analysis_phase, configured_path_composed=composed,
+                ),
+                protection_emitted=protection_emitted,
+            ),
+        ),
+    )
+
+    assert record.get("phase_composition") == stamped
+    assert ("phase_composition" in record) is (stamped is not None)
+
+
 def test_a_record_banked_before_curves_existed_still_reads_clean(tmp_path):
     """Additive at the reader: the field's ABSENCE changes nothing it sees.
 
