@@ -121,10 +121,5 @@ mv "$tmp" "$env"
 trap - EXIT
 
 grep '^JASPER_VOICE_PROVIDER=' "$env"
-systemctl restart jasper-voice
-sleep 2
-systemctl is-active jasper-voice
-journalctl -u jasper-voice -n 5 --no-pager 2>&1 \
-    | grep -v -E 'GetGpuDevices|device_discovery' \
-    | tail -5
 REMOTE
+"${SSH[@]}" "$(restart_and_verify_unit jasper-voice)"
