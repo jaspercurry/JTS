@@ -39,7 +39,7 @@ function formatDate(value) {
 }
 
 function optionLabel(run) {
-  return `${formatDate(run.started_at)} · ${run.id}`;
+  return `${formatDate(run.started_at)} · ${run.origin} ${run.name}`;
 }
 
 function fillRunPicker(select, catalog, selected, optional) {
