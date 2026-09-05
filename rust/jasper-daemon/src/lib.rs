@@ -67,65 +67,70 @@ pub fn notify(state: NotifyState<'_>) -> std::io::Result<()> {
 /// `Slice=jts-audio.slice` / `MemorySwapMax=0` belt, which is the load-bearing
 /// protection anyway.
 pub fn lock_memory(hooks: DaemonHooks) {
-    let prefix = hooks.event_prefix;
     // SAFETY: mlockall is a single syscall with no aliasing concerns. It does
     // not dereference Rust pointers or create aliases.
     let rc = unsafe { libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) };
-    if rc == 0 {
-        (hooks.info)(&format!("event={prefix}.mlockall_ok"));
+    let outcome = if rc == 0 {
+        Ok(())
     } else {
-        let error = std::io::Error::last_os_error();
-        (hooks.error)(&format!(
+        Err(std::io::Error::last_os_error())
+    };
+    report_lock_memory(outcome, hooks);
+}
+
+fn report_lock_memory(outcome: std::io::Result<()>, hooks: DaemonHooks) {
+    let prefix = hooks.event_prefix;
+    match outcome {
+        Ok(()) => (hooks.info)(&format!("event={prefix}.mlockall_ok")),
+        Err(error) => (hooks.error)(&format!(
             "event={prefix}.mlockall_failed errno={} detail={error}",
             error.raw_os_error().unwrap_or(0),
-        ));
+        )),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use std::cell::RefCell;
+    use std::io;
 
-    static EMITTED: Mutex<Vec<(&'static str, String)>> = Mutex::new(Vec::new());
-
-    fn push(channel: &'static str, message: &str) {
-        EMITTED.lock().unwrap().push((channel, message.to_string()));
+    thread_local! {
+        static EMITTED: RefCell<Vec<(&'static str, String)>> = const { RefCell::new(Vec::new()) };
     }
 
-    /// Both outcomes name the hosting daemon and land on the channel that
-    /// matches their severity: fan-in renders `error` at `error!`, so a
-    /// failure demoted to `info`/`warn` would drop out of a default-level
-    /// journal read.
+    fn push(channel: &'static str, message: &str) {
+        EMITTED.with(|cell| cell.borrow_mut().push((channel, message.to_string())));
+    }
+
+    fn drained() -> Vec<(&'static str, String)> {
+        EMITTED.with(|cell| cell.borrow_mut().drain(..).collect())
+    }
+
+    const HOOKS: DaemonHooks = DaemonHooks {
+        event_prefix: "test",
+        writer_stack_bytes: 0,
+        info: |message| push("info", message),
+        warn: |message| push("warn", message),
+        error: |message| push("error", message),
+    };
+
+    /// Both outcomes name the hosting daemon; the failure takes the `error`
+    /// channel so it carries journal priority for operator triage.
     #[test]
-    fn lock_memory_reports_one_outcome_under_the_daemon_prefix() {
-        const HOOKS: DaemonHooks = DaemonHooks {
-            event_prefix: "test",
-            writer_stack_bytes: 0,
-            info: |message| push("info", message),
-            warn: |message| push("warn", message),
-            error: |message| push("error", message),
-        };
+    fn both_lock_memory_outcomes_render_under_the_daemon_prefix() {
+        report_lock_memory(Ok(()), HOOKS);
+        assert_eq!(drained(), [("info", "event=test.mlockall_ok".to_string())]);
 
-        lock_memory(HOOKS);
-        // SAFETY: munlockall is a single syscall; it undoes the MCL_FUTURE the
-        // call above may have armed for the rest of this test process.
-        unsafe { libc::munlockall() };
-
-        let emitted = EMITTED.lock().unwrap();
-        assert_eq!(emitted.len(), 1, "{emitted:?}");
-        let (channel, line) = &emitted[0];
-        match line.split_once(' ') {
-            None => {
-                assert_eq!(line, "event=test.mlockall_ok");
-                assert_eq!(*channel, "info");
-            }
-            Some((head, rest)) => {
-                assert_eq!(head, "event=test.mlockall_failed");
-                assert!(rest.starts_with("errno="), "{rest}");
-                assert!(rest.contains(" detail="), "{rest}");
-                assert_eq!(*channel, "error");
-            }
-        }
+        let errno = libc::EAGAIN;
+        report_lock_memory(Err(io::Error::from_raw_os_error(errno)), HOOKS);
+        let detail = io::Error::from_raw_os_error(errno);
+        assert_eq!(
+            drained(),
+            [(
+                "error",
+                format!("event=test.mlockall_failed errno={errno} detail={detail}"),
+            )]
+        );
     }
 }
