@@ -20,6 +20,11 @@ import asyncio
 import logging
 import types
 
+import pytest
+
+from jasper.voice._supervisor import CANT_CONNECT_CUE_SLUG
+from jasper.voice_daemon import INTERNAL_ERROR_CUE_SLUG
+
 from ._async_wait import wait_signalled
 from ._log_events import event_fields
 
@@ -81,6 +86,12 @@ def _assert_no_turn_no_duck(wl) -> None:
     assert wl._play_listening_chirp.called is False
 
 
+async def _drain_refusal_cue(wl) -> None:
+    """Refusal cues are spawned, not awaited, so the control-socket reply
+    is not held behind ~6 s of audio. Assertions on them wait here."""
+    await asyncio.gather(*tuple(wl._fire_and_forget))
+
+
 async def test_manual_start_refused_when_mic_muted(caplog):
     wl = _make_wake_loop()
     wl._mic_muted = True
@@ -123,10 +134,9 @@ async def test_manual_start_at_the_spend_cap_cues_and_refuses(caplog):
         result = await wl.manual_session_start()
 
     assert result == "CAP"
-    # NOT `_assert_no_turn_no_duck`: a cue legitimately primes loudness and
-    # ducks, which is how it stays audible over music.
     assert wl._begin_turn.called is False
     assert wl._play_listening_chirp.called is False
+    await _drain_refusal_cue(wl)
     assert wl._cues.played == ["spend_cap_reached"]
     assert event_fields(caplog, "session.manual_refused") == {
         "reason": "spend_cap_reached",
@@ -171,26 +181,31 @@ async def test_manual_start_refused_when_paused_asks_for_an_early_retry(
 
     _assert_no_turn_no_duck(wl)
     assert state.nudges == 1
+    await _drain_refusal_cue(wl)
     assert wl._play_cue.called is True
     assert "reason=connection_paused" in caplog.text
 
 
-async def test_manual_start_failure_during_an_outage_is_cued():
-    """A press whose turn dies with the connection down still answers.
+@pytest.mark.parametrize(
+    ("connection_drops", "expected_slug"),
+    [(True, CANT_CONNECT_CUE_SLUG), (False, INTERNAL_ERROR_CUE_SLUG)],
+)
+async def test_manual_start_failure_cues_the_cause(connection_drops, expected_slug):
+    """A press whose turn dies still answers, and names the real cause.
 
-    The idle context reset reopens inside `_begin_turn`, so a reopen
-    that never lands raises past the paused gate above and reaches the
-    failure handler — which must cue, not return a silent ERROR
-    (AGENTS.md's no-silent-deafness rule)."""
-    from jasper.voice._supervisor import CANT_CONNECT_CUE_SLUG
-
+    The idle context reset reopens inside `_begin_turn`, so a reopen that
+    never lands raises past the paused gate above and reaches the failure
+    handler. It must cue rather than return a silent ERROR (AGENTS.md's
+    no-silent-deafness rule) — and an outage cue for a connection that is
+    still up would be a lie, so that branch cues `internal_error`.
+    """
     wl = _make_wake_loop()
     wl._cues = _SpyCues()
     paused = False
 
-    async def _begin_turn_that_loses_the_connection(**_kwargs) -> None:
+    async def _begin_turn_that_fails(**_kwargs) -> None:
         nonlocal paused
-        paused = True
+        paused = connection_drops
         raise RuntimeError("live connection: not connected after backoff window")
 
     wl._connection = types.SimpleNamespace(
@@ -199,31 +214,38 @@ async def test_manual_start_failure_during_an_outage_is_cued():
         wake_cue=lambda: CANT_CONNECT_CUE_SLUG,
         request_reconnect_now=lambda: True,
     )
-    wl._begin_turn = _begin_turn_that_loses_the_connection
+    wl._begin_turn = _begin_turn_that_fails
 
     assert await wl.manual_session_start() == "ERROR"
-    assert wl._cues.played == [CANT_CONNECT_CUE_SLUG]
+    await _drain_refusal_cue(wl)
+    assert wl._cues.played == [expected_slug]
 
 
-async def test_manual_start_failure_with_a_live_connection_cues_internal_error():
-    """The same press, failing with the connection up.
+async def test_manual_refusal_cue_does_not_hold_up_the_reply():
+    """The reply must not wait out the cue it just started.
 
-    An outage cue would be a lie about a working connection; the wake
-    path's acquire failure cues `internal_error` in this branch and the
-    button must match it rather than return a silent ERROR.
+    `manual_session_start` answers a control-socket START whose caller
+    times out at 5 s (`control/uds.py`) while a cue runs ~6 s with duck
+    and drain: awaiting one answered the button 503 and left the real
+    result to be written to a closed socket.
     """
-    from jasper.voice_daemon import INTERNAL_ERROR_CUE_SLUG
-
     wl = _make_wake_loop()
-    wl._cues = _SpyCues()
+    wl._spend_cap = types.SimpleNamespace(allowed=lambda: False)
+    played = asyncio.Event()
 
-    async def _begin_turn_that_fails_locally(**_kwargs) -> None:
-        raise RuntimeError("begin failed with the connection up")
+    class _SlowCues:
+        async def play(self, slug: str) -> bool:
+            await asyncio.sleep(0.05)
+            played.set()
+            return True
 
-    wl._begin_turn = _begin_turn_that_fails_locally
+    wl._cues = _SlowCues()
 
-    assert await wl.manual_session_start() == "ERROR"
-    assert wl._cues.played == [INTERNAL_ERROR_CUE_SLUG]
+    assert await wl.manual_session_start() == "CAP"
+    assert not played.is_set()
+
+    await _drain_refusal_cue(wl)
+    assert played.is_set()
 
 
 async def test_manual_start_waits_out_a_planned_rotation(monkeypatch):
@@ -498,6 +520,7 @@ async def test_source_less_start_on_a_speaker_with_no_room_mic_cues_and_refuses(
     assert wl._play_listening_chirp.called is False
     # Audible, not just logged: the household pressed something and must not
     # be answered with silence (AGENTS.md's no-silent-deafness rule).
+    await _drain_refusal_cue(wl)
     assert wl._cues.played == [NO_ROOM_MIC_CUE_SLUG]
     assert "event=session.manual_refused" in caplog.text
     assert "reason=no_room_microphone" in caplog.text
@@ -555,6 +578,7 @@ async def test_source_less_refusal_reads_the_single_derivation():
     wl = _ptt_only_wake_loop()
     wl._state = State.SESSION
     assert await wl.manual_session_start() == "NO_ROOM_MIC"
+    await _drain_refusal_cue(wl)
 
     wl2 = _ptt_only_wake_loop()
     wl2._state = State.SESSION
@@ -577,6 +601,7 @@ async def test_no_room_mic_outranks_the_transient_gates():
     wl._mic_muted = True
 
     assert await wl.manual_session_start() == "NO_ROOM_MIC"
+    await _drain_refusal_cue(wl)
 
 
 async def test_manual_end_is_idempotent_after_input_already_closed():
