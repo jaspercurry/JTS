@@ -37,6 +37,9 @@ RestartSec=2
 # namespacing (226/NAMESPACE) and would take every wizard on this tier down,
 # not just the assistant ones, on a box installed before that compartment
 # was created here.
+# UMask=0007 — wizard-written state under /var/lib/jasper(-secrets|-intsecrets)
+# lands group-writable (0660), not 0644. Mirrors jasper-voice/-mux/-control.
+UMask=0007
 ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true
