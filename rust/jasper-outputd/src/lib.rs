@@ -13,10 +13,7 @@
 //! riding the synced stream.
 //! The outputd systemd unit enables the ALSA transport.
 
-/// Stack bytes for every helper thread here. `mlockall(MCL_CURRENT|MCL_FUTURE)`
-/// populates and pins a thread's WHOLE stack, so Rust's 2 MiB default costs
-/// 2 MiB of unswappable RAM per thread; the playout loop runs on `main`, not here.
-pub const HELPER_STACK_BYTES: usize = 512 * 1024;
+pub use jasper_daemon::HELPER_STACK_BYTES;
 
 pub mod aec_clock;
 pub mod alsa_backend;
@@ -35,7 +32,6 @@ pub mod core;
 // has CamillaDSP feed the snapserver pipe, not outputd.
 pub mod dac_content;
 pub mod fake;
-mod json;
 pub mod ledger;
 pub mod loudness;
 pub mod mixer;

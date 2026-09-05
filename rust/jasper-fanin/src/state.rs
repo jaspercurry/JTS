@@ -67,8 +67,12 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use log::{info, warn};
 
+use jasper_daemon::json::{
+    json_string, push_kv_bool, push_kv_f64, push_kv_f64_opt, push_kv_str, push_kv_u64,
+    push_kv_u64_opt,
+};
+
 use crate::impulse_tap::{TapConfig, TapState};
-use crate::json::json_string;
 use crate::lane_resampler::LaneResamplerObservability;
 use crate::mixer::{
     DirectObservability, LaneSource, Mixer, RingLaneObservability, RingObservability, TrimControl,
@@ -1330,56 +1334,6 @@ fn epoch_millis() -> u64 {
     match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
         Ok(d) => d.as_millis() as u64,
         Err(_) => 0,
-    }
-}
-
-// ---- JSON helpers ----------------------------------------------------
-
-fn push_kv_str(buf: &mut String, key: &str, value: &str) {
-    buf.push('"');
-    buf.push_str(key);
-    buf.push_str(r#"":"#);
-    buf.push_str(&json_string(value));
-}
-
-fn push_kv_u64(buf: &mut String, key: &str, value: u64) {
-    buf.push('"');
-    buf.push_str(key);
-    buf.push_str(r#"":"#);
-    buf.push_str(&value.to_string());
-}
-
-fn push_kv_u64_opt(buf: &mut String, key: &str, value: Option<u64>) {
-    buf.push('"');
-    buf.push_str(key);
-    buf.push_str(r#"":"#);
-    match value {
-        Some(value) => buf.push_str(&value.to_string()),
-        None => buf.push_str("null"),
-    }
-}
-
-fn push_kv_bool(buf: &mut String, key: &str, value: bool) {
-    buf.push('"');
-    buf.push_str(key);
-    buf.push_str(r#"":"#);
-    buf.push_str(if value { "true" } else { "false" });
-}
-
-fn push_kv_f64(buf: &mut String, key: &str, value: f64, decimals: usize) {
-    buf.push('"');
-    buf.push_str(key);
-    buf.push_str(r#"":"#);
-    buf.push_str(&format!("{:.*}", decimals, value));
-}
-
-fn push_kv_f64_opt(buf: &mut String, key: &str, value: Option<f64>, decimals: usize) {
-    buf.push('"');
-    buf.push_str(key);
-    buf.push_str(r#"":"#);
-    match value {
-        Some(value) => buf.push_str(&format!("{:.*}", decimals, value)),
-        None => buf.push_str("null"),
     }
 }
 
