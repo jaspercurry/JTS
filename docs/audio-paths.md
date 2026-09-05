@@ -747,9 +747,12 @@ row with a `dtoverlay` and no `hat_products` (e.g.
 `latency_floor` and `final_edge_format`; an uncommissioned row ships the
 safe defaults (no `latency_floor`, default `S16_LE` edge) with its removal
 condition in a comment beside it (see the `HIFIBERRY_DAC8X_STUDIO` row and
-ADR-0232). The wizard, the classifier (`jasper/output_hardware.py`), and
-the reconciler are generic over the registry (ADR-0234, ADR-0235) — no new
-per-DAC branch needed elsewhere.
+ADR-0232). The wizard's I2S HAT picker is generic over the registry
+(ADR-0234); the classifier (`jasper/output_hardware.py`) and the
+reconciler still hardcode a few per-profile literals (Apple card
+detection, composite same-bus checks, `outputd_sink`) that ADR-0235
+tracks closing — check both before assuming a new row alone reaches
+every consumer.
 
 ## AEC bridge implications
 
