@@ -89,6 +89,7 @@ impl OutputCore {
     }
 
     fn with_dac(period_frames: u32, dac: FakeDacSink) -> Self {
+        // PANIC-AUDITED: period_frames is the daemon's own period-size config, not external input
         assert!(period_frames > 0, "period frames must be > 0");
         let format = AudioFormat::default();
         let period_samples = format.samples_for_frames(period_frames);
@@ -129,6 +130,7 @@ impl OutputCore {
     }
 
     pub fn push_content_period(&mut self, samples: Vec<ProgramSample>) {
+        // PANIC-AUDITED: output_buf is sized once at construction from the same period config
         assert_eq!(samples.len(), self.output_buf.len());
         self.content.push_period(samples);
     }
@@ -203,6 +205,7 @@ impl OutputCore {
         samples: impl Into<TtsAudioSamples>,
     ) {
         let samples = samples.into();
+        // PANIC-AUDITED: every real producer (the daemon's TTS/cue rendering) emits whole frames
         assert_eq!(samples.len() % (self.format.channels as usize), 0);
         if samples.is_empty() {
             return;
@@ -257,12 +260,14 @@ impl OutputCore {
 
     pub fn prepare_period_with_content(&mut self, samples: &[ProgramSample]) -> u32 {
         self.assert_no_prepared_period();
+        // PANIC-AUDITED: content_buf is sized once at construction from the same period config
         assert_eq!(samples.len(), self.content_buf.len());
         self.content_buf.copy_from_slice(samples);
         self.prepare_from_buffered_content()
     }
 
     fn assert_no_prepared_period(&self) {
+        // PANIC-AUDITED: the daemon's period loop calls prepare then commit in strict alternation
         assert!(
             !self.prepared_period_ready,
             "prepared output period was not committed"
@@ -311,6 +316,7 @@ impl OutputCore {
     }
 
     pub fn commit_prepared_period_with_dac_delay(&mut self, dac_delay_frames: u64) -> PeriodReport {
+        // PANIC-AUDITED: the daemon's period loop calls prepare then commit in strict alternation
         assert!(
             self.prepared_period_ready,
             "output period must be prepared before commit"

@@ -320,6 +320,7 @@ def test_diagnostics_serves_the_cached_oneshot_and_runs_no_doctor(
     real ones.
     """
     from jasper.cli import doctor as doctor_mod
+    from jasper.cli.doctor import _harness as doctor_harness
     import jasper.control.server as srv_mod
 
     cached = {
@@ -343,8 +344,13 @@ def test_diagnostics_serves_the_cached_oneshot_and_runs_no_doctor(
 
     monkeypatch.setattr(srv_mod.subprocess, "run", _record("subprocess.run"))
     monkeypatch.setattr(srv_mod.subprocess, "Popen", _record("subprocess.Popen"))
-    for name in ("main", "render_json", "_build_doctor_checks"):
+    for name in ("main", "render_json"):
         monkeypatch.setattr(doctor_mod, name, _record(f"doctor.{name}"))
+    # `run_async` resolves this in `_harness`'s own globals, so a
+    # package-level patch would never be reached.
+    monkeypatch.setattr(
+        doctor_harness, "_build_doctor_checks", _record("doctor._build_doctor_checks"),
+    )
 
     base, _ = server_with_coordinator
     status, body = _get(f"{base}/system/diagnostics")

@@ -13,6 +13,7 @@ use super::*;
 /// `Narrow` adds the sample as-is; `Wide` promotes it with the shared,
 /// information-preserving `widen_i16_to_i32` first.
 pub(super) fn mix_into(sum: &mut [i64], input: &[i16], width: ProgramWidth) {
+    // PANIC-AUDITED: both buffers are the mixer's one fixed-size period allocation
     debug_assert_eq!(sum.len(), input.len());
     match width {
         ProgramWidth::Narrow => {
@@ -39,7 +40,9 @@ pub(super) fn mix_into(sum: &mut [i64], input: &[i16], width: ProgramWidth) {
 /// mixer picks the pairing per lane from the ONE resolved width, and the
 /// `debug_assert` states that contract for anyone who wires a new caller.
 pub(super) fn mix_into_wide(sum: &mut [i64], input: &[i32], width: ProgramWidth) {
+    // PANIC-AUDITED: both buffers are the mixer's one fixed-size period allocation
     debug_assert_eq!(sum.len(), input.len());
+    // PANIC-AUDITED: Mixer::new's program_width_disagreement check is the real guard
     debug_assert_eq!(
         width,
         ProgramWidth::Wide,
@@ -126,6 +129,7 @@ pub(super) fn ramp_program_duck(
     release_step: f32,
     width: ProgramWidth,
 ) -> f32 {
+    // PANIC-AUDITED: channels is the daemon's fixed channel-count constant at the only call site
     debug_assert!(channels >= 1);
     let frames = sum.len() / channels;
     for f in 0..frames {
@@ -169,6 +173,7 @@ pub(super) fn ramp_program_duck(
 /// narrow sum would have produced; a wide sum carrying real low bits rounds
 /// rather than stepping half an LSB toward −∞ on every sample.
 pub(super) fn saturate_to_i16(sum: &[i64], out: &mut [i16], width: ProgramWidth) {
+    // PANIC-AUDITED: both buffers are the mixer's one fixed-size period allocation
     debug_assert_eq!(sum.len(), out.len());
     match width {
         ProgramWidth::Narrow => {
@@ -215,6 +220,7 @@ pub(super) const WIDE_BYTES_PER_SAMPLE: usize = 4;
 /// `copy_from_slice` cannot fail: `chunks_exact_mut(4)` yields exactly 4-byte
 /// chunks and `to_le_bytes` returns exactly 4 bytes.
 pub(super) fn fill_wide_ring_payload(sum: &[i64], out: &mut [u8]) {
+    // PANIC-AUDITED: both buffers are allocated once in Mixer::new from the same period_samples
     debug_assert_eq!(out.len(), sum.len() * WIDE_BYTES_PER_SAMPLE);
     for (chunk, &s) in out.chunks_exact_mut(WIDE_BYTES_PER_SAMPLE).zip(sum) {
         chunk.copy_from_slice(&clamp_sum_to_spine(s).to_le_bytes());
