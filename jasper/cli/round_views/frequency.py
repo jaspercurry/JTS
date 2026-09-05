@@ -30,18 +30,23 @@ from ._common import (
     _load_round,
     _write,
     answer,
+    banked_round_of,
 )
 
 def _frequency_default_out(source: Path) -> Path:
     """:func:`_cmd_frequency`'s own default: it takes sources the round
     resolver does not (a JSON document, a bundle that banked no round), so it
     reads the live shape directly — under the same rule as
-    :func:`default_out`, never inside a daemon-owned session bundle.
+    :func:`default_out`: beside the round a bundle was banked into, and never
+    inside a daemon-owned session bundle.
     """
     name = ARTIFACT_BY_VIEW["frequency"].artifact
     if not source.is_dir():
         return source.parent / name
     if (source / "info.json").is_file():
+        banked_round = banked_round_of(source)
+        if banked_round is not None:
+            return banked_round / name
         return Path.cwd() / f"{source.name}-{name}"
     return source / name
 
