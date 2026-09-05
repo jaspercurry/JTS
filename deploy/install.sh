@@ -2228,17 +2228,20 @@ main() {
         build_install_jasper_fanin
         build_install_jasper_outputd
         install_jts_ring_platform  # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)
+        # jasper-control renders its peering advert from the template at startup
+        # and reads /var/lib/jasper/peer_id, both created here, so this runs
+        # BEFORE the unit install restarts it.
+        install_avahi_jasper_control
+        install_peering_template
         install_streambox_systemd_units
         remove_retired_audio_topology_state  # retired dmix/fanin switch state; doctor WARNs on its presence
         migrate_wifi_guardian
         migrate_memory_resilience
         migrate_cgroup_memory_enabled
         install_journald_persistent_storage
-        install_avahi_jasper_control
         install_jasper_control_polkit  # grant non-root jasper-control its scoped systemctl/reboot
         install_jasper_web_polkit  # grant jasper-web NetworkManager wifi management
         widen_jasper_web_writable_dirs  # /etc/bluetooth + camilladsp/configs group-jasper writable
-        install_peering_template
         provision_correction_tls
         install_streambox_nginx_site
         widen_control_secret_env_modes  # secret env group-jasper readable for the spawned doctor
@@ -2274,16 +2277,19 @@ main() {
     build_install_jasper_fanin    # Rust daemon binary; enabled by install_systemd_units
     build_install_jasper_outputd  # Rust mainline final-output owner
     install_jts_ring_platform     # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)
+    # jasper-control renders its peering advert from the template at startup
+    # and reads /var/lib/jasper/peer_id, both created here, so this runs
+    # BEFORE the unit install restarts it.
+    install_avahi_jasper_control
+    install_peering_template
     install_systemd_units
     remove_retired_audio_topology_state  # retired dmix/fanin switch state; doctor WARNs on its presence
     migrate_memory_resilience   # Stage 1 OOM protection: sysctl + MGLRU + zram
     migrate_cgroup_memory_enabled  # Stage 2 audio-slice: cgroup memory + PSI in cmdline.txt
     install_journald_persistent_storage
-    install_avahi_jasper_control
     install_jasper_control_polkit  # grant non-root jasper-control its scoped systemctl/reboot
     install_jasper_web_polkit  # grant jasper-web NetworkManager wifi management
     widen_jasper_web_writable_dirs  # /etc/bluetooth + camilladsp/configs group-jasper writable
-    install_peering_template
     provision_correction_tls   # cert files must exist before nginx -t
     install_nginx_site
     install_camillagui

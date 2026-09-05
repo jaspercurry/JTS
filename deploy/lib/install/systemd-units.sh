@@ -854,9 +854,8 @@ reset_failed_core_graph_restart_targets() {
 # The local music sources a deploy refreshes in place, plus the two support
 # daemons that are not sources (nqptp clocks AirPlay 2, bt-agent answers
 # pairing). The source half must stay a superset of
-# jasper.local_sources.registry.local_source_audio_refresh_units().
-# try-restart, never restart: a household-Off source must not be resurrected
-# by a deploy.
+# jasper.local_sources.registry.local_source_audio_refresh_units(), whose
+# docstring owns the try-restart-only rule.
 JASPER_LOCAL_SOURCE_REFRESH_UNITS=(
     bluealsa-aplay.service
     nqptp.service
@@ -1265,6 +1264,8 @@ start_streambox_runtime_units() {
     systemctl enable --now jasper-identity-reconcile.timer
     systemctl start jasper-identity-reconcile.service || \
         echo "  (identity reconcile failed — non-fatal; doctor will flag)"
+    # StartLimitAction=reboot: a spent burst would reboot the Pi mid-install.
+    systemctl reset-failed jasper-control.service 2>/dev/null || true
     systemctl restart jasper-control.service || \
         echo "  WARN: jasper-control restart failed; /system/ will 502. Check logs with: journalctl -u jasper-control -e"
     # Enabling only arms these for the NEXT boot; deploy health checks this
@@ -1834,8 +1835,8 @@ install_systemd_units() {
     for unit in "${WIZARD_UNITS[@]}"; do
         systemctl stop "${unit}.service" 2>/dev/null || true
     done
-    # Non-fatal: install.sh sets up nginx, TLS, cues and the doctor summary
-    # AFTER this, and those are the operator's only recovery surface.
+    # StartLimitAction=reboot: a spent burst would reboot the Pi mid-install.
+    systemctl reset-failed jasper-control.service 2>/dev/null || true
     systemctl restart jasper-control.service || \
         echo "  WARN: jasper-control restart failed; /system/ will 502. Check logs with: journalctl -u jasper-control -e"
     # jasper-input is always-on (HID accessory bridge) — restart so any
