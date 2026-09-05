@@ -37,8 +37,10 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
   (severities there are pre-verification; `reports/p3-*.md` override them).
 - `docs/codebase-quality-review-2026-09-05/reports/` — the agent reports named below are your
   starting evidence.
-- Issue #4085 — the general steward's queue and its "came back clean" list; do not re-scout what
-  it cleared unless your own evidence contradicts it.
+- Issue #4085 — the general steward's handoff and its round-2 close-out (last comment): the
+  "came back clean" list still holds; the steward has stood down with nothing open, and its ten-item
+  queue is folded into the lanes below. Do not re-scout what it cleared unless your own evidence
+  contradicts it.
 - Issue #3769, last comment — the tuning steward's close-out: what wave 9 landed, what it
   deferred, the wave-10 candidates. The zone is parked (see Territory); this tells you what not to
   re-find.
@@ -145,7 +147,22 @@ Verified at HEAD by the review:
   sites with no `paths.py`; ≈20 spellings of 48000; 7 hand-typed `devices:` blocks; Rust:
   `json_string`, `push_kv_*`, sd_notify, `EXIT_CONFIG`, `lock_memory`, two UDS servers, the TTS
   server shell, `env_u32` diverging, no workspace (crate list in five places; `jasper-clock` built
-  four times; PR #4163 just landed a `jasper-daemon` crate — build on it).
+  four times). #4163, #4176 and #4187 have since landed `jasper-daemon` (sd-notify, `DaemonHooks`,
+  the UDS command server) — re-measure the twin list at HEAD before planning it; `push_dll_rate_diff`
+  in outputd's `state.rs` still opens its JSON object by hand.
+- One-home rows handed over by the general steward (#4085, round 2): the CamillaDSP config-dir
+  literal retyped in `web/sound_setup.py:193` (#4031), `active_speaker/staging.py` (owner-gated
+  tuning row) and `cli/doctor/audio.py` (P4) instead of `dsp_apply.CANONICAL_CAMILLA_CONFIG_DIR`;
+  `control/volume_ops.py:_build_spotify_router_or_none`, a fourth Spotify bootstrap copy that needs
+  `build_router` to hand the registry back before it can consume it; the `spotify_credentials.env`
+  literal in `env_load.py:56`, `web/_common.py:541`, `web/spotify_setup.py:141`,
+  `cli/doctor/secret_compartments.py:133`; `jasper/cli/_logging.py:CLI_LOG_FORMAT` one layer too
+  low for ~25 non-CLI copies; `wake_corpus/session_store.py:26-40` reaching nine names through
+  `bridge_session`, a function-local `xvf3800` import at `bridge_session.py:145`, and
+  `recording_backend.py` at 1,901 lines.
+- Refuted by the steward, do not re-file: a shared `deploy/bin` lib-resolve helper (#4154 closed —
+  +62 lines and a third dependency for two 19-line blocks; four more scripts share the shape, and
+  `deploy/bin` is P2's).
 
 Go deeper than the review did: it did not measure which of the 755 unexplained deferred imports are
 in library code vs entry points beyond a 120-site sample; it did not attempt the `runtime_contract`

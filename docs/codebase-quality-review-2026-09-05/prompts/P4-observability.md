@@ -37,8 +37,10 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
   (severities there are pre-verification; `reports/p3-*.md` override them).
 - `docs/codebase-quality-review-2026-09-05/reports/` — the agent reports named below are your
   starting evidence.
-- Issue #4085 — the general steward's queue and its "came back clean" list; do not re-scout what
-  it cleared unless your own evidence contradicts it.
+- Issue #4085 — the general steward's handoff and its round-2 close-out (last comment): the
+  "came back clean" list still holds; the steward has stood down with nothing open, and its ten-item
+  queue is folded into the lanes below. Do not re-scout what it cleared unless your own evidence
+  contradicts it.
 - Issue #3769, last comment — the tuning steward's close-out: what wave 9 landed, what it
   deferred, the wave-10 candidates. The zone is parked (see Territory); this tells you what not to
   re-find.
@@ -138,6 +140,16 @@ Verified at HEAD by the review:
 - `wifi_guardian_state.py:74,88,116` forks `nmcli`×2 + `journalctl -n 200` per `/state` build for a
   boot-oneshot fact; `aec_bridge.py:1007,1021` RMS line is prose parsed by two doctor regexes
   (blocks #4118's cadence change).
+- Doctor rows handed over by the general steward (#4085, round 2, items 2 and 9): #4169 —
+  `cli/doctor/audio.py:1418-1424` `check_sound_profile` warns `REASON_SOUND_PROFILE_NOT_ACTIVE`
+  while active-leader-bonded because the bake names are absent from `sound/camilla_yaml.py:68-74`
+  `_JTS_GENERATED_RE` (two regex entries plus the existing parametrized test is the whole fix);
+  `cli/doctor/renderers.py:641` is a third Spotify device walk with substring matching;
+  `renderers.py:537,615` carry partial `Registry.load`+`build_clients` copies (read-only on purpose,
+  never point them at `build_router`); `cli/doctor/secret_compartments.py` lists static compartment
+  paths while `_cli.py` resolves the same files through env overrides (tell P1); `cli/aec_init.py`
+  and its test still describe outputd's status socket as "about two reads a second" — #4187 removed
+  the sleep. If the doctor/state steward has stood down, these are yours; otherwise they are its.
 
 Go deeper than the review did: it did not read the 21k-line doctor test suite or `audio_health.py`/
 `airplay_health.py` bodies; it measured `/state` size only at the null floor; it did not open

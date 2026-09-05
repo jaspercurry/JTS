@@ -37,8 +37,10 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
   (severities there are pre-verification; `reports/p3-*.md` override them).
 - `docs/codebase-quality-review-2026-09-05/reports/` — the agent reports named below are your
   starting evidence.
-- Issue #4085 — the general steward's queue and its "came back clean" list; do not re-scout what
-  it cleared unless your own evidence contradicts it.
+- Issue #4085 — the general steward's handoff and its round-2 close-out (last comment): the
+  "came back clean" list still holds; the steward has stood down with nothing open, and its ten-item
+  queue is folded into the lanes below. Do not re-scout what it cleared unless your own evidence
+  contradicts it.
 - Issue #3769, last comment — the tuning steward's close-out: what wave 9 landed, what it
   deferred, the wave-10 candidates. The zone is parked (see Territory); this tells you what not to
   re-find.
@@ -107,9 +109,11 @@ debt markers, comment prose), `p1-T24.md` (unit prose), `p1-T23.md` (install pro
 
 Verified at HEAD by the review:
 - 157 ADRs, no index, nothing references `docs/adr/` programmatically; 79 dated one day; 0227, 0228,
-  0231 bundle 29 decisions; six live docs link the deleted HANDOFF corpus (`AEC-DIAG-06`, `RESEARCH-
-  pipewire-low-latency.md`, plus three in append-only ADRs 0115, 0146, 0169 — the link checker
-  reports them; decide once how append-only ADRs handle dead links); the no-orphan-doc test globs only
+  0231 bundle 29 decisions; the three markdown links to the deleted HANDOFF corpus that the link
+  checker could see are fixed and #4173 now runs that check on every push to `main`, but the
+  backticked path references it cannot see remain (`AEC-DIAG-06` ×3, `RESEARCH-pipewire-low-
+  latency.md:179`, ADRs 0002, 0004, 0009, 0115, 0146, 0169 at least — decide once how append-only
+  ADRs handle a dead reference, then sweep); the no-orphan-doc test globs only
   top-level `docs/*.md`, so `docs/bass-extension-waves/` (16 files) and `docs/ux-audit-2026-09-03/`
   (9) are invisible to it.
 - Zero real TODO/FIXME markers anywhere (genuinely clean); root docs verified claim by claim; the
@@ -130,6 +134,13 @@ Verified at HEAD by the review:
 - `BRINGUP.md:202-206` says the deploy scripts "refuse to proceed without" passwordless sudo, which
   is only true off a tty; the options table two paragraphs down concedes the interactive path exists
   and never says what it gives up.
+- From the general steward's round 2 (#4085 item 8), outside its own sweep: `P6a`/`P6d`/`U3`
+  program labels in `deploy/tmpfiles/jts-ring.conf`, `jasper-fanin.service` and
+  `bluealsa-aplay.service.d`; `S2`-style slice labels; three dated `2026-05-*` pointers in
+  `jasper-voice.service`; a second "WS1" phrasing in `deploy/bin/jasper-audio-hardware-reconcile`,
+  `jasper/bluetooth/roles.py`, `jasper/home_assistant.py`, `jasper/web/sync_flow.py` (#4031) and
+  `docs/doc-map.toml`; the "MSRV 1.75" note in `jasper-host-clock`'s manifest (P6 fixes the
+  fact, you delete the prose).
 - From the tuning steward's close-out: `REFACTOR-CUTOVER-2026-08.md` is the surviving half of #3769's
   D2 (its still-binding §6 rulings go to ADRs, then it is deleted; `REFACTOR-TUNING` already went
   that way via ADR-0228) — yours to price, owner-gated because the rulings are tuning doctrine; the

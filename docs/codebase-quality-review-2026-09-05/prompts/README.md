@@ -43,8 +43,11 @@ landing on `main`:
 | 3 (after P5 moves merge) | P7, P5 (splits), P8 (stale-path pass) | Tests and docs follow the tree |
 
 Four sessions at a time is a comfortable ceiling: every lane rebases before each push, and more
-than that makes `main` thrash. The general steward (#4085) and the doctor/state steward overlap
-P3–P6; stand them down (merge what is green, close what is not, one close-out comment each) before
-batch 1, or point them at these issues. The Wave-6 systems rows in the review go to P4 once the
-doctor/state steward has stood down. #4031's Phase D and #4027 keep running; the prompts already
-treat their files as theirs.
+than that makes `main` thrash. The general steward (#4085) has stood down with nothing open; its
+round-2 queue is folded into P2–P8. The doctor/state steward overlaps P3/P4: stand it down (merge
+what is green, close what is not, one close-out comment) before batch 1, or point it at these
+issues; the Wave-6 systems rows in the review go to P4 once it has. #4031's Phase D and #4027 are
+being landed the same way; their close-outs redraw the map before the fresh sessions start.
+Waves 1–2 of the steward round (26 PRs, the sensitive-tier #4163 and #4187 among them) are on
+`main` and **not deployed**; the owner's deploy is their hardware confirmation and gates P3's
+daemon rows.
