@@ -1170,7 +1170,7 @@ def check_crossover_unit_installed() -> CheckResult:
     )
 
     try:
-        topology = load_output_topology_strict()
+        topology = evidence.get("output_topology_strict", load_output_topology_strict)
     except OutputTopologyError:
         # No usable topology means this is not a commissioned active speaker,
         # so camilla#2 is not its concern. Skip rather than warn — the active
