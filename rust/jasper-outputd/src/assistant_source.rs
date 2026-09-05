@@ -120,6 +120,7 @@ pub struct SegmentWrite {
 
 impl AssistantSource {
     pub fn new(channels: usize) -> Self {
+        // PANIC-AUDITED: channels is the daemon's own CHANNELS constant at every real call site
         assert!(channels > 0, "channels must be > 0");
         Self {
             segments: VecDeque::new(),

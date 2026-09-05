@@ -380,6 +380,7 @@ pub(super) fn read_direct_and_render(
     let mut direct = input
         .direct
         .take()
+        // PANIC-AUDITED: step() calls this only when input.direct.is_some()
         .expect("read_direct_and_render only called on a direct lane");
 
     match &direct {
@@ -740,6 +741,7 @@ pub(super) fn push_capture_chunk(
     raw: &[i32],
     narrow: Option<&[i16]>,
 ) {
+    // PANIC-AUDITED: both views are slices of one just-read chunk, cut at the same got
     debug_assert!(narrow.map_or(true, |n| n.len() == raw.len()));
     let Some(r) = resampler else {
         return;
@@ -749,6 +751,7 @@ pub(super) fn push_capture_chunk(
     } else {
         // The narrow route always computes the view before calling.
         let Some(narrow) = narrow else {
+            // PANIC-AUDITED: debug-only so a release build drops a chunk, not the audio daemon
             debug_assert!(false, "the narrow route must supply its narrowed view");
             return;
         };

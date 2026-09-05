@@ -68,6 +68,7 @@ pub struct PlayoutLedger {
 
 impl PlayoutLedger {
     pub fn new(sample_rate: u32) -> Self {
+        // PANIC-AUDITED: sample_rate is the daemon's fixed SAMPLE_RATE constant at every call site
         assert!(sample_rate > 0, "sample rate must be > 0");
         Self {
             sample_rate,
@@ -217,6 +218,7 @@ impl PlayoutLedger {
         self.segments
             .iter()
             .find(|segment| segment.local_segment_id == id)
+            // PANIC-AUDITED: SegmentIds are minted by this ledger, so a miss is ledger corruption
             .expect("unknown playout segment id")
     }
 
@@ -234,6 +236,7 @@ impl PlayoutLedger {
         self.segments
             .iter_mut()
             .find(|segment| segment.local_segment_id == id)
+            // PANIC-AUDITED: SegmentIds are minted by this ledger, so a miss is ledger corruption
             .expect("unknown playout segment id")
     }
 }
