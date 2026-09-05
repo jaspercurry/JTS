@@ -1,16 +1,17 @@
 # JTS codebase quality review — 2026-09-05
 
 **Audited tree:** `2d571e6b8` (`origin/main` at review start, 2026-09-05 06:56 EDT).
-**Method:** research pass (structure and quality-measurement best practice), then the five-phase comb from
-`docs/DEEP-AUDIT-PLAYBOOK.md`: Phase 0 cartography (6 agents), Phase 1 tiled read of every product file
-(38 tiles, 573k lines), Phase 2 cross-cutting lenses and end-to-end scenarios (11 agents), Phase 3
-adversarial verification (3 skeptic agents; the reviewer independently reproduced the top findings),
-Phase 4 synthesis. ~60 Opus/Sonnet subagents. Evidence lives beside this file in
-`docs/codebase-quality-review-2026-09-05/` (findings register as CSV, every agent report).
+**Method:** a research pass on structure and quality measurement (the rubric is in the evidence
+directory), then the five-phase comb from `docs/DEEP-AUDIT-PLAYBOOK.md`: Phase 0 cartography (6 agents),
+Phase 1 tiled read of every product file (38 tiles, 573k lines), Phase 2 cross-cutting lenses and
+end-to-end scenarios (11 agents), Phase 3 adversarial verification (3 skeptic agents over 55 sub-claims;
+the reviewer independently reproduced the top findings), Phase 4 synthesis with a completeness critic.
+~65 Opus/Sonnet subagents. Evidence lives beside this file in `docs/codebase-quality-review-2026-09-05/`:
+the findings register (CSV), every agent report, the briefs, and the skeptic verdicts.
 **Relation to prior work:** builds on `docs/DEEP-AUDIT-2026-08-25.md` (11 days and ~1,100 commits ago)
-and on the four programs in flight — the general steward queue (#4030/#4085), attached hardware
-(#4027, ADR-0235), the web UI cleanup (#4031), and the tuning-rightsize waves. Findings already queued
-there are marked, not re-argued.
+and on the four programs in flight — the general steward queue (#4030/#4085), attached hardware (#4027,
+ADR-0235), the web UI cleanup (#4031), and the tuning-rightsize waves. Findings already queued there are
+marked, not re-argued.
 
 > Frozen snapshot. Finding IDs (`R-nnn`) key into the register; disposition belongs in the steward
 > issues, not in edits to this file.
@@ -20,91 +21,129 @@ there are marked, not re-argued.
 ## 1. Executive summary
 
 **The machinery is good; the seams are not.** Eleven days after the last audit the repo is measurably
-better at the module level: the module-level import graph is acyclic apart from one 4-module cycle, the
-tree has zero orphan modules, zero unreferenced scripts, zero uninstalled units, zero real TODO markers,
-and the safety clamps hold at every emitter. What this review found is almost entirely *between* files
-and *between* processes — places no single-file read can see, and no in-flight program owns:
+better at the module level: the executed import graph is acyclic apart from one 4-module cycle, the tree
+has zero orphan modules, zero unreferenced scripts, zero uninstalled units, zero real TODO markers, and
+the hearing ceiling holds by construction at every emitter (the skeptic could not construct a positive
+`volume_limit` from any shipped surface). What this review found is almost entirely *between* files and
+*between* processes — places no single-file read can see, and no in-flight program owns:
 
-1. **The non-negotiables are true by convention, not by construction.** The hearing ceiling has one
-   unguarded live write door and a doctor that reads the wrong file. The deploy guards are skipped by
-   a flag and by the *default* sudo fallback. Secrets are stored perfectly and leaked on the way out
-   (the redactor misses every JTS key shape; the WiFi passphrase is written unquoted into a file the
-   guardian `source`s as root). Privileged actions answer `200 ok` when polkit denies them. Deploy
-   health never gates anything.
+1. **Four things are wrong in a way that matters today.** The WiFi passphrase is written unquoted into
+   a file the recovery guardian `source`s as root. The *default* attended-sudo deploy path skips the
+   identity and downgrade guards and rsyncs anyway. Privileged actions answer `200 ok` when polkit
+   denies them. The multi-speaker election drops the local wake report whenever a peer's multicast
+   arrives first, so the speaker that heard the user better stands down (only when peering is on).
 2. **The structure is a flat bag with deferred imports holding it together.** 115 flat top-level
    modules; a 107-file `active_speaker/` root; 1,708 function-local `import jasper…` statements, 755 of
-   them with no reason. Three web pages of 4–5k lines each are built around one closure that captures
+   them with no reason. Three web pages of 4–5k lines are each built around one closure that captures
    two to four values. The canonical primitives exist (`atomic_io`, `env_load`, `log_event`,
    `service_units`, `json_fields`, `status_socket`) and are bypassed beside their own import lines.
-3. **Right-sizing is still the biggest lever.** The tuning zone is 41% of `jasper/` and its
-   dissolution plan has stalled at the class boundary (the god class went 158 → 155 methods). Only
-   27% of 829 `JASPER_*` tokens are knobs anything turns. The test suite is 1.4× the product and pins
-   1,645 private names.
+3. **Right-sizing is still the biggest lever, and the honest number is smaller than it looks.** The
+   tuning zone is 41% of `jasper/` and its dissolution has stalled at the class boundary. Only 27% of
+   829 `JASPER_*` tokens are knobs anything turns. But the *verified* deletable code is ~2,300 product
+   lines plus ~1,600 test lines (plus ~7,900 if the bass-extension park is lifted) — the tiles'
+   first-pass deletion claims were refuted 15 times on re-read. The suite is 1.4× the product and pins
+   1,645 private names; it is honest, and it is aimed at the wrong altitude.
 
-**Grades** (static evidence only; §9 lists what only hardware can prove). Rubric: the 12-row
-red/yellow/green table in the research reference, collapsed to letters for continuity with the
-previous audit.
+**Verification changed the grades.** Of 55 sub-claims the tiles and lenses raised at Blocker, the
+skeptics confirmed 14 at Blocker or Should-fix, downgraded 24, refuted 12, and upgraded 3 (the peering
+drop, the silent wake-leg death, the 1 % mute loop). Seventeen of the twenty-two tile "blockers" had been
+graded Should-fix by the agent that read the code and promoted during aggregation — the same failure
+mode the previous audit recorded. Everything in §2 below survived.
+
+**Grades** (static evidence only; §9 lists what only hardware can prove).
 
 | Attribute | Grade | Δ vs 08-25 | Confidence | One line |
 |---|---|---|---|---|
-| Hardware/audio safety (NN-1, NN-2) | **B** | ↓ from A− | high | Ceiling one-owner at every emitter; one unchecked live door (`set_active_config_raw`) + a doctor blind to the running graph; `max_peak_dbfs` unbounded above 0 dB. XVF brick guard holds; one unused write command to delete. |
-| Secrets (NN-3) | **C** | new | high | At rest: exemplary compartments. In transit: 8 redactors, 5 untested, the general one misses 8 of 23 real shapes; PSK sourced unquoted as root. |
-| Deploy integrity (NN-4, NN-8) | **C+** | new | high | Guards conditional on unrelated things (`SKIP_INSTALL`, interactive sudo); health never gates; staleness traps genuinely closed. |
-| Resilient | **B−** | ↓ from A | medium | Restart ladder inverted (the two units with no config-error park have the 8-second reboot fuse); 2–3 forks/second at idle; six unbounded status readers. Many mechanisms earn their keep. |
-| Observable | **B−** | ↓ from A− | high | Excellent primitives (`log_event`, `doctor_contract`, cues), no contract: 1,309 event names with no registry, 9 publish mechanisms, the cue manager itself emits nothing, "daemon dead" ≠ "speaker silent". |
-| Clean — separation & SSOT | **C+** | = | high | Module graph acyclic; package graph is a 23-package SCC held by 15 shelving mistakes; 20 spellings of the sample rate; primitives bypassed beside their import. |
-| Right-sized | **C** | ↑ from C− | high | Tuning zone 41% of `jasper/`; 289 knobs nobody turns; ~10k LOC verified dead or test-only. |
-| Tests | **B−** | = | high | Honest and broad; 1,645 private-name patches, 209 source-reading tests (most legitimate contracts), the NN-3 redactor has zero tests. |
-| Docs | **B** | ↑ from C+ | high | Governed corpus, claims verified; 157 ADRs with no index, 3 batch-ADRs, one 1,694-line plan that declares itself complete. |
+| Hardware/audio safety (NN-1, NN-2) | **A−** | = | high | Ceiling one-owner at every emitter and not constructible above 0 dB from any shipped input; the raw upload door is belt-and-braces, and the doctor reads the persisted file rather than the running graph. XVF brick guard holds; one unused write command to delete. |
+| Secrets (NN-3) | **C+** | new | high | Compartments exemplary. The PSK stash is sourced unquoted as root (R-001); the general redactor misses every underscore-prefixed key name and has zero tests — latent today because its three consumers carry provider text, not env dumps. |
+| Deploy integrity (NN-4, NN-8) | **C+** | new | high | The default attended-sudo path bypasses both guards (verified by execution); `SKIP_INSTALL=1` bypasses them for the checkout only; health is advisory by design and says so. Staleness traps are genuinely closed. |
+| Resilient | **B** | ↓ from A | medium | Held port 8780 reboots the box up to three times before the bootloop guard; `outputd.env` has a lost-update window; three uncapped STATUS readers; 2–3 forks/second at idle. Many mechanisms earn their keep. |
+| Observable | **B−** | ↓ from A− | high | Excellent primitives, no contract: 1,309 event names with no registry, 9 publish mechanisms, the cue manager emits nothing, `/state.voice.wake_legs` is labelled runtime truth and is the configured dict, "daemon dead" ≠ "speaker silent", no silence detector. |
+| Clean — separation & SSOT | **C+** | = | high | Module graph acyclic; package graph is a 23-package SCC held by 15 shelving mistakes; ≈20 spellings of the sample rate; primitives bypassed beside their import. |
+| Right-sized | **C** | ↑ from C− | high | Tuning zone 41% of `jasper/`; 289 knobs nobody turns; ~2.3k product + ~1.6k test LOC verified dead. |
+| Tests | **B−** | = | high | Honest and broad; 1,645 private-name patches; guards that measure the wrong thing (env-codified, atomic-io ratchet, unit allowlist); the NN-3 redactor has zero tests; denial paths untested by construction. |
+| Docs | **B** | ↑ from C+ | high | Governed corpus, claims verified; 157 ADRs with no index, 3 batch-ADRs, one 1,694-line plan that declares itself complete, one prior-audit sentence the code contradicts. |
 | Newcomer followability | **C** | ↑ from C− | high | Where things live is derivable from the graph, not from the tree. |
 
-**Overall: B− engineering, C+ proportionality.** The last audit said the repo needed an editor. It
-still does, but the first job now is a **welder**: ten seam fixes, most under 30 lines, that make the
+**Overall: B engineering, C+ proportionality.** The last audit said the repo needed an editor. It still
+does, but the first job now is a **welder**: a dozen seam fixes, most under 30 lines, that make the
 non-negotiables true by construction (§2). Then the structural moves (§3) that let every later steward
 round find things without grep.
 
 **Genuinely strong, earned:** the audio data plane is one pipeline with one ring-layout owner pinned
-across C/Rust/Python; `VolumeOwner` + `volume_latch` arbitration; `source_intent.request_source_intent`
-(the one privileged path that *proves* convergence); the file-mailbox → root-worker shape in
+across C/Rust/Python; `ensure_volume_limit_db` as the single funnel both emitter families pass
+through; `VolumeOwner` + `volume_latch` arbitration; `source_intent.request_source_intent` (the one
+privileged path that *proves* convergence); the file-mailbox → root-worker shape in
 `usb_gadget_forensics` and `accessories/reconcile`; `jasper-camilla`'s park-with-record policy;
 `renderer_lanes.RENDERER_LANES`; `jasper/fanin/latency_mode.py` (394 lines, 2% prose); the C ring
 core; the doctor's typed contract; `tests/test_cue_registry_coverage.py`'s two-sided guard;
-`build-sandbox.sh`'s OOM inversion; `content_fill.rs`. These are the templates the rest should copy.
+`build-sandbox.sh`'s OOM inversion; `content_fill.rs`; the aec-bridge mic-vanish ladder; the
+`research` scheduler's `wait_for` + server-side cancel. These are the templates the rest should copy.
 
 ---
 
-## 2. Fix now — the verified blockers
+## 2. Fix first — findings that survived verification
 
-Sequenced by blast radius. "Verified" = the reviewer reproduced it or a skeptic agent confirmed it at
-HEAD by re-reading or execution. Territory per #4085: S = general steward, D = doctor/state/resilience,
-H = hardware input, W = web UI, T = tuning.
+Severity is the skeptic's, not the tile's. Territory per #4085: S = general steward, D =
+doctor/state/resilience, H = hardware input, W = web UI, T = tuning. "Reachable" = on the owner's shipped
+configuration (full-profile Pi 5 with XVF3800 + Apple dongle; streambox Zero 2 W; peering off by default).
 
-| # | What | Where | Fix (smallest diff) | Terr. | Status |
+### 2.1 Blockers
+
+| # | What | Where | Fix (smallest diff) | Terr. | Verified by |
 |---|---|---|---|---|---|
-| R-001 | **WiFi passphrase written shell-unquoted into a file the guardian `source`s as root.** Any PSK with a space silently defeats WiFi recovery (`$JASPER_WIFI_PSK` comes back empty, the guardian takes the open-network branch); shell metacharacters execute as uid 0. | `jasper/wifi_guardian_persistence.py:186-188` (writer), `deploy/bin/jasper-wifi-guardian:126-131` (`set -a; source`), root oneshot unit; `env-migrations.sh:571-573` writes unquoted too | Quote on write (`shlex.quote` / `jasper_env_quote_value`) in both writers **and** stop sourcing: parse `^KEY=` like `read_stash` does. Pin with a space-bearing and a `$(…)`-bearing PSK. | S | **verified** (reviewer + L4) |
-| R-002 | **`redact_secrets` misses every JTS env-key shape** (`\b` cannot match after `_`): `JASPER_WIFI_PSK=hunter2` passes through unchanged; 8 of 23 realistic shapes leak. It is the sole guard on `/state.voice.connection_error`, a provider's raw HTTP body served on `0.0.0.0:8780`. Zero tests. | `jasper/secret_redaction.py:24-30`; consumers `voice/_supervisor.py:29`, `cli/doctor/_shared.py:44`, `cli/doctor/voice.py:24` | Replace the key-value regex with the shape set in the L4 report §2; one parametrized pin (input → placeholder). Converge the 8 redactors to 2 (Python + the bash sed). Apply it in `flight_recorder.RingFlushHandler.emit` too. | S | **verified** (reviewer ran it) |
-| R-003 | **Deploy guards are conditional on things unrelated to intent.** `SKIP_INSTALL=1` skips the identity guard and the direction/downgrade guard while `rsync --delete` runs; the *default* interactive-sudo fallback skips the same two plus the OOM scan, manifest check and health, with no flag and no pin. | `scripts/deploy-to-pi.sh:602-675` (guards), `:682` (rsync), `:167-198,236-240,610-613` (sudo fallback) | Hoist `preflight_sudo` + identity + `preflight_deploy_direction` above the rsync unconditionally; capture the manifest/peer_id over a separate `ssh -o BatchMode=yes` channel so the guards survive an attended sudo. Two behavior pins. | S | **verified** (reviewer read; S4 executed both) |
-| R-004 | **Nothing gates a deploy on health.** `run_doctor_summary` prints red and `return 0`; `surface_system_health` is `\|\| true`; `build.txt status=ok` is written first. A box with fanin/outputd/camilla down finishes `==> Done.` with the new SHA on `/system/`. And the stdlib probe written for "the venv is broken" is unreachable when the venv is broken (`:2167` guards `:2173`). | `deploy/install.sh:2158-2201`, `scripts/deploy-to-pi.sh:539-575` | Land ADR-0233 rule 5 as `jasper-doctor --core` (or `--speaker-silent-or-fail`), make its exit code the gate, invert the venv check, delete `deploy/bin/jasper-deploy-health` (900 LOC) + its 1,642-line test. | D + S | **verified** (S4) |
-| R-005 | **Privileged actions answer `200 ok` when polkit denies them.** `jasper-usbsink-volume.service` is in the audio-refresh list but in neither `restart_broker.MANAGED_UNITS` nor `deploy/polkit/49-jasper-control.rules`; `POST /system/restart/audio` `Popen`s `systemctl try-restart …` and never reads rc. Eleven in-tile mutation sites discard rc the same way; `restart_count` increments before the swallow. `systemctl reload avahi-daemon` is granted to neither service user. | `jasper/control/handlers/system.py:499-514,360`; `shairport_supervisor.py:410-421`; `peering/avahi.py:126-138`; `avahi_service.py:216-238` | Route every in-tile mutation through `restart_broker.manage_units` (same call length; returns `ok`/`rc`). Replace the hand-written unit list in `tests/test_restart_broker.py:131` with a derived one: union of `local_sources` registry tuples + `debug_mode.SUBSYSTEMS` + `RECONCILE_UNITS` + `CORE_AUDIO_RESTART_UNITS` ⊆ `POLKIT_MANAGE_UNITS`. **Delete** both avahi reloads (avahi inotify-watches the dir; both docstrings say so). | S/D | **verified** (reviewer computed the set difference; S1) |
-| R-006 | **NN-1 has one unguarded live door and a blind detector, and they are the same door.** `set_active_config_raw` uploads arbitrary YAML with no `volume_limit` parse; `patch_config` forwards any mapping; both leave the persisted `config_file_path` unchanged — and `check_camilla_volume_limit` reads exactly that file. `/sound/live-draft` uses the door on every slider move. Every *emitter* is clean (PR #3991's single `ensure_volume_limit_db` verified). | `jasper/camilla.py:891-931,1000-1039`; `jasper/web/sound_setup.py:1406`; `jasper/cli/doctor/audio.py:1065-1069` | Parse in `set_active_config_raw` with `parse_camilla_devices_config` + the predicate `dsp_apply._volume_limit_safety_error:185` already spells; refuse a `devices` key in `patch_config`; one doctor row over `get_active_config_raw()`; `log_event("camilla.volume_clamped", …)` when the fader clamp fires (`camilla.py:158` is prose today). | S (+D for the doctor row) | verified door (T05, S2, S6); reachability of a >0 value from shipped inputs: pending skeptic |
-| R-007 | **`max_peak_dbfs` accepts a positive value**; the two duck knobs beside it fail loud on `> 0`. The passive graph from `emit_sound_config` has no `Limiter`, so a positive value is bounded only by digital full scale. Separately, six `JASPER_OUTPUTD_ASSISTANT_*` keys are read only by fan-in; outputd hardcodes `AssistantLoudnessConfig::default()`, so the documented retunes are inert on the one box whose assistant path *is* outputd. | `rust/jasper-fanin/src/config.rs:1131` (vs `:1048,1060`); `rust/jasper-outputd/src/core.rs:110` | Same `anyhow::bail!` shape as the duck checks; read the keys in outputd or rename them `JASPER_FANIN_*`. | S | S2 re-graded up from T19-2; pending skeptic |
-| R-008 | **The restart ladder is inverted.** `jasper-control` and `jasper-aec-bridge` — the only two reboot-escalating units with no config-error park — have `StartLimitBurst=4 × RestartSec=2` = 8 s from first fault to `StartLimitAction=reboot`. `aec_bridge.py` returns 1 for five permanent faults exactly as for a transient stall; `control/server.py:2178 main()` has no try/except around `build_server`, so a held port 8780 reboots the recovery surface. The bootloop guard trips only after 3 reboots. | `jasper/cli/aec_bridge.py:1077-1176`; `jasper/control/server.py:2178-2238`; `deploy/systemd/jasper-{control,aec-bridge}.service` | `return 78` on the permanent branches + `RestartPreventExitStatus=78` (copy `jasper-voice.service:219-220`); wrap control's startup, `OSError` on bind → 78. Give fanin/outputd `jasper-camilla`'s park-with-record shape instead of `reboot`. | D | pending skeptic (L2 confirmed at HEAD) |
-| R-009 | **Wake can end in silence on four edges (NN-6).** A wake in the acquire window while `MEASURE_PAUSE` opens blocks the chirp and the turn up to 120 s (`begin_turn` is `while True: await resumed.wait()`); button + spend cap returns `"CAP"` with no cue and no log; the research-window cancel awaits up to 20 s *inside the main mic loop* (the 64-frame queue overflows, the heartbeat stops against `WatchdogSec=30s`); secondary wake-leg tasks are bare `create_task`s, so a raise kills a leg silently while `/state.voice.wake_legs` keeps listing it. The provider-outage escalation cue is an untracked task. | `jasper/voice/output_gate.py:89-106`; `voice_daemon.py:4644, 3466-3478, 2377-2389`; `voice/_supervisor.py:296-302` | Bound `begin_turn` with the deadline shape 15 lines above it (`_wait_for_idle`); cue + `log_event` on the CAP and cancel paths; move the cancel wait into `_arbitrate_acquire_drain`; `_track_task` for legs and the cue. ~40 LOC, four pins. | S | **verified** (T01, S5, L2 concur; #4104 moves the hold but does not close these) |
-| R-010 | **The multi-speaker election is not one.** Three LocalWake/PeerClaim combinations return no action, the ARBITRATE future never resolves, voice's 0.5 s client timeout fires before the daemon's 0.65 s fail-open and returns `WIN` — the *suppressed* speaker answers 500 ms late. A peer's WAKE multicast beats local detection jitter, so `rank.py`'s six tiers effectively never run. | `jasper/peering/state.py:289-294,308-337,408-412`; `voice_daemon.py:3945` vs `peering/daemon.py:96` | Every terminal path emits `StandDown`; derive both timeouts from one constant with the client's above the daemon's; in CANDIDATE add our report instead of returning `[]`. | S | pending skeptic (reachability: peering is installed-but-off by default) |
-| R-011 | **The streambox profile has no boot volume restore and no drift repair.** `VolumeCoordinator.initialize`, `maybe_reconcile_camilla`, `apply_active_source_transition` and all Spotify/BT observation have their only production caller inside `jasper-voice`, which the streambox profile `systemctl disable --now`s. | `deploy/lib/install/systemd-units.sh:1122`; `voice/daemon_main.py:834`; `volume_observers.py:159,197` | Move boot restore + the reconciler tick into `jasper-control` (already `Restart=always`, already builds coordinators, already hosts the measurement hold). | S | pending skeptic |
-| R-012 | **`outputd.env` is read-modify-written by two processes with a one-sided lock.** The udev-triggered bash reconciler does `cp` → mutate → spawn a Python validator → `mv` with no lock; the Python side holds `/run/jasper-fanin-coupling.lock` and starts the bash unit from inside its critical section. Same shape for `aec_mode.env` (`aec_endpoints.py:148` locked vs `jasper-aec-reconcile:307-327` bare `>>`). | `deploy/bin/jasper-audio-hardware-reconcile:606,846`; `jasper/fanin/coupling_reconcile.py:126,536`; `deploy/lib/jasper-env-file.sh:75` vs `jasper/atomic_io.py:478` | `flock` in the bash env-file lib on the same lock path Python uses; make `install.sh:1416` source that lib instead of its own `sed`+`>>` writer. | H + S | pending skeptic |
-| R-013 | **`jasper-web-streambox.service` runs the same `python -m jasper.web` as root with 5 hardening directives vs 19.** The `User=` deferral itself has a documented removal condition and a pin; the 11 uid-independent directives (`ProtectKernel*`, `RestrictNamespaces`, `SystemCallFilter`, `CapabilityBoundingSet`, …) have no reason to be absent. | `deploy/jasper-web-streambox.service` | Copy the 11 directives across; keep the `User=` deferral. | W/S | **verified** (T24, S1 re-grade) |
-| R-014 | **1% listening level mutes the speaker forever at 1 Hz.** `percent_to_db(1) == percent_to_db(0)`; `_write_camilla_db_with_mute` re-derives mute from the dB and asserts `main_mute` while `_set_camilla` logs `muted=false`; the reconciler then sees permanent `mute_drift` and re-writes every tick. | `jasper/volume_coordinator.py:2077,2602`; `volume_curve.py:104` | Pass `muted: bool` from the caller's level; delete `_main_mute_for_db`. One pin: `set_listening_level(1)` leaves `main_mute` False. | S | pending skeptic |
+| R-001 | **WiFi passphrase written shell-unquoted into a file the guardian `source`s as root.** Any PSK with a space silently defeats WiFi recovery (`$JASPER_WIFI_PSK` comes back empty; the guardian takes the open-network branch); shell metacharacters execute as uid 0. Reachable by every household whose passphrase has a space, and by anyone who can POST to `/wifi/`. | `jasper/wifi_guardian_persistence.py:186-188`; `deploy/bin/jasper-wifi-guardian:126-131` (`set -a; source`); root oneshot unit; `deploy/lib/install/env-migrations.sh:571-573` | Quote on write (`shlex.quote` / `jasper_env_quote_value`) in both writers **and** stop sourcing: parse `^KEY=` the way `read_stash` already does. Pin with a space-bearing and a `$(…)`-bearing PSK. | S | reviewer (three code points) + L4 (executed) |
+| R-002 | **The default attended-sudo deploy path bypasses the identity and downgrade guards and rsyncs anyway.** When passwordless sudo is absent and a human is at a tty, the script prints `identity: skipped` / `direction: skipped`, then deploys with `--delete` onto a peer_id that does not match `.env.local` and a commit that is a downgrade — no flag, no `JASPER_DEPLOY_ALLOW_DOWNGRADE`, no `JTS_ACCEPT_NEW_IDENTITY`. BRINGUP names the lab-Pi case as recurring. Every guard test pins `SUDO_INTERACTIVE=0`; the one test that sees the skip pins it as intended, by regexing source text. `SKIP_INSTALL=1` skips the same guards but only the checkout is at risk. | `scripts/deploy-to-pi.sh:167-199,238,602-675,625,682-687,763,985` | Capture the manifest and peer_id over a second non-tty `ssh -o BatchMode=yes` channel (only `sudo` needs the pty) so the guards survive attended sudo; hoist the identity guard above `SKIP_INSTALL`. One pin: a downgrade aborts under `SUDO_INTERACTIVE=1`. | S | reviewer (read) + S4 and P3 (both executed under a pty with stubbed ssh/rsync) |
+| R-003 | **Privileged actions answer `200 ok` when polkit denies them.** `jasper-usbsink-volume.service` is in the audio-refresh list but in neither `restart_broker.MANAGED_UNITS` nor the polkit rule; `POST /system/restart/audio` `Popen`s `systemctl try-restart …` and never reads rc; systemd calls `TryRestartUnit` per unit so the others restart and this one is silently denied. Eleven in-tile mutation sites discard rc the same way; `restart_count` increments before the swallow. PR #4120 does **not** fix this (it changes the installer's root-side set). | `jasper/control/handlers/system.py:459-471,504-517,360`; `shairport_supervisor.py:410-421`; `restart_broker.py:98`; `deploy/polkit/49-jasper-control.rules:50-100` | Route every in-tile mutation through `restart_broker.manage_units` (same call length; returns `ok`/`rc`). Replace the hand-written set in `tests/test_restart_broker.py:131` with a derived one: `local_sources` registry tuples ∪ `debug_mode.SUBSYSTEMS` ∪ `RECONCILE_UNITS` ∪ `CORE_AUDIO_RESTART_UNITS` ⊆ `POLKIT_MANAGE_UNITS`. | S/D | reviewer (set difference) + S1 + P3 (re-derived at runtime) |
+| R-004 | **The multi-speaker election stands down the speaker that heard the user better.** When a peer's WAKE multicast (~1 ms) beats local detection (30–150 ms jitter, per the config's own comment — i.e. essentially always), `_on_peer_wake` enters CANDIDATE "so our local detector can join when it fires", and `_on_local_wake` then returns `[]` — the local report is never ranked and the machine emits `StandDown`. Separately, SUPPRESSED + weak wake returns no action, the ARBITRATE future never resolves, and voice's 0.5 s client timeout fails open to `WIN`, inverting LOSE into WIN. Gated on `JASPER_PEERING=on` (off by default; the `/rooms/` page turns it on). | `jasper/peering/state.py:284-337,408-412`; `peering/daemon.py:96,363-391,461-464`; `voice_daemon.py:3944-3945,4011-4013` | In CANDIDATE with no local report, record it and `BroadcastWake` instead of returning `[]`; every terminal path emits `StandDown`; derive both timeouts from one constant with the client's above the daemon's (today the daemon's 0.65 s fail-open is unreachable on the wire). Pin with the pure state machine (the skeptic's `drive_sm.py` is the harness). Must land before peering is turned on. | S | S5 + P3 (drove the state machine) |
 
-Also fix-now, smaller: `CLEAR_CONFIGURATION` (`jasper/xvf/xvf_host.py:88`) is a write-only XVF
-command with zero consumers that writes the same DataPartition whose corruption is the documented
-brick cause — delete it and add it to the forbidden set (NN-2). `output_hardware.py:660` runs
-`aplay -L` with no timeout on exactly the DAC-vanished path. `renderer.py:112` connects to the mux
-socket with no timeout on the per-tick hot chain. `jasper/correction/runtime_integrity.py:96-118`
-re-implements the STATUS reader without the 1 MB cap (six hand-rolled readers exist; three dropped
-both the deadline and the cap — converge on `route_latency.status_socket`, and move that module out of
-`route_latency/`). `usage.db` has no retention, no index, and `SpendCap.allowed()` full-scans it on
-every wake with `strftime()` on the column.
+### 2.2 Should-fix, in blast-radius order
+
+| # | What | Where | Fix | Terr. | Verified by |
+|---|---|---|---|---|---|
+| R-005 | Secondary wake-leg and manual-mic tasks are bare `create_task`s with no done-callback; the shutdown path retrieves and discards the exception inside `except (CancelledError, Exception): pass`, so a dead leg's traceback reaches the journal **nowhere, ever** — and `/state.voice.wake_legs` is labelled "actually-armed … runtime truth" while publishing the configured dict. On the XVF box a dead leg is a silently halved wake surface. | `voice_daemon.py:2373-2386,2500-2505,4783-4788` | `add_done_callback` that logs `event=wake.leg_died`; publish the tasks still `not done()`. | S | S5 + P3 (upgraded) |
+| R-006 | 1 % listening level mutes the speaker and re-mutes at 1 Hz forever: `percent_to_db(0) == percent_to_db(1) == −50`, the level predicate says unmuted and the dB predicate says muted, and the reconciler's own write goes through the dB path, so `mute_drift` is true every tick and `event=volume.reconciled` lands in persistent journald every second. | `jasper/volume_coordinator.py:1993-1998,2066-2079,1811,1822-1825,1893`; `volume_curve.py:102-104` | Give `_write_camilla_db_with_mute` an explicit `mute` parameter fed from the level-domain intent; pin that level 1 converges in one write. | S | S6 + P3 (ran both predicates; note the muter is the dB path, not `_set_camilla`) |
+| R-007 | The streambox profile has no boot volume restore and no drift repair: `VolumeCoordinator.initialize` and `VolumeObserver` are constructed only in `jasper-voice`, which streambox disables; `/sound/` can repair drift only when a human saves EQ. | `deploy/lib/install/systemd-units.sh:1121-1127`; `voice/daemon_main.py:834,855`; `volume_observers.py:159` | Start a `VolumeObserver` (or at least `initialize()`) from `jasper-control` on the streambox profile. | S | S6 + P3 |
+| R-008 | `get_travel_routes` declares `untrusted_output=True` and never arms the taint monitor (`make_travel_routes_tools` takes no monitor while every sibling pack passes one), so third-party route text enters the context untainted and the next consequential Home Assistant action skips its confirmation gate. `dispatch_tool` never reads the flag: the declaration is decorative. Needs both packs enabled. | `tools/travel_routes.py:114,145`; `tools/packs.py:315-316` vs `:326,359,366`; `tools/home_assistant.py:278-288` | `packs.py:316` passes `monitor=d.untrusted_monitor`; better, `dispatch_tool` calls `monitor.mark()` whenever `tool.untrusted_output` and the payload is non-empty, and the per-tool calls delete. Pin: every `untrusted_output=True` tool is built with a monitor. | S | S5 + P3 |
+| R-009 | A held port 8780 reboots the box: `control/server.py main()` binds inline with no try/except, exit 1, `StartLimitBurst=4 × RestartSec=2` = 8 s to `StartLimitAction=reboot`; the bootloop guard bounds it at three reboots. (The "unplugged mic reboots the box" half was refuted: the bridge sits behind a `ConditionPathExists` marker the reconciler clears.) | `jasper/control/server.py:2178,2241`; `deploy/systemd/jasper-control.service:18-20,56-58`; `jasper/cli/aec_bridge.py:1077-1176` | `try/except OSError` → `return 78` + `SuccessExitStatus=78` (copy `jasper-voice.service:219`); give the five permanent aec-bridge faults exit 78 too. | D | L2 + P3 (split) |
+| R-010 | `outputd.env` lost-update window: the udev-triggered bash reconciler does `cp` → mutate → spawn a Python validator → `mv` with no lock while `coupling_reconcile.py` read-modify-writes under `/run/jasper-fanin-coupling.lock`; the ordered spine is safe, a hotplug landing inside the Python window is not. `aec_mode.env` has the same shape. | `deploy/bin/jasper-audio-hardware-reconcile:600-613,838-849`; `jasper/fanin/coupling_reconcile.py:889-919,1739`; `deploy/lib/jasper-env-file.sh:75` | One new `flock /run/jasper-outputd-env.lock` around both writers (not the coupling entry lock — the bash unit is started from inside it); make `install.sh:1416` source the env-file lib. | H | L2 + L4 + P3 |
+| R-011 | `POST /system/audio-quality` can never succeed: it writes `/var/lib/jasper-asound/asound.conf` from a `ProtectSystem=strict` unit whose `ReadWritePaths` omit it. Fails loudly (502) — a broken feature, not a lie. `systemctl reload avahi-daemon` is granted to neither service user; both docstrings say avahi inotify-watches the directory. | `deploy/systemd/jasper-control.service:139,160`; `deploy/bin/jasper-render-asound-conf:15,56`; `peering/avahi.py:126-138`; `avahi_service.py:114-134` | Add the path to `ReadWritePaths` (+ a unit-vs-writer path pin); **delete** both avahi reloads. | D/S | S1 + P3 |
+| R-012 | Three sync `STATUS\n` readers with a per-op timeout and no byte cap (an unbounded-memory primitive on a 1 GB Pi); `renderer.py:112` connects to the mux socket with no timeout on the chain `VolumeObserver` walks every tick (the `TimeoutError` in its `except` is dead); `usage.db` has no index and no retention and `SpendCap.allowed()` full-scans it with `strftime()` on the column on **every wake** (on by default: `.env.example:203`). | `audio_validation.py:505-517`; `control/airplay_health.py:1690-1700`; `correction/runtime_integrity.py:101-112`; `jasper/renderer.py:112`; `usage.py:414,823-833` | Route the three through `route_latency.status_socket.read_status_socket_or_none` (and move that module to `platform/`); `asyncio.wait_for(…, 1.0)` on the connect; integer epoch column + index + retention. | S | L2 + P3 |
+| R-013 | No surface reports wake recency or mic level between wakes: the watchdog catches frames *stopping*, nothing catches frames of *silence* — the classic XVF3800 failure (chip alive, capture channels muted) that `install.sh:2163-2166` names as the thing doctor exists to catch. | `voice/input_presence.py:26`; `cli/doctor/wake.py:42,277`; `voice_daemon.py:685,790-810` | `/state.voice.last_wake_at` + a rolling idle-frame RMS; one doctor check that fails when RMS sits at the floor for hours with the mic unmuted. | D | S5 + P3 (partial carve-out noted) |
+| R-014 | `redact_secrets` misses every underscore-prefixed key name (`\b` cannot match after `_`): 8 of 23 realistic shapes leak, incl. `JASPER_WIFI_PSK=`, `JASPER_HA_TOKEN=`, `GOOGLE_CLIENT_SECRET=`. Latent today — its three consumers carry provider HTTP bodies and exception text, and the live provider keys are caught by the prefix regex — but it is the sole guard on `/state.voice.connection_error` (served on `0.0.0.0:8780`), one of eight redactors in two languages, and it has **zero tests**. | `jasper/secret_redaction.py:23-31`; consumers `voice/_supervisor.py:29`, `cli/doctor/_shared.py:44`, `cli/doctor/voice.py:24`; `flight_recorder.py:63-90` (publishes the DEBUG ring on WARNING, no redaction) | Replace the leading `\b` with `(?<![A-Za-z0-9])`; one parametrized pin; converge the eight redactors to two; apply it in `RingFlushHandler.emit`. | S | reviewer (ran it) + L4 + P3 (downgraded on reach) |
+| R-015 | `/sound/` and `/correction/` run two divergent implementations of the summed test-tone flow: opposite `audio` defaults (`bool(raw.get("audio"))` vs `bool(raw.get("audio", True))`), different `duration_ms` handling, different refusal shapes — an identical POST plays a tone on one page and is silent on the other. Owner call 1 in #4085. | `web/sound_setup.py:4173-4358` vs `active_speaker/web_commissioning.py:2204-2333` | `/sound/` delegates to `web_commissioning.start_summed_test`; delete the copy. | W/T | T16-2 + P3 |
+| R-016 | NN-1 belt-and-braces: `set_active_config_raw` / `patch_config` validate nothing and deliberately leave `config_file_path` unchanged; `check_camilla_volume_limit` reads that persisted file, so the running graph is never checked for `volume_limit`. Not reachable today (every caller uploads emitter output that passed `ensure_volume_limit_db`); becomes reachable the moment a future emitter bypasses the funnel. ADR-0101 says the non-negotiable tier gets the pin anyway. | `jasper/camilla.py:891-941,1000-1039`; `cli/doctor/audio.py:1065-1112`; `web/sound_setup.py:1391-1408` | Parse-and-refuse in `set_active_config_raw` with the predicate `dsp_apply._volume_limit_safety_error` already spells; refuse a `devices` key in `patch_config`; have the doctor compare against `get_active_config_raw()` when readable; `log_event` the fader clamp (`camilla.py:158` is prose). | S/D | T05 + S2 + S6 + P3 (constructibility refuted) |
+| R-017 | Wake edges with no cue: button + spend cap returns `"CAP"` (HTTP 503 to the accessory, but the household hears nothing and no `log_event`); research-window cancel awaits up to 20 s inside the main mic loop and drops the wake with a prose WARN (the 64-frame queue overflows and the heartbeat stops against `WatchdogSec=30s`); the `MEASURE_PAUSE`-in-acquire-window case is real but sub-millisecond and bounded at 120 s. | `voice_daemon.py:4644-4645,3466-3478,2647`; `voice/output_gate.py:85-102` | Cue + `log_event` on the CAP path; play `INTERNAL_ERROR_CUE_SLUG` before the cancel-timeout return and move the wait into `_arbitrate_acquire_drain`; `_measurement_pause_detailed` returns `BUSY` while `_acquiring`. | S | T01 + S5 + P3 (F3 downgraded) |
+| R-018 | `jasper-web-streambox.service` runs the same `python -m jasper.web` as root with 5 hardening directives vs 19. The `User=` deferral is legitimate (documented removal condition, pinned); the 11 uid-independent directives are the gap. | `deploy/jasper-web-streambox.service` vs `deploy/jasper-web.service:126-202` | Copy the 11 across; extend `test_systemd_hardening.py` to require them on both units. | W/S | T24 + S1 + P3 |
+| R-019 | The accessory reader tasks are unsupervised: `_read_device` catches only `OSError`, the reap loop `del`s the task without inspecting it and only runs on the *next* udev event, and `_maybe_start` fires only on `add` — a still-plugged accessory whose reader died is permanently dead while the status file reports the bridge healthy. | `accessories/bridge.py:536-546,701,728-742` | In the reap loop log `active[p].exception()` and re-`_maybe_start(p)`; count it in the status file. | H | T09 + L2 + P3 (worse than filed) |
+| R-020 | `staging.py` logs a metadata-write failure and still returns `status: "staged"` while the reader answers `not_staged` (fails closed; misleads the operator). `calibration.store_calibration` writes household state with bare `write_text` while importing `atomic_write_text`. | `active_speaker/staging.py:1892-1914`; `audio_measurement/calibration.py:36,521,540` | Set `payload["status"] = "unstaged"` on the exception; use `atomic_write_text`. | T | T14-2 + T12-2 + P3 |
+| R-021 | `heal_shared_state_modes` spawns `/usr/bin/python3` from 12 install call sites per deploy (an ADR-0226 breach, not just cost); `jasper.identity` pulls the peering state machine (10.7 ms on x86, several× on the Zero) into six processes for one path constant; `chip_aec/health.py` → `alignment` → `audio_measurement.ramp` pulls `asyncio` + `ssl` into every reconciler shim for a verdict table. | `deploy/lib/install/env-migrations.sh:22-43`; `jasper/identity.py:42`; `jasper/peering/__init__.py:60-65`; `chip_aec/alignment.py:22` | Call the heal once from `main()`; drop the eager `state`/`rank` re-exports; move the two-line helper to a leaf. | S/H | T23 + S4 + T07 + L5 + P3 |
+
+Also fix-now, smaller (all confirmed): `CLEAR_CONFIGURATION` (`jasper/xvf/xvf_host.py:88`) is a
+write-only XVF command with zero consumers that writes the same DataPartition whose corruption is the
+documented brick cause — delete it and add it to the forbidden set (NN-2). `output_hardware.py:660`
+runs `aplay -L` with no timeout on the DAC-vanished path (bounded only by the unit's
+`TimeoutStartSec=50s`). `rust/jasper-fanin/src/main.rs:201` is an unbounded `mpsc::channel()` fed from
+the SCHED_FIFO thread into an `fdatasync` writer — a queue that grows exactly under xrun load; the
+sibling tap in the same crate already uses `sync_channel`. `max_peak_dbfs` accepts a positive value
+(nothing sets it; delete the knob or `.min(0.0)`). `outputd/main.rs:144`'s `notify_systemd(…)?` should
+be `let _ =`. `jasper-host-clock`'s `Dll` is constructed and never ticked — two constant fields sit in
+`/state` as live diagnostics; delete them (the claim that a Python test pins them was refuted).
+
+### 2.3 Downgraded or refuted on verification (so nobody re-files them)
+
+`prepare_period` allocating on the fan-in audio thread — **refuted** (zero allocation shapes in the
+function; the `warn!` is in the next function on a misconfiguration path). The two "AEC reference
+available" predicates disagreeing — they agree on the shipped XVF box; DRY only. `audio_quality.env`
+two writers — seed-once + one runtime writer with a header, correct. The research poll loop with no
+attempt ceiling — bounded at the right layer by `wait_for(300 s)` with a server-side billing cancel.
+`research` + `calibration_agent` as two OpenAI clients — three different APIs for three concerns.
+`wake_events.sqlite3` unbounded — rows only (~1 KB each); the 128 MiB audio sweep exists. `openai`
+provider keys leaking through `redact_secrets` — caught by the prefix regex. Deploy health "never gates"
+— true, and AGENTS.md does not promise a gate; `surface_system_health` says "ADVISORY" and names the
+false-positive class that makes a gate a nanny today; emit a machine-readable line instead. The stdlib
+"venv broken" probe — the code gates on RAM correctly; the previous audit's sentence is what is wrong.
+`crossover_v2`'s import charter — false, but tuning is Pi-5-only and numpy is present; a docstring fix.
 
 ---
 
@@ -191,7 +230,7 @@ module already exists:
 |---|---|---|---|
 | Atomic file write | `jasper/atomic_io.py` | 15 hand-rolls incl. 2 files that already import it; the `tests/test_atomic_io_conventions.py` ratchet keys on `mkstemp`, so 19 files using fixed `path + ".tmp"` (the *less* safe pattern) escape it; `google_creds.save_token:235` does this in the secrets compartment | key the ratchet on `os.replace`/`rename`, not `mkstemp` |
 | Env-file read | `env_load.parse_env_file` | 19 modules with private `KEY=value` parsers (6 on `/var/lib/jasper/*.env`); 6 spellings of "is this value true" | `platform-is-a-leaf` + one forbidden-pattern lint |
-| Env-file write | Python `web/_common.write_env_file`; bash `deploy/lib/jasper-env-file.sh` | `install.sh:1416` non-atomic `sed`+`>>`; two lock domains (R-012); no owner header from `write_env_file` (5 of ~20 writers comply with AGENTS.md's header rule) | `owner:` kwarg emitting the header; one `flock` path |
+| Env-file write | Python `web/_common.write_env_file`; bash `deploy/lib/jasper-env-file.sh` | `install.sh:1416` non-atomic `sed`+`>>`; two lock domains (R-010); no owner header from `write_env_file` (5 of ~20 writers comply with AGENTS.md's header rule) | `owner:` kwarg emitting the header; one `flock` path |
 | Structured log | `log_event` (1,455 sites, best-governed thing in the tree) | 59 raw `event=` format strings; 8 `print("event=…")` the conventions test does not see | extend `test_log_event_conventions.py` to `print` |
 | systemd unit state | `service_units.read_unit_states` ("the one reader", ADR-0233) | 1 consumer; 3 rival multi-unit readers, 4 rival block parsers, 11 single-property probes | the doctor's rule-1 drift check, widened |
 | STATUS socket read | `route_latency.status_socket.read_status_socket_or_none` | 6 sync hand-rolls (3 without deadline or cap) + 4 async | move to `platform/`, forbid `recv(` loops elsewhere |
@@ -251,15 +290,17 @@ What the wave-9 program has and has not done, against its own `REFACTOR-CUTOVER-
   (cites `EngineSeams` as five fields incl. `recommend`; HEAD has four in a 133-line file) and
   declares itself "VERIFIED-COMPLETE" while sibling ADR-0228 retired its other half — retire it into an
   ADR too (ruling 13).
-- Dead and verified: the `crossover_v2_flow` barrel (134 re-exports: 26 with a production importer,
-  93 test-only, 15 unread; cutover deletion step 1); 143 of 207 lazy doors in `active_speaker/__init__`
-  with zero readers; `program_analysis/__init__.py` publishing 32 private names (~20 with no
-  production consumer, three imported *cross-package* by `harmonic_evidence.py:803`); the audio-lab
-  aplay tone backend (~330 LOC + `audio_lab.py` + two knobs + most of a 1,231-line test file —
-  `tone_backend_status` hard-codes `audio_enabled = False`); `level_match.py`'s session half (zero
-  non-test callers; Room runs `autolevel.py`); `quality_model.ROOM == DRIVER == RAMP` (three names,
-  one object); `delay_graph.DelayCandidateConfirmation`; `frequency_view.build_frequency_view`;
-  `calibration.supported_model_options` (its docstring names a caller that rebuilds it inline).
+- Dead and verified by the deletion skeptic: the `crossover_v2_flow` barrel (134 re-exports: 26 with
+  a production importer, 93 test-only, 15 unread; cutover deletion step 1); 143 of 207 lazy doors in
+  `active_speaker/__init__` with zero readers; `program_analysis/__init__.py` publishing 32 private
+  names (~20 with no production consumer, three imported *cross-package* by
+  `harmonic_evidence.py:803`); the audio-lab aplay tone backend (~330 LOC + `audio_lab.py` + two knobs
+  + ~600 lines of a 1,231-line test file — `tone_backend_status` hard-codes `audio_enabled = False`);
+  the level-match methods on `correction/session.py` plus their refusal copy (288 LOC — `level_match.py`
+  itself is live through the crossover backend and is merely misfiled); `delay_graph.
+  DelayCandidateConfirmation`; `frequency_view.build_frequency_view`; `calibration.supported_model_
+  options` (its docstring names a caller that rebuilds it inline). Refuted on re-read: `quality_model.
+  ROOM/DRIVER/RAMP` are three distinct, imported instances, not one object.
 - Owner decision the zone's shape depends on: `commissioning_apply.py:888-905` carries a
   `KNOWN DEFECT (issue #2202)` saying the v1 commissioning apply *cannot succeed on real hardware*; it
   terminates a 21,667-LOC chain still wired via `web/correction_crossover_backend.py:1487`, and it is
@@ -280,13 +321,16 @@ What the wave-9 program has and has not done, against its own `REFACTOR-CUTOVER-
 - One correctness hole with no pin: `staging.py:1893` logs a metadata-write failure and still returns
   `status: "staged"` while the reader answers `not_staged`.
 
-`bass_extension/` (ADR-0018 parked): the park's boundary is narrower than the ADR implies.
-`limiter_evidence.py` (1,213), the `__init__` apply pathway (730), `bench/executor.py` (1,200 — zero
-importers; the CLI `raise SystemExit`s naming #1738 first) and `bench/{stimulus,live_proof,excitation}`
-(620, zero importers even inside the dead chain) are unreachable; `profile/targets/alignment`, the
-adapters and `bench/{render,derivation,manifest,activation,context}` are live. ADR-0018 says an
-orphan sweep is not authority to delete; it is authority to state that ~3,800 LOC + ~8k test LOC are
-buying a plan that a git tag and the ADR would preserve equally well. Owner decision.
+`bass_extension/` (ADR-0018 parked): the park's boundary is narrower than the ADR implies, and
+narrower than the tiles claimed. Unreachable from any shipping root: `limiter_evidence.py`,
+`bench/{executor,stimulus,live_proof,cross_check,analysis}.py` and the `__init__` apply/bypass/recover
+*functions* — ~4,000 product LOC with ~3,900 test LOC (`bench/executor.py` is reached only by its
+tests; the CLI `raise SystemExit`s naming #1738 first). Live and to keep: `profile/targets/alignment`,
+the adapters, `bench/{render,derivation,manifest,activation,context}`, and the `__init__` path
+constants (`BASS_EXTENSION_APPLY_INTENT_PATH` has six production importers). Only `bench/excitation.py`
+(85) is truly importer-free, and ADR-0018 §3 names it as "wire or delete when bass resumes". ADR-0018
+says an orphan sweep is not authority to delete; it is authority to state that ~7,900 lines are buying
+a plan that a git tag and the ADR would preserve equally well. Owner decision.
 
 ---
 
@@ -346,7 +390,7 @@ the unit files and stopped there: every `ExecCondition=` is POSIX shell, the gua
 defers its fork-backed probes — but `heal_shared_state_modes` still spawns `/usr/bin/python3` from 12
 install call sites, `chip_aec/health.py` → `alignment` → `audio_measurement.ramp` pulls `asyncio` +
 `ssl` (83 ms / 186 modules) into every reconciler shim to import a verdict table, and `jasper.identity`
-drags the peering state machine into six processes.
+drags the peering state machine into six processes (10.7 ms on x86 for one path constant).
 
 **Memory.** Fourteen units declare `MemoryMax` summing to 1,464 MB — 3.5× the Zero 2 W. The OOM
 ladder (`_oom_adj.py`) protects the audio chain in a defensible order and has **no bottom rung**: every
@@ -359,8 +403,9 @@ finding, re-graded to Blocker by measurement). Only three daemons import numpy a
 ADR-0225 asks for. On-device build: the low-memory threshold is 1.2 GB, so a 1 GB Pi 5 *and* the Zero
 2 W both ship fan-in/outputd at `opt-level=0` (#4137 raises it to 2 — good; `lto="fat"` is dead on the
 owner's hardware); `jasper-clock` compiles four times per deploy without a workspace; the prebuilt
-ARM64 bundle (~1,700 LOC of installer + test + workflow) is wired to nothing on the deploy path. 11 of
-12 `deploy/lib/install/*.sh` (5,565 lines) ship to every Pi with no runtime consumer.
+ARM64 bundle (~1,700 LOC of installer + test + workflow) is wired to nothing on the deploy path. The
+Pi-side copy of 11 of 12 `deploy/lib/install/*.sh` (5,565 lines) has no consumer (`install.sh` sources
+all twelve from the checkout; only `build-sandbox.sh` is read from `/usr/local/lib`) — a one-line glob fix.
 
 **Astronaut engineering, verified deletable:** `host_clock.rs`'s `catch_unwind` (dead under
 `panic = "abort"`); the `sdnotify` dependency + its ImportError branch (fails closed in the worst
@@ -370,8 +415,8 @@ write-only); the Bluetooth handler "plugin framework" (224 LOC of Protocol + reg
 one-`yield` bodies); the `first-party-runtime.sh` 581-line two-phase-commit journal (its activating
 env var is absent from the deploy-to-pi forwarding list, so it is unreachable via the only sanctioned
 path); `jasper-host-clock`'s `Dll` is constructed and never ticked (`dll_err_frames()` is constant
-`0.0` and `dll_locked()` constant `false`, published to `/state` and pinned by a contract test) — fold
-the crate into its one consumer.
+`0.0` and `dll_locked()` constant `false`, published to `/state` as live diagnostics; no test pins
+them) — delete the two fields and fold the crate into its one consumer.
 
 **Resilience wins to keep exactly as they are:** the aec-bridge mic-vanish ladder (verified end to
 end incl. the reconciler stopping and disabling the bridge before the reboot fuse); outputd's
@@ -453,10 +498,11 @@ in code) and the previous audit's prose sweep held outside the tuning zone. Rema
 Every wave keeps CI green and features identical unless marked as an owner decision. PR size per
 AGENTS.md; one concern per PR. Territories as in #4085.
 
-**Wave 0 — welding (this week; ~15 PRs, most < 60 lines).** R-001 through R-014 in §2, plus the
-`CLEAR_CONFIGURATION` deletion, the four missing timeouts, and `outputd`'s `notify_systemd(…)?`. Each
-lands with one behavior pin. Owners: S for 001/002/003/005/006/009/010/011/014; D for 004/008; H for
-012; W for 013.
+**Wave 0 — welding (this week; ~20 PRs, most < 60 lines).** §2.1's four blockers first (R-001 PSK
+quoting; R-002 the attended-sudo guards; R-003 broker routing + the derived allowlist pin; R-004 the
+peering state machine, before peering is turned on), then §2.2 in order, plus the small items at the end
+of §2.2. Each lands with one behavior pin. Owners: S for 001–006, 008, 012, 014–017, 021; D for 009, 011,
+013 and 016's doctor row; H for 010, 019; W for 015, 018; T for 020.
 
 **Wave 1 — the guards that measure the right thing (~8 PRs).** Derived unit-allowlist test; the
 `redact_secrets` parametrized pin; `atomic_io` ratchet keyed on rename; the env-contract replacement
@@ -464,15 +510,23 @@ lands with one behavior pin. Owners: S for 001/002/003/005/006/009/010/011/014; 
 `log_event` conventions extended to `print`; the three narrow import-linter contracts merged as
 ratchets (`platform-is-a-leaf`, `contracts-are-leaves`, `surfaces-are-leaves`) in `scripts/test-merge`.
 
-**Wave 2 — verified deletions (~10k LOC, one PR per row, each body pasting the negative proof).**
-Peering's mDNS/STATUS/PING half (~350 + 450 test); the wizard `main()`s and two console scripts
-(~330); the `crossover_v2_flow` barrel (test-only 93 + unread 15) and the 143 dead lazy doors;
-`program_analysis` private exports; `audio_hardware/__init__` (86 lines, zero consumers); the audio-lab
-tone backend (~330 + tests); `level_match`'s session half; `bluetooth/roles.py`; the astronaut list in
-§4; `Ducker` + `JASPER_DUCK_TRANSPORT`; 11 install libs from the ship set; `jasper-deploy-health`
-after R-004. Owner decisions priced separately: `bass_extension` parked half (~3.8k + 8k), the v1
-commissioning chain (§3.5), `s0-sync-*` vs `multiroom-spike-*` (2,150 LOC, both self-declared
-throwaway, 4 test files pinning their `--help`).
+**Wave 2 — verified deletions (~2,300 product + ~1,600 test LOC confirmed by the deletion skeptic;
+one PR per row, each body pasting the negative proof).** Peering's mDNS/STATUS/PING half (373 + 485
+test); nine wizard `main()`s and the `jasper-web`/`jasper-sound-web` console scripts (334); the
+`crossover_v2_flow` barrel (14 now, +87 after redirecting tests) and the 143 dead lazy doors;
+`program_analysis` private exports (46, after test redirect); `audio_hardware/__init__` (80); the
+audio-lab tone backend (330 + ~600 test); the session-level level-match methods + refusal copy (288 +
+180 test); `bluetooth/roles.py` + the test-only volume/mux paths that leave fan-in's Rust `AUTO` verb
+with no producer (131 + ~15 Rust + 120 test); `CLEAR_CONFIGURATION`; dead ring/resampler/host-clock
+symbols (233); the crossover_v2 barrels and four dead `InterventionProposal` fields (67); `HAClient.
+list_agents` + the dead CSRF helper (54); the astronaut list in §4; `Ducker` + `JASPER_DUCK_TRANSPORT`
+(87 + 387 test); the Pi-side install-lib copies (a one-line glob). Owner decisions priced separately:
+the `bass_extension` park (~4,000 + ~3,900 test), the v1 commissioning chain (§3.5), `jasper-deploy-
+health` (900 + 1,642 test, once `--core` exists), `s0-sync-*` vs `multiroom-spike-*` (2,150 LOC, both
+self-declared throwaway, 4 test files pinning their `--help`). Refuted deletions the next round must
+not re-file: `level_match.py` itself, `bass_extension/__init__.py`'s constants, `HAClient.healthcheck`/
+`.config`, `ring_stall_verdict`, `GOOGLE_ROUTES_SECRET_FILE`, `accounts`↔`google_creds` (converge, do
+not delete), the 345 file-local public defs (a visibility fix worth 0 LOC).
 
 **Wave 3 — relocation without behavior change (~12 PRs, `git mv` + import rewrite).** The seven
 misfiled modules (§3.1); `platform/` (the 20 primitives + `status_socket`); `net/`; `wake/`; `aec/`;
@@ -515,12 +569,12 @@ names its ADR; every guard names its removal condition (14 installer one-shots a
 3. **`sound_setup` ↔ `web_commissioning`** (owner call 1 in #4085): 2,784 lines of already-divergent
    orchestration across the T/W territory line. Recommendation: `web_commissioning` owns; #4031 D.2
    becomes a routes-table PR.
-4. **Peering**: it ships installed-but-off; R-010 makes its election wrong when on. Fix it (three
-   `StandDown`s + one constant) or delete the dead half and keep only the advert, and say which in
-   PLAN.md.
+4. **Peering**: it ships installed-but-off; R-004 makes its election wrong when on. Fix it (join the
+   in-flight CANDIDATE, `StandDown` on every terminal path, one timeout constant) or delete the dead
+   half and keep only the advert, and say which in PLAN.md.
 5. **Cargo workspace**: recommended; the only real caveat is keeping `-p` separation for the Zero-class
    low-RAM build path.
-6. **Streambox volume ownership** (R-011): move restore/reconcile into `jasper-control`, or document
+6. **Streambox volume ownership** (R-007): move restore/reconcile into `jasper-control`, or document
    that a mic-less streambox has no volume restore.
 7. **`caplog.text` migration** (91 files) and the private-name patch population: opportunistic, but
    the two worst files (`test_mux.py`, `test_control_server.py`) are worth a dedicated PR each.
@@ -531,11 +585,12 @@ names its ADR; every guard names its removal condition (14 installer one-shots a
 
 ## 9. What only hardware/runtime can prove
 
-Whether polkit actually denies a multi-unit `try-restart` when one unit is unauthorized (the set
-difference is certain; the runtime behavior of `systemctl` under a partial denial is not); whether
-`POST /system/audio-quality` can write under `ProtectSystem=strict` at all; the 120 s deafness window
-(needs `MEASURE_PAUSE` opened inside the acquire window on metal); the peering race timings; the
-`outputd.env` torn-write window on a Zero 2 W; whether a CamillaDSP statefile volume wins over
+Whether the udev-triggered bash reconciler ever actually lands inside `coupling_reconcile.py`'s
+read→write window (the shape is proven, a collision is not); whether the reconciler's marker removal
+reliably beats four aec-bridge restarts; the 1 Hz mute storm at 1 % on a real box (one `journalctl -u
+jasper-control | grep volume.reconciled`); whether an XVF3800 with capture channels muted presents as
+frames-of-silence rather than frames-stopping; the 120 s deafness window (needs `MEASURE_PAUSE` opened
+inside the acquire window on metal); the peering race timings at non-default arbitration windows; whether a CamillaDSP statefile volume wins over
 `speaker_volume.json` after a restart; the real `/state` byte size and build time under memory
 pressure; journald rate-limit drops; whether a cue is audible when outputd is dead; every latency,
 AEC-convergence and wake-rate number; the push-target handoff transient against a slow Spotify
@@ -572,7 +627,12 @@ per-build subprocesses are a doctor-run cost; the wake-events WAV cap is 128 MiB
 unbounded rows half stands); the correction bundle-root scan is gated to idle screens (10 s), not
 900 ms; `lto="fat"` is on two crates, not three.
 
-**Adversarial verification.** The reviewer personally reproduced R-001 (three code points), R-002
-(ran the redactor), R-003 (read the guard block), R-005 (computed the allowlist difference), and read
-the NN-1 and deploy tile reports in full. The Phase 2 deploy scenario executed the guard bypasses under
-a stubbed `ssh`/`rsync`. Skeptic verdicts on the remaining rows are recorded in the register.
+**Adversarial verification.** Three skeptic agents re-read 55 sub-claims (22 tile blockers → 33
+sub-claims; 20 deletion claims; 14 Phase 2 seam items): 14 confirmed at the filed grade, 24 downgraded,
+12 refuted, 3 upgraded, plus five new findings from the re-read (§2). Three claims were settled by
+execution rather than reading: the attended-sudo deploy bypass (stubbed `ssh`/`rsync` under a pty), the
+peering state machine (driven directly), and the 1 % mute predicates (evaluated numerically). The
+reviewer personally reproduced R-001 (three code points), R-014 (ran the redactor), R-002's flag branch
+(read the guard block), and R-003 (computed the allowlist difference), and read the NN-1, deploy and
+control tile reports in full. Every verdict is in `reports/p3-*.md`; the register carries a `verify`
+column naming which rows were re-read.
