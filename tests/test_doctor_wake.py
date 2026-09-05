@@ -14,6 +14,7 @@ import pytest
 
 from jasper import wake_models
 from jasper.cli import doctor
+from jasper.cli.doctor import wake
 
 # -------------------------------------------------- openWakeWord assets
 
@@ -98,7 +99,7 @@ def test_check_openwakeword_model_verdicts(
 ):
     _install_fake_openwakeword_package(monkeypatch, tmp_path, files)
 
-    r = doctor.check_openwakeword_model(SimpleNamespace(wake_model="hey_jarvis"))
+    r = wake.check_openwakeword_model(SimpleNamespace(wake_model="hey_jarvis"))
 
     assert r.status == status
     if reason:
@@ -115,7 +116,7 @@ def test_check_openwakeword_model_missing_custom_model_points_at_the_path(
     )
     missing = tmp_path / "custom-missing.onnx"
 
-    r = doctor.check_openwakeword_model(SimpleNamespace(wake_model=str(missing)))
+    r = wake.check_openwakeword_model(SimpleNamespace(wake_model=str(missing)))
 
     assert r.status == "fail"
     assert r.reason == doctor.wake.REASON_ACTIVE_MODEL_MISSING
@@ -141,7 +142,7 @@ def test_check_openwakeword_model_hashes_an_active_external_model(
         {k: v for k, v in _ALL_PRESENT.items() if k != "hey_jarvis_v0.1.onnx"},
     )
 
-    r = doctor.check_openwakeword_model(SimpleNamespace(wake_model=str(active_model)))
+    r = wake.check_openwakeword_model(SimpleNamespace(wake_model=str(active_model)))
 
     assert r.status == "fail"
     assert r.reason == doctor.wake.REASON_ACTIVE_MODEL_HASH_MISMATCH
@@ -219,7 +220,7 @@ def test_check_openwakeword_model_hashes_an_active_external_model(
     ],
 )
 def test_assess_wake_legs_verdicts(kwargs, status, reason):
-    r = doctor._assess_wake_legs(**kwargs)
+    r = wake._assess_wake_legs(**kwargs)
 
     assert r.status == status
     assert r.reason == getattr(doctor.wake, reason)
@@ -257,4 +258,4 @@ def test_push_to_talk_only_speaker_needs_both_published_facts(
     else:
         monkeypatch.setenv("JASPER_LOCAL_MIC_PRESENT", local_mic)
 
-    assert doctor._push_to_talk_only_speaker() is expected
+    assert wake._push_to_talk_only_speaker() is expected

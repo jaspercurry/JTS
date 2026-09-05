@@ -37,7 +37,7 @@ def _patch_shairport_conf(monkeypatch, conf_text: str, tmp_path: Path):
     """Read a synthetic shairport-sync.conf instead of the host file."""
     target = tmp_path / "shairport-sync.conf"
     target.write_text(conf_text)
-    real_path_cls = doctor.Path
+    real_path_cls = Path
 
     def fake_path(arg):
         if arg == "/etc/shairport-sync.conf":
@@ -74,7 +74,7 @@ def test_check_bluetooth_pairing_policy_ok(monkeypatch):
 
     monkeypatch.setattr(doctor.renderers, "_run", fake_run)
 
-    r = doctor.check_bluetooth_pairing_policy()
+    r = renderers.check_bluetooth_pairing_policy()
 
     assert r.status == "ok"
     assert r.reason == ""
@@ -93,7 +93,7 @@ def test_check_bluetooth_pairing_policy_fails_old_agent(monkeypatch):
 
     monkeypatch.setattr(doctor.renderers, "_run", fake_run)
 
-    r = doctor.check_bluetooth_pairing_policy()
+    r = renderers.check_bluetooth_pairing_policy()
 
     assert r.status == "fail"
     assert r.reason == renderers.REASON_BT_PAIRING_WRONG_AGENT
@@ -119,7 +119,7 @@ def test_check_bluetooth_pairing_policy_warns_pairable_outside_window(monkeypatc
 
     monkeypatch.setattr(doctor.renderers, "_run", fake_run)
 
-    r = doctor.check_bluetooth_pairing_policy()
+    r = renderers.check_bluetooth_pairing_policy()
 
     assert r.status == "warn"
     assert r.reason == renderers.REASON_BT_PAIRING_PAIRABLE_WITHOUT_DISCOVERABLE
@@ -145,7 +145,7 @@ def test_check_bluetooth_pairing_policy_warns_when_pairing_window_open(monkeypat
 
     monkeypatch.setattr(doctor.renderers, "_run", fake_run)
 
-    r = doctor.check_bluetooth_pairing_policy()
+    r = renderers.check_bluetooth_pairing_policy()
 
     assert r.status == "warn"
     assert r.reason == renderers.REASON_BT_PAIRING_WINDOW_OPEN
@@ -177,7 +177,7 @@ def test_shairport_check_substream_is_ok(monkeypatch, tmp_path):
         'alsa = {\n    output_device = "shairport_substream";\n};\n',
         tmp_path,
     )
-    r = doctor.check_shairport_sync_loopback_plughw()
+    r = renderers.check_shairport_sync_loopback_plughw()
     assert r.status == "ok"
     assert r.reason == renderers.REASON_SHAIRPORT_ALOOP_UNARMED_OK
 
@@ -191,7 +191,7 @@ def test_shairport_check_ring_device_ok_when_armed(monkeypatch, tmp_path):
         'alsa = {\n    output_device = "shairport_ring_lane";\n};\n',
         tmp_path,
     )
-    r = doctor.check_shairport_sync_loopback_plughw()
+    r = renderers.check_shairport_sync_loopback_plughw()
     assert r.status == "ok"
     assert r.reason == renderers.REASON_SHAIRPORT_RING_ARMED_OK
 
@@ -210,7 +210,7 @@ def test_shairport_check_armed_but_conf_aloop_warns_restart(
         'alsa = {\n    output_device = "shairport_substream";\n};\n',
         tmp_path,
     )
-    r = doctor.check_shairport_sync_loopback_plughw()
+    r = renderers.check_shairport_sync_loopback_plughw()
     assert r.status == "warn"
     assert r.reason == renderers.REASON_SHAIRPORT_ALOOP_ARMED_STALE
 
@@ -226,7 +226,7 @@ def test_shairport_check_ring_conf_but_disarmed_warns(monkeypatch, tmp_path):
         'alsa = {\n    output_device = "shairport_ring_lane";\n};\n',
         tmp_path,
     )
-    r = doctor.check_shairport_sync_loopback_plughw()
+    r = renderers.check_shairport_sync_loopback_plughw()
     assert r.status == "warn"
     assert r.reason == renderers.REASON_SHAIRPORT_RING_DISARMED_STALE
 
@@ -239,7 +239,7 @@ def test_shairport_check_jasper_renderer_in_fails(monkeypatch, tmp_path):
         'alsa = {\n    output_device = "jasper_renderer_in";\n};\n',
         tmp_path,
     )
-    r = doctor.check_shairport_sync_loopback_plughw()
+    r = renderers.check_shairport_sync_loopback_plughw()
     assert r.status == "fail"
     assert r.reason == renderers.REASON_SHAIRPORT_LEGACY_DMIX
 
@@ -257,7 +257,7 @@ def test_shairport_check_legacy_plughw_warns_with_redeploy_hint(
         'alsa = {\n    output_device = "plughw:Loopback,0,0";\n};\n',
         tmp_path,
     )
-    r = doctor.check_shairport_sync_loopback_plughw()
+    r = renderers.check_shairport_sync_loopback_plughw()
     assert r.status == "warn"
     assert r.reason == renderers.REASON_SHAIRPORT_LEGACY_PLUGHW
 
@@ -272,7 +272,7 @@ def test_shairport_check_raw_hw_loopback_fails(monkeypatch, tmp_path):
         'alsa = {\n    output_device = "hw:Loopback,0,0";\n};\n',
         tmp_path,
     )
-    r = doctor.check_shairport_sync_loopback_plughw()
+    r = renderers.check_shairport_sync_loopback_plughw()
     assert r.status == "fail"
     assert r.reason == renderers.REASON_SHAIRPORT_RAW_HW_LOOPBACK
 
@@ -313,7 +313,7 @@ def test_shairport_legacy_remediations_name_this_box_s_device(
         tmp_path,
     )
 
-    r = doctor.check_shairport_sync_loopback_plughw()
+    r = renderers.check_shairport_sync_loopback_plughw()
 
     expected_reason = {
         "jasper_renderer_in": renderers.REASON_SHAIRPORT_LEGACY_DMIX,
@@ -337,7 +337,7 @@ def test_shairport_check_missing_output_device_warns(monkeypatch, tmp_path):
         "alsa = {\n    output_rate = 44100;\n};\n",
         tmp_path,
     )
-    r = doctor.check_shairport_sync_loopback_plughw()
+    r = renderers.check_shairport_sync_loopback_plughw()
     assert r.status == "warn"
     assert r.reason == renderers.REASON_SHAIRPORT_NO_OUTPUT_DEVICE
 
@@ -353,7 +353,7 @@ def test_shairport_check_comments_ignored(monkeypatch, tmp_path):
         "};\n"
     )
     _patch_shairport_conf(monkeypatch, conf, tmp_path)
-    r = doctor.check_shairport_sync_loopback_plughw()
+    r = renderers.check_shairport_sync_loopback_plughw()
     assert r.status == "ok"
 
 
@@ -391,7 +391,7 @@ def test_renderer_resolvable_all_ok(monkeypatch):
         "_probe_open_as_user",
         lambda dev, user: (doctor.renderers.ProbeOutcome.OPENED, ""),
     )
-    r = doctor.check_renderer_device_resolvable()
+    r = renderers.check_renderer_device_resolvable()
     assert r.status == "ok"
     assert r.reason == ""
     # This check's entire contract is disclosing WHICH renderer resolved to
@@ -715,7 +715,7 @@ def test_probe_verdict_and_check_status(
         "-c", "2", "-r", "48000", "-f", "S16_LE",
         "/dev/zero",
     ]
-    assert doctor.check_renderer_device_resolvable().status == expect_status
+    assert renderers.check_renderer_device_resolvable().status == expect_status
 
 
 def test_ownership_gate_refuses_an_empty_unit(monkeypatch):
@@ -762,7 +762,7 @@ def test_absent_unit_is_not_a_root_probe(monkeypatch, load_state, expect_status)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(doctor.renderers, "_run", fake_run)
-    assert doctor.check_renderer_device_resolvable().status == expect_status
+    assert renderers.check_renderer_device_resolvable().status == expect_status
     # An unloaded unit must not even be probed.
     assert bool(probed) is (load_state == "loaded")
 
@@ -804,7 +804,7 @@ def test_renderer_resolvable_catches_pr214_regression(monkeypatch):
 
     monkeypatch.setattr(doctor.renderers, "_probe_open_as_user", fake_probe)
 
-    r = doctor.check_renderer_device_resolvable()
+    r = renderers.check_renderer_device_resolvable()
     assert r.status == "fail"
     assert r.reason == renderers.REASON_RENDERER_DEVICE_UNRESOLVABLE
     assert "shairport-sync" in r.detail
@@ -832,7 +832,7 @@ def test_renderer_resolvable_fail_includes_user_in_detail(monkeypatch):
         "_probe_open_as_user",
         lambda d, u: (doctor.renderers.ProbeOutcome.FAILED, "open failed"),
     )
-    r = doctor.check_renderer_device_resolvable()
+    r = renderers.check_renderer_device_resolvable()
     assert r.status == "fail"
     assert r.reason == renderers.REASON_RENDERER_DEVICE_UNRESOLVABLE
     assert "(shairport-sync)" in r.detail
@@ -856,7 +856,7 @@ def test_renderer_resolvable_skips_missing_renderers(monkeypatch):
         "_probe_open_as_user",
         lambda d, u: (doctor.renderers.ProbeOutcome.OPENED, ""),
     )
-    r = doctor.check_renderer_device_resolvable()
+    r = renderers.check_renderer_device_resolvable()
     assert r.status == "ok"
     assert r.reason == ""
     assert "shairport-sync" in r.detail
@@ -870,7 +870,7 @@ def test_renderer_resolvable_no_renderers_at_all_is_warn(monkeypatch):
     monkeypatch.setattr(doctor.renderers, "_renderer_device_shairport", lambda: None)
     monkeypatch.setattr(doctor.renderers, "_renderer_device_librespot", lambda: None)
     monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
-    r = doctor.check_renderer_device_resolvable()
+    r = renderers.check_renderer_device_resolvable()
     assert r.status == "warn"
     assert r.reason == renderers.REASON_RENDERER_NONE_CONFIGURED
 
@@ -933,7 +933,7 @@ def test_renderer_resolvable_expands_systemd_env_vars(monkeypatch):
 
     monkeypatch.setattr(doctor.renderers, "_probe_open_as_user", fake_probe)
 
-    r = doctor.check_renderer_device_resolvable()
+    r = renderers.check_renderer_device_resolvable()
     assert r.status == "ok"
     assert r.reason == ""
     # Probe must have been called with the RESOLVED value, not the
@@ -955,11 +955,11 @@ def test_resolve_systemd_env_vars_no_op_when_no_placeholder():
     """Strings without ${VAR} pass through unchanged — avoids the
     subprocess call entirely."""
     assert (
-        doctor._resolve_systemd_env_vars("librespot_substream", "librespot.service")
+        renderers._resolve_systemd_env_vars("librespot_substream", "librespot.service")
         == "librespot_substream"
     )
     assert (
-        doctor._resolve_systemd_env_vars("hw:Loopback,0,0", "any.service")
+        renderers._resolve_systemd_env_vars("hw:Loopback,0,0", "any.service")
         == "hw:Loopback,0,0"
     )
 
@@ -977,7 +977,7 @@ def test_resolve_systemd_env_vars_returns_original_on_failure(monkeypatch):
     monkeypatch.setattr(sp, "run", fake_run)
     # The function should swallow the error and return the input.
     assert (
-        doctor._resolve_systemd_env_vars(
+        renderers._resolve_systemd_env_vars(
             "${JASPER_LIBRESPOT_DEVICE}", "librespot.service"
         )
         == "${JASPER_LIBRESPOT_DEVICE}"
@@ -997,7 +997,7 @@ def test_parse_shairport_device_from_conf(tmp_path, monkeypatch):
         '    output_device = "shairport_substream";\n'
         "};\n"
     )
-    real_path_cls = doctor.Path
+    real_path_cls = Path
 
     def fake_path(arg):
         if arg == "/etc/shairport-sync.conf":
@@ -1005,7 +1005,7 @@ def test_parse_shairport_device_from_conf(tmp_path, monkeypatch):
         return real_path_cls(arg)
 
     monkeypatch.setattr(doctor.renderers, "Path", fake_path)
-    assert doctor._renderer_device_shairport() == "shairport_substream"
+    assert renderers._renderer_device_shairport() == "shairport_substream"
 
 
 def test_parse_librespot_device_from_systemd_unit(tmp_path, monkeypatch):
@@ -1020,7 +1020,7 @@ def test_parse_librespot_device_from_systemd_unit(tmp_path, monkeypatch):
         "    --device librespot_substream \\\n"
         "    --format S24_3\n"
     )
-    real_path_cls = doctor.Path
+    real_path_cls = Path
 
     def fake_path(arg):
         if arg == "/etc/systemd/system/librespot.service":
@@ -1028,7 +1028,7 @@ def test_parse_librespot_device_from_systemd_unit(tmp_path, monkeypatch):
         return real_path_cls(arg)
 
     monkeypatch.setattr(doctor.renderers, "Path", fake_path)
-    assert doctor._renderer_device_librespot() == "librespot_substream"
+    assert renderers._renderer_device_librespot() == "librespot_substream"
 
 
 def test_parse_bluealsa_device_from_dropin(tmp_path, monkeypatch):
@@ -1041,7 +1041,7 @@ def test_parse_bluealsa_device_from_dropin(tmp_path, monkeypatch):
         "ExecStart=\n"
         "ExecStart=/usr/bin/bluealsa-aplay -S --pcm=bluealsa_substream\n"
     )
-    real_path_cls = doctor.Path
+    real_path_cls = Path
 
     def fake_path(arg):
         if arg == "/etc/systemd/system/bluealsa-aplay.service.d/jts-output.conf":
@@ -1052,7 +1052,7 @@ def test_parse_bluealsa_device_from_dropin(tmp_path, monkeypatch):
         return real_path_cls(arg)
 
     monkeypatch.setattr(doctor.renderers, "Path", fake_path)
-    assert doctor._renderer_device_bluealsa() == "bluealsa_substream"
+    assert renderers._renderer_device_bluealsa() == "bluealsa_substream"
 
 
 def test_renderer_checks_read_parked_on_bonded_follower(monkeypatch):

@@ -18,7 +18,7 @@ import pytest
 
 
 from jasper.cli import doctor
-from jasper.cli.doctor import CheckResult, render_json
+from jasper.cli.doctor import CheckResult, render_json, renderers
 from jasper.cli.doctor._registry import RegisteredCheck
 from jasper.config import Config
 from jasper.control.restart_broker import MANAGED_UNITS
@@ -635,7 +635,7 @@ def test_librespot_check_reports_ok_on_streambox_cfg(monkeypatch):
         "units", {"librespot.service": {"active_state": "active"}},
     )
 
-    result = doctor.check_librespot_running(
+    result = renderers.check_librespot_running(
         doctor._doctor_config_from_env("streambox")
     )
 

@@ -18,7 +18,7 @@ from jasper.audio_hardware.dac import (
     latency_floor_for,
 )
 from jasper.cli import doctor
-from jasper.cli.doctor import _evidence, audio_runtime_ring
+from jasper.cli.doctor import _evidence, audio_runtime_outputd, audio_runtime_ring
 from jasper.cli.doctor._evidence import evidence
 from jasper.fanin_coupling import (
     RING_ACTIVE_PLAYBACK_DEVICE,
@@ -109,7 +109,7 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
         _real_endpoint_evidence,
     )
 
-    r = doctor.check_outputd_service()
+    r = audio_runtime_outputd.check_outputd_service()
 
     # Half one: outputd no longer restates the split.
     assert r.status == "ok", r.detail

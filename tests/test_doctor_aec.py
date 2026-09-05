@@ -15,7 +15,7 @@ import pytest
 from jasper.chip_aec import health as chip_aec_health
 from jasper.audio_profile_state import MicProbe, RuntimeAecEnv
 from jasper.cli import doctor
-from jasper.cli.doctor import _evidence
+from jasper.cli.doctor import _evidence, _shared, aec
 from jasper.control import aec_endpoints
 from tests._aec_bridge_helpers import _rms_log_line
 
@@ -74,7 +74,7 @@ def test_chip_window_mic_is_the_raw_capture_channel(raw0, expected_mic):
     """The chip `near` beam is already cancelled, so it understates the
     near-end level the music gate was calibrated on. `raw0` carries the
     uncancelled capture channel and must win when the bridge emits it."""
-    w = doctor._parse_rms_window(
+    w = aec._parse_rms_window(
         _chip_rms_log_line(
             ref=1_200, near=2_400, primary=1_900, level_delta_db=-2.1,
             raw0=raw0,
@@ -185,7 +185,7 @@ _REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY = (
          "below-alarm"],
 )
 def test_assess_aec_bridge_output_verdicts(journal, status, reason):
-    r = doctor._assess_aec_bridge_output(journal)
+    r = aec._assess_aec_bridge_output(journal)
 
     assert r.status == status
     assert r.reason == reason
@@ -214,11 +214,11 @@ def test_assess_aec_bridge_output_counts_windows_in_both_log_shapes(journal):
     lines = journal.split("\n")
 
     total_windows = [
-        w for w in map(doctor._parse_rms_window, lines) if w is not None
+        w for w in map(aec._parse_rms_window, lines) if w is not None
     ]
 
     assert len(total_windows) == len(lines) > 0
-    assert doctor._assess_aec_bridge_output(journal).status == "ok"
+    assert aec._assess_aec_bridge_output(journal).status == "ok"
 
 
 def test_chip_windows_never_count_as_attenuation_evidence():
@@ -232,7 +232,7 @@ def test_chip_windows_never_count_as_attenuation_evidence():
         for _ in range(8)
     )
 
-    windows = [doctor._parse_rms_window(line) for line in journal.split("\n")]
+    windows = [aec._parse_rms_window(line) for line in journal.split("\n")]
 
     assert all(
         w is not None
@@ -242,7 +242,7 @@ def test_chip_windows_never_count_as_attenuation_evidence():
         and w.mic == 2_400
         for w in windows
     )
-    assert doctor._assess_aec_bridge_output(journal).status == "ok"
+    assert aec._assess_aec_bridge_output(journal).status == "ok"
 
 
 def test_one_chip_window_does_not_displace_the_aec3_assessment():
@@ -258,7 +258,7 @@ def test_one_chip_window_does_not_displace_the_aec3_assessment():
         ]
     )
 
-    result = doctor._assess_aec_bridge_output(journal)
+    result = aec._assess_aec_bridge_output(journal)
 
     assert result.status == "ok"
     assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_HEALTHY_WORK
@@ -277,7 +277,7 @@ def test_assess_aec_output_silent_ref_with_a_healthy_window_names_the_cause():
         _rms_log_line(ref=1100, mic=2800, aec=180, attn_db=-23.8),
     ]
 
-    r = doctor._assess_aec_bridge_output("\n".join(lines))
+    r = aec._assess_aec_bridge_output("\n".join(lines))
 
     assert r.status == "ok"
     assert r.reason == doctor.aec.REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY
@@ -295,7 +295,7 @@ def test_assess_aec_output_relaxes_only_on_positive_idle_evidence(
     the loopback — so a pure-voice session does not read as a degraded bridge.
     The guard relaxes only on positive evidence of an idle loopback, never on
     uncertainty."""
-    r = doctor._assess_aec_bridge_output(
+    r = aec._assess_aec_bridge_output(
         _silent_ref_journal(), music_chain_active=music_chain_active
     )
 
@@ -359,7 +359,7 @@ def test_assess_aec_output_remediation_names_only_a_hop_it_can_prove(
     malformed/missing/retired-source provenance collapses to the same
     can't-name-a-hop reason rather than a reason built from data it did not
     prove."""
-    result = doctor._assess_aec_bridge_output(
+    result = aec._assess_aec_bridge_output(
         _silent_ref_journal(),
         bridge_stats=bridge_stats,
         outputd_status=outputd_status,
@@ -382,7 +382,7 @@ def test_assess_aec_output_remediation_names_only_a_hop_it_can_prove(
 def test_assess_aec_output_unusable_outputd_target_is_comparison_neutral(
     outputd_status,
 ):
-    result = doctor._assess_aec_bridge_output(
+    result = aec._assess_aec_bridge_output(
         _silent_ref_journal(),
         bridge_stats=_bridge_reference_stats("outputd_udp"),
         outputd_status=outputd_status,
@@ -425,7 +425,7 @@ def test_check_aec_output_health_uses_live_outputd_status_on_failure(monkeypatch
         lambda: _outputd_reference_status(error_count=7),
     )
 
-    result = doctor.check_aec_bridge_output_health()
+    result = aec.check_aec_bridge_output_health()
 
     assert result.status == "fail"
     # Only reachable once the LIVE outputd status (not a stale/absent one)
@@ -443,7 +443,7 @@ def test_check_aec_output_health_skips_outputd_status_when_reference_is_healthy(
         lambda: pytest.fail("healthy passive check must not probe outputd STATUS"),
     )
 
-    result = doctor.check_aec_bridge_output_health()
+    result = aec.check_aec_bridge_output_health()
 
     assert result.status == "ok"
     assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_HEALTHY_WORK
@@ -456,7 +456,7 @@ def test_check_aec_output_health_skips_when_bridge_not_running(monkeypatch):
     monkeypatch.setattr(doctor.aec, "_parked_follower_result", lambda _label: None)
     _stub_unit_active_states(monkeypatch, {})
 
-    result = doctor.check_aec_bridge_output_health()
+    result = aec.check_aec_bridge_output_health()
 
     assert result.status == "skipped"
     assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_BRIDGE_NOT_RUNNING
@@ -495,7 +495,7 @@ def test_loopback_playback_active_reads_proc_status(tmp_path):
 
     with patch("glob.glob", return_value=sub_paths):
         # All closed → inactive.
-        assert doctor._loopback_playback_active() is False
+        assert _shared._loopback_playback_active() is False
         # Flip sub2 to RUNNING → active. The reader is cached per doctor run
         # (ADR-0233 rule 4), so simulate a fresh run rather than expecting a
         # second call within the same run to re-read /proc.
@@ -503,13 +503,13 @@ def test_loopback_playback_active_reads_proc_status(tmp_path):
         (fake_root / "sub2" / "status").write_text(
             "state: RUNNING\nowner_pid   : 12345\n"
         )
-        assert doctor._loopback_playback_active() is True
+        assert _shared._loopback_playback_active() is True
 
     # No status files at all (e.g., snd-aloop not loaded) → inactive,
     # never raises.
     _evidence.evidence.reset()
     with patch("glob.glob", return_value=[]):
-        assert doctor._loopback_playback_active() is False
+        assert _shared._loopback_playback_active() is False
 
 
 def _reference_input_stats(
@@ -1355,7 +1355,7 @@ def _dtln_failed_line(reason: str = "No such file or directory") -> str:
 
 def test_assess_dtln_engine_loaded_returns_ok():
     """Happy path: bridge logged a successful engine-init line."""
-    r = doctor._assess_dtln_engine(_dtln_loaded_line(size=256))
+    r = aec._assess_dtln_engine(_dtln_loaded_line(size=256))
     assert r.status == "ok"
     assert r.reason == doctor.aec.REASON_DTLN_LOADED_FROM_JOURNAL
 
@@ -1367,7 +1367,7 @@ def test_assess_dtln_engine_load_failed_returns_fail():
     step didn't happen). Without this check, the operator would
     spend a week analyzing 'DTLN never fires' data without realizing
     the engine never ran."""
-    r = doctor._assess_dtln_engine(
+    r = aec._assess_dtln_engine(
         _dtln_failed_line(reason="DTLN ONNX models missing in /var/lib/jasper/dtln")
     )
     assert r.status == "fail"
@@ -1378,7 +1378,7 @@ def test_assess_dtln_engine_no_marker_warns():
     """Bridge running but no engine-init marker in the journal
     window — probably means the bridge hasn't restarted since the
     env var was set."""
-    r = doctor._assess_dtln_engine("some unrelated log lines\nbridge boot\n")
+    r = aec._assess_dtln_engine("some unrelated log lines\nbridge boot\n")
     assert r.status == "warn"
     assert r.reason == doctor.aec.REASON_DTLN_NO_INIT_LINE
 
@@ -1394,7 +1394,7 @@ def test_assess_dtln_engine_picks_most_recent_marker():
             _dtln_loaded_line(size=256),
         ]
     )
-    r = doctor._assess_dtln_engine(journal)
+    r = aec._assess_dtln_engine(journal)
     assert r.status == "ok"
     assert r.reason == doctor.aec.REASON_DTLN_LOADED_FROM_JOURNAL
 
@@ -1405,7 +1405,7 @@ def test_check_dtln_skips_when_env_disabled(monkeypatch):
     journalctl. This is the common case for non-triple-stream
     installs and must not flap."""
     monkeypatch.delenv("JASPER_AEC_DTLN_ENABLED", raising=False)
-    r = doctor.check_aec_bridge_dtln_engine()
+    r = aec.check_aec_bridge_dtln_engine()
     assert r.status == "ok"
     assert r.reason == doctor.aec.REASON_DTLN_DISABLED
 
@@ -1452,7 +1452,7 @@ def test_check_dtln_uses_configured_model_size(monkeypatch, tmp_path: Path):
     (tmp_path / "dtln_aec_128_1.onnx").write_bytes(b"model")
     (tmp_path / "dtln_aec_128_2.onnx").write_bytes(b"model")
 
-    r = doctor.check_aec_bridge_dtln_engine()
+    r = aec.check_aec_bridge_dtln_engine()
 
     assert r.status == "skipped"
     assert r.reason == doctor.aec.REASON_DTLN_BRIDGE_NOT_RUNNING
@@ -1493,7 +1493,7 @@ def test_check_dtln_fails_when_model_assets_or_size_are_bad(
     for name, content in files.items():
         (tmp_path / name).write_bytes(content)
 
-    r = doctor.check_aec_bridge_dtln_engine()
+    r = aec.check_aec_bridge_dtln_engine()
 
     assert r.status == "fail"
     assert r.reason == getattr(doctor.aec, reason)
@@ -1658,7 +1658,7 @@ def test_audio_profile_doctor_check_reports_active_chip_profile(monkeypatch):
         lambda key, default: settings.get(key, default),
     )
 
-    status = doctor._audio_profile_status_for_doctor(
+    status = aec._audio_profile_status_for_doctor(
         bridge_active=True,
         env={
             "JASPER_AUDIO_DAC_ID": "hifiberry_dac8x",
@@ -1679,7 +1679,7 @@ def test_audio_profile_doctor_check_reports_active_chip_profile(monkeypatch):
             chip_aec_supported=True,
         ),
     )
-    result = doctor._assess_audio_profile(status)
+    result = aec._assess_audio_profile(status)
 
     assert result.status == "ok"
     assert result.reason == doctor.aec.REASON_AUDIO_PROFILE_OK
@@ -1766,7 +1766,7 @@ def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
         lambda key, default: settings.get(key, default),
     )
 
-    status = doctor._audio_profile_status_for_doctor(
+    status = aec._audio_profile_status_for_doctor(
         bridge_active=True,
         env={
             "JASPER_AUDIO_DAC_ID": "hifiberry_dac8x",
@@ -1792,7 +1792,7 @@ def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
             chip_beam_plan="xvf_square_fixed_150_210",
         ),
     )
-    result = doctor._assess_audio_profile(status)
+    result = aec._assess_audio_profile(status)
 
     assert result.status == "warn"
     assert result.reason == doctor.aec.REASON_AUDIO_PROFILE_NEEDS_ATTENTION
@@ -1811,7 +1811,7 @@ def test_audio_profile_doctor_check_names_stale_saved_aec_card(monkeypatch):
         lambda key, default: settings.get(key, default),
     )
 
-    status = doctor._audio_profile_status_for_doctor(
+    status = aec._audio_profile_status_for_doctor(
         bridge_active=False,
         env={
             "JASPER_AUDIO_DAC_ID": "hifiberry_dac8x",
@@ -1829,14 +1829,14 @@ def test_audio_profile_doctor_check_names_stale_saved_aec_card(monkeypatch):
             chip_beam_plan="xvf_square_fixed_150_210",
         ),
     )
-    result = doctor._assess_audio_profile(status)
+    result = aec._assess_audio_profile(status)
 
     assert result.status == "warn"
     assert result.reason == doctor.aec.REASON_AUDIO_PROFILE_NEEDS_ATTENTION
 
 
 def test_audio_validation_advisory_ok_when_chip_aec_not_requested():
-    result = doctor._assess_audio_validation_summary(
+    result = aec._assess_audio_validation_summary(
         {
             "state": "missing",
             "status": "unknown",
@@ -1851,7 +1851,7 @@ def test_audio_validation_advisory_ok_when_chip_aec_not_requested():
 
 
 def test_audio_validation_warns_when_chip_aec_requested_and_missing():
-    result = doctor._assess_audio_validation_summary(
+    result = aec._assess_audio_validation_summary(
         {
             "state": "missing",
             "status": "unknown",
@@ -1866,7 +1866,7 @@ def test_audio_validation_warns_when_chip_aec_requested_and_missing():
 
 
 def test_audio_validation_suggests_hardware_runner_when_ready_for_passive_evidence():
-    result = doctor._assess_audio_validation_summary(
+    result = aec._assess_audio_validation_summary(
         {
             "state": "current",
             "status": "warn",
@@ -1881,7 +1881,7 @@ def test_audio_validation_suggests_hardware_runner_when_ready_for_passive_eviden
 
 
 def test_audio_validation_suggests_hardware_runner_for_drift_delay_recommendation():
-    result = doctor._assess_audio_validation_summary(
+    result = aec._assess_audio_validation_summary(
         {
             "state": "current",
             "status": "warn",
@@ -1909,11 +1909,11 @@ def test_audio_validation_passive_evidence_follows_dac_approval(
     dac_id, check_overrides, expected_status
 ):
     statuses = {
-        name: "pass" for name in doctor._CHIP_AEC_PASSIVE_REQUIRED_CHECKS
+        name: "pass" for name in _shared._CHIP_AEC_PASSIVE_REQUIRED_CHECKS
     }
     statuses.update({"bridge_counters": "warn", "measured_drift_delay": "not_run"})
     statuses.update(check_overrides)
-    result = doctor._assess_audio_validation_summary(
+    result = aec._assess_audio_validation_summary(
         {
             "state": "current",
             "status": "warn",
@@ -1966,7 +1966,7 @@ def test_audio_validation_readiness_filters_current_hardware(monkeypatch):
 
     monkeypatch.setattr(doctor.aec, "_audio_validation_summary", fake_summary)
 
-    result = doctor.check_audio_validation_readiness()
+    result = aec.check_audio_validation_readiness()
 
     assert result.status == "ok"
     assert result.reason == doctor.aec.REASON_VALIDATION_CURRENT_PASS
@@ -2076,7 +2076,7 @@ def test_check_dtln_prefers_stats_snapshot_over_journal(
 
     monkeypatch.setattr(doctor.aec, "_run", _fake_run)
 
-    r = doctor.check_aec_bridge_dtln_engine()
+    r = aec.check_aec_bridge_dtln_engine()
 
     assert r.status == "fail"
     assert r.reason == doctor.aec.REASON_DTLN_ENGINE_UNAVAILABLE
@@ -2096,7 +2096,7 @@ def test_enhanced_aec_doctor_is_quiet_and_cheap_when_not_requested(monkeypatch):
 
     monkeypatch.setattr(doctor.aec.enhanced_aec, "status", unexpected_status)
 
-    result = doctor.check_enhanced_aec()
+    result = aec.check_enhanced_aec()
 
     assert result.status == "ok"
     assert result.reason == doctor.aec.REASON_ENHANCED_AEC_NOT_REQUESTED
@@ -2132,7 +2132,7 @@ def test_enhanced_aec_doctor_accepts_non_actionable_states(
         lambda **_kwargs: {"state": state, "detail": f"state={state}"},
     )
 
-    result = doctor.check_enhanced_aec()
+    result = aec.check_enhanced_aec()
 
     assert result.status == "ok"
     assert result.reason == getattr(doctor.aec, reason)
@@ -2160,7 +2160,7 @@ def test_enhanced_aec_doctor_warns_only_after_request(monkeypatch, state):
         lambda **_kwargs: {"state": state, "detail": f"state={state}"},
     )
 
-    result = doctor.check_enhanced_aec()
+    result = aec.check_enhanced_aec()
 
     assert result.status == "warn"
     assert result.reason == doctor.aec.REASON_ENHANCED_AEC_UNAVAILABLE

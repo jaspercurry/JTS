@@ -378,7 +378,7 @@ async def test_no_log_when_state_unchanged(monkeypatch, caplog):
 # ---- doctor.check_home_assistant -------------------------------------------
 
 def test_check_home_assistant_skip_when_not_enabled():
-    from jasper.cli.doctor import check_home_assistant
+    from jasper.cli.doctor.integrations import check_home_assistant
     from jasper.cli.doctor.integrations import REASON_HOME_ASSISTANT_NOT_CONFIGURED
 
     class _Cfg:
@@ -395,7 +395,7 @@ def test_check_home_assistant_skip_when_not_enabled():
 
 
 def test_check_home_assistant_ok_when_probe_succeeds(monkeypatch):
-    from jasper.cli import doctor
+    from jasper.cli.doctor import integrations
 
     async def fake_probe(url, token, *, force=False, verify_ssl=True):
         return {
@@ -413,14 +413,14 @@ def test_check_home_assistant_ok_when_probe_succeeds(monkeypatch):
         ha_verify_ssl = True
         hostname = "jts.local"
 
-    result = doctor.check_home_assistant(_Cfg())
+    result = integrations.check_home_assistant(_Cfg())
     assert result.status == "ok"
     assert "Brooklyn House" in result.detail
     assert "2026.5.1" in result.detail
 
 
 def test_check_home_assistant_fail_when_unreachable(monkeypatch):
-    from jasper.cli import doctor
+    from jasper.cli.doctor import integrations
 
     async def fake_probe(url, token, *, force=False, verify_ssl=True):
         return {
@@ -438,7 +438,7 @@ def test_check_home_assistant_fail_when_unreachable(monkeypatch):
         ha_verify_ssl = True
         hostname = "jts.local"
 
-    result = doctor.check_home_assistant(_Cfg())
+    result = integrations.check_home_assistant(_Cfg())
     assert result.status == "fail"
     assert "unreachable" in result.detail.lower()
     assert "homeassistant.local:8123" in result.detail
@@ -447,7 +447,7 @@ def test_check_home_assistant_fail_when_unreachable(monkeypatch):
 
 
 def test_check_home_assistant_fail_when_probe_raises(monkeypatch):
-    from jasper.cli import doctor
+    from jasper.cli.doctor import integrations
 
     async def fake_probe(url, token, *, force=False, verify_ssl=True):
         raise RuntimeError("network stack exploded")
@@ -461,6 +461,6 @@ def test_check_home_assistant_fail_when_probe_raises(monkeypatch):
         ha_verify_ssl = True
         hostname = "jts.local"
 
-    result = doctor.check_home_assistant(_Cfg())
+    result = integrations.check_home_assistant(_Cfg())
     assert result.status == "fail"
     assert "raised" in result.detail.lower() or "error" in result.detail.lower()

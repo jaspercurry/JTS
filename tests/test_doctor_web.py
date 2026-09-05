@@ -96,7 +96,7 @@ def test_web_design_assets_verdicts(
     _assets(tmp_path, manifest=manifest, app_css=app_css, present=present)
     monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
 
-    r = doctor.check_web_design_assets()
+    r = doctor_web.check_web_design_assets()
 
     assert r.status == status
     assert r.reason == reason
@@ -107,7 +107,7 @@ def test_web_design_assets_caps_the_missing_list(monkeypatch, tmp_path: Path):
     _assets(tmp_path, manifest=[f"page{i}/js/main.js" for i in range(20)])
     monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
 
-    r = doctor.check_web_design_assets()
+    r = doctor_web.check_web_design_assets()
 
     assert r.status == "warn"
     assert "(+8 more)" in r.detail
@@ -117,7 +117,7 @@ def test_web_design_assets_caps_the_missing_list(monkeypatch, tmp_path: Path):
 def test_web_design_assets_skips_when_not_installed(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path / "nope"))
 
-    r = doctor.check_web_design_assets()
+    r = doctor_web.check_web_design_assets()
     assert r.status == "skipped"
     assert r.reason == doctor_web.REASON_WEB_ASSETS_NOT_INSTALLED
 

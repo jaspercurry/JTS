@@ -37,7 +37,7 @@ def _patch_asound_conf(
     stale = tmp_path / "audio_topology.env"
     if stale_topology_env:
         stale.write_text("JASPER_AUDIO_TOPOLOGY=dmix\n")
-    real_path_cls = doctor.Path
+    real_path_cls = Path
 
     def fake_path(arg):
         if arg == "/etc/asound.conf":
@@ -91,7 +91,7 @@ pcm.correction_substream {
 
 def test_fanin_asound_wiring_ok(monkeypatch, tmp_path):
     _patch_asound_conf(monkeypatch, _FANIN_ASOUND, tmp_path)
-    r = doctor.check_fanin_asound_wiring()
+    r = audio_runtime_fanin.check_fanin_asound_wiring()
     assert r.status == "ok"
 
 
@@ -220,7 +220,7 @@ def test_one_doctor_pass_opens_the_fanin_status_socket_once(monkeypatch):
 def test_check_fanin_service_ok_with_expected_status(monkeypatch):
     _seed_units()
     _patch_status_reader(monkeypatch, _fanin_status_payload())
-    r = doctor.check_fanin_service()
+    r = audio_runtime_fanin.check_fanin_service()
     assert r.status == "ok"
     assert r.reason == ""
 
@@ -243,7 +243,7 @@ def test_check_fanin_service_expects_the_ring_whatever_the_file_says(
     )
     _patch_status_reader(monkeypatch, _fanin_status_payload())
 
-    r = doctor.check_fanin_service()
+    r = audio_runtime_fanin.check_fanin_service()
 
     assert r.status == "ok"
 
@@ -254,7 +254,7 @@ def test_check_fanin_service_fails_on_a_non_ring_live_transport(monkeypatch):
         monkeypatch, _fanin_status_payload(transport="loopback")
     )
 
-    r = doctor.check_fanin_service()
+    r = audio_runtime_fanin.check_fanin_service()
 
     assert r.status == "fail"
     assert r.reason == audio_runtime_fanin.REASON_FANIN_TRANSPORT_NOT_RING
@@ -264,7 +264,7 @@ def test_check_fanin_service_fails_when_status_carries_no_ring_block(monkeypatch
     _seed_units()
     _patch_status_reader(monkeypatch, _fanin_status_payload(ring=None))
 
-    r = doctor.check_fanin_service()
+    r = audio_runtime_fanin.check_fanin_service()
 
     assert r.status == "fail"
     assert r.reason == audio_runtime_fanin.REASON_FANIN_STATUS_MISSING_RING
@@ -293,7 +293,7 @@ def test_check_fanin_service_reports_pre_dsp_tts_loudness(monkeypatch):
     }
     _patch_status_reader(monkeypatch, json.dumps(payload).encode())
 
-    r = doctor.check_fanin_service()
+    r = audio_runtime_fanin.check_fanin_service()
 
     assert r.status == "ok"
     assert r.reason == ""
@@ -359,7 +359,7 @@ def test_check_fanin_service_ok_with_peak_capped_positive_gain(monkeypatch):
     }
     _patch_status_reader(monkeypatch, json.dumps(payload).encode())
 
-    r = doctor.check_fanin_service()
+    r = audio_runtime_fanin.check_fanin_service()
 
     assert r.status == "ok"
     assert r.reason == ""
@@ -381,7 +381,7 @@ def test_check_fanin_service_warns_when_gain_exceeds_the_peak_cap(monkeypatch):
     }
     _patch_status_reader(monkeypatch, json.dumps(payload).encode())
 
-    r = doctor.check_fanin_service()
+    r = audio_runtime_fanin.check_fanin_service()
 
     assert r.status == "warn"
     assert r.reason == audio_runtime_fanin.REASON_FANIN_ASSISTANT_GAIN_OFF_CONTRACT
@@ -401,7 +401,7 @@ def test_check_fanin_service_warns_on_malformed_pre_dsp_tts_loudness(monkeypatch
     }
     _patch_status_reader(monkeypatch, json.dumps(payload).encode())
 
-    r = doctor.check_fanin_service()
+    r = audio_runtime_fanin.check_fanin_service()
 
     assert r.status == "warn"
     assert r.reason == audio_runtime_fanin.REASON_FANIN_ASSISTANT_GAIN_NOT_NUMERIC
@@ -410,7 +410,7 @@ def test_check_fanin_service_warns_on_malformed_pre_dsp_tts_loudness(monkeypatch
 def test_check_fanin_service_fails_on_invalid_status_json(monkeypatch):
     _seed_units()
     _patch_status_reader(monkeypatch, b"not-json")
-    r = doctor.check_fanin_service()
+    r = audio_runtime_fanin.check_fanin_service()
     assert r.status == "fail"
     assert r.reason == audio_runtime_fanin.REASON_FANIN_STATUS_MALFORMED
 
@@ -418,7 +418,7 @@ def test_check_fanin_service_fails_on_invalid_status_json(monkeypatch):
 def test_check_fanin_service_fails_when_status_socket_unreachable(monkeypatch):
     _seed_units()
     _patch_unreachable_status(monkeypatch)
-    r = doctor.check_fanin_service()
+    r = audio_runtime_fanin.check_fanin_service()
     assert r.status == "fail"
     assert r.reason == audio_runtime_fanin.REASON_FANIN_STATUS_UNREACHABLE
 
@@ -429,7 +429,7 @@ def test_check_fanin_service_fails_on_small_runtime_input_buffer(monkeypatch):
         monkeypatch,
         _fanin_status_payload(input_buffer_frames=2048),
     )
-    r = doctor.check_fanin_service()
+    r = audio_runtime_fanin.check_fanin_service()
     assert r.status == "fail"
     assert r.reason == audio_runtime_fanin.REASON_FANIN_INPUT_BUFFER_UNDERSIZED
 
@@ -443,7 +443,7 @@ def test_fanin_asound_wiring_fails_on_bare_renderer_lane(monkeypatch, tmp_path):
         ),
         tmp_path,
     )
-    r = doctor.check_fanin_asound_wiring()
+    r = audio_runtime_fanin.check_fanin_asound_wiring()
     assert r.status == "fail"
     assert r.reason == audio_runtime_fanin.REASON_ASOUND_LANE_WRONG_SLAVE
 
@@ -460,7 +460,7 @@ def test_fanin_asound_wiring_fails_when_the_lanes_shear_from_the_wire(
     monkeypatch.setattr(
         doctor.audio_runtime_fanin, "read_declared_ring_wire_format", lambda: "S16_LE"
     )
-    r = doctor.check_fanin_asound_wiring()
+    r = audio_runtime_fanin.check_fanin_asound_wiring()
     assert r.status == "fail"
     # A width shear is reported as a width shear: the lanes are wired correctly
     # and only their width disagrees, so calling them wrong slaves would send an
@@ -474,7 +474,7 @@ def test_fanin_asound_wiring_fails_on_legacy_renderer_dmix(monkeypatch, tmp_path
         _FANIN_ASOUND + "\npcm.jasper_renderer_mix {\n    type dmix\n}\n",
         tmp_path,
     )
-    r = doctor.check_fanin_asound_wiring()
+    r = audio_runtime_fanin.check_fanin_asound_wiring()
     assert r.status == "fail"
     assert r.reason == audio_runtime_fanin.REASON_ASOUND_LEGACY_RENDERER_BLOCK
 
@@ -486,7 +486,7 @@ def test_fanin_asound_wiring_warns_on_stale_topology_env(monkeypatch, tmp_path):
         tmp_path,
         stale_topology_env=True,
     )
-    r = doctor.check_fanin_asound_wiring()
+    r = audio_runtime_fanin.check_fanin_asound_wiring()
     assert r.status == "warn"
     assert r.reason == audio_runtime_fanin.REASON_ASOUND_STALE_TOPOLOGY_STATE
 
@@ -517,7 +517,7 @@ def test_check_fanin_tts_drops_ok_when_counters_zero(monkeypatch):
             }
         ),
     )
-    r = doctor.check_fanin_tts_drops()
+    r = audio_runtime_fanin.check_fanin_tts_drops()
     assert r.status == "ok"
     assert r.reason == ""
 
@@ -535,7 +535,7 @@ def test_check_fanin_tts_drops_warns_on_protocol_error(monkeypatch):
         ),
     )
 
-    r = doctor.check_fanin_tts_drops()
+    r = audio_runtime_fanin.check_fanin_tts_drops()
     assert r.status == "warn"
     assert r.reason == audio_runtime_fanin.REASON_FANIN_TTS_PROTOCOL_ERRORS
 
@@ -555,7 +555,7 @@ def test_check_fanin_tts_drops_warns_on_dropped_audio(monkeypatch):
             }
         ),
     )
-    r = doctor.check_fanin_tts_drops()
+    r = audio_runtime_fanin.check_fanin_tts_drops()
     assert r.status == "warn"
     assert r.reason == audio_runtime_fanin.REASON_FANIN_TTS_AUDIO_DROPPED
 
@@ -565,7 +565,7 @@ def test_check_fanin_tts_drops_ok_when_lane_disabled(monkeypatch):
         monkeypatch,
         _fanin_payload_with_tts({"enabled": False}),
     )
-    r = doctor.check_fanin_tts_drops()
+    r = audio_runtime_fanin.check_fanin_tts_drops()
     assert r.status == "ok"
     assert r.reason == audio_runtime_fanin.REASON_FANIN_TTS_LANE_DISABLED
 
@@ -574,7 +574,7 @@ def test_check_fanin_tts_drops_skips_when_status_unreachable(monkeypatch):
     # Reachability is the 'jasper-fanin service' check's job; this check
     # must not double-report a down daemon.
     _patch_unreachable_status(monkeypatch)
-    r = doctor.check_fanin_tts_drops()
+    r = audio_runtime_fanin.check_fanin_tts_drops()
     assert r.status == "skipped"
     assert r.reason == audio_runtime_fanin.REASON_FANIN_TTS_STATUS_NOT_PROBED
 
@@ -635,7 +635,7 @@ def test_check_fanin_ring_stall_verdicts(
     else:
         _patch_status_reader(monkeypatch, _fanin_payload_with_ring(ring))
 
-    r = doctor.check_fanin_ring_stall()
+    r = audio_runtime_fanin.check_fanin_ring_stall()
 
     assert r.status == status
     assert r.reason == reason

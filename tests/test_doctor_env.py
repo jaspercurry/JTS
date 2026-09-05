@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from jasper.cli import doctor
+from jasper.cli.doctor import _shared, env
 from jasper.cli.doctor.env import _classify_state_group_write
 
 from .doctor_test_support import _fresh_cfg, _pretend_group_is_jasper, _registered_check_names
@@ -29,7 +30,7 @@ def test_parse_env_file_basic(tmp_path: Path):
         "EMPTY=\n"
         "  WHITESPACE_KEY  =  trimmed  \n"
     )
-    out = doctor._parse_env_file(str(p))
+    out = _shared._parse_env_file(str(p))
     assert out["GEMINI_API_KEY"] == "AIzaSyABC"
     assert out["JASPER_VOICE_PROVIDER"] == "openai"
     assert out["OPENAI_API_KEY"] == "sk-quoted"
@@ -38,7 +39,7 @@ def test_parse_env_file_basic(tmp_path: Path):
 
 
 def test_parse_env_file_missing_returns_empty(tmp_path: Path):
-    out = doctor._parse_env_file(str(tmp_path / "does-not-exist"))
+    out = _shared._parse_env_file(str(tmp_path / "does-not-exist"))
     assert out == {}
 
 
@@ -222,7 +223,7 @@ def test_check_state_dir_warns_when_missing(monkeypatch, tmp_path):
         JASPER_USAGE_DB=str(tmp_path / "missing" / "usage.db"),
     )
 
-    r = doctor.check_state_dir(cfg)
+    r = env.check_state_dir(cfg)
 
     assert r.status == "warn"
     assert r.reason == doctor.env.REASON_STATE_DIR_MISSING
@@ -242,7 +243,7 @@ def test_check_state_dir_ok_when_group_writable_without_setgid(monkeypatch, tmp_
         JASPER_USAGE_DB=str(state_dir / "usage.db"),
     )
 
-    r = doctor.check_state_dir(cfg)
+    r = env.check_state_dir(cfg)
 
     assert r.status == "ok"
 
@@ -258,7 +259,7 @@ def test_check_state_dir_fails_when_not_group_writable(monkeypatch, tmp_path):
         JASPER_USAGE_DB=str(state_dir / "usage.db"),
     )
 
-    r = doctor.check_state_dir(cfg)
+    r = env.check_state_dir(cfg)
 
     assert r.status == "fail"
     assert r.reason == doctor.env.REASON_STATE_DIR_NOT_WRITABLE

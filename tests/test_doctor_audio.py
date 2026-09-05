@@ -11,6 +11,7 @@ Every assertion pins ``status`` and ``reason`` — never ``detail`` prose
 import grp
 import json
 import os
+import shutil
 import subprocess
 import sys
 import types
@@ -57,7 +58,7 @@ def test_apple_dongle_check_never_assumes_apple_without_a_record(monkeypatch):
         doctor.audio, "_run", _lsusb_only("Bus 001 Device 002: ID 1d6b:0002 hub\n")
     )
 
-    result = doctor.check_apple_dongle_audio()
+    result = audio.check_apple_dongle_audio()
 
     assert result.status == "skipped"
     assert result.reason == audio.REASON_APPLE_DONGLE_ABSENT
@@ -72,7 +73,7 @@ def test_apple_dongle_check_warns_when_the_chip_is_on_usb_but_no_card_enumerated
         doctor.audio, "_run", _lsusb_only("Bus 001 Device 002: ID 05ac:110a Apple\n")
     )
 
-    result = doctor.check_apple_dongle_audio()
+    result = audio.check_apple_dongle_audio()
 
     assert result.status == "warn"
     assert result.reason == audio.REASON_APPLE_DONGLE_NO_AUDIO_CARD
@@ -85,7 +86,7 @@ def test_apple_dongle_check_skips_for_non_apple_output_dac(monkeypatch):
     record_active_dac("hifiberry_dac8x")
     monkeypatch.setattr(doctor.audio, "_run", fail_probe)
 
-    result = doctor.check_apple_dongle_audio()
+    result = audio.check_apple_dongle_audio()
 
     assert result.status == "skipped"
     assert result.reason == audio.REASON_APPLE_DONGLE_NOT_APPLICABLE
@@ -108,7 +109,7 @@ def test_apple_dongle_check_matches_usb_id_case_insensitively(monkeypatch):
 
     monkeypatch.setattr(doctor.audio, "_run", fake_run)
 
-    result = doctor.check_apple_dongle_audio()
+    result = audio.check_apple_dongle_audio()
 
     assert result.status == "ok"
     # The audio card comes from the reconciler's record, never a second probe.
@@ -134,7 +135,7 @@ def test_apple_dongle_check_reads_usb_id_from_active_profile(monkeypatch):
 
     monkeypatch.setattr(doctor.audio, "_run", fake_run)
 
-    result = doctor.check_apple_dongle_audio()
+    result = audio.check_apple_dongle_audio()
 
     assert result.status == "ok"
     assert result.reason == ""
@@ -149,7 +150,7 @@ def test_apple_dongle_check_ok_for_a_partial_record_naming_its_card(monkeypatch)
         doctor.audio, "_run", _lsusb_only("Bus 001 Device 002: ID 05ac:110a Apple\n")
     )
 
-    result = doctor.check_apple_dongle_audio()
+    result = audio.check_apple_dongle_audio()
 
     assert result.status == "ok"
     assert result.reason == ""
@@ -185,7 +186,7 @@ def test_dual_apple_dongle_check_requires_two_audio_cards(monkeypatch):
     evidence.seed("output_hardware_state", state)
     monkeypatch.setattr(doctor.audio, "_run", fake_run)
 
-    result = doctor.check_apple_dongle_audio()
+    result = audio.check_apple_dongle_audio()
 
     assert result.status == "warn"
     assert result.reason == audio.REASON_APPLE_DONGLE_CARDS_MISSING
@@ -292,8 +293,8 @@ def test_active_speaker_hardware_mismatch_is_separate_from_basic_output_health(
     )
     evidence.seed("output_hardware_state", state)
 
-    output = doctor.check_output_hardware_state()
-    active = doctor.check_active_speaker_output_hardware_match()
+    output = audio.check_output_hardware_state()
+    active = audio.check_active_speaker_output_hardware_match()
 
     # Basic output health stays green; only the saved-topology check fails.
     assert output.status == "ok"
@@ -341,8 +342,8 @@ def test_active_speaker_hardware_match_checks_dual_apple_child_serials(
         path=hardware_path,
     )
 
-    output = doctor.check_output_hardware_state()
-    active = doctor.check_active_speaker_output_hardware_match()
+    output = audio.check_output_hardware_state()
+    active = audio.check_active_speaker_output_hardware_match()
 
     assert output.status == "ok"
     assert active.status == "fail"
@@ -352,7 +353,7 @@ def test_active_speaker_hardware_match_checks_dual_apple_child_serials(
 def test_output_hardware_state_warns_without_a_record():
     evidence.seed("output_hardware_state", None)
 
-    result = doctor.check_output_hardware_state()
+    result = audio.check_output_hardware_state()
 
     assert result.status == "warn"
     assert result.reason == audio.REASON_OUTPUT_HARDWARE_STATE_UNAVAILABLE
@@ -362,13 +363,13 @@ def test_output_hardware_state_warns_without_a_record():
 
 
 def test_extract_card_name_returns_none_for_shorthand():
-    assert doctor._extract_card_name("hw:7,1") is None
-    assert doctor._extract_card_name("plughw:0,0") is None
+    assert audio._extract_card_name("hw:7,1") is None
+    assert audio._extract_card_name("plughw:0,0") is None
 
 
 def test_extract_card_name_named_card_passthrough():
-    assert doctor._extract_card_name("Array") == "Array"
-    assert doctor._extract_card_name("plughw:CARD=Loopback") == "Loopback"
+    assert audio._extract_card_name("Array") == "Array"
+    assert audio._extract_card_name("plughw:CARD=Loopback") == "Loopback"
 
 
 def test_check_arecord_l_card_device_match():
@@ -390,11 +391,11 @@ def test_check_arecord_l_card_device_match():
                 "FakeProc", (), {"stdout": fake_output, "returncode": 0}
             )(),
         ),
-        patch.object(doctor.shutil, "which", return_value="/usr/bin/arecord"),
+        patch.object(shutil, "which", return_value="/usr/bin/arecord"),
     ):
-        assert doctor._check_arecord_l_card_device(7, 1) is True
-        assert doctor._check_arecord_l_card_device(7, 0) is True
-        assert doctor._check_arecord_l_card_device(99, 0) is False
+        assert audio._check_arecord_l_card_device(7, 1) is True
+        assert audio._check_arecord_l_card_device(7, 0) is True
+        assert audio._check_arecord_l_card_device(99, 0) is False
 
 
 def test_check_arecord_l_does_not_match_wrong_card():
@@ -412,9 +413,9 @@ def test_check_arecord_l_does_not_match_wrong_card():
                 "FakeProc", (), {"stdout": fake_output, "returncode": 0}
             )(),
         ),
-        patch.object(doctor.shutil, "which", return_value="/usr/bin/arecord"),
+        patch.object(shutil, "which", return_value="/usr/bin/arecord"),
     ):
-        assert doctor._check_arecord_l_card_device(7, 1) is False
+        assert audio._check_arecord_l_card_device(7, 1) is False
 
 
 @pytest.mark.parametrize(
@@ -449,9 +450,9 @@ def test_check_mic_card_routes_shorthand_through_arecord_l(
                 "FakeProc", (), {"stdout": arecord_l, "returncode": 0}
             )(),
         ),
-        patch.object(doctor.shutil, "which", return_value="/usr/bin/arecord"),
+        patch.object(shutil, "which", return_value="/usr/bin/arecord"),
     ):
-        r = doctor.check_mic_card_matches_config(cfg)
+        r = audio.check_mic_card_matches_config(cfg)
     assert r.status == status
     assert r.reason == reason
 
@@ -471,7 +472,7 @@ def test_check_mic_capture_falls_back_to_daemon_active(monkeypatch):
 
     stub_sounddevice(monkeypatch, FakeSD())
     with patch.object(doctor.audio, "_jasper_voice_active", return_value=True):
-        r = doctor.check_mic_capture(cfg)
+        r = audio.check_mic_capture(cfg)
     assert r.status == "skipped"
     assert r.reason == audio.REASON_MIC_HELD_BY_VOICE
 
@@ -491,7 +492,7 @@ def test_check_mic_capture_fails_hard_when_daemon_inactive(monkeypatch):
 
     stub_sounddevice(monkeypatch, FakeSD())
     with patch.object(doctor.audio, "_jasper_voice_active", return_value=False):
-        r = doctor.check_mic_capture(cfg)
+        r = audio.check_mic_capture(cfg)
     assert r.status == "fail"
     assert r.reason == audio.REASON_MIC_CAPTURE_OPEN_FAILED
 
@@ -562,7 +563,7 @@ def test_dac_sync_mode_skips_before_probing_when_no_xvf_mic(monkeypatch):
         lambda: (_ for _ in ()).throw(AssertionError("must not probe")),
     )
 
-    result = doctor.check_dac_usb_sync_mode()
+    result = audio.check_dac_usb_sync_mode()
 
     assert result.status == "skipped"
     assert result.reason == audio.REASON_DAC_SYNC_NOT_APPLICABLE
@@ -590,7 +591,7 @@ def test_check_dac_usb_sync_mode_verdicts(monkeypatch, state, status, reason):
         doctor.audio, "_output_hardware_state_or_none", lambda: state
     )
 
-    result = doctor.check_dac_usb_sync_mode()
+    result = audio.check_dac_usb_sync_mode()
 
     assert result.status == status
     assert result.reason == reason
@@ -991,7 +992,7 @@ def test_check_camilla_volume_limit_verdicts(
 ):
     _point_at_config(monkeypatch, tmp_path, text)
 
-    r = doctor.check_camilla_volume_limit()
+    r = audio.check_camilla_volume_limit()
 
     assert r.status == status
     assert r.reason == reason
@@ -1002,7 +1003,7 @@ def test_check_camilla_volume_limit_fails_on_a_missing_config(monkeypatch, tmp_p
     statefile.write_text(f"config_path: {tmp_path / 'gone.yml'}\n")
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
 
-    r = doctor.check_camilla_volume_limit()
+    r = audio.check_camilla_volume_limit()
 
     assert r.status == "fail"
     assert r.reason == audio.REASON_CAMILLA_CONFIG_MISSING
@@ -1037,7 +1038,7 @@ def test_check_camilla_ring_chunk_fails_over_capacity(monkeypatch, tmp_path):
 
     _stage_ring_config(tmp_path, monkeypatch, ring_capacity_frames() * 4)
 
-    r = doctor.check_camilla_ring_chunk_fits()
+    r = audio.check_camilla_ring_chunk_fits()
 
     assert r.status == "fail"
     assert r.reason == audio.REASON_RING_CHUNK_ABOVE_CAPACITY
@@ -1050,7 +1051,7 @@ def test_check_camilla_ring_chunk_ok_at_capacity(monkeypatch, tmp_path):
 
     _stage_ring_config(tmp_path, monkeypatch, ring_capacity_frames())
 
-    r = doctor.check_camilla_ring_chunk_fits()
+    r = audio.check_camilla_ring_chunk_fits()
 
     assert r.status == "ok"
 
@@ -1068,7 +1069,7 @@ def test_check_camilla_ring_chunk_fails_a_target_over_camillas_ceiling(
         tmp_path, monkeypatch, 256, extra="  queuelimit: 4\n  target_level: 4096\n",
     )
 
-    r = doctor.check_camilla_ring_chunk_fits()
+    r = audio.check_camilla_ring_chunk_fits()
 
     assert r.status == "fail"
     assert r.reason == audio.REASON_RING_TARGET_LEVEL_ABOVE_CEILING
@@ -1088,7 +1089,7 @@ def test_check_camilla_ring_chunk_discloses_the_clamp(monkeypatch, tmp_path):
     monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
     _stage_ring_config(tmp_path, monkeypatch, ring_capacity_frames())
 
-    r = doctor.check_camilla_ring_chunk_fits()
+    r = audio.check_camilla_ring_chunk_fits()
 
     assert r.status == "ok"
     assert r.reason == audio.REASON_RING_CHUNK_CLAMPED
@@ -1099,7 +1100,7 @@ def test_check_camilla_ring_chunk_not_applicable_off_the_ring(monkeypatch, tmp_p
         monkeypatch, tmp_path, "devices:\n  samplerate: 48000\n  chunksize: 1024\n",
     )
 
-    r = doctor.check_camilla_ring_chunk_fits()
+    r = audio.check_camilla_ring_chunk_fits()
 
     assert r.status == "skipped"
     assert r.reason == audio.REASON_RING_CHUNK_NOT_APPLICABLE
@@ -1320,7 +1321,7 @@ def test_active_speaker_runtime_graph_branches(
     """
     stage(monkeypatch, tmp_path)
 
-    r = doctor.check_active_speaker_runtime_graph()
+    r = audio.check_active_speaker_runtime_graph()
 
     assert (r.status, r.reason, r.speaker_silent) == (status, reason, silent)
 
@@ -1338,7 +1339,7 @@ def test_active_speaker_runtime_graph_names_the_blockers_it_is_parked_over(
     codes = [str(issue["code"]) for issue in classify_output_contract(topology).issues]
     assert codes, "fixture must carry at least one topology blocker"
 
-    r = doctor.check_active_speaker_runtime_graph()
+    r = audio.check_active_speaker_runtime_graph()
 
     assert r.reason == audio.REASON_GRAPH_PARKED_SILENT
     assert all(code in r.detail for code in codes)
@@ -1401,7 +1402,7 @@ def test_active_speaker_runtime_graph_exits_are_capability_aware(monkeypatch, tm
     assert parked_muted_exits(topology) != PARKED_MUTED_EXITS
     _stage_parked(monkeypatch, tmp_path, topology)
 
-    r = doctor.check_active_speaker_runtime_graph()
+    r = audio.check_active_speaker_runtime_graph()
 
     assert r.reason == audio.REASON_GRAPH_PARKED_SILENT
     # Follows the helper, and therefore does NOT offer the impossible action.
@@ -1415,7 +1416,7 @@ def test_active_speaker_runtime_graph_exits_are_capability_aware(monkeypatch, tm
 def test_check_sound_profile_reports_default_when_missing(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(tmp_path / "missing.json"))
 
-    r = doctor.check_sound_profile()
+    r = audio.check_sound_profile()
 
     assert r.status == "ok"
     assert r.reason == audio.REASON_SOUND_PROFILE_DEFAULT
@@ -1437,7 +1438,7 @@ def test_check_sound_profile_warns_when_saved_profile_not_active(
     _point_at_config(monkeypatch, tmp_path, "# base\n")
     monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(profile))
 
-    r = doctor.check_sound_profile()
+    r = audio.check_sound_profile()
 
     assert r.status == "warn"
     assert r.reason == audio.REASON_SOUND_PROFILE_NOT_ACTIVE
@@ -1485,7 +1486,7 @@ def test_check_sound_profile_accepts_every_jts_generated_active_name(
     )
     monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(profile))
 
-    r = doctor.check_sound_profile()
+    r = audio.check_sound_profile()
 
     assert r.status == "ok"
     assert r.reason == ""
@@ -1496,7 +1497,7 @@ def test_check_sound_profile_fails_on_corrupt_json(monkeypatch, tmp_path):
     profile.write_text("{not json")
     monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(profile))
 
-    r = doctor.check_sound_profile()
+    r = audio.check_sound_profile()
 
     assert r.status == "fail"
     assert r.reason == audio.REASON_SOUND_PROFILE_UNREADABLE
@@ -1551,7 +1552,7 @@ def test_check_dsp_apply_state_verdicts(monkeypatch, tmp_path, state, status, re
         path.write_text(json.dumps(state))
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(path))
 
-    r = doctor.check_dsp_apply_state()
+    r = audio.check_dsp_apply_state()
 
     assert r.status == status
     assert r.reason == reason
@@ -1582,7 +1583,7 @@ def test_active_speaker_baseline_canonical_ok_when_live_is_canonical(
         statefile=tmp_path / "statefile.yml",
     )
 
-    r = doctor.check_active_speaker_baseline_canonical()
+    r = audio.check_active_speaker_baseline_canonical()
 
     assert r.status == "ok"
     assert r.reason == ""
@@ -1611,7 +1612,7 @@ def test_active_speaker_baseline_canonical_ok_when_not_applicable(
         statefile=tmp_path / "statefile.yml",
     )
 
-    r = doctor.check_active_speaker_baseline_canonical()
+    r = audio.check_active_speaker_baseline_canonical()
 
     assert r.status == "skipped"
     assert r.reason == audio.REASON_BASELINE_CANONICAL_NOT_APPLICABLE
@@ -1642,7 +1643,7 @@ async def test_active_speaker_baseline_canonical_ok_when_content_matches_live(
         statefile=tmp_path / "statefile.yml",
     )
 
-    r = doctor.check_active_speaker_baseline_canonical()
+    r = audio.check_active_speaker_baseline_canonical()
 
     assert r.status == "ok"
     assert r.reason == ""
@@ -1675,7 +1676,7 @@ async def test_active_speaker_baseline_canonical_warns_on_divergence(
         statefile=tmp_path / "statefile.yml",
     )
 
-    r = doctor.check_active_speaker_baseline_canonical()
+    r = audio.check_active_speaker_baseline_canonical()
 
     assert r.status == "warn"
     assert r.reason == audio.REASON_BASELINE_CANONICAL_STALE
@@ -1697,7 +1698,7 @@ def test_active_speaker_baseline_canonical_warns_on_missing_canonical(
         statefile=tmp_path / "statefile.yml",
     )
 
-    r = doctor.check_active_speaker_baseline_canonical()
+    r = audio.check_active_speaker_baseline_canonical()
 
     assert r.status == "warn"
     assert r.reason == audio.REASON_BASELINE_CANONICAL_MISSING
@@ -1709,7 +1710,7 @@ def test_active_speaker_baseline_canonical_warns_on_missing_canonical(
 def test_active_speaker_startup_hold_ok_when_no_hold_is_in_flight():
     # The conftest fixture points the marker at a per-test path that starts
     # absent, which is the no-hold baseline.
-    r = doctor.check_active_speaker_startup_hold()
+    r = audio.check_active_speaker_startup_hold()
 
     assert r.status == "ok"
     assert r.reason == audio.REASON_STARTUP_HOLD_NONE
@@ -1735,7 +1736,7 @@ def test_active_speaker_startup_hold_verdicts(
     state.write_text(json.dumps({"status": load_status}), encoding="utf-8")
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE", str(state))
 
-    r = doctor.check_active_speaker_startup_hold()
+    r = audio.check_active_speaker_startup_hold()
 
     assert r.status == status
     assert r.reason == reason
@@ -1824,7 +1825,7 @@ def test_room_correction_authority_warns_but_never_fails(
         lambda **_kwargs: {"acoustic_commissioning": acoustic},
     )
 
-    r = doctor.check_room_correction_authority()
+    r = audio.check_room_correction_authority()
 
     assert r.status == status
     assert r.reason == reason
@@ -1838,7 +1839,7 @@ def test_room_correction_authority_warns_when_setup_cannot_be_read(monkeypatch):
         setup_status_mod, "read_active_speaker_setup_status", _unreadable
     )
 
-    r = doctor.check_room_correction_authority()
+    r = audio.check_room_correction_authority()
 
     assert r.status == "warn"
     assert r.reason == audio.REASON_SPEAKER_SETUP_UNREADABLE
@@ -1877,7 +1878,7 @@ def test_active_speaker_setup_notices_renders_only_non_blockers(
         lambda **_kwargs: {"issues": issues},
     )
 
-    r = doctor.check_active_speaker_setup_notices()
+    r = audio.check_active_speaker_setup_notices()
 
     assert r.status == status
     assert r.reason == reason
@@ -1952,7 +1953,7 @@ def test_active_speaker_applied_graph_discloses_never_gates(
         lambda **_kwargs: payload,
     )
 
-    r = doctor.check_active_speaker_applied_graph()
+    r = audio.check_active_speaker_applied_graph()
 
     assert r.status == status
     assert r.reason == reason
@@ -1966,7 +1967,7 @@ def test_active_speaker_applied_graph_warns_when_setup_cannot_be_read(monkeypatc
         setup_status_mod, "read_active_speaker_setup_status", _unreadable
     )
 
-    r = doctor.check_active_speaker_applied_graph()
+    r = audio.check_active_speaker_applied_graph()
 
     assert r.status == "warn"
     assert r.reason == audio.REASON_SPEAKER_SETUP_UNREADABLE

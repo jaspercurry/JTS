@@ -52,7 +52,7 @@ def test_check_correction_web_service_ok_when_socket_active(monkeypatch):
     _stub_unit_active_states(
         monkeypatch, {"jasper-correction-web.socket": "active"},
     )
-    r = doctor.check_correction_web_service()
+    r = correction.check_correction_web_service()
     assert r.status == "ok"
     assert r.reason == ""
 
@@ -71,7 +71,7 @@ def test_check_correction_web_service_warns_without_the_socket(
     _stub_unit_active_states(
         monkeypatch, {"jasper-correction-web.service": service_state},
     )
-    r = doctor.check_correction_web_service()
+    r = correction.check_correction_web_service()
     assert r.status == "warn"
     assert r.reason == reason
 
@@ -137,7 +137,7 @@ def test_check_correction_idle_exit_holds_verdicts(
     monkeypatch, active, journal, status, reason
 ):
     _idle_exit_journal(monkeypatch, journal=journal, active=active)
-    r = doctor.check_correction_idle_exit_holds()
+    r = correction.check_correction_idle_exit_holds()
     assert r.status == status
     assert r.reason == reason
 
@@ -191,7 +191,7 @@ def test_check_correction_https_assets_verdicts(
 ):
     monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(_web_root_with_app_css(tmp_path)))
     monkeypatch.setattr(doctor.correction, "_probe_https_status", probe)
-    r = doctor.check_correction_https_assets()
+    r = correction.check_correction_https_assets()
     assert r.status == status
     assert r.reason == reason
 
@@ -204,7 +204,7 @@ def test_check_correction_https_assets_skips_without_web_root(monkeypatch, tmp_p
         raise AssertionError("must not probe when the web root is absent")
 
     monkeypatch.setattr(doctor.correction, "_probe_https_status", _boom)
-    r = doctor.check_correction_https_assets()
+    r = correction.check_correction_https_assets()
     assert r.status == "skipped"
     assert r.reason == correction.REASON_HTTPS_ASSETS_NOT_INSTALLED
 
@@ -218,7 +218,7 @@ def test_check_correction_https_assets_skips_when_443_unreachable(
         raise OSError("connection refused")
 
     monkeypatch.setattr(doctor.correction, "_probe_https_status", _refused)
-    r = doctor.check_correction_https_assets()
+    r = correction.check_correction_https_assets()
     assert r.status == "skipped"
     assert r.reason == correction.REASON_HTTPS_ASSETS_UNREACHABLE
 
@@ -264,7 +264,7 @@ def test_not_writable_by_group_verdicts(tmp_path, mode, group, expect_flagged):
 
 def test_check_correction_state_dirs_warns_on_missing(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_CORRECTION_ROOT", str(tmp_path / "missing"))
-    r = doctor.check_correction_state_dirs()
+    r = correction.check_correction_state_dirs()
     assert r.status == "warn"
     assert r.reason == correction.REASON_STATE_DIRS_MISSING
 
@@ -286,7 +286,7 @@ def test_check_correction_state_dirs_fails_when_locked_out_by_mode(
         os.chmod(d, 0o700)
     monkeypatch.setenv("JASPER_CORRECTION_ROOT", str(root))
 
-    r = doctor.check_correction_state_dirs()
+    r = correction.check_correction_state_dirs()
 
     assert r.status == "fail"
     assert r.reason == correction.REASON_STATE_DIRS_NOT_WRITABLE
@@ -322,7 +322,7 @@ def test_check_correction_uploaded_calibration_sign_flags_only_uploads(
         root=tmp_path,
     )
 
-    r = doctor.check_correction_uploaded_calibration_sign()
+    r = correction.check_correction_uploaded_calibration_sign()
     assert r.status == "warn"
     assert r.reason == correction.REASON_UPLOADED_CALIBRATION_SIGN_REVIEW
 
@@ -337,10 +337,10 @@ def test_check_correction_uploaded_calibration_sign_flags_only_uploads(
         sign_convention="response",
         root=tmp_path,
     )
-    assert doctor.check_correction_uploaded_calibration_sign().status == "warn"
+    assert correction.check_correction_uploaded_calibration_sign().status == "warn"
 
     monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "empty"))
-    clean = doctor.check_correction_uploaded_calibration_sign()
+    clean = correction.check_correction_uploaded_calibration_sign()
     assert clean.status == "ok"
     assert clean.reason == ""
 
@@ -414,7 +414,7 @@ def test_check_correction_current_config_verdicts(
     statefile.write_text(f"config_path: {config}\n")
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
 
-    r = doctor.check_correction_current_config()
+    r = correction.check_correction_current_config()
 
     assert r.status == status
     assert r.reason == reason
@@ -424,7 +424,7 @@ def test_check_correction_current_config_warns_on_an_unreadable_statefile(
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
-    r = doctor.check_correction_current_config()
+    r = correction.check_correction_current_config()
     assert r.status == "warn"
     assert r.reason == correction.REASON_CAMILLA_STATEFILE_UNREADABLE
 
@@ -468,7 +468,7 @@ def test_check_correction_latest_bundle_warns_without_calibration(
     )
     monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(sessions))
 
-    r = doctor.check_correction_latest_bundle()
+    r = correction.check_correction_latest_bundle()
 
     assert r.status == "warn"
     assert r.reason == correction.REASON_LATEST_BUNDLE_UNCALIBRATED_MIC
@@ -500,7 +500,7 @@ def test_check_correction_latest_bundle_warns_on_bundle_issues(
     )
     monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(sessions))
 
-    r = doctor.check_correction_latest_bundle()
+    r = correction.check_correction_latest_bundle()
 
     assert r.status == "warn"
     assert r.reason == correction.REASON_LATEST_BUNDLE_ISSUES
@@ -517,7 +517,7 @@ def test_check_correction_latest_bundle_ok_on_a_golden_collection(
     write_golden_correction_bundle(sessions, "new", started_at=2000)
     monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(sessions))
 
-    r = doctor.check_correction_latest_bundle()
+    r = correction.check_correction_latest_bundle()
 
     assert r.status == "ok"
     assert r.reason == ""
@@ -534,7 +534,7 @@ def test_check_correction_latest_bundle_warns_when_the_walk_was_capped(
     monkeypatch.setattr(bundles, "BUNDLE_WALK_MAX_ENTRIES", 1)
     monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(sessions))
 
-    r = doctor.check_correction_latest_bundle()
+    r = correction.check_correction_latest_bundle()
 
     assert r.status == "warn"
     assert r.reason == correction.REASON_LATEST_BUNDLE_SUMMARY_TRUNCATED
@@ -542,7 +542,7 @@ def test_check_correction_latest_bundle_warns_when_the_walk_was_capped(
 
 def test_check_correction_latest_bundle_ok_when_none_recorded(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(tmp_path / "sessions"))
-    r = doctor.check_correction_latest_bundle()
+    r = correction.check_correction_latest_bundle()
     assert r.status == "ok"
     assert r.reason == correction.REASON_LATEST_BUNDLE_NONE
 
@@ -623,7 +623,7 @@ def test_check_crossover_v2_cloud_pipeline_verdicts(
 ):
     _patch_v2_state(monkeypatch, state)
 
-    r = doctor.check_crossover_v2_cloud_pipeline()
+    r = correction.check_crossover_v2_cloud_pipeline()
 
     assert r.status == status
     assert r.reason == reason
@@ -835,7 +835,7 @@ def test_check_crossover_v2_applied_is_graded_verdicts(
 ):
     _patch_v2_state(monkeypatch, _v2_applied_state(**overrides))
 
-    r = doctor.check_crossover_v2_applied_is_graded()
+    r = correction.check_crossover_v2_applied_is_graded()
 
     assert r.status == status
     assert r.reason == reason
@@ -864,7 +864,7 @@ def test_an_unknown_spatial_word_from_a_later_build_warns(monkeypatch):
         },
     )
 
-    r = doctor.check_crossover_v2_applied_is_graded()
+    r = correction.check_crossover_v2_applied_is_graded()
 
     assert r.status == "warn"
     assert r.reason == correction.REASON_APPLIED_GRADE_SPATIAL_UNRECOGNIZED
@@ -955,7 +955,7 @@ def _hold(**overrides):
 )
 def test_check_measurement_hold_verdicts(monkeypatch, hold, status, reason):
     _patch_measurement(monkeypatch, hold=hold)
-    r = doctor.check_measurement_hold()
+    r = correction.check_measurement_hold()
     assert r.status == status
     assert r.reason == reason
 
@@ -964,7 +964,7 @@ def test_measurement_hold_skips_when_control_is_down(monkeypatch):
     from jasper.control import client as control_client
 
     _patch_measurement(monkeypatch, error=control_client.ControlError("refused"))
-    r = doctor.check_measurement_hold()
+    r = correction.check_measurement_hold()
     assert r.status == "skipped"
     assert r.reason == correction.REASON_MEASUREMENT_HOLD_CONTROL_UNREACHABLE
 
@@ -1018,7 +1018,7 @@ def test_check_session_volume_unresolved_verdicts(
         doctor.correction, "DEFAULT_SESSION_VOLUME_STATE_PATH", path,
     )
 
-    r = doctor.check_session_volume_unresolved()
+    r = correction.check_session_volume_unresolved()
 
     assert r.status == status
     assert r.reason == reason

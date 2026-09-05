@@ -12,6 +12,7 @@ operator acts on (the missing function, the intent reason, the stale marker).
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -128,7 +129,7 @@ def _available_usb_role(monkeypatch):
 def test_check_usb_data_role_verdicts(monkeypatch, role, status, reason):
     monkeypatch.setattr(doctor.usbsink, "current_usb_data_role", role)
 
-    r = doctor.check_usb_data_role()
+    r = usbsink.check_usb_data_role()
 
     assert r.status == status
     assert r.reason == reason
@@ -239,7 +240,7 @@ def test_check_usbsink_state_verdicts(
 ):
     _state_env(monkeypatch, tmp_path, **kwargs)
 
-    r = doctor.check_usbsink_state()
+    r = usbsink.check_usbsink_state()
 
     assert r.status == status
     assert r.reason == reason
@@ -261,7 +262,7 @@ def test_check_usbsink_state_active_reads_host_connection_from_the_udc(
     (controller / "state").write_text("configured\n")
     monkeypatch.setenv("JASPER_UDC_CLASS_DIR", str(tmp_path / "udc"))
 
-    result = doctor.check_usbsink_state()
+    result = usbsink.check_usbsink_state()
 
     assert result.status == "ok"
     assert result.reason == ""
@@ -298,7 +299,7 @@ def test_check_usbsink_card_verdicts(
         mock_path.side_effect = lambda p: (
             card if p == "/proc/asound/UAC2Gadget" else Path(p)
         )
-        r = doctor.check_usbsink_card()
+        r = usbsink.check_usbsink_card()
 
     assert r.status == status
     assert r.reason == reason
@@ -334,7 +335,7 @@ def test_check_usbsink_host_stream_discloses_without_judging(
     monkeypatch.setattr(doctor.usbsink, "UAC2_CARD_PATH", str(card))
     monkeypatch.setattr(doctor.usbsink, "_uac2_capture_rate", lambda: rate)
 
-    result = doctor.check_usbsink_host_stream()
+    result = usbsink.check_usbsink_host_stream()
 
     assert result.status == status
     assert result.reason == reason
@@ -366,7 +367,7 @@ def test_check_usbsink_host_stream_never_crashes_the_doctor(
 
     monkeypatch.setattr(doctor._shared.subprocess, "run", raise_it)
 
-    result = doctor._run_doctor_check(doctor.check_usbsink_host_stream)
+    result = doctor._run_doctor_check(usbsink.check_usbsink_host_stream)
 
     assert result.status == "skipped"
     assert result.reason == usbsink.REASON_HOST_STREAM_NO_CONTROL
@@ -439,7 +440,7 @@ def test_check_usbsink_active_libcomposite_verdicts(
     )
     monkeypatch.setattr(doctor.usbsink, "_module_loaded", lambda name: libcomposite)
 
-    r = doctor.check_usbsink_active_libcomposite()
+    r = usbsink.check_usbsink_active_libcomposite()
     assert r.status == status
     assert r.reason == reason
 
@@ -493,7 +494,7 @@ def test_low_latency_contract_skips_a_route_that_makes_no_claim(monkeypatch):
         audio_runtime_plan, "build_audio_runtime_plan_from_system", lambda: plan
     )
 
-    r = doctor.check_usbsink_low_latency_contract()
+    r = usbsink.check_usbsink_low_latency_contract()
 
     assert r.status == "skipped"
     assert r.reason == usbsink.REASON_LOW_LATENCY_NO_CLAIM
@@ -532,7 +533,7 @@ def test_low_latency_contract_reports_why_usb_audio_is_not_wanted(
         ).throw(AssertionError("must not probe fan-in")),
     )
 
-    result = doctor.check_usbsink_low_latency_contract()
+    result = usbsink.check_usbsink_low_latency_contract()
 
     assert result.status == status
     assert result.reason == reason
@@ -560,7 +561,7 @@ def test_low_latency_contract_requires_a_readable_fanin_status(monkeypatch):
         ),
     )
 
-    r = doctor.check_usbsink_low_latency_contract()
+    r = usbsink.check_usbsink_low_latency_contract()
 
     assert r.status == "fail"
     assert r.reason == usbsink.REASON_LOW_LATENCY_STATUS_UNREADABLE
@@ -574,7 +575,7 @@ def test_low_latency_contract_warns_when_the_kernel_hides_the_attrs(
     (gadget / "functions" / "uac2.usb0").mkdir(parents=True)
     monkeypatch.setattr(doctor.usbsink, "USBSINK_GADGET_PATH", gadget)
 
-    r = doctor.check_usbsink_low_latency_contract()
+    r = usbsink.check_usbsink_low_latency_contract()
 
     assert r.status == "warn"
     assert r.reason == usbsink.REASON_LOW_LATENCY_ATTR_UNEXPOSED
@@ -586,7 +587,7 @@ def test_low_latency_contract_fails_on_a_direct_period_mismatch(monkeypatch):
         lambda _path, *, timeout=2.0: _fanin_direct_status(health="capturing", period_frames=128),
     )
 
-    r = doctor.check_usbsink_low_latency_contract()
+    r = usbsink.check_usbsink_low_latency_contract()
 
     assert r.status == "fail"
     assert r.reason == usbsink.REASON_LOW_LATENCY_LIVE_MISMATCH
@@ -603,7 +604,7 @@ def test_low_latency_contract_fails_on_a_mismatched_exposed_attr(
     (function_path / "c_hs_bint").write_text("1\n")
     monkeypatch.setattr(doctor.usbsink, "USBSINK_GADGET_PATH", tmp_path / "gadget")
 
-    r = doctor.check_usbsink_low_latency_contract()
+    r = usbsink.check_usbsink_low_latency_contract()
 
     assert r.status == "fail"
     assert r.reason == usbsink.REASON_LOW_LATENCY_ATTR_MISMATCH
@@ -625,7 +626,7 @@ def _name_env(monkeypatch, *, active: bool, speaker: str = "Kitchen"):
         _fake_unit_states({usbsink.USBSINK_UNIT: "active" if active else "inactive"}),
     )
     monkeypatch.setattr(
-        doctor.os, "uname", lambda: type("U", (), {"release": _KVER})()
+        os, "uname", lambda: type("U", (), {"release": _KVER})()
     )
     monkeypatch.setattr("jasper.speaker_name.runtime_name", lambda: speaker)
 
@@ -694,7 +695,7 @@ def test_check_usbsink_name_verdicts(
     if body is not None:
         _write_override(tmp_path, body, marker)
 
-    r = doctor.check_usbsink_name(modules_root=str(tmp_path))
+    r = usbsink.check_usbsink_name(modules_root=str(tmp_path))
 
     assert r.status == status
     assert r.reason == reason
@@ -924,7 +925,7 @@ def test_check_usbgadget_composition_verdicts(
 ):
     _patch_composition_env(monkeypatch, tmp_path, **env)
 
-    r = doctor.check_usbgadget_composition()
+    r = usbsink.check_usbgadget_composition()
 
     assert r.status == status
     assert r.reason == reason
@@ -959,7 +960,7 @@ def test_composition_kill_switch_matches_only_the_exact_literal(
         ncm=expected == "network=True",
     )
 
-    r = doctor.check_usbgadget_composition()
+    r = usbsink.check_usbgadget_composition()
 
     assert r.status == "ok"
     assert r.reason == reason
@@ -980,7 +981,7 @@ def test_composition_gadget_dir_with_no_functions_is_still_drift(
     )
     gadget.mkdir(parents=True, exist_ok=True)
 
-    r = doctor.check_usbgadget_composition()
+    r = usbsink.check_usbgadget_composition()
 
     assert r.status == "fail"
     assert r.reason == usbsink.REASON_COMPOSITION_STALE
@@ -993,7 +994,7 @@ def test_composition_unreadable_udc_dir_degrades_to_the_no_udc_skip(
     udc_dir.write_text("not a directory")
     monkeypatch.setenv("JASPER_UDC_CLASS_DIR", str(udc_dir))
 
-    r = doctor.check_usbgadget_composition()
+    r = usbsink.check_usbgadget_composition()
 
     assert r.status == "skipped"
     assert r.reason == usbsink.REASON_COMPOSITION_NO_UDC
@@ -1014,7 +1015,7 @@ def test_composition_invalid_source_intent_fails_loud(monkeypatch, tmp_path):
 
     monkeypatch.setattr(doctor.usbsink, "source_intent_enabled", invalid)
 
-    result = doctor.check_usbgadget_composition()
+    result = usbsink.check_usbgadget_composition()
 
     assert result.status == "fail"
     assert result.reason == _shared.REASON_SOURCE_INTENT_INVALID
@@ -1052,7 +1053,7 @@ def test_composition_retains_ncm_during_a_pending_host_reboot(
         lambda: usbsink._AudioIntent(False, "intent_disabled"),
     )
 
-    result = doctor.check_usbgadget_composition()
+    result = usbsink.check_usbgadget_composition()
 
     assert result.status == "warn"
     assert result.reason == usbsink.REASON_COMPOSITION_RETAINED_PENDING_REBOOT

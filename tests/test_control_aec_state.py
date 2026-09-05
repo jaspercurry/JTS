@@ -30,6 +30,7 @@ from jasper.chip_aec.policy import (
     CHIP_AEC_BLOCKER_CODES,
 )
 from jasper.cli import doctor
+from jasper.cli.doctor import aec
 from jasper.control import aec_endpoints
 from jasper.control import server
 from jasper.mics import xvf3800
@@ -570,7 +571,7 @@ def test_audio_profile_status_answers_the_same_on_doctor_and_aec(
         _stub_xvf_runtime(monkeypatch)
 
     endpoint = server._aec_full_status()
-    from_doctor = doctor._audio_profile_status_for_doctor(
+    from_doctor = aec._audio_profile_status_for_doctor(
         bridge_active=True, env=env,
     )
 
@@ -980,7 +981,7 @@ def _doctor_chip_aec_status(monkeypatch, aec_mode_file) -> dict:
         "_wake_leg_setting",
         lambda key, default: {"JASPER_WAKE_LEG_CHIP_AEC": True}.get(key, default),
     )
-    return doctor._audio_profile_status_for_doctor(
+    return aec._audio_profile_status_for_doctor(
         bridge_active=True,
         env={"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"},
     )

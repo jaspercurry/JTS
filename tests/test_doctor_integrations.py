@@ -9,6 +9,7 @@ import pytest
 
 import jasper.citibike as citibike_mod
 from jasper.cli import doctor
+from jasper.cli.doctor import integrations
 from jasper.config import Config
 
 from .doctor_test_support import _fresh_cfg
@@ -66,7 +67,7 @@ def _routes_cfg(monkeypatch, **vars_) -> Config:
 def test_check_google_routes_verdicts(monkeypatch, vars_, status, reason):
     cfg = _routes_cfg(monkeypatch, **vars_)
 
-    r = doctor.check_google_routes(cfg)
+    r = integrations.check_google_routes(cfg)
 
     assert r.status == status
     assert r.reason == getattr(doctor.integrations, reason)
@@ -113,7 +114,7 @@ def test_check_citibike_verdicts(
     _gbfs(monkeypatch, live_ids)
     cfg = _citibike_cfg(monkeypatch, stations=stations)
 
-    r = doctor.check_citibike(cfg)
+    r = integrations.check_citibike(cfg)
 
     assert r.status == status
     assert r.reason == getattr(doctor.integrations, reason)
@@ -131,7 +132,7 @@ def test_check_citibike_reports_the_ebike_only_mode(monkeypatch, ebike_only, rea
     _gbfs(monkeypatch, ("abc",))
     cfg = _citibike_cfg(monkeypatch, stations="abc|9 Av", ebike_only=ebike_only)
 
-    r = doctor.check_citibike(cfg)
+    r = integrations.check_citibike(cfg)
 
     assert r.reason == getattr(doctor.integrations, reason)
 
@@ -143,6 +144,6 @@ def test_check_citibike_fails_when_gbfs_unreachable(monkeypatch):
     monkeypatch.setattr(citibike_mod, "fetch_feed", _raise)
     cfg = _citibike_cfg(monkeypatch, stations="abc|9 Av")
 
-    r = doctor.check_citibike(cfg)
+    r = integrations.check_citibike(cfg)
     assert r.status == "fail"
     assert r.reason == doctor.integrations.REASON_CITIBIKE_GBFS_UNREACHABLE

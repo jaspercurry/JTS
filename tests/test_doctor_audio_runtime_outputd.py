@@ -11,7 +11,7 @@ import pytest
 
 from jasper import audio_runtime_plan
 from jasper.cli import doctor
-from jasper.cli.doctor import audio_runtime_outputd
+from jasper.cli.doctor import audio_runtime_fanin, audio_runtime_outputd
 from jasper.control import audio_health
 
 from ._doctor_audio_runtime_fixtures import (
@@ -85,7 +85,7 @@ def _patch_ring_coupled_box(
 
 def test_outputd_service_fails_when_disabled(monkeypatch):
     _seed_units(enabled="disabled")
-    r = doctor.check_outputd_service()
+    r = audio_runtime_outputd.check_outputd_service()
     assert r.status == "fail"
     assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_UNIT_NOT_ENABLED
 
@@ -93,7 +93,7 @@ def test_outputd_service_fails_when_disabled(monkeypatch):
 def test_outputd_service_ok_with_expected_status(monkeypatch):
     _seed_units()
     _patch_status_reader(monkeypatch, _outputd_status_payload())
-    r = doctor.check_outputd_service()
+    r = audio_runtime_outputd.check_outputd_service()
     assert r.status == "ok", r.detail
     assert r.reason == ""
 
@@ -174,7 +174,7 @@ def test_outputd_service_ok_with_shm_ring_content_source(monkeypatch, tmp_path):
         ),
     )
 
-    r = doctor.check_outputd_service()
+    r = audio_runtime_outputd.check_outputd_service()
 
     assert r.status == "ok"
     assert r.reason == ""
@@ -197,7 +197,7 @@ def test_outputd_service_fails_shm_ring_missing_ring_geometry(monkeypatch, tmp_p
     del payload["content"]["ring"]
     _patch_status_reader(monkeypatch, json.dumps(payload).encode())
 
-    r = doctor.check_outputd_service()
+    r = audio_runtime_outputd.check_outputd_service()
 
     assert r.status == "fail"
     assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_RING_CONTRACT_MISSING
@@ -220,7 +220,7 @@ def test_outputd_service_fails_shm_ring_slot_frames_mismatch(monkeypatch, tmp_pa
         ),
     )
 
-    r = doctor.check_outputd_service()
+    r = audio_runtime_outputd.check_outputd_service()
 
     assert r.status == "fail"
     assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_RING_SLOT_FRAMES_MISMATCH
@@ -243,7 +243,7 @@ def test_outputd_service_fails_shm_ring_capacity_incoherent(monkeypatch, tmp_pat
         ),
     )
 
-    r = doctor.check_outputd_service()
+    r = audio_runtime_outputd.check_outputd_service()
 
     assert r.status == "fail"
     assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_RING_CAPACITY_INCOHERENT
@@ -269,7 +269,7 @@ def test_outputd_service_fails_when_the_daemon_lags_its_own_env(
         _outputd_status_payload(content_source="alsa"),
     )
 
-    r = doctor.check_outputd_service()
+    r = audio_runtime_outputd.check_outputd_service()
 
     assert r.status == "fail"
     assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_CONTENT_SOURCE_MISMATCH
@@ -284,13 +284,13 @@ def test_outputd_service_ok_with_single_alsa_active_lane(monkeypatch, tmp_path):
     _seed_units()
     _patch_status_reader(
         monkeypatch,
-        _outputd_status_payload(dac_pcm=doctor._OUTPUTD_EXPECTED_DAC_PCM),
+        _outputd_status_payload(dac_pcm=audio_runtime_outputd._OUTPUTD_EXPECTED_DAC_PCM),
     )
     _patch_ring_coupled_box(
         monkeypatch, tmp_path, active_endpoint=True, active_channels=2
     )
 
-    r = doctor.check_outputd_service()
+    r = audio_runtime_outputd.check_outputd_service()
 
     assert r.status == "ok", r.detail
     assert r.reason == ""
@@ -389,7 +389,7 @@ def test_outputd_service_fails_when_active_graph_feeds_passive_reader(
     )
     _patch_disconnected_post_dsp_route(monkeypatch, tmp_path)
 
-    r = doctor.check_outputd_service()
+    r = audio_runtime_outputd.check_outputd_service()
 
     assert r.status == "fail"
     assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_TRANSPORT_ROUTE_UNPAIRED
@@ -436,7 +436,7 @@ def test_outputd_service_warns_when_transport_evidence_is_unavailable(monkeypatc
         ),
     )
 
-    r = doctor.check_outputd_service()
+    r = audio_runtime_outputd.check_outputd_service()
 
     assert r.status == "warn"
     assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_TRANSPORT_EVIDENCE_UNKNOWN
@@ -448,7 +448,7 @@ def test_outputd_service_ok_when_loudness_is_owned_by_fanin(monkeypatch):
     _seed_units()
     _patch_status_reader(monkeypatch, json.dumps(payload).encode())
 
-    r = doctor.check_outputd_service()
+    r = audio_runtime_outputd.check_outputd_service()
 
     assert r.status == "ok"
     assert r.reason == ""
@@ -469,7 +469,7 @@ def test_outputd_service_warns_when_gain_exceeds_the_peak_cap(monkeypatch):
     _seed_units()
     _patch_status_reader(monkeypatch, json.dumps(payload).encode())
 
-    r = doctor.check_outputd_service()
+    r = audio_runtime_outputd.check_outputd_service()
 
     assert r.status == "warn"
     assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_ASSISTANT_GAIN_OFF_CONTRACT
@@ -480,14 +480,14 @@ def test_outputd_service_fails_when_dual_apple_status_missing(monkeypatch, tmp_p
     payload = json.loads(
         _outputd_status_payload(
             sink_mode="dual_apple",
-            dac_pcm=doctor._OUTPUTD_EXPECTED_DUAL_DAC_PCM,
+            dac_pcm=audio_runtime_outputd._OUTPUTD_EXPECTED_DUAL_DAC_PCM,
         ).decode()
     )
     payload.pop("dual_apple", None)
     _patch_status_reader(monkeypatch, json.dumps(payload).encode())
     _patch_ring_coupled_box(monkeypatch, tmp_path, active_endpoint=True)
 
-    r = doctor.check_outputd_service()
+    r = audio_runtime_outputd.check_outputd_service()
     assert r.status == "fail", r.detail
     assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_DUAL_APPLE_STATUS_MISSING
 
@@ -498,7 +498,7 @@ def test_outputd_service_warns_when_dual_apple_pcm_link_missing(monkeypatch, tmp
         monkeypatch,
         _outputd_status_payload(
             sink_mode="dual_apple",
-            dac_pcm=doctor._OUTPUTD_EXPECTED_DUAL_DAC_PCM,
+            dac_pcm=audio_runtime_outputd._OUTPUTD_EXPECTED_DUAL_DAC_PCM,
             dual_apple_status={
                 "dac_a_pcm": "hw:CARD=A,DEV=0",
                 "dac_b_pcm": "hw:CARD=A_1,DEV=0",
@@ -511,7 +511,7 @@ def test_outputd_service_warns_when_dual_apple_pcm_link_missing(monkeypatch, tmp
         ),
     )
     _patch_ring_coupled_box(monkeypatch, tmp_path, active_endpoint=True)
-    r = doctor.check_outputd_service()
+    r = audio_runtime_outputd.check_outputd_service()
     assert r.status == "warn", r.detail
     assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_DUAL_APPLE_NOT_LINKED
 
@@ -530,11 +530,11 @@ def test_outputd_service_ok_with_dual_apple_status(monkeypatch, tmp_path):
         monkeypatch,
         _outputd_status_payload(
             sink_mode="dual_apple",
-            dac_pcm=doctor._OUTPUTD_EXPECTED_DUAL_DAC_PCM,
+            dac_pcm=audio_runtime_outputd._OUTPUTD_EXPECTED_DUAL_DAC_PCM,
         ),
     )
     _patch_ring_coupled_box(monkeypatch, tmp_path, active_endpoint=True)
-    r = doctor.check_outputd_service()
+    r = audio_runtime_outputd.check_outputd_service()
     assert r.status == "ok", r.detail
     assert r.reason == ""
 
@@ -545,7 +545,7 @@ def test_outputd_service_fails_on_fake_backend(monkeypatch):
         monkeypatch,
         _outputd_status_payload(backend="fake"),
     )
-    r = doctor.check_outputd_service()
+    r = audio_runtime_outputd.check_outputd_service()
     assert r.status == "fail"
     assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_BACKEND_NOT_ALSA
 
@@ -556,7 +556,7 @@ def test_outputd_service_fails_on_small_runtime_buffers(monkeypatch):
         monkeypatch,
         _outputd_status_payload(dac_buffer_frames=1024),
     )
-    r = doctor.check_outputd_service()
+    r = audio_runtime_outputd.check_outputd_service()
     assert r.status == "fail"
     assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_DAC_BUFFER_UNDERSIZED
 
@@ -567,7 +567,7 @@ def test_outputd_service_fails_when_reference_contract_missing(monkeypatch):
     _seed_units()
     _patch_status_reader(monkeypatch, json.dumps(payload).encode())
 
-    r = doctor.check_outputd_service()
+    r = audio_runtime_outputd.check_outputd_service()
 
     assert r.status == "fail"
     assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_REFERENCE_SOURCE_UNEXPECTED
@@ -634,7 +634,7 @@ def test_aec_clock_drift_ok_for_every_healthy_estimator_state(monkeypatch, aec_c
         monkeypatch, _outputd_aec_clock_payload(aec_clock=aec_clock)
     )
 
-    r = doctor.check_aec_clock_drift()
+    r = audio_runtime_outputd.check_aec_clock_drift()
 
     assert r.status == "ok"
     assert r.reason == ""
@@ -648,7 +648,7 @@ def test_aec_clock_drift_warns_when_untrusted(monkeypatch):
             aec_clock=_aec_clock_block(verdict="fallback", status="untrusted", ppm=None)
         ),
     )
-    r = doctor.check_aec_clock_drift()
+    r = audio_runtime_outputd.check_aec_clock_drift()
     assert r.status == "warn"
     assert r.reason == audio_runtime_outputd.REASON_AEC_CLOCK_UNTRUSTED
 
@@ -667,7 +667,7 @@ def test_aec_clock_drift_warns_when_optional_chip_reference_is_unavailable(
         ),
     )
 
-    r = doctor.check_aec_clock_drift()
+    r = audio_runtime_outputd.check_aec_clock_drift()
 
     assert r.status == "warn"
     assert r.reason == audio_runtime_outputd.REASON_AEC_CLOCK_CHIP_REF_UNAVAILABLE
@@ -691,14 +691,14 @@ def test_aec_clock_drift_stands_down_without_an_estimate(
     _patch_status_reader(
         monkeypatch, _outputd_aec_clock_payload(**payload_kwargs)
     )
-    r = doctor.check_aec_clock_drift()
+    r = audio_runtime_outputd.check_aec_clock_drift()
     assert r.status == "skipped"
     assert r.reason == reason
 
 
 def test_aec_clock_drift_skips_when_outputd_disabled(monkeypatch):
     _seed_units(enabled="disabled")
-    r = doctor.check_aec_clock_drift()
+    r = audio_runtime_outputd.check_aec_clock_drift()
     assert r.status == "skipped"
     assert r.reason == audio_runtime_outputd.REASON_AEC_CLOCK_OUTPUTD_NOT_ENABLED
 
@@ -1036,7 +1036,7 @@ def test_outputd_service_ok_on_a_marker_armed_member(monkeypatch, tmp_path):
         ),
     )
 
-    r = doctor.check_outputd_service()
+    r = audio_runtime_outputd.check_outputd_service()
 
     assert r.status == "ok", r.detail
     assert r.reason == ""
@@ -1048,12 +1048,12 @@ def test_outputd_service_ok_on_a_marker_armed_member(monkeypatch, tmp_path):
         (
             audio_health.FANIN_STALE_MS,
             _fanin_status_payload,
-            lambda: doctor.check_fanin_service(),
+            lambda: audio_runtime_fanin.check_fanin_service(),
         ),
         (
             audio_health.OUTPUTD_STALE_MS,
             _outputd_status_payload,
-            lambda: doctor.check_outputd_service(),
+            lambda: audio_runtime_outputd.check_outputd_service(),
         ),
     ],
     ids=["fanin", "outputd"],

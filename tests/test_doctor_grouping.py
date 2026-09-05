@@ -105,7 +105,7 @@ def test_check_grouping_snapcast_installed_verdicts(
         "shutil.which", lambda name: f"/usr/bin/{name}" if installed else None
     )
 
-    r = doctor.check_grouping_snapcast_installed()
+    r = grouping.check_grouping_snapcast_installed()
 
     assert r.status == status
     assert r.reason == reason
@@ -192,7 +192,7 @@ def test_check_grouping_snapcast_version_verdicts(
     if run is not None:
         monkeypatch.setattr(doctor.grouping, "_run", run)
 
-    r = doctor.check_grouping_snapcast_version()
+    r = grouping.check_grouping_snapcast_version()
 
     assert r.status == status
     assert r.reason == reason
@@ -215,7 +215,7 @@ def test_check_grouping_snapcast_version_stdout_wins_over_stderr(monkeypatch):
         ),
     )
 
-    r = doctor.check_grouping_snapcast_version()
+    r = grouping.check_grouping_snapcast_version()
 
     assert r.status == "ok"
     assert r.reason == grouping.REASON_SNAPCAST_VERSION_MATCH
@@ -248,7 +248,7 @@ def test_check_grouping_household_credential_verdicts(
     monkeypatch.setattr(hc, "SECRET_FILE", str(secret))
     _patch_grouping(monkeypatch, _grouping_cfg(**cfg_kwargs))
 
-    r = doctor.check_grouping_household_credential()
+    r = grouping.check_grouping_household_credential()
 
     assert r.status == status
     assert r.reason == reason
@@ -284,7 +284,7 @@ def test_check_crossover_unit_skips_when_not_an_active_leader(
     pair): both skip before touching topology or systemd."""
     _patch_grouping(monkeypatch, _grouping_cfg(**cfg_kwargs))
 
-    r = doctor.check_crossover_unit_installed()
+    r = grouping.check_crossover_unit_installed()
 
     assert r.status == "skipped"
     assert r.reason == grouping.REASON_NOT_APPLICABLE
@@ -301,7 +301,7 @@ def test_check_crossover_unit_skips_for_a_passive_leader(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     _patch_grouping(monkeypatch, _grouping_cfg(**_LEADER))
 
-    r = doctor.check_crossover_unit_installed()
+    r = grouping.check_crossover_unit_installed()
 
     assert r.status == "skipped"
     assert r.reason == grouping.REASON_NOT_APPLICABLE
@@ -345,7 +345,7 @@ def test_check_crossover_unit_active_leader_verdicts(
     )
     monkeypatch.setattr(doctor.grouping.shutil, "which", lambda _n: systemd_analyze)
 
-    r = doctor.check_crossover_unit_installed()
+    r = grouping.check_crossover_unit_installed()
 
     assert r.status == status
     assert r.reason == reason
@@ -357,7 +357,7 @@ def test_check_crossover_unit_active_leader_verdicts(
 def test_check_grouping_off_is_ok(monkeypatch):
     _patch_grouping(monkeypatch, _grouping_cfg(enabled=False))
 
-    r = doctor.check_grouping()
+    r = grouping.check_grouping()
 
     assert r.status == "ok"
     assert r.reason == grouping.REASON_GROUPING_OFF
@@ -372,7 +372,7 @@ def test_check_grouping_invalid_config_warns(monkeypatch):
     )
     _patch_grouping(monkeypatch, cfg)
 
-    r = doctor.check_grouping()
+    r = grouping.check_grouping()
 
     assert r.status == "warn"
     assert r.reason == grouping.REASON_CONFIG_INVALID
@@ -398,7 +398,7 @@ def test_check_grouping_leader_reads_degraded_when_config_not_piped(
         },
     )
 
-    r = doctor.check_grouping()
+    r = grouping.check_grouping()
 
     assert r.status == "warn"
     assert r.reason == grouping.REASON_RUNTIME_DEGRADED
@@ -423,7 +423,7 @@ def test_check_grouping_follower_verdicts(monkeypatch, snapclient_state, status)
         unit_states={"jasper-snapclient.service": snapclient_state},
     )
 
-    r = doctor.check_grouping()
+    r = grouping.check_grouping()
 
     assert r.status == status
     assert r.reason == (grouping.REASON_RUNTIME_DEGRADED if status == "warn" else "")
@@ -455,7 +455,7 @@ def test_check_grouping_pair_lock_warns(monkeypatch, dac_content, reason):
         lambda _path, *, timeout=2.0: {"dac_content": dac_content},
     )
 
-    r = doctor.check_grouping_pair_lock()
+    r = grouping.check_grouping_pair_lock()
 
     assert r.status == "warn"
     assert r.reason == reason
@@ -474,7 +474,7 @@ def _solo_tts_lane(monkeypatch, voice_env_path):
         "prop:Environment:jasper-voice",
         [f"{VOICE_TTS_SOCKET_ENV}={FANIN_TTS_SOCKET}"],
     )
-    return doctor.check_grouping_tts_lane()
+    return grouping.check_grouping_tts_lane()
 
 
 @pytest.mark.parametrize(
