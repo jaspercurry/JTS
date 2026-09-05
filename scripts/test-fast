@@ -167,10 +167,17 @@ while IFS= read -r changed; do
     tests/test_*.py)
       add_test_if_present "${changed}"
       ;;
-    tests/wake_feature_bank_fixtures.py)
-      add_test_if_present "tests/test_build_wake_feature_bank.py"
-      add_test_if_present "tests/test_build_wake_negative_feature_bank.py"
-      add_test_if_present "tests/test_wake_training_feature_bank.py"
+    tests/*_fixtures.py)
+      # A shared fixtures module has no jasper/*.py path component and its
+      # several importers aren't named by the jasper arms' module-name
+      # convention below — so, like the deploy/bin arm's fallback further
+      # down, grep for the module's own basename across every test file
+      # that imports it.
+      fixtures_module="${changed##*/}"
+      fixtures_module="${fixtures_module%.py}"
+      while IFS= read -r fixtures_test; do
+        add_test_if_present "${fixtures_test}"
+      done < <(grep -l -- "${fixtures_module}" tests/test_*.py 2>/dev/null || true)
       ;;
     wake_training/*)
       # wake_training/ lives outside jasper/ (laptop-side training tooling,

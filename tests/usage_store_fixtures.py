@@ -15,8 +15,7 @@ class FakeUsageStore:
         self.close_calls = 0
 
     def close_session(self, session_id, in_tokens, out_tokens, usage=None):
-        # Mirrors the real store's own assert so a re-entrant call after
-        # _session_id was cleared fails the same way it would in production.
+        # Traps a re-entrant close after _session_id was cleared.
         assert session_id is not None
         self.close_calls += 1
         return 0.0

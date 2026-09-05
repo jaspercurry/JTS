@@ -403,7 +403,7 @@ def _fast_lane_selected_tests(
 
 
 @pytest.mark.parametrize(
-    ("changed_path", "routed_tests"),
+    ("changed_path", "routed_tests", "test_contents"),
     [
         (
             "scripts/_test_lane.sh",
@@ -411,14 +411,30 @@ def _fast_lane_selected_tests(
                 "tests/test_test_lane_tool_resolution.py",
                 "tests/test_dependency_groups.py",
             ),
+            None,
         ),
         (
+            # The tests/*_fixtures.py arm routes by grepping each routed
+            # test for the changed module's own basename (same idiom as the
+            # deploy/bin arm's grep fallback below), so the stand-in test
+            # files need that basename in them, same as a real importer.
             "tests/wake_feature_bank_fixtures.py",
             (
                 "tests/test_build_wake_feature_bank.py",
                 "tests/test_build_wake_negative_feature_bank.py",
                 "tests/test_wake_training_feature_bank.py",
             ),
+            {
+                "tests/test_build_wake_feature_bank.py": (
+                    "from tests.wake_feature_bank_fixtures import x\n"
+                ),
+                "tests/test_build_wake_negative_feature_bank.py": (
+                    "from tests.wake_feature_bank_fixtures import x\n"
+                ),
+                "tests/test_wake_training_feature_bank.py": (
+                    "from tests.wake_feature_bank_fixtures import x\n"
+                ),
+            },
         ),
         (
             # issue #3142: a module nested one directory deeper than the
@@ -434,6 +450,7 @@ def _fast_lane_selected_tests(
                 "tests/test_doctor_audio_runtime_camilla.py",
                 "tests/test_doctor_env.py",
             ),
+            None,
         ),
     ],
     ids=(
@@ -446,6 +463,7 @@ def test_fast_lane_routes_internal_support_files_to_their_guards(
     tmp_path: Path,
     changed_path: str,
     routed_tests: tuple[str, ...],
+    test_contents: dict[str, str] | None,
 ) -> None:
     """Support-file-only edits must select their dependent test contracts.
 
@@ -459,6 +477,7 @@ def test_fast_lane_routes_internal_support_files_to_their_guards(
         tmp_path,
         changed_path=changed_path,
         routed_tests=routed_tests,
+        test_contents=test_contents,
     )
 
     assert set(routed_tests) <= selected, selected
