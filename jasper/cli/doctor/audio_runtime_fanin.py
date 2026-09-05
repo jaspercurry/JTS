@@ -79,11 +79,6 @@ REASON_FANIN_TTS_LANE_DISABLED = "fanin_tts_lane_disabled"
 REASON_FANIN_TTS_PROTOCOL_ERRORS = "fanin_tts_protocol_errors"
 REASON_FANIN_TTS_AUDIO_DROPPED = "fanin_tts_audio_dropped"
 
-REASON_FANIN_RING_STALL_STATUS_NOT_PROBED = "fanin_ring_stall_status_not_probed"
-REASON_FANIN_RING_STALL_BLOCK_ABSENT = "fanin_ring_stall_block_absent"
-REASON_FANIN_RING_STALL_ACTIVE = "fanin_ring_stall_active"
-REASON_FANIN_RING_STALL_DROPS = "fanin_ring_stall_drops"
-
 REASON_HOST_CLOCK_STATUS_NOT_PROBED = "host_clock_status_not_probed"
 REASON_HOST_CLOCK_TELEMETRY_MISSING = "host_clock_telemetry_missing"
 REASON_HOST_CLOCK_DISABLED = "host_clock_disabled"
@@ -772,88 +767,6 @@ def check_fanin_tts_drops() -> CheckResult:
             reason=REASON_FANIN_TTS_AUDIO_DROPPED,
         )
     return CheckResult(name, "ok", f"none since fan-in start ({budget})")
-
-
-@doctor_check()
-def check_fanin_ring_stall() -> CheckResult:
-    """Ring A's drop counters, over the SHARED Ring-A stall verdict (issue #1524).
-
-    Whether Ring A is stalled is :func:`jasper.ring_assets.ring_stall_verdict` —
-    the one reader ``check_ring_reader_stall`` asks for all four rings — so the
-    two rows cannot disagree about one ring. fan-in's ``stall_active`` is the
-    fallback for what that verdict cannot judge (no coherent SHM header), the
-    role this check kept: STATUS witnesses what the header cannot.
-
-    The drop counters are cumulative since fan-in start, so they are DETAIL, not
-    a verdict: a stall the reader recovered from must not stay red until the
-    next fan-in restart. Reachability is the 'jasper-fanin service' check's.
-
-    Returns:
-      - ok when Ring A is draining, carrying `fanin_ring_stall_drops` when past
-        episodes left non-zero counters
-      - skipped when STATUS is unreachable or carries no ring block
-      - warn when a stall is CURRENTLY active.
-    """
-    name = "fan-in ring stall"
-    status = evidence.fanin_status()
-    data = status.payload
-    if data is None:
-        return CheckResult(
-            name,
-            "skipped",
-            f"not probed ({type(status.error).__name__}); fan-in reachability is "
-            "covered by the 'jasper-fanin service' check",
-            reason=REASON_FANIN_RING_STALL_STATUS_NOT_PROBED,
-        )
-
-    output = data.get("output")
-    ring = output.get("ring") if isinstance(output, dict) else None
-    if not isinstance(ring, dict):
-        # A running fan-in always publishes a ring block (ADR-0100); the missing
-        # block itself is FAILed by the 'jasper-fanin service' check.
-        return CheckResult(
-            name,
-            "skipped",
-            "STATUS carries no output.ring block; the 'jasper-fanin service' "
-            "check owns that failure",
-            reason=REASON_FANIN_RING_STALL_BLOCK_ABSENT,
-        )
-
-    from jasper.ring_assets import RING_A_PROGRAM_FILE, ring_stall_verdict
-
-    stuck = int(ring.get("stuck_reader_drops") or 0)
-    no_reader = int(ring.get("drop_no_reader") or 0)
-    last_ms = int(ring.get("last_stall_ms") or 0)
-    clockless = int(ring.get("clockless_paces") or 0)
-    counts = (
-        f"stuck_reader_drops={stuck}, drop_no_reader={no_reader}, "
-        f"last_stall_ms={last_ms}, clockless_paces={clockless}"
-    )
-    verdict = ring_stall_verdict(RING_A_PROGRAM_FILE)
-    if verdict.present:
-        stalled, witness = verdict.stalled, verdict.detail
-    else:
-        stalled = bool(ring.get("stall_active"))
-        witness = f"fan-in STATUS reports stall_active ({verdict.detail})"
-    if stalled:
-        return CheckResult(
-            name,
-            "warn",
-            f"a ring stall is CURRENTLY active: {witness}. CamillaDSP is not "
-            f"draining the fan-in ring; fan-in demoted to free-run to stay "
-            f"real-time but ring content is dropping ({counts}). Check "
-            f"`journalctl -u jasper-fanin | grep event=fanin.ring.stall` and "
-            f"`systemctl status jasper-camilla`.",
-            reason=REASON_FANIN_RING_STALL_ACTIVE,
-        )
-    if stuck or no_reader:
-        return CheckResult(
-            name,
-            "ok",
-            f"no active stall; cumulative since fan-in start: {counts}",
-            reason=REASON_FANIN_RING_STALL_DROPS,
-        )
-    return CheckResult(name, "ok", f"no active stall ({counts})")
 
 
 @doctor_check()
