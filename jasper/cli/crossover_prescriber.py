@@ -8,9 +8,10 @@
 back through the strict gate, ``stage`` runs the SAME gate and banks it,
 ``status`` only reports. No model client, API key or network lives here. Emit
 the packet ONCE and pass that file as ``--packet <file>``; a rebuild
-fingerprints differently. ``packet``, ``propose`` and ``stage`` each answer
-with one JSON document on stdout and their human line on stderr; exit codes
-and the failure record are :mod:`~jasper.cli._refusal`'s.
+fingerprints differently. Every verb answers with one JSON document on stdout
+and its human line on stderr; exit codes and the failure record are
+:mod:`~jasper.cli._refusal`'s, and ``status`` — which accepts nothing and
+refuses nothing — always exits 0, reporting what it could not read as a field.
 """
 
 from __future__ import annotations
@@ -108,15 +109,16 @@ REASON_UNREADABLE = "evidence_unreadable"
 REASON_UNWRITABLE = "output_unwritable"
 
 
-def _answer(document: dict[str, Any], code: int = EXIT_OK) -> int:
+def _answer(document: dict[str, Any]) -> int:
     """One verb's answer, printed the one way every tuning tool prints one.
 
     stdout carries exactly this document and nothing else, so a reader parses
-    stdout rather than scraping the human line on stderr. ``status`` passes its
-    own code: it answers whether or not the evidence read.
+    stdout rather than scraping the human line on stderr. Exit 0 is what this
+    IS: a non-zero exit publishes :func:`~jasper.cli._refusal.failed`'s record
+    instead, and no verb may print both.
     """
     print(json.dumps(document, indent=2, sort_keys=True))
-    return code
+    return EXIT_OK
 
 
 def _read_packet_file(path: Path) -> dict[str, Any]:
@@ -342,8 +344,10 @@ def _gate(
 #: What ``propose`` writes when no ``--out`` names somewhere else: the accepted
 #: result, beside the packet it was judged against. NOT the prescription
 #: document itself, which is the operator's own file and what
-#: ``stage --prescription`` reads.
-PROPOSAL_ARTIFACT = "proposal.json"
+#: ``stage --prescription`` reads — and NOT ``proposal.json``, which is the
+#: apply-time candidate mirror :func:`~jasper.active_speaker.bundles` writes
+#: into the bundle inside this same round tree.
+PROPOSAL_RECEIPT_ARTIFACT = "proposal_receipt.json"
 
 
 def _gate_refusal(exc: BlendPrescriptionRefused) -> int:
@@ -462,9 +466,9 @@ def _proposal_out(args: argparse.Namespace) -> Path:
     together and a live daemon-owned bundle is not written into.
     """
     if args.packet:
-        return Path(args.packet).parent / PROPOSAL_ARTIFACT
+        return Path(args.packet).parent / PROPOSAL_RECEIPT_ARTIFACT
     round_dir = Path(args.session_dir)
-    return default_out(round_inputs(round_dir), round_dir, PROPOSAL_ARTIFACT)
+    return default_out(round_inputs(round_dir), round_dir, PROPOSAL_RECEIPT_ARTIFACT)
 
 
 def _band_phrase(lo: float, hi: float) -> str:
@@ -925,6 +929,7 @@ def _status_sections(
 def _next_commands(
     sections: dict[str, Any],
     *,
+    packet_error: str,
     seat_level_db: float | None,
     session_dir: str | None,
     evidence: list[str],
@@ -939,7 +944,9 @@ def _next_commands(
     ``speaker``'s two URLs.
     """
     commands: list[str] = []
-    if session_dir:
+    # Nothing that would fail for the reason already reported: these two read
+    # the same evidence this verb just could not.
+    if session_dir and not packet_error:
         # Runnable AS PRINTED, so ``--state`` appears only when one was named:
         # this verb's own placeholder would be a path that does not exist, and
         # the packet it emits already reports the flow state's absence.
@@ -1062,8 +1069,8 @@ def status_document(
         "seat_level_reference_volume_db": seat_level_db,
         "reading_order": _reading_order(),
         "next": _next_commands(
-            sections, seat_level_db=seat_level_db, session_dir=session_dir,
-            evidence=evidence, state=state,
+            sections, packet_error=packet_error, seat_level_db=seat_level_db,
+            session_dir=session_dir, evidence=evidence, state=state,
         ),
     }
 
@@ -1071,11 +1078,11 @@ def status_document(
 def _cmd_status(args: argparse.Namespace) -> int:
     """Where this speaker stands, and what to run next. Writes nothing.
 
-    The document prints either way; the exit code still says which of two
-    things happened, :data:`EXIT_UNREADABLE` when the packet could not be
-    built. This verb is the loop's orientation, so its whole answer is the
-    document — a report whose only copy went to stderr would be invisible to
-    the SSH agent reading it.
+    Exit 0 whatever it found: this verb accepts nothing and refuses nothing, so
+    an unreadable bundle is a FACT it reports — ``packet_fingerprint: null``
+    beside the sentence in ``packet_error`` — rather than a failure that would
+    have to publish a refusal record instead of the orientation the caller ran
+    it for.
     """
     packet: dict[str, Any] | None = None
     packet_error = ""
@@ -1093,14 +1100,11 @@ def _cmd_status(args: argparse.Namespace) -> int:
         except (CrossoverEvidencePacketError, OSError) as exc:
             packet_error = str(exc)
 
-    return _answer(
-        status_document(
-            packet, packet_error,
-            session_dir=args.session_dir,
-            evidence=_evidence_words(args), state=args.state,
-        ),
-        EXIT_UNREADABLE if packet_error else EXIT_OK,
-    )
+    return _answer(status_document(
+        packet, packet_error,
+        session_dir=args.session_dir,
+        evidence=_evidence_words(args), state=args.state,
+    ))
 
 
 #: What ``--state`` is, said once. The verbs differ only in whether they can
@@ -1300,8 +1304,9 @@ def build_parser() -> argparse.ArgumentParser:
             "  by hand.\n"
             "\n"
             "EXIT CODES\n"
-            "  0  accepted -- status (which accepts nothing) exits 0 once it\n"
-            "     read the evidence, even a partial one\n"
+            "  0  accepted -- status (which accepts nothing) always exits 0;\n"
+            "     what it could not read is a field in its document, not a\n"
+            "     code\n"
             "  1  EXIT_REFUSED -- propose's or stage's gate refused the\n"
             "     prescription; \"refused (<reason>): <detail>\" on stderr,\n"
             "     and the same record as JSON on stdout\n"
@@ -1363,7 +1368,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--out",
         default=None,
         help=(
-            f"a PATH for the accepted result instead of {PROPOSAL_ARTIFACT} "
+            f"a PATH for the accepted result instead of {PROPOSAL_RECEIPT_ARTIFACT} "
             "beside the packet it was judged against"
         ),
     )

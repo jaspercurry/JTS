@@ -2930,6 +2930,14 @@ def test_every_verb_answers_with_one_document_on_stdout(tmp_path, monkeypatch):
         assert Path(answer["out"]).is_file()
         assert answer["bytes"] == Path(answer["out"]).stat().st_size
         assert _long_numeric_lists(answer) == []
+    # Each default artifact has the round tree to itself: `proposal.json` is
+    # already the apply-time candidate mirror `bundles` writes into the bundle.
+    assert {Path(a["out"]).name for a in (packet_answer, propose_answer)} == {
+        cli.PACKET_ARTIFACT, cli.PROPOSAL_RECEIPT_ARTIFACT,
+    }
+    assert "proposal.json" not in {
+        Path(a["out"]).name for a in (packet_answer, propose_answer)
+    }
     # The next verb, runnable as printed, against the same two files.
     assert propose_answer["next"].startswith("jasper-crossover-prescriber stage ")
     assert str(artifact) in propose_answer["next"]
