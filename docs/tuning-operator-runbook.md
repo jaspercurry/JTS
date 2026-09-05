@@ -113,9 +113,9 @@ exist.
    fourth verb, not a door.
 2. **Read the round.** `jasper-crossover-prescriber packet` writes one versioned
    JSON document to `packet.json` beside the round and prints only a summary of
-   it — fingerprint, round id, per-block availability, where it landed
-   (`--out` names another path, `--compact` drops indentation, `--json` emits
-   that summary as JSON). This is the evidence surface; it is a **computed
+   it on stdout — fingerprint, round id, per-block availability, where it
+   landed and how big it is (`--out` names another path, `--compact` drops
+   indentation). This is the evidence surface; it is a **computed
    view**, so rebuild it per ROUND rather than carrying one across rounds.
    **Within one round, hand that one file** to steps 4 and 5 with `--packet`: a
    rebuild resolves `--drivers`/`--applied-profile` against whichever machine
@@ -542,14 +542,14 @@ gone from the graph. No gate refuses that (there is no component-damage mechanis
 to name), so `propose` and `stage` disclose it instead — read it before you
 stage: the `displaces:` line on the terminal report, or
 `prescription.displaced_filters` / `displaced_boost_db` / `displaced_boost_role`
-under `--json`.
+in the accepted result `propose` writes.
 
 **The classification bar DISCLOSES; it stopped refusing on 2026-08-23.** Every
 filter is checked against the packet's `feature_classification.verdicts[]` —
 nearest verdict decides, and it must match your filter's sign — and the ones no
 verdict backs are counted, not refused. Read the count on the same report: the
-`vouched:` line, or `prescription.unvouched_filters` under `--json`, with the
-backing verdicts in `prescription.classification_basis`. Filters repeated from
+`vouched:` line, or `prescription.unvouched_filters` in the accepted result,
+with the backing verdicts in `prescription.classification_basis`. Filters repeated from
 the incumbent normally come back unvouched, because the fit engine placed them
 and nothing classified them. What still refuses is what a filter COSTS: the
 per-filter and composed caps, the declared band, a BOOST's width ceiling

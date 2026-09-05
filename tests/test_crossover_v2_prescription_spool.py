@@ -1182,7 +1182,7 @@ def test_the_stage_verb_stamps_the_round_the_receipt_says_is_next(
 
 
 def test_the_stage_verb_banks_a_document_judged_against_a_saved_packet_FILE(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, capsys,
 ):
     """The whole flow, ending where it is supposed to: emit once, stage that.
 
@@ -1227,10 +1227,19 @@ def test_the_stage_verb_banks_a_document_judged_against_a_saved_packet_FILE(
     ])
 
     assert code == cli.EXIT_OK
-    envelope = json.loads(spool.prescription_spool_path().read_text())
+    staged_at = spool.prescription_spool_path()
+    envelope = json.loads(staged_at.read_text())
     assert envelope["for_round_ordinal"] == 9
     assert envelope["packet_fingerprint"] == packet["packet_fingerprint"]
     assert envelope["prescription_sha256"] == prescription_sha256(payload)
+    # stdout is the answer, and for this verb the answer is where the document
+    # landed and which round it is now the instruction for.
+    answer = json.loads(capsys.readouterr().out)
+    assert answer["staged"] is True
+    assert answer["out"] == str(staged_at)
+    assert answer["bytes"] == staged_at.stat().st_size
+    assert answer["for_round_ordinal"] == envelope["for_round_ordinal"]
+    assert answer["prescription_sha256"] == envelope["prescription_sha256"]
 
 
 def test_the_stage_verb_refuses_without_the_state_it_reads_the_ordinal_from(
@@ -1299,7 +1308,7 @@ def test_a_refused_prescription_stages_nothing_and_exits_two(tmp_path, monkeypat
 
     code = cli.main([
         "stage", str(tmp_path), "--state", str(state),
-        "--prescription", str(document), "--json",
+        "--prescription", str(document),
     ])
 
     assert code == cli.EXIT_REFUSED
@@ -1351,7 +1360,11 @@ def test_propose_and_stage_run_the_same_gate(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_gate", _counting_gate)
 
     argv = [str(tmp_path), "--state", str(state), "--prescription", str(document)]
-    assert cli.main(["propose", *argv]) == cli.EXIT_OK
+    # --out because the gate is stubbed: nothing here resolved a round for the
+    # accepted result to land beside.
+    assert cli.main(
+        ["propose", *argv, "--out", str(tmp_path / "proposal.json")]
+    ) == cli.EXIT_OK
     assert cli.main(["stage", *argv]) == cli.EXIT_OK
     assert reached == ["propose", "stage"]
 
@@ -1442,11 +1455,11 @@ def test_the_staged_event_reaches_stderr_from_the_real_entrypoint(tmp_path):
 
 
 def test_the_staged_event_goes_to_stderr_and_never_to_stdout(tmp_path):
-    """stdout is the machine channel; a log line there would corrupt ``--json``.
+    """stdout is the machine channel; a log line there would corrupt the answer.
 
-    The same split every other verb keeps — the packet and the accepted result
-    are stdout, the human and structured lines are stderr — so a caller piping
-    this command's stdout into ``jq`` is never handed a log line.
+    The same split every other verb keeps — the answer document is stdout, the
+    human and structured lines are stderr — so a caller piping this command's
+    stdout into ``jq`` is never handed a log line.
     """
     result = _stage_in_a_real_process(tmp_path)
 
@@ -1454,7 +1467,7 @@ def test_the_staged_event_goes_to_stderr_and_never_to_stdout(tmp_path):
 
 
 def test_configuring_logging_does_not_silence_the_human_summary(tmp_path):
-    """The control: the non-JSON summary an operator reads still prints.
+    """The control: the human summary an operator reads still prints.
 
     A logging change that captured or reformatted the command's own stderr
     writes would trade one observability defect for another.

@@ -828,7 +828,7 @@ jasper-crossover-prescriber packet <bundle-dir> --state <flow-state.json> \
 
 # the write side: judge what came back against the SAME file `packet` wrote
 jasper-crossover-prescriber propose --packet round.json \
-    --prescription answer.json --json
+    --prescription answer.json
 
 # the door: same gate, and the accepted answer is left for the next round
 jasper-crossover-prescriber stage --packet round.json \
@@ -856,8 +856,8 @@ jasper-crossover-prescriber stage --packet round.json \
 - **Exit codes are the contract**, and **`1` and `2` are this tool's own way
   round** — the shared read-only rule the
   [operator runbook](tuning-operator-runbook.md)'s "Exit codes" owns has them
-  the other way. `--json` prints the machine-readable `reason` plus its
-  evidence.
+  the other way. Every verb prints its answer, or its `reason` and the gate's
+  evidence, as one JSON document on stdout.
 
 `stage` writes one single-use document to
 `/var/lib/jasper/active_speaker_crossover_v2_prescription.json` stamped with the

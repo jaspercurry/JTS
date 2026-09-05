@@ -341,10 +341,8 @@ def test_the_packet_discloses_the_trim_the_round_re_solved(tmp_path, capsys):
         "delta_db": pytest.approx(-2.105 - (-1.361)),
         "pinned_this_round": False,
     }
-    # The same numbers reach the operator's terminal, not only the document.
-    assert "trim tweeter: applied -1.36 dB, round resolved -2.10 dB" in out
-    assert "-0.74 dB" in out
-    assert "pinned" not in out
+    # The same numbers reach the caller's stdout, not only the artifact.
+    assert json.loads(out)["trim"]["tweeter"] == trim
 
 
 def _receipt_with_incumbent(session: Path, incumbent: Any) -> None:
