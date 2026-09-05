@@ -24,7 +24,7 @@ doctor checks, the AEC bridge, the reconciler, and BRINGUP.
 4. If the mic needs to be the active AEC mic, see how the XVF profile reaches
    the reconciler under "Consumers today" below; its static fallback
    candidates and mixer control names are still XVF literals in bash
-   (ADR-0235 PR 11 moves those).
+   (ADR-0235 G10).
 
 ## Why no `MicProfile` interface?
 
