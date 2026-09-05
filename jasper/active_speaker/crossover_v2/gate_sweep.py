@@ -48,6 +48,7 @@ from jasper.audio_measurement.gating import (
     intersect_bands,
 )
 
+from .feature_classification import UNCERTAINTY_UNSEPARATED
 from .feature_optics import (
     CENTRE_SEARCH_OCT,
     DETREND_FRACTION,
@@ -175,6 +176,15 @@ ROUTE_CENTRE_SHIFT = "centre_shift"
 #: shares one floor and ceiling path (#3503).
 AXIS_AZIMUTH = "azimuth"
 AXIS_ELEVATION = "elevation"
+
+#: Why an axis family has no spread to publish: its own angle was declared
+#: and constant, or no pose in the family declared it at all. Both are
+#: UNMEASURED dimensions, never evidence a feature does not move along them;
+#: the axis is published carrying one of these rather than omitted, so "not
+#: sampled" is a fact a reader is told instead of one inferred from a missing
+#: key.
+AXIS_NOT_VARIED = "axis_took_one_value"
+AXIS_NOT_DECLARED = "no_pose_declared_on_this_axis"
 
 
 REFUSE_REFERENCE_BAND_EMPTY = "gate_sweep_reference_band_empty"
@@ -510,8 +520,12 @@ class AxisSigma:
     #: Distinct declared poses in the family, not captures: a repeat take at
     #: one pose feeds the sigma without being a second pose.
     n_poses: int
-    #: Across-pose sigma over this family alone, on the whole grid, per rung.
-    sigma: dict[float, np.ndarray]
+    #: Across-pose sigma over this family alone, on the whole grid, per rung,
+    #: or ``None`` when the axis was not sampled.
+    sigma: dict[float, np.ndarray] | None
+    #: :data:`AXIS_NOT_VARIED` or :data:`AXIS_NOT_DECLARED` when ``sigma`` is
+    #: ``None``, and ``None`` when it is not.
+    reason: str | None
 
 
 def _axis_sigmas(
@@ -521,11 +535,12 @@ def _axis_sigmas(
 
     The azimuth family is the poses declaring elevation 0, the elevation
     family the poses declaring azimuth 0, and the (0, 0) anchor is in both. A
-    family is formed only where its OWN angle takes two values, so two
-    captures differing in distance alone publish no elevation spread; a family
-    that did not vary is absent rather than zero. An undeclared pose field is
-    never read as zero — a capture that declares no height is not a capture at
-    height zero — so a round declaring no poses forms no family at all.
+    spread is read only where the family's OWN angle takes two values, so two
+    captures differing in distance alone publish no elevation spread. An
+    undeclared pose field is never read as zero — a capture that declares no
+    height is not a capture at height zero. Both axes are always returned:
+    one that did not vary carries its named reason instead of a sigma, so the
+    unmeasured axis is stated rather than left to a missing key (#3503).
     """
     families = {
         AXIS_AZIMUTH: [
@@ -541,12 +556,17 @@ def _axis_sigmas(
     }
     sigmas: dict[str, AxisSigma] = {}
     for axis, members in families.items():
-        if len({angle for angle, _read in members}) < 2:
-            continue
+        angles = {angle for angle, _read in members}
         family = [read for _angle, read in members]
+        sampled = len(angles) >= 2
         sigmas[axis] = AxisSigma(
             n_poses=len({read.capture.pose_key for read in family}),
-            sigma=_across_pose_sigma(family, rungs_ms),
+            sigma=_across_pose_sigma(family, rungs_ms) if sampled else None,
+            reason=(
+                None if sampled
+                else AXIS_NOT_VARIED if angles - {None}
+                else AXIS_NOT_DECLARED
+            ),
         )
     return sigmas
 
@@ -558,9 +578,17 @@ def _axis_sigma_row(
     rungs_ms: Sequence[float],
     valid_rungs_ms: Sequence[float],
 ) -> dict[str, Any]:
-    """One family's sigma at this bin, on the headline's own growth terms."""
+    """One family's sigma at this bin, on the headline's own growth terms, or
+    the NOT-SAMPLED block when the axis never varied."""
+    if family.sigma is None:
+        return {
+            "sampled": False,
+            "reason": family.reason,
+            "n_poses": family.n_poses,
+        }
     sigma = {rung: float(family.sigma[rung][grid_index]) for rung in rungs_ms}
     row: dict[str, Any] = {
+        "sampled": True,
         "n_poses": family.n_poses,
         "sigma_db_by_rung": {_key(rung): sigma[rung] for rung in rungs_ms},
         "sigma_growth_ratio": None,
@@ -621,8 +649,8 @@ def _feature_result(
     only what varies with the BIN; who that pose is is the round's fact,
     banked once beside the report, and the rows are in capture order so the
     JOIN is the position, not the key. ``sigma_by_axis`` is the same spread
-    per axis family beside the all-pose one, never instead of it, and a family
-    the round did not vary is absent (#3503).
+    per axis family beside the all-pose one, never instead of it, and an axis
+    the round did not vary says so with ``sampled: false`` (#3503).
     """
     grid_index = int(np.argmin(np.abs(grid - float(hz))))
     bin_hz = float(grid[grid_index])
@@ -837,6 +865,44 @@ def _key(rung_ms: float) -> str:
     return f"{rung_ms:g}"
 
 
+#: What kind of spread every sigma in this report is, in the register the
+#: evidence packet already declares (``kind`` + ``of``): the across-pose
+#: standard deviation pools the sound field's real pose-to-pose variation with
+#: each capture's own measurement noise and separates neither, so it is
+#: :data:`~.feature_classification.UNCERTAINTY_UNSEPARATED` rather than a kind
+#: it does not have. Separating them needs a repeat spread at a FIXED pose.
+_SIGMA_UNSEPARATED: dict[str, dict[str, str]] = {
+    "sigma_db_by_rung": {
+        "kind": UNCERTAINTY_UNSEPARATED,
+        "of": (
+            "how far the poses disagree at this bin and rung — the sample "
+            "standard deviation (ddof=1) across the normalised per-pose "
+            "curves. Its GROWTH across the ladder is the discriminator; its "
+            "size alone is not, because an azimuth-only cloud is large and "
+            "window-invariant at HF by directivity"
+        ),
+    },
+    "band_mean_sigma_db_by_rung": {
+        "kind": UNCERTAINTY_UNSEPARATED,
+        "of": (
+            "the same spread averaged over every graded bin of a band, "
+            "including bins below their own resolution floor at the short "
+            "rungs"
+        ),
+    },
+}
+
+#: Shaped like an uncertainty and not one, named rather than left out.
+_SIGMA_NOT_AN_UNCERTAINTY: dict[str, str] = {
+    "sigma_growth_ratio": (
+        "the ratio of the two spreads above at the longest and shortest "
+        "resolution-valid rungs — the DISCRIMINATOR this report is built on, "
+        "tested against a threshold. It is a signal, not a spread about any "
+        "reading, and sigma_growth_readable says whether it was read at all"
+    ),
+}
+
+
 def frame_descriptor(rungs_ms: Sequence[float], grid: np.ndarray) -> dict[str, Any]:
     """The frame every number in this report is stated in (#3495).
 
@@ -878,6 +944,18 @@ def frame_descriptor(rungs_ms: Sequence[float], grid: np.ndarray) -> dict[str, A
         "resolution_bars_cycles": {
             "invalid_below": RESOLUTION_INVALID_CYCLES,
             "grey_below": RESOLUTION_GREY_CYCLES,
+        },
+        "uncertainty": {
+            # Empty for the reason the packet's cross-seat block is: nothing
+            # here is a random OR a systematic uncertainty, and filing a
+            # pooled spread as either would be exactly the pooling these
+            # labels exist to prevent.
+            "fields": {},
+            "unseparated": {
+                field: dict(entry)
+                for field, entry in sorted(_SIGMA_UNSEPARATED.items())
+            },
+            "not_uncertainties": dict(sorted(_SIGMA_NOT_AN_UNCERTAINTY.items())),
         },
     }
 
