@@ -10,9 +10,8 @@ exception classification and the once-per-outage escalation
 announcement. The generic retry schedule lives in :mod:`jasper.backoff`
 so non-voice subsystems do not depend on this private module.
 
-Providers differ only in what a failed attempt means to them — Gemini
-drops its ADR-0166 resumption handle, OpenAI just reopens the WebSocket
-— and that difference goes through
+Providers differ only in what a failed attempt costs them in session
+state, and that difference goes through
 `SupervisedConnection._on_reconnect_attempt_failed`.
 """
 from __future__ import annotations
@@ -383,7 +382,7 @@ class Deferred:
 class SupervisedConnection(Protocol):
     """What the shared reconnect supervisor reads from a connection.
 
-    Every member already exists on both provider connections; naming
+    Every member already exists on each provider connection; naming
     them here is what lets the loop below be type-checked."""
 
     PROVIDER_NAME: str
@@ -399,7 +398,10 @@ class SupervisedConnection(Protocol):
     _reconnect_event: asyncio.Event
     _nudge_event: asyncio.Event
     _deferred_reconnect: Deferred
-    _outage: OutageTracker
+    # Raised by a provider that schedules its own session rotation: the
+    # reconnect it asks for is not a failure. `run_reconnect_with_backoff`
+    # spends the flag.
+    _planned_rotate: bool
     # None in production (retry forever); a bounded tuple in tests, to
     # make schedule exhaustion observable.
     _backoff_schedule: tuple[float, ...] | None
@@ -411,18 +413,12 @@ class SupervisedConnection(Protocol):
 
     async def _open_session(self) -> None: ...
 
-    async def _reconnect_with_backoff(self) -> None:
-        """Usually a thin call through to `run_reconnect_with_backoff`;
-        a provider owning pre-run state (Gemini's planned rotation)
-        settles it here first."""
-        ...
-
     def _on_reconnect_attempt_failed(
         self, exc: Exception, attempt: int, transient: bool,
     ) -> None:
-        """One failed reopen. Logs the provider's own diagnosis and
-        applies whatever recovery its next attempt needs — for Gemini,
-        dropping a possibly-stale resumption handle (ADR-0166)."""
+        """One failed reopen: log the provider's own diagnosis, and drop
+        whatever session state the failure may have invalidated so the
+        next attempt starts from something the provider will accept."""
         ...
 
 
@@ -444,7 +440,7 @@ async def run_supervisor_loop(conn: SupervisedConnection) -> None:
             provider=conn.PROVIDER_NAME,
             state=conn._state.value,
         )
-        await conn._reconnect_with_backoff()
+        await run_reconnect_with_backoff(conn)
         log_event(
             logger,
             "voice.supervisor.wait",
@@ -453,13 +449,14 @@ async def run_supervisor_loop(conn: SupervisedConnection) -> None:
         )
 
 
-async def run_reconnect_with_backoff(
-    conn: SupervisedConnection, *, first_delay: float | None = None,
-) -> None:
+async def run_reconnect_with_backoff(conn: SupervisedConnection) -> None:
     """Tear the session down, then reopen until it takes.
 
-    `first_delay` overrides the schedule for attempt 1 only: a planned
-    session rotation is not a failure and waits for nothing."""
+    A raised `_planned_rotate` is spent here: that reconnect is the
+    connection's own scheduled rotation rather than a failure, so its
+    first attempt waits for nothing. Every attempt after it backs off."""
+    planned_rotate = conn._planned_rotate
+    conn._planned_rotate = False
     async with conn._state_lock:
         conn._set_state(ConnectionState.RECONNECTING)
     # Tear down the old session before opening a new one so we don't
@@ -491,8 +488,8 @@ async def run_reconnect_with_backoff(
         attempt += 1
         if schedule is not None and attempt > len(schedule):
             break
-        if attempt == 1 and first_delay is not None:
-            delay = first_delay
+        if attempt == 1 and planned_rotate:
+            delay = 0.0
         elif schedule is not None:
             delay = schedule[attempt - 1]
         else:

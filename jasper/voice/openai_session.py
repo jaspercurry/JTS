@@ -69,7 +69,6 @@ from ._supervisor import (
     Deferred,
     OutageTracker,
     is_transient,
-    run_reconnect_with_backoff,
     run_supervisor_loop,
     survive_terminal_initial_connect,
 )
@@ -798,6 +797,9 @@ class OpenAIRealtimeConnection:
     """
 
     PROVIDER_NAME = "openai"
+    # This provider schedules no session rotation of its own: every
+    # reconnect it asks for is a failure, and backs off from attempt 1.
+    _planned_rotate = False
 
     def __init__(
         self,
@@ -991,7 +993,7 @@ class OpenAIRealtimeConnection:
             instruction = system_instruction or ""
             self._system_instruction_provider = lambda: instruction
         await self._do_initial_connect()
-        self._supervisor_task = asyncio.create_task(self._supervisor_loop())
+        self._supervisor_task = asyncio.create_task(run_supervisor_loop(self))
 
     async def stop(self) -> None:
         if self._state is ConnectionState.CLOSED:
@@ -1668,12 +1670,6 @@ class OpenAIRealtimeConnection:
             self._proactive_buffer_sec,
         )
         self._reconnect_event.set()
-
-    async def _supervisor_loop(self) -> None:
-        await run_supervisor_loop(self)
-
-    async def _reconnect_with_backoff(self) -> None:
-        await run_reconnect_with_backoff(self)
 
     def _on_reconnect_attempt_failed(
         self, exc: Exception, attempt: int, transient: bool,
