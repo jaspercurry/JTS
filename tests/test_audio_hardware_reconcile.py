@@ -783,21 +783,38 @@ def test_i2s_reboot_marker_tracks_desired_versus_observed(tmp_path: Path):
     assert "output_parked" in parked.stderr
 
 
-def test_published_not_durable_boot_change_still_sets_marker(tmp_path: Path):
+def _not_durable_python(tmp_path: Path, *, extra_case: str = "") -> Path:
+    """A `python` stand-in whose boot-config CLI reports a non-durable publish.
+
+    Stubbed rather than real because exit 74 needs a directory-fsync failure.
+    It emits the `--env` keys `reconcile_i2s_hat_boot` reads; every other test
+    here runs the real CLI, so a rename fails those rather than passing here.
+    """
     fake_python = tmp_path / "python"
     fake_python.write_text(
         "#!/bin/sh\n"
         "case \"$*\" in\n"
-        "*usb_port_role*) echo '{\"board_topology\": \"separate_host_ports\", "
-        "\"i2s_hat_profile\": \"innomaker_hifi_amp_pro\", "
-        "\"i2s_hat_boot_config_changed\": true, "
-        "\"boot_config_published_not_durable\": true}'; exit 74;;\n"
-        "*jasper.cli.output_hardware*) echo \"OBSERVED_OUTPUT_PROFILE_ID=unknown\"; "
-        "echo \"OBSERVED_OUTPUT_PROFILE_STATUS=unavailable\"; exit 0;;\n"
+        "*usb_port_role*) printf '%s\\n' "
+        "'JASPER_BOOT_BOARD_TOPOLOGY=separate_host_ports' "
+        "'JASPER_BOOT_I2S_HAT_PROFILE=innomaker_hifi_amp_pro' "
+        "'JASPER_BOOT_I2S_HAT_CHANGED=true' "
+        "'JASPER_BOOT_CONFIG_PUBLISHED_NOT_DURABLE=true'; exit 74;;\n"
+        f"{extra_case}"
         f'esac\nexec "{sys.executable}" "$@"\n',
         encoding="utf-8",
     )
     fake_python.chmod(0o755)
+    return fake_python
+
+
+def test_published_not_durable_boot_change_still_sets_marker(tmp_path: Path):
+    fake_python = _not_durable_python(
+        tmp_path,
+        extra_case=(
+            "*jasper.cli.output_hardware*) echo \"OBSERVED_OUTPUT_PROFILE_ID=unknown\"; "
+            "echo \"OBSERVED_OUTPUT_PROFILE_STATUS=unavailable\"; exit 0;;\n"
+        ),
+    )
 
     result = _run_reconcile(
         tmp_path, "", extra_env={"JASPER_OUTPUT_HARDWARE_PYTHON": str(fake_python)}
@@ -808,6 +825,32 @@ def test_published_not_durable_boot_change_still_sets_marker(tmp_path: Path):
     assert "error=boot_config_published_not_durable" in result.stderr
 
 
+def test_boot_config_payload_missing_a_key_refuses_instead_of_proceeding(
+    tmp_path: Path,
+):
+    """A key the emitter stopped writing reaches this reconciler's own refusal.
+
+    66 and not a `set -u` abort (1) partway through the function: the boot
+    config is preserved either way, but only 66 says so in the journal.
+    """
+    fake_python = tmp_path / "python"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        "case \"$*\" in\n"
+        "*usb_port_role*) "
+        "printf '%s\\n' 'JASPER_BOOT_BOARD_TOPOLOGY=separate_host_ports'; exit 0;;\n"
+        f'esac\nexec "{sys.executable}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    result = _run_reconcile(
+        tmp_path, "", extra_env={"JASPER_OUTPUT_HARDWARE_PYTHON": str(fake_python)}
+    )
+
+    assert result.returncode == 66, result.stderr
+
+
 def test_record_change_with_i2s_apply_error_restarts_dac_init_before_exit(
     tmp_path: Path,
 ):
@@ -816,18 +859,7 @@ def test_record_change_with_i2s_apply_error_restarts_dac_init_before_exit(
     the gap: the exit-74 early return sits between the record write and
     gate_role_services, so the pin restart the changed record earned has to
     fire at the exit site itself, not only from gate_role_services."""
-    fake_python = tmp_path / "python"
-    fake_python.write_text(
-        "#!/bin/sh\n"
-        "case \"$*\" in\n"
-        "*usb_port_role*) echo '{\"board_topology\": \"separate_host_ports\", "
-        "\"i2s_hat_profile\": \"innomaker_hifi_amp_pro\", "
-        "\"i2s_hat_boot_config_changed\": true, "
-        "\"boot_config_published_not_durable\": true}'; exit 74;;\n"
-        f'esac\nexec "{sys.executable}" "$@"\n',
-        encoding="utf-8",
-    )
-    fake_python.chmod(0o755)
+    fake_python = _not_durable_python(tmp_path)
 
     result = _run_reconcile(
         tmp_path, "", extra_env={"JASPER_OUTPUT_HARDWARE_PYTHON": str(fake_python)}

@@ -36,8 +36,8 @@ from jasper.output_hardware import (
 
 
 def _flag(value: bool) -> str:
-    # `event=hardware.usb_role_resolved` spells these the JSON way, and the
-    # reconciler logs them straight through.
+    # `true`/`false`, the spelling `publish_management_transport_marker`
+    # compares against.
     return "true" if value else "false"
 
 
@@ -66,16 +66,12 @@ def env_lines(
             if issue.get("severity") == "blocker"
         ),
         "OBSERVED_OUTPUT_RECORD_CHANGED": "1" if record_changed else "0",
-        "OBSERVED_OUTPUT_USB_TOPOLOGY": usb.board_topology if usb else "",
-        "OBSERVED_OUTPUT_USB_DESIRED_ROLE": usb.desired_role if usb else "",
-        "OBSERVED_OUTPUT_USB_ACTIVE_ROLE": usb.active_role if usb else "",
-        "OBSERVED_OUTPUT_USB_GADGET_AVAILABLE": (
-            _flag(usb.gadget_available) if usb else ""
-        ),
+        # The rest of the port-role record is not re-emitted here: the
+        # boot-config CLI owns it and reports it on stderr as
+        # `event=hardware.usb_role_resolved` (ADR-0235 R4).
         "OBSERVED_OUTPUT_USB_MANAGEMENT_TRANSPORT_AVAILABLE": (
             _flag(usb.management_transport_available) if usb else ""
         ),
-        "OBSERVED_OUTPUT_USB_REASON": usb.reason if usb else "",
         "OBSERVED_OUTPUT_DUAL_MAPPING_OK": "1" if mapping.ok else "0",
         "OBSERVED_OUTPUT_DUAL_MAPPING_REASON": mapping.reason,
         "OBSERVED_OUTPUT_DUAL_ORDER_SOURCE": mapping.order_source,
