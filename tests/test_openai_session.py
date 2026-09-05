@@ -26,7 +26,9 @@ import pytest
 
 from jasper.tools import ToolRegistry, tool
 from jasper.voice._supervisor import (
+    DEFAULT_INITIAL_CONNECT_BUDGET_SEC,
     NEEDS_ATTENTION_CUE_SLUG,
+    run_initial_connect,
     run_reconnect_with_backoff,
 )
 from jasper.voice.openai_session import (
@@ -35,6 +37,7 @@ from jasper.voice.openai_session import (
     _upsample_16k_to_24k,
 )
 from jasper.voice.grok_session import GROK_WEBSOCKET_BASE_URL, GrokRealtimeConnection
+from tests._log_events import event_field_maps, event_fields
 
 
 # ---------------------------------------------------------------------------
@@ -2069,7 +2072,7 @@ async def test_initial_connect_retries_with_exponential_backoff():
 
 async def test_initial_connect_exhausts_budget_and_raises():
     """Every attempt fails transiently and the wall-clock budget
-    expires: ``_open_session_with_retry`` raises ``RuntimeError`` so
+    expires: ``run_initial_connect`` raises ``RuntimeError`` so
     the daemon exits non-zero and systemd's outer loop kicks in. The
     budget covers wall-time, NOT a fixed retry count — verified by
     setting a tiny budget so the test runs in O(budget_sec) of fake
@@ -2106,7 +2109,7 @@ async def test_initial_connect_non_transient_error_skips_the_budget():
         fail_exc=_AuthError("bad key"),
     )
     with pytest.raises(_AuthError):
-        await conn._open_session_with_retry()
+        await run_initial_connect(conn, 600.0)
     # Critical: NO sleeps fired. A non-transient error must not
     # cost the user a backoff wait.
     assert clock.sleeps == []
@@ -2176,63 +2179,46 @@ async def test_initial_connect_zero_budget_is_single_attempt():
 
 
 async def test_initial_connect_logs_structured_events(caplog):
-    """Per the AGENTS.md PSK rule, the boot-time funnel emits
-    ``event=openai.initial_connect.{...}`` lines so journalctl can
-    grep the path alongside the rest of the daemon's structured logs.
-    Pin three concrete patterns: ``.attempt``, ``.backoff``, and
-    ``.exhausted`` (the failure-path triad)."""
-    import logging
-    caplog.set_level(logging.WARNING, logger="jasper.voice.openai_session")
-    conn, factory, clock = _make_conn_with_clock(
+    """The boot-time funnel is greppable in the journal: each retry and
+    the exhaustion carry the provider, the attempt and the cause."""
+    caplog.set_level(logging.WARNING, logger="jasper.voice._supervisor")
+    conn, _factory, _clock = _make_conn_with_clock(
         budget_sec=1.5, fail_count=100,
     )
-    registry = ToolRegistry()
     with pytest.raises(RuntimeError):
-        await conn.start(registry, "")
-    messages = [r.getMessage() for r in caplog.records]
-    assert any(
-        "event=openai.initial_connect.attempt" in m for m in messages
-    ), f"no .attempt event found in {messages}"
-    assert any(
-        "event=openai.initial_connect.backoff" in m for m in messages
-    ), f"no .backoff event found in {messages}"
-    assert any(
-        "event=openai.initial_connect.exhausted" in m for m in messages
-    ), f"no .exhausted event found in {messages}"
+        await conn.start(ToolRegistry(), "")
+    retries = event_field_maps(
+        caplog, "voice.initial_connect.retry", provider="openai",
+    )
+    assert retries, "no retry event"
+    assert retries[0]["attempt"] == "1"
+    assert float(retries[0]["delay_sec"]) > 0.0
+    exhausted = event_fields(caplog, "voice.initial_connect.exhausted")
+    assert exhausted["provider"] == "openai"
+    assert exhausted["exc"] == "OSError"
 
 
 async def test_initial_connect_success_after_retries_logs_success_event(caplog):
-    """Recovery path: after one or more transient failures, the next
-    successful attempt emits ``event=openai.initial_connect.success``
-    with ``elapsed_sec`` so journalctl can see how long the network
-    race took to resolve."""
-    import logging
-    caplog.set_level(logging.INFO, logger="jasper.voice.openai_session")
-    conn, factory, clock = _make_conn_with_clock(
+    """Recovery path: the successful attempt reports which attempt it
+    was and how long the network race took to resolve."""
+    caplog.set_level(logging.INFO, logger="jasper.voice._supervisor")
+    conn, _factory, _clock = _make_conn_with_clock(
         budget_sec=600.0, fail_count=2,
     )
-    registry = ToolRegistry()
-    await conn.start(registry, "")
+    await conn.start(ToolRegistry(), "")
     try:
-        messages = [r.getMessage() for r in caplog.records]
-        assert any(
-            "event=openai.initial_connect.success" in m for m in messages
-        ), f"no .success event found in {messages}"
-        # elapsed_sec is attached when attempt > 1.
-        success_lines = [
-            m for m in messages
-            if "event=openai.initial_connect.success" in m
-        ]
-        assert any("elapsed_sec=" in m for m in success_lines)
+        fields = event_fields(caplog, "voice.initial_connect.success")
+        assert fields["provider"] == "openai"
+        assert fields["attempt"] == "3"
+        assert float(fields["elapsed_sec"]) > 0.0
     finally:
         await conn.stop()
 
 
 def test_initial_connect_budget_env_default_when_unset(monkeypatch):
     """Constructing with ``initial_connect_budget_sec=None`` reads
-    the env var; missing env var → the module's documented default
+    the env var; missing env var → the shared default
     (DEFAULT_INITIAL_CONNECT_BUDGET_SEC = 600 s)."""
-    from jasper.voice.openai_session import DEFAULT_INITIAL_CONNECT_BUDGET_SEC
     monkeypatch.delenv(
         "JASPER_OPENAI_INITIAL_CONNECT_BUDGET_SEC", raising=False,
     )
@@ -2264,7 +2250,6 @@ def test_initial_connect_budget_env_garbage_falls_back(monkeypatch):
     """Non-numeric / negative env values must not refuse to start the
     daemon — log a warning, fall back to default. Better the daemon
     boots with documented behaviour than refuses over a typo."""
-    from jasper.voice.openai_session import DEFAULT_INITIAL_CONNECT_BUDGET_SEC
     for bad in ("not-a-number", "-5"):
         monkeypatch.setenv(
             "JASPER_OPENAI_INITIAL_CONNECT_BUDGET_SEC", bad,
