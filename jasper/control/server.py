@@ -710,6 +710,7 @@ async def _get_state(
     camilla_port: int,
     voice_socket_path: str,
     ha_status_snapshot: Callable[[], dict[str, Any]] | None = None,
+    airplay_playing_snapshot: Callable[[], bool | None] | None = None,
     transport_park_snapshot: Callable[[], dict[str, Any]] | None = None,
     service_states_snapshot: (
         Callable[[], dict[str, dict[str, Any]]] | None
@@ -720,6 +721,7 @@ async def _get_state(
         extra["transport_park_snapshot"] = transport_park_snapshot
     return await _state_aggregate._get_state(
         service_states_snapshot=service_states_snapshot,
+        airplay_playing_snapshot=airplay_playing_snapshot,
         camilla_host=camilla_host,
         camilla_port=camilla_port,
         voice_socket_path=voice_socket_path,
