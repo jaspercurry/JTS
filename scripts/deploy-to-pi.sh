@@ -91,6 +91,72 @@ run_remote_sudo() {
     fi
 }
 
+# Root-owned Pi facts under attended sudo.
+#
+# sudo's timestamp is per-tty, so every `ssh -tt` session prompts again,
+# and a prompt written into a $(...) capture is invisible to the operator
+# AND lands in the captured value. So on that channel each stage's facts
+# are staged ONCE by an UNCAPTURED privileged command — the prompt is on
+# screen and the operator types normally — into a directory the deploy
+# user owns, and every read then rides the plain BatchMode channel with
+# no sudo at all. Passwordless sudo reads the originals directly, as
+# before. No-op on that channel; every caller is unconditional.
+REMOTE_FACTS_DIR=""
+publish_root_facts() {
+    local stage="$1" since_epoch="${2:-0}" body args
+    [[ "$SUDO_INTERACTIVE" == "1" ]] || return 0
+    if [[ -z "$REMOTE_FACTS_DIR" ]]; then
+        # Named for this run alone: a concurrent deploy from another
+        # checkout must never sweep facts this one is still reading.
+        REMOTE_FACTS_DIR="$(ssh_remote 'd="$HOME/.jts-deploy-facts.'"$$"'"; rm -rf "$d" && mkdir -m 0700 "$d" && printf "%s\n" "$d"')" || {
+            echo "deploy-to-pi: could not stage privileged reads on ${SSH_TARGET}" >&2
+            exit 1
+        }
+        REMOTE_FACTS_DIR="${REMOTE_FACTS_DIR%%$'\n'*}"
+        trap 'cleanup_remote_facts' EXIT
+    fi
+    if [[ "$stage" == "journal" ]]; then
+        args="$since_epoch"
+        printf -v body '%s\n' \
+            'dir="$1"; owner="$2"; since="$3"' \
+            'journalctl -k --since "$(date -d @"${since}" "+%Y-%m-%d %H:%M:%S")" --no-pager > "${dir}/journal" 2>/dev/null || true' \
+            'chown "${owner}" "${dir}/journal"' \
+            'chmod 0600 "${dir}/journal"'
+    else
+        case "$stage" in
+            pre)  args="peer_id build.txt" ;;
+            post) args="build.txt install_profile" ;;
+        esac
+        printf -v body '%s\n' \
+            'dir="$1"; owner="$2"; shift 2' \
+            'for f in "$@"; do' \
+            '    [ -r "/var/lib/jasper/${f}" ] || continue' \
+            '    install -m 0600 -o "${owner}" "/var/lib/jasper/${f}" "${dir}/${f}"' \
+            'done'
+    fi
+    echo "==> Staging privileged reads on ${PI_HOST} (${stage}); sudo may prompt"
+    # shellcheck disable=SC2086
+    run_remote_sudo "sh -c $(shell_quote "$body") jts-deploy-facts $(shell_quote "$REMOTE_FACTS_DIR") $(shell_quote "$PI_USER") ${args}"
+}
+
+cleanup_remote_facts() {
+    [[ -n "$REMOTE_FACTS_DIR" ]] || return 0
+    ssh_remote "rm -rf $(shell_quote "$REMOTE_FACTS_DIR")" >/dev/null 2>&1 || true
+    REMOTE_FACTS_DIR=""
+}
+
+# Read one root-owned /var/lib/jasper file: the staged copy under
+# attended sudo, the original under passwordless sudo. Callers keep their
+# own error handling — this never swallows a failed read.
+read_pi_file() {
+    local name="$1"
+    if [[ "$SUDO_INTERACTIVE" == "1" ]]; then
+        ssh_remote "cat $(shell_quote "${REMOTE_FACTS_DIR}/${name}")"
+    else
+        run_remote_sudo "cat $(shell_quote "/var/lib/jasper/${name}")"
+    fi
+}
+
 resolve_remote_repo_dir() {
     local remote_home
     if [[ -n "$REMOTE_REPO_DIR" ]]; then
@@ -231,7 +297,7 @@ ensure_origin_fetched() {
 preflight_deploy_direction() {
     local remote_manifest installed_sha installed_branch installed_at
     local direction installed_short local_date installed_date
-    remote_manifest="$(run_remote_sudo 'cat /var/lib/jasper/build.txt 2>/dev/null' 2>/dev/null || true)"
+    remote_manifest="$(read_pi_file build.txt 2>/dev/null || true)"
     installed_sha="$(build_manifest_value "$remote_manifest" JASPER_GIT_SHA_FULL)"
     installed_branch="$(build_manifest_value "$remote_manifest" JASPER_GIT_BRANCH)"
     installed_at="$(build_manifest_value "$remote_manifest" JASPER_INSTALL_AT)"
@@ -449,11 +515,21 @@ finish_airplay_health_maintenance() {
 report_oom_collateral() {
     local since_epoch="$1"
     local journal units comms entry
+    # One regex, applied twice: remotely to bound what crosses the wire,
+    # then locally to what actually arrived, so a line that reached the
+    # capture by some other route can never raise the banner below.
+    local oom_re='out of memory|oom-kill|oom_reaper|killed process'
     # journalctl accepts a formatted timestamp reliably across versions;
     # format the epoch on the Pi (GNU date). grep || true keeps an empty
     # match from tripping the remote shell, and the whole read is
     # best-effort (a missing journal must not fail a good deploy).
-    journal="$(run_remote_sudo "journalctl -k --since \"\$(date -d @${since_epoch} '+%Y-%m-%d %H:%M:%S')\" --no-pager 2>/dev/null | grep -iE 'out of memory|oom-kill|oom_reaper|killed process' || true" 2>/dev/null || true)"
+    if [[ "$SUDO_INTERACTIVE" == "1" ]]; then
+        publish_root_facts journal "$since_epoch" || return 0
+        journal="$(read_pi_file journal 2>/dev/null || true)"
+    else
+        journal="$(run_remote_sudo "journalctl -k --since \"\$(date -d @${since_epoch} '+%Y-%m-%d %H:%M:%S')\" --no-pager 2>/dev/null | grep -iE '${oom_re}' || true" 2>/dev/null || true)"
+    fi
+    journal="$(printf '%s\n' "$journal" | grep -iE "$oom_re" || true)"
     if [[ -z "$journal" ]]; then
         return 0
     fi
@@ -491,7 +567,7 @@ report_oom_collateral() {
 # #4 (on jts2 the manifest was written early and lied after an OOM abort).
 verify_manifest_advanced() {
     local manifest installed_full installed_status expected
-    manifest="$(run_remote_sudo 'cat /var/lib/jasper/build.txt 2>/dev/null' 2>/dev/null || true)"
+    manifest="$(read_pi_file build.txt 2>/dev/null || true)"
     installed_full="$(build_manifest_value "$manifest" JASPER_GIT_SHA_FULL)"
     installed_status="$(build_manifest_value "$manifest" JASPER_INSTALL_STATUS)"
     expected="${SHA_FULL}${DIRTY}"
@@ -616,9 +692,8 @@ if [[ "${JTS_TARGET_FROM:-}" == "caller" \
     && "$PI_HOST" != "${JTS_TARGET_FILE_HOST:-}" ]]; then
     identity_env_file=""
 fi
-# tail -n1: `ssh -tt` (interactive sudo) prefixes the payload with sudo's
-# one-line password prompt, which would otherwise glue onto the UUID.
-remote_peer_id="$(run_remote_sudo 'cat /var/lib/jasper/peer_id 2>/dev/null' 2>/dev/null | tail -n1 || true)"
+publish_root_facts pre
+remote_peer_id="$(read_pi_file peer_id 2>/dev/null | tail -n1 || true)"
 identity_outcome="$(verify_or_record_peer_id \
     "$remote_peer_id" "$identity_env_file" \
     "${JTS_ACCEPT_NEW_IDENTITY:-}")" || {
@@ -689,7 +764,7 @@ echo "==> Running install.sh on ${PI_HOST}..."
 # EXIT trap shortens the long in-progress TTL even if install.sh exits
 # early, so stale deploy noise does not hide real problems for long.
 mark_airplay_health_maintenance "${AIRPLAY_HEALTH_DEPLOY_SUPPRESS_SEC}"
-trap 'finish_airplay_health_maintenance >/dev/null 2>&1 || true' EXIT
+trap 'finish_airplay_health_maintenance >/dev/null 2>&1 || true; cleanup_remote_facts' EXIT
 
 install_env="JASPER_DEPLOY_SHA=$(shell_quote "${SHA}${DIRTY}") \
 JASPER_DEPLOY_SHA_FULL=$(shell_quote "${SHA_FULL}${DIRTY}") \
@@ -791,12 +866,13 @@ if [[ -n "$REBOOT_MARKER" ]]; then
     echo "==> reboot required (not applied by this deploy): ${REBOOT_MARKER}"
 fi
 
+publish_root_facts post
+
 echo "==> Build manifest now on Pi:"
-run_remote_sudo 'cat /var/lib/jasper/build.txt 2>/dev/null || echo "(not present)"'
+read_pi_file build.txt 2>/dev/null || echo "(not present)"
 
 if ! REMOTE_INSTALL_PROFILE="$(
-    run_remote_sudo 'cat /var/lib/jasper/install_profile' \
-        2>/dev/null | tail -n1 | tr -d '[:space:]'
+    read_pi_file install_profile 2>/dev/null | tail -n1 | tr -d '[:space:]'
 )"; then
     finish_airplay_health_maintenance
     trap - EXIT
@@ -971,5 +1047,6 @@ if [[ "$OOM_PRODUCTION_HIT" == "1" ]]; then
 fi
 
 finish_airplay_health_maintenance
+cleanup_remote_facts
 trap - EXIT
 echo "==> Done."

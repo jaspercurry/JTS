@@ -446,7 +446,7 @@ eval "$(awk '/^preflight_deploy_direction\(\) \{/{f=1} f{print} f&&/^\}$/{exit}'
 declare -F preflight_deploy_direction >/dev/null || { echo "harness: extraction failed" >&2; exit 99; }
 # Stub the two external seams only: the ssh manifest read and the fetch.
 ensure_origin_fetched() { :; }
-run_remote_sudo() { printf '%s\n' "$MANIFEST"; }
+read_pi_file() { printf '%s\n' "$MANIFEST"; }
 SUDO_INTERACTIVE=@SUDO@; DIRTY=""; BRANCH=main
 PI_HOST="@HOST@"; SHA_FULL="@LOCAL@"; SHA="${SHA_FULL:0:8}"
 MANIFEST="JASPER_GIT_SHA_FULL=@INSTALLED@
@@ -531,8 +531,8 @@ eval "$(awk '/^verify_manifest_advanced\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "
 declare -F preflight_deploy_direction >/dev/null || { echo "harness: preflight extraction failed" >&2; exit 99; }
 declare -F verify_manifest_advanced >/dev/null || { echo "harness: verify extraction failed" >&2; exit 99; }
 ensure_origin_fetched() { :; }
-run_remote_sudo() { printf '%s\n' "$MANIFEST"; }
-SUDO_INTERACTIVE=@SUDO@; DIRTY=""; BRANCH=main
+read_pi_file() { printf '%s\n' "$MANIFEST"; }
+SUDO_INTERACTIVE=0; DIRTY=""; BRANCH=main
 PI_HOST="@HOST@"; SHA_FULL="@LOCAL@"; SHA="${SHA_FULL:0:8}"
 MANIFEST="JASPER_GIT_SHA_FULL=@INSTALLED@
 JASPER_GIT_BRANCH=main
@@ -546,7 +546,7 @@ verify_manifest_advanced
 """
 
 
-def _run_verify_same_sha(repo, *, installed, local, sudo, host="bench-pi.local"):
+def _run_verify_same_sha(repo, *, installed, local, host="bench-pi.local"):
     script = (
         _VERIFY_SAME_SHA_HARNESS
         .replace("@LIB@", str(LIB))
@@ -554,7 +554,6 @@ def _run_verify_same_sha(repo, *, installed, local, sudo, host="bench-pi.local")
         .replace("@HOST@", host)
         .replace("@LOCAL@", local)
         .replace("@INSTALLED@", installed)
-        .replace("@SUDO@", str(sudo))
     )
     return subprocess.run(
         ["bash", "-c", script],
@@ -562,23 +561,21 @@ def _run_verify_same_sha(repo, *, installed, local, sudo, host="bench-pi.local")
     )
 
 
-@pytest.mark.parametrize("sudo", [0, 1])
-def test_verify_flags_same_sha_redeploy_distinctly(deploy_history, sudo):
+def test_verify_flags_same_sha_redeploy_distinctly(deploy_history):
     # installed == local: redeploying the exact commit already on the Pi.
     repo, _sha_a, sha_c = deploy_history
-    proc = _run_verify_same_sha(repo, installed=sha_c, local=sha_c, sudo=sudo)
+    proc = _run_verify_same_sha(repo, installed=sha_c, local=sha_c)
     assert proc.returncode == 0, proc.stderr
     assert "✓ build manifest advanced" in proc.stdout
     assert "same-SHA redeploy" in proc.stdout
     assert "no new commit landed" in proc.stdout
 
 
-@pytest.mark.parametrize("sudo", [0, 1])
-def test_verify_stays_quiet_on_same_sha_line_for_a_real_change(deploy_history, sudo):
+def test_verify_stays_quiet_on_same_sha_line_for_a_real_change(deploy_history):
     # installed == A, local == C: a genuine forward deploy — the same-SHA
     # callout must not fire for it.
     repo, sha_a, sha_c = deploy_history
-    proc = _run_verify_same_sha(repo, installed=sha_a, local=sha_c, sudo=sudo)
+    proc = _run_verify_same_sha(repo, installed=sha_a, local=sha_c)
     assert proc.returncode == 0, proc.stderr
     assert "✓ build manifest advanced" in proc.stdout
     assert "same-SHA redeploy" not in proc.stdout
