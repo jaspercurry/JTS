@@ -21,7 +21,14 @@ import argparse
 
 from jasper.active_speaker.crossover_v2.round_views import cloud_binding_view
 
-from ._common import _ROUND_DIR_HELP, _load_round, _view_out, _write, answer
+from ._common import (
+    _ROUND_DIR_HELP,
+    _ROUND_DIR_METAVAR,
+    _load_round,
+    _view_out,
+    _write,
+    answer,
+)
 
 def _cmd_cloud_binding(args: argparse.Namespace) -> int:
     banked = _load_round(args.round_dir)
@@ -60,6 +67,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "cloud-binding",
         help="re-fit with the cloud's null evidence cut, and say whether it bound the fit — observed only",
     )
-    cloud_binding.add_argument("round_dir", help=_ROUND_DIR_HELP)
+    cloud_binding.add_argument(
+        "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP
+    )
     cloud_binding.add_argument("--out", default=None, help="write the result here (- for stdout)")
     cloud_binding.set_defaults(func=_cmd_cloud_binding)

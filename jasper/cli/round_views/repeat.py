@@ -43,6 +43,7 @@ from jasper.cli._refusal import EXIT_WRITE_FAILED, StageFailed
 from ._common import (
     PROG,
     _ROUND_DIR_HELP,
+    _ROUND_DIR_METAVAR,
     _load_round,
     _view_out,
     _write,
@@ -124,7 +125,10 @@ def _cmd_repeat_floor(args: argparse.Namespace) -> int:
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
     repeat = sub.add_parser("repeat", help="session-to-session spread of the pooled honest figures")
-    repeat.add_argument("round_dirs", nargs="+", help=f"two or more of: {_ROUND_DIR_HELP}")
+    repeat.add_argument(
+        "round_dirs", nargs="+", metavar=_ROUND_DIR_METAVAR,
+        help=f"two or more of: {_ROUND_DIR_HELP}",
+    )
     repeat.add_argument("--out", default=None, help="write the result here (- for stdout)")
     repeat.set_defaults(func=_cmd_repeat)
 
@@ -132,7 +136,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "repeat-floor", help="bank the repeat spread as the floor the evidence packet reads",
     )
     repeat_floor.add_argument(
-        "round_dirs", nargs="+",
+        "round_dirs", nargs="+", metavar=_ROUND_DIR_METAVAR,
         help="two or more TOUCHED-NOTHING fixed-pose repeat round directories",
     )
     repeat_floor.add_argument(

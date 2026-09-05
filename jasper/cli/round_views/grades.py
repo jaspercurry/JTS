@@ -34,6 +34,7 @@ from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
 from ._common import (
     _ROUND_DIR_HELP,
+    _ROUND_DIR_METAVAR,
     _add_norm_band_args,
     _load_round,
     _view_out,
@@ -139,18 +140,26 @@ def _cmd_per_seat(args: argparse.Namespace) -> int:
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
     entry = sub.add_parser("entry", help="grade the state this round entered on, before it applied anything")
-    entry.add_argument("round_dir", help=_ROUND_DIR_HELP)
+    entry.add_argument("round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP)
     entry.add_argument("--out", default=None, help="write the result here (- for stdout)")
     entry.set_defaults(func=_cmd_entry)
 
     frozen = sub.add_parser("frozen", help="grade a round shipped and frozen to a baseline's reference")
-    frozen.add_argument("baseline_dir", help=f"{_ROUND_DIR_HELP} to freeze the reference from")
-    frozen.add_argument("target_dir", help=f"{_ROUND_DIR_HELP} to grade")
+    frozen.add_argument(
+        "baseline_dir", metavar="<baseline-round-dir>",
+        help=f"{_ROUND_DIR_HELP} to freeze the reference from",
+    )
+    frozen.add_argument(
+        "target_dir", metavar="<target-round-dir>",
+        help=f"{_ROUND_DIR_HELP} to grade",
+    )
     frozen.add_argument("--out", default=None, help="write the result here (- for stdout)")
     frozen.set_defaults(func=_cmd_frozen)
 
     per_seat = sub.add_parser("per-seat", help="every banked position plus the VERIFY pose, normalised")
-    per_seat.add_argument("round_dir", help=_ROUND_DIR_HELP)
+    per_seat.add_argument(
+        "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP
+    )
     _add_norm_band_args(per_seat)
     per_seat.add_argument("--out", default=None, help="write the result here (- for stdout)")
     per_seat.set_defaults(func=_cmd_per_seat)

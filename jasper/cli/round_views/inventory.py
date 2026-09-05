@@ -33,6 +33,7 @@ from ._common import (
     TAKES_THIS_ROUND,
     ViewArtifact,
     _ROUND_DIR_HELP,
+    _ROUND_DIR_METAVAR,
     _ROUND_TOOL_ERRORS,
     _write,
     answer,
@@ -109,6 +110,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "inventory",
         help="which analysis artifacts this round has, and the command that produces each missing one",
     )
-    inventory.add_argument("round_dir", help=_ROUND_DIR_HELP)
+    inventory.add_argument(
+        "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP
+    )
     inventory.add_argument("--out", default=None, help="write the result here (- for stdout)")
     inventory.set_defaults(func=_cmd_inventory)

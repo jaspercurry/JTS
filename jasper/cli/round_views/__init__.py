@@ -102,18 +102,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROG,
         description=(
-            "The round-grading comparison views: entry-state grading, "
-            "frozen-reference grading, per-seat curves, session-to-session "
-            "repeatability and the banked repeat floor, per-seat agreement, "
-            "audibility co-metrics, measured per-angle directivity, whether "
-            "the cloud's null evidence bound the linearization fit, what a "
-            "candidate would measure from the banked per-driver solos, the "
-            "gate window ladder and the sweep read onto the spec verdict, the "
-            "shared frequency view, the H2/H3 distortion reading, whether a "
-            "feature is a driver defect or the room, how much of a far read "
-            "was the room, the inter-driver delay landscape and its acoustic "
-            "confirmation, and an inventory of which of those a round already "
-            "carries — over banked rounds and live sessions."
+            "Grade, compare and disclose what one round measured — one "
+            "subcommand per view, over banked rounds and live sessions, each "
+            "answering on stdout and filing its artifact beside the round."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
