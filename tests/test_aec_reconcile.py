@@ -709,6 +709,40 @@ def test_voice_input_absent_marker_mark_carries_the_reason(tmp_path: Path) -> No
     assert _event_values(
         result.stderr, "aec_reconcile.voice_input_absent", "reason"
     ) == ["no candidate microphone present and no accessory microphone paired"]
+    # stop_voice's park is a real absence, not the chip-AEC validation
+    # bounce's — no `transient=1` line (ADR-0238).
+    assert _marker(tmp_path).read_text().splitlines() == [
+        "reason=no candidate microphone present and no accessory microphone paired"
+    ]
+
+
+def test_validation_bounce_marks_the_park_transient(tmp_path: Path) -> None:
+    """activate_managed_chip_aec's own park (:1897) is the ~8 s chip-AEC
+    validation round trip, not a real absence — it marks `transient=1` so
+    the daemon's shutdown cue (ADR-0238) skips it. The pass's own
+    `restart_voice` clears the marker before `_run_reconcile` returns, so a
+    fake systemctl snapshots it at the stop that immediately follows the
+    write (mirrors `_drive_alignment_disposition`'s CHECKING branch)."""
+    _stage(tmp_path, "Array", profile="auto", channels=6)
+    snapshot = tmp_path / "checking-marker.env"
+    fake = _systemctl_double(
+        tmp_path,
+        "checking-marker-snapshot-systemctl",
+        "[[ \"$*\" == 'stop jasper-voice.service jasper-aec-bridge.service'"
+        f" && ! -f {shlex.quote(str(snapshot))} ]]"
+        f" && cp \"$JASPER_VOICE_INPUT_ABSENT_MARKER\" {shlex.quote(str(snapshot))}\n",
+    )
+
+    result = _run_reconcile(
+        tmp_path, "--reason", "test", extra_env={"JASPER_SYSTEMCTL": str(fake)}
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert snapshot.read_text().splitlines() == [
+        "reason=validating commissioned chip-AEC alignment",
+        "transient=1",
+    ]
+    assert not _marker(tmp_path).exists()
 
 
 def test_the_bridge_ready_revoke_precedes_the_absence_mark(tmp_path: Path) -> None:

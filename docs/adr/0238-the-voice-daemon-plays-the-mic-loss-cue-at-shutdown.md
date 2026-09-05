@@ -10,7 +10,7 @@
   voice daemon's control socket (`jasper/control/uds.py`); the audio, the TTS
   gain and the cue cache all live in jasper-voice. And every reconciler path
   that writes the voice-input absence marker stops jasper-voice in the same
-  breath (`deploy/bin/jasper-aec-reconcile:1711,1897,2027`), so a
+  breath (`deploy/bin/jasper-aec-reconcile:1718,1906,2036`), so a
   jasper-control poller on that marker would proxy into a socket that is
   already gone. The mechanism R6 named cannot make a sound.
 - **Decision:** jasper-voice announces its own park. When
@@ -30,9 +30,10 @@
 - **Consequences:** Only the mechanism sentence of R6 is superseded; the rest
   of it stands — the AEC bridge is still not taught to detect card loss, and
   G12 still closes. jasper-control keeps no watcher, no poll and no second
-  cue path. The cost is that every marker write announces, including the
-  transient park the chip-AEC bounce takes (`jasper-aec-reconcile:1897`),
-  which also pays the bound on its stop; whether that needs a discriminator
-  is for H2 — the audible check on a lab Pi, still owed — to say. G13's
-  residual window (the bridge restarting between the microphone vanishing
-  and the reconciler's next pass) is measured by H1, not guarded here.
+  cue path. The chip-AEC validation bounce (`:1906`, `activate_managed_chip_aec`)
+  marks its park `transient=1`; the shutdown hook reads that
+  (`voice_park_is_transient()`) and skips the cue, logging
+  `result=transient_park` instead — the two real parks (`:1718`, `:2036`)
+  carry no such line and still announce. G13's residual window (the bridge
+  restarting between the microphone vanishing and the reconciler's next
+  pass) is measured by H1, not guarded here.

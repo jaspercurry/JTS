@@ -61,7 +61,7 @@ from ..voice.input_policy import (
     EffectiveSpeechInputPolicy,
     build_effective_speech_input_policy,
 )
-from ..voice.input_presence import voice_parked_no_mic
+from ..voice.input_presence import voice_park_is_transient, voice_parked_no_mic
 from ..voice.prompt import _build_system_instruction
 from ..voice.session import LiveConnection
 from ..volume_coordinator import VolumeCoordinator
@@ -230,9 +230,24 @@ async def _announce_mic_loss_at_shutdown(wake_loop: WakeLoop) -> str:
     Returns the result code it logged, or ``not_parked`` when there is
     nothing to announce. Never raises and never outruns the bound above:
     going deaf in silence is bad, wedging the stop is worse.
+
+    A ``transient=1`` marker (the chip-AEC validation bounce inside
+    ``activate_managed_chip_aec``, ~8 s round trip) is a marked park but not
+    a real absence, so it skips the cue — logged as ``transient_park``
+    rather than silently returned like ``not_parked``, since the marker WAS
+    there and a discriminator not doing anything is worth a line.
     """
     if not voice_parked_no_mic():
         return "not_parked"
+    if voice_park_is_transient():
+        result = "transient_park"
+        log_event(
+            logger,
+            "voice.mic_loss_cue",
+            slug=NO_ROOM_MIC_CUE_SLUG,
+            result=result,
+        )
+        return result
     try:
         result = await asyncio.wait_for(
             wake_loop.play_cue(NO_ROOM_MIC_CUE_SLUG),

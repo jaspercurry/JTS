@@ -325,40 +325,59 @@ def test_check_mic_capture_reports_expected_idle_when_marked(
     assert result.reason == audio.REASON_MIC_ABSENT_DEFERRED
 
 
-def _shutting_down_daemon(marked: bool, tmp_path, monkeypatch):
+def _shutting_down_daemon(
+    marked: bool, tmp_path, monkeypatch, *, transient: bool = False
+):
     """A WakeLoop whose cue path runs for real, and a marker to match."""
     from tests.test_voice_daemon_manual_start_guard import _SpyCues
 
     marker = tmp_path / "voice-input-absent"
     if marked:
-        marker.write_text("reason=no candidate microphone present\n")
+        body = "reason=no candidate microphone present\n"
+        if transient:
+            body += "transient=1\n"
+        marker.write_text(body)
     monkeypatch.setenv("JASPER_VOICE_INPUT_ABSENT_MARKER", str(marker))
     wake_loop = WakeLoop.for_tests()
     wake_loop._cues = _SpyCues()
     return wake_loop
 
 
-@pytest.mark.parametrize("marked", [True, False], ids=("no-mic", "plain-restart"))
+@pytest.mark.parametrize(
+    ("marked", "transient", "played", "result"),
+    [
+        (True, False, True, "ok"),
+        (False, False, False, "not_parked"),
+        (True, True, False, "transient_park"),
+    ],
+    ids=("no-mic", "plain-restart", "transient-park"),
+)
 async def test_the_mic_loss_cue_follows_the_marker_at_shutdown(
-    marked: bool, tmp_path, monkeypatch, caplog,
+    marked: bool, transient: bool, played: bool, result: str,
+    tmp_path, monkeypatch, caplog,
 ) -> None:
     """The daemon's own stop is the transition into deafness, because the
     reconciler writes the marker and only then stops jasper-voice, and
     ConditionPathExists=! refuses every start while it stands (ADR-0238).
     So the marker at shutdown decides, and a plain restart stays silent —
-    including in the journal, so `voice.mic_loss_cue` means a real loss."""
+    including in the journal, so `voice.mic_loss_cue` means a real loss.
+    transient-park is the chip-AEC validation bounce's own park
+    (`transient=1`): marked, so it still logs, but never a real absence, so
+    the cue is skipped."""
     from jasper.voice import daemon_main
 
-    wake_loop = _shutting_down_daemon(marked, tmp_path, monkeypatch)
+    wake_loop = _shutting_down_daemon(
+        marked, tmp_path, monkeypatch, transient=transient
+    )
 
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
-        result = await daemon_main._announce_mic_loss_at_shutdown(wake_loop)
+        actual_result = await daemon_main._announce_mic_loss_at_shutdown(wake_loop)
 
-    assert wake_loop._cues.played == ([NO_ROOM_MIC_CUE_SLUG] if marked else [])
-    assert result == ("ok" if marked else "not_parked")
+    assert wake_loop._cues.played == ([NO_ROOM_MIC_CUE_SLUG] if played else [])
+    assert actual_result == result
     records = event_records(caplog, "voice.mic_loss_cue")
     assert [record.levelno for record in records] == (
-        [logging.INFO] if marked else []
+        [logging.INFO] if result in ("ok", "transient_park") else []
     )
 
 
