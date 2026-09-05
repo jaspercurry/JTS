@@ -171,17 +171,6 @@ impl OutputCore {
         id
     }
 
-    pub fn append_assistant_audio(
-        &mut self,
-        id: SegmentId,
-        gain: f32,
-        samples: impl Into<TtsAudioSamples>,
-    ) {
-        // Legacy direct path: render at the given gain with no headroom
-        // (peak cap == base), no live tracking, and no reference learning.
-        self.append_assistant_audio_planned(id, gain, None, false, samples);
-    }
-
     pub fn append_assistant_audio_with_segment_gain(
         &mut self,
         id: SegmentId,
@@ -399,11 +388,6 @@ impl OutputCore {
         &self.ledger
     }
 
-    pub fn set_assistant_loudness_config(&mut self, config: AssistantLoudnessConfig) {
-        // Preserve outputd's post-DSP mix stage across a config swap.
-        self.loudness = AssistantLoudness::new_with_stage(config, MixStage::PostDsp);
-    }
-
     /// Accept an absolute speaker-volume context from the voice daemon.
     ///
     /// Returns whether the update won the boot-clock stale-stamp guard (the
@@ -533,10 +517,6 @@ impl OutputCore {
 
     pub fn content_anchor_lufs(&self) -> Option<f32> {
         self.loudness.content_anchor_lufs()
-    }
-
-    pub fn last_assistant_loudness_decision(&self) -> Option<&AssistantGainDecision> {
-        self.loudness.last_decision()
     }
 }
 
