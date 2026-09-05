@@ -50,7 +50,7 @@ def test_aec_leg_restarts_reconciler(monkeypatch, tmp_path, server_with_coordina
     popens: list[list[str]] = []
 
     monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(mode_file))
-    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: {"ok": True})
+    monkeypatch.setattr(aec_endpoints, "_aec_full_status", lambda: {"ok": True})
     monkeypatch.setattr(srv_mod.subprocess, "Popen", _recording_popen(popens))
 
     status, body = _post(
@@ -92,7 +92,7 @@ def test_aec_profile_restarts_reconciler(
     popens: list[list[str]] = []
 
     monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(mode_file))
-    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: {"profile": profile})
+    monkeypatch.setattr(aec_endpoints, "_aec_full_status", lambda: {"profile": profile})
     monkeypatch.setattr(srv_mod.subprocess, "Popen", _recording_popen(popens))
 
     status, body = _post(
@@ -123,7 +123,7 @@ def test_usb_mic_persists_intent_and_schedules_descriptor_recompose(
     ])
     writes: list[bool] = []
     recomposes: list[bool] = []
-    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: next(statuses))
+    monkeypatch.setattr(aec_endpoints, "_aec_full_status", lambda: next(statuses))
     monkeypatch.setattr(srv_mod, "write_usb_mic_enabled", writes.append)
     monkeypatch.setattr(
         srv_mod,
@@ -153,7 +153,7 @@ def test_usb_mic_schedule_failure_returns_structured_502(
     }
     writes: list[bool] = []
     monkeypatch.setattr(
-        srv_mod,
+        aec_endpoints,
         "_aec_full_status",
         lambda: {"usb_mic": usb_mic},
     )
@@ -188,7 +188,7 @@ def test_usb_mic_refuses_enable_when_status_gate_is_closed(
     import jasper.control.server as srv_mod
 
     monkeypatch.setattr(
-        srv_mod,
+        aec_endpoints,
         "_aec_full_status",
         lambda: {
             "usb_mic": {
@@ -264,14 +264,14 @@ def test_raw_usb_mic_leg_persists_then_restarts_only_aec_bridge(
         return {"ok": True}
 
     monkeypatch.setattr(srv_mod.restart_broker, "manage_units", fake_manage)
-    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: final_status)
+    monkeypatch.setattr(aec_endpoints, "_aec_full_status", lambda: final_status)
     monkeypatch.setattr(
         srv_mod,
         "_schedule_usb_gadget_recompose",
         lambda: pytest.fail("source selection must not recompose the gadget"),
     )
     monkeypatch.setattr(
-        srv_mod,
+        aec_endpoints,
         "_kick_aec_reconciler",
         lambda: pytest.fail("source selection must not run the reconciler"),
     )
@@ -373,7 +373,7 @@ def test_usb_mic_leg_same_value_is_noop(
         "manage_units",
         lambda *_args, **_kwargs: pytest.fail("same-value save must not restart"),
     )
-    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: final_status)
+    monkeypatch.setattr(aec_endpoints, "_aec_full_status", lambda: final_status)
 
     status, body = _post(f"{base}/aec/usb-mic-leg", {"leg": "primary"})
 
@@ -418,7 +418,7 @@ def test_usb_mic_leg_coalesces_pending_apply_then_retries_after_timeout(
         "manage_units",
         lambda unit, **kwargs: calls.append((unit, kwargs["verb"])) or {"ok": True},
     )
-    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: pending_status)
+    monkeypatch.setattr(aec_endpoints, "_aec_full_status", lambda: pending_status)
 
     for _request in range(2):
         status, body = _post(
@@ -484,7 +484,7 @@ def test_usb_mic_leg_failed_schedule_does_not_suppress_immediate_retry(
         return {"ok": len(calls) != 2}
 
     monkeypatch.setattr(srv_mod.restart_broker, "manage_units", manage)
-    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: pending_status)
+    monkeypatch.setattr(aec_endpoints, "_aec_full_status", lambda: pending_status)
 
     first_status, first_body = _post(
         f"{base}/aec/usb-mic-leg",
@@ -532,7 +532,7 @@ def test_usb_mic_leg_repeated_changes_reset_reboot_budget_before_restart(
         "manage_units",
         lambda unit, **kwargs: calls.append((unit, kwargs["verb"])) or {"ok": True},
     )
-    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: {"usb_mic": {}})
+    monkeypatch.setattr(aec_endpoints, "_aec_full_status", lambda: {"usb_mic": {}})
 
     for leg in ("chip_aec_210", "primary") * 3:
         status, _body = _post(f"{base}/aec/usb-mic-leg", {"leg": leg})
@@ -754,7 +754,7 @@ def test_aec_commission_starts_oneshot_when_idle(
         lambda command, **_kwargs: commands.append(command) or _SystemctlResult(),
     )
     monkeypatch.setattr(
-        srv_mod,
+        aec_endpoints,
         "_aec_full_status",
         lambda: {"commission": {"running": True}},
     )
@@ -847,7 +847,7 @@ def test_aec_commission_concurrent_second_click_starts_nothing(
     monkeypatch.setattr(srv_mod, "_aec_commission_running", fake_running)
     monkeypatch.setattr(srv_mod, "_start_aec_commission", fake_start)
     monkeypatch.setattr(
-        srv_mod,
+        aec_endpoints,
         "_aec_full_status",
         lambda: {"commission": {"running": True}},
     )
@@ -873,7 +873,6 @@ def test_aec_firmware_update_starts_when_required(
     monkeypatch, server_with_coordinator,
 ):
     base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
 
     starts = []
     status_payload = {
@@ -884,9 +883,9 @@ def test_aec_firmware_update_starts_when_required(
             "action": {"enabled": True},
         }
     }
-    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: status_payload)
+    monkeypatch.setattr(aec_endpoints, "_aec_full_status", lambda: status_payload)
     monkeypatch.setattr(
-        srv_mod, "_start_xvf_firmware_update", lambda: starts.append("start"),
+        aec_endpoints, "_start_xvf_firmware_update", lambda: starts.append("start"),
     )
 
     status, body = _post(f"{base}/aec/firmware/update", {})
@@ -900,11 +899,10 @@ def test_aec_firmware_update_refuses_when_not_available(
     monkeypatch, server_with_coordinator,
 ):
     base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
 
     starts = []
     monkeypatch.setattr(
-        srv_mod,
+        aec_endpoints,
         "_aec_full_status",
         lambda: {
             "firmware_update": {
@@ -915,7 +913,7 @@ def test_aec_firmware_update_refuses_when_not_available(
         },
     )
     monkeypatch.setattr(
-        srv_mod, "_start_xvf_firmware_update", lambda: starts.append("start"),
+        aec_endpoints, "_start_xvf_firmware_update", lambda: starts.append("start"),
     )
 
     status, body = _post(f"{base}/aec/firmware/update", {})
@@ -929,7 +927,6 @@ def test_enhanced_aec_get_uses_dedicated_status(
     monkeypatch, server_with_coordinator,
 ):
     base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
 
     expected = {
         "schema_version": 1,
@@ -937,7 +934,7 @@ def test_enhanced_aec_get_uses_dedicated_status(
         "state": "not_installed",
         "action": {"enabled": True, "label": "Install enhancement"},
     }
-    monkeypatch.setattr(srv_mod, "_enhanced_aec_status", lambda: expected)
+    monkeypatch.setattr(aec_endpoints, "_enhanced_aec_status", lambda: expected)
 
     status, body = _get(f"{base}/aec/enhanced-aec")
 
@@ -964,7 +961,7 @@ def test_enhanced_aec_post_persists_then_starts_allowlisted_oneshot(
         },
     ])
     calls: list[tuple] = []
-    monkeypatch.setattr(srv_mod, "_enhanced_aec_status", lambda: next(statuses))
+    monkeypatch.setattr(aec_endpoints, "_enhanced_aec_status", lambda: next(statuses))
     monkeypatch.setattr(
         enhanced_aec,
         "request_install",

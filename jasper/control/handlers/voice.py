@@ -6,8 +6,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+
+from ...log_event import log_event
 from .. import server as _server
-from ._base import ControlHandlerMixin
+from ._base import ControlHandlerMixin, logger
 
 
 class VoiceRoutes(ControlHandlerMixin):
@@ -22,14 +26,14 @@ class VoiceRoutes(ControlHandlerMixin):
             self._send_json(_server._bonded_follower_mic_payload(leader))
             return
         try:
-            st = _server.asyncio.run(
+            st = asyncio.run(
                 _server._voice_socket_command(
                     self._voice_socket_path,
                     "STATUS",
                     timeout=2.0,
                 ),
             )
-        except (FileNotFoundError, OSError, _server.asyncio.TimeoutError) as e:
+        except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
             starting = _server._voice_starting_mic_payload()
             if starting is not None:
                 self._send_json(starting)
@@ -39,8 +43,8 @@ class VoiceRoutes(ControlHandlerMixin):
                 status=503,
             )
             return
-        except (RuntimeError, _server.json.JSONDecodeError, UnicodeDecodeError) as e:
-            _server.logger.exception("mic STATUS failed")
+        except (RuntimeError, json.JSONDecodeError, UnicodeDecodeError) as e:
+            logger.exception("mic STATUS failed")
             self._send_json({"error": str(e)}, status=502)
             return
         muted = bool(st.get("mic_muted", False))
@@ -175,8 +179,8 @@ class VoiceRoutes(ControlHandlerMixin):
         )
         if result is None:
             return
-        _server.log_event(
-            _server.logger,
+        log_event(
+            logger,
             "mic.set",
             muted=bool(body["muted"]),
             client=self.address_string(),
@@ -184,7 +188,7 @@ class VoiceRoutes(ControlHandlerMixin):
         # Read back the truth from the daemon. STATUS is cheap
         # and the daemon's flag is authoritative.
         try:
-            st = _server.asyncio.run(
+            st = asyncio.run(
                 _server._voice_socket_command(
                     self._voice_socket_path,
                     "STATUS",

@@ -23,7 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 import pytest
 
-from jasper.control import state_aggregate, usb_gadget_forensics
+from jasper.control import aec_endpoints, state_aggregate, usb_gadget_forensics
 from jasper.control.server import _make_handler
 
 from tests._librespot_state import write_librespot_state
@@ -761,7 +761,7 @@ def test_system_action_reboot_audits_and_invokes_systemctl(
 
     monkeypatch.setattr(srv_mod.subprocess, "Popen", _recording_popen(popens))
 
-    with caplog.at_level(logging.INFO, logger="jasper.control.server"):
+    with caplog.at_level(logging.INFO, logger="jasper.control"):
         status, body = _post(f"{base}/system/reboot", {})
 
     assert status == 200
@@ -911,10 +911,9 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     section comes back as null/None — but the response is still 200
     with a stable top-level shape."""
     base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
 
     monkeypatch.setattr(
-        srv_mod,
+        aec_endpoints,
         "_aec_full_status",
         lambda: {
             "mode": "auto",
@@ -1208,12 +1207,11 @@ def test_state_aec_probe_failure_is_fail_soft(
     server_with_coordinator, monkeypatch,
 ):
     base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
 
     def boom():
         raise RuntimeError("aec probe exploded")
 
-    monkeypatch.setattr(srv_mod, "_aec_full_status", boom)
+    monkeypatch.setattr(aec_endpoints, "_aec_full_status", boom)
 
     status, body = _get(f"{base}/state")
 
