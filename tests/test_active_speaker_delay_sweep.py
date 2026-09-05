@@ -101,6 +101,12 @@ def _propose(bundle: Path, capsys, *extra):
     return code, json.loads(captured.out), captured.err
 
 
+def _banked(answer) -> dict:
+    """The artifact the answer on stdout points at: the grid lives there, and
+    the answer names its path (ADR-0235)."""
+    return json.loads(Path(answer["out"]).read_text())
+
+
 def test_the_door_reads_the_bank_the_store_wrote_and_finds_the_offset(
     tmp_path, capsys,
 ) -> None:
@@ -114,9 +120,9 @@ def test_the_door_reads_the_bank_the_store_wrote_and_finds_the_offset(
     code, payload, err = _propose(bundle, capsys)
 
     assert code == 0
-    assert payload["status"] == "proposed"
     assert payload["take_path"].endswith("positions/p0_a01.json")
-    landscape = payload["landscape"]
+    assert payload["best_coordinate_us"] == pytest.approx(200.0, abs=50.0)
+    landscape = _banked(payload)["landscape"]
     assert landscape["best_coordinate_us"] == pytest.approx(200.0, abs=50.0)
     assert landscape["kind"] == "jts_inter_driver_delay_landscape"
     # Two or three: the optimum and its immediate neighbours.
@@ -129,7 +135,7 @@ def test_the_door_reads_the_bank_the_store_wrote_and_finds_the_offset(
 
 
 def test_the_door_hands_back_a_line_the_operator_can_run(tmp_path, capsys) -> None:
-    """One `confirm_with` line per coordinate, in the flags
+    """One `next` line per coordinate, in the flags
     `jasper-angle-capture stage` actually takes — this is the whole point of
     the verb: propose, then stage, without hand-deriving which branch moves."""
 
@@ -138,8 +144,8 @@ def test_the_door_hands_back_a_line_the_operator_can_run(tmp_path, capsys) -> No
     ])
     _code, payload, err = _propose(bundle, capsys)
 
-    commands = payload["confirm_with"]
-    assert len(commands) == len(payload["landscape"]["confirmation_coordinates_us"])
+    commands = payload["next"]
+    assert len(commands) == len(payload["confirmation_coordinates_us"])
 
     # Parsed by the REAL parser, not matched against a copy of its wording: a
     # printed line is only "ready to run" if the tool it names accepts it, and
@@ -170,8 +176,7 @@ def test_the_zero_coordinate_stages_no_delay_at_all(tmp_path, capsys) -> None:
 
     zero = [
         line for line, coordinate in zip(
-            payload["confirm_with"],
-            payload["landscape"]["confirmation_coordinates_us"],
+            payload["next"], payload["confirmation_coordinates_us"],
         )
         if coordinate == 0.0
     ]
@@ -271,7 +276,7 @@ def test_a_lateral_pose_answers_when_the_caller_asks_for_one(
     )
     code, payload, err = _propose(bundle, capsys, "--phase", PHASE_LATERAL)
     assert code == 0
-    assert payload["landscape"]["best_coordinate_us"] == pytest.approx(200.0, abs=50.0)
+    assert payload["best_coordinate_us"] == pytest.approx(200.0, abs=50.0)
 
 
 def test_the_proposal_echoes_the_composition_its_take_was_banked_under(
@@ -330,7 +335,7 @@ def test_a_retaken_pose_reads_the_retake_not_the_take_it_replaced(
 
     assert code == 0
     assert payload["take_path"].endswith("p0_a02.json")
-    assert payload["landscape"]["best_coordinate_us"] == pytest.approx(200.0, abs=50.0)
+    assert payload["best_coordinate_us"] == pytest.approx(200.0, abs=50.0)
 
 
 def _null_row(bundle: Path, *, delay_us: float, depth_db: float | None = None,
@@ -392,7 +397,9 @@ def test_delay_landscape_banks_itself_beside_the_round(tmp_path, capsys) -> None
     banked = bundle / "delay_landscape.json"
     assert code == 0
     assert payload["out"] == str(banked)
-    assert json.loads(banked.read_text())["landscape"] == payload["landscape"]
+    landscape = json.loads(banked.read_text())["landscape"]
+    assert landscape["best_coordinate_us"] == payload["best_coordinate_us"]
+    assert payload["bytes"] == banked.stat().st_size
 
 
 def test_confirm_grades_the_played_rows_against_the_computed_optimum(
@@ -406,8 +413,8 @@ def test_confirm_grades_the_played_rows_against_the_computed_optimum(
         _curve("woofer", arrival_us=200.0), _curve("tweeter"),
     ])
     _code, proposed, _err = _propose(bundle, capsys)
-    optimum = proposed["landscape"]["best_coordinate_us"]
-    for coordinate in proposed["landscape"]["confirmation_coordinates_us"]:
+    optimum = proposed["best_coordinate_us"]
+    for coordinate in proposed["confirmation_coordinates_us"]:
         _null_row(
             bundle, delay_us=coordinate,
             depth_db=26.0 if coordinate == optimum else 6.0,
@@ -424,7 +431,7 @@ def test_confirm_grades_the_played_rows_against_the_computed_optimum(
     # Every graded row is named with its coordinate and depth, and nothing
     # from the capture rides along.
     assert len(banked["graded_rows"]) == len(
-        proposed["landscape"]["confirmation_coordinates_us"]
+        proposed["confirmation_coordinates_us"]
     )
     assert all(
         "wav_sha256" not in row and {"delay_us", "depth_db"} <= set(row)

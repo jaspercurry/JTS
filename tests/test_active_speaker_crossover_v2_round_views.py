@@ -1890,7 +1890,7 @@ def test_the_cli_counts_an_unevaluable_band_apart_from_a_failing_one(tmp_path, c
     """An UNEVALUABLE band is not a failing band.
 
     A band whose every bin the take's own gate clamped away has no evidence —
-    ``passed is None``, never ``False`` — and a summary that counted it as
+    ``passed is None``, never ``False`` — and an answer that counted it as
     failing would report a band nobody could measure as one that measured
     badly. Driven through the console script, on the same masked fixture the
     product-level mask test uses.
@@ -1906,9 +1906,66 @@ def test_the_cli_counts_an_unevaluable_band_apart_from_a_failing_one(tmp_path, c
 
     assert cli.main(["entry", str(round_dir)]) == 0
 
-    summary = capsys.readouterr().err
-    assert "1 unevaluable" in summary
-    assert "0 outside target" in summary
+    answer = json.loads(capsys.readouterr().out)
+    assert answer["unevaluable"] == 1
+    assert answer["outside_target"] == 0
+
+
+#: The views one round directory answers, as the operator's own argv. One
+#: fixture drives them all, so the ANSWER's shape is pinned once here rather
+#: than re-asserted verb by verb.
+_SINGLE_ROUND_VIEWS = (
+    "entry", "per-seat", "agreement", "co-metrics", "directivity",
+    "cloud-binding", "spec-sweep", "frequency", "inventory",
+)
+
+
+def _longest_numeric_list(node: Any) -> int:
+    """The longest run of numbers anywhere in a document."""
+    if isinstance(node, list):
+        numbers = all(
+            isinstance(item, (int, float)) and not isinstance(item, bool)
+            for item in node
+        )
+        return max([
+            len(node) if node and numbers else 0,
+            *(_longest_numeric_list(item) for item in node),
+        ])
+    if isinstance(node, dict):
+        return max([0, *(_longest_numeric_list(value) for value in node.values())])
+    return 0
+
+
+@pytest.mark.parametrize("view", _SINGLE_ROUND_VIEWS)
+def test_a_view_answers_on_stdout_and_leaves_the_curves_in_its_artifact(
+    tmp_path, capsys, view
+):
+    """ADR-0235: exit 0 is ONE answer document naming the artifact it wrote.
+
+    The scalars a caller reads to decide what to run next, and no curve or
+    grid — those stay in the file at ``out``, so asking a view costs a bounded
+    number of tokens rather than a measurement's worth of them.
+    """
+    from jasper.cli import round_views as cli
+
+    round_dir = _make_round_dir(
+        tmp_path, "r1",
+        position_curves={
+            "cloud_verify_02": ("onax", _flat_curve()),
+            "cloud_verify_04": ("offax", _flat_curve(ripple_db=1.0)),
+        },
+    )
+
+    assert cli.main([view, str(round_dir)]) == cli.EXIT_OK
+
+    answer = json.loads(capsys.readouterr().out)
+    assert answer["view"] == view
+    # ``status`` is how a FAILURE is recognised; a success never carries one.
+    assert "status" not in answer
+    written = Path(answer["out"])
+    assert written.is_file()
+    assert written.stat().st_size == answer["bytes"]
+    assert _longest_numeric_list(answer) <= 16
 
 
 # --------------------------------------------------------------------------- #

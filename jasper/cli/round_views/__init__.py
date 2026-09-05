@@ -4,30 +4,26 @@
 
 """Operator entry point for the round-grading comparison views (issue #2769).
 
-One console script, one subcommand per view — each a thin argparse wrapper over
-:mod:`jasper.active_speaker.crossover_v2.round_views`, which owns every
-number this tool prints. A round directory is EITHER a banked round tree or
-a live session bundle still on the speaker
-(``/var/lib/jasper/active_speaker/sessions/<id>``) — the shape is
-:func:`~jasper.active_speaker.crossover_v2.round_inputs.round_inputs`'
-answer, so an operator can grade the round they just ran without banking it
-first (#3498). This module calls the product view and writes the result as
-JSON — into a BANKED round's own directory by default, so the artifact travels
-with the evidence it was computed from, and beside the CALLER for a live
-session bundle, which belongs to the daemon (:func:`default_out`). Per the
-same "who prints the sentence" boundary :mod:`jasper.cli.crossover_prescriber`
-already keeps for its own JSON output.
+One console script, one subcommand per view — each a thin argparse wrapper
+over :mod:`jasper.active_speaker.crossover_v2.round_views`, which owns every
+number this tool prints. A round directory is EITHER a banked round tree or a
+live session bundle still on the speaker, whichever
+:func:`~jasper.active_speaker.crossover_v2.round_inputs.round_inputs` finds,
+so an operator can grade the round they just ran without banking it first
+(#3498). The artifact lands beside a BANKED round, travelling with the
+evidence it was computed from, and beside the CALLER for a live bundle, which
+belongs to the daemon (:func:`default_out`).
+
+Every subcommand prints its ANSWER as one JSON document on stdout and its one
+human line on stderr (:func:`._common.answer`, ADR-0235); ``--out PATH``
+files the artifact elsewhere, ``-`` putting the whole artifact on stdout
+instead — which the two ``delay-`` verbs and ``repeat-floor``, whose record
+its owning module publishes, do not take. On failure the exit code names the
+STAGE that failed and it publishes the shared failure record; ``--help``'s
+EXIT CODES block and docs/tuning-operator-runbook.md's "Exit codes" state the
+numbers and the record's shape, so neither is repeated here.
 
 Subcommands: one module per view family, each documenting its own verbs.
-
-Every subcommand accepts ``--out PATH`` to write somewhere else instead
-(``-`` for stdout, except ``repeat-floor``, whose record is published by
-its owning module, and the two ``delay-`` verbs, whose own document already
-occupies stdout — those three require a real path), and prints a
-one-line human summary to stderr either way. On failure the exit code names
-the STAGE that failed and it publishes the shared failure record;
-``--help``'s EXIT CODES block and docs/tuning-operator-runbook.md's "Exit
-codes" state the numbers and the record's shape, so neither is repeated here.
 """
 
 from __future__ import annotations

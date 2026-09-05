@@ -23,7 +23,6 @@ figures, and the durable floor the evidence packet reads.
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 from typing import Sequence
 
@@ -39,9 +38,16 @@ from jasper.active_speaker.repeat_floor import (
     stopping_thresholds,
     write_repeat_floor,
 )
-from jasper.cli._refusal import EXIT_OK, EXIT_WRITE_FAILED, StageFailed
+from jasper.cli._refusal import EXIT_WRITE_FAILED, StageFailed
 
-from ._common import PROG, _ROUND_DIR_HELP, _load_round, _view_out, _write
+from ._common import (
+    PROG,
+    _ROUND_DIR_HELP,
+    _load_round,
+    _view_out,
+    _write,
+    answer,
+)
 
 def _load_rounds(round_dirs: Sequence[str]) -> list[tuple[str, BankedRound]]:
     """The (label, round) pairs both repeat verbs grade, labelled by the
@@ -55,13 +61,15 @@ def _cmd_repeat(args: argparse.Namespace) -> int:
     written = _write(result.to_dict(), args.out, _view_out(args, rounds[0][1]))
     shipped = next((m for m in result.metrics if m.name == SHIPPED_POOL_METRIC), None)
     spread = shipped.spread() if shipped else None
-    print(
-        f"repeatability: {len(result.round_labels)} round(s); "
-        f"{SHIPPED_POOL_METRIC} spread={spread}"
-        f"{f' -> {written}' if written else ''}",
-        file=sys.stderr,
+    return answer(
+        args.command, out=written, rounds=len(result.round_labels),
+        metric=SHIPPED_POOL_METRIC, spread=spread,
+        line=(
+            f"repeatability: {len(result.round_labels)} round(s); "
+            f"{SHIPPED_POOL_METRIC} spread={spread}"
+            f"{f' -> {written}' if written else ''}"
+        ),
     )
-    return EXIT_OK
 
 
 def _record_path(value: str) -> Path:
@@ -100,13 +108,18 @@ def _cmd_repeat_floor(args: argparse.Namespace) -> int:
             ) from exc
     thresholds = stopping_thresholds(payload)
     aggregate = payload["metrics"][SHIPPED_POOL_METRIC]
-    print(
-        f"repeat-floor: {payload['n_repeats']} round(s); {SHIPPED_POOL_METRIC} "
-        f"sd={aggregate['sd_db']:.4g} dB; thresholds={thresholds} -> "
-        + ", ".join(str(path) for path, _ in destinations),
-        file=sys.stderr,
+    return answer(
+        # The install path when it was asked for: that is the one
+        # bank-crossover-round.sh pulls beside every later round.
+        args.command, out=destinations[-1][0], n_repeats=payload["n_repeats"],
+        metric=SHIPPED_POOL_METRIC, sd_db=aggregate["sd_db"],
+        thresholds=thresholds, installed=args.install,
+        line=(
+            f"repeat-floor: {payload['n_repeats']} round(s); {SHIPPED_POOL_METRIC} "
+            f"sd={aggregate['sd_db']:.4g} dB; thresholds={thresholds} -> "
+            + ", ".join(str(path) for path, _ in destinations)
+        ),
     )
-    return EXIT_OK
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:

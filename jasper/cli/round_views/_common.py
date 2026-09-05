@@ -3,13 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """What every view here shares: the artifact table, the round reader, the
-publisher, and the flags more than one subcommand takes.
+publisher, the answer printer, and the flags more than one subcommand takes.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -24,13 +25,14 @@ from jasper.active_speaker.crossover_v2.round_views import (
     load_banked_round,
 )
 from jasper.cli._refusal import (
+    EXIT_OK,
     EXIT_REFUSED,
     EXIT_UNREADABLE,
     EXIT_WRITE_FAILED,
     failed,
     stage,
 )
-from jasper.cli._report import write_report
+from jasper.cli._report import render_report, write_report
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
@@ -164,6 +166,30 @@ def _write(
         EXIT_WRITE_FAILED, (OSError,), write_report, payload, out, default_path,
         make_parents=make_parents,
     )
+
+
+#: :func:`answer`'s ``out`` for a verb that writes no artifact at all, told
+#: apart from ``None`` — which is ``--out -``, where the artifact ITSELF is the
+#: document on stdout and no answer may be printed over it.
+_NO_ARTIFACT: Any = object()
+
+
+def answer(
+    view: str, *, out: Path | None = _NO_ARTIFACT, line: str, **fields: Any,
+) -> int:
+    """This view's ANSWER on stdout, its one human line on stderr (ADR-0235).
+
+    The answer is what the human line says, as fields: scalars and
+    run-bounded records, never a curve or a grid — those stay in the artifact
+    at ``out``, whose path and size ride along so the next command can name it.
+    """
+    if out is not None:
+        if out is not _NO_ARTIFACT:
+            fields["out"] = str(out)
+            fields["bytes"] = out.stat().st_size
+        print(render_report({"view": view, **fields}))
+    print(line, file=sys.stderr)
+    return EXIT_OK
 
 
 def refused_by_name(

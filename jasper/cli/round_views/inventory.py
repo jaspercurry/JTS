@@ -18,13 +18,12 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 from typing import Any
 
 from jasper.active_speaker.crossover_v2.evidence_packet import round_artifact_dir
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
-from jasper.cli._refusal import EXIT_OK, EXIT_UNREADABLE, stage
+from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
 from ._common import (
     ARTIFACT_BY_VIEW,
@@ -34,6 +33,7 @@ from ._common import (
     _ROUND_DIR_HELP,
     _ROUND_TOOL_ERRORS,
     _write,
+    answer,
     default_out,
 )
 
@@ -69,14 +69,16 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
         payload, args.out, default_out(inputs, round_dir, INVENTORY_ARTIFACT)
     )
     missing = [row["produced_by"] for row in artifacts if not row["present"]]
-    print(
-        f"inventory: {len(artifacts) - len(missing)}/{len(artifacts)} "
-        f"artifact(s) present"
-        + (f"; missing: {', '.join(missing)}" if missing else "")
-        + (f" -> {written}" if written else ""),
-        file=sys.stderr,
+    return answer(
+        args.command, out=written, present=len(artifacts) - len(missing),
+        total=len(artifacts), missing=missing,
+        line=(
+            f"inventory: {len(artifacts) - len(missing)}/{len(artifacts)} "
+            f"artifact(s) present"
+            + (f"; missing: {', '.join(missing)}" if missing else "")
+            + (f" -> {written}" if written else "")
+        ),
     )
-    return EXIT_OK
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
