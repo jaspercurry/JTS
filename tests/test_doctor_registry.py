@@ -59,6 +59,25 @@ def test_the_roster_names_exactly_the_modules_that_register_checks():
     assert set(MODULE_ROSTER) == {c.module for c in registered_checks()}
 
 
+def test_the_package_init_imports_exactly_the_roster_modules():
+    """A check registers when its module is imported, so the roster is only
+    honoured if the package ``__init__`` imports every module it names — and
+    nothing the roster does not name. Read from the source: any other test in
+    the session may already have imported a module the ``__init__`` forgot."""
+    tree = ast.parse(
+        (Path(doctor.__file__).parent / "__init__.py").read_text(encoding="utf-8")
+    )
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.level == 1
+        and node.module is None
+        for alias in node.names
+    }
+    assert imported == set(MODULE_ROSTER)
+
+
 def test_streambox_omissions_cannot_go_stale():
     """The two skip sets key off the roster and registered function names
     respectively, so either can drift silently if a module or check is
