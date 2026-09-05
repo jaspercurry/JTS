@@ -40,7 +40,10 @@ from ...camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ...librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
 from ...volume_persistence import configured_path as volume_state_path
 from ...config import Config
-from ...env_load import load_env_files as _load_env_files
+from ...env_load import (
+    bounded_env_int,
+    load_env_files as _load_env_files,
+)
 from ...identity import resolve_hostname
 from ...install_profile import (
     STREAMBOX_INSTALL_PROFILE,
@@ -51,7 +54,11 @@ from ...speaker_name import runtime_name as _speaker_runtime_name
 from ...spotify_oauth import resolved_spotify_redirect_uri
 from ...usage import DEFAULT_USAGE_DB
 
-from ._evidence import evidence
+from ._evidence import (
+    DOCTOR_CHECK_TIMEOUT_SECONDS,
+    DOCTOR_MAX_CONCURRENCY,
+    evidence,
+)
 from ._registry import doctor_check, registered_checks
 from ._shared import (
     BOLD,
@@ -645,8 +652,8 @@ __all__ = [
     "_watch_line",
     "_watch_loop",
     "_build_doctor_checks",
-    "_doctor_check_timeout",
-    "_doctor_max_concurrency",
+    "DOCTOR_CHECK_TIMEOUT_SECONDS",
+    "DOCTOR_MAX_CONCURRENCY",
     "main",
     "run_async",
     "argparse",
@@ -788,57 +795,6 @@ def _watch_line(results: list[CheckResult]) -> str:
         )
     return f"{ts}  {GREEN}all {len(results)} checks ok{RESET}"
 
-def _env_int_for_doctor(name: str, default: int) -> int:
-    raw = os.environ.get(name, "")
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    if value <= 0:
-        return default
-    return value
-
-
-def _env_float_for_doctor(name: str, default: float) -> float:
-    raw = os.environ.get(name, "")
-    if not raw:
-        return default
-    try:
-        value = float(raw)
-    except ValueError:
-        return default
-    if value <= 0:
-        return default
-    return value
-
-
-_DOCTOR_DEFAULT_CONCURRENCY = 8
-_DOCTOR_MAX_CONCURRENCY = 16
-_DOCTOR_DEFAULT_CHECK_TIMEOUT_SECONDS = 15.0
-
-
-def _doctor_max_concurrency() -> int:
-    return max(
-        1,
-        min(
-            _DOCTOR_MAX_CONCURRENCY,
-            _env_int_for_doctor(
-                "JASPER_DOCTOR_MAX_CONCURRENCY",
-                _DOCTOR_DEFAULT_CONCURRENCY,
-            ),
-        ),
-    )
-
-
-def _doctor_check_timeout() -> float:
-    return _env_float_for_doctor(
-        "JASPER_DOCTOR_CHECK_TIMEOUT_SECONDS",
-        _DOCTOR_DEFAULT_CHECK_TIMEOUT_SECONDS,
-    )
-
-
 def _local_audio_config_from_env() -> SimpleNamespace:
     """Cfg surface for profiles that run local audio without a voice brain.
 
@@ -851,7 +807,9 @@ def _local_audio_config_from_env() -> SimpleNamespace:
     return SimpleNamespace(
         usage_db=os.environ.get("JASPER_USAGE_DB", DEFAULT_USAGE_DB),
         camilla_host=os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"),
-        camilla_port=_env_int_for_doctor("JASPER_CAMILLA_PORT", DEFAULT_CAMILLA_PORT),
+        camilla_port=bounded_env_int(
+            "JASPER_CAMILLA_PORT", DEFAULT_CAMILLA_PORT, lo=1, hi=65535,
+        ),
         volume_state_path=volume_state_path(),
         librespot_state_path=os.environ.get(
             "JASPER_LIBRESPOT_STATE", DEFAULT_LIBRESPOT_STATE,
@@ -1075,7 +1033,12 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
-async def run_async(cfg: Config | SimpleNamespace) -> list[CheckResult]:
+async def run_async(
+    cfg: Config | SimpleNamespace,
+    *,
+    max_concurrency: int = DOCTOR_MAX_CONCURRENCY,
+    check_timeout: float = DOCTOR_CHECK_TIMEOUT_SECONDS,
+) -> list[CheckResult]:
     """Run every registered check and return the results in registry order.
 
     Checks run concurrently (most are subprocess/socket/file probes) but
@@ -1084,16 +1047,16 @@ async def run_async(cfg: Config | SimpleNamespace) -> list[CheckResult]:
     that lane while unrelated checks continue.
     """
     evidence.reset()
+    evidence.set_check_timeout(check_timeout)
     install_profile = read_install_profile()
     checks = _build_doctor_checks(cfg, install_profile)
-    semaphore = asyncio.Semaphore(_doctor_max_concurrency())
+    semaphore = asyncio.Semaphore(max_concurrency)
     exclusive_locks = {
         c.exclusive_group: asyncio.Lock()
         for c in checks
         if c.exclusive_group
     }
-    timeout = _doctor_check_timeout()
     return list(await asyncio.gather(*[
-        _run_runnable_bounded(c, semaphore, exclusive_locks, timeout)
+        _run_runnable_bounded(c, semaphore, exclusive_locks, check_timeout)
         for c in checks
     ]))

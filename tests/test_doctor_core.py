@@ -315,7 +315,6 @@ def test_run_async_parallelizes_blocking_checks_but_preserves_order(
         return check
 
     monkeypatch.setattr(doctor, "read_install_profile", lambda: "full")
-    monkeypatch.setenv("JASPER_DOCTOR_MAX_CONCURRENCY", "3")
     monkeypatch.setattr(
         doctor,
         "registered_checks",
@@ -329,7 +328,7 @@ def test_run_async_parallelizes_blocking_checks_but_preserves_order(
         ],
     )
 
-    results = asyncio.run(doctor.run_async(SimpleNamespace()))
+    results = asyncio.run(doctor.run_async(SimpleNamespace(), max_concurrency=3))
 
     assert [r.name for r in results] == ["a", "b", "c", "d", "e", "f"]
     assert max_active == 3
@@ -360,7 +359,6 @@ def test_run_async_serializes_checks_in_same_exclusive_group(monkeypatch):
         return doctor.CheckResult("c", "ok", "ran")
 
     monkeypatch.setattr(doctor, "read_install_profile", lambda: "full")
-    monkeypatch.setenv("JASPER_DOCTOR_MAX_CONCURRENCY", "3")
     monkeypatch.setattr(
         doctor,
         "registered_checks",
@@ -381,7 +379,7 @@ def test_run_async_serializes_checks_in_same_exclusive_group(monkeypatch):
         ],
     )
 
-    results = asyncio.run(doctor.run_async(SimpleNamespace()))
+    results = asyncio.run(doctor.run_async(SimpleNamespace(), max_concurrency=3))
 
     assert [r.name for r in results] == ["a", "b", "c"]
     assert max_active == 1
