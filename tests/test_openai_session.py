@@ -1590,12 +1590,7 @@ async def test_reconnect_with_backoff_eventually_succeeds():
 
 @pytest.mark.parametrize("conn_cls", [OpenAIRealtimeConnection, GrokRealtimeConnection])
 async def test_drop_signalled_during_a_reconnect_is_not_swallowed(conn_cls):
-    """A reconnect request raised while the supervisor is already
-    reconnecting must still be served. The supervisor loop is the only
-    owner of `_reconnect_event` and clears it before doing the work, so
-    a signal raised inside a reopen survives that reopen and drives one
-    more pass — instead of leaving a dead session behind a supervisor
-    that has parked thinking it is idle. See #3915."""
+    """A set() landing during the reopen must trigger one more cycle (#3915)."""
     factory = _FakeConnectFactory()
     conn = conn_cls(
         api_key="fake",

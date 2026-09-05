@@ -1334,9 +1334,7 @@ class GeminiLiveConnection:
                 await self._reconnect_event.wait()
                 if self._stopping.is_set():
                     return
-                # Sole owner of the clear, and it clears BEFORE the work:
-                # a drop signalled during the reopen then survives into
-                # the next pass instead of being discarded. See #3915.
+                # Cleared before the work so a signal during reopen survives. See #3915.
                 self._reconnect_event.clear()
                 log_event(
                     logger,
@@ -1350,7 +1348,6 @@ class GeminiLiveConnection:
                     "voice.supervisor.wait",
                     provider="gemini",
                     state=self._state.value,
-                    requeued=self._reconnect_event.is_set(),
                 )
         except asyncio.CancelledError:
             raise
