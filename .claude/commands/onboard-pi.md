@@ -281,7 +281,7 @@ The rest can happen anytime later.
 For a **streambox** profile, explain that AirPlay, Spotify Connect,
 Bluetooth, DSP, grouping, and management are installed locally, while the
 voice/microphone brain is intentionally omitted. Walk them through the
-banner's `/sources/`, `/spotify/`, `/sound/`, `/rooms/`, and `/system/`
+banner's `/sources/`, `/spotify/`, `/sound/`, `/sound/pair/`, and `/system/`
 links. Do not send them to `/voice/` or `/transit/`.
 
 If the banner says audio is safely parked because no output DAC was found,

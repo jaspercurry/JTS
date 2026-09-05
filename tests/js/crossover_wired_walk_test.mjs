@@ -66,7 +66,7 @@ const PENDING = {
   action: {
     id: "crossover_v2_position_ready",
     label: "Microphone is at +7°",
-    endpoint: "/correction/crossover/v2/position-ready",
+    endpoint: "/sound/speaker/crossover/v2/position-ready",
     body: { index: 3, degrees: 7 },
   },
 };
@@ -121,7 +121,7 @@ assertWiredStatus();
 nextEnvelope = envelope({ status: "awaiting_capture", source: "wired" });
 await release.click();
 assert.deepEqual(posted, [{
-  path: "/correction/crossover/v2/position-ready",
+  path: "/sound/speaker/crossover/v2/position-ready",
   body: { index: 3, degrees: 7 },
 }]);
 
@@ -153,14 +153,14 @@ assert.notEqual(captureStatus().textContent, holdingStatus);
 const CLOSING_SAVE = {
   id: "crossover_v2_complete",
   label: "Save this measurement",
-  endpoint: "/correction/crossover/v2/complete",
+  endpoint: "/sound/speaker/crossover/v2/complete",
   body: {},
   show_during_capture: true,
 };
 const CLOSING_RETAKE = {
   id: "crossover_v2_retake",
   label: "Record the last spot again",
-  endpoint: "/correction/crossover/v2/retake",
+  endpoint: "/sound/speaker/crossover/v2/retake",
   body: {},
   show_during_capture: true,
 };
@@ -202,7 +202,7 @@ posted.length = 0;
 nextEnvelope = envelope({ status: "awaiting_capture", source: "wired" });
 await retakeRelease.click();
 assert.deepEqual(posted, [{
-  path: "/correction/crossover/v2/position-ready",
+  path: "/sound/speaker/crossover/v2/position-ready",
   body: PENDING.action.body,
 }]);
 render(envelope({ status: "awaiting_capture", source: "wired" }, CLOSING_ACTIONS));

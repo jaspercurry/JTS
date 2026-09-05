@@ -457,7 +457,7 @@ def live_measurement_session(
     if plan.unresolved_volume_safety is not None:
         return (
             "a previous measurement left the speaker's measurement volume "
-            "unresolved; recover it at http://jts.local/correction/crossover/ "
+            "unresolved; recover it at http://jts.local/sound/speaker/crossover/ "
             f"before {action}"
         )
     if not _a_measurement_is_live(plan=plan, now=now):

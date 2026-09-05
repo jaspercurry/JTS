@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The P6 tuning-LLM surfaced in the ``/correction/`` flow.
+"""The P6 tuning-LLM surfaced in the ``/sound/room/`` flow.
 
 :func:`interpret` is a read-only narration of the SERVER-computed result;
 :func:`propose` is the confirm-gated proposer, whose every correction proposal

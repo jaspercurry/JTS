@@ -41,7 +41,7 @@ const { render, runAction, stopCapture } = await loadEsm(
 const nextAction = {
   id: "restart_session",
   label: "Continue",
-  endpoint: "/correction/crossover/v2/session",
+  endpoint: "/sound/speaker/crossover/v2/session",
   body: {},
   enabled: true,
 };
@@ -131,7 +131,7 @@ nextEnvelope = {
   alternate_actions: [],
 };
 await runAction(
-  { endpoint: "/correction/crossover/some-other-step", body: {} },
+  { endpoint: "/sound/speaker/crossover/some-other-step", body: {} },
   element("other-button"),
 );
 check(
@@ -150,7 +150,7 @@ nextEnvelope = {
   alternate_actions: [],
 };
 await runAction(
-  { endpoint: "/correction/crossover/some-other-step", body: {} },
+  { endpoint: "/sound/speaker/crossover/some-other-step", body: {} },
   element("other-button-2"),
 );
 check(
@@ -202,7 +202,7 @@ check(
 const holdPrimaryAction = {
   id: "hold_primary_action",
   label: "Primary action during hold",
-  endpoint: "/correction/crossover/v2/some-primary-action",
+  endpoint: "/sound/speaker/crossover/v2/some-primary-action",
   body: { fingerprint: "fp-1" },
   show_during_capture: true,
 };
@@ -246,20 +246,20 @@ check(
 const verifyRetryAction = {
   id: "verify_retry",
   label: "Try again",
-  endpoint: "/correction/crossover/v2/verify",
+  endpoint: "/sound/speaker/crossover/v2/verify",
   body: {},
 };
 const wayBackAction = {
   id: "republish_previous",
   label: "Go back to the previous tuning",
-  endpoint: "/correction/crossover/v2/republish",
+  endpoint: "/sound/speaker/crossover/v2/republish",
   body: { fingerprint: "fp-previous" },
   show_during_capture: true,
 };
 const verifyRemeasureAction = {
   id: "verify_remeasure",
   label: "Re-measure",
-  endpoint: "/correction/crossover/v2/session",
+  endpoint: "/sound/speaker/crossover/v2/session",
   body: {},
   expert: true,
   show_during_capture: true,
@@ -302,7 +302,7 @@ check(
 const clickAction = {
   id: "restart_session",
   label: "Continue",
-  endpoint: "/correction/crossover/v2/session",
+  endpoint: "/sound/speaker/crossover/v2/session",
   body: {},
   enabled: true,
 };
@@ -355,7 +355,7 @@ const recommendedTierAction = {
   description:
     "About 11 min — 16 measurements; re-checks the result at several spots around the mark.",
   recommended: true,
-  endpoint: "/correction/crossover/v2/session",
+  endpoint: "/sound/speaker/crossover/v2/session",
   body: { tier: "full" },
 };
 const otherTierAction = {
@@ -363,7 +363,7 @@ const otherTierAction = {
   label: "Quick tune",
   description: "About 5 min — 7 measurements; confirms the result at the mark.",
   recommended: false,
-  endpoint: "/correction/crossover/v2/session",
+  endpoint: "/sound/speaker/crossover/v2/session",
   body: { tier: "express" },
 };
 render({
@@ -474,7 +474,7 @@ render({
   next_action: {
     id: "review_apply",
     label: "Apply and verify",
-    endpoint: "/correction/crossover/v2/apply",
+    endpoint: "/sound/speaker/crossover/v2/apply",
     body: {expected_candidate_fingerprint: "fp-1"},
     enabled: false,
     show_during_capture: true,
@@ -497,7 +497,7 @@ render({
   next_action: {
     id: "review_apply",
     label: "Apply and verify",
-    endpoint: "/correction/crossover/v2/apply",
+    endpoint: "/sound/speaker/crossover/v2/apply",
     body: {expected_candidate_fingerprint: "fp-1"},
     enabled: true,
     show_during_capture: true,

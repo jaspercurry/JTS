@@ -125,7 +125,7 @@ const CONFIRM_ACTION = {
 const START_SESSION = {
   id: "start_session",
   label: "Start",
-  endpoint: "/correction/crossover/v2/session",
+  endpoint: "/sound/speaker/crossover/v2/session",
   body: {},
 };
 

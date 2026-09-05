@@ -935,7 +935,7 @@ def test_eq_page_delegates_content_dsp_when_bonded_follower(monkeypatch):
     monkeypatch.setattr(
         sound_setup,
         "bonded_follower_leader_web_url",
-        lambda path="/": leader_paths.append(path) or "http://jts3.local/eq/",
+        lambda path="/": leader_paths.append(path) or "http://jts3.local/sound/eq/",
     )
 
     html = sound_setup._index_html("csrf-token", page_mode="eq").decode()
@@ -943,8 +943,8 @@ def test_eq_page_delegates_content_dsp_when_bonded_follower(monkeypatch):
     # The delegation card stays: content EQ / room correction / volume shaping
     # are the leader's job while paired.
     assert "Sound is controlled by the pair leader" in html
-    assert leader_paths == ["/eq/"]
-    assert "http://jts3.local/eq/" in html
+    assert leader_paths == ["/sound/eq/"]
+    assert "http://jts3.local/sound/eq/" in html
     assert 'href="/sound/setup/">Open local sound setup</a>' in html
     # EQ is entirely leader-owned on a follower; no local commissioning module.
     assert "/assets/sound-profile/js/main.js" not in html
@@ -7160,8 +7160,8 @@ def test_profile_library_route_helpers_create_rename_delete(tmp_path: Path):
 def test_rollback_teardown_converts_any_failure_into_the_household_blocker():
     """The re-mute teardown may not let ANY exception escape uncopied.
 
-    /sound/ and /correction/ both run the combined-test re-mute from a
-    ``finally`` and both import this one helper. /correction/ used to catch a
+    /sound/ and /sound/room/ both run the combined-test re-mute from a
+    ``finally`` and both import this one helper. /sound/room/ used to catch a
     five-entry tuple (``CamillaUnavailable``, ``OSError``, ``RuntimeError``,
     ``ValueError``, ``TypeError``), so a rollback failing with anything else —
     a ``KeyError`` out of a payload, an ``AttributeError`` off a stubbed

@@ -9,7 +9,7 @@ JTS's per-device :mod:`jasper.control.control_token` is a CSRF token: it proves
 *browser -> its own speaker* and **wrong for machine-to-machine** (each speaker
 mints its OWN distinct control token, so a leader has nothing a follower's gate
 will accept). This module is the M2M counterpart: ONE secret per household,
-minted at the human pairing moment (the ``/rooms/`` bond fan-out), distributed
+minted at the human pairing moment (the ``/sound/pair/`` bond fan-out), distributed
 to each member over the trusted LAN, and presented on the cross-device grouping
 path as a STATIC bearer in the ``X-JTS-Household`` header. Distinct file,
 distinct header, distinct trust domain (peer identity, not page origin) — the

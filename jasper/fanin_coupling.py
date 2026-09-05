@@ -994,6 +994,6 @@ def coupling_capture_kwargs_from_env() -> dict[str, object]:
     central transport (ADR-0100), so there is nothing for a token to select and
     no unresolved token can make this answer ``{}`` — which would re-emit a
     graph capturing a lane fan-in does not write, silently, in the middle of a
-    ``/sound/`` or ``/correction/`` save.
+    ``/sound/`` or ``/sound/room/`` save.
     """
     return capture_kwargs_for_coupling()

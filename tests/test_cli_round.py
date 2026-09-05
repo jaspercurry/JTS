@@ -139,9 +139,10 @@ def test_the_endpoints_and_stage_words_are_the_products_own():
     )
     from jasper.web.correction_setup import _POST_ROUTES
 
+    # nginx maps /sound/speaker/crossover/ onto the daemon's /crossover/.
     for path in (wc.SESSION_PATH, wc.VERIFY_PATH, wc.APPLY_PATH):
-        assert path.startswith("/correction/")
-        assert path[len("/correction"):] in _POST_ROUTES
+        assert path.startswith("/sound/speaker/crossover/")
+        assert path.removeprefix("/sound/speaker") in _POST_ROUTES
     assert (wc.STAGE_KEY, wc.STAGE_POST_APPLY) == (
         VERIFY_STAGE_KEY,
         VERIFY_STAGE_POST_APPLY,
@@ -188,7 +189,7 @@ def test_open_posts_the_stage_and_tier_it_was_given(
     assert receipt["session_id"] == "s1"
     # The answer hands the ONE url a human drives the round on, and the verb
     # that follows -- neither is a thing its reader should have to know.
-    assert receipt["handoff_url"] == "http://jts3.local/sound/crossover/"
+    assert receipt["handoff_url"] == "http://jts3.local/sound/speaker/crossover/"
     assert receipt["next"] == "jasper-round wait"
     assert "status" not in receipt
     # Every request claims this speaker's own name, never 127.0.0.1.

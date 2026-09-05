@@ -22,7 +22,7 @@ that config comes from :mod:`jasper.multiroom.follower_config`.
 ``enable_rate_adjust`` is not member policy — see ADR-0218.
 
 This module owns the decision so every config-apply path — ``/sound``,
-``/correction``, and the grouping reconciler's bond apply
+``/sound/room/``, and the grouping reconciler's bond apply
 (:mod:`jasper.multiroom.leader_config`) — applies the SAME transform instead of
 threading it per call site (and is what stops a ``/sound`` save while bonded
 from silently yanking the leader's CamillaDSP off the pipe). Pure except for the

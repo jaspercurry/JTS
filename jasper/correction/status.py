@@ -331,7 +331,7 @@ def session_config_payload(session: Any) -> dict[str, Any]:
         "peq_f_low": peq_f_low,
         "peq_f_high": peq_f_high,
         # Same reason, same bug class: `cfg.correction_strategy` is only the
-        # DEFAULT. `/correction`'s start handler passes the household's pick as
+        # DEFAULT. `/sound/room/`'s start handler passes the household's pick as
         # `strategy_choice`, which never writes back to cfg — so reading cfg
         # here reported "balanced" for a `safe` session, and would now
         # contradict the band reported two lines up.

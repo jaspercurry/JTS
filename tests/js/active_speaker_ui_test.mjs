@@ -129,7 +129,7 @@ import {
   });
   assert.equal(s.provisional, true);
   assert.equal(s.rows[1].sourceLabel, "Datasheet estimate");
-  assert.ok(s.guidance.includes("jts.local/correction"));
+  assert.ok(s.guidance.includes("jts.local/sound/speaker/crossover"));
   assert.ok(/safe starting estimates/i.test(s.note));
   assert.ok(/not acoustic measurements/i.test(s.note));
 }
@@ -222,12 +222,12 @@ assert.ok(/explicitly apply/i.test(NEARFIELD_LEVEL_MATCH_GUIDANCE));
 
 // ...and it must POINT at the experience that can actually measure. /sound/ is
 // plain HTTP, so it has no getUserMedia and no recorder in this bundle; the
-// capture lives on the HTTPS /correction/ hub. BOTH halves are pinned: the
-// typeable host, and the tab. jts.local/correction lands on the sibling Room
-// tab, so naming the host alone would send the household to the wrong screen —
-// "Active speaker" (correction_hub.SECTIONS) is the part that makes the pointer
-// correct, so it gets its own guard.
-assert.ok(NEARFIELD_LEVEL_MATCH_GUIDANCE.includes("jts.local/correction"));
+// capture lives on the HTTPS /sound/speaker/crossover/ page. BOTH halves are
+// pinned: the typeable path (the host alone lands nowhere useful) and the
+// destination's label, which correction_hub.SECTIONS owns.
+assert.ok(
+  NEARFIELD_LEVEL_MATCH_GUIDANCE.includes("jts.local/sound/speaker/crossover"),
+);
 assert.ok(NEARFIELD_LEVEL_MATCH_GUIDANCE.includes("Active speaker"));
 
 // It must NOT carry a microphone-placement instruction. The canonical capture

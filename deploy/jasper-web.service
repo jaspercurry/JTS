@@ -81,7 +81,7 @@ EnvironmentFile=-/var/lib/jasper/transit.env
 #   /weather/  →  127.0.0.1:8779
 #   /wake-corpus/ → 127.0.0.1:8782
 #   /sound/    →  127.0.0.1:8784
-#   /rooms/    →  127.0.0.1:8785
+#   /sound/pair/ →  127.0.0.1:8785
 #   /tools/    →  127.0.0.1:8786
 # When socket-activated, all fds arrive via LISTEN_FDS and the
 # Python side disambiguates by getsockname()[1] (port). See
@@ -176,7 +176,7 @@ ReadWritePaths=/var/lib/jasper /var/lib/jasper-secrets /var/lib/jasper-intsecret
 # /run cannot succeed here; RuntimeDirectory= both creates the directory as
 # jasper-web:jasper (the unit's User:Group) and excludes it from
 # ProtectSystem=. Mode 0755 keeps the root reconciler's read of the marker
-# working; jasper-correction-web (through /correction/'s driver-capture arms)
+# working; jasper-correction-web (through /sound/room/'s driver-capture arms)
 # declares this same RuntimeDirectory= with the same user and mode since its
 # own de-root, and jasper-web-streambox.service (this same process, installed
 # as jasper-web.service on a streambox) stays root under ProtectSystem=full

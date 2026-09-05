@@ -486,8 +486,8 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      device-activated jasper-usbnet-dhcp.service (dnsmasq-base) serves DHCP.
      Kill switch: JASPER_USB_NETWORK=disabled.
    - Enable socket-activated streambox-safe web surfaces:
-     /spotify/, /sources/, /airplay/, /sound/, /speaker/, /wifi/, /rooms/,
-     /bluetooth/, /system/, and HTTPS /correction/. The assistant surfaces
+     /spotify/, /sources/, /airplay/, /sound/, /speaker/, /wifi/, /sound/pair/,
+     /bluetooth/, /system/, and HTTPS /sound/room/. The assistant surfaces
      -- /voice/, /google/, /transit/, /weather/, /ha/, /tools/, /chat/ --
      are routed and socket-bound here too; jasper-web serves them only
      once the tier holds Capability.ASSISTANT.
@@ -984,7 +984,7 @@ install_camilladsp() {
     # group-writable for the dropped service users instead of root-only.
     #
     # The active_speaker* paths below are the same capture/sweep/tone trees
-    # /sound/ and /correction/ share; this list must stay in sync with
+    # /sound/ and /sound/room/ share; this list must stay in sync with
     # heal_shared_state_modes's allowlist (env-migrations.sh), which re-heals
     # the same seven paths on every deploy for boxes that pre-date this line.
     install -d -m 2770 -g jasper \
@@ -1582,7 +1582,7 @@ resolve_fanin_coupling_default() {
 }
 
 provision_correction_tls() {
-    # /correction/ requires HTTPS because getUserMedia (mic capture)
+    # /sound/room/ requires HTTPS because getUserMedia (mic capture)
     # only works in a secure context. There's no way around this in
     # any browser, so we provision a private CA the user trusts once
     # on iOS, then issue a server cert from it for jts.local.
@@ -1603,7 +1603,7 @@ provision_correction_tls() {
     install -d -m 0755 "${ssl_dir}"
 
     if [[ ! -f "${ca_dir}/ca.crt" || ! -f "${ca_dir}/ca.key" ]]; then
-        echo "  generating /correction/ private CA at ${ca_dir}/ca.crt"
+        echo "  generating /sound/room/ private CA at ${ca_dir}/ca.crt"
         openssl genrsa -out "${ca_dir}/ca.key" 4096 2>/dev/null
         openssl req -x509 -new -nodes -key "${ca_dir}/ca.key" \
             -sha256 -days 3650 -out "${ca_dir}/ca.crt" \
@@ -1638,7 +1638,7 @@ EOF
     # location block in nginx-jasper.conf).
     install -d -m 0755 /usr/share/jasper-web
     install -m 0644 "${ca_dir}/ca.crt" /usr/share/jasper-web/jts-root-ca.crt
-    echo "  /correction/ TLS provisioned (server cert for ${hostname}, CA at /usr/share/jasper-web/jts-root-ca.crt)"
+    echo "  /sound/room/ TLS provisioned (server cert for ${hostname}, CA at /usr/share/jasper-web/jts-root-ca.crt)"
 }
 
 install_management_static_assets() {
@@ -1735,7 +1735,7 @@ tune_nginx_worker_processes() {
 install_nginx_site() {
     # Standalone nginx site that reverse-proxies /spotify/ (multi-account
     # OAuth web flow) and /voice/ (voice-provider config wizard) on plain
-    # HTTP. /correction/ and the /sound/* measurement routes are proxied on
+    # HTTP. /sound/room/ and the /sound/* measurement routes are proxied on
     # both listeners, but browser mic capture only works on the HTTPS one:
     # getUserMedia grants mic access in a secure context only. That origin is
     # the installer's own self-signed cert, so it is entered deliberately and
@@ -1818,7 +1818,7 @@ install_avahi_jasper_control() {
         /etc/jasper/avahi-templates/jasper-control.service
 
     # A non-root jasper-control renders the peering advert
-    # (jasper-peer.service) into this dir when /rooms/ peering is enabled
+    # (jasper-peer.service) into this dir when /sound/pair/ peering is enabled
     # (off by default). os.replace needs WRITE on the parent dir, which
     # ReadWritePaths= does NOT grant (it only lifts ProtectSystem=strict;
     # POSIX dir perms still apply). So when the `jasper` group exists, make the
@@ -1952,7 +1952,7 @@ install_peering_template() {
     #
     # jasper-control's peering daemon renders this template into
     # /etc/avahi/services/jasper-peer.service when JASPER_PEERING=on
-    # is set in /var/lib/jasper/peering.env (via the /rooms/ Speakers
+    # is set in /var/lib/jasper/peering.env (via the /sound/pair/ Speakers
     # page). When peering is off (the default), no
     # rendered file exists and this Pi is invisible to siblings —
     # the goal property of "zero cost when alone".
@@ -1981,7 +1981,7 @@ install_peering_template() {
         chmod 0644 /var/lib/jasper/peer_id
         echo "  Generated stable peer_id at /var/lib/jasper/peer_id"
     fi
-    echo "  Peering template installed; peering is OFF by default — enable at http://${JASPER_HOSTNAME:-jts.local}/rooms/"
+    echo "  Peering template installed; peering is OFF by default — enable at http://${JASPER_HOSTNAME:-jts.local}/sound/pair/"
 }
 
 regenerate_audio_cues() {

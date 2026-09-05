@@ -620,7 +620,7 @@ def check_correction_storage() -> CheckResult:
         ),
         knob="JASPER_CORRECTION_STORAGE_WARN_BYTES",
         note=(
-            "Review old sessions at http://jts.local/correction/ and re-run "
+            "Review old sessions at http://jts.local/sound/room/ and re-run "
             "only if needed; the newest bundle is what's applied."
         ),
     )

@@ -367,7 +367,7 @@ def handle_v2_republish(
         "candidate": summary,
         # What the operator does next, and the one thing that is NOT restored.
         "next_action": {
-            "endpoint": "/correction/crossover/v2/apply",
+            "endpoint": "/sound/speaker/crossover/v2/apply",
             "expected_candidate_fingerprint": banked.fingerprint,
         },
         "verify_priors_restored": False,

@@ -5,7 +5,7 @@
 """Peering configuration — env-file loader.
 
 Persisted at /var/lib/jasper/peering.env, mode 0644 (no secrets).
-Written by the /rooms/ Speakers page, sourced into jasper-control's
+Written by the /sound/pair/ Speakers page, sourced into jasper-control's
 environment via the systemd unit's `EnvironmentFile=` directive.
 
 Same precedence rule as wake_model.env and voice_provider.env:
@@ -16,7 +16,7 @@ Two modes only:
          no zeroconf browse, no multicast socket, no thread. Cost
          on a single-Pi household: zero.
   on   — Full peering. Advertise via Avahi, browse for siblings,
-         arbitrate wake events. The user opts in via /rooms/.
+         arbitrate wake events. The user opts in via /sound/pair/.
 
 We deliberately don't expose an `auto` mode where peering would
 turn itself on if peers appear; one mode flip per setting, easy
@@ -128,7 +128,7 @@ class PeeringConfig:
 
     mode: PeeringMode
     peer_id: str          # stable UUID, persists across reboots
-    room: str             # human label, surfaced in /rooms/ UI and logs
+    room: str             # human label, surfaced in /sound/pair/ UI and logs
     primary: bool         # small bias in the ranking function (~0.05)
     arb_window_ms: int    # arbitration collection window
     break_threshold: float  # local-wake confidence required to break a foreign session

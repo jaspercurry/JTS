@@ -16,7 +16,7 @@ preference choice.
 
 ## What JTS Does Today
 
-The `/correction/` wizard's `target_choice` accepts four values —
+The `/sound/room/` wizard's `target_choice` accepts four values —
 `flat`, `neutral`, `warm`, `bright` — resolved by
 `jasper.correction.strategy.resolve_target_profile`'s `TARGET_PROFILES`
 (`flat` and `neutral` are both zero-tilt entries; `flat` has no

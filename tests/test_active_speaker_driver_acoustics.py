@@ -215,7 +215,7 @@ def test_driver_in_its_band_reads_present(tmp_path):
 
 def test_overlong_capture_is_bounded_before_analysis(tmp_path, monkeypatch):
     """A driver capture longer than the cap is bounded before assess/deconv
-    (mirrors the /correction session path) so it can't drive the FFT to OOM,
+    (mirrors the /sound/room/ session path) so it can't drive the FFT to OOM,
     and an otherwise-good over-long capture still reads 'present'."""
     monkeypatch.setattr(deconv, "DEFAULT_MAX_CAPTURE_SECONDS", 1.5)
     sig, meta = _reference_sweep()  # 1 s sweep

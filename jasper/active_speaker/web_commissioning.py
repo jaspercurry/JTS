@@ -322,13 +322,15 @@ def _path_safety_evidence_path() -> str | None:
     return str(default_path) if default_path.exists() else None
 
 
-# The five commissioning blockers BOTH operator surfaces mint — /correction/
+# The five commissioning blockers BOTH operator surfaces mint —
+# /sound/speaker/crossover/
 # here and /sound/ through `jasper.web.sound_setup`. This module is their ONE
 # owner and /sound/ imports these factories, the same way it already imports the
 # commission-tone helpers rather than keeping a hand-copied fork (see the import
 # block's comment in sound_setup.py). The two surfaces' surrounding
 # orchestrations genuinely differ — /sound/ re-saves a crossover preview and
-# runs a stoppable playback loop, /correction/ takes resolved inputs and plays
+# runs a stoppable playback loop, the crossover page takes resolved inputs
+# and plays
 # once — so what is shared is the vocabulary, not the flow. Hand-copying the
 # sentence is what let the two drift while reading identical.
 #
@@ -388,7 +390,7 @@ async def rollback_summed_commission_teardown(
     ``rollback_driver_commissioning_config`` through their own seam, and each
     keeps the name its own tests substitute.
 
-    The catch is broad ON PURPOSE. /correction/ used to catch a five-entry
+    The catch is broad ON PURPOSE. This surface used to catch a five-entry
     tuple, so a rollback failure raising anything outside it — a ``KeyError``
     out of a payload, an ``AttributeError`` off a stubbed camilla — escaped the
     ``finally`` unconverted: no issue, no copy, an unhandled exception exactly
@@ -459,7 +461,7 @@ async def _ensure_commission_startup_anchor(
     # SHARED WITH /sound/, deliberately: this is the same two-term gate
     # `sound_setup._active_speaker_ensure_commission_startup_anchor` has run
     # since the jts5 2026-08-06 regression, and `staged_topology_mismatch` is a
-    # mapped household code. /correction/ short-circuited on the path term
+    # mapped household code. This surface short-circuited on the path term
     # alone, so the two surfaces disagreed about what "already loaded" meant and
     # only one of them could ever emit that code (#2285).
     #

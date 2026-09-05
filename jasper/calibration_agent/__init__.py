@@ -7,5 +7,5 @@ LLM surface.
 
 Deterministic bundle/corpus tools, prompt packaging and response validation,
 plus the P6 tuning surface (`model_client.call_advisor`,
-`correction_advisor.interpret`/`propose`) the `/correction/` flow calls.
+`correction_advisor.interpret`/`propose`) the `/sound/room/` flow calls.
 """

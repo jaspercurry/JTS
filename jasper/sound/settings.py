@@ -19,7 +19,7 @@ profile, so they live apart from :class:`~jasper.sound.profile.SoundProfile`:
   floor. The default preserves the original shipped curve.
 
 Single source of truth: ``/var/lib/jasper/sound_settings.json``,
-wizard-owned (the split ``/eq/`` and ``/sound/setup/`` pages). Absence or
+wizard-owned (the split ``/sound/eq/`` and ``/sound/setup/`` pages). Absence or
 corruption fails soft to
 the defaults above — which are also the "change nothing" state — so a
 missing or bad file can never silently alter the sound.

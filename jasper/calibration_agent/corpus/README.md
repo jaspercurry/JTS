@@ -181,7 +181,7 @@ Every concept file should have:
   `--audition-sound` is explicitly passed. No model output can control
   volume, emit CamillaDSP YAML, persist profiles, or generate room/FIR
   filters through this slice.
-- 2026-07-05: P6 tuning surface landed in the `/correction/` web flow —
+- 2026-07-05: P6 tuning surface landed in the `/sound/room/` web flow —
   `jasper.calibration_agent.key_provisioning` (operator-provisioned
   advisor key), `jasper.calibration_agent.correction_advisor`
   (redacted correction-flow context + interpret/propose calls), and a

@@ -244,7 +244,7 @@ def test_inactive_speaker_gets_not_applicable():
     env = build_crossover_envelope_v2({"active": False})
     assert env["screen"] == "not_applicable"
     assert env["active"] is False
-    assert env["next_action"]["href"] == "/correction/room/"
+    assert env["next_action"]["href"] == "/sound/room/"
 
 
 def test_setup_not_ready_blocks_before_any_capture():
@@ -305,7 +305,7 @@ def test_check_phase_offers_both_tiers_first_class():
         ("start_v2_session_express", "express"),
     ):
         action = actions[action_id]
-        assert action["endpoint"] == "/correction/crossover/v2/session"
+        assert action["endpoint"] == "/sound/speaker/crossover/v2/session"
         assert action["body"] == {"tier": tier}
 
 
@@ -651,7 +651,7 @@ def test_verify_phase_screen():
     assert env["next_action"] == {
         "id": "verify_start",
         "label": "Check the result",
-        "endpoint": "/correction/crossover/v2/verify",
+        "endpoint": "/sound/speaker/crossover/v2/verify",
         "body": {"stage": "post_apply"},
     }
     assert _step_statuses(env)["verify"] == "active"
@@ -1466,7 +1466,7 @@ def test_a_round_that_promises_another_bite_offers_the_button_to_take_it(row):
 
     assert action["id"] == "round_remeasure"
     assert action["label"] == "Try again with what we learned"
-    assert action["endpoint"] == "/correction/crossover/v2/session"
+    assert action["endpoint"] == "/sound/speaker/crossover/v2/session"
     # An EMPTY body: the tier is the lapsed session's, resolved server-side.
     # A literal here would be the #2639 demotion with extra steps.
     assert action["body"] == {}
@@ -1872,7 +1872,7 @@ def test_done_promotes_the_recommended_next_step_to_primary():
     ))
     action = env["next_action"]
     assert action["id"] == "room"
-    assert action["href"] == "/correction/room/"
+    assert action["href"] == "/sound/room/"
 
 
 _DONE_VERDICT_VARIANTS = {
@@ -1967,7 +1967,7 @@ def test_done_express_discloses_the_degraded_claim_and_the_upgrade_path():
     alternates = {a["id"]: a for a in env["alternate_actions"]}
     assert "run_full_measurement" in alternates
     upgrade = alternates["run_full_measurement"]
-    assert upgrade["endpoint"] == "/correction/crossover/v2/session"
+    assert upgrade["endpoint"] == "/sound/speaker/crossover/v2/session"
     assert upgrade["body"] == {"tier": "full"}
 
 
@@ -2601,7 +2601,7 @@ def test_volume_recovery_keys_on_needs_recovery_not_unresolved():
     needs draining — the screen must key on needs_recovery alone."""
     env = build_crossover_envelope_v2(_status(phase="check", needs_recovery=True))
     assert env["screen"] == "volume_recovery"
-    assert env["next_action"]["endpoint"] == "/correction/crossover/recover-volume"
+    assert env["next_action"]["endpoint"] == "/sound/speaker/crossover/recover-volume"
     # And needs_recovery false ⇒ no recovery screen even with a phase set.
     env = build_crossover_envelope_v2(_status(phase="check", needs_recovery=False))
     assert env["screen"] == "microphone_check"
@@ -4066,7 +4066,7 @@ def test_deterministic_mismatch_promotes_remeasure_over_a_dead_retry():
         REASON_REGISTRY[REASON_VERIFY_DETERMINISTIC_MISMATCH].message
     )
     assert env["next_action"]["id"] == "verify_remeasure"
-    assert env["next_action"]["endpoint"] == "/correction/crossover/v2/session"
+    assert env["next_action"]["endpoint"] == "/sound/speaker/crossover/v2/session"
     # Promoted, not gated behind the expert disclosure it sat in as an
     # alternate — a primary the screen steers towards is not a disclosure.
     assert "expert" not in env["next_action"]
@@ -4281,7 +4281,7 @@ def test_verify_phase_agc_failure_renders_verify_fail_not_fix_and_retry():
     way_back = next(
         a for a in env["alternate_actions"] if a["id"] == "republish_previous"
     )
-    assert way_back["endpoint"] == "/correction/crossover/v2/republish"
+    assert way_back["endpoint"] == "/sound/speaker/crossover/v2/republish"
 
 
 def test_check_phase_agc_failure_still_renders_its_normal_template():
@@ -4360,7 +4360,7 @@ def test_every_registry_code_renders_without_error(code, template):
 
 # --- #1942: a failure that outlived its session is history, not the screen ------
 #
-# The owner opened /correction/crossover/ on a fresh visit and was greeted by
+# The owner opened /sound/speaker/crossover/ on a fresh visit and was greeted by
 # the PREVIOUS DAY's terminal screen — "The measurement link timed out… The
 # crossover was already applied… Expert details: level error 3.82 dB (limit
 # 1.5 dB)" — presented as the live verdict, with Try again / Undo / Re-measure.
@@ -4449,7 +4449,7 @@ def test_aged_failure_greets_with_the_entry_screen_not_the_terminal_one():
     ))
     assert env["screen"] == "microphone_check"
     # A way forward, and it is the ordinary one — start a measurement.
-    assert env["next_action"]["endpoint"] == "/correction/crossover/v2/session"
+    assert env["next_action"]["endpoint"] == "/sound/speaker/crossover/v2/session"
     # Not the terminal screen's actions.
     assert env["next_action"]["id"] != "verify_retry"
 
@@ -4530,7 +4530,7 @@ def test_the_three_way_back_screens_offer_the_banked_way_back(screen, status):
         a for a in env["alternate_actions"] if a["id"] == "republish_previous"
     ]
     assert len(way_back) == 1
-    assert way_back[0]["endpoint"] == "/correction/crossover/v2/republish"
+    assert way_back[0]["endpoint"] == "/sound/speaker/crossover/v2/republish"
     assert way_back[0]["body"] == {"fingerprint": _WAY_BACK_FP}
     # Survives the JS capture-in-flight gate (W6.12): a get-me-out affordance
     # must stay visible while a failed capture is still winding down.
@@ -4593,7 +4593,7 @@ def test_aged_entry_screen_differs_from_a_clean_start_in_EXACTLY_two_keys():
         {
             "id": "republish_previous",
             "label": "Go back to the previous tuning",
-            "endpoint": "/correction/crossover/v2/republish",
+            "endpoint": "/sound/speaker/crossover/v2/republish",
             "body": {"fingerprint": _WAY_BACK_FP},
             "show_during_capture": True,
         },
@@ -4866,9 +4866,9 @@ def test_dead_session_phase_screen_becomes_the_dated_entry_screen(phase, applied
     continues the dead one, and none of its numbers survive."""
     env = build_crossover_envelope_v2(_dead_session_status(phase, applied=applied))
     assert env["screen"] == "microphone_check"
-    assert env["next_action"]["endpoint"] == "/correction/crossover/v2/session"
+    assert env["next_action"]["endpoint"] == "/sound/speaker/crossover/v2/session"
     assert [a.get("endpoint") for a in env["alternate_actions"]] == [
-        "/correction/crossover/v2/session",
+        "/sound/speaker/crossover/v2/session",
     ]
     assert (env["cloud"], env["cloud_chart"], env["tier"]) == (None, None, None)
     assert env["expert_details"] == []
@@ -5109,7 +5109,7 @@ def test_review_screen_offers_the_three_way_decision_and_never_undo():
     assert env["screen"] == "review"
     assert env["next_action"]["id"] == "review_apply"
     assert env["next_action"]["label"] == "Apply and verify"
-    assert env["next_action"]["endpoint"] == "/correction/crossover/v2/apply"
+    assert env["next_action"]["endpoint"] == "/sound/speaker/crossover/v2/apply"
     assert [a["id"] for a in env["alternate_actions"]] == [
         "review_remeasure", "review_decline",
     ]
@@ -5123,13 +5123,13 @@ def test_review_decline_exits_to_the_active_speaker_entry_not_the_hub():
     """#1985: "Keep current sound" must land the household back where the
     journey started, not in another subsystem's permission flow.
 
-    The generic ``/correction/`` hub is the Room-correction wizard, and its
+    The generic ``/sound/room/`` hub is the Room-correction wizard, and its
     first act is the browser-mic HTTPS-transition interstitial — a non-sequitur
     for someone who just finished a crossover measurement and chose to keep
     things as they are. The R8 slice check found exactly that landing.
 
-    Pinned as a literal, not "anything under /correction/": ``/correction/`` is
-    a prefix of ``/correction/crossover/``, so a containment assertion would
+    Pinned as a literal, not "anything under /sound/room/": ``/sound/room/`` is
+    a prefix of ``/sound/speaker/crossover/``, so a containment assertion would
     have passed against the bug.
 
     Since #2641 the href is a PRESENTATION HINT beside a real endpoint rather
@@ -5142,11 +5142,11 @@ def test_review_decline_exits_to_the_active_speaker_entry_not_the_hub():
         a for a in env["alternate_actions"] if a["id"] == "review_decline"
     )
     assert decline["label"] == "Keep current sound"
-    assert decline["href"] == "/correction/crossover/"
+    assert decline["href"] == "/sound/speaker/crossover/"
     remeasure = next(
         a for a in env["alternate_actions"] if a["id"] == "review_remeasure"
     )
-    assert remeasure["endpoint"] == "/correction/crossover/v2/session"
+    assert remeasure["endpoint"] == "/sound/speaker/crossover/v2/session"
     assert "href" not in remeasure
 
 
@@ -5170,7 +5170,7 @@ def test_the_decline_is_an_action_not_a_navigation():
         if a["id"] == "review_decline"
     )
 
-    assert decline["endpoint"] == "/correction/crossover/v2/decline"
+    assert decline["endpoint"] == "/sound/speaker/crossover/v2/decline"
     assert decline["body"] == {"expected_candidate_fingerprint": fingerprint}
 
 
@@ -5180,12 +5180,12 @@ def test_every_in_flow_action_the_envelope_mints_is_machine_actionable():
     The invariant, stated so it can be checked rather than intended: an action
     whose ``href`` points back INTO this flow is a decision, and a decision has
     to carry an ``endpoint`` a driver can POST. An action pointing at another
-    subsystem (``/correction/room/``, ``/sound/setup/``) is a navigation and is
+    subsystem (``/sound/room/``, ``/sound/setup/``) is a navigation and is
     exempt — no endpoint here could perform it, and minting a fake one would be
     worse than the link.
 
     This is the shape #2641 was: ``review_decline``'s href was
-    ``/correction/crossover/`` — in-flow — with no endpoint, so it looked like
+    ``/sound/speaker/crossover/`` — in-flow — with no endpoint, so it looked like
     an exit and behaved like a reload. Every screen is swept rather than the
     one that was reported, because the next instance of this bug will be on a
     different screen.
@@ -5197,7 +5197,7 @@ def test_every_in_flow_action_the_envelope_mints_is_machine_actionable():
             if not isinstance(action, dict):
                 continue
             href = str(action.get("href") or "")
-            if not href.startswith("/correction/crossover"):
+            if not href.startswith("/sound/speaker/crossover"):
                 continue
             if not action.get("endpoint"):
                 offenders.append((name, str(action.get("id") or "?")))
@@ -5958,7 +5958,7 @@ def test_the_calibration_reservation_reaches_both_decision_screens():
         assert reservation["code"] == "crossover_v2_mic_calibration_reservation"
     # The sentence names the concrete surface, never a vague "check your
     # setup" — the structured fact this pin is actually about.
-    assert "/correction/" in MIC_CALIBRATION_RESERVATION_COPY
+    assert "/sound/room/" in MIC_CALIBRATION_RESERVATION_COPY
 
 
 def test_a_calibrated_capture_says_nothing_about_the_mic_at_all():

@@ -60,14 +60,14 @@ function rowChildren() { return elements.get("crossover-action").children; }
 const DECLINE = {
   id: "review_decline",
   label: "Keep current sound",
-  endpoint: "/correction/crossover/v2/decline",
+  endpoint: "/sound/speaker/crossover/v2/decline",
   body: { expected_candidate_fingerprint: "fp-1" },
-  href: "/correction/crossover/",
+  href: "/sound/speaker/crossover/",
 };
 const ROOM = {
   id: "room",
   label: "Continue to Room correction",
-  href: "/correction/room/",
+  href: "/sound/room/",
 };
 
 render({
@@ -91,7 +91,7 @@ posted.length = 0;
 await decline.click();
 check(posted.length === 1, "(b) clicking the decline performs one request");
 check(
-  posted[0].url === "/correction/crossover/v2/decline",
+  posted[0].url === "/sound/speaker/crossover/v2/decline",
   "(b) it posts to the endpoint the envelope named",
 );
 check(
@@ -105,7 +105,7 @@ check(
 // the bug above.
 check(room.tag === "a", "(c) an href-only action still renders an anchor");
 check(
-  room.href === "/correction/room/",
+  room.href === "/sound/room/",
   "(c) and keeps pointing where the envelope said",
 );
 

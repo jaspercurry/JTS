@@ -89,7 +89,7 @@ def tuning_llm_available(
 
 @dataclass(frozen=True)
 class TuningAvailability:
-    """Whether the ``/correction/`` tuning affordance shows, and the nudge."""
+    """Whether the ``/sound/room/`` tuning affordance shows, and the nudge."""
 
     available: bool
     model: str

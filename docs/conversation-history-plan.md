@@ -170,9 +170,9 @@ Feature.
 **Route decision:** `/chat` is currently unclaimed in code. The calibration
 agent *designs*
 interactive `/chat*` routes, but they live on the `jasper-correction-web`
-server under the `/correction/` prefix, so there is no collision as long as
+server under the `/sound/room/` prefix, so there is no collision as long as
 this history/control surface owns the top-level `/chat` and the calibration
-agent keeps its routes `/correction/`-scoped. (If a future top-level interactive chat is
+agent keeps its routes `/sound/room/`-scoped. (If a future top-level interactive chat is
 ever wanted, rename this to `/history`; for now `/chat` matches the ask.)
 
 ---

@@ -24,7 +24,7 @@ from . import advisor_context
 
 DEFAULT_SESSIONS_DIR = Path("/var/lib/jasper/correction/sessions")
 # Package resource, not documentation: the product reads this corpus at
-# runtime and injects it into an LLM prompt on the live /correction/ wizard.
+# runtime and injects it into an LLM prompt on the live /sound/room/ wizard.
 # It ships inside the package because install.sh rsyncs `jasper/` and nothing
 # else on a speaker -- there is no /opt/jasper/docs to search.
 DEFAULT_CORPUS_DIR = Path(__file__).resolve().parent / "corpus"

@@ -6,7 +6,7 @@
 
 Deliberately NOT routed through ``jasper.mdns.browse_once``. The one-shot
 primitive is the right tool for "resolve a single service type into live,
-addressable instances" (e.g. ``/rooms/``, the HA wizard). This module needs
+addressable instances" (e.g. ``/sound/pair/``, the HA wizard). This module needs
 the opposite shape on two axes:
 
   - **Names-only across MULTIPLE service types.** It browses

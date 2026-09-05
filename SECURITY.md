@@ -65,7 +65,7 @@ Browser-origin attacks are a different class and are blocked with Host / Origin
 
 Setup wizards submit API keys, Home Assistant tokens, and Wi-Fi PSKs
 over plain HTTP on the LAN. nginx serves the management UI over HTTP;
-only `/correction/` has HTTPS because phone browsers require it for
+only `/sound/room/` has HTTPS because phone browsers require it for
 microphone capture. Do setup from a trusted network. A guest VLAN,
 rogue access point, or hostile device on the same Wi-Fi can observe or
 send LAN traffic unless the network itself isolates it. Server-side,

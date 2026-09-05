@@ -645,7 +645,7 @@ def test_every_printed_url_follows_the_configured_hostname(
     _, payload = _status([str(session)], capsys)
 
     assert payload["speaker"]["hostname"] == hostname
-    assert payload["speaker"]["crossover_url"] == f"http://{hostname}/sound/crossover/"
+    assert payload["speaker"]["crossover_url"] == f"http://{hostname}/sound/speaker/crossover/"
     assert payload["speaker"]["declaration_url"] == f"http://{hostname}/sound/setup/"
     for other in {"jts.local", "jts3.local", "kitchen.local"} - {hostname}:
         assert f"http://{other}" not in json.dumps(payload)
@@ -779,7 +779,7 @@ def test_an_unreadable_bundle_still_reports_and_says_which_half_failed(
     assert payload["staged"]["pending"] is True
     assert payload["banked"]["available"] is False
     assert payload["banked"]["reason"] == payload["packet_error"]
-    assert payload["speaker"]["crossover_url"].endswith("/sound/crossover/")
+    assert payload["speaker"]["crossover_url"].endswith("/sound/speaker/crossover/")
     # Nothing is offered that would fail for the reason this report already
     # gave: both round-reading commands read what this verb could not.
     assert payload["next"] == ["jasper-seat-level --mic-serial '<mic serial>'"]

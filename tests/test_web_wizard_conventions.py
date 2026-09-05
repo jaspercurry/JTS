@@ -1103,9 +1103,9 @@ _PAGE_MODULE = {
     "/spotify/": "spotify_setup",
     "/bluetooth/": "bluetooth_setup",
     "/airplay/": "airplay_setup",
-    "/eq/": "sound_setup",
+    "/sound/eq/": "sound_setup",
     "/sound/setup/": "sound_setup",
-    "/sound/crossover/": "correction_crossover_flow",
+    "/sound/speaker/crossover/": "correction_crossover_flow",
     "/sound/room/": "correction_room_flow",
     "/sound/bass/": "correction_bass_flow",
     "/sound/measurements/": "correction_measurements",
@@ -1118,7 +1118,7 @@ _PAGE_MODULE = {
     "/google/": "google_setup",
     "/ha/": "home_assistant_setup",
     "/wifi/": "wifi_setup",
-    "/rooms/": "rooms_setup",
+    "/sound/pair/": "rooms_setup",
     "/system/": "system_setup",
     "/speaker/": "speaker_setup",
     "/wake-corpus/": "wake_corpus_setup",
@@ -1134,10 +1134,8 @@ _TITLE_ALLOWLIST = {
     ("/spotify/", "Spotify accounts"): {"title", "header"},         # C.R1
     ("/bluetooth/", "Bluetooth devices"): {"title", "header"},      # C.R1
     ("/airplay/", "AirPlay sync"): {"title", "header"},             # C.R1
-    ("/eq/", "EQ"): {"back"},                                       # C.S1
-    ("/sound/setup/", "Sound setup"): {"back"},                     # C.S2
-    ("/rooms/", "Stereo pair"): {"back", "title", "header"},        # C.S4
-    ("/sound/crossover/", "Active speaker"): {"back", "title", "header"},  # C.S5
+    ("/sound/pair/", "Stereo pair"): {"title", "header"},           # C.S4
+    ("/sound/speaker/crossover/", "Active speaker"): {"title", "header"},  # C.S5
     ("/sound/room/", "Room correction"): {"title"},                 # C.S5
     ("/sound/bass/", "Bass"): {"back", "title", "header"},          # C.S5
     ("/sound/measurements/", "Measurements"): {"back", "title"},    # C.S5

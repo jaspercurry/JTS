@@ -392,7 +392,7 @@ def parse_calibration_sensitivity(text: str) -> MicSensitivity | None:
 REFUSE_MIC_CALIBRATION_UNAVAILABLE = "mic_calibration_unavailable"
 MIC_CALIBRATION_UNAVAILABLE_DETAIL = (
     "no parseable 'Sens Factor' calibration for this microphone — pass "
-    "--calibration-file, or store the vendor file via the /correction "
+    "--calibration-file, or store the vendor file via the /sound/room/ "
     "wizard. Absolute SPL is never guessed."
 )
 
@@ -970,7 +970,7 @@ def _models_expecting_response() -> set[tuple[str, str]]:
 def configured_calibration_root() -> Path:
     """The calibration store this speaker actually uses.
 
-    ``DEFAULT_CALIBRATION_DIR`` is only the default: the ``/correction/`` wizard
+    ``DEFAULT_CALIBRATION_DIR`` is only the default: the ``/sound/room/`` wizard
     resolves its root through ``JASPER_CORRECTION_CALIBRATION_DIR``. A migration
     that ignored the override would read an empty directory and report
     ``scanned=0`` -- success-shaped, and wrong.

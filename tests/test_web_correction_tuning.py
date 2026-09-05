@@ -181,7 +181,7 @@ def test_paid_call_min_interval_gate(monkeypatch):
 
 def test_tuning_timeout_env_typo_degrades_to_default(monkeypatch):
     """A garbage JASPER_TUNING_LLM_TIMEOUT_SEC must degrade to the 90 s
-    default, never crash the whole /correction/ wizard at import."""
+    default, never crash the whole /sound/room/ wizard at import."""
     monkeypatch.setenv("JASPER_TUNING_LLM_TIMEOUT_SEC", "ninety")
     assert correction_tuning._tuning_timeout_sec() == 90.0
     monkeypatch.setenv("JASPER_TUNING_LLM_TIMEOUT_SEC", "-5")

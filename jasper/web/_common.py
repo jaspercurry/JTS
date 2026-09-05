@@ -755,7 +755,7 @@ def pair_banner_html() -> str:
         '<div class="info-card info-card--accent" role="note">'
         "This speaker is part of a stereo pair. The assistant, sources, "
         "and leader-owned sound shaping run on the pair leader while paired "
-        '(<a href="/rooms/">manage the pair</a>).</div>'
+        '(<a href="/sound/pair/">manage the pair</a>).</div>'
     )
 
 

@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Pair-balance save state for /rooms/.
+// Pair-balance save state for /sound/pair/.
 //
 // The DOM owns rendering and availability; this module owns the async contract:
 // drag changes are saved live, overlapping drags queue one latest save, and any

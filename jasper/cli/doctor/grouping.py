@@ -1068,7 +1068,7 @@ def check_grouping_household_credential() -> CheckResult:
         label, "warn",
         "bonded but the household credential is missing — cross-device "
         "/grouping/set is unauthenticated (fail-safe open) until this speaker "
-        "re-pairs; re-save the bond from http://jts.local/rooms to restore it",
+        "re-pairs; re-save the bond from http://jts.local/sound/pair/ to restore it",
         reason=REASON_HOUSEHOLD_CREDENTIAL_MISSING,
     )
 

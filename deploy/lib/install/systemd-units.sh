@@ -1358,7 +1358,7 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-web.socket" \
         "${SYSTEMD_DIR}/jasper-web.socket"
-    # /correction/ wizard. Phase 0 = mic-permission verify only;
+    # /sound/room/ wizard. Phase 0 = mic-permission verify only;
     # future phases pull in heavy deps (numpy / scipy / pyfar) so
     # this lives in its own process rather than colocating with
     # jasper-web (Spotify + voice settings).

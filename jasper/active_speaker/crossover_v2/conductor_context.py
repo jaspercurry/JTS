@@ -8,8 +8,8 @@ resolves them.
 :func:`resolve_conductor_context` is the fail-closed session-open predicate:
 ONE derivation of the preset, the per-role bands/caps/duration limits, the
 measurement targets, the session volume and the playback device, from live
-status plus the declared topology. Its front ends — the ``/correction/``
-wizard, the null door and the measurement CLI — consume it rather than
+status plus the declared topology. Its front ends — the
+``/sound/speaker/crossover/`` wizard, the null door and the measurement CLI — consume it rather than
 re-deriving any of it, which is why it sits here rather than in the wizard.
 """
 
@@ -166,7 +166,7 @@ def ensure_crossover_preview_ready(*, durable: bool = False) -> dict[str, Any]:
 
     ``/sound/``'s Preview button was the ONLY historical writer of
     ``active_speaker_crossover_preview.json``; the v2 flow never called it, so
-    a household that went straight to ``/correction/`` without visiting
+    a household that went straight to ``/sound/speaker/crossover/`` without visiting
     ``/sound/`` first baked its MEASURE candidate's ``source_preset`` against
     the generic bundled-preset fallback (:func:`~jasper.active_speaker.commission_wiring.resolve_capture_preset`'s
     no-preview branch) — which then can NEVER match a preview generated later,

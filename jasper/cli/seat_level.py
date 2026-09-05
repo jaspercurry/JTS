@@ -407,7 +407,7 @@ def _derive_bounds(
     # worth more sensitive than it physically is. This is the reader
     # ``declared_driver_sensitivities``' own docstring names for
     # excitation-ceiling derivation and session-volume planning (#1665), and the
-    # one the /correction crossover-v2 flow already passes.
+    # one the /sound/room/ crossover-v2 flow already passes.
     ceiling_db = unsegmented_stimulus_ceiling_db(
         safety_profile,
         fingerprints,

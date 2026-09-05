@@ -64,7 +64,7 @@ def test_hold_answers_true_for_an_existing_marker_it_cannot_rewrite(
 
     The sibling root writers (jasper-correction-web, jasper-web-streambox) create
     the marker under UMask=0077, i.e. root:root 0600, and nothing on the
-    /correction/ path releases it. jasper-web's touch() then raises
+    /sound/room/ path releases it. jasper-web's touch() then raises
     PermissionError, and answering False there would refuse a load whose anchor
     is in fact held, with a blocker naming a remedy that cannot fix it.
 

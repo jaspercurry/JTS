@@ -170,10 +170,10 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         server: _Wizard = self.server
         server.record("GET", self.path, self.headers.get("Host") or "")
-        if self.path == "/sound/crossover/":
+        if self.path == "/sound/speaker/crossover/":
             self._send(200, CSRF_PAGE.encode(), "text/html")
             return
-        if self.path == "/correction/crossover/status":
+        if self.path == "/sound/speaker/crossover/status":
             block = server.after_open if server.opened else server.v2
             self._send(200, json.dumps({"crossover_v2": block}).encode(),
                        "application/json")
@@ -922,7 +922,7 @@ def test_a_verify_stage_opens_the_post_apply_check(checkout, wizard, tmp_path):
 
     assert proc.returncode == 0, proc.stderr
     posts = wizard.seen().posts
-    assert posts == (("/correction/crossover/v2/verify", {"stage": "post_apply"}),)
+    assert posts == (("/sound/speaker/crossover/v2/verify", {"stage": "post_apply"}),)
 
 
 def test_an_alignment_prescription_is_posted_verbatim(checkout, wizard, tmp_path):
@@ -1060,7 +1060,7 @@ def test_apply_refuses_a_fingerprint_that_is_not_live_and_sends_nothing(
     assert proc.returncode == 11  # EXIT_FINGERPRINT, literal on purpose
     requests = wizard.seen().requests
     assert not any(method == "POST" for method, _ in requests)
-    assert not any(path == "/sound/crossover/" for _, path in requests)
+    assert not any(path == "/sound/speaker/crossover/" for _, path in requests)
     row = _trail(trail)[-1]
     assert row["step"] == "apply" and row["ok"] is False
     assert row["named"] == "cand-somethingelse" and row["live"] == FINGERPRINT
@@ -1103,7 +1103,7 @@ def test_apply_posts_the_named_fingerprint_when_it_is_the_live_one(
     assert proc.returncode == 0, proc.stderr
     posts = wizard.seen().posts
     assert posts == (
-        ("/correction/crossover/v2/apply",
+        ("/sound/speaker/crossover/v2/apply",
          {"expected_candidate_fingerprint": FINGERPRINT}),
     )
     # An apply measures nothing and banks nothing.

@@ -44,7 +44,7 @@
 > Wave 3 target behavior. The mic/calibration slice of returning-user state
 > has landed ahead of that Wave, Pi-side only: `jasper.correction.household_mic`
 > persists the last successfully-established mic/calibration and the local
-> `/correction/` wizard pre-fills from it; the matching phone-side one-tap
+> `/sound/room/` wizard pre-fills from it; the matching phone-side one-tap
 > confirm UI (reading the capture spec's `default_setup` hint) is a follow-up.
 > Active's
 > evidence identities, excitation admission, and exact
@@ -135,7 +135,7 @@ The Room tab makes these promises:
 
 ## Organizing frame and first principles
 
-The `/correction/` hub has three product domains: **Crossover**, **Room**, and
+The measurement daemon has three product domains: **Crossover**, **Room**, and
 **Bass**. Their boundaries are load-bearing:
 
 - Crossover owns driver-domain safety, measurement, candidate application, and

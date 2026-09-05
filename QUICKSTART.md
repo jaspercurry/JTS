@@ -220,7 +220,7 @@ For a **streambox** profile, use only the locally installed surfaces:
 - **`http://jts.local/sources/`** — choose and enable music sources.
 - **`http://jts.local/spotify/`** — connect a Spotify account (optional).
 - **`http://jts.local/sound/`** — configure sound and output hardware.
-- **`http://jts.local/rooms/`** — group speakers.
+- **`http://jts.local/sound/pair/`** — group speakers.
 - **`http://jts.local/system/`** — dashboard and status.
 
 Streambox intentionally has no `/voice/` or `/transit/` setup. If the

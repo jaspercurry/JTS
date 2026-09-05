@@ -1,6 +1,6 @@
 [Unit]
 Description=Jasper Snapcast server — multi-room grouping leader (synchronised stream source)
-# Ships DISABLED. A solo speaker never runs snapcast. The /rooms/ grouping
+# Ships DISABLED. A solo speaker never runs snapcast. The /sound/pair/ grouping
 # control writes /var/lib/jasper/grouping.env and kicks
 # jasper-grouping-reconcile, which is the SINGLE writer that
 # starts/stops this unit per the grouping role (leader => snapserver +

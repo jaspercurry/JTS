@@ -54,21 +54,6 @@ _HARNESSES = sorted(path.name for path in _JS_DIR.glob("crossover_*_test.mjs"))
 assert _HARNESSES, f"no crossover_*_test.mjs harnesses found under {_JS_DIR}"
 
 
-def test_canonical_crossover_page_normalizes_server_action_urls() -> None:
-    source = (
-        Path(__file__).resolve().parents[1]
-        / "deploy/assets/correction/js/crossover/main.js"
-    ).read_text()
-
-    assert "function publicCrossoverUrl(value)" in source
-    assert "pathname.indexOf('/sound/crossover/') === 0" in source
-    assert "publicCrossoverUrl(action.endpoint)" in source
-    assert "href: publicCrossoverUrl(action.href)" in source
-    assert "publicCrossoverUrl('/correction/crossover/envelope')" in source
-    assert "publicCrossoverUrl('/correction/crossover/capture-cancel')" in source
-    assert "publicCrossoverUrl('/correction/crossover/reset')" in source
-
-
 @pytest.mark.parametrize("harness", _HARNESSES)
 def test_crossover_wizard_harness(harness: str):
     if _NODE is None:

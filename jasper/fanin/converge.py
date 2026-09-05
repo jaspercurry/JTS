@@ -170,7 +170,7 @@ def converge_active_endpoint(*, reason: str = "converge") -> str:
                 reason=reason,
                 detail=(
                     f"{verdict} (#2558); leaving the coupling where it is. "
-                    "Re-apply the speaker profile at /correction/ to put the "
+                    "Re-apply the speaker profile at /sound/setup/ to put the "
                     "record and the running graph back into agreement — that "
                     "apply is what writes both. Running `baseline-reemit` by "
                     "hand is NOT the fix: it is the exact republish of the "

@@ -88,7 +88,7 @@ SWEPT_SURFACES: tuple[str, ...] = (
     "jasper/web/correction_room_flow.py",
     "jasper/web/sync_flow.py",
     # Cluster 3 — the measurement pages' own chrome. The landing page is the
-    # ENTRY POINT to /correction/room/, so its row label and that page's
+    # ENTRY POINT to /sound/room/, so its row label and that page's
     # subtitle have to agree; they did not until #1959. The labels live in the
     # site-map manifest, the page template holds the rest of the chrome.
     "jasper/web/nav.py",

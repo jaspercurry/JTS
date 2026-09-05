@@ -9,7 +9,7 @@ components on 2026-07-31. Neither is installed; we own every rule below.
 The craft reference for **every management page** — type, colour, depth, radii,
 touch targets, motion, copy — applied as each page is touched, never as a
 standalone compliance sweep. The jasper.tech capture page
-and the Sound measurement wizards at `/sound/room/`, `/sound/crossover/`
+and the Sound measurement wizards at `/sound/room/`, `/sound/speaker/crossover/`
 (**Active speaker**), and `/sound/bass/` (#1941's world) carry the most design
 attention.
 
@@ -230,8 +230,7 @@ correction/crossover flow.
 ---
 
 Verification scope (2026-08-04): route-scope only: the Room, Active-speaker, and Bass
-measurement surfaces are canonical under `/sound/*`; direct `/correction/*`
-aliases render the same contract. No craft-system rule changed. Prior
-2026-07-31.
+measurement surfaces are canonical under `/sound/*`. No craft-system rule
+changed. Prior 2026-07-31.
 
 Last verified: 2026-08-04

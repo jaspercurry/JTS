@@ -5,7 +5,7 @@
 """Unit tests for the household credential (device-to-device control auth).
 
 The household secret is the M2M counterpart to the per-device control token:
-ONE secret per household, minted at the /rooms/ bond, distributed to each
+ONE secret per household, minted at the /sound/pair/ bond, distributed to each
 member, and presented as X-JTS-Household on the cross-device /grouping/set. A
 near-line-for-line clone of control_token.py, so these mirror
 test_control_token.py — but they pin the load-bearing DIFFERENCES the design

@@ -1452,7 +1452,7 @@ def ring_roleful_unattended_ready() -> tuple[bool, str]:
         "roleful topology, and neither proven arm holds: the applied baseline "
         f"({stale_detail or 'no applied active-speaker profile on this box'}) "
         f"and the all-muted staged anchor ({anchor_detail}). Leaving the graph "
-        "where it is; re-apply the speaker profile at /correction/, then run "
+        "where it is; re-apply the speaker profile at /sound/setup/, then run "
         "`jasper-fanin-coupling-reconcile shm_ring`."
     )
 

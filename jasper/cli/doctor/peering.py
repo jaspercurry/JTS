@@ -29,7 +29,7 @@ REASON_DISCOVERY_BROWSE_FAILED = "discovery_browse_failed"
 def check_peering_mode() -> CheckResult:
     """Verify /var/lib/jasper/peering.env is parseable.
 
-    Off by default; the household opts in via /rooms/. Both OFF (deliberate)
+    Off by default; the household opts in via /sound/pair/. Both OFF (deliberate)
     and ON (configured) are `ok` — the warn cases catch broken env files
     only."""
     label = "peering: mode"
@@ -38,7 +38,7 @@ def check_peering_mode() -> CheckResult:
     if env.status == "missing":
         return CheckResult(
             label, "ok",
-            "off (default) — enable at http://<hostname>/rooms/",
+            "off (default) — enable at http://<hostname>/sound/pair/",
             reason=REASON_PEERING_OFF,
         )
     if env.status == "unreadable":
@@ -58,7 +58,7 @@ def check_peering_mode() -> CheckResult:
     return CheckResult(
         label, "warn",
         f"unknown JASPER_PEERING={raw!r}; defaults to off. "
-        "Edit /var/lib/jasper/peering.env or use /rooms/.",
+        "Edit /var/lib/jasper/peering.env or use /sound/pair/.",
         reason=REASON_PEERING_MODE_UNKNOWN,
     )
 

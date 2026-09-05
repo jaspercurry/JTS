@@ -5334,7 +5334,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       el('tab-' + v).addEventListener('click', function() { if (view !== v) setView(v); });
     });
   }
-  el('back').addEventListener('click', function(e) { e.preventDefault(); window.location.href = '/'; });
+  el('back').addEventListener('click', function(e) { e.preventDefault(); window.location.href = '/sound/'; });
 
   el('view-body').addEventListener('click', function(ev) {
     var t = ev.target.closest('[data-act]');

@@ -2,7 +2,7 @@
 
 > **Operational map (current truth), not a script.** You are a laptop- or
 > cloud-side LLM session with an SSH shell on the speaker, or a person at the
-> `/correction/` wizard. This file says what v2 is, how to run a round, what the
+> `/sound/room/` wizard. This file says what v2 is, how to run a round, what the
 > tools refuse, and where to look when it breaks. It does not restate the rules,
 > the engine's architecture, the roadmap, or the campaign history — those have
 > owners:
@@ -47,7 +47,7 @@ around one mark — then proposes a correction, applies it on an explicit tap, a
 measures again to grade what changed, repeating that apply-and-re-measure round
 while the result is still getting flatter.
 
-- **Two tiers, chosen every session** on the `/correction/` wizard. Both run the
+- **Two tiers, chosen every session** on the `/sound/room/` wizard. Both run the
   same stage 1 and differ in **stage 2 only** — Full takes the longer stage-2
   cloud, Express the shorter one. Capture counts are not written here:
   `tier_display_info()` derives them from the plans themselves and is what the
@@ -58,7 +58,7 @@ while the result is still getting flatter.
 - **A third tier, `TIER_REMOTE`, is API-only and experimental** — Full's own
   shape and counts, driven by an external mic positioner, stating every pose as
   an ANGLE. The chooser never offers it; reach it with
-  `POST /correction/crossover/v2/session {"tier": "remote"}`.
+  `POST /sound/speaker/crossover/v2/session {"tier": "remote"}`.
 - **It is the only flow.** The legacy per-driver near-field procedure, its
   `JASPER_CROSSOVER_FLOW` selector, and the `build_crossover_envelope` shim are
   gone: callers reach `build_crossover_envelope_v2` directly.
@@ -178,16 +178,15 @@ never a hard-coded `jts.local`. `scripts/run-crossover-round.py` resolves
 
 **The measurement surfaces are HTTPS, and there are several.** `getUserMedia`
 needs a secure context, so nginx's 443 block serves the whole measurement
-family: the canonical `/sound/{room,crossover,bass,measurements}/` routes,
-their `/correction/*` compatibility aliases, and `/sync/` — the last one
-**HTTPS-only** (port 80 404s them). Plain `http://` still serves the ordinary
-wizards. `install.sh` provisions the private CA; a device has to trust it once
-before any of this works. Route paths therefore have two spellings, and nginx
-strips its own prefix, so these reach the same backend route:
+family: `/sound/room/`, `/sound/speaker/crossover/`, `/sound/bass/`,
+`/sound/measurements/` and `/sync/` — the last one **HTTPS-only** (port 80
+404s them). Plain `http://` still serves the ordinary wizards. `install.sh`
+provisions the private CA; a device has to trust it once before any of this
+works. nginx strips its own prefix, so a public path reaches the backend
+route under it:
 
 ```
-POST https://<speaker>/sound/crossover/v2/republish        # canonical
-POST https://<speaker>/correction/crossover/v2/republish   # compatibility alias
+POST https://<speaker>/sound/speaker/crossover/v2/republish
 ```
 
 The tool menu below gives the backend path the wizard registers on
@@ -199,7 +198,7 @@ withdraw` is a different thing — it pulls a staged *walk*.)
 
 ## Running it from the household surface
 
-`http://<speaker>/sound/crossover/` → the crossover step (this speaker's own
+`http://<speaker>/sound/speaker/crossover/` → the crossover step (this speaker's own
 hostname; `jasper-angle-capture stage` prints the URL as `handoff_url`). Screens
 are `speaker_setup → microphone_check → measure → apply → verify`. Place the mic
 ~1 m in front of the speaker at tweeter height, pick a tier on
@@ -213,7 +212,7 @@ explicitly.
 The journey is **two relay sessions** with an untimed household decision between
 them. Both use `crossover_v2:session` / `crossover_v2:verify`.
 
-**Stage 1 — `POST /correction/crossover/v2/session`, the same captures on both
+**Stage 1 — `POST /sound/speaker/crossover/v2/session`, the same captures on both
 tiers:** `check` (microphone check) · `measure` (design-axis anchor, per-driver)
 · `entry_baseline` (summed sweep at the mark — the round's measured "before").
 Which phases stage 1 walks is stated in the flow file, not a guess:
@@ -236,7 +235,7 @@ The set is held open past its capture target until the phone posts
 group and publishes the candidate; until it arrives the final position is still
 retakeable. **Nothing is applied inside this session.**
 
-**Stage 2 — `POST /correction/crossover/v2/verify` with
+**Stage 2 — `POST /sound/speaker/crossover/v2/verify` with
 `{"stage": "post_apply"}`** — 6 captures at Full and Remote, 1 on Express; this
 stage is the whole difference between the tiers. Index 1 is `verify` (design-axis
 anchor, summed); 2–6 are `cloud_verify`, the 5 prompted post-apply positions in
@@ -311,9 +310,9 @@ seconds of every remote session.
 
 **The driver contract**, in the order a run uses it:
 
-1. `POST /correction/crossover/v2/session` with `{"tier": "remote"}` (CSRF as
+1. `POST /sound/speaker/crossover/v2/session` with `{"tier": "remote"}` (CSRF as
    usual). A human performs the three gestures above.
-2. Poll `GET /correction/crossover/envelope` and POST the `next_action` specs as
+2. Poll `GET /sound/speaker/crossover/envelope` and POST the `next_action` specs as
    the wizard would.
 3. When `relay.position_pending` is present it names the target:
    `{index, attempt, degrees, role, prompt, hand_released, action}`. Move the
@@ -322,7 +321,7 @@ seconds of every remote session.
    composed for that entry, for a surface with words to render;
    `hand_released` is false on this tier, which is how the wizard knows not to
    offer a person a release control beside your driver.
-4. POST `position_pending.action` — `/correction/crossover/v2/position-ready`
+4. POST `position_pending.action` — `/sound/speaker/crossover/v2/position-ready`
    with `{"index": …}`. `index` must be a JSON integer (a malformed body is a
    400) and is checked against what is actually pending, so a retry that crossed
    a capture starting is refused (409) rather than releasing the *next* position.
@@ -345,9 +344,9 @@ three capture-device gestures**. With no such mic the session refuses at the tap
 and says so ([ADR-0188](adr/0188-wired-first-measurement-relay-parked.md)). The
 position gate is unchanged, and a hand-walked round is gated too, because
 nothing else paces it. Two steps are new: stage 1's held set
-closes on `POST /correction/crossover/v2/complete` (empty body), bounded by the
+closes on `POST /sound/speaker/crossover/v2/complete` (empty body), bounded by the
 session ceiling and expiring as `session_ceiling_expired`; and
-`POST /correction/crossover/v2/retake` (empty body) re-opens the take that just
+`POST /sound/speaker/crossover/v2/retake` (empty body) re-opens the take that just
 completed. The retake's terms are the §2.6 ones, stated once in
 `run_capture_plan`'s docstring and implemented against that statement in
 `build_v2_wired_run_and_consume`
@@ -1261,7 +1260,7 @@ the journal line instead: `event=correction.crossover_v2_result` logs `phase=`
 beside the code.
 
 ```sh
-# The phase walk (the /correction/ wizard runs under jasper-correction-web).
+# The phase walk (the /sound/room/ wizard runs under jasper-correction-web).
 journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(authorized|play|result|apply|apply_complete|restored|cloud_group_complete|cloud_geometry_retry|cloud_spec|cloud_publish_skipped)'
 
 # Session volume lifecycle (fail-closed). persist_failed is CRITICAL — the

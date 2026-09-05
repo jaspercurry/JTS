@@ -25,7 +25,7 @@ from that tier's ``Capability`` grants, never from its name — see
   /wake-corpus/ → 127.0.0.1:8782  (lazy jasper.web.wake_corpus_setup)
   /speaker/  →  127.0.0.1:8783  (jasper.web.speaker_setup)
   /sound/    →  127.0.0.1:8784  (jasper.web.sound_setup)
-  /rooms/    →  127.0.0.1:8785  (jasper.web.rooms_setup)
+  /sound/pair/ →  127.0.0.1:8785  (jasper.web.rooms_setup)
   /tools/    →  127.0.0.1:8786  (jasper.web.tools_setup)
 
 Socket activation:
@@ -557,7 +557,7 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    # `/eq/` and `/sound/` apply generated DSP configs from this process, so
+    # `/sound/eq/` and `/sound/` apply generated DSP configs from this process, so
     # their graph swaps need a canonical target to release the swap duck to.
     from jasper.volume_coordinator import install_env_canonical_target_provider
 

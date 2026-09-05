@@ -14,7 +14,7 @@ Solo gate: the events this ring captures (``multiroom.reconcile.*``,
 ``restart_broker.*``, ``grouping_supervisor.*``) chiefly fire on a speaker
 that is part of a multiroom bond. (``restart_broker.*`` is the exception —
 the broker also serves solo in-process callers such as wifi-scan-repair,
-/sources/, /correction/, wake-corpus, and active-speaker startup — so the
+/sources/, /sound/room/, wake-corpus, and active-speaker startup — so the
 solo gate intentionally trades away capturing those non-multiroom restarts,
 which are not what this multiroom-cascade ring exists to reconstruct.) A solo
 speaker (no grouping configured — the overwhelmingly common single-speaker

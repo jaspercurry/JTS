@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// main.js — the /rooms/ "Speakers" surface. Directory + wake-response.
+// main.js — the /sound/pair/ "Speakers" surface. Directory + wake-response.
 //
 // Fetches /rooms.json on load and re-polls every 7 s. Renders:
 //   * a "this speaker" card — name, hostname, address, Room (with a "Change
@@ -377,11 +377,11 @@ function describeBondFailure(e) {
         (r.detail || "failed")).join("; ")
     : (body.error || e.message || "unknown error");
   // A member with the control-token gate enabled rejects the grouping
-  // fan-out until the browser supplies its X-JTS-Token. /rooms/ can't
+  // fan-out until the browser supplies its X-JTS-Token. /sound/pair/ can't
   // prompt for it yet (a bond fans out to several speakers that each
   // carry their own token), so point the operator at the path that does
   // capture it: any /system/ action stores the token in this browser,
-  // which /rooms/ then reuses. (detail is a server string rendered via
+  // which /sound/pair/ then reuses. (detail is a server string rendered via
   // textContent at the call sites — no escaping concern.)
   const tokenGated = failed.some(
     (r) => typeof r.detail === "string" &&

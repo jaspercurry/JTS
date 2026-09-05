@@ -11,8 +11,8 @@ settings-group markup; one purpose means a leaf row. `jasper/web/nav.py` is the
 site map: its rows render the landing groups and, for the rows under a hub
 path, the `/sound/` and `/assistant/` hub pages (`render_hub`) — static HTML
 written at install time by `jasper.web.landing`, served from disk by an
-exact-match nginx block. `/sound/*` is canonical for measurement; the legacy
-`/correction/*` aliases are slated for deletion and take no new links.
+exact-match nginx block. `/sound/*` is the only measurement namespace —
+the `/correction/*` aliases are deleted.
 
 ## 2. One name, four places, and a way back
 

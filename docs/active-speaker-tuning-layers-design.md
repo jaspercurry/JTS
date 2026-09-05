@@ -157,7 +157,7 @@ visibly.
 
 **Linearization adds no flow of its own.** One commissioning flow — CHECK →
 MEASURE → explicit household Apply → VERIFY, Apply a separate
-`POST /correction/crossover/v2/apply` with verification after it — and
+`POST /sound/speaker/crossover/v2/apply` with verification after it — and
 linearization is not a second wizard or an extra sweep; it is a new consumer
 of data every session already records. The flow's current shape (capture
 count, guided walk) is [tuning-operator-runbook.md](tuning-operator-runbook.md)'s
@@ -585,7 +585,7 @@ program, pose and gate machinery; `jasper-angle-capture`
 ([`jasper/cli/angle_capture.py`](../jasper/cli/angle_capture.py)) is the door
 that stages a walk, banked in a single-use mailbox
 ([`angle_capture_spool.py`](../jasper/active_speaker/angle_capture_spool.py))
-for the next `/correction/crossover/v2/session` open to take as its lateral
+for the next `/sound/speaker/crossover/v2/session` open to take as its lateral
 group, banking every accepted pose's raw WAV with an angle-stamped sidecar.
 There is no automatic off-axis capture — nothing captures off-axis unless an
 operator stages a walk — and the angle SCHEDULE a search would need is still

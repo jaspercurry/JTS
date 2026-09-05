@@ -888,7 +888,7 @@ def build_commissioning_view(
                 "Re-measure",
                 enabled=True,
                 method="GET",
-                endpoint="/correction/crossover/",
+                endpoint="/sound/speaker/crossover/",
                 message=(
                     "Active speaker setup changed after the measured profile "
                     "was applied. Re-measure to carry that tune forward."
@@ -985,7 +985,7 @@ def load_commissioning_view(
 
     The single source of truth for feeding the pure composer above: a caller
     that omits one of its inputs silently degrades the view, so both the
-    ``/sound/`` payload and the ``/correction/crossover/envelope`` builder come
+    ``/sound/`` payload and the ``/sound/speaker/crossover/envelope`` builder come
     through here. ``commission`` is the one caller-supplied input, a
     runtime-only view needing an async CamillaDSP probe only ``/sound/`` owns;
     ``None`` composes identical steps.

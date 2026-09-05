@@ -197,7 +197,7 @@ def main() -> int:
     else:
         device_index, device_info = _find_input_device(args.device)
     state_url = f"{args.speaker.rstrip('/')}:8780/state"
-    crossover_url = f"{args.speaker.rstrip('/')}/correction/crossover/status"
+    crossover_url = f"{args.speaker.rstrip('/')}/sound/speaker/crossover/status"
     stop_event = threading.Event()
     audio_queue: queue.SimpleQueue[tuple[np.ndarray, dict[str, Any], str]] = (
         queue.SimpleQueue()

@@ -507,9 +507,9 @@ def test_the_decline_route_is_reachable_from_the_endpoint_the_envelope_mints():
         if a["id"] == "review_decline"
     )
 
-    # The correction router mounts its paths under /correction.
-    assert decline["endpoint"].startswith("/correction/")
-    routed = decline["endpoint"][len("/correction"):]
+    # nginx maps /sound/speaker/crossover/ onto the daemon's /crossover/.
+    assert decline["endpoint"].startswith("/sound/speaker/crossover/")
+    routed = decline["endpoint"].removeprefix("/sound/speaker")
     assert routed in correction_setup._POST_ROUTES
 
 

@@ -226,7 +226,7 @@ def test_neither_swap_ducks_the_fader(tmp_path):
     holds the measurement window, so nothing is playing for a step to be loud
     against — the ramp was 0.94 s per swapping stimulus spent on silence.
 
-    Scope is the MEASUREMENT path only. ``/sound/`` and ``/correction/`` apply
+    Scope is the MEASUREMENT path only. ``/sound/`` and ``/sound/room/`` apply
     keep their duck; ``test_camilla_controller.py`` pins that they still do.
     """
     cam = FakeCam(entry_path=_entry(tmp_path))

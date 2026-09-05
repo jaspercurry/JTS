@@ -691,7 +691,7 @@ def test_applied_profile_not_confirmed_renders_verify_fail_with_a_working_exit()
     # The retry the screen offers posts the verify route, which is exactly the
     # route the pre-flight guards — so the 400-body action is what keeps this
     # combination from being a loop.
-    assert env["next_action"]["endpoint"] == "/correction/crossover/v2/verify"
+    assert env["next_action"]["endpoint"] == "/sound/speaker/crossover/v2/verify"
 
 
 # --------------------------------------------------------------------------- #

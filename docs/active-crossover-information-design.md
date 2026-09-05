@@ -30,7 +30,7 @@
 > immutable target-attempt reservations, and a bounded, sequenced journal of
 > the nine-state transitions. Correction-web claims that owner at service start,
 > making prior-generation callbacks stale, and
-> `/correction/crossover/status` reports its `commissioning_run` block as
+> `/sound/speaker/crossover/status` reports its `commissioning_run` block as
 > `not_started`, exact
 > `current`, comparison-`stale`, or fail-closed `unavailable` state. This is
 > lifecycle identity, not acoustic or apply authority. Correction-web still
@@ -124,7 +124,7 @@
 >
 > **Wave 3 relay Stop boundary (2026-07-14; hardware-free).** The Crossover
 > page exposes one Stop action for active relay level and sweep work through
-> `/correction/crossover/capture-cancel`. While cancellation and exact cleanup are
+> `/sound/speaker/crossover/capture-cancel`. While cancellation and exact cleanup are
 > in flight, the server envelope reports `stopping` and withholds forward
 > actions; terminal `stopped` appears only after the owning worker has drained.
 > The subsequent persistence phase is visibly non-stoppable.
@@ -315,7 +315,7 @@ proposal, switch to Manual, edit it, and apply the resulting manual candidate.
 ## User experience
 
 The `/sound/` surface owns speaker layout, output identity, and manual editing.
-The HTTPS `/correction/crossover/` surface owns microphone permission and
+The HTTPS `/sound/speaker/crossover/` surface owns microphone permission and
 acoustic commissioning. They are two views of the same working and applied
 crossover, not independent wizards.
 
@@ -1800,7 +1800,7 @@ recomposition from that snapshot **and the speaker is on its solo active
 runtime**. Solo/grouped scope comes from fresh grouping membership for both
 leader and follower roles, not from source comments that `active_raw` removes.
 A grouped active leader instead projects
-`active_grouped_room_correction_not_supported` and links to `/rooms/`; turning
+`active_grouped_room_correction_not_supported` and links to `/sound/pair/`; turning
 grouping off restores the solo proof boundary. A later distributed decision
 must be Active-owned and bind the program-bake Camilla instance plus the
 driver-domain crossover instance. The identity

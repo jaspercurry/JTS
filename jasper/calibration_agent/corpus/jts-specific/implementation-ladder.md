@@ -133,7 +133,7 @@ After the intake, the recommended order is:
    HouseCurve / Dirac style displays without turning the
    socket-activated JTS web UI into a heavy pro workstation.
 5. **Sound curve / preference polish.** Keep `/sound/` independent from
-   `/correction/`, with editable preset curves, level-matched A/B, and
+   `/sound/room/`, with editable preset curves, level-matched A/B, and
    future proposed-vs-current compare.
 6. **FIR Stage 0 and readiness validation.** Export and no-apply FIR
    inspect/stage now exist: imported FIR WAVs can be checked for sample

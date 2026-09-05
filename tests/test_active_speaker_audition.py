@@ -634,7 +634,7 @@ def test_start_is_refused_while_a_measurement_session_holds_the_graph(
 def test_start_is_refused_by_a_control_hold_with_no_volume_statefile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The interlock's real shape: a ``/correction/`` room sweep.
+    """The interlock's real shape: a ``/sound/room/`` room sweep.
 
     That flow takes jasper-control's measurement hold and never builds a
     ``SessionVolumePlan``, so there is no volume statefile to find. A door that

@@ -113,7 +113,7 @@ def _correction_root() -> Path:
 
 @doctor_check()
 def check_correction_web_service() -> CheckResult:
-    """Socket activation is the liveness contract for /correction/.
+    """Socket activation is the liveness contract for /sound/room/.
 
     The service itself is expected to be inactive after its idle
     timeout; the socket must remain active so nginx can spawn the
@@ -138,7 +138,7 @@ def check_correction_web_service() -> CheckResult:
         return CheckResult(
             "correction web", "warn",
             "service active but socket inactive — current session may work, "
-            "but /correction/ will not restart after idle exit",
+            "but /sound/room/ will not restart after idle exit",
             reason=REASON_WEB_SOCKET_INACTIVE,
         )
     return CheckResult(
@@ -271,7 +271,7 @@ def _probe_https_status(
 def check_correction_https_assets() -> CheckResult:
     """nginx's 443 block must serve ``/assets/``, not redirect it to HTTP.
 
-    ``/correction/`` is the one wizard served over HTTPS (getUserMedia needs a
+    ``/sound/room/`` is the one wizard served over HTTPS (getUserMedia needs a
     secure context) and links its CSS/ES module by absolute path, so a 443
     block that does not serve ``/assets/`` leaves them mixed-content-blocked.
     ``check_web_design_assets`` covers the files existing on disk; this covers
@@ -298,7 +298,7 @@ def check_correction_https_assets() -> CheckResult:
     if status in (301, 302, 307, 308) and location.startswith("http://"):
         return CheckResult(
             "correction HTTPS assets", "warn",
-            f"/assets over HTTPS → {status} → {location}: the /correction/ UI's "
+            f"/assets over HTTPS → {status} → {location}: the /sound/room/ UI's "
             "CSS/JS will be mixed-content-blocked. Add an `/assets/` location to "
             "the nginx 443 server block and redeploy.",
             reason=REASON_HTTPS_ASSETS_HTTP_REDIRECT,
@@ -421,7 +421,7 @@ def check_correction_uploaded_calibration_sign() -> CheckResult:
         f"{len(flagged)} uploaded calibration(s) stored as a correction to add: "
         + ", ".join(flagged[:3])
         + (" …" if len(flagged) > 3 else "")
-        + " — review at /correction/; files from the REW ecosystem "
+        + " — review at /sound/room/; files from the REW ecosystem "
         "(miniDSP, Dayton, Cross-Spectrum) are response curves",
         reason=REASON_UPLOADED_CALIBRATION_SIGN_REVIEW,
     )
@@ -579,7 +579,7 @@ def check_correction_latest_bundle() -> CheckResult:
         return CheckResult(
             "latest correction bundle", "warn",
             summary + "; last completed measurement used no calibrated mic — "
-            "calibrate one under Microphone on /correction/ (enter the "
+            "calibrate one under Microphone on /sound/room/ (enter the "
             "serial number and Fetch calibration)",
             reason=REASON_LATEST_BUNDLE_UNCALIBRATED_MIC,
         )
@@ -595,7 +595,7 @@ def check_correction_latest_bundle() -> CheckResult:
 
 @doctor_check()
 def check_correction_cert_hostname() -> CheckResult:
-    """The /correction/ TLS cert's SAN must cover the name the LAN actually
+    """The /sound/room/ TLS cert's SAN must cover the name the LAN actually
     resolves for this speaker.
 
     install.sh issues the leaf cert for JASPER_HOSTNAME at deploy time, so a
@@ -648,7 +648,7 @@ def check_correction_cert_hostname() -> CheckResult:
     return CheckResult(
         label, "warn",
         f"cert SAN does not include the advertised name {effective} — "
-        "https://" + effective + "/correction/ will show a browser "
+        "https://" + effective + "/sound/room/ will show a browser "
         "warning. Redeploy (bash scripts/deploy-to-pi.sh) to regenerate "
         "the leaf cert after converging the hostname.",
         reason=REASON_CERT_SAN_MISMATCH,
@@ -787,7 +787,7 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
                 f"applied and graded, but the spatial grade word {spatial!r} "
                 "is not one this build recognizes — treating it as unproven "
                 f"rather than guessing ({verify_text}); check for a "
-                "jasper-doctor update, or re-measure at /correction/",
+                "jasper-doctor update, or re-measure at /sound/room/",
                 reason=REASON_APPLIED_GRADE_SPATIAL_UNRECOGNIZED,
             )
         if spatial == GRADE_SPATIAL_FAILED:
@@ -804,7 +804,7 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
                 label, "ok",
                 f"applied and graded, and the spatial grade missed the "
                 f"target{worst_text} — the tune stays on the speaker "
-                f"({verify_text}); re-measure at /correction/ or undo to "
+                f"({verify_text}); re-measure at /sound/room/ or undo to "
                 "restore the previous sound",
                 reason=REASON_APPLIED_GRADE_SPATIAL_FAILED,
             )
@@ -813,7 +813,7 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
                 label, "ok",
                 f"applied; the post-apply group closed but its spatial grade "
                 f"could not be measured ({verify_text}) — re-measure at "
-                "/correction/ in a quieter room, or undo",
+                "/sound/room/ in a quieter room, or undo",
                 reason=REASON_APPLIED_GRADE_SPATIAL_UNMEASURABLE,
             )
         if grade.get("complete") is False:
@@ -822,7 +822,7 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
                 f"applied and verified at the mark, but no "
                 f"{block.get('tier') or 'this'}-tier spatial grade exists "
                 f"for this session, so it is unproven away from the mark "
-                f"({verify_text}) — finish the measurement at /correction/, "
+                f"({verify_text}) — finish the measurement at /sound/room/, "
                 "or undo",
                 reason=REASON_APPLIED_GRADE_MARK_ONLY,
             )
@@ -834,7 +834,7 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
     if state in {GRADE_INCONCLUSIVE, GRADE_FAILED}:
         detail = (
             f"applied but the post-apply check came back {state} "
-            f"({verify_text}) — re-verify at /correction/ or undo to restore "
+            f"({verify_text}) — re-verify at /sound/room/ or undo to restore "
             "the previous sound"
         )
         if state == GRADE_INCONCLUSIVE:
@@ -849,7 +849,7 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
     return CheckResult(
         label, "ok",
         "applied but never graded: no post-apply check completed for this "
-        "correction — re-verify at /correction/ to confirm it, or undo",
+        "correction — re-verify at /sound/room/ to confirm it, or undo",
         reason=REASON_APPLIED_GRADE_NEVER_GRADED,
     )
 
@@ -973,7 +973,7 @@ def check_session_volume_unresolved() -> CheckResult:
 
     ``SessionVolumePlan.needs_recovery`` is the durable "a measurement left the
     speaker's volume in a state that must be drained" latch; without this line
-    only the ``/correction/crossover/`` recovery screen knows about it.
+    only the ``/sound/speaker/crossover/`` recovery screen knows about it.
 
     Two shapes refuse a new session and need different words: a latched
     ``unresolved`` state, and a durably ``active`` state with no live owner.
@@ -994,7 +994,7 @@ def check_session_volume_unresolved() -> CheckResult:
             label, "warn",
             f"a previous measurement left the volume unresolved ({safety}); "
             "the next session will refuse to start. Recover it at "
-            "http://jts.local/correction/crossover/",
+            "http://jts.local/sound/speaker/crossover/",
             reason=REASON_SESSION_VOLUME_UNRESOLVED,
         )
     if plan.stale_active():
@@ -1008,6 +1008,6 @@ def check_session_volume_unresolved() -> CheckResult:
         label, "warn",
         "a measurement session's volume state is durably active with no live "
         "owner in this process; if no measurement is running, recover it at "
-        "http://jts.local/correction/crossover/",
+        "http://jts.local/sound/speaker/crossover/",
         reason=REASON_SESSION_VOLUME_ACTIVE_NO_OWNER,
     )

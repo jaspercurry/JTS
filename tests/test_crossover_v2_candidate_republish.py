@@ -156,7 +156,7 @@ def test_republish_names_the_apply_endpoint_and_discloses_verify_is_not_restored
 
     assert result["verify_priors_restored"] is False
     assert result["next_action"] == {
-        "endpoint": "/correction/crossover/v2/apply",
+        "endpoint": "/sound/speaker/crossover/v2/apply",
         "expected_candidate_fingerprint": candidate.fingerprint,
     }
     assert v2host.load_v2_state()["verify_priors"] is None

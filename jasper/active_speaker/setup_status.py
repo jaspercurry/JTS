@@ -104,8 +104,8 @@ _READINESS_DERIVATION_ERRORS = (
     ActiveSpeakerConfigError,
     KeyError,
 )
-_CROSSOVER_SETUP_HREF = "/correction/crossover/"
-_ROOMS_SETUP_HREF = "/rooms/"
+_CROSSOVER_SETUP_HREF = "/sound/speaker/crossover/"
+_ROOMS_SETUP_HREF = "/sound/pair/"
 _PROGRAM_BAKE_SOURCE = (
     "jasper.active_speaker.camilla_yaml.emit_active_speaker_program_bake_config"
 )

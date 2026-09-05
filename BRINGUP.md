@@ -803,7 +803,7 @@ is `bash scripts/xvf-interrogate.sh --host
 ## Phase 9 — Trust the speaker's HTTPS cert on each iPhone (one-time, 1 min per device)
 
 This step is **only required** if you want to use the room-correction
-wizard at `https://jts.local/correction/`. The Spotify and voice
+wizard at `https://jts.local/sound/room/`. The Spotify and voice
 settings pages don't need it (they're plain HTTP). If you don't plan
 to run room correction yet, skip this section — you can come back any
 time.
@@ -833,7 +833,7 @@ On each iPhone:
    and is fine for a personal smart speaker on your home network.
    Tap **Continue**.
 
-Verify by visiting `https://jts.local/correction/` in Safari. The
+Verify by visiting `https://jts.local/sound/room/` in Safari. The
 page should load without a "Connection is not private" warning, and
 tapping **Start mic capture** should bring up the standard iOS
 microphone permission prompt.

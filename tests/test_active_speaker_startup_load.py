@@ -603,7 +603,7 @@ def test_startup_load_proceeds_when_a_root_owned_marker_already_holds(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    # End-to-end shape of the gate's blocker: /correction/ (root, UMask=0077)
+    # End-to-end shape of the gate's blocker: /sound/room/ (root, UMask=0077)
     # left a root:root 0600 marker that nothing releases, then /sound/ runs the
     # protected load. touch() raises there, but the anchor IS held, so the load
     # must PROCEED rather than refuse with a remedy that cannot fix it.

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""/rooms/ — the "Speakers" surface: directory + wake-response toggle.
+"""/sound/pair/ — the "Speakers" surface: directory + wake-response toggle.
 
 Discovery browses the ALWAYS-ON `_jasper-control._tcp` mDNS service
 (advertised unconditionally by deploy/avahi/jasper-control.service) — NOT
@@ -22,7 +22,7 @@ the ES module at /assets/rooms/js/main.js, which fetches /rooms.json on load
 and every 7 s. Every peer field is mDNS-provided (untrusted), so this server
 interpolates none of the discovered data.
 
-URL surface (after nginx strips the /rooms/ prefix); every POST is
+URL surface (after nginx strips the /sound/pair/ prefix); every POST is
 CSRF-verified:
   GET  /            page render (mount point + ES module)
   GET  /rooms.json  the directory + self status incl. the wake-response
@@ -469,7 +469,7 @@ def _render_page(*, csrf_token: str = "") -> bytes:
     # canonical_page emits the CSRF <meta name="jts-csrf"> tag the ES module
     # reads (via http.js jsonHeaders()) for the wake-response POST /peering.
     body = f"""
-{canonical_header("Speakers")}
+{canonical_header("Speakers", back_href="/sound/", back_label="Sound")}
 <main class="page">
   <div id="app" aria-busy="true">
     <p class="rooms-loading">Looking for speakers on this network…</p>
@@ -595,7 +595,7 @@ def lan_target(addr: str, known: set[str] | None = None) -> str | None:
 def request_control_token(handler: BaseHTTPRequestHandler) -> str | None:
     """The browser-supplied X-JTS-Token to forward to each member, or None.
 
-    /rooms/ grouping mutations fan out SERVER-side to each member's
+    /sound/pair/ grouping mutations fan out SERVER-side to each member's
     /grouping/set, so the browser's control token would be lost unless this
     leader forwards it. RELAY ONLY — never inject this token from disk, or
     the gate stops being real. A forwarded browser token authenticates
@@ -1456,7 +1456,7 @@ def _get_member_grouping_for_balance_snapshot(
 
 
 def _pair_balance_snapshot(grouping: dict, known: set[str] | None = None) -> dict:
-    """Compact live balance state for the /rooms/ slider.
+    """Compact live balance state for the /sound/pair/ slider.
 
     The snapshot is present only for a two-speaker left/right bond. It resolves
     the peer through the same roster-first path used by swap/trim so the UI does

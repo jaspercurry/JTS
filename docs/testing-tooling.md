@@ -1132,7 +1132,7 @@ Read the journal, not the code: `event=correction.crossover_v2_angle_walk_taken`
 [`arm_walk.py`](../jasper/active_speaker/arm_walk.py)) is what actually WALKS a
 live measurement session with the lab turntable arm: the session publishes
 `relay.position_pending` and holds every begin until something POSTs
-`/correction/crossover/v2/position-ready`, and the turntable adapter moves the
+`/sound/speaker/crossover/v2/position-ready`, and the turntable adapter moves the
 microphone.
 
 Runs **on the speaker**, in the foreground, one run per walk:

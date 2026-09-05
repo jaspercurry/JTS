@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""HTTPS correction measurement hub at /correction/.
+"""HTTPS measurement daemon behind the /sound/ measurement pages.
 
 The user opens the hub on a phone and chooses the measurement job:
 room correction, active-crossover acoustic checks, or bass tuning. Room
@@ -22,7 +22,7 @@ Architecture:
     for state transitions that take seconds.
   - Background asyncio loop in a daemon thread bridges the sync HTTP
     handlers to the async session methods.
-  - HTTP routes (after nginx strips the /correction/ prefix): this
+  - HTTP routes (after nginx strips the /sound/room/ prefix): this
     module now serves far more routes than fit a comment table.
 
 Why a separate service from jasper-web (Spotify + voice settings):
@@ -98,7 +98,7 @@ MAX_CALIBRATION_UPLOAD_JSON_BYTES = 1024 * 1024
 MAX_WAV_BODY_BYTES = 32 * 1024 * 1024
 MAX_SYNC_WAV_BODY_BYTES = 2 * 1024 * 1024
 MAX_DEVICE_FIELD_CHARS = 160
-_FOLLOWER_DELEGATED_PAGE_PATHS = frozenset({"/", "/room", "/sync"})
+_FOLLOWER_DELEGATED_PAGE_PATHS = frozenset({"/", "/sync"})
 
 
 class BadRequest(ValueError):
@@ -4420,7 +4420,6 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             path = urlparse(self.path).path.rstrip("/") or "/"
             if path not in {
                 "/",
-                "/room",
                 "/healthz",
                 "/status",
                 "/entry-status",
@@ -4448,7 +4447,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     cfg["hostname"], ctx["csrf_token"],
                 ))
                 return
-            if path in {"/", "/room"}:
+            if path == "/":
                 ctx = begin_request(self)
                 self._send_html(_render_page(
                     cfg["hostname"], ctx["csrf_token"], ctx["flash"],
@@ -5050,7 +5049,7 @@ def _claim_crossover_state_owners() -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="jasper-correction-web",
-        description="HTTPS correction measurement hub at /correction/ for the JTS speaker",
+        description="HTTPS measurement daemon for the JTS speaker's /sound/ pages",
     )
     parser.add_argument(
         "--host",

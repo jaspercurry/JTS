@@ -62,17 +62,6 @@ const CAPTURE_STOPPABLE = new Set(['starting', 'awaiting_capture']);
 // narrates it instead.
 const CAPTURE_WINDING_DOWN = new Set(['stopping']);
 const CAPTURE_IN_FLIGHT = new Set([...CAPTURE_STOPPABLE, ...CAPTURE_WINDING_DOWN]);
-function publicCrossoverUrl(value) {
-  const raw = String(value || '');
-  const pathname = typeof window !== 'undefined' && window.location
-    ? String(window.location.pathname || '')
-    : '';
-  if (pathname.indexOf('/sound/crossover/') === 0 &&
-      raw.indexOf('/correction/crossover') === 0) {
-    return '/sound/crossover' + raw.slice('/correction/crossover'.length);
-  }
-  return raw;
-}
 
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
@@ -98,7 +87,7 @@ function el(tag, attrs = {}, children = []) {
 // survives the refresh that follows a failed action.
 function setStatus(message, tone = '', action = null) {
   els.status.dataset.tone = tone;
-  const href = action && action.href ? publicCrossoverUrl(action.href) : '';
+  const href = (action && action.href) || '';
   if (!href) {
     els.status.textContent = message || '';
     return;
@@ -574,7 +563,7 @@ function renderActions(primary, alternates = []) {
     if (action.href && !action.endpoint) {
       control = el('a', {
         class: className,
-        href: publicCrossoverUrl(action.href),
+        href: action.href,
         text: action.label || 'Continue',
       });
     } else {
@@ -851,10 +840,7 @@ async function stopCapture() {
   els.captureStop.disabled = true;
   setStatus('Stopping safely…');
   try {
-    const response = await postJSON(
-      publicCrossoverUrl('/correction/crossover/capture-cancel'),
-      {},
-    );
+    const response = await postJSON('/sound/speaker/crossover/capture-cancel', {});
     renderCapture(response.capture);
     schedulePoll(POLL_MS);
     await refresh();
@@ -892,10 +878,7 @@ async function startOver() {
   els.startOver.disabled = true;
   setStatus('Starting over…');
   try {
-    const response = await postJSON(
-      publicCrossoverUrl('/correction/crossover/reset'),
-      {},
-    );
+    const response = await postJSON('/sound/speaker/crossover/reset', {});
     render(response);
     const reset = response && response.reset;
     if (reset && reset.status && reset.status !== 'cleared') {
@@ -934,10 +917,7 @@ async function runAction(action, button) {
   setStatus('Working…');
   let captureStarted = false;
   try {
-    const response = await postJSON(
-      publicCrossoverUrl(action.endpoint),
-      action.body || {},
-    );
+    const response = await postJSON(action.endpoint, action.body || {});
     captureStarted = Boolean(response && response.capture);
     if (captureStarted) {
       renderCapture(response.capture);
@@ -1032,9 +1012,7 @@ async function runRefreshQueue() {
   do {
     refreshQueued = false;
     const epoch = renderEpoch;
-    const env = await getJSON(
-      publicCrossoverUrl('/correction/crossover/envelope'),
-    );
+    const env = await getJSON('/sound/speaker/crossover/envelope');
     if (epoch === renderEpoch) render(env);
   } while (refreshQueued);
 }
