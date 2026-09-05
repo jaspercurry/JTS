@@ -206,7 +206,6 @@ code = [
   "jasper/audio_hardware/**",
 ]
 docs = [
-  "docs/PROPOSAL-dac-profile-registry.md",
   "docs/audio-paths.md",
 ]
 requires_docs_when = [
@@ -216,7 +215,7 @@ requires_docs_when = [
 verification = [
   "pytest tests/test_dac_profiles.py",
   "python3 scripts/docs-impact.py --validate-only",
-  "python3 scripts/docs-linkcheck.py --changed-file docs/PROPOSAL-dac-profile-registry.md",
+  "python3 scripts/docs-linkcheck.py --changed-file docs/audio-paths.md",
 ]
 
 [[subsystem]]
@@ -945,7 +944,6 @@ code = [
 docs = [
   "PLAN.md",
   "docs/adr/0145-remote-updates-stay-a-laptop-deploy.md",
-  "docs/PROPOSAL-dac-profile-registry.md",
   "docs/tool-platform-plan.md",
 ]
 requires_docs_when = [

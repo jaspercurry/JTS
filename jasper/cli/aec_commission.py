@@ -669,7 +669,7 @@ class SystemIO:
             raise CommissioningError(
                 f"output DAC {output_id or '<unset>'} is not in the DacProfile "
                 "registry; codify its profile (jasper/audio_hardware/dac.py, "
-                "docs/PROPOSAL-dac-profile-registry.md) before commissioning"
+                "docs/audio-paths.md) before commissioning"
             )
         return Hardware(profile.variant_id, profile.alsa_card_name, profile.chip_beam_plan)
 
