@@ -20,6 +20,9 @@
 // renders, read at call time by http.js so this cacheable module bakes in no
 // secret. The live HA URL + token are NEVER in the page DOM — the credentials
 // copy button fetches them lazily from ./credentials-for-copy (CSRF-gated).
+// The Disconnect form's data-confirm guard is wired by the shared
+// confirm-forms.js module; the voice-pack copy buttons stay page-local (they
+// copy a live-fetched, template-substituted prompt, not a static value).
 //
 // Untrusted strings (mDNS-advertised instance names/URLs) are written via
 // textContent / escaped data-* attributes, never innerHTML string-concat, so a
@@ -27,6 +30,7 @@
 
 import { csrfHeaders } from "/assets/shared/js/http.js";
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
+import { wireConfirmForms } from "/assets/shared/js/confirm-forms.js";
 
 // ---- shared helpers --------------------------------------------------------
 
@@ -369,28 +373,6 @@ function wireCopyButtons(template) {
           : "Copy failed — try the placeholder button instead",
         copied,
       );
-    });
-  }
-}
-
-// ---- shared: confirm-on-submit for the Disconnect form ---------------------
-//
-// The connected-state Disconnect form carries data-confirm / data-confirm-
-// danger (set server-side). Intercept submit, confirm via the shared
-// <dialog>, then let the native POST proceed. Mirrors the spotify/ page's
-// data-confirm convention so the behaviour is identical across wizards.
-
-function wireConfirmForms() {
-  for (const form of document.querySelectorAll("form[data-confirm]")) {
-    form.addEventListener("submit", async (event) => {
-      if (form.dataset.confirmed === "1") return; // re-submit after confirm
-      event.preventDefault();
-      const ok = await jtsConfirm(form.dataset.confirm, {
-        danger: form.dataset.confirmDanger === "1",
-      });
-      if (!ok) return;
-      form.dataset.confirmed = "1";
-      form.submit();
     });
   }
 }

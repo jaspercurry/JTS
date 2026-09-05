@@ -1424,9 +1424,9 @@ def _index_html(
   </div>
 </form>"""
 
-    # The Clear form's destructive confirm lives in the page's ES module
-    # (clear-form submit listener → jtsConfirm), not an inline onsubmit —
-    # canonical pages carry no inline dialog helper.
+    # The Clear form's destructive confirm rides in data-confirm, wired by
+    # the shared confirm-forms.js module — canonical pages carry no inline
+    # dialog helper.
     body = f"""
 <p class="form-hint">Configure travel-time directions plus NYC subway and bus settings.</p>
 
@@ -1438,7 +1438,9 @@ def _index_html(
 
 {_advanced_section_html(state, csrf_token)}
 
-<form method="post" action="clear" id="clear-form" style="margin-top:2rem">
+<form method="post" action="clear" id="clear-form" style="margin-top:2rem"
+      data-confirm="Clear all saved transit settings? Subway and bus tools will stop responding until reconfigured."
+      data-confirm-danger="1">
   {csrf_field_html(csrf_token) if csrf_token else ''}
   <button type="submit" class="btn btn--danger">Clear all transit settings</button>
 </form>"""

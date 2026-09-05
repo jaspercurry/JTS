@@ -15,14 +15,14 @@
 //      checkboxes on every change.
 //   2. "Change address" reveal. The geocode result panel hides its re-geocode
 //      form until the user clicks Change.
-//   3. Clear confirm. Clearing transit config is destructive (the subway/bus
-//      tools go quiet until reconfigured), so we confirm via the shared
-//      <dialog> helper — never window.confirm, which the browser can suppress.
+//   3. Clear confirm. The Clear form carries data-confirm, wired by the
+//      shared confirm-forms.js module (never window.confirm, which the
+//      browser can suppress).
 //
 // All wiring is addEventListener on escaped data-* attributes; no inline
 // handlers, no untrusted strings interpolated into JS.
 
-import { jtsConfirm } from "/assets/shared/js/dialog.js";
+import { wireConfirmForms } from "/assets/shared/js/confirm-forms.js";
 
 // ---- 1. Multi-select checkbox → hidden field sync -------------------------
 
@@ -63,17 +63,6 @@ if (changeBtn && redoForm) {
   });
 }
 
-// ---- 3. Clear-config confirm via the shared dialog -----------------------
+// ---- 3. Clear-config confirm via the shared data-confirm guard -----------
 
-const clearForm = document.getElementById("clear-form");
-if (clearForm) {
-  clearForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const ok = await jtsConfirm(
-      "Clear all saved transit settings? Subway and bus tools will stop " +
-        "responding until reconfigured.",
-      { danger: true }
-    );
-    if (ok) clearForm.submit();
-  });
-}
+wireConfirmForms();

@@ -18,7 +18,8 @@ label; the raw address typed into the form is never persisted.
 Migrated to the canonical design system: renders through
 ``canonical_page`` with the page-specific CSS in
 ``/assets/weather/weather.css``. It is a plain server-rendered
-request/response form, so it ships no ES module.
+request/response form; its only client behaviour is the shared
+data-confirm guard on the Clear form (assets/weather/js/main.js).
 """
 from __future__ import annotations
 
@@ -353,13 +354,16 @@ def _index_html(
     </form>
   </section>
 
-  <form method="post" action="./clear" class="clear-form">
+  <form method="post" action="./clear" class="clear-form"
+        data-confirm="Clear the saved weather location and units? Bare weather questions will need a location again."
+        data-confirm-danger="1">
     {csrf}
     <div class="form-actions">
       <button type="submit" class="btn btn--danger">Clear weather default</button>
     </div>
   </form>
 </main>
+<script type="module" src="/assets/weather/js/main.js"></script>
 """
     return canonical_page(
         "Weather",

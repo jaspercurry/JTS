@@ -375,7 +375,6 @@ def _redirect_uri_section_html(redirect_uri: str, client_id: str, mode: str) -> 
          data-select-on-click>
   <button type="button" class="btn btn--default"
           data-copy-target="redirect-uri">Copy</button>
-  <span class="copy-feedback">Copied!</span>
 </div>
 <p class="form-hint">{mode_note}</p>
 

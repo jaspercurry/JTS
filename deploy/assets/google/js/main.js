@@ -12,38 +12,20 @@
 // copy buttons, the Client-ID reveal, and the pre-submit confirms).
 //
 // Everything binds via delegated listeners on escaped data-* hooks — no
-// inline handlers, no untrusted strings baked into JS. Confirms use the
-// shared <dialog> helper (never window.confirm, which the browser can
-// suppress — see /assets/shared/js/dialog.js).
+// inline handlers, no untrusted strings baked into JS. Confirms
+// (data-confirm forms) and clipboard copies (data-copy buttons) are wired
+// by the shared confirm-forms.js / copy.js modules.
 
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
+import { wireConfirmForms } from "/assets/shared/js/confirm-forms.js";
+import { wireCopyButtons } from "/assets/shared/js/copy.js";
+
+wireConfirmForms();
+wireCopyButtons();
 
 // ---------------------------------------------------------------------------
-// Destructive-action submit guard.
-//
-// Any <form data-confirm="…"> (reset-credentials, remove-account) is
-// intercepted: we confirm via the shared dialog first, then let the native
-// POST proceed on OK. data-confirm-danger reddens the confirm button.
-// ---------------------------------------------------------------------------
-document.addEventListener("submit", async (event) => {
-  const form = event.target;
-  if (!(form instanceof HTMLFormElement)) return;
-  const message = form.dataset.confirm;
-  if (!message) return; // not a guarded form — let it submit normally
-  if (form.dataset.confirmed === "1") return; // second pass after OK
-
-  event.preventDefault();
-  const danger = form.hasAttribute("data-confirm-danger");
-  const ok = await jtsConfirm(message, { danger });
-  if (ok) {
-    form.dataset.confirmed = "1";
-    form.submit();
-  }
-});
-
-// ---------------------------------------------------------------------------
-// Delegated click handlers: copy-to-clipboard, Client-ID reveal,
-// reset-progress, and select-on-click inputs.
+// Delegated click handlers: Client-ID reveal, reset-progress, and
+// select-on-click inputs.
 // ---------------------------------------------------------------------------
 document.addEventListener("click", async (event) => {
   const target = event.target;
@@ -53,28 +35,6 @@ document.addEventListener("click", async (event) => {
   // URL fields). Replaces the old inline onclick="this.select()".
   if (target instanceof HTMLInputElement && target.hasAttribute("data-select-on-click")) {
     target.select();
-    return;
-  }
-
-  // Copy-to-clipboard buttons. data-copy = id of the input to copy;
-  // data-copy-feedback = id of the "Copied!" span to flash.
-  const copyBtn = target.closest("[data-copy]");
-  if (copyBtn) {
-    const input = document.getElementById(copyBtn.dataset.copy);
-    const feedback = document.getElementById(copyBtn.dataset.copyFeedback);
-    if (input) {
-      try {
-        await navigator.clipboard.writeText(input.value);
-      } catch (e) {
-        // Older/locked-down browsers: fall back to execCommand.
-        input.select();
-        document.execCommand("copy");
-      }
-      if (feedback) {
-        feedback.classList.add("shown");
-        setTimeout(() => feedback.classList.remove("shown"), 1800);
-      }
-    }
     return;
   }
 

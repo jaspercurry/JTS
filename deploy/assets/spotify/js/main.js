@@ -8,11 +8,13 @@
 // the following progressive enhancements:
 //   1. highlight the picked OAuth-mode radio card and mirror it into the
 //      hidden form field (the picker is a sibling of the credentials form),
-//   2. copy the redirect URL to the clipboard with a "Copied!" flash,
+//   2. copy the redirect URL to the clipboard, wired by the shared copy.js
+//      module,
 //   3. live-preview a pasted playlist's name before enabling its Add button,
 //   4. reveal the inline "add playlist" form,
-//   5. route every destructive submit through the shared <dialog> confirm
-//      (never window.confirm, which the browser can suppress).
+//   5. route every destructive submit through the shared data-confirm guard
+//      (confirm-forms.js — never window.confirm, which the browser can
+//      suppress).
 //
 // All of it degrades gracefully: with JS off the forms still submit, the
 // redirect URL is still selectable, and Add is simply always enabled.
@@ -20,7 +22,11 @@
 // Shared helpers come from the canonical layer by absolute path — we never
 // re-declare the CSRF/JSON/dialog plumbing here.
 
-import { jtsConfirm } from "/assets/shared/js/dialog.js";
+import { wireConfirmForms } from "/assets/shared/js/confirm-forms.js";
+import { wireCopyButtons } from "/assets/shared/js/copy.js";
+
+wireConfirmForms();
+wireCopyButtons();
 
 // ---------------------------------------------------------------------------
 // 1. OAuth-mode picker (bounce / manual) — highlight + mirror into the form.
@@ -36,33 +42,6 @@ document.querySelectorAll(".mode-picker input[type=radio]").forEach((radio) => {
       .forEach((label) => label.classList.remove("selected"));
     if (radio.parentElement) radio.parentElement.classList.add("selected");
     if (modeInput) modeInput.value = radio.value;
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 2. Copy-to-clipboard for the redirect URL.
-// ---------------------------------------------------------------------------
-// Delegated so it survives both page states that render a copy row, and so we
-// never need an inline onclick. The button carries data-copy-target with the
-// id of the <input> to read; the feedback span is its sibling .copy-feedback.
-document.querySelectorAll("[data-copy-target]").forEach((button) => {
-  button.addEventListener("click", async () => {
-    const input = document.getElementById(button.dataset.copyTarget);
-    if (!input) return;
-    try {
-      await navigator.clipboard.writeText(input.value);
-    } catch (err) {
-      // Older browsers / insecure contexts: fall back to select + execCommand.
-      input.select();
-      document.execCommand("copy");
-    }
-    const feedback = button.parentElement
-      ? button.parentElement.querySelector(".copy-feedback")
-      : null;
-    if (feedback) {
-      feedback.classList.add("shown");
-      setTimeout(() => feedback.classList.remove("shown"), 1800);
-    }
   });
 });
 
@@ -139,27 +118,5 @@ document.querySelectorAll(".add-playlist-btn").forEach((button) => {
     button.style.display = "none";
     const field = target.querySelector(".pl-input");
     if (field) field.focus();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 5. Confirm destructive submits via the shared modal dialog.
-// ---------------------------------------------------------------------------
-// Forms that mutate or remove carry data-confirm="<message>" (and
-// data-confirm-danger for the red/destructive styling). We intercept submit,
-// await the dialog, and only re-submit (which does NOT re-fire submit, so no
-// recursion) when the user confirms. Untrusted names ride in the escaped
-// data-confirm attribute — never interpolated into JS — so they cannot inject.
-document.querySelectorAll("form[data-confirm]").forEach((form) => {
-  form.addEventListener("submit", async (event) => {
-    if (form.dataset.confirmed === "1") return; // already confirmed, let it go
-    event.preventDefault();
-    const ok = await jtsConfirm(form.dataset.confirm, {
-      danger: form.dataset.confirmDanger === "1",
-    });
-    if (ok) {
-      form.dataset.confirmed = "1";
-      form.submit();
-    }
   });
 });

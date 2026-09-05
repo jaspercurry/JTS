@@ -59,15 +59,6 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px;
 }
-.copy-feedback {
-  align-self: center;
-  color: var(--status-ok);
-  font-size: 13px;
-  font-weight: 600;
-  opacity: 0;
-  transition: opacity 0.2s ease;
-}
-.copy-feedback.shown { opacity: 1; }
 
 /* Bounce / manual OAuth mode picker: radio cards, picked one highlighted. */
 .mode-picker { display: flex; flex-direction: column; gap: 10px; }
@@ -248,6 +239,5 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .copy-feedback,
   .account > summary::before { transition: none; }
 }
