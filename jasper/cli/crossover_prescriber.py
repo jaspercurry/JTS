@@ -351,8 +351,10 @@ def _gate(
 #: What ``propose`` writes when no ``--out`` names somewhere else: the accepted
 #: result, beside the packet it was judged against. NOT the prescription
 #: document itself, which is the operator's own file and what
-#: ``stage --prescription`` reads.
-PROPOSAL_ARTIFACT = "proposal.json"
+#: ``stage --prescription`` reads — and NOT ``proposal.json``, which is the
+#: apply-time candidate mirror :func:`~jasper.active_speaker.bundles` writes
+#: into the bundle inside this same round tree.
+PROPOSAL_RECEIPT_ARTIFACT = "proposal_receipt.json"
 
 
 def _gate_refusal(exc: BlendPrescriptionRefused) -> int:
@@ -462,9 +464,9 @@ def _proposal_out(args: argparse.Namespace) -> Path:
     together and a live daemon-owned bundle is not written into.
     """
     if args.packet:
-        return Path(args.packet).parent / PROPOSAL_ARTIFACT
+        return Path(args.packet).parent / PROPOSAL_RECEIPT_ARTIFACT
     round_dir = Path(args.session_dir)
-    return default_out(round_inputs(round_dir), round_dir, PROPOSAL_ARTIFACT)
+    return default_out(round_inputs(round_dir), round_dir, PROPOSAL_RECEIPT_ARTIFACT)
 
 
 def _band_phrase(lo: float, hi: float) -> str:
@@ -1394,7 +1396,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--out",
         default=None,
         help=(
-            f"a PATH for the accepted result instead of {PROPOSAL_ARTIFACT} "
+            f"a PATH for the accepted result instead of {PROPOSAL_RECEIPT_ARTIFACT} "
             "beside the packet it was judged against"
         ),
     )

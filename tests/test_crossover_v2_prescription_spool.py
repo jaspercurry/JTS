@@ -1363,7 +1363,7 @@ def test_propose_and_stage_run_the_same_gate(tmp_path, monkeypatch):
     # --out because the gate is stubbed: nothing here resolved a round for the
     # accepted result to land beside.
     assert cli.main(
-        ["propose", *argv, "--out", str(tmp_path / "proposal.json")]
+        ["propose", *argv, "--out", str(tmp_path / "proposal_receipt.json")]
     ) == cli.EXIT_OK
     assert cli.main(["stage", *argv]) == cli.EXIT_OK
     assert reached == ["propose", "stage"]
