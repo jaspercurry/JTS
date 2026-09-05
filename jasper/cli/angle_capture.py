@@ -42,7 +42,6 @@ What a taken walk then does, and what it deliberately does not publish, is
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import shlex
 import sys
@@ -96,7 +95,7 @@ from jasper.audio_measurement.measurement_geometry import (
 )
 from jasper.identity import CROSSOVER_PAGE_PATH, speaker_url
 
-from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_WRITE_FAILED, failed
+from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_WRITE_FAILED, answered, failed
 
 #: The rig ``serve`` drives. One today; the flag is what a second one would
 #: join, and it is NOT ``MOVERS`` (that says who moves the mic in a DECLARED
@@ -518,12 +517,6 @@ def _open_round(size: str) -> str:
     return f"jasper-round open --tier {size or TIER_EXPRESS}"
 
 
-def _answer(document: dict[str, Any]) -> int:
-    """The one JSON document a verb that succeeded puts on stdout."""
-    print(json.dumps(document, indent=2, sort_keys=True))
-    return EXIT_OK
-
-
 def _cmd_plan(args: argparse.Namespace) -> int:
     try:
         request = _build_request(args)
@@ -542,7 +535,7 @@ def _cmd_plan(args: argparse.Namespace) -> int:
     staging = " ".join(
         ["jasper-angle-capture", "stage", *map(shlex.quote, args.invocation[1:])]
     )
-    return _answer(_receipt(payload, next=staging))
+    return answered(_receipt(payload, next=staging))
 
 
 def _cmd_stage(args: argparse.Namespace) -> int:
@@ -576,7 +569,7 @@ def _cmd_stage(args: argparse.Namespace) -> int:
     _print_walk(payload)
     print(f"staged at {path}", file=sys.stderr)
     receipt = _receipt(payload, out=str(path), bytes=path.stat().st_size)
-    return _answer({**receipt, "next": _open_round(receipt["size"])})
+    return answered({**receipt, "next": _open_round(receipt["size"])})
 
 
 def _cmd_show(args: argparse.Namespace) -> int:
@@ -586,11 +579,11 @@ def _cmd_show(args: argparse.Namespace) -> int:
     except CrossoverV2FlowError as exc:
         return _refuse(exc)
     if request is None:
-        return _answer({"staged": False})
+        return answered({"staged": False})
     payload = _walk_payload(request, _resolved_level())
     _print_walk(payload)
     receipt = _receipt(payload, staged=True, out=str(angle_request_spool_path()))
-    return _answer({**receipt, "next": _open_round(receipt["size"])})
+    return answered({**receipt, "next": _open_round(receipt["size"])})
 
 
 def _cmd_withdraw(args: argparse.Namespace) -> int:
@@ -611,7 +604,7 @@ def _cmd_withdraw(args: argparse.Namespace) -> int:
         "withdrew the staged walk" if removed else "no walk was staged",
         file=sys.stderr,
     )
-    return _answer({"staged": False, "withdrawn": removed})
+    return answered({"staged": False, "withdrawn": removed})
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:

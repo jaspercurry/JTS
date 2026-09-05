@@ -26,7 +26,8 @@ from typing import Any
 
 from ._logging import CLI_LOG_FORMAT
 from ._refusal import (
-    EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, failed,
+    EXIT_OK as EXIT_OK,
+    EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answered, failed,
     read_source_bytes,
 )
 # The beside-the-round output rule, reused rather than restated: a live
@@ -107,18 +108,6 @@ SPOOL_UNREADABLE_REASON = "permission_denied"
 REASON_EVIDENCE_SOURCE = "evidence_source"
 REASON_UNREADABLE = "evidence_unreadable"
 REASON_UNWRITABLE = "output_unwritable"
-
-
-def _answer(document: dict[str, Any]) -> int:
-    """One verb's answer, printed the one way every tuning tool prints one.
-
-    stdout carries exactly this document and nothing else, so a reader parses
-    stdout rather than scraping the human line on stderr. Exit 0 is what this
-    IS: a non-zero exit publishes :func:`~jasper.cli._refusal.failed`'s record
-    instead, and no verb may print both.
-    """
-    print(json.dumps(document, indent=2, sort_keys=True))
-    return EXIT_OK
 
 
 def _read_packet_file(path: Path) -> dict[str, Any]:
@@ -257,7 +246,7 @@ def _cmd_packet(args: argparse.Namespace) -> int:
         f"round={summary['round_id']} -> {out} ({summary['bytes']} bytes)",
         file=sys.stderr,
     )
-    return _answer(summary)
+    return answered(summary)
 
 
 def _packet_summary(
@@ -452,7 +441,7 @@ def _cmd_propose(args: argparse.Namespace) -> int:
             EXIT_WRITE_FAILED, REASON_UNWRITABLE, f"could not write {out}: {exc}"
         )
     _print_prescription(prescription, "accepted")
-    return _answer({
+    return answered({
         **_admitted(prescription, candidate_fields, payload, out, size_bytes),
         "next": _stage_command(args),
     })
@@ -667,7 +656,7 @@ def _cmd_stage(args: argparse.Namespace) -> int:
     _print_prescription(prescription, "staged", qualifier=f" for round {ordinal}")
     print(f"  {path}", file=sys.stderr)
     print(f"  {STAGED_LIFECYCLE_NOTE}", file=sys.stderr)
-    return _answer({
+    return answered({
         **_admitted(prescription, candidate_fields, payload, path, size_bytes),
         "staged": True,
         "for_round_ordinal": ordinal,
@@ -1100,7 +1089,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
         except (CrossoverEvidencePacketError, OSError) as exc:
             packet_error = str(exc)
 
-    return _answer(status_document(
+    return answered(status_document(
         packet, packet_error,
         session_dir=args.session_dir,
         evidence=_evidence_words(args), state=args.state,

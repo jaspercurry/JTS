@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import logging
 import sys
 import time
@@ -53,7 +52,7 @@ from jasper.active_speaker.audition import (
     stop_audition,
 )
 from jasper.cli._logging import CLI_LOG_FORMAT
-from jasper.cli._refusal import EXIT_OK, EXIT_REFUSED, failed
+from jasper.cli._refusal import EXIT_OK as EXIT_OK, EXIT_REFUSED, answered, failed
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -89,12 +88,6 @@ def _play_cue(slug: str) -> None:
 def _say(line: str = "") -> None:
     """The human rendering, on stderr: stdout carries the answer."""
     print(line, file=sys.stderr)
-
-
-def _answer(payload: dict[str, Any]) -> int:
-    """The one JSON document a verb that succeeded puts on stdout."""
-    print(json.dumps(payload, indent=2, sort_keys=True, default=str))
-    return EXIT_OK
 
 
 def _print_status(payload: dict[str, Any]) -> None:
@@ -144,7 +137,7 @@ def _cmd_start(args: argparse.Namespace) -> int:
         return failed(
             EXIT_REFUSED, NOT_RESTORED, {**payload, "next": "jasper-audition stop"}
         )
-    return _answer(payload)
+    return answered(payload)
 
 
 def _ended(reason: str) -> dict[str, Any]:
@@ -170,7 +163,7 @@ def _cmd_stop(args: argparse.Namespace) -> int:
     except AuditionRefused as exc:
         return _refused(exc)
     _print_status(payload)
-    return _answer(payload)
+    return answered(payload)
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
@@ -181,7 +174,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
         else {"status": "not_auditioning", "layer": AUDITION_LAYER_FULL}
     )
     _print_status(payload)
-    return _answer(payload)
+    return answered(payload)
 
 
 def _refused(exc: AuditionRefused) -> int:

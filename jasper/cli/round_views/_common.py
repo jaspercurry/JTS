@@ -27,13 +27,14 @@ from jasper.active_speaker.crossover_v2.round_views import (
 )
 from jasper.cli._refusal import (
     EXIT_OK,
+    answered,
     EXIT_REFUSED,
     EXIT_UNREADABLE,
     EXIT_WRITE_FAILED,
     failed,
     stage,
 )
-from jasper.cli._report import render_report, write_report
+from jasper.cli._report import write_report
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
@@ -198,13 +199,13 @@ def answer(
     run-bounded records, never a curve or a grid — those stay in the artifact
     at ``out``, whose path and size ride along so the next command can name it.
     """
-    if out is not None:
-        if out is not _NO_ARTIFACT:
-            fields["out"] = str(out)
-            fields["bytes"] = out.stat().st_size
-        print(render_report({"view": view, **fields}))
-    print(line, file=sys.stderr)
-    return EXIT_OK
+    if out is None:
+        print(line, file=sys.stderr)
+        return EXIT_OK
+    if out is not _NO_ARTIFACT:
+        fields["out"] = str(out)
+        fields["bytes"] = out.stat().st_size
+    return answered({"view": view, **fields}, line)
 
 
 def refused_by_name(

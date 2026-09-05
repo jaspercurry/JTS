@@ -11,6 +11,7 @@ and what it EXITS with, without a wizard, a network or a speaker.
 from __future__ import annotations
 
 import io
+import sys
 import json
 import urllib.error
 
@@ -210,7 +211,7 @@ def test_open_carries_the_alignment_and_topology_documents(
     document = tmp_path / "alignment.json"
     document.write_text(json.dumps(alignment))
     monkeypatch.setattr(
-        cli.sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps(topology).encode()))
+        sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps(topology).encode()))
     )
     opener = _opener(v2={"session_id": "s1", "phase": "check"})
 

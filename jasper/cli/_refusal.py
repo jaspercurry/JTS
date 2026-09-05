@@ -20,7 +20,9 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, Mapping, TypeVar
+
+from ._report import render_report
 
 _T = TypeVar("_T")
 
@@ -64,6 +66,16 @@ def read_json_source(path: str) -> Any:
         raise ValueError(f"{path}: {exc}") from exc
 
 
+def answered(document: Mapping[str, Any], line: str = "") -> int:
+    """A verb's answer on stdout and, when given, its one human line on
+    stderr (ADR-0235). A success document never carries ``status``."""
+
+    print(render_report(dict(document)))
+    if line:
+        print(line, file=sys.stderr)
+    return EXIT_OK
+
+
 def refused(reason: str, detail: Any, *, exit_code: int, status: str = "refused") -> int:
     """Print the outcome on both streams and hand back ``exit_code``.
 
@@ -76,14 +88,7 @@ def refused(reason: str, detail: Any, *, exit_code: int, status: str = "refused"
         detail if isinstance(detail, str)
         else json.dumps(detail, sort_keys=True, default=str)
     )
-    print(
-        json.dumps(
-            {"status": status, "reason": reason, "detail": detail},
-            indent=2,
-            sort_keys=True,
-            default=str,
-        )
-    )
+    print(render_report({"status": status, "reason": reason, "detail": detail}))
     print(f"{status} ({reason}): {sentence}", file=sys.stderr)
     return exit_code
 

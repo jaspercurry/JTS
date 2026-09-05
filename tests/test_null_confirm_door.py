@@ -821,7 +821,7 @@ def test_a_clean_walk_answers_with_the_scalars_and_the_path(
 
     payload = json.loads(capsys.readouterr().out)
     assert code == null_door.EXIT_OK
-    assert payload["status"] == "banked"
+    assert "status" not in payload
     assert payload["fc_hz"] == 2000.0
     assert payload["delays_us"] == [0.0]
     assert payload["out"] == str(tmp_path / null_door.NULL_RUNS_DIR)

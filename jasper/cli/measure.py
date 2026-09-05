@@ -23,14 +23,14 @@ import json
 import logging
 import math
 import secrets
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from jasper.cli._logging import CLI_LOG_FORMAT
 from jasper.cli._refusal import (
-    EXIT_OK,
+    EXIT_OK as EXIT_OK,
+    answered,
     EXIT_REFUSED,
     EXIT_UNREADABLE,
     STATUS_BY_CODE,
@@ -945,12 +945,10 @@ def _cmd_measure(args: argparse.Namespace) -> int:
         return _restore_failed(exc)
     except (BoxNotMeasurable, MeasurementDoorRefused) as exc:
         return _refused(exc.reason, exc.detail, code=EXIT_REFUSED)
-    print(json.dumps(payload, indent=2, sort_keys=True, default=str))
-    print(
+    return answered(
+        payload,
         f"measured {payload['n_takes']} take(s) into {payload['bundle_dir']}",
-        file=sys.stderr,
     )
-    return EXIT_OK
 
 
 def build_parser() -> argparse.ArgumentParser:

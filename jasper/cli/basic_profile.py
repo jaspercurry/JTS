@@ -47,7 +47,6 @@ for. See ``docs/tuning-operator-runbook.md``'s "the other apply door".
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -59,7 +58,7 @@ from jasper.active_speaker.baseline_profile import (
 )
 from jasper.identity import read_identity
 
-from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, failed
+from ._refusal import EXIT_OK as EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, answered, failed
 
 #: The basic-profile door at its EXTERNAL path. nginx's ``location
 #: /sound/setup/`` proxies to jasper-web on ``127.0.0.1:8784/`` with the prefix
@@ -193,12 +192,6 @@ def _issues(profile: Mapping[str, Any]) -> list[dict[str, str]]:
     ]
 
 
-def _answer(payload: Mapping[str, Any]) -> int:
-    """The one JSON document a verb that succeeded puts on stdout."""
-    print(json.dumps(payload, indent=2, sort_keys=True))
-    return EXIT_OK
-
-
 def _say(line: str = "") -> None:
     """The human rendering, on stderr: stdout carries the answer."""
     print(line, file=sys.stderr)
@@ -245,7 +238,7 @@ def _cmd_review(wizard: WizardClient, args: argparse.Namespace) -> int:
         "\nNothing was applied. To put THIS candidate on the speaker:\n"
         f"  {apply_line}"
     )
-    return _answer({**summary, "issues": issues, "next": apply_line})
+    return answered({**summary, "issues": issues, "next": apply_line})
 
 
 def _refuse_stale(named: str, live: str) -> int:
@@ -351,7 +344,7 @@ def _cmd_apply(wizard: WizardClient, args: argparse.Namespace) -> int:
         )
         blend = proof["blend_correction_count"]
         _say(f"    {'blend correction':<24}" + ("none" if not blend else str(blend)))
-    return _answer(
+    return answered(
         {
             "status": "applied",
             "candidate_fingerprint": named,

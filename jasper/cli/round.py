@@ -38,8 +38,6 @@ which name this tool beside the laptop script it shares its transport with.
 from __future__ import annotations
 
 import argparse
-import json
-import sys
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -59,7 +57,8 @@ from jasper.active_speaker.wizard_client import (
 from jasper.identity import CROSSOVER_PAGE_PATH, read_identity, speaker_url
 
 from ._refusal import (
-    EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, failed,
+    EXIT_OK as EXIT_OK,
+    EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answered, failed,
     read_json_source,
 )
 
@@ -93,14 +92,12 @@ _EXIT_BY_WAIT_STATUS = {
 
 
 def _answer(verb: str, human: str, **fields: Any) -> int:
-    """The verb's answer on stdout, its one human line on stderr (ADR-0235)."""
+    """The verb's answer: its non-empty fields, under the verb."""
 
-    print(json.dumps(
+    return answered(
         {"verb": verb, **{k: v for k, v in fields.items() if v not in (None, "", {})}},
-        indent=2, sort_keys=True, default=str,
-    ))
-    print(human, file=sys.stderr)
-    return EXIT_OK
+        human,
+    )
 
 
 def _round_session_dir() -> str:

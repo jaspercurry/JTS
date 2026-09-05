@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ._logging import configure_verbose_logging
-from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, failed
+from ._refusal import EXIT_OK as EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, answered, failed
 
 #: Where this door banks one JSON row per played coordinate, beside the
 #: bundle it measured. ``jasper-round-views delay-confirm`` grades what lands
@@ -745,14 +745,12 @@ async def _run(args: argparse.Namespace) -> int:
         # The row's OWN reason: the coordinate that could not be read decided
         # it, and a slug spelled here would be a second opinion about which.
         return failed(EXIT_REFUSED, unmeasured[0]["reason"], _answer())
-    print(json.dumps({
-        "status": "banked",
+    return answered({
         **_answer(),
         "next": (
             f"jasper-round-views delay-confirm {work_dir} --fc-hz {fc_hz:g}"
         ),
-    }, indent=2, sort_keys=True))
-    return EXIT_OK
+    })
 
 
 def _protection_sections(context: Any) -> Mapping[str, Any] | None:
