@@ -21,15 +21,21 @@ Two concerns:
 """
 from __future__ import annotations
 
+import re
 import socket
 import threading
+import urllib.parse
 
 import pytest
 
 import jasper.location_state as ls
 from jasper.web import _common, weather_setup
 
-from ._web_test_helpers import make_csrf_session, post_with_csrf
+from ._web_test_helpers import (
+    make_csrf_session,
+    post_with_csrf,
+    request_with_csrf,
+)
 
 
 # The page reads weather/transit env vars as a *fallback* when its state file
@@ -265,10 +271,31 @@ def test_post_clear_redirects(live_server):
     post_with_csrf(live_server["url"], "/clear", {}, expect_status=303)
 
 
-def test_post_save_bad_units_redirects_with_flash(live_server):
-    # Invalid units -> see-other back to ./ carrying an error flash.
+def test_post_save_rejection_rerenders_with_submitted_values(live_server):
+    # Half-filled manual coords are rejected; the page comes back with the
+    # address and the latitude the user typed, not a redirect to a blank form.
+    err = request_with_csrf(
+        live_server["url"],
+        "/save",
+        urllib.parse.urlencode(
+            {"location": "Tampa, FL", "manual_lat": "40.7", "units": "fahrenheit"},
+        ).encode(),
+        content_type="application/x-www-form-urlencoded",
+        expect_status=422,
+    )
+    body = err.read().decode()
+    assert err.headers.get("Location") is None
+    assert re.search(r'id="location"[^>]*value="Tampa, FL"', body, re.S)
+    assert re.search(r'id="manual_lat"[^>]*value="40\.7"', body, re.S)
+    assert 'value="fahrenheit" selected' in body
+    # The restored coordinate wins over the address field, so its disclosure
+    # must come back open — otherwise the next submit fails for a hidden reason.
+    assert '<details class="disclosure manual-coords" open>' in body
+
+
+def test_post_save_rejects_unknown_units(live_server):
     post_with_csrf(
-        live_server["url"], "/save", {"units": "kelvin"}, expect_status=303,
+        live_server["url"], "/save", {"units": "kelvin"}, expect_status=422,
     )
 
 
