@@ -276,9 +276,8 @@ class OutageTracker:
         """None keeps the edge and its log line but plays nothing.
 
         The daemon can only wire this once the object that owns cue
-        playback exists, which is after the connection's ``start()`` —
-        so an outage that began on the very first connect has already
-        claimed its edge. Play what it held back."""
+        playback exists, so an outage that claimed its edge before then
+        held its cue back. Play it."""
         self._cb = cb
         if cb is not None:
             self._held_cue.fire_if_pending(self._announce)
