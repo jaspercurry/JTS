@@ -59,4 +59,4 @@ ask for a recommission. Per [ADR-0101](0101-proven-once-disclose-on-change.md) t
 reconciler runs software AEC3, publishes `disclosed_stale` with the action "wait
 for jasper-outputd to restart", and the box keeps hearing.
 
-Operational detail lives in [HANDOFF-aec.md](../HANDOFF-aec.md).
+Operational detail lives in HANDOFF-aec.md (deleted per ADR-0199).

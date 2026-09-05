@@ -70,6 +70,6 @@ Deferred, each with the condition that would reopen it:
   a reboot.
 - Both layers are fully reversible: a unit-file revert and an env-var flip.
 - Operational truth for what shipped lives in
-  [HANDOFF-resilience.md](../HANDOFF-resilience.md), not in the design doc that
+  HANDOFF-resilience.md (deleted per ADR-0199), not in the design doc that
   proposed it — including the bootloop guard that later bounded T5.1's
   otherwise unbounded across-boot escalation.

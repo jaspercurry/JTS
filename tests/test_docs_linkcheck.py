@@ -100,9 +100,20 @@ def _git(repo: Path, *args: str) -> str:
     ).stdout.strip()
 
 
-def test_a_deleted_doc_falls_back_to_checking_the_whole_tree(tmp_path):
-    """A delete has no post-diff content of its own to check, but an
-    untouched file's now-broken inbound link must still be caught (#4036)."""
+@pytest.mark.parametrize(
+    ("deleted_name", "expected"),
+    [
+        ("a.md", 1),
+        ("a.rs", 0),
+    ],
+)
+def test_a_deleted_file_falls_back_to_the_whole_tree_only_if_markdown(
+    tmp_path, deleted_name, expected
+):
+    """A deleted Markdown file has no post-diff content of its own to check,
+    but an untouched file's now-broken inbound link must still be caught
+    (#4036). A deleted non-Markdown file cannot break a Markdown link, so it
+    must not trigger the same whole-tree fallback (#4153, #4030)."""
     docs_linkcheck = load_docs_linkcheck()
     docs_linkcheck.ROOT = tmp_path.resolve()
 
@@ -111,20 +122,20 @@ def test_a_deleted_doc_falls_back_to_checking_the_whole_tree(tmp_path):
     _git(tmp_path, "config", "user.name", "JTS Tests")
     _git(tmp_path, "config", "commit.gpgsign", "false")
 
-    (tmp_path / "a.md").write_text("# A\n", encoding="utf-8")
-    (tmp_path / "keep.md").write_text("[to a](a.md)\n", encoding="utf-8")
+    (tmp_path / deleted_name).write_text("content\n", encoding="utf-8")
+    (tmp_path / "keep.md").write_text(f"[to it]({deleted_name})\n", encoding="utf-8")
     _git(tmp_path, "add", "-A")
     _git(tmp_path, "commit", "-q", "-m", "base")
     base = _git(tmp_path, "rev-parse", "HEAD")
 
-    (tmp_path / "a.md").unlink()
+    (tmp_path / deleted_name).unlink()
     _git(tmp_path, "add", "-A")
-    _git(tmp_path, "commit", "-q", "-m", "delete a.md")
+    _git(tmp_path, "commit", "-q", "-m", f"delete {deleted_name}")
     head = _git(tmp_path, "rev-parse", "HEAD")
 
     # keep.md is untouched by the diff, so a plain changed-files check would
-    # never look at its now-broken link to the deleted a.md.
-    assert docs_linkcheck.main(["--base", base, "--head", head]) == 1
+    # never look at its now-broken link to the deleted file on its own.
+    assert docs_linkcheck.main(["--base", base, "--head", head]) == expected
 
 
 def test_external_links_are_ignored(tmp_path):
