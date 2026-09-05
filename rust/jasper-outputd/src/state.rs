@@ -2279,9 +2279,9 @@ mod tests {
                 .to_string(),
             active_lane: false,
             // ACTIVE_LANE's pair. False is the passive/stereo default a FLAT box
-            // runs. `dual_test_config` below overrides it rather than inheriting
-            // it: a composite sink CAN be an active-ring endpoint, so the two
-            // fixtures encode different configurations, not a shared base.
+            // runs. `dual_test_config` below overrides ring_active_endpoint rather
+            // than inheriting it, because a composite sink CAN be an active-ring
+            // endpoint.
             ring_active_endpoint: false,
         }
     }
@@ -2381,14 +2381,12 @@ mod tests {
     // sosetopt(SO_RCVTIMEO) -- reached from read_bounded_command's
     // per-loop set_read_timeout call -- returns EINVAL. Every earlier
     // exchange in this test only closes the write half
-    // (`shutdown(Write)`) and passes; a future fixer restructuring this
-    // block should start there rather than re-deriving the mechanism.
+    // (`shutdown(Write)`) and passes.
     // CI's `rust` job runs on ubuntu-latest and is the authority; the test
     // runs there unaffected. jasper-outputd's hard `alsa` dependency also
-    // does not build on macOS at all via the usual Homebrew path (a separate,
-    // already-documented limitation in AGENTS.md); this `ignore`
-    // therefore only bites when ALSA is available locally *and* the run
-    // is lib-scoped (`cargo test --lib`) — a full `cargo test` on
+    // does not build on macOS at all via the usual Homebrew path; this
+    // `ignore` therefore only bites when ALSA is available locally *and*
+    // the run is lib-scoped (`cargo test --lib`) — a full `cargo test` on
     // macOS fails earlier compiling main.rs's test module
     // (`libc::SOCK_CLOEXEC` is Linux/BSD-only).
     #[test]

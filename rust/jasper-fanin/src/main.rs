@@ -63,7 +63,7 @@ pub(crate) const HELPER_STACK_BYTES: usize = 512 * 1024;
 /// rejection PARKS the unit failed (visible on /state + doctor) instead of
 /// crash-looping — restarting cannot fix bad config, and on this unit the loop
 /// escalates to `StartLimitAction=reboot` after five starts in five minutes.
-/// Mirrors `jasper-outputd`'s same treatment. See ADR-0141.
+/// See ADR-0141; fan-in carries only the exit-78 half.
 const EXIT_CONFIG: i32 = 78;
 
 /// Marker attached (as an `anyhow` context layer) to an error whose cause is
