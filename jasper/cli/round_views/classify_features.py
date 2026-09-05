@@ -11,7 +11,9 @@
   bundle; the round inside it and the ``<phase>_program.wav`` files its
   captures bind to are resolved by the rules the packet's own reader uses, so
   the verdict cannot land where that reader does not look. Offline: nothing is
-  re-measured and no capture is re-taken.
+  re-measured and no capture is re-taken. The answer names
+  ``classifiable_band_hz`` — the span a verdict can be about the SPEAKER
+  rather than about the band edge — on success as well as in the refusal.
 """
 
 from __future__ import annotations
@@ -154,14 +156,20 @@ def _cmd_classify_features(args: argparse.Namespace) -> int:
     written = _write(
         artifact, args.out, round_dir / ARTIFACT_BY_VIEW[args.command].artifact
     )
+    measurement = artifact["measurement"]
+    # The floor the refusal already carries, published on SUCCESS too: what
+    # this instrument can be asked about is knowable before a run rather than
+    # only after one declines (see ``feature_classifier.classifiable_band_hz``).
+    band_hz = measurement["classifiable_band_hz"]
     summary = (
         f"classify-features: {len(artifact['rows'])} feature(s) from "
-        f"{artifact['measurement']['n_captures']} capture(s)"
+        f"{measurement['n_captures']} capture(s), classifiable over "
+        f"{band_hz[0]:.0f}-{band_hz[1]:.0f} Hz"
         f"{f' -> {written}' if written else ''}"
     )
     return answer(
         args.command, out=written, features=len(artifact["rows"]),
-        captures=artifact["measurement"]["n_captures"],
+        captures=measurement["n_captures"], classifiable_band_hz=band_hz,
         line="\n".join([summary, *summary_lines(artifact)]),
     )
 

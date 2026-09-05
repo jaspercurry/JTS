@@ -1691,10 +1691,18 @@ def test_the_cli_files_the_verdict_where_the_packet_reads_it(tmp_path, capsys):
     bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
     code = cli.main(["classify-features", str(bundle), "--dumps", str(dumps)])
     assert code == cli.EXIT_OK
+    answer = json.loads(capsys.readouterr().out)
     round_dir, _ = round_artifact_dir(bundle)
     assert round_dir is not None
     banked = json.loads((round_dir / CLASSIFICATION_ARTIFACT).read_text())
     assert read_feature_verdicts(banked)[0].classification == DEFECT_CUTTABLE
+    # The floor the REFUSAL already names, on success too, so what this
+    # instrument can be asked about is known before a run rather than after
+    # one declines. Read off the artifact, never re-derived here.
+    assert (
+        answer["classifiable_band_hz"]
+        == banked["measurement"]["classifiable_band_hz"]
+    )
 
 
 def test_the_cli_classifies_a_bank_shape_round(tmp_path, capsys):

@@ -51,6 +51,7 @@ from . import (
     cloud_binding,
     delay,
     distortion,
+    findings,
     forward_model,
     frequency,
     grades,
@@ -95,7 +96,8 @@ __all__ = [
 #: The view families, in the order their subcommands are offered.
 _FAMILIES = (
     grades, repeat, candidates, seats, cloud_binding, forward_model, sweeps,
-    frequency, distortion, classify_features, close_reference, delay, inventory,
+    frequency, distortion, classify_features, findings, close_reference, delay,
+    inventory,
 )
 
 

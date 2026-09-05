@@ -113,6 +113,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "classify-features": ViewArtifact(
         CLASSIFICATION_ARTIFACT, TAKES_THIS_BUNDLE, in_artifact_dir=True
     ),
+    "findings": ViewArtifact("findings.json"),
     # No view writes this one: the banker does, as it files the session. It is
     # inventoried anyway because "does this round carry its pose index" is the
     # same question as the rest, asked of the same directory.
