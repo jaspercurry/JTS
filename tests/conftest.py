@@ -420,6 +420,16 @@ def _isolate_output_hardware_state(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_bootloop_marker(tmp_path_factory, monkeypatch):
+    """Point at a per-test (absent) marker so a host's real tripped boot-loop
+    guard can't leak into drift tests."""
+    monkeypatch.setenv(
+        "JASPER_BOOTLOOP_MARKER_FILE",
+        str(tmp_path_factory.mktemp("bootloop-guard") / "state.json"),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isolate_commissioning_disclosure(monkeypatch):
     """Clear the per-process "last receipt denial disclosed" memo.
 
