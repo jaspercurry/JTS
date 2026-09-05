@@ -261,7 +261,7 @@ def _profile_rows_html(rowspec: tuple[Any, ...]) -> str:
         <span class="profile-name" id="profile-name-{key}">{html.escape(spec.label)}</span>
         <span class="profile-desc" id="profile-desc-{key}">{html.escape(spec.description)}</span>
       </span>
-      <span class="badge badge--muted" id="profile-badge-{key}">{html.escape(spec.badge)}</span>
+      <span class="badge badge--idle" id="profile-badge-{key}">{html.escape(spec.badge)}</span>
       <span class="profile-choice-status" id="profile-status-{key}">—</span>
     </label>""")
     return "".join(rows)
@@ -317,7 +317,7 @@ def _advanced_fusion_html() -> str:
 <section class="section advanced-fusion-card">
   <details class="disclosure">
     <summary>Advanced wake fusion</summary>
-    <div class="disclosure-body">
+    <div class="disclosure__body">
   <div class="info-card">
     <p class="info-card__note">
       Expert controls for corpus tests and nonstandard wake streams.
@@ -433,11 +433,11 @@ def _row_html(
 
     badges = []
     if is_active:
-        badges.append('<span class="badge">active</span>')
+        badges.append('<span class="badge badge--ok">active</span>')
     if entry.recommended and not is_active:
-        badges.append('<span class="badge">recommended</span>')
+        badges.append('<span class="badge badge--ok">recommended</span>')
     if not available:
-        badges.append('<span class="badge badge--muted">not downloaded</span>')
+        badges.append('<span class="badge badge--idle">not downloaded</span>')
 
     radio_attrs = ['type="radio"', 'name="model"', f'value="{html.escape(entry.key)}"']
     if is_active:
@@ -479,7 +479,7 @@ def _custom_row_html(model: str, *, is_active: bool) -> str:
     leaving the radio alone; they replace it by picking a registered
     row and hitting Save."""
     active_cls = " is-active" if is_active else ""
-    active_badge = '<span class="badge">active</span>' if is_active else ""
+    active_badge = '<span class="badge badge--ok">active</span>' if is_active else ""
     return f"""
 <label class="wake-row{active_cls}" style="cursor:default">
   <div class="wake-row__head">
@@ -500,7 +500,7 @@ def _privacy_disclosure_html() -> str:
     return """
 <details class="disclosure">
   <summary>Wake recordings and privacy</summary>
-  <div class="disclosure-body">
+  <div class="disclosure__body">
     <p>
       JTS stores short wake-event WAV windows and SQLite metadata locally
       under <code>/var/lib/jasper/wake-events/</code> for reliability review.

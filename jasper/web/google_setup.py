@@ -208,8 +208,9 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
 
     The wizard's interactive behaviour (progress tracking, "mark done",
     reset-progress confirm, copy-to-clipboard) is delegated to
-    /assets/google/js/main.js — this function emits only markup with
-    `data-*` hooks the module binds to.
+    /assets/google/js/main.js (confirms and copies via the shared
+    confirm-forms.js / copy.js modules) — this function emits only markup
+    with `data-*` hooks the module binds to.
 
     The four steps mirror Google's actual UI as of May 2026:
       1. Create a Cloud project.
@@ -238,11 +239,10 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
         data-action="reset-progress">Reset progress</button>"""
         intro = '<p class="form-hint">Create one Google Cloud OAuth client, then paste its Client ID and Secret here. Each step links to the right Google page.</p>'
         mark_done = '<button class="btn btn--primary mark-done" type="button">I\'ve done this →</button>'
-        # data-copy points the delegated copy handler at the input by id.
+        # data-copy points the shared copy.js handler at the input by id.
         redirect_widget = f"""<div class="copy-row" style="margin-top:0.3em">
               <input id="step4-redirect" type="text" readonly value="{redirect_safe}" data-select-on-click>
-              <button type="button" class="btn btn--default" data-copy="step4-redirect" data-copy-feedback="step4-redirect-fb">Copy</button>
-              <span id="step4-redirect-fb" class="copy-feedback">Copied!</span>
+              <button type="button" class="btn btn--default" data-copy="step4-redirect">Copy</button>
             </div>"""
         creds_form = f"""<div class="creds-form-wrap">
           <form method="post" action="setup-credentials">
@@ -269,10 +269,10 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
 {progress_button}
 {intro}
 
-<ol class="wizard-steps">
+<ol class="setup-steps">
 
   <!-- ===== Step 1: Create or pick a Cloud project ===== -->
-  <li class="wizard-step" data-step="1">
+  <li class="setup-step" data-step="1">
     <details>
       <summary>
         <span class="step-num"><span>1</span></span>
@@ -295,7 +295,7 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
   </li>
 
   <!-- ===== Step 2: Configure the Google Auth Platform ===== -->
-  <li class="wizard-step" data-step="2">
+  <li class="setup-step" data-step="2">
     <details>
       <summary>
         <span class="step-num"><span>2</span></span>
@@ -332,7 +332,7 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
   </li>
 
   <!-- ===== Step 3: Enable Calendar + Gmail APIs ===== -->
-  <li class="wizard-step" data-step="3">
+  <li class="setup-step" data-step="3">
     <details>
       <summary>
         <span class="step-num"><span>3</span></span>
@@ -352,7 +352,7 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
   </li>
 
   <!-- ===== Step 4: Create OAuth client + paste creds ===== -->
-  <li class="wizard-step" data-step="4">
+  <li class="setup-step" data-step="4">
     <details>
       <summary>
         <span class="step-num"><span>4</span></span>
@@ -396,7 +396,7 @@ def _redirect_uri_section_html(redirect_uri: str) -> str:
     inline so the user adds it during initial client creation;
     this section exists for the cases where they need to re-add
     or fix it after the fact. The Copy button is wired by the
-    delegated copy handler in /assets/google/js/main.js."""
+    shared copy.js module."""
     redirect_safe = html.escape(redirect_uri)
     return f"""
 <h3>The redirect URL</h3>
@@ -404,8 +404,7 @@ def _redirect_uri_section_html(redirect_uri: str) -> str:
 
 <div class="copy-row">
   <input id="redirect-uri" type="text" readonly value="{redirect_safe}" data-select-on-click>
-  <button type="button" class="btn btn--default" data-copy="redirect-uri" data-copy-feedback="copy-feedback">Copy</button>
-  <span id="copy-feedback" class="copy-feedback">Copied!</span>
+  <button type="button" class="btn btn--default" data-copy="redirect-uri">Copy</button>
 </div>
 
 <p class="form-hint" style="margin-top:0.6em">It's a github.io URL because Google rejects <code>.local</code> mDNS names and bare LAN IPs. The page at that URL is a tiny static bouncer (<a href="https://github.com/jaspercurry/google-oauth-callback" target="_blank" rel="noopener">source</a>) that redirects the browser back here. No data passes through it.</p>
@@ -473,7 +472,7 @@ def _connection_details_html(client_id: str) -> str:
     return f"""
 <details class="disclosure">
   <summary>Connection details (scopes, project, OAuth client)</summary>
-  <div class="disclosure-body">
+  <div class="disclosure__body">
     <h3>What this app reads</h3>
     <ul>
       <li>Google Calendar — <strong>read-only</strong></li>
@@ -529,9 +528,8 @@ def _redirect_uri_page_html(
     fallback for the redirect_uri_mismatch case.
 
     The destructive "Reset Google credentials" form carries a
-    `data-confirm` message that the delegated submit-guard in
-    /assets/google/js/main.js confirms (via the shared <dialog>)
-    before letting the native POST proceed."""
+    `data-confirm` message that the shared confirm-forms.js module
+    confirms (via jtsConfirm) before letting the native POST proceed."""
     masked = (
         client_id[:8] + "…" + client_id[-30:]
         if len(client_id) > 38 else "configured"
@@ -546,11 +544,11 @@ def _redirect_uri_page_html(
 
 <details class="disclosure">
   <summary>OAuth client troubleshooting (redirect URI, reset credentials)</summary>
-  <div class="disclosure-body">
+  <div class="disclosure__body">
     <p>If sign-in fails with <code>redirect_uri_mismatch</code>, your OAuth client doesn't have the redirect URL in its allow-list yet — add it here.</p>
     {_redirect_uri_section_html(redirect_uri)}
     <form method="post" action="reset-credentials" style="margin-top:2em"
-          data-confirm="Clear the saved Client ID and Secret? You'll need to paste them again." data-confirm-danger>
+          data-confirm="Clear the saved Client ID and Secret? You'll need to paste them again." data-confirm-danger="1">
       {csrf}
       <button type="submit" class="btn btn--danger">Reset Google credentials</button>
     </form>
@@ -568,11 +566,11 @@ def _account_li_html(account: GoogleAccount, *, is_default: bool, csrf_token: st
     label, validated to `[a-zA-Z0-9_-]+` on save) and the email comes
     from Google; both are HTML-escaped before interpolation. The
     remove-confirm message rides in `data-confirm` (escaped for an
-    attribute) — never inline JS — so the delegated submit-guard can
-    confirm before the native POST."""
+    attribute) — never inline JS — so the shared confirm-forms.js module
+    can confirm before the native POST."""
     name = html.escape(account.name)
     email = html.escape(account.email or "(unknown email)")
-    badge = '<span class="badge" style="--tone: var(--status-ok)">default</span>' if is_default else ""
+    badge = '<span class="badge badge--ok">default</span>' if is_default else ""
     set_default = (
         '<button class="btn btn--default" type="submit" disabled>Default</button>'
         if is_default
@@ -595,7 +593,7 @@ def _account_li_html(account: GoogleAccount, *, is_default: bool, csrf_token: st
       {set_default}
     </form>
     <form method="post" action="remove"
-          data-confirm="{remove_confirm}" data-confirm-danger>
+          data-confirm="{remove_confirm}" data-confirm-danger="1">
       {csrf}
       <input type="hidden" name="name" value="{name}">
       <button class="btn btn--danger" type="submit">Remove</button>
@@ -638,17 +636,17 @@ def _management_html(
 
 <details class="disclosure">
   <summary>Google Cloud setup guide</summary>
-  <div class="disclosure-body">
+  <div class="disclosure__body">
     {_setup_wizard_body(redirect_uri, csrf_token, read_only=True)}
   </div>
 </details>
 
 <details class="disclosure">
   <summary>OAuth client settings (redirect URI, reset credentials)</summary>
-  <div class="disclosure-body">
+  <div class="disclosure__body">
     {_redirect_uri_section_html(redirect_uri)}
     <form method="post" action="reset-credentials" style="margin-top:2em"
-          data-confirm="Clear the saved Client ID and Secret? Existing OAuthed accounts will keep working until their refresh tokens are revoked." data-confirm-danger>
+          data-confirm="Clear the saved Client ID and Secret? Existing OAuthed accounts will keep working until their refresh tokens are revoked." data-confirm-danger="1">
       {csrf}
       <button type="submit" class="btn btn--danger">Reset Google credentials</button>
     </form>

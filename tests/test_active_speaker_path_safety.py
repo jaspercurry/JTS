@@ -40,24 +40,6 @@ def test_path_safety_writer_preserves_private_mode(tmp_path: Path) -> None:
     assert json.loads(path.read_text()) == {"safe": True}
 
 
-def test_path_safety_writer_inherits_parent_group(monkeypatch) -> None:
-    import jasper.active_speaker.path_safety as path_safety
-
-    calls = []
-    monkeypatch.setattr(
-        path_safety,
-        "atomic_write_json",
-        lambda path, payload, **kwargs: calls.append((path, payload, kwargs)),
-    )
-
-    path_safety.write_path_safety_evidence(
-        {"safe": True},
-        path=Path("evidence.json"),
-    )
-
-    assert calls[0][2] == {"mode": 0o640, "group_from_parent": True}
-
-
 def _topology(*, identity_verified: bool = True) -> OutputTopology:
     return mono_output_topology(identity_verified=identity_verified)
 

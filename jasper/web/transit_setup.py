@@ -280,14 +280,10 @@ def _validate_google_routes_key(key: str) -> str | None:
 
 
 def _badge_html(configured: bool) -> str:
-    """A canonical status badge for a provider card's header.
-
-    One knob: ``--tone`` selects the accent the ``.badge`` primitive reads,
-    so a configured card greens (status-ok) and an unconfigured one stays
-    neutral (status-idle) — matching the rest of the design system."""
+    """A canonical status badge for a provider card's header."""
     if configured:
-        return '<span class="badge" style="--tone:var(--status-ok)">configured</span>'
-    return '<span class="badge" style="--tone:var(--status-idle)">not configured</span>'
+        return '<span class="badge badge--ok">configured</span>'
+    return '<span class="badge badge--idle">not configured</span>'
 
 
 # ----------------------------------------------------------------------
@@ -648,7 +644,7 @@ def _subway_card_html(
 <section class="info-card provider-card">
   <div class="provider-card__head">
     <h2 class="provider-card__title">{html.escape(provider.label)}</h2>
-    <span class="badge" style="--tone:var(--status-idle)">awaiting address</span>
+    <span class="badge badge--idle">awaiting address</span>
   </div>
   <p class="provider-card__blurb">Enter your address above to find nearby subway stations.</p>
 </section>"""
@@ -659,7 +655,7 @@ def _subway_card_html(
 <section class="info-card provider-card">
   <div class="provider-card__head">
     <h2 class="provider-card__title">{html.escape(provider.label)}</h2>
-    <span class="badge" style="--tone:var(--status-idle)">no stations nearby</span>
+    <span class="badge badge--idle">no stations nearby</span>
   </div>
   <p class="provider-card__blurb">Nearest station is more than {MAX_NEAREST_STOP_MILES:.0f}&nbsp;mi away.</p>
 </section>"""
@@ -719,7 +715,7 @@ def _bus_card_html(
 <section class="info-card provider-card">
   <div class="provider-card__head">
     <h2 class="provider-card__title">{html.escape(provider.label)}</h2>
-    <span class="badge" style="--tone:var(--status-idle)">awaiting address</span>
+    <span class="badge badge--idle">awaiting address</span>
   </div>
   <p class="provider-card__blurb">Enter your address above to find nearby bus stops.</p>
 </section>"""
@@ -735,7 +731,7 @@ def _bus_card_html(
 <section class="info-card provider-card">
   <div class="provider-card__head">
     <h2 class="provider-card__title">{html.escape(provider.label)}</h2>
-    <span class="badge" style="--tone:var(--status-warn)">needs an API key</span>
+    <span class="badge badge--warn">needs an API key</span>
   </div>
   <div class="locked-card">
     <p>🔑 <strong>MTA BusTime needs a free API key</strong></p>
@@ -980,7 +976,7 @@ def _citibike_card_html(
 <section class="info-card provider-card">
   <div class="provider-card__head">
     <h2 class="provider-card__title">{html.escape(provider.label)}</h2>
-    <span class="badge" style="--tone:var(--status-idle)">awaiting address</span>
+    <span class="badge badge--idle">awaiting address</span>
   </div>
   <p class="provider-card__blurb">Enter your address above to find nearby Citi Bike stations.</p>
 </section>"""
@@ -1222,9 +1218,9 @@ def _advanced_section_html(state: dict[str, str], csrf_token: str) -> str:
     sub_stop = _value_for(state, "JASPER_SUBWAY_STATION_ID")
     bus_stops_raw = _value_for(state, "JASPER_BUS_STOPS")
     return f"""
-<details class="advanced">
+<details class="disclosure advanced-coords">
   <summary>Advanced — enter coordinates or stop IDs manually</summary>
-  <div class="advanced-body">
+  <div class="disclosure__body">
     <p class="form-hint">If you'd rather not geocode an address, paste coordinates from any map app. Three-decimal precision (~110&nbsp;m) is plenty.</p>
     <form method="post" action="geocode">
       {csrf_field_html(csrf_token)}
@@ -1401,7 +1397,7 @@ def _index_html(
 <section class="info-card provider-card">
   <div class="provider-card__head">
     <h2 class="provider-card__title">{html.escape(p.label)}</h2>
-    <span class="badge" style="--tone:var(--status-idle)">no UI yet</span>
+    <span class="badge badge--idle">no UI yet</span>
   </div>
   <p class="provider-card__blurb">This provider is in the registry but doesn't have a wizard card yet. Add one to <code>jasper/web/transit_setup.py</code>.</p>
 </section>""")
@@ -1424,9 +1420,9 @@ def _index_html(
   </div>
 </form>"""
 
-    # The Clear form's destructive confirm lives in the page's ES module
-    # (clear-form submit listener → jtsConfirm), not an inline onsubmit —
-    # canonical pages carry no inline dialog helper.
+    # The Clear form's destructive confirm rides in data-confirm, wired by
+    # the shared confirm-forms.js module — canonical pages carry no inline
+    # dialog helper.
     body = f"""
 <p class="form-hint">Configure travel-time directions plus NYC subway and bus settings.</p>
 
@@ -1438,7 +1434,9 @@ def _index_html(
 
 {_advanced_section_html(state, csrf_token)}
 
-<form method="post" action="clear" id="clear-form" style="margin-top:2rem">
+<form method="post" action="clear" id="clear-form" style="margin-top:2rem"
+      data-confirm="Clear all saved transit settings? Subway and bus tools will stop responding until reconfigured."
+      data-confirm-danger="1">
   {csrf_field_html(csrf_token) if csrf_token else ''}
   <button type="submit" class="btn btn--danger">Clear all transit settings</button>
 </form>"""

@@ -12,7 +12,7 @@ half-written one. That is a tempfile-in-the-same-directory + ``os.replace``
 rename, which is atomic on a POSIX same-filesystem rename. This module is the
 canonical implementation; call it instead of hand-rolling the pattern.
 
-Two properties are load-bearing and easy to get subtly wrong by hand:
+These properties are load-bearing and easy to get subtly wrong by hand:
 
   - **Same-filesystem rename.** The tempfile is created in the SAME directory
     as the target (``dir=parent``), not ``/tmp``. ``os.replace`` is only
@@ -22,11 +22,17 @@ Two properties are load-bearing and easy to get subtly wrong by hand:
     BEFORE the rename, so the file is never visible at the final path with a
     broader mode than requested (``mkstemp`` creates 0600, then we widen to
     ``mode`` only after, and the published name appears already-correct).
-  - **Optional parent-group publishing.** Some shared state files are written by
-    root during install and by non-root daemons at runtime. When requested, the
-    tempfile is chowned to the parent directory's group before chmod+rename, so a
-    root-run atomic replace does not publish ``root:root 0640`` into a
-    group-readable state directory.
+  - **Parent-group publishing, by default.** Some shared state files are written
+    by root during install and by non-root daemons at runtime. The unpublished
+    file — the tempfile, or a freshly opened lock — is chgrped to the parent
+    directory's group before it becomes visible, so a root-run atomic replace
+    does not publish ``root:root 0640`` into a group-readable state directory.
+    Publication is BEST EFFORT and has no strict mode: a writer that may not
+    chgrp (a non-root process outside the target group — every CLI writing to
+    an operator-named path) keeps its own group, which is never wider than the
+    parent's, logs one line, and publishes the file anyway.
+    ``group_from_parent=False`` opts out a root-only file that must keep
+    root's group.
   - **Optional target-stat preservation.** A repair or migration that rewrites a
     file it does not own must not re-own it. ``preserve_target_stat=True`` copies
     the EXISTING file's uid/gid/mode onto the tempfile before the rename — the
@@ -111,50 +117,66 @@ def fsync_directory(path: str | os.PathLike) -> None:
         os.close(descriptor)
 
 
+def _publish_parent_group(fd: int, parent_gid: int, *, path: str) -> None:
+    """Best-effort chgrp of an unpublished file to its parent's group.
+
+    See this module's docstring for the policy; a denial is logged, not raised.
+    """
+
+    if os.fstat(fd).st_gid == parent_gid:
+        return
+    try:
+        os.fchown(fd, -1, parent_gid)
+    except PermissionError:
+        log_event(
+            logger,
+            "atomic_io.group_publish_failed",
+            level=logging.WARNING,
+            path=path,
+            gid=parent_gid,
+        )
+
+
 @contextmanager
 def advisory_file_lock(
     path: str | os.PathLike,
     *,
     mode: int | None = None,
-    group_from_parent: bool = False,
+    group_from_parent: bool = True,
     timeout_sec: float | None = None,
 ):
     """Hold an exclusive advisory lock on ``path``.
 
-    The default preserves the historical ``open(..., 'a+')`` ownership and
-    umask behavior. Shared cross-user locks can opt into an explicit ``mode``
-    and the parent directory's group; both are applied before the lock is made
-    available to another process. Existing pre-upgrade ownership drift still
-    requires an install-time heal because a non-owner cannot repair a lock it
-    cannot open. ``timeout_sec`` adds bounded backpressure for request/deploy
-    paths; the historical default remains a blocking lock for tiny internal
-    state updates whose callers do not expose a latency contract.
+    ``group_from_parent`` follows the module docstring's parent-group
+    publishing rule, so a root-run holder cannot lock a non-root peer out of a
+    shared state directory. An explicit ``mode`` and the group are both
+    applied before the lock is made available to another process. Existing
+    pre-upgrade ownership drift still requires an install-time heal because a
+    non-owner cannot repair a lock it cannot open. ``timeout_sec`` adds
+    bounded backpressure for request/deploy paths; the historical default
+    remains a blocking lock for tiny internal state updates whose callers do
+    not expose a latency contract.
     """
 
     fspath = os.fspath(path)
     parent = os.path.dirname(fspath) or "."
     os.makedirs(parent, exist_ok=True)
-    if mode is None and not group_from_parent:
-        lock: TextIOWrapper = open(fspath, "a+", encoding="utf-8")
-    else:
-        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(fspath, flags, 0o666)
-        try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
-                raise OSError(errno.EINVAL, "lock path is not a regular file", fspath)
-            if group_from_parent:
-                parent_gid = os.stat(parent).st_gid
-                if os.fstat(fd).st_gid != parent_gid:
-                    os.fchown(fd, -1, parent_gid)
-            # A group writer can open a correctly provisioned root-owned lock
-            # but cannot chmod it.  Avoid an unnecessary privileged mutation
-            # when install has already published the requested mode.
-            if mode is not None and stat.S_IMODE(os.fstat(fd).st_mode) != mode:
-                os.fchmod(fd, mode)
-            lock = os.fdopen(fd, "a+", encoding="utf-8")
-        except (OSError, ValueError):
-            os.close(fd)
-            raise
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(fspath, flags, 0o666)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "lock path is not a regular file", fspath)
+        if group_from_parent:
+            _publish_parent_group(fd, os.stat(parent).st_gid, path=fspath)
+        # A group writer can open a correctly provisioned root-owned lock
+        # but cannot chmod it.  Avoid an unnecessary privileged mutation
+        # when install has already published the requested mode.
+        if mode is not None and stat.S_IMODE(os.fstat(fd).st_mode) != mode:
+            os.fchmod(fd, mode)
+        lock: TextIOWrapper = os.fdopen(fd, "a+", encoding="utf-8")
+    except (OSError, ValueError):
+        os.close(fd)
+        raise
     acquired = False
     try:
         if timeout_sec is None:
@@ -188,8 +210,7 @@ def atomic_write_text(
     text: str,
     *,
     mode: int = 0o644,
-    group_from_parent: bool = False,
-    best_effort_group: bool = False,
+    group_from_parent: bool = True,
     preserve_target_stat: bool = False,
     durable: bool = False,
 ) -> None:
@@ -200,13 +221,8 @@ def atomic_write_text(
     complete new one — never a partial write. The parent directory is created
     if missing. ``mode`` is applied to the tempfile BEFORE the rename, so the
     published file never appears with a wider permission window than requested.
-    When ``group_from_parent`` is true, the tempfile's group is set to the
-    parent directory's group before chmod+rename; this keeps root-run writers
-    from publishing group-readable files under the wrong group.
-    ``best_effort_group=True`` keeps publication available when that group
-    lookup or assignment fails: the failure is logged and the write continues
-    with the tempfile's existing group. The default remains strict so callers
-    cannot silently weaken a group-readable contract.
+    ``group_from_parent`` follows the module docstring's parent-group
+    publishing rule, applied to the tempfile before chmod+rename.
 
     ``preserve_target_stat=True`` is the REPLACE-IN-PLACE case: when the target
     already exists, its uid, gid, and mode are copied onto the tempfile before
@@ -232,20 +248,7 @@ def atomic_write_text(
     fspath = os.fspath(path)
     parent = os.path.dirname(fspath) or "."
     os.makedirs(parent, exist_ok=True)
-    parent_gid = None
-    if group_from_parent:
-        try:
-            parent_gid = os.stat(parent).st_gid
-        except OSError as exc:
-            if not best_effort_group:
-                raise
-            log_event(
-                logger,
-                "atomic_io.group_publish_failed",
-                level=logging.WARNING,
-                path=fspath,
-                error=exc,
-            )
+    parent_gid = os.stat(parent).st_gid if group_from_parent else None
     target_stat = None
     if preserve_target_stat:
         try:
@@ -263,19 +266,8 @@ def atomic_write_text(
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
-        if parent_gid is not None:
-            try:
-                os.chown(tmp, -1, parent_gid)
-            except OSError as exc:
-                if not best_effort_group:
-                    raise
-                log_event(
-                    logger,
-                    "atomic_io.group_publish_failed",
-                    level=logging.WARNING,
-                    path=tmp,
-                    error=exc,
-                )
+            if parent_gid is not None:
+                _publish_parent_group(f.fileno(), parent_gid, path=fspath)
         if target_stat is not None:
             try:
                 os.chown(tmp, target_stat.st_uid, target_stat.st_gid)
@@ -327,8 +319,7 @@ def atomic_write_json(
     payload: Any,
     *,
     mode: int = 0o644,
-    group_from_parent: bool = False,
-    best_effort_group: bool = False,
+    group_from_parent: bool = True,
     preserve_target_stat: bool = False,
     durable: bool = False,
 ) -> None:
@@ -345,7 +336,6 @@ def atomic_write_json(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         mode=mode,
         group_from_parent=group_from_parent,
-        best_effort_group=best_effort_group,
         preserve_target_stat=preserve_target_stat,
         durable=durable,
     )
@@ -466,7 +456,7 @@ def locked_update_env_file(
     updates: Mapping[str, str],
     *,
     mode: int = 0o644,
-    group_from_parent: bool = False,
+    group_from_parent: bool = True,
     lock_mode: int | None = None,
     max_bytes: int | None = None,
     lock_timeout_sec: float | None = None,
@@ -495,15 +485,9 @@ def locked_update_env_file(
             state = {}
         state.update(dict(updates))
         text = _format_env_text(state)
-        if group_from_parent:
-            atomic_write_text(
-                fspath,
-                text,
-                mode=mode,
-                group_from_parent=True,
-            )
-        else:
-            atomic_write_text(fspath, text, mode=mode)
+        atomic_write_text(
+            fspath, text, mode=mode, group_from_parent=group_from_parent
+        )
         return dict(state)
 
 
@@ -512,7 +496,7 @@ def locked_transform_env_file(
     transform: Callable[[dict[str, str]], "dict[str, str] | None"],
     *,
     mode: int = 0o644,
-    group_from_parent: bool = False,
+    group_from_parent: bool = True,
     lock_mode: int | None = None,
     max_bytes: int | None = None,
     lock_timeout_sec: float | None = None,
@@ -552,13 +536,7 @@ def locked_transform_env_file(
                 pass
             return None
         text = _format_env_text(new_state)
-        if group_from_parent:
-            atomic_write_text(
-                fspath,
-                text,
-                mode=mode,
-                group_from_parent=True,
-            )
-        else:
-            atomic_write_text(fspath, text, mode=mode)
+        atomic_write_text(
+            fspath, text, mode=mode, group_from_parent=group_from_parent
+        )
         return dict(new_state)

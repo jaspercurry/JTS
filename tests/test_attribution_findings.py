@@ -209,8 +209,8 @@ def test_an_unsure_finding_must_recommend_a_probe() -> None:
         ("This desk bounce cancels the low end.", "hardware-noun-free"),
         # Listed separately from "woofer" on purpose: the word boundary that
         # keeps "important" from tripping "port" also keeps "\bwoofer\b" from
-        # matching inside "subwoofer". A live noun — JTS ships 2.1 and
-        # wireless-sub support — so this gap was reachable.
+        # matching inside "subwoofer". A live noun — JTS ships a local-DAC
+        # subwoofer output group — so this gap was reachable.
         ("The subwoofer arrives late here.", "hardware-noun-free"),
         ("Both subwoofers arrive late here.", "hardware-noun-free"),
         ("This range is position_invariant.", "not an internal slug"),

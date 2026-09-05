@@ -19,7 +19,7 @@ REASON_STATE_DIR_STAT_FAILED = "state_dir_stat_failed"
 REASON_STATE_DIR_NOT_WRITABLE = "state_dir_not_writable"
 REASON_STATE_GROUP_WRITE_VIOLATION = "state_group_write_violation"
 
-@doctor_check(order=0, group="env")
+@doctor_check()
 def check_env_file() -> CheckResult:
     p = Path("/etc/jasper/jasper.env")
     if not p.exists():
@@ -32,7 +32,7 @@ def check_env_file() -> CheckResult:
         return CheckResult("env file", "ok", f"{p} (+ wizard {wizard.name})")
     return CheckResult("env file", "ok", str(p))
 
-@doctor_check(order=1, group="env")
+@doctor_check()
 def check_speaker_name() -> CheckResult:
     from ...speaker_name import STATE_FILE, read_state
 
@@ -51,7 +51,7 @@ def check_speaker_name() -> CheckResult:
         f"{state.name!r} ({state.source})",
     )
 
-@doctor_check(order=23, group="env", label="state dir", needs_cfg=True)
+@doctor_check(label="state dir", needs_cfg=True)
 def check_state_dir(cfg: Config) -> CheckResult:
     """The state dir must be writable by the non-root jasper-* daemons.
 
@@ -83,7 +83,7 @@ def check_state_dir(cfg: Config) -> CheckResult:
         )
     return CheckResult("state dir", "ok", str(p))
 
-@doctor_check(order=23.5, group="env", label="state group-write", needs_cfg=True)
+@doctor_check(label="state group-write", needs_cfg=True)
 def check_state_dir_group_writable(cfg: Config) -> CheckResult:
     """The shared, multi-writer state files must be group-`jasper` AND
     group-writable. jasper-voice and jasper-mux co-own

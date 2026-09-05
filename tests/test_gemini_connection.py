@@ -518,11 +518,36 @@ async def test_repeated_failures_surface_failed_state():
 async def test_idle_context_reset_drops_resumption_handle_and_reopens():
     """Connection healthy, but idle longer than the configured threshold:
     the next acquire_turn should close + reopen with no resumption
-    handle so stale conversational context can't bleed in."""
+    handle so stale conversational context can't bleed in.
+
+    The handle is dropped at teardown rather than when the reset is
+    requested: the old session's receive loop runs until the supervisor
+    cancels it, so a `session_resumption_update` that lands in between
+    would otherwise resume exactly the context being discarded."""
     # Tiny threshold so the test can hit it.
     conn, factory = _make_conn(context_reset_sec=0.01)
     registry = ToolRegistry()
     await conn.start(registry, "system")
+    teardown = conn._teardown_session
+    late_updates = 0
+
+    async def _teardown_after_a_late_handle() -> None:
+        """The reset's teardown, with the race it must survive run first."""
+        nonlocal late_updates
+        session = conn._session
+        if session is not None and late_updates == 0:
+            late_updates += 1
+            session.feed(_Resp(
+                session_resumption_update=_ResumptionUpdate(
+                    new_handle="hndl-late",
+                ),
+            ))
+            await _wait_until(
+                lambda: conn._resumption_handle == "hndl-late", timeout=1.0,
+            )
+        await teardown()
+
+    conn._teardown_session = _teardown_after_a_late_handle
     try:
         # First turn establishes a resumption handle.
         sess1 = factory.sessions[0]
@@ -535,7 +560,9 @@ async def test_idle_context_reset_drops_resumption_handle_and_reopens():
         await asyncio.sleep(0.05)
 
         # Next acquire triggers context-reset before opening a turn.
-        turn2 = await conn.acquire_turn()
+        turn2 = await asyncio.wait_for(conn.acquire_turn(), timeout=5.0)
+        # The late update really did land on the old session.
+        assert late_updates == 1
         # New session was opened.
         assert len(factory.sessions) == 2
         # New session opened with NO resumption handle (fresh context) —
@@ -544,6 +571,50 @@ async def test_idle_context_reset_drops_resumption_handle_and_reopens():
         # The connection cleared the cached handle.
         assert conn._resumption_handle is None
         await turn2.release()
+    finally:
+        await conn.stop()
+
+
+async def test_idle_context_reset_reopens_through_the_supervisor():
+    """The idle context reset hands its reopen to the supervisor.
+
+    One reopener per connection slot: the reset's session is opened from
+    a paused (supervisor-driven) state, and a drop signalled during that
+    reopen still settles CONNECTED with every superseded session closed.
+    """
+    conn, factory = _make_conn(context_reset_sec=0.01)
+    paused_at_open: list[bool] = []
+
+    def recording_factory(*, model, config):
+        paused_at_open.append(conn.is_paused())
+        cm = factory(model=model, config=config)
+        if len(factory.sessions) == 2:
+            # A fresh drop lands while the reset's reopen is in flight.
+            conn._reconnect_event.set()
+        return cm
+
+    conn._connect_factory = recording_factory
+    registry = ToolRegistry()
+    await conn.start(registry, "system")
+    try:
+        turn1 = await conn.acquire_turn()
+        await turn1.release()
+        await asyncio.sleep(0.05)
+
+        turn2 = await asyncio.wait_for(conn.acquire_turn(), timeout=5.0)
+        await turn2.release()
+        await _wait_until(
+            lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0,
+        )
+        # The initial connect is the turn task's; every reopen after it
+        # belongs to the supervisor.
+        assert paused_at_open[0] is False
+        assert paused_at_open[1:] and all(paused_at_open[1:])
+        assert len(factory.sessions) >= 2
+        # No orphan: the live session is the only one left open.
+        assert [s for s in factory.sessions if not s.closed] == [conn._session]
+        turn3 = await conn.acquire_turn()
+        await turn3.release()
     finally:
         await conn.stop()
 
@@ -985,86 +1056,26 @@ async def test_reconnect_generic_exception_drops_resumption_handle():
         await conn.stop()
 
 
-async def test_context_reset_reopen_recovers_from_409():
-    """Pre-fix the bare ``await self._open_session()`` inside
-    ``_maybe_reset_context`` had no retry — a single 409 from the
-    post-teardown race put the connection into an indeterminate
-    state and crashed the wake handler.
+async def test_context_reset_that_cannot_reconnect_raises_for_the_cue():
+    """A reset whose reopen never lands raises instead of hanging.
 
-    This test: idle past the context-reset window, then on the next
-    acquire_turn the post-teardown reopen 409s once, retries, and
-    succeeds. The turn should be acquirable without raising."""
+    The wake path answers that raise with a failure cue, so a press
+    during a dead connection is never silent (non-negotiable 6)."""
     conn, factory = _make_conn(context_reset_sec=0.01)
     registry = ToolRegistry()
     await conn.start(registry, "system")
     try:
-        # First turn so context-reset has something to reset.
-        turn1 = await conn.acquire_turn()
-        await turn1.release()
-        await asyncio.sleep(0.05)  # past the 0.01s reset window.
-
-        # Queue a 409 for the FIRST post-teardown open. The retry
-        # (1.0s into the schedule) will succeed since no second
-        # exception is queued.
-        factory.next_exceptions = [_make_websockets_409()]
-
-        # The acquire_turn should succeed despite the 409 transient.
-        # 5s timeout: 1.0s sleep before the retry attempt + slack.
-        turn2 = await asyncio.wait_for(conn.acquire_turn(), timeout=5.0)
-        assert len(factory.sessions) == 2  # post-teardown + retry → one new session
-        await turn2.release()
-    finally:
-        await conn.stop()
-
-
-async def test_context_reset_hard_fail_triggers_supervisor():
-    """If every retry on the context-reset reopen path fails, the
-    connection used to be left wedged: no session, supervisor
-    never woken, ``_connected_event`` cleared, every subsequent
-    wake hung for 20s before timing out. The fix sets
-    ``_reconnect_event`` so the supervisor takes over recovery.
-
-    Verified by counting that on hard failure, the supervisor's
-    reconnect loop kicks in (factory sessions count keeps growing
-    even after the original acquire_turn raised)."""
-    factory = _FakeConnect()
-    conn = GeminiLiveConnection(
-        api_key="fake",
-        model="fake-model",
-        voice="Aoede",
-        context_reset_sec=0.01,
-        rotate_after_sec=0.0,
-        backoff_schedule=(0.0, 0.0),
-        connect_factory=factory,
-    )
-    registry = ToolRegistry()
-    await conn.start(registry, "system")
-    try:
-        # First turn so context reset has something to reset.
         turn1 = await conn.acquire_turn()
         await turn1.release()
         await asyncio.sleep(0.05)
 
-        # Queue MANY 409s — exhausts the context-reset retry schedule
-        # AND every supervisor reconnect attempt. The point is to
-        # observe the supervisor being woken at all.
+        # More failures than the supervisor's bounded test schedule.
         factory.next_exceptions = [_make_websockets_409() for _ in range(20)]
 
-        # acquire_turn raises once context-reset retries are exhausted.
-        with pytest.raises(Exception):
+        with pytest.raises(RuntimeError):
             await asyncio.wait_for(conn.acquire_turn(), timeout=20.0)
-
-        # Supervisor was triggered: the reconnect_event was set and
-        # the supervisor consumed at least one of the queued 409s
-        # in its own backoff loop (drained next_exceptions further
-        # than the context-reset path alone would have).
-        await _wait_until(
-            lambda: conn._reconnect_event.is_set()
-            or conn._state is ConnectionState.FAILED
-            or conn._state is ConnectionState.RECONNECTING
-            or conn._state is ConnectionState.PAUSED_FOR_BACKOFF,
-            timeout=3.0,
-        )
+        assert conn.is_paused()
+        assert conn.wake_cue()
     finally:
         await conn.stop()
 

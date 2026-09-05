@@ -211,7 +211,6 @@ def _write(path: Path, state: Mapping[str, Any]) -> None:
         path,
         json.dumps(dict(state), indent=2, sort_keys=True) + "\n",
         mode=0o640,
-        group_from_parent=True,
     )
 
 
@@ -226,7 +225,6 @@ def _locked(path: Path):
         with advisory_file_lock(
             lock_path,
             mode=0o660,
-            group_from_parent=True,
             timeout_sec=DEFAULT_LOCK_TIMEOUT_S,
         ):
             yield

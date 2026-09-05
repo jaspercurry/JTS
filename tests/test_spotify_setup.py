@@ -315,9 +315,9 @@ def test_health_badge_renders_per_state():
     # Structural anchors (CSS class) — what the page styling hangs off.
     # Tested separately from the human-readable label so a copy edit
     # doesn't co-break the structural assertion and vice versa.
-    assert "health-ok" in ok_html
-    assert "health-revoked" in rev_html
-    assert "health-warn" in needs_html
+    assert "badge badge--ok" in ok_html
+    assert "badge badge--danger" in rev_html
+    assert "badge badge--warn" in needs_html
     # Human-readable labels — substring-loose so minor wording polish
     # doesn't require touching this test.
     assert "linked" in ok_html

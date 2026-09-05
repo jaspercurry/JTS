@@ -20,7 +20,7 @@
 // per-row action targets ride in escaped data-* attributes consumed by a single
 // delegated click handler (never inline onclick), exactly as before.
 
-import { jsonHeaders, postJSON } from "/assets/shared/js/http.js";
+import { jsonHeaders, postJSON, startPolling } from "/assets/shared/js/http.js";
 import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
 import { escapeHtml, cssIdSafe } from "/assets/shared/js/escape.js";
 import { toggleScanRequest } from "./scan.js";
@@ -38,7 +38,8 @@ let devices = new Map(); // path → device
 let evtSrc = null;
 let pairStreams = new Map(); // mac → EventSource
 let deviceMutations = new Map(); // mac → accepted server-owned action
-let stateTimer = null;
+let stopPoll = null;
+let pollMs = 0;
 let scanIntentUntil = 0;  // ms; client-side window where we treat
                            // the button as scanning even before the
                            // server polling catches up
@@ -152,8 +153,10 @@ function renderToggles() {
 }
 
 function schedulePoll(ms) {
-  if (stateTimer !== null) clearInterval(stateTimer);
-  stateTimer = setInterval(fetchState, ms);
+  if (ms === pollMs) return;
+  pollMs = ms;
+  if (stopPoll) stopPoll();
+  stopPoll = startPolling(fetchState, { intervalMs: ms });
 }
 
 function beginMutation() {
@@ -419,15 +422,15 @@ function deviceRow(d, pending) {
   // BLE HID devices can open a GATT link before pairing. JTS accessory
   // features are not usable until BlueZ has a paired record.
   if (pending) {
-    badges += `<span class="badge connecting">${deviceMutationLabel(pending.action, true)}</span>`;
+    badges += `<span class="badge badge--warn">${deviceMutationLabel(pending.action, true)}</span>`;
   } else if ((d.connected || d.trusted) && !d.paired) {
-    badges += '<span class="badge linked">Pair required</span>';
+    badges += '<span class="badge badge--warn">Pair required</span>';
   } else if (d.connected && d.servicesResolved === false) {
-    badges += '<span class="badge connecting">Connecting</span>';
+    badges += '<span class="badge badge--warn">Connecting</span>';
   } else if (d.connected) {
-    badges += '<span class="badge connected">Connected</span>';
+    badges += '<span class="badge badge--ok">Connected</span>';
   }
-  else if (d.paired) badges += '<span class="badge paired">Not connected</span>';
+  else if (d.paired) badges += '<span class="badge badge--idle">Not connected</span>';
   let actions = '';
   if (pending) {
     actions = `<button class="btn btn--default" disabled>${deviceMutationLabel(pending.action, true)}</button>`;
@@ -826,7 +829,6 @@ function iconSlug(s) { return String(s || 'device').replace(/[^a-zA-Z0-9_-]/g, '
 
 document.getElementById('sw-power').addEventListener('change', togglePower);
 document.getElementById('sw-disc').addEventListener('change', toggleDisc);
-fetchState();
 renderDevices();
 startDeviceStream();
 schedulePoll(5000);

@@ -854,15 +854,14 @@ def save_crossover_preview(
     )
     preview["path"] = str(target)
     preview["updated_at"] = _utc_now() if created_at is None else preview["updated_at"]
-    # group_from_parent: same reason as the design-draft store this preview is
-    # derived from. The crossover-accept seam re-prepares it from the ROOT
-    # jasper-correction-web process while /sound/ reads it as jasper-web, so a
-    # root write without this hides the preview behind root:root 0640.
+    # 0640 + the parent's group: same reason as the design-draft store this
+    # preview is derived from. The crossover-accept seam re-prepares it from
+    # the ROOT jasper-correction-web process while /sound/ reads it as
+    # jasper-web.
     atomic_write_text(
         target,
         json.dumps(preview, indent=2, sort_keys=True) + "\n",
         mode=0o640,
-        group_from_parent=True,
         durable=durable,
     )
     return preview

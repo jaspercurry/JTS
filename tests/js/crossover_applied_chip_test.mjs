@@ -63,6 +63,7 @@ render({
 check(chip.hidden === false, "manual: chip is unhidden");
 check(chip.textContent === "Manual crossover applied", "manual: chip text is the server label");
 check(chip.dataset.state === "manual", "manual: chip data-state is manual");
+check(chip.className === "badge badge--ok", "manual: chip carries the ok tone modifier");
 
 // --- automatic crossover applied: same shape, different state/label ------
 render({
@@ -81,6 +82,12 @@ render({
 check(chip.hidden === true, "none: chip is hidden");
 check(chip.textContent === "", "none: chip text is cleared");
 check(chip.dataset.state === "none", "none: chip data-state is none");
+
+// --- an unrecognised state still renders, on the neutral tone ---------
+render({ ...baseEnvelope, applied: { state: "future", label: "Something new" } });
+check(chip.hidden === false, "unknown state: chip is unhidden");
+check(chip.className === "badge badge--idle",
+  "unknown state: chip falls back to the idle tone modifier");
 
 // --- an envelope predating the `applied` field must not crash render() ---
 render({ ...baseEnvelope });

@@ -39,6 +39,7 @@ from .audio_hardware.dac import (
     physical_output_count_for as _dac_physical_output_count_for,
 )
 from .camilla_emit import (
+    BASS_MANAGEMENT_CORNER_HZ_DEFAULT,
     BASS_MANAGEMENT_CORNER_HZ_HI,
     BASS_MANAGEMENT_CORNER_HZ_LO,
 )
@@ -1071,6 +1072,27 @@ def subwoofer_speaker_groups(topology: OutputTopology) -> list[SpeakerGroup]:
             or group.id in routed_subwoofers
         )
     ]
+
+
+def bass_management_corner_hz() -> float | None:
+    """This speaker's live bass-management crossover corner (Hz), or ``None``
+    when it declares no subwoofer.
+
+    Fail-soft through :func:`load_output_topology`: an unreadable topology
+    resolves to "no subwoofer", never a raise, because a display and a room
+    correction must both survive a momentarily unreadable state file. A
+    subwoofer group with no explicit per-channel corner runs at the default
+    corner the active-speaker emitter falls back to.
+    """
+
+    groups = subwoofer_speaker_groups(load_output_topology())
+    if not groups:
+        return None
+    for group in groups:
+        for channel in group.channels:
+            if channel.crossover_fc_hz is not None:
+                return float(channel.crossover_fc_hz)
+    return float(BASS_MANAGEMENT_CORNER_HZ_DEFAULT)
 
 
 def topology_is_passive_mains(topology: OutputTopology) -> bool:
@@ -2257,7 +2279,6 @@ def output_topology_mutation(
     with advisory_file_lock(
         topology_lock_path(target),
         mode=0o660,
-        group_from_parent=True,
         timeout_sec=timeout_sec,
     ):
         yield OutputTopologyMutation(target)
@@ -2373,14 +2394,6 @@ def save_output_topology(
     data = json.dumps(topology.to_dict(), indent=2, sort_keys=True) + "\n"
     # /var/lib/jasper is group jasper but NOT setgid, so a root-run recovery
     # write must publish under the directory's group for the non-root management
-    # daemons. Group assignment is best-effort: losing that metadata must not
-    # lose the topology write itself.
-    atomic_write_text(
-        target,
-        data,
-        mode=0o640,
-        group_from_parent=True,
-        best_effort_group=True,
-        durable=True,
-    )
+    # daemons.
+    atomic_write_text(target, data, mode=0o640, durable=True)
     return "sha256:" + hashlib.sha256(data.encode("utf-8")).hexdigest()

@@ -36,7 +36,7 @@ REASON_CITIBIKE_STATIONS_RETIRED = "citibike_stations_retired"
 REASON_CITIBIKE_CONNECTED = "citibike_connected"
 REASON_CITIBIKE_CONNECTED_EBIKE_ONLY = "citibike_connected_ebike_only"
 
-@doctor_check(order=17, group="integrations", label="Google OAuth", needs_cfg=True)
+@doctor_check(label="Google OAuth", needs_cfg=True)
 def check_google_tokens(cfg: Config) -> CheckResult:
     """Verify Google OAuth state is healthy.
 
@@ -96,7 +96,7 @@ def check_google_tokens(cfg: Config) -> CheckResult:
         f"{len(healthy)} account(s) refreshed: {', '.join(healthy)}",
     )
 
-@doctor_check(order=18, group="integrations", label="Google Routes", needs_cfg=True)
+@doctor_check(label="Google Routes", needs_cfg=True)
 def check_google_routes(cfg: Config) -> CheckResult:
     """Verify Google Routes configuration without making a billable API call."""
     from ... import google_routes
@@ -141,7 +141,7 @@ def check_google_routes(cfg: Config) -> CheckResult:
     )
 
 
-@doctor_check(order=19, group="integrations", label="Home Assistant", needs_cfg=True)
+@doctor_check(label="Home Assistant", needs_cfg=True)
 def check_home_assistant(cfg: Config) -> CheckResult:
     """Verify Home Assistant connectivity for the home_assistant voice tool.
 
@@ -198,7 +198,7 @@ def check_home_assistant(cfg: Config) -> CheckResult:
         reason=REASON_HOME_ASSISTANT_CONNECTED,
     )
 
-@doctor_check(order=19.5, group="integrations", label="Citi Bike", needs_cfg=True)
+@doctor_check(label="Citi Bike", needs_cfg=True)
 def check_citibike(cfg: Config) -> CheckResult:
     """Verify Citi Bike GBFS reachability + saved-station resolution.
 

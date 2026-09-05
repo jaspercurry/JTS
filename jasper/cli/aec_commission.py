@@ -525,7 +525,6 @@ def _commission(
         artifact_path,
         artifact.to_dict(),
         mode=0o640,
-        group_from_parent=True,
         durable=True,
     )
     return artifact, evidence

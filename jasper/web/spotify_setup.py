@@ -375,7 +375,6 @@ def _redirect_uri_section_html(redirect_uri: str, client_id: str, mode: str) -> 
          data-select-on-click>
   <button type="button" class="btn btn--default"
           data-copy-target="redirect-uri">Copy</button>
-  <span class="copy-feedback">Copied!</span>
 </div>
 <p class="form-hint">{mode_note}</p>
 
@@ -567,24 +566,24 @@ def _health_badge_html(status: AccountStatus | None) -> str:
         return ""
     if status.state == ACCOUNT_OK:
         return (
-            '<span class="health-badge health-ok"'
+            '<span class="badge badge--ok"'
             ' title="Token is valid">✓ linked</span>'
         )
     if status.state == ACCOUNT_REVOKED:
         return (
-            '<span class="health-badge health-revoked"'
+            '<span class="badge badge--danger"'
             ' title="Spotify signed this account out. '
             'Click Re-link below.">⚠ signed out</span>'
         )
     if status.state == ACCOUNT_NEEDS_OAUTH:
         return (
-            '<span class="health-badge health-warn"'
+            '<span class="badge badge--warn"'
             ' title="No cached token — re-OAuth needed">'
             '○ not linked</span>'
         )
     detail = html.escape(status.detail or "unknown")
     return (
-        f'<span class="health-badge health-warn" title="{detail}">'
+        f'<span class="badge badge--warn" title="{detail}">'
         '? status unknown</span>'
     )
 
@@ -630,9 +629,7 @@ def _account_card_html(
     name = html.escape(account.name)
     badges = []
     if is_default:
-        badges.append(
-            '<span class="badge" style="--tone: var(--status-ok)">default</span>'
-        )
+        badges.append('<span class="badge badge--ok">default</span>')
     health = _health_badge_html(status)
     if health:
         badges.append(health)

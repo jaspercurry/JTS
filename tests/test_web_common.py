@@ -259,6 +259,25 @@ def test_send_see_other_urlencodes_special_characters_in_flash():
     assert "Saved%20100%25%3B%20ready." in cookie
 
 
+def test_send_rejected_form_rerenders_at_422_with_token_and_message():
+    token = "t" * 43
+    h = _FakeHandler(cookies=f"jts_csrf={token}")
+    seen: dict[str, str] = {}
+
+    def render(*, csrf_token: str, status_msg: str) -> bytes:
+        seen.update(csrf_token=csrf_token, status_msg=status_msg)
+        return b"<form>typed</form>"
+
+    _common.send_rejected_form(h, render, flash="Enter a location first.")
+    assert h._status == http.HTTPStatus.UNPROCESSABLE_ENTITY
+    assert h.header_values("Location") == []
+    assert h.wfile.getvalue() == b"<form>typed</form>"
+    assert seen == {
+        "csrf_token": token,
+        "status_msg": "Enter a location first.",
+    }
+
+
 def test_redirect_with_legacy_msg_cleans_query_and_preserves_fragment():
     h = _FakeHandler()
     _common.redirect_with_legacy_msg(

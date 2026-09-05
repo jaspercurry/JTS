@@ -18,9 +18,6 @@
 }
 body.stale { opacity: 0.55; }
 .muted { color: var(--muted); }
-/* Boot placeholder shown until the ES module graph renders — left visible
-   (rather than a blank page) if the modules ever fail to load. */
-.boot-note { padding: 3rem 1.5rem; text-align: center; color: var(--muted); }
 code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
@@ -148,14 +145,13 @@ a.link:hover { text-decoration: underline; text-underline-offset: 2px; }
 .choice__title { font-family: var(--font-display); font-size: 14px; font-weight: 600; }
 .choice__body { margin-top: 4px; font-size: 12px; color: var(--muted); }
 
-/* Action button row */
-.btn-row { display: flex; flex-wrap: wrap; gap: 8px; }
+/* Narrow screens: stack the .system-actions form-actions row full-width. */
 @media (max-width: 559px) {
-  .system-actions .btn-row {
+  .system-actions .form-actions {
     flex-direction: column;
     align-items: stretch;
   }
-  .system-actions .btn-row .btn {
+  .system-actions .form-actions .btn {
     width: 100%;
     min-height: 44px;
   }

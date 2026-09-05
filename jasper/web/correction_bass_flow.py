@@ -5,14 +5,12 @@
 """HTTPS bass-management display flow (revision plan §3.3 / P5).
 
 DISPLAY-ONLY. This page does NOT own the crossover corner — the SPEAKER layer
-does (active-speaker LocalSubwoofer / the wireless-sub bond). It reads the live
-bass-management state (:func:`jasper.bass_management.resolve_bass_management`)
-and shows the household: what corner is bass-managing this speaker, who owns it
-(active-speaker vs wireless sub), whether a sub is present, and whether the
-mains high-pass is armed — plus a pointer to the Room tab, where the bass-region
-measurement/correction already lives. There is no control surface here (no
-corner picker, no apply) by design: the corner is set where the speaker is
-commissioned, not here.
+does. It reads the live corner
+(:func:`jasper.output_topology.bass_management_corner_hz`) and shows the
+household where their subwoofer and speakers hand off, plus a pointer to the
+Room tab where the bass-region measurement/correction already lives. There is
+no control surface here (no corner picker, no apply) by design: the corner is
+set where the speaker is commissioned, not here.
 """
 
 from __future__ import annotations
@@ -41,9 +39,8 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
   <section class="info-card info-card--accent">
     <h2 class="section__title">Bass management</h2>
     <p class="form-hint">
-      Where your subwoofer and speakers hand off — the crossover corner, who
-      owns it, and whether the mains high-pass is on. This page is read-only:
-      the corner is set when your speaker is set up, not here.
+      Where your subwoofer and speakers hand off. This page is read-only: the
+      corner is set when your speaker is set up, not here.
     </p>
   </section>
 
@@ -82,29 +79,19 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
     )
 
 
-# Homeowner-facing labels for the corner owner. Stable strings, provider-
-# agnostic. The wizard shows these verbatim — the JS never re-derives ownership.
-_OWNER_LABELS = {
-    "active_speaker_local": "This speaker's own subwoofer output",
-    "wireless_sub": "A wireless subwoofer in this speaker's group",
-}
-
-
 def status_payload() -> dict[str, Any]:
     """The read-only bass-management display payload. Fail-soft.
 
-    Reads the resolved bass-management state and adds a homeowner-facing owner
-    label. Never raises — a read failure resolves to "no bass management," which
-    the page shows as "not configured."
+    Never raises — an unreadable topology resolves to "no subwoofer," which the
+    page shows as "not configured."
     """
-    from jasper.bass_management import resolve_bass_management
+    from jasper.output_topology import bass_management_corner_hz
 
-    state = resolve_bass_management()
-    payload: dict[str, Any] = state.to_dict()
-    payload["owner_label"] = (
-        _OWNER_LABELS.get(state.owner) if state.owner else None
-    )
-    payload["configured"] = state.corner_hz is not None
+    corner_hz = bass_management_corner_hz()
+    payload: dict[str, Any] = {
+        "corner_hz": corner_hz,
+        "configured": corner_hz is not None,
+    }
 
     # Bass Extension is a separate,
     # not-yet-household-launched feature that also lives on this tab. Its own

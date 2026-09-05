@@ -96,7 +96,7 @@ if [[ -z "$KEY_LINE" || "$KEY_LINE" == "${KEY_VAR}=" ]]; then
 fi
 
 echo "Switching ${PI_HOST}:JASPER_VOICE_PROVIDER → ${PROVIDER}"
-"${SSH[@]}" "sudo sh -s -- ${PROVIDER}" <<'REMOTE'
+"${SSH[@]}" "sudo sh -s -- ${PROVIDER} && $(restart_voice_and_verify_cmd)" <<'REMOTE'
 set -eu
 provider="$1"
 env="/var/lib/jasper/voice_provider.env"
@@ -121,10 +121,4 @@ mv "$tmp" "$env"
 trap - EXIT
 
 grep '^JASPER_VOICE_PROVIDER=' "$env"
-systemctl restart jasper-voice
-sleep 2
-systemctl is-active jasper-voice
-journalctl -u jasper-voice -n 5 --no-pager 2>&1 \
-    | grep -v -E 'GetGpuDevices|device_discovery' \
-    | tail -5
 REMOTE

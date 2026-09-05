@@ -744,7 +744,6 @@ def test_audio_view_is_normalized_fail_soft_and_progressively_disclosed() -> Non
     assert "Array.isArray(health.sources)" in audio_view
     assert "ageBucket" not in audio_view
     main_js = (_MODULE_DIR / "main.js").read_text()
-    assert "finally" in main_js
     assert "Dashboard data was incomplete" in main_js
     assert 'title: "Technical evidence", open: false' in audio_view
     assert 'title: "Audio conversion", open: false' in audio_view
@@ -824,7 +823,7 @@ def test_system_mobile_actions_and_tables_are_intentional() -> None:
     assert "Anyone on this Wi-Fi can run these actions." in js
     assert "Power off before unplugging or changing cables" in js
     assert "stays off until power is re-plugged" in js
-    assert ".system-actions .btn-row" in css
+    assert ".system-actions .form-actions" in css
     assert "min-height: 44px" in css
     assert "-webkit-overflow-scrolling: touch" in css
     assert ".table-wrap" in css

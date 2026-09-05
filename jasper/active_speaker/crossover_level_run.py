@@ -441,7 +441,6 @@ class CrossoverLevelRunStore:
                 with advisory_file_lock(
                     lock_path,
                     mode=0o660,
-                    group_from_parent=True,
                     timeout_sec=DEFAULT_LOCK_TIMEOUT_S,
                 ):
                     yield
@@ -604,7 +603,6 @@ class CrossoverLevelRunStore:
             self.path,
             json.dumps(payload, indent=2, sort_keys=True) + "\n",
             mode=0o640,
-            group_from_parent=True,
         )
 
     @staticmethod

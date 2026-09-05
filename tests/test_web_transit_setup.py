@@ -157,8 +157,8 @@ def test_with_coords_renders_subway_card_and_locked_bus_card(stub_gbfs):
     assert "9 Av" in out
     # Bus card locked: no key set, so only the register CTA + key input.
     assert "needs an API key" in out
-    # Locked-card warn badge uses the canonical status token, not a hex.
-    assert "--status-warn" in out
+    # The needs-a-key badge names its state, never a colour of its own.
+    assert "badge badge--warn" in out
 
 
 def test_travel_routes_card_masks_saved_key_and_selects_default_mode(stub_gbfs):
@@ -225,7 +225,7 @@ def test_outside_coverage_shows_no_coverage_card():
 def test_advanced_section_present_in_every_state(stub_gbfs):
     for state in ({}, NYC_STATE, LONDON_STATE):
         out = _render(state)
-        assert 'class="advanced"' in out
+        assert 'class="disclosure advanced-coords"' in out
         # Manual lat/lon override form still posts to geocode.
         assert 'name="manual_lat"' in out
 

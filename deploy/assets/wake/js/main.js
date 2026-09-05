@@ -25,7 +25,7 @@
 // cached module bakes in no secret. The slider uses an explicit Save button
 // rather than apply-on-change so a drag doesn't restart jasper-voice per pixel.
 
-import { jsonHeaders, postJSON } from "/assets/shared/js/http.js";
+import { jsonHeaders, postJSON, startPolling } from "/assets/shared/js/http.js";
 import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
 
 const LAYERS = ["raw", "dtln", "chip_aec_150", "chip_aec_210"];
@@ -335,7 +335,6 @@ function applyState(s) {
 }
 
 async function pollDetection() {
-  if (document.visibilityState === "hidden") return;
   if (Date.now() < ignorePollUntil) return;
   try {
     const r = await fetch("detection.json", { cache: "no-store" });
@@ -638,8 +637,4 @@ if (wakeForm) {
   });
 }
 
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") pollDetection();
-});
-pollDetection();
-setInterval(pollDetection, POLL_MS);
+startPolling(pollDetection, { intervalMs: POLL_MS });

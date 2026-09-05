@@ -62,7 +62,6 @@ def _write_state(path: Path, payload: dict[str, Any]) -> None:
         path,
         payload,
         mode=0o640,
-        group_from_parent=True,
     )
 
 

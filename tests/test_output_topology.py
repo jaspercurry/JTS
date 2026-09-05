@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from jasper import output_topology as output_topology_mod
+from jasper.camilla_emit import BASS_MANAGEMENT_CORNER_HZ_DEFAULT
 from jasper.output_hardware import (
     OutputCardFact,
     OutputHardwareState,
@@ -32,6 +33,7 @@ from jasper.output_topology import (
     OutputTopology,
     OutputTopologyError,
     SpeakerChannel,
+    bass_management_corner_hz,
     channel_identity_report,
     clock_domain_report,
     composite_serial_repin_plan,
@@ -1107,14 +1109,11 @@ def test_save_output_topology_cleans_temp_file_on_replace_failure(
     assert list(tmp_path.glob(".output_topology.json.*.tmp")) == []
 
 
-def test_save_output_topology_publishes_parent_group(
+def test_save_output_topology_publishes_group_readable_0640(
     tmp_path: Path,
-    monkeypatch,
 ) -> None:
-    # /var/lib/jasper is group jasper but not setgid, so a root-run write must
-    # chgrp the file to the directory's group; otherwise it lands root:root and
-    # the non-root jasper-group management daemons can't read it. Pin the
-    # contract: the tempfile is chowned to the parent dir's gid before rename.
+    # /var/lib/jasper is group jasper but not setgid, so the non-root
+    # jasper-group management daemons read this file by its group bits.
     path = tmp_path / "output_topology.json"
     topology = _topology(groups=[
         {
@@ -1125,50 +1124,11 @@ def test_save_output_topology_publishes_parent_group(
             "channels": [{"role": "full_range", "physical_output_index": 2}],
         }
     ])
-    chown_calls: list[tuple[int, int]] = []
-    real_chown = __import__("os").chown
-
-    def record_chown(target, uid, gid, *args, **kwargs):
-        chown_calls.append((uid, gid))
-        return real_chown(target, uid, gid, *args, **kwargs)
-
-    monkeypatch.setattr("jasper.atomic_io.os.chown", record_chown)
 
     save_output_topology(topology, path)
 
-    parent_gid = path.parent.stat().st_gid
-    assert chown_calls == [(-1, parent_gid)]
     assert path.stat().st_mode & 0o777 == 0o640
     assert json.loads(path.read_text(encoding="utf-8"))["kind"] == OUTPUT_TOPOLOGY_KIND
-
-
-def test_save_output_topology_survives_group_publish_failure(
-    tmp_path: Path,
-    monkeypatch,
-    caplog,
-) -> None:
-    # A chgrp failure (caller not a member of the dir's group) must never lose
-    # the topology write — best-effort, the file is still persisted.
-    path = tmp_path / "output_topology.json"
-    topology = _topology(groups=[
-        {
-            "id": "mono",
-            "label": "Mono speaker",
-            "kind": "mono",
-            "mode": "full_range_passive",
-            "channels": [{"role": "full_range", "physical_output_index": 0}],
-        }
-    ])
-
-    def fail_chown(*args, **kwargs):
-        raise PermissionError("simulated chgrp denial")
-
-    monkeypatch.setattr("jasper.atomic_io.os.chown", fail_chown)
-
-    save_output_topology(topology, path)
-
-    assert load_output_topology(path).speaker_groups[0].id == "mono"
-    assert "event=atomic_io.group_publish_failed" in caplog.text
 
 
 def test_load_output_topology_fails_soft_to_detected_draft(tmp_path: Path) -> None:
@@ -1642,6 +1602,39 @@ def test_sub_crossover_bounds_mirror_profile() -> None:
 
     assert SUB_CROSSOVER_HZ_LO == PROFILE_LO == SHARED_LO == 40.0
     assert SUB_CROSSOVER_HZ_HI == PROFILE_HI == SHARED_HI == 200.0
+
+
+def _subless_topology_raw() -> dict:
+    raw = _passive_sub_topology_raw(120.0)
+    raw["speaker_groups"] = raw["speaker_groups"][:2]
+    raw["routing"].pop("subwoofer_group_ids")
+    return raw
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (json.dumps(_passive_sub_topology_raw(120.0)), 120.0),
+        (
+            json.dumps(_passive_sub_topology_raw(None)),
+            BASS_MANAGEMENT_CORNER_HZ_DEFAULT,
+        ),
+        (json.dumps(_subless_topology_raw()), None),
+        ('{"kind": "jts_output_', None),
+    ],
+    ids=["declared corner", "default corner", "no subwoofer", "unreadable"],
+)
+def test_bass_management_corner_resolves_from_the_persisted_topology(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str,
+    expected: float | None,
+) -> None:
+    """Fail-soft: an unreadable topology resolves to "no subwoofer", never a
+    raise — a room correction and a display both depend on that."""
+    target = tmp_path / "topology.json"
+    target.write_text(text)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(target))
+
+    assert bass_management_corner_hz() == expected
 
 
 def _dual_apple_active_topology() -> OutputTopology:

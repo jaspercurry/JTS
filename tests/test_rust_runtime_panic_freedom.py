@@ -425,19 +425,6 @@ ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
     ),
     (
         "jasper-outputd/src/dac_content.rs",
-        "ChannelPick::Sub applied without a low-pass filter",
-    ): (
-        "A deliberate fail-closed contract trap, not a bare precondition: "
-        "the surrounding code's own comment says \"missing filter state is "
-        "a construction bug, not a bypass. Fail closed to silence ... and "
-        "warn.\" debug_assert!(false, ...) crashes loudly in dev/test "
-        "builds to catch the construction bug early; the eprintln! + "
-        "mute-to-silence right after it is the release-build path (where "
-        "debug_assert is a no-op) — both halves of one two-tier design, "
-        "not an oversight."
-    ),
-    (
-        "jasper-outputd/src/dac_content.rs",
         "out.len() * 2, self.period_bytes",
     ): (
         "pop_period's own doc comment states the exact contract "

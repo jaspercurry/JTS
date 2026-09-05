@@ -29,7 +29,7 @@
 // connect flows surface the rollback warning; the server still rolls the
 // previous profile back up on a failed connect.
 
-import { jsonHeaders } from "/assets/shared/js/http.js";
+import { jsonHeaders, startPolling } from "/assets/shared/js/http.js";
 import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
 import { escapeHtml, cssIdSafe } from "/assets/shared/js/escape.js";
 
@@ -43,7 +43,6 @@ let hasScanned = false;
 let autoScanned = false;
 let openSsid = null;     // available-list inline panel currently open
 let openSavedName = null;// saved-list inline panel currently open
-let stateTimer = null;
 function signalBars(sig) {
   if (sig == null) return '';
   if (sig >= 70) return '●●●●';
@@ -75,11 +74,6 @@ function maybeAutoScan() {
   if (autoScanned || scanning || !state.adapterPresent || !state.radioOn) return;
   autoScanned = true;
   rescan();
-}
-
-function schedulePoll(ms) {
-  if (stateTimer !== null) clearInterval(stateTimer);
-  stateTimer = setInterval(fetchState, ms);
 }
 
 function renderCurrent() {
@@ -156,7 +150,7 @@ function renderSaved() {
     const isCurrent = p.name === curName;
     const idsafe = cssIdSafe(p.name);
     const badge = isCurrent
-      ? '<span class="badge">In use</span>' : '';
+      ? '<span class="badge badge--ok">In use</span>' : '';
     // Display the SSID (what the user knows the network as); the
     // profile NAME goes through the API as the operate-on key.
     return '<div class="net-row" id="sv-' + idsafe + '">' +
@@ -228,7 +222,7 @@ function renderAvail() {
   list.innerHTML = scanResults.map(n => {
     const idsafe = cssIdSafe(n.ssid);
     const lock = n.secured ? ' 🔒' : '';
-    const inUseBadge = n.inUse ? '<span class="badge">Connected</span>' : '';
+    const inUseBadge = n.inUse ? '<span class="badge badge--ok">Connected</span>' : '';
     return '<div class="net-row" id="av-' + idsafe + '">' +
       '<div class="head" data-action="open-connect" ' +
            'data-ssid="' + escapeHtml(n.ssid) + '">' +
@@ -677,5 +671,4 @@ document.addEventListener('click', function(e) {
   if (action === 'close-forget') closeForget(el.dataset.name || '');
   if (action === 'dismiss-forget') dismissForget(el.dataset.name || '');
 });
-fetchState();
-schedulePoll(7000);
+startPolling(fetchState, { intervalMs: 7000 });

@@ -276,7 +276,7 @@ def _soften_for_push_to_talk(
     )
 
 
-@doctor_check(order=3.5, group="audio", label="microphone")
+@doctor_check(label="microphone")
 def check_microphone() -> CheckResult:
     """Single headline for microphone presence.
 
@@ -296,7 +296,7 @@ def check_microphone() -> CheckResult:
     return CheckResult("microphone", "ok", mp.summary)
 
 
-@doctor_check(order=4, group="audio", label="mic ALSA card", needs_cfg=True)
+@doctor_check(label="mic ALSA card", needs_cfg=True)
 def check_mic_card_matches_config(cfg: Config) -> CheckResult:
     """Validate the card configured in JASPER_MIC_DEVICE is actually present.
 
@@ -360,7 +360,7 @@ def check_mic_card_matches_config(cfg: Config) -> CheckResult:
         check_alsa_card(card, "arecord", f"mic ALSA card ({card})"), presence,
     )
 
-@doctor_check(order=5, group="audio")
+@doctor_check()
 def check_loopback() -> CheckResult:
     """snd-aloop must be loaded — on both couplings, hence `fail`.
 
@@ -380,10 +380,8 @@ def check_loopback() -> CheckResult:
         reason=REASON_LOOPBACK_MISSING,
     )
 
-# order=79 stays AFTER resilience's fractional 78.5 insert — the registry
-# contract is "the single async check sorts last", not contiguous integers
-# (test_doctor_registry), so the gap below 79 is intentional.
-@doctor_check(order=79, group="audio", label="CamillaDSP websocket", needs_cfg=True, is_async=True)
+
+@doctor_check(label="CamillaDSP websocket", needs_cfg=True, is_async=True)
 async def check_camilla_websocket(cfg: Config) -> CheckResult:
     controller: CamillaController | None = None
     try:
@@ -429,13 +427,7 @@ def _jasper_voice_active() -> bool:
     """True if jasper-voice.service reports active."""
     return evidence.unit_active("jasper-voice.service") is True
 
-@doctor_check(
-    order=6,
-    group="audio",
-    label="mic capture",
-    needs_cfg=True,
-    exclusive_group="audio-probe",
-)
+@doctor_check(label="mic capture", needs_cfg=True, exclusive_group="audio-probe")
 def check_mic_capture(cfg: Config) -> CheckResult:
     """Probe-open the mic device to confirm it produces non-silent audio.
 
@@ -522,7 +514,7 @@ def check_mic_capture(cfg: Config) -> CheckResult:
             presence,
         )
 
-@doctor_check(order=7, group="audio", label="tts output", needs_cfg=True)
+@doctor_check(label="tts output", needs_cfg=True)
 def check_tts_open(cfg: Config) -> CheckResult:
     """Verify the TTS output device is enumerable.
 
@@ -588,7 +580,7 @@ def check_tts_open(cfg: Config) -> CheckResult:
             reason=REASON_TTS_DEVICE_UNAVAILABLE,
         )
 
-@doctor_check(order=20, group="audio")
+@doctor_check()
 def check_output_hardware_state() -> CheckResult:
     """Surface reconciler-owned output hardware state."""
 
@@ -630,7 +622,7 @@ def check_output_hardware_state() -> CheckResult:
     )
 
 
-@doctor_check(order=20.5, group="audio")
+@doctor_check()
 def check_active_speaker_output_hardware_match() -> CheckResult:
     """Keep saved active-speaker topology mismatch out of basic playback health."""
 
@@ -806,14 +798,14 @@ def _camilla_configs_writable_result(
     return CheckResult(label, "ok", detail)
 
 
-@doctor_check(order=20.6, group="audio")
+@doctor_check()
 def check_camilla_configs_writable() -> CheckResult:
     """Guard the CamillaDSP config dir's group-write posture for jasper-web."""
 
     return _camilla_configs_writable_result(CAMILLA_CONFIGS_DIR)
 
 
-@doctor_check(order=20.7, group="audio")
+@doctor_check()
 def check_dac_usb_sync_mode() -> CheckResult:
     """Classify the speaker DAC's USB sync mode as an advisory clock-coherence
     observation for chip-AEC.
@@ -902,7 +894,7 @@ def check_dac_usb_sync_mode() -> CheckResult:
     )
 
 
-@doctor_check(order=21, group="audio")
+@doctor_check()
 def check_apple_dongle_audio() -> CheckResult:
     """Apple's USB-C → 3.5mm adapter exposes its USB Audio class interface only
     when something is plugged into the analog jack, so with no analog load
@@ -1019,7 +1011,7 @@ def _mixer_pin_problem(card_id: str, control: MixerControl) -> str | None:
     return None
 
 
-@doctor_check(order=22, group="audio", exclusive_group="audio-probe")
+@doctor_check(exclusive_group="audio-probe")
 def check_dac_mixer_pins() -> CheckResult:
     """Every mixer control the observed output DAC's profile declares must sit
     at its declared pin. JTS owns gain in CamillaDSP (main_volume), so a
@@ -1069,7 +1061,7 @@ def _devices_volume_limit_from_text(text: str) -> float | None:
         return None
     return float(value)
 
-@doctor_check(order=28, group="audio")
+@doctor_check()
 def check_camilla_volume_limit() -> CheckResult:
     """Verify the active Camilla config has JTS's non-positive fader cap."""
     config_path = evidence.camilla_config_path()
@@ -1120,7 +1112,7 @@ def check_camilla_volume_limit() -> CheckResult:
         f"{config_path} devices.volume_limit={limit:.1f} dB",
     )
 
-@doctor_check(order=28.2, group="audio")
+@doctor_check()
 def check_camilla_ring_chunk_fits() -> CheckResult:
     """Verify a ring-crossing Camilla config asks for a chunk the ring can hold.
 
@@ -1245,7 +1237,7 @@ def _incomplete_layout_detail(contract) -> str:
     return f"{blocker}. Fix the layout at {_SPEAKER_SETUP_URL}"
 
 
-@doctor_check(order=28.5, group="audio")
+@doctor_check()
 def check_active_speaker_runtime_graph() -> CheckResult:
     """Report the graph selected for saved speaker intent, fail closed if unsafe.
 
@@ -1381,7 +1373,7 @@ def _sound_profile_path() -> Path:
         )
     )
 
-@doctor_check(order=30, group="audio")
+@doctor_check()
 def check_sound_profile() -> CheckResult:
     from jasper.sound.camilla_yaml import is_jts_generated_config
     from jasper.sound.profile import (
@@ -1444,7 +1436,7 @@ def check_sound_profile() -> CheckResult:
         )
     return CheckResult("sound profile", "ok", detail)
 
-@doctor_check(order=30.5, group="audio")
+@doctor_check()
 def check_bass_extension_profile() -> CheckResult:
     from jasper.active_speaker.baseline_profile import (
         load_applied_baseline_profile_state,
@@ -1488,7 +1480,7 @@ def check_bass_extension_profile() -> CheckResult:
         f"natural={evaluation.profile.targets[-1].fp_hz:g}Hz",
     )
 
-@doctor_check(order=31, group="audio")
+@doctor_check()
 def check_dsp_apply_state() -> CheckResult:
     from jasper.dsp_apply import last_dsp_apply_state
 
@@ -1539,7 +1531,7 @@ def _is_baseline_candidate_sibling(live_path: Path, canonical: Path) -> bool:
         and live_path.name.startswith(f"{canonical.stem}_candidate_")
     )
 
-@doctor_check(order=31.5, group="audio")
+@doctor_check()
 def check_active_speaker_baseline_canonical() -> CheckResult:
     """Canonical ``active_speaker_baseline.yml`` durability (issue #1666).
 
@@ -1626,7 +1618,7 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
     )
 
 
-@doctor_check(order=31.55, group="audio", label="active speaker applied graph")
+@doctor_check(label="active speaker applied graph")
 def check_active_speaker_applied_graph() -> CheckResult:
     """Is the durable graph the one the applied profile names?
 
@@ -1705,7 +1697,7 @@ def check_active_speaker_applied_graph() -> CheckResult:
     )
 
 
-@doctor_check(order=31.6, group="audio", label="active speaker startup hold")
+@doctor_check(label="active speaker startup hold")
 def check_active_speaker_startup_hold() -> CheckResult:
     """A staged-startup hold marker with no startup load behind it is stale.
 
@@ -1751,7 +1743,7 @@ def check_active_speaker_startup_hold() -> CheckResult:
     )
 
 
-@doctor_check(order=31.7, group="audio", label="room correction authority")
+@doctor_check(label="room correction authority")
 def check_room_correction_authority() -> CheckResult:
     """Room correction runs unproven — this is the line that says so.
 
@@ -1820,7 +1812,7 @@ def check_room_correction_authority() -> CheckResult:
     )
 
 
-@doctor_check(order=31.8, group="audio", label="active speaker setup notices")
+@doctor_check(label="active speaker setup notices")
 def check_active_speaker_setup_notices() -> CheckResult:
     """The standing home for setup facts that no longer stop anything.
 

@@ -176,7 +176,6 @@ def test_migrated_json_body_reads_remain_after_csrf_guard():
             "_unbond(self)",
             "_swap_channels(self)",
             "_set_member_trim(self)",
-            "_set_mains_highpass(self)",
             "_save_peering(self)",
         ),
     }
@@ -1041,4 +1040,51 @@ def test_modules_do_not_redefine_the_shared_csrf_helpers():
         "these modules redefine the shared CSRF/JSON fetch helpers — import "
         "csrfHeaders / jsonHeaders from /assets/shared/js/http.js instead:\n"
         + "\n".join(offenders)
+    )
+
+
+# docs/UX-AUDIT-2026-09-03.md §5.5 — no inline style= in jasper/web/*.py
+# HTML (recurrence: 21 in correction_room_flow.py, 8 in google_setup.py —
+# B.4's --tone/.badge promotion cleared one of google's, so the live count
+# below is 7; measured at HEAD, not the audit snapshot).
+#
+# Shrink-only: each entry is today's real style="/style=' count for that
+# module. The test fails if a count GROWS (a new inline style=) and fails
+# if a count SHRINKS without this table being lowered to match — a fix must
+# update the allowlist in the same PR, never pass by accident. Delete an
+# entry outright once its module reaches 0.
+_INLINE_STYLE_ALLOWLIST = {
+    # Correction cluster: canonical_header() + correction.css absorb these
+    # as every correction page gets a title/back_href pass (C.S5).
+    "correction_room_flow.py": 21,
+    # Services cluster (C.A5): /google/, /ha/, /transit/, /weather/ each get
+    # an app.css-token pass as part of that row.
+    "google_setup.py": 7,
+    "home_assistant_setup.py": 1,
+    "transit_setup.py": 3,
+    "weather_setup.py": 2,
+    # /sources/ per-source row pass (C.R1).
+    "sources_setup.py": 6,
+    # /assistant/wake/ pass (C.A3).
+    "wake_setup.py": 1,
+    # Not yet in the condensed Phase C ledger (UX-AUDIT-2026-09-03.md §7) —
+    # tracked only as PR #10 in the wake-corpus cluster report
+    # (docs/ux-audit-2026-09-03/report-voice.md). Do not raise this count
+    # without also giving it a ledger row.
+    "wake_corpus_setup.py": 18,
+}
+
+_INLINE_STYLE_RE = re.compile(r"""style=["']""")
+
+
+def test_web_pages_inline_style_counts_match_the_shrink_only_allowlist():
+    counts = {}
+    for path in WEB_PY_FILES:
+        n = len(_INLINE_STYLE_RE.findall(path.read_text()))
+        if n:
+            counts[path.name] = n
+    assert counts == _INLINE_STYLE_ALLOWLIST, (
+        "inline style= counts drifted from the shrink-only allowlist "
+        "(docs/UX-AUDIT-2026-09-03.md §5.5) — lower an entry as its page is "
+        f"cleaned up, never raise one without a ledger row: {counts}"
     )

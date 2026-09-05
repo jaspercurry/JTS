@@ -39,11 +39,6 @@ import logging
 import re
 from dataclasses import dataclass
 
-from jasper.camilla_emit import (
-    BASS_MANAGEMENT_CORNER_HZ_DEFAULT,
-    BASS_MANAGEMENT_CORNER_HZ_HI,
-    BASS_MANAGEMENT_CORNER_HZ_LO,
-)
 from jasper.env_load import read_env_file_or_warn
 
 logger = logging.getLogger(__name__)
@@ -68,7 +63,7 @@ SNAP_STREAM_ID = "jts"
 
 # What this speaker plays out of its bond. "stereo" is the solo /
 # unsplit default; the rest are the channel-split assignments.
-ALLOWED_CHANNELS = ("stereo", "left", "right", "sub", "mono")
+ALLOWED_CHANNELS = ("stereo", "left", "right", "mono")
 
 # This speaker's role in its bond. Empty string = unset.
 ALLOWED_ROLES = ("leader", "follower")
@@ -95,28 +90,6 @@ CLIENT_LATENCY_MS_HI = 1500
 # meet the late side.
 CHANNEL_DELAY_MS_LO = 0.0
 CHANNEL_DELAY_MS_HI = 100.0
-
-# Receiver-side wireless-sub low-pass corner (Hz). Only meaningful when
-# channel=="sub": the follower mono-sums the full-range stereo program
-# and applies an LR4 low-pass locally in outputd so a powered sub plays
-# only the low end. When bass management is enabled, every non-sub main
-# member applies the complementary LR4 high-pass at this same corner in
-# its own local output path. A blank/non-numeric value falls back to the
-# default (a "sub" must never play full-range); an out-of-range value on
-# a sub is fail-LOUD. Bounds bracket sane home-sub corners.
-#
-# BOUND TO the one shared bass-management corner definition
-# (jasper.camilla_emit) so the wireless sub, the local-DAC sub, and the safety
-# guard reference one number, not four that can drift. The public spelling
-# stays for this module's importers (control.server, etc.).
-DEFAULT_CROSSOVER_HZ = BASS_MANAGEMENT_CORNER_HZ_DEFAULT
-CROSSOVER_HZ_LO = BASS_MANAGEMENT_CORNER_HZ_LO
-CROSSOVER_HZ_HI = BASS_MANAGEMENT_CORNER_HZ_HI
-
-# Wireless-sub bass management. Default ON: when a bond contains a sub, mains
-# high-pass at the same crossover corner the sub low-passes. The toggle exists
-# for people who deliberately want full-range mains + sub augmentation.
-DEFAULT_MAINS_HIGHPASS_ENABLED = True
 
 # Snapcast stream codec. "flac" is the lossless default (good drift
 # tolerance, modest CPU); "pcm" is uncompressed (lowest CPU, highest
@@ -166,8 +139,7 @@ class BondMember:
     """One follower in a leader's bond roster: its LAN IPv4, directory
     display name, and channel. Recorded on the LEADER at bond time so
     :func:`jasper.web.rooms_setup._unbond` can disable EVERY member of an
-    N-member bond (e.g. a 2.1 system: left + right + sub) instead of only
-    the single L/R sibling — no orphaned sub."""
+    N-member bond instead of only the single L/R sibling."""
 
     addr: str
     name: str
@@ -208,21 +180,6 @@ class GroupingConfig:
     # graph consumes them when generating the shared stereo stream.
     left_delay_ms: float = 0.0
     right_delay_ms: float = 0.0
-    # Bond-level wireless-sub crossover corner (Hz). A sub member always uses
-    # it as its low-pass corner; mains use the same value as their matched
-    # high-pass corner when this bond has a sub and mains_highpass_enabled is
-    # true.
-    # Defaulted so the wide existing constructor surface stays
-    # source-compatible; load_config always sets it explicitly.
-    crossover_hz: float = DEFAULT_CROSSOVER_HZ
-    # Per-bond wireless-sub bass-management preference. Default ON; only
-    # takes effect when a sub is actually present in the bond.
-    mains_highpass_enabled: bool = DEFAULT_MAINS_HIGHPASS_ENABLED
-    # Fan-out-derived bond-composition fact, persisted on every member so
-    # a non-leader main can self-heal its local outputd env without needing
-    # the leader-only roster. The leader also derives this from roster as
-    # defence in depth.
-    subwoofer_present: bool = False
     # The bond roster, LEADER only: who this leader's pair sibling IS,
     # recorded at bond-forming time. peer_addr is the follower's LAN
     # IPv4 (the cross-speaker control calls are IP-only by SSRF
@@ -237,9 +194,9 @@ class GroupingConfig:
     peer_addr: str = ""
     peer_name: str = ""
     # LEADER-only: every follower (addr/name/channel) recorded at bond
-    # time, so _unbond disables ALL members (not just the L/R sibling) —
-    # no orphaned sub. Empty on followers, solo, and legacy bonds (the
-    # discovery fallback covers those).
+    # time, so _unbond disables ALL members (not just the L/R sibling).
+    # Empty on followers, solo, and legacy bonds (the discovery fallback
+    # covers those).
     roster: tuple[BondMember, ...] = ()
 
 
@@ -257,9 +214,6 @@ _DISABLED = GroupingConfig(
     client_latency_ms=DEFAULT_CLIENT_LATENCY_MS,
     left_delay_ms=0.0,
     right_delay_ms=0.0,
-    crossover_hz=DEFAULT_CROSSOVER_HZ,
-    mains_highpass_enabled=DEFAULT_MAINS_HIGHPASS_ENABLED,
-    subwoofer_present=False,
     error=None,
 )
 
@@ -270,23 +224,6 @@ def _parse_enabled(raw: str) -> bool:
     A broken value must never silently leave grouping ON.
     """
     return raw.strip().lower() == "on"
-
-
-def _parse_bool_env(raw: str, *, key: str, default: bool) -> tuple[bool, str | None]:
-    """Parse a grouping boolean env (on/off/true/false/yes/no/1/0).
-
-    Empty/unset falls back to ``default`` with no error. An UNRECOGNIZED value
-    returns ``default`` plus a fail-LOUD error string naming the key, which
-    load_config promotes to cfg.error — a broken knob is never silently honored.
-    """
-    text = (raw or "").strip().lower()
-    if not text:
-        return default, None
-    if text in {"1", "true", "yes", "on"}:
-        return True, None
-    if text in {"0", "false", "no", "off"}:
-        return False, None
-    return default, f"{key}={raw!r} must be one of on/off/true/false/1/0"
 
 
 def _parse_buffer_ms(raw: str) -> int:
@@ -332,32 +269,12 @@ def _parse_channel_delay_ms(raw: str, *, key: str) -> tuple[float, str | None]:
     return val, None
 
 
-def _parse_crossover_hz(raw: str) -> float:
-    """Parse the sub low-pass corner; a blank or non-numeric value falls
-    back to DEFAULT_CROSSOVER_HZ (a "sub" must NEVER play full-range, so
-    there is no bypass sentinel). Range enforcement is the shared rule in
-    :func:`validate_grouping`, applied only when the config is enabled and
-    the channel is "sub" — so a non-sub member carrying a stray value is
-    not fail-LOUD over a knob it does not use.
-    """
-    if not raw.strip():
-        return DEFAULT_CROSSOVER_HZ
-    try:
-        return float(raw.strip())
-    except (ValueError, AttributeError):
-        logger.warning(
-            "JASPER_GROUPING_CROSSOVER_HZ=%r is not a number; "
-            "defaulting to %.1f Hz", raw, DEFAULT_CROSSOVER_HZ,
-        )
-        return DEFAULT_CROSSOVER_HZ
-
-
 def _scrub_roster_field(value: str) -> str:
     """Replace the roster delimiters ("|" ",") and any control char (ord < 32)
     with a space so an untrusted value can never RESHAPE the serialization — a
     "|"/"," in the middle of a field would otherwise inject an extra member, and
     a stray delimiter would split (drop) the record. Caller strips + length-caps.
-    A valid addr (IP/host) or channel (left/right/sub/...) never contains these,
+    A valid addr (IP/host) or channel (left/right/...) never contains these,
     so scrubbing only ever neutralises a malformed/hostile value."""
     return "".join(" " if (c in "|," or ord(c) < 32) else c for c in value)
 
@@ -421,9 +338,6 @@ def validate_grouping(
     client_latency_ms: int = DEFAULT_CLIENT_LATENCY_MS,
     left_delay_ms: float = 0.0,
     right_delay_ms: float = 0.0,
-    crossover_hz: float = DEFAULT_CROSSOVER_HZ,
-    mains_highpass_enabled: bool = DEFAULT_MAINS_HIGHPASS_ENABLED,
-    subwoofer_present: bool = False,
     peer_addr: str = "",
     peer_name: str = "",
     roster: tuple[BondMember, ...] = (),
@@ -483,10 +397,6 @@ def validate_grouping(
             f"JASPER_GROUPING_CLIENT_LATENCY_MS={client_latency_ms} must be "
             f"between {CLIENT_LATENCY_MS_LO} and {CLIENT_LATENCY_MS_HI}"
         )
-    if not isinstance(mains_highpass_enabled, bool):
-        return "JASPER_GROUPING_MAINS_HIGHPASS must be boolean"
-    if not isinstance(subwoofer_present, bool):
-        return "JASPER_GROUPING_SUBWOOFER_PRESENT must be boolean"
     for key, value in (
         ("JASPER_GROUPING_LEFT_DELAY_MS", left_delay_ms),
         ("JASPER_GROUPING_RIGHT_DELAY_MS", right_delay_ms),
@@ -496,17 +406,6 @@ def validate_grouping(
                 f"{key}={value} must be between {CHANNEL_DELAY_MS_LO} "
                 f"and {CHANNEL_DELAY_MS_HI}"
             )
-    # The crossover corner is mandatory for a sub bond. The sub always uses it
-    # for its local low-pass, and mains use the same value when bass management
-    # is armed. A non-sub member in a plain stereo pair can still carry a stale
-    # corner without failing loud because the reconciler clears the HP env
-    # unless a sub is present.
-    uses_crossover = channel == "sub" or subwoofer_present
-    if uses_crossover and not (CROSSOVER_HZ_LO <= crossover_hz <= CROSSOVER_HZ_HI):
-        return (
-            f"JASPER_GROUPING_CROSSOVER_HZ={crossover_hz} must be between "
-            f"{CROSSOVER_HZ_LO} and {CROSSOVER_HZ_HI} Hz"
-        )
     if peer_addr:
         if not is_private_or_loopback_ipv4(peer_addr):
             return (
@@ -612,31 +511,12 @@ def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
         src.get("JASPER_GROUPING_RIGHT_DELAY_MS", ""),
         key="JASPER_GROUPING_RIGHT_DELAY_MS",
     )
-    crossover_hz = _parse_crossover_hz(
-        src.get("JASPER_GROUPING_CROSSOVER_HZ", "")
-    )
-    mains_highpass_enabled, mains_highpass_parse_error = (
-        _parse_bool_env(
-            src.get("JASPER_GROUPING_MAINS_HIGHPASS", ""),
-            key="JASPER_GROUPING_MAINS_HIGHPASS",
-            default=DEFAULT_MAINS_HIGHPASS_ENABLED,
-        )
-    )
-    subwoofer_present, subwoofer_present_parse_error = (
-        _parse_bool_env(
-            src.get("JASPER_GROUPING_SUBWOOFER_PRESENT", ""),
-            key="JASPER_GROUPING_SUBWOOFER_PRESENT",
-            default=False,
-        )
-    )
 
     error = (
         trim_parse_error
         or client_latency_parse_error
         or left_delay_parse_error
         or right_delay_parse_error
-        or mains_highpass_parse_error
-        or subwoofer_present_parse_error
         or validate_grouping(
         role=role,
         channel=channel,
@@ -647,9 +527,6 @@ def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
         client_latency_ms=client_latency_ms,
         left_delay_ms=left_delay_ms,
         right_delay_ms=right_delay_ms,
-        crossover_hz=crossover_hz,
-        mains_highpass_enabled=mains_highpass_enabled,
-        subwoofer_present=subwoofer_present,
         peer_addr=peer_addr,
         peer_name=peer_name,
         roster=roster,
@@ -668,9 +545,6 @@ def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
         client_latency_ms=client_latency_ms,
         left_delay_ms=left_delay_ms,
         right_delay_ms=right_delay_ms,
-        crossover_hz=crossover_hz,
-        mains_highpass_enabled=mains_highpass_enabled,
-        subwoofer_present=subwoofer_present,
         peer_addr=peer_addr,
         peer_name=peer_name,
         roster=roster,
@@ -731,24 +605,6 @@ def follower_leader_addr(cfg: GroupingConfig) -> str | None:
 def is_bonded_follower(cfg: GroupingConfig) -> bool:
     """True when ``cfg`` describes an ACTIVE bonded FOLLOWER. PURE."""
     return follower_leader_addr(cfg) is not None
-
-
-def bond_has_subwoofer(cfg: GroupingConfig) -> bool:
-    """True when this bond contains a subwoofer member — this box IS the sub,
-    the persisted fan-out fact says one exists, or the leader roster lists one.
-
-    The ONE predicate behind every "does this bond bass-manage" decision. It is
-    shared on purpose by the reconciler's outputd env writer
-    (:func:`jasper.multiroom.reconcile.outputd_grouping_env` — decides whether
-    to arm the wireless mains high-pass) and the bass-management resolver
-    (:func:`jasper.bass_management.resolve_bass_management` — reports the
-    corner/ownership to displays and the room designer), so the two readers can
-    never drift on what "a sub is present" means. PURE."""
-    return (
-        cfg.subwoofer_present
-        or cfg.channel == "sub"
-        or any(m.channel == "sub" for m in cfg.roster)
-    )
 
 
 def local_sources_park_reason(cfg: GroupingConfig) -> str | None:

@@ -11,9 +11,7 @@
 use anyhow::{Context, Result};
 use jasper_env::{env_f32, env_parse, env_str};
 
-use crate::dac_content::{
-    ChannelPick, SUB_DEFAULT_CORNER_HZ, SUB_MAX_CORNER_HZ, SUB_MIN_CORNER_HZ,
-};
+use crate::dac_content::ChannelPick;
 use crate::types::{SampleFormat, SAMPLE_RATE};
 
 pub const DEFAULT_PERIOD_FRAMES: u32 = 1024;
@@ -253,11 +251,6 @@ pub struct Config {
     /// from the round-trip lane (channel-split vocabulary; default
     /// stereo = passthrough). Only meaningful with an armed lane.
     pub dac_content_channel: ChannelPick,
-    /// Optional LR4 high-pass corner for MAIN channels in a wireless-sub
-    /// bond. `None` means full-range mains. Invalid env values resolve to
-    /// `None` (fail-closed to full-range, never startup crash / stuck
-    /// bass-light). Ignored for `ChannelPick::Sub`.
-    pub dac_content_highpass_hz: Option<f64>,
     /// Per-member level trim on the round-trip lane (dB, ALWAYS <= 0 —
     /// pair balancing attenuates the LOUDER speaker, never boosts;
     /// positive values fail closed like the duck knob). Applied to the
@@ -576,45 +569,6 @@ impl Config {
         let dac_content_channel =
             ChannelPick::parse(&env_str("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", "stereo"))
                 .map_err(anyhow::Error::msg)?;
-        // The receiver-side dumb-subwoofer corner, only meaningful when the
-        // channel is "sub". A sub MUST NEVER play full-range, so a
-        // missing/blank/out-of-range value resolves to a safe low-pass
-        // (default 80 Hz, clamped to 40..200 Hz) with a warn — never a bypass.
-        // Mirrors GroupingConfig.crossover_hz's 40..200.
-        let dac_content_channel = if let ChannelPick::Sub(_) = dac_content_channel {
-            let raw = env_f64("JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ", SUB_DEFAULT_CORNER_HZ)?;
-            let corner = if !(SUB_MIN_CORNER_HZ..=SUB_MAX_CORNER_HZ).contains(&raw) {
-                let clamped = raw.clamp(SUB_MIN_CORNER_HZ, SUB_MAX_CORNER_HZ);
-                eprintln!(
-                    "event=outputd.dac_content.sub_corner_clamped requested={raw} \
-                     clamped={clamped} range={SUB_MIN_CORNER_HZ}..{SUB_MAX_CORNER_HZ}"
-                );
-                clamped
-            } else {
-                raw
-            };
-            ChannelPick::Sub(corner)
-        } else {
-            dac_content_channel
-        };
-        let dac_content_highpass_hz = match (
-            dac_content_channel,
-            env_optional("JASPER_OUTPUTD_DAC_CONTENT_HP_HZ"),
-        ) {
-            (ChannelPick::Sub(_), _) | (_, None) => None,
-            (_, Some(raw)) => match raw.trim().parse::<f64>() {
-                Ok(v) if v.is_finite() && (SUB_MIN_CORNER_HZ..=SUB_MAX_CORNER_HZ).contains(&v) => {
-                    Some(v)
-                }
-                _ => {
-                    eprintln!(
-                        "event=outputd.dac_content.main_highpass_invalid \
-                         requested={raw:?} action=play_full_range"
-                    );
-                    None
-                }
-            },
-        };
         // ONE lane, ONE source. Both spellings armed is a writer fault, and
         // guessing which transport wins would silently pick one snapclient's
         // output over another's.
@@ -921,7 +875,6 @@ impl Config {
             dac_content_fifo,
             dac_content_ring,
             dac_content_channel,
-            dac_content_highpass_hz,
             dac_content_trim_db,
             tts_socket_path,
             tts_max_pending_frames,
@@ -1016,22 +969,6 @@ fn env_bool(name: &str, default: bool) -> bool {
     }
 }
 
-fn env_f64(name: &str, default: f64) -> Result<f64> {
-    match std::env::var(name) {
-        Ok(s) if !s.trim().is_empty() => {
-            let parsed = s
-                .trim()
-                .parse::<f64>()
-                .with_context(|| format!("{} must be a number; got {:?}", name, s))?;
-            if !parsed.is_finite() {
-                anyhow::bail!("{} must be finite", name);
-            }
-            Ok(parsed)
-        }
-        _ => Ok(default),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1106,7 +1043,6 @@ mod tests {
             assert!(cfg.dac_content_fifo.is_none());
             assert!(cfg.dac_content_ring.is_none());
             assert_eq!(cfg.dac_content_channel, ChannelPick::Stereo);
-            assert_eq!(cfg.dac_content_highpass_hz, None);
             assert!(!cfg.active_lane);
             // Learned quiet-room reference persists to outputd's own file so a
             // solo/bonded flip never cross-contaminates fan-in's learned value.
@@ -1260,167 +1196,6 @@ mod tests {
                     Some("/run/jasper-grouping/member-content.fifo")
                 );
                 assert_eq!(cfg.dac_content_channel, ChannelPick::Left);
-                assert_eq!(cfg.dac_content_highpass_hz, None);
-            },
-        );
-    }
-
-    #[test]
-    fn main_highpass_uses_valid_corner_for_non_sub_channels() {
-        with_env(
-            &[
-                ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
-                // Without it the lane parks under the one transport (#3118);
-                // this test's subject is the knob.
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
-                ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("left")),
-                ("JASPER_OUTPUTD_DAC_CONTENT_HP_HZ", Some("120")),
-            ],
-            || {
-                let cfg = Config::from_env().unwrap();
-                assert_eq!(cfg.dac_content_channel, ChannelPick::Left);
-                assert_eq!(cfg.dac_content_highpass_hz, Some(120.0));
-            },
-        );
-    }
-
-    #[test]
-    fn main_highpass_invalid_or_zero_fails_closed_to_full_range() {
-        for raw in ["", "0", "-5", "nope", "5000"] {
-            with_env(
-                &[
-                    ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
-                    // Without it the lane parks under the one transport (#3118);
-                    // this test's subject is the knob.
-                    ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
-                    ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("left")),
-                    ("JASPER_OUTPUTD_DAC_CONTENT_HP_HZ", Some(raw)),
-                ],
-                || {
-                    let cfg = Config::from_env().unwrap();
-                    assert_eq!(cfg.dac_content_channel, ChannelPick::Left);
-                    assert_eq!(cfg.dac_content_highpass_hz, None);
-                },
-            );
-        }
-    }
-
-    #[test]
-    fn sub_channel_uses_the_configured_crossover_corner() {
-        with_env(
-            &[
-                ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
-                // Without it the lane parks under the one transport (#3118);
-                // this test's subject is the knob.
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
-                ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("sub")),
-                ("JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ", Some("120")),
-            ],
-            || {
-                let cfg = Config::from_env().unwrap();
-                assert_eq!(cfg.dac_content_channel, ChannelPick::Sub(120.0));
-                assert_eq!(cfg.dac_content_highpass_hz, None);
-            },
-        );
-    }
-
-    #[test]
-    fn sub_channel_defaults_to_80hz_when_corner_absent() {
-        // A "sub" must NEVER play full-range, so an absent corner picks a
-        // safe default low-pass, not a bypass.
-        with_env(
-            &[
-                ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
-                // Without it the lane parks under the one transport (#3118);
-                // this test's subject is the knob.
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
-                ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("sub")),
-            ],
-            || {
-                let cfg = Config::from_env().unwrap();
-                assert_eq!(
-                    cfg.dac_content_channel,
-                    ChannelPick::Sub(SUB_DEFAULT_CORNER_HZ)
-                );
-                assert_eq!(cfg.dac_content_highpass_hz, None);
-            },
-        );
-    }
-
-    #[test]
-    fn sub_corner_is_clamped_to_the_valid_range() {
-        // Below the floor clamps up; above the ceiling clamps down. The
-        // reconciler validates 40..200 too, but config defends in depth so
-        // a hand-set out-of-range value can never bypass or mis-tune.
-        with_env(
-            &[
-                ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
-                // Without it the lane parks under the one transport (#3118);
-                // this test's subject is the knob.
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
-                ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("sub")),
-                ("JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ", Some("5")),
-            ],
-            || {
-                let cfg = Config::from_env().unwrap();
-                assert_eq!(cfg.dac_content_channel, ChannelPick::Sub(SUB_MIN_CORNER_HZ));
-                assert_eq!(cfg.dac_content_highpass_hz, None);
-            },
-        );
-        with_env(
-            &[
-                ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
-                // Without it the lane parks under the one transport (#3118);
-                // this test's subject is the knob.
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
-                ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("sub")),
-                ("JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ", Some("5000")),
-            ],
-            || {
-                let cfg = Config::from_env().unwrap();
-                assert_eq!(cfg.dac_content_channel, ChannelPick::Sub(SUB_MAX_CORNER_HZ));
-                assert_eq!(cfg.dac_content_highpass_hz, None);
-            },
-        );
-    }
-
-    #[test]
-    fn main_highpass_is_ignored_for_sub_channels() {
-        with_env(
-            &[
-                ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
-                // Without it the lane parks under the one transport (#3118);
-                // this test's subject is the knob.
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
-                ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("sub")),
-                ("JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ", Some("90")),
-                ("JASPER_OUTPUTD_DAC_CONTENT_HP_HZ", Some("90")),
-            ],
-            || {
-                let cfg = Config::from_env().unwrap();
-                assert_eq!(cfg.dac_content_channel, ChannelPick::Sub(90.0));
-                assert_eq!(cfg.dac_content_highpass_hz, None);
-            },
-        );
-    }
-
-    #[test]
-    fn sub_corner_is_ignored_for_non_sub_channels() {
-        // The corner env only matters for "sub"; setting it on another
-        // channel must not change the pick.
-        with_env(
-            &[
-                ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
-                // Without it the lane parks under the one transport (#3118);
-                // this test's subject is the knob.
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
-                ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("left")),
-                ("JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ", Some("120")),
-            ],
-            || {
-                let cfg = Config::from_env().unwrap();
-                assert_eq!(cfg.dac_content_channel, ChannelPick::Left);
-                assert_eq!(cfg.dac_content_highpass_hz, None);
             },
         );
     }

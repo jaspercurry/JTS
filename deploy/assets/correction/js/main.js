@@ -2231,7 +2231,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       var rawCount = Number(session.private_raw_audio_count || 0);
       if (rawCount > 0) {
         var badge = document.createElement('span');
-        badge.className = 'privacy-badge';
+        badge.className = 'badge badge--warn';
         badge.textContent = 'Private raw recordings';
         privacy.appendChild(badge);
         privacy.appendChild(document.createTextNode(

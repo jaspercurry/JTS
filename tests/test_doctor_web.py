@@ -628,7 +628,7 @@ def test_every_shipped_wizard_socket_is_swept():
         "check_wizard_socket_start_limits",
     ],
 )
-def test_web_checks_are_registered_in_the_web_group(check_name):
+def test_web_checks_are_registered_in_the_web_module(check_name):
     assert check_name in _registered_check_names()
     by_name = {c.func.__name__: c for c in doctor.registered_checks()}
-    assert by_name[check_name].group == "web"
+    assert by_name[check_name].module == "web"

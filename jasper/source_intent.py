@@ -707,7 +707,6 @@ def _default_write_intent(path: str, updates: Mapping[str, str]) -> None:
         path,
         updates,
         mode=_INTENT_FILE_MODE,
-        group_from_parent=True,
         lock_mode=_SHARED_LOCK_MODE,
         max_bytes=_MAX_INTENT_BYTES,
         lock_timeout_sec=_REQUEST_LOCK_TIMEOUT_SEC,
@@ -766,7 +765,6 @@ def request_source_intent(
         with advisory_file_lock(
             request_lock_path,
             mode=_SHARED_LOCK_MODE,
-            group_from_parent=True,
             timeout_sec=_REQUEST_LOCK_TIMEOUT_SEC,
         ):
             request_started_ns = time.monotonic_ns()
@@ -1905,7 +1903,6 @@ def source_reconcile_lock(
     return advisory_file_lock(
         f"{env_path}.reconcile.lock",
         mode=_SHARED_LOCK_MODE,
-        group_from_parent=True,
         timeout_sec=timeout_sec,
     )
 

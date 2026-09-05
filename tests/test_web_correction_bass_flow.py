@@ -9,6 +9,8 @@ from __future__ import annotations
 from http import HTTPStatus
 from pathlib import Path
 
+import pytest
+
 from jasper.web import correction_bass_flow as flow
 
 
@@ -42,110 +44,26 @@ def test_bass_module_uses_shared_get_json():
     assert ".json()" not in source
 
 
-def _state(monkeypatch, **kwargs):
-    from jasper.bass_management import BassManagementState
-
-    defaults = dict(
-        corner_hz=None, owner=None, sub_present=False, mains_highpass_enabled=False,
-    )
-    defaults.update(kwargs)
+def _corner(monkeypatch, corner_hz=None):
     monkeypatch.setattr(
-        "jasper.bass_management.resolve_bass_management",
-        lambda: BassManagementState(**defaults),
+        "jasper.output_topology.bass_management_corner_hz", lambda: corner_hz
     )
 
 
-def test_status_payload_not_configured(monkeypatch):
-    _state(monkeypatch)  # no bass management
+@pytest.mark.parametrize("corner_hz", [None, 80.0])
+def test_status_payload_mirrors_the_live_corner(monkeypatch, corner_hz):
+    _corner(monkeypatch, corner_hz)
     payload, status = flow.handle_status()
     assert status == HTTPStatus.OK
-    assert payload["configured"] is False
-    assert payload["corner_hz"] is None
-    assert payload["owner_label"] is None
-
-
-def test_status_payload_active_speaker_local(monkeypatch):
-    from jasper.bass_management import OWNER_ACTIVE_SPEAKER_LOCAL
-
-    _state(
-        monkeypatch,
-        corner_hz=80.0,
-        owner=OWNER_ACTIVE_SPEAKER_LOCAL,
-        sub_present=True,
-        mains_highpass_enabled=True,
-    )
-    payload, status = flow.handle_status()
-    assert status == HTTPStatus.OK
-    assert payload["configured"] is True
-    assert payload["corner_hz"] == 80.0
-    assert payload["sub_present"] is True
-    assert payload["mains_highpass_enabled"] is True
-    # A homeowner-facing owner label is derived (not the raw owner id).
-    assert payload["owner_label"] == "This speaker's own subwoofer output"
-
-
-def test_status_payload_wireless_sub(monkeypatch):
-    from jasper.bass_management import OWNER_WIRELESS_SUB
-
-    _state(
-        monkeypatch,
-        corner_hz=90.0,
-        owner=OWNER_WIRELESS_SUB,
-        sub_present=True,
-        mains_highpass_enabled=False,
-    )
-    payload, _ = flow.handle_status()
-    assert payload["configured"] is True
-    assert payload["owner_label"] == (
-        "A wireless subwoofer in this speaker's group"
-    )
-    assert payload["mains_highpass_enabled"] is False
-
-
-def test_status_payload_fourth_quadrant_gap_is_reported(monkeypatch):
-    """The known active-endpoint + wireless-only-sub gap rides the payload so
-    the page can render the honest 'not applied on this speaker' copy instead
-    of claiming a high-pass the box does not run."""
-    from jasper.bass_management import (
-        MAINS_HP_UNWIRED_ACTIVE_ENDPOINT,
-        OWNER_WIRELESS_SUB,
-    )
-
-    _state(
-        monkeypatch,
-        corner_hz=90.0,
-        owner=OWNER_WIRELESS_SUB,
-        sub_present=True,
-        mains_highpass_enabled=False,
-        mains_highpass_unwired_reason=MAINS_HP_UNWIRED_ACTIVE_ENDPOINT,
-    )
-    payload, _ = flow.handle_status()
-    assert payload["mains_highpass_enabled"] is False
-    assert (
-        payload["mains_highpass_unwired_reason"]
-        == MAINS_HP_UNWIRED_ACTIVE_ENDPOINT
-    )
+    assert payload["corner_hz"] == corner_hz
+    assert payload["configured"] is (corner_hz is not None)
 
 
 def test_status_payload_is_display_only_no_control_keys(monkeypatch):
     """The wizard is read-only: the payload carries no apply/set/write affordance."""
-    from jasper.bass_management import OWNER_ACTIVE_SPEAKER_LOCAL
-
-    _state(
-        monkeypatch, corner_hz=80.0, owner=OWNER_ACTIVE_SPEAKER_LOCAL,
-        sub_present=True, mains_highpass_enabled=True,
-    )
+    _corner(monkeypatch, 80.0)
     payload, _ = flow.handle_status()
-    assert set(payload) == {
-        "corner_hz",
-        "owner",
-        "sub_present",
-        "mains_highpass_enabled",
-        "mains_highpass_unwired_reason",
-        "owner_label",
-        "configured",
-        "bass_extension",
-    }
+    assert set(payload) == {"corner_hz", "configured", "bass_extension"}
 
 
 def test_status_payload_includes_bass_extension_section(monkeypatch):
@@ -154,7 +72,7 @@ def test_status_payload_includes_bass_extension_section(monkeypatch):
     section, verbatim from bass_extension_state_summary()."""
     import jasper.bass_extension.profile as profile_mod
 
-    _state(monkeypatch)  # bass-management state is irrelevant here
+    _corner(monkeypatch)  # the corner is irrelevant here
     summary = {"commissioned": True, "status": "accepted"}
     monkeypatch.setattr(profile_mod, "bass_extension_state_summary", lambda: summary)
 
@@ -169,7 +87,7 @@ def test_status_payload_bass_extension_section_is_fail_soft(monkeypatch):
     everything else stays intact."""
     import jasper.bass_extension.profile as profile_mod
 
-    _state(monkeypatch, corner_hz=80.0)
+    _corner(monkeypatch, 80.0)
 
     def boom():
         raise RuntimeError("profile read failed")
@@ -207,7 +125,7 @@ def test_bass_flow_registered_on_the_correction_server(monkeypatch, tmp_path):
         )
         body = json.loads(resp.read())
         assert resp.status == 200
-        assert set(body) >= {"corner_hz", "configured", "owner_label"}
+        assert set(body) >= {"corner_hz", "configured"}
     finally:
         server.shutdown()
         server.server_close()

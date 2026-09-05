@@ -235,7 +235,6 @@ class IncidentStore:
                 self.path,
                 encoded,
                 mode=0o660,
-                group_from_parent=True,
             )
             self._write_warning_emitted = False
             return True

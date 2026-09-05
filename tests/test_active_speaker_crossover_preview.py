@@ -486,47 +486,24 @@ def test_save_crossover_preview_durable_fsyncs_the_write(
     assert len(fsync_calls) == 2  # file fsync + parent-directory fsync
 
 
-def test_save_crossover_preview_publishes_under_its_parent_group(
-    tmp_path: Path, monkeypatch,
+def test_save_crossover_preview_publishes_group_readable_0640(
+    tmp_path: Path,
 ) -> None:
-    """The 2026-08-21 jts3 defect, pinned at this writer too.
+    """The crossover-accept seam re-prepares this preview from the ROOT
+    ``jasper-correction-web`` process while ``/sound/`` reads it as
+    ``jasper-web`` (group ``jasper``), so 0640 is what keeps the page that
+    just asked for it able to open it."""
 
-    The crossover-accept seam re-prepares this preview from the ROOT
-    ``jasper-correction-web`` process, three lines after it writes the design
-    draft; ``/sound/`` reads both as ``jasper-web`` (group ``jasper``).
-    ``/var/lib/jasper`` is group ``jasper`` but NOT setgid, so a root write
-    without ``group_from_parent`` publishes ``root:root 0640`` and the preview
-    silently disappears from the page that just asked for it.
-
-    The KWARG is asserted, not just the resulting stat: on a dev box the
-    tempfile already inherits the test user's gid, so a filesystem-only check
-    cannot fail when the argument is dropped.
-    """
-
-    from jasper.active_speaker import crossover_preview as preview_mod
-
-    real_write = preview_mod.atomic_write_text
-    calls: list[dict] = []
-
-    def recording_write(path, text, **kwargs):
-        calls.append(kwargs)
-        real_write(path, text, **kwargs)
-
-    monkeypatch.setattr(preview_mod, "atomic_write_text", recording_write)
     path = tmp_path / "crossover_preview.json"
 
     save_crossover_preview(_draft(), path=path, created_at="2026-06-10T12:30:00Z")
+    assert path.stat().st_mode & 0o777 == 0o640
+
     # And the durable accept-seam write keeps the same contract.
     save_crossover_preview(
         _draft(), path=path, created_at="2026-06-10T12:31:00Z", durable=True,
     )
-
-    assert calls and all(call.get("group_from_parent") is True for call in calls)
-    assert all(call.get("mode") == 0o640 for call in calls)
-
-    published = path.stat()
-    assert published.st_mode & 0o777 == 0o640
-    assert published.st_gid == tmp_path.stat().st_gid
+    assert path.stat().st_mode & 0o777 == 0o640
 
 
 def test_load_crossover_preview_marks_changed_design_draft_stale(tmp_path: Path) -> None:

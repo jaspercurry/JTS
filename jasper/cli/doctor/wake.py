@@ -38,7 +38,7 @@ REASON_WAKE_LEGS_MISSING = "wake_legs_not_armed"
 REASON_WAKE_LEGS_UNEXPECTED = "wake_legs_unexpected_armed"
 REASON_WAKE_LEGS_MATCH = "wake_legs_armed_matches_configured"
 
-@doctor_check(order=8, group="wake", label="openWakeWord models", needs_cfg=True)
+@doctor_check(label="openWakeWord models", needs_cfg=True)
 def check_openwakeword_model(cfg: Config) -> CheckResult:
     # Must precede the openwakeword import; see jasper/openwakeword_guard.py.
     # jasper-doctor never imports jasper.wake, so without this the check pays
@@ -273,7 +273,7 @@ def _assess_wake_legs(
         reason=REASON_WAKE_LEGS_MATCH,
     )
 
-@doctor_check(order=53, group="wake")
+@doctor_check()
 def check_wake_legs_configured() -> CheckResult:
     """Reports which additive wake-detection legs are armed (raw chip-direct,
     DTLN neural, and the XVF3800 chip-AEC beam legs); check_aec_bridge_running

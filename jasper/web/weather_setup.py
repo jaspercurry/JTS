@@ -18,10 +18,12 @@ label; the raw address typed into the form is never persisted.
 Migrated to the canonical design system: renders through
 ``canonical_page`` with the page-specific CSS in
 ``/assets/weather/weather.css``. It is a plain server-rendered
-request/response form, so it ships no ES module.
+request/response form; its only client behaviour is the shared
+data-confirm guard on the Clear form (assets/weather/js/main.js).
 """
 from __future__ import annotations
 
+import functools
 import html
 import logging
 import os
@@ -45,6 +47,7 @@ from ._common import (
     restart_voice_daemon,
     safe_back_href,
     send_html_response,
+    send_rejected_form,
     send_see_other,
     guard_read_request,
     guard_mutating_request,
@@ -287,10 +290,18 @@ def _index_html(
     *,
     status_msg: str = "",
     back_href: str = "/",
+    submitted: dict[str, str] | None = None,
 ) -> bytes:
     csrf = csrf_field_html(csrf_token)
     current_html = _current_location_html(weather_state, transit_state)
-    units_options = _units_options_html(_units(weather_state))
+    sub = submitted or {}
+    # A restored manual coordinate takes precedence over the address field,
+    # so it must be visible and clearable rather than collapsed out of sight.
+    manual_open = " open" if (sub.get("manual_lat") or sub.get("manual_lon")) else ""
+    sub_units = (sub.get("units") or "").strip().lower()
+    units_options = _units_options_html(
+        sub_units if sub_units in VALID_UNITS else _units(weather_state),
+    )
     body = f"""
 {canonical_header("Weather", back_href=back_href)}
 <main class="page">
@@ -313,6 +324,7 @@ def _index_html(
       <div class="field">
         <label for="location">Location</label>
         <input id="location" name="location" type="text"
+               value="{html.escape(sub.get('location', ''), quote=True)}"
                placeholder="Tampa, FL or 123 Main St, Brooklyn NY"
                autocomplete="street-address">
         <p class="form-hint">
@@ -330,17 +342,19 @@ def _index_html(
         </select>
       </div>
 
-      <details class="advanced">
+      <details class="disclosure manual-coords"{manual_open}>
         <summary>Manual coordinates</summary>
-        <div class="advanced-body">
+        <div class="disclosure__body">
           <div class="field">
             <label for="manual_lat">Latitude</label>
             <input id="manual_lat" name="manual_lat" type="text"
+                   value="{html.escape(sub.get('manual_lat', ''), quote=True)}"
                    inputmode="decimal" placeholder="40.653">
           </div>
           <div class="field">
             <label for="manual_lon">Longitude</label>
             <input id="manual_lon" name="manual_lon" type="text"
+                   value="{html.escape(sub.get('manual_lon', ''), quote=True)}"
                    inputmode="decimal" placeholder="-74.007">
           </div>
           <p class="form-hint">Manual coordinates bypass geocoding.</p>
@@ -353,13 +367,16 @@ def _index_html(
     </form>
   </section>
 
-  <form method="post" action="./clear" class="clear-form">
+  <form method="post" action="./clear" class="clear-form"
+        data-confirm="Clear the saved weather location and units? Bare weather questions will need a location again."
+        data-confirm-danger="1">
     {csrf}
     <div class="form-actions">
       <button type="submit" class="btn btn--danger">Clear weather default</button>
     </div>
   </form>
 </main>
+<script type="module" src="/assets/weather/js/main.js"></script>
 """
     return canonical_page(
         "Weather",
@@ -415,9 +432,12 @@ def _make_handler(cfg: dict[str, str]) -> type[BaseHTTPRequestHandler]:
         def _handle_save(self, form: dict[str, str]) -> None:
             current = _load_state(cfg["state_path"])
             transit_state = read_env_file(cfg["transit_path"])
+            page = functools.partial(
+                _index_html, current, transit_state, submitted=form,
+            )
             new, err = _apply_save(form, current, transit_state=transit_state)
             if err is not None:
-                send_see_other(self, "./", flash=err)
+                send_rejected_form(self, page, flash=err)
                 return
             # weather.env has two writers in this process: this save/clear
             # and transit_setup's _seed_weather_from_transit_if_missing. Both
@@ -443,7 +463,7 @@ def _make_handler(cfg: dict[str, str]) -> type[BaseHTTPRequestHandler]:
                 )
             except OSError as e:
                 logger.exception("could not write weather.env")
-                send_see_other(self, "./", flash=f"Could not save: {e}")
+                send_rejected_form(self, page, flash=f"Could not save: {e}")
                 return
             restart_voice_daemon()
             # No coords in the log — they're the household's home location.

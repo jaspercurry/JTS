@@ -391,7 +391,6 @@ def save_v2_state(state: Mapping[str, Any], *, durable: bool = False) -> None:
             # value, not at the evidence packet hours later (#2839).
             json.dumps(payload, allow_nan=False, indent=2, sort_keys=True) + "\n",
             mode=0o640,
-            group_from_parent=True,
             durable=durable,
         )
 

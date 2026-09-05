@@ -9,7 +9,9 @@ Two concerns:
 1. The page renders canonical design-system bytes (links /assets/app.css
    and its page CSS, carries the shared .app-header, embeds the CSRF meta
    tag, uses the .field/.form-actions form vocabulary). It is a plain
-   server-rendered request/response form, so it ships no ES module.
+   server-rendered request/response form; its only client behaviour is the
+   shared confirm-forms.js guard on the Clear form, loaded as an ES module
+   (no inline `<script>`).
 2. The migration was presentation-only: the routes (GET /, POST /save,
    POST /clear), the CSRF handshake, the flash redirects, and the public
    module surface (render fn, make_server, main) are unchanged. The
@@ -19,15 +21,21 @@ Two concerns:
 """
 from __future__ import annotations
 
+import re
 import socket
 import threading
+import urllib.parse
 
 import pytest
 
 import jasper.location_state as ls
 from jasper.web import _common, weather_setup
 
-from ._web_test_helpers import make_csrf_session, post_with_csrf
+from ._web_test_helpers import (
+    make_csrf_session,
+    post_with_csrf,
+    request_with_csrf,
+)
 
 
 # The page reads weather/transit env vars as a *fallback* when its state file
@@ -124,10 +132,18 @@ def test_render_keeps_geocode_privacy_disclosure():
     assert "operations.osmfoundation.org" in out
 
 
-def test_render_ships_no_inline_script_or_style():
+def test_render_ships_es_module_not_inline_script_or_style():
     out = _render()
-    assert "<script" not in out
+    assert '<script type="module" src="/assets/weather/js/main.js">' in out
+    assert "<script>" not in out
     assert "<style>" not in out
+
+
+def test_clear_form_carries_confirm_guard():
+    out = _render()
+    assert 'action="./clear"' in out
+    assert "data-confirm=" in out
+    assert 'data-confirm-danger="1"' in out
 
 
 def test_render_no_legacy_chrome():
@@ -255,10 +271,31 @@ def test_post_clear_redirects(live_server):
     post_with_csrf(live_server["url"], "/clear", {}, expect_status=303)
 
 
-def test_post_save_bad_units_redirects_with_flash(live_server):
-    # Invalid units -> see-other back to ./ carrying an error flash.
+def test_post_save_rejection_rerenders_with_submitted_values(live_server):
+    # Half-filled manual coords are rejected; the page comes back with the
+    # address and the latitude the user typed, not a redirect to a blank form.
+    err = request_with_csrf(
+        live_server["url"],
+        "/save",
+        urllib.parse.urlencode(
+            {"location": "Tampa, FL", "manual_lat": "40.7", "units": "fahrenheit"},
+        ).encode(),
+        content_type="application/x-www-form-urlencoded",
+        expect_status=422,
+    )
+    body = err.read().decode()
+    assert err.headers.get("Location") is None
+    assert re.search(r'id="location"[^>]*value="Tampa, FL"', body, re.S)
+    assert re.search(r'id="manual_lat"[^>]*value="40\.7"', body, re.S)
+    assert 'value="fahrenheit" selected' in body
+    # The restored coordinate wins over the address field, so its disclosure
+    # must come back open — otherwise the next submit fails for a hidden reason.
+    assert '<details class="disclosure manual-coords" open>' in body
+
+
+def test_post_save_rejects_unknown_units(live_server):
     post_with_csrf(
-        live_server["url"], "/save", {"units": "kelvin"}, expect_status=303,
+        live_server["url"], "/save", {"units": "kelvin"}, expect_status=422,
     )
 
 

@@ -7,7 +7,7 @@
 // These mirror the /system/ module graph and build everything with dom.js so
 // untrusted transcript strings remain text nodes.
 
-import { h, svg } from "/assets/shared/js/dom.js";
+import { h } from "/assets/shared/js/dom.js";
 
 export function titledCard(title, opts = {}) {
   const body = h(`div.info-card${opts.accent ? ".info-card--accent" : ""}`);
@@ -19,9 +19,7 @@ export function titledCard(title, opts = {}) {
 }
 
 export function badge(text, tone = "ok") {
-  const el = h("span.badge", null, text);
-  el.style.setProperty("--tone", `var(--status-${tone})`);
-  return el;
+  return h(`span.badge.badge--${tone}`, null, text);
 }
 
 export function table({ columns, rows, modifier = "", renderCell }) {
@@ -44,18 +42,6 @@ export function table({ columns, rows, modifier = "", renderCell }) {
 export function actionButton(label, opts = {}) {
   const { variant = "default", onClick } = opts;
   return h(`button.btn.btn--${variant}`, { type: "button", onclick: onClick }, label);
-}
-
-export function header({ title = "Chat", backHref = "/" } = {}) {
-  return h("header.app-header", null,
-    h("div.app-header__row", null,
-      h("a.icon-button", { href: backHref, "attr:aria-label": "Home" },
-        svg("svg.ico", { "aria-hidden": "true" },
-          svg("use", { href: "#icon-back" }))),
-      h("h1.app-header__title", null, title),
-      h("span"),
-    ),
-  );
 }
 
 export function livePill(initial = "Loading...") {

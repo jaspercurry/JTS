@@ -25,7 +25,7 @@ REASON_PEERING_MODE_UNKNOWN = "peering_mode_unknown"
 REASON_DISCOVERY_TOOL_MISSING = "discovery_tool_missing"
 REASON_DISCOVERY_BROWSE_FAILED = "discovery_browse_failed"
 
-@doctor_check(order=69, group="peering")
+@doctor_check()
 def check_peering_mode() -> CheckResult:
     """Verify /var/lib/jasper/peering.env is parseable.
 
@@ -62,7 +62,7 @@ def check_peering_mode() -> CheckResult:
         reason=REASON_PEERING_MODE_UNKNOWN,
     )
 
-@doctor_check(order=70, group="peering")
+@doctor_check()
 def check_peering_discovery() -> CheckResult:
     """Browse `_jasper-peer._udp` to count sibling JTS speakers visible on the
     LAN.

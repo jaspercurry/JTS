@@ -731,7 +731,6 @@ def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
             target,
             yaml,
             mode=target_mode,
-            group_from_parent=True,
             durable=True,
         )
         written_path = target

@@ -2,9 +2,10 @@
  *
  * Only what app.css doesn't already cover: microphone/echo rows, advanced
  * fusion rows, the sensitivity slider, and wake-word radio cards. Shared
- * chrome (.app-header, .page, .section, .info-card, .badge, .btn--*, .field)
- * comes from app.css. Everything here is themed off the canonical design
- * tokens — no hardcoded palette — so it re-skins with the rest of the UI. */
+ * chrome (.app-header, .page, .section, .info-card, .badge, .btn--*, .field,
+ * .disclosure) comes from app.css. Everything here is themed off the
+ * canonical design tokens — no hardcoded palette — so it re-skins with the
+ * rest of the UI. */
 
 .wake-help {
   color: var(--muted);
@@ -248,7 +249,7 @@
 .advanced-fusion-card .info-card__note {
   margin: 0 0 0.4rem;
 }
-.advanced-fusion-card .disclosure-body {
+.advanced-fusion-card .disclosure__body {
   padding-top: 0.75rem;
 }
 .fusion-summary {
@@ -411,8 +412,3 @@
   color: var(--primary);
 }
 
-/* The "recommended"/"not downloaded" pills reuse .badge from app.css; the
- * tone knob picks the colour. .badge--muted is the un-toned grey pill. */
-.badge--muted {
-  --tone: var(--status-idle);
-}

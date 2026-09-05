@@ -52,7 +52,7 @@ REASON_CAMILLA_PARK_RECORD_UNINTELLIGIBLE = "camilla_park_record_unintelligible"
 REASON_CAMILLA_GRAPH_PARKED = "camilla_graph_parked"
 
 
-@doctor_check(order=51.1, group="audio")
+@doctor_check()
 def check_camilla_service() -> CheckResult:
     """The jasper-camilla systemd unit must never stay stopped.
 
@@ -140,7 +140,7 @@ def _expected_playback_format(
     return DEFAULT_PLAYBACK_FORMAT, "DEFAULT_PLAYBACK_FORMAT"
 
 
-@doctor_check(order=51.75, group="audio")
+@doctor_check()
 def check_camilla_playback_format() -> CheckResult:
     """The loaded CamillaDSP config's declared playback format must match its
     LANE's expected format.
@@ -209,7 +209,7 @@ def check_camilla_playback_format() -> CheckResult:
     )
 
 
-@doctor_check(order=51.6, group="audio")
+@doctor_check()
 def check_audio_runtime_plan() -> CheckResult:
     """Explainable SSOT check for audio latency/coupling knobs."""
 
@@ -252,7 +252,7 @@ def check_audio_runtime_plan() -> CheckResult:
     return CheckResult("audio runtime plan", "ok", summary)
 
 
-@doctor_check(order=52.67, group="audio")
+@doctor_check()
 def check_camilla_recover_park() -> CheckResult:
     """The core DSP graph is not parked by jasper-camilla-recover.
 

@@ -204,7 +204,7 @@ def test_bluez_main_conf_uses_canonical_atomic_writer(tmp_path, monkeypatch):
         (
             conf,
             "[General]\nName = Kitchen\n",
-            {"mode": 0o644, "group_from_parent": True},
+            {"mode": 0o644},
         ),
     ]
 
@@ -485,7 +485,7 @@ def test_post_unknown_route_404s():
     assert h.status == int(http.HTTPStatus.NOT_FOUND)
 
 
-def test_post_save_validation_error_redirects_with_flash(monkeypatch):
+def test_post_save_validation_error_rerenders_with_submitted_values(monkeypatch):
     token = "z" * 64
 
     def boom(_name):
@@ -495,11 +495,14 @@ def test_post_save_validation_error_redirects_with_flash(monkeypatch):
     handler = _handler_cls()
     # csrf_token is the form field (_common.CSRF_FORM_FIELD); jts_csrf is the
     # double-submit cookie. They must carry the same token to pass guard_mutating_request.
-    body = ("csrf_token=" + token + "&name=waytoolong").encode()
+    body = ("csrf_token=" + token + "&name=waytoolong&room=Kitchen").encode()
     h = FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
     handler.do_POST(h)
-    assert h.status == int(http.HTTPStatus.SEE_OTHER)
-    assert h.header_values("Location") == ["./"]
+    assert h.status == int(http.HTTPStatus.UNPROCESSABLE_ENTITY)
+    assert h.header_values("Location") == []
+    out = h.wfile.getvalue().decode()
+    assert 'name="name" value="waytoolong"' in out
+    assert 'name="room" value="Kitchen"' in out
 
 
 def test_post_save_applies_rename_and_restarts(monkeypatch):

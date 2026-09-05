@@ -470,8 +470,10 @@ def test_check_tool_packs_wires_the_runtime_reader(monkeypatch, runtime, status,
     assert r.reason == reason
 
 
-def test_check_tool_packs_is_registered_at_its_reserved_order():
-    by_order = {c.order: c for c in doctor.registered_checks()}
+def test_check_tool_packs_is_registered_in_the_voice_module():
+    entry = next(
+        c for c in doctor.registered_checks()
+        if c.func is doctor.check_tool_packs
+    )
 
-    assert by_order[44.5].func is doctor.check_tool_packs
-    assert by_order[44.5].group == "voice"
+    assert entry.module == "voice"

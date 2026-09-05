@@ -448,15 +448,10 @@ fn run_alsa(
     let mut dac_content = match dac_content_lane {
         Some((transport, path)) => {
             eprintln!(
-                "event=outputd.dac_content.enabled transport={} path={} channel={} \
-                 main_highpass_hz={}",
+                "event=outputd.dac_content.enabled transport={} path={} channel={}",
                 transport,
                 path,
                 config.dac_content_channel.as_str(),
-                config
-                    .dac_content_highpass_hz
-                    .map(|v| format!("{v:.1}"))
-                    .unwrap_or_else(|| "none".to_string()),
             );
             Some(if transport == "ring" {
                 DacContentSource::ring(
@@ -464,16 +459,10 @@ fn run_alsa(
                     config.dac_content_channel,
                     config.period_frames,
                     DAC_CONTENT_RING_SLOTS,
-                    config.dac_content_highpass_hz,
                 )
                 .map_err(|e| classify_ring_attach_error("dac_content", path, e))?
             } else {
-                DacContentSource::fifo(
-                    path,
-                    config.dac_content_channel,
-                    config.period_frames,
-                    config.dac_content_highpass_hz,
-                )
+                DacContentSource::fifo(path, config.dac_content_channel, config.period_frames)
             })
         }
         None => None,
@@ -2164,7 +2153,6 @@ mod tests {
             dac_content_fifo: None,
             dac_content_ring: None,
             dac_content_channel: jasper_outputd::dac_content::ChannelPick::Stereo,
-            dac_content_highpass_hz: None,
             dac_content_trim_db: 0.0,
             tts_socket_path: None,
             tts_max_pending_frames: jasper_outputd::tts::DEFAULT_MAX_PENDING_FRAMES,

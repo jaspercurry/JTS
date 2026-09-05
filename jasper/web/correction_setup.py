@@ -2053,7 +2053,6 @@ async def _snapshot_running_room_graph(
         snapshot,
         text,
         mode=0o640,
-        group_from_parent=True,
     )
     validation = validate_camilla_config(snapshot)
     if not validation.ok_to_apply:

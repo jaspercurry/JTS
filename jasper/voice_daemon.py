@@ -4691,6 +4691,13 @@ class WakeLoop:
             logger.exception("manual session start failed: %s", e)
             if self._turn_output_episode is not None:
                 await self._cleanup_after_failed_begin()
+            # A turn that died because the connection went down between
+            # the paused gate above and here (the idle context reset
+            # reopens inside `_begin_turn`) must still answer the press
+            # — same condition and cue as the wake path's acquire
+            # failure. See `_arbitrate_acquire_drain`.
+            if self._connection.is_paused():
+                await self._play_cue(self._connection.wake_cue())
             return "ERROR"
         finally:
             if source:

@@ -47,7 +47,7 @@ REASON_BOOTLOOP_GUARD_RELOAD_FAILED = "bootloop_guard_reload_failed"
 REASON_BOOTLOOP_GUARD_ARMED = "bootloop_guard_armed"
 REASON_BOOTLOOP_GUARD_TRIPPED = "bootloop_guard_tripped"
 
-@doctor_check(order=40, group="resilience")
+@doctor_check()
 def check_service_runtime_state() -> CheckResult:
     """Surface failed units and restart-count changes in the one-shot doctor.
 
@@ -192,7 +192,7 @@ def _read_resilience_state() -> dict[str, Any] | None:
     return _nested_dict(evidence.control_state().payload, "resilience")
 
 
-@doctor_check(order=40.5, group="resilience")
+@doctor_check()
 def check_supervisor_runtime_snapshots() -> CheckResult:
     """Surface supervisor state that otherwise only appears in ``/state``."""
     resilience = _read_resilience_state()
@@ -222,7 +222,7 @@ def _read_system_metrics_current() -> dict[str, Any] | None:
     )
 
 
-@doctor_check(order=40.6, group="resilience")
+@doctor_check()
 def check_supply_voltage() -> CheckResult:
     """Surface the Pi firmware's under-voltage flags. jasper-control's
     system-metrics sampler already polls ``vcgencmd get_throttled`` on a
@@ -328,10 +328,7 @@ def _classify_reboot_state(path: Path, *, now: float | None = None) -> CheckResu
     )
 
 
-# order=78.5 slots between the last sync check (78) and the async CamillaDSP
-# websocket check (79), which must sort last — pinned by
-# tests/test_doctor_registry.py.
-@doctor_check(order=78.5, group="resilience")
+@doctor_check()
 def check_bootloop_guard() -> CheckResult:
     """Surface the boot-loop guard marker.
 
@@ -383,7 +380,7 @@ def check_bootloop_guard() -> CheckResult:
     )
 
 
-@doctor_check(order=76, group="resilience")
+@doctor_check()
 def check_supervisor_reboot_state() -> CheckResult:
     """Surface the reboot rate-limit state file.
 

@@ -84,8 +84,9 @@ _MECHANISM_ID_RE = re.compile(r"\bM[0-9]{1,2}\b")
 #
 # * "subwoofer" is listed SEPARATELY from "woofer" and is not redundant: the
 #   word boundary that stops "important" tripping "port" also stops
-#   "\bwoofer\b" matching inside "subwoofer". It is a live noun — JTS ships
-#   2.1 and wireless-sub support — so the gap was reachable, not theoretical.
+#   "\bwoofer\b" matching inside "subwoofer". It is a live noun — JTS ships a
+#   local-DAC subwoofer output group — so the gap was reachable, not
+#   theoretical.
 # * "desk" is not hardware at all; it is a *reflector*. It belongs here
 #   because the rule §3.1 states is about naming WHAT PRODUCED a feature, not
 #   about a parts list: "the desk bounce" is the same device-taxonomy guess as

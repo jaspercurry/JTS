@@ -163,16 +163,6 @@ OUTPUTD_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-outputd.env"
 OUTPUTD_DAC_CONTENT_FIFO_ENV = "JASPER_OUTPUTD_DAC_CONTENT_FIFO"
 OUTPUTD_DAC_CONTENT_CHANNEL_ENV = "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL"
 OUTPUTD_DAC_CONTENT_TRIM_ENV = "JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB"
-# Receiver-side wireless-sub low-pass corner (Hz). Emitted ONLY when this
-# member's channel is "sub" — outputd's "sub" ChannelPick reads it to build its
-# LR4 low-pass — and ABSENT for every other channel, so outputd falls back to its
-# safe 80 Hz only if a sub somehow lacks it. Single writer: outputd_grouping_env.
-OUTPUTD_DAC_CONTENT_SUB_HZ_ENV = "JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ"
-# Receiver-side wireless-sub bass-management high-pass corner (Hz). Emitted for
-# non-sub MAIN members only when this bond is known to contain a sub and the
-# per-bond toggle is on. Empty everywhere else so stale env can never leave a
-# main bass-light without a sub.
-OUTPUTD_DAC_CONTENT_HP_HZ_ENV = "JASPER_OUTPUTD_DAC_CONTENT_HP_HZ"
 OUTPUTD_UNIT = "jasper-outputd.service"
 CAMILLA_UNIT = "jasper-camilla.service"
 
@@ -382,8 +372,8 @@ def snapclient_argv(
     ``player_alsa_device``). The host is the loopback when this speaker is the
     leader (it runs its own server), otherwise the leader's address.
 
-    Channel selection (which of L/R/sub this client plays) is a CamillaDSP or
-    outputd concern and is intentionally NOT decided here.
+    Channel selection (which of L/R/mono this client plays) is a CamillaDSP
+    or outputd concern and is intentionally NOT decided here.
 
     ``active_endpoint`` (the ACTIVE follower, plus the active leader's own
     drivers) DISABLES the ``dac_content`` ChannelPick on this box: CamillaDSP
@@ -581,37 +571,15 @@ def outputd_grouping_env(
             flat_output_allowed=flat_output_allowed,
             outputd_period_frames=outputd_period_frames,
         ).armed:
-            # CORNER PRECEDENCE: an ACTIVE main could carry the crossover corner
-            # TWICE — the wireless-sub mains high-pass in this lane AND its own
-            # CamillaDSP Layer-A bass-management high-pass (folded at
-            # LocalSubwoofer.crossover_fc_hz). The LOCAL active-speaker config
-            # wins: the dac_content lane is cleared entirely, so the wireless HP
-            # DEFERS and mains-HP is applied exactly once.
-            # KNOWN GAP — an active main WITHOUT a local sub: its Layer-A graph
-            # folds a mains HP only when preset.local_subwoofer is set, so with a
-            # wireless-only sub this clear leaves the mains FULL-RANGE.
-            # jasper.bass_management reports that state honestly to displays.
-            # Only a DUMB (passive single-DAC) member carries the wireless HP.
             return {
                 DAC_CONTENT_LANE_ENV: "",
                 OUTPUTD_DAC_CONTENT_FIFO_ENV: "",
                 OUTPUTD_DAC_CONTENT_CHANNEL_ENV: "",
                 OUTPUTD_TTS_SOCKET_ENV: route.outputd_tts_socket,
-                OUTPUTD_DAC_CONTENT_HP_HZ_ENV: "",
                 # Empty = unset to outputd's env_f32 (default 0.0).
                 OUTPUTD_DAC_CONTENT_TRIM_ENV: "",
             }  # no CONTENT_BRIDGE key: layer 1's value must stand
-        sub_present = config.bond_has_subwoofer(cfg)
-        # The wireless-sub mains high-pass corner, applied in THIS (dumb-member)
-        # lane. cfg.crossover_hz is the SHARED bass-management corner
-        # (jasper.camilla_emit via multiroom.config), so the sub's low-pass and
-        # this high-pass are one matched crossover, not two independent numbers.
-        main_highpass_hz = (
-            str(cfg.crossover_hz)
-            if (cfg.mains_highpass_enabled and sub_present and cfg.channel != "sub")
-            else ""
-        )
-        env = {
+        return {
             # The BARE marker outputd's env_bool reads (never a path — outputd
             # derives the ring file from its own DEFAULT_DAC_CONTENT_RING_PATH,
             # so the two ends have no second spelling to disagree on).
@@ -622,27 +590,16 @@ def outputd_grouping_env(
             OUTPUTD_DAC_CONTENT_FIFO_ENV: "",
             OUTPUTD_DAC_CONTENT_CHANNEL_ENV: cfg.channel or "stereo",
             OUTPUTD_TTS_SOCKET_ENV: route.outputd_tts_socket,
-            OUTPUTD_DAC_CONTENT_HP_HZ_ENV: main_highpass_hz,
             # Pair-balance trim (validated <= 0 by load_config; outputd
             # re-validates fail-closed). Always written while bonded so
             # a cleared trim converges back to 0.0.
             OUTPUTD_DAC_CONTENT_TRIM_ENV: f"{cfg.trim_db:.1f}",
         }
-        if cfg.channel == "sub":
-            env[OUTPUTD_DAC_CONTENT_SUB_HZ_ENV] = str(cfg.crossover_hz)
-            # A sub plays only low-passed bass and NEVER voice. outputd mixes
-            # TTS/cues AFTER the ChannelPick low-pass, so an armed TTS lane on a
-            # sub would emit FULL-RANGE speech to the subwoofer. Cleared here so
-            # that hazard cannot exist by construction (empty = unset to outputd,
-            # so no TTS server is constructed on a sub).
-            env[OUTPUTD_TTS_SOCKET_ENV] = route.outputd_tts_socket
-        return env
     return {
         DAC_CONTENT_LANE_ENV: "",
         OUTPUTD_DAC_CONTENT_FIFO_ENV: "",
         OUTPUTD_DAC_CONTENT_CHANNEL_ENV: "",
         OUTPUTD_TTS_SOCKET_ENV: "",
-        OUTPUTD_DAC_CONTENT_HP_HZ_ENV: "",
         # Empty = unset to outputd's env_f32 (default 0.0).
         OUTPUTD_DAC_CONTENT_TRIM_ENV: "",
     }
@@ -655,13 +612,12 @@ def voice_grouping_env(
 ) -> dict[str, str]:
     """jasper-voice's grouping-derived env. PURE.
 
-    The route matrix owns the policy. Passive non-sub members point voice's TTS
+    The route matrix owns the policy. Passive members point voice's TTS
     playout socket at outputd so each member's OWN replies mix at its OWN final
     output; inv-3 keeps the leader's TTS out of the SHARED stream. Active
-    endpoints and sub routes fail closed to fan-in or park, with outputd TTS
-    unarmed. Solo also returns an EMPTY dict — the key is omitted, never
-    present-but-empty (a set-empty value would be read as a real, invalid socket
-    path).
+    endpoints fail closed to fan-in or park, with outputd TTS unarmed. Solo also
+    returns an EMPTY dict — the key is omitted, never present-but-empty (a
+    set-empty value would be read as a real, invalid socket path).
     """
     route = expected_grouping_tts_route(cfg, active_endpoint=active_endpoint)
     if cfg.enabled and cfg.error is None:

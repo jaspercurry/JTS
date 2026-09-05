@@ -212,26 +212,6 @@ def test_account_card_escapes_untrusted_name_in_confirm():
     assert "ab&lt;c" in out
 
 
-def test_health_badge_tone_classes():
-    from jasper.spotify_router import (
-        ACCOUNT_OK,
-        ACCOUNT_REVOKED,
-        ACCOUNT_NEEDS_OAUTH,
-    )
-    ok = spotify_setup._health_badge_html(types.SimpleNamespace(state=ACCOUNT_OK, detail=""))
-    revoked = spotify_setup._health_badge_html(
-        types.SimpleNamespace(state=ACCOUNT_REVOKED, detail="")
-    )
-    needs = spotify_setup._health_badge_html(
-        types.SimpleNamespace(state=ACCOUNT_NEEDS_OAUTH, detail="")
-    )
-    assert "health-ok" in ok
-    assert "health-revoked" in revoked
-    assert "health-warn" in needs
-    # None status renders nothing (defensive).
-    assert spotify_setup._health_badge_html(None) == ""
-
-
 def test_playlist_section_add_form_has_no_inline_js():
     out = spotify_setup._account_playlists_section_html(
         _account(playlists={"spotify:playlist:1": "My Mix"}), csrf_token=CSRF,

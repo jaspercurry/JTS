@@ -86,7 +86,7 @@ def _render_page(csrf_token: str = "", *, view: str = "system") -> bytes:
         # it on first render, so if the ES module graph ever fails to load
         # the page shows "Loading…" rather than a silent blank.
         f'<div id="app" data-view="{view}" aria-busy="true">'
-        '<p class="boot-note">Loading the dashboard…</p>'
+        '<p class="status-line status-line--boot">Loading the dashboard…</p>'
         '</div>\n'
         '<script type="module" src="/assets/system-status/js/main.js"></script>'
     )

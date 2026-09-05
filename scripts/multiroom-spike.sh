@@ -42,8 +42,8 @@
 #
 #   FOLLOWER (2nd brainy Pi):  a snapclient bonded to the leader (the L/R peer).
 #
-#   SUB     (Pi Zero):    a snapclient on the cheap-endpoint tier, exercising
-#                         the loose-sub-sync path.
+#   ENDPOINT (Pi Zero):    a third snapclient on cheap hardware, exercising
+#                         the loose-sync tolerance a budget device tier gets.
 #
 # -----------------------------------------------------------------------------
 # THE SWEEP
@@ -87,11 +87,12 @@
 # USAGE
 # -----------------------------------------------------------------------------
 #   # 0. Configure the three hosts (laptop-side; see .env.local + flags below).
-#   #    LEADER defaults to PI_HOST from .env.local. Follower/sub are REQUIRED
-#   #    for the L/R + sub measurements; omit them to run a leader-only smoke.
+#   #    LEADER defaults to PI_HOST from .env.local. Follower/endpoint are
+#   #    REQUIRED for the L/R + cheap-tier measurements; omit them to run a
+#   #    leader-only smoke.
 #   #
 #   #      bash scripts/multiroom-spike.sh --setup \
-#   #          --follower brittany-pi.local --sub pizero.local --music ~/Music/test.flac
+#   #          --follower brittany-pi.local --endpoint pizero.local --music ~/Music/test.flac
 #   #
 #   # 1. Sweep (drives the whole {buffer × codec} matrix, software-mode stats):
 #   #      bash scripts/multiroom-spike.sh --sweep
@@ -109,7 +110,7 @@
 #   # Host config precedence: flags > JTS_SPIKE_* env > .env.local PI_HOST.
 #
 # Defaults: PI_HOST/PI_USER come from .env.local when present (the LEADER).
-# Follower/sub have no default — pass --follower / --sub.
+# Follower/endpoint have no default — pass --follower / --endpoint.
 # =============================================================================
 
 set -euo pipefail
@@ -136,7 +137,7 @@ UNIT_SERVER="jts-spike-snapserver"
 UNIT_FEEDER="jts-spike-feeder"
 UNIT_CLIENT_LEADER="jts-spike-client-leader"
 UNIT_CLIENT_FOLLOWER="jts-spike-client-follower"
-UNIT_CLIENT_SUB="jts-spike-client-sub"
+UNIT_CLIENT_ENDPOINT="jts-spike-client-endpoint"
 
 # The sweep matrix.
 BUFFERS_MS=(150 300 500 800 1200)
@@ -156,13 +157,13 @@ DIAG_RUNTIME_MAX="${JTS_SPIKE_DIAG_RUNTIME_MAX:-2min}"
 RESULTS_DIR="${REPO_ROOT}/multiroom-spike"
 
 # -----------------------------------------------------------------------------
-# Host config. LEADER = PI_HOST (from .env.local). FOLLOWER/SUB via flags/env.
+# Host config. LEADER = PI_HOST (from .env.local). FOLLOWER/ENDPOINT via flags/env.
 # -----------------------------------------------------------------------------
 LEADER_HOST="${PI_HOST:-}"
 LEADER_USER="${PI_USER}"
 FOLLOWER_HOST="${JTS_SPIKE_FOLLOWER:-}"
-SUB_HOST="${JTS_SPIKE_SUB:-}"
-CLIENT_USER="${JTS_SPIKE_CLIENT_USER:-pi}"     # follower/sub SSH user
+ENDPOINT_HOST="${JTS_SPIKE_ENDPOINT:-}"
+CLIENT_USER="${JTS_SPIKE_CLIENT_USER:-pi}"     # follower/endpoint SSH user
 
 MUSIC_FILE="${JTS_SPIKE_MUSIC:-}"              # optional local music file to stage
 LEADER_OUTPUT_DEV="${JTS_SPIKE_LEADER_OUTPUT:-default}"  # REAL device, never Loopback
@@ -185,7 +186,7 @@ ssh_to() {
 
 leader_ssh()   { ssh_to "$LEADER_HOST"   "$LEADER_USER" "$@"; }
 follower_ssh() { ssh_to "$FOLLOWER_HOST" "$CLIENT_USER" "$@"; }
-sub_ssh()      { ssh_to "$SUB_HOST"      "$CLIENT_USER" "$@"; }
+endpoint_ssh() { ssh_to "$ENDPOINT_HOST" "$CLIENT_USER" "$@"; }
 
 # Resolve the leader's LAN address as seen by the clients. We snapclient against
 # the leader's mDNS name (LEADER_HOST) directly — clients dial that to connect.
@@ -352,7 +353,7 @@ start_all_clients() {
     start_client "$LEADER_HOST" "$LEADER_USER" "$UNIT_CLIENT_LEADER" \
         "--soundcard ${LEADER_OUTPUT_DEV}" "leader-localhost"
     start_client "$FOLLOWER_HOST" "$CLIENT_USER" "$UNIT_CLIENT_FOLLOWER" "" "follower"
-    start_client "$SUB_HOST"      "$CLIENT_USER" "$UNIT_CLIENT_SUB"      "" "sub"
+    start_client "$ENDPOINT_HOST" "$CLIENT_USER" "$UNIT_CLIENT_ENDPOINT" "" "endpoint"
 }
 
 # -----------------------------------------------------------------------------
@@ -420,13 +421,13 @@ poll_cell() {
 # =============================================================================
 do_setup() {
     mkdir -p "$RESULTS_DIR"
-    log "SETUP: leader=${LEADER_HOST} follower=${FOLLOWER_HOST:-<none>} sub=${SUB_HOST:-<none>}"
+    log "SETUP: leader=${LEADER_HOST} follower=${FOLLOWER_HOST:-<none>} endpoint=${ENDPOINT_HOST:-<none>}"
     # Idempotent: clear any prior spike state before standing up fresh.
     do_teardown_quiet
     ensure_pkg "$LEADER_HOST"   "$LEADER_USER" snapserver snapserver
     ensure_pkg "$LEADER_HOST"   "$LEADER_USER" snapclient snapclient
     [[ -n "$FOLLOWER_HOST" ]] && ensure_pkg "$FOLLOWER_HOST" "$CLIENT_USER" snapclient snapclient
-    [[ -n "$SUB_HOST"      ]] && ensure_pkg "$SUB_HOST"      "$CLIENT_USER" snapclient snapclient
+    [[ -n "$ENDPOINT_HOST" ]] && ensure_pkg "$ENDPOINT_HOST" "$CLIENT_USER" snapclient snapclient
     log "generating known chirp test track on leader..."
     make_chirp_remote
     stage_music
@@ -480,14 +481,14 @@ EOF
 # Teardown: remove every transient unit, FIFO, conf, and netem qdisc we made.
 # Safe to run anytime; never touches jasper-* or product units.
 do_teardown_quiet() {
-    for host_user in "$LEADER_HOST:$LEADER_USER" "$FOLLOWER_HOST:$CLIENT_USER" "$SUB_HOST:$CLIENT_USER"; do
+    for host_user in "$LEADER_HOST:$LEADER_USER" "$FOLLOWER_HOST:$CLIENT_USER" "$ENDPOINT_HOST:$CLIENT_USER"; do
         local host="${host_user%%:*}" user="${host_user##*:}"
         [[ -z "$host" ]] && continue
         ssh_to "$host" "$user" "bash -s" <<REMOTE 2>/dev/null || true
 sudo systemctl stop ${UNIT_SERVER}.service ${UNIT_FEEDER}.service \
-    ${UNIT_CLIENT_LEADER}.service ${UNIT_CLIENT_FOLLOWER}.service ${UNIT_CLIENT_SUB}.service 2>/dev/null || true
+    ${UNIT_CLIENT_LEADER}.service ${UNIT_CLIENT_FOLLOWER}.service ${UNIT_CLIENT_ENDPOINT}.service 2>/dev/null || true
 sudo systemctl reset-failed ${UNIT_SERVER}.service ${UNIT_FEEDER}.service \
-    ${UNIT_CLIENT_LEADER}.service ${UNIT_CLIENT_FOLLOWER}.service ${UNIT_CLIENT_SUB}.service 2>/dev/null || true
+    ${UNIT_CLIENT_LEADER}.service ${UNIT_CLIENT_FOLLOWER}.service ${UNIT_CLIENT_ENDPOINT}.service 2>/dev/null || true
 sudo rm -f ${SNAPFIFO}
 sudo tc qdisc del dev wlan0 root 2>/dev/null || true
 REMOTE
@@ -527,7 +528,7 @@ while [[ $# -gt 0 ]]; do
         --record-chirp)       ACTION="record-chirp"; RECORD_SECS="${2:-12}"; shift ;;
         --leader)             LEADER_HOST="$2"; shift ;;
         --follower)           FOLLOWER_HOST="$2"; shift ;;
-        --sub)                SUB_HOST="$2"; shift ;;
+        --endpoint)           ENDPOINT_HOST="$2"; shift ;;
         --music)              MUSIC_FILE="$2"; shift ;;
         --leader-output)      LEADER_OUTPUT_DEV="$2"; shift ;;
         --netem)              NETEM_SPEC="$2"; shift ;;

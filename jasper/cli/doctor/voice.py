@@ -82,7 +82,7 @@ def _provider_api_key_attr(provider_id: str) -> str:
 _PROVIDER_UNDETERMINED = frozenset({"unreadable", "invalid"})
 
 
-@doctor_check(order=2, group="voice", label="provider key", needs_cfg=True)
+@doctor_check(label="provider key", needs_cfg=True)
 def check_provider_key(cfg: Config) -> CheckResult:
     """Check that the active provider's API key is set and has the expected
     prefix. Other providers' keys may be set (so the wizard can switch without
@@ -200,7 +200,7 @@ def _import_probe_timeout() -> float:
 # adapter peaks near 83 MB RSS, dropping MemAvailable by ~70 MB for ~1.5 s),
 # and check_memory_headroom warns below 100 MB available on a 1 GB Pi, so an
 # unserialized probe could trip that threshold itself.
-@doctor_check(order=2.5, group="voice", exclusive_group="memory-sample")
+@doctor_check(exclusive_group="memory-sample")
 def check_provider_importable() -> CheckResult:
     """Check that the *configured* voice provider's adapter and its
     lazily-imported SDK can actually be imported in this venv.
@@ -287,7 +287,7 @@ def _voice_provider_ids_manifest_path() -> Path:
         ),
     )
 
-@doctor_check(order=3, group="voice")
+@doctor_check()
 def check_voice_provider_ids_manifest() -> CheckResult:
     """Verify the shell-readable provider-id projection is in sync."""
     path = _voice_provider_ids_manifest_path()
@@ -400,7 +400,7 @@ def _assess_tool_packs(
     )
 
 
-@doctor_check(order=44.5, group="voice")
+@doctor_check()
 def check_tool_packs() -> CheckResult:
     """Reports tool-pack registration health — registered vs. expected,
     flagging any pack that failed to build.
@@ -417,7 +417,7 @@ def check_tool_packs() -> CheckResult:
     return _assess_tool_packs(expected, _voice_tool_packs_runtime())
 
 
-@doctor_check(order=43, group="voice", label="daily spend cap", needs_cfg=True)
+@doctor_check(label="daily spend cap", needs_cfg=True)
 def check_spend_cap(cfg: Config) -> CheckResult:
     try:
         from ...usage import (
@@ -473,7 +473,7 @@ def check_spend_cap(cfg: Config) -> CheckResult:
             "daily spend cap", "warn", str(e), reason=REASON_SPEND_CAP_UNREADABLE,
         )
 
-@doctor_check(order=44, group="voice", label="voice model pricing")
+@doctor_check(label="voice model pricing")
 def check_pricing() -> CheckResult:
     """Spend estimates (and thus the cap) depend on the bundled rate data
     loading and the active model having a rate. Surface both, since a

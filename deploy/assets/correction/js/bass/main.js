@@ -43,32 +43,15 @@ function render(state) {
     return;
   }
 
-  const rows = [];
-  const corner = Number(state.corner_hz);
-  rows.push(...row('Crossover corner', `${Math.round(corner)} Hz`));
-  if (state.owner_label) {
-    rows.push(...row('Owned by', state.owner_label));
-  }
-  rows.push(...row('Subwoofer', state.sub_present ? 'Present' : 'None'));
-  // Three honest states: actually wired on this box; deliberately off; or the
-  // known gap — an active speaker grouped with a wireless sub runs its mains
-  // full-range (the server reports mains_highpass_unwired_reason for that).
-  let mainsHp;
-  if (state.mains_highpass_enabled) {
-    mainsHp = `On — speakers roll off below ${Math.round(corner)} Hz`;
-  } else if (
-    state.mains_highpass_unwired_reason === 'active_endpoint_wireless_sub'
-  ) {
-    mainsHp =
-      'Not applied on this speaker — its drivers run full-range alongside ' +
-      'the wireless subwoofer (a known limitation of active speakers ' +
-      'grouped with a wireless sub)';
-  } else {
-    mainsHp = 'Off — speakers stay full-range';
-  }
-  rows.push(...row('Mains high-pass', mainsHp));
-
-  els.list.replaceChildren(...rows);
+  // A sub on this speaker's DAC is only ever wired WITH its complementary
+  // mains high-pass: a graph carrying one without the other is refused
+  // (active_baseline_bass_mgmt_highpass_missing). So the corner alone settles
+  // both rows and the server sends no separate flag.
+  const corner = Math.round(Number(state.corner_hz));
+  els.list.replaceChildren(
+    ...row('Crossover corner', `${corner} Hz`),
+    ...row('Mains high-pass', `On — speakers roll off below ${corner} Hz`),
+  );
   els.list.hidden = false;
   els.message.textContent =
     'Your subwoofer and speakers hand off at this corner.';

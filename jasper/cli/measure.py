@@ -34,6 +34,7 @@ from jasper.cli._refusal import (
     EXIT_REFUSED,
     EXIT_UNREADABLE,
     STATUS_BY_CODE,
+    failed,
 )
 from jasper.log_event import log_event
 
@@ -137,7 +138,6 @@ class MeasureInterrupted(RuntimeError):
         *,
         spec: Any,
         spec_index: int,
-        done: tuple[tuple[Any, str], ...] = (),
     ) -> None:
         self.reason = reason
         self.detail = detail
@@ -148,9 +148,6 @@ class MeasureInterrupted(RuntimeError):
         #: ids alone cannot say where a batch stopped.
         self.spec = spec
         self.spec_index = int(spec_index)
-        #: ``(outcome, graph fingerprint)`` per completed spec, so a partial
-        #: batch renders the same per-spec shape a whole one does.
-        self.done = done
         super().__init__(f"{reason}: {detail}")
 
 
@@ -811,7 +808,7 @@ async def _measured(
             # the door's give-back still runs shielded on the way out.
             raise MeasureInterrupted(
                 reason, str(exc) or type(exc).__name__,
-                session, store, spec=spec, spec_index=index, done=tuple(done),
+                session, store, spec=spec, spec_index=index,
             ) from exc
         # Read per spec, before the next spec swaps the install: the session
         # re-proves the graph per stimulus, so this fingerprint names the
@@ -821,13 +818,12 @@ async def _measured(
 
 
 def _spec_report(outcome: Any, graph_fingerprint: str) -> dict[str, Any]:
-    """One spec's own answer, in the caller's words.
+    """One spec's own answer: scalars, and the incidents nothing else records.
 
     ``graph_fingerprint`` rides per spec, never once per run: each spec may
-    install a different variant graph. Every stimulus is reported, not only the
-    banked ones — a rung that played and could not be banked is the fact a
-    reader most needs. ``incident`` is where a SPEC-scoped failure lands, and
-    ``stubs`` names the capabilities the engine has not built.
+    install a different variant graph. A stimulus with an ``incident`` banked
+    NO record, so its sentence exists nowhere but here; the banked takes carry
+    their own levels and ids and are read from the bundle, not from stdout.
     """
     from jasper.active_speaker.crossover_v2.measure_spec import stubbed_capabilities
 
@@ -835,25 +831,9 @@ def _spec_report(outcome: Any, graph_fingerprint: str) -> dict[str, Any]:
         "candidate_id": outcome.spec.candidate_id,
         "kind": outcome.spec.kind,
         "graph_fingerprint": graph_fingerprint,
-        "record_ids": list(outcome.record_ids),
-        "stimuli": [
-            {
-                "position_deg": stimulus.position_deg,
-                "stimulus_dbfs": stimulus.stimulus_dbfs,
-                "level_db": stimulus.level_db,
-                "record_id": stimulus.record_id,
-                "incident": stimulus.incident,
-            }
-            for stimulus in outcome.stimuli
-        ],
-        "stubs": [
-            {
-                "code": stub.code,
-                "instrument": stub.instrument,
-                "captured": stub.captured,
-            }
-            for stub in stubbed_capabilities(outcome.spec)
-        ],
+        "n_takes": len(outcome.record_ids),
+        "incidents": [s.incident for s in outcome.stimuli if s.incident],
+        "stubs": [stub.code for stub in stubbed_capabilities(outcome.spec)],
     }
 
 
@@ -866,56 +846,46 @@ def _report(
     branch on a count. The graph fingerprint lives on each entry, never at the
     top: one value could not name the several variant graphs a batch installs.
     """
+    record_ids = [
+        record_id
+        for outcome, _fingerprint in outcomes
+        for record_id in outcome.record_ids
+    ]
     return {
         "status": "measured",
         "session_id": session_id,
         "bundle_dir": str(store.bundle_dir),
-        "record_ids": [
-            record_id
-            for outcome, _fingerprint in outcomes
-            for record_id in outcome.record_ids
-        ],
+        "n_takes": len(record_ids),
+        "record_ids": record_ids,
         "specs": [
             _spec_report(outcome, fingerprint)
             for outcome, fingerprint in outcomes
         ],
+        "next": f"jasper-round bank {store.bundle_dir}",
     }
 
 
-
-
-def _refused(reason: str, detail: str, *, json_output: bool, code: int) -> int:
+def _refused(reason: str, detail: str, *, code: int) -> int:
     """One failing stage, under the word its code owns (``_refusal.py``)."""
 
-    status = STATUS_BY_CODE[code]
     log_event(
         logger,
         "active_speaker.measure",
         level=logging.WARNING,
-        action=status,
+        action=STATUS_BY_CODE[code],
         reason=reason,
         detail=detail,
     )
-    if json_output:
-        print(
-            json.dumps(
-                {"status": status, "reason": reason, "detail": detail},
-                indent=2,
-                sort_keys=True,
-            )
-        )
-    else:
-        print(f"{status} ({reason}): {detail}", file=sys.stderr)
-    return code
+    return failed(code, reason, detail)
 
 
 def _interrupted(exc: MeasureInterrupted) -> int:
-    """A run that stopped part-way, printed as a PARTIAL result.
+    """A run that stopped part-way — a refusal carrying what it banked.
 
-    Always JSON on stdout beside the ordinary result, because the ids in it are
-    the only handle anybody has on takes already on disk. ``stopped_at`` names
-    the spec in flight by zero-based ``index`` as well as by its fields, since
-    repeated or unlabelled entries cannot be told apart by fields alone.
+    The ids are the only handle anybody has on takes already on disk, and
+    ``stopped_at`` names the spec in flight by zero-based ``index`` as well as
+    by its fields, since repeated or unlabelled entries cannot be told apart by
+    fields alone.
     """
     log_event(
         logger,
@@ -926,36 +896,25 @@ def _interrupted(exc: MeasureInterrupted) -> int:
         detail=exc.detail,
         banked=str(len(exc.record_ids)),
     )
-    print(json.dumps(
-        {
-            "status": "partial",
-            "reason": exc.reason,
-            "detail": exc.detail,
-            "session_id": exc.session_id,
-            "bundle_dir": exc.bundle_dir,
-            "record_ids": exc.record_ids,
-            "specs": [
-                _spec_report(outcome, fingerprint)
-                for outcome, fingerprint in exc.done
-            ],
-            "stopped_at": {
-                "index": exc.spec_index,
-                "candidate_id": exc.spec.candidate_id,
-                "kind": exc.spec.kind,
-            },
+    return failed(EXIT_REFUSED, "interrupted", {
+        "reason": exc.reason,
+        "detail": exc.detail,
+        "session_id": exc.session_id,
+        "bundle_dir": exc.bundle_dir,
+        "record_ids": exc.record_ids,
+        "stopped_at": {
+            "index": exc.spec_index,
+            "candidate_id": exc.spec.candidate_id,
+            "kind": exc.spec.kind,
         },
-        indent=2,
-        sort_keys=True,
-        default=str,
-    ))
-    return EXIT_REFUSED
+    })
 
 
 def _restore_failed(exc: MeasureRestoreFailed) -> int:
     """The batch's own report, with the give-back failure named beside it.
 
-    Always JSON on stdout, like :func:`_interrupted`: every id in
-    ``exc.report`` is real evidence already on disk.
+    Every id in ``exc.report`` is real evidence already on disk, so the whole
+    report rides under ``detail`` rather than being dropped for the failure.
     """
     log_event(
         logger,
@@ -965,11 +924,10 @@ def _restore_failed(exc: MeasureRestoreFailed) -> int:
         reason=exc.reason,
         detail=exc.detail,
     )
-    payload = dict(exc.report)
-    payload["status"] = "restore_failed"
-    payload["restore_error"] = {"reason": exc.reason, "detail": exc.detail}
-    print(json.dumps(payload, indent=2, sort_keys=True, default=str))
-    return EXIT_REFUSED
+    report = {k: v for k, v in exc.report.items() if k != "status"}
+    return failed(EXIT_REFUSED, "restore_failed", {
+        **report, "reason": exc.reason, "detail": exc.detail,
+    })
 
 
 def _cmd_measure(args: argparse.Namespace) -> int:
@@ -978,9 +936,7 @@ def _cmd_measure(args: argparse.Namespace) -> int:
     try:
         specs = specs_from_args(args)
     except MeasureFlagError as exc:
-        return _refused(
-            exc.reason, exc.detail, json_output=args.json, code=EXIT_UNREADABLE
-        )
+        return _refused(exc.reason, exc.detail, code=EXIT_UNREADABLE)
     try:
         payload = asyncio.run(_measure(specs, read_box_declaration()))
     except MeasureInterrupted as exc:
@@ -988,10 +944,12 @@ def _cmd_measure(args: argparse.Namespace) -> int:
     except MeasureRestoreFailed as exc:
         return _restore_failed(exc)
     except (BoxNotMeasurable, MeasurementDoorRefused) as exc:
-        return _refused(
-            exc.reason, exc.detail, json_output=args.json, code=EXIT_REFUSED
-        )
+        return _refused(exc.reason, exc.detail, code=EXIT_REFUSED)
     print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    print(
+        f"measured {payload['n_takes']} take(s) into {payload['bundle_dir']}",
+        file=sys.stderr,
+    )
     return EXIT_OK
 
 
@@ -1020,8 +978,6 @@ def build_parser() -> argparse.ArgumentParser:
             "  ordinary path through a full session.\n"
             "\n"
             "WHEN NOT TO USE\n"
-            "  - inside a wizard-run round -- scripts/run-crossover-round.py\n"
-            "    already calls this per pose\n"
             "  - to measure several PLACEMENTS in one call -- one placement\n"
             "    per run; --specs measures several MeasureSpecs at ONE\n"
             "    placement, not several placements\n"
@@ -1032,9 +988,7 @@ def build_parser() -> argparse.ArgumentParser:
             "EXIT CODES\n"
             "  0  EXIT_OK -- every spec measured; ids printed\n"
             "  1  EXIT_REFUSED -- the door refused the measurement itself\n"
-            "     (box not measurable, an interrupt, a restore failure);\n"
-            "     \"refused (<reason>): <detail>\" on stderr, and as JSON\n"
-            "     with --json\n"
+            "     (box not measurable, an interrupt, a restore failure)\n"
             "  2  EXIT_UNREADABLE -- the request could not even be built: a\n"
             "     second --position, a variant axis with no --candidate-id,\n"
             "     a malformed --specs file"
@@ -1113,11 +1067,6 @@ def build_parser() -> argparse.ArgumentParser:
             "per-take flag above is refused beside it, and every entry needs "
             "its own candidate id once it sets a variant axis"
         ),
-    )
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        help="render a refusal as JSON too (the measurement always is)",
     )
     parser.set_defaults(func=_cmd_measure)
     return parser

@@ -89,7 +89,6 @@ def record_entry(entry_config_path: str, *, path: str | Path | None = None) -> N
         )
         + "\n",
         mode=0o640,
-        group_from_parent=True,
     )
     log_event(
         logger,

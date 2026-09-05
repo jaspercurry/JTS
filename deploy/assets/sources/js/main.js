@@ -11,10 +11,9 @@
 //     enabled}, then reconcile from desired + effective state. If persistence
 //     succeeds but runtime convergence fails, desired stays checked and the
 //     degraded reason is shown; only a failed write rolls the choice back.
-//   * Poll ./state every 4 s while the tab is visible, so an external
-//     `systemctl stop shairport-sync` from SSH shows up without a reload. A
-//     short ignore-window after a POST keeps a racing poll from reverting the
-//     value we just set.
+//   * Poll ./state every 4 s, so an external `systemctl stop shairport-sync`
+//     from SSH shows up without a reload. A short ignore-window after a POST
+//     keeps a racing poll from reverting the value we just set.
 //   * Bluetooth guard — before turning BT off while a wireless remote (volume
 //     knob, etc.) is paired, confirm via the shared <dialog> helper. The
 //     remote silently stops working until BT is back on, so this is a
@@ -25,7 +24,7 @@
 // secret. Confirm uses jtsConfirm (shared /assets/shared/js/dialog.js), never
 // the native popup, which the browser can suppress.
 
-import { jsonHeaders } from "/assets/shared/js/http.js";
+import { jsonHeaders, startPolling } from "/assets/shared/js/http.js";
 import { jtsAlert, jtsConfirm } from "/assets/shared/js/dialog.js";
 
 const POLL_MS = 4000;
@@ -132,7 +131,6 @@ function showStateError(message) {
 
 async function fetchState() {
   if (postInFlight) return;
-  if (document.visibilityState === "hidden") return;
   if (Date.now() < ignorePollUntil) return;
   if (stateFetchPromise !== null) return stateFetchPromise;
   stateFetchPromise = (async () => {
@@ -278,5 +276,4 @@ for (const name of SOURCES) {
   });
 }
 
-setInterval(fetchState, POLL_MS);
-fetchState();
+startPolling(fetchState, { intervalMs: POLL_MS });

@@ -768,7 +768,6 @@ class SessionVolumePlan:
             )
             + "\n",
             mode=0o640,
-            group_from_parent=True,
         )
 
     def _persist_state(self, state: _State) -> None:

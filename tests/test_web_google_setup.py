@@ -88,7 +88,7 @@ def test_setup_wizard_html_is_canonical():
     # hidden CSRF field and the four wizard steps.
     assert 'action="setup-credentials"' in text
     assert 'name="csrf_token"' in text
-    assert 'class="wizard-steps"' in text
+    assert 'class="setup-steps"' in text
     assert "data-step=\"4\"" in text
     assert "Create one Google Cloud OAuth client" in text
     assert "Connect this speaker to Google Calendar + Gmail" not in text
@@ -101,6 +101,9 @@ def test_redirect_uri_page_html_is_canonical():
     assert 'action="start"' in text
     assert 'action="reset-credentials"' in text
     assert "data-confirm" in text, "destructive confirm hook missing"
+    # confirm-forms.js reads dataset.confirmDanger === "1" — a bare
+    # data-confirm-danger attribute silently loses the red/danger style.
+    assert 'data-confirm-danger="1"' in text
     assert 'name="csrf_token"' in text
 
 
@@ -121,8 +124,11 @@ def test_management_html_is_canonical_and_escapes_accounts():
     assert "jasper@example.com" in text
     assert 'action="remove"' in text
     assert 'action="default"' in text
+    # confirm-forms.js reads dataset.confirmDanger === "1" — a bare
+    # data-confirm-danger attribute silently loses the red/danger style.
+    assert 'data-confirm-danger="1"' in text
     # Default badge present with the OK status tone.
-    assert "--tone: var(--status-ok)" in text
+    assert "badge badge--ok" in text
 
 
 def test_management_page_keeps_google_copy_short_on_default_path():
@@ -271,7 +277,7 @@ def test_get_root_renders_state1_when_no_creds(patched_common):
     fake.do_GET()
     assert patched_common.send_html_response.called
     page = patched_common.send_html_response.call_args.args[1]
-    assert b"wizard-steps" in page  # state 1
+    assert b"setup-steps" in page  # state 1
 
 
 def test_get_root_with_tools_return_uses_tool_pack_back_link(patched_common):

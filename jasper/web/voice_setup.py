@@ -340,10 +340,7 @@ def _fmt_env_float(value: float) -> str:
 
 
 def _badge_html(label: str, tone: str) -> str:
-    return (
-        f'<span class="badge" style="--tone:var(--status-{tone})">'
-        f'{html.escape(label)}</span>'
-    )
+    return f'<span class="badge badge--{tone}">{html.escape(label)}</span>'
 
 
 def _read_spend_cap_status(state: dict[str, str]) -> dict[str, Any]:
@@ -696,7 +693,7 @@ def _pricing_section_html(
             value_attr = f"{e:g}" if is_custom else ""
             placeholder = "set a rate" if unpriced else f"default {d:g}"
             chip = (
-                ' <span class="badge" style="--tone:var(--status-ok)">custom</span>'
+                ' <span class="badge badge--ok">custom</span>'
                 if is_custom else ""
             )
             name = f"price__{html.escape(model_id)}__{field}"
@@ -708,7 +705,7 @@ def _pricing_section_html(
                      placeholder="{html.escape(placeholder)}">
             </div>""")
         needs = (
-            ' <span class="badge" style="--tone:var(--status-warn)">needs pricing</span>'
+            ' <span class="badge badge--warn">needs pricing</span>'
             if unpriced else ""
         )
         blocks.append(f"""
@@ -720,9 +717,9 @@ def _pricing_section_html(
         f"Bundled rates as of {html.escape(default_as_of)}. " if default_as_of else ""
     )
     return f"""
-    <details class="pricing-disclosure">
+    <details class="disclosure pricing-disclosure">
       <summary>{html.escape(provider.label)} Pricing rates</summary>
-      <div class="pricing-disclosure__body">
+      <div class="disclosure__body">
         <p class="form-hint">{as_of_txt}Used by the /voice spend cap status
         and circuit breaker. Blank = use the bundled default; clear a box to reset.
         Edits apply to future sessions after the daemon restarts.</p>
@@ -795,9 +792,9 @@ def _pricing_refresh_html(
     <section class="section">
       <h2 class="section__title">Refresh pricing rates</h2>
       <p class="form-hint">Copy a model-specific pricing prompt, then paste back validated JSON.</p>
-      <details class="pricing-disclosure">
+      <details class="disclosure pricing-disclosure">
         <summary>1. Copy this research prompt</summary>
-        <div class="pricing-disclosure__body">
+        <div class="disclosure__body">
           <textarea id="pricing-prompt" class="prompt-box" readonly rows="14">{prompt}</textarea>
           <div class="form-actions">
             <button type="button" class="btn btn--default"
@@ -805,9 +802,9 @@ def _pricing_refresh_html(
           </div>
         </div>
       </details>
-      <details class="pricing-disclosure">
+      <details class="disclosure pricing-disclosure">
         <summary>2. Paste the JSON it gives you back</summary>
-        <div class="pricing-disclosure__body">
+        <div class="disclosure__body">
           <form method="post" action="pricing-import">
             {csrf_field_html(csrf_token)}
             <div class="field">
@@ -827,16 +824,10 @@ def _pricing_refresh_html(
 
 def _provider_status_badge_html(*, configured: bool, is_active: bool) -> str:
     if is_active:
-        return '<span class="badge" style="--tone:var(--status-ok)">active</span>'
+        return '<span class="badge badge--ok">active</span>'
     if configured:
-        return (
-            '<span class="badge" style="--tone:var(--status-idle)">'
-            'configured</span>'
-        )
-    return (
-        '<span class="badge" style="--tone:var(--status-warn)">'
-        'not configured</span>'
-    )
+        return '<span class="badge badge--idle">configured</span>'
+    return '<span class="badge badge--warn">not configured</span>'
 
 
 def _provider_clear_form_html(

@@ -136,6 +136,8 @@ function renderApplied(applied) {
   els.applied.hidden = state === 'none';
   els.applied.textContent = state === 'none' ? '' : (applied.label || '');
   els.applied.dataset.state = state;
+  const isApplied = state === 'manual' || state === 'automatic' || state === 'applied';
+  els.applied.className = isApplied ? 'badge badge--ok' : 'badge badge--idle';
 }
 
 function renderNudges(nudges, expertDetails, findings) {
@@ -523,7 +525,8 @@ function wrapChoice(action, control) {
   control.textContent = 'Start';
   const head = el('div', {class: 'measurement-row__head'}, [
     el('p', {class: 'measurement-row__title', text: action.label || 'Continue'}),
-    ...(action.recommended ? [el('span', {class: 'badge', text: 'Recommended'})] : []),
+    ...(action.recommended
+      ? [el('span', {class: 'badge badge--ok', text: 'Recommended'})] : []),
   ]);
   return el('div', {class: 'measurement-row'}, [
     el('div', {}, [

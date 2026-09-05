@@ -423,6 +423,61 @@ svg { display: block; }
   border-left: 2px solid var(--border);
   padding-left: 12px;
 }
+/* Progressive disclosure: <details class="disclosure"><summary>…</summary>
+   <div class="disclosure__body">…</div></details>. Chevron reads
+   --muted-faint per design-language.md §4 (decoration that must not
+   compete). */
+.disclosure {
+  border-radius: var(--radius-md);
+  background: color-mix(in oklab, var(--secondary) 50%, transparent);
+  box-shadow: inset 0 0 0 1px var(--border);
+  overflow: hidden;
+}
+.disclosure > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  position: relative;
+  padding: 14px 40px 14px 16px;
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  transition: background-color 150ms ease;
+}
+.disclosure > summary:hover { background: var(--surface-hover); }
+.disclosure > summary::-webkit-details-marker { display: none; }
+.disclosure > summary::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 18px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--muted-faint);
+  border-bottom: 2px solid var(--muted-faint);
+  transform: translateY(-65%) rotate(45deg);
+  transition: transform 150ms ease;
+}
+.disclosure[open] > summary::after { transform: translateY(-25%) rotate(-135deg); }
+.disclosure__body {
+  padding: 0 16px 16px;
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.6;
+  border-top: 1px solid var(--border);
+}
+.disclosure__body > * + * { margin-top: 10px; }
+.disclosure__body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.92em;
+  background: var(--foreground-005);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+}
+.disclosure__body a { color: var(--primary); }
 /* Key/value description list. */
 .deflist {
   display: grid;
@@ -443,7 +498,8 @@ svg { display: block; }
   color: var(--muted);
 }
 .deflist dd { margin: 0; word-break: break-word; font-variant-numeric: tabular-nums; }
-/* Status pill. Tone via inline `--tone` (--status-ok|warn|danger). */
+/* Status pill. Each modifier sets --tone and nothing else, so a page picks
+   a state rather than a colour. */
 .badge {
   display: inline-flex;
   align-items: center;
@@ -455,10 +511,72 @@ svg { display: block; }
   text-transform: uppercase;
   letter-spacing: 0.18em;
   color: var(--text);
-  background: color-mix(in oklab, var(--tone, var(--status-ok)) 18%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--tone, var(--status-ok)) 50%, transparent);
+  background: color-mix(in oklab, var(--tone, var(--status-idle)) 18%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--tone, var(--status-idle)) 50%, transparent);
 }
+.badge--ok { --tone: var(--status-ok); }
+.badge--warn { --tone: var(--status-warn); }
+.badge--danger { --tone: var(--status-danger); }
+.badge--idle { --tone: var(--status-idle); }
 .badge-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+/* Step indicator: <ol class="wizard-steps"><li class="wizard-step">
+   <span class="wizard-step__dot"></span><span class="wizard-step__label">
+   …</span></li></ol>, numbered by CSS counter. Done reads .done; the
+   current step reads .current (room correction) or .active (crossover) —
+   the split is each flow's own server envelope vocabulary, not drift — and
+   its dot colours from --tone (defaults to --primary). */
+.wizard-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  counter-reset: wizard-step;
+}
+.wizard-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  counter-increment: wizard-step;
+  color: var(--muted);
+  font-size: 13px;
+}
+.wizard-step__dot {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--border-strong);
+  background: var(--surface);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.wizard-step__dot::before { content: counter(wizard-step); }
+.wizard-step__label { white-space: nowrap; }
+@media (max-width: 30rem) {
+  .wizard-step__label { display: none; }
+}
+.wizard-step.done { color: var(--text); }
+.wizard-step.done .wizard-step__dot {
+  border-color: transparent;
+  background: color-mix(in oklab, var(--status-ok) 24%, transparent);
+  color: var(--text);
+}
+.wizard-step.current,
+.wizard-step.active {
+  color: var(--text);
+  font-weight: 600;
+}
+.wizard-step.current .wizard-step__dot,
+.wizard-step.active .wizard-step__dot {
+  border-color: transparent;
+  background: var(--tone, var(--primary));
+  color: var(--primary-foreground);
+}
 
 /* ---------------- modal dialog (jtsConfirm / jtsAlert) ---------------- */
 /* Styled, accessible stand-in for the browser's native confirm()/alert().
@@ -573,6 +691,29 @@ svg { display: block; }
   border-radius: var(--radius-sm);
   background: var(--foreground-005);
 }
+/* One line of live status text: <p class="status-line" role="status"
+   aria-live="polite">…</p>. An optional leading dot
+   (<span class="status-line__dot">) reads currentColor, so it tints with
+   --err. --boot is the full-page "module hasn't rendered yet" placeholder a
+   client-rendered page shows until its ES module graph replaces it. */
+.status-line {
+  min-height: 1.3em;
+  margin-top: 16px;
+  padding: 0 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.status-line__dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 9999px;
+  background: currentColor;
+  vertical-align: middle;
+}
+.status-line--err { color: var(--danger); }
+.status-line--boot { padding: 3rem 1.5rem; text-align: center; }
 
 /* ---------------- flash banner ---------------- */
 /* Flash banner markup is built by jasper.web._common.canonical_banner().

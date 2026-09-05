@@ -159,8 +159,8 @@ ACTIVE_PROGRAM_BAKE_SOURCE = (
 
 # Driver-domain-only (active follower) emit: a follower picks ONE inter-speaker
 # channel of the leader's corrected stereo program, so the valid selections are
-# left / right / a clip-safe mono sum. ``stereo`` (passthrough) and ``sub`` (the
-# wireless-sub member) are out of scope here.
+# left / right / a clip-safe mono sum. ``stereo`` (passthrough) is out of scope
+# here.
 DRIVER_DOMAIN_PROGRAM_CHANNELS = ("left", "right", "mono")
 
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_]+")
