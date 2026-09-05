@@ -29,6 +29,7 @@ from typing import Any
 
 import pytest
 
+from jasper.voice._supervisor import run_reconnect_with_backoff
 from tests._gemini_fakes import GoAway as _GoAway
 from tests._gemini_fakes import Response as _Resp
 from tests._gemini_fakes import ResumptionUpdate as _ResumptionUpdate
@@ -1287,7 +1288,7 @@ async def test_wake_during_a_connect_attempt_cuts_the_next_wait_short():
         connect_factory=lambda *, model, config: connect,
         sleep=_sleep,
     )
-    task = asyncio.ensure_future(conn._reconnect_with_backoff())
+    task = asyncio.ensure_future(run_reconnect_with_backoff(conn))
     try:
         await asyncio.wait_for(connecting.wait(), timeout=5.0)
         assert conn.is_paused()

@@ -712,7 +712,6 @@ code = [
   "jasper/calibration_agent/**",
   "jasper/web/correction_*.py",
   "jasper/web/sound_setup.py",
-  "jasper/web/balance_*.py",
   "jasper/web/sync_flow.py",
   "jasper/web/pair_flow.py",
   "deploy/assets/correction/js/**",
@@ -766,7 +765,7 @@ verification = [
   "pytest tests/test_web_correction_setup.py",
   "pytest tests/test_web_correction_tuning.py",
   "bash scripts/check-js-syntax.sh",
-  "pytest tests/test_web_balance_volume_guard.py tests/test_web_balance_flow.py tests/test_web_sync_flow.py",
+  "pytest tests/test_web_sync_flow.py",
   "pytest tests/test_audio_measurement_excitation_admission.py tests/test_audio_measurement_excitation_artifacts.py tests/test_audio_measurement_evidence_identity.py tests/test_active_speaker_driver_safety.py tests/test_active_speaker_commissioning_lifecycle.py tests/test_active_speaker_commissioning_receipt.py tests/test_active_speaker_commissioning_evidence.py",
 ]
 
@@ -1054,7 +1053,7 @@ id = "web-design-system"
 title = "Management UI design system + static asset delivery"
 safety = "safe-ci"
 code = [
-  "jasper/web/_common.py",
+  "jasper/web/*.py",
   "deploy/index.html",
   "deploy/assets/app.css",
   "deploy/assets/*/*.css",
@@ -1063,10 +1062,12 @@ code = [
 ]
 docs = [
   "docs/design-language.md",
+  "docs/web-ia.md",
 ]
 requires_docs_when = [
   "The shared page shell (canonical_page), the design tokens or shared components in app.css, the static ES-module delivery convention, or the /assets static-asset routing changes.",
   "A craft rule changes — the type ladder, the text ramp, depth, radii, touch targets, or motion — or a rule gains/loses a known offender.",
+  "A page's URL, its landing/hub row label, its parent, or a single-owner shared primitive changes.",
 ]
 verification = [
   "pytest tests/test_web_common.py tests/test_web_design_system.py tests/test_web_wizard_conventions.py",

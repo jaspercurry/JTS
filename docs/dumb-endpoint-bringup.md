@@ -48,7 +48,7 @@ Today, a transport endpoint has three supported shapes:
   `JASPER_INSTALL_PROFILE=streambox`. This installs the local renderer
   and DSP graph (`shairport-sync`, Spotify Connect/librespot, Bluetooth,
   USB Audio Input, fan-in, outputd, CamillaDSP, `/sources`, `/sound`,
-  `/spotify`, `/system`, `/rooms`, and correction/balance/sync web
+  `/spotify`, `/system`, `/rooms`, and correction/sync web
   surfaces) while deliberately omitting wake word, mic/AEC, assistant
   providers, TTS/cues, CamillaGUI, and accessory firmware. This is the
   default Zero 2 W install when the box is not already an active bonded
@@ -125,7 +125,7 @@ do not need migration.
 |---|---|---|---|---|
 | `full` | built | Pi 5 class | Brain speaker: sources, voice, room/content DSP, grouping leader, full UI | everything |
 | `satellite` | built today as persisted `endpoint` marker | Zero 2 W | Follower for a leader-owned synchronized group | `jasper-control`, Avahi, grouping reconcile, Snapclient, shared capability-gated `/`, endpoint-scoped `/system`, `/sources` |
-| `streambox` | built; Zero 2 W validation pending | Zero 2 W / Pi class | Standalone AirPlay / Spotify Connect / Bluetooth output target with no mic/AI brain | renderers, local output path, `/spotify`, `/sources`, `/system`, `/sound`, `/rooms`, correction/balance/sync |
+| `streambox` | built; Zero 2 W validation pending | Zero 2 W / Pi class | Standalone AirPlay / Spotify Connect / Bluetooth output target with no mic/AI brain | renderers, local output path, `/spotify`, `/sources`, `/system`, `/sound`, `/rooms`, correction/sync |
 
 | Output topology | Status | Applies to | Meaning |
 |---|---|---|---|
@@ -467,7 +467,7 @@ never as an on-Zero cargo build.
 
 **Validation gate: streambox role.** The streambox software profile is
 built: AirPlay / Spotify Connect / Bluetooth / USB Audio Input, local
-volume/source UI, `/sound`, correction/balance/sync surfaces, no voice,
+volume/source UI, `/sound`, correction/sync surfaces, no voice,
 no wake, no mic/AEC, no grouping leader. The remaining risk is not the
 product model; it is whether shairport-sync, nqptp, librespot,
 mux/output routing, CamillaDSP, USB gadget mode, a USB DAC on the same

@@ -48,13 +48,11 @@ import { createPairBalanceController } from "./pair-balance-controller.js";
 import {
   BALANCE_MAX_DB,
   BALANCE_MIN_DB,
-  addSubPlan,
   airplayLipSyncRow,
   balanceText,
   clampBalanceDb,
   formatBalanceDb,
   snapcastProvisionRow,
-  subCornerLabel,
   trimsForBalance,
 } from "./grouping-view.js";
 
@@ -89,13 +87,6 @@ function defRow(label, value) {
   return [h("dt", null, label), h("dd", null, value)];
 }
 
-function groupingHasSubwoofer(g) {
-  if (!g || typeof g !== "object") return false;
-  if (g.subwoofer_present || g.channel === "sub") return true;
-  const roster = Array.isArray(g.roster) ? g.roster : [];
-  return roster.some((m) => m && m.channel === "sub");
-}
-
 // ---------------------------------------------------------------------------
 // Grouping status → a key/value list (or a single "off (solo)" line).
 // Shape from jasper.multiroom.state.read_grouping_state() + the airplay-fit
@@ -125,15 +116,9 @@ function groupingBody(g) {
       h("div.badge-row", null, badge, "Not part of a bond"),
     );
   }
-  // Enabled + valid: role / channel / bond / buffer / codec. A subwoofer
-  // channel names its low-pass corner inline (e.g. "Subwoofer | 80 Hz
-  // low-pass") so the row says what the box actually plays, not just "sub".
-  const channelLabel = g.channel === "sub"
-    ? "Subwoofer | " + subCornerLabel(g.crossover_hz)
-    : (g.channel || "—");
   const rows = [
     defRow("Role", g.role || "—"),
-    defRow("Channel", channelLabel),
+    defRow("Channel", g.channel || "—"),
     defRow("Bond", g.bond_id || "—"),
   ];
   if (g.role === "follower" && g.leader_addr) {
@@ -418,15 +403,7 @@ function describeBondFailure(e) {
 function makeBondCard() {
   let saving = false;
   let selfAddr = "";
-  // The add-sub picker's reachable peers + the existing-members plan from the
-  // last poll, so the addSub handler re-posts the SAME bond with the new sub.
-  let lastSubReachable = [];
-  let lastAddSubPlan = { show: false, members: [], reason: "init" };
-  // Current bond_id from the poll — passed back on the add-sub re-post so it
-  // ADDS to the existing bond rather than minting a fresh one.
-  let lastBondId = "";
   let lastBonded = null;
-  let advancedSubOpen = false;
 
   // --- Create face: pick one sibling; the backend owns the pair topology. ---
   const select = h("select.bond-select", {
@@ -539,48 +516,6 @@ function makeBondCard() {
     h("div.balance-readout", null, balanceValue, balanceTrims, balanceReset),
     balanceStatus);
 
-  const mainsHpCb = h("input", {
-    type: "checkbox",
-    "attr:aria-label": "High-pass main speakers when a subwoofer is active",
-  });
-  const mainsHpToggle = h("label.toggle", null, mainsHpCb, h("span.track"));
-  const mainsHpRow = h("label.wake-row", null,
-    mainsHpToggle,
-    h("span.wake-row__text", null,
-      h("span.wake-row__label", null, "High-pass main speakers"),
-      h("span.wake-row__hint", null,
-        "Match the mains to the subwoofer crossover.")),
-  );
-
-  // --- Add-subwoofer sub-panel (dissolve face, stereo-leader only) --------
-  // Shown only when this speaker is a bonded stereo-pair LEADER with no sub
-  // yet (decided by the pure addSubPlan helper). Adds a third member to the
-  // SAME bond — it does NOT dissolve the pair.
-  const addSubSelect = h("select.bond-select", {
-    "attr:aria-label": "Speaker to add as a subwoofer",
-  });
-  const addSubCrossover = h("input.bond-crossover", {
-    type: "number", min: "40", max: "200", step: "1", value: "80",
-    "attr:aria-label": "Subwoofer low-pass corner (Hz)",
-  });
-  const addSubBtn = h("button.btn.btn--ghost",
-    { type: "button" }, "Add subwoofer");
-  const advancedSubBtn = h("button.btn.btn--ghost",
-    { type: "button" }, "Advanced");
-  const addSubIntro = h("p.info-card__note", null,
-    "Optional: add a subwoofer to this pair. The speaker you pick plays only the low " +
-    "end (low-passed locally on that box). The pair keeps playing as-is.");
-  const addSubPanel = h("div.add-sub-panel", null,
-    addSubIntro,
-    h("div.bond-row", null,
-      h("span.bond-row__label", null, "Add subwoofer"),
-      addSubSelect),
-    h("div.bond-row", null,
-      h("span.bond-row__label", null, "Low-pass (Hz)"),
-      addSubCrossover,
-      addSubBtn),
-  );
-
   const status = h("p.bond-status.info-card__note",
     { "attr:aria-live": "polite" });
   const loadingNote = h("p.info-card__note", null, "Loading speaker grouping…");
@@ -591,10 +526,7 @@ function makeBondCard() {
     picker,
     dissolveIntro,
     currentSummary,
-    mainsHpRow,
     balanceBlock,
-    advancedSubBtn,
-    addSubPanel,
     dissolveRow,
     status,
   );
@@ -616,10 +548,7 @@ function makeBondCard() {
     dissolveIntro.style.display = "none";
     currentSummary.style.display = "none";
     dissolveRow.style.display = "none";
-    mainsHpRow.style.display = "none";
     balanceBlock.style.display = "none";
-    advancedSubBtn.style.display = "none";
-    addSubPanel.style.display = "none";
     title.textContent = "Speaker grouping";
     setEnabled(false);
   }
@@ -632,10 +561,7 @@ function makeBondCard() {
     dissolveIntro.style.display = bonded ? "" : "none";
     currentSummary.style.display = bonded ? "" : "none";
     dissolveRow.style.display = bonded ? "" : "none";
-    mainsHpRow.style.display = "none";
     balanceBlock.style.display = bonded ? "" : "none";
-    advancedSubBtn.style.display = "none";
-    addSubPanel.style.display = "none";
     title.textContent = bonded ? "Speaker grouping" : "Create a stereo pair";
   }
 
@@ -664,19 +590,11 @@ function makeBondCard() {
     const channel = g.channel || "";
     if (g.role === "follower") {
       const leaderHost = localWebHost(g.leader_addr);
-      // A subwoofer follower reads differently from a left/right channel: it
-      // plays only the low end, low-passed locally at the saved corner.
-      const parts = channel === "sub"
-        ? [
-            "Subwoofer — this speaker plays the low end below ",
-            h("strong", null, subCornerLabel(g.crossover_hz)),
-            ".",
-          ]
-        : [
-            "Paired — this speaker plays the ",
-            h("strong", null, channel || "second"),
-            " channel.",
-          ];
+      const parts = [
+        "Paired — this speaker plays the ",
+        h("strong", null, channel || "second"),
+        " channel.",
+      ];
       if (leaderHost) {
         parts.push(" Following ", h("code.bond-current__addr", null, leaderHost), ".");
       } else if (g.leader_addr) {
@@ -722,10 +640,6 @@ function makeBondCard() {
       currentSummary.textContent = "";
       appendChildren(currentSummary, summarize(g));
       syncBalance(g);
-      const hasSub = groupingHasSubwoofer(g);
-      mainsHpRow.style.display = hasSub ? "" : "none";
-      mainsHpCb.checked = g.mains_highpass_enabled !== false;
-      mainsHpCb.disabled = !hasSub;
       dissolveBtn.disabled = false;
       // Swap is only well-defined for a left/right pair; the backend
       // re-validates (exactly one same-bond peer) — this just avoids
@@ -733,49 +647,6 @@ function makeBondCard() {
       swapBtn.style.display =
         (g.channel === "left" || g.channel === "right") ? "" : "none";
       swapBtn.disabled = false;
-      // Add-subwoofer affordance: only for a stereo-pair leader with no sub
-      // yet (the pure addSubPlan decides). Stash the existing-members plan so
-      // the handler re-posts the SAME bond with the new sub appended.
-      lastAddSubPlan = addSubPlan({ ...g, self_addr: selfAddr });
-      lastBondId = g.bond_id || "";
-      if (lastAddSubPlan.show && view.show_subwoofer_controls === true) {
-        advancedSubBtn.style.display = "";
-        advancedSubBtn.textContent = advancedSubOpen ? "Hide advanced" : "Advanced";
-        addSubPanel.style.display = advancedSubOpen ? "" : "none";
-        // Exclude self + every existing bond member from the sub picker.
-        const inBond = new Set(
-          lastAddSubPlan.members
-            .map((mm) => mm.addr)
-            .filter(Boolean),
-        );
-        const subReachable = peers.filter(
-          (p) => p && p.address && !inBond.has(p.address));
-        const prev = addSubSelect.value;
-        addSubSelect.textContent = "";
-        if (!subReachable.length) {
-          addSubSelect.appendChild(h("option", { value: "" },
-            "No other speakers found — add one to use as a subwoofer"));
-          addSubSelect.disabled = true;
-          addSubCrossover.disabled = true;
-          addSubBtn.disabled = true;
-        } else {
-          lastSubReachable = subReachable;
-          for (const p of subReachable) {
-            const label = (p.name || p.address) + " (" + p.address + ")";
-            addSubSelect.appendChild(h("option", { value: p.address }, label));
-          }
-          if (subReachable.some((p) => p.address === prev)) {
-            addSubSelect.value = prev;
-          }
-          addSubSelect.disabled = false;
-          addSubCrossover.disabled = false;
-          addSubBtn.disabled = false;
-        }
-      } else {
-        advancedSubOpen = false;
-        advancedSubBtn.style.display = "none";
-        addSubPanel.style.display = "none";
-      }
       return;
     }
 
@@ -873,75 +744,8 @@ function makeBondCard() {
     }
   }
 
-  async function addSub() {
-    const subAddr = addSubSelect.value;
-    if (!subAddr || !lastAddSubPlan.show) return;
-    saving = true;
-    addSubSelect.disabled = true;
-    addSubCrossover.disabled = true;
-    addSubBtn.disabled = true;
-    status.textContent = "Adding the subwoofer…";
-    try {
-      const picked = lastSubReachable.find((p) => p.address === subAddr);
-      const pickedName = (picked && picked.name) || "";
-      // Re-post the FULL desired roster to the SAME bond (bond_id reused from
-      // the current grouping): the existing members from the plan + the new
-      // sub. The sub plays only the low end, low-passed locally in outputd.
-      const members = [
-        ...lastAddSubPlan.members,
-        { addr: subAddr, role: "follower", channel: "sub",
-          crossover_hz: Number(addSubCrossover.value), name: pickedName },
-      ];
-      const body = { members };
-      if (lastBondId) body.bond_id = lastBondId;
-      const data = await postJSON("bond", body);
-      if (data && data.ok) {
-        status.textContent = "Subwoofer added — reconfiguring (~10s).";
-      }
-    } catch (e) {
-      console.error("rooms: add subwoofer failed", e);
-      status.textContent = "Couldn't add the subwoofer — " + describeBondFailure(e);
-    } finally {
-      saving = false;
-      addSubSelect.disabled = false;
-      addSubCrossover.disabled = false;
-      addSubBtn.disabled = false;
-    }
-  }
-
-  async function setMainsHighpass() {
-    const enabled = mainsHpCb.checked;
-    saving = true;
-    mainsHpCb.disabled = true;
-    status.textContent = "Saving bass management…";
-    try {
-      const data = await postJSON("mains-highpass", { enabled });
-      if (data && data.ok) {
-        status.textContent = enabled
-          ? "Bass management on — mains are reconfiguring (~10s)."
-          : "Bass management off — mains are reconfiguring (~10s).";
-      }
-    } catch (e) {
-      console.error("rooms: mains high-pass toggle failed", e);
-      mainsHpCb.checked = !enabled;
-      status.textContent = "Couldn't save bass management — " +
-        describeBondFailure(e);
-    } finally {
-      saving = false;
-      mainsHpCb.disabled = false;
-    }
-  }
-
   createBtn.addEventListener("click", create);
   swapBtn.addEventListener("click", swap);
-  addSubBtn.addEventListener("click", addSub);
-  advancedSubBtn.addEventListener("click", () => {
-    advancedSubOpen = !advancedSubOpen;
-    advancedSubBtn.textContent = advancedSubOpen ? "Hide advanced" : "Advanced";
-    addSubPanel.style.display =
-      advancedSubOpen && lastAddSubPlan.show ? "" : "none";
-  });
-  mainsHpCb.addEventListener("change", setMainsHighpass);
   dissolveBtn.addEventListener("click", dissolve);
   // Default to a neutral loading face; the first /rooms.json decides whether
   // create or paired controls are valid. This avoids initial layout/state lies.

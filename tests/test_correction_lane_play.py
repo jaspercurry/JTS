@@ -215,10 +215,10 @@ def test_popen_operator_cli_shape(monkeypatch) -> None:
 async def test_exec_walkthrough_shape(monkeypatch) -> None:
     """create_subprocess_exec("aplay", …, DEVNULL×2, umask) — the async shape.
 
-    Argv + stdio derived from (origin/main @ bb55691a1) the identical
-    ``_start_playback`` helpers in sync_flow and balance_flow: program+args
-    as separate positionals, both stdio DEVNULL; ``umask`` is P6c-i's
-    addition, forwarded through asyncio to the underlying Popen.
+    Argv + stdio derived from (origin/main @ bb55691a1) sync_flow's
+    ``_start_playback`` helper: program+args as separate positionals, both
+    stdio DEVNULL; ``umask`` is P6c-i's addition, forwarded through asyncio
+    to the underlying Popen.
     """
     import asyncio
 

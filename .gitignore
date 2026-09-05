@@ -64,6 +64,9 @@ wake-events/
 # launchable rather than silently gitignored.
 !.claude/agents/
 !.claude/agents/**
+# Skills, same reason: an untracked skill can't load for anyone else.
+!.claude/skills/
+!.claude/skills/**
 
 # Per-laptop active-Pi marker, written by scripts/onboard.sh. Loaded
 # into Claude Code's context via CLAUDE.md's @-import directive.

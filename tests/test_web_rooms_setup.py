@@ -71,7 +71,7 @@ def test_package_shared_rooms_boundary_is_public_and_lazily_imported():
     for private_name in _ROOMS_SHARED_OLD_PRIVATE:
         assert not hasattr(rooms_setup, private_name)
 
-    for filename in ("pair_flow.py", "sync_flow.py", "balance_flow.py"):
+    for filename in ("pair_flow.py", "sync_flow.py"):
         tree = ast.parse(
             (_REPO / "jasper" / "web" / filename).read_text(encoding="utf-8")
         )
@@ -371,7 +371,6 @@ def test_rooms_json_shape(monkeypatch):
         "bonded": False,
         "can_create_pair": True,
         "can_balance_pair": False,
-        "show_subwoofer_controls": False,
     }
 
 
@@ -465,7 +464,6 @@ def test_rooms_json_carries_live_pair_balance_snapshot(monkeypatch):
     assert data["view"]["state"] == "paired"
     assert data["view"]["bonded"] is True
     assert data["view"]["can_balance_pair"] is True
-    assert data["view"]["show_subwoofer_controls"] is False
 
 
 def test_rooms_json_balance_snapshot_uses_short_peer_read(monkeypatch):
@@ -3214,8 +3212,9 @@ def test_bond_card_renders_no_https_balance_link_via_node():
     """Issue #1842: the bond card's balance block used to build an
     `https://<hostname>/balance/` "microphone" link — a relay design
     ADR-0188 parked. On the self-signed origin that link fails hard
-    (ERR_CERT_AUTHORITY_INVALID). Pins that the card builds no <a> element at
-    all. Skips when node isn't on PATH."""
+    (ERR_CERT_AUTHORITY_INVALID). The `/balance/` page is gone entirely now
+    (#4031); this still pins that the card builds no <a> element at all.
+    Skips when node isn't on PATH."""
     if _NODE is None:
         pytest.skip("node not on PATH")
     proc = subprocess.run(

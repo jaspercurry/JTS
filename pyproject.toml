@@ -422,7 +422,6 @@ module = [
     "jasper.weather",
     "jasper.web.__main__",
     "jasper.web._common",
-    "jasper.web.balance_flow",
     "jasper.web.bluetooth_setup",
     "jasper.web.rooms_setup",
     "jasper.web.sound_setup",

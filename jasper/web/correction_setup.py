@@ -98,7 +98,7 @@ MAX_CALIBRATION_UPLOAD_JSON_BYTES = 1024 * 1024
 MAX_WAV_BODY_BYTES = 32 * 1024 * 1024
 MAX_SYNC_WAV_BODY_BYTES = 2 * 1024 * 1024
 MAX_DEVICE_FIELD_CHARS = 160
-_FOLLOWER_DELEGATED_PAGE_PATHS = frozenset({"/", "/room", "/balance", "/sync"})
+_FOLLOWER_DELEGATED_PAGE_PATHS = frozenset({"/", "/room", "/sync"})
 
 
 class BadRequest(ValueError):
@@ -359,13 +359,6 @@ _POST_ROUTES = frozenset({
     # ``begin_capture {retake: true}``, re-opening the slot that just
     # completed while the walk is still waiting on a person.
     "/crossover/v2/retake",
-    "/balance/start",
-    "/balance/ramp",
-    "/balance/meter",
-    "/balance/lock",
-    "/balance/stop",
-    "/balance/apply",
-    "/balance/reset",
     "/sync/start",
     "/sync/play",
     "/sync/analyze",
@@ -770,7 +763,7 @@ def _correction_start_blocker() -> str | None:
 def active_correction_phase() -> str | None:
     """Read-only: the active room-correction session state, or None.
 
-    The counterpart to balance/sync ``active_phase()`` so another measurement
+    The counterpart to sync's ``active_phase()`` so another measurement
     flow (active-speaker commissioning) can exclude correction without the side
     effect of ``_reserve_start_slot`` (which reserves /start)."""
     with _session_lock:
@@ -793,19 +786,15 @@ def _reserve_start_slot() -> str | None:
     `/start` and the new session visibly leaving IDLE.
     """
     global _start_in_progress
-    # The pair-balance and pair-sync flows share this process precisely so the
-    # measurement surfaces can exclude each other here (both open
-    # measurement_window; concurrent windows would interleave the
-    # renderer stop/start). Active-speaker commissioning excludes the same way
-    # (it plays sweeps through the production graph) but participates
-    # cooperatively rather than holding a window — see active_speaker_flow.
+    # The pair-sync flow shares this process precisely so the measurement
+    # surfaces can exclude each other here (both open measurement_window;
+    # concurrent windows would interleave the renderer stop/start).
+    # Active-speaker commissioning excludes the same way (it plays sweeps
+    # through the production graph) but participates cooperatively rather
+    # than holding a window — see active_speaker_flow.
     # Lazy imports: these modules never import this module back at import time.
     from .active_speaker_flow import active_phase as _active_speaker_phase
-    from .balance_flow import active_phase as _balance_phase
     from .sync_flow import active_phase as _sync_phase
-    balance_active = _balance_phase()
-    if balance_active is not None:
-        return f"balance:{balance_active}"
     sync_active = _sync_phase()
     if sync_active is not None:
         return f"sync:{sync_active}"
@@ -3979,51 +3968,6 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 status=status,
             )
 
-        def _dispatch_balance(self, path: str) -> None:
-            """POST /balance/* — the pair-balance walkthrough
-            (balance_flow). /start additionally requires the
-            correction session to be idle: both flows open
-            measurement_window, and this is where the correction side
-            of the mutual exclusion lives (the balance side lives in
-            _reserve_start_slot)."""
-            from . import balance_flow
-
-            def _schedule(coro):
-                return asyncio.run_coroutine_threadsafe(
-                    coro, _ensure_loop())
-
-            try:
-                if path == "/balance/start":
-                    blocked = _correction_start_blocker()
-                    if blocked is not None:
-                        self._send_json(
-                            {"ok": False, "error": (
-                                "a room-correction session is active "
-                                f"({blocked})"
-                            )},
-                            status=HTTPStatus.CONFLICT)
-                        return
-                    payload, status = balance_flow.handle_start(
-                        cfg["hostname"], _schedule)
-                elif path == "/balance/ramp":
-                    payload, status = balance_flow.handle_ramp(
-                        self, _run_async, _schedule)
-                elif path == "/balance/meter":
-                    payload, status = balance_flow.handle_meter(self)
-                elif path == "/balance/lock":
-                    payload, status = balance_flow.handle_lock(self)
-                elif path == "/balance/stop":
-                    payload, status = balance_flow.handle_stop()
-                elif path == "/balance/apply":
-                    payload, status = balance_flow.handle_apply(self)
-                else:  # /balance/reset
-                    payload, status = balance_flow.handle_stop()
-                self._send_json(payload, status=int(status))
-            except Exception as e:  # noqa: BLE001
-                logger.exception("%s failed", path)
-                self._send_json({"ok": False, "error": str(e)},
-                                status=500)
-
         def _dispatch_sync(self, path: str) -> None:
             """POST /sync/* — stereo-pair acoustic timing walkthrough."""
             from . import sync_flow
@@ -4492,8 +4436,6 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 "/crossover/envelope",
                 "/bass",
                 "/bass/status",
-                "/balance",
-                "/balance/status",
                 "/sync",
                 "/sync/status",
             }:
@@ -4594,20 +4536,6 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     path, lambda _handler: correction_bass_flow.handle_status(),
                 )
                 return
-            if path == "/balance":
-                from . import balance_flow
-                ctx = begin_request(self)
-                self._send_html(
-                    balance_flow.render_page(ctx["csrf_token"]))
-                return
-            if path == "/balance/status":
-                from . import balance_flow
-                try:
-                    self._send_json(balance_flow.handle_status())
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("/balance/status failed")
-                    self._send_json({"error": str(e)}, status=500)
-                return
             if path == "/sync":
                 from . import sync_flow
                 ctx = begin_request(self)
@@ -4688,9 +4616,6 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     },
                     status=HTTPStatus.CONFLICT,
                 )
-                return
-            if path.startswith("/balance/"):
-                self._dispatch_balance(path)
                 return
             if path.startswith("/sync/"):
                 self._dispatch_sync(path)

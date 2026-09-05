@@ -361,7 +361,7 @@ function emptyTopologyPayload() {
 
 // Single physical output (the Apple-dongle case) already consumed by a passive
 // mono layout: no spare DAC channel for a LOCAL subwoofer, so the subwoofer
-// add-on dead-ends and should offer the wireless-sub CTA instead.
+// add-on dead-ends.
 function dongleMonoTopologyPayload() {
   return {
     status: "valid",
@@ -8325,9 +8325,8 @@ async function testTuningHandoffCardMintsAndGoesStale() {
 const results = [];
 // Dead-end: a layout is drafted but no spare physical output exists for a LOCAL
 // subwoofer (the single-output Apple-dongle case). The card must keep the
-// disabled "Add subwoofer" affordance AND additionally point the household at a
-// wireless sub on the Speakers page — a "sub" must never be a silent dead-end.
-async function testSubwooferDeadEndOffersWirelessCta() {
+// disabled "Add subwoofer" affordance — a "sub" must never be a silent dead-end.
+async function testSubwooferDeadEndKeepsAddAffordance() {
   const fallback = baseFetch();
   const harness = setupHarness((path, options = {}) => {
     if (path === "./output-topology") {
@@ -8343,24 +8342,15 @@ async function testSubwooferDeadEndOffersWirelessCta() {
   if (!html.includes("No unused physical output is available for a subwoofer")) {
     fail("dongle layout should still explain why a local sub cannot be added", { html });
   }
-  // The existing disabled add affordance stays, with wireless-sub guidance
-  // demoted to a secondary option.
   if (!html.includes('data-act="toggle-output-subwoofer"')) {
     fail("the local-subwoofer add affordance must remain in the dead-end branch", { html });
   }
-  if (!html.includes('href="/rooms/"')) {
-    fail("dead-end subwoofer card should link to the Speakers page", { html });
-  }
-  if (!html.includes("Wireless sub options")) {
-    fail("dead-end subwoofer card should offer secondary wireless-sub guidance", { html });
-  }
-  return { subwooferDeadEndOffersWirelessCta: true };
+  return { subwooferDeadEndKeepsAddAffordance: true };
 }
 
-// Negative: when a spare output exists for a LOCAL subwoofer, the card offers the
-// normal add affordance and must NOT show the wireless-sub CTA (it would confuse
-// a household that can simply add one locally).
-async function testSubwooferWithSpareOutputHidesWirelessCta() {
+// Base case: a spare output exists for a LOCAL subwoofer, so the card offers
+// the normal add affordance.
+async function testSubwooferWithSpareOutputRendersAddOn() {
   const harness = setupHarness(baseFetch());
   await harness.flush();
   await harness.flush();
@@ -8370,10 +8360,7 @@ async function testSubwooferWithSpareOutputHidesWirelessCta() {
   if (!html.includes("Subwoofer add-on")) {
     fail("default layout should render the subwoofer add-on card", { html });
   }
-  if (html.includes('href="/rooms/"') || html.includes("Wireless sub options")) {
-    fail("a layout with a spare output must not show the wireless-sub CTA", { html });
-  }
-  return { subwooferWithSpareOutputHidesWirelessCta: true };
+  return { subwooferWithSpareOutputRendersAddOn: true };
 }
 
 // Issue #1820 defect 3, as it stands after the confirm step was retired.
@@ -8793,8 +8780,8 @@ results.push(await testFailedResetPreservesCommissioningPanels());
 results.push(await testSavedTopologyReconcileFailureNeedsAttention());
 results.push(await testFollowerModeRendersLocalDriverUi());
 results.push(await testFollowerModeSafeFallbackOnMalformedIsland());
-results.push(await testSubwooferDeadEndOffersWirelessCta());
-results.push(await testSubwooferWithSpareOutputHidesWirelessCta());
+results.push(await testSubwooferDeadEndKeepsAddAffordance());
+results.push(await testSubwooferWithSpareOutputRendersAddOn());
 results.push(await testUsableSafetyProfileRendersNoCalloutAndNoConfirmControl());
 results.push(await testATypedDeclarationWarningIsShownOnAConfirmedProfile());
 results.push(await testNoWarningsRenderNoTrustBlock());
