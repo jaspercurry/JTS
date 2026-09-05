@@ -59,7 +59,12 @@ from ._evidence import (
     DOCTOR_MAX_CONCURRENCY,
     evidence,
 )
-from ._registry import doctor_check, registered_checks
+from ._registry import (
+    STREAMBOX_OMITTED_DOCTOR_CHECKS,
+    STREAMBOX_OMITTED_DOCTOR_MODULES,
+    doctor_check,
+    registered_checks,
+)
 from ._shared import (
     BOLD,
     CheckResult,
@@ -356,20 +361,6 @@ from .secret_compartments import (
     check_jasper_intsecrets_compartment,
 )
 
-_STREAMBOX_OMITTED_DOCTOR_MODULES = frozenset({
-    "voice",
-    "wake",
-    "integrations",
-    "aec",
-})
-
-_STREAMBOX_OMITTED_DOCTOR_CHECKS = frozenset({
-    "check_mic_card_matches_config",
-    "check_mic_capture",
-    "check_tts_open",
-})
-
-
 def _registered_check_name(entry) -> str:
     """One naming rule for every calling convention, so a check cannot be
     named one thing on a full box and another on a streambox."""
@@ -388,8 +379,8 @@ def _profile_skip_result(entry, *, detail: str) -> CheckResult:
 def _doctor_skip_detail(entry, install_profile: str) -> str:
     role = install_role_for_profile(install_profile)
     if role == STREAMBOX_INSTALL_PROFILE and (
-        entry.module in _STREAMBOX_OMITTED_DOCTOR_MODULES
-        or entry.func.__name__ in _STREAMBOX_OMITTED_DOCTOR_CHECKS
+        entry.module in STREAMBOX_OMITTED_DOCTOR_MODULES
+        or entry.func.__name__ in STREAMBOX_OMITTED_DOCTOR_CHECKS
     ):
         return "not installed (streambox profile)"
     return ""

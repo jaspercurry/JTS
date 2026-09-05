@@ -322,7 +322,7 @@ def _classify_drift(
     )
 
 
-@doctor_check
+@doctor_check()
 def check_installed_settings_drift() -> CheckResult:
     """Name every installed setting whose live value has drifted."""
     drift: list[DriftItem] = []

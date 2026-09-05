@@ -655,7 +655,7 @@ def _outputd_transport_health(
 
 
 
-@doctor_check
+@doctor_check()
 def check_outputd_service() -> CheckResult:
     """Validate the outputd final-output-owner daemon.
 
@@ -871,7 +871,7 @@ def check_outputd_service() -> CheckResult:
         reason=evidence_reason,
     )
 
-@doctor_check
+@doctor_check()
 def check_aec_clock_drift() -> CheckResult:
     """Surface the passive chip-AEC clock-drift estimate (Layer 0).
 

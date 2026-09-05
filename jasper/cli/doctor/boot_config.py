@@ -35,7 +35,7 @@ def _skipped(detail: str) -> CheckResult:
     return CheckResult(CHECK_NAME, "ok", f"skipped — {detail}", reason=REASON_SKIPPED)
 
 
-@doctor_check
+@doctor_check()
 def check_i2s_dac_overlay_persists() -> CheckResult:
     """The saved active-output I2S DAC's dtoverlay line survives a reboot."""
 

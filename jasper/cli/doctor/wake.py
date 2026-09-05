@@ -273,7 +273,7 @@ def _assess_wake_legs(
         reason=REASON_WAKE_LEGS_MATCH,
     )
 
-@doctor_check
+@doctor_check()
 def check_wake_legs_configured() -> CheckResult:
     """Reports which additive wake-detection legs are armed (raw chip-direct,
     DTLN neural, and the XVF3800 chip-AEC beam legs); check_aec_bridge_running

@@ -15,7 +15,7 @@ REASON_STORE_UNAVAILABLE = "research_store_unavailable"
 REASON_COUNTS_UNAVAILABLE = "research_counts_unavailable"
 
 
-@doctor_check
+@doctor_check()
 def check_research() -> CheckResult:
     """Report async research provider/store health without private text."""
     from ...research.state import snapshot

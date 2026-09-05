@@ -360,7 +360,7 @@ def check_mic_card_matches_config(cfg: Config) -> CheckResult:
         check_alsa_card(card, "arecord", f"mic ALSA card ({card})"), presence,
     )
 
-@doctor_check
+@doctor_check()
 def check_loopback() -> CheckResult:
     """snd-aloop must be loaded — on both couplings, hence `fail`.
 
@@ -580,7 +580,7 @@ def check_tts_open(cfg: Config) -> CheckResult:
             reason=REASON_TTS_DEVICE_UNAVAILABLE,
         )
 
-@doctor_check
+@doctor_check()
 def check_output_hardware_state() -> CheckResult:
     """Surface reconciler-owned output hardware state."""
 
@@ -622,7 +622,7 @@ def check_output_hardware_state() -> CheckResult:
     )
 
 
-@doctor_check
+@doctor_check()
 def check_active_speaker_output_hardware_match() -> CheckResult:
     """Keep saved active-speaker topology mismatch out of basic playback health."""
 
@@ -798,14 +798,14 @@ def _camilla_configs_writable_result(
     return CheckResult(label, "ok", detail)
 
 
-@doctor_check
+@doctor_check()
 def check_camilla_configs_writable() -> CheckResult:
     """Guard the CamillaDSP config dir's group-write posture for jasper-web."""
 
     return _camilla_configs_writable_result(CAMILLA_CONFIGS_DIR)
 
 
-@doctor_check
+@doctor_check()
 def check_dac_usb_sync_mode() -> CheckResult:
     """Classify the speaker DAC's USB sync mode as an advisory clock-coherence
     observation for chip-AEC.
@@ -894,7 +894,7 @@ def check_dac_usb_sync_mode() -> CheckResult:
     )
 
 
-@doctor_check
+@doctor_check()
 def check_apple_dongle_audio() -> CheckResult:
     """Apple's USB-C → 3.5mm adapter exposes its USB Audio class interface only
     when something is plugged into the analog jack, so with no analog load
@@ -1061,7 +1061,7 @@ def _devices_volume_limit_from_text(text: str) -> float | None:
         return None
     return float(value)
 
-@doctor_check
+@doctor_check()
 def check_camilla_volume_limit() -> CheckResult:
     """Verify the active Camilla config has JTS's non-positive fader cap."""
     config_path = evidence.camilla_config_path()
@@ -1112,7 +1112,7 @@ def check_camilla_volume_limit() -> CheckResult:
         f"{config_path} devices.volume_limit={limit:.1f} dB",
     )
 
-@doctor_check
+@doctor_check()
 def check_camilla_ring_chunk_fits() -> CheckResult:
     """Verify a ring-crossing Camilla config asks for a chunk the ring can hold.
 
@@ -1237,7 +1237,7 @@ def _incomplete_layout_detail(contract) -> str:
     return f"{blocker}. Fix the layout at {_SPEAKER_SETUP_URL}"
 
 
-@doctor_check
+@doctor_check()
 def check_active_speaker_runtime_graph() -> CheckResult:
     """Report the graph selected for saved speaker intent, fail closed if unsafe.
 
@@ -1373,7 +1373,7 @@ def _sound_profile_path() -> Path:
         )
     )
 
-@doctor_check
+@doctor_check()
 def check_sound_profile() -> CheckResult:
     from jasper.sound.camilla_yaml import is_jts_generated_config
     from jasper.sound.profile import (
@@ -1436,7 +1436,7 @@ def check_sound_profile() -> CheckResult:
         )
     return CheckResult("sound profile", "ok", detail)
 
-@doctor_check
+@doctor_check()
 def check_bass_extension_profile() -> CheckResult:
     from jasper.active_speaker.baseline_profile import (
         load_applied_baseline_profile_state,
@@ -1480,7 +1480,7 @@ def check_bass_extension_profile() -> CheckResult:
         f"natural={evaluation.profile.targets[-1].fp_hz:g}Hz",
     )
 
-@doctor_check
+@doctor_check()
 def check_dsp_apply_state() -> CheckResult:
     from jasper.dsp_apply import last_dsp_apply_state
 
@@ -1531,7 +1531,7 @@ def _is_baseline_candidate_sibling(live_path: Path, canonical: Path) -> bool:
         and live_path.name.startswith(f"{canonical.stem}_candidate_")
     )
 
-@doctor_check
+@doctor_check()
 def check_active_speaker_baseline_canonical() -> CheckResult:
     """Canonical ``active_speaker_baseline.yml`` durability (issue #1666).
 

@@ -7,17 +7,15 @@
 A check is registered by the module of the subsystem it observes, and
 ``MODULE_ROSTER`` below is the display order (ADR-0233 rule 4): checks
 appear module by module in roster order, and within a module in source
-order. The module name is also the key
-``__init__._STREAMBOX_OMITTED_DOCTOR_MODULES`` filters on. Registering
-from a module the roster does not name is an import-time error, so a new
-module has to be given a position before it can run.
+order. Registering from a module the roster does not name is an
+import-time error, so a new module has to be given a position before it
+can run.
 
-- **The bare-vs-tuple distinction is preserved.** A check with
-  ``needs_cfg=False`` is emitted as a bare function, so the harness
-  derives its displayed/crash label from ``fn.__name__``
-  (``check_env_file`` → ``"env file"``). A check with
-  ``needs_cfg=True`` is emitted as ``(label, lambda: fn(cfg))`` — the
-  explicit label plus the ``cfg`` closure.
+- **The bare-vs-tuple distinction.** A check with ``needs_cfg=False`` is
+  emitted as a bare function, so the harness derives its displayed/crash
+  label from ``fn.__name__`` (``check_env_file`` → ``"env file"``). A
+  check with ``needs_cfg=True`` is emitted as ``(label, lambda: fn(cfg))``
+  — the explicit label plus the ``cfg`` closure.
 
 - **Async and hardware-sensitive checks carry explicit metadata.** A
   check flagged ``is_async=True`` is awaited directly by the harness.
@@ -30,9 +28,13 @@ module has to be given a position before it can run.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Awaitable, Callable, overload
+from typing import Awaitable, Callable, TypeVar
 
 from ._shared import CheckResult
+
+F = TypeVar(
+    "F", bound=Callable[..., CheckResult] | Callable[..., Awaitable[CheckResult]]
+)
 
 MODULE_ROSTER: tuple[str, ...] = (
     "env",
@@ -65,18 +67,24 @@ _ROSTER_POSITION: dict[str, int] = {
     module: position for position, module in enumerate(MODULE_ROSTER)
 }
 
+STREAMBOX_OMITTED_DOCTOR_MODULES = frozenset({
+    "voice",
+    "wake",
+    "integrations",
+    "aec",
+})
+
+STREAMBOX_OMITTED_DOCTOR_CHECKS = frozenset({
+    "check_mic_card_matches_config",
+    "check_mic_capture",
+    "check_tts_open",
+})
+
 
 @dataclass(frozen=True)
 class RegisteredCheck:
-    """One registry entry.
-
-    ``module`` is the doctor module basename the check registered from;
-    it decides display position. ``func`` is the raw check function.
-    ``needs_cfg`` marks the checks the harness calls with the ``Config``
-    argument. ``label`` is required for those; for bare checks it is
-    left empty and the harness derives the displayed/crash label from
-    ``func.__name__``.
-    """
+    """One registry entry; ``module`` and ``label`` follow the roster and
+    needs_cfg rules from the module docstring."""
 
     module: str
     func: Callable[..., CheckResult] | Callable[..., Awaitable[CheckResult]]
@@ -89,37 +97,17 @@ class RegisteredCheck:
 _REGISTRY: list[RegisteredCheck] = []
 
 
-@overload
-def doctor_check(func: Callable, /) -> Callable: ...
-
-
-@overload
 def doctor_check(
-    *,
-    label: str = ...,
-    needs_cfg: bool = ...,
-    is_async: bool = ...,
-    exclusive_group: str = ...,
-) -> Callable[[Callable], Callable]: ...
-
-
-def doctor_check(
-    func: Callable | None = None,
-    /,
     *,
     label: str = "",
     needs_cfg: bool = False,
     is_async: bool = False,
     exclusive_group: str = "",
-) -> Callable:
+) -> Callable[[F], F]:
     """Register a doctor check and return it unchanged.
 
-    Usable bare (``@doctor_check``) or called (``@doctor_check(...)``).
-
-    The decorator is *additive* — it records metadata in the registry and
-    returns the original function object untouched, so the function's
-    identity, signature, and body are preserved (it stays directly
-    importable and unit-testable).
+    The decorator is additive — it registers metadata and returns ``fn``
+    unchanged, so it stays directly importable and unit-testable.
 
     Display position comes from the defining module's entry in
     ``MODULE_ROSTER``; it is not a per-check argument.
@@ -136,7 +124,7 @@ def doctor_check(
             ownership reads). Empty string means no exclusive lane.
     """
 
-    def _register(fn: Callable) -> Callable:
+    def _register(fn: F) -> F:
         module = fn.__module__.rsplit(".", 1)[-1]
         if module not in _ROSTER_POSITION:
             raise ValueError(
@@ -156,7 +144,7 @@ def doctor_check(
         )
         return fn
 
-    return _register if func is None else _register(func)
+    return _register
 
 
 def registered_checks() -> list[RegisteredCheck]:

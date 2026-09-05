@@ -31,6 +31,8 @@ from jasper.cli import doctor
 from jasper.cli.doctor import CheckResult, _registry, _shared
 from jasper.cli.doctor._registry import (
     MODULE_ROSTER,
+    STREAMBOX_OMITTED_DOCTOR_CHECKS,
+    STREAMBOX_OMITTED_DOCTOR_MODULES,
     doctor_check,
     registered_checks,
 )
@@ -55,6 +57,15 @@ def test_the_roster_names_exactly_the_modules_that_register_checks():
         f"duplicate roster rows: {MODULE_ROSTER}"
     )
     assert set(MODULE_ROSTER) == {c.module for c in registered_checks()}
+
+
+def test_streambox_omissions_cannot_go_stale():
+    """The two skip sets key off the roster and registered function names
+    respectively, so either can drift silently if a module or check is
+    renamed or removed without updating the set beside it."""
+    assert STREAMBOX_OMITTED_DOCTOR_MODULES <= set(MODULE_ROSTER)
+    registered_names = {c.func.__name__ for c in registered_checks()}
+    assert STREAMBOX_OMITTED_DOCTOR_CHECKS <= registered_names
 
 
 def test_async_checks_keep_explicit_registry_metadata():
