@@ -193,11 +193,12 @@ WorkingDirectory=/opt/jasper
 # `on-failure` restarts on non-zero exit, signal-termination, an
 # operation timeout, OR a watchdog timeout — strictly broader than
 # `on-watchdog`, which covers only the watchdog. The daemon's first
-# connect to the provider is a single attempt: any failure hands the
-# retry to the reconnect supervisor (jasper/voice/_supervisor.py),
-# which backs off forever and cues the outage, so the daemon stays up
-# and hearing through an outage of any length. No connect failure
-# reaches `Restart=`; what does is a crash.
+# connect to the provider is a single attempt: any failure the adapter
+# can catch hands the retry to the reconnect supervisor
+# (jasper/voice/_supervisor.py), which backs off forever and cues when
+# a human must act, so the daemon stays up and hearing through an
+# outage of any length. No connect failure reaches `Restart=`; what
+# does is a crash. See ADR-0238.
 Restart=on-failure
 # Two exit codes mean "intentionally idle, not a crash" — park the unit
 # cleanly (treated as success, no auto-restart) so neither can consume the

@@ -456,7 +456,7 @@ def hand_off_first_connect(conn: SupervisedConnection, exc: Exception) -> None:
     A first connect fails for the reasons a reconnect does and is
     retried the same way, so nothing here classifies it or exits: the
     daemon stays up — wake word, cues and local tools alive, ``/state``
-    reporting the outage — until the provider answers. See ADR-0215."""
+    reporting the outage — until the provider answers. See ADR-0238."""
     log_event(
         logger,
         "voice.initial_connect.failed",
