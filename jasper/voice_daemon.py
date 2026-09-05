@@ -4054,6 +4054,7 @@ class WakeLoop:
             await self._play_cue(NO_ROOM_MIC_CUE_SLUG)
             return "NO_ROOM_MIC"
         if self._state is State.SESSION:
+            log_event(logger, "session.manual_refused", reason="busy")
             return "BUSY"
         # User-deliberate "stop listening" gates — mirror the wake path's
         # _wake_late_cancelled. Mic-mute and an open room-correction
@@ -4076,6 +4077,12 @@ class WakeLoop:
             )
             return "MEASURING"
         if not self._spend_cap.allowed():
+            log_event(
+                logger,
+                "session.manual_refused",
+                reason="spend_cap_reached",
+            )
+            await self._play_cue("spend_cap_reached")
             return "CAP"
         if self._connection.is_paused() and not await self._await_connection(
             PAUSED_CONNECTION_WAIT_SEC,
@@ -4132,6 +4139,8 @@ class WakeLoop:
             # failure. See `_arbitrate_acquire_drain`.
             if self._connection.is_paused():
                 await self._play_cue(self._connection.wake_cue())
+            else:
+                await self._play_cue(INTERNAL_ERROR_CUE_SLUG)
             return "ERROR"
         finally:
             if source:

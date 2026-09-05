@@ -21,6 +21,7 @@ import logging
 import types
 
 from ._async_wait import wait_signalled
+from ._log_events import event_fields
 
 
 class _SpyCalls:
@@ -108,6 +109,30 @@ async def test_manual_start_refused_when_measurement_active(caplog):
     assert "reason=measurement_active" in caplog.text
 
 
+async def test_manual_start_at_the_spend_cap_cues_and_refuses(caplog):
+    """A press at the daily cap answers audibly, like the wake path.
+
+    The cap is not a state the household just asked for, so silence here
+    is unexplainable (AGENTS.md's no-silent-deafness rule).
+    """
+    wl = _make_wake_loop()
+    wl._cues = _SpyCues()
+    wl._spend_cap = types.SimpleNamespace(allowed=lambda: False)
+
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        result = await wl.manual_session_start()
+
+    assert result == "CAP"
+    # NOT `_assert_no_turn_no_duck`: a cue legitimately primes loudness and
+    # ducks, which is how it stays audible over music.
+    assert wl._begin_turn.called is False
+    assert wl._play_listening_chirp.called is False
+    assert wl._cues.played == ["spend_cap_reached"]
+    assert event_fields(caplog, "session.manual_refused") == {
+        "reason": "spend_cap_reached",
+    }
+
+
 def _paused_connection(wl, *, paused_for_sec: float):
     """Wire a connection that reports paused for `paused_for_sec` of
     loop time, then reports connected. Counts the reconnect nudges."""
@@ -178,6 +203,27 @@ async def test_manual_start_failure_during_an_outage_is_cued():
 
     assert await wl.manual_session_start() == "ERROR"
     assert wl._cues.played == [CANT_CONNECT_CUE_SLUG]
+
+
+async def test_manual_start_failure_with_a_live_connection_cues_internal_error():
+    """The same press, failing with the connection up.
+
+    An outage cue would be a lie about a working connection; the wake
+    path's acquire failure cues `internal_error` in this branch and the
+    button must match it rather than return a silent ERROR.
+    """
+    from jasper.voice_daemon import INTERNAL_ERROR_CUE_SLUG
+
+    wl = _make_wake_loop()
+    wl._cues = _SpyCues()
+
+    async def _begin_turn_that_fails_locally(**_kwargs) -> None:
+        raise RuntimeError("begin failed with the connection up")
+
+    wl._begin_turn = _begin_turn_that_fails_locally
+
+    assert await wl.manual_session_start() == "ERROR"
+    assert wl._cues.played == [INTERNAL_ERROR_CUE_SLUG]
 
 
 async def test_manual_start_waits_out_a_planned_rotation(monkeypatch):
