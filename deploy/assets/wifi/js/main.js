@@ -156,7 +156,7 @@ function renderSaved() {
     const isCurrent = p.name === curName;
     const idsafe = cssIdSafe(p.name);
     const badge = isCurrent
-      ? '<span class="badge">In use</span>' : '';
+      ? '<span class="badge badge--ok">In use</span>' : '';
     // Display the SSID (what the user knows the network as); the
     // profile NAME goes through the API as the operate-on key.
     return '<div class="net-row" id="sv-' + idsafe + '">' +
@@ -228,7 +228,7 @@ function renderAvail() {
   list.innerHTML = scanResults.map(n => {
     const idsafe = cssIdSafe(n.ssid);
     const lock = n.secured ? ' 🔒' : '';
-    const inUseBadge = n.inUse ? '<span class="badge">Connected</span>' : '';
+    const inUseBadge = n.inUse ? '<span class="badge badge--ok">Connected</span>' : '';
     return '<div class="net-row" id="av-' + idsafe + '">' +
       '<div class="head" data-action="open-connect" ' +
            'data-ssid="' + escapeHtml(n.ssid) + '">' +

@@ -411,15 +411,6 @@ canvas#chart { display: block; width: 100%; height: 240px; }
 }
 .session-item p { margin: 0.25rem 0 0.55rem; }
 .session-actions { display: flex; flex-wrap: wrap; gap: 0.45rem; }
-.privacy-badge {
-  display: inline-block;
-  border-radius: 999px;
-  padding: 0.08rem 0.45rem;
-  font-size: 0.85rem;
-  color: var(--text);
-  background: color-mix(in oklab, var(--status-warn) 16%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--status-warn) 45%, transparent);
-}
 .session-report {
   border: 1px solid var(--border);
   border-left: 5px solid var(--border-strong);

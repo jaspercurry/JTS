@@ -405,7 +405,8 @@ check(
   "(h) tier chooser: the title text is the action's label",
 );
 check(
-  primaryHead.children.length === 2 && primaryHead.children[1].className === "badge"
+  primaryHead.children.length === 2
+    && primaryHead.children[1].className === "badge badge--ok"
     && primaryHead.children[1].textContent === "Recommended",
   "(h) tier chooser: the recommended action's head carries a Recommended badge",
 );

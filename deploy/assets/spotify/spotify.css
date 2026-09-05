@@ -13,7 +13,7 @@
  *     /sources/),
  *   - the bounce/manual OAuth mode picker (radio cards),
  *   - the readonly redirect-URI copy row + copied-feedback,
- *   - the per-account expand/collapse cards + token-health badges,
+ *   - the per-account expand/collapse cards,
  *   - the inline "add playlist" row with live name preview,
  *   - the manual-mode pre-warn callout.
  * Status colour is one knob everywhere: a component sets --tone to a
@@ -126,24 +126,6 @@
 }
 .account-actions { display: flex; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
 .account-actions form { margin: 0; }
-
-/* Token-health badge — one knob (--tone) selects the status colour.
-   Reuses the same status vocabulary as app.css's .badge but kept here
-   because the glyph + help-cursor are spotify-specific. */
-.health-badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: var(--radius-sm);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: help;
-  color: var(--tone, var(--status-idle));
-  background: color-mix(in oklab, var(--tone, var(--status-idle)) 14%, transparent);
-  border: 1px solid color-mix(in oklab, var(--tone, var(--status-idle)) 35%, transparent);
-}
-.health-badge.health-ok { --tone: var(--status-ok); }
-.health-badge.health-revoked { --tone: var(--status-danger); }
-.health-badge.health-warn { --tone: var(--status-warn); }
 
 /* Re-link banner inside a revoked card. */
 .relink-notice {

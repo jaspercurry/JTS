@@ -419,15 +419,15 @@ function deviceRow(d, pending) {
   // BLE HID devices can open a GATT link before pairing. JTS accessory
   // features are not usable until BlueZ has a paired record.
   if (pending) {
-    badges += `<span class="badge connecting">${deviceMutationLabel(pending.action, true)}</span>`;
+    badges += `<span class="badge badge--warn">${deviceMutationLabel(pending.action, true)}</span>`;
   } else if ((d.connected || d.trusted) && !d.paired) {
-    badges += '<span class="badge linked">Pair required</span>';
+    badges += '<span class="badge badge--warn">Pair required</span>';
   } else if (d.connected && d.servicesResolved === false) {
-    badges += '<span class="badge connecting">Connecting</span>';
+    badges += '<span class="badge badge--warn">Connecting</span>';
   } else if (d.connected) {
-    badges += '<span class="badge connected">Connected</span>';
+    badges += '<span class="badge badge--ok">Connected</span>';
   }
-  else if (d.paired) badges += '<span class="badge paired">Not connected</span>';
+  else if (d.paired) badges += '<span class="badge badge--idle">Not connected</span>';
   let actions = '';
   if (pending) {
     actions = `<button class="btn btn--default" disabled>${deviceMutationLabel(pending.action, true)}</button>`;

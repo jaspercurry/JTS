@@ -128,7 +128,7 @@ def test_management_html_is_canonical_and_escapes_accounts():
     # data-confirm-danger attribute silently loses the red/danger style.
     assert 'data-confirm-danger="1"' in text
     # Default badge present with the OK status tone.
-    assert "--tone: var(--status-ok)" in text
+    assert "badge badge--ok" in text
 
 
 def test_management_page_keeps_google_copy_short_on_default_path():

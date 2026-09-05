@@ -197,8 +197,7 @@ def test_connected_unpaired_ble_devices_do_not_render_as_ready():
     assert "deviceRow(d, true)" not in js
     assert "deviceRow(d, false)" not in js
     assert "(d.connected || d.trusted) && !d.paired" in js
-    assert "Pair required" in js
-    assert "badge linked" in js
+    assert '<span class="badge badge--warn">Pair required</span>' in js
     assert ">Remove</button>" in js
     assert 'data-action="forget"' in js
 

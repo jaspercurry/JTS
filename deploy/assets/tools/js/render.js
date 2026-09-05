@@ -21,8 +21,8 @@ const CATEGORY_ORDER = [
 ];
 
 const STATUS_BADGE = {
-  partial: { label: "Partial", tone: "var(--status-warn)" },
-  needs_setup: { label: "Needs setup", tone: "var(--status-warn)" },
+  partial: { label: "Partial", tone: "warn" },
+  needs_setup: { label: "Needs setup", tone: "warn" },
 };
 
 // A setup_url is only ever a same-origin wizard path ("/transit/", "/ha/",
@@ -85,7 +85,7 @@ function badge(status) {
   const spec = STATUS_BADGE[status];
   if (!spec) return "";
   return (
-    '<span class="badge" style="--tone: ' + spec.tone + '">' +
+    '<span class="badge badge--' + spec.tone + '">' +
     escapeHtml(spec.label) + "</span>"
   );
 }
@@ -267,7 +267,7 @@ function schemaBlock(tool) {
 function toolRow(tool) {
   const prompt = tool.description || "";
   const customized = tool.prompt_customized
-    ? '<span class="badge" style="--tone: var(--status-warn)">Custom prompt</span>'
+    ? '<span class="badge badge--warn">Custom prompt</span>'
     : "";
   const resetButton = tool.prompt_customized
     ? '<button type="button" class="btn btn--ghost" data-action="reset-prompt" data-tool="' +
