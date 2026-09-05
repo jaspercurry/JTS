@@ -106,6 +106,7 @@ _default_ha_status_cache: Any | None = None
 
 _VOICE_STATUS_DIRECT_KEYS = (
     "endpointer",
+    "last_turn_ms",
     "spend_allowed",
     "usage_tracking_degraded",
     "connection_paused",

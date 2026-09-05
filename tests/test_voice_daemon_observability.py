@@ -2,10 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from jasper.tts_routing import FANIN_TTS_SOCKET
+from tests._live_turn_fake import silent_frame
 from jasper.voice.daemon_main import _tts_ready_detail
+from jasper.voice.daemon_main import _serve_while_connecting
 
 
 def test_tts_ready_detail_reports_outputd_socket() -> None:
@@ -118,3 +123,270 @@ def test_priced_research_model_does_not_warn(caplog) -> None:
     assert not any(
         "event=pricing.unpriced" in r.getMessage() for r in caplog.records
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-turn latency timeline (`event=turn.timeline`, /state.voice.last_turn_ms)
+# ---------------------------------------------------------------------------
+
+
+def _timeline_loop(*, wake: bool):
+    """A WakeLoop parked mid-turn with a freshly anchored timeline.
+
+    `wake` picks which anchor the turn gets, the same way `_begin_turn` does:
+    the wake fire that opened it, or nothing — a turn no wake opened
+    (push-to-talk, remote, research confirmation) anchors on itself.
+    """
+    import time
+
+    from jasper.voice_daemon import State, WakeLoop
+    from tests._live_turn_fake import FakeLiveTurn
+
+    wl = WakeLoop.for_tests()
+    wl._state = State.SESSION
+    wl._turn = FakeLiveTurn()
+    wl._session_id = 1
+    wl._bg_tasks = set()
+    wl._user_speech_seen = True
+    wl._input_ended = False
+    wl._manual_endpoint_this_turn = not wake
+    wl._server_vad_this_turn = False
+    wl._barge_in_active = False
+    wl._silence_started_at = 0.0
+    wl._turn_started_at_loop = asyncio.get_event_loop().time()
+    wl._anchor_turn_timeline(time.monotonic() if wake else 0.0)
+    return wl
+
+
+async def test_wake_turn_timeline_carries_every_stage_in_order(caplog):
+    """The ruler the rest of the loop is tuned against: one line per turn
+    whose deltas all count from the wake fire, in the order the stages
+    happen. Without the ordering pin a stage anchored on the wrong clock
+    still logs a plausible-looking number."""
+    import logging
+
+    from tests._log_events import event_fields
+
+    caplog.set_level(logging.INFO, logger="jasper.voice_daemon")
+    wl = _timeline_loop(wake=True)
+
+    # Real sleeps between stages so the ordering assertion below is a pin
+    # and not six numbers that happen to round to the same millisecond.
+    await wl._play_listening_chirp(going_on=True)
+    await asyncio.sleep(0.002)
+    await wl._send_session_audio(silent_frame())
+    await asyncio.sleep(0.002)
+    # Silent frame with speech already seen: starts the end-of-utterance
+    # silence clock, which is the honest end-of-speech moment.
+    await wl._handle_session_frame(silent_frame())
+    await asyncio.sleep(0.002)
+    await wl._end_session_input("test")
+    await asyncio.sleep(0.002)
+    await wl._record_response_started()
+    await wl._end_turn("test")
+
+    fields = event_fields(caplog, "turn.timeline")
+    assert fields["anchor"] == "wake"
+    assert fields["endpointer"] == wl._endpointer_label()
+    stages = [
+        "cue_ms", "first_audio_to_provider_ms", "speech_end_ms",
+        "end_input_ms", "first_response_ms", "total_ms",
+    ]
+    assert [key for key in stages if key in fields] == stages
+    deltas = [int(fields[key]) for key in stages]
+    assert deltas[0] >= 0
+    assert deltas == sorted(deltas)
+
+
+async def test_manual_turn_anchors_on_itself_and_omits_absent_stages(caplog):
+    """A turn no wake opened must say what ms 0 is, and must leave out the
+    stages that did not happen rather than reporting them as zero — a
+    missing stage read as 0 ms is a wrong number, not a blank one."""
+    import logging
+
+    from tests._log_events import event_fields
+
+    caplog.set_level(logging.INFO, logger="jasper.voice_daemon")
+    wl = _timeline_loop(wake=False)
+
+    await wl._send_session_audio(silent_frame())
+    await wl._end_session_input("test")
+    await wl._end_turn("test")
+
+    fields = event_fields(caplog, "turn.timeline")
+    assert fields["anchor"] == "manual"
+    assert "speech_end_ms" not in fields
+    assert "first_response_ms" not in fields
+    assert int(fields["first_audio_to_provider_ms"]) >= 0
+    assert int(fields["end_input_ms"]) >= 0
+
+
+async def test_a_wake_that_opened_no_turn_does_not_anchor_a_later_one(caplog):
+    """A wake can fire and never open a turn — late cancel, lost peer
+    arbitration, spend cap, paused connection all return before
+    `_begin_turn`. The stamp it leaves behind must not become the anchor of
+    the next press, which would publish a multi-minute turn."""
+    import logging
+    import time
+
+    from tests._log_events import event_fields
+
+    caplog.set_level(logging.INFO, logger="jasper.voice_daemon")
+    wl = _timeline_loop(wake=False)
+    wl._wake_event_at_monotonic = time.monotonic() - 300.0
+
+    wl._anchor_turn_timeline()
+    await wl._end_session_input("test")
+    await wl._end_turn("test")
+
+    fields = event_fields(caplog, "turn.timeline")
+    assert fields["anchor"] == "manual"
+    assert int(fields["total_ms"]) < 1000
+
+
+async def test_push_to_talk_release_stamps_end_of_input(caplog):
+    """The button release is an end-of-input like any other and must go
+    through the one implementation every endpointer shares. When it did not,
+    a whole class of turn had a hole where `end_input_ms` belongs."""
+    import logging
+
+    from tests._log_events import event_fields
+
+    caplog.set_level(logging.INFO, logger="jasper.voice_daemon")
+    wl = _timeline_loop(wake=False)
+
+    assert await wl.manual_session_end() == "OK"
+    await wl._end_turn("test")
+
+    assert wl._input_ended is True
+    assert wl._turn is None
+    assert "end_input_ms" in event_fields(caplog, "turn.timeline")
+
+
+async def test_session_status_publishes_the_last_turn_timeline():
+    """`/state.voice.last_turn_ms` is the surface an operator reads without
+    a journal; it stays empty until a turn has actually been served."""
+    wl = _timeline_loop(wake=True)
+    assert wl.session_status()["last_turn_ms"] == {}
+
+    await wl._end_session_input("test")
+    await wl._end_turn("test")
+
+    last = wl.session_status()["last_turn_ms"]
+    assert last["anchor"] == "wake"
+    assert last["end_input_ms"] <= last["total_ms"]
+
+
+async def test_acquire_drain_stamps_first_audio_before_it_sends():
+    """A sourced push-to-talk turn's first bytes reach the provider through
+    the acquire drain, not `_send_session_audio`. Stamping on the way out
+    would charge the whole drain — every buffered frame — to the provider."""
+    wl = _timeline_loop(wake=False)
+    stamped_when_sent: list[bool] = []
+
+    async def _send_audio(_pcm) -> None:
+        stamped_when_sent.append(
+            "first_audio_to_provider" in wl._turn_timeline,
+        )
+
+    wl._turn.send_audio = _send_audio
+    wl._acquire_buffer.extend([silent_frame(), silent_frame()])
+
+    drained, _ = await wl._drain_acquire_audio()
+
+    assert drained == 2
+    assert stamped_when_sent[0] is True
+
+
+async def test_server_vad_turn_carries_end_of_input(caplog):
+    """Server VAD closes input inline rather than through
+    `_end_session_input` — it must not send a second end_input — so the
+    stamp has to sit beside each of those assignments or this whole class of
+    turn reports a timeline with no `end_input_ms` in it."""
+    import logging
+
+    from tests._log_events import event_fields
+
+    caplog.set_level(logging.INFO, logger="jasper.voice_daemon")
+    wl = _timeline_loop(wake=True)
+    wl._server_vad_this_turn = True
+    wl._turn.server_speech_detected = lambda: True
+
+    await wl._handle_session_frame(silent_frame())
+    await wl._end_turn("test")
+
+    assert wl._input_ended is True
+    assert "end_input_ms" in event_fields(caplog, "turn.timeline")
+
+
+async def test_background_connect_failure_ends_the_run() -> None:
+    """Backgrounding the connect must not swallow it: a failure the
+    supervisor cannot retry past still ends `run()` non-zero."""
+
+    async def _connect() -> None:
+        raise RuntimeError("connect failed")
+
+    async def _serve() -> None:
+        await asyncio.sleep(3600)
+
+    with pytest.raises(RuntimeError):
+        await _serve_while_connecting(_connect, _serve)
+
+
+async def test_a_connect_failing_in_the_same_tick_as_the_serve_ends_the_run(
+) -> None:
+    """Both tasks can land in one tick — a stop that races the failure.
+    The connect's exception must still reach `main()`; swallowing it
+    exits 0, which `Restart=on-failure` does not restart."""
+
+    async def _connect() -> None:
+        raise RuntimeError("connect failed")
+
+    async def _serve() -> None:
+        return None
+
+    with pytest.raises(RuntimeError):
+        await _serve_while_connecting(_connect, _serve)
+
+
+async def test_a_connect_that_returns_leaves_the_daemon_serving() -> None:
+    """A connect handed over to the reconnect supervisor returns normally
+    — the speaker keeps hearing and cues the outage, it does not exit."""
+    stop = asyncio.Event()
+
+    async def _connect() -> None:
+        return None
+
+    async def _serve() -> None:
+        await stop.wait()
+
+    task = asyncio.ensure_future(_serve_while_connecting(_connect, _serve))
+    await asyncio.sleep(0.05)
+    assert not task.done()
+    stop.set()
+    await asyncio.wait_for(task, timeout=5.0)
+
+
+async def test_stop_cancels_a_still_dialling_connect() -> None:
+    """SIGTERM ends the wake loop; a connect still waiting on the WAN must
+    not outlive it — the unit's TimeoutStopSec is 5 s."""
+    dialling = asyncio.Event()
+    cancelled = asyncio.Event()
+    stop = asyncio.Event()
+
+    async def _connect() -> None:
+        dialling.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    async def _serve() -> None:
+        await stop.wait()
+
+    task = asyncio.ensure_future(_serve_while_connecting(_connect, _serve))
+    await asyncio.wait_for(dialling.wait(), timeout=5.0)
+    stop.set()
+    await asyncio.wait_for(task, timeout=5.0)
+    assert cancelled.is_set()

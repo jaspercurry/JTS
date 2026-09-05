@@ -22,9 +22,9 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import numpy as np
 import pytest
 
+from tests._live_turn_fake import silent_frame
 from tests._log_events import event_field_maps, event_fields, event_records
 
 
@@ -55,10 +55,6 @@ class _SilentVad:
 
     def reset(self) -> None:
         return None
-
-
-def _frame() -> np.ndarray:
-    return np.zeros(1280, dtype=np.int16)
 
 
 def _shipped_idle_timeout_default() -> int:
@@ -123,7 +119,7 @@ async def test_mid_hold_silence_does_not_end_input_on_a_button_turn():
     wl._user_speech_seen = True
     wl._silence_started_at = now - (END_OF_UTTERANCE_SILENCE_SEC + 0.5)
 
-    await wl._handle_session_frame(_frame())
+    await wl._handle_session_frame(silent_frame())
 
     assert wl._turn.end_input_calls == 0
     assert wl._input_ended is False
@@ -146,7 +142,7 @@ async def test_mid_hold_silence_DOES_end_input_without_the_bypass():
     wl._user_speech_seen = True
     wl._silence_started_at = now - (END_OF_UTTERANCE_SILENCE_SEC + 0.5)
 
-    await wl._handle_session_frame(_frame())
+    await wl._handle_session_frame(silent_frame())
 
     assert wl._turn.end_input_calls == 1
     assert wl._input_ended is True
@@ -170,7 +166,7 @@ async def test_no_speech_abort_does_not_fire_on_a_button_turn():
 
     wl._end_turn = _spy_end_turn
 
-    await wl._handle_session_frame(_frame())
+    await wl._handle_session_frame(silent_frame())
 
     assert ended == []
     assert wl._turn.send_audio_calls == 1
@@ -188,7 +184,7 @@ async def test_no_speech_abort_DOES_fire_without_the_bypass():
 
     wl._end_turn = _spy_end_turn
 
-    await wl._handle_session_frame(_frame())
+    await wl._handle_session_frame(silent_frame())
 
     assert ended == [True]
 
@@ -402,7 +398,7 @@ async def test_hold_cap_closes_input_on_a_button_turn(caplog):
     wl._turn_started_at_loop = asyncio.get_event_loop().time() - (cap + 0.5)
 
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        await wl._handle_session_frame(_frame())
+        await wl._handle_session_frame(silent_frame())
 
     assert wl._input_ended is True
     assert wl._turn.end_input_calls == 1
@@ -420,7 +416,7 @@ async def test_hold_cap_does_not_fire_early_on_a_button_turn():
     cap = wl._ptt_input_cap_sec()
     wl._turn_started_at_loop = asyncio.get_event_loop().time() - (cap - 1.0)
 
-    await wl._handle_session_frame(_frame())
+    await wl._handle_session_frame(silent_frame())
 
     assert wl._input_ended is False
     assert wl._turn.end_input_calls == 0
@@ -435,7 +431,7 @@ async def test_hold_cap_fires_once_then_frames_are_dropped():
     wl._turn_started_at_loop = asyncio.get_event_loop().time() - (cap + 0.5)
 
     for _ in range(5):
-        await wl._handle_session_frame(_frame())
+        await wl._handle_session_frame(silent_frame())
 
     assert wl._turn.end_input_calls == 1
     assert wl._turn.send_audio_calls == 0
@@ -736,7 +732,7 @@ async def test_acquire_drain_skips_the_vad_pass_on_a_button_turn():
     wl = WakeLoop.for_tests()
     wl._turn = _SpyTurn()
     wl._vad = _SilentVad(score=1.0)
-    wl._acquire_buffer.extend(_frame() for _ in range(4))
+    wl._acquire_buffer.extend(silent_frame() for _ in range(4))
     wl._manual_endpoint_this_turn = True
 
     drained, speech = await wl._drain_acquire_audio()
@@ -753,7 +749,7 @@ async def test_acquire_drain_still_scores_on_a_wake_turn():
     wl = WakeLoop.for_tests()
     wl._turn = _SpyTurn()
     wl._vad = _SilentVad(score=1.0)
-    wl._acquire_buffer.extend(_frame() for _ in range(4))
+    wl._acquire_buffer.extend(silent_frame() for _ in range(4))
     wl._manual_endpoint_this_turn = False
 
     drained, speech = await wl._drain_acquire_audio()
