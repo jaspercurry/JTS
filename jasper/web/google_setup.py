@@ -269,10 +269,10 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
 {progress_button}
 {intro}
 
-<ol class="wizard-steps">
+<ol class="setup-steps">
 
   <!-- ===== Step 1: Create or pick a Cloud project ===== -->
-  <li class="wizard-step" data-step="1">
+  <li class="setup-step" data-step="1">
     <details>
       <summary>
         <span class="step-num"><span>1</span></span>
@@ -295,7 +295,7 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
   </li>
 
   <!-- ===== Step 2: Configure the Google Auth Platform ===== -->
-  <li class="wizard-step" data-step="2">
+  <li class="setup-step" data-step="2">
     <details>
       <summary>
         <span class="step-num"><span>2</span></span>
@@ -332,7 +332,7 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
   </li>
 
   <!-- ===== Step 3: Enable Calendar + Gmail APIs ===== -->
-  <li class="wizard-step" data-step="3">
+  <li class="setup-step" data-step="3">
     <details>
       <summary>
         <span class="step-num"><span>3</span></span>
@@ -352,7 +352,7 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
   </li>
 
   <!-- ===== Step 4: Create OAuth client + paste creds ===== -->
-  <li class="wizard-step" data-step="4">
+  <li class="setup-step" data-step="4">
     <details>
       <summary>
         <span class="step-num"><span>4</span></span>

@@ -70,14 +70,14 @@ document.addEventListener("click", async (event) => {
   const markBtn = target.closest("button.mark-done");
   if (markBtn) {
     event.preventDefault();
-    const stepEl = markBtn.closest("li.wizard-step");
+    const stepEl = markBtn.closest("li.setup-step");
     if (stepEl) markDone(stepEl);
   }
 });
 
 // ---------------------------------------------------------------------------
 // Setup-wizard progress tracking (state 1 only — the read-only "View setup
-// guide" copy in state 3 has no .wizard-step elements with this script's
+// guide" copy in state 3 has no .setup-step elements with this script's
 // hooks active, so init() is a no-op there).
 //
 // Each step has a "mark done" button that adds its step number to a JSON
@@ -108,7 +108,7 @@ function saveDone(arr) {
 function initWizard() {
   const done = loadDone();
   let firstNotDoneOpened = false;
-  document.querySelectorAll("li.wizard-step").forEach((el) => {
+  document.querySelectorAll("li.setup-step").forEach((el) => {
     const step = el.dataset.step;
     const details = el.querySelector("details");
     if (!details) return;
@@ -152,6 +152,6 @@ function markDone(stepEl) {
 // only the active state-1 wizard binds the localStorage state (the read-only
 // guide inside state 3 has no "active" highlighting because its steps share
 // the markup but were rendered read-only). initWizard() keys off
-// li.wizard-step, which is present in both — that's fine, the read-only copy
+// li.setup-step, which is present in both — that's fine, the read-only copy
 // just gets the same collapse/expand affordance.
 initWizard();

@@ -288,7 +288,7 @@ def render_follower_page(
     <p class="form-hint">This speaker is an active follower. Room correction,
     balance, and sync measurements are content calibration for the paired
     playback image, so run them from the leader while the pair is active.</p>
-    <div class="actions">
+    <div class="form-actions">
       {leader_link}
       <a class="btn" href="/rooms/">Manage pair</a>
     </div>

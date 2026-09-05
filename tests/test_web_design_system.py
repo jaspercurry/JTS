@@ -136,7 +136,10 @@ def test_spinner_primitive_is_shared_without_page_local_copies():
 # (a scoped override like `.wake-page .btn { … }` is unaffected — only a
 # bare `.toggle`/`.disclosure`/`.badge` compound at the start of a rule
 # is checked).
-OWNED_BARE_SELECTORS = (".toggle", ".disclosure", ".badge")
+OWNED_BARE_SELECTORS = (
+    ".toggle", ".disclosure", ".badge",
+    ".form-actions", ".status-line", ".wizard-steps",
+)
 
 
 def test_page_css_does_not_redeclare_owned_selectors():

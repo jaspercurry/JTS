@@ -824,7 +824,7 @@ def test_system_mobile_actions_and_tables_are_intentional() -> None:
     assert "Anyone on this Wi-Fi can run these actions." in js
     assert "Power off before unplugging or changing cables" in js
     assert "stays off until power is re-plugged" in js
-    assert ".system-actions .btn-row" in css
+    assert ".system-actions .form-actions" in css
     assert "min-height: 44px" in css
     assert "-webkit-overflow-scrolling: touch" in css
     assert ".table-wrap" in css

@@ -17,12 +17,6 @@
 
 body.stale { opacity: 0.72; }
 
-.boot-note {
-  padding: 3rem 1.5rem;
-  text-align: center;
-  color: var(--muted);
-}
-
 .live-pill {
   display: flex;
   align-items: center;
@@ -39,12 +33,6 @@ body.stale { opacity: 0.72; }
 @keyframes jts-chat-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
-}
-
-.btn-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
 }
 
 .chat-setting {

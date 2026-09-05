@@ -264,7 +264,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var node = el('status');
     if (node) {
       node.textContent = statusText;
-      node.className = 'status-line' + (statusErr ? ' err' : '');
+      node.className = 'status-line' + (statusErr ? ' status-line--err' : '');
     }
   }
 
@@ -638,7 +638,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '<section class="off-card">' +
         '<div class="off-card__icon">' + ico('spark') + '</div>' +
         '<p class="off-card__text">Create a sound profile that changes how your speaker sounds.</p>' +
-        '<div class="btn-row">' +
+        '<div class="form-actions">' +
           '<button type="button" class="btn btn--ghost" data-act="browse-presets">Try a stock profile</button>' +
           '<button type="button" class="btn btn--primary" data-act="new-draft">Create custom profile</button>' +
         '</div>' +
@@ -4938,7 +4938,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return '<div class="naming-card">' +
         '<label class="eyebrow">' + (isRename ? 'Rename profile' : 'Name your profile') + '</label>' +
         '<input type="text" id="name-input" maxlength="48" autocomplete="off" value="' + escapeHtml(nameDraft) + '">' +
-        '<div class="btn-row">' +
+        '<div class="form-actions">' +
           '<button type="button" class="btn btn--primary" data-act="finalize-name">' +
             (isRename ? 'Rename' : 'Save profile') + '</button>' +
           '<button type="button" class="btn btn--ghost" data-act="cancel-name">Cancel</button>' +
@@ -4946,20 +4946,20 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     var dirty = draftModified();
     if (editing.kind === 'user') {
-      return '<div class="btn-row">' +
+      return '<div class="form-actions">' +
           '<button type="button" class="btn btn--primary" data-act="overwrite" data-dirty-action' + (dirty ? '' : ' disabled') + '>Overwrite</button>' +
           '<button type="button" class="btn btn--ghost" data-act="begin-name">Save as new</button></div>' +
-        '<div class="btn-row">' +
+        '<div class="form-actions">' +
           '<button type="button" class="btn btn--ghost" data-act="begin-rename">Rename</button>' +
           '<button type="button" class="btn btn--ghost" data-act="reset-draft" data-dirty-action' +
             (dirty ? '' : ' disabled') + '>Reset draft</button></div>';
     }
     if (editing.kind === 'preset') {
-      return '<div class="btn-row">' +
+      return '<div class="form-actions">' +
           '<button type="button" class="btn btn--primary" data-act="begin-name">Save as new</button>' +
           '<button type="button" class="btn btn--ghost" data-act="reset-draft" data-dirty-action' + (dirty ? '' : ' disabled') + '>Reset draft</button></div>';
     }
-    return '<div class="btn-row">' +
+    return '<div class="form-actions">' +
         '<button type="button" class="btn btn--primary" data-act="begin-name">Save profile</button>' +
         '<button type="button" class="btn btn--ghost" data-act="reset-draft" data-dirty-action' + (dirty ? '' : ' disabled') + '>Reset draft</button></div>';
   }
