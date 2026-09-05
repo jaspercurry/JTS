@@ -193,7 +193,7 @@ _NO_ARTIFACT: Any = object()
 def answer(
     view: str, *, out: Path | None = _NO_ARTIFACT, line: str, **fields: Any,
 ) -> int:
-    """This view's ANSWER on stdout, its one human line on stderr (ADR-0236).
+    """This view's ANSWER on stdout, its one human line on stderr (ADR-0237).
 
     The answer is what the human line says, as fields: scalars and
     run-bounded records, never a curve or a grid — those stay in the artifact

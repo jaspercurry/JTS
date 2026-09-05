@@ -377,7 +377,7 @@ ladder HTTP backend, and the hardware-validation scripts.
   or scheduler environment override is authorized.
 - **Bass-owner identity:** `output_topology.bass_management_corner_hz()`
   is the sole read now (independent subwoofers are deleted, so there is
-  no remote-bass-owner case to arbitrate; see ADR-0236). Exactly one
+  no remote-bass-owner case to arbitrate; see ADR-0237). Exactly one
   physical bass system receives extension:
   - Local-DAC subwoofer present → the **sub chain** owns extension;
     mains keep their bass-management HP untouched.

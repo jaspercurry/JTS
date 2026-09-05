@@ -2,7 +2,7 @@
 
 - **Date:** 2026-08-26
 - **Status:** Superseded by
-  [ADR-0236](0236-independent-subwoofers-are-deleted-a-dac-channel-sub-stays.md)
+  [ADR-0237](0236-independent-subwoofers-are-deleted-a-dac-channel-sub-stays.md)
   (shipped 2026-06-23; recorded here when HANDOFF-distributed-active.md was
   trimmed to its operational spine)
 

@@ -1977,7 +1977,7 @@ def _longest_numeric_list(node: Any) -> int:
 def test_a_view_answers_on_stdout_and_leaves_the_curves_in_its_artifact(
     tmp_path, capsys, view
 ):
-    """ADR-0236: exit 0 is ONE answer document naming the artifact it wrote.
+    """ADR-0237: exit 0 is ONE answer document naming the artifact it wrote.
 
     The scalars a caller reads to decide what to run next, and no curve or
     grid — those stay in the file at ``out``, so asking a view costs a bounded

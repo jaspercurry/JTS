@@ -68,7 +68,7 @@ def read_json_source(path: str) -> Any:
 
 def answered(document: Mapping[str, Any], line: str = "") -> int:
     """A verb's answer on stdout and, when given, its one human line on
-    stderr (ADR-0236). A success document never carries ``status``."""
+    stderr (ADR-0237). A success document never carries ``status``."""
 
     print(render_report(dict(document)))
     if line:
