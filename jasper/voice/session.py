@@ -488,12 +488,11 @@ def log_first_chunk(
 ) -> None:
     """Emit ``event=turn.first_chunk`` for a turn's first assistant audio.
 
-    ``since_end_input_ms`` is the provider's own latency; it is omitted when
-    the daemon never sent ``end_input`` (server VAD commits the buffer
-    itself). ``since_turn_start_ms`` spans the user's whole utterance plus
-    local endpointing, so it is not a provider number.
-
-    ``end_input_monotonic`` of 0.0 means "never sent".
+    ``since_end_input_ms`` is the provider's own latency — the interval
+    between asking for a response and the first audio of it. It is omitted
+    when this turn was never asked (0.0), which is the only honest answer:
+    there is no interval to report. ``since_turn_start_ms`` spans the user's
+    whole utterance plus local endpointing, so it is not a provider number.
     """
     now = time.monotonic()
     fields: dict[str, Any] = {"provider": provider}

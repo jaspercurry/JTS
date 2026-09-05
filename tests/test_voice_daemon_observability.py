@@ -6,6 +6,7 @@ import asyncio
 from types import SimpleNamespace
 
 from jasper.tts_routing import FANIN_TTS_SOCKET
+from tests._live_turn_fake import silent_frame
 from jasper.voice.daemon_main import _tts_ready_detail
 
 
@@ -129,8 +130,9 @@ def test_priced_research_model_does_not_warn(caplog) -> None:
 def _timeline_loop(*, wake: bool):
     """A WakeLoop parked mid-turn with a freshly anchored timeline.
 
-    `wake` picks which anchor the turn gets: a wake fire, or the turn's own
-    start (push-to-talk, remote, research confirmation).
+    `wake` picks which anchor the turn gets, the same way `_begin_turn` does:
+    the wake fire that opened it, or nothing — a turn no wake opened
+    (push-to-talk, remote, research confirmation) anchors on itself.
     """
     import time
 
@@ -149,16 +151,8 @@ def _timeline_loop(*, wake: bool):
     wl._barge_in_active = False
     wl._silence_started_at = 0.0
     wl._turn_started_at_loop = asyncio.get_event_loop().time()
-    if wake:
-        wl._wake_event_at_monotonic = time.monotonic()
-    wl._anchor_turn_timeline()
+    wl._anchor_turn_timeline(time.monotonic() if wake else 0.0)
     return wl
-
-
-def _frame():
-    import numpy as np
-
-    return np.zeros(1280, dtype=np.int16)
 
 
 async def test_wake_turn_timeline_carries_every_stage_in_order(caplog):
@@ -177,11 +171,11 @@ async def test_wake_turn_timeline_carries_every_stage_in_order(caplog):
     # and not six numbers that happen to round to the same millisecond.
     await wl._play_listening_chirp(going_on=True)
     await asyncio.sleep(0.002)
-    await wl._send_session_audio(_frame())
+    await wl._send_session_audio(silent_frame())
     await asyncio.sleep(0.002)
     # Silent frame with speech already seen: starts the end-of-utterance
     # silence clock, which is the honest end-of-speech moment.
-    await wl._handle_session_frame(_frame())
+    await wl._handle_session_frame(silent_frame())
     await asyncio.sleep(0.002)
     await wl._end_session_input("test")
     await asyncio.sleep(0.002)
@@ -201,10 +195,10 @@ async def test_wake_turn_timeline_carries_every_stage_in_order(caplog):
     assert deltas == sorted(deltas)
 
 
-async def test_manual_turn_anchors_on_itself_and_omits_the_wake_stages(caplog):
-    """A push-to-talk press has no wake fire and no listening chirp, so the
-    line must say what ms 0 is and leave the stages that did not happen
-    out rather than reporting them as zero."""
+async def test_manual_turn_anchors_on_itself_and_omits_absent_stages(caplog):
+    """A turn no wake opened must say what ms 0 is, and must leave out the
+    stages that did not happen rather than reporting them as zero — a
+    missing stage read as 0 ms is a wrong number, not a blank one."""
     import logging
 
     from tests._log_events import event_fields
@@ -212,27 +206,58 @@ async def test_manual_turn_anchors_on_itself_and_omits_the_wake_stages(caplog):
     caplog.set_level(logging.INFO, logger="jasper.voice_daemon")
     wl = _timeline_loop(wake=False)
 
-    await wl._send_session_audio(_frame())
+    await wl._send_session_audio(silent_frame())
     await wl._end_session_input("test")
     await wl._end_turn("test")
 
     fields = event_fields(caplog, "turn.timeline")
     assert fields["anchor"] == "manual"
-    assert "cue_ms" not in fields
     assert "speech_end_ms" not in fields
     assert "first_response_ms" not in fields
     assert int(fields["first_audio_to_provider_ms"]) >= 0
     assert int(fields["end_input_ms"]) >= 0
 
 
-async def test_a_consumed_wake_does_not_anchor_a_later_turn():
-    """A wake that never opened a turn (late cancel, lost arbitration) must
-    not become the anchor of the next press minutes later."""
-    wl = _timeline_loop(wake=True)
+async def test_a_wake_that_opened_no_turn_does_not_anchor_a_later_one(caplog):
+    """A wake can fire and never open a turn — late cancel, lost peer
+    arbitration, spend cap, paused connection all return before
+    `_begin_turn`. The stamp it leaves behind must not become the anchor of
+    the next press, which would publish a multi-minute turn."""
+    import logging
+    import time
+
+    from tests._log_events import event_fields
+
+    caplog.set_level(logging.INFO, logger="jasper.voice_daemon")
+    wl = _timeline_loop(wake=False)
+    wl._wake_event_at_monotonic = time.monotonic() - 300.0
 
     wl._anchor_turn_timeline()
+    await wl._end_session_input("test")
+    await wl._end_turn("test")
 
-    assert wl._turn_anchor_kind == "manual"
+    fields = event_fields(caplog, "turn.timeline")
+    assert fields["anchor"] == "manual"
+    assert int(fields["total_ms"]) < 1000
+
+
+async def test_push_to_talk_release_stamps_end_of_input(caplog):
+    """The button release is an end-of-input like any other and must go
+    through the one implementation every endpointer shares. When it did not,
+    a whole class of turn had a hole where `end_input_ms` belongs."""
+    import logging
+
+    from tests._log_events import event_fields
+
+    caplog.set_level(logging.INFO, logger="jasper.voice_daemon")
+    wl = _timeline_loop(wake=False)
+
+    assert await wl.manual_session_end() == "OK"
+    await wl._end_turn("test")
+
+    assert wl._input_ended is True
+    assert wl._turn is None
+    assert "end_input_ms" in event_fields(caplog, "turn.timeline")
 
 
 async def test_session_status_publishes_the_last_turn_timeline():

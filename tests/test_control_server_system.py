@@ -1267,6 +1267,8 @@ def test_state_voice_wake_legs_flows_from_session_status(
     assert status == 200
     assert body["voice"]["reachable"] is True
     assert body["voice"]["wake_legs"] == ["on", "off", "dtln"]
+    # Same pull-through, for the per-turn latency deltas.
+    assert "last_turn_ms" in body["voice"]
 
 
 def test_state_voice_classifies_every_session_status_field():

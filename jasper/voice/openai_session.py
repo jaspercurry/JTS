@@ -198,8 +198,8 @@ class OpenAIRealtimeTurn:
         self._last_chunk_at: float = 0.0
         self._first_chunk_logged = False
         self._started_at_monotonic: float = _time.monotonic()
-        # Stays 0.0 under server VAD: the server commits the buffer, so
-        # end_input() never runs and there is no provider latency to anchor.
+        # When `response.create` went out, from either end-of-input path
+        # (daemon end_input, or the server-VAD trigger). 0.0 = not yet asked.
         self._end_input_at_monotonic: float = 0.0
         self._bytes_sent: int = 0
         self._chunks_received: int = 0
@@ -1162,7 +1162,14 @@ class OpenAIRealtimeConnection:
 
     async def create_response_only(self) -> None:
         """Send response.create WITHOUT a preceding commit — used when
-        server_vad has already committed the audio buffer."""
+        server_vad has already committed the audio buffer.
+
+        This is the ask on a server-VAD turn, so it carries the same
+        first-chunk anchor `end_input()` sets on a daemon-endpointed one.
+        """
+        turn = self._active_turn
+        if turn is not None:
+            turn._end_input_at_monotonic = _time.monotonic()
         await self._send_event({"type": "response.create"})
 
     async def set_turn_detection(self, mode: dict | None) -> None:

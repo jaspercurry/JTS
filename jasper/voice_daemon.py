@@ -1105,8 +1105,10 @@ class WakeLoop:
         # _begin_turn to break the wake→activity_start latency into
         # named segments (state reset, loudness prepare, duck,
         # acquire_turn) so a slow turn-acquire can be localized.
-        # Set on every fire and cleared by the turn that consumes it;
-        # 0.0 means "no unconsumed wake", i.e. anchor on now.
+        # 0.0 means "no wake yet this session"; replaced on every fire.
+        # Only a turn the wake path itself opens reads it (passed as
+        # `_begin_turn(anchor_at=...)`), because a wake that opens no turn
+        # leaves it set.
         self._wake_event_at_monotonic: float = 0.0
         # Per-turn latency timeline: stage -> time.monotonic(). Reset at
         # turn start; rendered as integer-ms deltas from `_turn_anchor`.
@@ -2933,8 +2935,7 @@ class WakeLoop:
             elif self._state is State.SESSION:
                 await self._end_turn("research_window_wake")
 
-        import time as _time
-        self._wake_event_at_monotonic = _time.monotonic()
+        self._wake_event_at_monotonic = time.monotonic()
         # Per-leg score summary for the log — ONLY the legs this install
         # actually built, so a single-stream or non-chip-AEC install emits
         # no fields for legs it isn't running. "none" means an ACTIVE leg
@@ -3313,6 +3314,7 @@ class WakeLoop:
 
             await self._begin_turn(
                 listening_feedback=True,
+                anchor_at=self._wake_event_at_monotonic,
             )  # ends with state = SESSION
             await self._telemetry_stage("turn_opened")
             # Starts the winner-only heartbeat. Fire-and-forget: voice's own
@@ -4005,13 +4007,16 @@ class WakeLoop:
             if self._manual_endpoint_this_turn
             else self._vad.predict
         )
-        return await drain_acquire_buffer(
+        drained, speech = await drain_acquire_buffer(
             self._acquire_buffer,
             self._turn,  # type: ignore[arg-type]
             vad_predict=vad_predict,
             speech_threshold=END_OF_UTTERANCE_SPEECH_THRESHOLD,
             peak_min=SPEECH_RUN_PEAK_MIN,
         )
+        if drained:
+            self._stamp_turn_stage("first_audio_to_provider")
+        return drained, speech
 
     async def _await_connection(self, timeout_sec: float) -> bool:
         """Nudge a paused connection and wait a bounded time for it.
@@ -4171,29 +4176,24 @@ class WakeLoop:
             return "NO_SESSION"
         if self._input_ended:
             return "OK"
-        self._input_ended = True
-        try:
-            await self._turn.end_input()
-            return "OK"
-        except Exception as e:  # noqa: BLE001
-            logger.warning("manual session end failed: %s", e)
-            return "ERROR"
+        await self._end_session_input("push-to-talk release")
+        return "OK"
 
-    def _anchor_turn_timeline(self) -> float:
-        """Open a fresh per-turn timeline and return its anchor.
+    def _anchor_turn_timeline(self, anchor_at: float = 0.0) -> None:
+        """Open a fresh per-turn timeline.
 
-        The anchor is the wake fire that opened this turn — so `sched_lag`
-        and every `turn.timeline` delta count from the moment the household
-        was heard — or now for a turn no wake opened (push-to-talk, remote,
-        research confirmation). The wake stamp is consumed here so a later
-        unwaked turn anchors on itself and not on a stale fire.
+        `anchor_at` is the wake fire that opened this turn, so every
+        `turn.timeline` delta counts from the moment the household was
+        heard. It is passed in rather than read off `_wake_event_at_monotonic`
+        because a wake that fires and then opens no turn (late cancel, lost
+        arbitration, spend cap, paused connection) leaves that field set:
+        the next push-to-talk or research turn would inherit it and report a
+        multi-minute turn. 0.0 means "no wake opened this turn" — anchor on
+        now and say so.
         """
-        wake_at = self._wake_event_at_monotonic
-        self._wake_event_at_monotonic = 0.0
         self._turn_timeline = {}
-        self._turn_anchor = wake_at or time.monotonic()
-        self._turn_anchor_kind = "wake" if wake_at else "manual"
-        return self._turn_anchor
+        self._turn_anchor = anchor_at or time.monotonic()
+        self._turn_anchor_kind = "wake" if anchor_at else "manual"
 
     def _stamp_turn_stage(self, stage: str, *, first: bool = True) -> None:
         """Record one latency stage of the in-flight turn.
@@ -4351,6 +4351,7 @@ class WakeLoop:
         pre_roll: bool = True,
         text_context: str | None = None,
         listening_feedback: bool = False,
+        anchor_at: float = 0.0,
     ) -> None:
         completed = False
         try:
@@ -4371,6 +4372,7 @@ class WakeLoop:
             await self._begin_turn_inner(
                 pre_roll=pre_roll,
                 text_context=text_context,
+                anchor_at=anchor_at,
             )
             completed = True
         finally:
@@ -4398,11 +4400,16 @@ class WakeLoop:
         *,
         pre_roll: bool = True,
         text_context: str | None = None,
+        anchor_at: float = 0.0,
     ) -> None:
-        import time as _time
-        t_wake = self._anchor_turn_timeline()
+        # Anchored before the first await so the fire-and-forget listening
+        # chirp cannot stamp its cue into the previous turn's timeline.
+        self._anchor_turn_timeline(anchor_at)
         await self._begin_turn_output_episode()
-        t_begin = _time.monotonic()
+        t_begin = time.monotonic()
+        # sched_lag is wake→picked-up-by-the-loop; a turn no wake opened has
+        # no lag to report and must not charge itself the episode await.
+        t_wake = anchor_at or t_begin
         # One endpointer decision per turn. A turn whose audio comes from a
         # push-to-talk source is closed by the button release
         # (`manual_session_end`), so local Silero must not also try.
@@ -4431,7 +4438,7 @@ class WakeLoop:
         self._resolve_barge_in_for_turn()
         if self._vad_off is not None:
             self._vad_off.reset()
-        t_after_state = _time.monotonic()
+        t_after_state = time.monotonic()
         await self._content_activity.refresh_now()
         await self._prepare_assistant_loudness_context()
         await self._tts.pause_content_meter()
@@ -4445,14 +4452,14 @@ class WakeLoop:
                 self._ducker, "locks_camilla_volume", True,
             ),
         )
-        t_after_loudness_prepare = _time.monotonic()
+        t_after_loudness_prepare = time.monotonic()
         await self._ducker.duck()
-        t_after_duck = _time.monotonic()
+        t_after_duck = time.monotonic()
         self._session_id = self._usage_store.open_session(
             provider=self._cfg.voice_provider,
         )
         self._turn = await self._connection.acquire_turn()
-        t_after_acquire = _time.monotonic()
+        t_after_acquire = time.monotonic()
 
         if text_context:
             send_text_context = getattr(self._turn, "send_text_context", None)
@@ -4522,7 +4529,7 @@ class WakeLoop:
             "turn acquire done in %.0fms "
             "(sched_lag=%.0f state=%.0f loudness_prepare=%.0f duck=%.0f acquire=%.0f) "
             "(wake→activity_start%s)",
-            (_time.monotonic() - t_wake) * 1000,
+            (time.monotonic() - t_wake) * 1000,
             (t_begin - t_wake) * 1000,
             (t_after_state - t_begin) * 1000,
             (t_after_loudness_prepare - t_after_state) * 1000,
