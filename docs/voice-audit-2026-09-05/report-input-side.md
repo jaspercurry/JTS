@@ -1,4 +1,4 @@
-## Audit report: JTS microphone / AEC input path
+# Audit report: JTS microphone / AEC input path
 
 Scope read in full: `jasper/cli/aec_bridge.py` (1294), `aec_bridge_capture.py` (253), `aec_bridge_config.py` (459), `aec_bridge_corpus_lanes.py` (454), `aec_bridge_engines.py` (329), `aec_bridge_reference.py` (234), `aec_bridge_telemetry.py` (458), `jasper/wake_legs.py` (140), `jasper/wake_fusion.py` (74), `jasper/wake_conditions.py` (86), `jasper/wake_condition_context.py` (85), `jasper/wake_events.py` (920), `jasper/openwakeword_guard.py` (122), `jasper/wake.py`, `jasper/audio_io.py` (relevant sections), `jasper/voice_daemon.py` (relevant sections), `jasper/chip_aec/policy.py` (417), `jasper/mics/xvf3800.py` / `jasper/usb_mic.py` (relevant sections), `deploy/systemd/jasper-aec-bridge.service`, `jasper-voice.service`, `jts-mic.slice`/`jts-audio.slice`, `deploy/bin/jasper-aec-reconcile` (relevant sections), `deploy/udev/99-jasper-aec-reconcile.rules`, ADR-0104, ADR-0139, ADR-0170, README.md AEC section.
 

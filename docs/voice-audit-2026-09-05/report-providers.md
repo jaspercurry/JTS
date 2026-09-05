@@ -1,4 +1,4 @@
-I have everything I need. Writing up the audit.
+# Audit: provider layer and daemon_main
 
 ## 1. Contract quality — `LiveTurn` / `LiveConnection`
 

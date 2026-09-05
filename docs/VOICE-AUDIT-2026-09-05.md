@@ -1,4 +1,4 @@
-# JTS voice loop — audit and cleanup program (handoff for the orchestrating agent)
+# JTS voice loop — audit and cleanup program (brief for the orchestrating agent)
 
 This is the working brief for getting the smart-speaker voice loop — wake
 word → endpointing → realtime-LLM turn → tools → TTS and cues, plus the
@@ -24,8 +24,9 @@ that program landed the measurement-hold extraction
 `jasper/voice/measurement_hold.py`), which is this brief's Wave 4.1; its queue
 items 2 (`TtsPlayout` collapse) and 3 (Rust daemon skeleton) touch this loop's
 edges and are not repeated here. It dropped a provider base class pending a
-re-scout; `report-providers` §2 is that re-scout (≈511 identical lines), so
-Wave 5 stands. Whether this brief runs as its own orchestrator or as lanes of
+re-scout; `report-providers` §2 is that re-scout (≈240 identical lines plus
+~270 in shared skeletons, ~511 removable across the two adapters), so Wave 5
+stands. Whether this brief runs as its own orchestrator or as lanes of
 the steward is owner decision 5 in §6.
 
 ## 0. How the orchestrator works
@@ -66,12 +67,14 @@ millisecond stage stamps. None of that needs redesign.
    500 lines, research announce 360, push-to-talk 349, peering 94) and the
    true wake→turn→end core is about 800 lines of code. A 185-line test-only
    constructor (`for_tests`) ships to the Pi.
-2. **Two provider adapters that copy each other.** About 511 lines of
+2. **Two provider adapters that copy each other.** About 240 lines of
    `gemini_session.py` are byte-identical (comments stripped) to
-   `openai_session.py`; the code says "mirrors the other adapter" fourteen
-   times. The `LiveTurn` Protocol is enforced nowhere: both adapters sit on
-   the mypy ignore baseline and nothing calls `isinstance`. Six of its
-   members exist only for server VAD, which ADR-0152 rules off.
+   `openai_session.py` and another ~270 follow the same skeleton; ~511
+   lines are removable across the two. The code says "mirrors the other
+   adapter" fourteen times. The `LiveTurn` Protocol is enforced nowhere:
+   both adapters sit on the mypy ignore baseline and nothing calls
+   `isinstance`. Four of its members, and two of `LiveConnection`'s, exist
+   only for server VAD, which ADR-0152 rules off.
 3. **Prose.** 0.45 (`voice_daemon.py`), 0.62 (`session.py`), 0.40
    (`gemini_session.py`). Dated anecdotes, phase numbers, design essays, and
    two comments that contradict the code they annotate.
@@ -82,8 +85,9 @@ millisecond stage stamps. None of that needs redesign.
    chunk from OpenAI in Nms" is anchored at turn open, so it contains the
    user's whole utterance plus ~1 s of local endpointing. The owner's belief
    that the cloud is fast is probably right; the log cannot show it.
-6. **Three real resilience holes.** A push-to-talk press at the spend cap or
-   on an acquire error produces silence and no journal line. A Gemini box
+6. **Three real resilience holes.** A push-to-talk press at the spend cap
+   produces silence and no journal line, and one that fails at turn open
+   plays no cue unless the connection is paused. A Gemini box
    whose link is down at boot exits after one attempt and can walk
    `StartLimitBurst` into `StartLimitAction=reboot`. The daemon opens the
    provider connection before the mic and the cue player exist, so a boot
@@ -118,7 +122,7 @@ takes.
 | # | change | ms | Cx | gate / conflict |
 |---|---|---|---|---|
 | L1 | Per-turn timeline: stamp `wake_fire`, `cue`, `first_audio_to_provider`, `speech_end`, `end_input`, `first_response_chunk`; emit one `event=turn.timeline`; put the last turn's deltas in `/state.voice`. Re-anchor the adapters' first-chunk log on `end_input`. | 0 (it is the ruler) | S | none — do first |
-| L2 | Wake-event and usage SQLite writes off the loop: `begin_event` fire-and-forget; `update_stage`/`set_outcome`/`open_session` via one writer task or `to_thread`, as `attach_audio` already does. | 1–100 typ on wake and on first TTS chunk; SD-card tail | S | `tests/test_turn_playback_barge_in.py:172` pins the current ordering — change it deliberately |
+| L2 | Wake-event and usage SQLite writes off the loop: `begin_event` fire-and-forget; `update_stage`/`set_outcome`/`open_session` through one background writer task (not `to_thread`: `usage.py` opens SQLite with `check_same_thread` on, and `attach_audio` threads only its WAV I/O). | 1–100 typ on wake and on first TTS chunk; SD-card tail | S | `tests/test_turn_playback_barge_in.py:172` pins the current ordering — change it deliberately |
 | L3 | One CamillaDSP round-trip per turn: cache `effective_volume_context()` and refresh on mutation; drop `content_activity.refresh_now()` from turn open (the poller runs at 1 Hz); call `_prepare_assistant_loudness_context()` once, not twice. | 5–15 typ, up to 5 s tail | M | none |
 | L4 | Anchor the end-of-utterance silence clock at the silent frame's start, not its arrival. The 800 ms constant does not change. | 80 | S | ADR-0152 spirit: verify with `scripts/probe-wake-gate.py` on the corpus |
 | L5 | End-of-turn chirp before the telemetry, peering and conversation writes. | up to 2.5 s worst case of dead air | S | none |
@@ -246,10 +250,11 @@ with the WAN unplugged plays the network-down cue and never reaches
 `StartLimitAction`.
 
 **Wave 2 — subtraction (Sonnet, one PR per bullet, all zero-behavior).**
-- `WakeFuser` and the per-second condition refresh: offsets are always empty
-  and `verify()` always fires; inline `detector.threshold`, classify the
-  condition once at fire time, delete `wake_fusion.py`, its test, the dead
-  suppression branch and `CONDITION_REFRESH_SEC` (≈ −170).
+- `WakeFuser`: offsets are always empty and `verify()` always fires; inline
+  `detector.threshold`; at fire time record the cached `_current_condition`
+  the 1 Hz refresh already computes and delete the fire-path recompute
+  (voice-daemon M4); delete `wake_fusion.py`, its test and the dead
+  suppression branch (≈ −170).
 - The server-VAD path end to end: six Protocol members, ~90 adapter lines,
   ~70 daemon lines, `JASPER_SERVER_VAD_ENABLED` (ADR-0152 is the removal
   condition; **owner decides** whether the experiment knob survives).
@@ -265,9 +270,11 @@ with the WAN unplugged plays the network-down cue and never reaches
 - Prose: the 15-span lists in `report-voice-daemon` §4 and
   `report-providers` §6 (≈ −500 lines); the two contradicting comments at
   `voice_daemon.py:3815,3822` and `:4025-4037` go first.
-- Four UDS line-protocol clients converge on one `jasper/line_uds.py`; the
-  duplicate `GainRamp` in `rust/jasper-fanin/src/tts.rs:1221` imports the
-  shared one.
+- Four UDS line-protocol clients converge on `jasper.control.uds` (its
+  client made public; `control/__init__` is three lines, and the
+  circular-import excuse in `measurement_window.py` names `control.server`,
+  not this module); the duplicate `GainRamp` in
+  `rust/jasper-fanin/src/tts.rs:1221` imports the shared one.
 
 **Wave 3 — our side of the latency (Opus, one PR each).** L2, L3, L4, L5,
 L6, in that order. Gate per PR: Wave 0's numbers before and after on the
@@ -305,7 +312,9 @@ ADR when a constant moves. `daemon_main.py` table-driving and the
 - **Contract conformance:** one test per adapter that `isinstance(turn,
   LiveTurn)` and `isinstance(conn, LiveConnection)` hold, and that the
   daemon's resolved `Interruptible` set matches `catalog.py`'s declared
-  `interrupt_reconcile`. Recurrence: six leaky members, three undeclared.
+  `interrupt_reconcile`. Gemini can only pass once the server-VAD members
+  leave the Protocol (owner decision 1) or move to an optional one.
+  Recurrence: six leaky members, three undeclared.
 - **No SQLite on a frame path:** a test drives `_handle_wake_frame`,
   `_handle_session_frame` and `_play_responses` with a store whose writes
   block, and asserts the handlers return. Recurrence: three sites.
@@ -313,8 +322,9 @@ ADR when a constant moves. `daemon_main.py` table-driving and the
   test that both constants are the same object. Recurrence: two
   declarations kept in sync by a comment.
 - **Structured log assertions:** the test rubric already forbids prose
-  assertions; `tests/_log_events.py` exists and one file uses it. No new
-  guard — the Wave 4 rule "convert before moving" is the mechanism.
+  assertions; `tests/_log_events.py` exists and four files use it against
+  twenty-one that still pin `caplog.text`. No new guard — the Wave 4 rule
+  "convert before moving" is the mechanism.
 
 ## 6. Decisions the owner must make (do not re-ask elsewhere)
 
@@ -371,22 +381,22 @@ Wave 1 — deafness and boot
 - [ ] 1.4 Owner gate: WAN-unplugged boot on a spare Pi
 
 Wave 2 — subtraction
-- [ ] 2.1 `WakeFuser` + condition refresh (input-side F1; voice-daemon M4)
+- [ ] 2.1 `WakeFuser` + fire-path condition recompute (input-side F1; voice-daemon M4)
 - [ ] 2.2 Server-VAD path (providers C1) — after owner decision 1
 - [ ] 2.3 `_synthetic_audio_profile`; scalar `MeasurementHold.pause()` (voice-daemon M9, M11); `for_tests` → tests only under decision 6 (H4)
 - [ ] 2.4 `trace.py` + `submit_recorded_audio` → `tests/voice_eval/` (providers G6)
 - [ ] 2.5 Dead code sweep (voice-daemon L1–L4; providers G1–G5, G7, C2, C3, C4; tools F3–F6)
 - [ ] 2.6 Prose sweep, `voice_daemon.py` (voice-daemon §4, M5, M6)
 - [ ] 2.7 Prose sweep, `jasper/voice/` (providers §6, I1, I2; tools F10; input-side F4)
-- [ ] 2.8 `jasper/line_uds.py` (providers D3); fan-in `GainRamp` import (rust F2)
+- [ ] 2.8 UDS clients converge on `jasper.control.uds` (providers D3); fan-in `GainRamp` import (rust F2)
 
 Wave 3 — our side of the latency
-- [ ] 3.1 SQLite off the loop, three sites (voice-daemon H3, M1, M10; rust F1; latency #5)
+- [ ] 3.1 SQLite off the loop, three sites, via one writer task (voice-daemon H3, M1, M10; rust F1; latency #5)
 - [ ] 3.2 One CamillaDSP round-trip per turn (voice-daemon M2, M3; latency #3, #4, #6)
 - [ ] 3.3 EOU clock anchored at frame start (latency #2)
 - [ ] 3.4 End-of-turn chirp before the writes (voice-daemon M10)
 - [ ] 3.5 Concurrent tool dispatch within a round (tools F1)
-- [ ] 3.6 Shared arming gate, one unit (voice-daemon M7; audio_buffer L8)
+- [ ] 3.6 Shared arming gate, one unit (voice-daemon M7, L8)
 - [ ] 3.7 Owner gate: before/after timeline numbers in each PR
 
 Wave 4 — decompose WakeLoop
@@ -395,16 +405,16 @@ Wave 4 — decompose WakeLoop
 - [ ] 4.3 `wake_telemetry.py` (also `_handle_wake_frame` inlay)
 - [ ] 4.4 `research_announcer.py` + `TurnHost`
 - [ ] 4.5 `push_to_talk.py`
-- [ ] 4.6 `assistant_output.py` + `FanInDucker` converged with `camilla.Ducker` (voice-daemon L5)
+- [ ] 4.6 `assistant_output.py` + `FanInDucker` converged with `camilla.Ducker` (voice-daemon §2 item 6)
 - [ ] 4.7 `daemon_main.py` table-driven builders + `AsyncExitStack` teardown + `control_socket.py` (providers F1–F3)
 
 Wave 5 — one provider base
 - [ ] 5.1 `tests/test_voice_supervisor.py`; provider test files shrink (tests §4, §7.1)
 - [ ] 5.2 `_base.py`; adapters become wire-only (providers A3, D1, D2, D4, H1)
-- [ ] 5.3 Contract trim + mypy baseline exit + conformance tests (providers A4, C2–C4, J1; §5 guard 1)
+- [ ] 5.3 Contract trim + mypy baseline exit + conformance tests (providers A4, C2–C4, J1; §5 guard 1) — after owner decision 1
 
 Wave 6 — hardware-gated tuning (owner)
 - [ ] 6.1 `JASPER_AEC_CAPTURE_LATENCY=low` (latency #1)
 - [ ] 6.2 EOU 0.8 → 0.6 or adaptive; supersede ADR-0152 (latency #9)
-- [ ] 6.3 20 ms transport, wake framing decoupled (latency #7, #8)
+- [ ] 6.3 20 ms transport, wake framing decoupled; then the last-sub-chunk EOU score (latency #7, then #8)
 - [ ] 6.4 Certified ring pair for the ordinary graph — non-negotiable tier (latency #10)

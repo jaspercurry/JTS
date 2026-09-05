@@ -1,7 +1,3 @@
-I've read all 5,476 lines and verified every claim against the tree. Report follows.
-
----
-
 # Audit: `jasper/voice_daemon.py` (5,476 lines)
 
 **Measured shape.** `WakeLoop` spans `jasper/voice_daemon.py:888-5415` (4,528 lines), **96 methods** (not ~114), and **102 `self._*` fields** assigned in `__init__` (`jasper/voice_daemon.py:906-1273`, 368 lines). Prose (comments + docstrings) is 1,589 lines against 3,550 code lines and 425 blank — a **0.45 prose:code ratio**. It is a god class, but an unusually *legible* one: the coupling is real, not accidental, and four concerns are already almost free-standing.

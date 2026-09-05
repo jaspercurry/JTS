@@ -1,7 +1,5 @@
 # Audit: Output Side & Tool Layer (jasper/tools, jasper/cues, jasper/voice/{earcons,turn_playback,output_gate,input_policy,input_presence}, assistant_loudness, conversation_history, timers)
 
-No files were modified — this is a read-only audit via `sed`/`grep`/full reads plus ADR-0153/0154/0155/0157/0204 and the two daemon consumers.
-
 ## 1. Tool registry/executor (`jasper/tools/__init__.py`, `packs.py`, `catalog.py`)
 
 **Shape is right and matches ADR-0157/0155.** `ToolDefinition` (schema+metadata, `jasper/tools/__init__.py:205-269`) is cleanly separated from `PythonExecutor`/`Tool` (runtime, `:308-411`). Schema is either hand-derived from a Python signature (`_params_schema`/`_annotation_to_schema`, `:711-763`) for `@tool`-decorated functions, or built explicitly (`weather.py:142-156`, `travel_routes.py:134-150`, `time.py:77-88`) when a tool needs a hand-tuned param schema or a separate short `llm_description`. Single dispatch seam: every provider (Gemini `voice/gemini_session.py:1555`, OpenAI/Grok `voice/openai_session.py:2060`) funnels through `dispatch_tool` (`jasper/tools/__init__.py:766-837`) — verified there are only these two call sites.

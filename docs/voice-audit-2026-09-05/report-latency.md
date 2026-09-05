@@ -1,4 +1,4 @@
-I have the full picture. Writing up the audit.
+# Audit: voice-loop latency budget
 
 ## 1. Latency budget
 
