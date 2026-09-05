@@ -4,8 +4,13 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
+from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
+from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.frequency_view import (
     FrequencyViewError,
     build_frequency_view,
@@ -13,6 +18,7 @@ from jasper.active_speaker.crossover_v2.frequency_view import (
 )
 from jasper.active_speaker.measurement_archive import ArchivedMeasurement
 from jasper.active_speaker.measurement_document import frequency_run_from_documents
+from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker import measurement_archive
 from jasper.web import correction_measurements
 
@@ -160,7 +166,7 @@ def test_measurement_page_uses_the_canonical_shell_and_static_module():
 def test_web_data_uses_the_same_frequency_view_contract(tmp_path, monkeypatch):
     entries = tuple(
         ArchivedMeasurement(run_id, tmp_path / run_id, started_at, "applied")
-        for run_id, started_at in (("bbb", 2.0), ("aaa", 1.0))
+        for run_id, started_at in (("aaa", 1.0), ("bbb", 2.0))
     )
     monkeypatch.setattr(
         correction_measurements, "list_measurements", lambda _root: entries,
@@ -172,7 +178,10 @@ def test_web_data_uses_the_same_frequency_view_contract(tmp_path, monkeypatch):
     )
 
     data = correction_measurements.build_data(
-        sessions_dir=tmp_path, run_a_id="aaa", run_b_id="bbb",
+        sessions_dir=tmp_path,
+        campaign_root=tmp_path / "campaigns",
+        run_a_id="aaa",
+        run_b_id="bbb",
     )
 
     assert data["catalog_schema"] == "jts_frequency_catalog/1"
@@ -181,10 +190,63 @@ def test_web_data_uses_the_same_frequency_view_contract(tmp_path, monkeypatch):
     assert [run["id"] for run in data["view"]["runs"]] == ["aaa", "bbb"]
 
 
+def _bank_one_round(root: Path, session_id: str) -> Path:
+    """A campaign home holding one round banked from a one-take bundle."""
+
+    bundle = root / "sessions" / session_id
+    positions = (
+        bundle / EVIDENCE_ROOT / "artifacts/crossover_v2" / session_id / "positions"
+    )
+    positions.mkdir(parents=True)
+    (positions / "t1.json").write_text(json.dumps({
+        "kind": POSITION_EVIDENCE_KIND,
+        "session_id": session_id,
+        "take_id": "t1",
+        "phase": "measure",
+        "position_deg": 0,
+        "curves": [{
+            "role": "summed",
+            "reference_db": 0.0,
+            "freqs_hz": [100.0, 1000.0, 10000.0],
+            "magnitude_db": [-1.0, 0.0, 1.0],
+        }],
+    }))
+    (bundle / "info.json").write_text(json.dumps({
+        "session_id": session_id, "started_at": 1000.0, "state": "applied",
+    }))
+    campaign_root = root / "campaigns"
+    absent = root / "absent.json"
+    bank_round(
+        bundle,
+        campaign_root=campaign_root,
+        state_path=absent,
+        design_draft_path=absent,
+        applied_profile_path=absent,
+        repeat_floor_path=absent,
+        declared_geometry_path=absent,
+    )
+    return campaign_root
+
+
+def test_web_data_offers_a_banked_round_and_graphs_its_curves(tmp_path):
+    campaign_root = _bank_one_round(tmp_path, "sess-1")
+
+    data = correction_measurements.build_data(
+        sessions_dir=tmp_path / "no-sessions", campaign_root=campaign_root,
+    )
+
+    [entry] = data["catalog"]
+    assert (entry["origin"], entry["name"]) == ("banked", "sess-1")
+    assert data["selected"]["a"] == entry["id"] != "sess-1"
+    [run] = data["view"]["runs"]
+    assert [series["magnitude_db"] for series in run["series"]] == [[-1.0, 0.0, 1.0]]
+
+
 def test_web_data_returns_an_empty_view_when_no_runs_exist(tmp_path, monkeypatch):
     monkeypatch.setattr(correction_measurements, "list_measurements", lambda _root: ())
     empty = correction_measurements.build_data(
-        sessions_dir=tmp_path, run_a_id="missing",
+        sessions_dir=tmp_path, campaign_root=tmp_path / "campaigns",
+        run_a_id="missing",
     )
     assert empty["view"] is None
 
@@ -201,7 +263,8 @@ def test_web_data_rejects_a_run_outside_the_catalog(tmp_path, monkeypatch):
         match="measurement not found",
     ):
         correction_measurements.build_data(
-            sessions_dir=tmp_path, run_a_id="../outside",
+            sessions_dir=tmp_path, campaign_root=tmp_path / "campaigns",
+            run_a_id="../outside",
         )
 
 
