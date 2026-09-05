@@ -566,7 +566,7 @@ async def _start_control_socket(
                               `drained` evidence while keeping the compatible
                               `result=ok` whenever cleanup is owned. Refuses
                               (BUSY) if a session is active. Auto-clears after
-                              voice_daemon.MEASUREMENT_AUTOCLEAR_SEC
+                              measurement_hold.MEASUREMENT_AUTOCLEAR_SEC
                               if RESUME is never sent.
         MEASURE_RESUME      → close the measurement window.
                               Idempotent.
@@ -604,9 +604,9 @@ async def _start_control_socket(
             elif cmd == "CUE_PLAY":
                 result = {"result": await wake_loop.play_cue(arg)}
             elif cmd == "MEASURE_PAUSE":
-                result = await wake_loop.measurement_pause_response()
+                result = await wake_loop.measurement_hold.pause_response()
             elif cmd == "MEASURE_RESUME":
-                result = {"result": await wake_loop.measurement_resume()}
+                result = {"result": await wake_loop.measurement_hold.resume()}
             elif cmd == "MUTE":
                 result = {"result": await wake_loop.mute_mic()}
             elif cmd == "UNMUTE":

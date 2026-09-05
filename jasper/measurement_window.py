@@ -38,7 +38,7 @@ MEASUREMENT_LEASE_REFRESH_SEC = 60.0
 MEASUREMENT_LEASE_RETRY_SEC = 5.0
 # Deadline for the daemon's MEASURE_PAUSE reply — a contract, not a local
 # timeout: the daemon may hold it while draining in-flight assistant audio, so
-# voice_daemon.MEASUREMENT_INFLIGHT_DRAIN_SEC must stay under this value.
+# voice.measurement_hold.MEASUREMENT_INFLIGHT_DRAIN_SEC must stay under it.
 VOICE_MEASURE_PAUSE_TIMEOUT_SEC = 3.0
 MEASUREMENT_FANIN_LABEL = "correction"
 MEASUREMENT_GATE_OWNER = "correction-measurement"
