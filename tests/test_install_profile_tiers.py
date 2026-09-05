@@ -539,7 +539,7 @@ def test_zero_class_rust_build_uses_low_memory_cargo_profile(tmp_path: Path):
     assert "CARGO_BUILD_JOBS=1" in env.stdout
     assert "CARGO_PROFILE_RELEASE_LTO=false" in env.stdout
     assert "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16" in env.stdout
-    assert "CARGO_PROFILE_RELEASE_OPT_LEVEL=0" in env.stdout
+    assert "CARGO_PROFILE_RELEASE_OPT_LEVEL=2" in env.stdout
 
 
 def test_one_gb_full_speaker_rust_build_uses_low_memory_profile(tmp_path: Path):
