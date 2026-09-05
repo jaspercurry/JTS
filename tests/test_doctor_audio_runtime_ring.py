@@ -5,6 +5,7 @@
 """Unit tests for the jasper-doctor shared-memory-ring checks."""
 
 import fcntl
+import json
 import os
 import struct
 import subprocess
@@ -29,12 +30,14 @@ from jasper.fanin_coupling import (
 from jasper.route_latency.status_socket import FANIN_STATUS_SOCKET
 
 from ._doctor_audio_runtime_fixtures import (
+    _fanin_status_payload,
     _outputd_status_payload,
     _patch_status_reader,
     _seed_units,
 )
 from .doctor_test_support import record_active_dac
 from .test_doctor_audio_runtime_camilla import _silent_camilla_recover_park
+from .test_ring_stall_alarm import _ring_file
 
 
 def _point_entry_lock_at(monkeypatch, tmp_path: Path) -> Path:
@@ -1324,6 +1327,130 @@ def test_writer_lock_guard_counts_one_pid_once(monkeypatch, tmp_path):
 
     # Not a fail (one pid), but the unlinked fd still earns the warn.
     assert result.status == "warn"
+
+
+# ===========================================================================
+# check_ring_reader_stall — Ring A's fan-in STATUS witness (issue #1524).
+#
+# The header-only, four-ring sweep is pinned in test_ring_stall_alarm.py.
+# This section pins Ring A's fallback: fan-in's `output.ring.stall_active`
+# stands in for a header this check cannot judge (no coherent SHM header),
+# and its cumulative stuck_reader_drops/drop_no_reader ride along as Ring A
+# detail, read through the evidence memo (`evidence.fanin_status()`) — no
+# second socket read of a daemon another check already asked this run.
+# ===========================================================================
+
+_RING_A_DRAINING = {
+    "path": "/dev/shm/jts-ring/program.ring",
+    "slots": 8, "occupancy": 2, "published": 123456,
+    "full_waits": 0, "stuck_reader_drops": 0, "drop_no_reader": 0,
+    "stall_active": False, "last_stall_ms": 0,
+}
+#: A ring that RECOVERED: the episode is over, its cumulative drop counters
+#: stand until fan-in restarts.
+_RING_A_RECOVERED = dict(_RING_A_DRAINING, stuck_reader_drops=375, last_stall_ms=4200)
+_RING_A_STATUS_STALLED = {
+    "path": "/dev/shm/jts-ring/program.ring",
+    "slots": 8, "occupancy": 8, "published": 500,
+    "full_waits": 32, "stuck_reader_drops": 375, "drop_no_reader": 0,
+    "stall_active": True, "last_stall_ms": 4200,
+}
+
+
+def _fanin_payload_with_ring(ring: dict | None) -> bytes:
+    """A shm_ring-transport fan-in STATUS payload with (or without) a ring block."""
+    payload = json.loads(_fanin_status_payload(transport="shm_ring").decode())
+    if ring is not None:
+        payload["output"]["ring"] = ring
+    return json.dumps(payload).encode()
+
+
+def _absent_other_rings(monkeypatch, tmp_path):
+    """Point Ring B / ACTIVE at absent paths so only Ring A (its header, or its
+    fan-in witness, set separately per test) can produce a verdict. The
+    grouping ring's own real default path is already absent on every dev/test
+    host, so it needs no stand-in here."""
+    import jasper.ring_assets as ring_assets
+
+    for attr in ("RING_B_CONTENT_FILE", "RING_ACTIVE_CONTENT_FILE"):
+        monkeypatch.setattr(ring_assets, attr, str(tmp_path / f"absent-{attr}"))
+
+
+def test_ring_reader_stall_warns_on_ring_a_header_stall(monkeypatch, tmp_path):
+    """The shared header judge decides when it CAN judge Ring A; fan-in's own
+    `stall_active` flag is not consulted."""
+    import time
+
+    import jasper.ring_assets as ring_assets
+
+    _absent_other_rings(monkeypatch, tmp_path)
+    real_now = time.monotonic_ns()
+    stalled_path = _ring_file(
+        tmp_path,
+        writer_hb=real_now - 5_000_000,
+        reader_hb=max(real_now - 3_000_000_000, 1),
+    )
+    monkeypatch.setattr(ring_assets, "RING_A_PROGRAM_FILE", stalled_path)
+    _patch_status_reader(monkeypatch, _fanin_payload_with_ring(_RING_A_DRAINING))
+
+    r = audio_runtime_ring.check_ring_reader_stall()
+
+    assert r.status == "warn"
+    assert r.reason == audio_runtime_ring.REASON_RING_READER_STALLED
+
+
+@pytest.mark.parametrize(
+    ("ring_status", "expected_status", "expected_reason"),
+    [
+        pytest.param(
+            _RING_A_STATUS_STALLED,
+            "warn",
+            audio_runtime_ring.REASON_RING_READER_STALLED,
+            id="stall_active_is_the_only_witness_left",
+        ),
+        pytest.param(
+            _RING_A_RECOVERED,
+            "ok",
+            audio_runtime_ring.REASON_RING_READER_STALL_DROPS,
+            id="recovered_drops_ride_along_as_detail",
+        ),
+        pytest.param(
+            None,
+            "skipped",
+            audio_runtime_ring.REASON_RING_READER_NO_LIVE_RING,
+            id="no_status_either_keeps_the_header_only_verdict",
+        ),
+    ],
+)
+def test_ring_reader_stall_without_a_ring_a_header(
+    monkeypatch, tmp_path, ring_status, expected_status, expected_reason,
+):
+    """No coherent Ring A header: fan-in STATUS decides status and reason.
+
+    ``stall_active`` stands in for a header this check cannot judge;
+    cumulative drop counters must not latch a stall red once the episode
+    recovers; and with no STATUS to fall back on either, the check's
+    existing header-only behavior stands (see test_ring_stall_alarm.py's
+    unarmed-box pin).
+    """
+    import jasper.ring_assets as ring_assets
+
+    _absent_other_rings(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        ring_assets, "RING_A_PROGRAM_FILE", str(tmp_path / "absent-ring-a")
+    )
+    if ring_status is None:
+        def refused(path, *, timeout):
+            raise OSError("connection refused")
+
+        monkeypatch.setattr(_evidence, "read_status_socket", refused)
+    else:
+        _patch_status_reader(monkeypatch, _fanin_payload_with_ring(ring_status))
+
+    r = audio_runtime_ring.check_ring_reader_stall()
+
+    assert r.status == expected_status
+    assert r.reason == expected_reason
 
 
 # ===========================================================================

@@ -243,7 +243,7 @@ def test_one_doctor_pass_opens_the_fanin_status_socket_once(monkeypatch):
         audio_runtime_fanin.check_fanin_service,
         audio_runtime_fanin.check_fanin_host_clock,
         audio_runtime_fanin.check_fanin_tts_drops,
-        audio_runtime_fanin.check_fanin_ring_stall,
+        audio_runtime_ring.check_ring_reader_stall,
         audio_runtime_ring.check_renderer_ring_lanes,
     ):
         check()
@@ -666,116 +666,6 @@ def test_check_fanin_tts_drops_skips_when_status_unreachable(monkeypatch):
     r = audio_runtime_fanin.check_fanin_tts_drops()
     assert r.status == "skipped"
     assert r.reason == audio_runtime_fanin.REASON_FANIN_TTS_STATUS_NOT_PROBED
-
-
-# ---------------------------------------------------------------------------
-# check_fanin_ring_stall — a live fan-in→CamillaDSP ring stall (issue #1524):
-# the SHM ring is full and CamillaDSP is not draining it. Skip-if-loopback.
-# ---------------------------------------------------------------------------
-
-
-def _fanin_payload_with_ring(ring: dict | None) -> bytes:
-    """A shm_ring-transport fan-in STATUS payload with (or without) a ring block."""
-    payload = json.loads(_fanin_status_payload(transport="shm_ring").decode())
-    if ring is not None:
-        payload["output"]["ring"] = ring
-    return json.dumps(payload).encode()
-
-
-_RING_DRAINING = {
-    "path": "/dev/shm/jts-ring/program.ring",
-    "slots": 8, "occupancy": 2, "published": 123456,
-    "full_waits": 0, "stuck_reader_drops": 0, "drop_no_reader": 0,
-    "stall_active": False, "last_stall_ms": 0,
-}
-#: A ring that RECOVERED: the episode is over, its cumulative drop counters
-#: stand until fan-in restarts.
-_RING_RECOVERED = dict(
-    _RING_DRAINING, stuck_reader_drops=375, last_stall_ms=4200
-)
-_RING_STALLED = {
-    "path": "/dev/shm/jts-ring/program.ring",
-    "slots": 8, "occupancy": 8, "published": 500,
-    "full_waits": 32, "stuck_reader_drops": 375, "drop_no_reader": 0,
-    "stall_active": True, "last_stall_ms": 4200,
-}
-
-
-def _patch_ring_verdict(monkeypatch, verdict):
-    """Answer the SHARED Ring-A stall reader (`jasper.ring_assets`), which is
-    what decides this check's verdict — its STATUS block is only detail."""
-    import jasper.ring_assets as ring_assets
-
-    monkeypatch.setattr(ring_assets, "ring_stall_verdict", lambda *a, **k: verdict)
-
-
-@pytest.mark.parametrize(
-    "ring, unreachable, status, reason",
-    [
-        # A STATUS-shape guard, not a topology branch: with no counters there
-        # is nothing to assess, and the missing block is the 'jasper-fanin
-        # service' check's failure to report.
-        (None, False, "skipped",
-         audio_runtime_fanin.REASON_FANIN_RING_STALL_BLOCK_ABSENT),
-        (_RING_DRAINING, False, "ok", ""),
-        (_RING_RECOVERED, False, "ok",
-         audio_runtime_fanin.REASON_FANIN_RING_STALL_DROPS),
-        # Reachability is the 'jasper-fanin service' check's job; this check
-        # must not double-report a down daemon.
-        (None, True, "skipped",
-         audio_runtime_fanin.REASON_FANIN_RING_STALL_STATUS_NOT_PROBED),
-    ],
-    ids=["no-ring-block", "draining", "recovered-drops-do-not-latch",
-         "status-unreachable"],
-)
-def test_check_fanin_ring_stall_verdicts(
-    monkeypatch, ring, unreachable, status, reason,
-):
-    from jasper.ring_assets import RingStallVerdict
-
-    _patch_ring_verdict(monkeypatch, RingStallVerdict(present=True, stalled=False))
-    if unreachable:
-        _patch_unreachable_status(monkeypatch)
-    elif ring is None:
-        _patch_status_reader(monkeypatch, _fanin_status_payload(ring=None))
-    else:
-        _patch_status_reader(monkeypatch, _fanin_payload_with_ring(ring))
-
-    r = audio_runtime_fanin.check_fanin_ring_stall()
-
-    assert r.status == status
-    assert r.reason == reason
-
-
-@pytest.mark.parametrize(
-    "verdict, ring",
-    [
-        # The shared header judge says Ring A is stalled; fan-in's own flag is
-        # not consulted.
-        ("stalled", _RING_DRAINING),
-        # No coherent header to judge — the role this check kept: STATUS is
-        # the only witness left.
-        ("absent", _RING_STALLED),
-    ],
-    ids=["shared-verdict-decides", "status-is-the-fallback"],
-)
-def test_check_fanin_ring_stall_warns_from_the_shared_reader(
-    monkeypatch, verdict, ring,
-):
-    from jasper.ring_assets import RingStallVerdict
-
-    _patch_ring_verdict(
-        monkeypatch,
-        RingStallVerdict(present=True, stalled=True)
-        if verdict == "stalled"
-        else RingStallVerdict(present=False),
-    )
-    _patch_status_reader(monkeypatch, _fanin_payload_with_ring(ring))
-
-    r = audio_runtime_fanin.check_fanin_ring_stall()
-
-    assert r.status == "warn"
-    assert r.reason == audio_runtime_fanin.REASON_FANIN_RING_STALL_ACTIVE
 
 
 # ===========================================================================
