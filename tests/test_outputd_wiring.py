@@ -260,7 +260,9 @@ def _start_monitor(
     )
 
 
-def _await(monitor: subprocess.Popen[bytes], log: Path, expected: tuple[str, ...]):
+def _await(
+    monitor: subprocess.Popen[bytes], log: Path, expected: tuple[str, ...]
+) -> None:
     """Block until every line in `expected` has reached `log`, or the monitor
     exits. Both are the monitor's own observable transitions, so the verdict
     does not move with machine load; the ceiling is only a hang backstop --
@@ -276,6 +278,17 @@ def _await(monitor: subprocess.Popen[bytes], log: Path, expected: tuple[str, ...
             raise AssertionError(f"monitor exited with {code}; {log.name}: {text!r}")
         time.sleep(0.02)
     raise AssertionError(f"monitor never reached {expected}; {log.name}: {text!r}")
+
+
+def _empty_board(tmp_path: Path) -> dict[str, str]:
+    sys_class = tmp_path / "sys" / "class" / "sound"
+    proc_asound = tmp_path / "proc" / "asound"
+    sys_class.mkdir(parents=True)
+    proc_asound.mkdir(parents=True)
+    return {
+        "JASPER_SYS_CLASS_SOUND": str(sys_class),
+        "JASPER_PROC_ASOUND": str(proc_asound),
+    }
 
 
 def test_the_boot_pin_and_the_drift_monitor_resolve_their_card_at_runtime():
@@ -322,16 +335,10 @@ def test_the_drift_monitor_trusts_an_explicit_configured_card(tmp_path):
     branch forward from the deleted `resolve_cards`): the monitor pins that
     card directly and never asks the classifier, so no Python is needed."""
     bin_dir, log = _amixer_double(tmp_path)
-    empty = tmp_path / "sys" / "class" / "sound"
-    empty.mkdir(parents=True)
-    (tmp_path / "proc" / "asound").mkdir(parents=True)
     monitor, _ = _start_monitor(
         tmp_path,
         bin_dir,
-        {
-            "JASPER_SYS_CLASS_SOUND": str(empty),
-            "JASPER_PROC_ASOUND": str(tmp_path / "proc" / "asound"),
-        },
+        _empty_board(tmp_path),
         card="Dongle_1",
     )
     try:
@@ -347,16 +354,10 @@ def test_the_drift_monitor_stays_up_and_re_asks_when_a_card_appears(tmp_path):
     `StartLimitBurst`). So an absent dongle must be a poll, never an exit, and
     the card set must be re-asked when the board's cards move."""
     bin_dir, log = _amixer_double(tmp_path)
-    empty = tmp_path / "sys" / "class" / "sound"
-    empty.mkdir(parents=True)
-    (tmp_path / "proc" / "asound").mkdir(parents=True)
     monitor, journal = _start_monitor(
         tmp_path,
         bin_dir,
-        {
-            "JASPER_SYS_CLASS_SOUND": str(empty),
-            "JASPER_PROC_ASOUND": str(tmp_path / "proc" / "asound"),
-        },
+        _empty_board(tmp_path),
     )
     try:
         # The absent event is the monitor's own proof that it asked, and got

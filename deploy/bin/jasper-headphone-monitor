@@ -85,6 +85,11 @@ APPLE_CARDS=()
 LAST_POPULATION="unprobed"
 refresh_apple_cards() {
     local entry name id population="" payload
+    # An explicit card argument is an operator override and asks nothing.
+    if [[ "$CONFIGURED_CARD" != "auto" ]]; then
+        APPLE_CARDS=("$CONFIGURED_CARD")
+        return 0
+    fi
     for entry in "$SYS_CLASS_SOUND"/card[0-9]*; do
         [[ -e "$entry" ]] || continue
         name="${entry##*/}"
@@ -94,11 +99,6 @@ refresh_apple_cards() {
     done
     [[ "$population" != "$LAST_POPULATION" ]] || return 0
     LAST_POPULATION="$population"
-    # An explicit card argument is an operator override and asks nothing.
-    if [[ "$CONFIGURED_CARD" != "auto" ]]; then
-        APPLE_CARDS=("$CONFIGURED_CARD")
-        return 0
-    fi
     if ! payload="$("$PYTHON" -m jasper.cli.output_hardware --env)"; then
         # Clear rather than leave stale ids, and force a real retry on the
         # next poll regardless of whether the card population changes.
@@ -108,7 +108,11 @@ refresh_apple_cards() {
     fi
     # Every value is shlex-quoted by the emitter, so the payload evals as-is.
     OBSERVED_OUTPUT_APPLE_CARD_IDS=""
-    eval "$payload"
+    if ! eval "$payload"; then
+        APPLE_CARDS=()
+        LAST_POPULATION="unprobed"
+        return 1
+    fi
     APPLE_CARDS=()
     [[ -n "$OBSERVED_OUTPUT_APPLE_CARD_IDS" ]] &&
         read -r -a APPLE_CARDS <<<"$OBSERVED_OUTPUT_APPLE_CARD_IDS"
