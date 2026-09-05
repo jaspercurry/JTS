@@ -1,10 +1,8 @@
 # ADR-0235: Attached hardware has one owner per fact, and the shell holds no hardware facts
 
 - **Date:** 2026-09-05
-- **Status:** Proposed
-- Refs: #4027. Builds on ADR-0232, ADR-0233, ADR-0234. Surveyed at 27c4d2119;
-  citations re-verified after a rebase to 5c033072d (no change to any file
-  this ADR cites).
+- **Status:** Accepted
+- Refs: #4027. Builds on ADR-0232, ADR-0233, ADR-0234. Surveyed at 27c4d2119.
 
 ## Context
 
@@ -32,8 +30,10 @@ doctor and /state, the wizards, the tests, and open issues/PRs/docs.
   transport park: /state and the doctor call the same function
   (`jasper/control/state_aggregate.py:1232,1264,1373`;
   `jasper/cli/doctor/_evidence.py:265,275`, `audio_runtime_ring.py:237-239`).
-- The doctor framework is one decorator, one `CheckResult` contract
-  (`jasper/doctor_contract.py:38-64`), pinned order keys.
+- The doctor framework is one decorator (`jasper/cli/doctor/_registry.py`)
+  and one `CheckResult` contract (`jasper/doctor_contract.py:38-64`).
+  Display order still uses hand-numbered keys; #4043 implements ADR-0233
+  rule 4 and is not this ADR's concern.
 - The wizard writes intent only for undetectable hardware
   (`/var/lib/jasper/i2s_hat.env` via `write_i2s_hat_intent`,
   `usb_port_role.py:390`) and carries no save/restore/undo machinery.
@@ -52,7 +52,9 @@ Output side:
   validated (`dac.py:271-272`) but never read; the reconciler emits
   `JASPER_OUTPUTD_SINK` from literals
   (`deploy/bin/jasper-audio-hardware-reconcile:1863,1950,1994`), disagreeing
-  with the registry's `alsa` (reconciler emits `single_alsa`).
+  with the registry's `alsa` (reconciler emits `single_alsa`). The
+  reconciler's own clockless-park gate compares the literal `single_alsa`
+  (`:788`).
   `requires_same_usb_bus` (`dac.py:176`) is consumed only by its own
   validator (`dac.py:293`); the classifier hardcodes the check
   (`jasper/output_hardware.py:437-445,528`). `udev_rule` (`dac.py:185`) is
@@ -63,8 +65,7 @@ Output side:
 - G2. Hardware facts in shell. The Apple dongle label `usb-c to 3.5mm`
   lives in `dac.py:414,769`,
   `deploy/bin/jasper-audio-hardware-reconcile:889`, and
-  `deploy/lib/jasper-apple-dongle.sh:10`. The composite channel width is a
-  bash literal, `jasper-audio-hardware-reconcile:1878`.
+  `deploy/lib/jasper-apple-dongle.sh:10`.
 - G3. Shell regex-parses `output_hardware.json`. `sed` extractions at
   `jasper-audio-hardware-reconcile:379-380,398-400,433-437,443,466-468,491`
   plus a separate `python -c json.load` at `:406-417`. A renamed key returns
@@ -175,18 +176,28 @@ sentinel-delimited blocks.
 
 ### Rulings
 
-- R1. Registry fields are load-bearing or deleted. `outputd_sink` becomes
-  the source of `JASPER_OUTPUTD_SINK` (values renamed to what outputd
-  parses); the classifier consults `requires_same_usb_bus`; `udev_rule`,
-  `known_profile_ids`, `supports_physical_output_count` are deleted.
+- R1. Registry fields are load-bearing or deleted. The registry's
+  `outputd_sink` values are renamed to the canonical spellings that outputd
+  and the reconciler's park gate (`:788`) already compare against
+  (`single_alsa`, `dual_apple`), and the reconciler emits
+  `profile.outputd_sink` instead of its literals; the classifier consults
+  `requires_same_usb_bus`; `udev_rule`, `known_profile_ids`,
+  `supports_physical_output_count` are deleted.
 - R2. The shell never parses JSON and never holds a hardware literal.
   Python emits env lines; bash evals. Applies to both reconcilers and to
   `deploy/lib/jasper-apple-dongle.sh`.
-- R3. A managed boot-config block persists when its EEPROM HAT disappears,
-  and the doctor discloses it. Auto-removal is refused: a transient EEPROM
-  read failure would cost a reboot cycle either way, and the stale line
-  only harms the USB port-role decision on shared-OTG boards. Removal
-  condition: an observed EEPROM flap that proves the read is stable.
+- R3. A managed boot-config block persists when its EEPROM HAT is not
+  detected, and the doctor discloses it. Auto-removal is refused because
+  `read_hat_eeprom` (`jasper/audio_hardware/hat_eeprom.py:47-64`) returns
+  `None` for both no HAT and firmware published no node, so auto-removal
+  would turn one missed read into a silent loss of the output DAC that
+  only the next boot reveals; under refusal a missed read costs nothing.
+  The stale line's only harm is the USB port-role decision on shared-OTG
+  boards (`usb_port_role.py:422`). Remedy the doctor names: save None in
+  the wizard's I2S HAT select, which declares an intent
+  (`usb_port_role.py:390-410`), so the reconciler manages the block and
+  removes it (`:805-819`). Removal condition: the EEPROM reader can
+  distinguish absent hardware from an unpublished node.
 - R4. Reconciler events go to stderr. Stdout is the payload the shell
   parses; stderr reaches the journal on every invocation path. The bash
   re-derivation of `usb_role_resolved` is deleted.
@@ -197,12 +208,19 @@ sentinel-delimited blocks.
   stays separate (different purpose, stdlib-only). Contract, now written
   down: voice selection excludes measurement-mic USB ids; measurement
   selection requires them.
-- R6. Microphone loss parks voice with a cue and never reboots the box. The
-  reconciler plays `no_room_microphone` when it writes the absence marker.
-  The bridge exits with a park status (the voice daemon's exit-66 pattern,
-  `deploy/systemd/jasper-voice.service:219-220`) when its capture card is
-  gone, so `StartLimitAction=reboot` cannot fire on unplug. H1 verifies the
-  race before the bridge change lands.
+- R6. Microphone loss parks voice with a cue and never reboots the box.
+  jasper-control plays the cue: it owns cue playback (`/cue/play`,
+  `jasper/cues/cli.py:152-172`) and already reads the absence marker for
+  /state, so it plays `no_room_microphone` on the marker's
+  present-to-absent transition. The bash reconciler spawns nothing for it.
+  The bridge is not taught to detect card loss: a capture stall and a
+  vanished card are indistinguishable at
+  `jasper/cli/aec_bridge.py:642,664-668`, and a detector that is too broad
+  turns an ordinary underrun into permanent silence. Instead, on the
+  absence path the reconciler revokes the bridge-ready marker before any
+  other work, so what the bridge hits is a failed `ConditionPathExists`,
+  which does not count against its start limit. A hardware check on a lab
+  Pi decides whether even that reorder is needed.
 - R7. The `outputd.env` dual-writer race (G8) and the two independent "DAC
   present" gates (reconciler park vs `jasper-outputd.service`
   ExecCondition) are disclosed, not guarded. No incident exists. Removal
@@ -215,26 +233,27 @@ keeps only the apply. The one sanctioned cross-lane write stays: the mic
 reconciler owns `JASPER_OUTPUTD_CHIP_REF_*` and restarts outputd, because
 the chip-AEC reference is a joint fact.
 
-### PRs, in order (each single-concern, under 400 lines, `/code-review` medium, `/simplify` before push)
+### PRs, in order
 
-| # | PR | Lane | Files | Model | Notes |
-|---|---|---|---|---|---|
-| 0 | Delete `docs/PROPOSAL-dac-profile-registry.md`; fix `docs/audio-paths.md` footer; add the add-a-row path to the DAC section of audio-paths.md; README points there | docs | 3 | Sonnet | G16 |
-| 1 | Registry fields load-bearing (R1) plus one `profile_for_hat` pin | A | dac.py, `__init__.py`, output_hardware.py, reconciler (2 literals), tests | Sonnet | G1, G17 |
-| 2 | Reconciler consumes one Python env emission of `output_hardware.json`; delete the `sed` and `json.load` parsers and the `usb-c to 3.5mm` literal; `<unreadable>` skipif | B1 | output_hardware.py, reconciler, its tests | Opus | G2, G3, G17. After PR 1. |
-| 3 | `jasper-apple-dongle.sh` derives Apple cards from `output_hardware.json`; delete its regex | B1 | `deploy/lib/jasper-apple-dongle.sh`, `deploy/bin/jasper-headphone-monitor`, `jasper-dac-init` if it still sources it, tests | Sonnet | G2. Touches the Headphone pin path: adversarial review. |
-| 4 | Split `usb_port_role.py` into `config_txt.py`, `i2s_hat.py`, `usb_port_role.py` (pure move); fold the duplicated `DEFAULT_UDC_CLASS_DIR` with `jasper/usbgadget.py:19` | B2 | 3 modules, callers, tests split to match | Sonnet | G7. After #4043 merges (it edits `doctor/boot_config.py`). |
-| 5 | Boot-config events on stderr; add `i2s_hat_boot_config_changed`; delete bash `usb_role_resolved` re-derivation | B2 | usb_port_role.py, reconciler, tests | Sonnet | G4, R4 |
-| 6 | `reconcile.degraded` gets one reader in `output_hardware.py`; doctor `check_output_hardware_state` warns; R3 disclosure check for a managed I2S block whose HAT is absent | D | output_hardware.py, doctor/audio.py, boot_config.py, tests | Sonnet | G5, G6. After #4043. |
-| 7 | `jasper-xvf-profile --env` emits candidate card names, mixer control names and max, capture channels; reconciler deletes its literals and `mic_channels` parser | C | xvf_profile.py, xvf3800.py, `jasper-aec-reconcile`, udev comment, tests | Opus | G10, R5 |
-| 8 | Input-side `event=` lines on ready-marker publish/revoke, absence marker mark/clear, candidate selection, mixer repair failure | C | `jasper-aec-reconcile`, tests | Sonnet | G12. After PR 7. |
-| 9a | Delete stale input-side prose (G15) | C | 5 files | Sonnet | |
-| 9b | `input_policy.py` compares against the configured AEC port, not `udp:9876` | C | input_policy.py, test | Sonnet | G10 |
-| 10 | Mic loss cue and bridge park exit (R6) | C | `jasper-aec-reconcile`, aec_bridge.py, bridge unit, tests | Opus | G12, G13. Needs H1 and H2 first. |
-| 11 | Move the nine active-speaker checks out of `doctor/audio.py` into `doctor/active_speaker.py`; `boot_config.py` reads topology through the evidence memo | D | doctor modules, roster, tests | Sonnet | G7. After #4043. |
+Each is single-concern and under 400 lines, reviewed and simplified before
+push. A PR lands after the one above it when they share a file. Scheduling,
+file lists, and model choices live on #4027.
 
-Parallel lanes: output {0, 1, 2, 3, 5}; input {9a, 9b, 7, 8}; doctor after
-#4043 {4, 6, 11}. PR 10 waits for hardware.
+| # | PR | Closes |
+|---|---|---|
+| 1 | Delete `docs/PROPOSAL-dac-profile-registry.md`; fix the `docs/audio-paths.md` footer and add the add-a-row path to its DAC section; README points there | G16 |
+| 2 | Registry fields load-bearing (R1) plus one `profile_for_hat` pin | G1, G17 |
+| 3 | A `--env` flag on the classifier CLI, same shape as `jasper/cli/xvf_profile.py --env` and living beside it under `jasper/cli/` (the classifier's `main` moves with it); the reconciler evals it, and its `sed` parsers, `json.load` spawn, and `usb-c to 3.5mm` literal are deleted; the `<unreadable>` skipif | G2, G3, G17 |
+| 4 | `deploy/lib/jasper-apple-dongle.sh` and `jasper-headphone-monitor` take Apple cards from the same emitter; the regex is deleted | G2 |
+| 5 | Boot-config events on stderr, including `i2s_hat_boot_config_changed`; the bash `usb_role_resolved` re-derivation is deleted | G4, R4 |
+| 6 | Split `usb_port_role.py` into `config_txt.py`, `i2s_hat.py`, `usb_port_role.py` (pure move, tests split to match); fold `DEFAULT_UDC_CLASS_DIR` with `jasper/usbgadget.py:19` | G7 |
+| 7 | `reconcile.degraded` gets one reader beside the classifier and `check_output_hardware_state` warns; the R3 disclosure check names its remedy | G5, G6 |
+| 8 | Move the nine active-speaker checks out of `doctor/audio.py` into `doctor/active_speaker.py`; `boot_config.py` reads topology through the evidence memo | G7 |
+| 9 | Delete the stale input-side prose, except the udev comment (PR 11 makes it true) | G15 |
+| 10 | `input_policy.py` compares against the configured AEC port | G10 |
+| 11 | `jasper-xvf-profile --env` emits candidate card names, mixer control names and max, and capture channels; the reconciler deletes its literals and `mic_channels` parser | G10, R5 |
+| 12 | Input-side `event=` lines on ready-marker publish/revoke, absence-marker mark/clear, candidate selection, mixer repair failure | G12 |
+| 13 | Mic-loss cue in jasper-control and the reconciler's early revoke (R6) | G12, G13 |
 
 ### Separate decisions (named, not folded into a PR)
 
@@ -265,25 +284,21 @@ Parallel lanes: output {0, 1, 2, 3, 5}; input {9a, 9b, 7, 8}; doctor after
   `headphone_pinned_100` from #3924's review is already gone. Owner closes
   or rescopes.
 
-### Needs the owner and hardware present
-
-- H1. Unplug the XVF3800 on a lab Pi with the journal open: does
-  `jasper-aec-bridge` reach `StartLimitAction=reboot` before the reconciler
-  revokes the ready marker? Decides the shape of PR 10.
-- H2. Audible check of the mic-loss cue (PR 10). Clearance rules apply.
-- H3. jts3 Phase 1 (ADR-0232): delete the hand-written line, deploy,
-  reboot, probe, soak, flip the Studio row. Unchanged, out of scope.
-
 ## Consequences
 
-- Twelve small PRs, most deleting more than they add. Three files get
-  smaller by design: the two reconcilers and `usb_port_role.py`.
-- A third party adds a DAC by adding one row (already true) and, after PR 2
-  and PR 3, without touching any shell file.
+- Thirteen small PRs, most deleting more than they add. Four files get
+  smaller by design: the two reconcilers, `usb_port_role.py`, and
+  `output_hardware.py`.
+- A third party adds a DAC by adding one row (already true) and, after PR 3
+  and PR 4, without touching any shell file.
 - A second voice-mic family is the trigger to extract a `MicProfile` row
   shape; until then the cost of one family is paid once, in
   `jasper/mics/xvf3800.py` and its CLI.
-- Two known races (G8, G14) stay disclosed with removal conditions rather
-  than guarded.
+- The `outputd.env` race (G8) stays disclosed with a removal condition
+  (R7); the two-reconciler race (G14) is D2.
 - ADR-0232, 0233 and 0234 stand. This ADR adds rulings; it supersedes
   nothing.
+- Seven rulings and ten deferrals in one file is against this directory's
+  one-decision-per-file rule, taken deliberately as ADR-0227 did: they
+  share one survey and one target shape, and separate files would repeat
+  the context.
