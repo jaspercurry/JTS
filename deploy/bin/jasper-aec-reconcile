@@ -195,7 +195,7 @@ publish_aec_bridge_ready() {
 
 revoke_aec_bridge_ready() {
     rm -f "$AEC_BRIDGE_READY_MARKER" 2>/dev/null || true
-    log "event=aec_reconcile.bridge_ready state=revoked"
+    log "event=aec_reconcile.bridge_ready state=revoked" || true
 }
 
 # Withdraw FIRST, on every pass, and republish only where a verdict settles.
@@ -1317,12 +1317,12 @@ ensure_capture_mixer_open() {
     done
     amixer -c "$card" cset name="${JASPER_XVF_MIXER_CAPTURE_SWITCH:-}" \
         "${switch#,}" >/dev/null 2>&1 \
-        || log "event=aec_reconcile.mixer_repair result=failed control=${JASPER_XVF_MIXER_CAPTURE_SWITCH:-}"
+        || log "event=aec_reconcile.mixer_repair result=failed control=${JASPER_XVF_MIXER_CAPTURE_SWITCH:-}" || true
     amixer -c "$card" cset name="${JASPER_XVF_MIXER_CAPTURE_VOLUME:-}" \
         "${volume#,}" >/dev/null 2>&1 \
-        || log "event=aec_reconcile.mixer_repair result=failed control=${JASPER_XVF_MIXER_CAPTURE_VOLUME:-}"
+        || log "event=aec_reconcile.mixer_repair result=failed control=${JASPER_XVF_MIXER_CAPTURE_VOLUME:-}" || true
     alsactl store >/dev/null 2>&1 ||
-        log "event=aec_reconcile.mixer_repair result=failed control=alsactl_store"
+        log "event=aec_reconcile.mixer_repair result=failed control=alsactl_store" || true
 }
 
 split_candidates() {
@@ -2258,9 +2258,9 @@ if [[ "$AEC_MODE" == "disabled" ]]; then
     else
         if [[ "$CURRENT_MIC" == udp:* || -z "$CURRENT_MIC" ]]; then
             set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$FALLBACK_MIC"
-            log "AEC disabled and no candidate mic present; cleared stale UDP to ${FALLBACK_MIC}"
+            log "event=aec_reconcile.no_candidate_mic stale=${CURRENT_MIC:-<unset>} fallback=${FALLBACK_MIC} cleared=1"
         else
-            log "AEC disabled and no candidate mic present"
+            log "event=aec_reconcile.no_candidate_mic current=${CURRENT_MIC} cleared=0"
         fi
     fi
     restart_voice_for_accessory_mic
@@ -2296,9 +2296,9 @@ stop_aec_and_clear_legs
 if [[ -n "$PRESENT_MIC" ]]; then
     if [[ "$CURRENT_MIC" != "$PRESENT_MIC" ]]; then
         set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$PRESENT_MIC"
-        log "AEC mic not 6-channel; selected direct mic ${PRESENT_MIC}"
+        log "event=aec_reconcile.direct_mic_selected reason=not_6_channel mic=${PRESENT_MIC} changed=1"
     else
-        log "AEC mic not 6-channel; direct mic already ${PRESENT_MIC}"
+        log "event=aec_reconcile.direct_mic_selected reason=not_6_channel mic=${PRESENT_MIC} changed=0"
     fi
     restart_voice
     exit 0

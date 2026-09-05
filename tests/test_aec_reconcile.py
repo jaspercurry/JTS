@@ -668,6 +668,32 @@ def test_bridge_ready_marker_stays_revoked_with_no_candidate_mic(
     assert states and set(states) == {"revoked"}
 
 
+@pytest.mark.parametrize(
+    ("current_mic", "changed"),
+    [("udp:9876", "1"), ("Array", "0")],
+    ids=("stale-current", "already-selected"),
+)
+def test_direct_mic_selected_event_for_a_non_6_channel_custom_mic(
+    tmp_path: Path, current_mic: str, changed: str
+) -> None:
+    """Same shape as the aec_disabled direct-mic events above (G12): a
+    custom-profile card below the AEC channel threshold is still a usable
+    plain mic, and the pass that falls back to it must be greppable too."""
+    _stage(
+        tmp_path, current_mic, mode="auto", profile="custom", card="Array", channels=2
+    )
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert _event_values(
+        result.stderr, "aec_reconcile.direct_mic_selected", "reason"
+    ) == ["not_6_channel"]
+    assert _event_values(
+        result.stderr, "aec_reconcile.direct_mic_selected", "changed"
+    ) == [changed]
+
+
 def test_voice_input_absent_marker_mark_carries_the_reason(tmp_path: Path) -> None:
     """The absence marker's success path (ADR-0235 :1625) had no event= line
     before this PR (G12); jasper-voice.service gates ExecStart on the
@@ -2545,6 +2571,14 @@ def test_aec_disabled_clears_every_leg_and_keeps_the_operator_booleans(
     assert "JASPER_AEC_CHIP_AEC_ENABLED=1" not in body
     assert "JASPER_AEC_REF_SOURCE=outputd_udp" in body
     assert "JASPER_OUTPUTD_REFERENCE_UDP_TARGET=''" in body
+    # No card staged, so no candidate mic; the custom "Array" device is
+    # neither udp: nor unset, so the reconciler leaves it alone.
+    assert _event_values(
+        result.stderr, "aec_reconcile.no_candidate_mic", "current"
+    ) == ["Array"]
+    assert _event_values(
+        result.stderr, "aec_reconcile.no_candidate_mic", "cleared"
+    ) == ["0"]
     mode_values = _env_assignments(tmp_path / "aec_mode.env")
     assert mode_values["JASPER_WAKE_LEG_RAW"] == "1"
     assert mode_values["JASPER_WAKE_LEG_DTLN"] == "1"
@@ -4003,3 +4037,5 @@ def test_measurement_exclusion_costs_no_interpreter_without_a_usb_card(
 
     assert result.returncode == 0, result.stderr
     assert "measurement resolver was spawned" not in result.stderr
+
+
