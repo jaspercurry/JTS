@@ -380,6 +380,34 @@ def test_wait_names_the_session_directory_the_bank_verb_takes(
     assert receipt["next"] == f"jasper-round bank {bundle}"
 
 
+def test_a_rejected_take_the_next_one_replaces_is_not_a_failed_round(
+    monkeypatch, capsys
+):
+    """Durable state carries one refused capture's code and the next accepted
+    take clears it, so the block alone is not the round's verdict."""
+    from jasper.active_speaker.crossover_v2.refusal_copy import NON_RETRIABLE_CODES
+
+    retriable = "clipped"
+    assert retriable not in NON_RETRIABLE_CODES
+    opener = _opener(
+        v2={"session_id": "s1", "phase": "review",
+            "candidate": {"fingerprint": _FINGERPRINT}},
+        envelopes=[
+            _envelope(session_id="s1", phase="measure",
+                      failure={"code": retriable}),
+        ],
+    )
+
+    code, receipt = _run(
+        ["wait", "--timeout-s", "5", "--poll-s", "0.01"],
+        opener, monkeypatch, capsys,
+    )
+
+    assert code == cli.EXIT_OK
+    assert receipt["phase"] == "review"
+    assert receipt["candidate_fingerprint"] == _FINGERPRINT
+
+
 @pytest.mark.parametrize(
     "steady, reason, exit_code",
     [
