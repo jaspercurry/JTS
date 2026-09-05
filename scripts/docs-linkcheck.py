@@ -34,6 +34,7 @@ MARKDOWN_SUFFIXES = {".md", ".markdown"}
 INLINE_LINK_RE = re.compile(r"!?\[(?:[^\]\n]|\n(?!\s*\n)){0,400}\]\(\s*(<[^>]*>|[^)\s]+)")
 REF_LINK_RE = re.compile(r"^[ \t]{0,3}\[[^\]\n]+\]:[ \t]*(<[^>]*>|[^\s]+)", re.M)
 HTML_LINK_RE = re.compile(r"""(?:href|src)\s*=\s*["']([^"'\n]+)["']""", re.I)
+INLINE_CODE_RE = re.compile(r"`+[^`]+`+")
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 HTML_ANCHOR_RE = re.compile(r"""<(?:a|[^>]+)\s+[^>]*(?:id|name)=["']([^"']+)["']""", re.I)
 SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
@@ -154,7 +155,8 @@ def scannable_text(path: Path) -> str:
         parts.extend("" for _ in range(line_no - previous - 1))
         parts.append(line)
         previous = line_no
-    return "\n".join(parts)
+    # Code spans are blanked character-for-character so offsets still map.
+    return INLINE_CODE_RE.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), "\n".join(parts))
 
 
 def collect_links(path: Path) -> tuple[Link, ...]:
