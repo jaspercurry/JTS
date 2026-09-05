@@ -31,6 +31,7 @@ from .session import (
     ConnectionState,
     CuePlayer,
     LiveTurn,
+    log_first_chunk,
 )
 
 logger = logging.getLogger(__name__)
@@ -203,6 +204,7 @@ class GeminiLiveTurn:
         # overrides this in acquire_turn() right after construction so the
         # value lines up with the actual activity_start send.
         self._started_at_monotonic: float = _time.monotonic()
+        self._end_input_at_monotonic: float = 0.0
         # Counters per turn — silent-failure detection lives at this
         # granularity now (was per-session pre-rework). With the
         # persistent connection, "session" no longer maps cleanly to one
@@ -249,6 +251,7 @@ class GeminiLiveTurn:
         if self._activity_end_sent or self._released or self._turn_lost:
             return
         self._activity_end_sent = True
+        self._end_input_at_monotonic = _time.monotonic()
         try:
             await self._conn._send_activity_end()
         except Exception as e:  # noqa: BLE001
@@ -426,10 +429,11 @@ class GeminiLiveTurn:
             self._chunks_received += 1
             if not self._first_chunk_logged:
                 self._first_chunk_logged = True
-                first_ms = (_time.monotonic() - self._started_at_monotonic) * 1000
-                logger.info(
-                    "first audio chunk from Gemini in %.0fms (turn start→1st chunk)",
-                    first_ms,
+                log_first_chunk(
+                    logger,
+                    "gemini",
+                    turn_start_monotonic=self._started_at_monotonic,
+                    end_input_monotonic=self._end_input_at_monotonic,
                 )
             await self._audio_q.put(AudioOutChunk(pcm=data))
 

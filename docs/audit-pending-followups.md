@@ -127,8 +127,8 @@ recommended frame size. Google's Live API recommends 20-40 ms for
 turns is dominated by model warmup (3-5 s typical), not chunk
 arrival. Decoupling mic-frame size from wake-frame size adds code
 complexity. To investigate: cut `OUTPUT_FRAME_SAMPLES` to 320 (20 ms)
-on a branch and watch the existing `first audio chunk in Xms` log
-line for ≥ 100 ms improvement. If no visible improvement, reject.
+on a branch and watch `event=turn.first_chunk since_end_input_ms=`
+for ≥ 100 ms improvement. If no visible improvement, reject.
 
 ## Tier 4 — rejected with rationale
 
@@ -501,8 +501,8 @@ Don't ship A or B speculatively. Concrete signals worth watching:
 
 - `openai response.done arrived AFTER turn release` warning fires
   more than ~1× per week in `journalctl -u jasper-voice`.
-- p99 of first-chunk latency (the `first audio chunk from OpenAI in
-  %dms` log line) climbs above 15 s sustained.
+- p99 of first-chunk latency (`event=turn.first_chunk
+  since_end_input_ms=`) climbs above 15 s sustained.
 - Tighter UX recovery becomes a felt need (e.g. kid-mode where
   20 s of ducked silence reads as broken).
 - A 4th provider lands with a different latency profile.

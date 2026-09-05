@@ -19,7 +19,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import numpy as np
+from tests._live_turn_fake import silent_frame
+
 
 class _SpyTurn:
     """LiveTurn stand-in exposing just the barge-in + forward surface."""
@@ -61,10 +62,6 @@ class _FixedVad:
         return None
 
 
-def _frame() -> np.ndarray:
-    return np.zeros(1280, dtype=np.int16)
-
-
 def _playback_loop(*, score: float, active: bool, ref_ok: bool = True):
     """A WakeLoop parked mid-playback (``_input_ended`` set)."""
     from jasper.voice_daemon import State, WakeLoop
@@ -94,7 +91,7 @@ def test_flag_off_frame_after_input_ended_is_dropped_exactly():
     turn = wl._turn
     vad = wl._vad
 
-    asyncio.run(wl._handle_session_frame(_frame()))
+    asyncio.run(wl._handle_session_frame(silent_frame()))
 
     assert vad.predict_calls == 0
     assert turn.local_interrupt_calls == 0
@@ -113,7 +110,7 @@ def test_flag_on_single_frame_does_not_trip():
     wl = _playback_loop(score=0.9, active=True)
     turn = wl._turn
 
-    asyncio.run(wl._handle_session_frame(_frame()))
+    asyncio.run(wl._handle_session_frame(silent_frame()))
 
     assert turn.local_interrupt_calls == 0
     assert not turn._interrupt_event.is_set()
@@ -129,11 +126,11 @@ def test_flag_on_sustained_run_trips_interrupt():
     turn = wl._turn
 
     async def drive() -> None:
-        await wl._handle_session_frame(_frame())  # arms the run
+        await wl._handle_session_frame(silent_frame())  # arms the run
         # Simulate the arming window elapsing without real sleeps.
         wl._barge_in_run_started_at -= BARGE_IN_SUSTAINED_SPEECH_SEC + 0.05
-        await wl._handle_session_frame(_frame())  # now sustained -> trip
-        await wl._handle_session_frame(_frame())  # one-shot: no re-trigger
+        await wl._handle_session_frame(silent_frame())  # now sustained -> trip
+        await wl._handle_session_frame(silent_frame())  # one-shot: no re-trigger
 
     asyncio.run(drive())
 
@@ -158,9 +155,9 @@ def test_barge_in_telemetry_surfaces_through_session_status():
     assert base["barge_in_reconcile"] == "needs_client_truncate"
 
     async def drive() -> None:
-        await wl._handle_session_frame(_frame())  # arm
+        await wl._handle_session_frame(silent_frame())  # arm
         wl._barge_in_run_started_at -= BARGE_IN_SUSTAINED_SPEECH_SEC + 0.05
-        await wl._handle_session_frame(_frame())  # trip
+        await wl._handle_session_frame(silent_frame())  # trip
 
     asyncio.run(drive())
 
@@ -177,10 +174,10 @@ def test_flag_on_subthreshold_breaks_run():
     turn = wl._turn
 
     async def drive() -> None:
-        await wl._handle_session_frame(_frame())  # arm
+        await wl._handle_session_frame(silent_frame())  # arm
         wl._barge_in_run_started_at -= 1.0  # would trip on next supra frame
         wl._vad.score = 0.1  # ...but a quiet frame lands first
-        await wl._handle_session_frame(_frame())
+        await wl._handle_session_frame(silent_frame())
 
     asyncio.run(drive())
 
@@ -194,7 +191,7 @@ def test_flag_on_threshold_respected():
     wl = _playback_loop(score=0.49, active=True)  # cfg threshold 0.5
     turn = wl._turn
 
-    asyncio.run(wl._handle_session_frame(_frame()))
+    asyncio.run(wl._handle_session_frame(silent_frame()))
 
     assert turn.local_interrupt_calls == 0
     assert wl._barge_in_run_started_at == 0.0
@@ -286,9 +283,9 @@ def test_disabled_branch_never_calls_playback_handler(monkeypatch):
         called["n"] += 1
 
     monkeypatch.setattr(wl, "_handle_playback_frame", _spy)
-    asyncio.run(wl._handle_session_frame(_frame()))
+    asyncio.run(wl._handle_session_frame(silent_frame()))
     assert called["n"] == 0
 
     wl._barge_in_active = True
-    asyncio.run(wl._handle_session_frame(_frame()))
+    asyncio.run(wl._handle_session_frame(silent_frame()))
     assert called["n"] == 1

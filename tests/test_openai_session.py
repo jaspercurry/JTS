@@ -3034,3 +3034,48 @@ async def test_cancelling_a_long_backoff_unwinds_at_once():
         await asyncio.wait_for(task, timeout=2.0)
     assert task.cancelled()
 
+
+
+@pytest.mark.parametrize("ask", ["end_input", "server_vad", None])
+async def test_first_chunk_event_reports_latency_since_the_ask(caplog, ask):
+    """`since_end_input_ms` is the provider's own latency — the interval
+    between asking for a response and the first audio of it coming back.
+    Both ends of input are an ask: the daemon's `end_input()` and, on a
+    server-VAD turn, the `response.create` the daemon fires once the server
+    reports end-of-utterance. It is absent only when this turn was never
+    asked, because there is then no interval to report.
+    `since_turn_start_ms` still spans the user's whole utterance plus local
+    endpointing, so it is not a provider figure."""
+    from tests._log_events import event_fields
+
+    caplog.set_level(logging.INFO, logger="jasper.voice.openai_session")
+    conn, factory = _make_conn()
+    await conn.start(ToolRegistry(), "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        await asyncio.sleep(0.01)
+        if ask == "end_input":
+            await turn.end_input()
+        elif ask == "server_vad":
+            turn.mark_server_vad()
+            await conn.create_response_only()
+        sess.feed({
+            "type": "response.output_audio.delta",
+            "delta": _b64(b"chunk"),
+            "response_id": "resp_1",
+        })
+        await _wait_until(lambda: turn.chunks_received() >= 1)
+
+        fields = event_fields(caplog, "turn.first_chunk")
+        assert fields["provider"] == "openai"
+        assert int(fields["since_turn_start_ms"]) >= 10
+        if ask is None:
+            assert "since_end_input_ms" not in fields
+        else:
+            assert 0 <= int(fields["since_end_input_ms"]) <= int(
+                fields["since_turn_start_ms"]
+            )
+        await turn.release()
+    finally:
+        await conn.stop()
