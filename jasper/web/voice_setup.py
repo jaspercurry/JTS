@@ -720,9 +720,9 @@ def _pricing_section_html(
         f"Bundled rates as of {html.escape(default_as_of)}. " if default_as_of else ""
     )
     return f"""
-    <details class="pricing-disclosure">
+    <details class="disclosure pricing-disclosure">
       <summary>{html.escape(provider.label)} Pricing rates</summary>
-      <div class="pricing-disclosure__body">
+      <div class="disclosure__body">
         <p class="form-hint">{as_of_txt}Used by the /voice spend cap status
         and circuit breaker. Blank = use the bundled default; clear a box to reset.
         Edits apply to future sessions after the daemon restarts.</p>
@@ -795,9 +795,9 @@ def _pricing_refresh_html(
     <section class="section">
       <h2 class="section__title">Refresh pricing rates</h2>
       <p class="form-hint">Copy a model-specific pricing prompt, then paste back validated JSON.</p>
-      <details class="pricing-disclosure">
+      <details class="disclosure pricing-disclosure">
         <summary>1. Copy this research prompt</summary>
-        <div class="pricing-disclosure__body">
+        <div class="disclosure__body">
           <textarea id="pricing-prompt" class="prompt-box" readonly rows="14">{prompt}</textarea>
           <div class="form-actions">
             <button type="button" class="btn btn--default"
@@ -805,9 +805,9 @@ def _pricing_refresh_html(
           </div>
         </div>
       </details>
-      <details class="pricing-disclosure">
+      <details class="disclosure pricing-disclosure">
         <summary>2. Paste the JSON it gives you back</summary>
-        <div class="pricing-disclosure__body">
+        <div class="disclosure__body">
           <form method="post" action="pricing-import">
             {csrf_field_html(csrf_token)}
             <div class="field">

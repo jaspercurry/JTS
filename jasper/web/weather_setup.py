@@ -330,9 +330,9 @@ def _index_html(
         </select>
       </div>
 
-      <details class="advanced">
+      <details class="disclosure manual-coords">
         <summary>Manual coordinates</summary>
-        <div class="advanced-body">
+        <div class="disclosure__body">
           <div class="field">
             <label for="manual_lat">Latitude</label>
             <input id="manual_lat" name="manual_lat" type="text"

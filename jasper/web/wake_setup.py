@@ -317,7 +317,7 @@ def _advanced_fusion_html() -> str:
 <section class="section advanced-fusion-card">
   <details class="disclosure">
     <summary>Advanced wake fusion</summary>
-    <div class="disclosure-body">
+    <div class="disclosure__body">
   <div class="info-card">
     <p class="info-card__note">
       Expert controls for corpus tests and nonstandard wake streams.
@@ -500,7 +500,7 @@ def _privacy_disclosure_html() -> str:
     return """
 <details class="disclosure">
   <summary>Wake recordings and privacy</summary>
-  <div class="disclosure-body">
+  <div class="disclosure__body">
     <p>
       JTS stores short wake-event WAV windows and SQLite metadata locally
       under <code>/var/lib/jasper/wake-events/</code> for reliability review.

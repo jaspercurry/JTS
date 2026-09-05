@@ -139,31 +139,10 @@
 /* Save row — keep the hint beside the button. */
 .save-row { display: flex; align-items: center; flex-wrap: wrap; gap: 0.75rem; margin-top: 1.2rem; }
 
-/* Advanced disclosure body padding. <details>/<summary> carry the native
-   marker; the body is a plain bordered region with our radius. */
-details.advanced { margin-top: 1.25rem; }
-details.advanced > summary {
-  cursor: pointer;
-  padding: 0.75rem 0.9rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--card);
-  font-weight: 600;
-  font-family: var(--font-display);
-  user-select: none;
-  -webkit-user-select: none;
-}
-details.advanced > summary:hover { border-color: var(--muted); }
-details.advanced[open] > summary {
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
-}
-details.advanced .advanced-body {
-  padding: 0.6rem 0.9rem 0.9rem;
-  border: 1px solid var(--border);
-  border-top: none;
-  border-radius: 0 0 var(--radius-md) var(--radius-md);
-}
+/* The "Advanced — enter coordinates or stop IDs manually" section uses the
+   shared .disclosure primitive (app.css); margin-top: 1.25rem to clear the
+   stop picker above it. */
+.advanced-coords { margin-top: 1.25rem; }
 
 /* "Replace API key" mini-disclosure inside the unlocked bus card. */
 details.replace-key { margin-top: 1rem; }

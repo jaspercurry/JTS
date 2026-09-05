@@ -1222,9 +1222,9 @@ def _advanced_section_html(state: dict[str, str], csrf_token: str) -> str:
     sub_stop = _value_for(state, "JASPER_SUBWAY_STATION_ID")
     bus_stops_raw = _value_for(state, "JASPER_BUS_STOPS")
     return f"""
-<details class="advanced">
+<details class="disclosure advanced-coords">
   <summary>Advanced — enter coordinates or stop IDs manually</summary>
-  <div class="advanced-body">
+  <div class="disclosure__body">
     <p class="form-hint">If you'd rather not geocode an address, paste coordinates from any map app. Three-decimal precision (~110&nbsp;m) is plenty.</p>
     <form method="post" action="geocode">
       {csrf_field_html(csrf_token)}

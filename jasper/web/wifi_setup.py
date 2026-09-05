@@ -1275,9 +1275,9 @@ def _landing_html(csrf_token: str = "") -> bytes:
     </div>
   </div>
 
-  <details class="disclosure">
+  <details class="disclosure saved-networks">
     <summary>Saved networks <span class="saved-count" id="saved-count"></span></summary>
-    <div class="disclosure-body">
+    <div class="disclosure__body">
       <div class="net-list" id="saved-list">
         <div class="empty">Loading…</div>
       </div>

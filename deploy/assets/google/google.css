@@ -2,11 +2,13 @@
  *
  * App.css owns the shared design layer (tokens, .page, .info-card,
  * .deflist, .badge, .field, .form-actions, .form-hint, .btn--*, .eyebrow,
- * .section__title). This file adds only what is unique to this wizard:
+ * .section__title, .disclosure). This file adds only what is unique to this
+ * wizard:
  *   - the linked-account list (state 3)
  *   - the multi-step setup walkthrough (state 1)
  *   - the callout box for in-step gotchas
- *   - the <details class="disclosure"> panels (Connection details, etc.)
+ *   - the <h3> sub-headers inside the disclosure panels (Connection
+ *     details, etc.)
  *   - the copy-to-clipboard row widget
  * All colours read the canonical oklch tokens so the page re-skins with the
  * rest of the design system; status tones use the --status-* knobs.
@@ -157,7 +159,6 @@ li.wizard-step.done .step-status::before {
   margin-bottom: 0.35em;
 }
 .step-body code,
-.disclosure-body code,
 .form-hint code {
   background: var(--card);
   border: 1px solid var(--border);
@@ -196,27 +197,9 @@ li.wizard-step.done button.mark-done {
   font-size: 0.96em;
 }
 
-/* ---- disclosure panels (Connection details / OAuth client settings) ----- */
-details.disclosure {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  margin: 1em 0;
-  background: var(--surface);
-}
-details.disclosure > summary {
-  cursor: pointer;
-  user-select: none;
-  -webkit-user-select: none;
-  padding: 0.8em 1em;
-  font-weight: 600;
-}
-details.disclosure[open] > summary {
-  border-bottom: 1px solid var(--border);
-}
-.disclosure-body {
-  padding: 0.5em 1em 1em;
-}
-.disclosure-body h3 {
+/* Sub-headers inside the shared .disclosure__body (Connection details / OAuth
+   client settings panels). */
+.disclosure__body h3 {
   font-family: var(--font-display);
   font-size: 0.78em;
   margin: 1.3em 0 0.3em;
