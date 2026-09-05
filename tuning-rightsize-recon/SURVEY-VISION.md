@@ -265,6 +265,32 @@ through one; close as two PRs. ~24 PRs, 4 CI runs. **The 80/20 cut if only
 one batch ships: batch 1 + Round A** — the LLM can then find every verb,
 read every answer on stdout, and copy every command `inventory` prints.
 
+### Landed (2026-09-05, against `w9-batch-2b-integration` merged with `w9-batch-2a-integration`)
+
+| Row | PRs | State |
+|---|---|---|
+| 9.1 | #4067 | landed (#4095 → main `8777cff19`) |
+| 9.2 | #4048 #4055 #4056 #4057 #4058 #4060 #4061 #4088 #4089, ADR-0237 | landed |
+| 9.3 | #4051 | landed |
+| 9.4 | #4065 #4068 | landed; `status`'s banked candidates in CI (#4135) |
+| 9.5 | #4050 #4063 | landed for `candidate_id` and `position_cycle.json`; the trim decision stopped in lane G on a false premise and re-taken as #4108 (in CI); the plan's per-stop candidate is #4129 (in CI) |
+| 9.6 | #4045 | landed |
+| 9.7 | #4047 | landed |
+| 9.8 | #4066 | landed |
+| 9.9 | #4048 #4055 | landed |
+| 9.10 | #4049 | landed; the vertical-pose and arm halves in CI (#4109 #4110) |
+| 9.11 | #4143 | in CI (#4148) |
+| 9.12 | #4107 | in CI (#4130) |
+| 9.13 | #4136 | in CI (#4148) |
+| 9.14 | #4132 #4133 #4134 | in CI (#4148) |
+| 9.15 | #4138 | pending owner — one null run on the box; its allowlist deletion deferred to its own row (the calibration helper in `jasper/web/correction_setup.py`) |
+| 9.16 | #4100 #4101 | in CI (#4130); `SafetyEnvelope.escalation_step_db` stopped — false premise, `staging.py` constructs it |
+| 9.17 | #4112 | in CI (#4130), two of the five docs (`tuning-master-plan.md`, `active-speaker-tuning-layers-design.md`); the other three deferred |
+| 9.18 | #4113 | in CI (#4130), partial: the shorthand grep over `jasper` falls 120 → 75 |
+| 9.19 | this commit | landed on the evidence branch |
+| beyond §6 | #4103 | in CI (#4130) — the `/sound/measurements/` picker lists banked rounds beside live bundles |
+| Round A, Round B | — | deferred to the owner's hardware passes |
+
 ## 7. Not doing, with why
 
 - **`program_analysis` facade repoint** (66 importers): a real maintainer trap,
@@ -318,24 +344,43 @@ read every answer on stdout, and copy every command `inventory` prints.
 
 ## 9. Definition of done
 
+State as of 2026-09-05, measured on `w9-batch-2b-integration` merged with
+`w9-batch-2a-integration` (the two open integration branches; batch 1 is on main).
+
 1. Every command in §10 is derivable from the methodology and runbook (the
-   seven ⚠ rows are zero); menu `--check` green.
+   seven ⚠ rows are zero); menu `--check` green. — **met** (#4067; the three
+   paths at `tuning-methodology.md:59`, `:136` and
+   `tuning-operator-runbook.md:156`; `--check` exit 0 at this tree).
 2. stdout is the answer on all ten binaries, pinned by invoking each `main`.
+   — **met** (#4051 plus lanes A–E; `tests/test_cli_exit_vocabulary.py:182-199`,
+   `:288-313`).
 3. The LLM stages a measurement (baseline or configs A/B/C), hands the human
-   one URL, and reads the banked result without a script (Round B).
+   one URL, and reads the banked result without a script (Round B). — **waits
+   on hardware**.
 4. `inventory` prints copy-pasteable commands with sizes; `status` prints
-   commands.
+   commands. — **met** (#4065, #4068; `status`'s banked-candidate block and
+   tournament line in CI, #4135).
 5. `round-views findings` and `candidates` exist; band floors are disclosed
-   before a refusal.
+   before a refusal. — **met** (#4143, #4136 in CI; `classify-features` prints
+   `classifiable_band_hz`).
 6. The trim decision and `position_cycle.json` land from the on-box path,
-   pinned; every take row carries `candidate_id`.
+   pinned; every take row carries `candidate_id`. — **partly**: `candidate_id`
+   and `position_cycle.json` are on main (#4050, #4063); `trim_decision` is in
+   CI (#4108).
 7. One wired capture kernel; `jasper.cli.measure`'s import closure excludes
-   `jasper.web`.
+   `jasper.web`. — **waits on #4138**, whose second half is deferred: the
+   `BOUNDARY_ALLOWLIST` entry is not deletable in that lane.
 8. Zero-production-caller code in the toolbox's domain deleted with verdicts.
+   — **partly**: #4100 and #4101 in CI; `SafetyEnvelope.escalation_step_db`
+   stopped on a false premise.
 9. Five docs carry no dated history, no dead pointer, no false sentence;
    `git grep -c "Wave [0-9]\|PR-[A-Z]\|WO-[0-9]\|panel lens" jasper` is zero.
+   — **partly**: #4112 right-sized two of the five; #4113 took the grep from
+   120 hits to 75, not to zero.
 10. Two hardware rounds walked; `volume_limit: 0.0` confirmed on the deploy.
-11. TARGET matches HEAD; WAVE-LOG folded; #3769 points here.
+    — **waits on hardware**.
+11. TARGET matches HEAD; WAVE-LOG folded; #3769 points here. — **met by this
+    commit** for the first two.
 
 ## 10. The shortest real round (Round A, human mover)
 
