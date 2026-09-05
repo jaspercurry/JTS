@@ -68,9 +68,8 @@ def repo_path(path: str) -> str:
 def changed_files_from_git(base: str | None, head: str | None) -> tuple[tuple[str, ...], bool]:
     """Touched paths, and whether any change is a rename or delete.
 
-    A rename/delete has no post-diff content of its own to link-check, but it
-    can still break an inbound link from a file this diff never touches --
-    the caller falls back to --all rather than missing that.
+    A renamed or deleted file of any type can break an inbound Markdown link
+    from a file this diff never touches, so the caller falls back to --all.
     """
     if base and head:
         args = ["git", "diff", "--name-status", f"{base}...{head}"]
@@ -98,15 +97,13 @@ def changed_files_from_git(base: str | None, head: str | None) -> tuple[tuple[st
     return tuple(paths), has_rename_or_delete
 
 
-def markdown_files(paths: tuple[str, ...], *, include_deleted: bool = False) -> tuple[Path, ...]:
+def markdown_files(paths: tuple[str, ...]) -> tuple[Path, ...]:
     files: list[Path] = []
     for raw in paths:
         path = ROOT / repo_path(raw)
         if path.suffix.lower() not in MARKDOWN_SUFFIXES:
             continue
         if path.exists() and path.is_file():
-            files.append(path)
-        elif include_deleted:
             files.append(path)
     return tuple(sorted(set(files)))
 
