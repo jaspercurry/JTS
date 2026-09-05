@@ -1289,6 +1289,32 @@ def send_see_other(
     handler.end_headers()
 
 
+def send_rejected_form(
+    handler: BaseHTTPRequestHandler,
+    render: Callable[..., bytes],
+    *,
+    flash: str,
+) -> None:
+    """Answer a rejected form POST by re-rendering the page.
+
+    The `send_see_other(flash=…)` sibling for a validation failure:
+    nothing was stored, so there is nothing to redirect to, and the 303
+    would throw away everything the user typed (docs/web-ia.md §4).
+    `render` is the page's own render function bound to the submitted
+    values (`functools.partial`); it is called with the request's CSRF
+    token and the rejection text, which the page shows through
+    `canonical_banner(status_msg)`.
+
+    Never bind a key, PSK, or token into `render` — leave that field
+    blank and say in `flash` that it needs re-entering."""
+    ctx = begin_request(handler)
+    send_html_response(
+        handler,
+        render(csrf_token=ctx["csrf_token"], status_msg=flash),
+        status=http.HTTPStatus.UNPROCESSABLE_ENTITY,
+    )
+
+
 def redirect_with_legacy_msg(
     handler: BaseHTTPRequestHandler,
     location: str,

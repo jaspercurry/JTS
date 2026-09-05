@@ -75,6 +75,7 @@ def test_save_rejects_invalid_name_before_apply(server_with_state):
         server_with_state["url"],
         "/save",
         {"name": "Kitchen/Bedroom"},
+        expect_status=422,
     )
 
     state = read_state(server_with_state["state_path"])
@@ -92,6 +93,7 @@ def test_save_blocks_visible_duplicate(server_with_state, monkeypatch):
         server_with_state["url"],
         "/save",
         {"name": "Living Room"},
+        expect_status=422,
     )
 
     state = read_state(server_with_state["state_path"])

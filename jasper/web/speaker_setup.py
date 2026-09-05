@@ -18,6 +18,7 @@ URL surface (after nginx strips /speaker/):
 from __future__ import annotations
 
 import asyncio
+import functools
 import html
 import logging
 import re
@@ -52,6 +53,7 @@ from ._common import (
     read_form,
     reject_csrf,
     send_html_response,
+    send_rejected_form,
     send_see_other,
     guard_read_request,
     guard_mutating_request,
@@ -451,17 +453,21 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 reject_csrf(self)
                 return
 
-            try:
-                requested = validate_name(form.get("name", ""))
-            except SpeakerNameError as e:
-                send_see_other(self, "./", flash=str(e))
-                return
+            name = form.get("name", "")
+            room = form.get("room", "")
+            page = functools.partial(
+                _index_html,
+                current_name=name,
+                current_room=room,
+                hostname=resolve_hostname(),
+            )
 
             try:
+                requested = validate_name(name)
                 # Room is optional; "" is a valid "unset" answer, not an error.
-                requested_room = validate_room(form.get("room", ""))
+                requested_room = validate_room(room)
             except SpeakerNameError as e:
-                send_see_other(self, "./", flash=str(e))
+                send_rejected_form(self, page, flash=str(e))
                 return
 
             state = read_state(cfg["state_path"])
@@ -484,7 +490,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                             f"{c.protocol}:{c.detail}" for c in conflicts
                         ),
                     )
-                    send_see_other(self, "./", flash=_format_conflicts(conflicts))
+                    send_rejected_form(
+                        self, page, flash=_format_conflicts(conflicts),
+                    )
                     return
 
             try:
@@ -496,7 +504,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 )
             except (OSError, SpeakerNameError) as e:
                 logger.exception("speaker name save failed")
-                send_see_other(self, "./", flash=f"Could not save: {e}")
+                send_rejected_form(self, page, flash=f"Could not save: {e}")
                 return
 
             log_event(
@@ -517,11 +525,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     f'Saved the name "{saved}", but some audio sources could '
                     "not restart. Try again or check System status."
                 )
-            send_see_other(
-                self,
-                "./",
-                flash=flash,
-            )
+            send_see_other(self, "./", flash=flash)
 
     return Handler
 
