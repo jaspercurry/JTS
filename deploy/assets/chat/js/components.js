@@ -19,9 +19,7 @@ export function titledCard(title, opts = {}) {
 }
 
 export function badge(text, tone = "ok") {
-  const el = h("span.badge", null, text);
-  el.style.setProperty("--tone", `var(--status-${tone})`);
-  return el;
+  return h(`span.badge.badge--${tone}`, null, text);
 }
 
 export function table({ columns, rows, modifier = "", renderCell }) {

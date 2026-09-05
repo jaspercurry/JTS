@@ -498,7 +498,8 @@ svg { display: block; }
   color: var(--muted);
 }
 .deflist dd { margin: 0; word-break: break-word; font-variant-numeric: tabular-nums; }
-/* Status pill. Tone via inline `--tone` (--status-ok|warn|danger). */
+/* Status pill. Each modifier sets --tone and nothing else, so a page picks
+   a state rather than a colour. */
 .badge {
   display: inline-flex;
   align-items: center;
@@ -510,9 +511,13 @@ svg { display: block; }
   text-transform: uppercase;
   letter-spacing: 0.18em;
   color: var(--text);
-  background: color-mix(in oklab, var(--tone, var(--status-ok)) 18%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--tone, var(--status-ok)) 50%, transparent);
+  background: color-mix(in oklab, var(--tone, var(--status-idle)) 18%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--tone, var(--status-idle)) 50%, transparent);
 }
+.badge--ok { --tone: var(--status-ok); }
+.badge--warn { --tone: var(--status-warn); }
+.badge--danger { --tone: var(--status-danger); }
+.badge--idle { --tone: var(--status-idle); }
 .badge-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
 
 /* ---------------- modal dialog (jtsConfirm / jtsAlert) ---------------- */

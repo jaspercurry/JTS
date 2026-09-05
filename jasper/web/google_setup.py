@@ -570,7 +570,7 @@ def _account_li_html(account: GoogleAccount, *, is_default: bool, csrf_token: st
     can confirm before the native POST."""
     name = html.escape(account.name)
     email = html.escape(account.email or "(unknown email)")
-    badge = '<span class="badge" style="--tone: var(--status-ok)">default</span>' if is_default else ""
+    badge = '<span class="badge badge--ok">default</span>' if is_default else ""
     set_default = (
         '<button class="btn btn--default" type="submit" disabled>Default</button>'
         if is_default

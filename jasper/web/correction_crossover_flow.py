@@ -32,7 +32,7 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
     <p class="eyebrow">Speaker layer</p>
     <h2 class="section__title">Calibrate the active crossover</h2>
     <p id="crossover-verdict" class="form-hint">Checking the speaker…</p>
-    <span id="crossover-applied" class="applied-chip" hidden></span>
+    <span id="crossover-applied" class="badge badge--idle" hidden></span>
     <div class="crossover-card__footer">
       <button id="crossover-start-over" class="btn btn--ghost" type="button">Start over</button>
       <p class="form-hint">

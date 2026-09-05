@@ -46,11 +46,10 @@ export function defList(rows, modifier = "") {
   );
 }
 
-// Status pill. Tone drives the colour through the inline --tone prop.
+// Status pill. `tone` is one of ok/warn/danger/idle and names the
+// app.css modifier that sets --tone.
 export function badge(text, tone = "ok") {
-  const el = h("span.badge", null, text);
-  el.style.setProperty("--tone", `var(--status-${tone})`);
-  return el;
+  return h(`span.badge.badge--${tone}`, null, text);
 }
 
 // Table. columns: {key, label, align?}[]; rows: object[]; renderCell:

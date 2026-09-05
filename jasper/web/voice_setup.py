@@ -340,10 +340,7 @@ def _fmt_env_float(value: float) -> str:
 
 
 def _badge_html(label: str, tone: str) -> str:
-    return (
-        f'<span class="badge" style="--tone:var(--status-{tone})">'
-        f'{html.escape(label)}</span>'
-    )
+    return f'<span class="badge badge--{tone}">{html.escape(label)}</span>'
 
 
 def _read_spend_cap_status(state: dict[str, str]) -> dict[str, Any]:
@@ -696,7 +693,7 @@ def _pricing_section_html(
             value_attr = f"{e:g}" if is_custom else ""
             placeholder = "set a rate" if unpriced else f"default {d:g}"
             chip = (
-                ' <span class="badge" style="--tone:var(--status-ok)">custom</span>'
+                ' <span class="badge badge--ok">custom</span>'
                 if is_custom else ""
             )
             name = f"price__{html.escape(model_id)}__{field}"
@@ -708,7 +705,7 @@ def _pricing_section_html(
                      placeholder="{html.escape(placeholder)}">
             </div>""")
         needs = (
-            ' <span class="badge" style="--tone:var(--status-warn)">needs pricing</span>'
+            ' <span class="badge badge--warn">needs pricing</span>'
             if unpriced else ""
         )
         blocks.append(f"""
@@ -827,16 +824,10 @@ def _pricing_refresh_html(
 
 def _provider_status_badge_html(*, configured: bool, is_active: bool) -> str:
     if is_active:
-        return '<span class="badge" style="--tone:var(--status-ok)">active</span>'
+        return '<span class="badge badge--ok">active</span>'
     if configured:
-        return (
-            '<span class="badge" style="--tone:var(--status-idle)">'
-            'configured</span>'
-        )
-    return (
-        '<span class="badge" style="--tone:var(--status-warn)">'
-        'not configured</span>'
-    )
+        return '<span class="badge badge--idle">configured</span>'
+    return '<span class="badge badge--warn">not configured</span>'
 
 
 def _provider_clear_form_html(

@@ -412,8 +412,3 @@
   color: var(--primary);
 }
 
-/* The "recommended"/"not downloaded" pills reuse .badge from app.css; the
- * tone knob picks the colour. .badge--muted is the un-toned grey pill. */
-.badge--muted {
-  --tone: var(--status-idle);
-}

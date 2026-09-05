@@ -134,8 +134,9 @@ def test_spinner_primitive_is_shared_without_page_local_copies():
 
 # Bare selectors app.css owns outright: no page sheet may redeclare these
 # (a scoped override like `.wake-page .btn { … }` is unaffected — only a
-# bare `.toggle`/`.disclosure` compound at the start of a rule is checked).
-OWNED_BARE_SELECTORS = (".toggle", ".disclosure")
+# bare `.toggle`/`.disclosure`/`.badge` compound at the start of a rule
+# is checked).
+OWNED_BARE_SELECTORS = (".toggle", ".disclosure", ".badge")
 
 
 def test_page_css_does_not_redeclare_owned_selectors():

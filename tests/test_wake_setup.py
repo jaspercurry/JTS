@@ -452,7 +452,7 @@ def test_index_html_marks_active_row(monkeypatch):
     alexa_input = html[alexa_idx - 100 : alexa_input_end + 1]
     assert "checked" in alexa_input
     # And an "active" badge appears in the same row.
-    assert '<span class="badge">active</span>' in html
+    assert '<span class="badge badge--ok">active</span>' in html
 
 
 def test_index_html_renders_custom_row_for_unknown_active(monkeypatch):

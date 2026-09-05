@@ -261,7 +261,7 @@ def _profile_rows_html(rowspec: tuple[Any, ...]) -> str:
         <span class="profile-name" id="profile-name-{key}">{html.escape(spec.label)}</span>
         <span class="profile-desc" id="profile-desc-{key}">{html.escape(spec.description)}</span>
       </span>
-      <span class="badge badge--muted" id="profile-badge-{key}">{html.escape(spec.badge)}</span>
+      <span class="badge badge--idle" id="profile-badge-{key}">{html.escape(spec.badge)}</span>
       <span class="profile-choice-status" id="profile-status-{key}">—</span>
     </label>""")
     return "".join(rows)
@@ -433,11 +433,11 @@ def _row_html(
 
     badges = []
     if is_active:
-        badges.append('<span class="badge">active</span>')
+        badges.append('<span class="badge badge--ok">active</span>')
     if entry.recommended and not is_active:
-        badges.append('<span class="badge">recommended</span>')
+        badges.append('<span class="badge badge--ok">recommended</span>')
     if not available:
-        badges.append('<span class="badge badge--muted">not downloaded</span>')
+        badges.append('<span class="badge badge--idle">not downloaded</span>')
 
     radio_attrs = ['type="radio"', 'name="model"', f'value="{html.escape(entry.key)}"']
     if is_active:
@@ -479,7 +479,7 @@ def _custom_row_html(model: str, *, is_active: bool) -> str:
     leaving the radio alone; they replace it by picking a registered
     row and hitting Save."""
     active_cls = " is-active" if is_active else ""
-    active_badge = '<span class="badge">active</span>' if is_active else ""
+    active_badge = '<span class="badge badge--ok">active</span>' if is_active else ""
     return f"""
 <label class="wake-row{active_cls}" style="cursor:default">
   <div class="wake-row__head">

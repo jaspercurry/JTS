@@ -114,24 +114,6 @@
   flex-shrink: 0;
 }
 
-/* Per-device status pill. Tone is one knob — each modifier sets --tone and
-   the pill reads it, mirroring the .badge vocabulary in app.css. */
-.device .badge {
-  display: inline-block;
-  padding: 0.1em 0.55em;
-  border-radius: 999px;
-  font-size: 0.72rem;
-  font-weight: 600;
-  margin-left: 0.4rem;
-  vertical-align: 0.05em;
-  color: var(--tone, var(--status-idle));
-  background: color-mix(in oklch, var(--tone, var(--status-idle)) 16%, var(--card));
-}
-.device .badge.connected  { --tone: var(--status-ok); }
-.device .badge.connecting { --tone: var(--status-warn); }
-.device .badge.linked     { --tone: var(--status-warn); }
-.device .badge.paired     { --tone: var(--status-idle); }
-
 /* RSSI + battery readouts, right-aligned so the actions column lines up
    across rows whether or not a row has any metrics. */
 .device .metrics {
