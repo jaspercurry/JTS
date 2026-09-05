@@ -498,7 +498,7 @@ def test_the_doctor_stall_check_judges_the_grouping_ring(monkeypatch, tmp_path):
     here.
     """
     from jasper import ring_assets
-    from jasper.cli import doctor
+    from jasper.cli.doctor import audio_runtime_ring
 
     # An absent file is not present -> the check skips it. The inertness claim.
     assert ring_assets.ring_stall_verdict(str(tmp_path / "absent.ring")).present is False
@@ -510,14 +510,14 @@ def test_the_doctor_stall_check_judges_the_grouping_ring(monkeypatch, tmp_path):
         return ring_assets.RingStallVerdict(present=False, detail="absent (test)")
 
     monkeypatch.setattr(ring_assets, "ring_stall_verdict", _spy)
-    result = doctor.audio_runtime_ring.check_ring_reader_stall()
+    result = audio_runtime_ring.check_ring_reader_stall()
 
     assert GROUPING_RING_FILE in asked, (
         "check_ring_reader_stall must judge the grouping ring — its tuple is "
         f"hand-kept, and it only asked about {asked}"
     )
     assert result.status == "skipped"
-    assert result.reason == doctor.audio_runtime_ring.REASON_RING_READER_NO_LIVE_RING
+    assert result.reason == audio_runtime_ring.REASON_RING_READER_NO_LIVE_RING
 
 
 # --- T-3: install coverage, and the deliberate rm -f asymmetry --------------

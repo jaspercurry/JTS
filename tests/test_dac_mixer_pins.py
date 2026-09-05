@@ -19,7 +19,6 @@ from jasper.audio_hardware.dac import (
     HIFIBERRY_STUDIO_MIXER_CONTROLS,
     MixerControl,
 )
-from jasper.cli import doctor
 from jasper.cli.doctor import audio
 from jasper import output_hardware
 from jasper.output_hardware import (
@@ -333,7 +332,7 @@ def test_doctor_fails_on_any_deviation_from_a_declared_pin(
     record_dac(HIFIBERRY_DAC8X_STUDIO_ID, "Studio")
     monkeypatch.setattr(audio, "_run", _doctor_amixer(canned))
 
-    result = doctor.check_dac_mixer_pins()
+    result = audio.check_dac_mixer_pins()
 
     assert (result.name, result.status) == ("DAC mixer pins", expected)
 
@@ -359,7 +358,7 @@ def test_doctor_reads_a_percent_pin_through_the_simple_mixer(
 
     monkeypatch.setattr(audio, "_run", fake_run)
 
-    assert doctor.check_dac_mixer_pins().status == expected
+    assert audio.check_dac_mixer_pins().status == expected
     assert calls == [["amixer", "-c", "AppleA", "sget", "Headphone"]]
 
 
@@ -391,7 +390,7 @@ def test_doctor_checks_every_card_of_a_composite_dac(monkeypatch) -> None:
 
     monkeypatch.setattr(audio, "_run", fake_run)
 
-    assert doctor.check_dac_mixer_pins().status == "fail"
+    assert audio.check_dac_mixer_pins().status == "fail"
     assert calls == [
         ["amixer", "-c", "Apple0", "sget", "Headphone"],
         ["amixer", "-c", "Apple1", "sget", "Headphone"],
@@ -405,4 +404,4 @@ def test_doctor_skips_a_dac_that_declares_no_pins(monkeypatch) -> None:
     record_dac("hifiberry_dac8x", "Card")
     monkeypatch.setattr(audio, "_run", fail_probe)
 
-    assert doctor.check_dac_mixer_pins().status == "skipped"
+    assert audio.check_dac_mixer_pins().status == "skipped"
