@@ -24,7 +24,6 @@ import pytest
 import jasper.active_speaker._common as _common
 import jasper.active_speaker.setup_status as setup_status_mod
 from jasper.camilla import CamillaUnavailable
-from jasper.cli import doctor
 from jasper.cli.doctor import audio
 from jasper.cli.doctor._evidence import evidence
 from jasper.mic_presence import MicPresence
@@ -55,7 +54,7 @@ def test_apple_dongle_check_never_assumes_apple_without_a_record(monkeypatch):
     env publication says (the doctor used to default to the Apple dongle)."""
     monkeypatch.setenv("JASPER_AUDIO_DAC_ID", "apple_usb_c_dongle")
     monkeypatch.setattr(
-        doctor.audio, "_run", _lsusb_only("Bus 001 Device 002: ID 1d6b:0002 hub\n")
+        audio, "_run", _lsusb_only("Bus 001 Device 002: ID 1d6b:0002 hub\n")
     )
 
     result = audio.check_apple_dongle_audio()
@@ -70,7 +69,7 @@ def test_apple_dongle_check_warns_when_the_chip_is_on_usb_but_no_card_enumerated
     """A dongle with nothing in its jack is a USB device and no audio card, so
     the record names no DAC; the bus is the only place the dongle shows."""
     monkeypatch.setattr(
-        doctor.audio, "_run", _lsusb_only("Bus 001 Device 002: ID 05ac:110a Apple\n")
+        audio, "_run", _lsusb_only("Bus 001 Device 002: ID 05ac:110a Apple\n")
     )
 
     result = audio.check_apple_dongle_audio()
@@ -84,7 +83,7 @@ def test_apple_dongle_check_skips_for_non_apple_output_dac(monkeypatch):
         raise AssertionError("Apple USB probe should not run")
 
     record_active_dac("hifiberry_dac8x")
-    monkeypatch.setattr(doctor.audio, "_run", fail_probe)
+    monkeypatch.setattr(audio, "_run", fail_probe)
 
     result = audio.check_apple_dongle_audio()
 
@@ -107,7 +106,7 @@ def test_apple_dongle_check_matches_usb_id_case_insensitively(monkeypatch):
             )
         raise AssertionError(cmd)
 
-    monkeypatch.setattr(doctor.audio, "_run", fake_run)
+    monkeypatch.setattr(audio, "_run", fake_run)
 
     result = audio.check_apple_dongle_audio()
 
@@ -119,7 +118,7 @@ def test_apple_dongle_check_matches_usb_id_case_insensitively(monkeypatch):
 def test_apple_dongle_check_reads_usb_id_from_active_profile(monkeypatch):
     record_active_dac("apple_usb_c_dongle", card_id="Apple")
     monkeypatch.setattr(
-        doctor.audio,
+        audio,
         "_dac_profile_for",
         lambda _profile_id: SimpleNamespace(usb_ids=("1234:abcd",)),
     )
@@ -133,7 +132,7 @@ def test_apple_dongle_check_reads_usb_id_from_active_profile(monkeypatch):
             )
         raise AssertionError(cmd)
 
-    monkeypatch.setattr(doctor.audio, "_run", fake_run)
+    monkeypatch.setattr(audio, "_run", fake_run)
 
     result = audio.check_apple_dongle_audio()
 
@@ -147,7 +146,7 @@ def test_apple_dongle_check_ok_for_a_partial_record_naming_its_card(monkeypatch)
     dongle with an analog load reports ok, not the 'no audio card' warn."""
     record_active_dac("apple_usb_c_dongle", card_id="A", status="partial")
     monkeypatch.setattr(
-        doctor.audio, "_run", _lsusb_only("Bus 001 Device 002: ID 05ac:110a Apple\n")
+        audio, "_run", _lsusb_only("Bus 001 Device 002: ID 05ac:110a Apple\n")
     )
 
     result = audio.check_apple_dongle_audio()
@@ -184,7 +183,7 @@ def test_dual_apple_dongle_check_requires_two_audio_cards(monkeypatch):
         raise AssertionError(cmd)
 
     evidence.seed("output_hardware_state", state)
-    monkeypatch.setattr(doctor.audio, "_run", fake_run)
+    monkeypatch.setattr(audio, "_run", fake_run)
 
     result = audio.check_apple_dongle_audio()
 
@@ -385,7 +384,7 @@ def test_check_arecord_l_card_device_match():
     )
     with (
         patch.object(
-            doctor.audio,
+            audio,
             "_run",
             return_value=type(
                 "FakeProc", (), {"stdout": fake_output, "returncode": 0}
@@ -407,7 +406,7 @@ def test_check_arecord_l_does_not_match_wrong_card():
     )
     with (
         patch.object(
-            doctor.audio,
+            audio,
             "_run",
             return_value=type(
                 "FakeProc", (), {"stdout": fake_output, "returncode": 0}
@@ -444,7 +443,7 @@ def test_check_mic_card_routes_shorthand_through_arecord_l(
     )
     with (
         patch.object(
-            doctor.audio,
+            audio,
             "_run",
             return_value=type(
                 "FakeProc", (), {"stdout": arecord_l, "returncode": 0}
@@ -471,7 +470,7 @@ def test_check_mic_capture_falls_back_to_daemon_active(monkeypatch):
             raise ValueError("No input device matching 'hw:7,1'")
 
     stub_sounddevice(monkeypatch, FakeSD())
-    with patch.object(doctor.audio, "_jasper_voice_active", return_value=True):
+    with patch.object(audio, "_jasper_voice_active", return_value=True):
         r = audio.check_mic_capture(cfg)
     assert r.status == "skipped"
     assert r.reason == audio.REASON_MIC_HELD_BY_VOICE
@@ -491,7 +490,7 @@ def test_check_mic_capture_fails_hard_when_daemon_inactive(monkeypatch):
             raise ValueError("No input device matching 'hw:7,1'")
 
     stub_sounddevice(monkeypatch, FakeSD())
-    with patch.object(doctor.audio, "_jasper_voice_active", return_value=False):
+    with patch.object(audio, "_jasper_voice_active", return_value=False):
         r = audio.check_mic_capture(cfg)
     assert r.status == "fail"
     assert r.reason == audio.REASON_MIC_CAPTURE_OPEN_FAILED
@@ -556,9 +555,9 @@ _I2S_STATE_PARTIAL = OutputHardwareState(
 
 def test_dac_sync_mode_skips_before_probing_when_no_xvf_mic(monkeypatch):
     """Chip-AEC is moot without the mic, so the output probe must not run."""
-    monkeypatch.setattr(doctor.audio.xvf3800, "is_present", lambda: False)
+    monkeypatch.setattr(audio.xvf3800, "is_present", lambda: False)
     monkeypatch.setattr(
-        doctor.audio,
+        audio,
         "_output_hardware_state_or_none",
         lambda: (_ for _ in ()).throw(AssertionError("must not probe")),
     )
@@ -586,9 +585,9 @@ def test_dac_sync_mode_skips_before_probing_when_no_xvf_mic(monkeypatch):
     ids=["sync", "adaptive", "async", "i2s", "i2s-partial", "state-unavailable"],
 )
 def test_check_dac_usb_sync_mode_verdicts(monkeypatch, state, status, reason):
-    monkeypatch.setattr(doctor.audio.xvf3800, "is_present", lambda: True)
+    monkeypatch.setattr(audio.xvf3800, "is_present", lambda: True)
     monkeypatch.setattr(
-        doctor.audio, "_output_hardware_state_or_none", lambda: state
+        audio, "_output_hardware_state_or_none", lambda: state
     )
 
     result = audio.check_dac_usb_sync_mode()
@@ -842,7 +841,7 @@ def test_camilla_configs_writable_verdicts(tmp_path, mode, group, status, reason
         d.mkdir()
         os.chmod(d, mode)
 
-    res = doctor.audio._camilla_configs_writable_result(
+    res = audio._camilla_configs_writable_result(
         d, expected_group=group or _own_group()
     )
 
@@ -853,9 +852,9 @@ def test_camilla_configs_writable_verdicts(tmp_path, mode, group, status, reason
 def test_camilla_configs_writable_targets_the_constant_dir(monkeypatch, tmp_path):
     """The decorated check reads CAMILLA_CONFIGS_DIR, so the guard stays
     pointed at the dir the deploy actually permissions."""
-    monkeypatch.setattr(doctor.audio, "CAMILLA_CONFIGS_DIR", tmp_path / "nope")
+    monkeypatch.setattr(audio, "CAMILLA_CONFIGS_DIR", tmp_path / "nope")
 
-    res = doctor.audio.check_camilla_configs_writable()
+    res = audio.check_camilla_configs_writable()
 
     assert res.status == "warn"
     assert res.reason == audio.REASON_CAMILLA_CONFIG_DIR_MISSING
@@ -884,7 +883,7 @@ def _camilla_controller(monkeypatch, *, volume, clipped):
         async def close(self):
             pass
 
-    monkeypatch.setattr(doctor.audio, "CamillaController", Controller)
+    monkeypatch.setattr(audio, "CamillaController", Controller)
     return constructed
 
 
@@ -910,7 +909,7 @@ async def test_check_camilla_websocket_verdicts(
     constructed = _camilla_controller(monkeypatch, volume=volume, clipped=clipped)
     cfg = SimpleNamespace(camilla_host="127.0.0.1", camilla_port=1234)
 
-    result = await doctor.audio.check_camilla_websocket(cfg)
+    result = await audio.check_camilla_websocket(cfg)
 
     assert result.status == status
     assert result.reason == reason

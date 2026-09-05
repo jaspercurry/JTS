@@ -4,9 +4,9 @@
 
 """``jasper-doctor`` — preflight diagnostic CLI (package entry).
 
-This ``__init__`` is the registration imports for the per-domain check
-modules, the harness that runs them, and the CLI; a check is imported
-from the module that owns it.
+This ``__init__`` registers the per-domain check modules, and is the
+harness that runs them and the CLI; a check is imported from the
+module that owns it.
 
 Usage:
     sudo /opt/jasper/.venv/bin/jasper-doctor             # one shot
@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from dataclasses import dataclass
+import importlib
 import os
 import sys
 import time
@@ -53,6 +54,7 @@ from ._evidence import (
     evidence,
 )
 from ._registry import (
+    MODULE_ROSTER,
     STREAMBOX_OMITTED_DOCTOR_CHECKS,
     STREAMBOX_OMITTED_DOCTOR_MODULES,
     registered_checks,
@@ -77,30 +79,10 @@ from ._shared import (
     check_row,
     summarize,
 )
-from . import env as env
-from . import voice as voice
-from . import audio as audio
-from . import boot_config as boot_config
-from . import wake as wake
-from . import renderers as renderers
-from . import integrations as integrations
-from . import privsep as privsep
-from . import secret_compartments as secret_compartments
-from . import web as web
-from . import research as research
-from . import correction as correction
-from . import memory as memory
-from . import drift as drift
-from . import resilience as resilience
-from . import aec as aec
-from . import audio_runtime_fanin as audio_runtime_fanin
-from . import audio_runtime_camilla as audio_runtime_camilla
-from . import audio_runtime_ring as audio_runtime_ring
-from . import audio_runtime_outputd as audio_runtime_outputd
-from . import usbsink as usbsink
-from . import network as network
-from . import peering as peering
-from . import grouping as grouping
+# Importing a domain module registers its checks; MODULE_ROSTER is the one list.
+for _name in MODULE_ROSTER:
+    importlib.import_module(f".{_name}", __package__)
+del _name
 
 def _registered_check_name(entry) -> str:
     """One naming rule for every calling convention, so a check cannot be

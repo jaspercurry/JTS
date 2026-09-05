@@ -18,7 +18,6 @@ from unittest.mock import patch
 
 import pytest
 
-from jasper.cli import doctor
 from jasper.cli.doctor import _evidence, correction
 from jasper.correction import bundles
 
@@ -98,7 +97,7 @@ def _idle_exit_journal(monkeypatch, *, journal, active="active"):
             raise journal
         return journal
 
-    monkeypatch.setattr(doctor.correction, "_run", fake_run)
+    monkeypatch.setattr(correction, "_run", fake_run)
 
 
 def _journal(stdout="", *, returncode=0, stderr=""):
@@ -190,7 +189,7 @@ def test_check_correction_https_assets_verdicts(
     monkeypatch, tmp_path, probe, status, reason
 ):
     monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(_web_root_with_app_css(tmp_path)))
-    monkeypatch.setattr(doctor.correction, "_probe_https_status", probe)
+    monkeypatch.setattr(correction, "_probe_https_status", probe)
     r = correction.check_correction_https_assets()
     assert r.status == status
     assert r.reason == reason
@@ -203,7 +202,7 @@ def test_check_correction_https_assets_skips_without_web_root(monkeypatch, tmp_p
     def _boom(*a, **k):
         raise AssertionError("must not probe when the web root is absent")
 
-    monkeypatch.setattr(doctor.correction, "_probe_https_status", _boom)
+    monkeypatch.setattr(correction, "_probe_https_status", _boom)
     r = correction.check_correction_https_assets()
     assert r.status == "skipped"
     assert r.reason == correction.REASON_HTTPS_ASSETS_NOT_INSTALLED
@@ -217,7 +216,7 @@ def test_check_correction_https_assets_skips_when_443_unreachable(
     def _refused(*a, **k):
         raise OSError("connection refused")
 
-    monkeypatch.setattr(doctor.correction, "_probe_https_status", _refused)
+    monkeypatch.setattr(correction, "_probe_https_status", _refused)
     r = correction.check_correction_https_assets()
     assert r.status == "skipped"
     assert r.reason == correction.REASON_HTTPS_ASSETS_UNREACHABLE
@@ -255,7 +254,7 @@ def test_not_writable_by_group_verdicts(tmp_path, mode, group, expect_flagged):
     d.mkdir()
     os.chmod(d, mode)
 
-    flagged = doctor.correction._not_writable_by_group(
+    flagged = correction._not_writable_by_group(
         [d], expected_group=group or _own_group()
     )
 
@@ -1015,7 +1014,7 @@ def test_check_session_volume_unresolved_verdicts(
     if state is not None:
         _write_session_volume(path, status=state, opened_at=time.time() - age_s)
     monkeypatch.setattr(
-        doctor.correction, "DEFAULT_SESSION_VOLUME_STATE_PATH", path,
+        correction, "DEFAULT_SESSION_VOLUME_STATE_PATH", path,
     )
 
     r = correction.check_session_volume_unresolved()
@@ -1048,7 +1047,7 @@ def _bank(path, **overrides):
 def test_seat_level_reference_absent_is_ok_not_a_warning(tmp_path):
     # A box that never ran the leveling step is healthy: the session falls back
     # to the codified reference and measures exactly as it always did.
-    result = doctor.correction._classify_seat_level_reference(tmp_path / "absent.json")
+    result = correction._classify_seat_level_reference(tmp_path / "absent.json")
     assert result.status == "ok"
     assert result.reason == correction.REASON_SEAT_LEVEL_NOT_MEASURED
 
@@ -1056,7 +1055,7 @@ def test_seat_level_reference_absent_is_ok_not_a_warning(tmp_path):
 def test_seat_level_reference_reports_a_banked_value(tmp_path):
     path = tmp_path / "ref.json"
     _bank(path)
-    result = doctor.correction._classify_seat_level_reference(path)
+    result = correction._classify_seat_level_reference(path)
     assert result.status == "ok"
     assert result.reason == ""
 
@@ -1075,7 +1074,7 @@ def test_seat_level_reference_present_but_unusable_warns(tmp_path):
             }
         )
     )
-    result = doctor.correction._classify_seat_level_reference(path)
+    result = correction._classify_seat_level_reference(path)
     assert result.status == "warn"
     assert result.reason == correction.REASON_SEAT_LEVEL_UNUSABLE
 
@@ -1086,7 +1085,7 @@ def test_seat_level_reference_unparseable_timestamp_still_reports_the_value(tmp_
     raw = json.loads(path.read_text())
     raw["updated_at"] = "not-a-date"
     path.write_text(json.dumps(raw))
-    result = doctor.correction._classify_seat_level_reference(path)
+    result = correction._classify_seat_level_reference(path)
     assert result.status == "ok"
     assert result.reason == correction.REASON_SEAT_LEVEL_TIMESTAMP_UNREADABLE
 
@@ -1102,9 +1101,9 @@ def _with_cert(monkeypatch, tmp_path, exists=True):
     cert = tmp_path / "jts.local.crt"
     if exists:
         cert.write_text("---")
-    real_path = doctor.correction.Path
+    real_path = correction.Path
     monkeypatch.setattr(
-        doctor.correction,
+        correction,
         "Path",
         lambda p: cert if p == "/etc/nginx/ssl/jts.local.crt" else real_path(p),
     )
@@ -1125,7 +1124,7 @@ def _openssl_san(*names: str):
 def test_cert_check_skips_without_a_cert(monkeypatch, tmp_path):
     _with_cert(monkeypatch, tmp_path, exists=False)
 
-    r = doctor.correction.check_correction_cert_hostname()
+    r = correction.check_correction_cert_hostname()
 
     assert r.status == "skipped"
     assert r.reason == correction.REASON_CERT_NOT_INSTALLED
@@ -1157,7 +1156,7 @@ def test_cert_check_compares_the_san_to_the_advertised_name(
     )
 
     with patch("subprocess.run", return_value=_openssl_san(*san)):
-        r = doctor.correction.check_correction_cert_hostname()
+        r = correction.check_correction_cert_hostname()
 
     assert r.status == status
     assert r.reason == reason
@@ -1168,7 +1167,7 @@ def test_cert_check_warns_when_the_san_cannot_be_read(monkeypatch, tmp_path):
     _write_identity_env(tmp_path, monkeypatch, avahi="jts3.local")
 
     with patch("subprocess.run", side_effect=FileNotFoundError("openssl")):
-        r = doctor.correction.check_correction_cert_hostname()
+        r = correction.check_correction_cert_hostname()
 
     assert r.status == "warn"
     assert r.reason == correction.REASON_CERT_SAN_UNREADABLE

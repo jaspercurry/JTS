@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 
 from jasper import audio_runtime_plan
-from jasper.cli import doctor
 from jasper.cli.doctor import audio_runtime_fanin, audio_runtime_outputd
 from jasper.control import audio_health
 
@@ -881,7 +880,7 @@ def _xrun_section(rate_per_hour, last_xrun_age_ms):
 def test_outputd_xrun_warning_none_when_no_recent_xrun():
     """last_xrun_age_ms=null (no xrun ever) → never warn, regardless of rate."""
     quiet = _xrun_section(rate_per_hour=0.0, last_xrun_age_ms=None)
-    assert doctor.audio_runtime_outputd._outputd_xrun_rate_warning(quiet, quiet) is None
+    assert audio_runtime_outputd._outputd_xrun_rate_warning(quiet, quiet) is None
 
 
 def test_outputd_xrun_warning_suppressed_for_stale_burst():
@@ -889,30 +888,30 @@ def test_outputd_xrun_warning_suppressed_for_stale_burst():
     burst) must NOT warn — the WARN is for a sustained, *current* problem."""
     stale = _xrun_section(
         rate_per_hour=50.0,
-        last_xrun_age_ms=doctor.audio_runtime_outputd._OUTPUTD_XRUN_RECENT_AGE_MS + 1,
+        last_xrun_age_ms=audio_runtime_outputd._OUTPUTD_XRUN_RECENT_AGE_MS + 1,
     )
-    assert doctor.audio_runtime_outputd._outputd_xrun_rate_warning(stale, stale) is None
+    assert audio_runtime_outputd._outputd_xrun_rate_warning(stale, stale) is None
 
 
 def test_outputd_xrun_warning_suppressed_for_recent_single_blip():
     """A recent xrun with a LOW sustained rate (one transient blip) must not
     warn — only a rate at/above the threshold qualifies."""
     blip = _xrun_section(
-        rate_per_hour=doctor.audio_runtime_outputd._OUTPUTD_XRUN_RATE_WARN_PER_HOUR - 0.1,
+        rate_per_hour=audio_runtime_outputd._OUTPUTD_XRUN_RATE_WARN_PER_HOUR - 0.1,
         last_xrun_age_ms=1000,
     )
-    assert doctor.audio_runtime_outputd._outputd_xrun_rate_warning(blip, blip) is None
+    assert audio_runtime_outputd._outputd_xrun_rate_warning(blip, blip) is None
 
 
 def test_outputd_xrun_warning_fires_on_recent_sustained_rate():
     """Recent xrun AND a sustained rate at/above threshold → warn, naming the
     offending lane and both fields."""
     hot = _xrun_section(
-        rate_per_hour=doctor.audio_runtime_outputd._OUTPUTD_XRUN_RATE_WARN_PER_HOUR,
+        rate_per_hour=audio_runtime_outputd._OUTPUTD_XRUN_RATE_WARN_PER_HOUR,
         last_xrun_age_ms=2000,
     )
     quiet = _xrun_section(rate_per_hour=0.0, last_xrun_age_ms=None)
-    reason = doctor.audio_runtime_outputd._outputd_xrun_rate_warning(quiet, hot)
+    reason = audio_runtime_outputd._outputd_xrun_rate_warning(quiet, hot)
     assert reason is not None
     assert "dac" in reason
     assert "xrun_rate_per_hour" in reason
@@ -923,7 +922,7 @@ def test_outputd_xrun_warning_reports_worst_lane():
     """When both lanes qualify, the higher-rate lane is reported."""
     content = _xrun_section(rate_per_hour=8.0, last_xrun_age_ms=1000)
     dac = _xrun_section(rate_per_hour=40.0, last_xrun_age_ms=1000)
-    reason = doctor.audio_runtime_outputd._outputd_xrun_rate_warning(content, dac)
+    reason = audio_runtime_outputd._outputd_xrun_rate_warning(content, dac)
     assert reason is not None
     assert reason.startswith("dac ")
 
@@ -939,7 +938,7 @@ def _transport_health(env: dict[str, str], *, content_source: str):
     discrimination is the RETURN SHAPE, which is what the caller branches on.
     """
     payload = json.loads(_outputd_status_payload(content_source=content_source))
-    return doctor.audio_runtime_outputd._outputd_transport_health(
+    return audio_runtime_outputd._outputd_transport_health(
         payload,
         payload["content"],
         payload["dac"],

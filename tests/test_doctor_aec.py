@@ -14,7 +14,6 @@ import pytest
 
 from jasper.chip_aec import health as chip_aec_health
 from jasper.audio_profile_state import MicProbe, RuntimeAecEnv
-from jasper.cli import doctor
 from jasper.cli.doctor import _evidence, _shared, aec
 from jasper.control import aec_endpoints
 from tests._aec_bridge_helpers import _rms_log_line
@@ -134,12 +133,12 @@ def _healthy_journal(windows: int = 8) -> str:
     )
 
 
-_REASON_BRIDGE_OUTPUT_NO_WINDOWS = doctor.aec.REASON_BRIDGE_OUTPUT_NO_WINDOWS
-_REASON_BRIDGE_OUTPUT_IDLE = doctor.aec.REASON_BRIDGE_OUTPUT_IDLE
-_REASON_BRIDGE_OUTPUT_HEALTHY_WORK = doctor.aec.REASON_BRIDGE_OUTPUT_HEALTHY_WORK
-_REASON_BRIDGE_OUTPUT_REF_SILENT = doctor.aec.REASON_BRIDGE_OUTPUT_REF_SILENT
+_REASON_BRIDGE_OUTPUT_NO_WINDOWS = aec.REASON_BRIDGE_OUTPUT_NO_WINDOWS
+_REASON_BRIDGE_OUTPUT_IDLE = aec.REASON_BRIDGE_OUTPUT_IDLE
+_REASON_BRIDGE_OUTPUT_HEALTHY_WORK = aec.REASON_BRIDGE_OUTPUT_HEALTHY_WORK
+_REASON_BRIDGE_OUTPUT_REF_SILENT = aec.REASON_BRIDGE_OUTPUT_REF_SILENT
 _REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY = (
-    doctor.aec.REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY
+    aec.REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY
 )
 
 
@@ -261,7 +260,7 @@ def test_one_chip_window_does_not_displace_the_aec3_assessment():
     result = aec._assess_aec_bridge_output(journal)
 
     assert result.status == "ok"
-    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_HEALTHY_WORK
+    assert result.reason == aec.REASON_BRIDGE_OUTPUT_HEALTHY_WORK
 
 
 def test_assess_aec_output_silent_ref_with_a_healthy_window_names_the_cause():
@@ -280,7 +279,7 @@ def test_assess_aec_output_silent_ref_with_a_healthy_window_names_the_cause():
     r = aec._assess_aec_bridge_output("\n".join(lines))
 
     assert r.status == "ok"
-    assert r.reason == doctor.aec.REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY
+    assert r.reason == aec.REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY
 
 
 @pytest.mark.parametrize(
@@ -301,9 +300,9 @@ def test_assess_aec_output_relaxes_only_on_positive_idle_evidence(
 
     assert r.status == status
     assert r.reason == (
-        doctor.aec.REASON_BRIDGE_OUTPUT_REF_SILENT_NO_MUSIC
+        aec.REASON_BRIDGE_OUTPUT_REF_SILENT_NO_MUSIC
         if status == "ok"
-        else doctor.aec.REASON_BRIDGE_OUTPUT_REF_SILENT
+        else aec.REASON_BRIDGE_OUTPUT_REF_SILENT
     )
 
 
@@ -367,7 +366,7 @@ def test_assess_aec_output_remediation_names_only_a_hop_it_can_prove(
     )
 
     assert result.status == "fail"
-    assert result.reason == getattr(doctor.aec, reason)
+    assert result.reason == getattr(aec, reason)
 
 
 @pytest.mark.parametrize(
@@ -390,7 +389,7 @@ def test_assess_aec_output_unusable_outputd_target_is_comparison_neutral(
     )
 
     assert result.status == "fail"
-    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_REF_SILENT_TARGET_UNKNOWN
+    assert result.reason == aec.REASON_BRIDGE_OUTPUT_REF_SILENT_TARGET_UNKNOWN
 
 
 @pytest.mark.parametrize(
@@ -414,13 +413,13 @@ def test_assess_aec_output_unusable_outputd_target_is_comparison_neutral(
 def test_bridge_reference_provenance_rejects_untrustworthy_timestamps(
     stats, expected
 ):
-    assert doctor.aec._bridge_reference_provenance(stats, 1_000.0) is expected
+    assert aec._bridge_reference_provenance(stats, 1_000.0) is expected
 
 
 def test_check_aec_output_health_uses_live_outputd_status_on_failure(monkeypatch):
     _stage_bridge_journal(monkeypatch, _silent_ref_journal())
     monkeypatch.setattr(
-        doctor.aec,
+        aec,
         "_read_outputd_status_for_aec_reference",
         lambda: _outputd_reference_status(error_count=7),
     )
@@ -430,7 +429,7 @@ def test_check_aec_output_health_uses_live_outputd_status_on_failure(monkeypatch
     assert result.status == "fail"
     # Only reachable once the LIVE outputd status (not a stale/absent one)
     # confirms the endpoint matches and the publisher reports active.
-    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_REF_SILENT_UNCONFIRMED
+    assert result.reason == aec.REASON_BRIDGE_OUTPUT_REF_SILENT_UNCONFIRMED
 
 
 def test_check_aec_output_health_skips_outputd_status_when_reference_is_healthy(
@@ -438,7 +437,7 @@ def test_check_aec_output_health_skips_outputd_status_when_reference_is_healthy(
 ):
     _stage_bridge_journal(monkeypatch, _healthy_journal())
     monkeypatch.setattr(
-        doctor.aec,
+        aec,
         "_read_outputd_status_for_aec_reference",
         lambda: pytest.fail("healthy passive check must not probe outputd STATUS"),
     )
@@ -446,36 +445,36 @@ def test_check_aec_output_health_skips_outputd_status_when_reference_is_healthy(
     result = aec.check_aec_bridge_output_health()
 
     assert result.status == "ok"
-    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_HEALTHY_WORK
+    assert result.reason == aec.REASON_BRIDGE_OUTPUT_HEALTHY_WORK
 
 
 def test_check_aec_output_health_skips_when_bridge_not_running(monkeypatch):
     """Nothing of this check's own domain (RMS windows, reference stats)
     exists to assess without a running bridge — that is a skip, not an ok,
     and the row it defers to is check_aec_bridge_running."""
-    monkeypatch.setattr(doctor.aec, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(aec, "_parked_follower_result", lambda _label: None)
     _stub_unit_active_states(monkeypatch, {})
 
     result = aec.check_aec_bridge_output_health()
 
     assert result.status == "skipped"
-    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_BRIDGE_NOT_RUNNING
+    assert result.reason == aec.REASON_BRIDGE_OUTPUT_BRIDGE_NOT_RUNNING
 
 
 def _stage_bridge_journal(monkeypatch, journal: str) -> None:
     def fake_run(command, **_kwargs):
         return SimpleNamespace(stdout=journal, stderr="", returncode=0)
 
-    monkeypatch.setattr(doctor.aec, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(aec, "_parked_follower_result", lambda _label: None)
     _stub_unit_active_states(monkeypatch, {"jasper-aec-bridge.service": "active"})
-    monkeypatch.setattr(doctor.aec, "_run", fake_run)
-    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: True)
+    monkeypatch.setattr(aec, "_run", fake_run)
+    monkeypatch.setattr(aec, "_loopback_playback_active", lambda: True)
     monkeypatch.setattr(
-        doctor.aec,
+        aec,
         "_read_bridge_stats_snapshot",
         lambda: _bridge_reference_stats("outputd_udp", now=1_000.0),
     )
-    monkeypatch.setattr(doctor.aec.time, "time", lambda: 1_000.0)
+    monkeypatch.setattr(aec.time, "time", lambda: 1_000.0)
 
 
 def test_loopback_playback_active_reads_proc_status(tmp_path):
@@ -569,7 +568,7 @@ def _active_outputd_reference_status(
 
 
 def _assess_reference_stats(stats: dict, *, now_monotonic: float = 1_000.0):
-    return doctor.aec._assess_aec_reference_input_from_stats(
+    return aec._assess_aec_reference_input_from_stats(
         stats,
         now_monotonic,
         configured_source="outputd_udp",
@@ -631,7 +630,7 @@ def test_assess_reference_input_status_and_grace(
     result, startup_grace = assessed
     assert result.status == expected_status
     assert startup_grace is expected_startup_grace
-    assert result.reason == getattr(doctor.aec, expected_reason)
+    assert result.reason == getattr(aec, expected_reason)
 
 
 @pytest.mark.parametrize(
@@ -675,7 +674,7 @@ def test_assess_reference_input_declared_v4_fails_closed(stats, reason):
     result, startup_grace = assessed
     assert result.status == "fail"
     assert startup_grace is False
-    assert result.reason == getattr(doctor.aec, reason)
+    assert result.reason == getattr(aec, reason)
 
 
 @pytest.mark.parametrize(
@@ -706,9 +705,9 @@ def test_assess_reference_input_rejects_untrusted_numeric_fields(field, value):
     # branch/reason from the shared nonnegative-float validator every other
     # field here goes through).
     assert result.reason == (
-        doctor.aec.REASON_REF_CONTRACT_INVALID_FRAMES_ENQUEUED
+        aec.REASON_REF_CONTRACT_INVALID_FRAMES_ENQUEUED
         if field == "frames_enqueued"
-        else doctor.aec.REASON_REF_CONTRACT_INVALID_NUMERIC
+        else aec.REASON_REF_CONTRACT_INVALID_NUMERIC
     )
 
 
@@ -751,9 +750,9 @@ def test_assess_reference_input_ignores_wall_clock_jumps(
     assert fresh is not None and fresh[0].status == "ok" and fresh[1] is False
     assert startup is not None and startup[0].status == "ok" and startup[1] is True
     assert stale is not None and stale[0].status == "fail"
-    assert fresh[0].reason == doctor.aec.REASON_REF_RECEIVER_CURRENT
-    assert startup[0].reason == doctor.aec.REASON_REF_STARTUP_GRACE
-    assert stale[0].reason == doctor.aec.REASON_REF_RECEIVER_STALE
+    assert fresh[0].reason == aec.REASON_REF_RECEIVER_CURRENT
+    assert startup[0].reason == aec.REASON_REF_STARTUP_GRACE
+    assert stale[0].reason == aec.REASON_REF_RECEIVER_STALE
 
 
 def test_assess_reference_input_young_process_gets_explicit_grace():
@@ -769,7 +768,7 @@ def test_assess_reference_input_young_process_gets_explicit_grace():
     result, startup_grace = assessed
     assert result.status == "ok"
     assert startup_grace is True
-    assert result.reason == doctor.aec.REASON_REF_STARTUP_GRACE
+    assert result.reason == aec.REASON_REF_STARTUP_GRACE
 
 
 @pytest.mark.parametrize(
@@ -789,7 +788,7 @@ def test_reference_input_failure_localizes_outputd_without_using_it_as_proof(
     """Regardless of what outputd's own STATUS looks like — missing, an
     unmatched target, inactive, or unreadable — a stale receiver never gets
     talked back into a pass by anything outputd claims about the sender."""
-    assessed = doctor.aec._assess_aec_reference_input_from_stats(
+    assessed = aec._assess_aec_reference_input_from_stats(
         _reference_input_stats(last_frame_age_ms=9_000),
         1_000.0,
         configured_source="outputd_udp",
@@ -801,7 +800,7 @@ def test_reference_input_failure_localizes_outputd_without_using_it_as_proof(
     assert assessed is not None
     result, _startup_grace = assessed
     assert result.status == "fail"
-    assert result.reason == doctor.aec.REASON_REF_RECEIVER_STALE
+    assert result.reason == aec.REASON_REF_RECEIVER_STALE
 
 
 def test_assess_reference_input_historical_starvation_does_not_fail_recent_ref():
@@ -822,7 +821,7 @@ def test_assess_reference_input_non_udp_sources_keep_journal_policy(
     configured_source,
 ):
     assert (
-        doctor.aec._assess_aec_reference_input_from_stats(
+        aec._assess_aec_reference_input_from_stats(
             _reference_input_stats(),
             1_000.0,
             configured_source=configured_source,
@@ -848,9 +847,9 @@ def _install_reference_health_check_fakes(
     monkeypatch.setenv("JASPER_AEC_OUTPUTD_REF_UDP_HOST", "127.0.0.1")
     monkeypatch.setenv("JASPER_AEC_OUTPUTD_REF_UDP_PORT", "9891")
     monkeypatch.setenv("JASPER_AEC_BRIDGE_STATS_PATH", str(stats_path))
-    monkeypatch.setattr(doctor.aec.time, "monotonic", lambda: 1_000.0)
-    monkeypatch.setattr(doctor.aec.time, "time", lambda: 50_000.0)
-    monkeypatch.setattr(doctor.aec, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(aec.time, "monotonic", lambda: 1_000.0)
+    monkeypatch.setattr(aec.time, "time", lambda: 50_000.0)
+    monkeypatch.setattr(aec, "_parked_follower_result", lambda _label: None)
     _stub_unit_active_states(monkeypatch, {"jasper-aec-bridge.service": "active"})
     calls: list[list[str]] = []
 
@@ -859,7 +858,7 @@ def _install_reference_health_check_fakes(
         return _active_outputd_reference_status()
 
     monkeypatch.setattr(
-        doctor.aec,
+        aec,
         "_read_outputd_status_for_aec_reference",
         fake_outputd_status,
     )
@@ -870,7 +869,7 @@ def _install_reference_health_check_fakes(
             return SimpleNamespace(returncode=0, stdout=journal, stderr="")
         raise AssertionError(f"unexpected command: {command!r}")
 
-    monkeypatch.setattr(doctor.aec, "_run", fake_run)
+    monkeypatch.setattr(aec, "_run", fake_run)
     return calls
 
 
@@ -942,13 +941,13 @@ def test_check_reference_freshness_and_content(
         journal=journal,
     )
     monkeypatch.setattr(
-        doctor.aec, "_loopback_playback_active", lambda: loopback_active
+        aec, "_loopback_playback_active", lambda: loopback_active
     )
 
-    result = doctor.aec.check_aec_bridge_output_health()
+    result = aec.check_aec_bridge_output_health()
 
     assert result.status == expected_status
-    assert result.reason == getattr(doctor.aec, expected_reason)
+    assert result.reason == getattr(aec, expected_reason)
     assert any(c[0] == "journalctl" for c in calls) == journalctl_called
     assert sum(c[0] == "outputd-status" for c in calls) == outputd_status_calls
 
@@ -981,10 +980,10 @@ def test_check_declared_v4_never_ages_from_fail_into_journal_fallback(
         journal="",
     )
 
-    result = doctor.aec.check_aec_bridge_output_health()
+    result = aec.check_aec_bridge_output_health()
 
     assert result.status == "fail"
-    assert result.reason == getattr(doctor.aec, reason)
+    assert result.reason == getattr(aec, reason)
     assert not any(command[0] == "journalctl" for command in calls)
     assert sum(command[0] == "outputd-status" for command in calls) == 1
 
@@ -1002,10 +1001,10 @@ def test_check_malformed_declared_v4_fails_without_row_traceback(
         journal="",
     )
 
-    result = doctor.aec.check_aec_bridge_output_health()
+    result = aec.check_aec_bridge_output_health()
 
     assert result.status == "fail"
-    assert result.reason == doctor.aec.REASON_REF_CONTRACT_MISSING_FIELD
+    assert result.reason == aec.REASON_REF_CONTRACT_MISSING_FIELD
     assert not any(command[0] == "journalctl" for command in calls)
     assert sum(command[0] == "outputd-status" for command in calls) == 1
 
@@ -1024,12 +1023,12 @@ def test_check_oversized_json_integer_preserves_fallback_without_traceback(
         stats=oversized,
         journal="",
     )
-    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: False)
+    monkeypatch.setattr(aec, "_loopback_playback_active", lambda: False)
 
-    result = doctor.aec.check_aec_bridge_output_health()
+    result = aec.check_aec_bridge_output_health()
 
     assert result.status == "warn"
-    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_NO_WINDOWS
+    assert result.reason == aec.REASON_BRIDGE_OUTPUT_NO_WINDOWS
     assert any(command[0] == "journalctl" for command in calls)
     assert not any(command[0] == "outputd-status" for command in calls)
 
@@ -1047,7 +1046,7 @@ def test_applied_reference_source_reads_the_v4_receiver_not_the_legacy_plan():
         "ref_source": "alsa",
     }
 
-    assert doctor.aec._applied_reference_source(stats) == "outputd_udp"
+    assert aec._applied_reference_source(stats) == "outputd_udp"
 
 
 @pytest.mark.parametrize(
@@ -1076,13 +1075,13 @@ def test_applied_reference_source_is_fail_soft(mutate):
     stats = _reference_input_stats()
     mutate(stats)
 
-    assert doctor.aec._applied_reference_source(stats) is None
+    assert aec._applied_reference_source(stats) is None
 
 
 @pytest.mark.parametrize("stats", [None, {}, "not-a-dict", 4])
 def test_applied_reference_source_tolerates_a_missing_snapshot(stats):
     """No snapshot (or a non-object one) is the rolling-deploy path."""
-    assert doctor.aec._applied_reference_source(stats) is None
+    assert aec._applied_reference_source(stats) is None
 
 
 def test_stale_env_ref_source_still_runs_the_authoritative_check(
@@ -1104,12 +1103,12 @@ def test_stale_env_ref_source_still_runs_the_authoritative_check(
         journal="",
     )
     monkeypatch.setenv("JASPER_AEC_REF_SOURCE", "alsa")
-    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: False)
+    monkeypatch.setattr(aec, "_loopback_playback_active", lambda: False)
 
-    result = doctor.aec.check_aec_bridge_output_health()
+    result = aec.check_aec_bridge_output_health()
 
     assert result.status == "fail"
-    assert result.reason == doctor.aec.REASON_REF_RECEIVER_STALE
+    assert result.reason == aec.REASON_REF_RECEIVER_STALE
     assert not any(command[0] == "journalctl" for command in calls)
     assert sum(command[0] == "outputd-status" for command in calls) == 1
 
@@ -1134,10 +1133,10 @@ def test_env_route_still_reaches_the_receiver_identity_fail(
         journal="",
     )
 
-    result = doctor.aec.check_aec_bridge_output_health()
+    result = aec.check_aec_bridge_output_health()
 
     assert result.status == "fail"
-    assert result.reason == doctor.aec.REASON_REF_ROUTE_MISMATCH
+    assert result.reason == aec.REASON_REF_ROUTE_MISMATCH
     assert not any(command[0] == "journalctl" for command in calls)
 
 
@@ -1168,12 +1167,12 @@ def test_stale_env_inside_startup_grace_converges_to_ok(
         journal=predecessor_silent_ref,
     )
     monkeypatch.setenv("JASPER_AEC_REF_SOURCE", "alsa")
-    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: True)
+    monkeypatch.setattr(aec, "_loopback_playback_active", lambda: True)
 
-    result = doctor.aec.check_aec_bridge_output_health()
+    result = aec.check_aec_bridge_output_health()
 
     assert result.status == "ok"
-    assert result.reason == doctor.aec.REASON_REF_STARTUP_GRACE
+    assert result.reason == aec.REASON_REF_STARTUP_GRACE
     assert not any(command[0] == "journalctl" for command in calls)
 
 
@@ -1198,12 +1197,12 @@ def test_the_same_box_past_the_startup_grace_fails(
         journal=predecessor_silent_ref,
     )
     monkeypatch.setenv("JASPER_AEC_REF_SOURCE", "alsa")
-    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: True)
+    monkeypatch.setattr(aec, "_loopback_playback_active", lambda: True)
 
-    result = doctor.aec.check_aec_bridge_output_health()
+    result = aec.check_aec_bridge_output_health()
 
     assert result.status == "fail"
-    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_REF_SILENT_UNCONFIRMED
+    assert result.reason == aec.REASON_BRIDGE_OUTPUT_REF_SILENT_UNCONFIRMED
     assert any(command[0] == "journalctl" for command in calls)
 
 
@@ -1226,12 +1225,12 @@ def test_neither_route_outputd_keeps_the_journal_fallback(
         journal="",
     )
     monkeypatch.setenv("JASPER_AEC_REF_SOURCE", "alsa")
-    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: False)
+    monkeypatch.setattr(aec, "_loopback_playback_active", lambda: False)
 
-    result = doctor.aec.check_aec_bridge_output_health()
+    result = aec.check_aec_bridge_output_health()
 
     assert result.status == "warn"
-    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_NO_WINDOWS
+    assert result.reason == aec.REASON_BRIDGE_OUTPUT_NO_WINDOWS
     assert any(command[0] == "journalctl" for command in calls)
     assert not any(command[0] == "outputd-status" for command in calls)
 
@@ -1259,12 +1258,12 @@ def test_check_fresh_v4_journal_failure_uses_monotonic_identity(
         ),
         journal=silent_ref,
     )
-    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: True)
+    monkeypatch.setattr(aec, "_loopback_playback_active", lambda: True)
 
-    result = doctor.aec.check_aec_bridge_output_health()
+    result = aec.check_aec_bridge_output_health()
 
     assert result.status == "fail"
-    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_REF_SILENT_UNCONFIRMED
+    assert result.reason == aec.REASON_BRIDGE_OUTPUT_REF_SILENT_UNCONFIRMED
     assert sum(command[0] == "outputd-status" for command in calls) == 1
 
 
@@ -1286,14 +1285,14 @@ def test_check_fresh_v4_identity_overrides_contradictory_legacy_plan(
         stats=stats,
         journal=silent_ref,
     )
-    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: True)
+    monkeypatch.setattr(aec, "_loopback_playback_active", lambda: True)
 
-    result = doctor.aec.check_aec_bridge_output_health()
+    result = aec.check_aec_bridge_output_health()
 
     assert result.status == "fail"
     # v4 wins: had the contradictory legacy `alsa` plan been used instead,
     # provenance would be unresolved and the reason would stay generic.
-    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_REF_SILENT_UNCONFIRMED
+    assert result.reason == aec.REASON_BRIDGE_OUTPUT_REF_SILENT_UNCONFIRMED
     assert sum(command[0] == "outputd-status" for command in calls) == 1
 
 
@@ -1323,12 +1322,12 @@ def test_check_legacy_non_outputd_fallback_skips_status(
         stats=stats,
         journal=silent_ref,
     )
-    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: True)
+    monkeypatch.setattr(aec, "_loopback_playback_active", lambda: True)
 
-    result = doctor.aec.check_aec_bridge_output_health()
+    result = aec.check_aec_bridge_output_health()
 
     assert result.status == "fail"
-    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_REF_SILENT
+    assert result.reason == aec.REASON_BRIDGE_OUTPUT_REF_SILENT
     assert not any(command[0] == "outputd-status" for command in calls)
 
 
@@ -1357,7 +1356,7 @@ def test_assess_dtln_engine_loaded_returns_ok():
     """Happy path: bridge logged a successful engine-init line."""
     r = aec._assess_dtln_engine(_dtln_loaded_line(size=256))
     assert r.status == "ok"
-    assert r.reason == doctor.aec.REASON_DTLN_LOADED_FROM_JOURNAL
+    assert r.reason == aec.REASON_DTLN_LOADED_FROM_JOURNAL
 
 
 def test_assess_dtln_engine_load_failed_returns_fail():
@@ -1371,7 +1370,7 @@ def test_assess_dtln_engine_load_failed_returns_fail():
         _dtln_failed_line(reason="DTLN ONNX models missing in /var/lib/jasper/dtln")
     )
     assert r.status == "fail"
-    assert r.reason == doctor.aec.REASON_DTLN_LOAD_FAILED
+    assert r.reason == aec.REASON_DTLN_LOAD_FAILED
 
 
 def test_assess_dtln_engine_no_marker_warns():
@@ -1380,7 +1379,7 @@ def test_assess_dtln_engine_no_marker_warns():
     env var was set."""
     r = aec._assess_dtln_engine("some unrelated log lines\nbridge boot\n")
     assert r.status == "warn"
-    assert r.reason == doctor.aec.REASON_DTLN_NO_INIT_LINE
+    assert r.reason == aec.REASON_DTLN_NO_INIT_LINE
 
 
 def test_assess_dtln_engine_picks_most_recent_marker():
@@ -1396,7 +1395,7 @@ def test_assess_dtln_engine_picks_most_recent_marker():
     )
     r = aec._assess_dtln_engine(journal)
     assert r.status == "ok"
-    assert r.reason == doctor.aec.REASON_DTLN_LOADED_FROM_JOURNAL
+    assert r.reason == aec.REASON_DTLN_LOADED_FROM_JOURNAL
 
 
 def test_check_dtln_skips_when_env_disabled(monkeypatch):
@@ -1407,7 +1406,7 @@ def test_check_dtln_skips_when_env_disabled(monkeypatch):
     monkeypatch.delenv("JASPER_AEC_DTLN_ENABLED", raising=False)
     r = aec.check_aec_bridge_dtln_engine()
     assert r.status == "ok"
-    assert r.reason == doctor.aec.REASON_DTLN_DISABLED
+    assert r.reason == aec.REASON_DTLN_DISABLED
 
 
 def _install_fake_dtln_registry(monkeypatch, tmp_path: Path):
@@ -1455,7 +1454,7 @@ def test_check_dtln_uses_configured_model_size(monkeypatch, tmp_path: Path):
     r = aec.check_aec_bridge_dtln_engine()
 
     assert r.status == "skipped"
-    assert r.reason == doctor.aec.REASON_DTLN_BRIDGE_NOT_RUNNING
+    assert r.reason == aec.REASON_DTLN_BRIDGE_NOT_RUNNING
 
 
 @pytest.mark.parametrize(
@@ -1496,7 +1495,7 @@ def test_check_dtln_fails_when_model_assets_or_size_are_bad(
     r = aec.check_aec_bridge_dtln_engine()
 
     assert r.status == "fail"
-    assert r.reason == getattr(doctor.aec, reason)
+    assert r.reason == getattr(aec, reason)
 
 # --------------------------------- Chip-AEC alignment: the record, unaltered
 # ---------------------------------------------------------------------------
@@ -1545,13 +1544,13 @@ def test_chip_aec_alignment_row_follows_the_published_record(
     """One row per published verdict: the record's status decides the doctor
     result."""
 
-    result = doctor.aec._assess_chip_aec_alignment(
+    result = aec._assess_chip_aec_alignment(
         _alignment_env(status), "xvf_chip_aec",
     )
 
     assert result.name == "Chip-AEC alignment"
     assert result.status == expected_result
-    assert result.reason == getattr(doctor.aec, expected_reason)
+    assert result.reason == getattr(aec, expected_reason)
 
 
 @pytest.mark.parametrize(
@@ -1572,16 +1571,16 @@ def test_chip_aec_alignment_row_serves_only_the_stamped_selection(
     an operator who toggles a leg lands on `custom` and must not keep getting
     a warning with a commission command behind it."""
 
-    result = doctor.aec._assess_chip_aec_alignment(
+    result = aec._assess_chip_aec_alignment(
         _alignment_env(chip_aec_health.STATUS_FAULT, selection=stamp),
         reading_selection,
     )
 
     assert result.status == ("warn" if owned else "ok")
     assert result.reason == (
-        doctor.aec.REASON_ALIGNMENT_NOT_READY
+        aec.REASON_ALIGNMENT_NOT_READY
         if owned
-        else doctor.aec.REASON_ALIGNMENT_NO_VERDICT
+        else aec.REASON_ALIGNMENT_NO_VERDICT
     )
 
 
@@ -1628,13 +1627,13 @@ def test_aec_mode_file_readers_share_one_parser(
     path = tmp_path / "aec_mode.env"
     if body is not None:
         path.write_text(body)
-    monkeypatch.setattr(doctor.aec, "DEFAULT_AEC_MODE_PATH", path)
+    monkeypatch.setattr(aec, "DEFAULT_AEC_MODE_PATH", path)
     monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(path))
 
     assert (
-        doctor.aec._aec_mode_setting(),
-        doctor.aec._aec_profile_setting(),
-        doctor.aec._wake_leg_setting("JASPER_WAKE_LEG_RAW", True),
+        aec._aec_mode_setting(),
+        aec._aec_profile_setting(),
+        aec._wake_leg_setting("JASPER_WAKE_LEG_RAW", True),
     ) == expected
     state = aec_endpoints._read_aec_state()
     assert (state["mode"], state["leg_raw"]) == (expected[0], expected[2])
@@ -1646,14 +1645,14 @@ def test_aec_mode_file_readers_share_one_parser(
 
 
 def test_audio_profile_doctor_check_reports_active_chip_profile(monkeypatch):
-    monkeypatch.setattr(doctor.aec, "_aec_mode_setting", lambda: "auto")
+    monkeypatch.setattr(aec, "_aec_mode_setting", lambda: "auto")
     settings = {
         "JASPER_WAKE_LEG_RAW": True,
         "JASPER_WAKE_LEG_DTLN": False,
         "JASPER_WAKE_LEG_CHIP_AEC": True,
     }
     monkeypatch.setattr(
-        doctor.aec,
+        aec,
         "_wake_leg_setting",
         lambda key, default: settings.get(key, default),
     )
@@ -1682,7 +1681,7 @@ def test_audio_profile_doctor_check_reports_active_chip_profile(monkeypatch):
     result = aec._assess_audio_profile(status)
 
     assert result.status == "ok"
-    assert result.reason == doctor.aec.REASON_AUDIO_PROFILE_OK
+    assert result.reason == aec.REASON_AUDIO_PROFILE_OK
 
 
 def test_aec_bridge_running_does_not_re_render_the_audio_profile(monkeypatch):
@@ -1693,16 +1692,16 @@ def test_aec_bridge_running_does_not_re_render_the_audio_profile(monkeypatch):
     def unexpected_status(**_kwargs):
         raise AssertionError("the running branch must not re-render /aec")
 
-    monkeypatch.setattr(doctor.aec, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(aec, "_parked_follower_result", lambda _label: None)
     _stub_unit_active_states(monkeypatch, {"jasper-aec-bridge.service": "active"})
     monkeypatch.setattr(
-        doctor.aec, "_audio_profile_status_for_doctor", unexpected_status,
+        aec, "_audio_profile_status_for_doctor", unexpected_status,
     )
 
-    result = doctor.aec.check_aec_bridge_running()
+    result = aec.check_aec_bridge_running()
 
     assert result.status == "ok"
-    assert result.reason == doctor.aec.REASON_BRIDGE_RUNNING
+    assert result.reason == aec.REASON_BRIDGE_RUNNING
 
 
 def test_aec_bridge_down_during_commissioning_is_intentional_not_a_failure(
@@ -1712,15 +1711,15 @@ def test_aec_bridge_down_during_commissioning_is_intentional_not_a_failure(
     must report that as the intended state, not a red bridge failure with a
     restart remedy."""
 
-    monkeypatch.setattr(doctor.aec, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(aec, "_parked_follower_result", lambda _label: None)
     _stub_unit_active_states(
         monkeypatch, {"jasper-aec-commission.service": "activating"},
     )
 
-    result = doctor.aec.check_aec_bridge_running()
+    result = aec.check_aec_bridge_running()
 
     assert result.status == "ok"
-    assert result.reason == doctor.aec.REASON_BRIDGE_COMMISSIONING
+    assert result.reason == aec.REASON_BRIDGE_COMMISSIONING
 
 
 def test_aec_bridge_down_separates_a_withheld_verdict_from_a_dead_bridge(
@@ -1734,34 +1733,34 @@ def test_aec_bridge_down_separates_a_withheld_verdict_from_a_dead_bridge(
 
     marker = tmp_path / "aec-bridge-ready"
     monkeypatch.setenv("JASPER_AEC_BRIDGE_READY_MARKER", str(marker))
-    monkeypatch.setattr(doctor.aec, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(aec, "_parked_follower_result", lambda _label: None)
     _stub_unit_active_states(monkeypatch, {})
-    monkeypatch.setattr(doctor.aec, "_aec_mode_setting", lambda: "auto")
+    monkeypatch.setattr(aec, "_aec_mode_setting", lambda: "auto")
     monkeypatch.setattr(
         xvf3800,
         "capture_channels",
         lambda: xvf3800.RECOMMENDED_FIRMWARE.capture_channels,
     )
 
-    withheld = doctor.aec.check_aec_bridge_running()
+    withheld = aec.check_aec_bridge_running()
     marker.write_text("reason=systemd\n")
-    admitted = doctor.aec.check_aec_bridge_running()
+    admitted = aec.check_aec_bridge_running()
 
     assert withheld.status == "fail"
     assert admitted.status == "fail"
-    assert withheld.reason == doctor.aec.REASON_BRIDGE_DOWN_READY_ABSENT
-    assert admitted.reason == doctor.aec.REASON_BRIDGE_DOWN_READY_PRESENT
+    assert withheld.reason == aec.REASON_BRIDGE_DOWN_READY_ABSENT
+    assert admitted.reason == aec.REASON_BRIDGE_DOWN_READY_PRESENT
 
 
 def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
-    monkeypatch.setattr(doctor.aec, "_aec_mode_setting", lambda: "auto")
+    monkeypatch.setattr(aec, "_aec_mode_setting", lambda: "auto")
     settings = {
         "JASPER_WAKE_LEG_RAW": True,
         "JASPER_WAKE_LEG_DTLN": False,
         "JASPER_WAKE_LEG_CHIP_AEC": True,
     }
     monkeypatch.setattr(
-        doctor.aec,
+        aec,
         "_wake_leg_setting",
         lambda key, default: settings.get(key, default),
     )
@@ -1795,18 +1794,18 @@ def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
     result = aec._assess_audio_profile(status)
 
     assert result.status == "warn"
-    assert result.reason == doctor.aec.REASON_AUDIO_PROFILE_NEEDS_ATTENTION
+    assert result.reason == aec.REASON_AUDIO_PROFILE_NEEDS_ATTENTION
 
 
 def test_audio_profile_doctor_check_names_stale_saved_aec_card(monkeypatch):
-    monkeypatch.setattr(doctor.aec, "_aec_mode_setting", lambda: "auto")
+    monkeypatch.setattr(aec, "_aec_mode_setting", lambda: "auto")
     settings = {
         "JASPER_WAKE_LEG_RAW": False,
         "JASPER_WAKE_LEG_DTLN": False,
         "JASPER_WAKE_LEG_CHIP_AEC": True,
     }
     monkeypatch.setattr(
-        doctor.aec,
+        aec,
         "_wake_leg_setting",
         lambda key, default: settings.get(key, default),
     )
@@ -1832,7 +1831,7 @@ def test_audio_profile_doctor_check_names_stale_saved_aec_card(monkeypatch):
     result = aec._assess_audio_profile(status)
 
     assert result.status == "warn"
-    assert result.reason == doctor.aec.REASON_AUDIO_PROFILE_NEEDS_ATTENTION
+    assert result.reason == aec.REASON_AUDIO_PROFILE_NEEDS_ATTENTION
 
 
 def test_audio_validation_advisory_ok_when_chip_aec_not_requested():
@@ -1847,7 +1846,7 @@ def test_audio_validation_advisory_ok_when_chip_aec_not_requested():
     )
 
     assert result.status == "ok"
-    assert result.reason == doctor.aec.REASON_VALIDATION_NOT_CHIP_PROFILE
+    assert result.reason == aec.REASON_VALIDATION_NOT_CHIP_PROFILE
 
 
 def test_audio_validation_warns_when_chip_aec_requested_and_missing():
@@ -1862,7 +1861,7 @@ def test_audio_validation_warns_when_chip_aec_requested_and_missing():
     )
 
     assert result.status == "warn"
-    assert result.reason == doctor.aec.REASON_VALIDATION_ADVISORY
+    assert result.reason == aec.REASON_VALIDATION_ADVISORY
 
 
 def test_audio_validation_suggests_hardware_runner_when_ready_for_passive_evidence():
@@ -1877,7 +1876,7 @@ def test_audio_validation_suggests_hardware_runner_when_ready_for_passive_eviden
     )
 
     assert result.status == "warn"
-    assert result.reason == doctor.aec.REASON_VALIDATION_ADVISORY
+    assert result.reason == aec.REASON_VALIDATION_ADVISORY
 
 
 def test_audio_validation_suggests_hardware_runner_for_drift_delay_recommendation():
@@ -1892,7 +1891,7 @@ def test_audio_validation_suggests_hardware_runner_for_drift_delay_recommendatio
     )
 
     assert result.status == "warn"
-    assert result.reason == doctor.aec.REASON_VALIDATION_ADVISORY
+    assert result.reason == aec.REASON_VALIDATION_ADVISORY
 
 
 @pytest.mark.parametrize(
@@ -1927,9 +1926,9 @@ def test_audio_validation_passive_evidence_follows_dac_approval(
 
     assert result.status == expected_status
     assert result.reason == (
-        doctor.aec.REASON_VALIDATION_PASSIVE_EVIDENCE
+        aec.REASON_VALIDATION_PASSIVE_EVIDENCE
         if expected_status == "ok"
-        else doctor.aec.REASON_VALIDATION_ADVISORY
+        else aec.REASON_VALIDATION_ADVISORY
     )
 
 
@@ -1937,17 +1936,17 @@ def test_audio_validation_readiness_filters_current_hardware(monkeypatch):
     captured = {}
 
     monkeypatch.setattr(
-        doctor.aec,
+        aec,
         "_audio_profile_status_for_doctor",
         lambda: {"audio_profile": {"requested": "xvf_chip_aec"}},
     )
     monkeypatch.setattr(
-        doctor.aec,
+        aec,
         "_shared_parse_env_file",
         lambda _path: {"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"},
     )
     monkeypatch.setattr(
-        doctor.aec,
+        aec,
         "_audio_validation_filter_kwargs",
         lambda **kwargs: {
             "requested_profile": kwargs["requested_profile"],
@@ -1964,12 +1963,12 @@ def test_audio_validation_readiness_filters_current_hardware(monkeypatch):
             "artifact_path": "/var/lib/jasper/audio-validation/latest.json",
         }
 
-    monkeypatch.setattr(doctor.aec, "_audio_validation_summary", fake_summary)
+    monkeypatch.setattr(aec, "_audio_validation_summary", fake_summary)
 
     result = aec.check_audio_validation_readiness()
 
     assert result.status == "ok"
-    assert result.reason == doctor.aec.REASON_VALIDATION_CURRENT_PASS
+    assert result.reason == aec.REASON_VALIDATION_CURRENT_PASS
     assert captured == {
         "requested_profile": "xvf_chip_aec",
         "mic_id": "xvf3800",
@@ -1996,23 +1995,23 @@ def _dtln_stats(enabled: bool, loaded: bool, error=None, age_sec: float = 1.0):
 def test_assess_dtln_stats_loaded_returns_ok():
     import time as _time
 
-    r = doctor.aec._assess_dtln_engine_from_stats(
+    r = aec._assess_dtln_engine_from_stats(
         _dtln_stats(enabled=True, loaded=True),
         _time.time(),
     )
     assert r is not None and r.status == "ok"
-    assert r.reason == doctor.aec.REASON_DTLN_LOADED_FROM_STATS
+    assert r.reason == aec.REASON_DTLN_LOADED_FROM_STATS
 
 
 def test_assess_dtln_stats_load_failure_returns_fail():
     import time as _time
 
-    r = doctor.aec._assess_dtln_engine_from_stats(
+    r = aec._assess_dtln_engine_from_stats(
         _dtln_stats(enabled=True, loaded=False, error="onnx missing"),
         _time.time(),
     )
     assert r is not None and r.status == "fail"
-    assert r.reason == doctor.aec.REASON_DTLN_ENGINE_UNAVAILABLE
+    assert r.reason == aec.REASON_DTLN_ENGINE_UNAVAILABLE
 
 
 def test_assess_dtln_stats_bridge_started_without_leg_warns():
@@ -2021,12 +2020,12 @@ def test_assess_dtln_stats_bridge_started_without_leg_warns():
     its own reason rather than the generic not-restarted one."""
     import time as _time
 
-    r = doctor.aec._assess_dtln_engine_from_stats(
+    r = aec._assess_dtln_engine_from_stats(
         _dtln_stats(enabled=False, loaded=False),
         _time.time(),
     )
     assert r is not None and r.status == "warn"
-    assert r.reason == doctor.aec.REASON_DTLN_NOT_STARTED_WITH_LEG
+    assert r.reason == aec.REASON_DTLN_NOT_STARTED_WITH_LEG
 
 
 def test_assess_dtln_stats_stale_or_legacy_falls_back():
@@ -2035,7 +2034,7 @@ def test_assess_dtln_stats_stale_or_legacy_falls_back():
     now = _time.time()
     # Stale snapshot (dead/old bridge process) → journal fallback.
     assert (
-        doctor.aec._assess_dtln_engine_from_stats(
+        aec._assess_dtln_engine_from_stats(
             _dtln_stats(enabled=True, loaded=True, age_sec=120.0),
             now,
         )
@@ -2043,7 +2042,7 @@ def test_assess_dtln_stats_stale_or_legacy_falls_back():
     )
     # Pre-leg_engines bridge build → journal fallback.
     assert (
-        doctor.aec._assess_dtln_engine_from_stats(
+        aec._assess_dtln_engine_from_stats(
             {"updated_epoch_sec": now},
             now,
         )
@@ -2074,19 +2073,19 @@ def test_check_dtln_prefers_stats_snapshot_over_journal(
     def _fake_run(cmd, **kwargs):
         raise AssertionError(f"unexpected subprocess: {cmd}")
 
-    monkeypatch.setattr(doctor.aec, "_run", _fake_run)
+    monkeypatch.setattr(aec, "_run", _fake_run)
 
     r = aec.check_aec_bridge_dtln_engine()
 
     assert r.status == "fail"
-    assert r.reason == doctor.aec.REASON_DTLN_ENGINE_UNAVAILABLE
+    assert r.reason == aec.REASON_DTLN_ENGINE_UNAVAILABLE
 
 # --- Optional enhanced AEC: requested-only advisory -----------------
 
 
 def test_enhanced_aec_doctor_is_quiet_and_cheap_when_not_requested(monkeypatch):
     monkeypatch.setattr(
-        doctor.aec.enhanced_aec,
+        aec.enhanced_aec,
         "read_intent",
         lambda: {"requested": False},
     )
@@ -2094,12 +2093,12 @@ def test_enhanced_aec_doctor_is_quiet_and_cheap_when_not_requested(monkeypatch):
     def unexpected_status(**_kwargs):
         raise AssertionError("status/fingerprint work must stay requested-only")
 
-    monkeypatch.setattr(doctor.aec.enhanced_aec, "status", unexpected_status)
+    monkeypatch.setattr(aec.enhanced_aec, "status", unexpected_status)
 
     result = aec.check_enhanced_aec()
 
     assert result.status == "ok"
-    assert result.reason == doctor.aec.REASON_ENHANCED_AEC_NOT_REQUESTED
+    assert result.reason == aec.REASON_ENHANCED_AEC_NOT_REQUESTED
 
 
 @pytest.mark.parametrize(
@@ -2116,18 +2115,18 @@ def test_enhanced_aec_doctor_accepts_non_actionable_states(
     reason,
 ):
     monkeypatch.setattr(
-        doctor.aec.enhanced_aec,
+        aec.enhanced_aec,
         "read_intent",
         lambda: {"requested": True},
     )
     monkeypatch.setattr(
-        doctor.aec,
+        aec,
         "_audio_profile_status_for_doctor",
         lambda: {"audio_profile": {"active": "xvf_software_aec3"}},
     )
     _stub_unit_active_states(monkeypatch, {})
     monkeypatch.setattr(
-        doctor.aec.enhanced_aec,
+        aec.enhanced_aec,
         "status",
         lambda **_kwargs: {"state": state, "detail": f"state={state}"},
     )
@@ -2135,7 +2134,7 @@ def test_enhanced_aec_doctor_accepts_non_actionable_states(
     result = aec.check_enhanced_aec()
 
     assert result.status == "ok"
-    assert result.reason == getattr(doctor.aec, reason)
+    assert result.reason == getattr(aec, reason)
 
 
 @pytest.mark.parametrize(
@@ -2144,18 +2143,18 @@ def test_enhanced_aec_doctor_accepts_non_actionable_states(
 )
 def test_enhanced_aec_doctor_warns_only_after_request(monkeypatch, state):
     monkeypatch.setattr(
-        doctor.aec.enhanced_aec,
+        aec.enhanced_aec,
         "read_intent",
         lambda: {"requested": True},
     )
     monkeypatch.setattr(
-        doctor.aec,
+        aec,
         "_audio_profile_status_for_doctor",
         lambda: {"audio_profile": {"active": "xvf_software_aec3"}},
     )
     _stub_unit_active_states(monkeypatch, {})
     monkeypatch.setattr(
-        doctor.aec.enhanced_aec,
+        aec.enhanced_aec,
         "status",
         lambda **_kwargs: {"state": state, "detail": f"state={state}"},
     )
@@ -2163,4 +2162,4 @@ def test_enhanced_aec_doctor_warns_only_after_request(monkeypatch, state):
     result = aec.check_enhanced_aec()
 
     assert result.status == "warn"
-    assert result.reason == doctor.aec.REASON_ENHANCED_AEC_UNAVAILABLE
+    assert result.reason == aec.REASON_ENHANCED_AEC_UNAVAILABLE

@@ -9,8 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.cli import doctor
-from jasper.cli.doctor import _shared, env
+from jasper.cli.doctor import _shared, env, grouping
 from jasper.cli.doctor.env import _classify_state_group_write
 
 from .doctor_test_support import _fresh_cfg, _pretend_group_is_jasper, _registered_check_names
@@ -44,7 +43,7 @@ def test_parse_env_file_missing_returns_empty(tmp_path: Path):
 
 
 def test_grouping_env_parser_uses_canonical_quote_handling():
-    out = doctor.grouping._parse_env_file(
+    out = grouping._parse_env_file(
         '# comment\nJASPER_GROUPING_ROLE="leader"\nEMPTY=\n',
     )
 
@@ -161,11 +160,11 @@ def test_state_group_write_no_files_is_ok(tmp_path):
     "name, mode, status, reason",
     [
         ("usage.db", 0o660, "ok", ""),
-        ("usage.db", 0o644, "warn", doctor.env.REASON_STATE_GROUP_WRITE_VIOLATION),
+        ("usage.db", 0o644, "warn", env.REASON_STATE_GROUP_WRITE_VIOLATION),
         # Readable by /chat but not writable by jasper-voice.
         (
             "conversation_history.db", 0o640, "warn",
-            doctor.env.REASON_STATE_GROUP_WRITE_VIOLATION,
+            env.REASON_STATE_GROUP_WRITE_VIOLATION,
         ),
     ],
     ids=["group-writable", "group-readonly", "history-group-readonly"],
@@ -226,7 +225,7 @@ def test_check_state_dir_warns_when_missing(monkeypatch, tmp_path):
     r = env.check_state_dir(cfg)
 
     assert r.status == "warn"
-    assert r.reason == doctor.env.REASON_STATE_DIR_MISSING
+    assert r.reason == env.REASON_STATE_DIR_MISSING
 
 
 def test_check_state_dir_ok_when_group_writable_without_setgid(monkeypatch, tmp_path):
@@ -262,4 +261,4 @@ def test_check_state_dir_fails_when_not_group_writable(monkeypatch, tmp_path):
     r = env.check_state_dir(cfg)
 
     assert r.status == "fail"
-    assert r.reason == doctor.env.REASON_STATE_DIR_NOT_WRITABLE
+    assert r.reason == env.REASON_STATE_DIR_NOT_WRITABLE

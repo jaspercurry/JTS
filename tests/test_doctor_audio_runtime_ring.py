@@ -57,7 +57,6 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
     from jasper.audio_runtime_plan import (
         output_endpoint_evidence_from_statefiles as _real_endpoint_evidence,
     )
-    from jasper.cli.doctor import audio_runtime_ring as _audio_runtime
     from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 
     # ONE on-disk statefile pair drives BOTH halves — no stubbed evidence
@@ -117,10 +116,10 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
 
     # Half two: the check that OWNS the split still fails on it — off the same
     # statefile half one just read.
-    split = _audio_runtime.check_ring_split_transport()
+    split = audio_runtime_ring.check_ring_split_transport()
 
     assert split.status == "fail", split.detail
-    assert split.reason == _audio_runtime.REASON_SPLIT_RING_UNCONSUMED
+    assert split.reason == audio_runtime_ring.REASON_SPLIT_RING_UNCONSUMED
 
 
 # ---- renderer ring lanes: the unarmed fleet default is healthy ----------
@@ -136,7 +135,7 @@ def test_unarmed_renderer_lanes_report_skipped(monkeypatch):
     import jasper.renderer_lanes as rl
 
     monkeypatch.setattr(rl, "read_armed_labels", lambda *a, **kw: ())
-    result = doctor.audio_runtime_ring.check_renderer_ring_lanes()
+    result = audio_runtime_ring.check_renderer_ring_lanes()
     assert result.status == "skipped"
     assert result.reason == audio_runtime_ring.REASON_RENDERER_LANES_UNARMED
 
@@ -150,7 +149,7 @@ def test_unarmed_renderer_lanes_exit_zero_through_render(monkeypatch, capsys):
     import jasper.renderer_lanes as rl
 
     monkeypatch.setattr(rl, "read_armed_labels", lambda *a, **kw: ())
-    result = doctor.audio_runtime_ring.check_renderer_ring_lanes()
+    result = audio_runtime_ring.check_renderer_ring_lanes()
     exit_code = doctor.render([result])
     capsys.readouterr()  # swallow render()'s printed report
     assert exit_code == 0
@@ -193,7 +192,7 @@ def test_armed_on_demand_lane_resting_state_is_healthy(monkeypatch):
         f"status:{FANIN_STATUS_SOCKET}",
         _evidence.StatusRead({"inputs": [_resting_ring_entry("correction")]}),
     )
-    result = doctor.audio_runtime_ring.check_renderer_ring_lanes()
+    result = audio_runtime_ring.check_renderer_ring_lanes()
     assert result.status == "ok"
     assert result.reason == ""
 
@@ -218,7 +217,7 @@ def test_armed_daemon_lane_never_fed_still_warns(monkeypatch):
             }
         ),
     )
-    result = doctor.audio_runtime_ring.check_renderer_ring_lanes()
+    result = audio_runtime_ring.check_renderer_ring_lanes()
     assert result.status == "warn"
     # The daemon lane is the problem; the on-demand lane beside it is not.
     assert result.reason == audio_runtime_ring.REASON_RENDERER_LANE_NEVER_FED

@@ -23,9 +23,9 @@ from unittest.mock import patch
 
 import pytest
 
-from jasper.cli import doctor
 from jasper.cli.doctor import _evidence
 from jasper.cli.doctor import network as doctor_network
+from jasper.cli.doctor import web
 from jasper.usb_network import (
     IPv4Observation,
     IPv4ObservationState,
@@ -88,9 +88,9 @@ def test_active_wifi_connection_requests_the_colon_safe_field_order(monkeypatch)
     contains its own colon. The parse itself is pinned on the shared function
     (tests/test_wifi_guardian_persistence.py)."""
     fake_run = _nmcli_active_run("802-11-wireless:wlan0:Home\\:2.4G\n")
-    monkeypatch.setattr(doctor.network, "_run", fake_run)
+    monkeypatch.setattr(doctor_network, "_run", fake_run)
 
-    assert doctor.network._active_wifi_connection("nmcli") == ("Home:2.4G", "wlan0")
+    assert doctor_network._active_wifi_connection("nmcli") == ("Home:2.4G", "wlan0")
     assert "TYPE,DEVICE,NAME" in fake_run.calls[0]
 
 
@@ -100,8 +100,8 @@ def test_active_wifi_connection_nonzero_returncode(monkeypatch):
     def fake_run(argv, *a, **kw):
         return _completed(argv, returncode=1)
 
-    monkeypatch.setattr(doctor.network, "_run", fake_run)
-    assert doctor.network._active_wifi_connection("nmcli") == (None, None)
+    monkeypatch.setattr(doctor_network, "_run", fake_run)
+    assert doctor_network._active_wifi_connection("nmcli") == (None, None)
 
 
 # ---------------------------------------------------- check_wifi_regdom
@@ -117,7 +117,7 @@ def _patch_doctor_iw_reg_get(monkeypatch, stdout: str, returncode: int = 0):
             stderr="boom" if returncode else "",
         )
 
-    monkeypatch.setattr(doctor.network, "_run", fake_run)
+    monkeypatch.setattr(doctor_network, "_run", fake_run)
 
 
 def test_check_wifi_regdom_ok_when_global_country_valid_and_phy_unlabeled(
@@ -197,7 +197,7 @@ def _mock_nmcli_proc(stdout: str = "", returncode: int = 0):
 
 
 def _patch_doctor_nmcli(monkeypatch, response_stack):
-    """Patch shutil.which to return a path and doctor._run to return
+    """Patch shutil.which to return a path and doctor_network._run to return
     the next CompletedProcess in response_stack for each call.
 
     Each entry can be either a string (treated as stdout, rc=0) or
@@ -221,7 +221,7 @@ def _patch_doctor_nmcli(monkeypatch, response_stack):
             return _mock_nmcli_proc(stdout=r)
         return r
 
-    monkeypatch.setattr(doctor.network, "_run", fake_run)
+    monkeypatch.setattr(doctor_network, "_run", fake_run)
 
 
 def test_check_wifi_guardian_ok_when_stash_matches_active(
@@ -439,7 +439,7 @@ def test_check_avahi_jasper_control_ok_on_partial_timeout(monkeypatch):
     the local service. That is still evidence that jasper-control is
     advertised; it should not crash the whole doctor run."""
     monkeypatch.setattr(
-        doctor.network.shutil,
+        doctor_network.shutil,
         "which",
         lambda name: "/usr/bin/avahi-browse" if name == "avahi-browse" else None,
     )
@@ -453,7 +453,7 @@ def test_check_avahi_jasper_control_ok_on_partial_timeout(monkeypatch):
             ),
         )
 
-    monkeypatch.setattr(doctor.network, "_run", fake_run)
+    monkeypatch.setattr(doctor_network, "_run", fake_run)
 
     r = doctor_network.check_avahi_jasper_control()
 
@@ -465,7 +465,7 @@ def test_check_avahi_jasper_control_fails_on_timeout_without_service(
     monkeypatch,
 ):
     monkeypatch.setattr(
-        doctor.network.shutil,
+        doctor_network.shutil,
         "which",
         lambda name: "/usr/bin/avahi-browse" if name == "avahi-browse" else None,
     )
@@ -473,7 +473,7 @@ def test_check_avahi_jasper_control_fails_on_timeout_without_service(
     def fake_run(cmd, timeout=5.0):
         raise subprocess.TimeoutExpired(cmd, timeout, output="")
 
-    monkeypatch.setattr(doctor.network, "_run", fake_run)
+    monkeypatch.setattr(doctor_network, "_run", fake_run)
 
     r = doctor_network.check_avahi_jasper_control()
 
@@ -485,7 +485,7 @@ def test_check_avahi_jasper_control_fails_on_timeout_without_service(
 
 
 def test_check_wifi_recover_timer_enabled_ok(monkeypatch):
-    monkeypatch.setattr(doctor.network.shutil, "which", lambda _x: "/usr/bin/systemctl")
+    monkeypatch.setattr(doctor_network.shutil, "which", lambda _x: "/usr/bin/systemctl")
     _seed_unit_states(**{
         "jasper-wifi-recover.timer": {
             "load_state": "loaded", "unit_file_state": "enabled",
@@ -497,7 +497,7 @@ def test_check_wifi_recover_timer_enabled_ok(monkeypatch):
 
 
 def test_check_wifi_recover_timer_disabled_warns(monkeypatch):
-    monkeypatch.setattr(doctor.network.shutil, "which", lambda _x: "/usr/bin/systemctl")
+    monkeypatch.setattr(doctor_network.shutil, "which", lambda _x: "/usr/bin/systemctl")
     _seed_unit_states(**{
         "jasper-wifi-recover.timer": {
             "load_state": "loaded", "unit_file_state": "disabled",
@@ -510,7 +510,7 @@ def test_check_wifi_recover_timer_disabled_warns(monkeypatch):
 
 def test_check_wifi_recover_timer_not_installed_skips(monkeypatch):
     """A dev box with systemctl but no JTS units: skip, don't warn."""
-    monkeypatch.setattr(doctor.network.shutil, "which", lambda _x: "/usr/bin/systemctl")
+    monkeypatch.setattr(doctor_network.shutil, "which", lambda _x: "/usr/bin/systemctl")
     _seed_unit_states(**{"jasper-wifi-recover.timer": {"load_state": "not-found"}})
     r = doctor_network.check_wifi_recover_timer()
     assert r.status == "skipped"
@@ -518,7 +518,7 @@ def test_check_wifi_recover_timer_not_installed_skips(monkeypatch):
 
 
 def test_check_wifi_recover_timer_no_systemctl_skips(monkeypatch):
-    monkeypatch.setattr(doctor.network.shutil, "which", lambda _x: None)
+    monkeypatch.setattr(doctor_network.shutil, "which", lambda _x: None)
     r = doctor_network.check_wifi_recover_timer()
     assert r.status == "skipped"
     assert r.reason == doctor_network.REASON_RECOVER_TIMER_SKIPPED_NO_SYSTEMCTL
@@ -1119,7 +1119,7 @@ def test_usbnet_probe_skips_no_nginx_site(monkeypatch, tmp_path):
     net_root = tmp_path / "sys-class-net"
     (net_root / "usb0").mkdir(parents=True)
     monkeypatch.setattr(doctor_network, "USBNET_SYS_CLASS_NET", net_root)
-    monkeypatch.setattr(doctor.web, "NGINX_SITE", tmp_path / "absent.conf")
+    monkeypatch.setattr(web, "NGINX_SITE", tmp_path / "absent.conf")
     r = doctor_network.check_usbnet_management_probe()
     assert r.status == "skipped"
     assert r.reason == doctor_network.REASON_USBNET_NGINX_NOT_INSTALLED
@@ -1131,7 +1131,7 @@ def _iface_and_nginx(monkeypatch, tmp_path):
     monkeypatch.setattr(doctor_network, "USBNET_SYS_CLASS_NET", net_root)
     site = tmp_path / "jasper.conf"
     site.write_text("# nginx site\n")
-    monkeypatch.setattr(doctor.web, "NGINX_SITE", site)
+    monkeypatch.setattr(web, "NGINX_SITE", site)
 
 
 class _Resp:

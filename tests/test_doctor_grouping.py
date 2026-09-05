@@ -10,7 +10,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper.cli import doctor
 from jasper.cli.doctor import _evidence, grouping
 from jasper.multiroom.tts_route import VOICE_PARK_ENV
 from jasper.tts_routing import (
@@ -190,7 +189,7 @@ def test_check_grouping_snapcast_version_verdicts(
         "shutil.which", lambda name: f"/usr/bin/{name}" if installed else None
     )
     if run is not None:
-        monkeypatch.setattr(doctor.grouping, "_run", run)
+        monkeypatch.setattr(grouping, "_run", run)
 
     r = grouping.check_grouping_snapcast_version()
 
@@ -207,7 +206,7 @@ def test_check_grouping_snapcast_version_stdout_wins_over_stderr(monkeypatch):
     _patch_grouping(monkeypatch, _grouping_cfg(**_LEADER))
     monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(
-        doctor.grouping,
+        grouping,
         "_run",
         _probe(
             stdout="snapclient v0.31.0\n",
@@ -259,7 +258,7 @@ def test_check_grouping_household_credential_verdicts(
 
 def _active_leader_topology(monkeypatch, tmp_path):
     """An ACTIVE-LEADER context: a roleful/protected output topology plus a
-    bonded-leader grouping config. Leaves `doctor.grouping._run` patchable."""
+    bonded-leader grouping config. Leaves `grouping._run` patchable."""
     import jasper.multiroom.config as mr_config
     from jasper.output_topology import save_output_topology
     from tests.test_active_speaker_runtime_contract import _active_topology
@@ -337,13 +336,13 @@ def test_check_crossover_unit_active_leader_verdicts(
         ),
     )
     monkeypatch.setattr(
-        doctor.grouping,
+        grouping,
         "_run",
         lambda argv, *a, **kw: SimpleNamespace(
             returncode=returncode, stdout="", stderr=""
         ),
     )
-    monkeypatch.setattr(doctor.grouping.shutil, "which", lambda _n: systemd_analyze)
+    monkeypatch.setattr(grouping.shutil, "which", lambda _n: systemd_analyze)
 
     r = grouping.check_crossover_unit_installed()
 

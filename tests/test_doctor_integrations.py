@@ -8,7 +8,6 @@ from __future__ import annotations
 import pytest
 
 import jasper.citibike as citibike_mod
-from jasper.cli import doctor
 from jasper.cli.doctor import integrations
 from jasper.config import Config
 
@@ -70,7 +69,7 @@ def test_check_google_routes_verdicts(monkeypatch, vars_, status, reason):
     r = integrations.check_google_routes(cfg)
 
     assert r.status == status
-    assert r.reason == getattr(doctor.integrations, reason)
+    assert r.reason == getattr(integrations, reason)
 
 
 # ---------------------------------------------------------------- Citi Bike
@@ -117,7 +116,7 @@ def test_check_citibike_verdicts(
     r = integrations.check_citibike(cfg)
 
     assert r.status == status
-    assert r.reason == getattr(doctor.integrations, reason)
+    assert r.reason == getattr(integrations, reason)
 
 
 @pytest.mark.parametrize(
@@ -134,7 +133,7 @@ def test_check_citibike_reports_the_ebike_only_mode(monkeypatch, ebike_only, rea
 
     r = integrations.check_citibike(cfg)
 
-    assert r.reason == getattr(doctor.integrations, reason)
+    assert r.reason == getattr(integrations, reason)
 
 
 def test_check_citibike_fails_when_gbfs_unreachable(monkeypatch):
@@ -146,4 +145,4 @@ def test_check_citibike_fails_when_gbfs_unreachable(monkeypatch):
 
     r = integrations.check_citibike(cfg)
     assert r.status == "fail"
-    assert r.reason == doctor.integrations.REASON_CITIBIKE_GBFS_UNREACHABLE
+    assert r.reason == integrations.REASON_CITIBIKE_GBFS_UNREACHABLE

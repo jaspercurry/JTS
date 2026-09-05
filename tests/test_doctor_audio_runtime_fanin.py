@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 
-from jasper.cli import doctor
 from jasper.cli.doctor import _evidence, audio_runtime_fanin, audio_runtime_ring
 from jasper.cli.doctor._evidence import evidence
 from jasper.output_topology import OutputTopologyError
@@ -46,7 +45,7 @@ def _patch_asound_conf(
             return stale
         return real_path_cls(arg)
 
-    monkeypatch.setattr(doctor.audio_runtime_fanin, "Path", fake_path)
+    monkeypatch.setattr(audio_runtime_fanin, "Path", fake_path)
 
 
 _FANIN_ASOUND = """
@@ -136,11 +135,11 @@ def _host_clock_status(
 
 def test_host_clock_doctor_ok_for_l0_and_bounded_retry():
     """A locked ladder is a plain ok; a bounded acquisition says it is probing."""
-    l0 = doctor.audio_runtime_fanin._host_clock_health_from_status(_host_clock_status())
+    l0 = audio_runtime_fanin._host_clock_health_from_status(_host_clock_status())
     assert l0.status == "ok"
     assert l0.reason == ""
 
-    retry = doctor.audio_runtime_fanin._host_clock_health_from_status(
+    retry = audio_runtime_fanin._host_clock_health_from_status(
         _host_clock_status(ladder="probing", phase="retry_wait", attempt=2, retries=1)
     )
     assert retry.status == "ok"
@@ -148,7 +147,7 @@ def test_host_clock_doctor_ok_for_l0_and_bounded_retry():
 
 
 def test_host_clock_doctor_warns_on_a_persistent_l2_fallback():
-    result = doctor.audio_runtime_fanin._host_clock_health_from_status(
+    result = audio_runtime_fanin._host_clock_health_from_status(
         _host_clock_status(ladder="l2_fallback", reason="probe_noncompliant")
     )
     assert result.status == "warn"
@@ -170,7 +169,7 @@ def test_host_clock_doctor_warns_on_a_persistent_l2_fallback():
     ],
 )
 def test_host_clock_doctor_warns_on_unavailable_or_generation_mismatch(status_kwargs):
-    result = doctor.audio_runtime_fanin._host_clock_health_from_status(
+    result = audio_runtime_fanin._host_clock_health_from_status(
         _host_clock_status(**status_kwargs)
     )
     assert result.status == "warn"
@@ -337,7 +336,7 @@ def test_check_fanin_service_reports_pre_dsp_tts_loudness(monkeypatch):
     ],
 )
 def test_assistant_gain_fault_pins_the_shared_loudness_contract(loudness, faulty):
-    fault = doctor.audio_runtime_fanin._assistant_gain_fault(loudness)
+    fault = audio_runtime_fanin._assistant_gain_fault(loudness)
     assert (fault is not None) is faulty, fault
 
 
@@ -458,7 +457,7 @@ def test_fanin_asound_wiring_fails_when_the_lanes_shear_from_the_wire(
     actually resolves rather than a literal."""
     _patch_asound_conf(monkeypatch, _FANIN_ASOUND, tmp_path)
     monkeypatch.setattr(
-        doctor.audio_runtime_fanin, "read_declared_ring_wire_format", lambda: "S16_LE"
+        audio_runtime_fanin, "read_declared_ring_wire_format", lambda: "S16_LE"
     )
     r = audio_runtime_fanin.check_fanin_asound_wiring()
     assert r.status == "fail"

@@ -13,7 +13,6 @@ from types import SimpleNamespace
 import pytest
 
 from jasper import wake_models
-from jasper.cli import doctor
 from jasper.cli.doctor import wake
 
 # -------------------------------------------------- openWakeWord assets
@@ -103,7 +102,7 @@ def test_check_openwakeword_model_verdicts(
 
     assert r.status == status
     if reason:
-        assert r.reason == getattr(doctor.wake, reason)
+        assert r.reason == getattr(wake, reason)
 
 
 def test_check_openwakeword_model_missing_custom_model_points_at_the_path(
@@ -119,7 +118,7 @@ def test_check_openwakeword_model_missing_custom_model_points_at_the_path(
     r = wake.check_openwakeword_model(SimpleNamespace(wake_model=str(missing)))
 
     assert r.status == "fail"
-    assert r.reason == doctor.wake.REASON_ACTIVE_MODEL_MISSING
+    assert r.reason == wake.REASON_ACTIVE_MODEL_MISSING
 
 
 def test_check_openwakeword_model_hashes_an_active_external_model(
@@ -145,7 +144,7 @@ def test_check_openwakeword_model_hashes_an_active_external_model(
     r = wake.check_openwakeword_model(SimpleNamespace(wake_model=str(active_model)))
 
     assert r.status == "fail"
-    assert r.reason == doctor.wake.REASON_ACTIVE_MODEL_HASH_MISMATCH
+    assert r.reason == wake.REASON_ACTIVE_MODEL_HASH_MISMATCH
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +222,7 @@ def test_assess_wake_legs_verdicts(kwargs, status, reason):
     r = wake._assess_wake_legs(**kwargs)
 
     assert r.status == status
-    assert r.reason == getattr(doctor.wake, reason)
+    assert r.reason == getattr(wake, reason)
 
 
 @pytest.mark.parametrize(

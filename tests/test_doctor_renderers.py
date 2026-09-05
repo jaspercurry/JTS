@@ -11,7 +11,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper.cli import doctor
 from jasper.cli.doctor import _evidence, _shared, renderers
 from jasper.cli.doctor.renderers import _classify_mux_mode
 from jasper.music_sources import MUSIC_SOURCES
@@ -44,7 +43,7 @@ def _patch_shairport_conf(monkeypatch, conf_text: str, tmp_path: Path):
             return target
         return real_path_cls(arg)
 
-    monkeypatch.setattr(doctor.renderers, "Path", fake_path)
+    monkeypatch.setattr(renderers, "Path", fake_path)
 
 
 def _seed_bt_agent_running():
@@ -72,7 +71,7 @@ def test_check_bluetooth_pairing_policy_ok(monkeypatch):
             )
         raise AssertionError(cmd)
 
-    monkeypatch.setattr(doctor.renderers, "_run", fake_run)
+    monkeypatch.setattr(renderers, "_run", fake_run)
 
     r = renderers.check_bluetooth_pairing_policy()
 
@@ -91,7 +90,7 @@ def test_check_bluetooth_pairing_policy_fails_old_agent(monkeypatch):
             stderr="",
         )
 
-    monkeypatch.setattr(doctor.renderers, "_run", fake_run)
+    monkeypatch.setattr(renderers, "_run", fake_run)
 
     r = renderers.check_bluetooth_pairing_policy()
 
@@ -117,7 +116,7 @@ def test_check_bluetooth_pairing_policy_warns_pairable_outside_window(monkeypatc
             )
         raise AssertionError(cmd)
 
-    monkeypatch.setattr(doctor.renderers, "_run", fake_run)
+    monkeypatch.setattr(renderers, "_run", fake_run)
 
     r = renderers.check_bluetooth_pairing_policy()
 
@@ -143,7 +142,7 @@ def test_check_bluetooth_pairing_policy_warns_when_pairing_window_open(monkeypat
             )
         raise AssertionError(cmd)
 
-    monkeypatch.setattr(doctor.renderers, "_run", fake_run)
+    monkeypatch.setattr(renderers, "_run", fake_run)
 
     r = renderers.check_bluetooth_pairing_policy()
 
@@ -369,16 +368,16 @@ def test_renderer_resolvable_all_ok(monkeypatch):
     """Happy path: every renderer has a discoverable device and the
     probe succeeds for each."""
     monkeypatch.setattr(
-        doctor.renderers, "_renderer_device_shairport", lambda: "shairport_substream"
+        renderers, "_renderer_device_shairport", lambda: "shairport_substream"
     )
     monkeypatch.setattr(
-        doctor.renderers, "_renderer_device_librespot", lambda: "librespot_substream"
+        renderers, "_renderer_device_librespot", lambda: "librespot_substream"
     )
     monkeypatch.setattr(
-        doctor.renderers, "_renderer_device_bluealsa", lambda: "bluealsa_substream"
+        renderers, "_renderer_device_bluealsa", lambda: "bluealsa_substream"
     )
     monkeypatch.setattr(
-        doctor.renderers,
+        renderers,
         "_systemd_unit_user",
         lambda unit: ({
             "shairport-sync.service": "shairport-sync",
@@ -387,9 +386,9 @@ def test_renderer_resolvable_all_ok(monkeypatch):
         }[unit], "loaded"),
     )
     monkeypatch.setattr(
-        doctor.renderers,
+        renderers,
         "_probe_open_as_user",
-        lambda dev, user: (doctor.renderers.ProbeOutcome.OPENED, ""),
+        lambda dev, user: (renderers.ProbeOutcome.OPENED, ""),
     )
     r = renderers.check_renderer_device_resolvable()
     assert r.status == "ok"
@@ -480,7 +479,7 @@ class _FakeProcPath:
         return self._text
 
 
-_OUTCOME = doctor.renderers.ProbeOutcome
+_OUTCOME = renderers.ProbeOutcome
 #: librespot's ARMED device (ring ingress) and its UNARMED one (snd-aloop).
 #: An un-armed box — the fleet default, and jts3 today — resolves to the
 #: latter, so both halves of the ownership gate are live and both are driven.
@@ -661,16 +660,16 @@ def test_probe_verdict_and_check_status(
     the real ownership gate; only the probe subprocess and the two /proc reads
     are stubbed. A busy verdict is what licenses the ownership check — never a
     substitute for a probe that did not open."""
-    monkeypatch.setattr(doctor.renderers, "_renderer_device_shairport", lambda: None)
-    monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
+    monkeypatch.setattr(renderers, "_renderer_device_shairport", lambda: None)
+    monkeypatch.setattr(renderers, "_renderer_device_bluealsa", lambda: None)
     monkeypatch.setattr(
-        doctor.renderers, "_renderer_device_librespot", lambda: device
+        renderers, "_renderer_device_librespot", lambda: device
     )
     monkeypatch.setattr(
-        doctor.renderers, "_systemd_unit_user", lambda unit: ("pi", "loaded")
+        renderers, "_systemd_unit_user", lambda unit: ("pi", "loaded")
     )
     monkeypatch.setattr(
-        doctor.renderers, "_resolve_systemd_env_vars", lambda dev, unit: dev
+        renderers, "_resolve_systemd_env_vars", lambda dev, unit: dev
     )
 
     argv: list[list[str]] = []
@@ -682,7 +681,7 @@ def test_probe_verdict_and_check_status(
         returncode, stderr = probe
         return SimpleNamespace(returncode=returncode, stdout="", stderr=stderr)
 
-    monkeypatch.setattr(doctor.renderers, "_run", fake_run)
+    monkeypatch.setattr(renderers, "_run", fake_run)
     monkeypatch.setattr(
         "jasper.renderer_lanes.ring_writer_pid", lambda label: _ALOOP_OWNER_PID
     )
@@ -693,24 +692,24 @@ def test_probe_verdict_and_check_status(
         "loopback_substreams",
         {i: f"owner_pid : {_ALOOP_OWNER_PID}\n" for i in range(3)},
     )
-    real_path = doctor.renderers.Path
+    real_path = renderers.Path
 
     def fake_path(arg):
         if str(arg).startswith("/proc/"):
             return _FakeProcPath(cgroup)
         return real_path(arg)
 
-    monkeypatch.setattr(doctor.renderers, "Path", fake_path)
+    monkeypatch.setattr(renderers, "Path", fake_path)
 
-    outcome, _ = doctor.renderers._probe_open_as_user(device, "pi")
+    outcome, _ = renderers._probe_open_as_user(device, "pi")
     assert outcome is expect_outcome
     # Non-negotiable #5's command, pinned as a list rather than as source text.
     assert argv[0] == [
         "sudo", "-n", "-u", "pi",
         "env", "LC_ALL=C",
-        "timeout", doctor.renderers._PROBE_TIMEOUT_SEC,
+        "timeout", renderers._PROBE_TIMEOUT_SEC,
         "aplay", "-q",
-        "-s", doctor.renderers._PROBE_FRAMES,
+        "-s", renderers._PROBE_FRAMES,
         "-D", device,
         "-c", "2", "-r", "48000", "-f", "S16_LE",
         "/dev/zero",
@@ -726,9 +725,9 @@ def test_ownership_gate_refuses_an_empty_unit(monkeypatch):
     a cgroup that WOULD match: reading the host's real /proc would pass on a
     machine that has none, pinning nothing."""
     monkeypatch.setattr(
-        doctor.renderers, "Path", lambda arg: _FakeProcPath(_OWNED_CGROUP)
+        renderers, "Path", lambda arg: _FakeProcPath(_OWNED_CGROUP)
     )
-    owned, _ = doctor.renderers._cgroup_owner_is_unit(1, "")
+    owned, _ = renderers._cgroup_owner_is_unit(1, "")
     assert owned is False
 
 
@@ -744,16 +743,16 @@ def test_absent_unit_is_not_a_root_probe(monkeypatch, load_state, expect_status)
     (bluealsa-aplay really runs as root). Only LoadState separates them, so a
     renamed or uninstalled renderer would otherwise be probed as root and pass
     — the check claiming "as the unit's real User=" with no unit behind it."""
-    monkeypatch.setattr(doctor.renderers, "_renderer_device_shairport", lambda: None)
-    monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
+    monkeypatch.setattr(renderers, "_renderer_device_shairport", lambda: None)
+    monkeypatch.setattr(renderers, "_renderer_device_bluealsa", lambda: None)
     monkeypatch.setattr(
-        doctor.renderers, "_renderer_device_librespot", lambda: "librespot_ring_lane"
+        renderers, "_renderer_device_librespot", lambda: "librespot_ring_lane"
     )
     monkeypatch.setattr(
-        doctor.renderers, "_resolve_systemd_env_vars", lambda dev, unit: dev
+        renderers, "_resolve_systemd_env_vars", lambda dev, unit: dev
     )
     monkeypatch.setattr(
-        doctor.renderers, "_systemd_unit_user", lambda unit: (None, load_state)
+        renderers, "_systemd_unit_user", lambda unit: (None, load_state)
     )
     probed: list[list[str]] = []
 
@@ -761,7 +760,7 @@ def test_absent_unit_is_not_a_root_probe(monkeypatch, load_state, expect_status)
         probed.append(cmd)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(doctor.renderers, "_run", fake_run)
+    monkeypatch.setattr(renderers, "_run", fake_run)
     assert renderers.check_renderer_device_resolvable().status == expect_status
     # An unloaded unit must not even be probed.
     assert bool(probed) is (load_state == "loaded")
@@ -773,16 +772,16 @@ def test_renderer_resolvable_catches_pr214_regression(monkeypatch):
     Pre-#223 the doctor missed this entirely. This test pins that the
     new check would have caught it."""
     monkeypatch.setattr(
-        doctor.renderers, "_renderer_device_shairport", lambda: "shairport_substream"
+        renderers, "_renderer_device_shairport", lambda: "shairport_substream"
     )
     monkeypatch.setattr(
-        doctor.renderers, "_renderer_device_librespot", lambda: "librespot_substream"
+        renderers, "_renderer_device_librespot", lambda: "librespot_substream"
     )
     monkeypatch.setattr(
-        doctor.renderers, "_renderer_device_bluealsa", lambda: "bluealsa_substream"
+        renderers, "_renderer_device_bluealsa", lambda: "bluealsa_substream"
     )
     monkeypatch.setattr(
-        doctor.renderers,
+        renderers,
         "_systemd_unit_user",
         lambda unit: ({
             "shairport-sync.service": "shairport-sync",
@@ -797,12 +796,12 @@ def test_renderer_resolvable_catches_pr214_regression(monkeypatch):
     def fake_probe(dev, user):
         if user == "shairport-sync":
             return (
-                doctor.renderers.ProbeOutcome.FAILED,
+                renderers.ProbeOutcome.FAILED,
                 "ALSA lib pcm.c:2722: Unknown PCM shairport_substream",
             )
-        return (doctor.renderers.ProbeOutcome.OPENED, "")
+        return (renderers.ProbeOutcome.OPENED, "")
 
-    monkeypatch.setattr(doctor.renderers, "_probe_open_as_user", fake_probe)
+    monkeypatch.setattr(renderers, "_probe_open_as_user", fake_probe)
 
     r = renderers.check_renderer_device_resolvable()
     assert r.status == "fail"
@@ -818,19 +817,19 @@ def test_renderer_resolvable_fail_includes_user_in_detail(monkeypatch):
     diagnostic for any "device works as root, fails as non-root" bug
     of which the PR #214 regression is the canonical example."""
     monkeypatch.setattr(
-        doctor.renderers, "_renderer_device_shairport", lambda: "weird-device"
+        renderers, "_renderer_device_shairport", lambda: "weird-device"
     )
-    monkeypatch.setattr(doctor.renderers, "_renderer_device_librespot", lambda: None)
-    monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
+    monkeypatch.setattr(renderers, "_renderer_device_librespot", lambda: None)
+    monkeypatch.setattr(renderers, "_renderer_device_bluealsa", lambda: None)
     monkeypatch.setattr(
-        doctor.renderers,
+        renderers,
         "_systemd_unit_user",
         lambda unit: ("shairport-sync", "loaded"),
     )
     monkeypatch.setattr(
-        doctor.renderers,
+        renderers,
         "_probe_open_as_user",
-        lambda d, u: (doctor.renderers.ProbeOutcome.FAILED, "open failed"),
+        lambda d, u: (renderers.ProbeOutcome.FAILED, "open failed"),
     )
     r = renderers.check_renderer_device_resolvable()
     assert r.status == "fail"
@@ -842,19 +841,19 @@ def test_renderer_resolvable_skips_missing_renderers(monkeypatch):
     """A stripped image without all renderers installed should
     `ok` for what works, `warn` only if nothing was probeable."""
     monkeypatch.setattr(
-        doctor.renderers, "_renderer_device_shairport", lambda: "shairport_substream"
+        renderers, "_renderer_device_shairport", lambda: "shairport_substream"
     )
-    monkeypatch.setattr(doctor.renderers, "_renderer_device_librespot", lambda: None)
-    monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
+    monkeypatch.setattr(renderers, "_renderer_device_librespot", lambda: None)
+    monkeypatch.setattr(renderers, "_renderer_device_bluealsa", lambda: None)
     monkeypatch.setattr(
-        doctor.renderers,
+        renderers,
         "_systemd_unit_user",
         lambda unit: ("shairport-sync", "loaded"),
     )
     monkeypatch.setattr(
-        doctor.renderers,
+        renderers,
         "_probe_open_as_user",
-        lambda d, u: (doctor.renderers.ProbeOutcome.OPENED, ""),
+        lambda d, u: (renderers.ProbeOutcome.OPENED, ""),
     )
     r = renderers.check_renderer_device_resolvable()
     assert r.status == "ok"
@@ -867,9 +866,9 @@ def test_renderer_resolvable_skips_missing_renderers(monkeypatch):
 def test_renderer_resolvable_no_renderers_at_all_is_warn(monkeypatch):
     """If literally nothing is configured, no audio path exists —
     surface as warn, not fail (could be a doctor-only image)."""
-    monkeypatch.setattr(doctor.renderers, "_renderer_device_shairport", lambda: None)
-    monkeypatch.setattr(doctor.renderers, "_renderer_device_librespot", lambda: None)
-    monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
+    monkeypatch.setattr(renderers, "_renderer_device_shairport", lambda: None)
+    monkeypatch.setattr(renderers, "_renderer_device_librespot", lambda: None)
+    monkeypatch.setattr(renderers, "_renderer_device_bluealsa", lambda: None)
     r = renderers.check_renderer_device_resolvable()
     assert r.status == "warn"
     assert r.reason == renderers.REASON_RENDERER_NONE_CONFIGURED
@@ -881,20 +880,20 @@ def test_renderer_resolvable_expands_systemd_env_vars(monkeypatch):
     -p Environment` before probing, otherwise it false-positives with
     'Unknown PCM ${JASPER_LIBRESPOT_DEVICE}'."""
     monkeypatch.setattr(
-        doctor.renderers, "_renderer_device_shairport", lambda: "shairport_substream"
+        renderers, "_renderer_device_shairport", lambda: "shairport_substream"
     )  # already literal
     monkeypatch.setattr(
-        doctor.renderers,
+        renderers,
         "_renderer_device_librespot",
         lambda: "${JASPER_LIBRESPOT_DEVICE}",
     )
     monkeypatch.setattr(
-        doctor.renderers,
+        renderers,
         "_renderer_device_bluealsa",
         lambda: "${JASPER_BLUEALSA_DEVICE}",
     )
     monkeypatch.setattr(
-        doctor.renderers,
+        renderers,
         "_systemd_unit_user",
         lambda unit: ({
             "shairport-sync.service": "shairport-sync",
@@ -922,16 +921,16 @@ def test_renderer_resolvable_expands_systemd_env_vars(monkeypatch):
             device,
         )
 
-    monkeypatch.setattr(doctor.renderers, "_resolve_systemd_env_vars", fake_resolve)
+    monkeypatch.setattr(renderers, "_resolve_systemd_env_vars", fake_resolve)
 
     # Probe sees the RESOLVED device — record what it gets called with.
     received: list[str] = []
 
     def fake_probe(device, user):
         received.append(device)
-        return (doctor.renderers.ProbeOutcome.OPENED, "")
+        return (renderers.ProbeOutcome.OPENED, "")
 
-    monkeypatch.setattr(doctor.renderers, "_probe_open_as_user", fake_probe)
+    monkeypatch.setattr(renderers, "_probe_open_as_user", fake_probe)
 
     r = renderers.check_renderer_device_resolvable()
     assert r.status == "ok"
@@ -1004,7 +1003,7 @@ def test_parse_shairport_device_from_conf(tmp_path, monkeypatch):
             return conf
         return real_path_cls(arg)
 
-    monkeypatch.setattr(doctor.renderers, "Path", fake_path)
+    monkeypatch.setattr(renderers, "Path", fake_path)
     assert renderers._renderer_device_shairport() == "shairport_substream"
 
 
@@ -1027,7 +1026,7 @@ def test_parse_librespot_device_from_systemd_unit(tmp_path, monkeypatch):
             return unit
         return real_path_cls(arg)
 
-    monkeypatch.setattr(doctor.renderers, "Path", fake_path)
+    monkeypatch.setattr(renderers, "Path", fake_path)
     assert renderers._renderer_device_librespot() == "librespot_substream"
 
 
@@ -1051,7 +1050,7 @@ def test_parse_bluealsa_device_from_dropin(tmp_path, monkeypatch):
             return tmp_path / "does-not-exist"
         return real_path_cls(arg)
 
-    monkeypatch.setattr(doctor.renderers, "Path", fake_path)
+    monkeypatch.setattr(renderers, "Path", fake_path)
     assert renderers._renderer_device_bluealsa() == "bluealsa_substream"
 
 
@@ -1061,8 +1060,6 @@ def test_renderer_checks_read_parked_on_bonded_follower(monkeypatch):
     fail against intended state. Driven through the real shared
     predicate with only the grouping config patched."""
     import jasper.multiroom.config as mr_config
-    from jasper.cli.doctor import renderers as rdoc
-
     monkeypatch.setattr(
         mr_config,
         "load_config",
@@ -1075,11 +1072,11 @@ def test_renderer_checks_read_parked_on_bonded_follower(monkeypatch):
         ),
     )
     checks = [
-        lambda: rdoc.check_librespot_running(None),
-        rdoc.check_shairport_sync_ap2,
-        rdoc.check_nqptp_running,
-        rdoc.check_jasper_mux,
-        rdoc.check_bluealsa,
+        lambda: renderers.check_librespot_running(None),
+        renderers.check_shairport_sync_ap2,
+        renderers.check_nqptp_running,
+        renderers.check_jasper_mux,
+        renderers.check_bluealsa,
     ]
     for check in checks:
         r = check()
@@ -1091,25 +1088,22 @@ def test_renderer_checks_probe_normally_when_solo(monkeypatch):
     """The parked skip must vanish on a solo speaker — a dead librespot
     is a real failure there. (Fail-open contract of the predicate.)"""
     import jasper.multiroom.config as mr_config
-    from jasper.cli.doctor import renderers as rdoc
-
     monkeypatch.setattr(
         mr_config,
         "load_config",
         lambda *a, **k: _grouping_cfg(enabled=False),
     )
-    monkeypatch.setattr(rdoc.os.path, "isfile", lambda p: False)
-    r = rdoc.check_librespot_running(None)
+    monkeypatch.setattr(renderers.os.path, "isfile", lambda p: False)
+    r = renderers.check_librespot_running(None)
     assert r.status == "fail"  # binary missing probes through, no skip
 
 
 def test_renderer_checks_treat_household_source_off_as_healthy(monkeypatch):
     """Intentional Off is desired state, not a dead-renderer incident."""
-    from jasper.cli.doctor import renderers as rdoc
     from jasper.source_intent import BluetoothRfkillState
 
-    monkeypatch.setattr(rdoc, "_parked_follower_result", lambda _label: None)
-    monkeypatch.setattr(rdoc, "source_intent_enabled", lambda source: False)
+    monkeypatch.setattr(renderers, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(renderers, "source_intent_enabled", lambda source: False)
     _seed_unit_states(**{
         "librespot.service": {"active_state": "inactive"},
         "shairport-sync.service": {"active_state": "inactive"},
@@ -1119,21 +1113,21 @@ def test_renderer_checks_treat_household_source_off_as_healthy(monkeypatch):
         "bt-agent.service": {"active_state": "inactive"},
     })
     monkeypatch.setattr(
-        rdoc,
+        renderers,
         "_run",
         lambda cmd: SimpleNamespace(returncode=3, stdout="Powered: no\n", stderr=""),
     )
     monkeypatch.setattr(
-        rdoc,
+        renderers,
         "read_bluetooth_rfkill_state",
         lambda: BluetoothRfkillState(True, True, False),
     )
 
     checks = (
-        lambda: rdoc.check_librespot_running(None),
-        rdoc.check_shairport_sync_ap2,
-        rdoc.check_bluealsa,
-        rdoc.check_bluetooth_pairing_policy,
+        lambda: renderers.check_librespot_running(None),
+        renderers.check_shairport_sync_ap2,
+        renderers.check_bluealsa,
+        renderers.check_bluetooth_pairing_policy,
     )
     for check in checks:
         result = check()
@@ -1142,27 +1136,23 @@ def test_renderer_checks_treat_household_source_off_as_healthy(monkeypatch):
 
 
 def test_renderer_check_fails_when_household_off_runtime_is_active(monkeypatch):
-    from jasper.cli.doctor import renderers as rdoc
-
-    monkeypatch.setattr(rdoc, "_parked_follower_result", lambda _label: None)
-    monkeypatch.setattr(rdoc, "source_intent_enabled", lambda source: False)
+    monkeypatch.setattr(renderers, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(renderers, "source_intent_enabled", lambda source: False)
     _seed_unit_states(**{"librespot.service": {"active_state": "active"}})
-    result = rdoc.check_librespot_running(None)
+    result = renderers.check_librespot_running(None)
 
     assert result.status == "fail"
     assert result.reason == renderers.REASON_SOURCE_OFF_DRIFT
 
 
 def test_renderer_check_fails_loud_on_invalid_source_intent(monkeypatch):
-    from jasper.cli.doctor import renderers as rdoc
-
-    monkeypatch.setattr(rdoc, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(renderers, "_parked_follower_result", lambda _label: None)
 
     def invalid(_source):
         raise RuntimeError("bad source intent")
 
-    monkeypatch.setattr(rdoc, "source_intent_enabled", invalid)
-    result = rdoc.check_bluealsa()
+    monkeypatch.setattr(renderers, "source_intent_enabled", invalid)
+    result = renderers.check_bluealsa()
 
     assert result.status == "fail"
     assert result.reason == renderers.REASON_SOURCE_INTENT_INVALID
@@ -1171,18 +1161,17 @@ def test_renderer_check_fails_loud_on_invalid_source_intent(monkeypatch):
 def test_bluealsa_desired_on_fails_when_radio_is_blocked_or_powered_off(
     monkeypatch,
 ):
-    from jasper.cli.doctor import renderers as rdoc
     from jasper.source_intent import BluetoothRfkillState
 
-    monkeypatch.setattr(rdoc, "_parked_follower_result", lambda _label: None)
-    monkeypatch.setattr(rdoc, "source_intent_enabled", lambda _source: True)
+    monkeypatch.setattr(renderers, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(renderers, "source_intent_enabled", lambda _source: True)
     monkeypatch.setattr(
-        rdoc,
+        renderers,
         "read_bluetooth_rfkill_state",
         lambda: BluetoothRfkillState(True, True, False),
     )
     monkeypatch.setattr(
-        rdoc,
+        renderers,
         "_run",
         lambda cmd: SimpleNamespace(
             returncode=0,
@@ -1191,20 +1180,19 @@ def test_bluealsa_desired_on_fails_when_radio_is_blocked_or_powered_off(
         ),
     )
 
-    result = rdoc.check_bluealsa()
+    result = renderers.check_bluealsa()
 
     assert result.status == "fail"
     assert result.reason == renderers.REASON_BLUETOOTH_RADIO_NOT_READY
 
 
 def test_bluealsa_desired_on_proves_radio_and_units(monkeypatch):
-    from jasper.cli.doctor import renderers as rdoc
     from jasper.source_intent import BluetoothRfkillState
 
-    monkeypatch.setattr(rdoc, "_parked_follower_result", lambda _label: None)
-    monkeypatch.setattr(rdoc, "source_intent_enabled", lambda _source: True)
+    monkeypatch.setattr(renderers, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(renderers, "source_intent_enabled", lambda _source: True)
     monkeypatch.setattr(
-        rdoc,
+        renderers,
         "read_bluetooth_rfkill_state",
         lambda: BluetoothRfkillState(True, False, False),
     )
@@ -1213,28 +1201,26 @@ def test_bluealsa_desired_on_proves_radio_and_units(monkeypatch):
         "bluealsa-aplay.service": {"active_state": "active"},
     })
     monkeypatch.setattr(
-        rdoc, "_run",
+        renderers, "_run",
         lambda cmd: SimpleNamespace(returncode=0, stdout="Powered: yes\n", stderr=""),
     )
 
-    result = rdoc.check_bluealsa()
+    result = renderers.check_bluealsa()
 
     assert result.status == "ok"
     assert result.reason == ""
 
 
 def test_bluealsa_desired_on_fails_when_rfkill_is_unreadable(monkeypatch):
-    from jasper.cli.doctor import renderers as rdoc
-
-    monkeypatch.setattr(rdoc, "_parked_follower_result", lambda _label: None)
-    monkeypatch.setattr(rdoc, "source_intent_enabled", lambda _source: True)
+    monkeypatch.setattr(renderers, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(renderers, "source_intent_enabled", lambda _source: True)
 
     def unreadable_rfkill():
         raise RuntimeError("rfkill unavailable")
 
-    monkeypatch.setattr(rdoc, "read_bluetooth_rfkill_state", unreadable_rfkill)
+    monkeypatch.setattr(renderers, "read_bluetooth_rfkill_state", unreadable_rfkill)
 
-    result = rdoc.check_bluealsa()
+    result = renderers.check_bluealsa()
 
     assert result.status == "fail"
     assert result.reason == renderers.REASON_BLUETOOTH_RADIO_UNVERIFIABLE
@@ -1259,8 +1245,6 @@ def test_voice_aec_checks_read_parked_on_bonded_follower(monkeypatch):
             leader_addr="jts.local",
         ),
     )
-    from jasper.cli.doctor import renderers as rdoc
-
     checks = [
         adoc.check_aec_bridge_running,
         adoc.check_aec_bridge_output_health,
@@ -1272,8 +1256,8 @@ def test_voice_aec_checks_read_parked_on_bonded_follower(monkeypatch):
         # Caught LIVE by the first on-pair doctor run after PR-B
         # deployed: these three probed parked units and read fail/warn
         # against intended state.
-        rdoc.check_bluetooth_pairing_policy,
-        lambda: rdoc.check_spotify_connect_device(None),
+        renderers.check_bluetooth_pairing_policy,
+        lambda: renderers.check_spotify_connect_device(None),
     ]
     for check in checks:
         r = check()
@@ -1301,8 +1285,6 @@ def test_resolve_device_prefers_the_lane_map_over_systemctl_show(monkeypatch, tm
     map — the SSOT that wrote the override — must win.
     """
     from jasper import renderer_lanes as rl
-    from jasper.cli.doctor import renderers as rdoc
-
     lanes = str(tmp_path / "renderer_lanes.env")
     rl.render_renderer_lanes_env(("spotify",), path=lanes)
     monkeypatch.setattr(rl, "RENDERER_LANES_ENV", lanes)
@@ -1315,10 +1297,10 @@ def test_resolve_device_prefers_the_lane_map_over_systemctl_show(monkeypatch, tm
 
         return R()
 
-    monkeypatch.setattr(rdoc.subprocess, "run", fake_run)
-    monkeypatch.setattr(rdoc, "_unit_runtime_environ", lambda unit: {})
+    monkeypatch.setattr(renderers.subprocess, "run", fake_run)
+    monkeypatch.setattr(renderers, "_unit_runtime_environ", lambda unit: {})
 
-    resolved = rdoc._resolve_systemd_env_vars(
+    resolved = renderers._resolve_systemd_env_vars(
         "${JASPER_LIBRESPOT_DEVICE}", "librespot.service"
     )
     assert resolved == "librespot_ring_lane", (
@@ -1332,8 +1314,6 @@ def test_resolve_device_falls_back_to_proc_environ(monkeypatch, tmp_path):
     running daemon's own `/proc/<MainPID>/environ` is the next-best surface —
     the arm.sh precedent — and it still beats `systemctl show`."""
     from jasper import renderer_lanes as rl
-    from jasper.cli.doctor import renderers as rdoc
-
     monkeypatch.setattr(rl, "RENDERER_LANES_ENV", str(tmp_path / "absent.env"))
 
     def fake_run(cmd, **kwargs):
@@ -1343,15 +1323,15 @@ def test_resolve_device_falls_back_to_proc_environ(monkeypatch, tmp_path):
 
         return R()
 
-    monkeypatch.setattr(rdoc.subprocess, "run", fake_run)
+    monkeypatch.setattr(renderers.subprocess, "run", fake_run)
     monkeypatch.setattr(
-        rdoc,
+        renderers,
         "_unit_runtime_environ",
         lambda unit: {"JASPER_LIBRESPOT_DEVICE": "operator_override_pcm"},
     )
 
     assert (
-        rdoc._resolve_systemd_env_vars(
+        renderers._resolve_systemd_env_vars(
             "${JASPER_LIBRESPOT_DEVICE}", "librespot.service"
         )
         == "operator_override_pcm"
@@ -1362,8 +1342,6 @@ def test_unarmed_box_resolves_to_the_shipped_aloop_device(monkeypatch, tmp_path)
     """The shipped fleet state: no lane map, no override — the in-unit default
     is what the renderer writes and what the probe must open."""
     from jasper import renderer_lanes as rl
-    from jasper.cli.doctor import renderers as rdoc
-
     monkeypatch.setattr(rl, "RENDERER_LANES_ENV", str(tmp_path / "absent.env"))
 
     def fake_run(cmd, **kwargs):
@@ -1373,11 +1351,11 @@ def test_unarmed_box_resolves_to_the_shipped_aloop_device(monkeypatch, tmp_path)
 
         return R()
 
-    monkeypatch.setattr(rdoc.subprocess, "run", fake_run)
-    monkeypatch.setattr(rdoc, "_unit_runtime_environ", lambda unit: {})
+    monkeypatch.setattr(renderers.subprocess, "run", fake_run)
+    monkeypatch.setattr(renderers, "_unit_runtime_environ", lambda unit: {})
 
     assert (
-        rdoc._resolve_systemd_env_vars(
+        renderers._resolve_systemd_env_vars(
             "${JASPER_LIBRESPOT_DEVICE}", "librespot.service"
         )
         == "librespot_substream"
@@ -1391,27 +1369,25 @@ def test_ring_lane_ebusy_owner_is_read_from_the_ring_header(monkeypatch, tmp_pat
     device on an armed box.
     """
     from jasper import renderer_lanes as rl
-    from jasper.cli.doctor import renderers as rdoc
-
     # No monkeypatch of the device map: it is DERIVED from RENDERER_LANES now,
     # so the real registry is the right input and each new lane is covered here
     # for free. (P6a hand-listed it, which meant a second lane would silently
     # miss the EBUSY-owner path and fail a healthy box.)
-    assert rdoc._ring_renderer_devices()["librespot_ring_lane"] == "spotify"
+    assert renderers._ring_renderer_devices()["librespot_ring_lane"] == "spotify"
     monkeypatch.setattr(rl, "ring_writer_pid", lambda label: 4242)
 
     cgroup = tmp_path / "cgroup"
     cgroup.write_text("0::/system.slice/librespot.service\n")
-    real_path = rdoc.Path
+    real_path = renderers.Path
 
     def fake_path(p):
         if str(p) == "/proc/4242/cgroup":
             return cgroup
         return real_path(p)
 
-    monkeypatch.setattr(rdoc, "Path", fake_path)
+    monkeypatch.setattr(renderers, "Path", fake_path)
 
-    owned, detail = rdoc._fanin_lane_busy_owner_matches(
+    owned, detail = renderers._fanin_lane_busy_owner_matches(
         "librespot_ring_lane", "librespot.service"
     )
     assert owned, detail
@@ -1427,8 +1403,8 @@ def test_ring_lane_ebusy_owner_is_read_from_the_ring_header(monkeypatch, tmp_pat
             return other
         return real_path(p)
 
-    monkeypatch.setattr(rdoc, "Path", fake_path_other)
-    owned, detail = rdoc._fanin_lane_busy_owner_matches(
+    monkeypatch.setattr(renderers, "Path", fake_path_other)
+    owned, detail = renderers._fanin_lane_busy_owner_matches(
         "librespot_ring_lane", "librespot.service"
     )
     assert not owned
@@ -1443,8 +1419,6 @@ def test_unit_runtime_environ_parses_real_nul_delimited_bytes(monkeypatch, tmp_p
     the one mutation survivor: every other path was covered by a monkeypatched
     stand-in. Feed it a genuine NUL-delimited environ blob.
     """
-    from jasper.cli.doctor import renderers as rdoc
-
     environ = tmp_path / "environ"
     environ.write_bytes(
         b"PATH=/usr/bin\x00JASPER_LIBRESPOT_DEVICE=librespot_ring_lane\x00"
@@ -1457,14 +1431,14 @@ def test_unit_runtime_environ_parses_real_nul_delimited_bytes(monkeypatch, tmp_p
             stdout = "4242\n"
         return R()
 
-    monkeypatch.setattr(rdoc.subprocess, "run", fake_run)
-    real_path = rdoc.Path
+    monkeypatch.setattr(renderers.subprocess, "run", fake_run)
+    real_path = renderers.Path
     monkeypatch.setattr(
-        rdoc, "Path",
+        renderers, "Path",
         lambda p: environ if str(p) == "/proc/4242/environ" else real_path(p),
     )
 
-    env = rdoc._unit_runtime_environ("librespot.service")
+    env = renderers._unit_runtime_environ("librespot.service")
     assert env["JASPER_LIBRESPOT_DEVICE"] == "librespot_ring_lane"
     assert env["PATH"] == "/usr/bin"
     assert env["EMPTY"] == "", "an empty value is a value, not an absence"
@@ -1474,8 +1448,6 @@ def test_unit_runtime_environ_parses_real_nul_delimited_bytes(monkeypatch, tmp_p
 def test_unit_runtime_environ_returns_empty_for_a_parked_unit(monkeypatch):
     """MainPID 0 means stopped/parked/failed. There is no environ to read, and
     guessing one would be worse than deferring to the next tier."""
-    from jasper.cli.doctor import renderers as rdoc
-
     for mainpid in ("0", "", "not-a-pid"):
         def fake_run(cmd, _v=mainpid, **kwargs):
             class R:
@@ -1483,8 +1455,8 @@ def test_unit_runtime_environ_returns_empty_for_a_parked_unit(monkeypatch):
                 stdout = _v
             return R()
 
-        monkeypatch.setattr(rdoc.subprocess, "run", fake_run)
-        assert rdoc._unit_runtime_environ("librespot.service") == {}, mainpid
+        monkeypatch.setattr(renderers.subprocess, "run", fake_run)
+        assert renderers._unit_runtime_environ("librespot.service") == {}, mainpid
 
 
 def test_resolver_surfaces_a_lanemap_vs_proc_disagreement(monkeypatch, tmp_path, caplog):
@@ -1496,8 +1468,6 @@ def test_resolver_surfaces_a_lanemap_vs_proc_disagreement(monkeypatch, tmp_path,
     import logging
 
     from jasper import renderer_lanes as rl
-    from jasper.cli.doctor import renderers as rdoc
-
     lanes = str(tmp_path / "renderer_lanes.env")
     rl.render_renderer_lanes_env(("spotify",), path=lanes)
     monkeypatch.setattr(rl, "RENDERER_LANES_ENV", lanes)
@@ -1508,14 +1478,14 @@ def test_resolver_surfaces_a_lanemap_vs_proc_disagreement(monkeypatch, tmp_path,
             stdout = ""
         return R()
 
-    monkeypatch.setattr(rdoc.subprocess, "run", fake_run)
+    monkeypatch.setattr(renderers.subprocess, "run", fake_run)
     monkeypatch.setattr(
-        rdoc, "_unit_runtime_environ",
+        renderers, "_unit_runtime_environ",
         lambda unit: {"JASPER_LIBRESPOT_DEVICE": "librespot_substream"},
     )
 
     with caplog.at_level(logging.WARNING):
-        resolved = rdoc._resolve_systemd_env_vars(
+        resolved = renderers._resolve_systemd_env_vars(
             "${JASPER_LIBRESPOT_DEVICE}", "librespot.service"
         )
     assert resolved == "librespot_ring_lane", "the map wins — it is what restarts apply"
