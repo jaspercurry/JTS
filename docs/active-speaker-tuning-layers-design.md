@@ -450,10 +450,11 @@ constants" is canonical for the pose set and repeat structure that actually
 runs (the `baseline` program in `measurement_programs.py`: 13 poses,
 `ANCHOR_REPEATS = 4`). Angle stays degrees everywhere.
 
-Elevation is sampled by neither the schema's design nor the shipped program.
-The household string-and-protractor method reads azimuth only; a vertical
-extension needs its own rig-support answer and household technique before it
-needs a pose schedule.
+The schema's design sampled no elevation; the shipped `baseline` program
+does (0° azimuth at ±10° and ±20° elevation, `measurement_programs.py`), and
+those poses feed driver linearization, not a crossover-tuning search. The
+household string-and-protractor method reads azimuth only, so any wider
+vertical extension needs its own rig-support answer before a pose schedule.
 
 ## The linearization pipeline — seed → crossover science → EQ
 
