@@ -33,11 +33,11 @@ from ...env_load import (
     load_env_files as _load_env_files,
 )
 from ...identity import resolve_hostname
-from ...log_event import render_logfmt
 from ...install_profile import (
     is_streambox_install_profile,
     read_install_profile,
 )
+from ...log_event import render_logfmt
 from ...speaker_name import runtime_name as _speaker_runtime_name
 from ...spotify_oauth import resolved_spotify_redirect_uri
 from ...usage import DEFAULT_USAGE_DB
@@ -59,19 +59,18 @@ from ._shared import (
 )
 
 
-_MARKS = {
-    "ok": (GREEN, "✓"),
-    "skipped": (DIM, "-"),
-    "warn": (YELLOW, "!"),
-    "fail": (RED, "✗"),
-}
-
-
 def render(results: list[CheckResult], *, core: bool = False) -> int:
     print()
     print(f"{BOLD}jasper-doctor{RESET}\n")
     for r in results:
-        color, mark = _MARKS[r.status]
+        if r.status == "ok":
+            color, mark = GREEN, "✓"
+        elif r.status == "skipped":
+            color, mark = DIM, "-"
+        elif r.status == "warn":
+            color, mark = YELLOW, "!"
+        else:
+            color, mark = RED, "✗"
         print(f"  {color}{mark}{RESET} {r.name:24s} {r.detail}")
     print()
     counts = summarize(results)
