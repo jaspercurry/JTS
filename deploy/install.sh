@@ -1652,60 +1652,23 @@ install_management_static_assets() {
     # but no service restart.
     install -d -m 0755 /usr/share/jasper-web
     install -m 0644 "${index_src}" /usr/share/jasper-web/index.html
-    # Stamp the app.css cache-bust version (mirrors the wizards' build-SHA
-    # query string) so a deploy busts the year-immutable /assets cache.
-    # The landing page is static HTML, so we substitute at install time.
-    # Resolve the SHA directly (deploy env → git → prior manifest) rather
-    # than reading build.txt: the manifest is now written LAST, as the
-    # verified-install marker, so it still holds the PRIOR SHA at this
-    # point in the run. resolve_build_sha_short returns the same value the
+    # Resolve the cache-bust SHA directly (deploy env, then the checkout, then
+    # the prior manifest) rather than reading build.txt: the manifest is written
+    # LAST, as the verified-install marker, so it still holds the PRIOR SHA at
+    # this point in the run. resolve_build_sha_short returns the same value the
     # manifest will record, so the cache key matches the installed build.
     app_css_ver="$(resolve_build_sha_short)"
     [[ -n "${app_css_ver}" && "${app_css_ver}" != "unknown" ]] || app_css_ver="dev"
-    sed_inplace /usr/share/jasper-web/index.html \
-        "s/__APP_CSS_VERSION__/${app_css_ver}/g"
-    # Bake the install profile's capability map into the landing page so its
-    # capability-gated sections render correctly at FIRST PAINT — no
-    # /system/data.json round-trip to lay out the page, and it stays correct
-    # even if a backend daemon is down. Same map jasper-control serves at
-    # runtime (system_capabilities_for_profile), so baked and live agree by
-    # construction. The profile marker was persisted earlier in this run.
-    # Python (not sed) so JSON quotes don't fight the shell; fail loud rather
-    # than ship a page with an unreplaced placeholder. Also bakes the WS1
-    # control token into <meta name="jts-control-token"> so the landing page's
-    # mic-mute button can ride it on POST /mic/mute (the token-gated route);
-    # ensure_token() generates-if-absent at 0640 group jasper, the same value
-    # the wizards deliver. The token stays inside Python (never a shell arg / process
-    # table); the base64url alphabet is HTML-safe, but escape defensively.
-    if ! PYTHONPATH="${REPO_DIR}" python3 - /usr/share/jasper-web/index.html <<'PYBAKE'
-import json
-import sys
-from html import escape as html_escape
-
-from jasper.control import control_token
-from jasper.install_profile import (
-    read_install_profile,
-    system_capabilities_for_profile,
-)
-
-path = sys.argv[1]
-caps = json.dumps(system_capabilities_for_profile(read_install_profile()))
-token = html_escape(control_token.ensure_token())
-html = open(path, encoding="utf-8").read()
-if "__JTS_CAPS_JSON__" not in html:
-    sys.exit("landing page is missing the __JTS_CAPS_JSON__ placeholder")
-if "__JTS_CONTROL_TOKEN__" not in html:
-    sys.exit("landing page is missing the __JTS_CONTROL_TOKEN__ placeholder")
-html = html.replace("__JTS_CAPS_JSON__", caps)
-html = html.replace("__JTS_CONTROL_TOKEN__", token)
-with open(path, "w", encoding="utf-8") as f:
-    f.write(html)
-PYBAKE
-    then
-        echo "  ERROR: failed to bake landing-page capabilities/token; refusing to ship a broken page" >&2
+    # The renderer reads the control token itself, so it never reaches a shell
+    # argument or the process table. The profile marker it needs was persisted
+    # earlier in this run.
+    if ! PYTHONPATH="${REPO_DIR}" python3 -m jasper.web.landing \
+            /usr/share/jasper-web/index.html \
+            --app-css-version "${app_css_ver}"; then
+        echo "  ERROR: failed to render the landing page; refusing to ship a broken page" >&2
         return 1
     fi
-    echo "  landing page: baked install-profile capabilities + control token for first-paint layout"
+    echo "  landing page: rendered (capabilities, control token, icon sprite)"
     # All /assets/ content (app.css, fonts, per-page CSS + ES modules) +
     # the .install-manifest the doctor verifies — see
     # deploy/lib/install/web-assets.sh for the copy shape and the

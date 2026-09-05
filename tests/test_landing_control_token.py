@@ -14,8 +14,9 @@ and, on the resulting 403, the toggle snapped back silently with no feedback
 These are static-source guards (mirroring tests/test_web_design_system.py):
 the page must carry the bake-time token placeholder + meta tag, the pause POST
 must attach X-JTS-Token, the failure path must surface an error instead of a
-silent revert, install.sh must bake the token (fail-loud), and nginx must serve
-`location = /` no-store so the token-bearing HTML is never cached.
+silent revert, the install-time renderer must bake the token (fail-loud), and
+nginx must serve `location = /` no-store so the token-bearing HTML is never
+cached.
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 LANDING_HTML = ROOT / "deploy" / "index.html"
 INSTALL_SH = ROOT / "deploy" / "install.sh"
+LANDING_PY = ROOT / "jasper" / "web" / "landing.py"
 # Both nginx sites serve the same token-baked index.html at `/`
 # (install_management_static_assets runs for the full and streambox profiles).
 NGINX_CONFS = (
@@ -32,9 +34,9 @@ NGINX_CONFS = (
     ROOT / "deploy" / "nginx-jasper-streambox.conf",
 )
 
-# The single placeholder install.sh substitutes with the live token, and the
-# meta name both sides agree on. A rename on one side without the other should
-# fail here.
+# The single placeholder jasper.web.landing substitutes with the live token,
+# and the meta name both sides agree on. A rename on one side without the
+# other should fail here.
 TOKEN_PLACEHOLDER = "__JTS_CONTROL_TOKEN__"
 META_NAME = 'name="jts-control-token"'
 
@@ -115,12 +117,17 @@ def test_mic_status_handles_voice_reloading_state():
 
 def test_install_bakes_control_token_fail_loud():
     sh = INSTALL_SH.read_text()
-    assert TOKEN_PLACEHOLDER in sh, "install.sh must reference the token placeholder"
-    assert "control_token.ensure_token()" in sh, \
-        "install.sh must mint/read the token via control_token.ensure_token()"
-    # Fail-loud: an unbaked placeholder must abort the install, never ship.
-    assert f"missing the {TOKEN_PLACEHOLDER} placeholder" in sh, \
-        "install.sh must fail loud when the token placeholder is absent"
+    renderer = LANDING_PY.read_text()
+    assert "python3 -m jasper.web.landing" in sh, \
+        "install.sh must render the landing page through jasper.web.landing"
+    assert TOKEN_PLACEHOLDER in renderer, \
+        "the renderer must reference the token placeholder"
+    assert "ensure_token()" in renderer, \
+        "the renderer must mint/read the token via control_token.ensure_token()"
+    # Fail-loud: a failed render must abort the install, never ship. The
+    # renderer's own refusal is pinned in tests/test_web_landing.py.
+    assert "refusing to ship a broken page" in sh, \
+        "install.sh must abort the install when the render fails"
 
 
 def test_nginx_serves_landing_no_store():
