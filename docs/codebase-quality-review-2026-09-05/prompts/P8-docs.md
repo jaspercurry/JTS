@@ -44,6 +44,10 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
 - Issue #3769, last comment — the tuning steward's close-out: what wave 9 landed, what it
   deferred, the wave-10 candidates. The zone is parked (see Territory); this tells you what not to
   re-find.
+- Issue #4139 and its comment — the idle-efficiency review: the only lane with hands on all three
+  boxes (jts.local, jts3, jts4). Its measured numbers, the nine PRs it merged, the tickets it filed
+  (#4121–#4124, #4190) and its "leave-alone (measured)" list are facts at HEAD; do not re-propose
+  what it measured and refuted, and route every "measure once on hardware" row through it.
 
 ## Territory
 

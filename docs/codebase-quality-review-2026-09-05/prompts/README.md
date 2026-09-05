@@ -68,3 +68,10 @@ daemon rows.
   this review both edit `docs/doc-map.toml`, so whichever merges second rebases once.
 - **Web UI** (#4031, session mid-PR on #4196), **hardware input** (#4027), **doctor/state**: close-outs
   pending; each becomes or feeds a lane in the redrawn map.
+- **Idle-efficiency / ops review** (#4139): the daily deploy + health + idle-efficiency pass over
+  jts.local, jts3 and jts4 — the only lane with hands on the boxes, since the remote sessions cannot
+  reach the LAN. Proposed shape in the redrawn map: a measure-deploy-and-file lane (P10) that owns
+  no source tree, deploys `main`, measures, and files rows on the owning lane's issue; it opens code
+  PRs only as owner-approved one-offs. Every "measure once on hardware" row in P3, P4 and P9 is an
+  ask on its issue. Deploy state at its last comment: jts3 and jts4 on `bb5173924` (12:24), jts.local
+  on `6a255e2e7`; the general steward's #4163/#4187 (merged 17:09) are on no box yet.

@@ -44,6 +44,10 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
 - Issue #3769, last comment — the tuning steward's close-out: what wave 9 landed, what it
   deferred, the wave-10 candidates. The zone is parked (see Territory); this tells you what not to
   re-find.
+- Issue #4139 and its comment — the idle-efficiency review: the only lane with hands on all three
+  boxes (jts.local, jts3, jts4). Its measured numbers, the nine PRs it merged, the tickets it filed
+  (#4121–#4124, #4190) and its "leave-alone (measured)" list are facts at HEAD; do not re-propose
+  what it measured and refuted, and route every "measure once on hardware" row through it.
 
 ## Territory
 
@@ -144,6 +148,19 @@ Verified at HEAD by the review:
 - Astronaut engineering to delete: `host_clock.rs:530-545` `catch_unwind` (dead under `panic=abort`);
   the `sdnotify` dep + ImportError branch (fails closed the wrong way); the udev rule line that can
   never match (`05ac/…`); `deploy/avahi/jasper-control.service` fallback; `bluetooth/roles.py`.
+- Measured on hardware by the idle-efficiency review (#4139, after its nine PRs merged): jts4
+  (Zero 2 W) idles at fan-in 4.4 %, outputd 2.0 %, voice 12 %, control 3.6 %, CamillaDSP 10.6 % of
+  a core and **5.4 forks/s box-wide** — your "under ~20/min" target is a 16× cut from that; price
+  it from these numbers, not the review's estimate. #4125 landed the volume-observer half (idle
+  ticks fork nothing; the residual is `_active_source()` falling through to `active_renderers()`
+  twice per tick); still open there: #4121 (`jasper-headphone-monitor` 1 Hz `amixer` poll →
+  `alsactl monitor`), #4124 (CamillaDSP short-read WARN storm, 120/h, fan-in `full_waits` 162/s on
+  jts4), `control/airplay_health` forking `journalctl` per unit every 30 s, mux `fanin NONE failed
+  reason=auto_idle: [Errno 2]` 7/h, and the `jasper-usbmic*` units referencing the full-profile
+  `jasper-aec-bridge` on streambox. #4120 added `jasper-usbsink-volume.service` to the deploy
+  restart set and noted the restart list duplicates `jasper/local_sources/registry.py` — the same
+  derived-set fix as R-003's broker allowlist; do it once. Its measured leave-alone list (warm
+  Gemini session, zram at 0.5×, interpreter merges, the always-pacing zero-fill chain) is settled.
 - Correction bundles have no retention while the sibling subsystem prunes (`cli/doctor/memory.py:
   571-600` warns and says pruning belongs to correction) — an owner-gated tuning-zone row.
 - `active_speaker/staging.py`: a failed metadata write logs and still reports the bundle as staged

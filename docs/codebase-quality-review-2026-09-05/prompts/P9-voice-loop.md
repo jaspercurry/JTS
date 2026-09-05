@@ -144,7 +144,11 @@ them in front of the owner with the brief's recommendations, and do not act on 2
 `for_tests` move, 5.3 or any Wave 6 row before the answer.
 
 Hardware gates are the owner's: row 0.2 (ten spoken turns, numbers into the ledger) and row 1.4
-(WAN-unplugged boot). Nothing in Wave 3 or Wave 6 starts before 0.2 has numbers.
+(WAN-unplugged boot). Nothing in Wave 3 or Wave 6 starts before 0.2 has numbers. The
+idle-efficiency review (#4139) is the lane with hands on the boxes: its measured baseline is voice
+at ~12 % of a core idle on the Zero 2 W after #4125, and its leave-alone list settles the warm
+Gemini session with its 135 s rotation (0 measurable CPU — do not propose "go lazy"); #4118
+(merged) moved the `chip_aec rms` cadence to 15 s, which is the line P4 says the doctor parses.
 
 Go deeper than the brief did: it did not measure the loop on the Pi Zero 2 W (ADR-0226 —
 `jasper-voice`'s import closure and resident set on the 415 MB target); it read `jasper/tools/`

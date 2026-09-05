@@ -44,6 +44,10 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
 - Issue #3769, last comment — the tuning steward's close-out: what wave 9 landed, what it
   deferred, the wave-10 candidates. The zone is parked (see Territory); this tells you what not to
   re-find.
+- Issue #4139 and its comment — the idle-efficiency review: the only lane with hands on all three
+  boxes (jts.local, jts3, jts4). Its measured numbers, the nine PRs it merged, the tickets it filed
+  (#4121–#4124, #4190) and its "leave-alone (measured)" list are facts at HEAD; do not re-propose
+  what it measured and refuted, and route every "measure once on hardware" row through it.
 
 ## Territory
 
@@ -183,7 +187,11 @@ and `crossover_v2/contracts.py` + `refusal_copy.py` pull numpy/scipy into every 
 (the review's Wave-6 row; the steward measured `jasper-measure`'s 402-module closure and never asked
 ADR-0226's memory question — state closure size per entry point before and after your moves).
 The single highest-leverage PR is the layers contract in `scripts/test-merge`, green at L1–L3 —
-land it first so every later move is guarded.
+land it first so every later move is guarded. Two measured facts from the idle-efficiency review
+(#4139) bound the import-cost argument: trimming numpy/rapidfuzz/pydantic was re-refuted on the
+boxes (every `.so` ≤ 1.2 MB resident), so an import-closure row is justified by startup time or a
+named consumer, never by resident memory; and `jasper-control` carries numpy on jts3 only (+20 MB,
+trigger unidentified) — a real closure lead worth one scout.
 
 ## The plan, before any code
 
