@@ -46,6 +46,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DSP_APPLY_STATE_PATH = Path("/var/lib/jasper/dsp_apply_state.json")
 DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S = 10.0
+# A wait longer than this is announced while it is still happening, so a
+# stalled apply is visible in flight rather than only once it ends.
+_LOCK_WAIT_ANNOUNCE_AFTER_S = 0.01
 CANONICAL_CAMILLA_CONFIG_DIR = Path("/var/lib/camilladsp/configs")
 CANONICAL_DSP_WRITER_LOCK_PATH = CANONICAL_CAMILLA_CONFIG_DIR / ".dsp_apply.lock"
 
@@ -557,6 +560,7 @@ async def _dsp_apply_lock(
                         path,
                         timeout_sec=timeout,
                         on_contended=_announce_wait,
+                        contended_after_sec=_LOCK_WAIT_ANNOUNCE_AFTER_S,
                     )
                 )
             except TimeoutError:

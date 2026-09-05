@@ -173,9 +173,9 @@ class VolumePersistence:
         The state-file lock above is deliberately tiny. This separate lease may
         span a slow Spotify/Bluetooth actuator without blocking unrelated state
         readers or handoff diagnostics. Acquisition runs off the event loop so
-        jasper-voice remains responsive while another process owns the lease,
-        and a cancelled waiter propagates at once — the helper releases a lease
-        its worker wins afterwards rather than making the caller wait for it.
+        jasper-voice remains responsive while another process owns the lease; a
+        cancelled waiter propagates at once and a lease its worker wins
+        afterwards is released.
         """
         async with advisory_file_lock_async(
             self._operation_lock_path,

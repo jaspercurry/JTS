@@ -9,12 +9,10 @@ import contextlib
 import os
 import subprocess
 import stat
-import time
 from pathlib import Path
 
 import pytest
 
-import jasper.atomic_io as atomic_io_module
 import jasper.dsp_apply as dsp_apply_module
 
 from jasper.dsp_apply import (
@@ -178,26 +176,24 @@ async def test_cancelled_dsp_writer_waiter_cannot_acquire_late(tmp_path: Path):
         pass
 
 
-async def test_dsp_writer_lock_refuses_a_lock_won_after_its_deadline(
+async def test_dsp_writer_lock_reports_a_refused_acquire_as_its_own_timeout(
     tmp_path: Path,
     monkeypatch,
 ):
-    """Admission always means "inside the budget the caller was promised".
+    """A helper ``TimeoutError`` reaches the caller as the typed DSP one."""
 
-    The wait runs on a worker thread, so a stalled worker (or loop) can hand
-    back a lock the caller's budget no longer covers. That lock is released,
-    not entered — the successor below proves it was not stranded.
-    """
+    class Refused:
+        async def __aenter__(self):
+            raise TimeoutError("timed out waiting for lock")
 
-    real_lock = atomic_io_module.advisory_file_lock
+        async def __aexit__(self, exc_type, exc, traceback):
+            raise AssertionError("a lock that never acquired cannot release")
 
-    @contextlib.contextmanager
-    def stalled_acquire(path, **kwargs):
-        time.sleep(0.05)
-        with real_lock(path, **kwargs) as handle:
-            yield handle
-
-    monkeypatch.setattr(atomic_io_module, "advisory_file_lock", stalled_acquire)
+    monkeypatch.setattr(
+        dsp_apply_module,
+        "advisory_file_lock_async",
+        lambda *args, **kwargs: Refused(),
+    )
 
     with pytest.raises(DspWriterLockTimeout):
         async with dsp_writer_lock(
@@ -205,10 +201,7 @@ async def test_dsp_writer_lock_refuses_a_lock_won_after_its_deadline(
             timeout_s=0.01,
             source="late_waiter",
         ):
-            pytest.fail("waiter was admitted after its deadline")
-
-    async with dsp_writer_lock(tmp_path, timeout_s=1.0, source="successor"):
-        pass
+            pytest.fail("a refused acquire was admitted")
 
 
 async def test_cancelling_contended_owner_is_not_logged_as_wait_cancellation(

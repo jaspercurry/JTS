@@ -152,10 +152,6 @@ SHARED_LOCK_MODE = 0o660
 # cadence rather than a coarser sleep that would round every handoff up.
 _LOCK_POLL_SECONDS = 0.01
 
-# An async acquire that settles inside this grace was never really contended;
-# only a longer wait is worth announcing.
-_LOCK_CONTENDED_AFTER_SECONDS = 0.01
-
 
 @contextmanager
 def advisory_file_lock(
@@ -246,22 +242,18 @@ async def advisory_file_lock_async(
     mode: int = SHARED_LOCK_MODE,
     group_from_parent: bool = True,
     on_contended: Callable[[], None] | None = None,
+    contended_after_sec: float = 0.0,
 ) -> AsyncIterator[TextIOWrapper]:
     """Hold :func:`advisory_file_lock` without blocking the event loop.
 
-    ``asyncio.to_thread`` cannot be cancelled, so a waiter that leaves — a
-    cancelled task, or one whose deadline passed — can still have a worker
-    that wins the flock afterwards. The acquire is therefore awaited under
-    ``asyncio.shield`` and, when it is still pending on the way out, a
-    done-callback closes the held stack once the worker settles: a lock won
-    after the caller left is released, never stranded behind an ownerless
-    holder. The deadline is re-checked on the loop when the worker returns
-    because a saturated executor delays the worker's own clock; admission
-    always means "inside ``timeout_sec``", and a lock handed back late is
-    released and reported as ``TimeoutError``. ``on_contended``, when given,
-    is called once on the loop if the acquire has not settled within
-    :data:`_LOCK_CONTENDED_AFTER_SECONDS`, so a caller can announce a wait
-    while it is still happening.
+    ``asyncio.to_thread`` cannot be cancelled and a saturated executor delays
+    the worker, so a waiter that leaves — cancelled, or past its deadline —
+    can still have a worker win the flock afterwards. Such a lock is released,
+    never entered: admission always means "inside ``timeout_sec``", and one
+    handed back late raises ``TimeoutError``. The deadline starts on the loop,
+    so ``timeout_sec`` below roughly 5 ms cannot be met across the thread hop.
+    ``on_contended`` fires on the loop once the acquire has been pending for
+    ``contended_after_sec``, so a caller can announce a wait while it lasts.
     """
 
     # Deferred: importing asyncio costs ~60 ms, and this module is imported by
@@ -270,30 +262,30 @@ async def advisory_file_lock_async(
 
     deadline = time.monotonic() + timeout_sec
     held = ExitStack()
-    # One open per acquire: the primitive's own bounded retry runs on the
-    # worker, so a contended caller neither reopens the lock file per poll nor
-    # blocks the event loop while it waits.
-    acquire = asyncio.ensure_future(
-        asyncio.to_thread(
-            held.enter_context,
+
+    def _acquire() -> TextIOWrapper:
+        # One open per acquire: the primitive's bounded retry runs on the worker.
+        return held.enter_context(
             advisory_file_lock(
                 path,
                 mode=mode,
                 group_from_parent=group_from_parent,
-                timeout_sec=timeout_sec,
-            ),
+                timeout_sec=max(0.0, deadline - time.monotonic()),
+            )
         )
-    )
+
+    acquire = asyncio.ensure_future(asyncio.to_thread(_acquire))
 
     def _release_when_settled(settled: asyncio.Future[Any]) -> None:
         if not settled.cancelled():
+            # Retrieve, so a failed acquire is not an unretrieved task exception.
             settled.exception()
         held.close()
 
     try:
         if on_contended is not None:
             finished, _pending = await asyncio.wait(
-                {acquire}, timeout=_LOCK_CONTENDED_AFTER_SECONDS
+                {acquire}, timeout=contended_after_sec
             )
             if not finished:
                 on_contended()
@@ -303,7 +295,7 @@ async def advisory_file_lock_async(
         yield lock
     finally:
         if acquire.done():
-            held.close()
+            _release_when_settled(acquire)
         else:
             acquire.add_done_callback(_release_when_settled)
 
