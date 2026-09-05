@@ -55,6 +55,14 @@ _BANKED_POSITIONS_GLOB = (
 _TAKE_FIELDS = ("index", "attempt", "take_id", "position_deg", "role",
                 "regime", "wav_sha256")
 
+#: What :func:`read_lateral_take` DEFAULTS rather than projects, and what
+#: :func:`read_position_cycle` therefore exempts at the MISSING end: a document
+#: written before one of these existed reads, while a key neither reader knows
+#: still refuses. ``candidate_id`` rides here because a cycled pose measures
+#: several candidates at ONE bearing — without it those rows are
+#: indistinguishable — and ``""`` is a take that named no candidate.
+_DEFAULTED_TAKE_FIELDS = ("vertical_deg", "candidate_id")
+
 #: The three arrays that make a retained entry-baseline take the durable copy.
 #: A take without all three predates the curve riding here and is not readable
 #: as a baseline.
@@ -201,10 +209,11 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
     ``lateral_poses`` block. A second reader with its own idea of what a
     lateral take is would disagree with this one silently.
 
-    Returns the record narrowed to :data:`_TAKE_FIELDS` plus ``vertical_deg``
-    — the identity, the pose, and the verifier. The banked record stays the
-    place to go for the rest. A take banked before ``vertical_deg`` existed
-    reads back as 0, the elevation a walk that could not state a rise took.
+    Returns the record narrowed to :data:`_TAKE_FIELDS` plus
+    :data:`_DEFAULTED_TAKE_FIELDS` — the identity, the candidate, the pose, and
+    the verifier. The banked record stays the place to go for the rest. A take
+    banked before one of the defaulted fields existed reads back as 0 or ``""``,
+    which is what a walk that could not state a rise or a candidate took.
     """
     try:
         raw = json.loads(path.read_text())
@@ -218,6 +227,7 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
         return None
     take: dict[str, Any] = {field: raw.get(field) for field in _TAKE_FIELDS}
     take["vertical_deg"] = raw.get("vertical_deg") or 0
+    take["candidate_id"] = raw.get("candidate_id") or ""
     return take
 
 
@@ -526,14 +536,15 @@ def read_position_cycle(path: str | Path) -> dict[str, Any]:
     if not isinstance(takes, list) or not takes:
         raise PositionCycleError(f"{path}: takes must be a non-empty list")
     for offset, take in enumerate(takes, start=1):
-        # ``vertical_deg`` is exempted at the MISSING end only: a document
-        # written before it existed reads, a document inventing a key does not.
         if not isinstance(take, Mapping) or not (
-            set(_TAKE_FIELDS) <= set(take) <= set(_TAKE_FIELDS) | {"vertical_deg"}
+            set(_TAKE_FIELDS)
+            <= set(take)
+            <= set(_TAKE_FIELDS) | set(_DEFAULTED_TAKE_FIELDS)
         ):
             raise PositionCycleError(
                 f"{path}: take {offset} must carry exactly "
-                f"{sorted(_TAKE_FIELDS)}, optionally with ['vertical_deg']"
+                f"{sorted(_TAKE_FIELDS)}, optionally with "
+                f"{sorted(_DEFAULTED_TAKE_FIELDS)}"
             )
     return dict(raw)
 
