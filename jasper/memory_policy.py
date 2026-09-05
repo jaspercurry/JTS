@@ -15,6 +15,30 @@ from typing import NamedTuple
 DISK_WARN_PERCENT = 85
 DISK_FAIL_PERCENT = 95
 
+# Kernel pressure-stall information. `psi=1` on the cmdline (install.sh) plus
+# CONFIG_PSI; without either the file is absent and the fact is "no reading",
+# never a calm zero. "some avg60" is the share of the last 60 s in which at
+# least one task stalled waiting on memory.
+PROC_PRESSURE_MEMORY = "/proc/pressure/memory"
+# Cumulative OOM kills since boot. Absent on kernels without the counter.
+PROC_VMSTAT = "/proc/vmstat"
+
+# PSI "some avg60" percent at which memory stalls stop being noise on a 1 GB
+# board. Mirrors the /system dashboard's warn band —
+# `toneForPercent(psi, 10, 20)` in deploy/assets/system-status/js/format.js —
+# which tests/test_system_status_thresholds.py pins to this owner.
+MEM_PSI_WARN_AVG60 = 10.0
+
+# zram virtual capacity as a percent of RAM. deploy/rpi-swap/50-jts.conf sets
+# `RamMultiplier=0.5` and deploy/lib/install/memory-resilience.sh sizes to the
+# same number; tests/test_memory_policy.py pins both to this owner.
+ZRAM_TARGET_PERCENT = 50
+# Slack before the doctor calls a live zram device oversized. rpi-swap sizes
+# from MemTotal, which sits a few percent below installed RAM and moves with
+# the CMA/GPU split, so the live ratio never lands exactly on target; the old
+# 100%-of-RAM default this check exists to catch is far past the margin.
+ZRAM_OVERSIZE_MARGIN_PERCENT = 10
+
 
 def memory_headroom_thresholds(total_mb: int) -> tuple[int, int]:
     """Return the canonical ``(warn_mb, fail_mb)`` MemAvailable floors.
@@ -63,3 +87,60 @@ def disk_usage(path: str = "/") -> DiskUsage | None:
         return DiskUsage(path, 0, 0, 0.0)
     free = st.f_bavail * st.f_frsize
     return DiskUsage(path, total, free, (total - free) * 100 / total)
+
+
+class MemoryPressure(NamedTuple):
+    """Live memory-stall pressure, as the kernel reports it.
+
+    Either field is ``None`` where this kernel publishes no such counter —
+    distinct from a zero, which means "measured, and there is none".
+    ``oom_kills`` is cumulative since boot, so it describes history and never
+    the current verdict.
+    """
+
+    psi_some_avg60: float | None
+    oom_kills: int | None
+
+
+def memory_pressure(
+    *,
+    pressure_path: str = PROC_PRESSURE_MEMORY,
+    vmstat_path: str = PROC_VMSTAT,
+) -> MemoryPressure:
+    """Read PSI and the OOM-kill counter. Never raises.
+
+    One reader for both consumers (ADR-0233 rule 1): jasper-control's
+    system-metrics sampler feeds the dashboard tile from it, and
+    jasper-doctor's ``check_memory_pressure`` verdicts against
+    :data:`MEM_PSI_WARN_AVG60`.
+    """
+    return MemoryPressure(
+        _psi_some_avg60(pressure_path), _oom_kills(vmstat_path)
+    )
+
+
+def _psi_some_avg60(path: str) -> float | None:
+    """Line shape: ``some avg10=0.00 avg60=1.23 avg300=0.41 total=12345``."""
+    try:
+        with open(path) as f:
+            for line in f:
+                if not line.startswith("some "):
+                    continue
+                for field in line.split()[1:]:
+                    key, _, value = field.partition("=")
+                    if key == "avg60":
+                        return float(value)
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _oom_kills(path: str) -> int | None:
+    try:
+        with open(path) as f:
+            for line in f:
+                if line.startswith("oom_kill "):
+                    return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+    return None

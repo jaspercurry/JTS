@@ -20,6 +20,7 @@ import pytest
 from jasper.memory_policy import (
     DISK_FAIL_PERCENT,
     DISK_WARN_PERCENT,
+    MEM_PSI_WARN_AVG60,
     memory_headroom_thresholds,
 )
 
@@ -50,6 +51,7 @@ def test_system_threshold_helpers_document_the_colours() -> None:
     assert "value > capacity" in text
     assert "value >= capacity * 0.75" in text
     assert "toneForPercent(Number(pct) || 0, 85, 95)" in text
+    assert f"toneForPercent(psi, {int(MEM_PSI_WARN_AVG60)}, 20)" in text
     assert "temp >= 80 || throttledNow" in text
     assert "Thermal sensor unavailable" in text
 
