@@ -899,13 +899,6 @@ def test_camilla_block_field_shared_scanner():
     assert _camilla_block_field("devices:\n  codec: 'flac'  # x\n", "devices", "codec") == "flac"
 
 
-# NOTE: the former check_grouping_tts_separation tests were REMOVED
-# 2026-06-11 with the check itself (the retired outputd-as-producer
-# machinery). The operator story it carried now lives in check_grouping's
-# runtime detail, covered by test_doctor_grouping.py::
-# test_check_grouping_leader_reads_degraded_until_producer_built.
-
-
 def test_voice_grouping_env_flips_socket_when_bonded_and_omits_when_solo():
     """PR-2: a passive bonded member's voice plays TTS via outputd
     (post-round-trip); solo and active endpoints OMIT the key entirely so voice
