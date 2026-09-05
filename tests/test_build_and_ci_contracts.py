@@ -18,6 +18,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 TESTS_WORKFLOW = WORKFLOWS / "tests.yml"
+ACTIONS_DIR = ROOT / ".github" / "actions"
+SETUP_PYTHON_UV_ACTION = ACTIONS_DIR / "setup-python-uv" / "action.yml"
 
 
 def _pyproject() -> dict:
@@ -279,9 +281,7 @@ def test_ci_syncs_full_runtime_from_committed_uv_lock() -> None:
     workflow = TESTS_WORKFLOW.read_text(encoding="utf-8")
     test_merge = (ROOT / "scripts" / "test-merge").read_text(encoding="utf-8")
     lane_resolver = (ROOT / "scripts" / "_test_lane.sh").read_text(encoding="utf-8")
-    setup_action = (
-        ROOT / ".github" / "actions" / "setup-python-uv" / "action.yml"
-    ).read_text(encoding="utf-8")
+    setup_action = SETUP_PYTHON_UV_ACTION.read_text(encoding="utf-8")
 
     sync = "uv sync --locked --extra full --extra dev --group openwakeword-onnx"
     openwakeword = (
@@ -318,7 +318,12 @@ def _workflow_action_refs(
                 and path[0] == "jobs"
                 and path[2:] == ("steps", "[]")
             )
-            if key == "uses" and (is_job_action or is_step_action):
+            # A composite action.yml has no `jobs:` wrapper: its steps live
+            # directly under `runs.steps`.
+            is_composite_step_action = path == ("runs", "steps", "[]")
+            if key == "uses" and (
+                is_job_action or is_step_action or is_composite_step_action
+            ):
                 refs.append(value if isinstance(value, str) else repr(value))
             else:
                 refs.extend(_workflow_action_refs(value, (*path, str(key))))
@@ -348,8 +353,12 @@ def _workflow_action_refs(
             "      - run: |\n          echo 'uses: owner/action@v1'\n",
             [],
         ),
+        (
+            "runs:\n  using: composite\n  steps:\n    - uses: owner/action@v1\n",
+            ["owner/action@v1"],
+        ),
     ],
-    ids=["quoted-key", "flow-mapping", "quoted-value", "run-block"],
+    ids=["quoted-key", "flow-mapping", "quoted-value", "run-block", "composite-step"],
 )
 def test_workflow_action_refs_follow_yaml_structure(
     workflow: str, expected: list[str]
@@ -366,7 +375,12 @@ def test_workflow_actions_are_sha_pinned() -> None:
     than on anything real (#2713), so this pins the shape, not the value.
     """
     unpinned: list[str] = []
-    workflow_paths = (*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml"))
+    workflow_paths = (
+        *WORKFLOWS.glob("*.yml"),
+        *WORKFLOWS.glob("*.yaml"),
+        *ACTIONS_DIR.glob("*/action.yml"),
+        *ACTIONS_DIR.glob("*/action.yaml"),
+    )
     for path in sorted(workflow_paths):
         workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
         for ref in _workflow_action_refs(workflow):
@@ -381,6 +395,20 @@ def test_workflow_actions_are_sha_pinned() -> None:
         "workflow actions must be pinned to a 40-hex commit SHA, not a tag:\n  "
         + "\n  ".join(unpinned)
     )
+
+
+def test_local_action_steps_follow_a_checkout_in_the_same_job() -> None:
+    """A local composite action cannot check out the repo for itself."""
+
+    parsed = yaml.safe_load(TESTS_WORKFLOW.read_text(encoding="utf-8"))
+    for job_name, job in parsed["jobs"].items():
+        checked_out = False
+        for step in job.get("steps", ()):
+            uses = step.get("uses", "")
+            if uses.startswith("actions/checkout@"):
+                checked_out = True
+            elif uses.startswith("./"):
+                assert checked_out, f"{job_name}: {uses} runs before actions/checkout"
 
 
 def test_ci_pytest_gate_is_parallel_and_hardware_free() -> None:

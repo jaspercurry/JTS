@@ -44,6 +44,8 @@ jobs:
     env:
       JASPER_VOICE_PROVIDER: gemini
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
       - uses: ./.github/actions/setup-python-uv
 
       - name: Install the locked base + landing test toolchain
@@ -104,10 +106,12 @@ jobs:
     env:
       JASPER_VOICE_PROVIDER: gemini
     steps:
-      - uses: ./.github/actions/setup-python-uv
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # docs-linkcheck diffs base...head to find changed Markdown.
           fetch-depth: 0
+
+      - uses: ./.github/actions/setup-python-uv
 
       - name: System deps for sounddevice (portaudio)
         # Several registered doc-contract tests import jasper packages that
@@ -245,6 +249,8 @@ jobs:
     env:
       JASPER_VOICE_PROVIDER: gemini
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
       - uses: ./.github/actions/setup-python-uv
 
       - name: Install the locked policy test toolchain
@@ -289,6 +295,8 @@ jobs:
     env:
       JASPER_VOICE_PROVIDER: gemini
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
       - uses: ./.github/actions/setup-python-uv
         with:
           python-version: ${{ matrix.python-version }}
