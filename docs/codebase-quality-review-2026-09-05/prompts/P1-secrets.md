@@ -51,6 +51,15 @@ attribute needs a change there, write it up as a suggestion (file:line, what, wh
 or ask the owner for a one-off. Other stewards merge to `main` concurrently: rebase before every
 push, judge every PR by `git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
 
+**Sibling lanes.** Seven sibling sessions run the other attributes of the same review (P1 #4193, P2 #4194,
+P3 #4195, P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202; the index and sequencing are in
+`docs/codebase-quality-review-2026-09-05/prompts/README.md`). You share files with: **P4
+(observability)**, which owns `/state` payload code and `jasper/cli/doctor/` rows — you make the
+leak-closing edit at a leak site yourself but tell P4 on its issue; **P2 (deploy)**, which owns
+`deploy/install.sh` and `deploy/lib/install/` — a secrets change that lives in the installer is an
+ask on P2's issue, not your PR. You own `jasper/secret_redaction.py`, the wifi-guardian pair, the
+compartment files and every read/write of them.
+
 ## What "A" means here
 
 Storage stays as it is (it is already A: the two compartments, one wizard writer each, doctor-audited).
@@ -113,7 +122,7 @@ Phase 1 — **scout** (read-only Opus/Sonnet fan-out, parallel, each blind to th
 every finding above at HEAD and go deeper than the review did on the corners it names as unread.
 Each scout returns file:line evidence and a one-line fix; no scout edits anything.
 
-Phase 2 — **plan**: write ONE page (as a GitHub issue comment, not a repo file): the target state in
+Phase 2 — **plan**: write ONE page (as a comment on this issue, not a repo file): the target state in
 a paragraph, the gap between HEAD and it, and a sequenced list of PRs — one concern each, under 400
 changed lines unless pure deletion or a mechanical move — each with its proof (the test or command
 that shows it landed) and, where the attribute can regress, the **one** guard that keeps it landed

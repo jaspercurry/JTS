@@ -51,6 +51,17 @@ attribute needs a change there, write it up as a suggestion (file:line, what, wh
 or ask the owner for a one-off. Other stewards merge to `main` concurrently: rebase before every
 push, judge every PR by `git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
 
+**Sibling lanes.** Seven sibling sessions run the other attributes of the same review (P1 #4193, P2 #4194,
+P3 #4195, P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202; the index and sequencing are in
+`docs/codebase-quality-review-2026-09-05/prompts/README.md`). You share `jasper/control/` with
+**P4 (observability)**: you own `restart_broker.py`, `handlers/system.py`, `deploy/polkit/`, unit
+`Restart=`/`StartLimitAction=` policy, `peering/state.py`, and the clamp paths in
+`volume_coordinator.py`/`camilla.py`; P4 owns the `/state` payload, freshness, `jasper/cli/doctor/`
+and `log_event` conventions — a new `/state` field or doctor row you need is an ask on P4's issue,
+and the `event=` line for a behavior you change is yours. You share `jasper/peering/` with **P6
+(right-sizing)**, which deletes the mDNS/STATUS/PING half: if both PRs are open, P6 lands first and
+you rebase (it shrinks your surface).
+
 ## What "A" means here
 
 **A = every daemon fails in the direction the owner would choose, and no loop, queue, socket read or
@@ -120,7 +131,7 @@ Phase 1 — **scout** (read-only Opus/Sonnet fan-out, parallel, each blind to th
 every finding above at HEAD and go deeper than the review did on the corners it names as unread.
 Each scout returns file:line evidence and a one-line fix; no scout edits anything.
 
-Phase 2 — **plan**: write ONE page (as a GitHub issue comment, not a repo file): the target state in
+Phase 2 — **plan**: write ONE page (as a comment on this issue, not a repo file): the target state in
 a paragraph, the gap between HEAD and it, and a sequenced list of PRs — one concern each, under 400
 changed lines unless pure deletion or a mechanical move — each with its proof (the test or command
 that shows it landed) and, where the attribute can regress, the **one** guard that keeps it landed

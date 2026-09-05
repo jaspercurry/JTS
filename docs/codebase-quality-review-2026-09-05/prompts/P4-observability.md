@@ -51,6 +51,16 @@ attribute needs a change there, write it up as a suggestion (file:line, what, wh
 or ask the owner for a one-off. Other stewards merge to `main` concurrently: rebase before every
 push, judge every PR by `git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
 
+**Sibling lanes.** Seven sibling sessions run the other attributes of the same review (P1 #4193, P2 #4194,
+P3 #4195, P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202; the index and sequencing are in
+`docs/codebase-quality-review-2026-09-05/prompts/README.md`). You share `jasper/control/` with
+**P3 (resilience)**: you own the `/state` payload and freshness, `jasper/cli/doctor/`, the
+`log_event`/`EVENTS` conventions, cue-manager instrumentation and the wake-recency detector; P3
+owns `restart_broker.py`, `handlers/system.py`, polkit and unit restart policy. **P1 (secrets)**
+may edit a doctor/`/state` leak site directly and will tell you on this issue; keep its redaction
+in place. The Wave-6 systems rows in the review (`VolumeObserver` gate, `MemoryMax`, the
+per-request `asyncio.run`) stay with the doctor/state steward unless the owner hands them to you.
+
 ## What "A" means here
 
 **A = from the box's own surfaces you can tell which daemon is broken, since when, and whether the
@@ -125,7 +135,7 @@ Phase 1 — **scout** (read-only Opus/Sonnet fan-out, parallel, each blind to th
 every finding above at HEAD and go deeper than the review did on the corners it names as unread.
 Each scout returns file:line evidence and a one-line fix; no scout edits anything.
 
-Phase 2 — **plan**: write ONE page (as a GitHub issue comment, not a repo file): the target state in
+Phase 2 — **plan**: write ONE page (as a comment on this issue, not a repo file): the target state in
 a paragraph, the gap between HEAD and it, and a sequenced list of PRs — one concern each, under 400
 changed lines unless pure deletion or a mechanical move — each with its proof (the test or command
 that shows it landed) and, where the attribute can regress, the **one** guard that keeps it landed
