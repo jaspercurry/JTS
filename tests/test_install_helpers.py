@@ -1819,10 +1819,9 @@ def test_landing_page_app_css_version_uses_resolved_build_sha():
 
 # build-sandbox.sh — unified RAM-aware + cgroup-contained build policy
 # ----------------------------------------------------------------------
-# Workstream A of docs/install-update-resilience-plan.md. On jts2
-# (1 GB Pi 5, 2026-06-21) an unbounded `meson compile` OOM-killed the
-# build AND cascaded into nginx + jasper-voice. These tests pin the two
-# levers that generalize the PR #899 point-fix: RAM-aware `-j`
+# ADR-0163. On jts2 (1 GB Pi 5, 2026-06-21) an unbounded `meson compile`
+# OOM-killed the build AND cascaded into nginx + jasper-voice. These tests
+# pin the two levers that generalize the PR #899 point-fix: RAM-aware `-j`
 # (_ram_bounded_jobs) and cgroup containment (run_contained_build), and
 # the inverse-of-audio-daemon policy that makes a build the OOM victim
 # instead of a daemon.

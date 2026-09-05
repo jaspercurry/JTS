@@ -2,28 +2,19 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The ``jts_ring`` transport platform's asset vocabulary: names, paths, conf.d.
+"""The ``jts_ring`` transport platform: asset vocabulary and live-ring health.
 
-Single source of truth for the three ring-platform assets every box ships — the
-compiled ioplug ``.so``, the conf.d PCM definitions (:data:`RING_CONF_PCMS`) and
-the ``/dev/shm/jts-ring`` tmpfs directory — shared by three consumers:
-
-- ``jasper.cli.doctor.audio_runtime_ring.check_ring_platform_assets`` — the
-  deploy-time health probe. It also open-probes the PCMs, which needs
-  ``arecord``/``aplay`` and so lives in the doctor.
-- ``jasper.fanin.coupling_reconcile`` — the ``shm_ring`` **activation gate**:
-  the reconciler refuses to ARM the ring coupling when an asset is missing, so
-  a half-installed ring platform cannot strand the realtime path (the ioplug
-  would fail to resolve and CamillaDSP would crash-loop on its statefile).
-  Presence only — an open-probe from the reconciler could disturb a live arm.
-- ``jasper.cli.audio_config render-ring-conf-wire`` — the per-box conf.d
-  **renderer** the output-hardware reconciler shells into. It rewrites the
-  values through this module's own regexes, so the reader and the writer of the
-  conf.d format cannot drift.
+Single source of truth for the three ring-platform assets every box ships —
+the compiled ioplug ``.so``, the conf.d PCM definitions
+(:data:`RING_CONF_PCMS`), and the ``/dev/shm/jts-ring`` tmpfs directory — plus
+the live-ring health layer built on the on-disk SHM header
+(:class:`RingHeader`): stall/liveness verdicts (:func:`ring_stall_verdict`),
+priming/flow state (:func:`ring_flow_state`), and header-vs-conf.d coherence
+(:func:`ring_header_matches_conf`).
 
 Import-cheap (stdlib, plus the import-free ``jasper.fanin_coupling`` constants)
-so the reconciler and the socket-activated web surfaces can resolve asset
-presence without pulling in the doctor.
+so callers can resolve asset presence and ring health without pulling in the
+doctor.
 """
 
 from __future__ import annotations

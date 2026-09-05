@@ -1369,9 +1369,9 @@ write_build_manifest() {
     # line is reached. A mid-install abort (e.g. the OOM-killed WebRTC
     # build on jts2, 2026-06-21) therefore leaves the PRIOR good manifest
     # untouched — so the deploy direction-guard and the /system "Software"
-    # card never advertise a SHA the box is not cleanly running. This
-    # closes problem #4 in docs/install-update-resilience-plan.md, where
-    # the manifest was written EARLY and lied after the build failed.
+    # card never advertise a SHA the box is not cleanly running. See
+    # ADR-0172: the manifest used to be written EARLY and lied after the
+    # build failed.
     #
     # JASPER_INSTALL_STATUS=ok records exactly that honest claim: the
     # install process for this SHA completed. (Runtime subsystem health —

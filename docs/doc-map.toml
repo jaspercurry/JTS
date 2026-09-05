@@ -159,13 +159,12 @@ docs = [
   "AGENTS.md",
   "QUICKSTART.md",
   "BRINGUP.md",
-  "docs/install-update-resilience-plan.md",
   "docs/install-hardware-tier-and-staleness.md",
 ]
 requires_docs_when = [
   "The supported deploy path, first-run setup flow, install targets, service ownership, or laptop/Pi state files change.",
   "A build/download/provenance input or runtime install location changes.",
-  "Build memory-bounding, cross-hardware-tier install behavior, update atomicity/rollback, or runtime hot-plug convergence changes (see the install-update-resilience planning brief).",
+  "Build memory-bounding, cross-hardware-tier install behavior, update atomicity/rollback, or runtime hot-plug convergence changes.",
   "The mandatory-v1 / optional-v2 boundary, enhanced-AEC build target, verified activation, or deploy/boot retry behavior changes.",
   "The build-manifest gating, deploy post-install verification (manifest-advanced gate, jasper-doctor health surfacing), or OOM-collateral surfacing change.",
 ]

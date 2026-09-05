@@ -1,14 +1,17 @@
 # Hardware-tier awareness & the stale-update question — design note
 
 > **Status: design note + recommendation (Workstream D, 2026-06-21).**
-> This is the investigation output for Workstream D of
-> [`install-update-resilience-plan.md`](install-update-resilience-plan.md)
-> (tier-aware install + cross-SKU testing + the version-skew risk
-> question). It records *findings, decisions, and a scoped PR*; it is not
-> ongoing operational truth. Once the recommended work lands, the code
-> plus the operational docs it updates (`install.sh`, the deploy script,
-> the test files) are the truth. Sibling workstreams: A (memory-safe
-> builds), B (atomic/recoverable updates), C (hot-plug resilience).
+> This is the investigation output for Workstream D of the install/update
+> resilience planning brief (tier-aware install + cross-SKU testing + the
+> version-skew risk question) — since landed and deleted per ADR-0199. Its
+> sibling workstreams landed too: A (memory-safe builds) as
+> [ADR-0163](adr/0163-installer-builds-run-the-inverse-of-the-audio-daemon-memory-policy.md),
+> B (atomic/recoverable updates) as ADR-0172–0174, and C (hot-plug
+> resilience) in the reconciler/udev wiring it names. This note records
+> *findings, decisions, and a scoped PR*; it is not ongoing operational
+> truth. Once the recommended work lands, the code plus the operational
+> docs it updates (`install.sh`, the deploy script, the test files) are
+> the truth.
 >
 > **2026-07-27 resolution of the WebRTC-build question:** keep the small,
 > distro-linked AEC3 v1 binding as the unconditional software fallback, but

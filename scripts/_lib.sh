@@ -469,13 +469,12 @@ classify_installed_vs_main() {
 
 # ── OOM-collateral parsing (deploy post-install surfacing) ───────────────
 #
-# Problem #2/#5 (docs/install-update-resilience-plan.md): on jts2 a source
-# build OOM-killed nginx AND jasper-voice, and the deploy tooling exited
-# silently — the collateral was only discoverable by SSHing in to read the
-# journal. deploy-to-pi.sh now scans the kernel log for the install window
-# and surfaces what was killed. These are the pure parsers behind that;
-# the ssh/journalctl I/O stays in deploy-to-pi.sh so they unit-test against
-# captured journal text.
+# ADR-0174: on jts2 a source build OOM-killed nginx AND jasper-voice, and
+# the deploy tooling exited silently — the collateral was only discoverable
+# by SSHing in to read the journal. deploy-to-pi.sh now scans the kernel log
+# for the install window and surfaces what was killed. These are the pure
+# parsers behind that; the ssh/journalctl I/O stays in deploy-to-pi.sh so
+# they unit-test against captured journal text.
 #
 # Two readings of one kernel OOM event:
 #   - the victim's cgroup (task_memcg=/system.slice/<unit>.service) names
