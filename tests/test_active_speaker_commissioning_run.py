@@ -1033,40 +1033,28 @@ def test_in_process_lock_contention_has_a_typed_bounded_timeout(
     assert store.snapshot()["current"]["run_id"] == handle.run_id
 
 
-def test_file_lock_polling_uses_one_deadline_and_never_sleeps_after_it(
+def test_file_lock_contention_has_a_typed_bounded_timeout(
     tmp_path: Path,
 ) -> None:
+    # Only the contended call gets the 25 ms budget, for the reason the
+    # in-process contention test above records.
     path = tmp_path / "run.json"
     lock_path = path.with_name(f".{path.name}.lock")
-    clock = [0.0]
-    sleeps: list[float] = []
-
-    def monotonic() -> float:
-        return clock[0]
-
-    def sleep(duration: float) -> None:
-        assert duration > 0.0
-        assert clock[0] < 0.025
-        sleeps.append(duration)
-        clock[0] += duration
-
-    store = CommissioningRunStore(
+    store = CommissioningRunStore(path=path, owner_id="3" * 32)
+    contended = CommissioningRunStore(
         path=path,
         owner_id="3" * 32,
         lock_timeout_s=0.025,
-        monotonic=monotonic,
-        sleep=sleep,
     )
     handle = _start(store)
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+", encoding="utf-8") as holder:
         fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        with pytest.raises(CommissioningRunLockTimeout, match="file lock"):
-            store.claim_owner()
-        fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+        try:
+            with pytest.raises(CommissioningRunLockTimeout, match="file lock"):
+                contended.claim_owner()
+        finally:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
 
-    assert sum(sleeps) == pytest.approx(0.025)
-    assert sleeps[-1] == pytest.approx(0.005)
     assert store.snapshot()["current"]["run_id"] == handle.run_id
 
 

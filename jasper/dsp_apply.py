@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import fcntl
 import hashlib
 import inspect
 import json
@@ -40,7 +39,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from jasper.atomic_io import atomic_write_text
+from jasper.atomic_io import advisory_file_lock, atomic_write_text
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -500,46 +499,28 @@ def _proof_failure(
 class _FileLock:
     def __init__(self, path: Path) -> None:
         self.path = path
-        self._fh: Any | None = None
+        self._held: contextlib.ExitStack | None = None
 
     def try_acquire(self) -> bool:
         """Attempt one non-blocking acquisition.
 
-        Keeping the operation synchronous is intentional: ``LOCK_NB`` cannot
-        wait in the kernel, so cancellation cannot strand a worker which later
+        Keeping the operation synchronous is intentional: a zero timeout
+        cannot wait, so cancellation cannot strand a worker which later
         acquires the lock after its coroutine has gone away.
         """
 
-        if self._fh is None:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o660)
-            try:
-                # The generated-config directory is root:jasper setgid; the lock
-                # has to be writable by whichever process reaches the apply path
-                # first. O_CREAT still respects umask, so publish the intended
-                # mode explicitly.
-                try:
-                    os.fchmod(fd, 0o660)
-                except OSError:
-                    pass
-                self._fh = os.fdopen(fd, "a+", encoding="utf-8")
-            except Exception:  # noqa: BLE001
-                os.close(fd)
-                raise
+        held = contextlib.ExitStack()
         try:
-            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+            held.enter_context(advisory_file_lock(self.path, timeout_sec=0.0))
+        except TimeoutError:
             return False
+        self._held = held
         return True
 
     def release(self) -> None:
-        if self._fh is None:
-            return
-        try:
-            fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
-        finally:
-            self._fh.close()
-            self._fh = None
+        held, self._held = self._held, None
+        if held is not None:
+            held.close()
 
 
 def _positive_finite(value: float, *, field_name: str) -> float:

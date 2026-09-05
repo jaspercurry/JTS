@@ -17,24 +17,20 @@ owner claims, reservations and transitions emit stable events.
 
 from __future__ import annotations
 
-import errno
-import fcntl
 import json
 import logging
 import math
-import os
-import stat
 import re
 import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import IO, Any, cast
+from typing import Any, cast
 
-from jasper.atomic_io import atomic_write_text
+from jasper.atomic_io import advisory_file_lock, atomic_write_text
 from jasper.audio_measurement.evidence_identity import (
     EvidenceIdentityError,
     json_fingerprint,
@@ -58,11 +54,6 @@ LIVE_MUTATION_TERMINAL_STATUSES = frozenset(
     {"aborted", "committed", "released", "retained"}
 )
 DEFAULT_STATE_PATH = Path("/var/lib/jasper/active_speaker_commissioning_run.json")
-# Group-WRITABLE: holding an advisory lock means opening the file for write, so
-# 0o640 let a group member read a lock it could never take — the mode every
-# other lock in the tree already uses. Applied only when it differs, because a
-# non-owner cannot chmod a lock it CAN open. See ADR-0196.
-LOCK_FILE_MODE = 0o660
 
 # This is control-plane state, not an evidence store.  Keeping both collection
 # counts and serialized bytes bounded prevents a corrupt or adversarial file
@@ -75,7 +66,6 @@ MAX_OWNER_GENERATION = 2_147_483_647
 MAX_ID_LENGTH = 160
 DEFAULT_LOCK_TIMEOUT_S = 2.0
 MAX_LOCK_TIMEOUT_S = 10.0
-LOCK_POLL_INTERVAL_S = 0.01
 
 logger = logging.getLogger(__name__)
 _THREAD_LOCK = threading.RLock()
@@ -83,13 +73,6 @@ _LIVE_EXECUTION_THREAD_LOCK = threading.Lock()
 _UUID_HEX_RE = re.compile(r"[0-9a-f]{32}")
 _IDENTIFIER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}")
 _TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
-
-
-def _ensure_lock_mode(handle: IO[str]) -> None:
-    """Publish an open lock at :data:`LOCK_FILE_MODE`, if it is not already."""
-
-    if stat.S_IMODE(os.fstat(handle.fileno()).st_mode) != LOCK_FILE_MODE:
-        os.fchmod(handle.fileno(), LOCK_FILE_MODE)
 
 
 class CommissioningRunError(RuntimeError):
@@ -951,7 +934,6 @@ class CommissioningRunStore:
         uuid_factory: Callable[[], uuid.UUID] = uuid.uuid4,
         lock_timeout_s: float = DEFAULT_LOCK_TIMEOUT_S,
         monotonic: Callable[[], float] = time.monotonic,
-        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.path = state_path(path)
         self.live_mutation_path = self.path.with_name(
@@ -969,7 +951,6 @@ class CommissioningRunStore:
         self._now_clock = now
         self.lock_timeout_s = _lock_timeout(lock_timeout_s)
         self._monotonic = monotonic
-        self._sleep = sleep
 
     def _now(self) -> str:
         value = float(self._now_clock())
@@ -991,35 +972,31 @@ class CommissioningRunStore:
             raise CommissioningRunConflict(
                 "another live mutation caller owns execution"
             )
-        file_lock_acquired = False
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.live_execution_lock_path.open("a+", encoding="utf-8") as lock:
-                _ensure_lock_mode(lock)
+            with ExitStack() as held:
                 try:
-                    try:
-                        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        file_lock_acquired = True
-                    except OSError as exc:
-                        if exc.errno in {errno.EACCES, errno.EAGAIN}:
-                            raise CommissioningRunConflict(
-                                "another live mutation caller owns execution"
-                            ) from exc
-                        raise CommissioningRunError(
-                            "live mutation execution lock failed"
-                        ) from exc
-                    with self._locked():
-                        current = self._read()["current"]
-                        if not isinstance(
-                            current, Mapping
-                        ) or not self._matches_handle(current, handle):
-                            raise CommissioningRunStale(
-                                "live mutation execution belongs to a stale run generation"
-                            )
-                    yield
-                finally:
-                    if file_lock_acquired:
-                        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                    held.enter_context(
+                        advisory_file_lock(
+                            self.live_execution_lock_path, timeout_sec=0.0
+                        )
+                    )
+                except TimeoutError as exc:
+                    raise CommissioningRunConflict(
+                        "another live mutation caller owns execution"
+                    ) from exc
+                except OSError as exc:
+                    raise CommissioningRunError(
+                        "live mutation execution lock failed"
+                    ) from exc
+                with self._locked():
+                    current = self._read()["current"]
+                    if not isinstance(current, Mapping) or not self._matches_handle(
+                        current, handle
+                    ):
+                        raise CommissioningRunStale(
+                            "live mutation execution belongs to a stale run generation"
+                        )
+                yield
         finally:
             _LIVE_EXECUTION_THREAD_LOCK.release()
 
@@ -1042,37 +1019,25 @@ class CommissioningRunStore:
                 "timed out waiting for the in-process commissioning run lock"
             )
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.lock_path.open("a+", encoding="utf-8") as handle:
-                _ensure_lock_mode(handle)
-                file_lock_acquired = False
-                while not file_lock_acquired:
-                    if remaining() <= 0.0:
-                        raise CommissioningRunLockTimeout(
-                            "timed out waiting for the commissioning run file lock"
-                        )
-                    try:
-                        fcntl.flock(
-                            handle.fileno(),
-                            fcntl.LOCK_EX | fcntl.LOCK_NB,
-                        )
-                        file_lock_acquired = True
-                    except OSError as exc:
-                        if exc.errno not in {errno.EACCES, errno.EAGAIN}:
-                            raise CommissioningRunError(
-                                "commissioning run file lock failed"
-                            ) from exc
-                        sleep_budget = remaining()
-                        if sleep_budget <= 0.0:
-                            raise CommissioningRunLockTimeout(
-                                "timed out waiting for the commissioning run file lock"
-                            ) from exc
-                        self._sleep(min(LOCK_POLL_INTERVAL_S, sleep_budget))
+            file_budget = remaining()
+            if file_budget <= 0.0:
+                raise CommissioningRunLockTimeout(
+                    "timed out waiting for the commissioning run file lock"
+                )
+            with ExitStack() as held:
                 try:
-                    yield
-                finally:
-                    if file_lock_acquired:
-                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                    held.enter_context(
+                        advisory_file_lock(self.lock_path, timeout_sec=file_budget)
+                    )
+                except TimeoutError as exc:
+                    raise CommissioningRunLockTimeout(
+                        "timed out waiting for the commissioning run file lock"
+                    ) from exc
+                except OSError as exc:
+                    raise CommissioningRunError(
+                        "commissioning run file lock failed"
+                    ) from exc
+                yield
         finally:
             _THREAD_LOCK.release()
 
