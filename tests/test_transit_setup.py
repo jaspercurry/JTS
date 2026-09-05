@@ -193,6 +193,27 @@ def test_seed_transit_skips_atomically_when_coords_present(tmp_path):
     assert saved["FOO"] == "bar"  # foreign key preserved
 
 
+def test_locked_apply_publishes_group_readable_transit_env(monkeypatch):
+    """transit.env's write must pass group_from_parent=True: jasper-web can run
+    as root on a streambox Pi, and without it the write publishes root:root,
+    which jasper-control (group jasper) cannot read."""
+    calls = []
+    monkeypatch.setattr(
+        transit_setup,
+        "locked_transform_env_file",
+        lambda path, transform, **kwargs: calls.append((path, kwargs)),
+    )
+
+    transit_setup._locked_apply("/var/lib/jasper/transit.env", {}, {"K": "V"})
+
+    assert calls == [
+        (
+            "/var/lib/jasper/transit.env",
+            {"mode": transit_setup.TRANSIT_FILE_MODE, "group_from_parent": True},
+        ),
+    ]
+
+
 def test_concurrent_transit_save_and_weather_seed_dont_lose_keys(tmp_path):
     """Two concurrent writers of transit.env — a transit save routed through
     _locked_apply and the weather->transit seed — must not clobber each other

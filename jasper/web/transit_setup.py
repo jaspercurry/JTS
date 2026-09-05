@@ -167,7 +167,9 @@ def _locked_apply(state_path: str, current: dict[str, str], new: dict[str, str])
         result.update(changed)
         return result or None
 
-    locked_transform_env_file(state_path, _transform, mode=TRANSIT_FILE_MODE)
+    locked_transform_env_file(
+        state_path, _transform, mode=TRANSIT_FILE_MODE, group_from_parent=True,
+    )
 
 
 def _seed_weather_from_transit_if_missing(
@@ -207,7 +209,10 @@ def _seed_weather_from_transit_if_missing(
         return new_weather
 
     locked_transform_env_file(
-        weather_path, _seed_transform, mode=location_state.WEATHER_FILE_MODE,
+        weather_path,
+        _seed_transform,
+        mode=location_state.WEATHER_FILE_MODE,
+        group_from_parent=True,
     )
     return seeded
 

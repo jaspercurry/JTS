@@ -102,6 +102,9 @@ def test_install_widens_secret_env_on_upgrade():
         # Non-secret state jasper-control also reads off disk for /state:
         "sound_profile.json",
         "sound_settings.json",
+        # BusTime/location wizard state, read by jasper-doctor:
+        "transit.env",
+        "weather.env",
     ):
         assert fname in widened_files, f"widening loop must cover {fname}"
     for fname in (
