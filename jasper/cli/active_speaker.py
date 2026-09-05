@@ -706,10 +706,7 @@ def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
                 f"ERROR: parent directory does not exist: {preview_path.parent}"
             )
             return 1
-        # Operator-named path; see startup_load's --out preview.
-        atomic_write_text(
-            preview_path, yaml, mode=0o640, group_from_parent=False
-        )
+        atomic_write_text(preview_path, yaml, mode=0o640)
         written_path = preview_path
     else:
         applied_config = applied.get("config")

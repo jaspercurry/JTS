@@ -49,7 +49,6 @@ def test_atomic_write_json_uses_canonical_encoding_and_policy(tmp_path):
         path,
         {"z": 1, "a": {"ready": True}},
         mode=0o640,
-        group_from_parent=True,
     )
 
     assert path.read_text(encoding="utf-8") == (
@@ -149,54 +148,75 @@ def test_fsync_directory_tolerance_contract(
     )
 
 
-@pytest.mark.parametrize("writer", ["text", "json", "update", "transform"])
-def test_writers_publish_parent_group_by_default(tmp_path, monkeypatch, writer):
-    """Every publishing writer defaults to ``group_from_parent=True``, so a
-    root-run wizard or installer cannot publish root:root into a state
-    directory a non-root daemon reads. Omitting the kwarg must behave exactly
-    like passing True. Asserting the CALL, not the resulting stat: on a dev box
-    the tempfile already inherits the test user's gid, so a filesystem check
-    cannot fail when the group step is skipped."""
-    from jasper.atomic_io import locked_transform_env_file, locked_update_env_file
+@pytest.fixture
+def foreign_parent_gid(tmp_path, monkeypatch):
+    """Make ``tmp_path`` report a group the writing process is NOT in.
 
-    path = tmp_path / "wizard.env"
-    calls: list[tuple[str, int, int]] = []
-    monkeypatch.setattr(
-        os, "chown", lambda target, uid, gid: calls.append((target, uid, gid))
-    )
+    On a dev box a new file already inherits the test user's gid, so against
+    the real parent group neither the publish nor the denial path is
+    observable: the helper short-circuits before it ever chgrps.
+    """
 
-    {
-        "text": lambda: atomic_write_text(path, "JASPER_X=1\n"),
-        "json": lambda: atomic_write_json(path, {"JASPER_X": "1"}),
-        "update": lambda: locked_update_env_file(path, {"JASPER_X": "1"}),
-        "transform": lambda: locked_transform_env_file(
-            path, lambda cur: {**cur, "JASPER_X": "1"}
-        ),
-    }[writer]()
-
-    assert calls, "the writers must set the temp file group by default"
-    target, uid, gid = calls[-1]
-    assert os.path.dirname(target) == str(tmp_path)
-    assert os.path.basename(target).startswith(".wizard.env.")
-    assert (uid, gid) == (-1, os.stat(tmp_path).st_gid)
-
-
-def test_advisory_lock_publishes_parent_group_by_default(tmp_path, monkeypatch):
-    """The lock the env writers serialize on carries the same default: without
-    the kwarg it takes the descriptor path and chgrps, so a root-held lock does
-    not lock a group peer out of a shared state directory. The parent group is
-    forced to differ because the real one already matches on a dev box."""
-    foreign_gid = os.stat(tmp_path).st_gid + 1
+    gid = os.stat(tmp_path).st_gid + 1
     real_stat = os.stat
 
     def parent_in_a_foreign_group(target, *args, **kwargs):
         st = real_stat(target, *args, **kwargs)
-        if os.fspath(target) == str(tmp_path):
-            return os.stat_result(tuple(st)[:5] + (foreign_gid,) + tuple(st)[6:])
+        if not isinstance(target, int) and os.fspath(target) == str(tmp_path):
+            return os.stat_result(tuple(st)[:5] + (gid,) + tuple(st)[6:])
         return st
 
-    fchowns: list[tuple[int, int]] = []
     monkeypatch.setattr(atomic_io_module.os, "stat", parent_in_a_foreign_group)
+    return gid
+
+
+def _write(writer, path):
+    from jasper.atomic_io import locked_transform_env_file, locked_update_env_file
+
+    return {
+        "text": lambda: atomic_write_text(path, "JASPER_X=1\n", mode=0o640),
+        "json": lambda: atomic_write_json(path, {"JASPER_X": "1"}, mode=0o640),
+        "update": lambda: locked_update_env_file(
+            path, {"JASPER_X": "1"}, mode=0o640
+        ),
+        "transform": lambda: locked_transform_env_file(
+            path, lambda cur: {**cur, "JASPER_X": "1"}, mode=0o640
+        ),
+    }[writer]()
+
+
+@pytest.mark.parametrize("writer", ["text", "json", "update", "transform"])
+def test_writers_publish_parent_group_by_default(
+    tmp_path, monkeypatch, foreign_parent_gid, writer
+):
+    """Every publishing writer defaults to ``group_from_parent=True``, so a
+    root-run wizard or installer cannot publish root:root into a state
+    directory a non-root daemon reads. Omitting the kwarg must behave exactly
+    like passing True."""
+    path = tmp_path / "wizard.env"
+    fchowns: list[tuple[int, int, int]] = []
+    monkeypatch.setattr(
+        atomic_io_module.os,
+        "fchown",
+        lambda fd, uid, gid: fchowns.append((os.fstat(fd).st_ino, uid, gid)),
+    )
+
+    _write(writer, path)
+
+    assert fchowns, "the writers must publish the parent group by default"
+    inode, uid, gid = fchowns[-1]
+    assert (uid, gid) == (-1, foreign_parent_gid)
+    # The rename keeps the inode, so this is the file that got published.
+    assert inode == os.stat(path).st_ino
+
+
+def test_advisory_lock_publishes_parent_group_by_default(
+    tmp_path, monkeypatch, foreign_parent_gid
+):
+    """The lock the env writers serialize on carries the same default: without
+    the kwarg it chgrps the descriptor, so a root-held lock does not lock a
+    group peer out of a shared state directory."""
+    fchowns: list[tuple[int, int]] = []
     monkeypatch.setattr(
         atomic_io_module.os, "fchown", lambda fd, uid, gid: fchowns.append((uid, gid))
     )
@@ -204,48 +224,32 @@ def test_advisory_lock_publishes_parent_group_by_default(tmp_path, monkeypatch):
     with advisory_file_lock(tmp_path / "wizard.env.lock"):
         pass
 
-    assert fchowns == [(-1, foreign_gid)]
+    assert fchowns == [(-1, foreign_parent_gid)]
 
 
-def test_group_from_parent_chown_failure_cleans_up_temp(tmp_path, monkeypatch):
-    path = tmp_path / "secret.env"
-
-    def boom(*_args, **_kwargs):
-        raise PermissionError("simulated group assignment failure")
-
-    monkeypatch.setattr(os, "chown", boom)
-
-    with pytest.raises(PermissionError):
-        atomic_write_text(path, "doomed", mode=0o640, group_from_parent=True)
-
-    assert not path.exists()
-    assert list(tmp_path.iterdir()) == []
-
-
-def test_best_effort_group_failure_still_publishes_requested_mode(
-    tmp_path,
-    monkeypatch,
-    caplog,
+@pytest.mark.parametrize("writer", ["text", "json", "update", "transform"])
+def test_writers_keep_their_own_group_when_the_chgrp_is_denied(
+    tmp_path, monkeypatch, caplog, foreign_parent_gid, writer
 ):
-    """Availability-sensitive state may keep writing after a chgrp denial."""
-    path = tmp_path / "shared-state.json"
+    """Publication is BEST EFFORT and has no strict mode. A writer that may not
+    chgrp — every non-root CLI writing to a path an operator named — publishes
+    the file anyway, under its own group (never a wider one), and says so."""
+    probe = tmp_path / "probe"
+    probe.touch()
+    own_gid = probe.stat().st_gid
 
-    def deny_chown(*_args, **_kwargs):
-        raise PermissionError("simulated group assignment failure")
+    def deny(*_args, **_kwargs):
+        raise PermissionError("simulated chgrp denial")
 
-    monkeypatch.setattr(os, "chown", deny_chown)
+    monkeypatch.setattr(atomic_io_module.os, "fchown", deny)
+    path = tmp_path / "wizard.env"
 
-    atomic_write_text(
-        path,
-        '{"status":"ready"}\n',
-        mode=0o640,
-        group_from_parent=True,
-        best_effort_group=True,
-    )
+    _write(writer, path)
 
-    assert path.read_text(encoding="utf-8") == '{"status":"ready"}\n'
-    assert stat.S_IMODE(path.stat().st_mode) == 0o640
-    assert list(tmp_path.iterdir()) == [path]
+    published = path.stat()
+    assert "JASPER_X" in path.read_text(encoding="utf-8")
+    assert stat.S_IMODE(published.st_mode) == 0o640
+    assert published.st_gid == own_gid != foreign_parent_gid
     assert "event=atomic_io.group_publish_failed" in caplog.text
 
 

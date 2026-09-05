@@ -101,49 +101,6 @@ def test_cli_enable_writes_0640_token(monkeypatch, tmp_path, capsys):
     assert out == token  # the token is printed to stdout
 
 
-def test_cli_enable_sets_token_group_to_parent_directory(
-    monkeypatch, tmp_path, capsys,
-):
-    """A root-run rotate must not publish root:root 0640 in /var/lib/jasper.
-
-    The runtime contract is group-read by the token directory's group (normally
-    `jasper`), so the CLI must set that group before the atomic rename.
-    """
-    path = tmp_path / "control_token"
-    _point_cli_at(monkeypatch, path)
-    calls: list[tuple[str, int, int]] = []
-
-    def fake_chown(target: str, uid: int, gid: int) -> None:
-        calls.append((target, uid, gid))
-
-    monkeypatch.setattr(cli.os, "chown", fake_chown)
-    assert cli.main(["--enable"]) == 0
-    capsys.readouterr()
-
-    parent_gid = os.stat(tmp_path).st_gid
-    assert calls, "CLI writer must set group before publishing the token"
-    target, uid, gid = calls[-1]
-    assert os.path.dirname(target) == str(tmp_path)
-    assert os.path.basename(target).startswith(".control_token.")
-    assert uid == -1
-    assert gid == parent_gid
-
-
-def test_cli_enable_cleans_temp_file_when_group_assignment_fails(
-    monkeypatch, tmp_path,
-):
-    path = tmp_path / "control_token"
-    _point_cli_at(monkeypatch, path)
-
-    def fail_chown(_target: str, _uid: int, _gid: int) -> None:
-        raise PermissionError("no group change")
-
-    monkeypatch.setattr(cli.os, "chown", fail_chown)
-    assert cli.main(["--enable"]) == 1
-    assert not path.exists()
-    assert list(tmp_path.glob(".control_token.*.tmp")) == []
-
-
 def test_cli_enable_refuses_to_clobber_without_force(monkeypatch, tmp_path):
     path = tmp_path / "control_token"
     _point_cli_at(monkeypatch, path)
@@ -223,28 +180,6 @@ def test_ensure_token_is_0640(monkeypatch, tmp_path):
     # mandatory gate from silently fail-OFF'ing post-drop.
     mode = stat.S_IMODE(os.stat(path).st_mode)
     assert mode == 0o640, f"token file is {oct(mode)}, expected 0o640"
-
-
-def test_ensure_token_sets_token_group_to_parent_directory(monkeypatch, tmp_path):
-    """Install-time minting may run as root, so startup generation needs the
-    same parent-group publish contract as the CLI rotation path."""
-    path = tmp_path / "control_token"
-    monkeypatch.setattr(control_token, "TOKEN_FILE", str(path))
-    calls: list[tuple[str, int, int]] = []
-
-    def fake_chown(target: str, uid: int, gid: int) -> None:
-        calls.append((target, uid, gid))
-
-    monkeypatch.setattr(os, "chown", fake_chown)
-    control_token.ensure_token()
-
-    parent_gid = os.stat(tmp_path).st_gid
-    assert calls, "ensure_token must set group before publishing the token"
-    target, uid, gid = calls[-1]
-    assert os.path.dirname(target) == str(tmp_path)
-    assert os.path.basename(target).startswith(".control_token.")
-    assert uid == -1
-    assert gid == parent_gid
 
 
 def test_ensure_token_is_idempotent_and_never_rotates(monkeypatch, tmp_path):

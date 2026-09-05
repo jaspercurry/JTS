@@ -464,11 +464,7 @@ async def start_audition(
                 # and identical trims are what makes the A/B mean anything.
                 "louder_than_full_db": level_give_back_db(applied),
             }
-            atomic_write_json(
-                audition_state_path(state_path),
-                state,
-                best_effort_group=True,
-            )
+            atomic_write_json(audition_state_path(state_path), state)
             armed = True
         finally:
             if not armed:

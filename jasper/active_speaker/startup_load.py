@@ -1334,12 +1334,7 @@ def reemit_staged_startup_anchor(
                     device, source, "out_parent_missing",
                     detail=str(preview_path.parent),
                 )
-            # Operator-named path: no group peer reads it, and a chgrp
-            # into a directory the operator is not a group member of
-            # (/tmp) would raise on Linux.
-            atomic_write_text(
-                preview_path, yaml, mode=0o640, group_from_parent=False
-            )
+            atomic_write_text(preview_path, yaml, mode=0o640)
             return ReemitAnchorReport(
                 device, source, classification=graph.classification,
                 written_path=preview_path, preview=True, byte_count=len(yaml),

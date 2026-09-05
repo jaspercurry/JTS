@@ -650,15 +650,8 @@ widen_control_secret_env_modes() {
     #     privsep MANIFEST) and weather.env (coords + units, no secret; the
     #     /weather/ wizard reads it off disk as jasper-web). Both readers are
     #     non-root and in group `jasper`.
-    # REMOVAL CONDITION for the CHGRP half of the loop below: every file it
-    # lists is written through jasper.atomic_io, which now publishes the parent
-    # directory's group by default, so the chgrp only still heals files an
-    # OLDER build left root:root -- transit.env, weather.env,
-    # voice_provider.env, household_secret and sound_profile.json omitted that
-    # kwarg; control_token and sound_settings.json always passed it. Drop the
-    # chgrp once every box has installed past this change. The chmod half heals
-    # a separate, older class (files an early build created 0600) and outlives
-    # it.
+    # Drop the chgrp once every box has installed past the atomic_io
+    # default-group change; the chmod half heals an older 0600 class and stays.
     # NOTE: the WiFi guardian PSK stash is DELIBERATELY NOT widened here — it
     # holds the WiFi password, which jasper-control does not need the value of
     # (only the SSID, which it derives from nmcli/the journal), so it stays

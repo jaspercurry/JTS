@@ -445,24 +445,17 @@ def test_baseline_profile_compiles_durable_camilla_yaml(
     assert "as_tweeter_baseline_limiter" in yaml
 
 
-def test_baseline_profile_state_keeps_shared_parent_group(
-    monkeypatch,
+def test_baseline_profile_state_is_published_group_readable_0640(
     tmp_path: Path,
 ) -> None:
-    """A root web writer must not hide applied Layer-A state from control."""
+    """0640 is what lets the non-root control daemon read applied Layer-A
+    state a root web writer published."""
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft)
     measurements = _measurements(topology, tmp_path)
-    calls: list[dict[str, object]] = []
-    real_write = baseline_profile_mod.atomic_write_text
-
-    def recording_write(path, text, *, mode):
-        calls.append({"path": Path(path), "mode": mode})
-        real_write(path, text, mode=mode)
-
-    monkeypatch.setattr(baseline_profile_mod, "atomic_write_text", recording_write)
     state_path = tmp_path / "baseline_profile.json"
+
     build_baseline_profile_candidate(
         topology,
         design_draft=draft,
@@ -474,9 +467,7 @@ def test_baseline_profile_state_keeps_shared_parent_group(
         validate=_valid_config,
     )
 
-    state_writes = [call for call in calls if call["path"] == state_path]
-    assert state_writes
-    assert all(call["mode"] == 0o640 for call in state_writes)
+    assert state_path.stat().st_mode & 0o777 == 0o640
 
 
 def test_baseline_profile_compiles_with_local_subwoofer(tmp_path: Path) -> None:
