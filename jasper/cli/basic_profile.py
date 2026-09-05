@@ -47,7 +47,6 @@ for. See ``docs/tuning-operator-runbook.md``'s "the other apply door".
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -59,7 +58,7 @@ from jasper.active_speaker.baseline_profile import (
 )
 from jasper.identity import read_identity
 
-from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE
+from ._refusal import EXIT_OK as EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, answered, failed
 
 #: The basic-profile door at its EXTERNAL path. nginx's ``location
 #: /sound/setup/`` proxies to jasper-web on ``127.0.0.1:8784/`` with the prefix
@@ -82,6 +81,13 @@ CSRF_PAGE_PATH = "/sound/setup/"
 #: catches it (jasper/web/sound_setup.py's finish-commissioning payload).
 FINGERPRINT_MISMATCH_CODE = "baseline_candidate_fingerprint_mismatch"
 
+#: The door refused and named neither a blocker nor a status of its own.
+DOOR_REFUSED = "door_refused"
+
+#: No answer to read. The same slug ``jasper-round`` publishes for the same
+#: condition, so one round trip lost is one word whichever tool made it.
+ANSWER_LOST = "answer_lost"
+
 #: Said whenever an apply's answer is lost, because "it failed" is a claim this
 #: tool cannot make there and the applied record is what can settle it.
 LOST_ANSWER_ADVICE = (
@@ -101,6 +107,7 @@ class _DoorUnreachable(Exception):
     def __init__(self, path: str, detail: str) -> None:
         super().__init__(f"{path}: {detail}")
         self.path = path
+        self.detail = detail
 
 
 def _door(
@@ -185,8 +192,9 @@ def _issues(profile: Mapping[str, Any]) -> list[dict[str, str]]:
     ]
 
 
-def _dump(payload: Mapping[str, Any]) -> None:
-    print(json.dumps(payload, indent=2, sort_keys=True))
+def _say(line: str = "") -> None:
+    """The human rendering, on stderr: stdout carries the answer."""
+    print(line, file=sys.stderr)
 
 
 def _render_number(value: float | None, suffix: str) -> str:
@@ -196,18 +204,18 @@ def _render_number(value: float | None, suffix: str) -> str:
 def _print_facts(summary: Mapping[str, Any]) -> None:
     roles = summary["linearization_roles"]
     blend = summary["blend_correction_count"]
-    print(f"  {'fingerprint':<22}{summary['candidate_fingerprint'] or '(none)'}")
-    print(f"  {'status':<22}{summary['status'] or '(none)'}")
-    print(
+    _say(f"  {'fingerprint':<22}{summary['candidate_fingerprint'] or '(none)'}")
+    _say(f"  {'status':<22}{summary['status'] or '(none)'}")
+    _say(
         f"  {'linearization':<22}"
         + ("none" if not roles else f"{len(roles)}: {', '.join(roles)}")
     )
-    print(f"  {'blend correction':<22}" + ("none" if not blend else str(blend)))
-    print(f"  {'tuning owner':<22}{summary['tuning_owner'] or '(none)'}")
+    _say(f"  {'blend correction':<22}" + ("none" if not blend else str(blend)))
+    _say(f"  {'tuning owner':<22}{summary['tuning_owner'] or '(none)'}")
     trims = summary["trims"]
-    print("  trims" if trims else f"  {'trims':<22}(none)")
+    _say("  trims" if trims else f"  {'trims':<22}(none)")
     for role, trim in trims.items():
-        print(
+        _say(
             f"    {role:<16}{_render_number(trim['gain_db'], 'dB'):>12}"
             f"{_render_number(trim['delay_ms'], 'ms'):>12}"
             f"   {'inverted' if trim['inverted'] else 'normal'}"
@@ -218,23 +226,23 @@ def _cmd_review(wizard: WizardClient, args: argparse.Namespace) -> int:
     profile = _door(wizard, REVIEW_PATH)
     summary = _summary(profile)
     issues = _issues(profile)
-    if args.json:
-        _dump({**summary, "issues": issues})
-        return EXIT_OK
-    print("basic profile candidate")
-    _print_facts(summary)
-    for issue in issues:
-        print(f"  issue  {issue['severity']}  {issue['code']}: {issue['message']}")
-    print(
-        "\nNothing was applied. To put THIS candidate on the speaker:\n"
-        f"  jasper-basic-profile apply --expected-fingerprint "
+    apply_line = (
+        "jasper-basic-profile apply --expected-fingerprint "
         f"{summary['candidate_fingerprint'] or '<fingerprint>'}"
     )
-    return EXIT_OK
+    _say("basic profile candidate")
+    _print_facts(summary)
+    for issue in issues:
+        _say(f"  issue  {issue['severity']}  {issue['code']}: {issue['message']}")
+    _say(
+        "\nNothing was applied. To put THIS candidate on the speaker:\n"
+        f"  {apply_line}"
+    )
+    return answered({**summary, "issues": issues, "next": apply_line})
 
 
-def _refuse_stale(named: str, live: str, *, json_output: bool) -> int:
-    """The door's blocked shape, produced here so nothing is POSTed.
+def _refuse_stale(named: str, live: str) -> int:
+    """The door's own refusal, produced here so nothing is POSTed.
 
     The door runs the same comparison and would refuse the same request. What
     this adds is that a stale or mistyped fingerprint ends on the speaker's
@@ -246,27 +254,34 @@ def _refuse_stale(named: str, live: str, *, json_output: bool) -> int:
         else "the crossover candidate changed after review; review it again "
         "before applying"
     )
-    payload = {
-        "status": "blocked",
-        "refused_by": "client",
-        "expected_candidate_fingerprint": named,
-        "candidate_fingerprint": live,
-        "issues": [
-            {
-                "severity": "blocker",
-                "code": FINGERPRINT_MISMATCH_CODE,
-                "message": message,
-            }
-        ],
-    }
-    if json_output:
-        _dump(payload)
-    else:
-        print(f"refused before anything was sent ({FINGERPRINT_MISMATCH_CODE})")
-        print(f"  {'named':<22}{named or '(none)'}")
-        print(f"  {'live':<22}{live or '(none)'}")
-        print(f"  {message}")
-    return EXIT_REFUSED
+    return failed(
+        EXIT_REFUSED,
+        FINGERPRINT_MISMATCH_CODE,
+        {
+            "refused_by": "client",
+            "expected_candidate_fingerprint": named,
+            "candidate_fingerprint": live,
+            "issues": [
+                {
+                    "severity": "blocker",
+                    "code": FINGERPRINT_MISMATCH_CODE,
+                    "message": message,
+                }
+            ],
+        },
+    )
+
+
+def _door_refusal_reason(payload: Mapping[str, Any]) -> str:
+    """The door's OWN name for what it refused: its first blocker's code.
+
+    :data:`FINGERPRINT_MISMATCH_CODE`'s rule, generalized: one condition, one
+    name, whichever side of the round trip caught it.
+    """
+    for issue in _issues(payload):
+        if issue["severity"] == "blocker" and issue["code"]:
+            return issue["code"]
+    return str(payload.get("status") or "") or DOOR_REFUSED
 
 
 def _proof() -> dict[str, Any] | None:
@@ -292,14 +307,13 @@ def _cmd_apply(wizard: WizardClient, args: argparse.Namespace) -> int:
     live = reviewed["candidate_fingerprint"]
     named = args.expected_fingerprint or live
     if not live or named != live:
-        return _refuse_stale(named, live, json_output=args.json)
+        return _refuse_stale(named, live)
 
     applied = _door(
         wizard, SAVE_AND_APPLY_PATH, {"expected_candidate_fingerprint": named}
     )
     if str(applied.get("status") or "") != "applied":
-        _dump(applied)
-        return EXIT_REFUSED
+        return failed(EXIT_REFUSED, _door_refusal_reason(applied), applied)
 
     proof = _proof()
     state_path = baseline_profile_state_path()
@@ -308,39 +322,36 @@ def _cmd_apply(wizard: WizardClient, args: argparse.Namespace) -> int:
     # an issue, and the runbook tells the operator to read that before deciding
     # this is what they wanted.
     issues = _issues(applied)
-    if args.json:
-        _dump(
-            {
-                "status": "applied",
-                "candidate_fingerprint": named,
-                "proof": proof,
-                "issues": issues,
-            }
-        )
-        return EXIT_OK
-    print("applied.")
+    _say("applied.")
     for issue in issues:
-        print(f"  issue  {issue['severity']}  {issue['code']}: {issue['message']}")
-    print(f"  {'fingerprint':<22}{named}")
+        _say(f"  issue  {issue['severity']}  {issue['code']}: {issue['message']}")
+    _say(f"  {'fingerprint':<22}{named}")
     if proof is None:
-        print(f"  the applied record at {state_path} could not be read")
-        return EXIT_OK
-    print(f"  proof, from {state_path}")
-    for key in (
-        "candidate_fingerprint",
-        "applied_at",
-        "tuning_owner",
-        "structure_and_trim_only",
-    ):
-        print(f"    {key:<24}{proof[key]}")
-    roles = proof["linearization_roles"]
-    print(
-        f"    {'linearization':<24}"
-        + ("none" if not roles else f"{len(roles)}: {', '.join(roles)}")
+        _say(f"  the applied record at {state_path} could not be read")
+    else:
+        _say(f"  proof, from {state_path}")
+        for key in (
+            "candidate_fingerprint",
+            "applied_at",
+            "tuning_owner",
+            "structure_and_trim_only",
+        ):
+            _say(f"    {key:<24}{proof[key]}")
+        roles = proof["linearization_roles"]
+        _say(
+            f"    {'linearization':<24}"
+            + ("none" if not roles else f"{len(roles)}: {', '.join(roles)}")
+        )
+        blend = proof["blend_correction_count"]
+        _say(f"    {'blend correction':<24}" + ("none" if not blend else str(blend)))
+    return answered(
+        {
+            "status": "applied",
+            "candidate_fingerprint": named,
+            "proof": proof,
+            "issues": issues,
+        }
     )
-    blend = proof["blend_correction_count"]
-    print(f"    {'blend correction':<24}" + ("none" if not blend else str(blend)))
-    return EXIT_OK
 
 
 def _add_connection_args(parser: argparse.ArgumentParser) -> None:
@@ -359,7 +370,6 @@ def _add_connection_args(parser: argparse.ArgumentParser) -> None:
         default="http://127.0.0.1",
         help="where the wizard is reached (default: %(default)s)",
     )
-    parser.add_argument("--json", action="store_true", help="emit JSON, not text")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -368,7 +378,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Review and apply the basic profile -- the chosen crossover plus "
             "per-driver trim, delay and polarity, with no linearization and no "
-            "blend correction. Replaces the live tune; deletes no evidence."
+            "blend correction, replacing the live tune and deleting no evidence."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -396,15 +406,16 @@ def build_parser() -> argparse.ArgumentParser:
             "EXIT CODES\n"
             "  0  the door answered; `review` printed the candidate, or\n"
             "     `apply` put it on the speaker\n"
-            "  1  EXIT_REFUSED -- the door's refusal payload, or this\n"
-            "     tool's own pre-flight fingerprint refusal, printed as\n"
-            "     JSON on stdout. A refusal is an answer, so nothing was\n"
-            "     applied\n"
-            "  2  EXIT_UNREADABLE -- the answer was LOST (wrong --hostname,\n"
-            "     the daemon is down, a dropped connection); stderr names\n"
-            "     which round trip. `review` only reads, so nothing changed\n"
-            "     there -- but a lost answer to the apply POST does NOT mean\n"
-            "     the apply failed. Run `review` and read the applied state"
+            "  1  EXIT_REFUSED -- {status, reason, detail} on stdout: the\n"
+            "     reason is the door's own blocker code (or this tool's\n"
+            "     pre-flight fingerprint refusal, which uses the same one)\n"
+            "     and the detail carries the payload. Nothing was applied\n"
+            "  2  EXIT_UNREADABLE -- reason `answer_lost`: there was no\n"
+            "     answer to read (wrong --hostname, the daemon is down, a\n"
+            "     dropped connection), and the detail names which round\n"
+            "     trip. `review` only reads, so nothing changed there -- but\n"
+            "     a lost answer to the apply POST does NOT mean the apply\n"
+            "     failed. Run `review` and read the applied state"
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -446,14 +457,15 @@ def main(argv: Sequence[str] | None = None, *, opener: Any | None = None) -> int
     try:
         return int(args.func(wizard, args))
     except _DoorUnreachable as exc:
-        print(f"the basic-profile door's answer was lost: {exc}", file=sys.stderr)
-        if exc.path == SAVE_AND_APPLY_PATH:
-            print(LOST_ANSWER_ADVICE, file=sys.stderr)
         # UNREADABLE and not a refusal: there was no answer to read. On the
         # apply POST the outcome is genuinely unknown -- the route has no
         # try/except around its own answer, so a connection dropped after the
-        # graph was loaded looks exactly like one dropped before it.
-        return EXIT_UNREADABLE
+        # graph was loaded looks exactly like one dropped before it, which is
+        # the one case that has to carry the advice.
+        detail: dict[str, Any] = {"path": exc.path, "detail": exc.detail}
+        if exc.path == SAVE_AND_APPLY_PATH:
+            detail["advice"] = LOST_ANSWER_ADVICE
+        return failed(EXIT_UNREADABLE, ANSWER_LOST, detail)
 
 
 if __name__ == "__main__":  # pragma: no cover - console-script entry point

@@ -435,7 +435,9 @@ unsafe impl Send for RingMapping {}
 
 impl RingMapping {
     fn header_atomic(&self, offset: usize) -> &AtomicU64 {
+        // PANIC-AUDITED: every call site passes a fixed layout::OFF_* constant
         debug_assert!(offset + 8 <= HEADER_BYTES);
+        // PANIC-AUDITED: the layout::OFF_* constants are 8-byte aligned by construction
         debug_assert_eq!(offset % 8, 0);
         // SAFETY: offset is within the header (< HEADER_BYTES), 8-byte aligned,
         // and the mmap base is page-aligned, so the pointer is valid and
@@ -446,6 +448,7 @@ impl RingMapping {
     /// Read a plain u32 header field (rate/channels/etc are init-only; the
     /// reader validated them at attach and never mutates them).
     fn header_u32(&self, offset: usize) -> u32 {
+        // PANIC-AUDITED: every call site passes a fixed layout::OFF_* constant
         debug_assert!(offset + 4 <= HEADER_BYTES);
         // SAFETY: offset within header, 4-byte read from a valid mapping.
         unsafe { std::ptr::read_unaligned(self.base.add(offset) as *const u32) }
@@ -456,6 +459,7 @@ impl RingMapping {
     /// an S16LE ring and the wrong size on any other. Stated once here and
     /// called from all three wrappers rather than repeated at each.
     pub(crate) fn debug_assert_s16_typed_view(&self) {
+        // PANIC-AUDITED: debug-only tripwire; fanin's wire-format tests are the real guard
         debug_assert_eq!(
             self.geometry.sample_format,
             layout::SAMPLE_FORMAT_S16LE,
@@ -466,6 +470,7 @@ impl RingMapping {
     /// The same tripwire for the `i32`-typed wrapper: `samples_per_slot` 4-byte
     /// samples is one slot on an S32LE ring and the wrong size on any other.
     pub(crate) fn debug_assert_s32_typed_view(&self) {
+        // PANIC-AUDITED: debug-only tripwire; fanin's wide wire-format tests are the real guard
         debug_assert_eq!(
             self.geometry.sample_format,
             layout::SAMPLE_FORMAT_S32LE,
@@ -478,12 +483,14 @@ impl RingMapping {
     fn slot_bytes(&self) -> usize {
         self.geometry
             .slot_bytes()
+            // PANIC-AUDITED: the geometry is validated at attach, before any RingMapping can exist
             .expect("mapped ring geometry was validated before slot access")
     }
 
     fn slot_ptr(&self, slot_index: u32) -> *const u8 {
         let slot_bytes = self.slot_bytes();
         let off = HEADER_BYTES + (slot_index as usize) * slot_bytes;
+        // PANIC-AUDITED: slot_index is seq % n_slots and the mapping is sized for n_slots
         debug_assert!(off + slot_bytes <= self.len);
         // SAFETY: slot_index < n_slots (caller guarantees via seq % n_slots)
         // and the mapping is sized HEADER_BYTES + n_slots*slot_bytes.
@@ -516,6 +523,7 @@ impl RingMapping {
     /// Publication of `OFF_WRITE_SEQ` remains the caller's Release-store
     /// responsibility.
     pub(crate) fn write_slot_bytes(&self, write_seq: u64, payload: &[u8]) {
+        // PANIC-AUDITED: both callers size the payload from the attached geometry
         assert_eq!(
             payload.len(),
             self.slot_bytes(),
@@ -776,6 +784,7 @@ impl RingReader {
     /// view (so `/state` is honest even on empty periods).
     pub fn try_consume_slot_bytes(&mut self, out: &mut [u8]) -> SlotRead {
         let g = self.map.geometry;
+        // PANIC-AUDITED: outputd's only caller sizes out from the attached geometry
         debug_assert_eq!(
             out.len(),
             self.map.slot_bytes(),
@@ -1301,6 +1310,7 @@ fn mmap_fd(fd: RawFd, len: usize, geometry: Geometry) -> io::Result<RingMapping>
 }
 
 fn write_u32(map: &RingMapping, offset: usize, value: u32) {
+    // PANIC-AUDITED: every call site passes a fixed layout::OFF_* constant
     debug_assert!(offset + 4 <= HEADER_BYTES);
     // SAFETY: offset within header, 4-byte write into a valid, writable mapping.
     unsafe {
@@ -1428,6 +1438,7 @@ impl TestRingWriter {
     /// free-runs on full — see the module doc.
     pub fn try_publish_slot(&mut self, samples: &[i16]) -> bool {
         let g = self.map.geometry;
+        // PANIC-AUDITED: test/bench-only writer with no product caller
         assert_eq!(samples.len(), g.samples_per_slot());
         self.map
             .header_atomic(layout::OFF_WRITER_HEARTBEAT_NS)

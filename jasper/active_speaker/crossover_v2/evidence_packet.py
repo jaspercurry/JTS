@@ -2335,11 +2335,11 @@ def _incumbent_trim_block(
     pinned = _mapping(candidate.get("trims_pinned"))
     out: dict[str, dict[str, Any]] = {}
     for role in sorted(set(applied) | set(resolved)):
-        applied_db = _finite_or_none(_mapping(applied.get(role)).get("gain_db"))
+        applied_db = finite_float(_mapping(applied.get(role)).get("gain_db"))
         resolved_db = (
-            _finite_or_none(_mapping(pinned[role]).get("displaced_db"))
+            finite_float(_mapping(pinned[role]).get("displaced_db"))
             if role in pinned
-            else _finite_or_none(resolved.get(role))
+            else finite_float(resolved.get(role))
         )
         out[role] = {
             "applied_db": applied_db,
@@ -2351,14 +2351,6 @@ def _incumbent_trim_block(
             "pinned_this_round": role in pinned,
         }
     return out
-
-
-def _finite_or_none(value: Any) -> float | None:
-    return (
-        float(value)
-        if isinstance(value, (int, float)) and not isinstance(value, bool)
-        else None
-    )
 
 
 def _verify_block(state: dict[str, Any], reason: str) -> dict[str, Any]:

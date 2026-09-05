@@ -292,6 +292,28 @@ def _blocked(reason: str, named: str, live: str) -> dict[str, Any]:
     }
 
 
+def _round_is_over(failure: Any, phase: str) -> bool:
+    """Whether a ``failure`` block ENDED the round or only refused one capture.
+
+    Durable state carries ONE failure at a time and the wired walk writes the
+    rejected capture's code into it, clearing it on the next accepted take
+    (``correction_crossover_v2_wired._capture_one`` ->
+    ``durable_state.build_conductor_state``). So the block's presence says a
+    take was refused, never that the session stopped: a round is over when its
+    phase has left :data:`RUNNING_PHASES`, or when the refusal carries a code no
+    retry can clear.
+    """
+    if phase not in RUNNING_PHASES:
+        return True
+    # The reason registry pulls numpy in, which is why it is read HERE rather
+    # than imported: only a poll that already sees a failure pays for it, never
+    # the ordinary polling path (ADR-0226).
+    from jasper.active_speaker.crossover_v2.refusal_copy import NON_RETRIABLE_CODES
+
+    code = str(failure.get("code") or "") if isinstance(failure, Mapping) else ""
+    return code in NON_RETRIABLE_CODES
+
+
 def wait_for_round(
     client: WizardClient,
     *,
@@ -308,7 +330,8 @@ def wait_for_round(
     moment the poll started), and the phase must leave :data:`RUNNING_PHASES`. A caller
     with no prior id (a separate invocation) passes ``""`` and waits on whatever session
     is current. A status read that is not answered ends the wait at once, rather than
-    burning the full timeout indistinguishable from a slow round.
+    burning the full timeout indistinguishable from a slow round. A failure block ends
+    it only when :func:`_round_is_over` says the round did.
     """
     deadline = now() + timeout_s
     while True:
@@ -320,7 +343,7 @@ def wait_for_round(
         phase = str(block.get("phase") or "")
         session_id = str(block.get("session_id") or "")
         failure = block.get("failure")
-        if failure:
+        if failure and _round_is_over(failure, phase):
             return {"status": "failed", "reason": REASON_SESSION_FAILED,
                     "phase": phase, "session_id": session_id,
                     "candidate_fingerprint": _live_fingerprint(block),

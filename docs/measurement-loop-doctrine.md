@@ -16,8 +16,8 @@ controls — live in
 
 ## 1. The loop
 
-**measure → analyze → recommend → loop → save.** This is the control loop's
-vocabulary, not a list of methods on `TuningSession`. The engine owns one
+**measure → analyze → recommend → apply → loop → save.** This is the control
+loop's vocabulary, not a list of methods on `TuningSession`. The engine owns one
 tuning operation, `measure`, inside its `open` / `close` lifetime. The
 doors-and-banks tools analyze the banked evidence, recommend the next action,
 and persist their own accounting under
@@ -36,16 +36,23 @@ and persist their own accounting under
   document's `expected_delta_db`) and the next thing to try is named.
   Proposing, prescribing and recommending are one act; a final call is that
   same act with more information behind it.
-  Tool: `jasper-crossover-prescriber propose`.
+  Tool: `jasper-crossover-prescriber propose`, then
+  `jasper-crossover-prescriber stage` for the class the next round carries.
+- **apply** — a recommendation the round earned becomes what the speaker
+  plays. A measurement run never applies; the apply is a second, deliberate
+  act named against the candidate you reviewed.
+  Tool: `jasper-round apply --expected-fingerprint <fp>`
+  (`jasper-basic-profile apply` returns the speaker to structure-plus-trim).
 - **loop** — checking that a recommendation held is measuring again (§3).
-  Tool: `jasper-round-views frozen`, the re-measure graded against the round it
-  is checking.
+  Tool: `jasper-round open --stage post_apply` for the re-measure, then
+  `jasper-round-views frozen <baseline-round> <this-round>` to grade it
+  against the round it is checking.
 - **save** — the result is banked.
   Tool: `jasper-round bank`.
 
 ### 1a. The layering rule — what a measurement plays through
 
-**Owner ruling, 2026-09-01.** When tuning layer N, the measurement plays
+**Owner ruling.** When tuning layer N, the measurement plays
 through layer N and everything *below* it, and never anything above it.
 
 - Preference EQ (`/sound/`) sits above everything tunable, so it is part of no
@@ -60,8 +67,8 @@ through layer N and everything *below* it, and never anything above it.
   boundary on every household EQ save, which is noise that trains a driver to
   ignore the flag.
 
-**Known departure, open at writing time.** The rule above is the ruling; the
-code does not yet meet it everywhere. Routed stimuli satisfy it by construction
+**Known departure.** The rule above is the ruling; the code does not meet it
+everywhere. Routed stimuli satisfy it by construction
 — `measurement_emit.emit_measurement_graph` takes no `SoundProfile`, pinned by
 `test_the_measurement_graph_never_carries_preference_eq`. The
 `programs.SUMMED_SWEEP_PHASES` captures do not: they deliberately measure the
@@ -69,10 +76,9 @@ STANDING production graph, which carries the household's preference EQ. That
 set is VERIFY, both position clouds, **and ENTRY_BASELINE** — so it includes
 the very pair `evaluate_benefit` differences, and an EQ save between a round's
 "before" and its "after" moves them apart for a reason no verdict attributes.
-Harmless on the runs banked so far only because jts3's sound profile was
-`enabled=false` with 0 bands throughout both campaigns, which is a property of
-those runs and not a guarantee. Closing it is measurement-path work and has no
-issue of its own yet.
+Harmless on a speaker whose sound profile is `enabled=false` with 0 bands,
+which is a property of that box and not a guarantee. Read the profile before you
+difference an entry baseline against a verify.
 
 ## 2. The authority model
 
@@ -366,15 +372,3 @@ experiment a scientist would run, on the theory it might not work?** If yes, it
 ships as an informational flag, never a gate. A refusal earns its place only by
 naming the mechanism it guards against — component damage, or the household's
 hearing. "Seems risky" is not a mechanism.
-
----
-
-Migration (2026-08-23, #2865): section 3 arrived from
-[`audio-commissioning-roadmap.md`](historical/audio-commissioning-roadmap.md)'s
-Ethos — its ruling text re-read from that file, and the owner's 2026-08-22
-re-affirmation and intervention-granularity refinement quoted from #2865 and
-#2862, at writing time.
-
-Last verified: 2026-08-26 — §4's five clamps and §4a's named symbols were each
-grepped for a live producer at that day's `main`; §§1-3 and 5 were re-read and
-stand.

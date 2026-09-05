@@ -29,19 +29,17 @@ request, with both values on the receipt.
 **``bank`` reaches no wizard**: it files through
 :func:`jasper.active_speaker.round_bank.bank_round` into the campaign home.
 
-The wizard verbs print a receipt -- the fields, or the same fields as JSON
-under ``--json``; ``bank`` prints the round directory. See
-``docs/tuning-operator-runbook.md`` steps 6 and 8, which name this tool beside
-the laptop script it shares its transport with.
+Every verb answers on stdout with ONE JSON receipt and prints one human line
+on stderr; a failure answers with the refusal document instead, under the word
+its exit code owns. See ``docs/tuning-operator-runbook.md`` steps 6 and 8,
+which name this tool beside the laptop script it shares its transport with.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
-import sys
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Sequence
 
 from jasper.active_speaker.wizard_client import (
     CSRF_PAGE_PATH,
@@ -56,12 +54,15 @@ from jasper.active_speaker.wizard_client import (
     error_of,
     wait_for_round,
 )
-from jasper.identity import read_identity
+from jasper.identity import CROSSOVER_PAGE_PATH, read_identity, speaker_url
 
 from ._refusal import (
-    EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, read_json_source,
+    EXIT_OK as EXIT_OK,
+    EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answered, failed,
+    read_json_source,
 )
 
+PROG = "jasper-round"
 DEFAULT_TIMEOUT_S = 900.0
 DEFAULT_POLL_S = 5.0
 
@@ -84,22 +85,38 @@ AUTHORITY_TIER = "mutating-with-gates (`open`/`apply`/`bank` write; `wait` does 
 #: neither says the round failed. Which one it was rides in the receipt's
 #: ``reason`` (``answer_lost`` / ``wait_timeout``), not in the number.
 _EXIT_BY_WAIT_STATUS = {
-    "terminal": EXIT_OK,
     "failed": EXIT_REFUSED,
     "lost": EXIT_UNREADABLE,
     "timed_out": EXIT_UNREADABLE,
 }
 
 
-def _emit(receipt: Mapping[str, Any], *, json_output: bool) -> None:
-    if json_output:
-        print(json.dumps(dict(receipt), indent=2, sort_keys=True, default=str))
-        return
-    print(f"{receipt['verb']}: {receipt.get('status') or receipt.get('reason') or 'ok'}")
-    for key, value in receipt.items():
-        if key in ("verb", "status") or value in (None, "", {}):
-            continue
-        print(f"  {key:<30}{value}")
+def _answer(verb: str, human: str, **fields: Any) -> int:
+    """The verb's answer: its non-empty fields, under the verb."""
+
+    return answered(
+        {"verb": verb, **{k: v for k, v in fields.items() if v not in (None, "", {})}},
+        human,
+    )
+
+
+def _round_session_dir() -> str:
+    """The bundle ``bank`` takes: the newest under the sessions root, the rule
+    ``scripts/bank-crossover-round.sh`` already banks by.
+
+    The wizard's ``session_id`` is the capture provider's and never names this
+    directory, so no reader of the receipt can compose it.
+    """
+    # The bundle store pulls the measurement import graph in: an open must not
+    # pay for a door only a finished wait carries (ADR-0226). A sessions root
+    # this operator cannot read costs the answer a path, never its exit code.
+    from jasper.active_speaker.bundles import latest_bundle, sessions_dir
+
+    try:
+        found = latest_bundle(sessions_dir())
+    except OSError:
+        return ""
+    return str(found["bundle_dir"]) if found else ""
 
 
 def _prescription_doors(args: argparse.Namespace) -> dict[str, Any]:
@@ -142,97 +159,93 @@ def _cmd_open(client: WizardClient, args: argparse.Namespace) -> int:
     """
     post_apply = args.stage == STAGE_POST_APPLY
     if not post_apply and not args.tier:
-        _emit(
-            {"verb": "open", "status": "blocked", "stage": args.stage,
-             "reason": REASON_TIER_REQUIRED},
-            json_output=args.json,
-        )
-        return EXIT_REFUSED
+        return failed(EXIT_REFUSED, REASON_TIER_REQUIRED, {"stage": args.stage})
     try:
         prescriptions = {} if post_apply else _prescription_doors(args)
     except ValueError as exc:
-        _emit(
-            {"verb": "open", "status": "blocked", "stage": args.stage,
-             "reason": REASON_OPEN_REFUSED, "detail": str(exc)},
-            json_output=args.json,
+        return failed(
+            EXIT_REFUSED, REASON_OPEN_REFUSED,
+            {"stage": args.stage, "error": str(exc)},
         )
-        return EXIT_REFUSED
+    path = VERIFY_PATH if post_apply else SESSION_PATH
     http, payload = client.open_session(
         args.tier or "", stage=args.stage, prescriptions=prescriptions
     )
-    block = client.v2_block() if http == 200 else {}
-    _emit(
-        {
-            "verb": "open",
-            "status": "opened" if http == 200 else "blocked",
-            "stage": args.stage,
-            "tier": None if post_apply else args.tier,
-            "path": VERIFY_PATH if post_apply else SESSION_PATH,
-            "http": http,
-            "session_id": str(block.get("session_id") or ""),
-            "phase": str(block.get("phase") or ""),
-            "reason": (
-                "" if http == 200
-                else REASON_ANSWER_LOST if http == 0
-                else REASON_OPEN_REFUSED
-            ),
-            "detail": "" if http == 200 else error_of(payload),
-        },
-        json_output=args.json,
+    if http != 200:
+        return failed(
+            EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,
+            REASON_ANSWER_LOST if http == 0 else REASON_OPEN_REFUSED,
+            {"stage": args.stage, "tier": args.tier or "", "path": path,
+             "http": http, "error": error_of(payload)},
+        )
+    block = client.v2_block()
+    url = speaker_url(CROSSOVER_PAGE_PATH)
+    return _answer(
+        "open",
+        f"{args.stage} session open -- the round is driven at {url}",
+        stage=args.stage,
+        tier=None if post_apply else args.tier,
+        path=path,
+        http=http,
+        session_id=str(block.get("session_id") or ""),
+        phase=str(block.get("phase") or ""),
+        handoff_url=url,
+        next=f"{PROG} wait",
     )
-    if http == 200:
-        return EXIT_OK
-    return EXIT_UNREADABLE if http == 0 else EXIT_REFUSED
 
 
 def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
     result = wait_for_round(
         client, timeout_s=args.timeout_s, poll_s=args.poll_s
     )
-    _emit(
-        {
-            "verb": "wait",
-            "status": result["status"],
-            "reason": result["reason"],
-            "phase": result["phase"],
-            "session_id": result["session_id"],
-            "candidate_fingerprint": result["candidate_fingerprint"],
-            "failure": result["failure"],
-            "waited_s": args.timeout_s if result["status"] == "timed_out" else None,
-        },
-        json_output=args.json,
+    status = str(result["status"])
+    if status != "terminal":
+        return failed(
+            _EXIT_BY_WAIT_STATUS[status], str(result["reason"]),
+            {"phase": result["phase"], "session_id": result["session_id"],
+             "failure": result["failure"],
+             "waited_s": args.timeout_s if status == "timed_out" else None},
+        )
+    session_dir = _round_session_dir()
+    return _answer(
+        "wait",
+        f"session {result['session_id']} stopped at {result['phase']}",
+        phase=result["phase"],
+        session_id=result["session_id"],
+        candidate_fingerprint=result["candidate_fingerprint"],
+        session_dir=session_dir,
+        next=f"{PROG} bank {session_dir}" if session_dir else "",
     )
-    return _EXIT_BY_WAIT_STATUS[str(result["status"])]
 
 
 def _cmd_apply(client: WizardClient, args: argparse.Namespace) -> int:
     result = apply_by_fingerprint(client, args.expected_fingerprint)
+    fingerprint = str(result["candidate_fingerprint"])
+    if result["status"] == "applied":
+        return _answer(
+            "apply",
+            f"applied {fingerprint}",
+            candidate_fingerprint=fingerprint,
+            http=result["http"],
+            outcome=result["outcome"],
+        )
     lost = result["reason"] == REASON_ANSWER_LOST
-    _emit(
+    return failed(
+        EXIT_UNREADABLE if lost else EXIT_REFUSED, str(result["reason"]),
         {
-            "verb": "apply",
-            "status": result["status"],
-            "reason": result["reason"],
             "refused_by": result["refused_by"],
             "expected_candidate_fingerprint":
                 result["expected_candidate_fingerprint"],
-            "candidate_fingerprint": result["candidate_fingerprint"],
+            "candidate_fingerprint": fingerprint,
             "http": result["http"],
             "outcome": result["outcome"],
-            "detail": (
-                "" if result["status"] == "applied"
-                else error_of(result["payload"]) if result["payload"] is not None
+            "error": (
+                error_of(result["payload"]) if result["payload"] is not None
                 else "refused before any request left this speaker"
             ),
+            **({"advice": LOST_ANSWER_ADVICE} if lost else {}),
         },
-        json_output=args.json,
     )
-    if result["status"] == "applied":
-        return EXIT_OK
-    if lost:
-        print(LOST_ANSWER_ADVICE, file=sys.stderr)
-        return EXIT_UNREADABLE
-    return EXIT_REFUSED
 
 
 def _cmd_bank(args: argparse.Namespace) -> int:
@@ -244,38 +257,23 @@ def _cmd_bank(args: argparse.Namespace) -> int:
         bank_round,
     )
 
-    payload: dict[str, Any]
     root = Path(args.campaign_root) if args.campaign_root else DEFAULT_CAMPAIGN_ROOT
     try:
         banked = bank_round(Path(args.session_dir), campaign_root=root)
     except RoundBankError as exc:
-        payload = {"banked": False, "reason": exc.reason, "detail": str(exc)}
-        code = EXIT_REFUSED
-        print(f"refused ({exc.reason}): {exc}", file=sys.stderr)
+        return failed(EXIT_REFUSED, exc.reason, str(exc))
     except OSError as exc:
-        payload = {"banked": False, "reason": "write_failed", "detail": str(exc)}
-        code = EXIT_WRITE_FAILED
-        print(f"could not bank {args.session_dir}: {exc}", file=sys.stderr)
-    else:
-        provenance = banked.provenance
-        payload = {
-            "banked": True,
-            "round_dir": str(banked.path),
-            "provenance": provenance,
-        }
-        code = EXIT_OK
-        if not args.json:
-            print(str(banked.path))
-            print(
-                f"  session={provenance['session_id']} "
-                f"banked_at_utc={provenance['banked_at_utc']} "
-                f"installed_sha={provenance['installed_sha'] or 'unknown'} "
-                f"missing={','.join(provenance['missing'] or ['none'])}",
-                file=sys.stderr,
-            )
-    if args.json:
-        print(json.dumps(payload, indent=2, sort_keys=True))
-    return code
+        return failed(EXIT_WRITE_FAILED, "write_failed", str(exc))
+    provenance = banked.provenance
+    return _answer(
+        "bank",
+        f"{banked.path} session={provenance['session_id']} "
+        f"banked_at_utc={provenance['banked_at_utc']} "
+        f"installed_sha={provenance['installed_sha'] or 'unknown'} "
+        f"missing={','.join(provenance['missing'] or ['none'])}",
+        round_dir=str(banked.path),
+        provenance=provenance,
+    )
 
 
 def _connection_args(parser: argparse.ArgumentParser) -> None:
@@ -297,12 +295,11 @@ def _connection_args(parser: argparse.ArgumentParser) -> None:
         default="http://127.0.0.1",
         help="where the wizard is reached (default: %(default)s)",
     )
-    parser.add_argument("--json", action="store_true", help="emit JSON, not text")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="jasper-round",
+        prog=PROG,
         description=(
             "Open, wait on, apply and bank a crossover round from the speaker "
             "itself. The three wizard verbs scripts/run-crossover-round.py "
@@ -425,7 +422,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="where banked rounds live (default: the on-box campaign home)",
     )
-    banker.add_argument("--json", action="store_true", help="emit JSON, not text")
     banker.set_defaults(func=_cmd_bank)
     return parser
 

@@ -25,23 +25,24 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 from typing import Any
 
 from jasper.active_speaker.crossover_v2.gate_sweep import summary_lines, sweep_round
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 from jasper.active_speaker.crossover_v2.round_views import spec_with_gate_sensitivity
-from jasper.cli._refusal import EXIT_OK, EXIT_UNREADABLE, stage
+from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
 from ._common import (
     ARTIFACT_BY_VIEW,
     _ROUND_DIR_HELP,
+    _ROUND_DIR_METAVAR,
     _ROUND_TOOL_ERRORS,
     _load_round,
     _view_out,
     _write,
     add_rungs_ms_argument,
+    answer,
     refused_by_name,
     resolved_out,
 )
@@ -73,13 +74,26 @@ def _cmd_spec_sweep(args: argparse.Namespace) -> int:
     report = spec_with_gate_sensitivity(banked, rungs_ms=args.rungs_ms)
     payload = {"round_dir": str(banked.round_dir), "spec": report.to_dict()}
     written = _write(payload, args.out, _view_out(args, banked))
-    print(
-        "spec-sweep [disclosure only, no grade moves]: "
-        + "; ".join(_band_sweep_line(band) for band in report.bands)
-        + (f" -> {written}" if written else ""),
-        file=sys.stderr,
+    return answer(
+        args.command, out=written, overall_passed=report.overall_passed,
+        bands=[
+            {
+                "band_hz": [band.f_lo_hz, band.f_hi_hz],
+                "passed": band.passed,
+                "gate_window_verdict": band.gate_window_verdict,
+                "sigma_growth_ratio": band.sigma_growth_ratio,
+                "n_valid_rungs": band.n_valid_rungs,
+                "gate_sensitivity_db": band.gate_sensitivity_db,
+                "max_deviation_hz": band.max_deviation_hz,
+            }
+            for band in report.bands
+        ],
+        line=(
+            "spec-sweep [disclosure only, no grade moves]: "
+            + "; ".join(_band_sweep_line(band) for band in report.bands)
+            + (f" -> {written}" if written else "")
+        ),
     )
-    return EXIT_OK
 
 
 def _cmd_gate_sweep(args: argparse.Namespace) -> int:
@@ -96,13 +110,23 @@ def _cmd_gate_sweep(args: argparse.Namespace) -> int:
         report, args.out,
         resolved_out(round_dir, ARTIFACT_BY_VIEW[args.command].artifact),
     )
-    print(
-        "gate-sweep [evidence only, no grade moves]: "
-        + "; ".join(summary_lines(report))
-        + (f" -> {written}" if written else ""),
-        file=sys.stderr,
+    return answer(
+        args.command, out=written, poses=len(report["poses"]),
+        rungs_ms=report["frame"]["rungs_ms"],
+        bands=[
+            {"band_hz": band["band_hz"], "verdict": band["window_verdict"]}
+            for band in report["bands"]
+        ],
+        features=[
+            {"bin_hz": feature["bin_hz"], "verdict": feature["window_verdict"]}
+            for feature in report["features"]
+        ],
+        line=(
+            "gate-sweep [evidence only, no grade moves]: "
+            + "; ".join(summary_lines(report))
+            + (f" -> {written}" if written else "")
+        ),
     )
-    return EXIT_OK
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
@@ -110,7 +134,9 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "spec-sweep",
         help="the round's spec verdict with room-or-speaker answered at each band's worst bin",
     )
-    spec_sweep.add_argument("round_dir", help=_ROUND_DIR_HELP)
+    spec_sweep.add_argument(
+        "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP
+    )
     add_rungs_ms_argument(spec_sweep)
     spec_sweep.add_argument("--out", default=None, help="write the result here (- for stdout)")
     spec_sweep.set_defaults(func=_cmd_spec_sweep)
@@ -119,7 +145,9 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "gate-sweep",
         help="sweep the gate window over this round's own captures — room or speaker, evidence only",
     )
-    gate_sweep.add_argument("round_dir", help=_ROUND_DIR_HELP)
+    gate_sweep.add_argument(
+        "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP
+    )
     add_rungs_ms_argument(gate_sweep)
     gate_sweep.add_argument(
         "--at-hz", type=float, nargs="+", default=None, metavar="HZ",

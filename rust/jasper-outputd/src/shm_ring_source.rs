@@ -48,6 +48,7 @@ const PACKED_RING_WIRE_UNSUPPORTED: &str =
 /// integer byte order already is the wire's. Every JTS host is little-endian
 /// (aarch64 and x86_64 Linux, and CI's x86_64); this makes a big-endian port a
 /// compile error here rather than a silent byte-swap at the speaker.
+// PANIC-AUDITED: const context: a big-endian target fails to build, so this never runs
 const _: () = assert!(cfg!(target_endian = "little"), "the ring wire is LE");
 
 /// Which of the ring's two wire widths this reader attached to, and therefore

@@ -44,7 +44,7 @@ profile a durable, evaluable fact and nothing more.
   if so, STOP and report; do not guess a substitute).
 - `jasper.output_topology.bass_management_corner_hz()` returns the
   local subwoofer's corner in Hz, or `None` (`jasper.bass_management`
-  is gone — ADR-0236).
+  is gone — ADR-0237).
 - Locate the repo's atomic text-write helper (grep
   `atomic_write_text`; `design_draft.py` uses it). Use that helper;
   if it doesn't exist under that name, stop and report.

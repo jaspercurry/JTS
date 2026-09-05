@@ -117,6 +117,7 @@ impl Heartbeat {
             .name("fanin-heartbeat".into())
             .stack_size(crate::HELPER_STACK_BYTES)
             .spawn(move || me.run())
+            // PANIC-AUDITED: startup-time spawn before READY=1; systemd restarts the unit
             .expect("heartbeat thread spawn failed");
     }
 

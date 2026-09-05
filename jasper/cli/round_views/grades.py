@@ -23,7 +23,6 @@ baseline's per-position references, and the round's own per-seat curves.
 from __future__ import annotations
 
 import argparse
-import sys
 
 from jasper.active_speaker.crossover_v2.round_views import (
     entry_state_grade,
@@ -31,14 +30,16 @@ from jasper.active_speaker.crossover_v2.round_views import (
     per_seat_curves,
     verify_pose_curve,
 )
-from jasper.cli._refusal import EXIT_OK, EXIT_UNREADABLE, stage
+from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
 from ._common import (
     _ROUND_DIR_HELP,
+    _ROUND_DIR_METAVAR,
     _add_norm_band_args,
     _load_round,
     _view_out,
     _write,
+    answer,
 )
 
 def _cmd_entry(args: argparse.Namespace) -> int:
@@ -56,8 +57,10 @@ def _cmd_entry(args: argparse.Namespace) -> int:
         # ANSWER — the one this door exists to give instead of an operator's
         # hand-rolled evaluation — not a failure to read the round, which is
         # what the unreadable exit is for.
-        print(f"entry-state: NOT GRADED — {grade.reason}", file=sys.stderr)
-        return EXIT_OK
+        return answer(
+            args.command, out=written, graded=False, reason=grade.reason,
+            line=f"entry-state: NOT GRADED — {grade.reason}",
+        )
     # `is False` / `is None`, never a bare truthiness test, for exactly the
     # reason `seats._cmd_agreement` states: an UNEVALUABLE band (no
     # non-excluded bin survived) is not a failing one, and collapsing them
@@ -66,16 +69,21 @@ def _cmd_entry(args: argparse.Namespace) -> int:
     n_unevaluable = sum(1 for band in report.bands if band.passed is None)
     ordinal = "?" if grade.round_ordinal is None else grade.round_ordinal
     epoch = "?" if grade.round_ordinal_epoch is None else grade.round_ordinal_epoch
-    print(
-        f"entry-state: {len(report.bands)} band(s), {n_failed} outside target, "
-        f"{n_unevaluable} unevaluable; "
-        f"overall_passed={report.overall_passed} "
-        f"round={ordinal} epoch={epoch} "
-        f"graph={grade.graph_fingerprint or '(not recorded)'}"
-        f"{f' -> {written}' if written else ''}",
-        file=sys.stderr,
+    return answer(
+        args.command, out=written, graded=True, bands=len(report.bands),
+        outside_target=n_failed, unevaluable=n_unevaluable,
+        overall_passed=report.overall_passed, round_ordinal=grade.round_ordinal,
+        round_ordinal_epoch=grade.round_ordinal_epoch,
+        graph_fingerprint=grade.graph_fingerprint or None,
+        line=(
+            f"entry-state: {len(report.bands)} band(s), {n_failed} outside target, "
+            f"{n_unevaluable} unevaluable; "
+            f"overall_passed={report.overall_passed} "
+            f"round={ordinal} epoch={epoch} "
+            f"graph={grade.graph_fingerprint or '(not recorded)'}"
+            f"{f' -> {written}' if written else ''}"
+        ),
     )
-    return EXIT_OK
 
 
 def _cmd_frozen(args: argparse.Namespace) -> int:
@@ -83,12 +91,13 @@ def _cmd_frozen(args: argparse.Namespace) -> int:
     target = _load_round(args.target_dir)
     result = frozen_reference_grade(baseline, target)
     written = _write(result.to_dict(), args.out, _view_out(args, target))
-    print(
-        f"frozen-reference: shipped={result.shipped} frozen={result.frozen}"
-        f"{f' -> {written}' if written else ''}",
-        file=sys.stderr,
+    return answer(
+        args.command, out=written, shipped=result.shipped, frozen=result.frozen,
+        line=(
+            f"frozen-reference: shipped={result.shipped} frozen={result.frozen}"
+            f"{f' -> {written}' if written else ''}"
+        ),
     )
-    return EXIT_OK
 
 
 def _cmd_per_seat(args: argparse.Namespace) -> int:
@@ -116,29 +125,41 @@ def _cmd_per_seat(args: argparse.Namespace) -> int:
         ],
     }
     written = _write(payload, args.out, _view_out(args, banked))
-    print(
-        f"per-seat: {len(seats)} seat(s) ({', '.join(s.position_id for s in seats)}); "
-        f"verify pose {'included' if verify.curve is not None else f'ABSENT ({verify.reason})'}"
-        f"{f' -> {written}' if written else ''}",
-        file=sys.stderr,
+    return answer(
+        args.command, out=written,
+        seats=[seat.position_id for seat in seats],
+        verify_pose_included=verify.curve is not None,
+        verify_pose_reason=verify.reason,
+        line=(
+            f"per-seat: {len(seats)} seat(s) ({', '.join(s.position_id for s in seats)}); "
+            f"verify pose {'included' if verify.curve is not None else f'ABSENT ({verify.reason})'}"
+            f"{f' -> {written}' if written else ''}"
+        ),
     )
-    return EXIT_OK
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
     entry = sub.add_parser("entry", help="grade the state this round entered on, before it applied anything")
-    entry.add_argument("round_dir", help=_ROUND_DIR_HELP)
+    entry.add_argument("round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP)
     entry.add_argument("--out", default=None, help="write the result here (- for stdout)")
     entry.set_defaults(func=_cmd_entry)
 
     frozen = sub.add_parser("frozen", help="grade a round shipped and frozen to a baseline's reference")
-    frozen.add_argument("baseline_dir", help=f"{_ROUND_DIR_HELP} to freeze the reference from")
-    frozen.add_argument("target_dir", help=f"{_ROUND_DIR_HELP} to grade")
+    frozen.add_argument(
+        "baseline_dir", metavar="<baseline-round-dir>",
+        help=f"{_ROUND_DIR_HELP} to freeze the reference from",
+    )
+    frozen.add_argument(
+        "target_dir", metavar="<target-round-dir>",
+        help=f"{_ROUND_DIR_HELP} to grade",
+    )
     frozen.add_argument("--out", default=None, help="write the result here (- for stdout)")
     frozen.set_defaults(func=_cmd_frozen)
 
     per_seat = sub.add_parser("per-seat", help="every banked position plus the VERIFY pose, normalised")
-    per_seat.add_argument("round_dir", help=_ROUND_DIR_HELP)
+    per_seat.add_argument(
+        "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP
+    )
     _add_norm_band_args(per_seat)
     per_seat.add_argument("--out", default=None, help="write the result here (- for stdout)")
     per_seat.set_defaults(func=_cmd_per_seat)

@@ -22,7 +22,6 @@ import pytest
 
 from jasper import audio_runtime_plan
 from jasper.audio_hardware.usb_port_role import UsbPortRoleState
-from jasper.cli import doctor
 from jasper.cli.doctor import _evidence, _shared, usbsink
 from jasper.cli.doctor._evidence import evidence
 from jasper.fanin import coupling_auto as _ca
@@ -365,9 +364,9 @@ def test_check_usbsink_host_stream_never_crashes_the_doctor(
     def raise_it(*args, **kwargs):
         raise raised
 
-    monkeypatch.setattr(doctor._shared.subprocess, "run", raise_it)
+    monkeypatch.setattr(_shared.subprocess, "run", raise_it)
 
-    result = doctor._run_doctor_check(usbsink.check_usbsink_host_stream)
+    result = _shared._run_doctor_check(usbsink.check_usbsink_host_stream)
 
     assert result.status == "skipped"
     assert result.reason == usbsink.REASON_HOST_STREAM_NO_CONTROL

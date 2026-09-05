@@ -828,7 +828,7 @@ jasper-crossover-prescriber packet <bundle-dir> --state <flow-state.json> \
 
 # the write side: judge what came back against the SAME file `packet` wrote
 jasper-crossover-prescriber propose --packet round.json \
-    --prescription answer.json --json
+    --prescription answer.json
 
 # the door: same gate, and the accepted answer is left for the next round
 jasper-crossover-prescriber stage --packet round.json \
@@ -856,8 +856,8 @@ jasper-crossover-prescriber stage --packet round.json \
 - **Exit codes are the contract**, and **`1` and `2` are this tool's own way
   round** — the shared read-only rule the
   [operator runbook](tuning-operator-runbook.md)'s "Exit codes" owns has them
-  the other way. `--json` prints the machine-readable `reason` plus its
-  evidence.
+  the other way. Every verb prints its answer, or its `reason` and the gate's
+  evidence, as one JSON document on stdout.
 
 `stage` writes one single-use document to
 `/var/lib/jasper/active_speaker_crossover_v2_prescription.json` stamped with the
@@ -1052,10 +1052,13 @@ jasper-angle-capture stage --program tournament --size full --candidates fp1,fp2
 
 # THE OPERATOR ESCAPE HATCH: a free-form angle list no program names
 jasper-angle-capture plan  --angles 0,7,-7,22,-22 --regime per_driver --mover human
-jasper-angle-capture stage --angles 0,7,-7,22,-22 --regime per_driver --json
+jasper-angle-capture stage --angles 0,7,-7,22,-22 --regime per_driver
 
 # R-1's reverse-null: the design-axis MEASURE capture with one branch flipped
 jasper-angle-capture stage --angles 0 --polarity inverted --inverted-role tweeter
+
+# WHAT IS STAGED: the peek, without taking it
+jasper-angle-capture show
 
 jasper-angle-capture withdraw
 ```
@@ -1063,11 +1066,13 @@ jasper-angle-capture withdraw
 - `--program` and `--angles` are mutually exclusive and one is required.
   `--program` names a row of
   [`measurement_programs.py`](../jasper/active_speaker/measurement_programs.py),
-  the only owner of the poses; `--regime` belongs to `--angles` alone. Both
-  print the same receipt: `program`, `price` (`mic_moves` / `captures` /
-  `ceiling_min`), `level`, `handoff_url`. `plan` is the **dry run of** `stage` —
-  same constructors, same refusals — and names, per stop, the capture index,
-  signed bearing, pose prompt, program, advance policy, and (for an arm) the
+  the only owner of the poses; `--regime` belongs to `--angles` alone. Every
+  verb answers with one JSON receipt on **stdout** — `program`, `size`,
+  `mover`, `stops`, `price` (`mic_moves` / `captures` / `ceiling_min`),
+  `level`, `handoff_url`, `next` — and renders the walk for a person on
+  **stderr**. `plan` is the **dry run of** `stage` — same constructors, same
+  refusals — and its stderr names, per stop, the capture index, signed
+  bearing, pose prompt, program, advance policy, and (for an arm) the
   `position_deg` the position gate waits for.
 - **`level` is absolute dB SPL at the microphone**, resolved by
   [`seat_level_reference.py`](../jasper/active_speaker/seat_level_reference.py)
@@ -1087,8 +1092,8 @@ jasper-angle-capture withdraw
   so `--polarity inverted` with no `--inverted-role` stages cleanly and refuses
   the next open. An inverted walk needs a WIRED session: only the wired source
   binds the engine MEASURE leg the flip rides.
-- **Exit codes**: `0` accepted, `2` refused (bad angle, unknown regime or mover,
-  session already running), `3` an accepted request could not be banked. `2`
+- **Exit codes**: `0` accepted, `1` refused (bad angle, unknown regime or mover,
+  session already running), `3` an accepted request could not be banked. `1`
   means fix the request; `3` means fix the filesystem.
 - **What it does not do**: it runs no capture and opens no session. `stage`
   writes one single-use, last-wins document to
@@ -1254,7 +1259,9 @@ both are required to measure.
   poses the round actually measured, **derived** from the banked bundle (owner
   [`position_cycle.py`](../jasper/active_speaker/crossover_v2/position_cycle.py)),
   never from what the round *meant* to stage. When the bundle cannot support the
-  index the runner names what was missing and writes nothing.
+  index the runner names what was missing and writes nothing. `jasper-round
+  bank` derives the same file, through the same writer, for a round banked on
+  the box; a round with nothing to index is named in its `provenance.json`.
 - **Refused before anything runs**, eight configurations: an `--apply` with an
   empty fingerprint or with `--per-position` at any value; `--angles` without
   `--attest-rig-clear`; an unreadable `--alignment-prescription` or
@@ -1335,9 +1342,9 @@ banks the volume as the crossover session's measurement reference.
 # bands, converge on 75-80 dB SPL and bank the result
 jasper-seat-level --mic-serial 810-8494
 
-# explicit stimulus, band, calibration file; machine-readable
+# explicit stimulus, band, calibration file
 jasper-seat-level --stimulus-wav check.wav --calibration-file umik2.txt \
-    --target-db-spl 72 --tolerance-db 2 --json
+    --target-db-spl 72 --tolerance-db 2
 
 # instrumented: every window's per-sample dB SPL series, one DEBUG line per window
 jasper-seat-level --mic-serial 810-8494 --verbose
@@ -1391,7 +1398,10 @@ jasper-seat-level --mic-serial 810-8494 --verbose
   any chain is swept in at most 7 bites, downward moves are uncapped, and no
   sample is discarded for being quiet. Audible time is bounded structurally at
   11 readings, so at most about **11 × `settle_timeout_s`** plus the fade legs.
-- **Exit codes**: `0` converged and banked, `1` any refusal. Every refusal
+- **Exit codes**: `0` converged and banked — stdout carries the reference
+  volume, the measured SPL, whether the household volume came back, and where
+  the reference was banked; `1` any refusal, as `{status, reason, detail}` with
+  the whole ramp telemetry under `detail`. Every refusal
   restores the household volume, banks nothing, and names itself — the mic ones
   (`mic_calibration_unavailable`, `measurement_mic_absent`, `mic_not_observing`,
   `mic_feed_lost`, `mic_clipping`), the target ones

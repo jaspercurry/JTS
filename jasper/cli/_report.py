@@ -12,10 +12,20 @@ from typing import Any
 from jasper.atomic_io import atomic_write_text
 
 
+def _jsonable(value: Any) -> Any:
+    """numpy scalars as numbers; paths and anything else as text."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def render_report(payload: Any) -> str:
     """``payload`` as the one JSON text every one of these tools publishes."""
 
-    return json.dumps(payload, indent=2, sort_keys=True, default=float, allow_nan=False)
+    return json.dumps(
+        payload, indent=2, sort_keys=True, default=_jsonable, allow_nan=False
+    )
 
 
 def write_report(
