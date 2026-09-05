@@ -1235,6 +1235,7 @@ start_streambox_runtime_units() {
     systemctl enable jasper-fanin-coupling-auto.service
     systemctl try-restart bluealsa-aplay.service nqptp.service \
         shairport-sync.service librespot.service bt-agent.service \
+        jasper-usbsink-volume.service \
         2>/dev/null || true
     reapply_source_intent
     for unit in jasper-web jasper-bluetooth-web jasper-correction-web \
@@ -1812,6 +1813,7 @@ install_systemd_units() {
     systemctl enable --now jasper-mux.service
     systemctl try-restart bluealsa-aplay.service nqptp.service \
         shairport-sync.service librespot.service bt-agent.service \
+        jasper-usbsink-volume.service \
         2>/dev/null || true
     reapply_source_intent
     # The wizard services are socket-activated now. Any currently-
