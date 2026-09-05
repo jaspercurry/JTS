@@ -2059,7 +2059,7 @@ def test_household_mic_write_failure_never_blocks_the_calibration(
 # --- The capture's setup.calibration reference --------------------------------
 #
 # The measurement source mints the reference from the household record
-# (correction_crossover_v2_wired._wired_setup_reference) and the analyze seam
+# (wired_capture.mint_wired_answer) and the analyze seam
 # resolves it back through correction_crossover_v2.resolve_setup_calibration.
 # These drive that production seam.
 

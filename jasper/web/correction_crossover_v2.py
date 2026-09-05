@@ -2393,7 +2393,7 @@ def default_setup_calibration_for_v2() -> Any | None:
     ``build_v2_session_spec``/``build_v2_verify_session_spec`` via their
     shared ``**spec_kwargs`` forward to ``build_crossover_sweep_spec``, and
     the measurement source mints the capture's own reference from it
-    (``correction_crossover_v2_wired._wired_setup_reference``). Fail-soft: any
+    (``wired_capture.mint_wired_answer``). Fail-soft: any
     resolution miss yields no hint, never blocks session open.
     """
     from .correction_setup import _default_setup_calibration_for_spec
