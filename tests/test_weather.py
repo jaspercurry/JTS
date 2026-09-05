@@ -20,6 +20,7 @@ from jasper.weather import (
     _next_rain_window,
     _will_rain,
 )
+from tests.fake_clock_fixtures import FakeClock
 
 
 # --- pure helpers ---
@@ -828,17 +829,6 @@ def test_get_weather_tool_routes_rain_timing_to_next_rain_window():
 # `time` for the clock so TTL boundaries are deterministic.
 
 
-class _FakeClock:
-    """Stand-in for the module's `time` reference. Only `monotonic` is
-    used by the cache; advance it explicitly to cross the TTL boundary."""
-
-    def __init__(self, start: float = 1000.0) -> None:
-        self.now = start
-
-    def monotonic(self) -> float:
-        return self.now
-
-
 def _distinct_location_handler(geocode_calls: list[str]):
     """Handler that geocodes each distinct place name to its own coords
     (so each fills a separate cache key) and serves a trivial forecast."""
@@ -898,7 +888,7 @@ async def test_geocode_cache_evicts_oldest_at_cap():
 async def test_forecast_cache_serves_second_call_within_ttl(monkeypatch):
     """A second weather query for the same location within the TTL is
     served from the forecast cache without re-hitting Open-Meteo."""
-    clock = _FakeClock()
+    clock = FakeClock(start=1000.0)
     monkeypatch.setattr(weather_module, "time", clock)
     forecast_calls = 0
 
@@ -930,7 +920,7 @@ async def test_forecast_cache_serves_second_call_within_ttl(monkeypatch):
 async def test_forecast_cache_refetches_after_ttl(monkeypatch):
     """Once the TTL has elapsed the entry is stale and the next query
     refetches the forecast."""
-    clock = _FakeClock()
+    clock = FakeClock(start=1000.0)
     monkeypatch.setattr(weather_module, "time", clock)
     forecast_calls = 0
 

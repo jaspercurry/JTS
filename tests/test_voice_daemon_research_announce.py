@@ -22,6 +22,7 @@ from jasper.research import (
 )
 from tests._async_wait import wait_until as _wait_for
 from tests._live_turn_fake import FakeLiveTurn as _FakeTurn
+from tests.usage_store_fixtures import FakeUsageStore
 
 def _wake_loop():
     from jasper.voice_daemon import State, WakeLoop
@@ -67,12 +68,6 @@ class _MarkingScheduler:
         self.read.append(job_id)
 
 
-class _FakeUsageStore:
-    def close_session(self, session_id, in_tokens, out_tokens, usage=None):
-        assert session_id is not None
-        return 0.0
-
-
 class _UnusedClient:
     async def complete(self, _req):
         raise AssertionError("restart restore must not re-run research")
@@ -90,7 +85,7 @@ def _put_in_session(
     wl._state = State.SESSION
     wl._turn = turn
     wl._session_id = 7
-    wl._usage_store = _FakeUsageStore()
+    wl._usage_store = FakeUsageStore()
     wl._user_speech_seen = True
     wl._server_vad_this_turn = False
     wl._input_ended = False

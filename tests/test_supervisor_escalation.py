@@ -32,7 +32,7 @@ from jasper.voice._supervisor import (
     is_transient,
     outage_cue,
 )
-from tests.test_failure_detail import _Rejected
+from tests.failure_detail_fixtures import Rejected
 
 try:
     import google.genai  # noqa: F401
@@ -128,8 +128,8 @@ def _wrapped(inner: BaseException) -> Exception:
         (_Status(409), True),
         (_Status(429), True),
         (_Status(502), True),
-        (_Rejected(403, b""), False),
-        (_Rejected(500, b""), True),
+        (Rejected(403, b""), False),
+        (Rejected(500, b""), True),
         (OSError("network blip"), True),
         (ValueError("bad config"), False),
         (TypeError("wrong shape"), False),
@@ -190,7 +190,7 @@ def test_is_transient_never_reads_the_deprecated_close_code() -> None:
         (ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused"), False),
         (OSError("no errno"), False),
         (TimeoutError(), False),
-        (_Rejected(500, b""), False),
+        (Rejected(500, b""), False),
     ],
     ids=[
         "dns-eai-again",
@@ -220,10 +220,10 @@ def test_is_network_down_only_for_a_missing_link(
 @pytest.mark.parametrize(
     ("exc", "cue"),
     [
-        (_Rejected(403, b""), NEEDS_ATTENTION_CUE_SLUG),
-        (_Rejected(403, _CREDIT_BODY), OUT_OF_CREDIT_CUE_SLUG),
-        (_Rejected(401, b""), NEEDS_ATTENTION_CUE_SLUG),
-        (_Rejected(429, b""), None),
+        (Rejected(403, b""), NEEDS_ATTENTION_CUE_SLUG),
+        (Rejected(403, _CREDIT_BODY), OUT_OF_CREDIT_CUE_SLUG),
+        (Rejected(401, b""), NEEDS_ATTENTION_CUE_SLUG),
+        (Rejected(429, b""), None),
         (OSError("network blip"), None),
         (_dns(), NETWORK_DOWN_CUE_SLUG),
         (ValueError("bad config"), NEEDS_ATTENTION_CUE_SLUG),
@@ -256,7 +256,7 @@ def test_outage_cue_scans_past_the_display_limit() -> None:
     string `/state` shows: a marker beyond FAILURE_DETAIL_LIMIT still
     names the remedy."""
     body = b"x" * 400 + b' "used all available credits"'
-    assert outage_cue(_Rejected(403, body)) == OUT_OF_CREDIT_CUE_SLUG
+    assert outage_cue(Rejected(403, body)) == OUT_OF_CREDIT_CUE_SLUG
 
 
 # ---------------------------------------------------------------------------
@@ -282,11 +282,11 @@ async def _drive(tracker: OutageTracker, events: list[object]) -> None:
         ([_Terminal(), _Terminal()], [NEEDS_ATTENTION_CUE_SLUG]),
         ([_Terminal(), _OtherTerminal()], [NEEDS_ATTENTION_CUE_SLUG]),
         (
-            [_Terminal(), _Rejected(403, _CREDIT_BODY)],
+            [_Terminal(), Rejected(403, _CREDIT_BODY)],
             [NEEDS_ATTENTION_CUE_SLUG, OUT_OF_CREDIT_CUE_SLUG],
         ),
         (
-            [_Rejected(403, _CREDIT_BODY), _Rejected(403, _CREDIT_BODY)],
+            [Rejected(403, _CREDIT_BODY), Rejected(403, _CREDIT_BODY)],
             [OUT_OF_CREDIT_CUE_SLUG],
         ),
         ([_Terminal(), None, _Terminal()], [NEEDS_ATTENTION_CUE_SLUG] * 2),
@@ -356,7 +356,7 @@ async def test_cue_tracks_the_latest_failure() -> None:
     assert tracker.wake_cue == NETWORK_DOWN_CUE_SLUG
     assert calls == [NEEDS_ATTENTION_CUE_SLUG]
 
-    await _drive(tracker, [_Rejected(403, _CREDIT_BODY), None])
+    await _drive(tracker, [Rejected(403, _CREDIT_BODY), None])
     assert tracker.cue is None
     assert tracker.detail is None
 
@@ -426,7 +426,7 @@ async def test_supervisor_speaks_once_then_recovers_silently() -> None:
     conn.set_failure_escalation_cb(cb)
     await conn.start(ToolRegistry(), "system")
     try:
-        factory.next_exceptions = [_Rejected(403, b"")]
+        factory.next_exceptions = [Rejected(403, b"")]
 
         class _Drop(Exception):
             class _Rcvd:

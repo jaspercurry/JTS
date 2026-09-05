@@ -21,6 +21,7 @@ from tests.control_server_fixtures import (
     server_with_coordinator,
     server_with_voice_socket,
 )
+from tests.fake_clock_fixtures import FakeClock
 
 _IMPORTED_FIXTURES = (
     _explicit_passive_output_topology,
@@ -150,20 +151,6 @@ def _fake_voice_connection(reply: bytes):
     return reader, writer
 
 
-class _FakeClock:
-    """Deterministic time.monotonic()/asyncio.sleep() so the connect-retry
-    budget runs instantly instead of over real wall-clock seconds."""
-
-    def __init__(self) -> None:
-        self.now = 0.0
-
-    def monotonic(self) -> float:
-        return self.now
-
-    async def sleep(self, secs: float) -> None:
-        self.now += secs
-
-
 def test_session_start_succeeds_once_the_late_socket_appears(
     monkeypatch, server_with_coordinator,
 ):
@@ -171,7 +158,7 @@ def test_session_start_succeeds_once_the_late_socket_appears(
     its control socket exists -- must not hard-fail: the bounded connect
     retry in jasper.control.uds._connect_voice_socket absorbs it, and the
     request succeeds normally once the socket appears within budget."""
-    clock = _FakeClock()
+    clock = FakeClock()
     monkeypatch.setattr(uds_mod.time, "monotonic", clock.monotonic)
     monkeypatch.setattr(uds_mod.asyncio, "sleep", clock.sleep)
 

@@ -13,6 +13,7 @@ import pytest
 
 from jasper.control import grouping_supervisor, uds
 from tests._socket_paths import short_socket_path_fixture as _short_sock_path_fixture
+from tests.fake_clock_fixtures import FakeClock
 
 _IMPORTED_FIXTURES = (_short_sock_path_fixture,)
 
@@ -41,21 +42,6 @@ class _PendingReader:
         return await self._reply
 
 
-class _FakeClock:
-    """Deterministic stand-in for time.monotonic()/asyncio.sleep() so the
-    connect-retry budget tests run instantly instead of over real
-    wall-clock seconds."""
-
-    def __init__(self) -> None:
-        self.now = 0.0
-
-    def monotonic(self) -> float:
-        return self.now
-
-    async def sleep(self, secs: float) -> None:
-        self.now += secs
-
-
 async def test_voice_socket_command_retries_connect_until_socket_appears(
     monkeypatch,
 ):
@@ -63,7 +49,7 @@ async def test_voice_socket_command_retries_connect_until_socket_appears(
     connect landing just before that must not surface as a hard 503 --
     it should retry within the bounded budget and succeed once the
     socket appears."""
-    clock = _FakeClock()
+    clock = FakeClock()
     monkeypatch.setattr(uds.time, "monotonic", clock.monotonic)
     monkeypatch.setattr(uds.asyncio, "sleep", clock.sleep)
 
@@ -90,7 +76,7 @@ async def test_voice_socket_command_gives_up_after_retry_budget(monkeypatch):
     """A socket that never appears (daemon genuinely down, not merely
     restarting) still fails -- but only after the bounded budget, not on
     the first connect."""
-    clock = _FakeClock()
+    clock = FakeClock()
     monkeypatch.setattr(uds.time, "monotonic", clock.monotonic)
     monkeypatch.setattr(uds.asyncio, "sleep", clock.sleep)
 
@@ -116,7 +102,7 @@ async def test_voice_socket_command_retries_connection_refused_too(monkeypatch):
     """A stale socket file mid-teardown/startup race refuses the connect
     (ECONNREFUSED) rather than ENOENT -- same transient condition, same
     retry."""
-    clock = _FakeClock()
+    clock = FakeClock()
     monkeypatch.setattr(uds.time, "monotonic", clock.monotonic)
     monkeypatch.setattr(uds.asyncio, "sleep", clock.sleep)
 

@@ -30,16 +30,7 @@ from __future__ import annotations
 import asyncio
 
 from tests._live_turn_fake import FakeLiveTurn as _FakeTurn
-
-
-class _FakeUsageStore:
-    def __init__(self) -> None:
-        self.close_calls = 0
-
-    def close_session(self, session_id, in_tokens, out_tokens, usage=None):
-        assert session_id is not None
-        self.close_calls += 1
-        return 0.0
+from tests.usage_store_fixtures import FakeUsageStore
 
 
 class _RecordingTts:
@@ -82,7 +73,7 @@ def _make_wakeloop(tts: _RecordingTts):
     wl._state = State.SESSION
     wl._turn = _FakeTurn()
     wl._session_id = 7
-    wl._usage_store = _FakeUsageStore()
+    wl._usage_store = FakeUsageStore()
     wl._bg_tasks = set()
     wl._peering_current_epoch = "ep-1"
     wl._user_speech_seen = True

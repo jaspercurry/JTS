@@ -28,6 +28,7 @@ from jasper.music_sources import MUSIC_SOURCES, VolumeMode
 from jasper.mux import Mux, Source
 
 from ._async_wait import wait_signalled
+from .fake_clock_fixtures import FakeClock
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -154,20 +155,10 @@ def _stub_pauses(mux: Mux):
     mux._pause = AsyncMock()
 
 
-class _FakeClock:
-    """Stand-in for jasper.mux's `time`; the module only calls monotonic()."""
-
-    def __init__(self, start: float = 1000.0) -> None:
-        self.now = start
-
-    def monotonic(self) -> float:
-        return self.now
-
-
 @pytest.fixture
 def mux_clock(monkeypatch):
     """Advanceable jasper.mux clock. The asyncio loop clock is untouched."""
-    clock = _FakeClock()
+    clock = FakeClock(start=1000.0)
     monkeypatch.setattr(mux_module, "time", clock)
     return clock
 

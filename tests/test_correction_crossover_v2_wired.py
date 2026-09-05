@@ -67,7 +67,8 @@ from jasper.capture_protocol import CapturePlan, CapturePlanEntry
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_wired as v2wired
 
-from tests.test_wired_capture import FakePcm, UMIK2_USB_ID, _make_card
+from tests.test_wired_capture import UMIK2_USB_ID, _make_card
+from tests.wired_capture_fixtures import FakePcm
 
 RATE = 48_000
 
