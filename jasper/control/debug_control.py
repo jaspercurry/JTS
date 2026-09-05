@@ -33,8 +33,9 @@ import time
 from jasper.log_event import log_event
 
 from .. import debug_mode
+from ..atomic_io import locked_update_env_file
 from ..debug_mode import EXPIRES_KEY, SUBSYSTEMS, env_key
-from ..web._common import read_env_file, write_env_file
+from ..web._common import read_env_file
 
 logger = logging.getLogger(__name__)
 
@@ -53,12 +54,7 @@ def _read_env() -> dict[str, str]:
 
 
 def _atomic_write(updates: dict[str, str]) -> None:
-    """Read-modify-write of debug.env preserving unrelated keys. Mirrors
-    server._atomic_rewrite_env; duplicated (not imported) to avoid a
-    circular import with the server module."""
-    state = _read_env()
-    state.update(updates)
-    write_env_file(debug_mode.DEBUG_FILE, state, mode=0o644)
+    locked_update_env_file(debug_mode.DEBUG_FILE, updates, mode=0o644)
 
 
 def _clear_all() -> dict[str, str]:

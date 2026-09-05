@@ -6,10 +6,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
+from ...log_event import log_event
 from .. import server as _server
-from ._base import ControlHandlerMixin
+from ._base import ControlHandlerMixin, logger
 
 
 class GroupingRoutes(ControlHandlerMixin):
@@ -38,7 +40,7 @@ class GroupingRoutes(ControlHandlerMixin):
             TypeError,
             ValueError,
         ):
-            _server.logger.exception("grouping state read failed")
+            logger.exception("grouping state read failed")
             grouping = None
         try:
             readiness, _blocked = _server._active_speaker_grouping_evaluation()
@@ -50,7 +52,7 @@ class GroupingRoutes(ControlHandlerMixin):
             TypeError,
             ValueError,
         ):
-            _server.logger.exception("grouping readiness read failed")
+            logger.exception("grouping readiness read failed")
             readiness = None
         # grouping_response is the ONE home for the envelope shape; the
         # /rooms consumers parse it via the paired parse functions in
@@ -194,7 +196,7 @@ class GroupingRoutes(ControlHandlerMixin):
             elif trim_db is not None and _server._is_trim_only_grouping_change(
                 before_grouping, after_grouping
             ):
-                live_apply = _server.asyncio.run(
+                live_apply = asyncio.run(
                     _server.apply_live_grouping_trim(
                         after_grouping.trim_db,
                         cfg=after_grouping,
@@ -208,7 +210,7 @@ class GroupingRoutes(ControlHandlerMixin):
                 _server._kick_grouping_reconciler()
                 reconciler_kicked = True
         except Exception as e:  # noqa: BLE001
-            _server.logger.exception("grouping set failed")
+            logger.exception("grouping set failed")
             self._send_json({"error": str(e)}, status=502)
             return
         # Persist / drop the household credential as the bond forms or
@@ -222,16 +224,16 @@ class GroupingRoutes(ControlHandlerMixin):
         # secret value is never logged — only the transition.
         if enabled:
             if _server.household_credential.adopt(self.headers.get("X-JTS-Household")):
-                _server.log_event(
-                    _server.logger,
+                log_event(
+                    logger,
                     "household_credential.adopted",
                     bond=bond_id or "(none)",
                 )
         elif _server.household_credential.is_paired():
             _server.household_credential.clear()
-            _server.log_event(_server.logger, "household_credential.cleared")
-        _server.log_event(
-            _server.logger,
+            log_event(logger, "household_credential.cleared")
+        log_event(
+            logger,
             "grouping.set",
             enabled=enabled,
             role=role or "(none)",

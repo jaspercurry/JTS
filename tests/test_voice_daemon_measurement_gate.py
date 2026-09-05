@@ -5,8 +5,8 @@
 """Assistant audio is refused for the whole room-correction measurement
 window (issues #1786, #1898, #1913).
 
-A window is opened and closed by `measurement_pause()` /
-`measurement_resume()` (the coordinator's MEASURE_PAUSE/RESUME UDS
+A window is opened and closed by `MeasurementHold.pause()` /
+`MeasurementHold.resume()` (the coordinator's MEASURE_PAUSE/RESUME UDS
 commands — see `jasper.measurement_window.measurement_window()`,
 which the crossover-v2 flow holds open for a whole session via
 `acquire_session_measurement_pause()`). Refusal happens at one
@@ -50,7 +50,7 @@ async def test_play_cue_refuses_during_measurement(caplog) -> None:
 
     wl = WakeLoop.for_tests()
     wl._cues = _RefusingCues()
-    assert await wl.measurement_pause() == "ok"
+    assert await wl.measurement_hold.pause() == "ok"
 
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
         result = await wl.play_cue("cant_connect")
@@ -59,7 +59,7 @@ async def test_play_cue_refuses_during_measurement(caplog) -> None:
     assert "event=cue.skipped" in caplog.text
     assert "reason=measurement_active" in caplog.text
     assert "slug=cant_connect" in caplog.text
-    await wl.measurement_resume()
+    await wl.measurement_hold.resume()
 
 
 async def test_play_cue_plays_normally_when_not_measuring() -> None:
@@ -89,7 +89,7 @@ async def test_play_supervisor_cue_refuses_during_measurement(
     wl._cues = _RefusingCues()
     if output_busy:
         assert await wl._output_gate.begin_if_idle("admin") is not None
-    assert await wl.measurement_pause() == "ok"
+    assert await wl.measurement_hold.pause() == "ok"
 
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
         result = await wl.play_supervisor_cue("cant_connect")
@@ -98,7 +98,7 @@ async def test_play_supervisor_cue_refuses_during_measurement(
     if not output_busy:
         assert "event=cue.skipped" in caplog.text
         assert "reason=measurement_active" in caplog.text
-    await wl.measurement_resume()
+    await wl.measurement_hold.resume()
 
 
 async def test_play_supervisor_cue_plays_normally_when_not_measuring() -> None:
@@ -132,14 +132,14 @@ async def test_announce_timer_suppressed_during_measurement(caplog) -> None:
 
     wl = WakeLoop.for_tests()
     wl._cues = _Cues()
-    assert await wl.measurement_pause() == "ok"
+    assert await wl.measurement_hold.pause() == "ok"
 
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
         await wl.announce_timer(_timer())
 
     assert "event=dynamic_text.skipped" in caplog.text
     assert "reason=measurement_active" in caplog.text
-    await wl.measurement_resume()
+    await wl.measurement_hold.resume()
 
 
 async def test_announce_timer_speaks_normally_when_not_measuring() -> None:
@@ -182,13 +182,13 @@ async def test_prerender_race_cannot_admit_timer_after_pause() -> None:
     announce = asyncio.create_task(wl.announce_timer(_timer()))
     await asyncio.wait_for(prerender_started.wait(), timeout=1.0)
 
-    assert await wl.measurement_pause() == "ok"
+    assert await wl.measurement_hold.pause() == "ok"
     finish_prerender.set()
     await asyncio.wait_for(announce, timeout=1.0)
 
     assert spoke == []
     assert wl._output_gate.admission_paused
-    await wl.measurement_resume()
+    await wl.measurement_hold.resume()
 
 
 async def test_measurement_pause_blocks_mute_click_admission() -> None:
@@ -201,12 +201,12 @@ async def test_measurement_pause_blocks_mute_click_admission() -> None:
         writes.append(pcm)
 
     wl._tts.write_segment = write_segment
-    assert await wl.measurement_pause() == "ok"
+    assert await wl.measurement_hold.pause() == "ok"
 
     await wl._play_mute_click(going_on=True)
 
     assert writes == []
-    await wl.measurement_resume()
+    await wl.measurement_hold.resume()
 
 
 class _RecordingTts(TtsPlayout):
@@ -236,13 +236,13 @@ async def test_wake_in_flight_when_pause_lands_cannot_emit(
     from jasper.voice_daemon import WakeLoop
 
     monkeypatch.setattr(
-        "jasper.voice_daemon.MEASUREMENT_INFLIGHT_DRAIN_SEC", 0.0,
+        "jasper.voice.measurement_hold.MEASUREMENT_INFLIGHT_DRAIN_SEC", 0.0,
     )
     tts = _RecordingTts()
     wl = WakeLoop.for_tests(tts=tts)
     await wl._begin_turn_output_episode()
 
-    assert await wl.measurement_pause() == "ok"
+    assert await wl.measurement_hold.pause() == "ok"
 
     with caplog.at_level(logging.INFO, logger="jasper.audio_io"):
         await wl._play_listening_chirp(going_on=True)
@@ -251,7 +251,7 @@ async def test_wake_in_flight_when_pause_lands_cannot_emit(
     assert tts.segments == []
     assert "event=tts_write.refused" in caplog.text
     assert "reason=measurement_active" in caplog.text
-    await wl.measurement_resume()
+    await wl.measurement_hold.resume()
 
 
 async def test_emission_proceeds_once_the_window_closes() -> None:
@@ -260,8 +260,8 @@ async def test_emission_proceeds_once_the_window_closes() -> None:
     tts = _RecordingTts()
     wl = WakeLoop.for_tests(tts=tts)
 
-    assert await wl.measurement_pause() == "ok"
-    await wl.measurement_resume()
+    assert await wl.measurement_hold.pause() == "ok"
+    await wl.measurement_hold.resume()
     await wl._play_listening_chirp(going_on=True)
 
     assert tts.segments == [wl._chirp_on_pcm]

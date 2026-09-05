@@ -111,6 +111,57 @@ def test_list_sessions_skips_corrupt_files(tmp_path: Path) -> None:
     assert sessions[0]["session_id"] == "good"
 
 
+def test_list_sessions_skips_bad_aec3_sweep_source(tmp_path: Path) -> None:
+    """A sidecar with an unrecognized aec3_sweep_source raises inside the
+    per-file parse (Aec3SweepConfigError, a ValueError) and must be
+    skipped like any other malformed file, not 500 the whole list."""
+    out = tmp_path / "out"
+    md = out / "metadata"
+    md.mkdir(parents=True)
+    (md / "enroll_jasper_good.json").write_text(json.dumps({
+        "session_id": "good", "member": "jasper",
+        "ports": {}, "clips": [],
+    }))
+    (md / "enroll_jasper_bad.json").write_text(json.dumps({
+        "session_id": "bad", "member": "jasper",
+        "ports": {}, "clips": [], "aec3_sweep_source": "not-a-real-source",
+    }))
+
+    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    sessions = b.list_sessions()
+    assert len(sessions) == 1
+    assert sessions[0]["session_id"] == "good"
+
+
+def test_list_sessions_survives_delete_race_after_glob(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """A sidecar deleted between glob() and stat() (a concurrent delete
+    on another thread, e.g. a session the UI's 30 s poll raced against
+    delete_session) must be skipped, not raise FileNotFoundError out of
+    the whole list."""
+    out = tmp_path / "out"
+    md = out / "metadata"
+    md.mkdir(parents=True)
+    (md / "enroll_jasper_good.json").write_text(json.dumps({
+        "session_id": "good", "member": "jasper",
+        "ports": {}, "clips": [],
+    }))
+    ghost = md / "enroll_jasper_ghost.json"  # never created on disk
+    real_glob = Path.glob
+
+    def fake_glob(self: Path, *args: object, **kwargs: object) -> list[Path]:
+        matches = list(real_glob(self, *args, **kwargs))
+        return [*matches, ghost] if self == md else matches
+
+    monkeypatch.setattr(Path, "glob", fake_glob)
+
+    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    sessions = b.list_sessions()
+    assert len(sessions) == 1
+    assert sessions[0]["session_id"] == "good"
+
+
 def test_load_session_switches_active(backend, tmp_path: Path) -> None:
     """load_session swaps the in-memory active session to an
     existing one on disk."""

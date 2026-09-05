@@ -350,6 +350,18 @@ def _legacy_aec3_sweep_source(value: str | None = None) -> str:
     return normalize_aec3_sweep_source(value, default=AEC3_SWEEP_SOURCE_XVF)
 
 
+def saved_aec3_sweep_source(data: Mapping[str, Any]) -> str:
+    """Recover a session's AEC3 sweep source from new or legacy metadata."""
+    saved_config = data.get("aec3_sweep_config")
+    saved_source = (
+        saved_config.get("input_source")
+        if isinstance(saved_config, dict) else None
+    )
+    return _legacy_aec3_sweep_source(
+        str(data.get("aec3_sweep_source") or saved_source or ""),
+    )
+
+
 def chip_aec_config_metadata() -> dict[str, object]:
     """Effective chip-AEC corpus profile recorded with each session."""
     from jasper.mics import xvf3800
@@ -1635,14 +1647,7 @@ def _enabled_legs_from_metadata(
     data: dict[str, Any], ports: dict[str, int],
 ) -> tuple[str, ...]:
     """Recover the session leg set from new or legacy metadata."""
-    saved_config = data.get("aec3_sweep_config")
-    saved_source = (
-        saved_config.get("input_source")
-        if isinstance(saved_config, dict) else None
-    )
-    aec3_sweep_source = _legacy_aec3_sweep_source(
-        str(data.get("aec3_sweep_source") or saved_source or ""),
-    )
+    aec3_sweep_source = saved_aec3_sweep_source(data)
     raw = data.get("enabled_legs")
     if isinstance(raw, list):
         raw_legs = tuple(

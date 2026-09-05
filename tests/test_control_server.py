@@ -34,11 +34,10 @@ from jasper.control.server import (
     VOLUME_MIN_DB,
     _active_speaker_level_match_provisional,
     _active_speaker_output_safety_snapshot,
-    _clamp_db,
     _control_route_allowed_for_install_profile,
-    _db_to_percent,
     _make_handler,
 )
+from jasper.control.volume_ops import _clamp_db, _db_to_percent
 
 from tests.control_server_fixtures import (
     _explicit_passive_output_topology,
@@ -526,6 +525,7 @@ def test_split_control_helpers_keep_state_at_owner_modules():
         "_TOGGLE_TO_TOKEN",
         "_aec_bridge_active_impl",
         "_aec_fresh_jasper_env_impl",
+        "_aec_full_status",
         "_fresh_jasper_env",
         "_read_audio_quality_state",
         "_read_active_audio_converter",
@@ -542,7 +542,6 @@ def test_split_control_helpers_keep_state_at_owner_modules():
     # These are intentional host seams, not mirrored state: handlers and
     # _get_state composition replace the whole callable in route-level tests.
     for name in (
-        "_aec_full_status",
         "_augment_source_payload",
         "_get_state",
         "_safe_audio_quality_state",

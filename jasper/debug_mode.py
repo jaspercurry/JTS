@@ -167,9 +167,9 @@ def compute_env_update(
     ttl: float = DEFAULT_TTL_SEC,
 ) -> dict[str, str]:
     """Pure computation of the env-file updates for toggling one
-    subsystem. Caller persists via ``_atomic_rewrite_env``. Re-arms the
-    shared expiry to ``now + ttl`` whenever anything is (or stays)
-    enabled; clears it when the last subsystem goes off."""
+    subsystem. Re-arms the shared expiry to ``now + ttl`` whenever
+    anything is (or stays) enabled; clears it when the last subsystem
+    goes off."""
     if subsystem_id not in SUBSYSTEMS:
         raise ValueError(f"unknown debug subsystem: {subsystem_id!r}")
     after = {

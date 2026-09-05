@@ -272,12 +272,12 @@ async def test_measurement_pause_and_resume_transfer_volume_ownership():
         note_measurement_active=note_measurement_active
     )
 
-    assert await wl.measurement_pause() == "ok"
+    assert await wl.measurement_hold.pause() == "ok"
     assert wl._measurement_active.is_set()
     assert wl._output_gate.admission_paused
     assert ownership == [True]
 
-    assert await wl.measurement_resume() == "ok"
+    assert await wl.measurement_hold.resume() == "ok"
     assert not wl._measurement_active.is_set()
     assert not wl._output_gate.admission_paused
     assert ownership == [True, False]
@@ -298,7 +298,7 @@ async def test_measurement_auto_clear_releases_reconcile_guard(monkeypatch):
     timer_started = asyncio.Event()
     release_timer = asyncio.Event()
 
-    from jasper.voice_daemon import MEASUREMENT_AUTOCLEAR_SEC
+    from jasper.voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
 
     async def fake_sleep(seconds):
         assert seconds == MEASUREMENT_AUTOCLEAR_SEC
@@ -306,16 +306,18 @@ async def test_measurement_auto_clear_releases_reconcile_guard(monkeypatch):
         await release_timer.wait()
 
     monkeypatch.setattr(
-        "jasper.voice_daemon._measurement_safety_sleep",
+        "jasper.voice.measurement_hold._measurement_safety_sleep",
         fake_sleep,
     )
 
-    assert await wl.measurement_pause() == "ok"
+    assert await wl.measurement_hold.pause() == "ok"
     await wait_signalled(
-        timer_started, "auto-clear timer started", producer=wl._measurement_safety_task
+        timer_started,
+        "auto-clear timer started",
+        producer=wl.measurement_hold._safety_task,
     )
     release_timer.set()
-    await wl._measurement_safety_task
+    await wl.measurement_hold._safety_task
 
     assert ownership == [True, False]
     assert not wl._measurement_active.is_set()

@@ -6,10 +6,14 @@
 
 from __future__ import annotations
 
+import subprocess
+import time
 from typing import Any, cast
 
+from ...log_event import log_event
+from .. import aec_endpoints
 from .. import server as _server
-from ._base import ControlHandlerMixin
+from ._base import ControlHandlerMixin, logger
 
 
 def _commission_start_body(*, running: bool) -> dict[str, Any]:
@@ -36,10 +40,10 @@ class AecRoutes(ControlHandlerMixin):
         # /system's Diagnostics disclosure runs jasper-doctor
         # which has check_aec_bridge_dtln_engine for the
         # silent-failure case.
-        self._send_json(_server._aec_full_status())
+        self._send_json(aec_endpoints._aec_full_status())
 
     def _get_enhanced_aec(self) -> None:
-        self._send_json(_server._enhanced_aec_status())
+        self._send_json(aec_endpoints._enhanced_aec_status())
 
     def _post_aec_leg(self) -> None:
         # Toggle one of the additive wake-detection legs
@@ -58,11 +62,11 @@ class AecRoutes(ControlHandlerMixin):
         body = self._read_json()
         leg = body.get("leg")
         enabled_val = body.get("enabled")
-        if leg not in _server._aec_endpoints._TOGGLE_TO_TOKEN:
+        if leg not in aec_endpoints._TOGGLE_TO_TOKEN:
             self._send_json(
                 {
                     "error": "leg must be one of: "
-                    + ", ".join(sorted(_server._aec_endpoints._TOGGLE_TO_TOKEN))
+                    + ", ".join(sorted(aec_endpoints._TOGGLE_TO_TOKEN))
                 },
                 status=400,
             )
@@ -74,7 +78,7 @@ class AecRoutes(ControlHandlerMixin):
             )
             return
         try:
-            _server._write_aec_leg(leg, enabled_val)
+            aec_endpoints._write_aec_leg(leg, enabled_val)
         except (OSError, ValueError) as e:
             self._send_json(
                 {"error": f"write aec_mode.env failed: {e}"},
@@ -82,21 +86,21 @@ class AecRoutes(ControlHandlerMixin):
             )
             return
         try:
-            _server._kick_aec_reconciler()
-        except (OSError, _server.subprocess.SubprocessError) as e:
+            aec_endpoints._kick_aec_reconciler()
+        except (OSError, subprocess.SubprocessError) as e:
             self._send_json(
                 {"error": f"reconciler restart failed: {e}"},
                 status=502,
             )
             return
-        _server.log_event(
-            _server.logger,
+        log_event(
+            logger,
             "aec.leg",
             leg=leg,
             enabled=enabled_val,
             client=self.address_string(),
         )
-        self._send_json(_server._aec_full_status())
+        self._send_json(aec_endpoints._aec_full_status())
         return
 
     def _post_aec_profile(self) -> None:
@@ -114,7 +118,7 @@ class AecRoutes(ControlHandlerMixin):
             )
             return
         try:
-            _server._write_audio_input_profile(profile)
+            aec_endpoints._write_audio_input_profile(profile)
         except (OSError, ValueError) as e:
             self._send_json(
                 {"error": f"write aec_mode.env failed: {e}"},
@@ -122,20 +126,20 @@ class AecRoutes(ControlHandlerMixin):
             )
             return
         try:
-            _server._kick_aec_reconciler()
-        except (OSError, _server.subprocess.SubprocessError) as e:
+            aec_endpoints._kick_aec_reconciler()
+        except (OSError, subprocess.SubprocessError) as e:
             self._send_json(
                 {"error": f"reconciler restart failed: {e}"},
                 status=502,
             )
             return
-        _server.log_event(
-            _server.logger,
+        log_event(
+            logger,
             "aec.profile",
             profile=_server.normalize_audio_input_profile(profile, default=""),
             client=self.address_string(),
         )
-        self._send_json(_server._aec_full_status())
+        self._send_json(aec_endpoints._aec_full_status())
         return
 
     def _post_aec_usb_mic(self) -> None:
@@ -151,7 +155,7 @@ class AecRoutes(ControlHandlerMixin):
                 status=400,
             )
             return
-        current = _server._aec_full_status()
+        current = aec_endpoints._aec_full_status()
         usb_mic = current.get("usb_mic") or {}
         if enabled and not bool(usb_mic.get("toggle_enabled")):
             self._send_json(
@@ -171,14 +175,14 @@ class AecRoutes(ControlHandlerMixin):
                 status=502,
             )
             return
-        _server.log_event(
-            _server.logger,
+        log_event(
+            logger,
             "usb_mic.set",
             enabled=enabled,
             client=self.address_string(),
         )
         if not _server._schedule_usb_gadget_recompose():
-            failed_status = _server._aec_full_status()
+            failed_status = aec_endpoints._aec_full_status()
             self._send_json(
                 {
                     "error": (
@@ -193,7 +197,7 @@ class AecRoutes(ControlHandlerMixin):
                 status=502,
             )
             return
-        self._send_json(_server._aec_full_status())
+        self._send_json(aec_endpoints._aec_full_status())
         return
 
     def _post_aec_usb_mic_leg(self) -> None:
@@ -210,9 +214,7 @@ class AecRoutes(ControlHandlerMixin):
         leg = leg.strip()
         # Match GET /aec's fresh reconciler-owned view. jasper-control is
         # long-lived, so its process environment can lag a mic hotplug.
-        choices = _server.usb_mic_leg_choices(
-            _server._aec_endpoints._fresh_jasper_env()
-        )
+        choices = _server.usb_mic_leg_choices(aec_endpoints._fresh_jasper_env())
         allowed = {
             str(choice.get("value") or "")
             for choice in choices
@@ -238,15 +240,15 @@ class AecRoutes(ControlHandlerMixin):
         with _server._usb_mic_leg_apply_lock:
             persisted_matches = _server.read_usb_mic_leg() == leg
             if persisted_matches:
-                current_status = _server._aec_full_status()
+                current_status = aec_endpoints._aec_full_status()
                 selection = (current_status.get("usb_mic") or {}).get(
                     "source_selection"
                 ) or {}
                 applied = selection.get("applied") or {}
                 if applied.get("value") == leg:
                     _server._usb_mic_leg_apply_pending = None
-                    _server.log_event(
-                        _server.logger,
+                    log_event(
+                        logger,
                         "usb_mic.leg_unchanged",
                         leg=leg,
                         client=self.address_string(),
@@ -257,11 +259,11 @@ class AecRoutes(ControlHandlerMixin):
                 if (
                     pending is not None
                     and pending[0] == leg
-                    and _server.time.monotonic() - pending[1]
+                    and time.monotonic() - pending[1]
                     < _server._USB_MIC_LEG_APPLY_COALESCE_SECONDS
                 ):
-                    _server.log_event(
-                        _server.logger,
+                    log_event(
+                        logger,
                         "usb_mic.leg_apply_pending",
                         leg=leg,
                         client=self.address_string(),
@@ -280,8 +282,8 @@ class AecRoutes(ControlHandlerMixin):
                         status=502,
                     )
                     return
-            _server.log_event(
-                _server.logger,
+            log_event(
+                logger,
                 ("usb_mic.leg_reapply" if persisted_matches else "usb_mic.leg_set"),
                 leg=leg,
                 client=self.address_string(),
@@ -294,7 +296,7 @@ class AecRoutes(ControlHandlerMixin):
                 timeout=5.0,
             )
             if not restart.get("ok"):
-                failed_status = _server._aec_full_status()
+                failed_status = aec_endpoints._aec_full_status()
                 self._send_json(
                     {
                         "error": (
@@ -309,8 +311,8 @@ class AecRoutes(ControlHandlerMixin):
                     status=502,
                 )
                 return
-            _server._usb_mic_leg_apply_pending = (leg, _server.time.monotonic())
-        self._send_json(_server._aec_full_status())
+            _server._usb_mic_leg_apply_pending = (leg, time.monotonic())
+        self._send_json(aec_endpoints._aec_full_status())
         return
 
     def _post_aec_threshold(self) -> None:
@@ -343,7 +345,7 @@ class AecRoutes(ControlHandlerMixin):
             )
             return
         try:
-            _server._write_wake_threshold(threshold)
+            aec_endpoints._write_wake_threshold(threshold)
         except (OSError, ValueError) as e:
             self._send_json(
                 {"error": f"write wake_model.env failed: {e}"},
@@ -351,17 +353,17 @@ class AecRoutes(ControlHandlerMixin):
             )
             return
         try:
-            _server.subprocess.Popen(
+            subprocess.Popen(
                 ["systemctl", "restart", "--no-block", "jasper-voice.service"],
             )
-        except (OSError, _server.subprocess.SubprocessError) as e:
+        except (OSError, subprocess.SubprocessError) as e:
             self._send_json(
                 {"error": f"voice restart failed: {e}"},
                 status=502,
             )
             return
-        _server.log_event(
-            _server.logger,
+        log_event(
+            logger,
             "wake.threshold",
             value=f"{threshold:.2f}",
             client=self.address_string(),
@@ -396,16 +398,16 @@ class AecRoutes(ControlHandlerMixin):
                 status=502,
             )
             return
-        _server.log_event(
-            _server.logger,
+        log_event(
+            logger,
             "aec.commission.start",
             client=self.address_string(),
         )
-        self._send_json(_server._aec_full_status())
+        self._send_json(aec_endpoints._aec_full_status())
         return
 
     def _post_aec_firmware_update(self) -> None:
-        status = _server._aec_full_status()
+        status = aec_endpoints._aec_full_status()
         firmware = status.get("firmware_update")
         action = firmware.get("action") if isinstance(firmware, dict) else {}
         if not isinstance(action, dict) or not action.get("enabled"):
@@ -417,26 +419,26 @@ class AecRoutes(ControlHandlerMixin):
             self._send_json({"error": detail}, status=409)
             return
         try:
-            _server._start_xvf_firmware_update()
-        except (OSError, _server.subprocess.SubprocessError) as e:
+            aec_endpoints._start_xvf_firmware_update()
+        except (OSError, subprocess.SubprocessError) as e:
             self._send_json(
                 {"error": f"firmware update start failed: {e}"},
                 status=502,
             )
             return
-        _server.log_event(
-            _server.logger,
+        log_event(
+            logger,
             "aec.firmware_update.start",
             client=self.address_string(),
             target=(firmware.get("target") or {}).get("id")
             if isinstance(firmware, dict)
             else "",
         )
-        self._send_json(_server._aec_full_status())
+        self._send_json(aec_endpoints._aec_full_status())
         return
 
     def _post_enhanced_aec_install(self) -> None:
-        current = _server._enhanced_aec_status()
+        current = aec_endpoints._enhanced_aec_status()
         if current.get("state") in {"installed", "installing"}:
             self._send_json(current)
             return
@@ -480,15 +482,15 @@ class AecRoutes(ControlHandlerMixin):
                     ),
                     "code": "enhanced_aec_start_failed",
                     "intent_saved": True,
-                    "enhanced_aec": _server._enhanced_aec_status(),
+                    "enhanced_aec": aec_endpoints._enhanced_aec_status(),
                 },
                 status=502,
             )
             return
-        _server.log_event(
-            _server.logger,
+        log_event(
+            logger,
             "aec.enhanced.install_start",
             client=self.address_string(),
         )
-        self._send_json(_server._enhanced_aec_status())
+        self._send_json(aec_endpoints._enhanced_aec_status())
         return

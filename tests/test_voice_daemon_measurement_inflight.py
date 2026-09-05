@@ -6,16 +6,15 @@
 
 #1786 stopped proactive cues, timers, and research announcements from
 *starting* once a room-correction measurement window is open. This is its
-residual half: `measurement_pause()` checked only `State.SESSION`, never
+residual half: the pause checked only `State.SESSION`, never
 `_output_gate.is_active`, so a cue or timer announcement that began a
 moment BEFORE the PAUSE landed kept playing into the window's first
 capture.
 
-`measurement_pause()` now closes output admission atomically, arms the window
-(so nothing new can start and mic frames stop immediately), and then waits,
-bounded by
-`MEASUREMENT_INFLIGHT_DRAIN_SEC`, for the already-playing episode to
-finish. On timeout it preserves the compatible `result=ok`, adds
+`MeasurementHold.pause()` now closes output admission atomically, arms the
+window (so nothing new can start and mic frames stop immediately), and then
+waits, bounded by `MEASUREMENT_INFLIGHT_DRAIN_SEC`, for the already-playing
+episode to finish. On timeout it preserves the compatible `result=ok`, adds
 `drained=false`, and keeps cleanup ownership armed; strict callers refuse to
 capture, while the historical permissive correction path may proceed but must
 still send RESUME.
@@ -50,16 +49,15 @@ from jasper.measurement_window import (
 )
 from jasper.tts_routing import FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET
 from jasper.voice.output_gate import AssistantOutputGate
-from jasper.voice_daemon import (
+from jasper.voice.measurement_hold import (
     MEASUREMENT_AUTOCLEAR_SEC,
     MEASUREMENT_INFLIGHT_DRAIN_SEC,
     MEASUREMENT_PAUSE_REPLY_MARGIN_SEC,
     MEASUREMENT_PAUSE_ROLLBACK_RESERVE_SEC,
     MEASUREMENT_PAUSE_SETUP_DRAIN_TIMEOUT_SEC,
     MEASUREMENT_PAUSE_TOTAL_TIMEOUT_SEC,
-    State,
-    WakeLoop,
 )
+from jasper.voice_daemon import State, WakeLoop
 
 from ._async_wait import wait_signalled
 
@@ -209,7 +207,7 @@ class _RefusingCues:
 
 async def _close_window(wl: WakeLoop) -> None:
     """Cancel the auto-clear safety task so the test loop closes clean."""
-    await wl.measurement_resume()
+    await wl.measurement_hold.resume()
 
 
 async def _allow_test_measurement_meter(_deadline: float) -> None:
@@ -226,7 +224,7 @@ async def test_pause_waits_for_inflight_cue_then_returns() -> None:
     episode = await wl._output_gate.begin_if_idle("admin")
     assert episode is not None
 
-    pause = asyncio.create_task(wl.measurement_pause())
+    pause = asyncio.create_task(wl.measurement_hold.pause())
     for _ in range(5):
         await asyncio.sleep(0)
 
@@ -249,7 +247,7 @@ async def test_pause_drains_tts_for_both_supported_mix_stages() -> None:
         wl._cfg.tts_outputd_socket = tts_socket
         episode = await wl._output_gate.begin_turn()
 
-        pause = asyncio.create_task(wl.measurement_pause())
+        pause = asyncio.create_task(wl.measurement_hold.pause())
         for _ in range(5):
             await asyncio.sleep(0)
 
@@ -269,15 +267,15 @@ async def test_window_is_armed_before_the_drain_not_after() -> None:
     episode = await wl._output_gate.begin_if_idle("proactive")
     assert episode is not None
 
-    pause = asyncio.create_task(wl.measurement_pause())
+    pause = asyncio.create_task(wl.measurement_hold.pause())
     for _ in range(5):
         await asyncio.sleep(0)
 
     assert not pause.done()
     assert wl._measurement_active.is_set()
     # A crash mid-drain still self-heals: the safety timer is already armed.
-    assert wl._measurement_safety_task is not None
-    assert not wl._measurement_safety_task.done()
+    assert wl.measurement_hold._safety_task is not None
+    assert not wl.measurement_hold._safety_task.done()
     # And the pre-existing #1786 gate is live during the wait.
     assert await wl.play_cue("cant_connect") == "measurement_active"
 
@@ -293,7 +291,7 @@ async def test_drain_defers_to_inflight_audio_and_never_cancels_it() -> None:
     episode = await wl._output_gate.begin_if_idle("admin")
     assert episode is not None
 
-    pause = asyncio.create_task(wl.measurement_pause())
+    pause = asyncio.create_task(wl.measurement_hold.pause())
     for _ in range(5):
         await asyncio.sleep(0)
 
@@ -313,7 +311,7 @@ async def test_drained_path_logs_the_wait(caplog) -> None:
     assert episode is not None
 
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
-        pause = asyncio.create_task(wl.measurement_pause())
+        pause = asyncio.create_task(wl.measurement_hold.pause())
         for _ in range(5):
             await asyncio.sleep(0)
         await wl._output_gate.end(episode)
@@ -335,7 +333,7 @@ async def test_pause_reports_additive_timeout_and_retains_cleanup(
     wl._output_gate = gate
 
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
-        result, drained = await wl._measurement_pause_detailed()
+        result, drained = await wl.measurement_hold._pause_detailed()
 
     assert result == "ok"
     assert drained is False
@@ -364,7 +362,7 @@ async def test_idle_output_never_waits() -> None:
     wl = WakeLoop.for_tests()
     wl._output_gate = _IdleGate()
 
-    assert await wl.measurement_pause() == "ok"
+    assert await wl.measurement_hold.pause() == "ok"
     assert wl._measurement_active.is_set()
     await _close_window(wl)
 
@@ -387,7 +385,7 @@ async def test_pause_setup_error_restores_output_admission_once() -> None:
     wl._tts = tts
 
     with pytest.raises(RuntimeError, match="meter pause failed"):
-        await wl.measurement_pause()
+        await wl.measurement_hold.pause()
 
     assert not wl._measurement_active.is_set()
     assert not gate.admission_paused
@@ -410,11 +408,11 @@ async def test_unexpected_base_exception_after_opening_still_rolls_back(
     wl._tts = _UnexpectedMeter()
 
     with pytest.raises(error_type, match="unexpected setup failure"):
-        await wl.measurement_pause()
+        await wl.measurement_hold.pause()
 
     assert not wl._measurement_active.is_set()
     assert not wl._output_gate.admission_paused
-    assert wl._measurement_safety_task is None
+    assert wl.measurement_hold._safety_task is None
 
 
 async def test_repeated_cancellation_waits_for_local_pause_rollback() -> None:
@@ -443,7 +441,7 @@ async def test_repeated_cancellation_waits_for_local_pause_rollback() -> None:
     assert episode is not None
     wl._output_gate = gate
     wl._tts = _HeldRollbackMeter()
-    pause = asyncio.create_task(wl.measurement_pause())
+    pause = asyncio.create_task(wl.measurement_hold.pause())
     await wait_signalled(setup_entered, "measurement setup", producer=pause)
 
     pause.cancel()
@@ -465,7 +463,7 @@ async def test_repeated_cancellation_waits_for_local_pause_rollback() -> None:
 
 
 async def test_pause_arms_crash_recovery_before_external_setup_await() -> None:
-    import jasper.voice_daemon as voice_daemon_mod
+    import jasper.voice.measurement_hold as measurement_hold_mod
 
     note_entered = asyncio.Event()
     release_note = asyncio.Event()
@@ -492,7 +490,7 @@ async def test_pause_arms_crash_recovery_before_external_setup_await() -> None:
     wl._volume_coordinator = _FailingVolume()
     wl._tts = meter
 
-    pause = asyncio.create_task(wl.measurement_pause())
+    pause = asyncio.create_task(wl.measurement_hold.pause())
     await wait_signalled(
         note_entered,
         "measurement volume setup",
@@ -500,7 +498,7 @@ async def test_pause_arms_crash_recovery_before_external_setup_await() -> None:
     )
     assert wl._measurement_active.is_set()
     assert wl._output_gate.admission_paused
-    safety = wl._measurement_safety_task
+    safety = wl.measurement_hold._safety_task
     assert safety is not None and not safety.done()
 
     release_note.set()
@@ -509,10 +507,10 @@ async def test_pause_arms_crash_recovery_before_external_setup_await() -> None:
 
     assert not wl._measurement_active.is_set()
     assert not wl._output_gate.admission_paused
-    assert wl._measurement_safety_task is None
+    assert wl.measurement_hold._safety_task is None
     assert safety.done()
     assert meter.resume_calls == 0
-    assert voice_daemon_mod.MEASUREMENT_AUTOCLEAR_SEC > 0
+    assert measurement_hold_mod.MEASUREMENT_AUTOCLEAR_SEC > 0
 
 
 async def test_resume_reopens_admission_before_stuck_meter_recovers() -> None:
@@ -529,9 +527,9 @@ async def test_resume_reopens_admission_before_stuck_meter_recovers() -> None:
 
     wl = WakeLoop.for_tests()
     wl._tts = _Meter()
-    assert await wl.measurement_pause() == "ok"
+    assert await wl.measurement_hold.pause() == "ok"
 
-    resume = asyncio.create_task(wl.measurement_resume())
+    resume = asyncio.create_task(wl.measurement_hold.resume())
     await wait_signalled(
         resume_entered,
         "measurement meter resume",
@@ -549,10 +547,10 @@ async def test_resume_restores_after_safety_join_timeout(
     monkeypatch,
     caplog,
 ) -> None:
-    import jasper.voice_daemon as voice_daemon_mod
+    import jasper.voice.measurement_hold as measurement_hold_mod
 
     monkeypatch.setattr(
-        voice_daemon_mod,
+        measurement_hold_mod,
         "MEASUREMENT_SAFETY_JOIN_TIMEOUT_SEC",
         0.01,
     )
@@ -573,16 +571,16 @@ async def test_resume_restores_after_safety_join_timeout(
 
     wl = WakeLoop.for_tests()
     await wl._output_gate.pause_admission()
-    wl._set_measurement_active_local(True, trigger="test")
+    wl.measurement_hold._set_active_local(True, trigger="test")
     safety = asyncio.create_task(stubborn_safety())
-    wl._measurement_safety_task = safety
+    wl.measurement_hold._safety_task = safety
     await wait_signalled(
         safety_started,
         "stubborn measurement safety start",
         producer=safety,
     )
 
-    assert await wl.measurement_resume() == "ok"
+    assert await wl.measurement_hold.resume() == "ok"
     assert cancellation_seen.is_set()
     assert not wl._measurement_active.is_set()
     assert not wl._output_gate.admission_paused
@@ -606,7 +604,7 @@ async def test_pause_waits_for_physical_mute_click_tail(tts_socket: str) -> None
         producer=click,
     )
 
-    pause = asyncio.create_task(wl.measurement_pause())
+    pause = asyncio.create_task(wl.measurement_hold.pause())
     for _ in range(5):
         await asyncio.sleep(0)
     assert not pause.done(), tts_socket
@@ -705,7 +703,7 @@ async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
     assert stream.attempts == 2
     assert wl._output_gate.active_kind == "feedback"
 
-    pause = asyncio.create_task(wl.measurement_pause_response())
+    pause = asyncio.create_task(wl.measurement_hold.pause_response())
     for _ in range(5):
         await asyncio.sleep(0)
     assert not pause.done(), tts_socket
@@ -777,7 +775,7 @@ async def test_cancelled_mute_write_waits_for_acceptance_and_physical_tail(
     assert not click.done(), tts_socket
     assert wl._output_gate.active_kind == "feedback"
 
-    pause = asyncio.create_task(wl.measurement_pause_response())
+    pause = asyncio.create_task(wl.measurement_hold.pause_response())
     for _ in range(5):
         await asyncio.sleep(0)
     assert not pause.done(), tts_socket
@@ -885,7 +883,7 @@ async def test_cancelled_cue_tail_retains_output_episode(
     assert not playing.done(), (tts_socket, path)
     assert wl._output_gate.active_kind == expected_kind
 
-    pause = asyncio.create_task(wl.measurement_pause_response())
+    pause = asyncio.create_task(wl.measurement_hold.pause_response())
     for _ in range(5):
         await asyncio.sleep(0)
     assert not pause.done(), (tts_socket, path)
@@ -1837,7 +1835,7 @@ async def test_measurement_deadline_cleanup_preserves_cancelled_error() -> None:
 
     wl = WakeLoop.for_tests()
     with pytest.raises(asyncio.CancelledError) as caught:
-        await wl._restore_measurement_step_before_deadline(
+        await wl.measurement_hold._restore_step_before_deadline(
             cancelled_step(),
             deadline_monotonic=asyncio.get_running_loop().time() + 1.0,
             event="measurement.test_cleanup_failed",
@@ -1972,11 +1970,11 @@ async def test_lease_refresh_into_an_open_window_never_waits() -> None:
     #1786 blocks new output, so a renewal has nothing to drain and must
     stay latency-free even if something is somehow playing."""
     wl = WakeLoop.for_tests()
-    assert await wl.measurement_pause() == "ok"
+    assert await wl.measurement_hold.pause() == "ok"
 
     gate = _StuckGate()
     wl._output_gate = gate
-    assert await wl.measurement_pause() == "ok"
+    assert await wl.measurement_hold.pause() == "ok"
 
     assert gate.waits == []
     await _close_window(wl)
@@ -1986,7 +1984,7 @@ async def test_lease_refresh_joins_stale_auto_clear_before_return(
     monkeypatch,
 ) -> None:
     """An expiring old lease cannot reopen admission behind its renewal."""
-    import jasper.voice_daemon as voice_daemon_mod
+    import jasper.voice.measurement_hold as measurement_hold_mod
 
     old_sleeping = asyncio.Event()
     release_old = asyncio.Event()
@@ -2007,19 +2005,19 @@ async def test_lease_refresh_joins_stale_auto_clear_before_return(
         await wait_signalled(keep_new_armed, "renewed safety cancellation")
 
     monkeypatch.setattr(
-        voice_daemon_mod,
+        measurement_hold_mod,
         "_measurement_safety_sleep",
         controlled_safety_sleep,
     )
     wl = WakeLoop.for_tests()
-    assert await wl.measurement_pause() == "ok"
+    assert await wl.measurement_hold.pause() == "ok"
     await wait_signalled(old_sleeping, "old measurement safety sleep")
-    old_task = wl._measurement_safety_task
+    old_task = wl.measurement_hold._safety_task
     assert old_task is not None
 
-    await wl._measurement_transition_lock.acquire()
+    await wl.measurement_hold._transition_lock.acquire()
     try:
-        renewal = asyncio.create_task(wl.measurement_pause())
+        renewal = asyncio.create_task(wl.measurement_hold.pause())
         await asyncio.sleep(0)
         release_old.set()
         await wait_signalled(
@@ -2029,12 +2027,12 @@ async def test_lease_refresh_joins_stale_auto_clear_before_return(
         )
         await asyncio.sleep(0)
     finally:
-        wl._measurement_transition_lock.release()
+        wl.measurement_hold._transition_lock.release()
 
     assert await renewal == "ok"
     await wait_signalled(new_sleeping, "renewed measurement safety sleep")
     assert old_task.done()
-    assert wl._measurement_safety_task is not old_task
+    assert wl.measurement_hold._safety_task is not old_task
     assert wl._measurement_active.is_set()
     assert wl._output_gate.admission_paused
     await _close_window(wl)
@@ -2043,10 +2041,10 @@ async def test_lease_refresh_joins_stale_auto_clear_before_return(
 async def test_renewal_timeout_releases_lock_for_auto_clear(monkeypatch) -> None:
     """An expiring setup cannot starve the generation-bound backstop."""
 
-    import jasper.voice_daemon as voice_daemon_mod
+    import jasper.voice.measurement_hold as measurement_hold_mod
 
     clock = _FakeMonotonic()
-    monkeypatch.setattr(voice_daemon_mod, "_measurement_monotonic", clock)
+    monkeypatch.setattr(measurement_hold_mod, "_measurement_monotonic", clock)
     safety_started = asyncio.Event()
     expire_safety = asyncio.Event()
 
@@ -2055,7 +2053,7 @@ async def test_renewal_timeout_releases_lock_for_auto_clear(monkeypatch) -> None
         await wait_signalled(expire_safety, "expire renewed measurement lease")
 
     monkeypatch.setattr(
-        voice_daemon_mod,
+        measurement_hold_mod,
         "_measurement_safety_sleep",
         controlled_safety_sleep,
     )
@@ -2068,18 +2066,18 @@ async def test_renewal_timeout_releases_lock_for_auto_clear(monkeypatch) -> None
 
     wl = WakeLoop.for_tests()
     await wl._output_gate.pause_admission()
-    wl._set_measurement_active_local(True, trigger="test")
+    wl.measurement_hold._set_active_local(True, trigger="test")
     wl._volume_coordinator = _ExpiringVolume()
 
     with pytest.raises(TimeoutError, match="aggregate deadline"):
-        await wl.measurement_pause()
+        await wl.measurement_hold.pause()
     await wait_signalled(
         safety_started,
         "renewed safety task",
-        producer=wl._measurement_safety_task,
+        producer=wl.measurement_hold._safety_task,
     )
     expire_safety.set()
-    safety = wl._measurement_safety_task
+    safety = wl.measurement_hold._safety_task
     assert safety is not None
     await safety
 
@@ -2093,7 +2091,7 @@ async def test_active_session_still_refuses_without_draining() -> None:
     gate = _StuckGate()
     wl._output_gate = gate
 
-    assert await wl.measurement_pause() == "BUSY"
+    assert await wl.measurement_hold.pause() == "BUSY"
     assert not wl._measurement_active.is_set()
     assert gate.waits == []
 
@@ -2132,11 +2130,11 @@ async def test_uds_slow_setup_reduces_drain_to_aggregate_remaining(
 ) -> None:
     """The real wire shares one budget across volume, meter, and drain."""
 
-    import jasper.voice_daemon as voice_daemon_mod
+    import jasper.voice.measurement_hold as measurement_hold_mod
     from jasper.voice.daemon_main import _start_control_socket
 
     clock = _FakeMonotonic()
-    monkeypatch.setattr(voice_daemon_mod, "_measurement_monotonic", clock)
+    monkeypatch.setattr(measurement_hold_mod, "_measurement_monotonic", clock)
 
     class _SlowVolume:
         async def note_measurement_active(self, active: bool) -> None:
@@ -2190,11 +2188,11 @@ async def test_uds_setup_expiry_rolls_back_inside_declared_total(
 ) -> None:
     """The real wire returns non-ok after local rollback, below old 3 s."""
 
-    import jasper.voice_daemon as voice_daemon_mod
+    import jasper.voice.measurement_hold as measurement_hold_mod
     from jasper.voice.daemon_main import _start_control_socket
 
     clock = _FakeMonotonic()
-    monkeypatch.setattr(voice_daemon_mod, "_measurement_monotonic", clock)
+    monkeypatch.setattr(measurement_hold_mod, "_measurement_monotonic", clock)
 
     class _SlowVolume:
         async def note_measurement_active(self, active: bool) -> None:

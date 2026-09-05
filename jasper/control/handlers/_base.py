@@ -2,12 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared typing boundary for control-server route mixins."""
+"""Shared typing and logging boundary for control-server route mixins."""
 
 from __future__ import annotations
 
+import logging
 from http.server import BaseHTTPRequestHandler
 from typing import Any
+
+# Not `__name__`: one journal name for every route body, not one per mixin.
+logger = logging.getLogger("jasper.control")
 
 
 class ControlHandlerMixin(BaseHTTPRequestHandler):

@@ -809,8 +809,8 @@ def test_grouping_set_trim_settable_validated_and_preserved(
 
     writes = []
     monkeypatch.setattr(
-        srv_mod, "_atomic_rewrite_env",
-        lambda path, updates: writes.append(dict(updates)),
+        srv_mod, "locked_update_env_file",
+        lambda path, updates, **_kw: writes.append(dict(updates)),
     )
     monkeypatch.setattr(srv_mod, "_kick_grouping_reconciler", lambda: None)
     base, _fake = server_with_coordinator
@@ -839,8 +839,8 @@ def test_grouping_set_latency_and_delay_settable_validated_and_preserved(
 
     writes = []
     monkeypatch.setattr(
-        srv_mod, "_atomic_rewrite_env",
-        lambda path, updates: writes.append(dict(updates)),
+        srv_mod, "locked_update_env_file",
+        lambda path, updates, **_kw: writes.append(dict(updates)),
     )
     monkeypatch.setattr(srv_mod, "_kick_grouping_reconciler", lambda: None)
     base, _fake = server_with_coordinator
@@ -889,8 +889,8 @@ def test_grouping_set_peer_roster_settable_preserved_and_cleared(
 
     writes = []
     monkeypatch.setattr(
-        srv_mod, "_atomic_rewrite_env",
-        lambda path, updates: writes.append(dict(updates)),
+        srv_mod, "locked_update_env_file",
+        lambda path, updates, **_kw: writes.append(dict(updates)),
     )
     monkeypatch.setattr(srv_mod, "_kick_grouping_reconciler", lambda: None)
     base, _fake = server_with_coordinator
@@ -930,8 +930,8 @@ def test_grouping_set_roster_settable_preserved_and_validated(
 
     writes = []
     monkeypatch.setattr(
-        srv_mod, "_atomic_rewrite_env",
-        lambda path, updates: writes.append(dict(updates)),
+        srv_mod, "locked_update_env_file",
+        lambda path, updates, **_kw: writes.append(dict(updates)),
     )
     monkeypatch.setattr(srv_mod, "_kick_grouping_reconciler", lambda: None)
     base, _fake = server_with_coordinator
