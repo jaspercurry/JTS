@@ -1447,6 +1447,37 @@ def test_reconcile_publishes_the_management_transport_verdict_as_a_marker(
     assert not marker.exists()
 
 
+@pytest.mark.parametrize(
+    ("starting_content", "active_usb_role"),
+    [
+        # A verdict that would REMOVE the marker if --print-env mutated.
+        pytest.param("sentinel\n", "host", id="marker-present"),
+        # A verdict that would CREATE the marker if --print-env mutated.
+        pytest.param(None, "peripheral", id="marker-absent"),
+    ],
+)
+def test_print_env_leaves_the_management_transport_marker_untouched(
+    tmp_path: Path, starting_content: str | None, active_usb_role: str,
+):
+    """--print-env is install.sh's mid-install probe of the PREVIOUS build
+    (#4123): it must never flip the gadget's management-transport gate off a
+    stale verdict. Remove this test when --print-env moves after the source
+    sync."""
+    marker = tmp_path / "management-transport.ok"
+    if starting_content is not None:
+        marker.write_text(starting_content, encoding="utf-8")
+
+    result = _run_reconcile(
+        tmp_path, INNOMAKER_LISTING, "--print-env", active_usb_role=active_usb_role,
+    )
+
+    assert result.returncode == 0, result.stderr
+    if starting_content is None:
+        assert not marker.exists()
+    else:
+        assert marker.read_text(encoding="utf-8") == starting_content
+
+
 def test_reconcile_dual_apple_records_profile_and_parks_until_dual_sink(
     tmp_path: Path,
 ):
@@ -2294,6 +2325,86 @@ def _stub_render_lib(tmp_path: Path, body: str) -> Path:
         encoding="utf-8",
     )
     return stub
+
+
+def _stub_render_lib_missing_log_token(tmp_path: Path) -> Path:
+    """The shape of an installed render lib one build behind the repo script:
+    everything else intact, `jasper_asound_log_token` gone."""
+    stub = tmp_path / "stub-asound-render-stale.sh"
+    real = ROOT / "deploy" / "lib" / "jasper-asound-render.sh"
+    stub.write_text(
+        f"#!/usr/bin/env bash\nsource {real}\nunset -f jasper_asound_log_token\n",
+        encoding="utf-8",
+    )
+    return stub
+
+
+def _dual_apple_ready_python(tmp_path: Path) -> Path:
+    """A python stand-in reporting a fully-ready dual-Apple composite. This is
+    the only branch --print-env can reach that calls into the render lib
+    (`apply_observed_composite_policy`'s `jasper_asound_log_token`), and
+    driving it for real needs a saved topology and a CamillaDSP statefile --
+    machinery this test has no other reason to stand up.
+    """
+    fake_python = tmp_path / "dual-apple-ready-python"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        "*jasper.cli.output_hardware*) cat <<'EOF'\n"
+        "OBSERVED_OUTPUT_PROFILE_ID=dual_apple_usb_c_dac_4ch\n"
+        "OBSERVED_OUTPUT_PROFILE_STATUS=ready\n"
+        "OBSERVED_OUTPUT_APPLE_CARD_IDS='A A_1'\n"
+        "OBSERVED_OUTPUT_USB_MANAGEMENT_TRANSPORT_AVAILABLE=false\n"
+        "OBSERVED_OUTPUT_RECORD_CHANGED=0\n"
+        "OBSERVED_OUTPUT_DUAL_MAPPING_OK=1\n"
+        "OBSERVED_OUTPUT_DUAL_ORDER_SOURCE=topology\n"
+        "OBSERVED_OUTPUT_DUAL_DAC_A_PCM=hw:1,0\n"
+        "OBSERVED_OUTPUT_DUAL_DAC_B_PCM=hw:2,0\n"
+        "EOF\n"
+        "exit 0 ;;\n"
+        "-) printf '4 ring_active_playback\\n'; exit 0 ;;\n"
+        f'esac\nexec "{sys.executable}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+    return fake_python
+
+
+@pytest.mark.parametrize(
+    ("stale_lib", "expected_pcm_fields"),
+    [
+        pytest.param(False, "dac_a_pcm=hw:1,0 dac_b_pcm=hw:2,0", id="current-lib"),
+        pytest.param(True, "dac_a_pcm= dac_b_pcm=", id="lib-missing-log-token"),
+    ],
+)
+def test_print_env_composite_ready_path_survives_a_stale_render_lib(
+    tmp_path: Path, stale_lib: bool, expected_pcm_fields: str,
+):
+    """The dual-Apple ready branch is --print-env's only call into the render
+    lib. A lib one build behind the script -- the exposure
+    `load_asound_render_lib`'s installed-first order used to carry into the
+    mid-install probe of the PREVIOUS build, #4123 -- does not abort the
+    probe: the missing function drops its two log fields instead of stopping
+    the pass. Remove this test when --print-env moves after the source sync.
+    """
+    extra_env = {
+        "JASPER_OUTPUT_HARDWARE_PYTHON": str(_dual_apple_ready_python(tmp_path)),
+    }
+    if stale_lib:
+        extra_env["JASPER_ASOUND_RENDER_LIB"] = str(
+            _stub_render_lib_missing_log_token(tmp_path)
+        )
+
+    result = _run_reconcile(tmp_path, "", "--print-env", extra_env=extra_env)
+
+    assert result.returncode == 0, result.stderr
+    assert "OUTPUT_DAC_ID=dual_apple_usb_c_dac_4ch" in result.stdout
+    _assert_states(
+        result.stderr,
+        "event=audio_hardware_reconcile.dual_apple_detected ",
+        "action=outputd_dual_sink",
+        expected_pcm_fields,
+    )
 
 
 @pytest.mark.parametrize(
