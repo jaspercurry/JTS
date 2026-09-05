@@ -36,22 +36,23 @@ from jasper.output_hardware import (
 
 
 def _flag(value: bool) -> str:
-    # The reconciler logs these straight into `event=hardware.usb_role_resolved`,
-    # which has always carried the JSON spelling.
+    # `event=hardware.usb_role_resolved` spells these the JSON way, and the
+    # reconciler logs them straight through.
     return "true" if value else "false"
 
 
-def _env_values(
+def env_lines(
     state: OutputHardwareState,
     cards: tuple[OutputCardFact, ...],
     *,
-    record_changed: bool,
-) -> dict[str, str]:
+    record_changed: bool = False,
+) -> str:
+    """The whole shell contract, one shlex-quoted ``KEY=value`` line per fact."""
     usb = state.usb_data_role
     mapping = dual_apple_runtime_mapping(state)
-    pcms = [child.pcm or "" for child in mapping.child_devices]
-    pcms += ["", ""]
-    return {
+    # Padded so an absent or partial composite still answers both PCM keys.
+    pcms = [child.pcm or "" for child in mapping.child_devices] + ["", ""]
+    values = {
         "OBSERVED_OUTPUT_PROFILE_ID": state.profile_id,
         "OBSERVED_OUTPUT_PROFILE_STATUS": state.status,
         "OBSERVED_OUTPUT_SELECTED_CARD_ID": state.selected_card_id or "",
@@ -59,7 +60,7 @@ def _env_values(
             child.device_id for child in state.child_devices
         ),
         "OBSERVED_OUTPUT_APPLE_CARD_IDS": " ".join(apple_output_card_ids(cards)),
-        "OBSERVED_OUTPUT_BLOCKER_CODES": " ".join(
+        "OBSERVED_OUTPUT_BLOCKER_CODES": ",".join(
             str(issue.get("code") or "unnamed")
             for issue in state.issues
             if issue.get("severity") == "blocker"
@@ -81,19 +82,8 @@ def _env_values(
         "OBSERVED_OUTPUT_DUAL_DAC_A_PCM": pcms[0],
         "OBSERVED_OUTPUT_DUAL_DAC_B_PCM": pcms[1],
     }
-
-
-def env_lines(
-    state: OutputHardwareState,
-    cards: tuple[OutputCardFact, ...],
-    *,
-    record_changed: bool = False,
-) -> str:
     return "".join(
-        f"{key}={shlex.quote(value)}\n"
-        for key, value in _env_values(
-            state, cards, record_changed=record_changed
-        ).items()
+        f"{key}={shlex.quote(value)}\n" for key, value in values.items()
     )
 
 

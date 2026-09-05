@@ -828,7 +828,7 @@ clear_observed_output_state() {
     OBSERVED_OUTPUT_SELECTED_CARD_ID=""
     OBSERVED_OUTPUT_CHILD_DEVICE_IDS=""
     OBSERVED_OUTPUT_APPLE_CARD_IDS=""
-    # Blocker codes from the observed record, space-joined. The record is where
+    # Blocker codes from the observed record, comma-joined. The record is where
     # a park's reason is written, so this is what lets `output_parked` name WHY
     # instead of only reporting `recognized=0`.
     OBSERVED_OUTPUT_BLOCKER_CODES=""

@@ -42,8 +42,8 @@ def test_shared_parser_extracts_first_matching_card(tmp_path: Path):
 
 
 def test_install_uses_the_shared_parser_and_ships_it():
-    """install.sh is the parser's one shell consumer since ADR-0235 R2 moved
-    the reconciler's card lookup behind the classifier's env emitter."""
+    """install.sh is the parser's one shell consumer: the reconciler takes its
+    Apple card from the classifier's env emitter (ADR-0235 R2)."""
     install = (ROOT / "deploy/install.sh").read_text(encoding="utf-8")
     units = (ROOT / "deploy/lib/install/systemd-units.sh").read_text(
         encoding="utf-8"
