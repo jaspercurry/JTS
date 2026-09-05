@@ -76,7 +76,9 @@ CUES: tuple[CueDef, ...] = (
         description=(
             "Played when wake fires and turn-open hits an UNEXPECTED "
             "local/internal error that is NOT a connectivity problem — "
-            "e.g. a failed state write. Distinguished from cant_connect: "
+            "e.g. a failed state write — and again at end of turn when a "
+            "question was asked and no answer came back at all. "
+            "Distinguished from cant_connect: "
             "that cue is truthful only when the live backend is genuinely "
             "down/paused (its own gate handles that). Reaching this means "
             "the connection looked healthy and something else broke, so "

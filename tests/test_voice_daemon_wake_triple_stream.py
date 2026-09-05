@@ -984,8 +984,10 @@ async def test_zero_leg_run_ends_an_in_flight_turn_on_stop(monkeypatch):
 
     wl, ticked, _bumps = _zero_leg_loop_with_fast_keepalive(monkeypatch)
     ended = asyncio.Event()
+    reasons: list[str] = []
 
-    async def _end_turn():
+    async def _end_turn(reason: str = "ended"):
+        reasons.append(reason)
         ended.set()
 
     wl._end_turn = _end_turn
@@ -999,6 +1001,9 @@ async def test_zero_leg_run_ends_an_in_flight_turn_on_stop(monkeypatch):
     assert ended.is_set(), (
         "stop during an in-flight turn must reach run()'s _end_turn branch"
     )
+    # The reason a shutdown teardown gives itself: a turn with no answer
+    # owes no failure cue when the daemon is the one going away.
+    assert reasons == ["stopping"]
 
 
 async def test_zero_leg_run_does_not_end_a_turn_that_is_not_running(
@@ -1012,8 +1017,8 @@ async def test_zero_leg_run_does_not_end_a_turn_that_is_not_running(
     wl, ticked, _bumps = _zero_leg_loop_with_fast_keepalive(monkeypatch)
     calls = []
 
-    async def _end_turn():
-        calls.append(1)
+    async def _end_turn(reason: str = "ended"):
+        calls.append(reason)
 
     wl._end_turn = _end_turn
 

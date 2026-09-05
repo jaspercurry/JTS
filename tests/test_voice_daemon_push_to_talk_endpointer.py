@@ -25,7 +25,7 @@ import logging
 import numpy as np
 import pytest
 
-from tests._log_events import event_fields, event_records
+from tests._log_events import event_field_maps, event_fields, event_records
 
 
 class _SpyTurn:
@@ -794,10 +794,18 @@ class _TeardownTurn:
     """The LiveTurn surface `_end_turn_inner` actually touches, so the
     real teardown can run start to finish without a provider."""
 
-    def __init__(self, *, chunks: int = 3) -> None:
+    def __init__(
+        self,
+        *,
+        chunks: int = 3,
+        turn_lost: bool = False,
+        server_turn_complete: bool = False,
+    ) -> None:
         self.end_input_calls = 0
         self.release_calls = 0
         self._chunks = chunks
+        self._turn_lost = turn_lost
+        self._server_turn_complete = server_turn_complete
 
     def last_chunk_at(self) -> float:
         return 0.0
@@ -806,7 +814,10 @@ class _TeardownTurn:
         return 0.0
 
     def turn_lost(self) -> bool:
-        return False
+        return self._turn_lost
+
+    def server_turn_complete(self) -> bool:
+        return self._server_turn_complete
 
     def bytes_sent(self) -> int:
         return 4096
@@ -824,15 +835,27 @@ class _TeardownTurn:
         self.release_calls += 1
 
 
+class _SpyCues:
+    """Recording cue manager, so the REAL `_play_cue` path runs end to end."""
+
+    def __init__(self) -> None:
+        self.played: list[str] = []
+
+    async def play(self, slug: str) -> bool:
+        self.played.append(slug)
+        return True
+
+
 def _teardown_loop():
-    """A WakeLoop a caller can tear turns down on more than once, so a
-    per-daemon latch is observable across turns."""
+    """A WakeLoop a caller can tear turns down on, with a cue manager so
+    every failure cue the teardown plays is observable."""
     from jasper.voice_daemon import WakeLoop
 
     wl = WakeLoop.for_tests()
     # Only read by the no-audio diagnostics below; `for_tests`' cfg stub
     # does not carry it because nothing else in that seam reaches them.
     wl._cfg.active_voice_model = "test-model"
+    wl._cues = _SpyCues()
     return wl
 
 
@@ -841,6 +864,10 @@ async def _torn_down_mid_hold(
     manual: bool,
     chunks: int = 3,
     input_ended: bool = False,
+    user_speech: bool = False,
+    turn_lost: bool = False,
+    server_turn_complete: bool = False,
+    reason: str = "test",
     wl=None,
 ) -> _TeardownTurn:
     """Run the REAL `_end_turn_inner` on a turn where nothing else in the
@@ -850,16 +877,20 @@ async def _torn_down_mid_hold(
     if wl is None:
         wl = _teardown_loop()
     wl._state = State.SESSION
-    turn = _TeardownTurn(chunks=chunks)
+    turn = _TeardownTurn(
+        chunks=chunks,
+        turn_lost=turn_lost,
+        server_turn_complete=server_turn_complete,
+    )
     wl._turn = turn
     wl._bg_tasks = set()
     wl._wake_event_store = None
     wl._session_id = "sess-teardown"
     wl._input_ended = input_ended
-    wl._user_speech_seen = False
+    wl._user_speech_seen = user_speech
     wl._manual_endpoint_this_turn = manual
 
-    await wl._end_turn_inner("test")
+    await wl._end_turn_inner(reason)
     # The teardown must have completed, or "end_input was called" would be
     # an accident of where it stopped rather than of the gate.
     assert wl._state is State.WAKE
@@ -902,24 +933,101 @@ async def test_no_answer_on_a_wake_turn_still_says_recording_timeout(caplog):
     assert "HOLD TIMEOUT" not in caplog.text
 
 
-async def test_silent_response_warns_once_per_daemon_not_once_per_turn(caplog):
-    """#2228: this arm fired every turn while the warnings that name the
-    real cause are one-shot, so an operator whose journal window missed the
-    daemon's first turn saw only the repeating, cause-blind line. Latched
-    per daemon like `_barge_in_no_ref_warned` / `_warned_cues_unconfigured`.
-    """
+@pytest.mark.parametrize(
+    "turn, cued, counted",
+    [
+        # Asked, and the model answered with nothing at all.
+        pytest.param(
+            {"chunks": 0, "input_ended": True, "user_speech": True},
+            True, 1, id="silent_response",
+        ),
+        # The link went while the model was still speaking: the household
+        # got half an answer and then the end chirp.
+        pytest.param(
+            {"chunks": 2, "input_ended": True, "user_speech": True,
+             "turn_lost": True},
+            True, 1, id="lost_mid_reply",
+        ),
+        # A turn the model answered: nothing to count, nothing to say.
+        pytest.param(
+            {"chunks": 3, "input_ended": True, "user_speech": True},
+            False, 0, id="answered",
+        ),
+        # The link dropped only after the model had finished speaking.
+        pytest.param(
+            {"chunks": 3, "input_ended": True, "user_speech": True,
+             "turn_lost": True, "server_turn_complete": True},
+            False, 0, id="lost_after_the_answer",
+        ),
+        # Counted, never spoken: whoever muted the mic knows why the
+        # speaker went quiet, and a failure cue there is a nag.
+        pytest.param(
+            {"chunks": 0, "input_ended": True, "user_speech": True,
+             "reason": "mic_muted"},
+            False, 1, id="mic_muted",
+        ),
+        # Same for a wake taking the turn over mid-flight.
+        pytest.param(
+            {"chunks": 0, "input_ended": True, "user_speech": True,
+             "reason": "research_window_wake"},
+            False, 1, id="wake_interruption",
+        ),
+        # A button released with nothing said. `_handle_manual_session_frame`
+        # scores no frames, so the daemon cannot tell that from a real
+        # question — it counts the turn and stays quiet about it.
+        pytest.param(
+            {"chunks": 0, "input_ended": True, "manual": True},
+            False, 1, id="push_to_talk_no_speech",
+        ),
+    ],
+)
+async def test_a_turn_with_no_answer_is_heard_and_counted(
+    turn, cued, counted, caplog,
+):
+    """Non-negotiable 6: the household hears the listening chirp, silence,
+    and the end chirp, and is told nothing. Every occurrence is counted for
+    /state and logged with that count; the cue is held back only for the
+    endings the household itself caused."""
+    from jasper.voice_daemon import INTERNAL_ERROR_CUE_SLUG
+
     wl = _teardown_loop()
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        await _torn_down_mid_hold(manual=False, chunks=0, input_ended=True, wl=wl)
-        await _torn_down_mid_hold(manual=False, chunks=0, input_ended=True, wl=wl)
+        await _torn_down_mid_hold(wl=wl, **{"manual": False, **turn})
 
-    # Exactly one record across two turns is the latch holding.
-    fields = event_fields(caplog, "turn.silent_response")
+    assert wl._silent_responses_session == counted
+    assert wl.session_status()["silent_responses_session"] == counted
+    assert wl._cues.played == ([INTERNAL_ERROR_CUE_SLUG] if cued else [])
+    records = event_records(caplog, "turn.silent_response")
+    assert len(records) == counted
+    if not counted:
+        return
     # Only what the site can observe. It cannot tell a provider fault from
     # an idle-watchdog reap, so it carries fields, not a diagnosis.
+    fields = event_fields(caplog, "turn.silent_response")
     assert fields["provider"] == "test"
-    assert fields["endpointer"] == "silero_aec"
     assert int(fields["bytes_sent"]) == 4096
+    assert int(fields["count"]) == counted
+    assert fields["turn_lost"] == ("true" if turn.get("turn_lost") else "false")
+
+
+async def test_every_silent_response_is_logged_with_a_rising_count(caplog):
+    """#2228 latched this WARN per daemon, so an operator whose journal
+    window missed the first turn saw nothing at all. The count replaces the
+    latch: repetition is now the signal, not the noise."""
+    wl = _teardown_loop()
+    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
+        for _ in range(2):
+            await _torn_down_mid_hold(
+                manual=False, chunks=0, input_ended=True,
+                user_speech=True, wl=wl,
+            )
+
+    counts = [
+        int(fields["count"])
+        for fields in event_field_maps(caplog, "turn.silent_response")
+    ]
+    assert counts == [1, 2]
+    assert wl._silent_responses_session == 2
 
 
 async def test_teardown_still_calls_end_input_on_a_button_turn():

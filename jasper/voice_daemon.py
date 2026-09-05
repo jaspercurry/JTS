@@ -361,6 +361,15 @@ PTT_KEEPALIVE_INTERVAL_SEC = 2.0
 # the guard test cannot drift from the registry entry.
 NO_ROOM_MIC_CUE_SLUG = "no_room_microphone"
 
+# `_end_turn` reasons the household or the daemon itself chose: whoever
+# muted, shut down or spoke over the turn already knows why it went quiet,
+# so no failure cue is owed however little the model said.
+NO_ANSWER_CUE_SUPPRESSED_REASONS = frozenset({
+    "mic_muted",
+    "stopping",
+    "research_window_wake",
+})
+
 # How long a wake or a manual (button) session start waits out a paused
 # connection before taking the turn anyway. Most pauses are a planned
 # session rotation, whose gap is one teardown plus one connect (p50
@@ -1144,10 +1153,9 @@ class WakeLoop:
         self._barge_in_ptt_warned: bool = False
         self._ptt_cap_warned: bool = False
         self._server_vad_ptt_warned: bool = False
-        # One-shot per daemon like the latches above: the zero-chunks arm
-        # observes that nothing came back, never why, so a per-turn repeat
-        # buries the one-shot warnings that do name a cause. See #2228.
-        self._silent_response_warned: bool = False
+        # Turns since daemon start that were asked a question and produced no
+        # answer. Published as /state.voice.silent_responses_session.
+        self._silent_responses_session: int = 0
         self._barge_in_active: bool = False
         # Reconciliation kind for the active provider (resolved once — the
         # provider is fixed for the daemon's life; a switch restarts us).
@@ -2376,7 +2384,7 @@ class WakeLoop:
                     self._heartbeat.bump()
                 if self._stop_event.is_set():
                     if self._state is State.SESSION:
-                        await self._end_turn()
+                        await self._end_turn("stopping")
                     return
                 if frame is None:
                     # Keepalive tick, not audio. The bump above was its whole
@@ -2734,7 +2742,7 @@ class WakeLoop:
             return "ok"
         if self._state is State.SESSION:
             try:
-                await self._end_turn()
+                await self._end_turn("mic_muted")
             except Exception as e:  # noqa: BLE001
                 logger.warning("ending turn on mic mute: %s", e)
         self._mic_muted = True
@@ -4225,6 +4233,10 @@ class WakeLoop:
             # silently failed to build (event=tool_pack.build_failed) is
             # visible in /state.voice + jasper-doctor, not only the journal.
             "tool_packs": self._tool_packs,
+            # Turns the model was asked to answer and either answered with
+            # nothing or lost the link before finishing. Daemon-lifetime,
+            # like barge_in_count_session below.
+            "silent_responses_session": self._silent_responses_session,
             # In-session barge-in firing telemetry → /state.voice.barge_in
             # (the `enabled` flag is read fresh in jasper-control's
             # aggregator, not here — it can change without restarting this
@@ -4686,6 +4698,7 @@ class WakeLoop:
         except Exception as e:  # noqa: BLE001
             logger.warning("teardown end_segment failed: %s", e)
 
+        play_no_answer_cue = False
         if self._turn is not None:
             # `_manual_endpoint_this_turn` is the third term because on a
             # push-to-talk turn `_user_speech_seen` never flips (nothing
@@ -4724,12 +4737,13 @@ class WakeLoop:
                     _optional_turn_text(self._turn, "assistant_transcript"),
                     data_json=_optional_turn_data_json(self._turn),
                 )
-            # Per-turn no-audio detection splits into two phenomena, gated on
-            # whether the wake loop explicitly ended input (silence detector,
-            # hard cap, or manual end). Bytes sent with `_input_ended` never
-            # flipped means the model never got a clean end-of-utterance
-            # signal before the watchdog closed the turn — a different fault
-            # from a model that was asked and answered with silence.
+            # Per-turn no-answer detection, gated on whether the wake loop
+            # explicitly ended input (silence detector, hard cap, or manual
+            # end). Bytes sent with `_input_ended` never flipped means the
+            # model never got a clean end-of-utterance signal before the
+            # watchdog closed the turn — a different fault from a model that
+            # was asked and answered with silence, or a link that dropped
+            # before it finished.
             bytes_sent = self._turn.bytes_sent()
             chunks_received = self._turn.chunks_received()
             expected_research_silence_dismiss = (
@@ -4739,26 +4753,40 @@ class WakeLoop:
                 and not self._user_speech_seen
                 and not self._input_ended
             )
+            lost_mid_reply = (
+                self._turn.turn_lost()
+                and not self._turn.server_turn_complete()
+            )
+            silent = chunks_received == 0 and not self._turn.turn_lost()
             if (
                 bytes_sent > 0
-                and chunks_received == 0
-                and not self._turn.turn_lost()
+                and (silent or lost_mid_reply)
                 and not expected_research_silence_dismiss
             ):
                 model = _active_model(self._cfg)
                 if self._input_ended:
-                    if not self._silent_response_warned:
-                        self._silent_response_warned = True
-                        log_event(
-                            logger,
-                            "turn.silent_response",
-                            provider=self._cfg.voice_provider,
-                            model=model,
-                            bytes_sent=bytes_sent,
-                            endpointer=self._endpointer_label(),
-                            level=logging.WARNING,
-                        )
-                elif self._manual_endpoint_this_turn:
+                    self._silent_responses_session += 1
+                    log_event(
+                        logger,
+                        "turn.silent_response",
+                        provider=self._cfg.voice_provider,
+                        model=model,
+                        bytes_sent=bytes_sent,
+                        chunks_received=chunks_received,
+                        turn_lost=lost_mid_reply,
+                        count=self._silent_responses_session,
+                        endpointer=self._endpointer_label(),
+                        level=logging.WARNING,
+                    )
+                    # Speak only when there was something to hear: scored
+                    # user speech, or an answer already under way. A button
+                    # turn scores no frames (`_handle_manual_session_frame`),
+                    # so a release with nothing said stays silent.
+                    play_no_answer_cue = (
+                        (self._user_speech_seen or chunks_received > 0)
+                        and reason not in NO_ANSWER_CUE_SUPPRESSED_REASONS
+                    )
+                elif silent and self._manual_endpoint_this_turn:
                     # Same shape as RECORDING TIMEOUT below, but that text
                     # names a silence detector and a wake fire, neither of
                     # which exists on a button turn — it would send an
@@ -4775,7 +4803,7 @@ class WakeLoop:
                         "sits below the idle timeout.",
                         bytes_sent, model, float(self._cfg.idle_timeout_sec),
                     )
-                else:
+                elif silent:
                     logger.warning(
                         "RECORDING TIMEOUT: sent %d bytes of audio to %s "
                         "but the silence detector never tripped — idle "
@@ -4825,6 +4853,10 @@ class WakeLoop:
         self._state = State.WAKE
         await self._output_gate.end_turn(self._turn_output_episode)
         self._turn_output_episode = None
+        if play_no_answer_cue:
+            # Must follow the gate release above: `_play_cue` takes an
+            # "admin" episode of its own and will not preempt the turn's.
+            await self._play_cue(INTERNAL_ERROR_CUE_SLUG)
         if research_window_job is not None:
             self._research_window_active = False
             self._research_window_job = None
