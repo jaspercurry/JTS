@@ -177,7 +177,6 @@ def test_migrated_json_body_reads_remain_after_csrf_guard():
             "_unbond(self)",
             "_swap_channels(self)",
             "_set_member_trim(self)",
-            "_set_mains_highpass(self)",
             "_save_peering(self)",
         ),
     }
