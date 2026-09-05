@@ -47,12 +47,16 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
 
 ## Territory
 
-Other agents own attached-hardware input (#4027: `jasper/audio_hardware/`, `output_hardware.py`,
-`usbsink/`, `accessories/`, udev) and the web UI (#4031: `jasper/web/`, `deploy/assets/`, nginx
-confs). Stay out of their code unless the owner says otherwise; when your attribute needs a change
-there, write it up as a suggestion (file:line, what, why) for that agent, or ask the owner for a
-one-off. Other stewards merge to `main` concurrently: rebase before every push, judge every PR by
-`git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
+Other lanes own attached-hardware input (#4027: `jasper/audio_hardware/`, `output_hardware.py`,
+`usbsink/`, `accessories/`, udev), the web UI (#4031: `jasper/web/`, `deploy/assets/`, nginx
+confs), and **the voice loop (P9 #4208: `jasper/voice_daemon.py`, `jasper/voice/`, `jasper/cues/`,
+`jasper/tools/`, the top-level wake modules, `jasper-voice.service`, `tests/voice_eval/`)**. Stay
+out of their code unless the owner says otherwise; when your attribute needs a change there, write
+it up as a suggestion (file:line, what, why) on that lane's issue, or ask the owner for a one-off.
+The one exception: an attribute lane may land one repo-wide **mechanical** sweep (a helper adoption,
+a convention) across a concern lane's files after telling it on its issue; anything behavioral there
+is the concern lane's. Other lanes merge to `main` concurrently: rebase before every push, judge
+every PR by `git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
 
 **The tuning zone is parked, not open.** Its steward stood down with wave 9 on main (close-out:
 the last comment on #3769; `TARGET.md`, `WAVE-LOG.md` and `SURVEY-VISION.md` §7 live on branch
@@ -68,14 +72,16 @@ PR #4138 (the wired capture kernel; green, waiting on the owner's hardware null 
 `cli/measure.py` and their tests alone until it merges; and #4031's Phase D is about to cut into
 `active_speaker/commissioning_*` — anything there is coordinated on #4031 before a branch exists.
 
-**Sibling lanes.** Seven sibling sessions run the other attributes of the same review (P1 #4193, P2 #4194,
-P3 #4195, P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202; the index and sequencing are in
-`docs/codebase-quality-review-2026-09-05/prompts/README.md`). You own `docs/`, `README.md`,
+**Sibling lanes.** Eight sibling sessions run the other lanes (P1 #4193, P2 #4194, P3 #4195,
+P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202, and P9 #4208 the voice loop; the index and
+sequencing are in `docs/codebase-quality-review-2026-09-05/prompts/README.md`). You own `docs/`, `README.md`,
 `AGENTS.md` prose, `docs/doc-map.toml` policy and the ADR tier; nobody else writes prose. Your lane
 has no upstream dependency for trims and consolidation: start now. Two things wait: **P6** names
 the parked/plan-tier documents to retire and the ADR that records each (you make the change), and
 **P5** moves modules — its PRs fix the paths they touch, and you do one stale-path pass over the
-tree after P5's moves have merged, as your last PR.
+tree after P5's moves have merged, as your last PR. **P9 (voice loop)** does the prose in its own
+files (`voice_daemon.py`, `jasper/voice/`, `jasper/cues/`, `jasper/tools/`, `jasper-voice.service`);
+skip them, and hand P9 the rows marked (P9) below.
 
 ## What "A" means here
 
@@ -95,7 +101,7 @@ decision is findable; and comments in code state constraints, not history.** Con
   lines to one-line invariants;
 - comments that are factually backwards at HEAD are deleted (the list below); the 207 history/PR/
   date narrations in the active-speaker root are an owner-gated tuning-zone row; module
-  docstrings exist on `voice_daemon.py` and `audio_io.py` and describe the module they head;
+  docstrings exist on `audio_io.py` (and, P9's row, `voice_daemon.py`) and describe the module they head;
 - `BRINGUP.md` tells operators what the attended-sudo path gives up (until P2 fixes it).
 Mechanical measure: `docs/adr/INDEX.md` matches the directory; the link checker passes with `--all`;
 `grep -c "ADR-" deploy/systemd/*.service` ≥ the reboot-unit count; a comment-line ratio per package
@@ -118,14 +124,14 @@ Verified at HEAD by the review:
   (9) are invisible to it.
 - Zero real TODO/FIXME markers anywhere (genuinely clean); root docs verified claim by claim; the
   prior audit's prose sweep held outside the tuning zone.
-- Comments factually backwards at HEAD: `openai_session.py:801-804`; `outputd/config.rs:230-234,
+- Comments factually backwards at HEAD: `openai_session.py:801-804` (P9); `outputd/config.rs:230-234,
   246-247`; `control/handlers/system.py:428` ("runs as root" — it does not); `sound/settings.py:
   148-150`; `sound/profile.py:44-46` (claims EQ boosts are clip-safe; `camilla_stereo_prefix.py:
   196-198` says the opposite and is right); `graph_carrier.py:713-719` ("no production caller" — two);
   `peering/uds.py:22` ("used by doctor" — it is not); `coupling_reconcile.py:18` ("single writer") vs
   `:899-903` ("two writers"); `volume_owner.py:703-711`'s deletion promise; `crossover_v2/__init__.
   py:5-13`'s import charter (owner-gated tuning row); `prompt.py:8-38` dated eval history pointing at a
-  CLAUDE.md section that no longer exists; `RECONCILE_DUCK_SKIP_DB`'s unmet removal condition.
+  CLAUDE.md section that no longer exists (P9); `RECONCILE_DUCK_SKIP_DB`'s unmet removal condition.
 - Prose ratios: 34–43% of lines in the voice, DSP-control, deploy-unit and install tiles;
   `ring-platform.sh:391-459` (69 comment lines over five `rm -f`); `jts-ring.conf` (89 comment
   lines for one `d` line); `service-users.sh` 70%; `install.sh:1206-1219` text addressed to a
@@ -137,7 +143,7 @@ Verified at HEAD by the review:
 - From the general steward's round 2 (#4085 item 8), outside its own sweep: `P6a`/`P6d`/`U3`
   program labels in `deploy/tmpfiles/jts-ring.conf`, `jasper-fanin.service` and
   `bluealsa-aplay.service.d`; `S2`-style slice labels; three dated `2026-05-*` pointers in
-  `jasper-voice.service`; a second "WS1" phrasing in `deploy/bin/jasper-audio-hardware-reconcile`,
+  `jasper-voice.service` (P9); a second "WS1" phrasing in `deploy/bin/jasper-audio-hardware-reconcile`,
   `jasper/bluetooth/roles.py`, `jasper/home_assistant.py`, `jasper/web/sync_flow.py` (#4031) and
   `docs/doc-map.toml`; the "MSRV 1.75" note in `jasper-host-clock`'s manifest (P6 fixes the
   fact, you delete the prose).

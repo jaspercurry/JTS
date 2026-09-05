@@ -47,12 +47,16 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
 
 ## Territory
 
-Other agents own attached-hardware input (#4027: `jasper/audio_hardware/`, `output_hardware.py`,
-`usbsink/`, `accessories/`, udev) and the web UI (#4031: `jasper/web/`, `deploy/assets/`, nginx
-confs). Stay out of their code unless the owner says otherwise; when your attribute needs a change
-there, write it up as a suggestion (file:line, what, why) for that agent, or ask the owner for a
-one-off. Other stewards merge to `main` concurrently: rebase before every push, judge every PR by
-`git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
+Other lanes own attached-hardware input (#4027: `jasper/audio_hardware/`, `output_hardware.py`,
+`usbsink/`, `accessories/`, udev), the web UI (#4031: `jasper/web/`, `deploy/assets/`, nginx
+confs), and **the voice loop (P9 #4208: `jasper/voice_daemon.py`, `jasper/voice/`, `jasper/cues/`,
+`jasper/tools/`, the top-level wake modules, `jasper-voice.service`, `tests/voice_eval/`)**. Stay
+out of their code unless the owner says otherwise; when your attribute needs a change there, write
+it up as a suggestion (file:line, what, why) on that lane's issue, or ask the owner for a one-off.
+The one exception: an attribute lane may land one repo-wide **mechanical** sweep (a helper adoption,
+a convention) across a concern lane's files after telling it on its issue; anything behavioral there
+is the concern lane's. Other lanes merge to `main` concurrently: rebase before every push, judge
+every PR by `git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
 
 **The tuning zone is parked, not open.** Its steward stood down with wave 9 on main (close-out:
 the last comment on #3769; `TARGET.md`, `WAVE-LOG.md` and `SURVEY-VISION.md` §7 live on branch
@@ -68,9 +72,9 @@ PR #4138 (the wired capture kernel; green, waiting on the owner's hardware null 
 `cli/measure.py` and their tests alone until it merges; and #4031's Phase D is about to cut into
 `active_speaker/commissioning_*` — anything there is coordinated on #4031 before a branch exists.
 
-**Sibling lanes.** Seven sibling sessions run the other attributes of the same review (P1 #4193, P2 #4194,
-P3 #4195, P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202; the index and sequencing are in
-`docs/codebase-quality-review-2026-09-05/prompts/README.md`). Ordering that matters: your
+**Sibling lanes.** Eight sibling sessions run the other lanes (P1 #4193, P2 #4194, P3 #4195,
+P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202, and P9 #4208 the voice loop; the index and
+sequencing are in `docs/codebase-quality-review-2026-09-05/prompts/README.md`). Ordering that matters: your
 deletions land **before P5 (structure)** moves anything — agree the disjoint lists on P5's issue in
 your first day and prioritise the deletions that sit in packages P5 will move. **P3 (resilience)**
 owns `jasper/peering/state.py`; your peering deletion is the other half and lands first if both are
@@ -78,6 +82,10 @@ open. **P2** owns `deploy/install.sh` and the deploy path: the install-lib copie
 bundle and the `jasper-deploy-health` pricing are asks on P2's issue. **P8** owns docs: you name the
 parked/plan-tier documents to retire and the ADR that records each, P8 makes the docs change.
 **P7** deletes tests whose subjects you removed only where your PR did not already take them.
+**P9 (voice loop)** owns deletions inside voice files (its Wave 2) and the `JASPER_SERVER_VAD_ENABLED`
+and `for_tests` rows once the owner decides; your `Ducker` + `JASPER_DUCK_TRANSPORT` row conflicts
+with P9's brief (it converges `FanInDucker` onto `camilla.Ducker`) — P9 re-verifies which ducker is
+live and records it on this issue before either lane acts.
 
 ## What "A" means here
 
@@ -115,7 +123,8 @@ what survives); `bluetooth/roles.py` + test-only volume/mux paths that leave fan
 producer 131 (+~15 Rust); `CLEAR_CONFIGURATION` 1; dead ring/resampler/host-clock symbols 233;
 crossover_v2 barrels + dead fields 67 (tuning — owner-gated); `HAClient.list_agents` + dead CSRF
 helper 54; `quality_model`/`calibration`/`null_walk` 36 (tuning — owner-gated); `Ducker` +
-`JASPER_DUCK_TRANSPORT` 87 (+387 test); the Pi-side install-lib glob (one line).
+`JASPER_DUCK_TRANSPORT` 87 (+387 test — held until P9 settles which ducker is live); the Pi-side
+install-lib glob (one line).
 
 The tuning steward's close-out (#3769, last comment) adds to the owner-gated heading: `correction/
 session.py:2244` `MeasurementSession.run_level_match` with zero callers; `active_speaker/
