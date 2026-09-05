@@ -82,6 +82,7 @@ REASON_FANIN_TTS_AUDIO_DROPPED = "fanin_tts_audio_dropped"
 REASON_FANIN_RING_STALL_STATUS_NOT_PROBED = "fanin_ring_stall_status_not_probed"
 REASON_FANIN_RING_STALL_BLOCK_ABSENT = "fanin_ring_stall_block_absent"
 REASON_FANIN_RING_STALL_ACTIVE = "fanin_ring_stall_active"
+REASON_FANIN_RING_STALL_DROPS = "fanin_ring_stall_drops"
 
 REASON_HOST_CLOCK_STATUS_NOT_PROBED = "host_clock_status_not_probed"
 REASON_HOST_CLOCK_TELEMETRY_MISSING = "host_clock_telemetry_missing"
@@ -100,7 +101,6 @@ REASON_COUPLING_GRAPH_NOT_RING = "coupling_graph_not_ring"
 REASON_COUPLING_ACTIVE_LADDER_PENDING = "coupling_active_ladder_pending"
 
 REASON_ALOOP_NOT_LOADED = "aloop_not_loaded"
-REASON_ALOOP_REGISTERED_SET_UNDERIVABLE = "aloop_registered_set_underivable"
 REASON_ALOOP_PROC_UNREADABLE = "aloop_proc_unreadable"
 REASON_ALOOP_UNREGISTERED_SUBSTREAM_OPEN = "aloop_unregistered_substream_open"
 
@@ -369,9 +369,11 @@ def check_fanin_service() -> CheckResult:
     Returns:
       - ok ("active, responding") when enabled and the UDS endpoint
         replies to STATUS with a fresh progress sentinel.
-      - fail when disabled/inactive, when STATUS cannot be read, or
-        when the live STATUS schema drifts from the production graph.
-      - warn when enabled+active but the work loop is stale.
+      - fail when disabled/inactive, when STATUS cannot be read, or when the
+        STATUS SHAPE drifts (a missing block, a non-ring transport, no TTS).
+      - warn, composed over every remaining branch so none masks another: a
+        stale work loop, an input roster off this box's lane map, an input
+        buffer under its validated size, an off-contract assistant gain.
     """
     service_failure = _service_state_failure(
         "jasper-fanin service",
@@ -446,22 +448,11 @@ def check_fanin_service() -> CheckResult:
             "active but STATUS response missing inputs[]",
             reason=REASON_FANIN_STATUS_MISSING_INPUTS,
         )
-    actual_inputs = [
+    actual_inputs = {
         (inp.get("label"), inp.get("pcm"))
         for inp in inputs
         if isinstance(inp, dict)
-    ]
-    expected_inputs = _fanin_expected_inputs()
-    if actual_inputs != expected_inputs:
-        return CheckResult(
-            "jasper-fanin service",
-            "fail",
-            "active but STATUS inputs drifted. Expected "
-            f"{expected_inputs!r}; got {actual_inputs!r}. "
-            "Check /var/lib/jasper/fanin.env and "
-            "/var/lib/jasper/renderer_lanes.env.",
-            reason=REASON_FANIN_INPUTS_DRIFTED,
-        )
+    }
 
     progress_age = data.get("watchdog", {}).get(
         "last_progress_age_ms", -1
@@ -472,14 +463,6 @@ def check_fanin_service() -> CheckResult:
             "fail",
             "active but STATUS response missing watchdog state",
             reason=REASON_FANIN_STATUS_MISSING_WATCHDOG,
-        )
-    if progress_age > FANIN_STALE_MS:
-        return CheckResult(
-            "jasper-fanin service",
-            "warn",
-            f"active but last_progress_age_ms={progress_age} "
-            f"(work loop may be wedged; watchdog should fire soon)",
-            reason=REASON_FANIN_PROGRESS_STALE,
         )
     frames = output.get("frames_written", 0)
     xruns = output.get("xrun_count", 0)
@@ -499,16 +482,6 @@ def check_fanin_service() -> CheckResult:
             continue
         if count:
             input_xruns.append(f"{inp.get('label', '?')}={count}")
-    if input_buffer_frames < 4096:
-        return CheckResult(
-            "jasper-fanin service",
-            "fail",
-            f"active, but runtime input_buffer_frames={input_buffer_frames} is below "
-            f"4096. AirPlay WiFi burst absorption was validated at 4096; "
-            f"check /var/lib/jasper/fanin.env and "
-            f"JASPER_FANIN_INPUT_BUFFER_FRAMES.",
-            reason=REASON_FANIN_INPUT_BUFFER_UNDERSIZED,
-        )
     tts = data.get("tts", {})
     if not isinstance(tts, dict) or not bool(tts.get("enabled", False)):
         return CheckResult(
@@ -520,55 +493,74 @@ def check_fanin_service() -> CheckResult:
             reason=REASON_FANIN_TTS_NOT_ENABLED,
         )
 
-    tts_detail = "tts_enabled=true"
+    # Every branch below describes an ACTIVE, responding fan-in, so none returns
+    # early: a lane-map reordering or an undersized buffer must not mask a
+    # wedged work loop. One row, the first fault's reason.
+    faults: list[tuple[str, str]] = []
+    if progress_age > FANIN_STALE_MS:
+        faults.append((REASON_FANIN_PROGRESS_STALE, "the work loop may be wedged"))
+    expected_inputs = set(_fanin_expected_inputs())
+    if actual_inputs != expected_inputs:
+        faults.append((
+            REASON_FANIN_INPUTS_DRIFTED,
+            f"input roster drifted: missing "
+            f"{sorted(expected_inputs - actual_inputs)!r}, unexpected "
+            f"{sorted(actual_inputs - expected_inputs)!r} — check "
+            "/var/lib/jasper/fanin.env and /var/lib/jasper/renderer_lanes.env",
+        ))
+    if input_buffer_frames < 4096:
+        faults.append((
+            REASON_FANIN_INPUT_BUFFER_UNDERSIZED,
+            "input_buffer_frames is below the 4096 AirPlay WiFi burst "
+            "absorption was validated at — check JASPER_FANIN_INPUT_BUFFER_FRAMES",
+        ))
+
+    settled_reason = ""
     loudness = tts.get("assistant_loudness")
     if not isinstance(loudness, dict):
-        return CheckResult(
-            "jasper-fanin service",
-            "warn",
-            "active with pre-DSP TTS enabled but STATUS is missing "
-            "tts.assistant_loudness telemetry; deploy current jasper-fanin "
-            "before evaluating TTS loudness.",
-            reason=REASON_FANIN_LOUDNESS_TELEMETRY_MISSING,
+        settled_reason = REASON_FANIN_LOUDNESS_TELEMETRY_MISSING
+        tts_detail = (
+            "tts_enabled=true, assistant_loudness telemetry absent "
+            "(deploy current jasper-fanin to evaluate TTS loudness)"
         )
-    decision_seen = bool(loudness.get("decision_seen", False))
-    calibrated = bool(loudness.get("calibrated", False))
-    final_gain = loudness.get("final_gain_db")
-    if decision_seen and not isinstance(final_gain, (int, float)):
-        return CheckResult(
-            "jasper-fanin service",
-            "warn",
-            "active with pre-DSP TTS enabled but "
-            "tts.assistant_loudness.decision_seen=true without "
-            "numeric final_gain_db.",
-            reason=REASON_FANIN_ASSISTANT_GAIN_NOT_NUMERIC,
+    else:
+        decision_seen = bool(loudness.get("decision_seen", False))
+        calibrated = bool(loudness.get("calibrated", False))
+        final_gain = loudness.get("final_gain_db")
+        if decision_seen and not isinstance(final_gain, (int, float)):
+            faults.append((
+                REASON_FANIN_ASSISTANT_GAIN_NOT_NUMERIC,
+                "assistant_loudness.decision_seen=true without a numeric "
+                "final_gain_db",
+            ))
+        elif (gain_fault := _assistant_gain_fault(loudness)) is not None:
+            faults.append(
+                (REASON_FANIN_ASSISTANT_GAIN_OFF_CONTRACT, f"assistant_loudness.{gain_fault}")
+            )
+        tts_detail = (
+            f"tts_enabled=true, "
+            f"tts_pending_frames={tts.get('pending_frames', 0)}, "
+            f"assistant_loudness_decision={decision_seen}, "
+            f"assistant_loudness_calibrated={calibrated}, "
+            f"assistant_final_gain_db={final_gain}"
         )
-    gain_fault = _assistant_gain_fault(loudness)
-    if gain_fault is not None:
-        return CheckResult(
-            "jasper-fanin service",
-            "warn",
-            f"active with pre-DSP TTS enabled but "
-            f"tts.assistant_loudness.{gain_fault}.",
-            reason=REASON_FANIN_ASSISTANT_GAIN_OFF_CONTRACT,
-        )
-    tts_detail = (
-        f"tts_enabled=true, "
-        f"tts_pending_frames={tts.get('pending_frames', 0)}, "
-        f"assistant_loudness_decision={decision_seen}, "
-        f"assistant_loudness_calibrated={calibrated}, "
-        f"assistant_final_gain_db={final_gain}"
-    )
-    return CheckResult(
-        "jasper-fanin service",
-        "ok",
+    detail = (
         f"active, frames_written={frames}, "
         f"transport={actual_transport}, "
         f"input_buffer_frames={input_buffer_frames}, "
         f"output xruns={xruns}, input xruns={','.join(input_xruns) or '0'}, "
         f"progress_age_ms={progress_age}, "
-        f"{tts_detail}",
+        f"{tts_detail}"
     )
+    if faults:
+        fault_reason = faults[0][0]
+        return CheckResult(
+            "jasper-fanin service",
+            "warn",
+            f"{detail}; " + "; ".join(message for _, message in faults),
+            reason=fault_reason,
+        )
+    return CheckResult("jasper-fanin service", "ok", detail, reason=settled_reason)
 
 
 def _host_clock_health_from_status(data: dict[str, object]) -> CheckResult:
@@ -578,7 +570,7 @@ def _host_clock_health_from_status(data: dict[str, object]) -> CheckResult:
     if not isinstance(host_clock, dict):
         return CheckResult(
             label,
-            "warn",
+            "skipped",
             "fan-in STATUS has no host_clock object; deploy current jasper-fanin",
             reason=REASON_HOST_CLOCK_TELEMETRY_MISSING,
         )
@@ -598,14 +590,14 @@ def _host_clock_health_from_status(data: dict[str, object]) -> CheckResult:
     if not isinstance(actuator, dict):
         return CheckResult(
             label,
-            "warn",
+            "skipped",
             "enabled but actuator telemetry is missing",
             reason=REASON_HOST_CLOCK_ACTUATOR_TELEMETRY_MISSING,
         )
     if not isinstance(probe, dict):
         return CheckResult(
             label,
-            "warn",
+            "skipped",
             "enabled but probe telemetry is missing",
             reason=REASON_HOST_CLOCK_PROBE_TELEMETRY_MISSING,
         )
@@ -627,7 +619,7 @@ def _host_clock_health_from_status(data: dict[str, object]) -> CheckResult:
     if not ready or not generations_match:
         return CheckResult(
             label,
-            "warn",
+            "fail",
             f"actuator unavailable/mismatched: ladder={ladder}, "
             f"fallback_reason={reason}, capture_generation={capture_generation}, "
             f"control_generation={control_generation}, ready={ready}; {counters}. "
@@ -694,12 +686,16 @@ def check_fanin_tts_drops() -> CheckResult:
     under that budget (`_OUTPUTD_PACE_AHEAD_SEC` in jasper/audio_io.py), so a
     nonzero drop counter means assistant/cue audio audibly skipped.
 
+    Every counter here is CUMULATIVE SINCE FAN-IN START, and fan-in publishes no
+    recency beside them, so no rate-and-recency verdict is derivable: warning
+    would latch one boot-time drop red until the next restart, and reward a
+    healer for restarting fan-in to clear it.
+
     Returns:
-      - ok when counters are zero, or the TTS lane is disabled in this
-        topology.
+      - ok whenever STATUS is readable, carrying `fanin_tts_protocol_errors`,
+        `fanin_tts_audio_dropped` or `fanin_tts_lane_disabled` as its reason.
       - skipped when STATUS is unreachable (reachability is owned by
         'jasper-fanin service').
-      - warn when protocol errors or dropped audio > 0 since fan-in start.
     """
     name = "fan-in TTS delivery"
     status = evidence.fanin_status()
@@ -725,57 +721,58 @@ def check_fanin_tts_drops() -> CheckResult:
     dropped_frames = int(tts.get("dropped_audio_frames") or 0)
     dropped_commands = int(tts.get("dropped_commands") or 0)
     protocol_errors = int(tts.get("protocol_errors") or 0)
+    budget = (
+        f"pending_frames={tts.get('pending_frames')}, "
+        f"budget_frames={tts.get('budget_frames')}"
+    )
     if protocol_errors:
         return CheckResult(
             name,
-            "warn",
+            "ok",
             f"{protocol_errors} TTS socket protocol error(s) since fan-in "
-            "start — assistant and cue audio may be mute. Check "
-            "`journalctl -u jasper-fanin | grep tts_socket.protocol_error` "
-            "for a voice/fan-in wire mismatch or malformed client.",
+            f"start ({budget}) — assistant and cue audio may have been mute "
+            "for those. Check `journalctl -u jasper-fanin | grep "
+            "tts_socket.protocol_error` for a voice/fan-in wire mismatch or "
+            "malformed client.",
             reason=REASON_FANIN_TTS_PROTOCOL_ERRORS,
         )
-    if dropped_frames == 0 and dropped_commands == 0:
+    if dropped_frames or dropped_commands:
+        sample_rate = int(data.get("output", {}).get("sample_rate") or 48_000)
+        dropped_sec = dropped_frames / float(sample_rate)
         return CheckResult(
             name,
             "ok",
-            f"none since fan-in start (pending_frames="
-            f"{tts.get('pending_frames')}, budget_frames="
-            f"{tts.get('budget_frames')})",
+            f"{dropped_commands} audio command(s) / ~{dropped_sec:.1f}s of "
+            f"TTS audio dropped at the pending budget since fan-in start "
+            f"({budget}) — those assistant replies were audibly "
+            "garbled/fast-forwarded. Check `journalctl -u jasper-fanin | grep "
+            "tts_command_dropped` and the voice daemon's `paced` turn "
+            "accounting; an unpaced writer or a pacing regression is the "
+            "usual cause.",
+            reason=REASON_FANIN_TTS_AUDIO_DROPPED,
         )
-
-    sample_rate = int(data.get("output", {}).get("sample_rate") or 48_000)
-    dropped_sec = dropped_frames / float(sample_rate)
-    return CheckResult(
-        name,
-        "warn",
-        f"{dropped_commands} audio command(s) / ~{dropped_sec:.1f}s of "
-        "TTS audio dropped at the pending budget since fan-in start — "
-        "assistant replies were audibly garbled/fast-forwarded. Check "
-        "`journalctl -u jasper-fanin | grep tts_command_dropped` and the "
-        "voice daemon's `paced` turn accounting; an unpaced writer or a "
-        "pacing regression is the usual cause.",
-        reason=REASON_FANIN_TTS_AUDIO_DROPPED,
-    )
+    return CheckResult(name, "ok", f"none since fan-in start ({budget})")
 
 
 @doctor_check()
 def check_fanin_ring_stall() -> CheckResult:
-    """A live fan-in→CamillaDSP ring stall (issue #1524).
+    """Ring A's drop counters, over the SHARED Ring-A stall verdict (issue #1524).
 
-    The ring is full AND CamillaDSP is not draining it (heartbeat-live but
-    ``read_seq`` frozen, or the reader absent > 1 s). The writer self-recovers by
-    DEMOTING the stuck reader to free-run so fan-in stays real time, but content
-    drops. ``stall_active`` is true for exactly as long as the reader stays
-    stuck, so it is the live/sustained signal.
+    Whether Ring A is stalled is :func:`jasper.ring_assets.ring_stall_verdict` —
+    the one reader ``check_ring_reader_stall`` asks for all four rings — so the
+    two rows cannot disagree about one ring. fan-in's ``stall_active`` is the
+    fallback for what that verdict cannot judge (no coherent SHM header), the
+    role this check kept: STATUS witnesses what the header cannot.
 
-    Reachability is owned by the 'jasper-fanin service' check.
+    The drop counters are cumulative since fan-in start, so they are DETAIL, not
+    a verdict: a stall the reader recovered from must not stay red until the
+    next fan-in restart. Reachability is the 'jasper-fanin service' check's.
 
     Returns:
-      - ok when the ring is draining normally
+      - ok when Ring A is draining, carrying `fanin_ring_stall_drops` when past
+        episodes left non-zero counters
       - skipped when STATUS is unreachable or carries no ring block
-      - warn when a stall episode is CURRENTLY active, surfacing the stuck-reader
-        vs no-reader drop split and the last stall duration.
+      - warn when a stall is CURRENTLY active.
     """
     name = "fan-in ring stall"
     status = evidence.fanin_status()
@@ -802,6 +799,8 @@ def check_fanin_ring_stall() -> CheckResult:
             reason=REASON_FANIN_RING_STALL_BLOCK_ABSENT,
         )
 
+    from jasper.ring_assets import RING_A_PROGRAM_FILE, ring_stall_verdict
+
     stuck = int(ring.get("stuck_reader_drops") or 0)
     no_reader = int(ring.get("drop_no_reader") or 0)
     last_ms = int(ring.get("last_stall_ms") or 0)
@@ -810,16 +809,29 @@ def check_fanin_ring_stall() -> CheckResult:
         f"stuck_reader_drops={stuck}, drop_no_reader={no_reader}, "
         f"last_stall_ms={last_ms}, clockless_paces={clockless}"
     )
-    if bool(ring.get("stall_active")):
+    verdict = ring_stall_verdict(RING_A_PROGRAM_FILE)
+    if verdict.present:
+        stalled, witness = verdict.stalled, verdict.detail
+    else:
+        stalled = bool(ring.get("stall_active"))
+        witness = f"fan-in STATUS reports stall_active ({verdict.detail})"
+    if stalled:
         return CheckResult(
             name,
             "warn",
-            f"a ring stall is CURRENTLY active — CamillaDSP is not draining the "
-            f"fan-in ring; fan-in demoted to free-run to stay real-time but ring "
-            f"content is dropping ({counts}). Check `journalctl -u jasper-fanin "
-            f"| grep event=fanin.ring.stall` and `systemctl status "
-            f"jasper-camilla`.",
+            f"a ring stall is CURRENTLY active: {witness}. CamillaDSP is not "
+            f"draining the fan-in ring; fan-in demoted to free-run to stay "
+            f"real-time but ring content is dropping ({counts}). Check "
+            f"`journalctl -u jasper-fanin | grep event=fanin.ring.stall` and "
+            f"`systemctl status jasper-camilla`.",
             reason=REASON_FANIN_RING_STALL_ACTIVE,
+        )
+    if stuck or no_reader:
+        return CheckResult(
+            name,
+            "ok",
+            f"no active stall; cumulative since fan-in start: {counts}",
+            reason=REASON_FANIN_RING_STALL_DROPS,
         )
     return CheckResult(name, "ok", f"no active stall ({counts})")
 
@@ -1032,15 +1044,17 @@ def check_fanin_coupling() -> CheckResult:
 #
 # Pairs 5, 6 and 7 are absent because no owner names them: their PCM
 # definitions are gone, so an open pair in that range has resurrected a
-# deleted lane. That is the FAIL. They stay reserved
-# rather than reclaimed, per deploy/modprobe.d/snd-aloop.conf: pcm_substreams
-# stays 8 so no surviving pair renumbers.
+# deleted lane. That is the WARN — migration hygiene naming a pid, not a
+# broken speaker. They stay reserved rather than reclaimed, per
+# deploy/modprobe.d/snd-aloop.conf: pcm_substreams stays 8 so no surviving
+# pair renumbers.
 #
 # BOUNDED. At most 4 PCM directories x `_ALOOP_SUBSTREAMS` status reads (32
 # small procfs files), plus one `comm`/`cgroup` read per offender, capped at
 # `_ALOOP_OFFENDER_DETAIL_CAP` offenders in the message.
 #
-# FAIL-SOFT. An unreadable /proc is `warn`, never an exception and never a FAIL.
+# FAIL-SOFT. An unreadable /proc observed nothing, so it is `skipped`, never an
+# exception.
 #
 # SERIALIZED. `exclusive_group="audio-probe"` shares a lane with
 # `check_renderer_device_resolvable` (renderers.py), which opens real PCMs with
@@ -1080,10 +1094,7 @@ def _pair_from_loopback_pcm(pcm: str) -> int | None:
     """Substream index from an ``hw:Loopback,<device>,<sub>`` name.
 
     Returns None for anything that is not an snd-aloop hw triple — a ring path,
-    a plug wrapper, a renamed card. Callers treat None as "cannot derive" and
-    degrade to `warn`; they must never treat it as "this pair is not
-    registered", because that would SHRINK the registered set and turn a
-    healthy box red.
+    a plug wrapper, a renamed card.
     """
     m = re.fullmatch(r"hw:([^,]+),\d+,(\d+)", pcm.strip())
     if not m or m.group(1) != _ALOOP_CARD_ID:
@@ -1091,22 +1102,17 @@ def _pair_from_loopback_pcm(pcm: str) -> int | None:
     return int(m.group(2))
 
 
-def _derive_registered_pairs() -> dict[int, str] | None:
+def _derive_registered_pairs() -> dict[int, str]:
     """``{pair: provenance}`` derived from the owning facts (see header comment).
 
-    Returns None if ANY source entry is unparseable — all-or-nothing, because a
-    partial derivation would shrink the registered set and turn legitimate
-    holders into doctor FAILs.
+    Every entry of the source constant parses; that is pinned by
+    tests/test_doctor_audio_runtime_fanin.py, not defended at runtime.
     """
-    registered: dict[int, str] = {}
-
-    for label, pcm in _FANIN_EXPECTED_ALOOP_INPUTS:
-        pair = _pair_from_loopback_pcm(pcm)
-        if pair is None:
-            return None
-        registered[pair] = f"fan-in input lane {label!r}"
-
-    return registered
+    return {
+        pair: f"fan-in input lane {label!r}"
+        for label, pcm in _FANIN_EXPECTED_ALOOP_INPUTS
+        if (pair := _pair_from_loopback_pcm(pcm)) is not None
+    }
 
 
 def _aloop_substream_owner(status_text: str) -> str:
@@ -1146,10 +1152,9 @@ def check_aloop_registered_substreams() -> CheckResult:
     See the header comment above for the rationale; the statuses:
 
     - snd-aloop absent            -> skipped (no remnant on this box)
-    - registered set underivable  -> warn (never a shrunken set)
-    - /proc unreadable            -> warn (fail-soft; never a FAIL)
+    - /proc unreadable            -> skipped (nothing was observed)
     - every open pair registered  -> ok, reporting the remnant's current size
-    - an UNREGISTERED pair open   -> fail, naming the offender
+    - an UNREGISTERED pair open   -> warn, naming the offender
     """
     label = "aloop remnant"
 
@@ -1163,18 +1168,7 @@ def check_aloop_registered_substreams() -> CheckResult:
             reason=REASON_ALOOP_NOT_LOADED,
         )
 
-    derived = _derive_registered_pairs()
-    if derived is None:
-        return CheckResult(
-            label,
-            "warn",
-            "could not derive the registered substream set from its owning "
-            "constant (_FANIN_EXPECTED_ALOOP_INPUTS in this module) — each "
-            "entry must be an 'hw:Loopback,<device>,<sub>' triple. The "
-            "remnant's scope cannot be verified.",
-            reason=REASON_ALOOP_REGISTERED_SET_UNDERIVABLE,
-        )
-    registered_pairs = derived
+    registered_pairs = _derive_registered_pairs()
 
     offenders: list[str] = []
     registered_open: set[int] = set()
@@ -1212,7 +1206,7 @@ def check_aloop_registered_substreams() -> CheckResult:
     if scanned == 0:
         return CheckResult(
             label,
-            "warn",
+            "skipped",
             f"snd-aloop card present at {card_dir} but no substream status "
             f"was readable ({unreadable} read error(s)) — the remnant's scope "
             "could not be verified",
@@ -1225,7 +1219,7 @@ def check_aloop_registered_substreams() -> CheckResult:
         suffix = f" (+{more} more)" if more > 0 else ""
         return CheckResult(
             label,
-            "fail",
+            "warn",
             "snd-aloop substream(s) open with no registered purpose in this "
             f"phase: {'; '.join(shown)}{suffix}. Only fan-in's five capture "
             "lanes (pairs 0-4) are registered; pairs 5, 6 and 7 have no PCM "
