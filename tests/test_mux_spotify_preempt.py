@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from jasper.mux import Mux, Source
+from jasper.spotify_router import Router
 
 
 @pytest.fixture
@@ -174,10 +175,12 @@ class _FakeSpClient:
 
 def _attach_fake_router(mux: Mux, clients: list[_FakeSpClient]):
     """Bypass `_ensure_spotify_router`'s multi-account-machinery
-    setup by directly seeding the router cache."""
+    setup by directly seeding the router cache with a real Router
+    (its devices_named does the account walk under test)."""
     mux._spotify_router_built = True
-    mux._spotify_router = SimpleNamespace(
+    mux._spotify_router = Router(
         clients={c.account.name: c for c in clients},
+        default_name=clients[0].account.name if clients else "",
     )
 
 

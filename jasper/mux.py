@@ -1813,59 +1813,40 @@ class Mux:
             return False
         from .speaker_name import runtime_name as _speaker_runtime_name
         device_name = _speaker_runtime_name()
+        matches = await router.devices_named(device_name, timeout=5.0)
         # Two-pass: first prefer is_active devices (lowest-latency
         # path); fall through to any JTS-named device if that fails.
         for prefer_active in (True, False):
-            for ac in router.clients.values():
+            for ac, d in matches:
+                if prefer_active and not d.get("is_active"):
+                    continue
                 try:
-                    devices = await asyncio.wait_for(
-                        asyncio.to_thread(ac.sp.devices), timeout=5.0,
+                    await asyncio.wait_for(
+                        asyncio.to_thread(
+                            ac.sp.pause_playback, device_id=d.get("id"),
+                        ),
+                        timeout=5.0,
                     )
+                    logger.info(
+                        "spotify pause via Web API: "
+                        "account=%s device=%s active=%s",
+                        ac.account.name, d.get("id"),
+                        d.get("is_active"),
+                    )
+                    return True
                 except asyncio.TimeoutError:
                     logger.warning(
-                        "spotify devices() timed out for %s — "
+                        "spotify pause_playback timed out for %s — "
                         "skipping (does not block mux tick)",
                         ac.account.name,
                     )
                     continue
                 except Exception as e:  # noqa: BLE001
                     logger.debug(
-                        "spotify devices() failed for %s: %s",
+                        "spotify pause failed for %s: %s",
                         ac.account.name, e,
                     )
                     continue
-                for d in (devices.get("devices") or []):
-                    if d.get("name") != device_name:
-                        continue
-                    if prefer_active and not d.get("is_active"):
-                        continue
-                    try:
-                        await asyncio.wait_for(
-                            asyncio.to_thread(
-                                ac.sp.pause_playback, device_id=d.get("id"),
-                            ),
-                            timeout=5.0,
-                        )
-                        logger.info(
-                            "spotify pause via Web API: "
-                            "account=%s device=%s active=%s",
-                            ac.account.name, d.get("id"),
-                            d.get("is_active"),
-                        )
-                        return True
-                    except asyncio.TimeoutError:
-                        logger.warning(
-                            "spotify pause_playback timed out for %s — "
-                            "skipping (does not block mux tick)",
-                            ac.account.name,
-                        )
-                        continue
-                    except Exception as e:  # noqa: BLE001
-                        logger.debug(
-                            "spotify pause failed for %s: %s",
-                            ac.account.name, e,
-                        )
-                        continue
         return False
 
     async def _spotify_force_restart_librespot(self) -> bool:

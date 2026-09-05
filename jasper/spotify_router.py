@@ -650,6 +650,37 @@ class Router:
         )
         return first
 
+    async def devices_named(
+        self, name: str, *, timeout: float = 5.0,
+    ) -> list[tuple[AccountClient, dict]]:
+        """Every Spotify Connect device named ``name`` across all
+        authorized accounts, paired with the account that reported it.
+
+        Each account's `devices()` call is bounded by ``timeout`` so one
+        wedged Web API request can't stall the others — or, upstream,
+        whatever dispatch (pause, volume) is waiting on this list.
+        """
+        matches: list[tuple[AccountClient, dict]] = []
+        for ac in self.clients.values():
+            try:
+                devices = await asyncio.wait_for(
+                    asyncio.to_thread(ac.sp.devices), timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "router: devices() timed out for %s", ac.account.name,
+                )
+                continue
+            except Exception as e:  # noqa: BLE001
+                logger.debug(
+                    "router: devices() failed for %s: %s", ac.account.name, e,
+                )
+                continue
+            for d in (devices.get("devices") or []):
+                if d.get("name") == name:
+                    matches.append((ac, d))
+        return matches
+
     @staticmethod
     async def _current_playback(ac: AccountClient) -> dict | None:
         try:
