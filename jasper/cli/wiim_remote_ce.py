@@ -626,8 +626,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     _parse_args(argv)
-    # INFO, not configure_verbose_logging's WARNING default: "applied" is
-    # the only journal confirmation that a reservation engaged.
+    # INFO floor, not configure_verbose_logging's WARNING: "applied" is the only success line.
     logging.basicConfig(level=logging.INFO, format=CLI_LOG_FORMAT)
     return run()
 
