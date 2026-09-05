@@ -52,7 +52,6 @@ Camilla-only path, so the migration preserves the user's last setting.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -63,7 +62,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .atomic_io import advisory_file_lock, atomic_write_text
+from .atomic_io import (
+    advisory_file_lock,
+    advisory_file_lock_async,
+    atomic_write_text,
+)
 from .volume_curve import (
     DEFAULT_VOLUME_FLOOR_DB,
     VOLUME_CEILING_DB,
@@ -170,38 +173,15 @@ class VolumePersistence:
         The state-file lock above is deliberately tiny. This separate lease may
         span a slow Spotify/Bluetooth actuator without blocking unrelated state
         readers or handoff diagnostics. Acquisition runs off the event loop so
-        jasper-voice remains responsive while another process owns the lease.
+        jasper-voice remains responsive while another process owns the lease,
+        and a cancelled waiter propagates at once — the helper releases a lease
+        its worker wins afterwards rather than making the caller wait for it.
         """
-        lock = advisory_file_lock(
+        async with advisory_file_lock_async(
             self._operation_lock_path,
             timeout_sec=timeout_sec,
-        )
-        acquire = asyncio.create_task(asyncio.to_thread(lock.__enter__))
-        acquired = False
-        try:
-            try:
-                await asyncio.shield(acquire)
-                acquired = True
-            except asyncio.CancelledError:
-                # The worker thread cannot be cancelled while blocked in
-                # flock(). Wait for its bounded acquisition, release if it
-                # succeeded, and collect an acquisition failure so it cannot
-                # replace the caller's cancellation or become an unretrieved
-                # task exception.
-                try:
-                    await acquire
-                except (OSError, ValueError):
-                    # Acquisition result is secondary to caller cancellation.
-                    pass
-                else:
-                    acquired = True
-                raise
+        ):
             yield
-        finally:
-            if acquired:
-                await asyncio.shield(
-                    asyncio.to_thread(lock.__exit__, None, None, None),
-                )
 
     def load(self) -> VolumeRecord | None:
         """Read the persisted record. Returns None on missing /

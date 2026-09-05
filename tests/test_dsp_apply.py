@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+import jasper.atomic_io as atomic_io_module
 import jasper.dsp_apply as dsp_apply_module
 
 from jasper.dsp_apply import (
@@ -188,7 +189,7 @@ async def test_dsp_writer_lock_refuses_a_lock_won_after_its_deadline(
     not entered — the successor below proves it was not stranded.
     """
 
-    real_lock = dsp_apply_module.advisory_file_lock
+    real_lock = atomic_io_module.advisory_file_lock
 
     @contextlib.contextmanager
     def stalled_acquire(path, **kwargs):
@@ -196,7 +197,7 @@ async def test_dsp_writer_lock_refuses_a_lock_won_after_its_deadline(
         with real_lock(path, **kwargs) as handle:
             yield handle
 
-    monkeypatch.setattr(dsp_apply_module, "advisory_file_lock", stalled_acquire)
+    monkeypatch.setattr(atomic_io_module, "advisory_file_lock", stalled_acquire)
 
     with pytest.raises(DspWriterLockTimeout):
         async with dsp_writer_lock(

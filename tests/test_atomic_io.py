@@ -15,19 +15,26 @@ policy).
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import errno
 import os
 import stat
+import threading
+import time
 
 import pytest
 
 from jasper import atomic_io as atomic_io_module
 from jasper.atomic_io import (
     advisory_file_lock,
+    advisory_file_lock_async,
     atomic_write_json,
     atomic_write_text,
     fsync_directory,
 )
+
+from ._async_wait import wait_signalled
 
 
 def test_write_read_round_trip(tmp_path):
@@ -288,6 +295,131 @@ def test_lock_is_acquired_when_the_mode_repair_is_denied(tmp_path, monkeypatch, 
 
     assert "event=atomic_io.lock_mode_failed" in caplog.text
     assert stat.S_IMODE(lock_path.stat().st_mode) == 0o644
+
+
+# ---------- advisory_file_lock_async --------------------------------------
+#
+# A successor acquire is how these pin "released, not stranded": a stranded
+# flock never frees, so the bound is a hang-breaker, not a timing assertion
+# (tests/_async_wait.py).
+_SUCCESSOR_BUDGET_S = 0.1
+
+
+async def test_async_lock_admits_the_next_waiter_when_the_holder_releases(
+    tmp_path,
+):
+    path = tmp_path / "op.lock"
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    admitted = asyncio.Event()
+
+    async def hold():
+        async with advisory_file_lock_async(path, timeout_sec=1.0):
+            entered.set()
+            await release.wait()
+
+    async def contend():
+        async with advisory_file_lock_async(path, timeout_sec=5.0):
+            admitted.set()
+
+    holder = asyncio.create_task(hold())
+    await wait_signalled(entered, "holder took the async lock", producer=holder)
+    contender = asyncio.create_task(contend())
+    await asyncio.sleep(0.03)
+    assert not admitted.is_set()  # the holder really is excluding it
+
+    release.set()
+    await holder
+    await contender
+    assert admitted.is_set()
+
+
+@pytest.mark.parametrize(
+    "strand", ["cancelled_while_pending", "settled_after_the_deadline"]
+)
+async def test_async_lock_releases_a_lock_the_waiter_never_took(
+    tmp_path, monkeypatch, strand,
+):
+    """A waiter that leaves without entering must not strand the flock.
+
+    ``asyncio.to_thread`` cannot be cancelled, and a saturated executor can
+    hand a lock back after the caller's deadline; both leave a lock nobody
+    ever entered.
+    """
+
+    path = tmp_path / "op.lock"
+
+    if strand == "settled_after_the_deadline":
+        real_lock = atomic_io_module.advisory_file_lock
+
+        @contextlib.contextmanager
+        def stalled(lock_path, **kwargs):
+            time.sleep(0.05)
+            with real_lock(lock_path, **kwargs) as handle:
+                yield handle
+
+        monkeypatch.setattr(atomic_io_module, "advisory_file_lock", stalled)
+        with pytest.raises(TimeoutError):
+            async with advisory_file_lock_async(path, timeout_sec=0.01):
+                pytest.fail("a lock won after the deadline was entered")
+        monkeypatch.undo()
+    else:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        waiter_released = threading.Event()
+        real_lock = atomic_io_module.advisory_file_lock
+
+        class Watched:
+            """The real lock, reporting the helper's own release.
+
+            Deliberately not a generator context manager: one of those is
+            released by its finaliser too, which would report a strand that
+            the helper never actually undid.
+            """
+
+            def __init__(self, lock_path, **kwargs):
+                self._inner = real_lock(lock_path, **kwargs)
+
+            def __enter__(self):
+                return self._inner.__enter__()
+
+            def __exit__(self, *exc_info):
+                try:
+                    return self._inner.__exit__(*exc_info)
+                finally:
+                    waiter_released.set()
+
+        def watched(lock_path, **kwargs):
+            return Watched(lock_path, **kwargs)
+
+        async def hold():
+            async with advisory_file_lock_async(path, timeout_sec=1.0):
+                entered.set()
+                await release.wait()
+
+        async def wait_then_enter():
+            async with advisory_file_lock_async(path, timeout_sec=1.0):
+                pytest.fail("a cancelled waiter entered the lock")
+
+        holder = asyncio.create_task(hold())
+        await wait_signalled(
+            entered, "holder took the async lock", producer=holder
+        )
+        # Armed only now, so the event reports the WAITER's release, not the
+        # holder's.
+        monkeypatch.setattr(atomic_io_module, "advisory_file_lock", watched)
+        waiter = asyncio.create_task(wait_then_enter())
+        await asyncio.sleep(0.03)
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        release.set()
+        await holder
+        assert await asyncio.to_thread(waiter_released.wait, 1.0)
+        monkeypatch.undo()
+
+    async with advisory_file_lock_async(path, timeout_sec=_SUCCESSOR_BUDGET_S):
+        pass
 
 
 @pytest.mark.parametrize("writer", ["update", "transform"])

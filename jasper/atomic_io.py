@@ -56,8 +56,8 @@ import os
 import stat
 import tempfile
 import time
-from collections.abc import Mapping
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Mapping
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 from io import TextIOWrapper
 from typing import Any, Callable
 
@@ -71,6 +71,7 @@ __all__ = [
     "CONFIG_FILE_MODE",
     "SHARED_LOCK_MODE",
     "advisory_file_lock",
+    "advisory_file_lock_async",
     "atomic_write_json",
     "atomic_write_text",
     "fsync_directory",
@@ -150,6 +151,10 @@ SHARED_LOCK_MODE = 0o660
 # Per-request web paths wait on these locks, so a bounded wait retries at this
 # cadence rather than a coarser sleep that would round every handoff up.
 _LOCK_POLL_SECONDS = 0.01
+
+# An async acquire that settles inside this grace was never really contended;
+# only a longer wait is worth announcing.
+_LOCK_CONTENDED_AFTER_SECONDS = 0.01
 
 
 @contextmanager
@@ -231,6 +236,76 @@ def advisory_file_lock(
         if acquired:
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
         lock.close()
+
+
+@asynccontextmanager
+async def advisory_file_lock_async(
+    path: str | os.PathLike,
+    *,
+    timeout_sec: float,
+    mode: int = SHARED_LOCK_MODE,
+    group_from_parent: bool = True,
+    on_contended: Callable[[], None] | None = None,
+) -> AsyncIterator[TextIOWrapper]:
+    """Hold :func:`advisory_file_lock` without blocking the event loop.
+
+    ``asyncio.to_thread`` cannot be cancelled, so a waiter that leaves — a
+    cancelled task, or one whose deadline passed — can still have a worker
+    that wins the flock afterwards. The acquire is therefore awaited under
+    ``asyncio.shield`` and, when it is still pending on the way out, a
+    done-callback closes the held stack once the worker settles: a lock won
+    after the caller left is released, never stranded behind an ownerless
+    holder. The deadline is re-checked on the loop when the worker returns
+    because a saturated executor delays the worker's own clock; admission
+    always means "inside ``timeout_sec``", and a lock handed back late is
+    released and reported as ``TimeoutError``. ``on_contended``, when given,
+    is called once on the loop if the acquire has not settled within
+    :data:`_LOCK_CONTENDED_AFTER_SECONDS`, so a caller can announce a wait
+    while it is still happening.
+    """
+
+    # Deferred: importing asyncio costs ~60 ms, and this module is imported by
+    # short-lived synchronous env writers on a 415 MB Pi (ADR-0226).
+    import asyncio
+
+    deadline = time.monotonic() + timeout_sec
+    held = ExitStack()
+    # One open per acquire: the primitive's own bounded retry runs on the
+    # worker, so a contended caller neither reopens the lock file per poll nor
+    # blocks the event loop while it waits.
+    acquire = asyncio.ensure_future(
+        asyncio.to_thread(
+            held.enter_context,
+            advisory_file_lock(
+                path,
+                mode=mode,
+                group_from_parent=group_from_parent,
+                timeout_sec=timeout_sec,
+            ),
+        )
+    )
+
+    def _release_when_settled(settled: asyncio.Future[Any]) -> None:
+        if not settled.cancelled():
+            settled.exception()
+        held.close()
+
+    try:
+        if on_contended is not None:
+            finished, _pending = await asyncio.wait(
+                {acquire}, timeout=_LOCK_CONTENDED_AFTER_SECONDS
+            )
+            if not finished:
+                on_contended()
+        lock = await asyncio.shield(acquire)
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"timed out waiting for lock {os.fspath(path)}")
+        yield lock
+    finally:
+        if acquire.done():
+            held.close()
+        else:
+            acquire.add_done_callback(_release_when_settled)
 
 
 def atomic_write_text(
