@@ -7,6 +7,7 @@
 // escaped by construction — there is no innerHTML path.
 
 import { h, svg } from "/assets/shared/js/dom.js";
+import { appHeader } from "/assets/shared/js/chrome.js";
 
 // A titled section: a cased card title above a card body. Returns the section
 // plus the (empty) body container, so the poll loop can re-render just the
@@ -137,14 +138,8 @@ export function header({
   const announcement = h("p.sr-only", {
     "attr:role": "status", "attr:aria-live": "polite",
   });
-  const el = h("header.app-header", null,
-    h("div.app-header__row", null,
-      h("a.icon-button", { href: backHref, "attr:aria-label": "Home" },
-        svg("svg.ico", { "aria-hidden": "true" },
-          svg("use", { href: "#icon-back" }))),
-      h("h1.app-header__title", null, title),
-      h("span"),
-    ),
+  const el = appHeader({ title, backHref });
+  el.append(
     h("div.app-header__tabs", null,
       h("div", null,
         h("nav.segmented", { "attr:aria-label": "Status views" },

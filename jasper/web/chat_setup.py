@@ -44,7 +44,7 @@ def _render_page(csrf_token: str = "") -> bytes:
         '<script type="module" src="/assets/chat/js/main.js"></script>'
     )
     return canonical_page(
-        "Chat",
+        "Chat history",
         body,
         csrf_token=csrf_token,
         page_css_href="/assets/chat/chat.css",

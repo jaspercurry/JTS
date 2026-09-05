@@ -5,17 +5,22 @@
 // Source harness for /chat/'s date-filter helpers. Node cannot resolve the
 // browser-absolute imports in views.js, so ratchet the exact import/export
 // surface, strip it, and evaluate only the three helpers under test plus their
-// two local formatting dependencies.
+// two local formatting dependencies. Also pins shared/js/chrome.js's
+// appHeader() against the element tree jasper/web/_common.py's
+// canonical_header() emits (SP-1: one page-header contract, not four).
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { loadEsm, repoPath } from "./_loader.mjs";
+import { FakeElement } from "./_dom.mjs";
 
 const modulePath = process.argv[2];
 if (!modulePath) throw new Error("usage: node chat_views_test.mjs <views.js>");
 
 const expectedImports = [
   'import { h } from "/assets/shared/js/dom.js";',
-  'import { actionButton, badge, header, livePill, titledCard } from "./components.js";',
+  'import { appHeader } from "/assets/shared/js/chrome.js";',
+  'import { actionButton, badge, livePill, titledCard } from "./components.js";',
 ];
 const expectedExports = [
   "buildPage",
@@ -117,5 +122,46 @@ assert.equal(
   "2026-07-15T02:30:00Z",
 );
 assert.equal(normalizeSince("  not-an-iso-filter  "), "not-an-iso-filter");
+
+// appHeader() parity: same element tree canonical_header() emits (a round
+// #icon-back button, the centred title, the right-slot placeholder) — a
+// class/attribute pin, not a byte-for-byte string compare, since nothing in
+// this test suite spawns Python to generate a live fixture.
+globalThis.Node = class {};
+Object.setPrototypeOf(FakeElement.prototype, globalThis.Node.prototype);
+globalThis.document = {
+  createElement: (tag) => new FakeElement(tag),
+  createElementNS: (_ns, tag) => new FakeElement(tag),
+  createTextNode: (text) => ({ __text: String(text) }),
+};
+
+const domPath = repoPath("deploy/assets/shared/js/dom.js");
+const { appHeader } = await loadEsm(repoPath("deploy/assets/shared/js/chrome.js"), {
+  rewrite: [[/from "\/assets\/shared\/js\/dom.js";/, `from "file://${domPath}";`]],
+});
+
+const header = appHeader({ title: "EQ", backHref: "/sound/setup/" });
+assert.equal(header.tag, "header");
+assert.equal(header.className, "app-header");
+const [row] = header.children;
+assert.equal(row.tag, "div");
+assert.equal(row.className, "app-header__row");
+const [back, title, right] = row.children;
+assert.equal(back.tag, "a");
+assert.equal(back.className, "icon-button");
+assert.equal(back.attributes.href, "/sound/setup/");
+assert.equal(back.attributes["aria-label"], "Home");
+const [icon] = back.children;
+assert.equal(icon.tag, "svg");
+assert.equal(icon.attributes.class, "ico");
+assert.equal(icon.attributes["aria-hidden"], "true");
+assert.equal(icon.children[0].attributes.href, "#icon-back");
+assert.equal(title.tag, "h1");
+assert.equal(title.className, "app-header__title");
+assert.equal(title.children[0].__text, "EQ");
+assert.equal(right.tag, "span");
+
+const withRight = appHeader({ title: "T", right: new FakeElement("button") });
+assert.equal(withRight.children[0].children[2].tag, "button");
 
 console.log(JSON.stringify({ ok: true, timezone: process.env.TZ }));
