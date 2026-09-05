@@ -39,45 +39,27 @@ from jasper.timers import (
 # --- pure functions -----------------------------------------------
 
 
-def test_human_duration_zero_seconds():
-    assert human_duration(0) == "0 seconds"
-
-
-def test_human_duration_one_second_singular():
-    assert human_duration(1) == "1 second"
-
-
-def test_human_duration_seconds_below_one_minute():
-    assert human_duration(45) == "45 seconds"
-
-
-def test_human_duration_one_minute_singular():
-    assert human_duration(60) == "1 minute"
-
-
-def test_human_duration_minutes_plural_no_seconds():
-    assert human_duration(300) == "5 minutes"
-
-
-def test_human_duration_minutes_with_seconds():
-    assert human_duration(330) == "5 minutes and 30 seconds"
-
-
-def test_human_duration_one_hour_exact():
-    assert human_duration(3600) == "1 hour"
-
-
-def test_human_duration_one_hour_thirty_minutes():
-    assert human_duration(5400) == "1 hour and 30 minutes"
-
-
-def test_human_duration_hours_minutes_seconds_three_part():
-    # 1h 1m 1s — uses Oxford comma between minute and second parts.
-    assert human_duration(3661) == "1 hour, 1 minute, and 1 second"
-
-
-def test_human_duration_negative_floors_to_zero():
-    assert human_duration(-5) == "0 seconds"
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [
+        pytest.param(0, "0 seconds", id="zero_seconds"),
+        pytest.param(1, "1 second", id="one_second_singular"),
+        pytest.param(45, "45 seconds", id="seconds_below_one_minute"),
+        pytest.param(60, "1 minute", id="one_minute_singular"),
+        pytest.param(300, "5 minutes", id="minutes_plural_no_seconds"),
+        pytest.param(330, "5 minutes and 30 seconds", id="minutes_with_seconds"),
+        pytest.param(3600, "1 hour", id="one_hour_exact"),
+        pytest.param(5400, "1 hour and 30 minutes", id="one_hour_thirty_minutes"),
+        # 1h 1m 1s — uses Oxford comma between minute and second parts.
+        pytest.param(
+            3661, "1 hour, 1 minute, and 1 second",
+            id="hours_minutes_seconds_three_part",
+        ),
+        pytest.param(-5, "0 seconds", id="negative_floors_to_zero"),
+    ],
+)
+def test_human_duration(seconds, expected):
+    assert human_duration(seconds) == expected
 
 
 def test_announcement_text_labelled_uses_label():

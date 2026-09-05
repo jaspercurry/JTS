@@ -8,6 +8,8 @@ import asyncio
 from functools import partial
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from jasper.bluetooth.avrcp import bluetooth_avrcp_call, bluetooth_player_path
 from jasper.tools.transport import (
     _detect_source,
@@ -47,58 +49,51 @@ def _by_name(tools):
 # --- _detect_source ---
 
 
-def test_detect_source_airplay():
-    renderer = FakeRenderer(renderers={"aplactive": True})
-    assert asyncio.run(_detect_source(renderer)) == "airplay"
-
-
-def test_detect_source_spotify():
-    renderer = FakeRenderer(renderers={"spotactive": True})
-    assert asyncio.run(_detect_source(renderer)) == "spotify"
-
-
-def test_detect_source_bluetooth():
-    renderer = FakeRenderer(renderers={"btactive": True})
-    assert asyncio.run(_detect_source(renderer)) == "bluetooth"
-
-
-def test_detect_source_returns_none_when_no_renderer_active():
-    renderer = FakeRenderer(renderers={})
-    assert asyncio.run(_detect_source(renderer)) == "none"
-
-
-def test_detect_source_airplay_wins_over_others():
-    renderer = FakeRenderer(
-        renderers={"aplactive": True, "spotactive": True},
-        selected_source=None,
-    )
-    assert asyncio.run(_detect_source(renderer)) == "airplay"
-
-
-def test_detect_source_prefers_mux_selected_source():
-    renderer = FakeRenderer(
-        renderers={"aplactive": True, "spotactive": True},
-        selected_source="spotify",
-    )
-    assert asyncio.run(_detect_source(renderer)) == "spotify"
-
-
-def test_detect_source_supports_usbsink():
-    renderer = FakeRenderer(renderers={"usbsinkactive": True})
-    assert asyncio.run(_detect_source(renderer)) == "usbsink"
-
-
-def test_detect_source_prefers_mux_usbsink_winner():
-    renderer = FakeRenderer(renderers={}, selected_source="usbsink")
-    assert asyncio.run(_detect_source(renderer)) == "usbsink"
-
-
-def test_detect_source_falls_back_when_mux_unavailable():
-    renderer = FakeRenderer(
-        renderers={"btactive": True},
-        selected_source_error=OSError("mux socket unavailable"),
-    )
-    assert asyncio.run(_detect_source(renderer)) == "bluetooth"
+@pytest.mark.parametrize(
+    ("renderer_kwargs", "expected"),
+    [
+        pytest.param({"renderers": {"aplactive": True}}, "airplay", id="airplay"),
+        pytest.param({"renderers": {"spotactive": True}}, "spotify", id="spotify"),
+        pytest.param({"renderers": {"btactive": True}}, "bluetooth", id="bluetooth"),
+        pytest.param(
+            {"renderers": {}}, "none", id="returns_none_when_no_renderer_active",
+        ),
+        pytest.param(
+            {
+                "renderers": {"aplactive": True, "spotactive": True},
+                "selected_source": None,
+            },
+            "airplay",
+            id="airplay_wins_over_others",
+        ),
+        pytest.param(
+            {
+                "renderers": {"aplactive": True, "spotactive": True},
+                "selected_source": "spotify",
+            },
+            "spotify",
+            id="prefers_mux_selected_source",
+        ),
+        pytest.param(
+            {"renderers": {"usbsinkactive": True}}, "usbsink", id="supports_usbsink",
+        ),
+        pytest.param(
+            {"renderers": {}, "selected_source": "usbsink"}, "usbsink",
+            id="prefers_mux_usbsink_winner",
+        ),
+        pytest.param(
+            {
+                "renderers": {"btactive": True},
+                "selected_source_error": OSError("mux socket unavailable"),
+            },
+            "bluetooth",
+            id="falls_back_when_mux_unavailable",
+        ),
+    ],
+)
+def test_detect_source(renderer_kwargs, expected):
+    renderer = FakeRenderer(**renderer_kwargs)
+    assert asyncio.run(_detect_source(renderer)) == expected
 
 
 # --- AirPlay dispatch: title-match path ---
