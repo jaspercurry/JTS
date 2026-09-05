@@ -746,7 +746,8 @@ def test_i2s_reboot_marker_tracks_desired_versus_observed(tmp_path: Path):
     malformed_python = tmp_path / "malformed-python"
     malformed_python.write_text(
         "#!/bin/sh\ncase \"$*\" in\n"
-        f"*jasper.output_hardware*) \"{sys.executable}\" \"$@\" | sed 's/}}$//'; exit 0;;\n"
+        f"*jasper.cli.output_hardware*) \"{sys.executable}\" \"$@\""
+        " | sed '/OBSERVED_OUTPUT_PROFILE_STATUS=/d'; exit 0;;\n"
         f'esac\nPYTHONOPTIMIZE=1 exec "{sys.executable}" "$@"\n',
         encoding="utf-8",
     )
@@ -791,8 +792,8 @@ def test_published_not_durable_boot_change_still_sets_marker(tmp_path: Path):
         "\"i2s_hat_profile\": \"innomaker_hifi_amp_pro\", "
         "\"i2s_hat_boot_config_changed\": true, "
         "\"boot_config_published_not_durable\": true}'; exit 74;;\n"
-        "*jasper.output_hardware*) echo '{\"profile_id\": \"unknown\", "
-        "\"status\": \"unavailable\"}'; exit 0;;\n"
+        "*jasper.cli.output_hardware*) echo \"OBSERVED_OUTPUT_PROFILE_ID=unknown\"; "
+        "echo \"OBSERVED_OUTPUT_PROFILE_STATUS=unavailable\"; exit 0;;\n"
         f'esac\nexec "{sys.executable}" "$@"\n',
         encoding="utf-8",
     )
@@ -851,6 +852,42 @@ def test_print_env_prefers_dac8x_but_keeps_apple_control_role(tmp_path: Path):
     assert "OUTPUT_DAC_RECOGNIZED=1" in result.stdout
     assert "OUTPUT_DAC_ROUTE" not in result.stdout
     assert not (tmp_path / "jasper.env").exists()
+    assert not (tmp_path / "output_hardware.json").exists()
+
+
+def test_no_interpreter_leaves_every_observed_fact_at_its_absent_value(
+    tmp_path: Path,
+):
+    """The classifier is the only source of hardware facts (ADR-0235 R2), so
+    losing the interpreter loses all of them at once rather than half of them.
+
+    The Apple control role is one of those facts now: with no record there is
+    no card to name, and the mixer helpers stay off. The run still succeeds --
+    install reads this and must not abort on a box whose venv is not built yet.
+    """
+    result = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--print-env",
+        extra_env={
+            "JASPER_OUTPUT_HARDWARE_PYTHON": str(tmp_path / "absent-python")
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    _assert_states(
+        result.stderr,
+        "event=audio_hardware_reconcile.state_observed_skip ",
+        "reason=python_unavailable",
+    )
+    _assert_states(
+        result.stdout,
+        "DONGLE_CARD=A",
+        "APPLE_DONGLE_PRESENT=0",
+        "APPLE_DONGLE_SERVICE_CARD=auto",
+        "OUTPUT_DAC_ID=unknown",
+        "OUTPUT_DAC_RECOGNIZED=0",
+    )
     assert not (tmp_path / "output_hardware.json").exists()
 
 
@@ -1932,7 +1969,7 @@ def test_contract_failure_preserves_an_env_without_a_clockless_output_loop(
                 "python-observation-and-contract-fail",
                 'for arg in "$@"; do\n'
                 '    if [[ "$arg" == "outputd-capture-device" '
-                '|| "$arg" == "jasper.output_hardware" ]]; then\n'
+                '|| "$arg" == "jasper.cli.output_hardware" ]]; then\n'
                 "        exit 1\n"
                 "    fi\n"
                 "done",
@@ -2061,7 +2098,14 @@ def test_reconcile_outputd_only_delta_restarts_outputd_alone(
         pytest.param("streambox\n", False, id="streambox"),
         pytest.param("", False, id="empty"),
         pytest.param("invalid\n", False, id="invalid"),
-        pytest.param("<unreadable>", False, id="unreadable"),
+        pytest.param(
+            "<unreadable>",
+            False,
+            id="unreadable",
+            marks=pytest.mark.skipif(
+                os.geteuid() == 0, reason="root bypasses the mode bits this asserts"
+            ),
+        ),
     ],
 )
 def test_dac_change_brain_restart_gate_follows_profile_marker(
