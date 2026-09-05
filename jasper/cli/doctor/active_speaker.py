@@ -2,9 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""jasper-doctor checks — active-speaker domain.
-
-Split from audio.py verbatim (ADR-0235 PR 8); no check logic changed."""
+"""jasper-doctor checks — active-speaker domain: runtime/applied graph,
+sound and bass-extension profile, and room-correction authority. See ADR-0235."""
 from __future__ import annotations
 
 import json
