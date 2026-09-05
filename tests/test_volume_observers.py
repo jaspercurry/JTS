@@ -13,7 +13,7 @@ tmp_path-backed state file for Spotify. Coverage:
 - Spotify reader maps librespot's raw 0-65535 volume to 0-100 percent
 - BT reader resolves transport path then reads MediaTransport1.Volume
 - _maybe_observe fires only on real change (>0.5 unit delta)
-- a tick fires observe_source_volume only for active Spotify/BT
+- a tick probes only the active source's reader, and none when idle
 - source activation forwards one fresh observation even at same value
 - AirPlay ticks read but do not dispatch canonical observations
 - observer ignores readers that return None (source not active)
@@ -308,49 +308,80 @@ async def test_maybe_observe_retries_declined_unchanged_value():
 # ---------- full tick -------------------------------------------------------
 
 
+class _ProbeSpy:
+    """Counts probes at the boundary each reader delegates to: busctl
+    get-property for the AirPlay and BT volumes, bluealsa-cli's transport
+    lookup for BT, the state-file read for Spotify. Every one but Spotify's
+    forks a child, which is what an idle tick must not spend."""
+
+    def __init__(self) -> None:
+        self.airplay = 0
+        self.spotify = 0
+        self.bluetooth = 0
+
+    def install(self, monkeypatch) -> None:
+        async def fake_busctl(bus_name, object_path, interface, prop, **kwargs):
+            if prop == "AirplayVolume":
+                self.airplay += 1
+                return "v d -5.0"
+            if prop == "Volume":
+                return "v q 64"
+            return None
+
+        async def fake_path():
+            self.bluetooth += 1
+            return "/org/bluealsa/hci0/dev_X/a2dpsnk/source"
+
+        real_volume_percent = observer_mod.librespot_state.volume_percent
+
+        def counting_volume_percent(path):
+            self.spotify += 1
+            return real_volume_percent(path)
+
+        monkeypatch.setattr(
+            "jasper.volume_observers._busctl_get_property_value", fake_busctl,
+        )
+        monkeypatch.setattr(
+            "jasper.volume_observers._bluez_alsa_active_transport_path",
+            fake_path,
+        )
+        monkeypatch.setattr(
+            observer_mod.librespot_state, "volume_percent",
+            counting_volume_percent,
+        )
+
+
 @pytest.mark.parametrize(
-    ("active", "expected"),
+    ("active", "probes", "expected_observed", "expected_airplay_seen"),
     [
-        (Source.AIRPLAY, None),
-        (Source.SPOTIFY, Source.SPOTIFY),
-        (Source.BLUETOOTH, Source.BLUETOOTH),
+        (Source.IDLE, (0, 0, 0), [], None),
+        (Source.USBSINK, (0, 0, 0), [], None),
+        (Source.AIRPLAY, (1, 0, 0), [], -5.0),
+        (Source.SPOTIFY, (0, 1, 0), [(Source.SPOTIFY, 100.0)], None),
+        (Source.BLUETOOTH, (0, 0, 1), [(Source.BLUETOOTH, 64.0)], None),
     ],
 )
-async def test_tick_dispatches_only_active_source(
-    active, expected, monkeypatch, tmp_path,
+async def test_tick_probes_only_the_active_source(
+    active, probes, expected_observed, expected_airplay_seen,
+    monkeypatch, tmp_path,
 ):
-    """A single tick reads all sources, but only the active source's
-    volume is allowed to update the canonical listening_level."""
+    """A tick asks exactly one reader — the active source's — and none at
+    all on an idle box or on a source this observer does not poll. Only the
+    active source's value reaches the coordinator; AirPlay's stays a
+    diagnostic reading (ADR-0206) and is never dispatched."""
     coord = _FakeCoordinator(active=active)
     state = write_librespot_state(
         tmp_path / "librespot.state.env", volume=65535,  # 100%
     )
-    obs = VolumeObserver(
-        coord,
-        librespot_state_path=str(state),
-    )
-
-    async def fake_busctl(bus_name, object_path, interface, prop, **kwargs):
-        if prop == "AirplayVolume":
-            return "v d -5.0"
-        if prop == "Volume":
-            return "v q 64"
-        return None
-
-    async def fake_path():
-        return "/org/bluealsa/hci0/dev_X/a2dpsnk/source"
-
-    monkeypatch.setattr(
-        "jasper.volume_observers._busctl_get_property_value", fake_busctl,
-    )
-    monkeypatch.setattr(
-        "jasper.volume_observers._bluez_alsa_active_transport_path", fake_path,
-    )
+    obs = VolumeObserver(coord, librespot_state_path=str(state))
+    spy = _ProbeSpy()
+    spy.install(monkeypatch)
 
     await obs._tick()
 
-    expected_sources = [] if expected is None else [expected]
-    assert [s for s, _ in coord.observed] == expected_sources
+    assert (spy.airplay, spy.spotify, spy.bluetooth) == probes
+    assert coord.observed == expected_observed
+    assert obs._last_seen[Source.AIRPLAY] == expected_airplay_seen
 
 
 async def test_tick_forwards_same_value_on_source_activation(
@@ -383,30 +414,6 @@ async def test_tick_forwards_same_value_on_source_activation(
 
     assert coord.transitions == [(Source.AIRPLAY, Source.SPOTIFY)]
     assert coord.observed == [(Source.SPOTIFY, 100.0)]
-
-
-async def test_tick_skips_inactive_sources(monkeypatch, tmp_path):
-    coord = _FakeCoordinator(active=Source.IDLE)
-    obs = VolumeObserver(
-        coord,
-        librespot_state_path=str(tmp_path / "missing.env"),
-    )
-
-    async def fake_busctl(*args, **kwargs):
-        return None  # all DBus reads fail
-
-    async def fake_path():
-        return None  # no BT transport
-
-    monkeypatch.setattr(
-        "jasper.volume_observers._busctl_get_property_value", fake_busctl,
-    )
-    monkeypatch.setattr(
-        "jasper.volume_observers._bluez_alsa_active_transport_path", fake_path,
-    )
-
-    await obs._tick()
-    assert coord.observed == []
 
 
 async def test_tick_calls_reconciler_every_tick(monkeypatch, tmp_path):
@@ -486,25 +493,26 @@ async def test_tick_continues_when_reconciler_raises(monkeypatch, tmp_path, capl
 # fut.done(): return fut.result()`), so a swallowed cancel there makes the
 # observer IMMORTAL and hangs that `await`.
 #
-# `asyncio.gather` is NOT affected: its own `_cancel_requested` bookkeeping
-# re-raises the parent's cancellation once its children finish, whether or not
-# a child swallowed its own. That already cleared _tick's gathered readers
-# (#1952). What it does not clear are _tick's DIRECTLY awaited chains. There
-# are FOUR of them, reaching THREE terminal call sites -- enumerate the chains,
-# not the `wait_for` grep, or the next audit will miss the two that only look
-# like coordinator bookkeeping:
+# Every chain out of _tick is DIRECTLY awaited -- enumerate the chains, not
+# the `wait_for` grep, or the next audit will miss the ones that only look
+# like coordinator bookkeeping. FOUR of them, reaching THREE terminal sites:
 #
-#   1. every tick   _tick:150 -> VolumeCoordinator._active_source
-#                             -> RendererClient.selected_source   (renderer.py)
-#   2. on transition _tick:156 -> apply_active_source_transition
-#                             -> _set_push_source_for_handoff -> _set_bluetooth
-#                             -> bluealsa_probe.list_pcms      (bluealsa_probe.py)
-#                             -> _busctl_set_property     (volume_coordinator.py)
-#   3. on observation _tick:182/184 -> _maybe_observe
-#                             -> observe_source_volume (its own _active_source,
-#                                volume_coordinator.py:726/739) -> as chain 1
-#   4. every tick   _tick:193 -> maybe_reconcile_camilla (_active_source at
-#                                volume_coordinator.py:1900/1944) -> as chain 1
+#   1. every tick      _active_source -> RendererClient.selected_source
+#                              (renderer.py)
+#   2. on transition   apply_active_source_transition
+#                              -> _set_push_source_for_handoff -> _set_bluetooth
+#                              -> bluealsa_probe.list_pcms  (bluealsa_probe.py)
+#                              -> _busctl_set_property (volume_coordinator.py)
+#   3. on observation  the active source's reader -> _maybe_observe
+#                              -> observe_source_volume (its own
+#                                 _active_source) -> as chain 1
+#   4. every tick      maybe_reconcile_camilla (its own _active_source)
+#                              -> as chain 1
+#
+# Chain 3's reader is bounded by `asyncio.timeout()` at both of its subprocess
+# boundaries (busctl.run_busctl, bluealsa_probe.list_pcms), each re-raising
+# CancelledError, so dropping the `asyncio.gather` that used to fan the three
+# readers out (#1952) added no new swallow to this loop.
 #
 # Chains 3 and 4 need no separate fix -- they terminate at the same
 # selected_source chain 1 does -- but they are why "insulate the two chains I
