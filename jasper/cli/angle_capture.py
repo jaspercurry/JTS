@@ -364,6 +364,7 @@ def _walk_payload(
                 "program_phase": stop.program_phase,
                 "prompt": stop.prompt.text,
                 "screen": dict(stop.screen),
+                "candidate_id": stop.candidate_id,
             }
             for stop in stops
         ],
@@ -412,6 +413,12 @@ def _print_walk(payload: dict[str, Any]) -> None:
             + (
                 f"  el {stop['elevation_deg']:+d} deg"
                 if stop["elevation_deg"] else ""
+            )
+            # Prefix only: the walk's full fingerprints are on the
+            # ``candidates`` line below.
+            + (
+                f"  cand {stop['candidate_id'][:12]}"
+                if stop["candidate_id"] else ""
             )
         )
     if payload["polarity"] != POLARITY_NORMAL:

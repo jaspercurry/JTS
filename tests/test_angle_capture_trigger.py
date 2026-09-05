@@ -1082,6 +1082,32 @@ def test_show_reads_back_the_staged_walk_without_consuming_it(slot, capsys):
     assert spool.take_staged_angle_request() is not None
 
 
+def test_the_printed_walk_names_the_candidate_each_stop_plays(slot, capsys):
+    """Which variant a stop measures, on the row an operator reads.
+
+    A cycle expands pose-major/candidate-minor, so the stops at one pose are
+    otherwise identical rows: without this the walk a person is asked to hold
+    still for cannot be checked against the cycle that was staged. The
+    rendering is one function, so ``plan`` and ``stage`` print these rows too.
+    """
+    # Sized like the real thing -- a fingerprint is sha256 hex -- because the
+    # row abbreviates it and prints the full ids on its ``candidates`` line.
+    request = request_for_program(
+        mp.program("tournament", "express"), candidates=("a1" * 32, "b2" * 32),
+    )
+    spool.stage_angle_request(request)
+    capsys.readouterr()
+
+    assert cli.main(["show"]) == cli.EXIT_OK
+    rows = [
+        line for line in capsys.readouterr().err.splitlines()
+        if line.startswith("  ") and line.strip()[:1].isdigit()
+    ]
+    assert [row.rsplit("cand ", 1)[-1] for row in rows] == [
+        stop.candidate_id[:12] for stop in request.stops
+    ]
+
+
 def test_plan_answers_with_the_stage_line_that_would_bank_it(slot, capsys):
     """``plan`` is the dry run of ``stage``, so its ``next`` IS that stage."""
     argv = ["plan", "--program", "baseline", "--size", "express", "--mover", "human"]
