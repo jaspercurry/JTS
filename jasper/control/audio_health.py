@@ -2489,6 +2489,11 @@ class AudioHealthSampler:
         """Compatibility surface for the existing ``airplay_health`` payload."""
         return self._airplay.snapshot()
 
+    def airplay_playing(self) -> bool | None:
+        """shairport's MPRIS PlaybackStatus for `/state`, from the sample this
+        object already holds. None when unknown or not yet sampled."""
+        return self._airplay.airplay_streaming()
+
     def outputd_snapshot(self) -> dict[str, Any] | None:
         """Reuse the cached outputd observation in ``/system/snapshot``."""
         with self._lock:
