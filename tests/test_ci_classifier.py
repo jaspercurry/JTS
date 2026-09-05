@@ -115,24 +115,29 @@ def test_lane_decision_table(
 
 
 @pytest.mark.parametrize(
-    ("status", "paths"),
+    ("status", "paths", "expected_lane"),
     [
-        ("D", ("deploy/index.html",)),
-        ("D", ("docs/HANDOFF-aec.md",)),
-        ("D", ("README.md",)),
-        ("T", ("deploy/index.html",)),
-        ("U", ("deploy/index.html",)),
-        ("X", ("README.md",)),
-        ("R100", ("deploy/old-index.html", "deploy/index.html")),
-        ("R100", ("docs/HANDOFF-old.md", "docs/HANDOFF-new.md")),
-        ("C100", ("deploy/source.html", "deploy/index.html")),
+        ("D", ("deploy/index.html",), "full"),
+        # A docs-only delete/rename is still docs-lane-safe (#4036).
+        ("D", ("docs/HANDOFF-aec.md",), "docs"),
+        ("D", ("README.md",), "docs"),
+        ("T", ("deploy/index.html",), "full"),
+        ("U", ("deploy/index.html",), "full"),
+        ("X", ("README.md",), "full"),
+        ("R100", ("deploy/old-index.html", "deploy/index.html"), "full"),
+        ("R100", ("docs/HANDOFF-old.md", "docs/HANDOFF-new.md"), "docs"),
+        # A rename whose content also changed (similarity < 100%) is gated
+        # the same as a pure rename.
+        ("R087", ("docs/HANDOFF-old.md", "docs/HANDOFF-changed.md"), "docs"),
+        ("R100", (_DOC, "jasper/control/server.py"), "full"),
+        ("C100", ("deploy/source.html", "deploy/index.html"), "full"),
     ],
 )
-def test_only_added_or_modified_paths_can_take_a_narrow_lane(
-    status: str, paths: tuple[str, ...]
+def test_change_status_gates_narrow_lane_eligibility(
+    status: str, paths: tuple[str, ...], expected_lane: str
 ) -> None:
     change = ci_classifier.Change(status, paths)
-    assert ci_classifier.classify("pull_request", (change,)).lane == "full"
+    assert ci_classifier.classify("pull_request", (change,)).lane == expected_lane
 
 
 @pytest.mark.parametrize(
