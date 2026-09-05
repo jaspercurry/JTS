@@ -10,22 +10,20 @@ import asyncio
 import subprocess
 from typing import Any, Callable
 
-from ...audio_quality import (
-    apply_requested_converter as _apply_audio_quality,
-    normalize_converter as _normalize_audio_converter,
-)
+from ...audio_quality import apply_requested_converter, normalize_converter
 from ...doctor_contract import (
     REASON_SNAPSHOT_PENDING,
     REASON_SNAPSHOT_UNAVAILABLE,
 )
 from ...fanin.latency_mode import (
-    LatencyApplyError as _UsbLatencyApplyError,
-    apply_requested_mode as _apply_usb_latency_mode,
-    normalize_mode as _normalize_usb_latency_mode,
+    LatencyApplyError,
+    apply_requested_mode,
+    normalize_mode,
 )
 from ...install_profile import system_capabilities_for_profile
 from ...local_sources import local_source_park_units
 from ...log_event import log_event
+from .. import debug_control
 from .. import server as _server
 from .. import state_aggregate
 from .. import usb_gadget_forensics
@@ -59,7 +57,7 @@ class SystemRoutes(ControlHandlerMixin):
     def _get_debug(self) -> None:
         # Runtime debug-logging state for the /system Debug card:
         # per-subsystem on/off + the shared auto-expiry countdown.
-        self._send_json(_server.debug_control.snapshot())
+        self._send_json(debug_control.snapshot())
 
     def _get_state(self) -> None:
         # Cross-daemon snapshot — voice / audio / renderers.
@@ -287,7 +285,7 @@ class SystemRoutes(ControlHandlerMixin):
             )
             return
         try:
-            _server.debug_control.set_debug(subsystem, enabled)
+            debug_control.set_debug(subsystem, enabled)
         except ValueError as e:
             self._send_json({"error": str(e)}, status=400)
             return
@@ -304,7 +302,7 @@ class SystemRoutes(ControlHandlerMixin):
             enabled=enabled,
             client=self.address_string(),
         )
-        self._send_json(_server.debug_control.snapshot())
+        self._send_json(debug_control.snapshot())
         return
 
     def _post_usb_forensics(self) -> None:
@@ -355,12 +353,12 @@ class SystemRoutes(ControlHandlerMixin):
             )
             return
         try:
-            converter = _normalize_audio_converter(raw_converter)
+            converter = normalize_converter(raw_converter)
         except ValueError as e:
             self._send_json({"error": str(e)}, status=400)
             return
         try:
-            state = _apply_audio_quality(converter)
+            state = apply_requested_converter(converter)
         except (OSError, subprocess.SubprocessError) as e:
             logger.exception("audio quality apply failed")
             self._send_json(
@@ -413,13 +411,13 @@ class SystemRoutes(ControlHandlerMixin):
             self._send_json({"error": "mode is required"}, status=400)
             return
         try:
-            mode = _normalize_usb_latency_mode(raw_mode)
+            mode = normalize_mode(raw_mode)
         except ValueError as e:
             self._send_json({"error": str(e)}, status=400)
             return
         try:
-            _apply_usb_latency_mode(mode)
-        except (OSError, _UsbLatencyApplyError) as e:
+            apply_requested_mode(mode)
+        except (OSError, LatencyApplyError) as e:
             logger.exception("USB latency apply failed")
             self._send_json(
                 {

@@ -569,7 +569,7 @@ def test_system_audio_quality_applies_and_try_restarts_renderers(
             "options": [],
         }
 
-    monkeypatch.setattr(system_mod, "_apply_audio_quality", fake_apply)
+    monkeypatch.setattr(system_mod, "apply_requested_converter", fake_apply)
     monkeypatch.setattr(srv_mod.subprocess, "Popen", _recording_popen(popens))
 
     status, body = _post(
@@ -597,7 +597,7 @@ def test_system_audio_quality_rejects_unknown_converter(
     def fail_apply(_converter: str) -> dict:
         raise AssertionError("invalid converter should not apply")
 
-    monkeypatch.setattr(system_mod, "_apply_audio_quality", fail_apply)
+    monkeypatch.setattr(system_mod, "apply_requested_converter", fail_apply)
 
     status, body = _post(
         f"{base}/system/audio-quality",
@@ -618,7 +618,7 @@ def test_system_audio_quality_rejects_missing_converter(
     def fail_apply(_converter: str) -> dict:
         raise AssertionError("missing converter should not apply")
 
-    monkeypatch.setattr(system_mod, "_apply_audio_quality", fail_apply)
+    monkeypatch.setattr(system_mod, "apply_requested_converter", fail_apply)
 
     status, body = _post(f"{base}/system/audio-quality", {})
 
@@ -638,7 +638,7 @@ def test_system_usb_latency_applies_fixed_mode(
     marked: list[str] = []
     monkeypatch.setattr(
         system_mod,
-        "_apply_usb_latency_mode",
+        "apply_requested_mode",
         lambda mode: applied.append(mode),
     )
     monkeypatch.setattr(
@@ -663,9 +663,9 @@ def test_system_usb_latency_surfaces_apply_failure(
     import jasper.control.handlers.system as system_mod
 
     def fail(_mode: str) -> None:
-        raise system_mod._UsbLatencyApplyError("fan-in restart failed")
+        raise system_mod.LatencyApplyError("fan-in restart failed")
 
-    monkeypatch.setattr(system_mod, "_apply_usb_latency_mode", fail)
+    monkeypatch.setattr(system_mod, "apply_requested_mode", fail)
 
     status, body = _post(f"{base}/system/usb-latency", {"mode": "high"})
 
