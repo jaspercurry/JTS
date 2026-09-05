@@ -64,24 +64,11 @@ anyhow = "1"
 # and Slice=jts-audio.slice MemorySwapMax=0).
 libc = "0.2"
 
-# Derive macros for the assistant-reference persistence record
-# (src/assistant_reference.rs `PersistedAssistantReference`). serde +
-# serde_derive are ALREADY in Cargo.lock transitively via serde_json below; the
-# `derive` feature only activates the existing serde_derive proc-macro, so
-# `cargo build --locked` needs no lock churn. That file is a correctness-critical
-# persisted record, so it uses serde (de)serialization rather than a hand-rolled
-# parser — same reasoning the impulse-tap arm-body parse uses serde_json below.
-serde = { version = "1", features = ["derive"] }
-
-# JSON parsing for the relocated impulse-tap arm-body endpoint
-# (src/impulse_tap.rs `TapConfig::from_arm_body`), the persisted
-# assistant-reference record, and canonical serialization of variable strings
+# JSON parsing for the impulse-tap arm-body endpoint (src/impulse_tap.rs
+# `TapConfig::from_arm_body`) and canonical serialization of variable strings
 # inside fan-in's hand-built STATUS / xrun / tap observability objects. The
-# fixed outer emit
-# shapes remain allocation-conscious; serde_json owns the correctness-sensitive
-# parse and string-quoting boundaries. The crate and its transitive serde
-# machinery were already present in Cargo.lock, so these emit callers add no
-# dependency or lock churn. Revisit at hardening if binary size ever matters.
+# fixed outer emit shapes remain allocation-conscious; serde_json owns the
+# correctness-sensitive parse and string-quoting boundaries.
 serde_json = "1"
 
 [profile.release]

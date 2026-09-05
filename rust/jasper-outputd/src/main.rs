@@ -37,6 +37,7 @@ use jasper_outputd::state::{ChipRefWrite, OutputdState, StateServer};
 use jasper_outputd::tts::{spawn_tts_server, tts_channels, TtsBridge};
 use jasper_outputd::types::{narrow_period, ProgramSample, SampleFormat};
 use jasper_outputd::{CHANNELS, SAMPLE_RATE};
+use jasper_tts_protocol::assistant_reference::{self, DaemonHooks};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
 
@@ -505,13 +506,21 @@ fn run_alsa(
         // Learned quiet-room assistant reference: load the last value and arm
         // the persistence writer, mirroring fan-in. Best-effort — a writer
         // failure degrades to no learning and never blocks final output.
-        let reference = jasper_outputd::assistant_reference::load(std::path::Path::new(
-            &config.assistant_reference_path,
-        ));
+        let hooks = DaemonHooks {
+            event_prefix: "outputd",
+            writer_stack_bytes: jasper_outputd::HELPER_STACK_BYTES,
+            info: |message| eprintln!("{message}"),
+            warn: |message| eprintln!("{message}"),
+        };
+        let reference = assistant_reference::load(
+            std::path::Path::new(&config.assistant_reference_path),
+            hooks,
+        );
         core.set_held_assistant_reference(reference);
-        match jasper_outputd::assistant_reference::spawn_writer(
+        match assistant_reference::spawn_writer(
             PathBuf::from(&config.assistant_reference_path),
             reference,
+            hooks,
         ) {
             Ok((reference_tx, handle)) => {
                 core.set_assistant_reference_sink(reference_tx);

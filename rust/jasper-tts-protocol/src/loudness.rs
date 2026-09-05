@@ -37,7 +37,7 @@ pub const K_WEIGHTING_RLB_COEFFICIENTS: [f64; 5] =
 const MOMENTARY_FRAMES: u64 = (SAMPLE_RATE as u64) * 400 / 1000;
 const SHORT_TERM_FRAMES: u64 = (SAMPLE_RATE as u64) * 3;
 const CONTENT_ANCHOR_FRAMES: u64 = (SAMPLE_RATE as u64) * 12;
-const MAX_SAFE_ASSISTANT_CALIBRATION_LU: f32 = 24.0;
+pub(crate) const MAX_SAFE_ASSISTANT_CALIBRATION_LU: f32 = 24.0;
 
 #[derive(Debug, Clone, Copy)]
 pub struct AssistantLoudnessConfig {
