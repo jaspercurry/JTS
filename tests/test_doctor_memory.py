@@ -623,7 +623,7 @@ def test_check_journald_persistence_verdicts(monkeypatch, kwargs, status, reason
         assert r.reason == reason
 
 
-def test_check_journald_persistence_is_registered_once_in_the_memory_group():
+def test_check_journald_persistence_is_registered_once_in_the_memory_module():
     matches = [
         c
         for c in doctor.registered_checks()
@@ -631,7 +631,7 @@ def test_check_journald_persistence_is_registered_once_in_the_memory_group():
     ]
 
     assert len(matches) == 1
-    assert matches[0].group == "memory"
+    assert matches[0].module == "memory"
 
 
 # ------------------------------- /state.resilience.disk (the /state mirror)

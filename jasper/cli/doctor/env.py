@@ -19,7 +19,7 @@ REASON_STATE_DIR_STAT_FAILED = "state_dir_stat_failed"
 REASON_STATE_DIR_NOT_WRITABLE = "state_dir_not_writable"
 REASON_STATE_GROUP_WRITE_VIOLATION = "state_group_write_violation"
 
-@doctor_check()
+@doctor_check
 def check_env_file() -> CheckResult:
     p = Path("/etc/jasper/jasper.env")
     if not p.exists():
@@ -32,7 +32,7 @@ def check_env_file() -> CheckResult:
         return CheckResult("env file", "ok", f"{p} (+ wizard {wizard.name})")
     return CheckResult("env file", "ok", str(p))
 
-@doctor_check()
+@doctor_check
 def check_speaker_name() -> CheckResult:
     from ...speaker_name import STATE_FILE, read_state
 

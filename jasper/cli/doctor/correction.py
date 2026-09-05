@@ -111,7 +111,7 @@ def _correction_root() -> Path:
         os.environ.get("JASPER_CORRECTION_ROOT", "/var/lib/jasper/correction")
     )
 
-@doctor_check()
+@doctor_check
 def check_correction_web_service() -> CheckResult:
     """Socket activation is the liveness contract for /correction/.
 
@@ -178,7 +178,7 @@ def _latest_deferred_hold(journal_text: str) -> tuple[str, str] | None:
     return latest
 
 
-@doctor_check()
+@doctor_check
 def check_correction_idle_exit_holds() -> CheckResult:
     """A leaked idle-exit hold must be visible here, not only in the journal.
 
@@ -267,7 +267,7 @@ def _probe_https_status(
     finally:
         conn.close()
 
-@doctor_check()
+@doctor_check
 def check_correction_https_assets() -> CheckResult:
     """nginx's 443 block must serve ``/assets/``, not redirect it to HTTP.
 
@@ -339,7 +339,7 @@ def _not_writable_by_group(
     return not_writable
 
 
-@doctor_check()
+@doctor_check
 def check_correction_state_dirs() -> CheckResult:
     root = _correction_root()
     expected = [
@@ -378,7 +378,7 @@ def check_correction_state_dirs() -> CheckResult:
 _UPLOADED_CALIBRATION_SIGN_SCAN_CAP = 5_000
 
 
-@doctor_check()
+@doctor_check
 def check_correction_uploaded_calibration_sign() -> CheckResult:
     """Advisory: uploaded mic calibrations still claiming the "correction"
     convention.
@@ -445,7 +445,7 @@ def _active_camilla_config_path() -> tuple[Path, str | None]:
     statefile = camilla_statefile_path()
     return statefile, read_camilla_statefile_config_path(statefile)
 
-@doctor_check()
+@doctor_check
 def check_correction_current_config() -> CheckResult:
     from jasper.correction.status import describe_current_config
 
@@ -522,7 +522,7 @@ def _correction_evidence_status(bundle: dict[str, object]) -> str:
         return f"complete({artifact_count} artifacts)"
     return "complete"
 
-@doctor_check()
+@doctor_check
 def check_correction_latest_bundle() -> CheckResult:
     from jasper.correction import bundles
 
@@ -593,7 +593,7 @@ def check_correction_latest_bundle() -> CheckResult:
     return CheckResult("latest correction bundle", "ok", summary)
 
 
-@doctor_check()
+@doctor_check
 def check_correction_cert_hostname() -> CheckResult:
     """The /correction/ TLS cert's SAN must cover the name the LAN actually
     resolves for this speaker.
@@ -655,7 +655,7 @@ def check_correction_cert_hostname() -> CheckResult:
     )
 
 
-@doctor_check()
+@doctor_check
 def check_crossover_v2_cloud_pipeline() -> CheckResult:
     """The last session's honest-instrument cloud verdict — per group, the spec
     pass/fail, the excluded-interval count, and whether the geometry locked.
@@ -716,7 +716,7 @@ def check_crossover_v2_cloud_pipeline() -> CheckResult:
     return CheckResult(label, "ok", "; ".join(parts))
 
 
-@doctor_check()
+@doctor_check
 def check_crossover_v2_applied_is_graded() -> CheckResult:
     """A correction is on the speaker; was it ever graded after it landed?
 
@@ -909,13 +909,13 @@ def _classify_seat_level_reference(
     return CheckResult(label, "ok", detail)
 
 
-@doctor_check()
+@doctor_check
 def check_seat_level_reference() -> CheckResult:
     """Surface the measured seat-SPL reference the next session will hold."""
     return _classify_seat_level_reference(seat_level_reference_state_path())
 
 
-@doctor_check()
+@doctor_check
 def check_measurement_hold() -> CheckResult:
     """A measurement hold that never lapses must be visible here.
 
@@ -967,7 +967,7 @@ def check_measurement_hold() -> CheckResult:
     return CheckResult(label, "ok", detail, reason=REASON_MEASUREMENT_HOLD_ACTIVE)
 
 
-@doctor_check()
+@doctor_check
 def check_session_volume_unresolved() -> CheckResult:
     """An unresolved measurement volume must not be silent.
 

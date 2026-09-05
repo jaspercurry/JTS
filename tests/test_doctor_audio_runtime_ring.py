@@ -416,14 +416,14 @@ def test_ring_conf_floor_render_verdicts(
     assert result.reason == reason
 
 
-def test_check_is_registered_in_the_audio_doctor_group():
+def test_check_is_registered_in_the_ring_runtime_module():
     from jasper.cli.doctor._registry import registered_checks
 
     entry = next(
         e for e in registered_checks()
         if e.func is audio_runtime_ring.check_ring_conf_floor_render
     )
-    assert entry.group == "audio"
+    assert entry.module == "audio_runtime_ring"
 
 
 # ===========================================================================

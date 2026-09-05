@@ -356,7 +356,7 @@ from .secret_compartments import (
     check_jasper_intsecrets_compartment,
 )
 
-_STREAMBOX_OMITTED_DOCTOR_GROUPS = frozenset({
+_STREAMBOX_OMITTED_DOCTOR_MODULES = frozenset({
     "voice",
     "wake",
     "integrations",
@@ -388,7 +388,7 @@ def _profile_skip_result(entry, *, detail: str) -> CheckResult:
 def _doctor_skip_detail(entry, install_profile: str) -> str:
     role = install_role_for_profile(install_profile)
     if role == STREAMBOX_INSTALL_PROFILE and (
-        entry.group in _STREAMBOX_OMITTED_DOCTOR_GROUPS
+        entry.module in _STREAMBOX_OMITTED_DOCTOR_MODULES
         or entry.func.__name__ in _STREAMBOX_OMITTED_DOCTOR_CHECKS
     ):
         return "not installed (streambox profile)"

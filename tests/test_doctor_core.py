@@ -19,8 +19,14 @@ import pytest
 
 from jasper.cli import doctor
 from jasper.cli.doctor import CheckResult, render_json
+from jasper.cli.doctor._registry import RegisteredCheck
 from jasper.config import Config
 from jasper.control.restart_broker import MANAGED_UNITS
+
+
+def _reg(func, *, module="env", **kw) -> RegisteredCheck:
+    """A registry entry for the harness tests, which stub `registered_checks`."""
+    return RegisteredCheck(module=module, func=func, **kw)
 
 
 def test_json_mode_reports_unhandled_check_exception(monkeypatch, capsys):
@@ -140,8 +146,6 @@ def test_legacy_endpoint_token_doctor_behaves_as_streambox(monkeypatch):
     """A persisted/legacy 'endpoint' token normalizes to streambox, so the
     doctor applies the streambox skip behaviour (voice/brain groups skipped,
     local audio kept)."""
-    from jasper.cli.doctor._registry import RegisteredCheck
-
     ran: list[str] = []
 
     def env_check():
@@ -161,14 +165,9 @@ def test_legacy_endpoint_token_doctor_behaves_as_streambox(monkeypatch):
         doctor,
         "registered_checks",
         lambda: [
-            RegisteredCheck(module="env", func=env_check),
-            RegisteredCheck(
-                module="voice",
-                func=voice_check,
-                needs_cfg=True,
-                label="provider key",
-            ),
-            RegisteredCheck(module="web", func=web_check),
+            _reg(env_check),
+            _reg(voice_check, module="voice", needs_cfg=True, label="provider key"),
+            _reg(web_check, module="web"),
         ],
     )
 
@@ -230,8 +229,6 @@ def test_streambox_doctor_skips_voice_brain_but_keeps_local_audio_checks():
 
 
 def test_streambox_profile_doctor_keeps_local_audio_groups(monkeypatch):
-    from jasper.cli.doctor._registry import RegisteredCheck
-
     ran: list[str] = []
 
     def voice_check(_cfg):
@@ -255,25 +252,20 @@ def test_streambox_profile_doctor_keeps_local_audio_groups(monkeypatch):
         doctor,
         "registered_checks",
         lambda: [
-            RegisteredCheck(
-                module="voice",
-                func=voice_check,
-                needs_cfg=True,
-                label="provider key",
-            ),
-            RegisteredCheck(
+            _reg(voice_check, module="voice", needs_cfg=True, label="provider key"),
+            _reg(
+                check_mic_capture,
                 module="audio",
-                func=check_mic_capture,
                 needs_cfg=True,
                 label="mic capture",
             ),
-            RegisteredCheck(
+            _reg(
+                renderer_check,
                 module="renderers",
-                func=renderer_check,
                 needs_cfg=True,
                 label="librespot.service",
             ),
-            RegisteredCheck(module="correction", func=correction_check),
+            _reg(correction_check, module="correction"),
         ],
     )
 
@@ -291,8 +283,6 @@ def test_streambox_profile_doctor_keeps_local_audio_groups(monkeypatch):
 def test_run_async_parallelizes_blocking_checks_but_preserves_order(
     monkeypatch,
 ):
-    from jasper.cli.doctor._registry import RegisteredCheck
-
     active = 0
     max_active = 0
     lock = threading.Lock()
@@ -315,12 +305,7 @@ def test_run_async_parallelizes_blocking_checks_but_preserves_order(
         doctor,
         "registered_checks",
         lambda: [
-            RegisteredCheck(module="env", func=make_check("a", 0.15)),
-            RegisteredCheck(module="env", func=make_check("b", 0.15)),
-            RegisteredCheck(module="env", func=make_check("c", 0.15)),
-            RegisteredCheck(module="env", func=make_check("d", 0.15)),
-            RegisteredCheck(module="env", func=make_check("e", 0.15)),
-            RegisteredCheck(module="env", func=make_check("f", 0.15)),
+            _reg(make_check(name, 0.15)) for name in "abcdef"
         ],
     )
 
@@ -331,8 +316,6 @@ def test_run_async_parallelizes_blocking_checks_but_preserves_order(
 
 
 def test_run_async_serializes_checks_in_same_exclusive_group(monkeypatch):
-    from jasper.cli.doctor._registry import RegisteredCheck
-
     active = 0
     max_active = 0
     lock = threading.Lock()
@@ -359,17 +342,9 @@ def test_run_async_serializes_checks_in_same_exclusive_group(monkeypatch):
         doctor,
         "registered_checks",
         lambda: [
-            RegisteredCheck(
-                module="env",
-                func=exclusive("a"),
-                exclusive_group="audio-probe",
-            ),
-            RegisteredCheck(
-                module="env",
-                func=exclusive("b"),
-                exclusive_group="audio-probe",
-            ),
-            RegisteredCheck(module="env", func=ordinary),
+            _reg(exclusive("a"), exclusive_group="audio-probe"),
+            _reg(exclusive("b"), exclusive_group="audio-probe"),
+            _reg(ordinary),
         ],
     )
 

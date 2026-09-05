@@ -287,7 +287,7 @@ def _voice_provider_ids_manifest_path() -> Path:
         ),
     )
 
-@doctor_check()
+@doctor_check
 def check_voice_provider_ids_manifest() -> CheckResult:
     """Verify the shell-readable provider-id projection is in sync."""
     path = _voice_provider_ids_manifest_path()
@@ -400,7 +400,7 @@ def _assess_tool_packs(
     )
 
 
-@doctor_check()
+@doctor_check
 def check_tool_packs() -> CheckResult:
     """Reports tool-pack registration health — registered vs. expected,
     flagging any pack that failed to build.

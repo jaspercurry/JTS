@@ -59,7 +59,7 @@ def _manifest_entries(manifest: Path) -> list[str]:
     return entries
 
 
-@doctor_check()
+@doctor_check
 def check_web_design_assets() -> CheckResult:
     """Every installed management-UI static asset must be present.
 
@@ -129,7 +129,7 @@ MANAGEMENT_502_HINT = (
 )
 
 
-@doctor_check()
+@doctor_check
 def check_management_surface() -> CheckResult:
     """The management UI must answer through nginx under the speaker's
     real hostname.
@@ -188,7 +188,7 @@ def check_management_surface() -> CheckResult:
     )
 
 
-@doctor_check()
+@doctor_check
 def check_control_token() -> CheckResult:
     """Report the control-token gate posture (never the secret).
 
@@ -210,7 +210,7 @@ def check_control_token() -> CheckResult:
     )
 
 
-@doctor_check()
+@doctor_check
 def check_tool_catalog() -> CheckResult:
     """Report the /tools/ catalog the wizard serves: present, tool count,
     how many the household disabled, and whether a voice restart is pending.
@@ -248,7 +248,7 @@ def check_tool_catalog() -> CheckResult:
     )
 
 
-@doctor_check()
+@doctor_check
 def check_conversation_history() -> CheckResult:
     """Report whether the opt-in conversation-history store is usable.
 
@@ -334,7 +334,7 @@ def _camillagui_listen_addresses() -> list[str] | None:
     return addresses
 
 
-@doctor_check()
+@doctor_check
 def check_camillagui_loopback() -> CheckResult:
     """CamillaGUI's externally-reachable socket must bind loopback-only.
 
@@ -441,7 +441,7 @@ def _wizard_socket_state(unit: str) -> tuple[str, str] | None:
     )
 
 
-@doctor_check()
+@doctor_check
 def check_wizard_socket_start_limits() -> CheckResult:
     """A failed ``.socket`` is what a start-limited wizard looks like.
 

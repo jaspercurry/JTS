@@ -5,10 +5,10 @@
 """Guard the jasper-doctor registry's ordering and output contracts.
 
 Ordering (ADR-0233 rule 4): a check registers from the module of the subsystem
-it observes, and `MODULE_ROSTER` alone decides display position and group
-label, so the run sequence must follow the roster, the roster must name exactly
-the modules that register checks, a module the roster does not name must be
-rejected at registration, and async / exclusive-lane metadata must be explicit.
+it observes, and `MODULE_ROSTER` alone decides display position, so the run
+sequence must follow the roster, the roster must name exactly the modules that
+register checks, a module the roster does not name must be rejected at
+registration, and async / exclusive-lane metadata must be explicit.
 
 Output (ADR-0233 rule 3): a status outside the closed set is rejected, every
 warn/fail row carries a machine-stable `reason` drawn from its module's
@@ -39,7 +39,7 @@ from jasper.cli.doctor._registry import (
 def test_display_order_follows_the_module_roster():
     checks = registered_checks()
     assert checks, "registry is empty — the per-domain modules did not register"
-    positions = {module: i for i, (module, _) in enumerate(MODULE_ROSTER)}
+    positions = {module: i for i, module in enumerate(MODULE_ROSTER)}
     seen = [positions[c.module] for c in checks]
     assert seen == sorted(seen), (
         "a module's checks must display as one contiguous block, in roster "
@@ -48,12 +48,13 @@ def test_display_order_follows_the_module_roster():
 
 
 def test_the_roster_names_exactly_the_modules_that_register_checks():
-    """The roster is the source of truth for order and group label, so it goes
-    stale in both directions: a new module with no entry has nowhere to
-    display, and an entry whose module registers nothing is a dead label."""
-    rostered = [module for module, _ in MODULE_ROSTER]
-    assert len(rostered) == len(set(rostered)), f"duplicate roster rows: {rostered}"
-    assert set(rostered) == {c.module for c in registered_checks()}
+    """The roster is the source of truth for order, so it goes stale in both
+    directions: a new module with no entry has nowhere to display, and an entry
+    whose module registers nothing is a dead row."""
+    assert len(MODULE_ROSTER) == len(set(MODULE_ROSTER)), (
+        f"duplicate roster rows: {MODULE_ROSTER}"
+    )
+    assert set(MODULE_ROSTER) == {c.module for c in registered_checks()}
 
 
 def test_async_checks_keep_explicit_registry_metadata():
@@ -81,11 +82,11 @@ def test_hardware_sensitive_checks_are_marked_exclusive():
 
 def test_a_check_from_an_unrostered_module_is_rejected():
     """Roster membership is the structural guard: a module the roster does not
-    name has neither a display position nor a group label, so registering from
-    one must fail loudly at import rather than land somewhere arbitrary."""
+    name has no display position, so registering from one must fail loudly at
+    import rather than land somewhere arbitrary."""
     saved = list(_registry._REGISTRY)
     try:
-        with pytest.raises(ValueError, match="MODULE_ROSTER"):
+        with pytest.raises(ValueError):
             doctor_check()(lambda: None)
     finally:
         _registry._REGISTRY[:] = saved

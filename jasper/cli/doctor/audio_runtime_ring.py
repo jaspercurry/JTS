@@ -257,7 +257,7 @@ def _grouped_dac_content_lane_parked() -> bool:
     )
 
 
-@doctor_check()
+@doctor_check
 def check_ring_split_transport() -> CheckResult:
     """The two ends of the post-DSP hop must agree about the ring.
 
@@ -411,7 +411,7 @@ def check_ring_split_transport() -> CheckResult:
     )
 
 
-@doctor_check()
+@doctor_check
 def check_active_ring_path_projection() -> CheckResult:
     """A ring PATH that lags its endpoint marker is SILENT — outputd refuses it.
 
@@ -592,7 +592,7 @@ def _resolved_ring_wire():
     return wire
 
 
-@doctor_check()
+@doctor_check
 def check_ring_ioplug_provenance() -> CheckResult:
     """Is the INSTALLED ioplug the one the installer built, and what can it parse?
 
@@ -762,7 +762,7 @@ def _ring_writer_lock_holders(
     return holders, unreadable
 
 
-@doctor_check()
+@doctor_check
 def check_ring_writer_lock_exclusivity() -> CheckResult:
     """Do two live writers hold one ring's writer lock?
 
@@ -873,7 +873,7 @@ def check_ring_writer_lock_exclusivity() -> CheckResult:
     )
 
 
-@doctor_check()
+@doctor_check
 def check_ring_reader_stall() -> CheckResult:
     """A ring being WRITTEN but not READ, judged from the SHARED HEADER.
 
@@ -940,7 +940,7 @@ def check_ring_reader_stall() -> CheckResult:
     )
 
 
-@doctor_check()
+@doctor_check
 def check_ring_geometry_coherence() -> CheckResult:
     """Verify the Ring-A geometry agrees across env, conf.d, and on-disk.
 
@@ -1054,7 +1054,7 @@ def check_ring_geometry_coherence() -> CheckResult:
     )
 
 
-@doctor_check()
+@doctor_check
 def check_ring_conf_floor_render() -> CheckResult:
     """Verify the ring conf.d slot period matches the active DAC's declared floor.
 
@@ -1198,7 +1198,7 @@ def check_ring_conf_floor_render() -> CheckResult:
     )
 
 
-@doctor_check()
+@doctor_check
 def check_renderer_ring_lanes() -> CheckResult:
     """Every ARMED renderer-ingress lane is attached, fed, and coherent.
 
@@ -1408,7 +1408,7 @@ def _ring_detach_remedy(reason: str) -> str:
     )
 
 
-@doctor_check()
+@doctor_check
 def check_ring_transport_park() -> CheckResult:
     """No topology this box declares is one the ring cannot serve (ADR-0178).
 

@@ -5,11 +5,12 @@
 """Ordered registry for jasper-doctor checks.
 
 A check is registered by the module of the subsystem it observes, and
-``MODULE_ROSTER`` below is the single place display order and section
-label are decided (ADR-0233 rule 4). Checks appear module by module in
-roster order, and within a module in source order; registering from a
-module the roster does not name is an import-time error, so a new
-module has to be given a position and a label before it can run.
+``MODULE_ROSTER`` below is the display order (ADR-0233 rule 4): checks
+appear module by module in roster order, and within a module in source
+order. The module name is also the key
+``__init__._STREAMBOX_OMITTED_DOCTOR_MODULES`` filters on. Registering
+from a module the roster does not name is an import-time error, so a new
+module has to be given a position before it can run.
 
 - **The bare-vs-tuple distinction is preserved.** A check with
   ``needs_cfg=False`` is emitted as a bare function, so the harness
@@ -25,51 +26,43 @@ module has to be given a position and a label before it can run.
   keeps ALSA/proc evidence probes from observing one another's temporary
   opens while still allowing the rest of the subprocess-heavy doctor to
   run concurrently.
-
-The group label is the per-domain dimension. It does not affect order;
-it names the section a module's checks belong to, and
-``__init__._STREAMBOX_OMITTED_DOCTOR_GROUPS`` skips whole groups a
-streambox does not install. Several modules share one label on purpose
-(the ``audio_runtime_*`` modules and ``boot_config`` are all ``audio``;
-``drift`` is ``install``; ``secret_compartments`` is ``privsep``).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, overload
 
 from ._shared import CheckResult
 
-MODULE_ROSTER: tuple[tuple[str, str], ...] = (
-    ("env", "env"),
-    ("voice", "voice"),
-    ("audio", "audio"),
-    ("wake", "wake"),
-    ("renderers", "renderers"),
-    ("integrations", "integrations"),
-    ("boot_config", "audio"),
-    ("privsep", "privsep"),
-    ("secret_compartments", "privsep"),
-    ("web", "web"),
-    ("research", "research"),
-    ("correction", "correction"),
-    ("memory", "memory"),
-    ("drift", "install"),
-    ("resilience", "resilience"),
-    ("aec", "aec"),
-    ("audio_runtime_fanin", "audio"),
-    ("audio_runtime_camilla", "audio"),
-    ("audio_runtime_ring", "audio"),
-    ("audio_runtime_outputd", "audio"),
-    ("usbsink", "usbsink"),
-    ("network", "network"),
-    ("peering", "peering"),
-    ("grouping", "grouping"),
+MODULE_ROSTER: tuple[str, ...] = (
+    "env",
+    "voice",
+    "audio",
+    "boot_config",
+    "wake",
+    "renderers",
+    "integrations",
+    "privsep",
+    "secret_compartments",
+    "web",
+    "research",
+    "correction",
+    "memory",
+    "drift",
+    "resilience",
+    "aec",
+    "audio_runtime_fanin",
+    "audio_runtime_camilla",
+    "audio_runtime_ring",
+    "audio_runtime_outputd",
+    "usbsink",
+    "network",
+    "peering",
+    "grouping",
 )
 
-_GROUP_BY_MODULE: dict[str, str] = dict(MODULE_ROSTER)
 _ROSTER_POSITION: dict[str, int] = {
-    module: position for position, (module, _) in enumerate(MODULE_ROSTER)
+    module: position for position, module in enumerate(MODULE_ROSTER)
 }
 
 
@@ -78,11 +71,11 @@ class RegisteredCheck:
     """One registry entry.
 
     ``module`` is the doctor module basename the check registered from;
-    it decides both display position and ``group``. ``func`` is the raw
-    check function. ``needs_cfg`` marks the checks the harness calls
-    with the ``Config`` argument. ``label`` is required for those; for
-    bare checks it is left empty and the harness derives the
-    displayed/crash label from ``func.__name__``.
+    it decides display position. ``func`` is the raw check function.
+    ``needs_cfg`` marks the checks the harness calls with the ``Config``
+    argument. ``label`` is required for those; for bare checks it is
+    left empty and the harness derives the displayed/crash label from
+    ``func.__name__``.
     """
 
     module: str
@@ -92,30 +85,44 @@ class RegisteredCheck:
     label: str = ""
     exclusive_group: str = ""
 
-    @property
-    def group(self) -> str:
-        return _GROUP_BY_MODULE[self.module]
-
 
 _REGISTRY: list[RegisteredCheck] = []
 
 
+@overload
+def doctor_check(func: Callable, /) -> Callable: ...
+
+
+@overload
 def doctor_check(
+    *,
+    label: str = ...,
+    needs_cfg: bool = ...,
+    is_async: bool = ...,
+    exclusive_group: str = ...,
+) -> Callable[[Callable], Callable]: ...
+
+
+def doctor_check(
+    func: Callable | None = None,
+    /,
     *,
     label: str = "",
     needs_cfg: bool = False,
     is_async: bool = False,
     exclusive_group: str = "",
-) -> Callable[[Callable], Callable]:
+) -> Callable:
     """Register a doctor check and return it unchanged.
+
+    Usable bare (``@doctor_check``) or called (``@doctor_check(...)``).
 
     The decorator is *additive* — it records metadata in the registry and
     returns the original function object untouched, so the function's
     identity, signature, and body are preserved (it stays directly
     importable and unit-testable).
 
-    Display position and group come from the defining module's entry in
-    ``MODULE_ROSTER``; neither is a per-check argument.
+    Display position comes from the defining module's entry in
+    ``MODULE_ROSTER``; it is not a per-check argument.
 
     Args:
         label: explicit display/crash label. Required for ``needs_cfg``
@@ -135,8 +142,7 @@ def doctor_check(
             raise ValueError(
                 f"{module}.{fn.__name__} registers a doctor check from a "
                 "module MODULE_ROSTER does not name; add the module to the "
-                "roster at the position its checks should display, with the "
-                "group label they belong under."
+                "roster at the position its checks should display."
             )
         _REGISTRY.append(
             RegisteredCheck(
@@ -150,7 +156,7 @@ def doctor_check(
         )
         return fn
 
-    return _register
+    return _register if func is None else _register(func)
 
 
 def registered_checks() -> list[RegisteredCheck]:

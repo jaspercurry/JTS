@@ -470,10 +470,10 @@ def test_check_tool_packs_wires_the_runtime_reader(monkeypatch, runtime, status,
     assert r.reason == reason
 
 
-def test_check_tool_packs_is_registered_under_the_voice_group():
+def test_check_tool_packs_is_registered_in_the_voice_module():
     entry = next(
         c for c in doctor.registered_checks()
         if c.func is doctor.check_tool_packs
     )
 
-    assert (entry.module, entry.group) == ("voice", "voice")
+    assert entry.module == "voice"

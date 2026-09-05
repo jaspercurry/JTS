@@ -93,7 +93,7 @@ def _install_profile_is_streambox() -> bool:
         return False
 
 
-@doctor_check()
+@doctor_check
 def check_ram() -> CheckResult:
     try:
         with open("/proc/meminfo") as f:
@@ -183,7 +183,7 @@ def check_memory_headroom() -> CheckResult:
         f"{avail_mb} MB available ({pct}%)",
     )
 
-@doctor_check()
+@doctor_check
 def check_zram_size_ratio() -> CheckResult:
     """Verify the rpi-swap drop-in sized zram to ≤60% of RAM. The
     old zramswap default was 100% of RAM, which amplifies thrash
@@ -249,7 +249,7 @@ def check_zram_size_ratio() -> CheckResult:
 # decompression jitter blew the ALSA buffer timing budget).
 
 
-@doctor_check()
+@doctor_check
 def check_cgroup_memory_enabled() -> CheckResult:
     """Verify the Linux memory cgroup controller is actually enabled.
     Required for `MemorySwapMax=0` on jts-audio.slice / jts-mic.slice
@@ -310,7 +310,7 @@ def _audio_path_units() -> tuple[str, ...]:
 # the 42 MB observed on aec-bridge during the 2026-05-24 stress.
 _AUDIO_VMSWAP_WARN_KB = 1024  # 1 MB
 
-@doctor_check()
+@doctor_check
 def check_audio_path_no_swap() -> CheckResult:
     """Verify audio-path daemons have ~0 pages in zram. If any are
     swapped meaningfully (>1 MB), it means either the slice's
@@ -400,7 +400,7 @@ def _disk_warn_percent() -> int:
     return value
 
 
-@doctor_check()
+@doctor_check
 def check_disk_space() -> CheckResult:
     """WARN/FAIL on root-filesystem fullness before writes start failing.
 
@@ -567,7 +567,7 @@ def _storage_warn_bytes(knob: str, default: int) -> int:
     return value if value > 0 else default
 
 
-@doctor_check()
+@doctor_check
 def check_correction_storage() -> CheckResult:
     """Read-only size warning for the correction-session directory.
 
@@ -601,7 +601,7 @@ def check_correction_storage() -> CheckResult:
     )
 
 
-@doctor_check()
+@doctor_check
 def check_wake_events_storage() -> CheckResult:
     """Read-only size warning for the wake-event corpus directory.
 
@@ -750,7 +750,7 @@ def _journald_disk_usage() -> str:
     return " ".join((proc.stdout or "").split())
 
 
-@doctor_check()
+@doctor_check
 def check_journald_persistence() -> CheckResult:
     """Verify the persistent-journal drop-in is in effect: Storage=persistent
     so a watchdog reset's previous-boot logs survive, and the SystemMaxUse
