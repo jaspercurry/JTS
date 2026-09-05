@@ -30,7 +30,8 @@ FAKE_TEMPLATE = (
     "<body>__JTS_ICON_SPRITE__"
     '<a class="setting-row"><svg class="chevron"><use href="#icon-chevron">'
     "</use></svg></a>"
-    "<script>var BAKED_CAPS = __JTS_CAPS_JSON__;</script>"
+    "__JTS_CAPS_ISLAND__"
+    '<script type="module" src="/assets/landing/js/main.js"></script>'
 )
 
 
@@ -38,13 +39,13 @@ def _render(template: str = FAKE_TEMPLATE, *, token: str = "tok-1") -> str:
     return render_landing(
         template,
         app_css_version="abc1234",
-        caps_json='{"voice_brain": true}',
+        caps={"voice_brain": True},
         control_token=token,
     )
 
 
 def test_renderer_covers_exactly_the_shipped_templates_placeholders() -> None:
-    covered = substitutions(app_css_version="", caps_json="", control_token="")
+    covered = substitutions(app_css_version="", caps={}, control_token="")
 
     assert TEMPLATE_PLACEHOLDERS, "expected placeholders in deploy/index.html"
     assert tuple(sorted(covered)) == TEMPLATE_PLACEHOLDERS
@@ -55,7 +56,10 @@ def test_render_substitutes_every_placeholder() -> None:
 
     assert "/assets/app.css?v=abc1234" in out
     assert 'content="tok-1"' in out
-    assert 'var BAKED_CAPS = {"voice_brain": true};' in out
+    assert (
+        '<script type="application/json" id="landing-caps">'
+        '{"voice_brain": true}</script>'
+    ) in out
     assert CANONICAL_ICON_SPRITE in out
 
 
@@ -86,3 +90,14 @@ def test_shipped_landing_page_renders_with_nothing_left_behind() -> None:
     assert not re.search(
         r"__[A-Z][A-Z_]*__", _render(LANDING_HTML.read_text())
     )
+
+
+def test_shipped_landing_page_carries_one_module_and_its_caps_island() -> None:
+    """One ES-module entry (docs/web-ia.md §3) reading its capability ceiling
+    from the shared `json_island()` shape — no inline behaviour left to drift
+    from the hub pages that share settings-status.js."""
+    out = _render(LANDING_HTML.read_text())
+
+    assert '<script type="module" src="/assets/landing/js/main.js"></script>' in out
+    assert '<script type="application/json" id="landing-caps">' in out
+    assert "<script>" not in out

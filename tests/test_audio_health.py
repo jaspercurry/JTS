@@ -4040,6 +4040,9 @@ def test_state_keeps_working_when_audio_health_snapshot_raises(monkeypatch) -> N
         def snapshot(self) -> dict:
             raise RuntimeError("audio monitor failed")
 
+        def airplay_playing(self) -> bool | None:
+            return None
+
     async def fake_state(**_kwargs) -> dict:
         return {"ts": 1000.0, "audio": {}}
 

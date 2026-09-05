@@ -39,7 +39,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from jasper.atomic_io import advisory_file_lock, atomic_write_text
+from jasper.atomic_io import advisory_file_lock_async, atomic_write_text
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -538,87 +538,68 @@ async def _dsp_apply_lock(
         return
 
     started = time.monotonic()
-    deadline = started + timeout
-    held = contextlib.ExitStack()
-    # One open per acquire: the primitive's own bounded retry runs on a worker
-    # thread, so a contended apply neither reopens the lock file per poll nor
-    # blocks the event loop while it waits.
-    acquire = asyncio.ensure_future(
-        asyncio.to_thread(
-            held.enter_context,
-            advisory_file_lock(path, timeout_sec=timeout),
-        )
-    )
-
-    def _release_when_settled(settled: asyncio.Future[Any]) -> None:
-        # asyncio.to_thread cannot be cancelled, so a cancelled waiter's worker
-        # can still win the flock; release whatever it took instead of
-        # stranding every other DSP writer behind an ownerless lock.
-        if not settled.cancelled():
-            settled.exception()
-        held.close()
-
     contended = False
     admitted = False
+
+    def _announce_wait() -> None:
+        nonlocal contended
+        contended = True
+        log_event(
+            logger,
+            "dsp.writer_lock",
+            result="waiting",
+            source=source,
+            timeout_ms=round(timeout * 1000),
+        )
+
     try:
-        finished, _pending = await asyncio.wait(
-            {acquire}, timeout=_LOCK_WAIT_ANNOUNCE_AFTER_S
-        )
-        if not finished:
-            contended = True
-            log_event(
-                logger,
-                "dsp.writer_lock",
-                result="waiting",
-                source=source,
-                timeout_ms=round(timeout * 1000),
+        async with contextlib.AsyncExitStack() as stack:
+            try:
+                await stack.enter_async_context(
+                    advisory_file_lock_async(
+                        path,
+                        timeout_sec=timeout,
+                        on_contended=_announce_wait,
+                        contended_after_sec=_LOCK_WAIT_ANNOUNCE_AFTER_S,
+                    )
+                )
+            except TimeoutError:
+                waited = max(0.0, time.monotonic() - started)
+                log_event(
+                    logger,
+                    "dsp.writer_lock",
+                    result="timeout",
+                    source=source,
+                    wait_ms=round(waited * 1000),
+                    timeout_ms=round(timeout * 1000),
+                    level=logging.WARNING,
+                )
+                raise DspWriterLockTimeout(
+                    path,
+                    timeout_s=timeout,
+                    waited_s=waited,
+                    source=source,
+                ) from None
+            admitted = True
+            if contended:
+                log_event(
+                    logger,
+                    "dsp.writer_lock",
+                    result="acquired",
+                    source=source,
+                    wait_ms=round(max(0.0, time.monotonic() - started) * 1000),
+                )
+            if intent_path.exists() and not allow_pending_bass_extension_recovery:
+                raise BassExtensionApplyPending(
+                    "bass-extension rollback is pending; graph mutation refused"
+                )
+            token = _DSP_LOCK_OWNERSHIP.set(
+                _DspLockOwnership(path, task, allow_pending_bass_extension_recovery)
             )
-        try:
-            # Shielded: cancelling this wait must not discard the lock the
-            # worker may already hold — the finally below releases it.
-            await asyncio.shield(acquire)
-            # A stalled worker or loop can hand back a lock the caller's budget
-            # no longer covers; admission always means "inside the timeout".
-            timed_out = time.monotonic() >= deadline
-        except TimeoutError:
-            timed_out = True
-        if timed_out:
-            waited = max(0.0, time.monotonic() - started)
-            log_event(
-                logger,
-                "dsp.writer_lock",
-                result="timeout",
-                source=source,
-                wait_ms=round(waited * 1000),
-                timeout_ms=round(timeout * 1000),
-                level=logging.WARNING,
-            )
-            raise DspWriterLockTimeout(
-                path,
-                timeout_s=timeout,
-                waited_s=waited,
-                source=source,
-            )
-        admitted = True
-        if contended:
-            log_event(
-                logger,
-                "dsp.writer_lock",
-                result="acquired",
-                source=source,
-                wait_ms=round(max(0.0, time.monotonic() - started) * 1000),
-            )
-        if intent_path.exists() and not allow_pending_bass_extension_recovery:
-            raise BassExtensionApplyPending(
-                "bass-extension rollback is pending; graph mutation refused"
-            )
-        token = _DSP_LOCK_OWNERSHIP.set(
-            _DspLockOwnership(path, task, allow_pending_bass_extension_recovery)
-        )
-        try:
-            yield
-        finally:
-            _DSP_LOCK_OWNERSHIP.reset(token)
+            try:
+                yield
+            finally:
+                _DSP_LOCK_OWNERSHIP.reset(token)
     except asyncio.CancelledError:
         if contended and not admitted:
             log_event(
@@ -629,12 +610,6 @@ async def _dsp_apply_lock(
                 wait_ms=round(max(0.0, time.monotonic() - started) * 1000),
             )
         raise
-    finally:
-        # Release now if the acquire has settled; otherwise defer to its done-callback so a lock won after cancellation is never stranded.
-        if acquire.done():
-            held.close()
-        else:
-            acquire.add_done_callback(_release_when_settled)
 
 
 def dsp_apply_lock_path(config_dir: str | Path) -> Path:

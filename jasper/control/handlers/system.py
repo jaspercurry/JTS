@@ -74,6 +74,13 @@ class SystemRoutes(ControlHandlerMixin):
                         camilla_port=self._camilla_port,
                         voice_socket_path=self._voice_socket_path,
                         ha_status_snapshot=self._ha_status_cache.snapshot,
+                        # shairport's MPRIS PlaybackStatus from the health
+                        # sampler that already holds it, so `/state` runs no
+                        # `busctl` of its own (ADR-0233 rules 1 and 2).
+                        airplay_playing_snapshot=(
+                            None if self._audio_health_sampler is None
+                            else self._audio_health_sampler.airplay_playing
+                        ),
                         # One tick's transport-park verdict for the whole
                         # payload: `resilience.transport_park` and the
                         # `audio_health` rows attached below are then the same

@@ -1,12 +1,16 @@
 name: Docs links
 
-# Fast, deterministic Markdown link check for PRs. This only checks changed
-# Markdown files and only validates repo-local paths and Markdown anchors.
-# External URLs are intentionally ignored on the PR path.
+# Fast, deterministic Markdown link check. On a PR this only checks changed
+# Markdown files; on push to main it checks the whole tree (--all), so a
+# rename/delete's dead link left uncaught by a PR's own diff still surfaces.
+# Only repo-local paths and Markdown anchors are validated -- external URLs
+# are intentionally ignored.
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
   workflow_dispatch:
 
 # Cancel superseded PR runs: GitHub Actions caps concurrent jobs, and a stale

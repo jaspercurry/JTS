@@ -4,10 +4,12 @@
 
 """Regression checks for the static landing page.
 
-The main page is plain HTML/JS under deploy/index.html. These tests
-pin the small optimistic-volume state machine so stale POST responses
-or polls cannot repaint an older volume while a newer local gesture is
-still pending.
+The markup is deploy/index.html; its behaviour is the ES module
+deploy/assets/landing/js/main.js (capability gating and the status-*
+sublabels it shares with the hub pages live in shared/js/settings-status.js).
+These tests pin the small optimistic-volume state machine so stale POST
+responses or polls cannot repaint an older volume while a newer local gesture
+is still pending.
 """
 from __future__ import annotations
 
@@ -26,6 +28,10 @@ from jasper.web import wifi_setup
 
 _REPO = Path(__file__).resolve().parent.parent
 _INDEX_PATH = _REPO / "deploy" / "index.html"
+_LANDING_JS_PATH = _REPO / "deploy" / "assets" / "landing" / "js" / "main.js"
+_SETTINGS_STATUS_JS_PATH = (
+    _REPO / "deploy" / "assets" / "shared" / "js" / "settings-status.js"
+)
 _NGINX_PATH = _REPO / "deploy" / "nginx-jasper.conf"
 _STREAMBOX_NGINX_PATH = _REPO / "deploy" / "nginx-jasper-streambox.conf"
 _INSTALL_PATH = _REPO / "deploy" / "install.sh"
@@ -36,6 +42,10 @@ _APP_CSS_PATH = _REPO / "deploy" / "assets" / "app.css"
 
 def _index_html() -> str:
     return _INDEX_PATH.read_text(encoding="utf-8")
+
+
+def _landing_js() -> str:
+    return _LANDING_JS_PATH.read_text(encoding="utf-8")
 
 
 def _app_css() -> str:
@@ -60,26 +70,26 @@ def _assert_strong_no_cache(block: str) -> None:
     assert 'add_header Expires "0" always;' in block
 
 
-def _volume_slider_script(html: str) -> str:
-    start = html.index("    // Volume slider.")
-    end = html.index("    // Source selector.", start)
-    return html[start:end]
+def _volume_slider_script(js: str) -> str:
+    start = js.index("// Volume slider.")
+    end = js.index("// Stereo-pair banner.", start)
+    return js[start:end]
 
 
 def test_volume_slider_suppresses_poll_while_local_write_pending() -> None:
-    html = _index_html()
+    js = _landing_js()
 
-    assert "function localVolumeDirty()" in html
-    assert "dragging || flushing || inFlight || pending !== null" in html
-    assert "Date.now() < ignorePollUntil" in html
+    assert "function localVolumeDirty()" in js
+    assert "dragging || flushing || inFlight || pending !== null" in js
+    assert "Date.now() < ignorePollUntil" in js
     assert re.search(
         r"async function poll\(\) \{\s+if \(localVolumeDirty\(\)\) return;",
-        html,
+        js,
     )
 
 
 def test_volume_slider_polls_faster_only_while_page_is_visible() -> None:
-    script = _volume_slider_script(_index_html())
+    script = _volume_slider_script(_landing_js())
 
     assert "var POLL_MS = 500;" in script
     assert "setInterval(poll, POLL_MS);" in script
@@ -102,34 +112,35 @@ def test_volume_slider_polls_faster_only_while_page_is_visible() -> None:
 
 
 def test_volume_slider_ignores_stale_post_responses() -> None:
-    html = _index_html()
+    js = _landing_js()
 
-    assert "var desiredPct = null" in html
+    assert "var desiredPct = null" in js
     assert re.search(
         r"if \(!dragging && pending === null && toSend === desiredPct &&\s+"
         r"typeof data\.percent === 'number'\) \{\s+setUI\(data\.percent\);",
-        html,
+        js,
     )
 
 
 def test_volume_slider_allows_only_one_flush_loop() -> None:
-    html = _index_html()
+    js = _landing_js()
 
-    assert "var flushing = false" in html
-    assert "if (flushing) return;" in html
-    assert "flushing = true;" in html
-    assert "flushing = false;" in html
+    assert "var flushing = false" in js
+    assert "if (flushing) return;" in js
+    assert "flushing = true;" in js
+    assert "flushing = false;" in js
 
 
 def test_volume_slider_uses_touch_friendly_pointer_target() -> None:
     html = _index_html()
+    js = _landing_js()
 
     assert 'id="vol-control"' in html
     assert 'role="slider"' in html
     assert "touch-action: none;" in html
-    assert "function xToPercent(clientX)" in html
-    assert "hit.setPointerCapture(e.pointerId)" in html
-    assert "hit.addEventListener('pointermove'" in html
+    assert "function xToPercent(clientX)" in js
+    assert "hit.setPointerCapture(e.pointerId)" in js
+    assert "hit.addEventListener('pointermove'" in js
     assert 'id="vol-input"' not in html
     assert 'type="range"' not in html
 
@@ -137,7 +148,7 @@ def test_volume_slider_uses_touch_friendly_pointer_target() -> None:
 def test_volume_slider_surfaces_active_speaker_safety_muted_state() -> None:
     html = _index_html()
     style = html.split("<style>", 1)[1].split("</style>", 1)[0]
-    script = _volume_slider_script(html)
+    script = _volume_slider_script(_landing_js())
 
     assert 'id="volume-safety-note" hidden' in html
     assert "Speaker output is locked until active crossover setup is complete." in html
@@ -164,10 +175,13 @@ def test_volume_slider_pointer_drag_updates_from_bar_coordinates(tmp_path: Path)
     if node is None:
         pytest.skip("node is required for the landing-page pointer harness")
 
+    # The slider is a named init function in the module; the harness runs the
+    # slice, then boots it exactly as main.js does.
+    slider = _volume_slider_script(_landing_js()) + "\ninitVolume();\n"
     harness = textwrap.dedent(
         f"""
         const vm = require('node:vm');
-        const script = {json.dumps(_volume_slider_script(_index_html()))};
+        const script = {json.dumps(slider)};
         const posted = [];
 
         function makeElement(id) {{
@@ -248,6 +262,8 @@ def test_volume_slider_pointer_drag_updates_from_bar_coordinates(tmp_path: Path)
               if (url === '/volume/set') posted.push(JSON.parse(options.body));
               return {{ ok: true, json: async () => ({{ percent: 50 }}) }};
             }},
+            // The module imports this from http.js; the slice runs bare.
+            jsonHeaders: () => ({{ 'Content-Type': 'application/json' }}),
             setInterval() {{ return 1; }},
             setTimeout,
             Promise,
@@ -347,29 +363,34 @@ def test_landing_page_uses_grouped_settings_rows() -> None:
 def test_landing_page_capability_gates_fail_closed() -> None:
     html = _index_html()
 
-    assert "caps[required] !== true" in html
+    assert "caps[required] !== true" in _SETTINGS_STATUS_JS_PATH.read_text()
     for line in html.splitlines():
         if "data-requires=" in line and line.lstrip().startswith("<"):
             assert "hidden" in line, line.strip()
 
 
-def test_landing_page_bakes_capability_ceiling_at_first_paint() -> None:
-    # The capability ceiling is install-time-static, so it's baked into the
-    # page and applied SYNCHRONOUSLY at first paint — no /system/data.json
-    # round-trip to lay out the page (that was the two-layer stutter), and
-    # the layout survives a backend daemon being down.
+def test_landing_page_bakes_capability_ceiling_before_any_fetch() -> None:
+    # The capability ceiling is install-time-static, so it rides the page as a
+    # data island and gates the rows before any /system/data.json round-trip
+    # (that round-trip was the two-layer stutter). Every gated row ships
+    # hidden, so gating only reveals and the layout survives a daemon being
+    # down.
     html = _index_html()
+    settings_status = _SETTINGS_STATUS_JS_PATH.read_text()
 
-    # install.sh stamps this placeholder with the profile's capability map.
-    assert "var BAKED_CAPS = __JTS_CAPS_JSON__;" in html
-    assert "applyCapabilities(BAKED_CAPS);" in html
+    # install.sh stamps this placeholder with the profile's capability island.
+    assert "__JTS_CAPS_ISLAND__" in html
+    assert 'JSON.parse(document.getElementById("landing-caps").textContent)' in (
+        _landing_js()
+    )
 
     # The snapshot poll must NOT re-drive layout (live values only), so a slow
     # or failed fetch can never blank or restyle the page.
-    render = html.split("function renderSnapshot(snap)", 1)[1].split(
-        "async function fetchSnapshot", 1,
+    render = settings_status.split("function renderSnapshot(", 1)[1].split(
+        "export function initSettingsStatus", 1,
     )[0]
-    assert "applyCapabilities(" not in render
+    assert "data-requires" not in render
+    assert ".hidden" not in render
 
 
 def test_install_bakes_landing_capabilities() -> None:
@@ -382,7 +403,7 @@ def test_install_bakes_landing_capabilities() -> None:
 
     assert "system_capabilities_for_profile" in landing
     assert "read_install_profile" in landing
-    assert "__JTS_CAPS_JSON__" in landing
+    assert "__JTS_CAPS_ISLAND__" in landing
     assert "python3 -m jasper.web.landing" in install
     assert "refusing to ship a broken page" in install
 
@@ -517,12 +538,12 @@ def test_landing_page_css_keeps_type_stable() -> None:
 
 
 def test_source_selector_uses_control_endpoints() -> None:
-    html = _index_html()
+    js = _landing_js()
 
-    assert "fetch('/source/state'" in html
-    assert "fetch('/source/select'" in html
-    assert "pendingSource" in html
-    assert "source-button.playing::after" in html
+    assert "fetch('/source/state'" in js
+    assert "fetch('/source/select'" in js
+    assert "pendingSource" in js
+    assert "source-button.playing::after" in _index_html()
 
 
 def test_room_correction_card_uses_room_handoff() -> None:
@@ -557,7 +578,7 @@ def test_landing_exposes_complete_canonical_sound_navigation() -> None:
     )
     # Follower pages own delegation locally; the dashboard must keep Setup and
     # commissioning navigation visible instead of hiding the whole section.
-    pair_script = html.split("// Stereo-pair banner.", 1)[1]
+    pair_script = _landing_js().split("// Stereo-pair banner.", 1)[1]
     assert "soundSection.style.display" not in pair_script
 
 
@@ -784,17 +805,18 @@ def test_landing_page_stereo_pair_banner_wiring() -> None:
     hides and the slider relabels — its requests are forwarded server-side
     (jasper-control's bonded-follower volume proxy)."""
     html = _index_html()
+    js = _landing_js()
     assert '<section class="control-section pair-banner" id="pair-banner" hidden>' in html
     assert 'id="source-section"' in html
     assert 'id="volume-eyebrow"' in html
     assert 'id="pair-manage-link" href="/rooms/" data-requires="pair_management" hidden' in html
-    assert "fetch('/grouping')" in html
-    assert "'Pair volume'" in html
-    assert "import('/assets/shared/js/local-web-host.js')" in html
-    assert "leaderLink.href = 'http://' + leaderHost + '/';" in html
-    assert "leaderLink.href = 'http://' + g.leader_addr" not in html
+    assert "fetch('/grouping')" in js
+    assert "'Pair volume'" in js
+    assert 'from "/assets/shared/js/local-web-host.js"' in js
+    assert "leaderLink.href = 'http://' + leaderHost + '/';" in js
+    assert "leaderLink.href = 'http://' + g.leader_addr" not in js
     # The banner script writes text, never markup.
-    pair_js = html.split("Stereo-pair banner", 1)[1].split("Source selector", 1)[0]
+    pair_js = js.split("Stereo-pair banner", 1)[1].split("Source selector", 1)[0]
     assert "HOST_RE" not in pair_js
     assert "IPV4_RE" not in pair_js
     assert "function localWebHost" not in pair_js

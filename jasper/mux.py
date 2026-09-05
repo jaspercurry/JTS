@@ -1766,17 +1766,18 @@ class Mux:
             )
             return None
         try:
+            from .accounts import DEFAULT_REGISTRY_PATH, LEGACY_CACHE_PATH
             from .spotify_router import build_router
             router = build_router(
                 client_id=client_id,
                 redirect_uri=resolved_spotify_redirect_uri(),
                 accounts_path=os.environ.get(
                     "JASPER_SPOTIFY_ACCOUNTS_PATH",
-                    "/var/lib/jasper-intsecrets/spotify/accounts.json",
+                    DEFAULT_REGISTRY_PATH,
                 ),
                 cache_path=os.environ.get(
                     "SPOTIFY_CACHE_PATH",
-                    "/var/lib/jasper-intsecrets/.spotify-cache",
+                    LEGACY_CACHE_PATH,
                 ),
             )
             if not router.clients:
