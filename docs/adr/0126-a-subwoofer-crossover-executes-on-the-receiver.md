@@ -1,8 +1,10 @@
 # ADR-0126: A subwoofer's crossover executes on the receiver, on the one shared stereo stream
 
 - **Date:** 2026-08-26
-- **Status:** Accepted (shipped 2026-06-23; recorded here when
-  HANDOFF-distributed-active.md was trimmed to its operational spine)
+- **Status:** Superseded by
+  [ADR-0236](0236-independent-subwoofers-are-deleted-a-dac-channel-sub-stays.md)
+  (shipped 2026-06-23; recorded here when HANDOFF-distributed-active.md was
+  trimmed to its operational spine)
 
 ## Context
 
