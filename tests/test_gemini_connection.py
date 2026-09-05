@@ -29,7 +29,10 @@ from typing import Any
 
 import pytest
 
-from jasper.voice._supervisor import run_reconnect_with_backoff
+from jasper.voice._supervisor import (
+    CANT_CONNECT_CUE_SLUG,
+    run_reconnect_with_backoff,
+)
 from tests._gemini_fakes import GoAway as _GoAway
 from tests._gemini_fakes import Response as _Resp
 from tests._gemini_fakes import ResumptionUpdate as _ResumptionUpdate
@@ -583,10 +586,10 @@ async def test_idle_context_reset_reopens_through_the_supervisor():
     reopen still settles CONNECTED with every superseded session closed.
     """
     conn, factory = _make_conn(context_reset_sec=0.01)
-    paused_at_open: list[bool] = []
+    state_at_open: list[ConnectionState] = []
 
     def recording_factory(*, model, config):
-        paused_at_open.append(conn.is_paused())
+        state_at_open.append(conn._state)
         cm = factory(model=model, config=config)
         if len(factory.sessions) == 2:
             # A fresh drop lands while the reset's reopen is in flight.
@@ -608,8 +611,11 @@ async def test_idle_context_reset_reopens_through_the_supervisor():
         )
         # The initial connect is the turn task's; every reopen after it
         # belongs to the supervisor.
-        assert paused_at_open[0] is False
-        assert paused_at_open[1:] and all(paused_at_open[1:])
+        assert state_at_open[0] is ConnectionState.CONNECTING
+        assert state_at_open[1:] and all(
+            state is ConnectionState.PAUSED_FOR_BACKOFF
+            for state in state_at_open[1:]
+        )
         assert len(factory.sessions) >= 2
         # No orphan: the live session is the only one left open.
         assert [s for s in factory.sessions if not s.closed] == [conn._session]
@@ -1334,4 +1340,32 @@ async def test_unplanned_drop_does_not_inherit_the_rotation_zero_backoff():
         assert delays and delays[0] > 0.0, delays
         await turn.release()
     finally:
+        await conn.stop()
+
+
+async def test_the_first_connect_reads_as_paused_while_it_dials():
+    """The daemon serves wake while the first connect is still dialling
+    (a boot with the WAN down). A wake landing then must take the paused
+    path — the bounded re-check and a connection cue — rather than open a
+    turn against a session that does not exist yet."""
+    connecting = asyncio.Event()
+    release = asyncio.Event()
+    connect = _SlowThenDeadConnect(connecting, release)
+    conn = GeminiLiveConnection(
+        api_key="fake",
+        model="fake-model",
+        backoff_schedule=(0.0,),
+        connect_factory=lambda *, model, config: connect,
+    )
+    task = asyncio.ensure_future(conn.start(ToolRegistry(), "system"))
+    try:
+        await asyncio.wait_for(connecting.wait(), timeout=5.0)
+        assert conn.is_paused()
+        # No failure recorded yet: the honest cue is the generic
+        # "can't connect right now, I'll keep trying".
+        assert conn.wake_cue() == CANT_CONNECT_CUE_SLUG
+    finally:
+        release.set()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(task, timeout=5.0)
         await conn.stop()

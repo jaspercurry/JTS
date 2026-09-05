@@ -12,6 +12,7 @@ import signal
 import sys
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterable
+from functools import partial
 from typing import Any
 
 from jasper.log_event import log_event
@@ -620,6 +621,37 @@ async def _start_control_socket(
     return server
 
 
+async def _serve_while_connecting(
+    connect: Callable[[], Awaitable[None]],
+    serve: Callable[[], Awaitable[None]],
+) -> None:
+    """Serve wake while the first provider connect is still dialling.
+
+    Hearing must not wait on the WAN: mics, cues and ``READY=1`` are up
+    before this is reached, so a boot with the link down answers a wake
+    with a cue instead of silence. A connect that raises ends the run; a
+    connect that returns leaves the daemon serving with the supervisor
+    retrying. Whichever finishes first, the other is cancelled on the
+    way out.
+    """
+    connect_task = asyncio.create_task(connect())
+    serve_task = asyncio.create_task(serve())
+    try:
+        done, _pending = await asyncio.wait(
+            (connect_task, serve_task), return_when=asyncio.FIRST_COMPLETED,
+        )
+        if connect_task in done:
+            # Both can land in one tick; the failure must not be left for
+            # the suppressed await below to eat.
+            connect_task.result()
+        await serve_task
+    finally:
+        for task in (connect_task, serve_task):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+
+
 async def run() -> None:
     cfg = Config.from_env()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -1020,7 +1052,8 @@ async def run() -> None:
         # unrelated tools (observed misroute: lights → get_current_time
         # + get_now_playing on May 22 2026).
         ha_configured = ha is not None
-        await connection.start(
+        connect_live_session = partial(
+            connection.start,
             registry,
             lambda: _build_system_instruction(
                 cfg.weather_prompt_location,
@@ -1216,7 +1249,9 @@ async def run() -> None:
                 wake_loop, cfg.voice_control_socket,
             )
             try:
-                await wake_loop.run()
+                await _serve_while_connecting(
+                    connect_live_session, wake_loop.run,
+                )
             finally:
                 registry.set_dispatch_observer(None)
                 heartbeat.stop()

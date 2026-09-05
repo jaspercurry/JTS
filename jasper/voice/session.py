@@ -415,10 +415,11 @@ class LiveConnection(Protocol):
         ...
 
     def is_paused(self) -> bool:
-        """True if the connection is currently in a backoff/failed state
-        and cannot accept turns. The daemon's wake handler can check
-        this before paying the cost of opening a turn (so wake events
-        during a known-down period are a clean no-op)."""
+        """True while the connection cannot accept turns: the first
+        connect is still dialling, or a reconnect is in backoff, or the
+        provider rejected us terminally. The daemon's wake handler
+        checks this before paying the cost of opening a turn, and cues
+        rather than opening one."""
         ...
 
     def last_failure_detail(self) -> str | None:

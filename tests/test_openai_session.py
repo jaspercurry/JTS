@@ -26,6 +26,7 @@ import pytest
 
 from jasper.tools import ToolRegistry, tool
 from jasper.voice._supervisor import (
+    CANT_CONNECT_CUE_SLUG,
     NEEDS_ATTENTION_CUE_SLUG,
     run_reconnect_with_backoff,
 )
@@ -1645,10 +1646,10 @@ async def test_idle_context_reset_reopens_through_the_supervisor(conn_cls):
         backoff_schedule=(0.0, 0.0),
         connect_factory=factory,
     )
-    paused_at_open: list[bool] = []
+    state_at_open: list[ConnectionState] = []
 
     def recording_factory(*, model: str):
-        paused_at_open.append(conn.is_paused())
+        state_at_open.append(conn._state)
         cm = factory(model=model)
         if len(factory.conns) == 2:
             # A fresh drop lands while the reset's reopen is in flight.
@@ -1670,8 +1671,11 @@ async def test_idle_context_reset_reopens_through_the_supervisor(conn_cls):
         )
         # The initial connect is the turn task's; every reopen after it
         # belongs to the supervisor.
-        assert paused_at_open[0] is False
-        assert paused_at_open[1:] and all(paused_at_open[1:])
+        assert state_at_open[0] is ConnectionState.CONNECTING
+        assert state_at_open[1:] and all(
+            state is ConnectionState.PAUSED_FOR_BACKOFF
+            for state in state_at_open[1:]
+        )
         assert len(factory.conns) >= 2
         # No orphan: the live session is the only one left open.
         assert [c for c in factory.conns if not c.closed] == [conn._conn]
@@ -1782,9 +1786,8 @@ async def test_terminal_initial_connect_stays_up_and_heals():
     """A terminal first connect (403, account blocked) must not kill the
     daemon — the reconnect path survives the same rejection, so start()
     must too. It returns with the supervisor running, the outage visible
-    on the fields `/state` reads, the escalation cue announced once (the
-    daemon wires the cue player only after start()), and self-healing
-    once the provider accepts."""
+    on the fields `/state` reads, the escalation cue announced once, and
+    self-healing once the provider accepts."""
     factory = _FakeConnectFactory()
 
     class _Blocked(Exception):
@@ -1802,6 +1805,9 @@ async def test_terminal_initial_connect_stays_up_and_heals():
         cue_calls.append(slug)
 
     registry = ToolRegistry()
+    # Wired before the connect, as the daemon does: cue playback is up
+    # before `start()` is called at all.
+    conn.set_failure_escalation_cb(cue_cb)
     await conn.start(registry, "")
     try:
         # No await between start() and these — the supervisor task is
@@ -1810,7 +1816,6 @@ async def test_terminal_initial_connect_stays_up_and_heals():
         assert conn.is_paused()
         assert isinstance(conn.last_failure_detail(), str)
 
-        conn.set_failure_escalation_cb(cue_cb)
         await _wait_until(lambda: cue_calls == [NEEDS_ATTENTION_CUE_SLUG])
         await _wait_until(
             lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0,
@@ -1845,13 +1850,13 @@ async def test_setup_rejection_on_initial_connect_stays_up(conn_cls):
     async def cue_cb(slug: str) -> None:
         cue_calls.append(slug)
 
+    conn.set_failure_escalation_cb(cue_cb)
     await conn.start(ToolRegistry(), "")
     try:
         assert conn._supervisor_task is not None
         assert conn.is_paused()
         assert isinstance(conn.last_failure_detail(), str)
 
-        conn.set_failure_escalation_cb(cue_cb)
         await _wait_until(lambda: cue_calls == [NEEDS_ATTENTION_CUE_SLUG])
     finally:
         await conn.stop()
@@ -2764,3 +2769,33 @@ async def test_cancelling_a_long_backoff_unwinds_at_once():
         await asyncio.wait_for(task, timeout=2.0)
     assert task.cancelled()
 
+
+
+@pytest.mark.parametrize(
+    "conn_cls", [OpenAIRealtimeConnection, GrokRealtimeConnection],
+)
+async def test_the_first_connect_reads_as_paused_while_it_dials(conn_cls):
+    """The daemon serves wake while the first connect is still dialling
+    (a boot with the WAN down). A wake landing then must take the paused
+    path — the bounded re-check and a connection cue — rather than open a
+    turn against a socket that does not exist yet."""
+    connecting = asyncio.Event()
+    release = asyncio.Event()
+    connect = _SlowThenDeadConnect(connecting, release)
+    conn = conn_cls(
+        api_key="fake",
+        backoff_schedule=(0.0,),
+        connect_factory=lambda *, model: connect,
+    )
+    task = asyncio.ensure_future(conn.start(ToolRegistry(), ""))
+    try:
+        await asyncio.wait_for(connecting.wait(), timeout=5.0)
+        assert conn.is_paused()
+        # No failure recorded yet: the honest cue is the generic
+        # "can't connect right now, I'll keep trying".
+        assert conn.wake_cue() == CANT_CONNECT_CUE_SLUG
+    finally:
+        release.set()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(task, timeout=5.0)
+        await conn.stop()

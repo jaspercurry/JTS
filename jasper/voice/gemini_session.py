@@ -779,6 +779,7 @@ class GeminiLiveConnection:
 
     def is_paused(self) -> bool:
         return self._state in (
+            ConnectionState.CONNECTING,
             ConnectionState.RECONNECTING,
             ConnectionState.PAUSED_FOR_BACKOFF,
             ConnectionState.FAILED,

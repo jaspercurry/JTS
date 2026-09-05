@@ -243,7 +243,6 @@ class OutageTracker:
         self.cue: str | None = None
         self._announced: str | None = None
         self._network_streak = 0
-        self._held_cue = Deferred()
         self._cb: CuePlayer | None = None
 
     @property
@@ -254,27 +253,12 @@ class OutageTracker:
         return self.cue or CANT_CONNECT_CUE_SLUG
 
     def set_callback(self, cb: CuePlayer | None) -> None:
-        """None keeps the edge and its log line but plays nothing.
-
-        The daemon can only wire this once the object that owns cue
-        playback exists, which is after the connection's ``start()`` —
-        so an outage that began on the very first connect has already
-        claimed its edge. Play what it held back."""
+        """None keeps the edge and its log line but plays nothing."""
         self._cb = cb
-        if cb is not None:
-            self._held_cue.fire_if_pending(self._announce)
 
-    def _announce(self) -> None:
-        cue = self.cue
-        if cue is None:
-            # The outage ended (or turned transient) before a player
-            # existed: there is nothing left to announce.
-            self._held_cue.clear()
-            return
+    def _announce(self, cue: str) -> None:
         if self._cb is None:
-            self._held_cue.request()
             return
-        self._held_cue.clear()
         # Fire-and-forget: cue playback must not stall the reconnect
         # cadence.
         asyncio.create_task(
@@ -305,7 +289,7 @@ class OutageTracker:
             exc=type(exc).__name__,
             level=logging.WARNING,
         )
-        self._announce()
+        self._announce(cue)
 
     def on_recovery(self) -> None:
         """A session opened: clear the outage and re-arm, silently."""
@@ -313,13 +297,12 @@ class OutageTracker:
         self.cue = None
         self._announced = None
         self._network_streak = 0
-        self._held_cue.clear()
 
 
 class Deferred:
     """One action held back until the moment it may happen.
 
-    Three sites need the same dance — request → hold → fire-on-release,
+    Two sites need the same dance — request → hold → fire-on-release,
     plus clear-when-it-no-longer-applies so a later release can't fire a
     spurious second time:
 
@@ -328,8 +311,6 @@ class Deferred:
         down mid-reply would cut the user off mid-sentence.
       * Gemini: the same, triggered either by a planned session
         rotation or by a ``GoAway`` with ample ``time_left``.
-      * ``OutageTracker``: an escalation cue raised before the daemon
-        wired a cue player.
 
     The flag is cleared BEFORE ``fire`` runs, so a re-entrant release
     cannot double-fire."""
