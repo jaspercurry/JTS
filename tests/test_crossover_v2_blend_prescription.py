@@ -2824,7 +2824,7 @@ def _banked_round(tmp_path: Path) -> Path:
 
 
 def test_the_cli_writes_the_packet_beside_the_round_and_exits_zero(tmp_path):
-    """The packet is a FILE by default, and the terminal gets a summary.
+    """The packet is a FILE by default, and stdout is the answer about it.
 
     Every verb downstream takes it as ``--packet <file>`` — a rebuild
     fingerprints differently — so the ordinary invocation now banks the file
@@ -2842,14 +2842,16 @@ def test_the_cli_writes_the_packet_beside_the_round_and_exits_zero(tmp_path):
     # The arrays really are in the file...
     assert emitted["positions"]["curve_grid"]["freqs_hz"]
     # ...and never on stdout, which names the file instead.
+    answer = json.loads(out)
     assert "freqs_hz" not in out
     assert "magnitude_db" not in out
-    assert str(artifact) in out
-    assert emitted["packet_fingerprint"][:16] in out
+    assert answer["out"] == str(artifact)
+    assert answer["bytes"] == artifact.stat().st_size
+    assert answer["packet_fingerprint"] == emitted["packet_fingerprint"]
 
 
 def test_the_packet_summary_reports_availability_block_by_block(tmp_path):
-    """``--json`` is the same summary, and it is derived from the packet.
+    """The summary is derived from the packet, block by block.
 
     Availability is read off each block's own ``available`` flag rather than a
     second list of block names here, so a block added to the builder is
@@ -2857,13 +2859,13 @@ def test_the_packet_summary_reports_availability_block_by_block(tmp_path):
     """
     round_dir = _banked_round(tmp_path)
 
-    code, out, _ = _run_cli(["packet", str(round_dir), "--json"])
+    code, out, _ = _run_cli(["packet", str(round_dir)])
 
     assert code == cli.EXIT_OK
     summary = json.loads(out)
     artifact = round_dir / cli.PACKET_ARTIFACT
     emitted = json.loads(artifact.read_text())
-    assert summary["artifact"] == str(artifact)
+    assert summary["out"] == str(artifact)
     assert summary["packet_fingerprint"] == emitted["packet_fingerprint"]
     assert summary["round_id"] == emitted["session"]["round_id"]
     # Every reported flag is the packet's own, never a second opinion...
@@ -2881,6 +2883,59 @@ def test_the_packet_summary_reports_availability_block_by_block(tmp_path):
     assert "magnitude_db" not in out
 
 
+def _long_numeric_lists(document: Any, path: str = "$") -> list[str]:
+    """Every place the document carries a numeric run longer than 16."""
+    if isinstance(document, dict):
+        return [
+            hit
+            for key, value in document.items()
+            for hit in _long_numeric_lists(value, f"{path}.{key}")
+        ]
+    if isinstance(document, list):
+        numbers = [v for v in document if isinstance(v, (int, float))]
+        return [path] if len(numbers) > 16 else [
+            hit
+            for index, value in enumerate(document)
+            for hit in _long_numeric_lists(value, f"{path}[{index}]")
+        ]
+    return []
+
+
+def test_every_verb_answers_with_one_document_on_stdout(tmp_path, monkeypatch):
+    """stdout IS the answer — one document, scalars, and a path.
+
+    Asserted for both reading verbs at once because the property is the
+    contract's, not any one verb's: whatever a verb computed for its human
+    line is on stdout, the curves are in the artifact it names, and the next
+    command is spelled out with the paths already in it.
+    """
+    monkeypatch.chdir(tmp_path)
+    round_dir = _banked_round(tmp_path)
+
+    code, packet_out, _ = _run_cli(["packet", str(round_dir)])
+    assert code == cli.EXIT_OK
+    packet_answer = json.loads(packet_out)
+    artifact = Path(packet_answer["out"])
+    document = _write_document(
+        tmp_path, _document([_cut(-1.5)], json.loads(artifact.read_text()))
+    )
+
+    code, propose_out, _ = _run_cli([
+        "propose", "--packet", str(artifact), "--prescription", str(document),
+    ])
+    assert code == cli.EXIT_OK
+    propose_answer = json.loads(propose_out)
+
+    for answer in (packet_answer, propose_answer):
+        assert Path(answer["out"]).is_file()
+        assert answer["bytes"] == Path(answer["out"]).stat().st_size
+        assert _long_numeric_lists(answer) == []
+    # The next verb, runnable as printed, against the same two files.
+    assert propose_answer["next"].startswith("jasper-crossover-prescriber stage ")
+    assert str(artifact) in propose_answer["next"]
+    assert str(document) in propose_answer["next"]
+
+
 def test_an_explicit_out_overrides_the_default_path(tmp_path):
     """``--out`` still names the file, and nothing lands beside the round."""
     round_dir = _banked_round(tmp_path)
@@ -2893,19 +2948,24 @@ def test_an_explicit_out_overrides_the_default_path(tmp_path):
         "jts_crossover_v2_evidence_packet"
     )
     assert not (round_dir / cli.PACKET_ARTIFACT).exists()
-    assert str(elsewhere) in out
+    assert json.loads(out)["out"] == str(elsewhere)
 
 
 def test_an_unwritable_artifact_is_the_write_exit_not_an_unreadable_round(tmp_path):
     """The evidence READ; only the filing failed, which is a different fix."""
     round_dir = _banked_round(tmp_path)
 
-    code, _, err = _run_cli([
+    code, out, err = _run_cli([
         "packet", str(round_dir), "--out", str(tmp_path / "nope" / "packet.json"),
     ])
 
     assert code == cli.EXIT_WRITE_FAILED
-    assert err.startswith("error: could not write ")
+    assert json.loads(out) == {
+        "status": "unwritable",
+        "reason": cli.REASON_UNWRITABLE,
+        "detail": mock.ANY,
+    }
+    assert err.startswith("unwritable (")
 
 
 def test_propose_judges_a_document_against_the_file_packet_wrote(
@@ -2921,15 +2981,19 @@ def test_propose_judges_a_document_against_the_file_packet_wrote(
     _never_rebuilds(monkeypatch)
 
     code, out, _ = _run_cli([
-        "propose", "--packet", str(artifact),
-        "--prescription", str(document), "--json",
+        "propose", "--packet", str(artifact), "--prescription", str(document),
     ])
 
     assert code == cli.EXIT_OK
     assert json.loads(out)["accepted"] is True
 
 
-def test_the_cli_accepts_a_prescription_from_a_file_and_exits_zero(tmp_path):
+def test_the_cli_accepts_a_prescription_from_a_file_and_exits_zero(
+    tmp_path, monkeypatch
+):
+    # A LIVE bundle is daemon-owned, so the accepted result lands beside the
+    # CALLER, which here must not be the checkout.
+    monkeypatch.chdir(tmp_path)
     session, _ = _bundle(tmp_path)
     # Same evidence inputs the bare CLI call below resolves by default, so
     # this reference packet's fingerprint matches the one the CLI builds.
@@ -2940,19 +3004,21 @@ def test_the_cli_accepts_a_prescription_from_a_file_and_exits_zero(tmp_path):
     )
     path = _write_document(tmp_path, _document([_cut(-1.5)], packet))
     code, out, _ = _run_cli(
-        ["propose", str(session), "--prescription", str(path), "--json"]
+        ["propose", str(session), "--prescription", str(path)]
     )
     assert code == cli.EXIT_OK
-    result = json.loads(out)
-    assert result["accepted"] is True
-    assert result["candidate_fields"] == {
+    answer = json.loads(out)
+    assert answer["accepted"] is True
+    # stdout names the fields; their VALUES are in the envelope it points at.
+    assert answer["candidate_fields"] == ["blend_correction"]
+    assert json.loads(Path(answer["out"]).read_text())["candidate_fields"] == {
         "blend_correction": [
             {"biquad_type": "Peaking", "freq": 1000.0, "q": 2.0, "gain": -1.5}
         ]
     }
     # The digest is of the BYTES actually parsed, so a later reader can prove
     # which document produced a round.
-    assert result["prescription_sha256"] == hashlib.sha256(
+    assert answer["prescription_sha256"] == hashlib.sha256(
         path.read_bytes()
     ).hexdigest()
 
@@ -2997,8 +3063,7 @@ def test_propose_judges_a_document_against_a_saved_packet_FILE(tmp_path, monkeyp
     _never_rebuilds(monkeypatch)
 
     code, out, _ = _run_cli([
-        "propose", "--packet", str(packet_path),
-        "--prescription", str(document), "--json",
+        "propose", "--packet", str(packet_path), "--prescription", str(document),
     ])
 
     assert code == cli.EXIT_OK
@@ -3020,8 +3085,7 @@ def test_a_document_echoing_another_packet_still_refuses_against_the_file(
     _never_rebuilds(monkeypatch)
 
     code, out, _ = _run_cli([
-        "propose", "--packet", str(packet_path),
-        "--prescription", str(document), "--json",
+        "propose", "--packet", str(packet_path), "--prescription", str(document),
     ])
 
     assert code == cli.EXIT_REFUSED
@@ -3044,13 +3108,14 @@ def test_a_rebuild_input_beside_the_packet_file_is_refused(tmp_path, extra):
     packet_path, packet = _saved_packet(tmp_path)
     document = _write_document(tmp_path, _document([_cut(-1.5)], packet))
 
-    code, _, err = _run_cli([
+    code, out, err = _run_cli([
         "propose", *extra, "--packet", str(packet_path),
         "--prescription", str(document),
     ])
 
     assert code == cli.EXIT_UNREADABLE
-    assert err.startswith("error:")
+    assert json.loads(out)["reason"] == cli.REASON_EVIDENCE_SOURCE
+    assert err.startswith("unreadable (")
 
 
 @pytest.mark.parametrize("blob", [
@@ -3063,25 +3128,27 @@ def test_an_unreadable_packet_file_is_the_unreadable_exit(tmp_path, blob):
     packet_path.write_text(blob)
     document = _write_document(tmp_path, {"kind": "whatever"})
 
-    code, _, err = _run_cli([
+    code, out, _ = _run_cli([
         "propose", "--packet", str(packet_path), "--prescription", str(document),
     ])
 
     assert code == cli.EXIT_UNREADABLE
-    assert err.startswith("error:")
+    assert json.loads(out)["reason"] == cli.REASON_UNREADABLE
 
 
 def test_naming_no_evidence_at_all_is_unreadable_with_a_sentence(tmp_path):
     """``session_dir`` is optional only because ``--packet`` can replace it."""
     document = _write_document(tmp_path, {"kind": "whatever"})
 
-    code, _, err = _run_cli(["propose", "--prescription", str(document)])
+    code, out, err = _run_cli(["propose", "--prescription", str(document)])
 
     assert code == cli.EXIT_UNREADABLE
+    assert json.loads(out)["reason"] == cli.REASON_EVIDENCE_SOURCE
     assert "--packet" in err
 
 
-def test_the_cli_reads_a_prescription_from_stdin(tmp_path):
+def test_the_cli_reads_a_prescription_from_stdin(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(
         session,
@@ -3090,7 +3157,7 @@ def test_the_cli_reads_a_prescription_from_stdin(tmp_path):
     )
     payload = json.dumps(_document([_cut(-1.5)], packet)).encode()
     code, out, _ = _run_cli(
-        ["propose", str(session), "--prescription", "-", "--json"], stdin=payload
+        ["propose", str(session), "--prescription", "-"], stdin=payload
     )
     assert code == cli.EXIT_OK
     assert json.loads(out)["prescription_sha256"] == hashlib.sha256(
@@ -3107,18 +3174,18 @@ def test_unreadable_evidence_is_not_reported_as_a_refusal(tmp_path, argv_tail, l
     document fault, which is the REFUSED one."""
     empty = tmp_path / "empty"
     empty.mkdir()
-    code, _, err = _run_cli(["packet", str(empty), *argv_tail])
+    code, out, _ = _run_cli(["packet", str(empty), *argv_tail])
     assert code == cli.EXIT_UNREADABLE, label
-    assert err.startswith("error:")
+    assert json.loads(out)["reason"] == cli.REASON_UNREADABLE, label
 
 
 def test_a_missing_prescription_file_is_the_unreadable_exit(tmp_path):
     session, _ = _bundle(tmp_path)
-    code, _, err = _run_cli(
+    code, out, _ = _run_cli(
         ["propose", str(session), "--prescription", str(tmp_path / "nope.json")]
     )
     assert code == cli.EXIT_UNREADABLE
-    assert err.startswith("error:")
+    assert json.loads(out)["reason"] == cli.REASON_UNREADABLE
 
 
 @pytest.mark.parametrize("filters,reason", [
@@ -3126,13 +3193,11 @@ def test_a_missing_prescription_file_is_the_unreadable_exit(tmp_path):
     pytest.param([_cut(gain=4.0)], "filter_boost_too_high", id="boost-too-high"),
     pytest.param([_cut(freq=100.0)], "filter_outside_region", id="outside-region"),
 ])
-def test_a_refusal_exits_two_and_prints_the_machine_readable_payload(
-    tmp_path, filters, reason
-):
-    """Exit 2 is the loop working. ``--json`` carries the slug and its evidence.
+def test_a_refusal_prints_the_machine_readable_payload(tmp_path, filters, reason):
+    """A refusal is an OUTPUT: the slug and the gate's evidence, on stdout.
 
-    This is the only test that executes ``BlendPrescriptionRefused.to_dict``,
-    which is the payload a prescriber actually reads to correct itself.
+    That document is what a prescriber reads to correct itself, so it is
+    published on every refusal rather than behind a flag.
     """
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(
@@ -3142,14 +3207,16 @@ def test_a_refusal_exits_two_and_prints_the_machine_readable_payload(
     )
     path = _write_document(tmp_path, _document(filters, packet))
     code, out, err = _run_cli(
-        ["propose", str(session), "--prescription", str(path), "--json"]
+        ["propose", str(session), "--prescription", str(path)]
     )
     assert code == cli.EXIT_REFUSED
     payload = json.loads(out)
-    assert payload["accepted"] is False
+    assert payload["status"] == "refused"
     assert payload["reason"] == reason
-    assert payload["detail"].strip()
-    assert isinstance(payload["evidence"], dict)
+    # The gate's verdict, and whatever it measured, under the one detail key.
+    detail = payload["detail"]
+    assert isinstance(detail["verdict"], str) and detail["verdict"].strip()
+    assert isinstance(detail["evidence"], dict) and detail["evidence"]
     assert f"refused ({reason})" in err
 
 
@@ -3169,7 +3236,7 @@ def test_the_b1_documents_exit_two_rather_than_crashing_the_cli(
     path = tmp_path / "hostile.json"
     path.write_bytes(payload)
     code, out, _ = _run_cli(
-        ["propose", str(session), "--prescription", str(path), "--json"]
+        ["propose", str(session), "--prescription", str(path)]
     )
     assert code == cli.EXIT_REFUSED
     assert json.loads(out)["reason"] == reason
@@ -3199,7 +3266,7 @@ def test_a_refusal_from_the_candidate_seam_still_exits_two(tmp_path):
         ),
     ):
         code, out, err = _run_cli(
-            ["propose", str(session), "--prescription", str(path), "--json"]
+            ["propose", str(session), "--prescription", str(path)]
         )
     assert code == cli.EXIT_REFUSED
     assert json.loads(out)["reason"] == "boost_route_unavailable"
@@ -3218,7 +3285,7 @@ def test_the_bignum_document_exits_two_through_the_cli(tmp_path):
         )
     )
     code, out, _ = _run_cli(
-        ["propose", str(session), "--prescription", str(path), "--json"]
+        ["propose", str(session), "--prescription", str(path)]
     )
     assert code == cli.EXIT_REFUSED
     assert json.loads(out)["reason"] == "filter_malformed"

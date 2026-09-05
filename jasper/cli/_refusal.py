@@ -64,7 +64,7 @@ def read_json_source(path: str) -> Any:
         raise ValueError(f"{path}: {exc}") from exc
 
 
-def refused(reason: str, detail: str, *, exit_code: int, status: str = "refused") -> int:
+def refused(reason: str, detail: Any, *, exit_code: int, status: str = "refused") -> int:
     """Print the outcome on both streams and hand back ``exit_code``."""
 
     print(
@@ -78,7 +78,7 @@ def refused(reason: str, detail: str, *, exit_code: int, status: str = "refused"
     return exit_code
 
 
-def failed(exit_code: int, reason: str, detail: str) -> int:
+def failed(exit_code: int, reason: str, detail: Any) -> int:
     """One failing stage, published under the word its code owns."""
 
     return refused(

@@ -8,8 +8,9 @@
 back through the strict gate, ``stage`` runs the SAME gate and banks it,
 ``status`` only reports. No model client, API key or network lives here. Emit
 the packet ONCE and pass that file as ``--packet <file>``; a rebuild
-fingerprints differently. Exit codes: 0 accepted, 1 evidence unreadable,
-2 refused, 3 staging failed.
+fingerprints differently. ``packet``, ``propose`` and ``stage`` each answer
+with one JSON document on stdout and their human line on stderr; exit codes
+and the failure record are :mod:`~jasper.cli._refusal`'s.
 """
 
 from __future__ import annotations
@@ -17,13 +18,15 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
 
 from ._logging import CLI_LOG_FORMAT
 from ._refusal import (
-    EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, read_source_bytes,
+    EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, failed,
+    read_source_bytes,
 )
 # The beside-the-round output rule, reused rather than restated: a live
 # session bundle is daemon-owned, so a view defaulting inside it raises
@@ -98,11 +101,31 @@ from jasper.identity import (
 #: Authority tier for the generated tool-menu index (ADR-0204).
 AUTHORITY_TIER = "advisory (`stage` mutates)"
 
+#: This tool's console-script name, as ``pyproject.toml`` installs it: the
+#: parser's own ``prog`` and the ``next`` command every answer prints.
+PROG = "jasper-crossover-prescriber"
+
 #: What happens to a document in the spool; ``stage`` and ``status`` both say it.
 STAGED_LIFECYCLE_NOTE = "the next round takes it once and consumes it"
 
 #: Why the staged section has nothing to report.
 SPOOL_UNREADABLE_REASON = "permission_denied"
+
+#: The slugs this tool publishes for its OWN failures. A gate refusal
+#: publishes the gate's own reason instead, which is finer-grained than these.
+REASON_EVIDENCE_SOURCE = "evidence_source"
+REASON_UNREADABLE = "evidence_unreadable"
+REASON_UNWRITABLE = "output_unwritable"
+
+
+def _answer(document: dict[str, Any]) -> int:
+    """One verb's answer, printed the one way every tuning tool prints one.
+
+    stdout carries exactly this document and nothing else, so a reader parses
+    stdout rather than scraping the human line on stderr.
+    """
+    print(json.dumps(document, indent=2, sort_keys=True))
+    return EXIT_OK
 
 
 def _read_packet_file(path: Path) -> dict[str, Any]:
@@ -225,21 +248,23 @@ def _cmd_packet(args: argparse.Namespace) -> int:
             else default_out(round_inputs(round_dir), round_dir, PACKET_ARTIFACT)
         )
     except (CrossoverEvidencePacketError, OSError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return EXIT_UNREADABLE
+        return failed(EXIT_UNREADABLE, REASON_UNREADABLE, str(exc))
     try:
         out.write_text(blob)
+        size_bytes = out.stat().st_size
     except OSError as exc:
         # The evidence READ; only the filing failed, which is a different
         # place to send the operator than an unreadable round.
-        print(f"error: could not write {out}: {exc}", file=sys.stderr)
-        return EXIT_WRITE_FAILED
-    summary = _packet_summary(packet, out, len(blob))
-    if args.json:
-        print(json.dumps(summary, indent=2, sort_keys=True))
-    else:
-        _print_packet_summary(summary)
-    return EXIT_OK
+        return failed(
+            EXIT_WRITE_FAILED, REASON_UNWRITABLE, f"could not write {out}: {exc}"
+        )
+    summary = _packet_summary(packet, out, size_bytes)
+    print(
+        f"packet {(summary['packet_fingerprint'] or '')[:16]} "
+        f"round={summary['round_id']} -> {out} ({summary['bytes']} bytes)",
+        file=sys.stderr,
+    )
+    return _answer(summary)
 
 
 def _packet_summary(
@@ -252,7 +277,7 @@ def _packet_summary(
     curve is ever named: the arrays live in the artifact.
     """
     return {
-        "artifact": str(artifact),
+        "out": str(artifact),
         "bytes": size_bytes,
         "packet_fingerprint": packet.get("packet_fingerprint"),
         "round_id": (packet.get("session") or {}).get("round_id"),
@@ -268,33 +293,6 @@ def _packet_summary(
     }
 
 
-def _print_packet_summary(summary: dict[str, Any]) -> None:
-    """:func:`_packet_summary` as lines, so ``--json`` and a terminal agree."""
-    print(
-        f"packet {(summary['packet_fingerprint'] or '')[:16]} "
-        f"round={summary['round_id']} -> {summary['artifact']} "
-        f"({summary['bytes']} bytes)"
-    )
-    blocks = summary["blocks"]
-    absent = [name for name, available in blocks.items() if not available]
-    print(
-        f"  blocks: {len(blocks) - len(absent)}/{len(blocks)} available"
-        + (f"; unavailable: {', '.join(absent)}" if absent else "")
-    )
-    if summary["not_evaluated"]:
-        print(f"  not evaluated: {', '.join(summary['not_evaluated'])}")
-    for role, numbers in sorted(summary["trim"].items()):
-        applied_db = numbers.get("applied_db")
-        resolved_db = numbers.get("round_resolved_db")
-        if applied_db is None or resolved_db is None:
-            continue
-        pinned = " (pinned this round)" if numbers.get("pinned_this_round") else ""
-        print(
-            f"  trim {role}: applied {applied_db:+.2f} dB, round resolved "
-            f"{resolved_db:+.2f} dB (Δ {numbers['delta_db']:+.2f} dB){pinned}"
-        )
-
-
 def _gate(
     args: argparse.Namespace,
 ) -> tuple[
@@ -307,8 +305,8 @@ def _gate(
 
     Shared WHOLE by ``propose`` and ``stage``, which is what makes the first a
     true dry run of the second. The document's own ``kind`` picks the gate.
-    Raises ``BlendPrescriptionRefused`` (exit 2) or
-    ``CrossoverEvidencePacketError``/``OSError`` (exit 1).
+    Raises ``BlendPrescriptionRefused`` (``EXIT_REFUSED``) or
+    ``CrossoverEvidencePacketError``/``OSError`` (``EXIT_UNREADABLE``).
     """
     packet = _load_packet(args)
     payload = read_source_bytes(args.prescription)
@@ -350,40 +348,123 @@ def _gate(
     return payload, prescription, candidate_fields, classifications
 
 
+#: What ``propose`` writes when no ``--out`` names somewhere else: the accepted
+#: result, beside the packet it was judged against. NOT the prescription
+#: document itself, which is the operator's own file and what
+#: ``stage --prescription`` reads.
+PROPOSAL_ARTIFACT = "proposal.json"
+
+
+def _gate_refusal(exc: BlendPrescriptionRefused) -> int:
+    """The gate's verdict as this tool's refusal, under the gate's own reason.
+
+    The verdict alone when the gate measured nothing to show for it; the
+    verdict and its evidence together when it did, because that evidence is
+    what lets a prescriber correct the document rather than guess.
+    """
+    detail: Any = exc.detail
+    if exc.evidence:
+        detail = {"verdict": exc.detail, "evidence": dict(exc.evidence)}
+    return failed(EXIT_REFUSED, exc.reason, detail)
+
+
+def _admitted(
+    prescription: BlendPrescription | DriverPrescription,
+    candidate_fields: dict[str, Any],
+    payload: bytes,
+    out: Path,
+    size_bytes: int,
+) -> dict[str, Any]:
+    """What was admitted and where the whole result landed. Scalars only.
+
+    The filters, their evidence and the candidate fields' VALUES are in the
+    artifact ``out`` names; a reader that needs them opens it.
+    """
+    return {
+        "accepted": True,
+        "prescription_class": prescription.prescription_class,
+        "n_filters": len(prescription.filters),
+        "scope": _scope(prescription),
+        "candidate_fields": sorted(candidate_fields),
+        "prescription_sha256": prescription_sha256(payload),
+        "out": str(out),
+        "bytes": size_bytes,
+    }
+
+
+def _stage_command(args: argparse.Namespace) -> str:
+    """The ``stage`` invocation for this evidence, with the paths in hand.
+
+    Every rebuild input comes along: a rebuild missing one resolves that flag
+    against the machine instead and fingerprints differently, which is the
+    mismatch the printed command exists to avoid. ``--state`` is the one input
+    ``propose`` does not need and ``stage`` refuses without, so an operator who
+    named none is handed the placeholder rather than a command that cannot run.
+    """
+    evidence = ["--packet", args.packet] if args.packet else [
+        str(args.session_dir),
+        *(
+            word
+            for flag, dest in _REBUILD_ONLY_FLAGS
+            if getattr(args, dest)
+            for word in (flag, getattr(args, dest))
+        ),
+    ]
+    return shlex.join([
+        PROG, "stage", *evidence,
+        "--prescription", args.prescription,
+        "--state", args.state or "<flow state JSON>",
+    ])
+
+
 def _cmd_propose(args: argparse.Namespace) -> int:
     """Read a prescription back through the gate, and say what it becomes."""
     source_error = _evidence_source_error(args)
     if source_error is not None:
-        print(f"error: {source_error}", file=sys.stderr)
-        return EXIT_UNREADABLE
+        return failed(EXIT_UNREADABLE, REASON_EVIDENCE_SOURCE, source_error)
     try:
         payload, prescription, candidate_fields, _ = _gate(args)
     except (CrossoverEvidencePacketError, OSError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return EXIT_UNREADABLE
+        return failed(EXIT_UNREADABLE, REASON_UNREADABLE, str(exc))
     except BlendPrescriptionRefused as exc:
-        if args.json:
-            print(json.dumps(exc.to_dict(), indent=2, sort_keys=True))
-        print(f"refused ({exc.reason}): {exc.detail}", file=sys.stderr)
-        return EXIT_REFUSED
+        return _gate_refusal(exc)
 
-    result: dict[str, Any] = {
-        "accepted": True,
-        "prescription": prescription.to_dict(),
-        "prescription_sha256": prescription_sha256(payload),
-        "candidate_fields": candidate_fields,
-    }
-    if args.out:
-        Path(args.out).write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
-    if args.json:
-        print(json.dumps(result, indent=2, sort_keys=True))
-    else:
-        _print_prescription(prescription, "accepted")
-        print(
-            f"  these become the candidate's {sorted(candidate_fields)} at build time",
-            file=sys.stderr,
+    blob = json.dumps(
+        {
+            "accepted": True,
+            "prescription": prescription.to_dict(),
+            "prescription_sha256": prescription_sha256(payload),
+            "candidate_fields": candidate_fields,
+        },
+        indent=2,
+        sort_keys=True,
+    ) + "\n"
+    out = Path(args.out) if args.out else _proposal_out(args)
+    try:
+        out.write_text(blob)
+        size_bytes = out.stat().st_size
+    except OSError as exc:
+        return failed(
+            EXIT_WRITE_FAILED, REASON_UNWRITABLE, f"could not write {out}: {exc}"
         )
-    return EXIT_OK
+    _print_prescription(prescription, "accepted")
+    return _answer({
+        **_admitted(prescription, candidate_fields, payload, out, size_bytes),
+        "next": _stage_command(args),
+    })
+
+
+def _proposal_out(args: argparse.Namespace) -> Path:
+    """Beside the packet this document was judged against.
+
+    A ``--packet`` file is already somewhere the operator can write; a rebuild
+    lands where ``packet`` itself would have, so the round's own artifacts stay
+    together and a live daemon-owned bundle is not written into.
+    """
+    if args.packet:
+        return Path(args.packet).parent / PROPOSAL_ARTIFACT
+    round_dir = Path(args.session_dir)
+    return default_out(round_inputs(round_dir), round_dir, PROPOSAL_ARTIFACT)
 
 
 def _band_phrase(lo: float, hi: float) -> str:
@@ -537,17 +618,16 @@ def _cmd_stage(args: argparse.Namespace) -> int:
     """Accept a prescription and leave it where the next round will take it."""
     source_error = _evidence_source_error(args)
     if source_error is not None:
-        print(f"error: {source_error}", file=sys.stderr)
-        return EXIT_UNREADABLE
+        return failed(EXIT_UNREADABLE, REASON_EVIDENCE_SOURCE, source_error)
     if not args.state:
-        print(
-            "error: --state is required to stage a prescription; the round it "
-            "becomes an instruction for is read from the flow state's round "
-            "receipt, and staging without one would file it against a series "
-            "this command cannot see",
-            file=sys.stderr,
+        return failed(
+            EXIT_UNREADABLE,
+            REASON_EVIDENCE_SOURCE,
+            "--state is required to stage a prescription; the round it becomes "
+            "an instruction for is read from the flow state's round receipt, "
+            "and staging without one would file it against a series this "
+            "command cannot see",
         )
-        return EXIT_UNREADABLE
     try:
         payload, prescription, candidate_fields, classifications = _gate(args)
         ordinal = _next_round_ordinal(args.state)
@@ -556,18 +636,14 @@ def _cmd_stage(args: argparse.Namespace) -> int:
         # subclass, so an arm widened to ``except ValueError`` below would
         # report every refused prescription as an unreadable input — exit 2
         # with no reason slug.
-        if args.json:
-            print(json.dumps(exc.to_dict(), indent=2, sort_keys=True))
-        print(f"refused ({exc.reason}): {exc.detail}", file=sys.stderr)
-        return EXIT_REFUSED
+        return _gate_refusal(exc)
     except (
         CrossoverEvidencePacketError, OSError, UnicodeDecodeError,
         json.JSONDecodeError,
     ) as exc:
         # The last two are the state file's own failure modes: it is read here
         # rather than by the packet builder.
-        print(f"error: {exc}", file=sys.stderr)
-        return EXIT_UNREADABLE
+        return failed(EXIT_UNREADABLE, REASON_UNREADABLE, str(exc))
 
     try:
         path = stage_prescription(
@@ -576,28 +652,22 @@ def _cmd_stage(args: argparse.Namespace) -> int:
             for_round_ordinal=ordinal,
             classifications=classifications,
         )
+        size_bytes = path.stat().st_size
     except OSError as exc:
-        print(f"error: could not stage the prescription: {exc}", file=sys.stderr)
-        return EXIT_WRITE_FAILED
+        return failed(
+            EXIT_WRITE_FAILED,
+            REASON_UNWRITABLE,
+            f"could not stage the prescription: {exc}",
+        )
 
-    result: dict[str, Any] = {
-        "accepted": True,
+    _print_prescription(prescription, "staged", qualifier=f" for round {ordinal}")
+    print(f"  {path}", file=sys.stderr)
+    print(f"  {STAGED_LIFECYCLE_NOTE}", file=sys.stderr)
+    return _answer({
+        **_admitted(prescription, candidate_fields, payload, path, size_bytes),
         "staged": True,
-        "staged_at_path": str(path),
         "for_round_ordinal": ordinal,
-        "prescription": prescription.to_dict(),
-        "prescription_sha256": prescription_sha256(payload),
-        "candidate_fields": candidate_fields,
-    }
-    if args.json:
-        print(json.dumps(result, indent=2, sort_keys=True))
-    else:
-        _print_prescription(prescription, "staged", qualifier=f" for round {ordinal}")
-        print(f"  {path}", file=sys.stderr)
-        print(f"  {STAGED_LIFECYCLE_NOTE}", file=sys.stderr)
-    return EXIT_OK
-
-
+    })
 
 
 def _block(packet: dict[str, Any] | None, name: str) -> dict[str, Any]:
@@ -1226,7 +1296,7 @@ def _add_evidence_args(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="jasper-crossover-prescriber",
+        prog=PROG,
         description=(
             "Emit one crossover round's evidence packet, read a prescription "
             "back through the strict gate, and say where this speaker stands."
@@ -1264,7 +1334,7 @@ def build_parser() -> argparse.ArgumentParser:
             "     read the evidence, even a partial one\n"
             "  1  EXIT_REFUSED -- propose's or stage's gate refused the\n"
             "     prescription; \"refused (<reason>): <detail>\" on stderr,\n"
-            "     and as JSON with --json\n"
+            "     and the same record as JSON on stdout\n"
             "  2  EXIT_UNREADABLE -- the bundle, --state, --drivers,\n"
             "     --applied-profile, --repeat-floor or --declared-geometry\n"
             "     could not be read\n"
@@ -1308,11 +1378,6 @@ def build_parser() -> argparse.ArgumentParser:
     packet.add_argument(
         "--compact", action="store_true", help="emit the packet without indentation"
     )
-    packet.add_argument(
-        "--json",
-        action="store_true",
-        help="emit the summary as JSON",
-    )
     packet.set_defaults(func=_cmd_packet)
 
     propose = sub.add_parser(
@@ -1325,9 +1390,13 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="the prescription JSON document, or - for stdin",
     )
-    propose.add_argument("--out", default=None, help="write the accepted result here")
     propose.add_argument(
-        "--json", action="store_true", help="emit the result (or refusal) as JSON"
+        "--out",
+        default=None,
+        help=(
+            f"a PATH for the accepted result instead of {PROPOSAL_ARTIFACT} "
+            "beside the packet it was judged against"
+        ),
     )
     propose.set_defaults(func=_cmd_propose)
 
@@ -1342,9 +1411,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--prescription",
         required=True,
         help="the prescription JSON document, or - for stdin",
-    )
-    stage.add_argument(
-        "--json", action="store_true", help="emit the result (or refusal) as JSON"
     )
     stage.set_defaults(func=_cmd_stage)
     return parser
