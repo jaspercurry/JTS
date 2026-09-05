@@ -18,6 +18,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from jasper.wake_ports import DEFAULT_AEC_ON_PORT
+
 
 OPENAI_NOISE_REDUCTION_AUTO = "auto"
 OPENAI_NOISE_REDUCTION_DISABLED = frozenset((
@@ -106,7 +108,7 @@ def contract_from_config(cfg: Any) -> SpeechInputContract:
             provenance="aec_reconciler",
         )
 
-    if mic_device == "udp:9876":
+    if mic_device == f"udp:{DEFAULT_AEC_ON_PORT}":
         return SpeechInputContract(
             profile="xvf_software_aec3",
             source=mic_device,
