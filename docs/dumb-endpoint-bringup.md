@@ -22,7 +22,7 @@
 
 This is the operator runbook for bringing up a cheap JTS endpoint such
 as `jts4`: a Raspberry Pi Zero 2 W that can be a synchronized satellite
-for a stereo pair / wireless subwoofer / multi-room group, or a
+for a stereo pair / multi-room group, or a
 standalone streambox for AirPlay / Spotify Connect / Bluetooth playback.
 
 It is **not** the full JTS speaker bring-up. This file owns the
@@ -281,7 +281,7 @@ client latency (`Client.SetLatency` / `snapclient --latency`) is for
 fixed whole-endpoint PCM/DAC/backend latency; leader-side CamillaDSP
 `Delay` is for rendered-channel acoustic arrival at the listening seat.
 Do not let a Zero-class endpoint invent local dynamic timing policy for
-a stereo pair or sub group. The leader measures the group and decides
+a stereo pair. The leader measures the group and decides
 which persistent knob owns the correction: endpoint-path baseline in
 Snapcast latency, room/pair arrival delta in the leader render graph.
 The source notes live in
@@ -313,12 +313,12 @@ must explain failures and recover predictably.
 ## Audio quality and buffer policy
 
 Use one leader-defined timing policy for every strict playback set. Stereo
-pairs and 2.1 groups should be treated as one synchronization object, not
-as independent clients that adapt their own buffers.
+pairs should be treated as one synchronization object, not as independent
+clients that adapt their own buffers.
 
 Buffer guidance:
 
-- Use fixed group latency for `left`/`right`/`sub` sets.
+- Use fixed group latency for `left`/`right` sets.
 - If Wi-Fi is fragile, raise the latency budget for the whole group rather
   than letting each endpoint independently grow or shrink its playout
   buffer.
@@ -329,11 +329,8 @@ Buffer guidance:
 - Surface buffer pressure as `degraded` before audible failure when
   possible.
 
-For a wireless subwoofer, the delay must remain stable after calibration.
-A few milliseconds may not sound like an echo, but around the crossover it
-can move phase enough to change bass summation. For stereo pairs, relative
-left/right drift can move the image. Treat both as stricter than ordinary
-multi-room playback.
+For stereo pairs, relative left/right drift can move the image. Treat
+this as stricter than ordinary multi-room playback.
 
 ## Resiliency contract
 
@@ -717,7 +714,6 @@ Measure:
 - DAC hotplug / wrong-DAC behavior.
 - Long-run drift and underruns.
 - Stereo pair electrical/acoustic alignment.
-- Wireless sub crossover-region stability.
 - Restart storms and leader reboot behavior.
 
 Exit criteria:
@@ -846,9 +842,8 @@ If the DAC is card `1`:
 speaker-test -D plughw:1,0 -t sine -f 80 -c 2 -l 1
 ```
 
-Use a low level on headphones or the amp. For a subwoofer path, an 80 Hz
-sine is a useful first sanity check. For a full-range endpoint, use a
-short low-level stereo test before connecting a power amp.
+Use a low level on headphones or the amp. Use a short low-level stereo
+test before connecting a power amp.
 
 ## Run the multi-room spike
 
@@ -857,10 +852,10 @@ From the laptop checkout, use the throwaway harness in
 transient `jts-spike-*` systemd units and does not modify the product JTS
 audio path.
 
-For a Zero used as a sub endpoint:
+For a Zero used as a third follower on cheap hardware:
 
 ```sh
-bash scripts/multiroom-spike.sh --setup --sub jts4.local --apt-install
+bash scripts/multiroom-spike.sh --setup --endpoint jts4.local --apt-install
 bash scripts/multiroom-spike.sh --sweep
 bash scripts/multiroom-spike.sh --teardown
 ```
@@ -868,7 +863,7 @@ bash scripts/multiroom-spike.sh --teardown
 If mDNS is unreliable, use the IP:
 
 ```sh
-bash scripts/multiroom-spike.sh --setup --sub 192.168.1.162 --apt-install
+bash scripts/multiroom-spike.sh --setup --endpoint 192.168.1.162 --apt-install
 ```
 
 The spike bypasses CamillaDSP and the JTS volume/safety ceilings. Keep the
@@ -885,8 +880,8 @@ not the complete product. The durable path (phases above) still needs:
 - A product role-conversion flow between streambox and satellite. Today
   the install profile guard intentionally requires explicit operator
   intent for tier changes.
-- Product channel selection for `left`, `right`, `mono`, and `sub`
-  beyond the current direct Snapclient player.
+- Product channel selection for `left`, `right`, and `mono` beyond the
+  current direct Snapclient player.
 - A stable leader identity/address rule, with IP fallback for flaky
   mDNS and a path toward peer-id pinning before this becomes
   user-facing.
@@ -900,10 +895,8 @@ not the complete product. The durable path (phases above) still needs:
 - For stereo pairs: acoustic sync confirmation, with fixed endpoint-path
   latency separated from listening-seat acoustic delay, and (full tier
   only) per-side correction baked by the leader.
-- For 2.1: a single synchronized multi-channel stream, not a separate
-  sub stream.
 - Real hardware measurements for Wi-Fi fragility, DAC hotplug, long-run
-  clock drift, underruns, and stereo/sub acoustic alignment (Phase 4).
+  clock drift, underruns, and stereo acoustic alignment (Phase 4).
 
 Until those land, treat the Zero 2 W roles as measured lab/productization
 paths, not as shippable wireless-speaker defaults.

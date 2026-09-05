@@ -53,12 +53,11 @@ assistant audio must stay in fan-in upstream of CamillaDSP so it rides
 the crossover/protection graph; outputd's post-crossover TTS mixer is
 not armed on active endpoints.
 
-Passive/dumb bonded non-sub multiroom members are the exception: the
-grouping reconciler points voice at `/run/jasper-outputd/tts.sock`, and
-outputd mixes that speaker's own assistant audio into its local
-post-round-trip content lane so replies do not ride the shared sync
-buffer. Active endpoints stay on fan-in, and wireless sub followers park
-voice while keeping outputd TTS unarmed.
+Passive/dumb bonded multiroom members are the exception: the grouping
+reconciler points voice at `/run/jasper-outputd/tts.sock`, and outputd
+mixes that speaker's own assistant audio into its local post-round-trip
+content lane so replies do not ride the shared sync buffer. Active
+endpoints stay on fan-in, with outputd TTS unarmed.
 
 The SHM slot ring is the only transport between fan-in, CamillaDSP, and
 outputd. `jasper-outputd` reads Ring B: CamillaDSP writes the post-DSP
