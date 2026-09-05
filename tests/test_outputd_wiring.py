@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from jasper.tts_routing import (
 )
 from tests.install_surface import installer_shell_paths, installer_text
 from tests.reconcile_fixtures import fake_systemctl
+from tests.test_audio_hardware_reconcile import _dual_apple_cards
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -211,46 +213,69 @@ def _bash_function(path: Path, name: str) -> str:
 
 # The role gate that enables/disables these two units is covered end to end by
 # tests/test_audio_hardware_reconcile.py, which also proves it is CALLED.
-NO_APPLE_DONGLE_LISTING = "hw:CARD=Other,DEV=0\n  Other DAC\n"
+DRIFTED_HEADPHONE_STATE = "  Front Left: Playback 80 [67%] [-20.00dB] [on]"
 
 
-def _apple_dongle_bin(tmp_path: Path, cards: str) -> tuple[Path, Path, Path]:
-    """A fake `aplay -L` listing that records every card probe, plus an
-    `amixer` that records its argv."""
-    bin_dir = tmp_path / f"bin{sum(1 for _ in tmp_path.iterdir())}"
+def _amixer_double(tmp_path: Path) -> tuple[Path, Path]:
+    """An `amixer` that records its argv and reports a drifted Headphone."""
+    bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = bin_dir / "amixer.log"  # absent until amixer is actually invoked
-    probes = bin_dir / "aplay.log"  # one line per card probe the helper runs
-    (bin_dir / "aplay").write_text(
-        "#!/usr/bin/env bash\n"
-        f'printf "probe\\n" >> "{probes}"\n'
-        f"printf '%s' {shlex.quote(cards)}\n"
-    )
     (bin_dir / "amixer").write_text(
-        f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "{log}"\n'
+        "#!/usr/bin/env bash\n"
+        f'printf "%s\\n" "$*" >> {shlex.quote(str(log))}\n'
+        f"printf '%s\\n' {shlex.quote(DRIFTED_HEADPHONE_STATE)}\n"
     )
-    for name in ("aplay", "amixer"):
-        (bin_dir / name).chmod(0o755)
-    return bin_dir, log, probes
+    (bin_dir / "amixer").chmod(0o755)
+    return bin_dir, log
 
 
-def _polled_on_or_exited(
-    monitor: subprocess.Popen[bytes], probes: Path
-) -> int | None:
-    """Block until the monitor probes for cards a SECOND time (it polled on) or
-    returns (it did not), whichever comes first: None for a poll, else the exit
-    code. Both outcomes are the monitor's own observable transitions, so this
-    verdict does not move with machine load. The ceiling is only a hang
-    backstop -- never a timing assertion (#3092)."""
+def _start_monitor(
+    tmp_path: Path, bin_dir: Path, board: dict[str, str], *, card: str = "auto"
+) -> tuple[subprocess.Popen[bytes], Path]:
+    """The drift monitor plus its journal, reading `board` through the
+    classifier's own seams."""
+    journal = tmp_path / "monitor.log"
+    return (
+        subprocess.Popen(
+            [
+                "/bin/bash",
+                str(REPO / "deploy" / "bin" / "jasper-headphone-monitor"),
+                card, "Headphone",
+            ],
+            cwd=REPO,
+            env={
+                **os.environ,
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "JASPER_OUTPUT_HARDWARE_PYTHON": sys.executable,
+                # `true -L` lists nothing, so an empty board stays empty
+                # instead of falling back to the dev machine's own cards.
+                "JASPER_APLAY": "true",
+                **board,
+            },
+            stdout=journal.open("wb"),
+            stderr=subprocess.DEVNULL,
+        ),
+        journal,
+    )
+
+
+def _await(monitor: subprocess.Popen[bytes], log: Path, expected: tuple[str, ...]):
+    """Block until every line in `expected` has reached `log`, or the monitor
+    exits. Both are the monitor's own observable transitions, so the verdict
+    does not move with machine load; the ceiling is only a hang backstop --
+    never a timing assertion (#3092)."""
     deadline = time.monotonic() + 120.0
+    text = ""
     while time.monotonic() < deadline:
-        if probes.exists() and probes.read_text().count("probe") >= 2:
-            return None
+        text = log.read_text() if log.exists() else ""
+        if all(line in text for line in expected):
+            return
         code = monitor.poll()
         if code is not None:
-            return code
+            raise AssertionError(f"monitor exited with {code}; {log.name}: {text!r}")
         time.sleep(0.02)
-    raise AssertionError("monitor neither probed a second time nor exited")
+    raise AssertionError(f"monitor never reached {expected}; {log.name}: {text!r}")
 
 
 def test_the_boot_pin_and_the_drift_monitor_resolve_their_card_at_runtime():
@@ -273,30 +298,94 @@ def test_the_boot_pin_and_the_drift_monitor_resolve_their_card_at_runtime():
     assert 's/__APPLE_DONGLE_CARD__/${APPLE_DONGLE_SERVICE_CARD}/g' in installer_text()
 
 
-def test_apple_dongle_headphone_monitor_keeps_polling_when_the_dongle_is_absent(
-    tmp_path,
-):
-    """The monitor is enabled on boxes whose dongle comes and goes, so an absent
-    dongle must be a poll, never an exit: any exit walks `Restart=on-failure`
-    into `StartLimitBurst` and parks the unit with nothing left to revive it."""
-    bin_dir, log, probes = _apple_dongle_bin(tmp_path, NO_APPLE_DONGLE_LISTING)
-    monitor = subprocess.Popen(
+_BOTH_APPLE_PINS = (
+    "-c A sset Headphone 100% unmute",
+    "-c A_1 sset Headphone 100% unmute",
+)
+
+
+def test_the_drift_monitor_pins_every_apple_card_the_classifier_names(tmp_path):
+    """Which attached cards are Apple is the classifier's answer, not a label
+    match in the shell (ADR-0235 R2): a board carrying two Apple DACs gets both
+    re-pinned, under the card ids the emitter named."""
+    bin_dir, log = _amixer_double(tmp_path)
+    monitor, _ = _start_monitor(tmp_path, bin_dir, _dual_apple_cards(tmp_path))
+    try:
+        _await(monitor, log, _BOTH_APPLE_PINS)
+    finally:
+        monitor.kill()
+        monitor.wait()
+
+
+def test_the_drift_monitor_trusts_an_explicit_configured_card(tmp_path):
+    """A non-`auto` argument is an operator override (ADR-0235 R2 carries this
+    branch forward from the deleted `resolve_cards`): the monitor pins that
+    card directly and never asks the classifier, so no Python is needed."""
+    bin_dir, log = _amixer_double(tmp_path)
+    empty = tmp_path / "sys" / "class" / "sound"
+    empty.mkdir(parents=True)
+    (tmp_path / "proc" / "asound").mkdir(parents=True)
+    monitor, _ = _start_monitor(
+        tmp_path,
+        bin_dir,
+        {
+            "JASPER_SYS_CLASS_SOUND": str(empty),
+            "JASPER_PROC_ASOUND": str(tmp_path / "proc" / "asound"),
+        },
+        card="Dongle_1",
+    )
+    try:
+        _await(monitor, log, ("-c Dongle_1 sset Headphone 100% unmute",))
+    finally:
+        monitor.kill()
+        monitor.wait()
+
+
+def test_the_drift_monitor_stays_up_and_re_asks_when_a_card_appears(tmp_path):
+    """The monitor is enabled on boxes whose dongle comes and goes, and
+    jasper-audio-hardware-reconcile never re-execs it (a restart per pass burns
+    `StartLimitBurst`). So an absent dongle must be a poll, never an exit, and
+    the card set must be re-asked when the board's cards move."""
+    bin_dir, log = _amixer_double(tmp_path)
+    empty = tmp_path / "sys" / "class" / "sound"
+    empty.mkdir(parents=True)
+    (tmp_path / "proc" / "asound").mkdir(parents=True)
+    monitor, journal = _start_monitor(
+        tmp_path,
+        bin_dir,
+        {
+            "JASPER_SYS_CLASS_SOUND": str(empty),
+            "JASPER_PROC_ASOUND": str(tmp_path / "proc" / "asound"),
+        },
+    )
+    try:
+        # The absent event is the monitor's own proof that it asked, and got
+        # no Apple card, BEFORE the board grew one.
+        _await(monitor, journal, ("event=apple_dongle.headphone_monitor.absent",))
+        assert not log.exists(), "nothing to reset when no dongle is present"
+        _dual_apple_cards(tmp_path)
+        _await(monitor, log, _BOTH_APPLE_PINS)
+    finally:
+        monitor.kill()
+        monitor.wait()
+
+
+def test_the_drift_monitor_fails_loudly_when_the_classifier_cannot_run(tmp_path):
+    """No card set, no work: the monitor names the reconciler's own
+    probe-unavailable reason and exits instead of spinning on a stale one."""
+    result = subprocess.run(
         [
             "/bin/bash",
             str(REPO / "deploy" / "bin" / "jasper-headphone-monitor"),
             "auto", "Headphone",
         ],
-        env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        env={**os.environ, "JASPER_OUTPUT_HARDWARE_PYTHON": str(tmp_path / "absent")},
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
-    try:
-        exited = _polled_on_or_exited(monitor, probes)
-    finally:
-        monitor.kill()
-        monitor.wait()
-    assert exited is None, f"monitor exited with {exited} instead of polling on"
-    assert not log.exists(), "nothing to reset when no dongle is present"
+    assert result.returncode == 1
+    assert "reason=python_unavailable" in result.stderr
 
 
 def test_apple_dongle_udev_rule_escapes_literal_headphone_percent():
