@@ -480,7 +480,8 @@ class ResolvedStop:
     1-based capture index the capture drives (``index == accepted_count + 1``).
     ``program_phase`` names the phase whose composed program object this stop plays;
     :func:`program_for_stop` turns it into the object -- a program question, never a
-    session-journey one (see the module docstring).
+    session-journey one (see the module docstring). ``candidate_id`` is the request
+    stop's, carried so a resolved walk names the variant each stop measures.
     """
 
     index: int
@@ -490,6 +491,7 @@ class ResolvedStop:
     prompt: CloudPositionPrompt
     program_phase: str
     screen: Mapping[str, str]
+    candidate_id: str = ""
 
     def __post_init__(self) -> None:
         # Frozen means frozen: read-only view, still compares equal to a plain dict.
@@ -528,6 +530,7 @@ def resolve_request(request: AngleCaptureRequest) -> tuple[ResolvedStop, ...]:
                 prompt=pose,
                 program_phase=_REGIME_PROGRAM_PHASE[stop.regime],
                 screen=_screen_policy(request, pose),
+                candidate_id=stop.candidate_id,
             )
         )
     return tuple(resolved)

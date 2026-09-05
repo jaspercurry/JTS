@@ -35,6 +35,12 @@ from ._refusal import (
 # PermissionError for the operator (#3498).
 from .round_views import default_out
 
+from jasper.active_speaker.angle_capture import (
+    LateralWalkRefused,
+    candidate_measure_axes,
+)
+from jasper.active_speaker.candidate_bank import banked_candidates
+from jasper.active_speaker.crossover_declaration import preset_crossover_geometry
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_PRESCRIPTION_MALFORMED,
     BlendPrescription,
@@ -739,6 +745,55 @@ def _declared_section(
     }
 
 
+def _candidate_records() -> list[dict[str, Any]]:
+    """Every banked candidate a walk could cycle, with the verdict staging will give it.
+
+    The bank belongs to the SPEAKER rather than to this round, so it is read
+    through its own listing reader and not from the packet; that reader's scan
+    bound sizes this list. ``reason`` carries the seam's sentence rather than
+    its slug: every refusal here is ``walk_candidate_not_measurable``, so only
+    the sentence says which of the three shapes a candidate has.
+    """
+    records: list[dict[str, Any]] = []
+    for banked in banked_candidates():
+        candidate = banked.candidate
+        measurable, reason = True, None
+        try:
+            candidate_measure_axes(candidate)
+        except LateralWalkRefused as exc:
+            measurable, reason = False, exc.detail
+        minted = preset_crossover_geometry(candidate.source_preset)
+        corner: dict[str, Any] | None = None
+        if minted is not None:
+            roles, geometry = minted
+            corner = {
+                "between_roles": list(roles),
+                "fc_hz": geometry.fc_hz,
+                "filter_type": geometry.filter_type,
+                "slope_db_per_octave": geometry.slope_db_per_octave,
+            }
+        alignment = candidate.alignment
+        records.append({
+            "fingerprint": banked.fingerprint,
+            "bundle_session_id": banked.bundle_session_id,
+            "capture_session_id": banked.capture_session_id,
+            "corner": corner,
+            "alignment": {
+                "polarity": alignment.polarity,
+                "delay_us": alignment.delay_us,
+                "delay_role": alignment.delay_role,
+            },
+            "measurable": measurable,
+            "reason": reason,
+        })
+    return records
+
+
+def _measurable_fingerprints(candidates: list[dict[str, Any]]) -> list[str]:
+    """The banked candidates a walk may stage, in bank order."""
+    return [one["fingerprint"] for one in candidates if one["measurable"]]
+
+
 def _degree_list(block: dict[str, Any], key: str) -> list[int]:
     """One of the packet's whole-degree lists, or empty when it published none."""
 
@@ -759,6 +814,7 @@ def _banked_section(
     """
     region = packet_region_band_hz(packet)
     verdicts = packet_feature_classifications(packet)
+    candidates = _candidate_records()
     region_state: dict[str, Any] = {
         "available": region is not None,
         "band_hz": [region[0], region[1]] if region else None,
@@ -822,6 +878,11 @@ def _banked_section(
         )
         if walk["available"]
         else f"; no walk takes ({walk['reason']})"
+    ) + (
+        f"; {len(candidates)} banked candidate(s), "
+        f"{len(_measurable_fingerprints(candidates))} measurable"
+        if candidates
+        else "; no banked candidate"
     )
     return {
         "available": available,
@@ -831,6 +892,7 @@ def _banked_section(
         "region": region_state,
         "classification": classification,
         "walk": walk,
+        "candidates": candidates,
         "summary": summary,
     }
 
@@ -956,6 +1018,14 @@ def _next_commands(
             commands.append(
                 shlex.join(["jasper-round-views", "classify-features", bundle])
             )
+    measurable = _measurable_fingerprints(sections["banked"]["candidates"])
+    # One candidate is not a comparison: a tournament exists to put two of them
+    # at one pose, adjacent, so the microphone moves once.
+    if len(measurable) > 1:
+        commands.append(shlex.join([
+            "jasper-angle-capture", "stage",
+            "--program", "tournament", "--candidates", ",".join(measurable),
+        ]))
     if not sections["staged"]["available"]:
         commands.append(
             " ".join([ORIENTATION_COMMAND, *(shlex.quote(w) for w in evidence)])

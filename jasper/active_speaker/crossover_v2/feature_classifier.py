@@ -1740,6 +1740,27 @@ def _pose_reading(
     return {**base, "resolved": True, "pooled_db": pooled, "centre_hz": centre}
 
 
+def _pose_persistence_block(readings: list[dict[str, Any]]) -> dict[str, Any]:
+    """One feature's pose table, under the spread across the poses that
+    RESOLVED it, so the position question is a number rather than N rows.
+
+    ``sigma_pooled_db`` is the sample standard deviation (ddof=1) of those
+    rows' ``pooled_db``, and ``None`` under two of them, where it is
+    undefined: a fabricated 0.0 would read as a feature that held perfectly
+    across a walk nobody took. A statistic, never a verdict -- what a spread
+    means for a filter is the reader's, on the methodology's thresholds.
+    """
+    resolved = [row["pooled_db"] for row in readings if row["resolved"]]
+    return {
+        "n_poses": len(readings),
+        "n_resolved": len(resolved),
+        "sigma_pooled_db": (
+            float(np.std(resolved, ddof=1)) if len(resolved) > 1 else None
+        ),
+        "poses": readings,
+    }
+
+
 def _pose_bank_block(pose_curves: Sequence[RoundPoseCurve]) -> dict[str, Any]:
     """This round's lateral-pose bank, once -- what every row's
     ``pose_persistence`` table is read against.
@@ -2350,10 +2371,10 @@ def classify_round(
         )
         row["gate_rungs"] = gate_call["gate_rungs"]
         row["gate_sensitivity"] = gate_call["gate_sensitivity"]
-        row["pose_persistence"] = [
+        row["pose_persistence"] = _pose_persistence_block([
             _pose_reading(curve, detrended, fc, pooled_db[key] < 0)
             for curve, detrended in zip(pose_curves, pose_detrended)
-        ]
+        ])
         row["decay"] = {
             name: _decay_read(decay_host, band)
             for name, band in _decay_bands_hz(fc).items()
