@@ -106,9 +106,9 @@ memfd sealing. Every cycle moves zero bytes between processes.
 
 Two free-running clocks that must stay sample-aligned is a delay-locked-loop
 problem by definition, and JTS has it in several places it currently
-hand-waves: a future **wireless subwoofer** receiver, **multiroom followers**,
-and the **chip-AEC SRO** recovery (`content_bridge.rs`'s `RateController`
-already *wants* to be a DLL). Where JTS does run its own loop (CamillaDSP
+hand-waves: **multiroom followers** and the **chip-AEC SRO** recovery
+(`content_bridge.rs`'s `RateController` already *wants* to be a DLL). Where
+JTS does run its own loop (CamillaDSP
 `rate_adjust`) it has already hit the first-order-oscillation failure mode the
 DLL's `z3` integrator + adaptive bandwidth are built to avoid.
 
