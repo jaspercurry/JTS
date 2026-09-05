@@ -1367,9 +1367,8 @@ async def _get_state(
             # {"status": "absent"} on a healthy boot. Same reader
             # jasper-doctor's check_camilla_recover_park uses.
             "camilla_recover": camilla_recover_state.snapshot(),
-            # jasper-outputd's ExecStopPost failure-reconcile stamp plus the
-            # park it implies. parked=true means the helper already spent its
-            # reconcile window and outputd is still failed: it owns the DAC
+            # jasper-outputd's ExecStopPost park record. parked=true means the
+            # stop helper judged the failure terminal: outputd owns the DAC
             # write loop, so the speaker emits NOTHING until the output env is
             # fixed and the unit restarted. Same reader jasper-doctor's
             # check_outputd_failure_reconcile_park uses.

@@ -28,6 +28,11 @@ CONFIG_EXIT_STATUS=78
 # interpreter instead of a dozen-plus.
 RECONCILE_STAMP="${JASPER_OUTPUTD_CONFIG_RETRY_STATE:-/run/jasper-outputd/failure-reconcile.stamp}"
 RECONCILE_WINDOW_SEC="${JASPER_OUTPUTD_CONFIG_RETRY_WINDOW_SEC:-300}"
+# Deliberately OUTSIDE RuntimeDirectory=jasper-outputd: systemd removes that
+# directory when the unit stops without a restart, which is exactly the park
+# this record reports. jasper-outputd.service's ExecStartPost removes it when
+# outputd next reaches READY; jasper/outputd_failure_reconcile_state.py reads it.
+PARK_RECORD="${JASPER_OUTPUTD_RECONCILE_PARK_STATE:-/run/jasper-outputd-failure-reconcile.park}"
 
 log() {
     local outcome="$1"
@@ -52,6 +57,23 @@ mark_reconcile() {
     now_sec > "$RECONCILE_STAMP" 2>/dev/null || true
 }
 
+# Exit 78 is held by RestartPreventExitStatus=, so a pass that hands it no
+# retry leaves the unit parked with nothing to bring it back. Only this script
+# knows which of its branches did that, so it records the park rather than
+# leaving a reader to infer one from the dedup stamp.
+park_if_config() {
+    [[ "$STATUS" == "$CONFIG_EXIT_STATUS" ]] || return 0
+    local tmp="${PARK_RECORD}.tmp.$$"
+    # tempfile+rename so a reader never sees a truncated record.
+    {
+        printf 'parked_at=%s\n' "$(now_sec)"
+        printf 'exit_status=%s\n' "$STATUS"
+        printf 'reason=%s\n' "$1"
+    } >"$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$PARK_RECORD" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+    log park reason="$1" state="$PARK_RECORD"
+}
+
 # `exec-condition` is systemd's own SERVICE_RESULT spelling for an
 # ExecCondition skip (systemd.service(5) $SERVICE_RESULT).
 if [[ "$RESULT" == "success" || "$RESULT" == "exec-condition" ]]; then
@@ -61,11 +83,13 @@ fi
 
 if [[ ! -x "$RECONCILE" ]]; then
     log skip reason=reconciler_unavailable path="$RECONCILE"
+    park_if_config reconciler_unavailable
     exit 0
 fi
 
 if reconcile_recent; then
     log skip reason=recent state="$RECONCILE_STAMP"
+    park_if_config recent
     exit 0
 fi
 # Stamp before reconciling: a pass that is itself killed still spends the window.
@@ -79,6 +103,7 @@ if [[ "$STATUS" == "$CONFIG_EXIT_STATUS" ]]; then
     else
         rc=$?
         log failed reason=config_reconciler_nonzero rc="$rc" state="$RECONCILE_STAMP"
+        park_if_config config_reconciler_nonzero
     fi
     exit 0
 fi

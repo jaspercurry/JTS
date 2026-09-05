@@ -44,12 +44,8 @@ REASON_REBOOT_STATE_FUTURE_DATED = "reboot_state_future_dated"
 REASON_REBOOT_STATE_ARMED = "reboot_state_armed"
 
 REASON_OUTPUTD_RECONCILE_UNOBSERVED = "outputd_failure_reconcile_unobserved"
-REASON_OUTPUTD_RECONCILE_UNREADABLE = "outputd_failure_reconcile_unreadable"
-REASON_OUTPUTD_RECONCILE_UNINTELLIGIBLE = (
-    "outputd_failure_reconcile_unintelligible"
-)
-REASON_OUTPUTD_RECONCILE_NONE = "outputd_failure_reconcile_none"
-REASON_OUTPUTD_RECONCILED = "outputd_failure_reconciled"
+REASON_OUTPUTD_PARK_RECORD_STALE = "outputd_park_record_stale"
+REASON_OUTPUTD_UNIT_FAILED = "outputd_failed_without_park_record"
 REASON_OUTPUTD_PARKED = "outputd_failure_reconcile_parked"
 
 REASON_BOOTLOOP_GUARD_NOT_RUN = "bootloop_guard_not_run"
@@ -338,80 +334,79 @@ def _classify_reboot_state(path: Path, *, now: float | None = None) -> CheckResu
     )
 
 
+# Wall-clock before this reads as "the clock was not set yet", not as an age:
+# /run records survive no reboot, but a Pi with no RTC stamps 1970 until NTP
+# lands, and "2000000000s ago" is worse than saying so.
+_CLOCK_SET_EPOCH = 1577836800  # 2020-01-01T00:00:00Z
+
+
+def _parked_ago(parked_at: int | None, *, now: float | None = None) -> str:
+    if parked_at is None:
+        return "at an unrecorded time"
+    if parked_at < _CLOCK_SET_EPOCH:
+        return "with the clock unset at park time"
+    age = (time.time() if now is None else now) - parked_at
+    return f"{age:.0f}s ago"
+
+
 @doctor_check()
 def check_outputd_failure_reconcile_park() -> CheckResult:
-    """outputd is not parked behind a spent failure-reconcile window.
+    """outputd is running, and carries no park record from its stop helper.
 
-    ``jasper-outputd.service``'s ``ExecStopPost=`` helper refreshes the
-    output-hardware env once per window and gives a CONFIG failure (exit 78)
-    one explicit retry; a second failure inside that window gets nothing, and
-    ``RestartPreventExitStatus=78`` leaves the unit failed with no automatic
-    path back. ``speaker_silent`` on that branch: outputd owns the DAC write
-    loop (docs/audio-paths.md), so with it failed nothing writes the card and
-    the speaker emits NOTHING.
+    Why a stop can park outputd for good: see
+    deploy/bin/jasper-outputd-failure-reconcile. This check owns outputd's
+    runtime state (it is deliberately not in ``_RUNTIME_STATE_UNITS``), so one
+    failed outputd is one fail row. ``speaker_silent`` on both fail branches:
+    outputd owns the DAC write loop (docs/audio-paths.md), so with it down
+    nothing writes the card and the speaker emits NOTHING.
     """
     label = "outputd failure-reconcile"
-    state = outputd_failure_reconcile_state.snapshot(
-        evidence.unit_state(outputd_failure_reconcile_state.UNIT),
-    )
+    reader = outputd_failure_reconcile_state
+    state = reader.snapshot(evidence.unit_state(reader.UNIT))
     reason = state.get("reason")
     path = state.get("path")
 
-    if reason == outputd_failure_reconcile_state.REASON_RUNTIME_DIR_ABSENT:
+    if reason == reader.REASON_UNOBSERVED:
+        error = state.get("error")
         return CheckResult(
             label, "skipped",
-            f"no {Path(str(path)).parent} — outputd has not run this boot",
+            f"park record at {path} unreadable ({error})" if error
+            else "systemctl unavailable — a park cannot be ruled out",
             reason=REASON_OUTPUTD_RECONCILE_UNOBSERVED,
         )
-    if reason == outputd_failure_reconcile_state.REASON_UNIT_STATE_UNAVAILABLE:
-        return CheckResult(
-            label, "skipped",
-            "systemctl unavailable — a park cannot be ruled out",
-            reason=REASON_OUTPUTD_RECONCILE_UNOBSERVED,
-        )
-    if reason == outputd_failure_reconcile_state.REASON_UNREADABLE:
-        return CheckResult(
-            label, "warn",
-            f"reconcile stamp at {path} exists but could not be read "
-            f"({state.get('error')}) — a park cannot be ruled out. Check "
-            "`journalctl -u jasper-outputd` for "
-            "event=outputd.failure_reconcile.*",
-            reason=REASON_OUTPUTD_RECONCILE_UNREADABLE,
-        )
-    if reason == outputd_failure_reconcile_state.REASON_UNINTELLIGIBLE:
-        return CheckResult(
-            label, "warn",
-            f"reconcile stamp at {path} carries no epoch second (a truncated "
-            "write) — the helper reads it as no reconcile and will spend a "
-            "fresh window on the next failure",
-            reason=REASON_OUTPUTD_RECONCILE_UNINTELLIGIBLE,
-        )
-    if reason == outputd_failure_reconcile_state.REASON_NO_RECONCILE:
-        return CheckResult(
-            label, "ok", "outputd has not failed this boot",
-            reason=REASON_OUTPUTD_RECONCILE_NONE,
-        )
-    if reason == outputd_failure_reconcile_state.REASON_PARKED:
+    if reason == reader.REASON_PARKED:
         return CheckResult(
             label, "fail",
-            "PARKED — outputd is failed "
-            f"(result={state.get('result') or '?'}) after its ExecStopPost "
-            f"reconcile pass {state.get('age_s')}s ago did not bring it back. "
-            "Exit 78 (bad output config) is held by "
-            "RestartPreventExitStatus, so nothing retries it. Fix the "
-            "output env, then `systemctl restart jasper-outputd`.",
+            "PARKED — jasper-outputd's stop helper recorded a park "
+            f"{_parked_ago(state.get('parked_at'))} "
+            f"(exit_status={state.get('exit_status') or '?'}, "
+            f"reason={state.get('park_reason') or '?'}) and nothing retries "
+            f"it. Fix the output env, `systemctl restart jasper-outputd`, "
+            f"then delete {path} if it survives.",
             speaker_silent=True,
             reason=REASON_OUTPUTD_PARKED,
         )
+    if reason == reader.REASON_UNIT_FAILED:
+        return CheckResult(
+            label, "fail",
+            f"{reader.UNIT} is failed with no park record — its stop helper "
+            "did not judge this terminal, so systemd's Restart=on-failure "
+            "should be retrying. Check `journalctl -u jasper-outputd`.",
+            speaker_silent=True,
+            reason=REASON_OUTPUTD_UNIT_FAILED,
+        )
+    if reason == reader.REASON_RECORD_STALE:
+        return CheckResult(
+            label, "warn",
+            f"park record at {path} is stale — outputd is running, so the "
+            "unit's ExecStartPost removal did not fire. Delete it; a later "
+            "unrelated failure would otherwise read as this park.",
+            reason=REASON_OUTPUTD_PARK_RECORD_STALE,
+        )
     return CheckResult(
-        label, "ok",
-        f"reconciled {state.get('age_s')}s ago; outputd is not failed"
-        + (
-            f" (window of {state.get('window_sec')}s still spent)"
-            if state.get("window_spent") else ""
-        ),
-        reason=REASON_OUTPUTD_RECONCILED,
+        label, "ok", f"{reader.UNIT} is running and carries no park record",
     )
+
 
 @doctor_check()
 def check_bootloop_guard() -> CheckResult:

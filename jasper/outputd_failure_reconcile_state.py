@@ -4,154 +4,103 @@
 
 """Read-only snapshot of the outputd failure-reconcile park.
 
-``deploy/bin/jasper-outputd-failure-reconcile`` runs from
-``jasper-outputd.service``'s ``ExecStopPost=``. On any failure stop it
-refreshes the output-hardware env before systemd's ``Restart=on-failure``
-retry, and it bounds itself to one reconcile per window across every failure
-class with a stamp file holding the epoch second of that pass. A CONFIG
-failure (exit 78, ``EX_CONFIG``) additionally gets one explicit retry; a
-second exit 78 inside the same window finds the window already spent, does
-nothing, and ``RestartPreventExitStatus=78`` leaves the unit parked.
+``deploy/bin/jasper-outputd-failure-reconcile`` (jasper-outputd.service's
+``ExecStopPost=``) writes the record read here on the branches that leave
+outputd parked; that unit's ``ExecStartPost=`` removes it once outputd is READY
+again. Why exit 78 parks lives in the script — the actor that knows.
 
-This module is the ONE reader of that pair of facts (ADR-0233 rule 1), with
-two consumers — jasper-doctor's ``check_outputd_failure_reconcile_park`` and
-``/state.resilience.outputd_failure_reconcile`` — so the operator and the
-household surfaces cannot disagree about whether the box is parked.
-
-**The systemd half is passed in, never re-read here.** Both consumers already
-hold a ``systemctl show`` view (the doctor's per-run evidence memo, and
-jasper-control's system-metrics sampler), and ADR-0233 rule 2 forbids
-``/state`` growing a probe that forks per request.
-
-**Freshness.** Re-read on every call: neither consumer restarts when outputd
-parks, so a value captured at import would be permanently wrong.
+ONE reader, two consumers (ADR-0233 rule 1): jasper-doctor's
+``check_outputd_failure_reconcile_park`` and
+``/state.resilience.outputd_failure_reconcile``. The systemd half is passed in,
+never re-read here: both consumers hold a ``systemctl show`` view already and
+rule 2 forbids ``/state`` growing a per-request fork. Re-read on every call —
+neither consumer restarts when outputd parks.
 """
 from __future__ import annotations
 
 import os
-import time
 from typing import Any, Mapping
 
-#: The unit whose ``ExecStopPost=`` owns the stamp.
+from .control import park_record
+from .service_units import unit_failed
+
+#: The unit whose ``ExecStopPost=`` writes the record and ``ExecStartPost=``
+#: removes it.
 UNIT = "jasper-outputd.service"
 
-#: Must equal ``RECONCILE_STAMP`` / ``RECONCILE_WINDOW_SEC`` defaults in
-#: ``deploy/bin/jasper-outputd-failure-reconcile``. Pinned against that script
-#: by ``tests/test_outputd_failure_reconcile_state.py`` — a literal duplicated
-#: across a shell writer and a Python reader is exactly the pair that drifts.
-DEFAULT_STAMP_PATH = "/run/jasper-outputd/failure-reconcile.stamp"
-DEFAULT_WINDOW_SEC = 300
+#: Must equal ``PARK_RECORD``'s default in the script and the path the unit's
+#: ``ExecStartPost=`` removes; pinned against both by
+#: ``tests/test_outputd_failure_reconcile_state.py``. Deliberately outside
+#: ``RuntimeDirectory=jasper-outputd``, which systemd deletes on the very stop
+#: this record reports.
+DEFAULT_RECORD_PATH = "/run/jasper-outputd-failure-reconcile.park"
 
 #: Closed vocabulary for ``snapshot()["reason"]``.
-REASON_RUNTIME_DIR_ABSENT = "runtime_dir_absent"
-REASON_NO_RECONCILE = "no_reconcile"
-REASON_UNREADABLE = "unreadable"
-REASON_UNINTELLIGIBLE = "unintelligible"
-REASON_UNIT_STATE_UNAVAILABLE = "unit_state_unavailable"
-REASON_RECONCILED = "reconciled"
 REASON_PARKED = "parked"
-
-
-def _stamp_path() -> str:
-    return os.environ.get(
-        "JASPER_OUTPUTD_CONFIG_RETRY_STATE", DEFAULT_STAMP_PATH
-    )
-
-
-def _window_sec() -> int:
-    raw = os.environ.get("JASPER_OUTPUTD_CONFIG_RETRY_WINDOW_SEC")
-    try:
-        return int(raw) if raw else DEFAULT_WINDOW_SEC
-    except ValueError:
-        return DEFAULT_WINDOW_SEC
-
-
-def _base(path: str, window: int) -> dict[str, Any]:
-    return {
-        "present": False,
-        "path": path,
-        "at": None,
-        "age_s": None,
-        "window_sec": window,
-        "window_spent": False,
-        "parked": False,
-    }
+REASON_UNIT_FAILED = "unit_failed"
+REASON_RECORD_STALE = "park_record_stale"
+REASON_UNOBSERVED = "unobserved"
+REASON_OK = "ok"
 
 
 def snapshot(
     unit_state: Mapping[str, Any] | None = None,
     *,
     path: str | None = None,
-    now: float | None = None,
 ) -> dict[str, Any]:
-    """Fail-soft read of the failure-reconcile stamp and the park it implies.
+    """Fail-soft read of the outputd park record. Never raises.
 
     ``unit_state`` is ``jasper-outputd.service``'s record from
-    :func:`jasper.service_units.read_unit_states` (``None`` where the caller
-    has no systemd view). ``parked`` is True only when a reconcile pass is on
-    record AND the unit is sitting ``failed``: the helper already ran and did
-    not bring outputd back, and outputd owns the DAC write loop.
+    :func:`jasper.service_units.read_unit_states`, ``None`` where the caller has
+    no systemd view. ``parked`` is True iff the record exists — the helper
+    writes one only where it knows outputd is parked, so the record IS the park,
+    and the unit view serves only to spot a stale one. ``reason``:
 
-    ``reason`` is one of the module's ``REASON_*`` constants:
-
-    ``runtime_dir_absent``
-        No ``/run/jasper-outputd`` — systemd removes the RuntimeDirectory when
-        the unit stops for good, so there is no evidence either way.
-    ``no_reconcile``
-        Runtime directory present, no stamp: outputd has not failed this boot.
-    ``unreadable`` / ``unintelligible``
-        The stamp is there but cannot be read, or does not hold an epoch
-        second. Reported distinctly from absent — a surface this module cannot
-        read must not report a healthy speaker.
-    ``unit_state_unavailable``
-        A reconcile is on record but the caller has no systemd view, so the
-        park cannot be ruled in or out.
-    ``reconciled``
-        A reconcile is on record and outputd is not failed — the helper did
-        its job.
-    ``parked``
-        A reconcile is on record and outputd is failed.
-
-    Never raises.
+    * ``parked`` — record present; ``parked_at``/``exit_status``/
+      ``park_reason`` carry the writer's fields, None where a partial write
+      lost them.
+    * ``unit_failed`` — no record, outputd failed: something other than a
+      spent exit-78 window stopped it.
+    * ``park_record_stale`` — record present, outputd running: the removal
+      hook did not fire.
+    * ``unobserved`` — unreadable, or absent with no systemd view. A surface
+      this module cannot read must not report a healthy speaker.
+    * ``ok`` — no record, outputd running.
     """
-    target = path if path is not None else _stamp_path()
-    window = _window_sec()
-    out = _base(target, window)
+    target = path if path is not None else os.environ.get(
+        "JASPER_OUTPUTD_RECONCILE_PARK_STATE", DEFAULT_RECORD_PATH
+    )
+    out: dict[str, Any] = {"path": target, "present": False, "parked": False}
+    terminal, fields = park_record.read(target)
 
-    try:
-        with open(target, encoding="utf-8", errors="replace") as fh:
-            raw = fh.read()
-    except FileNotFoundError:
-        if not os.path.isdir(os.path.dirname(target) or "/"):
-            out["reason"] = REASON_RUNTIME_DIR_ABSENT
-            return out
-        out["reason"] = REASON_NO_RECONCILE
-        return out
-    except OSError as exc:
-        out["reason"] = REASON_UNREADABLE
-        out["error"] = str(exc)
-        return out
-
-    try:
-        at = int(raw.strip())
-    except ValueError:
-        out["present"] = True
-        out["reason"] = REASON_UNINTELLIGIBLE
+    if terminal is not None:
+        if terminal.get("status") == "unreadable":
+            out["error"] = terminal.get("error")
+            out["reason"] = REASON_UNOBSERVED
+        elif unit_state is None:
+            out["reason"] = REASON_UNOBSERVED
+        else:
+            out["reason"] = (
+                REASON_UNIT_FAILED if unit_failed(unit_state) else REASON_OK
+            )
         return out
 
-    age = (time.time() if now is None else now) - at
-    out["present"] = True
-    out["at"] = at
-    out["age_s"] = round(age, 1)
-    out["window_spent"] = 0 <= age < window
-
-    if unit_state is None:
-        out["reason"] = REASON_UNIT_STATE_UNAVAILABLE
+    out.update({
+        "present": True,
+        "parked_at": _epoch(fields.get("parked_at")),
+        "exit_status": fields.get("exit_status"),
+        "park_reason": fields.get("reason"),
+    })
+    if unit_state is not None and not unit_failed(unit_state):
+        out["reason"] = REASON_RECORD_STALE
         return out
-    if unit_state.get("active_state") == "failed":
-        out["parked"] = True
-        out["reason"] = REASON_PARKED
-        out["result"] = unit_state.get("result")
-        return out
-    out["reason"] = REASON_RECONCILED
+    out["parked"] = True
+    out["reason"] = REASON_PARKED
     return out
+
+
+def _epoch(raw: str | None) -> int | None:
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
