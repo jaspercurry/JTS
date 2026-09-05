@@ -18,6 +18,9 @@ import pytest
 
 
 from jasper.cli import doctor
+# `main` and `run_async` resolve these names in their own module's
+# namespace, so a patch aimed at the package would not apply.
+from jasper.cli.doctor import _cli, _harness
 from jasper.cli.doctor import CheckResult, render_json, renderers
 from jasper.cli.doctor._registry import RegisteredCheck
 from jasper.config import Config
@@ -32,13 +35,13 @@ def _reg(func, *, module="env", **kw) -> RegisteredCheck:
 def test_json_mode_reports_unhandled_check_exception(monkeypatch, capsys):
     """Machine-readable mode should stay machine-readable even if a
     diagnostic check raises unexpectedly."""
-    monkeypatch.setattr(doctor, "_load_env_files", lambda: None)
+    monkeypatch.setattr(_cli, "_load_env_files", lambda: None)
     monkeypatch.setattr(Config, "from_env", staticmethod(lambda: object()))
 
     async def boom(_cfg):
         raise RuntimeError("synthetic failure")
 
-    monkeypatch.setattr(doctor, "run_async", boom)
+    monkeypatch.setattr(_cli, "run_async", boom)
     monkeypatch.setattr(sys, "argv", ["jasper-doctor", "--json"])
 
     try:
@@ -65,8 +68,8 @@ def test_json_mode_endpoint_tier_does_not_require_voice_provider(
     it should still report endpoint health instead of failing at Config
     construction.
     """
-    monkeypatch.setattr(doctor, "_load_env_files", lambda: None)
-    monkeypatch.setattr(doctor, "read_install_profile", lambda: "endpoint")
+    monkeypatch.setattr(_cli, "_load_env_files", lambda: None)
+    monkeypatch.setattr(_cli, "read_install_profile", lambda: "endpoint")
     monkeypatch.setattr(
         Config,
         "from_env",
@@ -82,7 +85,7 @@ def test_json_mode_endpoint_tier_does_not_require_voice_provider(
         assert cfg.usage_db == "/tmp/jasper-endpoint-usage.db"
         return [doctor.CheckResult("endpoint smoke", "ok", "minimal cfg")]
 
-    monkeypatch.setattr(doctor, "run_async", fake_run_async)
+    monkeypatch.setattr(_cli, "run_async", fake_run_async)
     monkeypatch.setattr(sys, "argv", ["jasper-doctor", "--json"])
 
     try:
@@ -160,9 +163,9 @@ def test_legacy_endpoint_token_doctor_behaves_as_streambox(monkeypatch):
         ran.append("web")
         return doctor.CheckResult("management surface", "ok", "ran")
 
-    monkeypatch.setattr(doctor, "read_install_profile", lambda: "endpoint")
+    monkeypatch.setattr(_harness, "read_install_profile", lambda: "endpoint")
     monkeypatch.setattr(
-        doctor,
+        _harness,
         "registered_checks",
         lambda: [
             _reg(env_check),
@@ -247,9 +250,9 @@ def test_streambox_profile_doctor_keeps_local_audio_groups(monkeypatch):
         ran.append("correction")
         return doctor.CheckResult("room correction service", "ok", "ran")
 
-    monkeypatch.setattr(doctor, "read_install_profile", lambda: "streambox")
+    monkeypatch.setattr(_harness, "read_install_profile", lambda: "streambox")
     monkeypatch.setattr(
-        doctor,
+        _harness,
         "registered_checks",
         lambda: [
             _reg(voice_check, module="voice", needs_cfg=True, label="provider key"),
@@ -300,9 +303,9 @@ def test_run_async_parallelizes_blocking_checks_but_preserves_order(
 
         return check
 
-    monkeypatch.setattr(doctor, "read_install_profile", lambda: "full")
+    monkeypatch.setattr(_harness, "read_install_profile", lambda: "full")
     monkeypatch.setattr(
-        doctor,
+        _harness,
         "registered_checks",
         lambda: [
             _reg(make_check(name, 0.15)) for name in "abcdef"
@@ -337,9 +340,9 @@ def test_run_async_serializes_checks_in_same_exclusive_group(monkeypatch):
         time.sleep(0.05)
         return doctor.CheckResult("c", "ok", "ran")
 
-    monkeypatch.setattr(doctor, "read_install_profile", lambda: "full")
+    monkeypatch.setattr(_harness, "read_install_profile", lambda: "full")
     monkeypatch.setattr(
-        doctor,
+        _harness,
         "registered_checks",
         lambda: [
             _reg(exclusive("a"), exclusive_group="audio-probe"),

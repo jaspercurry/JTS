@@ -374,7 +374,7 @@ module = [
     "jasper.citibike",
     "jasper.cli.aec_bridge",
     "jasper.cli.aec_init",
-    "jasper.cli.doctor",
+    "jasper.cli.doctor._harness",
     "jasper.cli.doctor.aec",
     "jasper.cli.doctor.audio",
     "jasper.cli.doctor.correction",
