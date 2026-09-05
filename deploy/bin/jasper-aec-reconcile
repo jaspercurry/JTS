@@ -187,6 +187,7 @@ publish_aec_bridge_ready() {
     if ensure_parent_dir "$AEC_BRIDGE_READY_MARKER" \
         && printf 'reason=%s\n' "$REASON" \
             > "$AEC_BRIDGE_READY_MARKER" 2>/dev/null; then
+        log "event=aec_reconcile.bridge_ready state=published"
         return 0
     fi
     log "event=aec_reconcile.aec_ready_marker_write_failed marker=${AEC_BRIDGE_READY_MARKER}"
@@ -194,6 +195,7 @@ publish_aec_bridge_ready() {
 
 revoke_aec_bridge_ready() {
     rm -f "$AEC_BRIDGE_READY_MARKER" 2>/dev/null || true
+    log "event=aec_reconcile.bridge_ready state=revoked"
 }
 
 # Withdraw FIRST, on every pass, and republish only where a verdict settles.
@@ -1195,7 +1197,7 @@ resolve_measurement_usb_ids() {
     [[ "$MEASUREMENT_USB_IDS_STATUS" == "unresolved" ]] || return 0
     if ! command -v "$MIC_PROFILE_PYTHON" >/dev/null 2>&1; then
         MEASUREMENT_USB_IDS_STATUS="unavailable"
-        log "measurement-mic registry unavailable at ${MIC_PROFILE_PYTHON}; measurement mics are NOT excluded from the mic candidates this pass"
+        log "event=aec_reconcile.measurement_registry status=unavailable python=${MIC_PROFILE_PYTHON}"
         return 0
     fi
     # stderr is deliberately NOT redirected: a traceback from a partial deploy
@@ -1205,7 +1207,7 @@ resolve_measurement_usb_ids() {
         MEASUREMENT_USB_IDS_STATUS="resolved"
     else
         MEASUREMENT_USB_IDS_STATUS="failed"
-        log "measurement-mic registry probe failed (see the message above); measurement mics are NOT excluded from the mic candidates this pass"
+        log "event=aec_reconcile.measurement_registry status=failed python=${MIC_PROFILE_PYTHON}"
     fi
     return 0
 }
@@ -1314,10 +1316,13 @@ ensure_capture_mixer_open() {
         volume+=",${JASPER_XVF_MIXER_VOLUME_MAX:-}"
     done
     amixer -c "$card" cset name="${JASPER_XVF_MIXER_CAPTURE_SWITCH:-}" \
-        "${switch#,}" >/dev/null 2>&1 || true
+        "${switch#,}" >/dev/null 2>&1 \
+        || log "event=aec_reconcile.mixer_repair result=failed control=${JASPER_XVF_MIXER_CAPTURE_SWITCH:-}"
     amixer -c "$card" cset name="${JASPER_XVF_MIXER_CAPTURE_VOLUME:-}" \
-        "${volume#,}" >/dev/null 2>&1 || true
-    alsactl store >/dev/null 2>&1 || true
+        "${volume#,}" >/dev/null 2>&1 \
+        || log "event=aec_reconcile.mixer_repair result=failed control=${JASPER_XVF_MIXER_CAPTURE_VOLUME:-}"
+    alsactl store >/dev/null 2>&1 ||
+        log "event=aec_reconcile.mixer_repair result=failed control=alsactl_store"
 }
 
 split_candidates() {
@@ -1630,7 +1635,7 @@ mark_voice_input_absent() {
     # trap).
     if printf 'reason=%s\n' "$reason" > "$VOICE_INPUT_ABSENT_MARKER" 2>/dev/null; then
         chmod 0644 "$VOICE_INPUT_ABSENT_MARKER" 2>/dev/null || true
-        log "voice input absent: marked ${VOICE_INPUT_ABSENT_MARKER} (${reason}); jasper-voice gated off until a mic appears"
+        log "event=aec_reconcile.voice_input_absent state=marked reason=${reason}"
         return
     fi
     # No marker means no gate, and exit 66 cannot stand in for one: it needs a
@@ -1646,8 +1651,10 @@ mark_voice_input_absent() {
 
 clear_voice_input_absent() {
     if [[ -e "$VOICE_INPUT_ABSENT_MARKER" ]]; then
+        local line
+        IFS= read -r line < "$VOICE_INPUT_ABSENT_MARKER" || line=""
         rm -f "$VOICE_INPUT_ABSENT_MARKER" 2>/dev/null || true
-        log "voice input present: cleared ${VOICE_INPUT_ABSENT_MARKER}; jasper-voice gate open"
+        log "event=aec_reconcile.voice_input_absent state=cleared reason=${line#reason=}"
     fi
     # The other half of the mark fallback above, and unconditional for the same
     # reason the mark's `disable` is: this pass cannot know whether an earlier
@@ -2163,7 +2170,7 @@ else
     PRESENT_MIC=""
 fi
 
-log "profile=${AUDIO_INPUT_PROFILE} mode=${AEC_MODE} current_mic=${CURRENT_MIC:-<unset>} aec_mic=${AEC_MIC_DEVICE} candidates=${MIC_CANDIDATES[*]:-<none>} legs=raw:${LEG_RAW},dtln:${LEG_DTLN},chip_aec:${LEG_CHIP_AEC},chip_aec_150:${LEG_CHIP_AEC_150},chip_aec_210:${LEG_CHIP_AEC_210}"
+log "event=aec_reconcile.pass profile=${AUDIO_INPUT_PROFILE} mode=${AEC_MODE} current_mic=${CURRENT_MIC:-<unset>} aec_mic=${AEC_MIC_DEVICE} candidates=${MIC_CANDIDATES[*]:-<none>} legs=raw:${LEG_RAW},dtln:${LEG_DTLN},chip_aec:${LEG_CHIP_AEC},chip_aec_150:${LEG_CHIP_AEC_150},chip_aec_210:${LEG_CHIP_AEC_210}"
 write_mic_profile_env
 write_local_mic_presence_env
 if profile_managed_mic_resolution; then
@@ -2243,9 +2250,9 @@ if [[ "$AEC_MODE" == "disabled" ]]; then
     if [[ -n "$PRESENT_MIC" ]]; then
         if [[ "$CURRENT_MIC" != "$PRESENT_MIC" ]]; then
             set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$PRESENT_MIC"
-            log "AEC disabled; selected direct mic ${PRESENT_MIC}"
+            log "event=aec_reconcile.direct_mic_selected reason=aec_disabled mic=${PRESENT_MIC} changed=1"
         else
-            log "AEC disabled; direct mic already ${PRESENT_MIC}"
+            log "event=aec_reconcile.direct_mic_selected reason=aec_disabled mic=${PRESENT_MIC} changed=0"
         fi
         restart_voice
     else
@@ -2299,8 +2306,8 @@ fi
 
 if [[ "$CURRENT_MIC" == udp:* || -z "$CURRENT_MIC" || "$CURRENT_MIC" =~ ^hw:[0-9]+,1$ ]]; then
     set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$FALLBACK_MIC"
-    log "no candidate mic present; cleared stale ${CURRENT_MIC:-<unset>} to ${FALLBACK_MIC}"
+    log "event=aec_reconcile.no_candidate_mic stale=${CURRENT_MIC:-<unset>} fallback=${FALLBACK_MIC} cleared=1"
 else
-    log "no candidate mic present"
+    log "event=aec_reconcile.no_candidate_mic current=${CURRENT_MIC} cleared=0"
 fi
 restart_voice_for_accessory_mic

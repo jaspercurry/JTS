@@ -121,6 +121,23 @@ def _env_assignments(path: Path) -> dict[str, str]:
     )
 
 
+def _event_values(stderr: str, event: str, field: str) -> list[str]:
+    """Every `field=` value, one per stderr line carrying `event=<event>`.
+
+    Captures up to the next `key=` token or end of line, never to the next
+    space alone: several of this reconciler's fields carry embedded spaces
+    (absence-marker `reason=` prose, ALSA mixer control names), so `field`
+    need not be the last key=value pair on the line. Same anchor-on-the-next-
+    known-field idiom the pass-summary `candidates=(.*?) legs=` pin already
+    relies on (ADR-0235 PR 12).
+    """
+    return re.findall(
+        rf"^.*\bevent={re.escape(event)}(?= |$).*\b{re.escape(field)}=(.*?)(?= \S+=|$)",
+        stderr,
+        flags=re.MULTILINE,
+    )
+
+
 def _shell_function_body(source: str, name: str) -> str:
     match = re.search(
         rf"^{re.escape(name)}\(\)\s*\{{\n(.*?)^\}}$",
@@ -162,22 +179,26 @@ def _publishing_init_systemctl(tmp_path: Path, health: AlignmentHealth) -> Path:
     )
 
 
-def _fake_mixer_tools(tmp_path: Path) -> tuple[Path, Path]:
+def _fake_mixer_tools(tmp_path: Path, failing: str = "") -> tuple[Path, Path]:
+    """A logging amixer/alsactl double. `failing` (amixer or alsactl), if
+    given, exits 1 after logging — a fake that fails on demand, so
+    ensure_capture_mixer_open's per-invocation event=aec_reconcile.mixer_repair
+    is exercised without a real mixer."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "mixer.log"
     # argv is logged PIPE-joined, never space-joined: the XVF capture mixer
     # control names carry spaces, so a space-joined log cannot tell one
     # argument from three and would read as covered over a quoting regression.
-    script = (
-        "#!/usr/bin/env bash\n"
-        "IFS='|'\n"
-        "printf '%s|%s\\n' \"${0##*/}\" \"$*\" >> \"$JASPER_MIXER_LOG\"\n"
-        "exit 0\n"
-    )
     for name in ("amixer", "alsactl"):
+        exit_code = 1 if name == failing else 0
         executable = bin_dir / name
-        executable.write_text(script)
+        executable.write_text(
+            "#!/usr/bin/env bash\n"
+            "IFS='|'\n"
+            "printf '%s|%s\\n' \"${0##*/}\" \"$*\" >> \"$JASPER_MIXER_LOG\"\n"
+            f"exit {exit_code}\n"
+        )
         executable.chmod(0o755)
     return bin_dir, log
 
@@ -615,6 +636,80 @@ def test_reconcile_enables_udp_aec_when_array_is_6_channel(tmp_path: Path) -> No
     assert lines.index("restart jasper-aec-bridge.service") < lines.index(
         VOICE_RESTART_CMD
     )
+
+
+def test_bridge_ready_marker_publish_and_revoke_are_events(tmp_path: Path) -> None:
+    """Ready-marker publish/revoke (ADR-0235 :187-204) are the most
+    load-bearing verdicts in the file — jasper-aec-bridge.service's
+    StartLimitAction=reboot gates on the marker — and had no event= line
+    before this PR (G12). Every pass withdraws first (unconditional), then
+    republishes only where a verdict settles (ADR-0224)."""
+    _stage(tmp_path, "Array", mode="auto", channels=6)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert _event_values(
+        result.stderr, "aec_reconcile.bridge_ready", "state"
+    ) == ["revoked", "published"]
+
+
+def test_bridge_ready_marker_stays_revoked_with_no_candidate_mic(
+    tmp_path: Path,
+) -> None:
+    """The mirror case: nothing admits the bridge, so the unconditional
+    top-of-pass revoke fires but the marker is never republished."""
+    _stage(tmp_path, "udp:9876", mode="auto")
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    states = _event_values(result.stderr, "aec_reconcile.bridge_ready", "state")
+    assert states and set(states) == {"revoked"}
+
+
+def test_voice_input_absent_marker_mark_carries_the_reason(tmp_path: Path) -> None:
+    """The absence marker's success path (ADR-0235 :1625) had no event= line
+    before this PR (G12); jasper-voice.service gates ExecStart on the
+    marker's absence, so this is what a no-input box's journal shows."""
+    _stage(tmp_path, "udp:9876", mode="auto")
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert _event_values(
+        result.stderr, "aec_reconcile.voice_input_absent", "state"
+    ) == ["marked"]
+    assert _event_values(
+        result.stderr, "aec_reconcile.voice_input_absent", "reason"
+    ) == ["no candidate microphone present and no accessory microphone paired"]
+
+
+def test_voice_input_absent_marker_clear_carries_the_markers_own_reason(
+    tmp_path: Path,
+) -> None:
+    """`clear`'s reason is whatever the marker body it just removed carried —
+    not a description of what un-parked voice this pass. Free-prose today
+    (jasper/mic_presence.py `_marker_reason`); emitted as-is (ADR-0235
+    PR 12), not a code vocabulary this PR does not own.
+
+    ``profile="custom"``, not ``mode="auto"``: a bare auto pass over a
+    real 6-channel XVF card resolves the managed chip-AEC profile and marks
+    (then clears) its OWN commissioning-validation reason, which would
+    overwrite the one under test before this pass's clear ever reads it.
+    """
+    _marker(tmp_path).write_text("reason=stale-no-mic\n")
+    _stage(tmp_path, "Array", profile="custom", channels=6)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert _event_values(
+        result.stderr, "aec_reconcile.voice_input_absent", "state"
+    ) == ["cleared"]
+    assert _event_values(
+        result.stderr, "aec_reconcile.voice_input_absent", "reason"
+    ) == ["stale-no-mic"]
 
 
 @pytest.mark.parametrize(
@@ -1064,6 +1159,42 @@ def test_reconcile_repairs_capture_mixer_before_arming_six_channel_aec(
     assert result.returncode == 0, result.stderr
     calls = mixer_log.read_text().splitlines() if mixer_log.exists() else []
     assert calls == (expected if repairs else [])
+
+
+@pytest.mark.parametrize(
+    ("failing", "controls"),
+    [
+        ("amixer", [xvf3800.MIXER_CAPTURE_SWITCH, xvf3800.MIXER_CAPTURE_VOLUME]),
+        ("alsactl", ["alsactl_store"]),
+    ],
+)
+def test_mixer_repair_failure_is_one_event_per_invocation(
+    tmp_path: Path, failing: str, controls: list[str]
+) -> None:
+    """ensure_capture_mixer_open swallows every amixer/alsactl error so a
+    mixer failure never parks voice — but each failing invocation must still
+    become one greppable event=aec_reconcile.mixer_repair line, or a
+    silent-mute regression has no signal (ADR-0235 PR 12 / G12)."""
+    bin_dir, mixer_log = _fake_mixer_tools(tmp_path, failing=failing)
+    _stage(tmp_path, "Array", mode="auto", channels=6)
+
+    result = _run_reconcile(
+        tmp_path,
+        "--reason",
+        "test",
+        extra_env={
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "JASPER_MIXER_LOG": str(mixer_log),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        _event_values(result.stderr, "aec_reconcile.mixer_repair", "control")
+        == controls
+    )
+    # Non-fatal: the pass still arms AEC on the same run.
+    assert "JASPER_MIC_DEVICE=udp:9876" in (tmp_path / "jasper.env").read_text()
 
 
 @pytest.mark.parametrize("provider_id", sorted(VALID_PROVIDER_IDS))
