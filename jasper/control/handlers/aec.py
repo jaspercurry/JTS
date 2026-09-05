@@ -10,7 +10,14 @@ import subprocess
 import time
 from typing import Any, cast
 
+from ...audio_profile_state import normalize_audio_input_profile
 from ...log_event import log_event
+from ...usb_mic import (
+    read_usb_mic_leg,
+    usb_mic_leg_choices,
+    write_usb_mic_enabled,
+    write_usb_mic_leg,
+)
 from .. import aec_endpoints
 from .. import server as _server
 from ._base import ControlHandlerMixin, logger
@@ -136,7 +143,7 @@ class AecRoutes(ControlHandlerMixin):
         log_event(
             logger,
             "aec.profile",
-            profile=_server.normalize_audio_input_profile(profile, default=""),
+            profile=normalize_audio_input_profile(profile, default=""),
             client=self.address_string(),
         )
         self._send_json(aec_endpoints._aec_full_status())
@@ -168,7 +175,7 @@ class AecRoutes(ControlHandlerMixin):
             )
             return
         try:
-            _server.write_usb_mic_enabled(enabled)
+            write_usb_mic_enabled(enabled)
         except OSError as exc:
             self._send_json(
                 {"error": f"write usb_mic.env failed: {exc}"},
@@ -214,7 +221,7 @@ class AecRoutes(ControlHandlerMixin):
         leg = leg.strip()
         # Match GET /aec's fresh reconciler-owned view. jasper-control is
         # long-lived, so its process environment can lag a mic hotplug.
-        choices = _server.usb_mic_leg_choices(aec_endpoints._fresh_jasper_env())
+        choices = usb_mic_leg_choices(aec_endpoints._fresh_jasper_env())
         allowed = {
             str(choice.get("value") or "")
             for choice in choices
@@ -238,7 +245,7 @@ class AecRoutes(ControlHandlerMixin):
         # authenticated changes cannot spend StartLimitAction=reboot's
         # recovery budget (the reconciler uses the same safety contract).
         with _server._usb_mic_leg_apply_lock:
-            persisted_matches = _server.read_usb_mic_leg() == leg
+            persisted_matches = read_usb_mic_leg() == leg
             if persisted_matches:
                 current_status = aec_endpoints._aec_full_status()
                 selection = (current_status.get("usb_mic") or {}).get(
@@ -272,7 +279,7 @@ class AecRoutes(ControlHandlerMixin):
                     return
             else:
                 try:
-                    _server.write_usb_mic_leg(leg)
+                    write_usb_mic_leg(leg)
                 except ValueError as exc:
                     self._send_json({"error": str(exc)}, status=400)
                     return

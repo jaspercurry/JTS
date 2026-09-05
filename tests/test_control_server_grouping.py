@@ -229,7 +229,7 @@ def test_grouping_set_delay_burst_coalesces_kicks_and_applies_last_env(
 def test_grouping_set_trim_only_live_applies_without_reconciler(
     monkeypatch, tmp_path, server_with_coordinator,
 ):
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.grouping as grouping_mod
     from jasper.multiroom.runtime_balance import LiveTrimApplyResult
 
     base, _ = server_with_coordinator
@@ -248,7 +248,7 @@ def test_grouping_set_trim_only_live_applies_without_reconciler(
         calls.append((trim_db, cfg.role, cfg.channel))
         return LiveTrimApplyResult(True, "outputd", trim_db)
 
-    monkeypatch.setattr(srv_mod, "apply_live_grouping_trim", fake_live_apply)
+    monkeypatch.setattr(grouping_mod, "apply_live_grouping_trim", fake_live_apply)
 
     status, body = _post(
         f"{base}/grouping/set",
@@ -277,7 +277,7 @@ def test_grouping_set_trim_only_live_applies_without_reconciler(
 def test_grouping_set_trim_only_falls_back_to_reconciler_on_live_apply_failure(
     monkeypatch, tmp_path, server_with_coordinator,
 ):
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.grouping as grouping_mod
     from jasper.multiroom.runtime_balance import LiveTrimApplyResult
 
     base, _ = server_with_coordinator
@@ -294,7 +294,7 @@ def test_grouping_set_trim_only_falls_back_to_reconciler_on_live_apply_failure(
     async def fake_live_apply(trim_db, *, cfg):
         return LiveTrimApplyResult(False, "outputd", trim_db, "socket down")
 
-    monkeypatch.setattr(srv_mod, "apply_live_grouping_trim", fake_live_apply)
+    monkeypatch.setattr(grouping_mod, "apply_live_grouping_trim", fake_live_apply)
 
     status, body = _post(
         f"{base}/grouping/set",
@@ -531,6 +531,7 @@ def test_grouping_get_returns_grouping_block(
     key — the block the dissolve flow reads to discover bond
     membership (role, bond_id, leader_addr)."""
     base, _ = server_with_coordinator
+    import jasper.control.handlers.grouping as grouping_mod
     import jasper.control.server as srv_mod
 
     snapshot = {
@@ -543,7 +544,7 @@ def test_grouping_get_returns_grouping_block(
         "codec": "flac",
         "error": None,
     }
-    monkeypatch.setattr(srv_mod, "read_grouping_state", lambda: snapshot)
+    monkeypatch.setattr(grouping_mod, "read_grouping_state", lambda: snapshot)
     monkeypatch.setattr(
         srv_mod,
         "read_active_speaker_setup_status",
@@ -575,11 +576,12 @@ def test_grouping_get_projects_readiness_under_peer_response_budget(
     public readiness projection remains small with ample headroom.
     """
     base, _ = server_with_coordinator
+    import jasper.control.handlers.grouping as grouping_mod
     import jasper.control.server as srv_mod
     from jasper.web.rooms_setup import PEER_RESPONSE_MAX_BYTES
 
     monkeypatch.setattr(
-        srv_mod,
+        grouping_mod,
         "read_grouping_state",
         lambda: {
             "enabled": False,
@@ -620,9 +622,10 @@ def test_grouping_get_requires_no_csrf(monkeypatch, server_with_coordinator):
     unauthenticated read on this no-auth LAN surface, like /state and
     /healthz."""
     base, _ = server_with_coordinator
+    import jasper.control.handlers.grouping as grouping_mod
     import jasper.control.server as srv_mod
 
-    monkeypatch.setattr(srv_mod, "read_grouping_state", lambda: {"enabled": False})
+    monkeypatch.setattr(grouping_mod, "read_grouping_state", lambda: {"enabled": False})
     monkeypatch.setattr(
         srv_mod,
         "read_active_speaker_setup_status",
@@ -643,12 +646,13 @@ def test_grouping_get_fails_soft_on_read_error(
     null grouping payload rather than 500 — mirrors /state's fail-soft
     grouping section."""
     base, _ = server_with_coordinator
+    import jasper.control.handlers.grouping as grouping_mod
     import jasper.control.server as srv_mod
 
     def boom():
         raise RuntimeError("grouping read exploded")
 
-    monkeypatch.setattr(srv_mod, "read_grouping_state", boom)
+    monkeypatch.setattr(grouping_mod, "read_grouping_state", boom)
     monkeypatch.setattr(
         srv_mod,
         "read_active_speaker_setup_status",
@@ -667,10 +671,11 @@ def test_grouping_get_surfaces_target_side_active_speaker_block(
 ):
     """The lightweight preflight and final write guard return one verdict."""
     base, _ = server_with_coordinator
+    import jasper.control.handlers.grouping as grouping_mod
     import jasper.control.server as srv_mod
 
     env, popens = _grouping_test_setup(monkeypatch, tmp_path)
-    monkeypatch.setattr(srv_mod, "read_grouping_state", lambda: {"enabled": False})
+    monkeypatch.setattr(grouping_mod, "read_grouping_state", lambda: {"enabled": False})
     monkeypatch.setattr(
         srv_mod,
         "read_active_speaker_setup_status",
@@ -706,10 +711,11 @@ def test_grouping_get_fails_readiness_closed_without_hiding_grouping(
 ):
     """A broken readiness derivation stays explicit null and grouping survives."""
     base, _ = server_with_coordinator
+    import jasper.control.handlers.grouping as grouping_mod
     import jasper.control.server as srv_mod
 
     snapshot = {"enabled": False}
-    monkeypatch.setattr(srv_mod, "read_grouping_state", lambda: snapshot)
+    monkeypatch.setattr(grouping_mod, "read_grouping_state", lambda: snapshot)
 
     def boom():
         raise RuntimeError("active setup read exploded")
