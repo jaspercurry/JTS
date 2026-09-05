@@ -29,6 +29,10 @@ session_artifacts = [
   # Voice-loop (wake -> turn -> TTS) audit and cleanup program; a work queue,
   # deleted when its ledger is done. Evidence in docs/voice-audit-2026-09-05/.
   "docs/VOICE-AUDIT-2026-09-05.md",
+  # Whole-codebase quality review (frozen snapshot; evidence in
+  # docs/codebase-quality-review-2026-09-05/). Disposition lives in the
+  # steward issues, not here.
+  "docs/CODEBASE-QUALITY-REVIEW-2026-09-05.md",
 ]
 # Prior-art research artifacts: long-lived studies kept as reference (each
 # tagged `Status: research` in-doc), not canonical operational scan targets.
