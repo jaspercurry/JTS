@@ -20,7 +20,11 @@ After=jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-
 # jasper-aec-reconcile already owns whether the bridge runs; it writes and
 # removes the matching drop-in beside those calls. After= stays: it is pure
 # ordering and costs nothing when the bridge is absent.
-Wants=network-online.target jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-accessory-reconcile.service
+# Cost of the identity oneshot here: every Restart= of this unit waits for a
+# fresh reconciler run (bash + ~12 subprocesses, TimeoutStartSec=30 worst
+# case on a wedged busctl), and it drags voice transitively After=
+# avahi-daemon. Paid because Config.from_env freezes cfg.hostname at start.
+Wants=network-online.target jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-accessory-reconcile.service jasper-identity-reconcile.service
 
 # Cap the crash-restart spiral. On 2026-05-10 we found NRestarts=9032
 # accumulated silently because the daemon kept hitting transient

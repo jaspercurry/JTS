@@ -23,10 +23,11 @@ re-read wizard/reconciler-owned files fresh, never trust the
     management request path and behind every URL
     :func:`jasper.identity.resolve_hostname` builds, so both read through
     one mtime/size-keyed cache (a ``stat()`` per call, a re-parse only
-    when the reconciler rewrote the file). Only the allowlist follows a
-    rename live: it learns ``jts-2.local`` within one reconciler period,
-    while ``resolve_hostname`` prefers the process environment and so
-    keeps the name its unit started with until the unit restarts.
+    when the reconciler rewrote the file). Both follow a rename within one
+    reconciler period for readers that re-resolve per call, rather than
+    answering with the ``os.environ`` snapshot a unit started with; a
+    consumer that caches its answer (``Config.from_env``) still needs a
+    restart.
   * :func:`snapshot` — the ``/state.resilience.identity`` and doctor
     surface; reads fresh, derives a status, never raises.
 
@@ -40,10 +41,10 @@ peer_id — who the speaker is supposed to be). This one reads the
 *observed* network identity (what the LAN currently resolves). The
 reconciler exists precisely because the two can disagree. The one
 place they meet is ``JASPER_IDENTITY_CONFIGURED_HOSTNAME``, which
-records intent rather than observation: this file is where a process
-with no ``EnvironmentFile=`` — any CLI run over ssh — can still read
-it, so ``jasper.identity`` takes its hostname from here when the
-environment is silent.
+records intent rather than observation: this file is the one place a
+process can read it fresh — a CLI over ssh has no ``EnvironmentFile=``
+at all, and a daemon's copy is frozen at unit start — so
+``jasper.identity`` takes its hostname from here first.
 """
 from __future__ import annotations
 

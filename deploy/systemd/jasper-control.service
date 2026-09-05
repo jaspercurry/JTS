@@ -6,7 +6,7 @@ After=jasper-camilla.service network-online.target
 # camilla calls — a write that hits the 2 s restart window logs a
 # warning and is dropped, but the remote keeps responding and the next
 # write lands. After= still orders us behind camilla on cold boot.
-Wants=network-online.target jasper-camilla.service
+Wants=network-online.target jasper-camilla.service jasper-identity-reconcile.service
 
 # Tier 4.5 — escalate to system reboot if the per-service restart
 # spiral exceeds 4 restarts in 5 minutes. jasper-control is the
