@@ -5,85 +5,50 @@
 """Pin the audited panic-freedom of the Rust audio daemons' runtime paths.
 
 The two daemons (``rust/jasper-fanin``, ``rust/jasper-outputd``) are the
-speaker's always-on audio path on a production Pi, and every crate in
-``RUNTIME_CRATES`` is compiled into one or both of them, so an unguarded
-panic there kills audio output until systemd restarts the unit: "no new
+speaker's always-on audio path on a production Pi, so an unguarded panic in
+runtime code kills audio output until systemd restarts the unit: "no new
 panics outside test code" is a safety invariant worth pinning, not a style
-preference.
+preference. CI builds and ``cargo test``s these crates, but cargo cannot run
+in every dev environment and nothing in cargo's gate distinguishes a
+test-only ``unwrap`` from a runtime one; this guard is the static-source twin
+(same technique as ``tests/test_outputd_wiring.py``).
 
-The contract: every panic-capable construct outside ``#[cfg(test)]`` code
-carries a ``// PANIC-AUDITED: <invariant>`` marker on its own line or on the
-line directly above, naming the invariant that makes it unreachable. The
-audit then lives at the site the next editor of that line reads, and this
-test stores no message text of its own.
+The contract, for every panic-capable construct outside ``#[cfg(test)]``
+code:
 
-``.unwrap()``, ``panic!``, ``unreachable!``, ``todo!`` and ``unimplemented!``
-are not markable: they are banned outright, and a line carrying one fails
-even when a marker (or a marked ``.expect(``) sits on it, so constructs stay
-judged independently rather than per line (issue #1718).
+- ``.expect(`` and the ``assert!`` family (``assert!``, ``assert_eq!``,
+  ``assert_ne!``, ``debug_assert!`` and its ``_eq`` / ``_ne`` twins) carry a
+  ``// PANIC-AUDITED: <invariant>`` comment naming what makes the site
+  unreachable -- inline on the site's own line, or alone on the line
+  directly above it. A marker with no such construct under it is itself a
+  violation, so a marker cannot outlive the site it audits.
+- ``.unwrap()``, ``panic!``, ``unreachable!``, ``todo!`` and
+  ``unimplemented!`` are unmarkable: no comment clears them, so a line
+  carrying one fails even beside a marked ``.expect(`` -- constructs are
+  judged one by one, never per line (issue #1718).
 
-Issue #1718: the scan covers the ``assert!`` family — ``assert!``,
-``assert_eq!``, ``assert_ne!``, and ``debug_assert!`` (and, caught by the
-same regex, ``debug_assert_eq!`` / ``debug_assert_ne!``) — which is the same
-panic mechanism under a different macro name. In this workspace's release
-profile (``panic = "abort"``, ``rust/jasper-outputd/Cargo.toml``) ``assert!``
-/ ``assert_eq!`` / ``assert_ne!`` abort the daemon outright, same as an
-unguarded ``.expect(``. The ``debug_assert!`` sub-family is the one place
-this differs from the issue's original framing: with no ``debug-assertions
-= true`` override, it compiles to a no-op in that release profile. This
-repo's own CI (``.github/workflows/tests.yml``) runs ``cargo test --release
---locked`` for every crate, so CI's own test run does not exercise
-``debug_assert!`` either — the coverage this guard adds for that sub-family
-is an unqualified local ``cargo test`` (no ``--release``) or any
-debug-profile developer run, neither of which any existing gate checks. It
-stays in scope for that gap.
+``debug_assert!`` stays in scope even though this workspace's release
+profile (``panic = "abort"``, ``rust/jasper-outputd/Cargo.toml``) compiles
+it out and CI runs ``cargo test --release --locked``: an unqualified local
+``cargo test`` or any debug-profile developer run does execute it, and no
+other gate covers that.
 
-Issue #2251: ``unreachable!``, ``todo!``, and ``unimplemented!`` all expand
-to ``panic!`` at compile time, so a static source scan that doesn't name
-them lets any of the three sail through unmatched. Unlike ``.expect(`` / the
-``assert!`` family, none of the three is a conditional guard with a
-legitimate invariant-documenting use: reaching any of them panics
-unconditionally, exactly like a bare ``panic!`` — hence the unmarkable
-category above rather than a marker of their own.
-
-CI builds and ``cargo test``s these crates, but cargo cannot run in every
-dev environment and nothing in cargo's gate distinguishes a test-only
-``unwrap`` from a runtime one. This guard is the static-source twin (same
-technique as ``tests/test_outputd_wiring.py``).
-
-The non-daemon crates in ``RUNTIME_CRATES`` are scanned for the same reason
-the daemons' own are: each is a ``path`` dependency compiled into and
-executing as part of the shipped binaries. "On the default runtime path" is
-deliberately not read narrowly as "doing its feature's user-visible job" —
-construction/status-seeding code that runs unconditionally counts too:
-
-- ``jasper-tts-protocol`` carries the TTS wire protocol and the shared
-  loudness engine into BOTH daemons.
-- ``jasper-ring`` looks like an opt-in prototype from its own module doc
-  ("Ring B prototype") but the ring is the ONLY central transport
-  (``docs/adr/0100-one-audio-transport.md``) -- so this crate's
-  ``RingReader``/``RingWriter`` code IS the default runtime path, not a
-  corpus/lab-only affair.
-- ``jasper-resampler`` is used unconditionally in ``jasper-fanin``'s mixer
-  for per-lane rate matching (``LaneResampler``) and general RMS/format
-  utilities, independent of coupling mode.
-- ``jasper-clock``'s ``Dll`` is constructed unconditionally as part of
-  ``jasper-outputd``'s ``State`` (``sro_estimator``, ``dac_clock`` fields
-  built on every daemon start) and is the control law inside
-  ``jasper-resampler``'s ``RateController``.
-- ``jasper-host-clock`` reads "Default OFF" in its own module doc, and the
-  combo-mode servo THREAD genuinely is gated behind
-  ``JASPER_FANIN_HOST_CLOCK=enabled`` AND USB Direct armed (both non-default)
-  -- but ``jasper_host_clock::HostClock::new(...).status_fragment()`` runs
-  unconditionally at fan-in startup to seed the disabled ``/state`` fragment
-  even when the feature itself never arms.
-- ``jasper-env``'s env-parsing helpers (``env_str``, ``env_parse``) run on
-  every daemon startup to read config.
+``RUNTIME_CRATES`` is every crate compiled into the shipped binaries, not
+just the daemons' own -- each is a ``path`` dependency of one or both, so
+its code executes in the audio runtime just the same. "On the default
+runtime path" is deliberately not read narrowly as "doing its feature's
+user-visible job": construction- and status-seeding code that runs
+unconditionally counts too. ``jasper-host-clock`` reads "Default OFF" in its
+own module doc, yet ``HostClock::new(...).status_fragment()`` runs at every
+fan-in startup to seed the disabled ``/state`` fragment; ``jasper-ring``
+reads "Ring B prototype", yet the ring is the ONLY central transport
+(``docs/adr/0100-one-audio-transport.md``).
 """
 from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
@@ -111,7 +76,7 @@ _BARE_PANIC_PAT = re.compile(
 _PANIC_PAT = re.compile(
     _BARE_PANIC_PAT.pattern + r"|\.expect\(|" + _ASSERT_FAMILY_PAT.pattern
 )
-_MARKER_PAT = re.compile(r"//\s*PANIC-AUDITED:\s*\S")
+_MARKER_PAT = re.compile(r"(?<!/)//(?![/!])\s*PANIC-AUDITED:\s*\S")
 _STRING_PAT = re.compile(r'"(?:[^"\\]|\\.)*"')
 _RAW_STRING_START_PAT = re.compile(
     r'(?<![A-Za-z0-9_])(?:br|cr|r)(?P<hashes>#{0,255})"'
@@ -150,17 +115,24 @@ def _split_comment(line: str) -> tuple[str, str]:
     return stripped[:idx], line[idx:]
 
 
-def _strip_comments(line: str) -> str:
-    return _split_comment(line)[0]
+class _SourceLine(NamedTuple):
+    """One line split in two: ``code`` with literals blanked, and the
+    ``//`` comment that actually opened one -- so a ``//`` inside a raw
+    string or a ``/* */`` block leaves ``comment`` empty."""
+
+    code: str
+    comment: str
 
 
-def _strip_source_lines(lines: list[str]) -> list[str]:
-    """Strip literals and comments while tracking Rust raw strings."""
-    result: list[str] = []
+def _strip_source_lines(lines: list[str]) -> list[_SourceLine]:
+    """Split each line while tracking Rust raw strings and block
+    comments across lines."""
+    result: list[_SourceLine] = []
     raw_close: str | None = None
     block_comment_depth = 0
     for line in lines:
         code = ""
+        comment = ""
         cursor = 0
         while cursor < len(line):
             if raw_close is not None:
@@ -193,7 +165,7 @@ def _strip_source_lines(lines: list[str]) -> list[str]:
                 continue
 
             segment = line[cursor:]
-            stripped = _strip_comments(segment)
+            stripped, comment_here = _split_comment(segment)
             start = _RAW_STRING_START_PAT.search(stripped)
             block_start = stripped.find("/*")
             if block_start >= 0 and (
@@ -205,6 +177,7 @@ def _strip_source_lines(lines: list[str]) -> list[str]:
                 continue
             if start is None:
                 code += stripped
+                comment = comment_here
                 break
             code += stripped[: start.start()]
             raw_close = '"' + start.group("hashes")
@@ -218,7 +191,7 @@ def _strip_source_lines(lines: list[str]) -> list[str]:
             code += " " * (after_close - cursor - start.start())
             cursor = after_close
             raw_close = None
-        result.append(code)
+        result.append(_SourceLine(code, comment))
     return result
 
 
@@ -226,18 +199,18 @@ def _cfg_test_spans(lines: list[str]) -> list[tuple[int, int]]:
     """0-based inclusive line spans of ``#[cfg(test)]``-attributed items
     (modules and functions), found by brace counting with char and
     string literals stripped."""
-    code_lines = _strip_source_lines(lines)
+    source = _strip_source_lines(lines)
     spans: list[tuple[int, int]] = []
     i = 0
     while i < len(lines):
-        if "#[cfg(test)]" not in code_lines[i]:
+        if "#[cfg(test)]" not in source[i].code:
             i += 1
             continue
         depth = 0
         opened = False
         j = i
         while j < len(lines):
-            code = code_lines[j]
+            code = source[j].code
             depth += code.count("{") - code.count("}")
             if "{" in code:
                 opened = True
@@ -252,21 +225,39 @@ def _cfg_test_spans(lines: list[str]) -> list[tuple[int, int]]:
     return spans
 
 
-def _is_audited(lines: list[str], n: int) -> bool:
-    """Whether a ``// PANIC-AUDITED:`` marker covers line ``n``: on that
-    line, or on the line directly above it."""
-    return any(
-        _MARKER_PAT.search(_split_comment(lines[i])[1])
-        for i in (n, n - 1)
-        if i >= 0
-    )
+def _is_gated(line: _SourceLine) -> bool:
+    return bool(_PANIC_PAT.search(line.code))
+
+
+def _is_audited(source: list[_SourceLine], n: int) -> bool:
+    """Whether a marker covers the site on line ``n``: inline on that line,
+    or alone -- no code of its own -- on the line directly above. An inline
+    marker audits only the site it shares a line with."""
+    if _MARKER_PAT.search(source[n].comment):
+        return True
+    above = source[n - 1] if n else None
+    if above is None or above.code.strip():
+        return False
+    return bool(_MARKER_PAT.search(above.comment))
+
+
+def _marker_is_orphaned(source: list[_SourceLine], n: int) -> bool:
+    """The mirror of _is_audited: a marker must have a gated construct on
+    its own line, or -- standing alone -- on the next one."""
+    if _is_gated(source[n]):
+        return False
+    if source[n].code.strip():
+        return True
+    below = source[n + 1] if n + 1 < len(source) else None
+    return below is None or not _is_gated(below)
 
 
 def _scan_source(rel: str, lines: list[str]) -> list[str]:
-    """One Rust source's unaudited panic-family constructs, as
-    ``file:line: source`` strings, skipping ``#[cfg(test)]`` code."""
+    """One Rust source's unaudited panic-family constructs and orphaned
+    markers, as ``file:line: source`` strings, skipping ``#[cfg(test)]``
+    code."""
     violations: list[str] = []
-    code_lines = _strip_source_lines(lines)
+    source = _strip_source_lines(lines)
     spans = _cfg_test_spans(lines)
 
     def in_test(n: int) -> bool:
@@ -276,24 +267,31 @@ def _scan_source(rel: str, lines: list[str]) -> list[str]:
         # Scanner soundness: every #[test] fn must sit inside a
         # #[cfg(test)] span, or the classifier would mislabel
         # its body as runtime code.
-        if "#[test]" in code_lines[n] and not in_test(n):
+        if "#[test]" in source[n].code and not in_test(n):
             violations.append(
                 f"{rel}:{n + 1}: #[test] outside a #[cfg(test)] "
                 "module — move it inside one (or teach this "
                 "scanner about the new shape)"
             )
             continue
-        code = code_lines[n]
-        if not _PANIC_PAT.search(code) or in_test(n):
+        if in_test(n):
             continue
-        if _BARE_PANIC_PAT.search(code) or not _is_audited(lines, n):
+        if _is_gated(source[n]) and (
+            _BARE_PANIC_PAT.search(source[n].code)
+            or not _is_audited(source, n)
+        ):
             violations.append(f"{rel}:{n + 1}: {raw.strip()}")
+        elif _MARKER_PAT.search(source[n].comment) and _marker_is_orphaned(
+            source, n
+        ):
+            violations.append(f"{rel}:{n + 1}: orphaned {raw.strip()}")
     return violations
 
 
 def _runtime_violations(rust_root: Path = REPO / "rust") -> list[str]:
     """Scan the runtime crates for panic-capable constructs outside
-    ``#[cfg(test)]`` code that no audit marker covers."""
+    ``#[cfg(test)]`` code that no audit marker covers, and for markers that
+    cover no such construct."""
     violations: list[str] = []
     for crate in RUNTIME_CRATES:
         # Rust modules can live below src/ (for example
@@ -311,12 +309,11 @@ def _runtime_violations(rust_root: Path = REPO / "rust") -> list[str]:
 
 def test_bare_panic_pattern_covers_all_five_constructs() -> None:
     """Issue #2251 gate SF1: RUNTIME_CRATES currently has zero live
-    unreachable!/todo!/unimplemented! occurrences, so
-    test_no_unaudited_panics_in_rust_runtime_code would stay green even if
-    one of
-    the five constructs -- or the whole _BARE_PANIC_PAT category -- were
-    silently dropped. Pin the pattern object directly instead of relying on
-    the corpus to self-detect a regression here."""
+    unreachable!/todo!/unimplemented! occurrences, so the tree test would
+    stay green even if one of the five constructs -- or the whole
+    _BARE_PANIC_PAT category -- were silently dropped. Pin the pattern
+    object directly instead of relying on the corpus to self-detect a
+    regression here."""
     for construct in (
         ".unwrap()",
         'panic!("boom")',
@@ -334,11 +331,11 @@ def test_bare_panic_pattern_covers_all_five_constructs() -> None:
     assert _BARE_PANIC_PAT.search(comment_line)
     assert _BARE_PANIC_PAT.search(string_line)
 
-    # _strip_comments is what _scan_source() calls before matching (it
-    # strips char and string literals internally, then truncates at
-    # `//`); once run through it, neither line reads as a panic.
-    assert not _BARE_PANIC_PAT.search(_strip_comments(comment_line))
-    assert not _BARE_PANIC_PAT.search(_strip_comments(string_line))
+    # _split_comment is the per-line step inside _strip_source_lines,
+    # whose code half is what _scan_source() matches against; once run
+    # through it, neither line reads as a panic.
+    assert not _BARE_PANIC_PAT.search(_split_comment(comment_line)[0])
+    assert not _BARE_PANIC_PAT.search(_split_comment(string_line)[0])
 
 
 # Issue #2274: each entry is one line of a #[cfg(test)] module body,
@@ -439,32 +436,54 @@ pub fn boom() { panic!("live"); }
     assert [int(v.split(":")[1]) for v in violations] == [runtime_panic]
 
 
-# One runtime line each (with the marker placement under test), and whether
-# the gate must flag it.
-_MARKER_FIXTURES: dict[str, tuple[str, bool]] = {
-    "unmarked-expect": ('    x.expect("minted by this ledger");', True),
+# Each fixture is a function body (so line 1 is the fn header) and the
+# lines the gate must flag.
+_MARKER_FIXTURES: dict[str, tuple[str, list[int]]] = {
+    "unmarked-expect": ('    x.expect("minted by this ledger");', [2]),
     "expect-marked-above": (
         "    // PANIC-AUDITED: minted by this ledger\n"
         '    x.expect("minted by this ledger");',
-        False,
+        [],
     ),
     "expect-marked-inline": (
         '    x.expect("m"); // PANIC-AUDITED: minted by this ledger',
-        False,
+        [],
     ),
-    "unmarked-debug-assert": ("    debug_assert!(x.is_some());", True),
+    "inline-marker-covers-only-its-own-line": (
+        '    a.expect("m"); // PANIC-AUDITED: minted by this ledger\n'
+        '    b.expect("m");',
+        [3],
+    ),
+    "unmarked-debug-assert": ("    debug_assert!(x.is_some());", [2]),
     "debug-assert-marked": (
         "    // PANIC-AUDITED: fixed period config\n"
         "    debug_assert!(x.is_some());",
-        False,
+        [],
     ),
     "marked-unwrap-is-still-banned": (
         "    // PANIC-AUDITED: an unwrap is not markable\n    x.unwrap();",
-        True,
+        [3],
     ),
     "marker-inside-a-string-is-not-a-marker": (
         '    log("// PANIC-AUDITED: x"); x.expect("m");',
-        True,
+        [2],
+    ),
+    "marker-inside-a-block-comment-is-not-a-marker": (
+        "    /* an aside\n       // PANIC-AUDITED: x */\n"
+        '    x.expect("m");',
+        [4],
+    ),
+    "marker-in-a-doc-comment-is-not-a-marker": (
+        '    /// PANIC-AUDITED: x\n    x.expect("m");',
+        [3],
+    ),
+    "orphaned-marker": (
+        "    // PANIC-AUDITED: the site it audited is gone\n    let y = 1;",
+        [2],
+    ),
+    "orphaned-inline-marker": (
+        "    let y = 1; // PANIC-AUDITED: the site it audited is gone",
+        [2],
     ),
 }
 
@@ -473,30 +492,41 @@ _MARKER_FIXTURES: dict[str, tuple[str, bool]] = {
 def test_the_marker_contract_is_what_clears_a_site(
     tmp_path: Path, fixture: str
 ) -> None:
-    """The gate scans a crate tree, so drive it against a temp one: an
-    unmarked site fails, the marker (on its own line or the line above)
-    clears it, and neither placement clears an unmarkable construct."""
-    site, flagged = _MARKER_FIXTURES[fixture]
+    """The gate walks a crate tree, so drive it against a temp one: an
+    unmarked site fails, a marker on the site's own line or alone directly
+    above it clears exactly that site, no marker clears an unmarkable
+    construct, and a marker over nothing is itself a violation."""
+    body, flagged = _MARKER_FIXTURES[fixture]
     src = tmp_path / RUNTIME_CRATES[0] / "src"
     src.mkdir(parents=True)
-    (src / "lib.rs").write_text(f"pub fn f(x: Option<u32>) {{\n{site}\n}}\n")
+    (src / "lib.rs").write_text(f"pub fn f(x: Option<u32>) {{\n{body}\n}}\n")
 
     violations = _runtime_violations(tmp_path)
 
-    assert bool(violations) is flagged, violations
+    assert [int(v.split(":")[1]) for v in violations] == flagged, violations
 
 
 def test_no_unaudited_panics_in_rust_runtime_code() -> None:
+    missing = [
+        crate
+        for crate in RUNTIME_CRATES
+        if not (REPO / "rust" / crate / "src").is_dir()
+    ]
+    assert not missing, (
+        "RUNTIME_CRATES names a crate with no rust/<crate>/src, so the gate "
+        f"silently scans nothing for it: {missing}"
+    )
+
     violations = _runtime_violations()
     assert not violations, (
         "unwrap()/expect()/panic!/unreachable!/todo!/unimplemented!/"
         "assert!-family in runtime (non-#[cfg(test)]) code of the "
-        "production audio daemons:\n  "
+        "production audio daemons, or a marker auditing nothing:\n  "
         + "\n  ".join(violations)
         + "\nReturn a Result (or log-and-degrade) instead. If this is a "
         "genuine invariant, keep the .expect(\"<invariant>\") or the "
         "assert!/assert_eq!/assert_ne!/debug_assert! and put a "
-        "// PANIC-AUDITED: <one-clause invariant> marker on that line or "
-        "the line above it. .unwrap()/panic!/unreachable!/todo!/"
+        "// PANIC-AUDITED: <one-clause invariant> marker on that line, or "
+        "alone on the line above it. .unwrap()/panic!/unreachable!/todo!/"
         "unimplemented! cannot be marked — rewrite them."
     )

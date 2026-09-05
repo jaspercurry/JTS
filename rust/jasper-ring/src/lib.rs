@@ -490,7 +490,7 @@ impl RingMapping {
     fn slot_ptr(&self, slot_index: u32) -> *const u8 {
         let slot_bytes = self.slot_bytes();
         let off = HEADER_BYTES + (slot_index as usize) * slot_bytes;
-        // PANIC-AUDITED: the SAFETY note below states the caller guarantee this rests on
+        // PANIC-AUDITED: slot_index is seq % n_slots and the mapping is sized for n_slots
         debug_assert!(off + slot_bytes <= self.len);
         // SAFETY: slot_index < n_slots (caller guarantees via seq % n_slots)
         // and the mapping is sized HEADER_BYTES + n_slots*slot_bytes.
@@ -1438,7 +1438,7 @@ impl TestRingWriter {
     /// free-runs on full — see the module doc.
     pub fn try_publish_slot(&mut self, samples: &[i16]) -> bool {
         let g = self.map.geometry;
-        // PANIC-AUDITED: fanin sizes samples from the geometry the writer was constructed with
+        // PANIC-AUDITED: test/bench-only writer with no product caller
         assert_eq!(samples.len(), g.samples_per_slot());
         self.map
             .header_atomic(layout::OFF_WRITER_HEARTBEAT_NS)
