@@ -105,10 +105,11 @@ the **driver** door prescribes; alignment, topology and blend refuse by name
 `region_unavailable`) instead of searching for a crossover region that cannot
 exist.
 
-1. **Orient.** `jasper-crossover-prescriber status` — declared / banked /
-   staged / applied state and the possible next actions, read from the same
-   builders the doors read. `status` orients rather than prescribes: it is the
-   fourth verb, not a door.
+1. **Orient.** `jasper-crossover-prescriber status` — one JSON document on
+   stdout: declared / banked / staged / applied state read from the same
+   builders the doors read, the reading order below with each doc's size, and
+   `next`, the commands to run with the paths already in them. `status`
+   orients rather than prescribes: it is the fourth verb, not a door.
 2. **Read the round.** `jasper-crossover-prescriber packet` writes one versioned
    JSON document to `packet.json` beside the round and prints only a summary of
    it on stdout — fingerprint, round id, per-block availability, where it

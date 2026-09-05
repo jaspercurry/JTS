@@ -691,24 +691,29 @@ def test_reporting_a_staged_prescription_does_not_consume_it(tmp_path, capsys):
 def test_an_unreadable_bundle_still_reports_and_says_which_half_failed(
     tmp_path, capsys
 ):
-    """A partial answer beats no answer, and the exit code stays honest.
+    """A partial answer beats no answer, and it is still an answer.
 
-    The spool lives on the speaker rather than in the bundle, so a prescription
-    waiting for the next round is a fact whichever directory was named.
+    This verb accepts nothing and refuses nothing, so what it could not read is
+    a FIELD — exit 0 with the sentence in ``packet_error`` — never a code that
+    would oblige it to publish a refusal record instead of the orientation the
+    caller ran it for. The spool lives on the speaker rather than in the
+    bundle, so a prescription waiting for the next round is a fact whichever
+    directory was named.
     """
     spool.prescription_spool_path().write_text("{}")
 
     code, payload = _status([str(tmp_path / "not-a-bundle")], capsys)
 
-    assert code == cli.EXIT_UNREADABLE
+    assert code == cli.EXIT_OK
+    assert payload["packet_fingerprint"] is None
     assert payload["packet_error"]
     assert payload["staged"]["pending"] is True
     assert payload["banked"]["available"] is False
     assert payload["banked"]["reason"] == payload["packet_error"]
     assert payload["speaker"]["crossover_url"].endswith("/sound/crossover/")
     # Nothing is offered that would fail for the reason this report already
-    # gave: classify-features cannot read what this verb could not read.
-    assert not any("classify-features" in command for command in payload["next"])
+    # gave: both round-reading commands read what this verb could not.
+    assert payload["next"] == ["jasper-seat-level --mic-serial '<mic serial>'"]
 
 
 def test_a_virgin_speaker_orients_with_no_session_dir_at_all(capsys):
@@ -718,7 +723,8 @@ def test_a_virgin_speaker_orients_with_no_session_dir_at_all(capsys):
     """
     code, payload = _status([], capsys)
 
-    assert code == cli.EXIT_UNREADABLE
+    assert code == cli.EXIT_OK
+    assert payload["packet_fingerprint"] is None
     assert payload["packet_error"]
     assert payload["banked"]["available"] is False
     assert payload["banked"]["reason"] == payload["packet_error"]
