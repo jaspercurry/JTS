@@ -13,7 +13,6 @@ rather than degrading into a silent feed.
 
 from __future__ import annotations
 
-import struct
 import threading
 import time
 
@@ -25,15 +24,10 @@ from jasper.audio_measurement.wired_level_meter import (
     WiredLevelMeter,
 )
 
-from tests.test_wired_capture import FakePcm
+from tests.wired_capture_fixtures import FakePcm, frames_bytes
 
 RATE = 48_000
 CHANNELS = 2
-
-
-def _frames_bytes(values):
-    """Interleaved S32_LE frames: ``values`` is [(ch0, ch1), ...]."""
-    return b"".join(struct.pack("<ii", a, b) for a, b in values)
 
 
 def _meter(script, *, channels=CHANNELS):
@@ -120,7 +114,7 @@ def test_level_meter_drain_reraises_a_reader_failure():
         def read(self):
             if explode.wait(timeout=0.005):
                 raise OSError("mic yanked")
-            return 16, _frames_bytes([(1000, 0)] * 16)
+            return 16, frames_bytes([(1000, 0)] * 16)
 
         def close(self):
             pass
@@ -160,7 +154,7 @@ def test_level_meter_start_survives_reader_death_after_first_chunk():
         def read(self):
             self._reads += 1
             if self._reads == 1:
-                return 16, _frames_bytes([(1000, 0)] * 16)
+                return 16, frames_bytes([(1000, 0)] * 16)
             reached_second_read.set()
             raise OSError("mic hiccup right after the first chunk")
 
@@ -214,8 +208,8 @@ def test_level_meter_partial_frame_is_a_loud_failure():
             if go_partial.wait(timeout=0.005):
                 # claims 4 frames but the buffer is not a whole number of
                 # samples, let alone frames — the shape numpy cannot represent
-                return 4, _frames_bytes([(1000, 0)] * 3) + b"\x01\x02"
-            return 16, _frames_bytes([(1000, 0)] * 16)
+                return 4, frames_bytes([(1000, 0)] * 3) + b"\x01\x02"
+            return 16, frames_bytes([(1000, 0)] * 16)
 
         def close(self):
             pass

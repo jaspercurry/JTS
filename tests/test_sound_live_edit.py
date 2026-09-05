@@ -19,7 +19,7 @@ import pathlib
 import pytest
 
 from jasper.sound.live_edit import plan_live_edit
-from tests.test_sound_setup import FakeCamilla
+from tests.sound_camilla_fixtures import FakeCamilla
 
 RUNNING = """
 devices:

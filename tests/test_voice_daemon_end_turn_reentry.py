@@ -32,19 +32,7 @@ import pytest
 from jasper.tts_routing import FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET
 from tests._async_wait import wait_signalled
 from tests._live_turn_fake import FakeLiveTurn as _FakeTurn
-
-
-class _FakeUsageStore:
-    def __init__(self) -> None:
-        self.close_calls = 0
-
-    def close_session(self, session_id, in_tokens, out_tokens, usage=None):
-        # Real store asserts a non-None session_id is passed; mirror that
-        # so a re-entrant call after _session_id was cleared would blow up
-        # exactly like production if the guard were absent.
-        assert session_id is not None
-        self.close_calls += 1
-        return 0.0
+from tests.usage_store_fixtures import FakeUsageStore
 
 
 def _make_wakeloop():
@@ -77,7 +65,7 @@ def _make_wakeloop():
     wl._state = State.SESSION
     wl._turn = _FakeTurn()
     wl._session_id = 7
-    wl._usage_store = _FakeUsageStore()
+    wl._usage_store = FakeUsageStore()
     wl._bg_tasks = set()
     wl._peering_current_epoch = "ep-1"
     wl._user_speech_seen = True
