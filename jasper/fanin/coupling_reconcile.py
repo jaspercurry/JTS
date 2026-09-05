@@ -1980,6 +1980,43 @@ def _acquire_entry_lock(
     return EntryLock(outcome="acquired", fh=fh)
 
 
+def reconcile_in_progress() -> bool | None:
+    """Is a reconcile pass holding the entry lock right now? ``None`` = cannot say.
+
+    The ladder's own in-flight signal, observed rather than inferred:
+    :func:`_acquire_entry_lock` holds this flock for the WHOLE pass, so a reader
+    that cannot take it shared knows a pass is between rungs. Same read-only
+    probe shape as
+    :meth:`jasper.camilla.CamillaController.graph_mutation_in_progress`.
+
+    NO ``O_CREAT``, unlike the acquire: a probe must never create the lock file
+    (a non-root doctor could not anyway, and a created-then-unlocked file would
+    read as "no pass" for a caller who then has to distinguish it from a real
+    one). A missing file therefore answers ``None``, not ``False`` — no pass has
+    run since boot, which is indistinguishable here from "/run is not this
+    box's".
+
+    SHARED, so two probes never exclude each other, and released inside this
+    call. It does conflict with the acquire's ``LOCK_EX``, but that acquire is
+    ``LOCK_NB`` inside a bounded retry loop (``ENTRY_LOCK_TIMEOUT_SECONDS`` at
+    ``ENTRY_LOCK_POLL_SECONDS``), so a pass starting inside a probe's window
+    retries a poll interval later instead of failing.
+    """
+    try:
+        fd = os.open(ENTRY_LOCK_PATH, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    return False
+
+
 def main(argv: "list[str] | None" = None) -> int:
     """CLI: ``jasper-fanin-coupling-reconcile shm_ring`` (an operator asking for
     the ring convergence now) or ``--auto`` (the unattended boot/deploy pass,

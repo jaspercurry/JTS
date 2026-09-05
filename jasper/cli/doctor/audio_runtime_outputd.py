@@ -537,7 +537,7 @@ def _outputd_transport_health(
     unit's ``EnvironmentFile=`` layering (:func:`_outputd_reconciled_env`), so
     the question here is "is the running daemon on the env it was last given?".
     Whether that env is the RIGHT one for this box is
-    :func:`check_ring_split_transport`'s.
+    :func:`check_content_transport_coherence`'s.
     """
     from jasper.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_ENV_VAR
     from jasper.audio_runtime_plan import (
@@ -603,14 +603,12 @@ def _outputd_transport_health(
                 "; ".join(transport_report.errors) + _transport_route_remedy(),
                 reason=REASON_OUTPUTD_TRANSPORT_ROUTE_UNPAIRED,
             )
-        # Notes are deliberately not elevated: each has an OWNING check that
-        # FAILs on the same state with a runnable remedy, and both read PERSISTED
-        # evidence rather than outputd's live STATUS (at the endpoint rung
-        # outputd has refused to start, so this function returns its systemd
-        # failure long before reaching here).
-        #
-        #   graph rung    -> :func:`check_ring_split_transport`
-        #   endpoint rung -> :func:`check_active_ring_path_projection`
+        # Notes are deliberately not elevated: both rungs are owned by
+        # :func:`check_content_transport_coherence`, which FAILs on the same
+        # states with a runnable remedy and reads PERSISTED evidence rather than
+        # outputd's live STATUS (at the endpoint rung outputd has refused to
+        # start, so this function returns its systemd failure long before
+        # reaching here).
     local_pipe_detail = f"content_source={actual_content_source}"
     if dac.get("pcm") != expected_dac_pcm:
         return CheckResult(

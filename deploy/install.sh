@@ -433,8 +433,8 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      platform' check fails; on a REBUILD failure a prior good .so stays
      installed and the deploy REVOKES the installer's provenance record, so
      the doctor's 'ring ioplug provenance' check reports an unvouched
-     plugin — warn, or fail on a box whose wire needs a conf.d field only a
-     vouched plugin is known to parse.
+     plugin — an informational ok, or fail on a box whose wire needs a
+     conf.d field only a vouched plugin is known to parse.
    - The shairport-sync/nqptp source builds and Rust daemon builds
      run RAM-bounded and cgroup-contained via
      deploy/lib/install/build-sandbox.sh, so an OOM kills only the build,
