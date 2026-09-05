@@ -13,8 +13,6 @@ Wants=avahi-daemon.service
 # a socket-activated unit would pay this run on every cold start. The timer
 # below carries the 5-minute self-heal for a rename that lands mid-uptime.
 Before=jasper-voice.service jasper-control.service
-# See #4123.
-ConditionPathExists=!/run/jasper-install/in_progress
 
 [Service]
 Type=oneshot

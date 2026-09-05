@@ -85,14 +85,20 @@ _print_reboot_required_marker() {
 # one is a change to all of them.
 INSTALL_IN_PROGRESS_MARKER="${REBOOT_REQUIRED_MARKER%/*}/in_progress"
 
+# The path-activated accessory reconciler takes the window as a stop, not a
+# Condition: PathExists= is level-triggered, so a service that keeps going
+# inactive re-triggers until TriggerLimitBurst fails the .path unit.
 mark_install_in_progress() {
     install -d -m 0755 "${INSTALL_IN_PROGRESS_MARKER%/*}"
     printf 'pid=%s sha=%s\n' "$$" "${JASPER_DEPLOY_SHA_FULL:-unknown}" \
         > "${INSTALL_IN_PROGRESS_MARKER}"
+    systemctl stop jasper-accessory-reconcile.path 2>/dev/null || true
 }
 
 clear_install_in_progress() {
     rm -f "${INSTALL_IN_PROGRESS_MARKER}"
+    systemctl is-enabled --quiet jasper-accessory-reconcile.path 2>/dev/null \
+        && systemctl start jasper-accessory-reconcile.path 2>/dev/null || true
 }
 
 

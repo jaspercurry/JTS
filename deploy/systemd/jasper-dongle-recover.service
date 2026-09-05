@@ -16,8 +16,6 @@ Description=Recover audio daemons after the Apple dongle re-enumerates
 # lets systemd serialise the recovery itself.
 After=sound.target
 Wants=sound.target
-# See #4123.
-ConditionPathExists=!/run/jasper-install/in_progress
 
 [Service]
 Type=oneshot

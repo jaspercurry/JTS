@@ -44,8 +44,9 @@ the Pi (1-4) or as a whole red lane on the laptop (5):
    every local lane red regardless of the diff under test.
 
 6. **Install-window gate.** Every unit an install can have started
-   behind its back must be gated on the in-progress marker, or it runs
-   against a half-synced /opt/jasper (issue #4123).
+   behind its back is gated on the in-progress marker, or is named in an
+   allowlist with the reason it is safe on a half-synced /opt/jasper
+   (issue #4123).
 """
 from __future__ import annotations
 
@@ -233,12 +234,16 @@ def test_wizard_env_files_load_after_jasper_env():
 _WANTS_RE = re.compile(r'SYSTEMD_WANTS\}\+="([^"]+)"')
 
 
+def _shipped_unit_name(wants_target: str) -> str:
+    """udev instantiates a template with the event's %k; the file ships as @."""
+    return wants_target.replace("@%k.service", "@.service")
+
+
 def test_udev_systemd_wants_units_are_shipped():
     missing = []
     for rules in sorted(_DEPLOY.glob("udev/*.rules")):
         for unit in _WANTS_RE.findall(rules.read_text()):
-            shipped_name = unit.replace("@%k.service", "@.service")
-            if not (_DEPLOY / "systemd" / shipped_name).is_file():
+            if not (_DEPLOY / "systemd" / _shipped_unit_name(unit)).is_file():
                 missing.append(f"{rules.relative_to(_REPO)} -> {unit}")
     assert not missing, (
         "udev rules request units that don't ship in deploy/systemd/: "
@@ -612,7 +617,29 @@ def test_start_time_hostname_readers_order_behind_the_identity_oneshot(reader):
 # Remove when the installer stops mutating /opt/jasper in place.
 _INSTALL_MARKER_GATE = "!/run/jasper-install/in_progress"
 _RUN_RE = re.compile(r'RUN\+="([^"\s]+)')
-_START_RE = re.compile(r"\bstart\s+([A-Za-z0-9@._-]+\.service)")
+_START_RE = re.compile(r"\b(?:re)?start\s+([A-Za-z0-9@._-]+\.service)")
+# Directories a udev RUN+= path can resolve into, in shipped-file terms.
+_HELPER_DIRS = (_DEPLOY / "bin", _DEPLOY / "usbsink")
+
+# Async-activated units that deliberately carry NO gate, with the reason each
+# is safe on a half-synced tree. Explicit rather than derived from "does the
+# ExecStart name /opt/jasper", because an ExecStart can be a bash wrapper that
+# execs venv Python (jasper-wifi-recover does exactly that) — the derivation
+# would silently under-report. Stale entries fail: an ungated unit that stops
+# being async-activated has to leave this list too.
+_UNGATED_ASYNC_UNITS = {
+    "jasper-identity-reconcile.service": "pure bash; no /opt/jasper reference",
+    "jasper-dongle-recover.service": "only systemctl-starts units gated themselves",
+    "jasper-wifi-recover.service": "bash recovery that must keep running during a "
+                                   "long install; its Python branch self-gates on "
+                                   "the marker instead",
+}
+
+
+def _uncommented(text: str) -> str:
+    return "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
 
 
 def _async_activated_units() -> set[str]:
@@ -626,12 +653,17 @@ def _async_activated_units() -> set[str]:
     units: set[str] = set()
     for rules in sorted(_DEPLOY.glob("udev/*.rules")):
         text = rules.read_text(encoding="utf-8")
-        for unit in _WANTS_RE.findall(text):
-            units.add(unit.replace("@%k.service", "@.service"))
+        units.update(_shipped_unit_name(u) for u in _WANTS_RE.findall(text))
         for run in _RUN_RE.findall(text):
-            helper = _DEPLOY / "bin" / Path(run).name
-            if helper.is_file():
-                units.update(_START_RE.findall(helper.read_text(encoding="utf-8")))
+            for helper_dir in _HELPER_DIRS:
+                helper = helper_dir / Path(run).name
+                if helper.is_file():
+                    units.update(
+                        _START_RE.findall(
+                            _uncommented(helper.read_text(encoding="utf-8"))
+                        )
+                    )
+                    break
     for timer in sorted(_DEPLOY.glob("systemd/*.timer")):
         unit = value_for(timer.read_text(encoding="utf-8"), "Unit")
         units.add(unit or f"{timer.stem}.service")
@@ -643,11 +675,12 @@ def _async_activated_units() -> set[str]:
 
 def test_async_activated_units_are_gated_on_the_install_marker():
     """A new udev rule or timer added without the gate is the recurrence risk
-    this pin exists for — not the six units that carry it today."""
-    expected = _async_activated_units()
+    this pin exists for — not the units that carry it today."""
+    async_units = _async_activated_units()
     # The #4123 unit reaches the set only through the udev chain, so its
     # absence means the derivation broke rather than the units regressing.
-    assert "jasper-audio-hardware-reconcile.service" in expected
+    assert "jasper-audio-hardware-reconcile.service" in async_units
+    assert _UNGATED_ASYNC_UNITS.keys() <= async_units
     gated = {
         unit.name
         for unit in sorted(_DEPLOY.glob("systemd/*.service"))
@@ -655,4 +688,4 @@ def test_async_activated_units_are_gated_on_the_install_marker():
         and _INSTALL_MARKER_GATE
         in values_for(unit.read_text(encoding="utf-8"), "ConditionPathExists")
     }
-    assert gated == expected
+    assert gated == async_units - _UNGATED_ASYNC_UNITS.keys()

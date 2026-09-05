@@ -21,9 +21,12 @@ import shlex
 import subprocess
 from pathlib import Path
 
+from .systemd_unit_helpers import value_for
+
 REPO_ROOT = Path(__file__).parent.parent
 MEMORY_RESILIENCE_SH = REPO_ROOT / "deploy" / "lib" / "install" / "memory-resilience.sh"
 BUILD_SANDBOX_SH = REPO_ROOT / "deploy" / "lib" / "install" / "build-sandbox.sh"
+GATED_UNIT = REPO_ROOT / "deploy" / "systemd" / "jasper-audio-hardware-reconcile.service"
 
 
 def _run(script: str, marker: Path) -> subprocess.CompletedProcess[str]:
@@ -110,3 +113,18 @@ def test_install_in_progress_marker_survives_the_window_and_the_exit_trap_clears
     assert r.returncode == 0, r.stderr
     assert "sha=0123456789abcdef" in r.stdout
     assert not in_progress.exists()
+
+
+def test_the_marker_seams_default_is_the_path_the_units_gate_on() -> None:
+    """Units cannot read the shell seam, so the literal in their
+    ConditionPathExists= and this default have to be kept in step by hand."""
+    r = subprocess.run(
+        ["bash", "-c", "set -euo pipefail; "
+         f"source {shlex.quote(str(MEMORY_RESILIENCE_SH))} >/dev/null; "
+         'printf "%s" "${INSTALL_IN_PROGRESS_MARKER}"'],
+        capture_output=True, text=True, timeout=5,
+        env={k: v for k, v in os.environ.items() if k != "JTS_REBOOT_REQUIRED_MARKER"},
+    )
+    assert r.returncode == 0, r.stderr
+    gate = value_for(GATED_UNIT.read_text(encoding="utf-8"), "ConditionPathExists")
+    assert r.stdout == gate.lstrip("!")

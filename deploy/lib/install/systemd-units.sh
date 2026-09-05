@@ -1314,6 +1314,10 @@ install_streambox_systemd_units() {
 
     validate_streambox_systemd_units
     systemctl daemon-reload
+    # The gated units' own executables land in the staging above, so the
+    # install window ends here — after PID 1 has loaded their Condition
+    # lines, and before the first installer-issued start below (#4123).
+    clear_install_in_progress
     systemctl enable --now jts-audio.slice >/dev/null 2>&1 || true
     enable_streambox_web_sockets
     start_streambox_runtime_units
@@ -1697,6 +1701,10 @@ install_systemd_units() {
         "${SYSTEMD_DIR}/bluealsa-aplay.service.d/jts-slice.conf"
 
     systemctl daemon-reload
+    # The gated units' own executables land in the staging above, so the
+    # install window ends here — after PID 1 has loaded their Condition
+    # lines, and before the first installer-issued start below (#4123).
+    clear_install_in_progress
     # Commit only after systemd accepted the complete generation. Runtime
     # mutations below are deliberately outside the staging transaction.
     trap - ERR
