@@ -279,7 +279,7 @@ def _assess_audio_profile(status: dict) -> CheckResult:
         reason = REASON_AUDIO_PROFILE_NEEDS_ATTENTION
     return CheckResult("Audio profile", result, detail, reason=reason)
 
-@doctor_check(order=46, group="aec")
+@doctor_check()
 def check_audio_profile_runtime() -> CheckResult:
     """Summarise requested vs applied mic/AEC profile runtime truth."""
     parked = _parked_follower_result("Audio profile")
@@ -340,7 +340,7 @@ def _assess_chip_aec_alignment(
     )
 
 
-@doctor_check(order=45.5, group="aec")
+@doctor_check()
 def check_chip_aec_alignment() -> CheckResult:
     """Report the reconciler's chip-AEC alignment verdict, unaltered."""
     parked = _parked_follower_result("Chip-AEC alignment")
@@ -382,7 +382,7 @@ def _assess_enhanced_aec_status(payload: dict) -> CheckResult:
     )
 
 
-@doctor_check(order=46.5, group="aec")
+@doctor_check()
 def check_enhanced_aec() -> CheckResult:
     """Report only an explicitly requested optional enhancement.
 
@@ -518,7 +518,7 @@ def _chip_aec_passive_evidence_pair(
         return None
     return mic_id, dac_id
 
-@doctor_check(order=47, group="aec")
+@doctor_check()
 def check_audio_validation_readiness() -> CheckResult:
     """Report latest schema-v1 validation artifact as advisory readiness."""
 
@@ -543,7 +543,7 @@ def _dfu_flash_remedy() -> str:
             f"procedure — in-system DFU, no Safe Mode entry: {xvf3800.dfu_flash_command()}")
 
 
-@doctor_check(order=45, group="aec")
+@doctor_check()
 def check_aec_bridge_running() -> CheckResult:
     """jasper-aec-bridge runs WebRTC AEC3 echo cancellation on the XVF
     chip's ASR-tap channel (1 of the 6-ch firmware, see
@@ -1177,7 +1177,7 @@ def _assess_aec_bridge_output(
         reason=REASON_BRIDGE_OUTPUT_HEALTHY_WORK,
     )
 
-@doctor_check(order=48, group="aec", exclusive_group="audio-probe")
+@doctor_check(exclusive_group="audio-probe")
 def check_aec_bridge_output_health() -> CheckResult:
     """Verify the bridge isn't silently producing garbage. The bare
     `is-active` check passes whenever the process is running — but
@@ -1610,7 +1610,7 @@ def _assess_dtln_engine(journal_text: str) -> CheckResult:
         reason=REASON_DTLN_NO_INIT_LINE,
     )
 
-@doctor_check(order=54, group="aec")
+@doctor_check()
 def check_aec_bridge_dtln_engine() -> CheckResult:
     """Verify the DTLN-aec engine (triple-stream tertiary leg) is
     actually running when `JASPER_AEC_DTLN_ENABLED=1`.
@@ -1734,7 +1734,7 @@ def _check_dtln_model_assets() -> CheckResult | None:
         )
     return None
 
-@doctor_check(order=55, group="aec")
+@doctor_check()
 def check_xvf_firmware_6ch() -> CheckResult:
     """6-ch firmware exposes raw mics on channels 2-5 of the XVF
     capture endpoint. The bridge depends on the 6-channel endpoint
@@ -1756,7 +1756,7 @@ def check_xvf_firmware_6ch() -> CheckResult:
                        f"software AEC. {_dfu_flash_remedy()}",
                        reason=REASON_XVF_FIRMWARE_WRONG_CHANNELS)
 
-@doctor_check(order=56, group="aec", exclusive_group="audio-probe")
+@doctor_check(exclusive_group="audio-probe")
 def check_xvf_mixer_state() -> CheckResult:
     """The XVF chip exposes each capture channel as a kernel ALSA
     mixer slot. When the chip is flashed from 2-ch to 6-ch firmware

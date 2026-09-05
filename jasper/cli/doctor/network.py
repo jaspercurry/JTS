@@ -191,7 +191,7 @@ def _active_wifi_connection(nmcli: str) -> tuple[str | None, str | None]:
         return None, None
     return active_wifi_connection(proc.stdout)
 
-@doctor_check(order=63, group="network")
+@doctor_check()
 def check_wifi_regdom() -> CheckResult:
     """Verify the configured global WLAN regulatory country is known.
 
@@ -236,7 +236,7 @@ def check_wifi_regdom() -> CheckResult:
         f"global country={global_country}; {phy_detail}",
     )
 
-@doctor_check(order=64, group="network")
+@doctor_check()
 def check_wifi_guardian() -> CheckResult:
     """Verify the WiFi profile guardian stash matches the active
     NetworkManager profile.
@@ -352,7 +352,7 @@ def check_wifi_guardian() -> CheckResult:
         reason=REASON_GUARDIAN_SSID_DRIFT,
     )
 
-@doctor_check(order=64.2, group="network")
+@doctor_check()
 def check_wifi_link_local_ipv6() -> CheckResult:
     """Active Wi-Fi profiles must keep link-local IPv6 enabled for mDNS.
 
@@ -417,7 +417,7 @@ def check_wifi_link_local_ipv6() -> CheckResult:
         f"{profile} keeps link-local IPv6 on {device} (ipv6.method={method})",
     )
 
-@doctor_check(order=64.5, group="network")
+@doctor_check()
 def check_wifi_recover_timer() -> CheckResult:
     """The Wi-Fi flap recovery timer must stay enabled so the Wi-Fi-down
     nudge (brcmfmac scan-suppression repair + guardian activation) is live.
@@ -453,7 +453,7 @@ def check_wifi_recover_timer() -> CheckResult:
         reason=REASON_RECOVER_TIMER_DISABLED,
     )
 
-@doctor_check(order=65, group="network")
+@doctor_check()
 def check_avahi_daemon() -> CheckResult:
     """avahi-daemon is the mDNS *publisher* — without it the speaker
     is invisible to `<hostname>.local` resolution from other devices,
@@ -492,7 +492,7 @@ def check_avahi_daemon() -> CheckResult:
         reason=REASON_AVAHI_DAEMON_INACTIVE,
     )
 
-@doctor_check(order=67, group="network")
+@doctor_check()
 def check_hostname_avahi_consistency() -> CheckResult:
     """Detect Avahi's silent hostname suffix-resolve on collision.
 
@@ -562,7 +562,7 @@ def check_hostname_avahi_consistency() -> CheckResult:
         reason=REASON_HOSTNAME_COLLISION,
     )
 
-@doctor_check(order=66, group="network")
+@doctor_check()
 def check_avahi_jasper_control() -> CheckResult:
     """Verify avahi is advertising `_jasper-control._tcp` so supported
     clients can find us via mDNS-SD. avahi-browse with -t (terminate after a
@@ -618,7 +618,7 @@ def check_avahi_jasper_control() -> CheckResult:
     )
 
 
-@doctor_check(order=67.5, group="network")
+@doctor_check()
 def check_identity_coherence() -> CheckResult:
     """The speaker's three names must agree: OS hostname, Avahi's
     effective mDNS name, and the configured JASPER_HOSTNAME.
@@ -733,7 +733,7 @@ def _udc_present() -> bool:
         return False
 
 
-@doctor_check(order=67.55, group="network")
+@doctor_check()
 def check_usbnet_address_plan() -> CheckResult:
     """The persisted plan and its two installed projections must agree."""
 
@@ -790,7 +790,7 @@ def check_usbnet_address_plan() -> CheckResult:
     )
 
 
-@doctor_check(order=67.6, group="network")
+@doctor_check()
 def check_usbnet_interface() -> CheckResult:
     """The usb0 NCM interface must use its plan-derived management /30.
 
@@ -925,7 +925,7 @@ def check_usbnet_interface() -> CheckResult:
     return CheckResult(label, "ok", detail)
 
 
-@doctor_check(order=67.7, group="network")
+@doctor_check()
 def check_usbnet_nm_profile() -> CheckResult:
     """The ``jts-usb`` NetworkManager profile must be the one bound to
     usb0 — not some other/ad-hoc profile — whenever usb0 exists.
@@ -985,7 +985,7 @@ def check_usbnet_nm_profile() -> CheckResult:
     return CheckResult(label, "ok", f"{USBNET_NM_PROFILE} active on {USBNET_IFACE}")
 
 
-@doctor_check(order=67.8, group="network")
+@doctor_check()
 def check_usbnet_dhcp_unit() -> CheckResult:
     """jasper-usbnet-dhcp.service's active state must be coherent with
     whether usb0 exists.
@@ -1038,7 +1038,7 @@ def check_usbnet_dhcp_unit() -> CheckResult:
     )
 
 
-@doctor_check(order=67.9, group="network")
+@doctor_check()
 def check_usbnet_management_probe() -> CheckResult:
     """The management UI must answer over the USB fallback address.
 

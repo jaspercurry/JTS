@@ -4,42 +4,89 @@
 
 """Ordered registry for jasper-doctor checks.
 
-Contract:
+A check is registered by the module of the subsystem it observes, and
+``MODULE_ROSTER`` below is the display order (ADR-0233 rule 4): checks
+appear module by module in roster order, and within a module in source
+order. Registering from a module the roster does not name is an
+import-time error, so a new module has to be given a position before it
+can run.
 
-- **Order is a sparse sort KEY, not a contiguous index.** Orders must be
-  UNIQUE; gaps are intentional, so a check inserted between two others
-  takes any value strictly between their orders and nothing renumbers.
-  Sorting by ``order`` also makes the sequence independent of the order
-  the per-domain modules were imported in.
+- **The bare-vs-tuple distinction.** A check with ``needs_cfg=False`` is
+  emitted as a bare function, so the harness derives its displayed/crash
+  label from ``fn.__name__`` (``check_env_file`` → ``"env file"``). A
+  check with ``needs_cfg=True`` is emitted as ``(label, lambda: fn(cfg))``
+  — the explicit label plus the ``cfg`` closure.
 
-- **One naming rule for every entry.** A check's displayed name and its
-  crash-path label are both ``entry.label or _check_name(entry.func)``
-  (``check_env_file`` → ``"env file"``), whatever its calling convention.
-
-- **Async and hardware-sensitive checks carry explicit metadata.** Only
-  one check in an ``exclusive_group=`` runs at a time, which keeps
-  ALSA/proc evidence probes from observing one another's temporary opens
-  while unrelated checks still run concurrently.
-
-``group=`` is the per-domain dimension: it affects neither order nor
-output, and only records which subsystem a check belongs to.
+- **Async and hardware-sensitive checks carry explicit metadata.** A
+  check flagged ``is_async=True`` is awaited directly by the harness.
+  A check with ``exclusive_group=`` may still run while unrelated checks
+  are in flight, but only one check in that group runs at a time. This
+  keeps ALSA/proc evidence probes from observing one another's temporary
+  opens while still allowing the rest of the subprocess-heavy doctor to
+  run concurrently.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, TypeVar
 
 from ._shared import CheckResult
+
+F = TypeVar(
+    "F", bound=Callable[..., CheckResult] | Callable[..., Awaitable[CheckResult]]
+)
+
+MODULE_ROSTER: tuple[str, ...] = (
+    "env",
+    "voice",
+    "audio",
+    "boot_config",
+    "wake",
+    "renderers",
+    "integrations",
+    "privsep",
+    "secret_compartments",
+    "web",
+    "research",
+    "correction",
+    "memory",
+    "drift",
+    "resilience",
+    "aec",
+    "audio_runtime_fanin",
+    "audio_runtime_camilla",
+    "audio_runtime_ring",
+    "audio_runtime_outputd",
+    "usbsink",
+    "network",
+    "peering",
+    "grouping",
+)
+
+_ROSTER_POSITION: dict[str, int] = {
+    module: position for position, module in enumerate(MODULE_ROSTER)
+}
+
+STREAMBOX_OMITTED_DOCTOR_MODULES = frozenset({
+    "voice",
+    "wake",
+    "integrations",
+    "aec",
+})
+
+STREAMBOX_OMITTED_DOCTOR_CHECKS = frozenset({
+    "check_mic_card_matches_config",
+    "check_mic_capture",
+    "check_tts_open",
+})
 
 
 @dataclass(frozen=True)
 class RegisteredCheck:
-    """One registry entry. ``label`` left empty is derived from
-    ``func.__name__``.
-    """
+    """One registry entry; ``module`` and ``label`` follow the roster and
+    needs_cfg rules from the module docstring."""
 
-    order: float
-    group: str
+    module: str
     func: Callable[..., CheckResult] | Callable[..., Awaitable[CheckResult]]
     needs_cfg: bool = False
     is_async: bool = False
@@ -52,47 +99,42 @@ _REGISTRY: list[RegisteredCheck] = []
 
 def doctor_check(
     *,
-    order: float,
-    group: str,
     label: str = "",
     needs_cfg: bool = False,
     is_async: bool = False,
     exclusive_group: str = "",
-) -> Callable[[Callable], Callable]:
-    """Register a doctor check and return the function object unchanged, so
-    it stays directly importable and unit-testable.
+) -> Callable[[F], F]:
+    """Register a doctor check and return it unchanged.
+
+    The decorator is additive — it registers metadata and returns ``fn``
+    unchanged, so it stays directly importable and unit-testable.
+
+    Display position comes from the defining module's entry in
+    ``MODULE_ROSTER``; it is not a per-check argument.
 
     Args:
-        order: sparse sort key in the canonical run sequence; must be unique.
-        group: subsystem/domain the check belongs to. Need not match the
-            module name (``drift.py`` registers under ``install``, and the
-            four ``audio_runtime_*`` modules all register under ``audio``).
-            Organizational only, except that
-            ``__init__._STREAMBOX_OMITTED_DOCTOR_GROUPS`` skips whole groups
-            a streambox does not install.
-        label: explicit display/crash label; empty derives it from
-            ``__name__``.
+        label: explicit display/crash label. Required for ``needs_cfg``
+            checks. Leave empty for bare checks so the label is derived
+            from ``__name__``.
         needs_cfg: True iff the check takes the ``Config`` argument.
         is_async: True for checks implemented as async callables.
-        exclusive_group: serialization key for probes that are individually
-            safe but perturb one another when run at the same instant (ALSA
-            open probes, `/proc/asound` ownership reads). Empty = no lane.
+        exclusive_group: Optional serialization key for probes that are
+            individually safe but can perturb one another when run at the
+            same instant (for example, ALSA open probes and `/proc/asound`
+            ownership reads). Empty string means no exclusive lane.
     """
 
-    def _register(fn: Callable) -> Callable:
-        clash = next((c for c in _REGISTRY if c.order == order), None)
-        if clash is not None:
+    def _register(fn: F) -> F:
+        module = fn.__module__.rsplit(".", 1)[-1]
+        if module not in _ROSTER_POSITION:
             raise ValueError(
-                f"doctor_check order={order} is already registered by "
-                f"{clash.func.__module__}.{clash.func.__name__}; check orders "
-                "must be unique — a duplicate would silently fall back to "
-                "import-order tie-breaking. Conflicting check: "
-                f"{fn.__module__}.{fn.__name__}."
+                f"{module}.{fn.__name__} registers a doctor check from a "
+                "module MODULE_ROSTER does not name; add the module to the "
+                "roster at the position its checks should display."
             )
         _REGISTRY.append(
             RegisteredCheck(
-                order=order,
-                group=group,
+                module=module,
                 func=fn,
                 needs_cfg=needs_cfg,
                 is_async=is_async,
@@ -106,5 +148,11 @@ def doctor_check(
 
 
 def registered_checks() -> list[RegisteredCheck]:
-    """All registered checks sorted by ``order``."""
-    return sorted(_REGISTRY, key=lambda c: c.order)
+    """All registered checks in canonical order.
+
+    Modules follow ``MODULE_ROSTER``; within a module, source order. The
+    sort is stable over the append-ordered registry, so the sequence is
+    independent of the order in which the per-domain modules happened to
+    be imported.
+    """
+    return sorted(_REGISTRY, key=lambda c: _ROSTER_POSITION[c.module])

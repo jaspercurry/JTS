@@ -164,7 +164,7 @@ def _grouping_runtime(cfg: object) -> dict:
     return evidence.get("grouping_runtime", lambda: _compute_grouping_runtime(cfg))
 
 
-@doctor_check(order=71, group="grouping")
+@doctor_check()
 def check_grouping() -> CheckResult:
     """Verify /var/lib/jasper/grouping.env is consistent AND actually up.
 
@@ -209,7 +209,7 @@ def check_grouping() -> CheckResult:
     return CheckResult(label, "ok", detail)
 
 
-@doctor_check(order=71.2, group="grouping")
+@doctor_check()
 def check_grouping_pair_lock() -> CheckResult:
     """Surface the composite pair-lock truth used by ``/state.grouping``.
 
@@ -309,7 +309,7 @@ def _probe_grouping_pcm(pcm: str) -> tuple[int | None, str]:
         return None, f"PCM probe returned no result{f': {stderr}' if stderr else ''}"
 
 
-@doctor_check(order=71.3, group="grouping")
+@doctor_check()
 def check_grouping_ring_device() -> CheckResult:
     """Does ``pcm.jts_ring_grouping`` actually open on this box?
 
@@ -385,7 +385,7 @@ def check_grouping_ring_device() -> CheckResult:
     )
 
 
-@doctor_check(order=71.5, group="grouping")
+@doctor_check()
 def check_grouping_snapcast_installed() -> CheckResult:
     """Grouping needs the snapcast binaries — snapserver hosts the stream,
     snapclient plays it. install.sh ships the JTS snap units but deliberately
@@ -416,7 +416,7 @@ def check_grouping_snapcast_installed() -> CheckResult:
     return CheckResult(label, "ok", "snapserver + snapclient present")
 
 
-@doctor_check(order=71.6, group="grouping")
+@doctor_check()
 def check_grouping_snapcast_version() -> CheckResult:
     """Warn when the installed snapclient differs from the version this
     design validated against
@@ -499,7 +499,7 @@ def check_grouping_snapcast_version() -> CheckResult:
     )
 
 
-@doctor_check(order=74, group="grouping")
+@doctor_check()
 def check_grouping_rate_adjust() -> CheckResult:
     """inv-5: no CamillaDSP **in a bonded chain**
     runs ``enable_rate_adjust: true`` — on either role.
@@ -605,7 +605,7 @@ def check_grouping_rate_adjust() -> CheckResult:
     return CheckResult(label, "ok", f"rate_adjust off for bonded member ({config_path})")
 
 
-@doctor_check(order=75, group="grouping")
+@doctor_check()
 def check_grouping_leader_pipe() -> CheckResult:
     """A bonded LEADER's ACTIVE CamillaDSP config must write snapserver's
     pipe (``devices.playback`` = File → SNAPFIFO) — else snapserver streams
@@ -701,7 +701,7 @@ def _resolved_jasper_voice_env() -> tuple[dict[str, str] | None, str]:
     return resolved, error
 
 
-@doctor_check(order=75.3, group="grouping")
+@doctor_check()
 def check_grouping_channel_pick() -> CheckResult:
     """An ACTIVE member's outputd round-trip lane must be wired with THIS
     speaker's channel — the canonical home of the channel drop (outputd
@@ -830,7 +830,7 @@ def check_grouping_channel_pick() -> CheckResult:
     return CheckResult(label, "ok", f"outputd lane wired, channel={want_channel}")
 
 
-@doctor_check(order=75.35, group="grouping")
+@doctor_check()
 def check_grouping_sub_corner() -> CheckResult:
     """A "sub" member's outputd lane must carry the low-pass corner so it
     plays only the low end. The reconciler emits
@@ -895,7 +895,7 @@ def check_grouping_sub_corner() -> CheckResult:
     return CheckResult(label, "ok", f"sub low-pass corner wired, {corner} Hz")
 
 
-@doctor_check(order=75.36, group="grouping")
+@doctor_check()
 def check_grouping_local_vs_wireless_sub() -> CheckResult:
     """A speaker must NOT carry BOTH a LOCAL sub (an output_topology
     ``subwoofer`` group on its own spare DAC channel) AND a WIRELESS sub
@@ -954,7 +954,7 @@ def check_grouping_local_vs_wireless_sub() -> CheckResult:
     return CheckResult(label, "ok", "no local or wireless sub", reason=REASON_NO_SUB)
 
 
-@doctor_check(order=75.6, group="grouping")
+@doctor_check()
 def check_grouping_tts_lane() -> CheckResult:
     """A bonded non-sub passive member's assistant TTS must route to its OWN
     outputd (member-local, instant), not ride the synced stream (delayed by the
@@ -1118,7 +1118,7 @@ def check_grouping_tts_lane() -> CheckResult:
     return CheckResult(label, "ok", route.ok_detail)
 
 
-@doctor_check(order=75.7, group="grouping")
+@doctor_check()
 def check_grouping_pair_channels() -> CheckResult:
     """Cross-MEMBER channel coherence — the one drift no member-local check
     can see. A same-channel pair ({left,left} / {right,right}) is the
@@ -1183,7 +1183,7 @@ def check_grouping_pair_channels() -> CheckResult:
     )
 
 
-@doctor_check(order=75.8, group="grouping")
+@doctor_check()
 def check_grouping_household_credential() -> CheckResult:
     """A BONDED member must hold the household credential — the device-to-device
     secret that authenticates the cross-device ``/grouping/set`` fan-out.
@@ -1219,7 +1219,7 @@ def check_grouping_household_credential() -> CheckResult:
     )
 
 
-@doctor_check(order=75.9, group="grouping")
+@doctor_check()
 def check_grouping_airplay_latency() -> CheckResult:
     """A bonded LEADER receiving AirPlay must fit its hidden downstream
     delay (~150 ms pipeline + the Snapcast ``buffer_ms``) inside the budget
@@ -1272,7 +1272,7 @@ def check_grouping_airplay_latency() -> CheckResult:
     return CheckResult(label, "ok", f"fits — {budget_desc}")
 
 
-@doctor_check(order=75.95, group="grouping")
+@doctor_check()
 def check_crossover_unit_installed() -> CheckResult:
     """An ACTIVE LEADER must have camilla#2's endpoint-crossover unit
     installed and parseable.

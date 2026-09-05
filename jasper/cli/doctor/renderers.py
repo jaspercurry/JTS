@@ -233,7 +233,7 @@ def _desired_bluetooth_radio_failure(label: str) -> CheckResult | None:
     )
 
 
-@doctor_check(order=9, group="renderers", label="librespot.service", needs_cfg=True)
+@doctor_check(label="librespot.service", needs_cfg=True)
 def check_librespot_running(cfg: Config) -> CheckResult:
     """Verify librespot is installed and the systemd unit is active.
 
@@ -275,7 +275,7 @@ def check_librespot_running(cfg: Config) -> CheckResult:
         f"{bin_path} active (state file: {cfg.librespot_state_path})",
     )
 
-@doctor_check(order=10, group="renderers")
+@doctor_check()
 def check_shairport_sync_ap2() -> CheckResult:
     """Verify shairport-sync is installed with AirPlay 2 support
     AND the systemd unit is active. The Debian Trixie apt package
@@ -318,7 +318,7 @@ def check_shairport_sync_ap2() -> CheckResult:
         )
     return CheckResult("shairport-sync AP2", "ok", out)
 
-@doctor_check(order=11, group="renderers")
+@doctor_check()
 def check_nqptp_running() -> CheckResult:
     """nqptp is required for AirPlay 2 timing. Without it,
     shairport-sync's AP2 path silently fails to handshake."""
@@ -344,7 +344,7 @@ def check_nqptp_running() -> CheckResult:
         reason=REASON_NQPTP_NOT_ACTIVE,
     )
 
-@doctor_check(order=14, group="renderers")
+@doctor_check()
 def check_jasper_mux() -> CheckResult:
     """jasper-mux arbitrates which renderer plays when. Without it,
     source selection and guarded handoff stop working; if fan-in has
@@ -367,7 +367,7 @@ def check_jasper_mux() -> CheckResult:
         reason=REASON_MUX_NOT_ACTIVE,
     )
 
-@doctor_check(order=12, group="renderers")
+@doctor_check()
 def check_bluealsa() -> CheckResult:
     """bluealsa daemon registers the A2DP profile with bluez;
     bluealsa-aplay forwards incoming A2DP audio to ALSA. Both
@@ -402,7 +402,7 @@ def check_bluealsa() -> CheckResult:
         reason=REASON_BLUEALSA_NOT_ACTIVE,
     )
 
-@doctor_check(order=13, group="renderers")
+@doctor_check()
 def check_bluetooth_pairing_policy() -> CheckResult:
     """Verify the JTS no-code pairing agent is installed and idle-closed."""
     parked = _parked_follower_result("Bluetooth pairing policy")
@@ -519,7 +519,7 @@ def check_bluetooth_pairing_policy() -> CheckResult:
         "JTS no-code agent active; pairing window closed",
     )
 
-@doctor_check(order=15, group="renderers", label="Spotify auth", needs_cfg=True)
+@doctor_check(label="Spotify auth", needs_cfg=True)
 def check_spotify_cache(cfg: Config) -> CheckResult:
     """Verify Spotify is authenticated. Prefers the multi-account
     registry (per-household-member accounts, the modern path) over the
@@ -570,7 +570,7 @@ def check_spotify_cache(cfg: Config) -> CheckResult:
         )
     return CheckResult("Spotify auth", "ok", f"legacy cache at {p}")
 
-@doctor_check(order=16, group="renderers", label="Spotify Connect device", needs_cfg=True)
+@doctor_check(label="Spotify Connect device", needs_cfg=True)
 def check_spotify_connect_device(cfg: Config) -> CheckResult:
     """Verify the on-Pi librespot endpoint is visible to at least one
     configured Spotify account, with a broadcast name matching the
@@ -680,7 +680,7 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
         reason=REASON_SPOTIFY_DEVICE_NOT_VISIBLE,
     )
 
-@doctor_check(order=72, group="renderers")
+@doctor_check()
 def check_shairport_sync_loopback_plughw() -> CheckResult:
     """Verify the deployed shairport-sync.conf uses a multi-writer-safe
     renderer device that MATCHES the lane map's intent.
@@ -1255,7 +1255,7 @@ def _fanin_lane_busy_owner_matches(device: str, unit: str) -> tuple[bool, str]:
         return True, f"busy/owned pid={pid}"
     return False, f"busy but owner pid={pid} {why}"
 
-@doctor_check(order=73, group="renderers", exclusive_group="audio-probe")
+@doctor_check(exclusive_group="audio-probe")
 def check_renderer_device_resolvable() -> CheckResult:
     """Verify each music renderer can actually open the ALSA device it is
     configured to write to, AS its runtime systemd User=.
@@ -1400,7 +1400,7 @@ def _classify_mux_mode(path: Path) -> CheckResult:
     )
 
 
-@doctor_check(order=77, group="renderers")
+@doctor_check()
 def check_mux_mode_state() -> CheckResult:
     """Surface the persisted source-selection mode (auto vs manual pin).
 
