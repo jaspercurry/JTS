@@ -107,9 +107,9 @@ twitches its neighbours on every update. "Repaints in place" means polled
 values, drag readouts, timers, live metrics — not a number rendered once.
 
 `.deflist dd` has it. The live gaps — `.status-val` (carrying `#vol-percent`,
-repainting on every drag frame and a 2 Hz poll) and `#status-system` /
-`#system-summary` (CPU · temp · disk, every 20 s) — are all on the protected
-landing page, so they're ledgered rather than fixed here.
+repainting on every drag frame and a 2 Hz poll) and `#system-summary`
+(CPU · temp · disk, every 20 s) — are all on the protected landing page, so
+they're ledgered rather than fixed here.
 
 ## 8. Touch targets
 

@@ -1663,11 +1663,12 @@ install_management_static_assets() {
     # earlier in this run.
     if ! PYTHONPATH="${REPO_DIR}" python3 -m jasper.web.landing \
             /usr/share/jasper-web/index.html \
-            --app-css-version "${app_css_ver}"; then
+            --app-css-version "${app_css_ver}" \
+            --hub-dir /usr/share/jasper-web; then
         echo "  ERROR: failed to render the landing page; refusing to ship a broken page" >&2
         return 1
     fi
-    echo "  landing page: rendered (capabilities, control token, icon sprite)"
+    echo "  landing page + /sound/ and /assistant/ hubs: rendered (capabilities, control token, icon sprite)"
     # All /assets/ content (app.css, fonts, per-page CSS + ES modules) +
     # the .install-manifest the doctor verifies — see
     # deploy/lib/install/web-assets.sh for the copy shape and the

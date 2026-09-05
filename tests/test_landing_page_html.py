@@ -25,6 +25,7 @@ import pytest
 
 from jasper.web import wifi_setup
 from jasper.web.landing import render_landing
+from jasper.web.nav import hub_paths, render_hub
 
 
 _REPO = Path(__file__).resolve().parent.parent
@@ -346,28 +347,12 @@ def test_landing_page_uses_grouped_settings_rows() -> None:
     assert "JTS speaker" not in html
     assert "Manage your speaker" not in html
     assert "Voice & Skills" not in html
-    for heading in (
-        "Sources",
-        "Sound",
-        "Assistant",
-        "Integrations",
-        "Network",
-        "System",
-    ):
-        assert f">{heading}</h2>" in html
     assert 'class="setting-row"' in html
     headings = re.findall(
         r'<h2 class="eyebrow group-title" id="[^"]+">([^<]+)</h2>',
         html,
     )
-    assert headings == [
-        "Sources",
-        "Sound",
-        "Assistant",
-        "Integrations",
-        "Network",
-        "System",
-    ]
+    assert headings == ["Sources", "Sound", "Assistant", "System"]
 def test_landing_page_capability_gates_fail_closed() -> None:
     html = _index_html()
 
@@ -388,7 +373,7 @@ def test_landing_page_bakes_capability_ceiling_before_any_fetch() -> None:
     # install.sh stamps this placeholder with the profile's capability island.
     assert "__JTS_CAPS_ISLAND__" in _INDEX_PATH.read_text(encoding="utf-8")
     assert 'JSON.parse(document.getElementById("landing-caps").textContent)' in (
-        _landing_js()
+        settings_status
     )
 
     # The snapshot poll must NOT re-drive layout (live values only), so a slow
@@ -439,16 +424,19 @@ def test_streambox_shows_no_link_its_nginx_conf_cannot_serve() -> None:
     # profile's nginx conf never routes: the household taps "Voice" and gets
     # the catch-all. Pin the seam between the two files rather than the three
     # sections that happened to break, so the next widened grant is caught.
+    # The hubs hold most of those rows now, so they are walked too.
     from jasper.install_profile import system_capabilities_for_profile
 
     caps = system_capabilities_for_profile("streambox")
+    conf = _STREAMBOX_NGINX_PATH.read_text(encoding="utf-8")
+    # An exact-match block serves that one path (`= /` is the landing page,
+    # `= /sound/` the hub); a prefix block serves everything under it, except
+    # the `/` catch-all, which is exactly what a dead link falls to.
+    exact = set(re.findall(r"location\s+=\s*(/[^\s{]*)", conf))
     served = {
         prefix
-        for prefix in re.findall(
-            r"location\s+=?\s*(/[^\s{]*)",
-            _STREAMBOX_NGINX_PATH.read_text(encoding="utf-8"),
-        )
-        if prefix != "/"  # the catch-all is exactly what a dead link falls to
+        for prefix in re.findall(r"location\s+(/[^\s{]*)", conf)
+        if prefix != "/"
     }
 
     class _Gates(HTMLParser):
@@ -481,13 +469,15 @@ def test_streambox_shows_no_link_its_nginx_conf_cannot_serve() -> None:
 
     gates = _Gates()
     gates.feed(_index_html())
+    for hub in hub_paths():
+        gates.feed(render_hub(hub, caps=caps, app_css_version="testsha"))
     unserved = sorted({
         href
         for href in gates.visible
-        if not any(href == p or href.startswith(p) for p in served)
+        if href not in exact and not any(href.startswith(p) for p in served)
     })
     assert not unserved, (
-        "landing rows visible on streambox link to paths "
+        "landing and hub rows visible on streambox link to paths "
         f"nginx-jasper-streambox.conf does not serve: {unserved}"
     )
 
@@ -553,38 +543,9 @@ def test_source_selector_uses_control_endpoints() -> None:
     assert "source-button.playing::after" in _index_html()
 
 
-def test_room_correction_card_uses_room_handoff() -> None:
-    html = _index_html()
-
-    assert 'id="correction-card" href="/sound/room/"' in html
-    assert "data-https" not in html
-    # #1941 R4: the instrument is the microphone, never the phone — the row is
-    # the entry point to /correction/room/, whose own subtitle says the same.
-    assert "Microphone measurement" in html
-
-
-def test_landing_exposes_complete_canonical_sound_navigation() -> None:
-    html = _index_html()
-
-    for href in (
-        "/eq/",
-        "/sound/setup/",
-        "/sound/crossover/",
-        "/sound/room/",
-        "/sound/bass/",
-    ):
-        assert f'href="{href}"' in html
-    crossover_row = re.search(
-        r'<a class="setting-row" href="/sound/crossover/">(?P<body>.*?)</a>',
-        html,
-        re.DOTALL,
-    )
-    assert crossover_row is not None
-    assert '<span class="setting-title">Active speaker</span>' in crossover_row.group(
-        "body"
-    )
-    # Follower pages own delegation locally; the dashboard must keep Setup and
-    # commissioning navigation visible instead of hiding the whole section.
+def test_landing_keeps_the_sound_row_visible_on_a_follower() -> None:
+    # Follower pages own delegation locally; the dashboard must keep Sound
+    # navigation visible instead of hiding the whole section.
     pair_script = _landing_js().split("// Stereo-pair banner.", 1)[1]
     assert "soundSection.style.display" not in pair_script
 
@@ -672,13 +633,6 @@ def test_both_nginx_profiles_have_canonical_sound_route_parity() -> None:
         assert "if ($request_method !~ ^(GET|HEAD)$) { return 405; }" in https_catchall
         _assert_strong_no_cache(https_catchall)
 
-        sound_redirect = _nginx_location_block(
-            http_nginx, "location = /sound/"
-        )
-        assert "if ($request_method !~ ^(GET|HEAD)$) { return 405; }" in sound_redirect
-        assert "return 302 /sound/setup/;" in sound_redirect
-        _assert_strong_no_cache(sound_redirect)
-
         eq = _nginx_location_block(http_nginx, "location /eq/")
         setup = _nginx_location_block(http_nginx, "location /sound/setup/")
         compat = _nginx_location_block(http_nginx, "location /sound/")
@@ -719,6 +673,23 @@ def test_both_nginx_profiles_allow_bounded_wifi_connect_rollback() -> None:
         assert match
         proxy_timeout = int(match.group(1))
         assert proxy_timeout >= wifi_setup.CONNECT_NEW_TIMEOUT_CEILING + 20
+
+
+@pytest.mark.parametrize("path", hub_paths())
+def test_both_nginx_profiles_serve_the_hubs_from_disk(path: str) -> None:
+    # A hub is a static page rendered at install time, so its exact-match
+    # block reads from disk like `location = /` — and only the exact match,
+    # or the `/sound/` prefix proxy would stop serving the pages under it.
+    for conf in (_NGINX_PATH, _STREAMBOX_NGINX_PATH):
+        nginx = conf.read_text(encoding="utf-8")
+        hub = _nginx_location_block(nginx, f"location = {path}")
+        bare = _nginx_location_block(nginx, f"location = {path.rstrip('/')}")
+
+        assert "root /usr/share/jasper-web;" in hub
+        assert f"try_files {path}index.html =404;" in hub
+        assert 'add_header Cache-Control "no-store";' in hub
+        assert "proxy_pass" not in hub
+        assert f"return 302 {path};" in bare
 
 
 def test_nginx_serves_static_management_assets() -> None:
