@@ -906,9 +906,6 @@ def stop_peering_daemon(*, timeout: float = 5.0) -> None:
 # Forwarded pair action requests carry this header; its presence stops a
 # second hop (see _maybe_forward_pair_action_to_leader's loop breaker).
 _PAIR_FORWARD_HEADER = "X-JTS-Pair-Forwarded"
-_GROUPING_RECONCILE_KICK_HELPER = (
-    "/usr/local/sbin/jasper-grouping-reconcile-kick"
-)
 _GROUPING_RECONCILE_TRAILING_UNIT = "jasper-grouping-reconcile-trailing.service"
 _GROUPING_RECONCILE_TRAILING_DELAY_FILE = (
     "/run/jasper-control/grouping-reconcile-trailing-delay"
@@ -1034,7 +1031,7 @@ def _launch_grouping_reconciler_kick(reason: str) -> None:
         reason=reason,
     )
     subprocess.Popen(
-        [_GROUPING_RECONCILE_KICK_HELPER],
+        [grouping_supervisor.RECONCILE_KICK_HELPER],
     )
 
 
