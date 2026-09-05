@@ -442,6 +442,32 @@ async def test_reconnect_with_backoff_eventually_succeeds():
         await conn.stop()
 
 
+async def test_drop_signalled_during_a_reconnect_is_not_swallowed():
+    """A set() landing during the reopen must trigger one more cycle (#3915)."""
+    conn, factory = _make_conn(backoff_schedule=(0.0, 0.0))
+
+    def signalling_factory(*, model, config):
+        cm = factory(model=model, config=config)
+        if len(factory.sessions) == 2:
+            # The supervisor's reopen is in flight; a fresh drop lands
+            # before `_open_session_attempt` finishes.
+            conn._reconnect_event.set()
+        return cm
+
+    conn._connect_factory = signalling_factory
+    registry = ToolRegistry()
+    await conn.start(registry, "system")
+    try:
+        factory.sessions[0].feed_error(_ws_close_error(1006, "abnormal"))
+
+        await _wait_until(lambda: len(factory.sessions) >= 3, timeout=3.0)
+        await _wait_until(lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0)
+        turn = await conn.acquire_turn()
+        await turn.release()
+    finally:
+        await conn.stop()
+
+
 async def test_repeated_failures_surface_failed_state():
     """If every open in the backoff schedule fails, the connection
     transitions to FAILED. Subsequent acquire_turn() calls raise."""

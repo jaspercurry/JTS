@@ -1551,7 +1551,6 @@ class OpenAIRealtimeConnection:
             self._conn = None
             self._conn_cm = None
             raise
-        self._reconnect_event.clear()
         self._deferred_reconnect.clear()
         self._receive_task = asyncio.create_task(self._receive_loop(conn))
         async with self._state_lock:
@@ -1679,8 +1678,21 @@ class OpenAIRealtimeConnection:
                 await self._reconnect_event.wait()
                 if self._stopping.is_set():
                     return
-                await self._reconnect_with_backoff()
+                # Cleared before the work so a signal during reopen survives. See #3915.
                 self._reconnect_event.clear()
+                log_event(
+                    logger,
+                    "voice.supervisor.wake",
+                    provider=self.PROVIDER_NAME,
+                    state=self._state.value,
+                )
+                await self._reconnect_with_backoff()
+                log_event(
+                    logger,
+                    "voice.supervisor.wait",
+                    provider=self.PROVIDER_NAME,
+                    state=self._state.value,
+                )
         except asyncio.CancelledError:
             raise
 
