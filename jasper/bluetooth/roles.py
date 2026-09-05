@@ -76,6 +76,6 @@ class RoleStore:
         # tree. Keep the write best-effort (a role-map write must not crash the
         # bluetooth handler).
         try:
-            atomic_write_text(self._path, body, mode=0o640, group_from_parent=True)
+            atomic_write_text(self._path, body, mode=0o640)
         except OSError as e:
             logger.warning("bt_roles: write failed (%s)", e)

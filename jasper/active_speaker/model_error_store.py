@@ -192,7 +192,7 @@ def _write_state(path: Path, state: dict[str, Any]) -> None:
     state["state_path"] = str(path)
     state["updated_at"] = _utc_now()
     path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(path, state, mode=0o640, group_from_parent=True)
+    atomic_write_json(path, state, mode=0o640)
 
 
 def adopt_floor(
@@ -209,7 +209,6 @@ def adopt_floor(
     with advisory_file_lock(
         _store_lock_path(resolved),
         mode=_STORE_LOCK_MODE,
-        group_from_parent=True,
         timeout_sec=_STORE_LOCK_TIMEOUT_SEC,
     ):
         state = load_state(resolved)
@@ -314,7 +313,6 @@ def record_model_error(
     with advisory_file_lock(
         _store_lock_path(resolved),
         mode=_STORE_LOCK_MODE,
-        group_from_parent=True,
         timeout_sec=_STORE_LOCK_TIMEOUT_SEC,
     ):
         state = load_state(resolved)

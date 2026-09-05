@@ -449,7 +449,6 @@ def save_bass_extension_profile(
         _profile_path(path),
         json.dumps(profile.to_dict(), indent=2, sort_keys=True) + "\n",
         mode=0o640,
-        group_from_parent=True,
         durable=True,
     )
 

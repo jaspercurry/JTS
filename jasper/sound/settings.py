@@ -139,7 +139,7 @@ def save_sound_settings(
     data = json.dumps(settings.to_dict(), indent=2, sort_keys=True) + "\n"
     # 0640 group jasper so the non-root jasper-control can read these
     # (non-secret) sound settings for /state.
-    atomic_write_text(settings_path, data, mode=0o640, group_from_parent=True)
+    atomic_write_text(settings_path, data, mode=0o640)
 
 
 def output_trim_db(profile: SoundProfile, settings: SoundSettings) -> float:

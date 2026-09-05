@@ -3005,7 +3005,6 @@ def build_baseline_profile_candidate(
             state_target,
             json.dumps(payload, indent=2, sort_keys=True) + "\n",
             mode=0o640,
-            group_from_parent=True,
         )
     return payload
 
@@ -3629,7 +3628,6 @@ def persist_applied_baseline_profile(
         target,
         json.dumps(applied, indent=2, sort_keys=True) + "\n",
         mode=0o640,
-        group_from_parent=True,
         durable=True,
     )
     return applied
@@ -3681,7 +3679,7 @@ def promote_applied_baseline_candidate(
         return
     try:
         text = applied_path.read_text(encoding="utf-8")
-        atomic_write_text(canonical, text, mode=0o640, group_from_parent=True)
+        atomic_write_text(canonical, text, mode=0o640)
     except (OSError, UnicodeError) as exc:
         # UnicodeError (read_text can raise UnicodeDecodeError on a
         # corrupted-but-present sibling) is a ValueError, not an OSError --
@@ -3974,7 +3972,6 @@ async def _apply_baseline_profile_locked(
             state_target,
             json.dumps(candidate, indent=2, sort_keys=True) + "\n",
             mode=0o640,
-            group_from_parent=True,
         )
     if not driver_domain and candidate.get("permissions", {}).get("may_apply"):
         from jasper.active_speaker.runtime_contract import (
@@ -4021,7 +4018,6 @@ async def _apply_baseline_profile_locked(
                 state_target,
                 json.dumps(candidate, indent=2, sort_keys=True) + "\n",
                 mode=0o640,
-                group_from_parent=True,
             )
     if not candidate.get("permissions", {}).get("may_apply"):
         await _record_apply_outcome_into_bundle(
@@ -4089,7 +4085,6 @@ async def _apply_baseline_profile_locked(
             state_target,
             json.dumps(failed, indent=2, sort_keys=True) + "\n",
             mode=0o640,
-            group_from_parent=True,
         )
         # Spec-pinned failure event name: apply_rolled_back covers every
         # DspApplyError, whether or not the underlying rollback itself

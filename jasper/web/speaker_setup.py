@@ -160,7 +160,6 @@ def _write_bluez_main_conf_name(name: str, path: str = BLUEZ_MAIN_CONF) -> None:
             conf,
             updated,
             mode=0o644,
-            group_from_parent=True,
         )
     except (OSError, UnicodeError) as e:
         log_event(

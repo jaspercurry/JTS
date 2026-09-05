@@ -167,7 +167,6 @@ def _record_state(
         path,
         payload,
         mode=0o640,
-        group_from_parent=True,
     )
 
 
@@ -1371,7 +1370,6 @@ def reemit_staged_startup_anchor(
                     target,
                     yaml,
                     mode=target_mode,
-                    group_from_parent=True,
                     durable=True,
                 )
                 # Every field that names a LOCATION is rewritten — the three
@@ -1404,7 +1402,6 @@ def reemit_staged_startup_anchor(
                     meta_target,
                     published,
                     mode=0o640,
-                    group_from_parent=True,
                     durable=True,
                 )
         except StagedAnchorLockContended as exc:

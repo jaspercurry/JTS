@@ -256,7 +256,6 @@ def staged_anchor_lock(
             handle = stack.enter_context(advisory_file_lock(
                 lock_path,
                 mode=STAGED_ANCHOR_LOCK_MODE,
-                group_from_parent=True,
                 timeout_sec=timeout,
             ))
         # `TimeoutError` IS an `OSError` subclass, so the bounded-wait refusal
@@ -1900,7 +1899,6 @@ def _stage_protected_startup_config_locked(
             meta_path,
             payload,
             mode=0o640,
-            group_from_parent=True,
         )
     except OSError as exc:
         logger.warning(

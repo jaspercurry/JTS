@@ -316,7 +316,6 @@ async def _restore_locked(
         selected,
         predecessor_text,
         mode=mode,
-        group_from_parent=True,
         durable=True,
     )
     await _reload_and_match(
@@ -333,7 +332,6 @@ async def _restore_locked(
             profile_path,
             predecessor_profile.decode("utf-8"),
             mode=0o640,
-            group_from_parent=True,
             durable=True,
         )
     await _active_proof(
@@ -550,7 +548,6 @@ async def apply_bass_extension(
                 selected,
                 natural_text,
                 mode=selected_mode,
-                group_from_parent=True,
                 durable=True,
             )
             await _reload_and_match(
@@ -632,7 +629,6 @@ async def apply_bass_extension(
                 selected,
                 predecessor_text,
                 mode=selected_mode,
-                group_from_parent=True,
                 durable=True,
             )
             if selected.read_bytes() != predecessor_graph_bytes:
@@ -641,7 +637,6 @@ async def apply_bass_extension(
                 intent_target,
                 json.dumps(intent, indent=2, sort_keys=True) + "\n",
                 mode=0o640,
-                group_from_parent=True,
                 durable=True,
             )
 
@@ -678,7 +673,6 @@ async def apply_bass_extension(
                     selected,
                     desired_graph_bytes.decode("utf-8"),
                     mode=selected_mode,
-                    group_from_parent=True,
                     durable=True,
                 )
                 await _reload_and_match(

@@ -311,7 +311,6 @@ def stage_prescription(
         path,
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         mode=0o640,
-        group_from_parent=True,
         durable=True,
     )
     log_event(

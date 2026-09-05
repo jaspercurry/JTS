@@ -109,7 +109,6 @@ def build_cache_handler(cache_path: str):
                     self.cache_path,
                     json.dumps(token_info),
                     mode=SPOTIFY_CACHE_FILE_MODE,
-                    group_from_parent=True,
                 )
 
         _CACHE_HANDLER_CLS = _GroupReadableCacheFileHandler
@@ -182,7 +181,6 @@ class Registry:
             self.path,
             json.dumps(payload, indent=2),
             mode=SPOTIFY_CACHE_FILE_MODE,
-            group_from_parent=True,
         )
 
     def get(self, name: str) -> Account | None:

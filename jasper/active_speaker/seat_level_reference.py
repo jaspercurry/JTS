@@ -250,7 +250,7 @@ def write_seat_level_reference(
         # "this build does not record stimuli", and a missing key cannot.
         "stimulus": None if stimulus is None else stimulus.to_dict(),
     }
-    atomic_write_json(path, payload, mode=0o640, group_from_parent=True)
+    atomic_write_json(path, payload, mode=0o640)
     return payload
 
 

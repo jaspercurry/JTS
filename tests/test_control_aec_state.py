@@ -303,8 +303,7 @@ def test_aec_mode_interleaved_writers_preserve_each_others_keys(
         text,
         *,
         mode=0o644,
-        group_from_parent=False,
-        best_effort_group=False,
+        group_from_parent=True,
         preserve_target_stat=False,
         durable=False,
     ):
@@ -316,7 +315,6 @@ def test_aec_mode_interleaved_writers_preserve_each_others_keys(
             text,
             mode=mode,
             group_from_parent=group_from_parent,
-            best_effort_group=best_effort_group,
             preserve_target_stat=preserve_target_stat,
             durable=durable,
         )
@@ -379,8 +377,7 @@ def test_wake_model_and_threshold_interleaved_writers_preserve_both_keys(
         text,
         *,
         mode=0o644,
-        group_from_parent=False,
-        best_effort_group=False,
+        group_from_parent=True,
         preserve_target_stat=False,
         durable=False,
     ):
@@ -392,7 +389,6 @@ def test_wake_model_and_threshold_interleaved_writers_preserve_both_keys(
             text,
             mode=mode,
             group_from_parent=group_from_parent,
-            best_effort_group=best_effort_group,
             preserve_target_stat=preserve_target_stat,
             durable=durable,
         )

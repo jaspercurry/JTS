@@ -1104,7 +1104,6 @@ class CommissioningRunStore:
             self.path,
             encoded,
             mode=0o640,
-            group_from_parent=True,
         )
 
     def _read_live_mutation(self) -> CommissioningLiveMutation | None:
@@ -1133,7 +1132,6 @@ class CommissioningRunStore:
             self.live_mutation_path,
             encoded,
             mode=0o640,
-            group_from_parent=True,
         )
 
     @staticmethod

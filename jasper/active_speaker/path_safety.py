@@ -185,7 +185,6 @@ def write_path_safety_evidence(
         target,
         evidence,
         mode=0o640,
-        group_from_parent=True,
     )
     return target
 
