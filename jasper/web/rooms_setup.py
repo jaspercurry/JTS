@@ -919,17 +919,6 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
     fresh_bond = not requested_bond_id
     bond_id = requested_bond_id or _generate_bond_id()
     leader_addr = _leader_handle()
-    if "mains_highpass_enabled" in parsed:
-        mains_highpass_enabled = parsed.get("mains_highpass_enabled")
-        if not isinstance(mains_highpass_enabled, bool):
-            _send_json(
-                handler,
-                {"ok": False, "error": "mains_highpass_enabled must be boolean"},
-                status=HTTPStatus.BAD_REQUEST,
-            )
-            return
-    else:
-        mains_highpass_enabled = True
 
     # Record each member's slot so the positional results from
     # _fan_out_grouping pair back to the right member.
@@ -955,7 +944,6 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
             "peer_addr": "",
             "peer_name": "",
             "roster": [],
-            "mains_highpass_enabled": mains_highpass_enabled,
         }
         if fresh_bond:
             # A new pair must not inherit stale balance trim from a previous

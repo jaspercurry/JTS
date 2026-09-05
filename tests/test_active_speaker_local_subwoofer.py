@@ -30,11 +30,7 @@ from jasper.active_speaker import (
     emit_active_speaker_baseline_config,
     lowest_driver_role,
 )
-from jasper.active_speaker.profile import (
-    DEFAULT_SUB_CROSSOVER_HZ,
-    SUB_CROSSOVER_HZ_HI,
-    SUB_CROSSOVER_HZ_LO,
-)
+from jasper.active_speaker.profile import DEFAULT_SUB_CROSSOVER_HZ
 from jasper.active_speaker.runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
@@ -271,19 +267,6 @@ def _baseline(preset: ActiveSpeakerPreset) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def test_sub_crossover_corner_mirrors_wireless_sub() -> None:
-    # The local-sub corner reuses the wireless sub's exact numbers.
-    from jasper.multiroom.config import (
-        CROSSOVER_HZ_HI,
-        CROSSOVER_HZ_LO,
-        DEFAULT_CROSSOVER_HZ,
-    )
-
-    assert DEFAULT_SUB_CROSSOVER_HZ == DEFAULT_CROSSOVER_HZ == 80.0
-    assert SUB_CROSSOVER_HZ_LO == CROSSOVER_HZ_LO == 40.0
-    assert SUB_CROSSOVER_HZ_HI == CROSSOVER_HZ_HI == 200.0
-
-
 def test_local_sub_defaults_to_80hz() -> None:
     sub = LocalSubwoofer.from_mapping({"physical_output_index": 4})
     assert sub.crossover_fc_hz == 80.0
@@ -422,6 +405,18 @@ def test_active_2way_sub_emit_shape() -> None:
 
     # The sub LP and the mains HP share ONE corner — two halves of one crossover.
     assert lp["parameters"]["freq"] == hp["parameters"]["freq"]
+
+
+def test_subless_active_main_folds_no_mains_bass_management_highpass() -> None:
+    # The mains bass-management high-pass is folded ONLY for a preset that
+    # declares a LocalSubwoofer — the other half of the rule pinned by
+    # test_active_2way_sub_emit_shape. Without one the mains stay full-range
+    # below the driver crossover and no bass-management filter is emitted.
+    subless = replace(_active_2way_sub_preset(), local_subwoofer=None)
+    payload = _parse(_baseline(subless))
+
+    assert payload["devices"]["playback"]["channels"] == 4
+    assert not [n for n in payload["filters"] if n.endswith("_bass_mgmt_hp")]
 
 
 def test_passive_1way_sub_emit_shape() -> None:

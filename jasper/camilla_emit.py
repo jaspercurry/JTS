@@ -319,12 +319,11 @@ def channel_select_sources(channel: str) -> list[tuple[int, float, bool]]:
     two output channels for one inter-speaker channel assignment.
 
     One unity source for a ``left`` / ``right`` route; the clip-safe
-    :func:`mono_sum_sources` for a ``mono`` / ``sub`` L+R sum. Both output
-    channels get the SAME content, so the assigned channel reaches the driver
-    regardless of how the physical speaker taps the stereo bus. ``stereo`` is
-    passthrough and has no mixer, so it is not a valid argument here (callers
-    handle it separately). ``sub`` shares ``mono``'s sum; its low-pass crossover
-    is a separate filter.
+    :func:`mono_sum_sources` for a ``mono`` L+R sum. Both output channels get
+    the SAME content, so the assigned channel reaches the driver regardless of
+    how the physical speaker taps the stereo bus. ``stereo`` is passthrough and
+    has no mixer, so it is not a valid argument here (callers handle it
+    separately).
 
     Raises ``ValueError`` for an unknown / passthrough channel — this is an
     internal (resolved) value, so fail loud rather than emit a silent mis-route.
@@ -333,11 +332,11 @@ def channel_select_sources(channel: str) -> list[tuple[int, float, bool]]:
         return [(0, _CHANNEL_ROUTE_GAIN_DB, False)]
     if channel == "right":
         return [(1, _CHANNEL_ROUTE_GAIN_DB, False)]
-    if channel in {"mono", "sub"}:
+    if channel == "mono":
         return mono_sum_sources()
     raise ValueError(
         f"channel {channel!r} has no channel-select mixer "
-        "(expected one of left, right, mono, sub)"
+        "(expected one of left, right, mono)"
     )
 
 

@@ -12,7 +12,6 @@ import pytest
 
 from jasper.cli import doctor
 from jasper.cli.doctor import _evidence, grouping
-from jasper.multiroom.config import BondMember
 from jasper.multiroom.tts_route import VOICE_PARK_ENV
 from jasper.tts_routing import (
     FANIN_TTS_SOCKET,
@@ -30,22 +29,6 @@ _FOLLOWER = dict(
     bond_id="living-room",
     leader_addr="192.168.1.50",
 )
-_SUB_FOLLOWER = dict(
-    enabled=True,
-    role="follower",
-    channel="sub",
-    bond_id="lr",
-    leader_addr="192.168.1.50",
-)
-_SUB_LEADER = dict(
-    enabled=True,
-    role="leader",
-    channel="left",
-    bond_id="lr",
-    roster=(BondMember(addr="192.168.1.60", name="Sub", channel="sub"),),
-)
-
-
 def _fake_unit_states(
     active: dict[str, str] | None = None,
     *,
@@ -368,47 +351,6 @@ def test_check_crossover_unit_active_leader_verdicts(
     assert r.reason == reason
 
 
-# --- local-vs-wireless sub coexistence (B3) -------------------------------
-
-
-def _set_local_sub_topology(monkeypatch, tmp_path, *, with_sub: bool):
-    """A subwoofer topology carries routing.subwoofer_group_ids; the no-sub
-    case points at a missing file (an empty draft, so no subwoofer groups)."""
-    topology_path = tmp_path / "output_topology.json"
-    if with_sub:
-        from jasper.output_topology import save_output_topology
-        from tests.test_active_speaker_runtime_contract import _subwoofer_topology
-
-        save_output_topology(_subwoofer_topology(), path=topology_path)
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-
-
-@pytest.mark.parametrize(
-    "local_sub, cfg_kwargs, status, reason",
-    [
-        (False, {"enabled": False}, "ok", grouping.REASON_NO_SUB),
-        (True, {"enabled": False}, "ok", grouping.REASON_LOCAL_SUB_ONLY),
-        (False, _SUB_FOLLOWER, "ok", grouping.REASON_WIRELESS_SUB_ONLY),
-        (False, _SUB_LEADER, "ok", grouping.REASON_WIRELESS_SUB_ONLY),
-        # Two bass producers at one speaker.
-        (True, _SUB_FOLLOWER, "warn", grouping.REASON_SUB_CONFLICT),
-        (True, _SUB_LEADER, "warn", grouping.REASON_SUB_CONFLICT),
-    ],
-    ids=["neither", "local-only", "wireless-follower", "wireless-leader",
-         "both-follower", "both-leader"],
-)
-def test_check_grouping_local_vs_wireless_sub_verdicts(
-    monkeypatch, tmp_path, local_sub, cfg_kwargs, status, reason
-):
-    _set_local_sub_topology(monkeypatch, tmp_path, with_sub=local_sub)
-    _patch_grouping(monkeypatch, _grouping_cfg(**cfg_kwargs))
-
-    r = doctor.check_grouping_local_vs_wireless_sub()
-
-    assert r.status == status
-    assert r.reason == reason
-
-
 # ------------------------------------------------------------- check_grouping
 
 
@@ -585,7 +527,6 @@ def test_check_grouping_tts_lane_warns_when_the_authority_is_unreadable(
     [
         "check_grouping_snapcast_version",
         "check_crossover_unit_installed",
-        "check_grouping_local_vs_wireless_sub",
         "check_grouping_pair_lock",
     ],
 )

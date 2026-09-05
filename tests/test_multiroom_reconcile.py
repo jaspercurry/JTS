@@ -34,7 +34,6 @@ from jasper.ring_assets import (
 from jasper.multiroom.config import (
     DEFAULT_BUFFER_MS,
     DEFAULT_CODEC,
-    BondMember,
     GroupingConfig,
 )
 from tests._bonded_member import bonded_grouping_env
@@ -546,245 +545,15 @@ def test_topology_changes_revoke_dac_bypass_without_deleting_bond_intent():
     assert _assemble_args(bonded, active_endpoint=True)[CLIENT_KEY]
 
 
-def test_outputd_grouping_env_emits_sub_corner_only_for_sub():
-    """The wireless-sub low-pass corner rides the outputd lane ONLY when the
-    member's channel is "sub"; it is ABSENT for every other channel (a non-sub
-    member must never carry it)."""
-
-    from jasper.multiroom.reconcile import (
-        OUTPUTD_DAC_CONTENT_SUB_HZ_ENV,
-    )
-
-    sub = dataclasses.replace(_follower(channel="sub"), crossover_hz=120.0)
-    env = bonded_grouping_env(
-        sub,
-        flat_output_allowed=True,
-    )
-    assert env[OUTPUTD_DAC_CONTENT_SUB_HZ_ENV] == "120.0"
-
-    for ch in ("left", "right", "stereo", "mono"):
-        env = bonded_grouping_env(
-            _follower(channel=ch), flat_output_allowed=True
-        )
-        assert OUTPUTD_DAC_CONTENT_SUB_HZ_ENV not in env
-
-
-def test_outputd_grouping_env_highpasses_mains_when_bond_has_sub():
-
-    from jasper.multiroom.reconcile import (
-        OUTPUTD_DAC_CONTENT_HP_HZ_ENV,
-    )
-
-    leader = dataclasses.replace(
-        _leader(channel="left"),
-        crossover_hz=100.0,
-        roster=(BondMember(addr="192.168.1.8", name="Sub", channel="sub"),),
-    )
-    assert (
-        bonded_grouping_env(
-            leader,
-            flat_output_allowed=True,
-    )[
-            OUTPUTD_DAC_CONTENT_HP_HZ_ENV
-        ]
-        == "100.0"
-    )
-
-    follower = dataclasses.replace(
-        _follower(channel="right"),
-        crossover_hz=100.0,
-        subwoofer_present=True,
-    )
-    assert (
-        bonded_grouping_env(
-            follower,
-            flat_output_allowed=True,
-    )[
-            OUTPUTD_DAC_CONTENT_HP_HZ_ENV
-        ]
-        == "100.0"
-    )
-
-
-def test_outputd_grouping_env_clears_main_highpass_when_not_applicable():
-
-    from jasper.multiroom.reconcile import (
-        OUTPUTD_DAC_CONTENT_HP_HZ_ENV,
-        outputd_grouping_env,
-    )
-
-    rostered = dataclasses.replace(
-        _leader(channel="left"),
-        crossover_hz=90.0,
-        roster=(BondMember(addr="192.168.1.8", name="Sub", channel="sub"),),
-    )
-    assert (
-        outputd_grouping_env(
-            dataclasses.replace(rostered, mains_highpass_enabled=False)
-        )[OUTPUTD_DAC_CONTENT_HP_HZ_ENV]
-        == ""
-    )
-    assert (
-        outputd_grouping_env(_leader(channel="left"))[OUTPUTD_DAC_CONTENT_HP_HZ_ENV]
-        == ""
-    )
-    assert (
-        outputd_grouping_env(
-            dataclasses.replace(_follower(channel="sub"), subwoofer_present=True)
-        )[OUTPUTD_DAC_CONTENT_HP_HZ_ENV]
-        == ""
-    )
-    assert (
-        outputd_grouping_env(
-            dataclasses.replace(_follower(channel="right"), subwoofer_present=True),
-            active_endpoint=True,
-        )[OUTPUTD_DAC_CONTENT_HP_HZ_ENV]
-        == ""
-    )
-    assert outputd_grouping_env(_disabled())[OUTPUTD_DAC_CONTENT_HP_HZ_ENV] == ""
-
-
-def test_corner_precedence_active_main_defers_wireless_highpass():
-    """Revision plan §6 default — corner precedence, mains-HP applied ONCE.
-
-    When a speaker is BOTH an active main AND bonded to a wireless sub, it could
-    high-pass the mains TWICE: the wireless mains-HP in outputd's dac_content
-    lane, AND its own CamillaDSP active-graph bass-management HP. The
-    active-speaker LOCAL config wins — the wireless path defers. Concretely: the
-    SAME box (a right-channel main in a bond that contains a sub, mains-HP
-    enabled) writes the wireless HP env when it is a DUMB single-DAC member, but
-    that env is CLEARED when it is an ACTIVE endpoint (its CamillaDSP owns the
-    corner). So the corner is applied exactly once regardless of which path the
-    box takes.
-    """
-
-    from jasper.multiroom.reconcile import (
-        OUTPUTD_DAC_CONTENT_HP_HZ_ENV,
-        outputd_grouping_env,
-    )
-
-    # A right-channel main; the bond has a sub; mains high-pass armed; corner 100.
-    active_main = dataclasses.replace(
-        _follower(channel="right"),
-        crossover_hz=100.0,
-        subwoofer_present=True,
-        mains_highpass_enabled=True,
-    )
-
-    # As a DUMB member (active_endpoint=False): the wireless HP IS applied here.
-    dumb = bonded_grouping_env(
-        active_main,
-        active_endpoint=False,
-        flat_output_allowed=True,
-    )
-    assert dumb[OUTPUTD_DAC_CONTENT_HP_HZ_ENV] == "100.0"
-
-    # As an ACTIVE endpoint: the wireless HP DEFERS (cleared) — the box's own
-    # CamillaDSP graph owns the corner, so mains-HP is applied exactly once
-    # there, never stacked with this lane.
-    active = outputd_grouping_env(active_main, active_endpoint=True)
-    assert active[OUTPUTD_DAC_CONTENT_HP_HZ_ENV] == ""
-
-
-def test_corner_precedence_active_graph_highpass_uses_shared_corner():
-    """The 'applied once' side of §6: the active-speaker CamillaDSP graph's
-    mains bass-management high-pass is emitted at the LocalSubwoofer corner —
-    the SAME shared bass-management corner the deferred wireless path would have
-    used. Real-shape: parse the emitted startup graph and find the mains'
-    lowest-driver LinkwitzRileyHighpass at the sub corner.
-    """
-    import yaml
-
-    from jasper.active_speaker.camilla_yaml import (
-        emit_active_speaker_baseline_config,
-    )
-    from jasper.active_speaker.profile import ActiveSpeakerPreset
-    from jasper.camilla_emit import BASS_MANAGEMENT_CORNER_HZ_DEFAULT
-
-    # A 2-way active main WITH a local sub at the shared default corner.
-    preset = ActiveSpeakerPreset.from_mapping(
-        {
-            "artifact_schema_version": 1,
-            "kind": "jts_active_speaker_preset",
-            "preset_id": "p5_active_main_with_sub",
-            "name": "P5 active main + sub",
-            "way_count": 2,
-            "channel_map": {
-                "layout": "mono",
-                "outputs": [
-                    {
-                        "index": 0,
-                        "side": "mono",
-                        "driver_role": "woofer",
-                        "label": "Woofer",
-                    },
-                    {
-                        "index": 1,
-                        "side": "mono",
-                        "driver_role": "tweeter",
-                        "label": "Tweeter",
-                    },
-                ],
-            },
-            "drivers": {
-                "woofer": {"manufacturer": "Acme", "model": "W1"},
-                "tweeter": {"manufacturer": "Acme", "model": "T1"},
-            },
-            "crossover_regions": [
-                {
-                    "id": "wt",
-                    "lower_driver": "woofer",
-                    "upper_driver": "tweeter",
-                    "fc_hz": 2000.0,
-                }
-            ],
-            "local_subwoofer": {
-                "physical_output_index": 2,
-                "label": "Sub",
-                "crossover_fc_hz": BASS_MANAGEMENT_CORNER_HZ_DEFAULT,
-            },
-        }
-    )
-    doc = yaml.safe_load(
-        emit_active_speaker_baseline_config(
-            preset,
-            playback_device="hw:TestDAC",
-            baseline_id="p5-precedence-test",
-        )
-    )
-    filters = doc["filters"]
-    # There is a LinkwitzRileyHighpass at the sub corner (the mains'
-    # bass-management HP) — proving the active graph applies the corner locally.
-    hp_at_corner = [
-        f
-        for f in filters.values()
-        if isinstance(f, dict)
-        and f.get("type") == "BiquadCombo"
-        and f.get("parameters", {}).get("type") == "LinkwitzRileyHighpass"
-        and f["parameters"].get("freq") == BASS_MANAGEMENT_CORNER_HZ_DEFAULT
-    ]
-    assert hp_at_corner, "active graph must high-pass mains at the sub corner"
-
-
-def test_outputd_grouping_env_clears_tts_socket_for_a_sub():
-    """A sub plays only low-passed bass and NEVER voice; outputd mixes TTS AFTER
-    the low-pass, so a sub must NOT arm the outputd TTS lane (else full-range
-    speech would reach the subwoofer). Every non-sub PASSIVE member keeps it
-    armed; active endpoints keep it cleared regardless of channel because active
-    voice rides fan-in upstream of the crossover."""
+def test_outputd_grouping_env_tts_socket_by_member_shape():
+    """A PASSIVE bonded member mixes its own replies at its own outputd; an
+    active endpoint keeps that socket cleared because active voice rides fan-in
+    upstream of the crossover."""
     from jasper.multiroom.reconcile import (
         OUTPUTD_TTS_SOCKET,
         OUTPUTD_TTS_SOCKET_ENV,
         outputd_grouping_env,
     )
-
-    sub = outputd_grouping_env(_follower(channel="sub"))
-    assert sub[OUTPUTD_TTS_SOCKET_ENV] == ""  # cleared = unset to outputd
-    active_sub = outputd_grouping_env(
-        _follower(channel="sub"),
-        active_endpoint=True,
-    )
-    assert active_sub[OUTPUTD_TTS_SOCKET_ENV] == ""
 
     for ch in ("left", "right", "stereo", "mono"):
         env = outputd_grouping_env(_follower(channel=ch))
@@ -794,19 +563,6 @@ def test_outputd_grouping_env_clears_tts_socket_for_a_sub():
             active_endpoint=True,
         )
         assert active_env[OUTPUTD_TTS_SOCKET_ENV] == ""
-
-
-def test_outputd_grouping_env_no_sub_corner_when_not_active_member():
-    """An active-endpoint sub (camilla owns the pick) and a disabled config
-    both clear the lane — the corner key is never emitted there."""
-    from jasper.multiroom.reconcile import (
-        OUTPUTD_DAC_CONTENT_SUB_HZ_ENV,
-        outputd_grouping_env,
-    )
-
-    active = outputd_grouping_env(_follower(channel="sub"), active_endpoint=True)
-    assert OUTPUTD_DAC_CONTENT_SUB_HZ_ENV not in active
-    assert OUTPUTD_DAC_CONTENT_SUB_HZ_ENV not in outputd_grouping_env(_disabled())
 
 
 def test_assemble_args_disabled_clears_both():
