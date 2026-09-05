@@ -904,6 +904,11 @@ def test_a_raised_pose_gains_exactly_one_elevation_clause(
     them and it. The clause EXTENDS the shipped bearing sentence rather than
     replacing it or adding a second one: a household asked to swing and to
     rise gets one instruction, not two that could be followed in either order.
+
+    It also states the rise as a LENGTH in the table's own both-units register,
+    because the person holding the microphone has a tape measure and no
+    protractor -- and it names the mark distance the conversion assumes, since
+    the same angle is a different height at any other distance.
     """
     flat = ac.pose_at_angle(22)
     raised = ac.pose_at_angle(22, elevation_deg)
@@ -913,7 +918,8 @@ def test_a_raised_pose_gains_exactly_one_elevation_clause(
     )
     assert raised.headline == (
         "Turn the microphone to +22° (22° RIGHT of the design axis), and "
-        f"{abs(elevation_deg)}° {word} mark height."
+        f"{abs(elevation_deg)}° {word} mark height — that is 7 in (18 cm) "
+        "at the declared 1 m."
     )
     # The supporting clause is about DISTANCE and is unchanged by a rise.
     assert raised.detail == flat.detail
@@ -933,9 +939,9 @@ def test_a_rise_on_the_design_axis_does_not_say_LEAVE_the_microphone(
     assert ac.pose_at_angle(0).headline == (
         "Leave the microphone on the design axis (0°)."
     )
-    assert ac.pose_at_angle(0, elevation_deg).headline == (
+    assert ac.pose_at_angle(0, elevation_deg).headline.startswith(
         "Keep the microphone on the design axis (0°), and "
-        f"{abs(elevation_deg)}° {word} mark height."
+        f"{abs(elevation_deg)}° {word} mark height"
     )
 
 

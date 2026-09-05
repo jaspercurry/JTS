@@ -28,12 +28,13 @@ speed (1 Hz polling captures everything), and a polling loop is
 simpler to reason about — one well-placed sleep, one error path per
 source, no long-lived subscription state to manage.
 
-Cadence: 1 Hz, mirroring jasper-mux's source-state poll. Each tick
-fans out to the three built-in protocol-volume probes (Spotify state
-file, AirPlay busctl, Bluetooth busctl); the whole tick is well under
-100 ms typical. USB sink is the exception: its daemon observes the
-host-side gadget mixer directly and posts `source="usbsink"` changes to
-jasper-control, so this shared observer does not poll it.
+Cadence: 1 Hz, mirroring jasper-mux's source-state poll. A tick probes
+only the source the coordinator reports active — every other reading
+was discarded, and each probe but Spotify's forks a subprocess — so an
+idle box runs none. USB sink is the exception even when active: its
+daemon observes the host-side gadget mixer directly and posts
+`source="usbsink"` changes to jasper-control, so this observer never
+polls it.
 
 Echo prevention. The coordinator tracks the timestamp of every
 outbound write per source. When an observer reports a value it just
@@ -66,7 +67,7 @@ _bluez_alsa_active_transport_path = partial(active_transport_path, logger)
 
 
 class VolumeObserver:
-    """Polls each source's current volume at a fixed cadence and
+    """Polls the active source's current volume at a fixed cadence and
     feeds detected changes into the coordinator. One instance covers
     the built-in protocol-volume surfaces (AirPlay, Spotify,
     Bluetooth); USB sink's host-volume observer lives in
@@ -168,24 +169,26 @@ class VolumeObserver:
                 self._last_seen_revision[current_active] = None
             self._last_active_source = current_active
 
-        airplay_db, spotify_pct, bt_vol = await asyncio.gather(
-            self._read_airplay_db(),
-            self._read_spotify_percent(),
-            self._read_bluetooth_volume(),
-            return_exceptions=False,
-        )
-        if current_active == Source.AIRPLAY and airplay_db is not None:
-            self._last_seen[Source.AIRPLAY] = airplay_db
-            logger.debug(
-                "airplay sender volume observed at %.1f dB "
-                "(diagnostics only; the canonical path is shairport's "
-                "volume hook — ADR-0206)",
-                airplay_db,
-            )
-        if current_active == Source.SPOTIFY and spotify_pct is not None:
-            await self._maybe_observe(Source.SPOTIFY, float(spotify_pct))
-        if current_active == Source.BLUETOOTH and bt_vol is not None:
-            await self._maybe_observe(Source.BLUETOOTH, float(bt_vol))
+        # Exactly one probe, the active source's: the other readings were
+        # discarded and each but Spotify's forks a busctl/bluealsa-cli child.
+        if current_active == Source.AIRPLAY:
+            airplay_db = await self._read_airplay_db()
+            if airplay_db is not None:
+                self._last_seen[Source.AIRPLAY] = airplay_db
+                logger.debug(
+                    "airplay sender volume observed at %.1f dB "
+                    "(diagnostics only; the canonical path is shairport's "
+                    "volume hook — ADR-0206)",
+                    airplay_db,
+                )
+        elif current_active == Source.SPOTIFY:
+            spotify_pct = await self._read_spotify_percent()
+            if spotify_pct is not None:
+                await self._maybe_observe(Source.SPOTIFY, float(spotify_pct))
+        elif current_active == Source.BLUETOOTH:
+            bt_vol = await self._read_bluetooth_volume()
+            if bt_vol is not None:
+                await self._maybe_observe(Source.BLUETOOTH, float(bt_vol))
 
         # Self-healing convergence backstop. Idempotent and gated
         # internally — no-op unless `main_volume_db` has drifted

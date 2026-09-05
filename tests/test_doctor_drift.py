@@ -10,6 +10,7 @@ deploy/install.sh installed against what the running kernel and systemd report.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -234,6 +235,37 @@ def test_degraded_directive_read_is_skipped_never_a_silent_pass():
     assert items == []
     assert checked == healthy_checked - len(_ACTION_WANT)
     assert notes
+
+
+def _bootloop_marker(monkeypatch, tmp_path, payload) -> None:
+    p = tmp_path / "bootloop-state.json"
+    monkeypatch.setenv("JASPER_BOOTLOOP_MARKER_FILE", str(p))
+    p.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_bootloop_guard_tripped_units_are_not_reported_as_drift(
+    monkeypatch, tmp_path,
+):
+    """check_bootloop_guard already reports a trip; this check must not
+    double-report the runtime drop-ins it wrote as StartLimitAction drift
+    for the units the guard disarmed."""
+    guarded = (
+        "jasper-outputd", "jasper-aec-bridge", "jasper-voice", "jasper-control",
+    )
+    healthy_checked = _systemd_drift()[1]
+    _bootloop_marker(monkeypatch, tmp_path, {
+        "tripped": True,
+        "boots_in_window": 3,
+        "threshold": 3,
+        "window_sec": 3600,
+        "checked_at": 1000,
+        "units": [f"{u}.service" for u in guarded],
+    })
+
+    items, checked, _ = _systemd_drift(actions={u: "none" for u in guarded})
+
+    assert [d.item for d in items] == []
+    assert checked == healthy_checked - len(guarded)
 
 
 _INSTALLED_SYSCTL_CONF = """\

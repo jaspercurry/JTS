@@ -17,7 +17,6 @@ from typing import Any
 from jasper.log_event import log_event
 
 from .. import flight_recorder, transit
-from ..accounts import Registry, maybe_migrate_legacy
 from ..audio_io import (
     InputDeviceUnavailable,
     TtsPlayout,
@@ -44,7 +43,7 @@ from ..install_profile import (
 )
 from ..renderer import RendererClient
 from ..research import ResearchScheduler, active_research_provider
-from ..spotify_router import BuildResult, Router, build_clients
+from ..spotify_router import Router, build_router
 from ..timers import Timer, TimerScheduler, announcement_text
 from ..tools import ToolRegistry, UntrustedContentMonitor
 from ..tools.packs import ToolDeps, outcomes_to_state, register_packs
@@ -434,45 +433,26 @@ def _build_router(cfg: Config) -> Router | None:
     The returned router carries a `rebuild_fn` so it can recover from
     a startup-time revocation (or a re-link via the web wizard)
     without a daemon restart: when `router.clients` is empty, the next
-    tool call triggers a rebuild via Router.refresh_if_empty(). The
-    rebuild also picks up a wizard-changed default account (POST
-    /default mutates registry.default_name; BuildResult carries it
-    forward; Router.refresh_if_empty updates self.default_name)."""
+    tool call triggers a rebuild via Router.refresh_if_empty()."""
     if not cfg.spotify_enabled:
         return None
-
-    def _do_build() -> BuildResult:
-        # Re-load the registry on every build — the wizard may have
-        # added/removed accounts, written a fresh cache file, or
-        # changed the default since the daemon started.
-        # maybe_migrate_legacy is a no-op after the first call so it's
-        # safe to run each time.
-        accounts = Registry.load(cfg.spotify_accounts_path)
-        maybe_migrate_legacy(
-            accounts, cfg.spotify_cache_path, default_name="default",
-        )
-        return build_clients(
-            accounts,
-            client_id=cfg.spotify_client_id,
-            redirect_uri=cfg.spotify_redirect_uri,
-        )
-
-    result = _do_build()
-    if not result.clients:
+    router = build_router(
+        client_id=cfg.spotify_client_id,
+        redirect_uri=cfg.spotify_redirect_uri,
+        accounts_path=cfg.spotify_accounts_path,
+        cache_path=cfg.spotify_cache_path,
+        with_rebuild=True,
+    )
+    if not router.clients:
         # Surface the per-account reasons at startup so a "Spotify
         # tools are silent" report has a forensic trail.
         log_event(
             logger,
             "spotify.startup_empty",
-            statuses=[(s.name, s.state) for s in result.statuses],
+            statuses=[(s.name, s.state) for s in router.statuses],
             setup_url=cfg.spotify_setup_url,
         )
-    return Router(
-        clients=result.clients,
-        default_name=result.default_name,
-        statuses=result.statuses,
-        rebuild_fn=_do_build,
-    )
+    return router
 
 
 def _build_registry(

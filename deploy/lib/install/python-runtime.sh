@@ -138,7 +138,7 @@ install_jasper() {
     # leaves the prior good manifest rather than a SHA the box isn't cleanly running. (See
     # ADR-0172.)
 
-    # WS1 Phase 4a — the per-account Google OAuth token tree + client secret
+    # The per-account Google OAuth token tree + client secret
     # live in the group-`jasper-secrets` compartment (jasper-voice + jasper-web
     # only), NOT here under the /var/lib/jasper StateDirectory (whose recursive
     # chown would force the group back to `jasper`, re-exposing the refresh
@@ -149,7 +149,7 @@ install_jasper() {
     # voice_keys.env.
     ensure_secrets_dir
 
-    # WS1 Phase 4b — Home Assistant + Spotify integration secrets live in the
+    # Home Assistant + Spotify integration secrets live in the
     # sibling group-`jasper-intsecrets` compartment (voice/control/mux/web).
     # ensure_intsecrets_dir creates the forward path;
     # reassert_intsecrets_compartment_perms below re-narrows its ownership/modes.
@@ -388,11 +388,11 @@ PY
         chmod 0640 "${ENV_DIR}/jasper.env"
         echo "  audio DAC id: ${OUTPUT_DAC_ID}"
     fi
-    # WS1 Phase 4a — re-narrow the jasper-secrets compartment's ownership and
+    # Re-narrow the jasper-secrets compartment's ownership and
     # modes on every deploy, and move any operator-seeded LLM API key out of
     # jasper.env into voice_keys.env.
     reassert_secrets_compartment_perms
-    # WS1 Phase 4b — the same re-narrow for the jasper-intsecrets compartment
+    # The same re-narrow for the jasper-intsecrets compartment
     # (Home Assistant token + Spotify credentials/caches).
     reassert_intsecrets_compartment_perms
     render_voice_provider_ids_manifest

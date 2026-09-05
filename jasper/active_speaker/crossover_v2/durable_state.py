@@ -1390,7 +1390,7 @@ def build_conductor_state(
                 getattr(conductor, "measure_proposal_fingerprint", "") or ""
             ),
             "gate_window_ms": conductor.measure_gate_window_ms,
-            # Measurement-honesty gate G3's reference, DATED — history, not a
+            # The measurement-honesty reference, DATED — history, not a
             # comparator (#1927). The verify-only re-arm hands it to the next
             # conductor as ``verify_pilot_transfer_prior``, which may only
             # disclose it. Carried forward below when this session set no
@@ -1406,7 +1406,7 @@ def build_conductor_state(
     # session id and a session-scoped guard would drop it on "Try again".
     if not state["tier"] and prior.get("tier"):
         state["tier"] = str(prior["tier"])
-    # G3's dated reference (#1927) carries forward across the writes of a
+    # The dated reference (#1927) carries forward across the writes of a
     # VERIFY-ONLY session and is dropped by any session that MEASURES.
     #
     # Carried, because a verify session's first writes run BEFORE any usable

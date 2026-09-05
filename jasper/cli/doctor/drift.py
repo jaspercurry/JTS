@@ -24,6 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
 from ..._oom_adj import EXPECTED as _EXPECTED_OOM_ADJ
 from ._evidence import evidence
 from ._registry import doctor_check
@@ -147,6 +148,22 @@ def _drift_installed_units(units: list[str]) -> set[str] | None:
     return installed
 
 
+def _bootloop_guarded_units() -> frozenset[str]:
+    """Bare unit names the boot-loop guard has disarmed
+    ``StartLimitAction=reboot`` for this boot, per its ``/run`` marker.
+
+    Empty when the guard has not tripped or its marker is unavailable —
+    ``StartLimitAction`` drift is then judged as usual. When tripped, the
+    guard's own doctor row (``resilience.check_bootloop_guard``) already
+    reports the condition, so this check must not double-report the
+    runtime drop-in it wrote as drift.
+    """
+    snap = _bootloop_guard_snapshot()
+    if not snap.get("tripped"):
+        return frozenset()
+    return frozenset(str(u).removesuffix(".service") for u in (snap.get("units") or []))
+
+
 def _systemd_drift() -> tuple[list[DriftItem], int, list[str]]:
     """Unit-file directive drift, plus the OOM ladder as the kernel holds it.
 
@@ -159,6 +176,7 @@ def _systemd_drift() -> tuple[list[DriftItem], int, list[str]]:
     installed = _drift_installed_units(table_units)
     if installed is None:
         return [], 0, ["systemctl unavailable"]
+    guarded = _bootloop_guarded_units()
 
     drift: list[DriftItem] = []
     notes: list[str] = []
@@ -179,6 +197,8 @@ def _systemd_drift() -> tuple[list[DriftItem], int, list[str]]:
             notes.append(f"{directive} unreadable")
             continue
         for unit, raw in zip(units, values):
+            if directive == "StartLimitAction" and unit in guarded:
+                continue
             got = _directive_value(directive, raw)
             if got is None:
                 notes.append(f"{unit} {directive} unparseable")

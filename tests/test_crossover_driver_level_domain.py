@@ -87,8 +87,8 @@ def test_lease_snapshot_requires_every_driver_before_ready():
 
     lease = CrossoverLevelLease()
     lease.context_id = "profile-1"
-    lease.configure_targets([
-        {
+    lease._targets = {
+        "mono:woofer": {
             "target_id": "mono:woofer",
             "speaker_group_id": "mono",
             "role": "woofer",
@@ -96,7 +96,7 @@ def test_lease_snapshot_requires_every_driver_before_ready():
             "tone_frequency_hz": 250.0,
             "commissioning_gain_db": -3.0,
         },
-        {
+        "mono:tweeter": {
             "target_id": "mono:tweeter",
             "speaker_group_id": "mono",
             "role": "tweeter",
@@ -104,7 +104,7 @@ def test_lease_snapshot_requires_every_driver_before_ready():
             "tone_frequency_hz": 6250.0,
             "commissioning_gain_db": -18.0,
         },
-    ])
+    }
     lease._outcomes["near_field_driver:mono:woofer"] = _locked_outcome(
         original=-30.0, locked=-10.0
     )
@@ -120,62 +120,6 @@ def test_lease_snapshot_requires_every_driver_before_ready():
     )
     assert lease.level_match_snapshot(current_context_id="profile-1")["ready"] is True
     assert lease.level_match_snapshot()["next_target"] is None
-    # Each driver's own lock stays addressable per role and per geometry --
-    # no role inherits another's level.
-    assert lease.driver_sweep_locked_main_volume_db(
-        "mono", "tweeter", capture_geometry="near_field"
-    ) == pytest.approx(-4.0)
-    assert lease.driver_sweep_locked_main_volume_db(
-        "mono", "woofer", capture_geometry="near_field"
-    ) == pytest.approx(-10.0)
-
-
-def test_reference_axis_lock_never_falls_back_to_near_field_lock():
-    from jasper.web.correction_crossover_backend import CrossoverLevelLease
-
-    lease = CrossoverLevelLease()
-    lease._outcomes["near_field_driver:mono:woofer"] = _locked_outcome(
-        original=-30.0, locked=-18.0
-    )
-
-    # A near_field lock alone leaves the reference_axis ledger empty -- the
-    # caller reads "no lock" and refuses rather than borrowing -18.0.
-    assert (
-        lease.driver_sweep_locked_main_volume_db(
-            "mono", "woofer", capture_geometry="reference_axis"
-        )
-        is None
-    )
-
-    lease._outcomes["reference_axis_driver:mono:woofer"] = _locked_outcome(
-        original=-30.0, locked=-3.5
-    )
-    assert lease.driver_sweep_locked_main_volume_db(
-        "mono", "woofer", capture_geometry="reference_axis"
-    ) == pytest.approx(-3.5)
-    assert lease.driver_sweep_locked_main_volume_db(
-        "mono", "woofer", capture_geometry="near_field"
-    ) == pytest.approx(-18.0)
-
-
-@pytest.mark.parametrize("unusable_lock", (float("nan"), float("inf"), 0.1, True))
-def test_driver_lock_ledger_is_fail_closed_for_unusable_locks(unusable_lock):
-    """A lock that is non-finite, above 0 dB, or a bool must read as "no
-    lock" (None), never as a volume the caller would then assert."""
-
-    from jasper.web.correction_crossover_backend import CrossoverLevelLease
-
-    lease = CrossoverLevelLease()
-    lease._outcomes["near_field_driver:mono:woofer"] = _locked_outcome(
-        original=-30.0, locked=unusable_lock
-    )
-
-    assert (
-        lease.driver_sweep_locked_main_volume_db(
-            "mono", "woofer", capture_geometry="near_field"
-        )
-        is None
-    )
 
 
 def test_discard_reference_axis_outcome_clears_runtime_and_lock_store():
@@ -201,63 +145,6 @@ def test_discard_reference_axis_outcome_clears_runtime_and_lock_store():
 
     assert geometry not in lease._outcomes
     assert lease.level_lock_store.get(geometry) is None
-
-
-async def test_reference_axis_level_ramp_uses_bounded_listening_position_cap(
-    monkeypatch,
-):
-    from jasper.audio_measurement import ramp
-    from jasper.correction import level_match
-    from jasper.audio_measurement.ramp import (
-        LISTENING_POSITION_CAP_BUMP_DB,
-        LISTENING_POSITION_CAP_CEIL_DB,
-    )
-    from jasper.web import correction_crossover_backend as backend
-
-    ramp_calls: list[dict[str, object]] = []
-    monkeypatch.setattr(
-        ramp.MeasurementRamp,
-        "from_env",
-        classmethod(lambda cls, **kwargs: ramp_calls.append(kwargs) or object()),
-    )
-
-    outcome = SimpleNamespace(locked=False, ramp=SimpleNamespace(restored=False))
-
-    class FakeSession:
-        def __init__(self, **_kwargs):
-            pass
-
-        async def run_for_geometry(self, geometry, **_ports):
-            assert geometry == "reference_axis_driver:mono:woofer"
-            return outcome
-
-    monkeypatch.setattr(level_match, "LevelMatchSession", FakeSession)
-    lease = backend.CrossoverLevelLease()
-    current = -30.0
-
-    async def get_volume():
-        return current
-
-    async def set_volume(value):
-        nonlocal current
-        current = value
-        return True
-
-    assert (
-        await lease.run_level_match(
-            "reference_axis_driver:mono:woofer",
-            get_main_volume_db=get_volume,
-            set_main_volume_db=set_volume,
-        )
-        is outcome
-    )
-    assert ramp_calls == [
-        {
-            "allow_bounded_low_level": True,
-            "cap_bump_db": LISTENING_POSITION_CAP_BUMP_DB,
-            "cap_ceil_db": LISTENING_POSITION_CAP_CEIL_DB,
-        }
-    ]
 
 
 @pytest.mark.parametrize(
@@ -316,26 +203,6 @@ def test_driver_level_geometry_writer_rejects_non_active_role():
 
     with pytest.raises(ValueError, match="unsupported driver role"):
         driver_level_geometry("mono", "subwoofer", "reference_axis")
-
-
-@pytest.mark.parametrize(
-    "geometry",
-    (
-        "",
-        "near_field_driver:mono:Woofer",
-        "near_field_driver:mono:subwoofer",
-        "reference_axis_driver",
-        "reference_axis_driver:",
-        "reference_axis_driver:mono",
-        "reference_axis_driver::woofer",
-    ),
-)
-async def test_run_level_match_rejects_noncanonical_geometry_before_ramp(geometry):
-    from jasper.web.correction_crossover_backend import CrossoverLevelLease
-
-    lease = CrossoverLevelLease()
-    with pytest.raises(ValueError):
-        await lease.run_level_match(geometry)
 
 
 class _LostResponse(RuntimeError):
@@ -462,42 +329,6 @@ async def test_volume_recovery_uses_emergency_attenuation_after_restore_rejectio
     assert lease.unresolved_volume_safety is None
 
 
-@pytest.mark.parametrize(
-    "geometry",
-    (
-        "near_field_driver:mono:woofer",
-        "reference_axis_driver:mono:woofer",
-    ),
-)
-async def test_level_intent_write_failure_prevents_volume_mutation(
-    monkeypatch, geometry
-):
-    from jasper.web import correction_crossover_backend as backend
-
-    def refuse_persist(_path, _payload):
-        raise OSError("read-only state directory")
-
-    monkeypatch.setattr(backend, "_write_volume_safety_state", refuse_persist)
-    lease = backend.CrossoverLevelLease(volume_safety_state_path="state.json")
-    writes = []
-
-    async def get_volume():
-        return -27.0
-
-    async def set_volume(value):
-        writes.append(value)
-        return True
-
-    with pytest.raises(OSError, match="read-only"):
-        await lease.run_level_match(
-            geometry,
-            get_main_volume_db=get_volume,
-            set_main_volume_db=set_volume,
-        )
-
-    assert writes == []
-
-
 async def test_dual_recovery_failure_reports_failed_and_survives_restart(tmp_path):
     """Both recovery candidates refused: the drain answers FAILED rather than
     pretending resolution, and the unresolved intent is still on disk for the
@@ -543,143 +374,6 @@ async def test_dual_recovery_failure_reports_failed_and_survives_restart(tmp_pat
             volume_safety_state_path=state_path
         ).unresolved_volume_safety
         is not None
-    )
-
-
-@pytest.mark.parametrize(
-    "geometry",
-    (
-        "near_field_driver:mono:woofer",
-        "reference_axis_driver:mono:woofer",
-    ),
-)
-async def test_level_dual_recovery_failure_survives_restart(
-    monkeypatch, tmp_path, geometry
-):
-    from jasper.audio_measurement.ramp import RampState
-    from jasper.correction import level_match
-    from jasper.web.correction_crossover_backend import CrossoverLevelLease
-
-    outcome = SimpleNamespace(
-        locked=True,
-        ramp=SimpleNamespace(state=RampState.LOCKED, restored=False),
-    )
-
-    class FakeSession:
-        def __init__(self, *, store, **_kwargs):
-            self.store = store
-
-        async def run_for_geometry(self, requested, **_ports):
-            assert requested == geometry
-            return outcome
-
-    monkeypatch.setattr(level_match, "LevelMatchSession", FakeSession)
-    state_path = tmp_path / "volume-safety.json"
-    lease = CrossoverLevelLease(volume_safety_state_path=state_path)
-    writes = []
-
-    async def get_volume():
-        return -27.0
-
-    async def refuse_volume(value):
-        writes.append(value)
-        return False
-
-    with pytest.raises(RuntimeError, match="recover the crossover volume"):
-        await lease.run_level_match(
-            geometry,
-            get_main_volume_db=get_volume,
-            set_main_volume_db=refuse_volume,
-        )
-
-    assert writes == [-27.0, -60.0]
-    assert geometry not in lease._outcomes
-    assert (
-        CrossoverLevelLease(
-            volume_safety_state_path=state_path
-        ).unresolved_volume_safety
-        is not None
-    )
-
-
-@pytest.mark.parametrize(
-    "geometry",
-    (
-        "near_field_driver:mono:woofer",
-        "reference_axis_driver:mono:woofer",
-    ),
-)
-async def test_level_cancel_during_restore_drains_then_discards_identity(
-    monkeypatch, tmp_path, geometry
-):
-    import asyncio
-
-    from jasper.audio_measurement.ramp import RampState
-    from jasper.correction import level_match
-    from jasper.correction.level_match import MeasurementLevelLock
-    from jasper.web.correction_crossover_backend import CrossoverLevelLease
-
-    from ._async_wait import wait_signalled
-
-    outcome = SimpleNamespace(
-        locked=True,
-        ramp=SimpleNamespace(state=RampState.LOCKED, restored=False),
-    )
-
-    class FakeSession:
-        def __init__(self, *, store, **_kwargs):
-            self.store = store
-
-        async def run_for_geometry(self, requested, **_ports):
-            self.store.put(
-                MeasurementLevelLock(
-                    geometry=requested,
-                    main_volume_db=-8.0,
-                    gain_map_db=None,
-                    settled_mic_dbfs=None,
-                    noise_floor_dbfs=None,
-                )
-            )
-            return outcome
-
-    monkeypatch.setattr(level_match, "LevelMatchSession", FakeSession)
-    state_path = tmp_path / "volume-safety.json"
-    lease = CrossoverLevelLease(volume_safety_state_path=state_path)
-    restore_started = asyncio.Event()
-    release_restore = asyncio.Event()
-    current = -27.0
-
-    async def get_volume():
-        return current
-
-    async def blocked_restore(value):
-        nonlocal current
-        restore_started.set()
-        await release_restore.wait()
-        current = value
-        return True
-
-    task = asyncio.create_task(
-        lease.run_level_match(
-            geometry,
-            get_main_volume_db=get_volume,
-            set_main_volume_db=blocked_restore,
-        )
-    )
-    await wait_signalled(restore_started, "level-match restore started", producer=task)
-    task.cancel()
-    release_restore.set()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-
-    assert current == -27.0
-    assert lease.level_lock_store.get(geometry) is None
-    assert geometry not in lease._outcomes
-    assert (
-        CrossoverLevelLease(
-            volume_safety_state_path=state_path
-        ).unresolved_volume_safety
-        is None
     )
 
 

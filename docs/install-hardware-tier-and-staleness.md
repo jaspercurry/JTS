@@ -110,7 +110,7 @@ thresholds and no shared vocabulary:
 
 | Guard | Where | Shape | Threshold |
 |---|---|---|---|
-| Rust low-memory profile | `deploy/lib/install/rust-daemons.sh` `rust_low_memory_build_enabled` / `rust_cargo_build_env` | binary on/off (jobs=1, lto=false, codegen-units=16, opt=0) | `< 1200000 kB` (~1.2 GB), `RUST_LOW_MEMORY_BUILD_THRESHOLD_KB` |
+| Rust low-memory profile | `deploy/lib/install/rust-daemons.sh` `rust_low_memory_build_enabled` / `rust_cargo_build_env` | binary on/off (jobs=1, lto=false, codegen-units=16, opt=2) | `< 1200000 kB` (~1.2 GB), `RUST_LOW_MEMORY_BUILD_THRESHOLD_KB` |
 | WebRTC AEC3 `-j` cap | `deploy/install.sh` `_webrtc_compile_jobs` | graduated `-j` | `~1.5 GB / job`, clamped `[1, nproc]` (point-fixed in PR #899 after the jts2 OOM) |
 
 Plus two more readers of the same `MemTotal` for *runtime* tuning —

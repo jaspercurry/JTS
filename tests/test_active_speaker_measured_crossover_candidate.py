@@ -21,6 +21,7 @@ import yaml as yaml_lib
 from jasper.active_speaker.crossover_alignment import POLARITY_INVERT, POLARITY_KEEP
 from jasper.active_speaker.measured_crossover_candidate import (
     CANDIDATE_KIND,
+    _OPTIONAL_FIELD_TYPES,
     SCHEMA_VERSION,
     MeasuredCrossoverAlignment,
     MeasuredCrossoverCandidate,
@@ -52,6 +53,7 @@ def _candidate(
     program_id: str = "prog-abc123",
     linearization: dict | None = None,
     linearization_outcome: str | None = None,
+    trim_decision: dict | None = None,
     exclusion_evidence: dict | None = None,
 ) -> MeasuredCrossoverCandidate:
     preset = preset or _preset()
@@ -63,6 +65,8 @@ def _candidate(
         kwargs["linearization"] = linearization
     if linearization_outcome is not None:
         kwargs["linearization_outcome"] = linearization_outcome
+    if trim_decision is not None:
+        kwargs["trim_decision"] = trim_decision
     if exclusion_evidence is not None:
         kwargs["exclusion_evidence"] = exclusion_evidence
     return MeasuredCrossoverCandidate(
@@ -638,9 +642,7 @@ def test_every_optional_field_is_setdefaulted_in_the_reopen_comparison():
     direction by ``test_linearization_outcome_tampering_trips_the_tamper_check``
     and ``test_exclusion_evidence_tampering_trips_the_tamper_check``."""
     full = _candidate().to_dict()
-    optional = {"linearization", "linearization_outcome", "exclusion_evidence"}
-    # The set this walks must be exactly what from_mapping calls optional, so
-    # a new field cannot be added to one and forgotten in the other.
+    optional = set(_OPTIONAL_FIELD_TYPES)
     assert all(not full[key] for key in optional), "the era case is the empty one"
 
     for key in sorted(optional):
@@ -712,27 +714,17 @@ def test_to_dict_canonical_shape_always_includes_linearization_key():
     ``_core()`` (the fingerprint input) intentionally does NOT follow this
     rule — see test_empty_linearization_is_omitted_from_the_fingerprinted_core
     for why the two disagree."""
-    candidate = _candidate()
-    assert candidate.linearization == {}
-    assert candidate.linearization_outcome == ""
-    assert candidate.exclusion_evidence == {}
-    raw = candidate.to_dict()
-    assert raw["linearization"] == {}
-    assert raw["linearization_outcome"] == ""
-    # PR-6b's ``exclusion_evidence`` joins the same always-written set, for the
-    # same reason: a fresh empty write and a freshly-built raw dict must agree
-    # byte-for-byte or from_mapping's tamper check needs a special case.
-    assert raw["exclusion_evidence"] == {}
-    # Decision 10's ``blend_correction`` joins the same always-written set, for
-    # the same reason. Its empty value is a LIST, not a mapping: it describes
-    # the summed response rather than a driver, so it is a flat filter list.
-    assert raw["blend_correction"] == []
+    raw = _candidate().to_dict()
+    # Every optional field, written with the empty value its absence claims —
+    # walked off the module's own vocabulary so a new one joins this pin
+    # without an edit here.
+    assert {key: raw[key] for key in _OPTIONAL_FIELD_TYPES} == {
+        key: empty() for key, empty in _OPTIONAL_FIELD_TYPES.items()
+    }
     assert set(raw) == {
         "schema_version", "kind", "program_id", "analysis", "source_preset",
-        "role_attenuations_db", "alignment", "linearization",
-        "linearization_outcome", "exclusion_evidence", "blend_correction",
-        "fingerprint",
-    }
+        "role_attenuations_db", "alignment", "fingerprint",
+    } | set(_OPTIONAL_FIELD_TYPES)
 
 
 def test_from_mapping_rejects_non_mapping_linearization():
@@ -1065,3 +1057,44 @@ def test_prove_candidate_config_rejects_unprotected_tweeter():
     with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
         prove_candidate_config(candidate, tampered)
     assert excinfo.value.code == "tweeter_unprotected"
+
+
+# --- trim decision ----------------------------------------------------------
+
+_TRIM = {
+    "strategy": "resolved_committed",
+    "committed_side": "resolved",
+    "anchor_drift_db": 1.25,
+}
+
+
+@pytest.mark.parametrize("trim", [None, _TRIM])
+def test_trim_decision_is_fingerprinted_only_when_present(trim):
+    """The applied profile's record of WHICH trim pair committed.
+
+    Absent (the shape every candidate written before the field has) it is
+    omitted from the fingerprinted core, so an older candidate.json keeps its
+    identity; present it is fingerprinted like any other evidence, so the
+    committed pair cannot be edited out of a persisted correction.
+    """
+    baseline = _candidate()
+    candidate = _candidate(trim_decision=trim)
+    assert candidate.to_dict()["trim_decision"] == (trim or {})
+    assert ("trim_decision" in candidate._core()) is (trim is not None)
+    assert (candidate.fingerprint == baseline.fingerprint) is (trim is None)
+
+    raw = candidate.to_dict()
+    assert MeasuredCrossoverCandidate.from_mapping(raw).trim_decision == (trim or {})
+    if trim is not None:
+        raw["trim_decision"] = dict(trim, committed_side="anchored")
+        with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
+            MeasuredCrossoverCandidate.from_mapping(raw)
+        assert excinfo.value.code == "candidate_tampered"
+
+
+def test_from_mapping_rejects_non_mapping_trim_decision():
+    raw = _candidate().to_dict()
+    raw["trim_decision"] = ["resolved"]
+    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
+        MeasuredCrossoverCandidate.from_mapping(raw)
+    assert excinfo.value.code == "trim_decision_malformed"

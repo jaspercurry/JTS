@@ -74,10 +74,9 @@ SHELF_SLOPE_THRESHOLD_DB_PER_OCT: float = 3.0
 # policy".
 MAX_FILTERS_PER_DRIVER: int = 8
 
-# Per-filter BOOST ceiling, dB (PR-L5) — deliberately equal to
-# PER_FILTER_CUT_CAP_DB. A REALIZATION bound, not a policy cap (survives the
-# owner's "arbitrary gain caps GO" ruling): TOTAL boost stays unbounded
-# because a cascade composes.
+# Per-filter BOOST ceiling, dB — deliberately equal to PER_FILTER_CUT_CAP_DB.
+# A REALIZATION bound, not a policy cap (survives the owner's "arbitrary gain
+# caps GO" ruling): TOTAL boost stays unbounded because a cascade composes.
 PER_FILTER_BOOST_CAP_DB: float = 12.0
 
 # A bin below this allowed-depth is "the envelope permits nothing here"
@@ -197,13 +196,13 @@ HF_CONTINUATION_POLICY: Mapping[str, str] = {
 
 
 # --------------------------------------------------------------------------- #
-# the allowed vocabulary + the shared level frame (PR-L5)
+# the allowed vocabulary + the shared level frame
 # --------------------------------------------------------------------------- #
 
 
 @dataclass(frozen=True)
 class FitVocabulary:
-    """What moves this fit is allowed to make (PR-L5).
+    """What moves this fit is allowed to make.
 
     Deliberately small: every field is a move the fit can MAKE, not a fact
     about the speaker. Way count, driver roles, pad authority and alignment
@@ -230,8 +229,8 @@ class FitVocabulary:
         }
 
 
-#: The pre-PR-L5 posture, and the default: cuts only. Every caller that does not
-#: pass a vocabulary gets the fit it got before this capability existed.
+#: The default posture: cuts only. Every caller that does not pass a
+#: vocabulary gets the fit it got before this capability existed.
 CUT_ONLY_VOCABULARY = FitVocabulary()
 
 
@@ -440,7 +439,7 @@ class LinearizationFit:
     # ``branch_level_bands_hz`` instead — using this one shipped the jts3
     # horn tweeter 3.67 dB hot, 2026-08-19). 0.0 when no filters emitted.
     correction_giveback_db: float = 0.0
-    # PR-L5 disclosure, #1808 charge: realized peak of the branch chain this
+    # #1808 charge: realized peak of the branch chain this
     # fit is emitted into, plus ``branch_chain.HEADROOM_MARGIN_DB`` — exactly
     # what the emitter CHARGES to ``active_baseline_headroom``. Stamped by
     # the composer, not computed here (this core does not know its chain).
@@ -570,7 +569,7 @@ HEADROOM_COST_BASIS_UNKNOWN = "unknown"
 
 def worst_headroom_cost_db(linearization_mapping: Mapping[str, Any]) -> float:
     """The max-level cost of a whole correction, dB — the WORST branch's
-    :attr:`LinearizationFit.headroom_cost_db` (PR-L5).
+    :attr:`LinearizationFit.headroom_cost_db`.
 
     Worst branch and not the sum, matching
     ``camilla_yaml.linearization_headroom_db``: driver chains run in
@@ -1212,7 +1211,7 @@ def _hf_continuation_stage(
 
 
 # --------------------------------------------------------------------------- #
-# the lift stage: reduce our own cuts, then boost (PR-L5)
+# the lift stage: reduce our own cuts, then boost
 # --------------------------------------------------------------------------- #
 
 # Bisection iterations to find how far one existing cut can be shrunk
@@ -1523,14 +1522,14 @@ def _lift_stage(
     contribution: np.ndarray | None = None,
     gain_permitted: np.ndarray | None = None,
 ) -> _Lift:
-    """Raise the bands a cut-only fit had to leave dark (PR-L5).
+    """Raise the bands a cut-only fit had to leave dark.
 
     Runs LAST, on whatever deficit survives the shelf, peaking and CD-horn
     stages. Two moves in order: :func:`reduce_cuts_for_lift` (free), then
     boost filters for the residue if the vocabulary allows. Null exclusion
     still binds via ``envelope.allowed_depth_db``. Inert under a cut-only
     vocabulary, not as a formality — chasing every below-target dip would
-    silently change what every pre-PR-L5 caller gets. ``contribution``
+    silently change what existing callers get. ``contribution``
     (R10a, #1968) scales the WANTED deficit by the branch's own-output
     fraction, gain side only.
 
@@ -1891,7 +1890,7 @@ def fit_driver_linearization(
             np.maximum(np.abs(complex_correction_response(hf.filters, grid_hz)), 1e-12)
         )
 
-    # Lift stage (PR-L5), runs LAST, in the CD-horn's give-back frame if it fired.
+    # Lift stage, runs LAST, in the CD-horn's give-back frame if it fired.
     lift = _lift_stage(
         grid_hz, working_db, target_curve_db - hf.spend_db, envelope,
         band_mask, filters, vocabulary,

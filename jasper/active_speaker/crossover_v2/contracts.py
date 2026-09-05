@@ -1247,8 +1247,8 @@ class RoundReceipt:
 # as a constant, never as a promise about accuracy.
 DEFAULT_CLOUD_MEASURE_POSITIONS = 9
 # VERIFY PASS: |measured sum − predicted sum| ≤ this over [Fc/2, 2·Fc] (§5.2),
-# measured against the notch-excluded max (W6.7 ruling 1 —
-# `program_analysis.VERIFY_NOTCH_EXCLUSION_DB`) rather than the raw max.
+# measured against the notch-excluded max
+# (`program_analysis.VERIFY_NOTCH_EXCLUSION_DB`) rather than the raw max.
 VERIFY_TOLERANCE_DB = 1.5
 # …and the key that number is compared against, which is why it lives beside it:
 # the absolute VERIFY tracking error read by both the live attempts loop and the

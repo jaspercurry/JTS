@@ -35,7 +35,7 @@ CAMILLA_DIR="/opt/camilladsp"
 CAMILLA_CONF="/etc/camilladsp"
 ENV_DIR="/etc/jasper"
 STATE_DIR="/var/lib/jasper"
-# WS1 Phase 4a — the group-`jasper-secrets` secret compartment, a SIBLING of
+# The group-`jasper-secrets` secret compartment, a SIBLING of
 # STATE_DIR (not under it): STATE_DIR is jasper-voice/-mux's StateDirectory,
 # whose recursive chown would force this tree's group back to `jasper`.
 SECRETS_DIR="/var/lib/jasper-secrets"
@@ -662,23 +662,24 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
 5. Services and live actions
    - Create the \`jasper\` group and the non-root service users
      (jasper-voice / jasper-mux / jasper-input / jasper-usbmic /
-     jasper-control / jasper-web) the Tier-A daemons drop to, plus the Phase 4
+     jasper-control / jasper-web) the Tier-A daemons drop to, plus the
      secret-compartment groups.
    - Install /etc/polkit-1/rules.d/49-jasper-control.rules granting the
      non-root jasper-control its scoped systemctl (MANAGED_UNITS allowlist)
-     + reboot/power-off — its restart broker + supervisors run as that uid
-     (WS1 Phase 3b-2). Make /etc/avahi/services group-jasper writable so it
+     + reboot/power-off — its restart broker + supervisors run as that uid.
+     Make /etc/avahi/services group-jasper writable so it
      can render the peering advert.
    - Install /etc/polkit-1/rules.d/49-jasper-web.rules granting the non-root
      jasper-web the NetworkManager actions (scan / connect / forget / radio /
-     PSK re-read) the /wifi/ wizard drives (WS1 Phase 3b-3).
+     PSK re-read) the /wifi/ wizard drives.
    - Widen /etc/bluetooth + /var/lib/camilladsp/configs to group-jasper 2775
      so the non-root jasper-web can atomically replace the BlueZ name and the
-     generated sound profiles (WS1 Phase 3b-3).
+     generated sound profiles.
    - Widen the config/state files jasper-control reads off disk
      (jasper.env + voice_provider/control_token + non-secret sound state)
      to 0640 group jasper so the jasper-doctor it spawns + /state can read
-     them. Secret compartments stay isolated by WS1 Phase 4.
+     them. The secret compartments (jasper-secrets/jasper-intsecrets) stay
+     isolated separately.
    - Reload udev and systemd.
    - Enable socket-activated setup wizards and always-on audio/control
      services.
@@ -964,7 +965,7 @@ install_camilladsp() {
     # under configs/.
     install -d -m 0755 /var/lib/camilladsp
     # configs/ is written atomically (temp file in-dir + rename) by the non-root
-    # jasper-web user (WS1 privilege drop) for active-speaker staging and
+    # jasper-web user for active-speaker staging and
     # room-correction configs, so it must be group-writable from its FIRST
     # creation — not only after the later widen step below. A deploy that stops
     # between here and that widen (or a future reorder) must not leave it
@@ -1078,7 +1079,7 @@ ensure_output_hardware_state() {
     if ! run_captured_command output env \
         JASPER_OUTPUT_HARDWARE_STATE_PATH=/run/jasper-output-hardware/output_hardware.json \
         JASPER_APLAY="${JASPER_APLAY:-aplay}" \
-        /opt/jasper/.venv/bin/python -m jasper.output_hardware --write; then
+        /opt/jasper/.venv/bin/python -m jasper.cli.output_hardware --write; then
         return 1
     fi
 }
@@ -1815,7 +1816,7 @@ install_avahi_jasper_control() {
         "${REPO_DIR}/deploy/avahi/jasper-control.service.template" \
         /etc/jasper/avahi-templates/jasper-control.service
 
-    # WS1 Phase 3b-2: a non-root jasper-control renders the peering advert
+    # A non-root jasper-control renders the peering advert
     # (jasper-peer.service) into this dir when /rooms/ peering is enabled
     # (off by default). os.replace needs WRITE on the parent dir, which
     # ReadWritePaths= does NOT grant (it only lifts ProtectSystem=strict;
@@ -1875,7 +1876,7 @@ PY
 }
 
 install_jasper_control_polkit() {
-    # WS1 Phase 3b-2 — the polkit grant for the non-root jasper-control user.
+    # The polkit grant for the non-root jasper-control user.
     # Without it, every systemctl/reboot/poweroff jasper-control runs (the
     # in-process restart broker + the system/shairport/grouping supervisors +
     # the /system buttons) is DENIED with "Interactive authentication required"
@@ -1891,7 +1892,7 @@ install_jasper_control_polkit() {
 }
 
 install_jasper_web_polkit() {
-    # WS1 Phase 3b-3 — the polkit grant for the non-root jasper-web user. The
+    # The polkit grant for the non-root jasper-web user. The
     # /wifi/ wizard drives NetworkManager (scan / connect / forget / radio /
     # PSK re-read); NM's implicit defaults DENY a sessionless daemon for every
     # one of those, so without this rule a non-root jasper-web cannot manage
@@ -1906,7 +1907,7 @@ install_jasper_web_polkit() {
 }
 
 widen_jasper_web_writable_dirs() {
-    # WS1 Phase 3b-3 — the non-root jasper-web user atomically replaces files in
+    # The non-root jasper-web user atomically replaces files in
     # two root-owned dirs: /etc/bluetooth/main.conf (BlueZ name persistence
     # across a bluetooth.service restart — the /speaker rename) and generated
     # CamillaDSP sound profiles under /var/lib/camilladsp/configs (the /sound/
@@ -2206,7 +2207,7 @@ main() {
         require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
         setup_build_swap_if_needed
         trap install_exit_cleanup EXIT
-        create_jasper_service_users  # WS1 Phase 3b: before unit install + state-dir creation
+        create_jasper_service_users  # before unit install + state-dir creation
         park_low_memory_build_units
         install_streambox_deps
         install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
@@ -2222,7 +2223,7 @@ main() {
         ensure_outputd_camilla_statefile
         ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
         reassert_secrets_compartment_perms  # assistant provider keys jasper-voice reads
-        reassert_intsecrets_compartment_perms  # WS1 Phase 4b: streambox Spotify creds/cache perms
+        reassert_intsecrets_compartment_perms  # streambox Spotify creds/cache perms
         build_install_jasper_fanin
         build_install_jasper_outputd
         install_jts_ring_platform  # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)
@@ -2233,13 +2234,13 @@ main() {
         migrate_cgroup_memory_enabled
         install_journald_persistent_storage
         install_avahi_jasper_control
-        install_jasper_control_polkit  # WS1 3b-2: grant non-root jasper-control its scoped systemctl/reboot
-        install_jasper_web_polkit  # WS1 3b-3: grant jasper-web NetworkManager wifi management
-        widen_jasper_web_writable_dirs  # WS1 3b-3: /etc/bluetooth + camilladsp/configs group-jasper writable
+        install_jasper_control_polkit  # grant non-root jasper-control its scoped systemctl/reboot
+        install_jasper_web_polkit  # grant jasper-web NetworkManager wifi management
+        widen_jasper_web_writable_dirs  # /etc/bluetooth + camilladsp/configs group-jasper writable
         install_peering_template
         provision_correction_tls
         install_streambox_nginx_site
-        widen_control_secret_env_modes  # WS1 3b-2: secret env group-jasper readable for the spawned doctor
+        widen_control_secret_env_modes  # secret env group-jasper readable for the spawned doctor
         # Final mutation: stamp the verified-install manifest only now that
         # every step above succeeded (set -e). run_doctor_summary below is
         # non-mutating diagnostics — keep write_build_manifest the LAST
@@ -2254,7 +2255,7 @@ main() {
     require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
     setup_build_swap_if_needed
     trap install_exit_cleanup EXIT
-    create_jasper_service_users  # WS1 Phase 3b: before unit install + state-dir creation
+    create_jasper_service_users  # before unit install + state-dir creation
     park_low_memory_build_units
     install_deps
     install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
@@ -2278,15 +2279,15 @@ main() {
     migrate_cgroup_memory_enabled  # Stage 2 audio-slice: cgroup memory + PSI in cmdline.txt
     install_journald_persistent_storage
     install_avahi_jasper_control
-    install_jasper_control_polkit  # WS1 3b-2: grant non-root jasper-control its scoped systemctl/reboot
-    install_jasper_web_polkit  # WS1 3b-3: grant jasper-web NetworkManager wifi management
-    widen_jasper_web_writable_dirs  # WS1 3b-3: /etc/bluetooth + camilladsp/configs group-jasper writable
+    install_jasper_control_polkit  # grant non-root jasper-control its scoped systemctl/reboot
+    install_jasper_web_polkit  # grant jasper-web NetworkManager wifi management
+    widen_jasper_web_writable_dirs  # /etc/bluetooth + camilladsp/configs group-jasper writable
     install_peering_template
     provision_correction_tls   # cert files must exist before nginx -t
     install_nginx_site
     install_camillagui
     regenerate_audio_cues
-    widen_control_secret_env_modes  # WS1 3b-2: secret env group-jasper readable for the spawned doctor
+    widen_control_secret_env_modes  # secret env group-jasper readable for the spawned doctor
     # Final mutation: stamp the verified-install manifest only now that
     # every step above succeeded (set -e). run_doctor_summary below is
     # non-mutating diagnostics — keep write_build_manifest the LAST state

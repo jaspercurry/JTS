@@ -19,7 +19,6 @@ import math
 import os
 import re
 import subprocess
-import sys
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -40,7 +39,7 @@ from .audio_hardware.dac import (
     mixer_control_groups_for,
     profile_for_card_label as _dac_profile_for_card_label,
 )
-from .audio_hardware.hat_eeprom import HatEeprom, read_hat_eeprom
+from .audio_hardware.hat_eeprom import HatEeprom
 from .audio_hardware.usb_port_role import (
     UsbPortRoleState,
     resolve_system_usb_port_role,
@@ -204,6 +203,20 @@ def _is_apple_output_card(card: OutputCardFact) -> bool:
 
 def _apple_card_count(cards: Iterable[OutputCardFact]) -> int:
     return sum(1 for card in cards if _is_apple_output_card(card))
+
+
+def apple_output_card_ids(cards: Iterable[OutputCardFact]) -> tuple[str, ...]:
+    """Card ids of the attached Apple USB-C DACs, in observation order.
+
+    Playback cards only: the shell owner this feeds picks the Apple mixer
+    helpers' card from the first id, and a capture-only card can never be
+    that. The registry match already happened in the probe (ADR-0235 R2).
+    """
+    return tuple(
+        card.card_id
+        for card in cards
+        if card.has_playback and _is_apple_output_card(card)
+    )
 
 
 @dataclass(frozen=True)
@@ -1325,32 +1338,3 @@ def topology_hardware_from_state(state: OutputHardwareState) -> dict[str, Any]:
     if child_devices:
         out["child_devices"] = child_devices
     return out
-
-
-def main(argv: list[str] | None = None) -> int:
-    argv = list(argv or [])
-    hat = read_hat_eeprom()
-    cards = probe_system_cards(
-        sys_class_sound=os.environ.get("JASPER_SYS_CLASS_SOUND", "/sys/class/sound"),
-        proc_asound=os.environ.get("JASPER_PROC_ASOUND", "/proc/asound"),
-        hat=hat,
-    )
-    if not cards:
-        listing = probe_aplay_listing(os.environ.get("JASPER_APLAY", "aplay"))
-        cards = parse_aplay_listing(listing, hat=hat)
-    state = apply_saved_topology_policy(classify_output_cards(cards), cards)
-    state = replace(
-        state,
-        hat_eeprom=hat,
-        usb_data_role=resolve_system_usb_port_role(
-            observed_output_profile_id=state.profile_id,
-        ),
-    )
-    if "--write" in argv:
-        write_state(state)
-    print(json.dumps(state.to_dict(), sort_keys=True))
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))

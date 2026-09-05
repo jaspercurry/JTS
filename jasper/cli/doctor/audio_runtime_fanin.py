@@ -357,7 +357,7 @@ def check_fanin_asound_wiring() -> CheckResult:
 
     return CheckResult(label, "ok", "renderer/test lanes 0..4")
 
-@doctor_check()
+@doctor_check(core=True)
 def check_fanin_service() -> CheckResult:
     """The jasper-fanin systemd unit is required for renderer audio.
 

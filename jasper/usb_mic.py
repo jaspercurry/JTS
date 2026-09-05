@@ -61,6 +61,9 @@ class IntentState:
     enabled: bool
     valid: bool
     detail: str = ""
+    # True only when the intent file has never been written — the factory
+    # default (disabled) rather than a corrupt/present-but-invalid file.
+    absent: bool = False
 
 
 def read_intent(path: str | os.PathLike[str] = INTENT_PATH) -> IntentState:
@@ -72,7 +75,9 @@ def read_intent(path: str | os.PathLike[str] = INTENT_PATH) -> IntentState:
             max_bytes=_MAX_ENV_BYTES,
         ).decode("utf-8")
     except FileNotFoundError:
-        return IntentState(False, False, "USB microphone preference is missing.")
+        return IntentState(
+            False, False, "USB microphone preference is missing.", absent=True,
+        )
     except (OSError, UnicodeDecodeError) as exc:
         return IntentState(False, False, f"USB microphone preference is unreadable: {exc}")
     raw = read_value(text, INTENT_KEY)

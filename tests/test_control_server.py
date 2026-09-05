@@ -16,6 +16,7 @@ ThreadingHTTPServer's own lifecycle. Route bodies are tested beside the
 from __future__ import annotations
 
 import json
+import logging
 import re
 import signal
 import threading
@@ -247,6 +248,38 @@ def test_cross_site_get_healthz_is_allowed(server_with_coordinator):
     )
     assert status == 200
     assert body == {"ok": True}
+
+
+def _access_log_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    # log_request's access-log line is always logger.info; filter out other
+    # levels (e.g. the WARNING http.reject event) rather than asserting on
+    # message text.
+    return [r for r in caplog.records if r.levelno == logging.INFO]
+
+
+@pytest.mark.parametrize(
+    ("path", "headers", "expected_status", "expected_info_records"),
+    [
+        pytest.param("/healthz", None, 200, 0, id="200_healthz_not_logged"),
+        pytest.param(
+            "/healthz", {"Host": "evil.example"}, 403, 1,
+            id="non_200_healthz_still_logged",
+        ),
+        pytest.param("/volume", None, 200, 1, id="other_path_still_logged"),
+    ],
+)
+def test_access_log_skips_only_200_healthz(
+    server_with_coordinator, caplog, path, headers, expected_status,
+    expected_info_records,
+):
+    # The supervisor's own successful liveness self-poll otherwise fills
+    # ~45% of this daemon's idle journal volume (measured on jts4,
+    # jts.local, jts3 — see jasper/control/server.py Handler.log_request).
+    base, _ = server_with_coordinator
+    with caplog.at_level("INFO", logger="jasper.control.server"):
+        status, _ = _get(f"{base}{path}", headers=headers)
+    assert status == expected_status
+    assert len(_access_log_records(caplog)) == expected_info_records
 
 
 def test_full_profile_allows_every_control_route():

@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from jasper.web import wifi_setup
+from jasper.web.landing import render_landing
 
 
 _REPO = Path(__file__).resolve().parent.parent
@@ -41,7 +42,14 @@ _APP_CSS_PATH = _REPO / "deploy" / "assets" / "app.css"
 
 
 def _index_html() -> str:
-    return _INDEX_PATH.read_text(encoding="utf-8")
+    """The document nginx serves: the template with install.sh's placeholders
+    (icon sprite, caps island, control token, nav groups) substituted."""
+    return render_landing(
+        _INDEX_PATH.read_text(encoding="utf-8"),
+        app_css_version="testsha",
+        caps={},
+        control_token="test-token",
+    )
 
 
 def _landing_js() -> str:
@@ -375,11 +383,10 @@ def test_landing_page_bakes_capability_ceiling_before_any_fetch() -> None:
     # (that round-trip was the two-layer stutter). Every gated row ships
     # hidden, so gating only reveals and the layout survives a daemon being
     # down.
-    html = _index_html()
     settings_status = _SETTINGS_STATUS_JS_PATH.read_text()
 
     # install.sh stamps this placeholder with the profile's capability island.
-    assert "__JTS_CAPS_ISLAND__" in html
+    assert "__JTS_CAPS_ISLAND__" in _INDEX_PATH.read_text(encoding="utf-8")
     assert 'JSON.parse(document.getElementById("landing-caps").textContent)' in (
         _landing_js()
     )
@@ -792,7 +799,7 @@ def test_install_copies_and_stamps_app_css() -> None:
     assert "${assets_root}/app.css" in web_assets
     # The static landing page's app.css link is cache-busted at install
     # time by substituting the build SHA into the version placeholder.
-    assert "__APP_CSS_VERSION__" in _index_html()
+    assert "__APP_CSS_VERSION__" in _INDEX_PATH.read_text(encoding="utf-8")
     assert 'app_css_ver="$(resolve_build_sha_short)"' in install
     assert '--app-css-version "${app_css_ver}"' in install
 

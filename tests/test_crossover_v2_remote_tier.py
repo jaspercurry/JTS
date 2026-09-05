@@ -445,7 +445,9 @@ def test_the_gate_defers_until_the_driver_releases_and_then_admits():
     assert pending["degrees"] == -7
     assert pending["role"] == POSITION_ROLE_ONAX
     assert pending["action"]["endpoint"] == POSITION_READY_ENDPOINT
-    assert pending["action"]["body"] == {"index": 3, "degrees": -7}
+    assert pending["action"]["body"] == {
+        "index": 3, "degrees": -7, "vertical_deg": 0,
+    }
     # The phone re-posts the SAME begin throughout a hold; each one defers again
     # without spending anything.
     with pytest.raises(CaptureBeginDeferred):
@@ -684,6 +686,48 @@ def test_the_release_label_signs_a_bearing_but_never_signs_zero():
     assert "+0" not in _label_at(0)
     assert _label_at(7) != _label_at(-7)
     assert "+7" in _label_at(7)
+
+
+def test_a_raised_stop_reaches_the_gate_and_its_button_as_a_raised_stop():
+    """A vertical stop's BEARING is 0°, so the bearing alone cannot name it.
+
+    Driven through the shipped plan builder and the shipped gate because the
+    claim spans both: the entry states the elevation, the hold republishes it,
+    and the button distinguishes the raised spot from the design-axis anchor it
+    is measured against. Flattened, two different poses share one attestation —
+    and the household is asked twice for the same spot.
+    """
+    from jasper.active_speaker.angle_capture import pose_at_angle
+
+    # The shipped constructor for a walk's poses — the one that actually feeds
+    # ``lateral_prompts``, so the seam that reaches the gate is pinned too.
+    raised = pose_at_angle(0, 10)
+    plan = build_v2_capture_plan(
+        flow._DISPLAY_ROLES_BANDS,
+        flow._DISPLAY_FC_HZ,
+        plan_shape=_hand_released(),
+        include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
+        include_lateral=True,
+        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
+        lateral_prompts=(raised,),
+    )
+    entry, = [
+        e for e in plan.entries
+        if capture_plan.POSITION_VERTICAL_DEG_KEY in e.screen
+    ]
+    assert int(entry.screen[POSITION_DEG_KEY]) == 0
+
+    gate = PositionGate()
+    with pytest.raises(CaptureBeginDeferred):
+        gate.gate(1, 1, entry)
+    pending = gate.pending()
+
+    assert pending["degrees"] == 0
+    assert pending["vertical_deg"] == 10
+    assert pending["action"]["body"]["vertical_deg"] == 10
+    # An entry that states no elevation is at mark height, and its button says
+    # something else than this one's.
+    assert pending["action"]["label"] != _label_at(0)
 
 
 def test_hand_released_tracks_the_entrys_own_advance_policy():

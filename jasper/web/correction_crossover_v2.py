@@ -4257,6 +4257,8 @@ class PositionGate:
             AUTO_ADVANCE_TAP,
             POSITION_DEG_KEY,
             POSITION_ROLE_KEY,
+            POSITION_VERTICAL_DEG_KEY,
+            elevation_clause,
         )
         from jasper.active_speaker.crossover_v2.capture_source import (
             CaptureBeginDeferred,
@@ -4277,6 +4279,14 @@ class PositionGate:
                 "This measurement did not say where the microphone should be.",
             )
         target = int(raw_degrees)
+        # Absent reads as mark height, which is what an entry that states no
+        # elevation means; the bearing above has no such default because a
+        # missing target is the plan/gate disagreement refused just above.
+        vertical = int(screen.get(POSITION_VERTICAL_DEG_KEY) or 0)
+        # Every sentence this gate publishes about the pose carries it, so the
+        # raised stop and the design-axis anchor it is measured against can
+        # never render as the same hold.
+        rise = f", {elevation_clause(vertical)}" if vertical else ""
         role = str(screen.get(POSITION_ROLE_KEY) or "")
         key = (int(index), int(attempt))
         now = self._clock()
@@ -4342,6 +4352,7 @@ class PositionGate:
                     "index": int(index),
                     "attempt": int(attempt),
                     "degrees": target,
+                    "vertical_deg": vertical,
                     "role": role,
                     # The words a PERSON acts on, lifted verbatim off the entry
                     # the runner already handed us — the same
@@ -4373,19 +4384,25 @@ class PositionGate:
                     ),
                     "action": {
                         "id": "crossover_v2_position_ready",
-                        # The SIGN is what tells the two off-axis sides apart,
-                        # so it stays everywhere it distinguishes something —
-                        # but "+0°" distinguishes nothing and reads as a typo
-                        # on a button a household presses. The design axis is
-                        # also how the pose's own prompt names it ("on the
-                        # design axis (0°)"), so the two now agree.
+                        # The SIGN tells the two off-axis sides apart, so it
+                        # stays where it distinguishes something — but "+0°"
+                        # distinguishes nothing and reads as a typo on a button
+                        # a household presses, and "on the design axis (0°)" is
+                        # how the pose's own prompt names that spot. The
+                        # elevation rides along because a walk states its
+                        # vertical stops at 0° BEARING: without the clause two
+                        # different spots share one button.
                         "label": (
                             "Microphone is on the design axis (0°)"
                             if target == 0
                             else f"Microphone is at {target:+d}°"
-                        ),
+                        ) + rise,
                         "endpoint": POSITION_READY_ENDPOINT,
-                        "body": {"index": int(index), "degrees": target},
+                        "body": {
+                            "index": int(index),
+                            "degrees": target,
+                            "vertical_deg": vertical,
+                        },
                     },
                 }
                 log_event(
@@ -4394,11 +4411,12 @@ class PositionGate:
                     index=int(index),
                     attempt=int(attempt),
                     degrees=target,
+                    vertical_deg=vertical,
                     role=role,
                 )
         raise CaptureBeginDeferred(
             POSITION_HOLD_CODE,
-            f"Waiting for the microphone to reach {target:+d}°.",
+            f"Waiting for the microphone to reach {target:+d}°{rise}.",
         )
 
     # -- the releasing side ------------------------------------------------- #

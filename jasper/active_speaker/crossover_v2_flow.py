@@ -77,8 +77,8 @@ publish, apply-gate observation) crosses an INJECTED seam
 (:class:`V2FlowSeams`), exactly as :func:`jasper.active_speaker.program_playback.play_program`
 and :class:`jasper.active_speaker.session_volume_plan.SessionVolumePlan` inject
 their DSP / volume seams. That keeps the whole state walk fixture-testable with
-fake seams, and lets Wave 6 bind the real CamillaController-backed playback, the
-``analyze_program_capture`` call, the verified-WAV source, and the
+fake seams, and lets production code bind the real CamillaController-backed
+playback, the ``analyze_program_capture`` call, the verified-WAV source, and the
 ``commissioning_service`` publish/apply chain without touching this logic.
 
 The session exposes the three ``run_capture_plan`` callbacks
@@ -683,7 +683,7 @@ class V2FlowSeams:
     # #1866: the banked level-frame disagreement, at most once per session and
     # AFTER ``publish_candidate``, so the artifact it cites already exists.
     publish_findings: Callable[[Mapping[str, Any]], None] | None = None
-    # PR-L5: undo the applied correction; True when the previous profile was
+    # Undo the applied correction; True when the previous profile was
     # restored. Absent, the session still classifies and refuses.
     rollback: Callable[[str], bool] | None = None
     # #1811: the whole-band level move the APPLY made and did not command, read at
@@ -1058,7 +1058,7 @@ class CrossoverV2Session:
         self._verify_prompts: tuple[CloudPositionPrompt, ...] = verify_pose_table(
             verify_prompts
         )
-        # WO-1: per-position evidence metadata by position id. Not pruned on removal;
+        # Per-position evidence metadata by position id. Not pruned on removal;
         # the serializer joins on ``combined.position_ids``, so an orphan is never read.
         self._group_position_meta: dict[str, dict[str, dict[str, Any]]] = {
             phase: {} for phase in self._journey.plan.group_indexes
@@ -1122,7 +1122,7 @@ class CrossoverV2Session:
         }
         self._armed_index: int | None = None
         # The most recent authorized (index, attempt): the host addresses the terminal
-        # ``capture_result`` to it at a play-seam failure (§5.10 / W6.1).
+        # ``capture_result`` to it at a play-seam failure (§5.10).
         self._armed_capture: tuple[int, int] | None = None
         # MEASURE→VERIFY handoff evidence; a verify-only re-arm rehydrates it (§5.2).
         self._measure_predicted_sum: Any = measure_predicted_sum
@@ -1133,7 +1133,7 @@ class CrossoverV2Session:
             if isinstance(measure_predicted_spec_report, Mapping)
             else None
         )
-        # PR-L5: what the applied correction COMMANDS on the summed response.
+        # What the applied correction COMMANDS on the summed response.
         self._measure_commanded_delta: Any = measure_commanded_delta
         # #2614: the applied graph's OWN transfer against the uncorrected crossover —
         # the STATE axis beside the CHANGE axis above.
@@ -1226,7 +1226,7 @@ class CrossoverV2Session:
         # The pilot evidence belonging to ``_last_failure_code`` (#2085), ALWAYS written
         # with it. ``None`` is "no pilot evidence for this failure".
         self._last_failure_pilot_heard: bool | None = None
-        # G3's reference, SESSION-SCOPED since #1927: the first usable VERIFY attempt of
+        # SESSION-SCOPED reference, since #1927: the first usable VERIFY attempt of
         # THIS session records it and every later attempt is compared against it. A
         # rehydrated one conflated within-session chain consistency with cross-day
         # setup identity — the 2026-07-30 bench measured 0.775 dB of ordinary mic
@@ -1268,7 +1268,7 @@ class CrossoverV2Session:
         # the top of every ``_measure_verdict``. NOT every value is a refusal: G1 writes
         # ``ripple_disclosure`` on a capture it ACCEPTS, so pair it with ``accepted=``.
         self._last_measure_guard: str = ""
-        # G1's banked reservation (#2087). Reset at the top of every
+        # The banked ripple reservation (#2087). Reset at the top of every
         # ``_measure_verdict``, so it describes THE ACCEPTED CAPTURE and no other.
         self._measure_ripple_reservation: dict[str, Any] | None = None
         self._measure_alignment_reservation: dict[str, Any] | None = None
@@ -1677,7 +1677,7 @@ class CrossoverV2Session:
 
     @property
     def delta_probe(self) -> DeltaProbeMap | None:
-        """This session's realized-vs-commanded verdict (PR-L5), or ``None``."""
+        """This session's realized-vs-commanded verdict, or ``None``."""
         return self._delta_probe
 
     @property
@@ -1693,7 +1693,7 @@ class CrossoverV2Session:
 
     @property
     def measure_ripple_reservation(self) -> dict[str, Any] | None:
-        """G1's banked reservation about the accepted MEASURE, or ``None``."""
+        """The banked ripple reservation about the accepted MEASURE, or ``None``."""
         reservation = self._measure_ripple_reservation
         return dict(reservation) if reservation else None
 
@@ -2547,7 +2547,7 @@ class CrossoverV2Session:
             return []
 
     def _note_ripple_reservation(self, predicted_ripple_db: float) -> None:
-        """Bank G1's reservation about the capture being accepted (#2087).
+        """Bank the ripple reservation about the capture being accepted (#2087).
 
         It records and decides nothing, and must never acquire a branch that
         could, or the #2087 ruling quietly grows a gate back.
@@ -2985,7 +2985,7 @@ class CrossoverV2Session:
         """
         positions = self._group_positions[phase]
         combined = combine_cloud_positions(positions)
-        # PR-L5's spatial arm reads the across-position level spread of BOTH groups,
+        # The spatial arm reads the across-position level spread of BOTH groups,
         # off the one combine this method already paid for.
         self._group_band_spread[phase] = tuple(
             getattr(combined, "band_spread", None) or ()
@@ -3253,7 +3253,7 @@ class CrossoverV2Session:
             if linearization.linearized_predicted_sum is not None
             else analysis.predicted_sum
         )
-        # PR-L4: the last GRADING before a candidate can be proposed. It refuses
+        # The last GRADING before a candidate can be proposed. It refuses
         # nothing; what it returns is the level-frame record the publish banks.
         level_frame_finding = self._assert_accountable(
             predicted_sum, analysis.predicted_sum, linearization=linearization,
@@ -3457,7 +3457,7 @@ class CrossoverV2Session:
         )
         return {
             "candidate_fingerprint": candidate.fingerprint,
-            # "This correction costs N dB of maximum level" (PR-L5). This is the
+            # "This correction costs N dB of maximum level." This is the
             # CONFIRM payload; the household disclosure is persisted by
             # ``_candidate_summary``. Both use ``worst_headroom_cost_db``.
             "headroom_cost_db": self._candidate_headroom_cost_db(),
@@ -3487,7 +3487,7 @@ class CrossoverV2Session:
             )
 
     def _candidate_headroom_cost_db(self) -> float:
-        """The applied correction's disclosed max-level cost, dB (PR-L5)."""
+        """The applied correction's disclosed max-level cost, dB."""
         linearization = getattr(self._candidate, "linearization", None)
         if not isinstance(linearization, Mapping):
             return 0.0
@@ -4304,9 +4304,9 @@ class CrossoverV2Session:
         # Every §7 claim, graded BEFORE any of them gates, so a capture that fails one
         # still discloses the others.
         self._verify_claims = _verify_claims(tracking, analysis.verify_absolute)
-        # Notch-aware, validity-floor-clamped comparator (W6.7 ruling 1): the
-        # NOTCH-EXCLUDED max over this capture's own gate-derived band. Run 7 read
-        # 27.83 dB raw against a predicted sum whose own ripple was ~30 dB.
+        # Notch-aware, validity-floor-clamped comparator: the NOTCH-EXCLUDED max
+        # over this capture's own gate-derived band. Run 7 read 27.83 dB raw
+        # against a predicted sum whose own ripple was ~30 dB.
         max_db = tracking.get("max_db_notch_excluded")
         # Gated on the CLAIM just recorded: R18's vocabulary is three-valued, and a
         # claim nobody could grade must not read as one that failed (#3487).
@@ -4328,7 +4328,7 @@ class CrossoverV2Session:
         # Graded and inside tolerance: the mismatch did NOT repeat, so the pair #1873's
         # discriminator would draw its claim from is broken.
         self._verify_last_mismatch_max_db = None
-        # PR-L5's delta probe, run only once tracking has PASSED. What it adds is the
+        # The delta probe, run only once tracking has PASSED. What it adds is the
         # band tracking cannot see: the whole span the correction commands.
         self._verify_tracking_curve = analysis.verify_tracking_curve
         summed = analysis.summed_response
