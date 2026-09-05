@@ -1570,7 +1570,7 @@ class WakeLoop:
 
         The drain only runs on the household's next COMPLETED voice turn
         (_end_turn_inner → _drain_pending_research), not on
-        `measurement_resume()` — a queued result can therefore sit for a
+        `MeasurementHold.resume()` — a queued result can therefore sit for a
         while, bounded only by `_research_pending_cap`. Draining on resume
         would fire at the sweep's trailing edge, the in-flight-bleed
         window tracked as issue #1898.
@@ -2383,8 +2383,8 @@ class WakeLoop:
                 # pre-roll append). Dropping pre-roll matters — sweep tail
                 # in the pre-roll would prepend ~1.4 s of test-tone audio
                 # to whatever turn starts right after the window closes.
-                # Active sessions never reach this branch: measurement_pause()
-                # refuses to set the event while State.SESSION (returns BUSY).
+                # Active sessions never reach this branch: the measurement
+                # hold refuses to set the event while State.SESSION (BUSY).
                 if self._measurement_active.is_set():
                     continue
 
@@ -3233,11 +3233,11 @@ class WakeLoop:
         local rather than connectivity.
         """
         try:
-            # mute_mic / measurement_pause can fire after _handle_wake_frame
-            # spawned this task but before it is scheduled. Both are
-            # user-deliberate "stop listening" signals; a chirp plus an LLM
-            # session after them is wrong. Checked twice — now, and again
-            # after the arbitration await, which can take up to 500 ms.
+            # mute_mic / MeasurementHold.pause can fire after
+            # _handle_wake_frame spawned this task but before it is scheduled.
+            # Both are user-deliberate "stop listening" signals; a chirp plus
+            # an LLM session after them is wrong. Checked twice — now, and
+            # again after the arbitration await, which can take up to 500 ms.
             if self._wake_late_cancelled("pre_arb"):
                 await self._telemetry_stage("late_cancel")
                 await self._telemetry_outcome("late_cancel", "pre_arb")

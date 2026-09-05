@@ -75,12 +75,10 @@ __all__ = [
 ]
 
 # How long one acquire keeps the hold alive without a renewal. Mirrors
-# voice.measurement_hold.MEASUREMENT_AUTOCLEAR_SEC so the two copies of the
-# same fact lapse together rather than leaving one enforcement point armed
-# after the other has let go. Must stay comfortably above the window's
-# renewal cadence (measurement_window.MEASUREMENT_LEASE_REFRESH_SEC) with
-# room for one failed renewal and its MEASUREMENT_LEASE_RETRY_SEC back-off;
-# a test pins the triple.
+# voice.measurement_hold.MEASUREMENT_AUTOCLEAR_SEC. Must stay comfortably
+# above the window's renewal cadence
+# (measurement_window.MEASUREMENT_LEASE_REFRESH_SEC) with room for one failed
+# renewal and its MEASUREMENT_LEASE_RETRY_SEC back-off; a test pins the triple.
 MEASUREMENT_HOLD_TTL_SEC = 120.0
 
 # The isolation modes this registrar honours. See the module docstring: a mode
