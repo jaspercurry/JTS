@@ -379,6 +379,13 @@ def _env_lock_path(path: str) -> str:
     return os.path.join(parent, f".{basename}.lock")
 
 
+# An env file can have writers running as different service users (group
+# jasper), and the lock is opened O_RDWR, so group write is required or the
+# second unit's acquire fails EACCES. Units disagree on UMask, so the mode is
+# asserted on every acquire rather than left to whichever unit creates it.
+_ENV_LOCK_MODE = 0o660
+
+
 def read_regular_bytes_nofollow(
     path: str | os.PathLike,
     *,
@@ -457,7 +464,7 @@ def locked_update_env_file(
     *,
     mode: int = 0o644,
     group_from_parent: bool = True,
-    lock_mode: int | None = None,
+    lock_mode: int | None = _ENV_LOCK_MODE,
     max_bytes: int | None = None,
     lock_timeout_sec: float | None = None,
 ) -> dict[str, str]:
@@ -467,7 +474,8 @@ def locked_update_env_file(
     protect two writers that both read the old file, update different keys, and
     then publish whole-file replacements. This helper holds an advisory flock
     across the read, update, and atomic replace so cooperating writers preserve
-    each other's keys.
+    each other's keys. ``lock_mode`` defaults to group-writable so writers
+    running as different service users can share that lock.
     """
     fspath = os.fspath(path)
     parent = os.path.dirname(fspath) or "."
@@ -497,7 +505,7 @@ def locked_transform_env_file(
     *,
     mode: int = 0o644,
     group_from_parent: bool = True,
-    lock_mode: int | None = None,
+    lock_mode: int | None = _ENV_LOCK_MODE,
     max_bytes: int | None = None,
     lock_timeout_sec: float | None = None,
 ) -> dict[str, str] | None:

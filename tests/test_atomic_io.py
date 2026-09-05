@@ -274,6 +274,22 @@ def test_shared_lock_does_not_chmod_an_already_correct_root_owned_mode(
         pass
 
 
+@pytest.mark.parametrize("writer", ["update", "transform"])
+def test_env_lock_is_group_writable_whatever_the_creators_umask(tmp_path, writer):
+    """Some env files have writers in two units running as different service
+    users, and the units disagree on ``UMask=``. The lock is opened ``O_RDWR``,
+    so one left at the creator's 0644 EACCESes the peer's acquire."""
+    path = tmp_path / "wake_model.env"
+    previous_umask = os.umask(0o022)
+    try:
+        _write(writer, path)
+    finally:
+        os.umask(previous_umask)
+
+    lock = tmp_path / ".wake_model.env.lock"
+    assert stat.S_IMODE(lock.stat().st_mode) == 0o660
+
+
 @pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="requires O_NOFOLLOW")
 def test_shared_lock_refuses_symlink_without_mutating_target(tmp_path):
     target = tmp_path / "target"

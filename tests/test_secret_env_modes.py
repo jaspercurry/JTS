@@ -128,6 +128,18 @@ def test_install_widens_secret_env_on_upgrade():
     assert '[[ -L "${path}" ]]' in mig, (
         "widening must refuse symlinks in the group-writable state directory"
     )
+    # Env-file locks a second unit acquires O_RDWR: 0644 EACCESes the peer.
+    lock_loop = re.search(r"for f in (?P<items>[^;]*\.lock[^;]*); do", mig)
+    assert lock_loop is not None, "widening must heal the shared env-file locks"
+    healed_locks = set(lock_loop.group("items").replace("\\", " ").split())
+    for lock_name in (".wake_model.env.lock", ".aec_mode.env.lock"):
+        assert lock_name in healed_locks, f"lock heal must cover {lock_name}"
+    assert "chmod 0660" in mig, "shared env-file locks must be healed to 0660"
+    assert "rm -f" not in mig, (
+        "locks are chmodded, never removed — the daemons are already restarted, "
+        "so a live holder may hold the flock and a new opener would take a "
+        "different inode"
+    )
     # The WiFi PSK stash is DELIBERATELY excluded — jasper-control needs only the
     # SSID (not the PSK value), so the PSK stays owner-only 0600 (least privilege).
     assert "wifi_guardian.env" not in mig, (
