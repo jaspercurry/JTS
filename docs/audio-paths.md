@@ -738,6 +738,19 @@ park normal output rather than silently routing four active lanes to the wrong
 dongle. Generic USB DAC aggregation through ALSA `multi`/`dmix`/`plug` or
 CamillaDSP multi-device output remains unsupported.
 
+**Adding a DAC**: add one `DacProfile` row to `jasper/audio_hardware/dac.py`.
+Detection is by ALSA card label (`supported_card_matches`), by HAT EEPROM
+product (`hat_products`, gating a shared card label through
+`eeprom_gated_card_matches`), or by the wizard's I2S HAT toggle — an `i2s`
+row with a `dtoverlay` and no `hat_products` (e.g.
+`INNOMAKER_HIFI_AMP_PRO`). A commissioned row carries a measured
+`latency_floor` and `final_edge_format`; an uncommissioned row ships the
+safe defaults (no `latency_floor`, default `S16_LE` edge) with its removal
+condition in a comment beside it (see the `HIFIBERRY_DAC8X_STUDIO` row and
+ADR-0232). The wizard, the classifier (`jasper/output_hardware.py`), and
+the reconciler are generic over the registry (ADR-0234, ADR-0235) — no new
+per-DAC branch needed elsewhere.
+
 ## AEC bridge implications
 
 The bridge receives outputd's speaker monitor over localhost UDP, and that
@@ -767,6 +780,7 @@ tap reads.
 
 ---
 
-Last verified: 2026-08-26 against `deploy/alsa/asoundrc.jasper`,
-`deploy/alsa/conf.d/`, `deploy/modprobe.d/snd-aloop.conf`, and
-`jasper/control/transport_park.py`.
+Last verified: 2026-09-05 against `deploy/alsa/asoundrc.jasper`,
+`deploy/alsa/conf.d/`, `deploy/modprobe.d/snd-aloop.conf`,
+`jasper/control/transport_park.py`, and the DAC section against
+`jasper/audio_hardware/dac.py` and `jasper/output_hardware.py`.
