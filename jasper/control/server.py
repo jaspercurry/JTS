@@ -68,10 +68,6 @@ from . import (  # noqa: F401 - route-mixin dependency exports
     usb_gadget_forensics,
 )
 from ..multiroom.config import (  # noqa: F401 - route-mixin dependency exports
-    CROSSOVER_HZ_HI,
-    CROSSOVER_HZ_LO,
-    DEFAULT_CROSSOVER_HZ,
-    DEFAULT_MAINS_HIGHPASS_ENABLED,
     GROUPING_ENV_FILE,
     BondMember,
     GroupingConfig,
@@ -1210,7 +1206,7 @@ class _GroupingReconcilerKickCoalescer:
 
     The HTTP handler writes grouping.env before calling this, and the oneshot
     reconciler re-reads grouping.env when it finally runs, so the last write
-    wins without restarting outputd for every trim/delay/crossover sweep step.
+    wins without restarting outputd for every trim/delay sweep step.
     The packaged trailing service survives a jasper-control restart.
     """
 
@@ -1350,9 +1346,6 @@ def _is_trim_only_grouping_change(before: GroupingConfig, after: GroupingConfig)
         and before.client_latency_ms == after.client_latency_ms
         and math.isclose(before.left_delay_ms, after.left_delay_ms, abs_tol=0.0005)
         and math.isclose(before.right_delay_ms, after.right_delay_ms, abs_tol=0.0005)
-        and math.isclose(before.crossover_hz, after.crossover_hz, abs_tol=0.0005)
-        and before.mains_highpass_enabled == after.mains_highpass_enabled
-        and before.subwoofer_present == after.subwoofer_present
         and before.peer_addr == after.peer_addr
         and before.peer_name == after.peer_name
         and before.roster == after.roster
@@ -1366,9 +1359,6 @@ class _GroupingOptionalFields:
     client_latency_ms: int | None
     left_delay_ms: float | None
     right_delay_ms: float | None
-    crossover_hz: float | None
-    mains_highpass_enabled: bool | None
-    subwoofer_present: bool | None
 
 
 def _parse_grouping_optional_fields(
@@ -1376,8 +1366,7 @@ def _parse_grouping_optional_fields(
 ) -> tuple[_GroupingOptionalFields | None, str | None]:
     """Parse optional ``/grouping/set`` scalars without HTTP side effects.
 
-    Numeric fields intentionally retain Python ``int``/``float`` coercion;
-    the two flags retain their stricter JSON-boolean-only contract.
+    Fields intentionally retain Python ``int``/``float`` coercion.
     """
     parsed: dict[str, Any] = {}
     for key, caster, error in (
@@ -1389,7 +1378,6 @@ def _parse_grouping_optional_fields(
         ),
         ("left_delay_ms", float, "left_delay_ms must be a number"),
         ("right_delay_ms", float, "right_delay_ms must be a number"),
-        ("crossover_hz", float, "crossover_hz must be a number"),
     ):
         if key not in body:
             continue
@@ -1398,46 +1386,12 @@ def _parse_grouping_optional_fields(
         except (TypeError, ValueError):
             return None, error
 
-    for key in ("mains_highpass_enabled", "subwoofer_present"):
-        if key not in body:
-            continue
-        value = body[key]
-        if not isinstance(value, bool):
-            return None, f"{key} must be boolean"
-        parsed[key] = value
-
     return _GroupingOptionalFields(
         trim_db=parsed.get("trim_db"),
         client_latency_ms=parsed.get("client_latency_ms"),
         left_delay_ms=parsed.get("left_delay_ms"),
         right_delay_ms=parsed.get("right_delay_ms"),
-        crossover_hz=parsed.get("crossover_hz"),
-        mains_highpass_enabled=parsed.get("mains_highpass_enabled"),
-        subwoofer_present=parsed.get("subwoofer_present"),
     ), None
-
-
-def _resolve_grouping_crossover_hz_for_write(
-    *,
-    channel: str,
-    subwoofer_present: bool,
-    requested: float | None,
-) -> float | None:
-    """Return the crossover value this /grouping/set write must persist.
-
-    Plain stereo writes keep the omitted-means-preserve contract. A sub channel
-    or sub-present bond actively consumes the corner, so an omitted request
-    must instead validate and write a value: the existing operator value when
-    it is in range, otherwise the default.
-    """
-    if requested is not None:
-        return requested
-    if channel != "sub" and not subwoofer_present:
-        return None
-    existing = load_grouping_config(GROUPING_ENV_FILE).crossover_hz
-    if CROSSOVER_HZ_LO <= existing <= CROSSOVER_HZ_HI:
-        return existing
-    return DEFAULT_CROSSOVER_HZ
 
 
 def _write_grouping(
@@ -1446,9 +1400,6 @@ def _write_grouping(
     client_latency_ms: "int | None" = None,
     left_delay_ms: "float | None" = None,
     right_delay_ms: "float | None" = None,
-    crossover_hz: "float | None" = None,
-    mains_highpass_enabled: "bool | None" = None,
-    subwoofer_present: "bool | None" = None,
     peer_addr: "str | None" = None,
     peer_name: "str | None" = None,
     roster: "str | None" = None,
@@ -1482,20 +1433,6 @@ def _write_grouping(
         updates["JASPER_GROUPING_LEFT_DELAY_MS"] = f"{left_delay_ms:.3f}"
     if right_delay_ms is not None:
         updates["JASPER_GROUPING_RIGHT_DELAY_MS"] = f"{right_delay_ms:.3f}"
-    if crossover_hz is not None:
-        # Receiver-side wireless-sub corner. Settable like the role fields,
-        # preserved like codec when the caller omits it (only meaningful for
-        # channel="sub", but persisted regardless so a sub<->non-sub flip
-        # keeps the operator's chosen corner).
-        updates["JASPER_GROUPING_CROSSOVER_HZ"] = f"{crossover_hz:g}"
-    if mains_highpass_enabled is not None:
-        updates["JASPER_GROUPING_MAINS_HIGHPASS"] = (
-            "on" if mains_highpass_enabled else "off"
-        )
-    if subwoofer_present is not None:
-        updates["JASPER_GROUPING_SUBWOOFER_PRESENT"] = (
-            "on" if subwoofer_present else "off"
-        )
     # Peer and roster (leader only): same preserved-when-omitted contract as
     # trim, and an EXPLICIT empty string clears — the bond flow clears both on
     # non-leader members so a role flip can't leave a stale roster behind.
@@ -1508,10 +1445,6 @@ def _write_grouping(
     if roster is not None:
         updates["JASPER_GROUPING_ROSTER"] = roster
     _atomic_rewrite_env(GROUPING_ENV_FILE, updates)
-
-
-
-
 
 
 

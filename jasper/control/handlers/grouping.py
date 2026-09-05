@@ -85,9 +85,6 @@ class GroupingRoutes(ControlHandlerMixin):
         client_latency_ms = optional_fields.client_latency_ms
         left_delay_ms = optional_fields.left_delay_ms
         right_delay_ms = optional_fields.right_delay_ms
-        crossover_hz = optional_fields.crossover_hz
-        mains_highpass_enabled = optional_fields.mains_highpass_enabled
-        subwoofer_present = optional_fields.subwoofer_present
         peer_addr: str | None = None
         if "peer_addr" in body:
             peer_addr = str(body.get("peer_addr") or "").strip()
@@ -134,14 +131,6 @@ class GroupingRoutes(ControlHandlerMixin):
         # read) so we never persist a fail-loud config. A disabled
         # request needs no fields.
         if enabled:
-            effective_subwoofer_present = (
-                subwoofer_present if subwoofer_present is not None else False
-            )
-            effective_crossover_hz = _server._resolve_grouping_crossover_hz_for_write(
-                channel=channel,
-                subwoofer_present=effective_subwoofer_present,
-                requested=crossover_hz,
-            )
             err = _server.validate_grouping(
                 role=role,
                 channel=channel,
@@ -153,17 +142,6 @@ class GroupingRoutes(ControlHandlerMixin):
                 ),
                 left_delay_ms=left_delay_ms if left_delay_ms is not None else 0.0,
                 right_delay_ms=(right_delay_ms if right_delay_ms is not None else 0.0),
-                crossover_hz=(
-                    effective_crossover_hz
-                    if effective_crossover_hz is not None
-                    else _server.DEFAULT_CROSSOVER_HZ
-                ),
-                mains_highpass_enabled=(
-                    mains_highpass_enabled
-                    if mains_highpass_enabled is not None
-                    else _server.DEFAULT_MAINS_HIGHPASS_ENABLED
-                ),
-                subwoofer_present=effective_subwoofer_present,
                 peer_addr=peer_addr or "",
                 peer_name=peer_name or "",
                 roster=roster_members,
@@ -188,7 +166,6 @@ class GroupingRoutes(ControlHandlerMixin):
                     status=409,
                 )
                 return
-            crossover_hz = effective_crossover_hz
         before_grouping = _server.load_grouping_config(_server.GROUPING_ENV_FILE)
         live_apply_payload: dict[str, Any] | None = None
         reconciler_kicked = False
@@ -203,9 +180,6 @@ class GroupingRoutes(ControlHandlerMixin):
                 client_latency_ms=client_latency_ms,
                 left_delay_ms=left_delay_ms,
                 right_delay_ms=right_delay_ms,
-                crossover_hz=crossover_hz,
-                mains_highpass_enabled=mains_highpass_enabled,
-                subwoofer_present=subwoofer_present,
                 peer_addr=peer_addr,
                 peer_name=peer_name,
                 roster=roster_str,
