@@ -292,8 +292,7 @@ export var SUB_CROSSOVER_HZ_LO = 40.0;
 export var SUB_CROSSOVER_HZ_HI = 200.0;
 
 // The single local-subwoofer group, if one is routed. A local sub adds a DAC
-// output lane; the wireless sub (multiroom channel) is a separate path and never
-// appears in this topology.
+// output lane.
 export function localSubwooferGroup(topology) {
   var groups = topology && Array.isArray(topology.speaker_groups) ?
     topology.speaker_groups : [];

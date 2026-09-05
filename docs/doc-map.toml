@@ -872,7 +872,7 @@ verification = [
 
 [[subsystem]]
 id = "multiroom-grouping"
-title = "Multi-room speaker grouping (stereo pair / 2.1 / wireless sub)"
+title = "Multi-room speaker grouping (stereo pair)"
 safety = "hardware-risk"
 code = [
   "jasper/multiroom/**",
