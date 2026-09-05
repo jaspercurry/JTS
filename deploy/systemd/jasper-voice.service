@@ -199,7 +199,7 @@ WorkingDirectory=/opt/jasper
 # directly caused the 2026-05-23 silent-dead outage where the
 # voice loop's OpenAI initial-connect retry budget exhausted
 # during a WiFi-recovery window. The initial-connect path now
-# uses a 10-minute time budget (see jasper/voice/openai_session.py:
+# uses a 10-minute time budget (see jasper/voice/_supervisor.py:
 # ``DEFAULT_INITIAL_CONNECT_BUDGET_SEC``) and exits non-zero on
 # exhaustion so systemd's outer loop (this `Restart=on-failure` +
 # the StartLimitBurst above) grants another full budget.

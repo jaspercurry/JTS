@@ -28,7 +28,6 @@ from jasper.tools import ToolRegistry, tool
 from jasper.voice._supervisor import (
     DEFAULT_INITIAL_CONNECT_BUDGET_SEC,
     NEEDS_ATTENTION_CUE_SLUG,
-    run_initial_connect,
     run_reconnect_with_backoff,
 )
 from jasper.voice.openai_session import (
@@ -37,7 +36,6 @@ from jasper.voice.openai_session import (
     _upsample_16k_to_24k,
 )
 from jasper.voice.grok_session import GROK_WEBSOCKET_BASE_URL, GrokRealtimeConnection
-from tests._log_events import event_field_maps, event_fields
 
 
 # ---------------------------------------------------------------------------
@@ -1956,7 +1954,8 @@ async def test_connection_lost_marks_active_turn_lost():
 
 
 # ---------------------------------------------------------------------------
-# Initial-connect retry budget — startup-resilience under network races.
+# Initial connect — the budget knob and what a failed one leaves on /state.
+# The retry loop itself is pinned in tests/test_voice_supervisor.py.
 # ---------------------------------------------------------------------------
 
 
@@ -2018,103 +2017,6 @@ def _make_conn_with_clock(
     return conn, factory, clock
 
 
-async def test_initial_connect_succeeds_first_try():
-    """Happy path: first connect attempt succeeds with no backoff
-    sleeps and no retries logged."""
-    conn, factory, clock = _make_conn_with_clock(budget_sec=600.0)
-    registry = ToolRegistry()
-    await conn.start(registry, "")
-    try:
-        # Exactly one connect was issued.
-        assert len(factory.conns) == 1
-        # No sleeps fired — the loop took the success branch immediately.
-        assert clock.sleeps == []
-        assert conn._state is ConnectionState.CONNECTED
-    finally:
-        await conn.stop()
-
-
-async def test_initial_connect_retries_with_exponential_backoff():
-    """N transient failures then success: the loop attempts N+1 times
-    and the sleep delays grow exponentially (the shared
-    ``reconnect_backoff_delay`` schedule). Pins the behavior the
-    2026-05-23 fix introduces — the old code did at most 5 attempts
-    with a fixed schedule capping at ~15 s of total wall-time."""
-    conn, factory, clock = _make_conn_with_clock(
-        budget_sec=600.0, fail_count=3,
-    )
-    registry = ToolRegistry()
-    await conn.start(registry, "")
-    try:
-        # 3 failures + 1 success = 4 connect attempts.
-        # The factory's `next_exceptions` is drained by the failed
-        # calls; the 4th call lands on the empty list and creates a
-        # _FakeConn.
-        assert len(factory.conns) == 1, (
-            "Only the successful call records a conn in factory.conns; "
-            "the failed calls raise before reaching that path."
-        )
-        # 3 sleeps fired (one between each pair of attempts).
-        assert len(clock.sleeps) == 3
-        # Exponential growth: each sleep is at least as large as the
-        # previous one's BASE (modulo ±25% jitter from the shared
-        # helper). Reconnect base schedule is 1, 2, 4, … s; with ±25%
-        # jitter that's 0.75-1.25, 1.5-2.5, 3.0-5.0. Assert each delay
-        # falls inside its expected range.
-        delays = clock.sleeps
-        assert 0.75 <= delays[0] <= 1.25, f"attempt 1 delay: {delays[0]}"
-        assert 1.5 <= delays[1] <= 2.5, f"attempt 2 delay: {delays[1]}"
-        assert 3.0 <= delays[2] <= 5.0, f"attempt 3 delay: {delays[2]}"
-        assert conn._state is ConnectionState.CONNECTED
-    finally:
-        await conn.stop()
-
-
-async def test_initial_connect_exhausts_budget_and_raises():
-    """Every attempt fails transiently and the wall-clock budget
-    expires: ``run_initial_connect`` raises ``RuntimeError`` so
-    the daemon exits non-zero and systemd's outer loop kicks in. The
-    budget covers wall-time, NOT a fixed retry count — verified by
-    setting a tiny budget so the test runs in O(budget_sec) of fake
-    clock-ticks rather than 10 real minutes."""
-    # Small budget: the second sleep alone will overshoot the deadline,
-    # so the loop exhausts after a couple of attempts.
-    conn, factory, clock = _make_conn_with_clock(
-        budget_sec=2.0,
-        # Effectively infinite: every connect attempt fails.
-        fail_count=100,
-    )
-    registry = ToolRegistry()
-    with pytest.raises(RuntimeError, match="budget of .* exhausted"):
-        await conn.start(registry, "")
-    # State machine landed in FAILED (the _do_initial_connect except
-    # branch sets this before re-raising).
-    assert conn._state is ConnectionState.FAILED
-    # At least 1 attempt was made.
-    assert len(factory.next_exceptions) < 100
-    # No successful connect.
-    assert len(factory.conns) == 0
-
-
-async def test_initial_connect_non_transient_error_skips_the_budget():
-    """Auth errors (and other non-transient failures per
-    ``is_transient``) must NOT consume the initial-connect budget — the
-    first attempt ends the loop, no sleep, no retry."""
-    class _AuthError(Exception):
-        status_code = 401
-
-    conn, factory, clock = _make_conn_with_clock(
-        budget_sec=600.0,
-        fail_count=1,
-        fail_exc=_AuthError("bad key"),
-    )
-    with pytest.raises(_AuthError):
-        await run_initial_connect(conn, 600.0)
-    # Critical: NO sleeps fired. A non-transient error must not
-    # cost the user a backoff wait.
-    assert clock.sleeps == []
-
-
 async def test_initial_connect_records_the_provider_reason():
     """A restart mid-outage must not repeat the 2026-09-01 blind spot.
 
@@ -2159,58 +2061,6 @@ async def test_successful_connect_clears_the_failure_detail():
     try:
         assert conn._state is ConnectionState.CONNECTED
         assert conn.last_failure_detail() is None
-    finally:
-        await conn.stop()
-
-
-async def test_initial_connect_zero_budget_is_single_attempt():
-    """budget=0 means "single attempt, no retries" — a transient
-    failure on the first attempt exhausts immediately. Useful for
-    operators who want fast-feedback boot semantics at the cost of
-    network-race resilience."""
-    conn, factory, clock = _make_conn_with_clock(
-        budget_sec=0.0, fail_count=1,
-    )
-    registry = ToolRegistry()
-    with pytest.raises(RuntimeError, match="budget"):
-        await conn.start(registry, "")
-    # No sleeps — the deadline check happens before any backoff sleep.
-    assert clock.sleeps == []
-
-
-async def test_initial_connect_logs_structured_events(caplog):
-    """The boot-time funnel is greppable in the journal: each retry and
-    the exhaustion carry the provider, the attempt and the cause."""
-    caplog.set_level(logging.WARNING, logger="jasper.voice._supervisor")
-    conn, _factory, _clock = _make_conn_with_clock(
-        budget_sec=1.5, fail_count=100,
-    )
-    with pytest.raises(RuntimeError):
-        await conn.start(ToolRegistry(), "")
-    retries = event_field_maps(
-        caplog, "voice.initial_connect.retry", provider="openai",
-    )
-    assert retries, "no retry event"
-    assert retries[0]["attempt"] == "1"
-    assert float(retries[0]["delay_sec"]) > 0.0
-    exhausted = event_fields(caplog, "voice.initial_connect.exhausted")
-    assert exhausted["provider"] == "openai"
-    assert exhausted["exc"] == "OSError"
-
-
-async def test_initial_connect_success_after_retries_logs_success_event(caplog):
-    """Recovery path: the successful attempt reports which attempt it
-    was and how long the network race took to resolve."""
-    caplog.set_level(logging.INFO, logger="jasper.voice._supervisor")
-    conn, _factory, _clock = _make_conn_with_clock(
-        budget_sec=600.0, fail_count=2,
-    )
-    await conn.start(ToolRegistry(), "")
-    try:
-        fields = event_fields(caplog, "voice.initial_connect.success")
-        assert fields["provider"] == "openai"
-        assert fields["attempt"] == "3"
-        assert float(fields["elapsed_sec"]) > 0.0
     finally:
         await conn.stop()
 

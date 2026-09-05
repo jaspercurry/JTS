@@ -431,10 +431,6 @@ class SupervisedConnection(Protocol):
         next attempt starts from something the provider will accept."""
         ...
 
-    def _on_initial_attempt_failed(self, exc: Exception, attempt: int) -> None:
-        """The same, for a failed attempt at a process's first session."""
-        ...
-
 
 async def await_connected(conn: SupervisedConnection) -> None:
     """Wait for an open session so a turn never opens against a
@@ -487,18 +483,18 @@ async def run_initial_connect(
     at boot from spending the unit's crash-loop budget, which ends in
     ``StartLimitAction=reboot`` (ADR-0103). What a raised failure costs
     the daemon is the caller's call; see
-    ``survive_terminal_initial_connect``.
+    ``survive_terminal_initial_connect``. A stop ends the wait and the
+    loop, leaving the session unopened.
     """
     budget_sec = max(0.0, budget_sec)
     start = conn._monotonic()
     deadline = start + budget_sec
     attempt = 0
-    while True:
+    while not conn._stopping.is_set():
         attempt += 1
         try:
             await conn._open_session()
         except Exception as e:  # noqa: BLE001
-            conn._on_initial_attempt_failed(e, attempt)
             now = conn._monotonic()
             fields = {
                 "provider": conn.PROVIDER_NAME,
@@ -522,7 +518,7 @@ async def run_initial_connect(
                 raise RuntimeError(
                     f"{conn._log_tag} initial-connect budget of "
                     f"{budget_sec:.0f}s exhausted after {attempt} "
-                    f"attempt(s); last error: {e}"
+                    f"attempt(s); last error: {fields['reason']}"
                 )
             # Never oversleep the deadline: with 2 s of budget left, a
             # 32 s wait would spend it on nothing.
@@ -532,7 +528,9 @@ async def run_initial_connect(
                 fields=fields, delay_sec=f"{delay:.2f}",
                 level=logging.WARNING,
             )
-            await conn._sleep(delay)
+            # Interruptible: a stop during the wait must not hold the
+            # daemon until systemd's TimeoutStopSec kills it.
+            await sleep_or_nudge(delay, conn._stopping, sleep=conn._sleep)
         else:
             log_event(
                 logger,

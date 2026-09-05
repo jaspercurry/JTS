@@ -1347,9 +1347,6 @@ class OpenAIRealtimeConnection:
                 self._set_state(ConnectionState.FAILED)
             survive_terminal_initial_connect(e, self._reconnect_event.set)
 
-    def _on_initial_attempt_failed(self, exc: Exception, attempt: int) -> None:
-        """No session state here can be invalidated by a failed connect."""
-
     def _resolve_connect_call(self):
         """Return a callable ``(model: str) -> AsyncContextManager[conn]``
         that opens a Realtime WebSocket. Built lazily so test paths
