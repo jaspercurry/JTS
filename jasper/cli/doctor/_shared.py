@@ -325,9 +325,11 @@ def _parked_follower_result(label: str) -> CheckResult | None:
     )
 
 
+# NO jasper-outputd.service: resilience.check_outputd_failure_reconcile_park
+# owns its runtime state, park record and all, so one failed outputd is one
+# fail row rather than two saying different things about the same unit.
 _RUNTIME_STATE_UNITS = (
     "nginx.service",
-    "jasper-outputd.service",
     "jasper-fanin.service",
     "jasper-camilla.service",
     "jasper-voice.service",

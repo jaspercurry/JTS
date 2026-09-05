@@ -132,12 +132,11 @@ install_jasper() {
     # root-created CLI artifact cannot wedge the web setup flow.
     install -d -m 2770 -o root -g jasper "${STATE_DIR}/active_speaker_tone_artifacts"
 
-    # NOTE: the build manifest is intentionally NOT written here. It is the
-    # verified-install success marker and is stamped as the FINAL mutation
-    # in main() (write_build_manifest), so a failure anywhere downstream —
-    # the WebRTC/Rust builds, unit install, nginx config — leaves the prior
-    # good manifest rather than a SHA the box isn't cleanly running.
-    # (See ADR-0172.)
+    # The build manifest is intentionally NOT written here. It is the verified-install success
+    # marker and is stamped as the FINAL mutation in main() (write_build_manifest), so a
+    # failure anywhere downstream — the WebRTC/Rust builds, unit install, nginx config —
+    # leaves the prior good manifest rather than a SHA the box isn't cleanly running. (See
+    # ADR-0172.)
 
     # WS1 Phase 4a — the per-account Google OAuth token tree + client secret
     # live in the group-`jasper-secrets` compartment (jasper-voice + jasper-web

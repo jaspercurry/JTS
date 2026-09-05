@@ -58,6 +58,7 @@ from ..route_latency.status_socket import (
     FANIN_STATUS_SOCKET,
     OUTPUTD_STATUS_SOCKET,
 )
+from .. import outputd_failure_reconcile_state
 from ..volume_diagnostics import (
     build_volume_policy_snapshot,
     read_diagnostics as _read_volume_diagnostics,
@@ -1366,6 +1367,14 @@ async def _get_state(
             # {"status": "absent"} on a healthy boot. Same reader
             # jasper-doctor's check_camilla_recover_park uses.
             "camilla_recover": camilla_recover_state.snapshot(),
+            # jasper-outputd's ExecStopPost park record. parked=true means the
+            # stop helper judged the failure terminal: outputd owns the DAC
+            # write loop, so the speaker emits NOTHING until the output env is
+            # fixed and the unit restarted. Same reader jasper-doctor's
+            # check_outputd_failure_reconcile_park uses.
+            "outputd_failure_reconcile": outputd_failure_reconcile_state.snapshot(
+                (service_states or {}).get(outputd_failure_reconcile_state.UNIT),
+            ),
             # The four named parks of the one-audio-transport rule (ADR-0178).
             # Read from the audio-health sampler's cached verdict, and by the
             # same reader jasper-doctor's check_ring_transport_park uses, so

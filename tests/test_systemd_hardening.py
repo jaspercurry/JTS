@@ -1056,6 +1056,8 @@ _SHARED_STATE_WRITERS = {
     "jasper-voice": TIER_A["jasper-voice"],
     "jasper-mux": TIER_A["jasper-mux"],
     "jasper-control": TIER_A["jasper-control"],
+    "jasper-web": TIER_A["jasper-web"],
+    "jasper-web-streambox": ROOT / "deploy/jasper-web-streambox.service",
 }
 
 

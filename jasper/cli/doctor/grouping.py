@@ -150,31 +150,43 @@ def _compute_grouping_runtime(cfg: object) -> dict:
 
 
 def _grouping_runtime(cfg: object) -> dict:
-    """:func:`_compute_grouping_runtime`, read once per doctor run — both
-    check_grouping and check_grouping_pair_lock ask the same fact."""
+    """:func:`_compute_grouping_runtime`, read once per doctor run —
+    check_grouping's one fact."""
     return evidence.get("grouping_runtime", lambda: _compute_grouping_runtime(cfg))
 
 
 @doctor_check()
 def check_grouping() -> CheckResult:
-    """Verify /var/lib/jasper/grouping.env is consistent AND actually up.
+    """Verify /var/lib/jasper/grouping.env is consistent AND actually up,
+    and surface the composite pair-lock truth ``/state.grouping`` uses.
 
-    Off by default; the user opts in via the grouping web wizard. We
-    return `ok` for OFF (deliberate). For ON we `warn` on two failure
-    classes:
-      - **config invalid** — the fail-LOUD "enabled but broken" state
-        that jasper.multiroom.config carries on GroupingConfig.error;
-      - **runtime degraded** — configured-valid but a snap unit the
-        reconciler's plan wants running is not `active` (e.g. a follower
-        whose snapclient can't reach its leader, a leader whose snapserver
-        is down), OR a bonded leader whose active CamillaDSP config does not
-        write the snapserver pipe. This is §7's "make it visible, not
-        invisible": a green config with silent breakage underneath is
-        exactly what we refuse to show. Runtime health is derived by the
-        same pure `derive_grouping_runtime` the /state surface uses."""
+    Off by default (user opts in via the grouping web wizard), so OFF is
+    `ok`. For ON, `warn` on two failure classes, worst wins:
+      - **config invalid** — GroupingConfig.error's fail-LOUD "enabled but
+        broken" state;
+      - **runtime degraded** — a snap unit the reconciler's plan wants
+        running is not `active` (e.g. a follower whose snapclient can't
+        reach its leader, a leader whose snapserver is down), OR a bonded
+        leader whose active CamillaDSP config does not write the
+        snapserver pipe — §7's "make it visible, not invisible"; OR the
+        composite pair-lock verdict's own degraded branch (local FIFO
+        bytes not flowing, or snapcast clients connected but not all
+        audible/reachable). A degraded runtime health always yields a
+        degraded pair lock too (mirrored detail), so that case is
+        reported once, as runtime-degraded.
+
+    The composite verdict's terminal branch is `unknown`, not a failure:
+    Snapcast's documented JSON-RPC surface never exposes a follower's
+    buffer fill, drift, or time-lock, so an otherwise-healthy pair
+    reports `unknown` as its steady state — that is `ok` with a reason
+    (ADR-0233 rule 3: unobservable and non-actionable is `ok`, not a
+    permanent warn), not a claim that the clock lock was confirmed.
+
+    Both verdicts come from the same pure `derive_grouping_runtime` the
+    /state surface uses."""
     from ...multiroom.config import load_config as _load_grouping_config
 
-    label = "grouping: mode"
+    label = "grouping"
     cfg = _load_grouping_config()
     if not cfg.enabled:
         return CheckResult(
@@ -192,44 +204,20 @@ def check_grouping() -> CheckResult:
     if cfg.role == "follower":
         base += f" leader_addr={cfg.leader_addr}"
 
-    detail = f"{base} — {runtime['detail']}"
+    def _result(status: str, detail: str, reason: str | None = None) -> CheckResult:
+        return CheckResult(label, status, f"{base} — {detail}", reason=reason)
+
     if runtime["health"] == "degraded":
-        return CheckResult(
-            label, "warn", detail, reason=REASON_RUNTIME_DEGRADED,
-        )
-    return CheckResult(label, "ok", detail)
+        return _result("warn", runtime["detail"], REASON_RUNTIME_DEGRADED)
 
-
-@doctor_check()
-def check_grouping_pair_lock() -> CheckResult:
-    """Surface the composite pair-lock truth used by ``/state.grouping``.
-
-    This deliberately reuses ``derive_grouping_runtime`` rather than
-    re-scoring the bond in the doctor. The verdict includes the honest
-    Snapcast limitation: local FIFO bytes and client connection/volume are
-    observable today, but follower buffer-fill/drift/time-lock are not
-    exposed by Snapcast's documented JSON-RPC surface.
-    """
-    from ...multiroom.config import load_config as _load_grouping_config
-
-    label = "grouping: pair lock"
-    cfg = _load_grouping_config()
-    if not cfg.enabled:
-        return CheckResult(
-            label, "ok", "single-speaker (grouping off)", reason=REASON_GROUPING_OFF
-        )
-    if cfg.error is not None:
-        return CheckResult(label, "warn", cfg.error, reason=REASON_CONFIG_INVALID)
-
-    runtime = _grouping_runtime(cfg)
     pair_lock = runtime.get("pair_lock") or {}
-    status = str(pair_lock.get("status") or "unknown")
-    detail = str(pair_lock.get("detail") or "pair-lock verdict unavailable")
-    if status == "degraded":
-        return CheckResult(label, "warn", detail, reason=REASON_PAIR_LOCK_DEGRADED)
-    if status == "unknown":
-        return CheckResult(label, "warn", detail, reason=REASON_PAIR_LOCK_UNKNOWN)
-    return CheckResult(label, "ok", detail)
+    pair_status = str(pair_lock.get("status") or "unknown")
+    pair_detail = str(pair_lock.get("detail") or "pair-lock verdict unavailable")
+    if pair_status == "degraded":
+        return _result("warn", pair_detail, REASON_PAIR_LOCK_DEGRADED)
+    if pair_status == "unknown":
+        return _result("ok", pair_detail, REASON_PAIR_LOCK_UNKNOWN)
+    return _result("ok", runtime["detail"])
 
 
 # The PCM-resolution probe, run in a CHILD interpreter.

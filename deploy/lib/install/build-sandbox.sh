@@ -272,19 +272,18 @@ _build_sandbox_default_memory_high() {
 # systemd. $1 = human label.
 build_sandbox_props() {
     local label="${1:-build}"
-    # NOTE: OOMScoreAdjust is intentionally NOT a --property here. It is an
-    # exec/service property that a transient `systemd-run --scope` unit
-    # REJECTS ("Unknown assignment: OOMScoreAdjust=..."), which fails the
-    # whole build. The build's positive "kill me first" oom_score_adj is
-    # applied to the build process via choom instead (build_sandbox_oom_prefix),
-    # and the scope's children inherit it. MemoryAccounting / CPUWeight /
-    # IOWeight / MemoryHigh ARE valid scope (cgroup) properties and stay here.
+    # OOMScoreAdjust is intentionally NOT a --property here. It is an exec/service property
+    # that a transient `systemd-run --scope` unit REJECTS ("Unknown assignment:
+    # OOMScoreAdjust=..."), which fails the whole build. The build's positive "kill me first"
+    # oom_score_adj is applied to the build process via choom instead
+    # (build_sandbox_oom_prefix), and the scope's children inherit it. MemoryAccounting /
+    # CPUWeight / IOWeight / MemoryHigh ARE valid scope (cgroup) properties and stay here.
     printf '%s\n' \
         "--property=Description=JTS contained build: ${label}" \
         "--property=MemoryAccounting=yes" \
         "--property=CPUWeight=${JASPER_BUILD_SANDBOX_CPU_WEIGHT:-20}" \
         "--property=IOWeight=${JASPER_BUILD_SANDBOX_IO_WEIGHT:-20}"
-    # NOTE: deliberately NO MemorySwapMax=0 — builds may legitimately need
+    # Deliberately NO MemorySwapMax=0 — builds may legitimately need
     # swap to complete a >1 GB -O3 TU on a 1 GB Pi. This is the key
     # difference from jts-audio.slice and pi-run-diagnostic.sh.
     local mem_high="${JASPER_BUILD_SANDBOX_MEMORY_HIGH:-}"

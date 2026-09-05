@@ -9,6 +9,11 @@ recorder page. It was extracted verbatim from
 ``jasper/web/wake_corpus_setup.py`` (which is now a thin HTTP adapter that
 imports and re-exports everything here):
 
+  - :mod:`jasper.wake_corpus.runtime_probe` — corpus leg/profile
+    vocabulary and the env + hardware probes over it. The package
+    leaf: the modules below import it; it imports none of them.
+  - :mod:`jasper.wake_corpus.capture_plan` — plan identity/hashing, the
+    plan builder, and conformance validation against a running bridge.
   - :mod:`jasper.wake_corpus.bridge_session` — bridge env / leg-plan /
     capture-health / systemctl restart primitives + enter/exit corpus
     test mode. Pure-function + subprocess layer (no asyncio).

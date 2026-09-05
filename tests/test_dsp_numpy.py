@@ -6,9 +6,14 @@
 
 These kernels replaced live `scipy.signal` calls on the AEC bridge's
 reference path and the assistant's TTS playout path, so "close enough"
-is not a verdict anyone can hear their way to. The scipy comparisons run
-whenever scipy is importable; the shape, gain, stability and chunk-continuity
-checks run always, because the boxes this ships to have no scipy at all.
+is not a verdict anyone can hear their way to. Bit-exactness is pinned
+against the textbook recursion spelled out in this module, which is the
+kernel's own contract; scipy is a second oracle, for correctness rather than
+for float order, and a drifting one, because it rounds that same recursion
+its own way from release to release, so it is held to float rounding and not
+to the bit. The scipy comparisons run whenever scipy is importable; the
+textbook-recursion, shape, gain, stability and chunk-continuity checks run
+always, because the boxes this ships to have no scipy at all.
 """
 from __future__ import annotations
 
@@ -154,23 +159,58 @@ def test_butter2_highpass_sos_rejects_a_cutoff_outside_the_band(cutoff):
 # --- sosfilt -------------------------------------------------------------
 
 
-@pytest.mark.parametrize("signal", ["speechlike", "square"])
-def test_sosfilt_matches_scipy(signal):
-    scipy_signal = pytest.importorskip("scipy.signal")
+def _df2t(sos, x, zi):
+    """Textbook transposed direct form II, cascaded; each `a0` (column 3) is 1."""
+    sections = [[float(v) for v in row] for row in sos]
+    state = [[float(v) for v in row] for row in zi]
+    out = []
+    for sample in x:
+        carried = float(sample)
+        for i, (b0, b1, b2, _a0, a1, a2) in enumerate(sections):
+            value = b0 * carried + state[i][0]
+            state[i][0] = b1 * carried - a1 * value + state[i][1]
+            state[i][1] = b2 * carried - a2 * value
+            carried = value
+        out.append(carried)
+    return np.array(out), np.array(state)
+
+
+def _sosfilt_fixture(signal):
     sos = butter2_highpass_sos(125.0, MIC_RATE)
     source = (
         _speechlike(1_280, MIC_RATE) if signal == "speechlike"
         else _full_scale_square(1_280, MIC_RATE)
     )
     zi = np.zeros((sos.shape[0], 2))
+    return sos, source, zi
+
+
+@pytest.mark.parametrize("signal", ["speechlike", "square"])
+def test_sosfilt_matches_the_textbook_recursion(signal):
+    sos, source, zi = _sosfilt_fixture(signal)
+
+    out, state = sosfilt(sos, source, zi=zi)
+    textbook, textbook_state = _df2t(sos, source, zi)
+
+    assert out.shape == textbook.shape
+    # The recursion and the float order it is evaluated in are the contract.
+    assert float(np.max(np.abs(out - textbook))) == 0.0
+    assert float(np.max(np.abs(state - textbook_state))) == 0.0
+
+
+@pytest.mark.parametrize("signal", ["speechlike", "square"])
+def test_sosfilt_agrees_with_scipy_to_float_rounding(signal):
+    scipy_signal = pytest.importorskip("scipy.signal")
+    sos, source, zi = _sosfilt_fixture(signal)
 
     out, state = sosfilt(sos, source, zi=zi)
     reference, ref_state = scipy_signal.sosfilt(sos, source, zi=zi)
 
     assert out.shape == reference.shape
-    # Same recursion in the same order: bit-identical, not merely close.
-    assert float(np.max(np.abs(out - reference))) == 0.0
-    assert float(np.max(np.abs(state - ref_state))) == 0.0
+    # scipy computes the same recursion with less rounding than plain float64,
+    # so it pins correctness only, to a tolerance a hundredth of an int16 LSB.
+    np.testing.assert_allclose(out, reference, rtol=0.0, atol=1e-8)
+    np.testing.assert_allclose(state, ref_state, rtol=0.0, atol=1e-8)
     assert _lag_of_peak_correlation(out, reference) == 0
 
 

@@ -234,11 +234,11 @@ def register_passive_only_dac(monkeypatch) -> DacProfile:
     :func:`jasper.audio_hardware.dac.by_id` and
     :func:`~jasper.audio_hardware.dac.is_known_profile_id`, so every caller
     that resolves or tests a profile BY ID sees the synthetic one. Registry
-    ENUMERATION is deliberately left alone: ``all_profiles()`` and
-    ``known_profile_ids()`` read ``REGISTRY``, so they will NOT list it. That
-    fits the guard surfaces under test, which all resolve
-    ``topology.hardware.device_id`` through ``by_id``; a test that needs the
-    synthetic profile enumerated has to patch ``REGISTRY`` as well.
+    ENUMERATION is deliberately left alone: ``all_profiles()`` reads
+    ``REGISTRY``, so it will NOT list it. That fits the guard surfaces under
+    test, which all resolve ``topology.hardware.device_id`` through ``by_id``;
+    a test that needs the synthetic profile enumerated has to patch
+    ``REGISTRY`` as well.
     """
 
     profile = DacProfile(

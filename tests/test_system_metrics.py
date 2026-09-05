@@ -23,6 +23,7 @@ from unittest.mock import patch
 import pytest
 
 from jasper.control import system_metrics
+from jasper.memory_policy import MemoryPressure
 from jasper.control.server import _make_handler
 from jasper.control.system_metrics import SystemSampler, read_build_info
 
@@ -115,29 +116,6 @@ def test_read_meminfo_returns_sensible_values() -> None:
     assert out["swap_used_mb"] >= 0
 
 
-def test_memory_pressure_readers_parse_and_tolerate_absence(tmp_path) -> None:
-    """PSI + the OOM counter parse out of their real file shapes, and a
-    kernel that publishes neither yields None rather than a calm zero."""
-    pressure = tmp_path / "memory"
-    pressure.write_text(
-        "some avg10=0.00 avg60=12.34 avg300=1.20 total=987654\n"
-        "full avg10=0.00 avg60=3.21 avg300=0.40 total=123456\n",
-    )
-    vmstat = tmp_path / "vmstat"
-    vmstat.write_text("nr_free_pages 12345\noom_kill 3\npgmajfault 42\n")
-
-    assert SystemSampler._read_mem_psi_some_avg60(str(pressure)) == 12.34
-    assert SystemSampler._read_oom_kill(str(vmstat)) == 3
-
-    missing = str(tmp_path / "nope")
-    assert SystemSampler._read_mem_psi_some_avg60(missing) is None
-    assert SystemSampler._read_oom_kill(missing) is None
-    # Present but without the counter (older kernel) is also "no reading".
-    no_counter = tmp_path / "vmstat-old"
-    no_counter.write_text("nr_free_pages 12345\n")
-    assert SystemSampler._read_oom_kill(str(no_counter)) is None
-
-
 @pytest.mark.parametrize("psi,oom,expected", [
     (12.34, 3, {"mem_psi_some_avg60": 12.34, "oom_kill": 3}),
     (0.0, 0, {"mem_psi_some_avg60": 0.0, "oom_kill": 0}),
@@ -149,10 +127,9 @@ def test_snapshot_omits_memory_pressure_fields_when_unreadable(
     """Omitted, not zeroed: the dashboard must be able to tell "this kernel
     has no PSI" from "there is no pressure"."""
     s = SystemSampler(history_points=5)
-    with patch.object(
-        SystemSampler, "_read_mem_psi_some_avg60", return_value=psi,
-    ), patch.object(
-        SystemSampler, "_read_oom_kill", return_value=oom,
+    with patch(
+        "jasper.control.system_metrics.memory_pressure",
+        return_value=MemoryPressure(psi, oom),
     ), patch.object(
         SystemSampler, "_read_meminfo",
         return_value={"total_mb": 2048, "available_mb": 1024,

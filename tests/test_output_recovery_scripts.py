@@ -39,6 +39,7 @@ class _FailureReconcileHarness:
             "printf '%s\\n' \"$*\" >> \"$JASPER_SYSTEMCTL_LOG\"\n",
         )
         self.stamp = tmp_path / "failure-reconcile.stamp"
+        self.park = tmp_path / "failure-reconcile.park"
         self.env = os.environ.copy()
         self.env.update({
             "JASPER_AUDIO_HARDWARE_RECONCILE": str(fake_reconcile),
@@ -47,6 +48,7 @@ class _FailureReconcileHarness:
             "JASPER_TEST_RECONCILE_RC": str(self.reconcile_rc),
             "JASPER_SYSTEMCTL_LOG": str(self.systemctl_log),
             "JASPER_OUTPUTD_CONFIG_RETRY_STATE": str(self.stamp),
+            "JASPER_OUTPUTD_RECONCILE_PARK_STATE": str(self.park),
         })
 
     def run(
@@ -65,6 +67,15 @@ class _FailureReconcileHarness:
             text=True,
             capture_output=True,
             check=True,
+        )
+
+    def park_record(self) -> dict[str, str]:
+        if not self.park.exists():
+            return {}
+        return dict(
+            line.split("=", 1)
+            for line in self.park.read_text(encoding="utf-8").splitlines()
+            if "=" in line
         )
 
     def reconcile_calls(self) -> list[str]:
@@ -152,11 +163,58 @@ def test_outputd_failure_reconcile_retries_config_exit_once(tmp_path: Path) -> N
     assert harness.systemctl_calls() == retried
     assert "event=outputd.failure_reconcile.retry" in result.stderr
 
+    assert harness.park_record() == {}
+
     second = harness.run(exit_status="78")
 
     assert harness.reconcile_calls() == reconciled
     assert harness.systemctl_calls() == retried
     assert "event=outputd.failure_reconcile.skip" in second.stderr
+    # The retry is spent and RestartPreventExitStatus=78 holds the unit: the
+    # actor records the park rather than leaving a reader to infer one.
+    record = harness.park_record()
+    assert (record["exit_status"], record["reason"]) == ("78", "recent")
+    assert int(record["parked_at"]) > 0
+
+
+def test_outputd_failure_reconcile_records_a_park_with_no_reconciler(
+    tmp_path: Path,
+) -> None:
+    """No reconciler binary means exit 78 got no retry either."""
+    harness = _FailureReconcileHarness(tmp_path)
+
+    result = harness.run(
+        exit_status="78",
+        JASPER_AUDIO_HARDWARE_RECONCILE=str(tmp_path / "absent"),
+    )
+
+    assert harness.park_record()["reason"] == "reconciler_unavailable"
+    assert "event=outputd.failure_reconcile.park" in result.stderr
+
+
+def test_outputd_failure_reconcile_records_a_park_when_the_reconciler_fails(
+    tmp_path: Path,
+) -> None:
+    harness = _FailureReconcileHarness(tmp_path)
+    harness.reconcile_rc.write_text("3", encoding="utf-8")
+
+    harness.run(exit_status="78")
+
+    assert harness.park_record()["reason"] == "config_reconciler_nonzero"
+    assert harness.systemctl_calls() == []
+
+
+def test_outputd_failure_reconcile_records_no_park_for_other_exits(
+    tmp_path: Path,
+) -> None:
+    """Only exit 78 is held by RestartPreventExitStatus; every other class
+    keeps systemd's Restart=on-failure, so it is not a park."""
+    harness = _FailureReconcileHarness(tmp_path)
+
+    harness.run(result="signal", exit_status="KILL")
+    harness.run(result="signal", exit_status="KILL")
+
+    assert harness.park_record() == {}
 
 
 def test_outputd_failure_reconcile_skips_normal_stops(tmp_path: Path) -> None:

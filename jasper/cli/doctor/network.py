@@ -209,7 +209,7 @@ def check_wifi_regdom() -> CheckResult:
     proc = _run(["iw", "reg", "get"], timeout=5)
     if proc.returncode != 0:
         return CheckResult(
-            "WiFi reg domain", "warn",
+            "WiFi reg domain", "skipped",
             "iw reg get failed; can't verify WLAN country configuration",
             reason=REASON_REGDOM_PROBE_FAILED,
         )
@@ -217,7 +217,7 @@ def check_wifi_regdom() -> CheckResult:
     global_country, phy_countries = _parse_iw_regdom(proc.stdout)
     if global_country is None:
         return CheckResult(
-            "WiFi reg domain", "warn",
+            "WiFi reg domain", "skipped",
             "could not parse global regdom from `iw reg get` "
             "(no WiFi adapter? Ethernet-only Pi is fine)",
             reason=REASON_REGDOM_UNPARSEABLE,
@@ -515,13 +515,13 @@ def check_hostname_avahi_consistency() -> CheckResult:
     sys_hostname = _run(["hostname", "-s"]).stdout.strip()
     if not sys_hostname:
         return CheckResult(
-            label, "warn", "could not read system hostname",
+            label, "skipped", "could not read system hostname",
             reason=REASON_HOSTNAME_UNREADABLE,
         )
     bin_path = shutil.which("avahi-resolve-host-name")
     if bin_path is None:
         return CheckResult(
-            label, "warn",
+            label, "skipped",
             "avahi-resolve-host-name missing (apt install avahi-utils)",
             reason=REASON_AVAHI_RESOLVE_MISSING,
         )
@@ -553,7 +553,7 @@ def check_hostname_avahi_consistency() -> CheckResult:
             f"`{sys_hostname}.local` resolves to us ({resolved_ip})",
         )
     return CheckResult(
-        label, "warn",
+        label, "fail",
         f"`{sys_hostname}.local` resolves to {resolved_ip}, but this "
         f"Pi's IPs are {sorted(own_ips)}. Another device on the LAN "
         f"is using your hostname; Avahi suffix-resolved us to "
@@ -571,7 +571,7 @@ def check_avahi_jasper_control() -> CheckResult:
     bin_path = shutil.which("avahi-browse")
     if bin_path is None:
         return CheckResult(
-            label, "warn",
+            label, "skipped",
             "avahi-browse missing (apt install avahi-utils) — can't "
             "verify the service is being advertised. Clients may still "
             "find us if avahi-daemon is publishing it.",
@@ -671,8 +671,11 @@ def check_identity_coherence() -> CheckResult:
         f"configured={snap['configured_hostname']}"
     )
     if snap["status"] == "collision":
+        # A fresh snapshot is a live assertion: fail. A stale one (the
+        # reconciler timer may be dead) can't be asserted live — warn,
+        # same reason, stale_note already folded into the detail below.
         return CheckResult(
-            label, "warn",
+            label, "warn" if stale_note else "fail",
             f"Avahi renamed this speaker: {names}. Another device on the "
             "LAN is using your hostname. The management UI stays "
             f"reachable at http://{snap['avahi_hostname']}/ ; pick a "
@@ -690,7 +693,7 @@ def check_identity_coherence() -> CheckResult:
         )
     if stale_note:
         return CheckResult(
-            label, "warn", names + stale_note, reason=REASON_IDENTITY_SNAPSHOT_STALE
+            label, "ok", names + stale_note, reason=REASON_IDENTITY_SNAPSHOT_STALE
         )
     return CheckResult(label, "ok", names)
 

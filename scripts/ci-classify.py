@@ -74,6 +74,9 @@ DOCS_HAND_REGISTERED_READERS = {
     "tests/test_run_wake_training_phase0.py": (
         "CWD-relative README hashed by an importlib-loaded script"
     ),
+    "tests/test_tuning_tool_menu_generator.py": (
+        "RUNBOOK read via an attribute on an importlib-loaded script"
+    ),
 }
 # Registered tests that read documentation.  Keep sorted.  Over-registering is
 # safe (a few seconds of bundle runtime); under-registering would let a prose
@@ -94,6 +97,7 @@ DOCS_TEST_FILES = (
     "tests/test_prepare_wake_livekit_smoke.py",
     "tests/test_prepare_wake_training_workdir.py",
     "tests/test_run_wake_training_phase0.py",
+    "tests/test_tuning_tool_menu_generator.py",
     "tests/test_usb_turntable_experiment.py",
     "tests/test_voice_eval_registry.py",
     "tests/test_wake_review.py",
@@ -242,12 +246,18 @@ def classify(event_name: str, changes: Sequence[Change]) -> Decision:
     if not frozen:
         return Decision("full", "empty pull-request diff", frozen)
     for change in frozen:
-        if change.status not in {"A", "M"}:
-            return Decision(
-                "full",
-                f"change status {change.status!r} is not safe for a narrow lane",
-                frozen,
-            )
+        if change.status in {"A", "M"}:
+            continue
+        # See #4036.
+        if (change.status.startswith("R") or change.status == "D") and all(
+            is_docs_lane_path(path) for path in change.paths
+        ):
+            continue
+        return Decision(
+            "full",
+            f"change status {change.status!r} is not safe for a narrow lane",
+            frozen,
+        )
 
     paths = frozenset(path for change in frozen for path in change.paths)
     for lane, is_subject, is_lane_path in NARROW_LANES:

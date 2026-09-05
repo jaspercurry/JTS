@@ -41,6 +41,7 @@ title = "CI gates and branch protection"
 safety = "safe-ci"
 code = [
   ".github/workflows/tests.yml",
+  ".github/actions/**",
   # The executable test lanes and the PR lane classifier. AGENTS.md's "Agent
   # test routing" names these scripts as the source of truth for what a lane
   # runs ("update the script first, then adjust this short routing note and

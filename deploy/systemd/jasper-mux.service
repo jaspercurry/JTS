@@ -73,9 +73,6 @@ UMask=0007
 # audible source-selection path: fan-in starts safe/closed and mux
 # opens the chosen renderer lane after volume handoff. Keep moderate
 # protection, but restart on every exit.
-# NOTE: MemoryHigh/MemoryMax above are silent no-ops until the
-# memory cgroup is enabled (Stage 2 of plan). Kept here as
-# documentation of intent.
 OOMScoreAdjust=-300
 
 # WS1 phase-1 hardening (hardened root).

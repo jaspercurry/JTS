@@ -93,10 +93,7 @@ _CASES: tuple[tuple[str, str, str], ...] = (
     ("JASPER_MIC_CAPTURE_RATE", "mic_capture_rate", "int"),
     ("JASPER_MIC_CAPTURE_CHANNELS", "mic_capture_channels", "int"),
     # TTS / output path.
-    ("JASPER_TTS_DEVICE", "tts_device", "str"),
-    ("JASPER_TTS_TRANSPORT", "tts_transport", "str"),
     ("JASPER_TTS_OUTPUTD_SOCKET", "tts_outputd_socket", "str"),
-    ("JASPER_TTS_OUTPUT_RATE", "tts_output_rate", "int"),
     ("JASPER_ASSISTANT_LOUDNESS_PROFILE_PATH", "assistant_loudness_profile_path", "str"),
     # Barge-in + server VAD.
     ("JASPER_VAD_BARGE_IN_THRESHOLD", "vad_barge_in_threshold", "float"),

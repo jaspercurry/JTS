@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import fcntl
 import hashlib
 import inspect
 import json
@@ -40,14 +39,16 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from jasper.atomic_io import atomic_write_text
+from jasper.atomic_io import advisory_file_lock, atomic_write_text
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_DSP_APPLY_STATE_PATH = Path("/var/lib/jasper/dsp_apply_state.json")
 DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S = 10.0
-DEFAULT_DSP_WRITER_LOCK_POLL_INTERVAL_S = 0.05
+# A wait longer than this is announced while it is still happening, so a
+# stalled apply is visible in flight rather than only once it ends.
+_LOCK_WAIT_ANNOUNCE_AFTER_S = 0.01
 CANONICAL_CAMILLA_CONFIG_DIR = Path("/var/lib/camilladsp/configs")
 CANONICAL_DSP_WRITER_LOCK_PATH = CANONICAL_CAMILLA_CONFIG_DIR / ".dsp_apply.lock"
 
@@ -497,51 +498,6 @@ def _proof_failure(
     return None
 
 
-class _FileLock:
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        self._fh: Any | None = None
-
-    def try_acquire(self) -> bool:
-        """Attempt one non-blocking acquisition.
-
-        Keeping the operation synchronous is intentional: ``LOCK_NB`` cannot
-        wait in the kernel, so cancellation cannot strand a worker which later
-        acquires the lock after its coroutine has gone away.
-        """
-
-        if self._fh is None:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o660)
-            try:
-                # The generated-config directory is root:jasper setgid; the lock
-                # has to be writable by whichever process reaches the apply path
-                # first. O_CREAT still respects umask, so publish the intended
-                # mode explicitly.
-                try:
-                    os.fchmod(fd, 0o660)
-                except OSError:
-                    pass
-                self._fh = os.fdopen(fd, "a+", encoding="utf-8")
-            except Exception:  # noqa: BLE001
-                os.close(fd)
-                raise
-        try:
-            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return False
-        return True
-
-    def release(self) -> None:
-        if self._fh is None:
-            return
-        try:
-            fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
-        finally:
-            self._fh.close()
-            self._fh = None
-
-
 def _positive_finite(value: float, *, field_name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{field_name} must be a positive finite number")
@@ -556,16 +512,11 @@ async def _dsp_apply_lock(
     path: Path,
     *,
     timeout_s: float = DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S,
-    poll_interval_s: float = DEFAULT_DSP_WRITER_LOCK_POLL_INTERVAL_S,
     source: str = "unspecified",
     allow_pending_bass_extension_recovery: bool = False,
     bass_extension_intent_path: str | Path | None = None,
 ):
     timeout = _positive_finite(timeout_s, field_name="timeout_s")
-    poll_interval = _positive_finite(
-        poll_interval_s,
-        field_name="poll_interval_s",
-    )
     if not isinstance(source, str) or not source or source != source.strip():
         raise ValueError("source must be non-empty trimmed text")
     from jasper.bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
@@ -586,57 +537,69 @@ async def _dsp_apply_lock(
         yield
         return
 
-    lock = _FileLock(path)
     started = time.monotonic()
     deadline = started + timeout
+    held = contextlib.ExitStack()
+    # One open per acquire: the primitive's own bounded retry runs on a worker
+    # thread, so a contended apply neither reopens the lock file per poll nor
+    # blocks the event loop while it waits.
+    acquire = asyncio.ensure_future(
+        asyncio.to_thread(
+            held.enter_context,
+            advisory_file_lock(path, timeout_sec=timeout),
+        )
+    )
+
+    def _release_when_settled(settled: asyncio.Future[Any]) -> None:
+        # asyncio.to_thread cannot be cancelled, so a cancelled waiter's worker
+        # can still win the flock; release whatever it took instead of
+        # stranding every other DSP writer behind an ownerless lock.
+        if not settled.cancelled():
+            settled.exception()
+        held.close()
+
     contended = False
-    first_attempt = True
     admitted = False
     try:
-        while True:
-            # The first non-blocking attempt is immediate. Every retry checks
-            # its monotonic deadline before touching flock, so an event-loop
-            # stall cannot turn a timed-out waiter into a late owner.
-            if not first_attempt and time.monotonic() >= deadline:
-                acquired = False
-            else:
-                acquired = lock.try_acquire()
-            first_attempt = False
-            if acquired and time.monotonic() < deadline:
-                admitted = True
-                break
-            if acquired:
-                # The local open/flock attempt itself crossed the deadline.
-                # Release in the outer finally and report no admission.
-                lock.release()
-            if not contended:
-                contended = True
-                log_event(
-                    logger,
-                    "dsp.writer_lock",
-                    result="waiting",
-                    source=source,
-                    timeout_ms=round(timeout * 1000),
-                )
-            remaining = deadline - time.monotonic()
-            if remaining <= 0.0:
-                waited = max(0.0, time.monotonic() - started)
-                log_event(
-                    logger,
-                    "dsp.writer_lock",
-                    result="timeout",
-                    source=source,
-                    wait_ms=round(waited * 1000),
-                    timeout_ms=round(timeout * 1000),
-                    level=logging.WARNING,
-                )
-                raise DspWriterLockTimeout(
-                    path,
-                    timeout_s=timeout,
-                    waited_s=waited,
-                    source=source,
-                )
-            await asyncio.sleep(min(poll_interval, remaining))
+        finished, _pending = await asyncio.wait(
+            {acquire}, timeout=_LOCK_WAIT_ANNOUNCE_AFTER_S
+        )
+        if not finished:
+            contended = True
+            log_event(
+                logger,
+                "dsp.writer_lock",
+                result="waiting",
+                source=source,
+                timeout_ms=round(timeout * 1000),
+            )
+        try:
+            # Shielded: cancelling this wait must not discard the lock the
+            # worker may already hold — the finally below releases it.
+            await asyncio.shield(acquire)
+            # A stalled worker or loop can hand back a lock the caller's budget
+            # no longer covers; admission always means "inside the timeout".
+            timed_out = time.monotonic() >= deadline
+        except TimeoutError:
+            timed_out = True
+        if timed_out:
+            waited = max(0.0, time.monotonic() - started)
+            log_event(
+                logger,
+                "dsp.writer_lock",
+                result="timeout",
+                source=source,
+                wait_ms=round(waited * 1000),
+                timeout_ms=round(timeout * 1000),
+                level=logging.WARNING,
+            )
+            raise DspWriterLockTimeout(
+                path,
+                timeout_s=timeout,
+                waited_s=waited,
+                source=source,
+            )
+        admitted = True
         if contended:
             log_event(
                 logger,
@@ -667,9 +630,11 @@ async def _dsp_apply_lock(
             )
         raise
     finally:
-        # Release synchronously so cancellation cannot interrupt ownership
-        # cleanup. flock(LOCK_UN) and close are local, non-blocking operations.
-        lock.release()
+        # Release now if the acquire has settled; otherwise defer to its done-callback so a lock won after cancellation is never stranded.
+        if acquire.done():
+            held.close()
+        else:
+            acquire.add_done_callback(_release_when_settled)
 
 
 def dsp_apply_lock_path(config_dir: str | Path) -> Path:

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -796,6 +797,51 @@ def test_classify_dual_apple_blocks_missing_usb_topology_facts() -> None:
     assert "dual_apple_usb_topology_unknown" in {
         issue["code"] for issue in state.issues
     }
+
+
+@pytest.mark.parametrize(
+    ("requires_same_usb_bus", "expect_blocker"),
+    [(True, True), (False, False)],
+)
+def test_dual_apple_same_bus_gate_follows_the_composite_profile_field(
+    monkeypatch: pytest.MonkeyPatch,
+    requires_same_usb_bus: bool,
+    expect_blocker: bool,
+) -> None:
+    """The mismatched-bus blocker fires only when the ARMED composite profile
+    declares ``requires_same_usb_bus`` (ADR-0235 R1) — the classifier no
+    longer hardcodes the check."""
+    monkeypatch.setattr(
+        output_hardware,
+        "DUAL_APPLE_USB_C_DAC_4CH",
+        dataclasses.replace(
+            dac.DUAL_APPLE_USB_C_DAC_4CH,
+            requires_same_usb_bus=requires_same_usb_bus,
+        ),
+    )
+
+    state = classify_output_cards([
+        OutputCardFact(
+            card_id="A",
+            device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+            serial="one",
+            busnum="1",
+            controller="xhci-hcd.0",
+        ),
+        OutputCardFact(
+            card_id="A_1",
+            device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+            serial="two",
+            busnum="3",
+            controller="xhci-hcd.1",
+        ),
+    ])
+
+    has_blocker = "dual_apple_usb_topology_mismatch" in {
+        issue["code"] for issue in state.issues
+    }
+    assert has_blocker is expect_blocker
+    assert state.status == ("partial" if expect_blocker else "ready")
 
 
 def test_classify_more_than_two_apple_dacs_is_not_auto_promoted() -> None:

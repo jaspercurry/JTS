@@ -147,6 +147,10 @@ def _publish_parent_group(fd: int, parent_gid: int, *, path: str) -> None:
 # file. See ADR-0196.
 SHARED_LOCK_MODE = 0o660
 
+# Per-request web paths wait on these locks, so a bounded wait retries at this
+# cadence rather than a coarser sleep that would round every handoff up.
+_LOCK_POLL_SECONDS = 0.01
+
 
 @contextmanager
 def advisory_file_lock(
@@ -221,7 +225,7 @@ def advisory_file_lock(
                         raise TimeoutError(
                             f"timed out waiting for lock {fspath}"
                         ) from None
-                    time.sleep(min(0.05, remaining))
+                    time.sleep(min(_LOCK_POLL_SECONDS, remaining))
         yield lock
     finally:
         if acquired:

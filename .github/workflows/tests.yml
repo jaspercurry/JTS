@@ -46,15 +46,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: "3.13"
-
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
-        with:
-          version: "0.12.9"
-          python-version: "3.13"
-          enable-cache: true
+      - uses: ./.github/actions/setup-python-uv
 
       - name: Install the locked base + landing test toolchain
         # The landing contracts import only the JTS base package and stdlib
@@ -119,6 +111,8 @@ jobs:
           # docs-linkcheck diffs base...head to find changed Markdown.
           fetch-depth: 0
 
+      - uses: ./.github/actions/setup-python-uv
+
       - name: System deps for sounddevice (portaudio)
         # Several registered doc-contract tests import jasper packages that
         # pull in sounddevice. Paid once here (~11s) so the bundle can import
@@ -129,16 +123,6 @@ jobs:
         # budget its 6 minutes must cover.
         timeout-minutes: 6
         run: scripts/ci-apt-install.sh portaudio19-dev
-
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: "3.13"
-
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
-        with:
-          version: "0.12.9"
-          python-version: "3.13"
-          enable-cache: true
 
       - name: Install JTS from committed uv lock
         run: uv sync --locked --extra full --extra dev --group openwakeword-onnx
@@ -267,15 +251,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: "3.13"
-
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
-        with:
-          version: "0.12.9"
-          python-version: "3.13"
-          enable-cache: true
+      - uses: ./.github/actions/setup-python-uv
 
       - name: Install the locked policy test toolchain
         run: uv sync --locked --group fast-landing
@@ -321,22 +297,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
+      - uses: ./.github/actions/setup-python-uv
+        with:
+          python-version: ${{ matrix.python-version }}
+
       - name: System deps for sounddevice (portaudio)
         # Bounded against apt-mirror hangs (#2727).
         timeout-minutes: 6
         run: scripts/ci-apt-install.sh portaudio19-dev
-
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
-        with:
-          # Pin uv itself so dependency installation is reproducible for
-          # the same reason `uv sync --locked` is.
-          version: "0.12.9"
-          python-version: ${{ matrix.python-version }}
-          enable-cache: true
 
       - name: Supply-chain provenance check
         run: python3 scripts/check-provenance.py

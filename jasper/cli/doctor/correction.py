@@ -354,13 +354,13 @@ def check_correction_state_dirs() -> CheckResult:
     not_writable = _not_writable_by_group([p for p in expected if p.is_dir()])
     if not_dirs:
         return CheckResult(
-            "correction state dirs", "fail",
+            "correction state dirs", "warn",
             "expected directories but found files: " + ", ".join(not_dirs),
             reason=REASON_STATE_DIRS_NOT_DIRECTORIES,
         )
     if not_writable:
         return CheckResult(
-            "correction state dirs", "fail",
+            "correction state dirs", "warn",
             f"not writable by {_CORRECTION_SERVICE_USER}: " + ", ".join(not_writable),
             reason=REASON_STATE_DIRS_NOT_WRITABLE,
         )
@@ -417,7 +417,7 @@ def check_correction_uploaded_calibration_sign() -> CheckResult:
             detail += f" ({unreadable} unreadable record(s))"
         return CheckResult("uploaded calibration sign", "ok", detail)
     return CheckResult(
-        "uploaded calibration sign", "warn",
+        "uploaded calibration sign", "ok",
         f"{len(flagged)} uploaded calibration(s) stored as a correction to add: "
         + ", ".join(flagged[:3])
         + (" …" if len(flagged) > 3 else "")
@@ -728,8 +728,8 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
     this check — reads it. Express-tier sessions omit the post-apply position
     group, so the VERIFY outcome carries them and either half satisfies this.
 
-    WARN, never FAIL, and never a revert: an ungraded or failed correction is a
-    measurement finding the household acts on at ``/correction/`` (#2160 —
+    ``ok`` with a reason, never warn/fail and never a revert: an ungraded or
+    failed correction is a measurement finding no healer can act on (#2160 —
     grade and disclose, do not gate). The producer's ``result`` code is
     disclosed beside the grade and never gates it: this check grades the
     CHECKING, and healthy sessions legitimately reach ``inconclusive``. An
@@ -783,7 +783,7 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
             GRADE_SPATIAL_UNMEASURABLE,
         }:
             return CheckResult(
-                label, "warn",
+                label, "ok",
                 f"applied and graded, but the spatial grade word {spatial!r} "
                 "is not one this build recognizes — treating it as unproven "
                 f"rather than guessing ({verify_text}); check for a "
@@ -801,7 +801,7 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
                 where = f" @ {at:.0f}Hz" if isinstance(at, (int, float)) else ""
                 worst_text = f" ({worst:+.2f}dB{where})"
             return CheckResult(
-                label, "warn",
+                label, "ok",
                 f"applied and graded, and the spatial grade missed the "
                 f"target{worst_text} — the tune stays on the speaker "
                 f"({verify_text}); re-measure at /correction/ or undo to "
@@ -810,7 +810,7 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
             )
         if spatial == GRADE_SPATIAL_UNMEASURABLE:
             return CheckResult(
-                label, "warn",
+                label, "ok",
                 f"applied; the post-apply group closed but its spatial grade "
                 f"could not be measured ({verify_text}) — re-measure at "
                 "/correction/ in a quieter room, or undo",
@@ -818,7 +818,7 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
             )
         if grade.get("complete") is False:
             return CheckResult(
-                label, "warn",
+                label, "ok",
                 f"applied and verified at the mark, but no "
                 f"{block.get('tier') or 'this'}-tier spatial grade exists "
                 f"for this session, so it is unproven away from the mark "
@@ -839,15 +839,15 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
         )
         if state == GRADE_INCONCLUSIVE:
             return CheckResult(
-                label, "warn", detail,
+                label, "ok", detail,
                 reason=REASON_APPLIED_GRADE_VERIFY_INCONCLUSIVE,
             )
         return CheckResult(
-            label, "warn", detail,
+            label, "ok", detail,
             reason=REASON_APPLIED_GRADE_VERIFY_FAILED,
         )
     return CheckResult(
-        label, "warn",
+        label, "ok",
         "applied but never graded: no post-apply check completed for this "
         "correction — re-verify at /correction/ to confirm it, or undo",
         reason=REASON_APPLIED_GRADE_NEVER_GRADED,

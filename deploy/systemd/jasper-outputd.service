@@ -112,6 +112,10 @@ ExecCondition=/bin/sh -c 'backend="$${JASPER_OUTPUTD_BACKEND:-alsa}"; card="$${J
 # jasper-outputd from inside this unit's stop transaction.
 ExecStopPost=-/usr/local/sbin/jasper-outputd-failure-reconcile
 ExecStart=/opt/jasper/bin/jasper-outputd
+# Retire the helper's park record. Type=notify, so this runs only once outputd
+# has sent READY=1 — a start attempt that exits 78 again never reaches it and
+# the record stands.
+ExecStartPost=-/bin/rm -f /run/jasper-outputd-failure-reconcile.park
 
 [Install]
 WantedBy=multi-user.target
