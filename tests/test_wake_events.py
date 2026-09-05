@@ -1176,7 +1176,7 @@ async def test_concurrent_sweeps_do_not_double_scan(tmp_path):
     # Task gets its first turn, reading None. Capturing the loop explicitly
     # up front makes this immune to that ordering regardless of how the
     # test body awaits `started`. Same idiom as FakeProc in
-    # tests/test_web_balance_flow.py / tests/test_web_sync_flow.py.
+    # tests/test_web_sync_flow.py.
     loop = asyncio.get_running_loop()
 
     def slow_scan():

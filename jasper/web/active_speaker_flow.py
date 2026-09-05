@@ -6,19 +6,19 @@
 
 The active-crossover commission flow (the per-driver ramp + near-field
 level-match capture) plays sweeps/tones through the production CamillaDSP graph.
-Room correction, pair balance, and pair sync do the same and open
+Room correction and pair sync do the same and open
 ``jasper.measurement_window.measurement_window``. Two running at once corrupt each
 other's captures, so this module keeps them apart.
 
 This is DEFENSE-IN-DEPTH, not the only thing standing between the flows. A
 correction sweep is already refused on a roleful/protected topology at sweep
 entry (``correction.runtime_safety``), an active speaker can't be measured as a
-bonded pair (the graph carrier defers active×grouping, so balance/sync don't
-apply to it), and every commissioning graph carries the tweeter protective
-high-pass. So a collision here means a corrupted, re-runnable measurement — not
-unsafe output.
+bonded pair (the graph carrier defers active×grouping, so sync doesn't apply to
+it), and every commissioning graph carries the tweeter protective high-pass. So
+a collision here means a corrupted, re-runnable measurement — not unsafe
+output.
 
-The other three flows hold ``measurement_window`` for their whole session and
+The other two flows hold ``measurement_window`` for their whole session and
 exclude each other atomically through the window's ``_window_active`` mutex
 (``correction._reserve_start_slot`` also consults each other's ``active_phase()``
 for a clean pre-emptive error). The commission flow can't hold a window the same
@@ -28,14 +28,14 @@ requests — there is no persistent loop to own a held context manager. So it
 participates COOPERATIVELY instead:
 
   * :func:`active_phase` derives the commission "phase" from the self-expiring
-    safe-playback session; the three measurement start paths consult it.
+    safe-playback session; the two measurement start paths consult it.
   * :func:`blocking_measurement_phase` is the reverse — ``commission-load``
-    refuses to arm while any of the three is active.
+    refuses to arm while either is active.
 
 These checks are advisory and NON-ATOMIC: unlike the ``_window_active`` mutex
-(which serializes the other three among themselves), a sub-second start-vs-start
-race between commission-load and a correction/balance/sync start can slip both
-past their checks. The cost of losing that race is one corrupted measurement
+(which serializes the other two among themselves), a sub-second start-vs-start
+race between commission-load and a correction/sync start can slip both past
+their checks. The cost of losing that race is one corrupted measurement
 someone re-runs — never unsafe output, per the protections above — so a
 cooperative check is the right weight rather than a heavier shared lock.
 
@@ -67,20 +67,16 @@ def active_phase() -> str | None:
 
 
 def blocking_measurement_phase() -> str | None:
-    """The first active correction / balance / sync phase, or ``None``.
+    """The first active correction / sync phase, or ``None``.
 
-    The reverse of the three start paths consulting :func:`active_phase`:
+    The reverse of the two start paths consulting :func:`active_phase`:
     ``commission-load`` calls this and refuses to arm a driver test while another
     measurement flow holds (or is about to hold) the measurement window. Lazy
     imports avoid an import cycle (those modules consult us back).
     """
-    from .balance_flow import active_phase as _balance_phase
     from .correction_setup import active_correction_phase
     from .sync_flow import active_phase as _sync_phase
 
-    balance = _balance_phase()
-    if balance is not None:
-        return f"balance:{balance}"
     sync = _sync_phase()
     if sync is not None:
         return f"sync:{sync}"

@@ -244,8 +244,7 @@ def handle_play(run_async: Callable, schedule: Callable) -> tuple[dict, int]:
     # Re-validate under the lock after the spawn: the pre-spawn check released
     # the lock, so two concurrent /sync/play calls could both pass it and both
     # spawn overlapping aplay markers into one delay measurement. The loser
-    # kills its just-spawned proc instead of recording it (mirrors
-    # balance_flow.handle_ramp's post-spawn re-check).
+    # kills its just-spawned proc instead of recording it.
     with _lock:
         abort_error = ""
         if _state["phase"] != "measuring":

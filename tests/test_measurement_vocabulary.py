@@ -86,7 +86,6 @@ SWEPT_SURFACES: tuple[str, ...] = (
     "jasper/correction/level_match.py",
     "jasper/web/correction_setup.py",
     "jasper/web/correction_room_flow.py",
-    "jasper/web/balance_flow.py",
     "jasper/web/sync_flow.py",
     # Cluster 3 — the measurement pages' own chrome. The landing page is the
     # ENTRY POINT to /correction/room/, so its row label and that page's
