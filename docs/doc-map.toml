@@ -24,6 +24,8 @@ session_artifacts = [
   # docs/dumb-endpoint-bringup.md (see docs/doc-map.toml's multiroom-grouping
   # subsystem). Tracked by #1852.
   "docs/multiroom-pairing-reliability-plan.md",
+  # Sub-page UX/IA audit and cleanup program; a work queue, deleted when done.
+  "docs/UX-AUDIT-2026-09-03.md",
 ]
 # Prior-art research artifacts: long-lived studies kept as reference (each
 # tagged `Status: research` in-doc), not canonical operational scan targets.

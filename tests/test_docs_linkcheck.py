@@ -100,12 +100,13 @@ def test_external_links_are_ignored(tmp_path):
     assert docs_linkcheck.check_file(doc) == ()
 
 
-def test_links_inside_fenced_code_are_ignored(tmp_path):
+def test_links_inside_code_are_ignored(tmp_path):
     docs_linkcheck = load_docs_linkcheck()
     docs_linkcheck.ROOT = tmp_path.resolve()
     doc = tmp_path / "doc.md"
     doc.write_text(
-        "```md\n[Missing](missing.md)\n```\n[External](https://example.com)\n",
+        "```md\n[Missing](missing.md)\n```\n[External](https://example.com)\n"
+        'Call `canonical_header("x",\n  back_href="/rooms/")` or `<a href="/rooms/">`.\n',
         encoding="utf-8",
     )
 
