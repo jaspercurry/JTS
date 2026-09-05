@@ -23,7 +23,6 @@
 //! in steady state. If future measurement shows audible source-handover
 //! clicks, add ramping in the mixer with tests and doctor visibility.
 
-mod assistant_reference;
 mod config;
 mod host_clock;
 mod impulse_tap;
@@ -44,6 +43,7 @@ use std::sync::mpsc::channel;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use jasper_tts_protocol::assistant_reference::{self, DaemonHooks};
 use log::{error, info, warn};
 
 use crate::config::Config;
@@ -227,13 +227,21 @@ fn run() -> Result<()> {
 
     let (tts_input, tts_metrics, assistant_reference_writer) =
         if let Some(socket_path) = &config.tts_socket_path {
-            let assistant_reference = crate::assistant_reference::load(std::path::Path::new(
-                &config.assistant_reference_path,
-            ));
+            let hooks = DaemonHooks {
+                event_prefix: "fanin",
+                writer_stack_bytes: HELPER_STACK_BYTES,
+                info: |message| info!("{message}"),
+                warn: |message| warn!("{message}"),
+            };
+            let assistant_reference = assistant_reference::load(
+                std::path::Path::new(&config.assistant_reference_path),
+                hooks,
+            );
             let (assistant_reference_tx, assistant_reference_writer) =
-                match crate::assistant_reference::spawn_writer(
+                match assistant_reference::spawn_writer(
                     PathBuf::from(&config.assistant_reference_path),
                     assistant_reference,
+                    hooks,
                 ) {
                     Ok((tx, handle)) => (Some(tx), Some(handle)),
                     Err(error) => {

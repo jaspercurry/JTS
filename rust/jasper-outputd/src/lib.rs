@@ -20,10 +20,6 @@ pub const HELPER_STACK_BYTES: usize = 512 * 1024;
 
 pub mod aec_clock;
 pub mod alsa_backend;
-// The learned quiet-room assistant reference persistence (bonded-member
-// post-DSP mix), mirroring fan-in's assistant_reference so the calibration
-// survives restarts on a grouped follower the way it does solo.
-pub mod assistant_reference;
 // The real per-period assistant render/gain engine (`AssistantSource`) plus
 // the DAC-write sink `OutputCore` calls unconditionally each period
 // (`FakeDacSink`) — both reachable from the real ALSA daemon path, not just

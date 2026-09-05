@@ -98,7 +98,6 @@ dependencies = [
  "jasper-ring",
  "jasper-tts-protocol",
  "libc",
- "serde",
  "serde_json",
  "signal-hook",
 ]
@@ -122,6 +121,8 @@ name = "jasper-tts-protocol"
 version = "0.1.0"
 dependencies = [
  "jasper-resampler",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

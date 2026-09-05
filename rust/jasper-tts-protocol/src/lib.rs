@@ -13,7 +13,9 @@
 //! are defined once and consumed by both ends.
 //!
 //! It also owns the shared K-weighted assistant loudness policy used by
-//! fan-in and outputd. Queueing policy, epochs, metrics, the per-daemon
+//! fan-in and outputd, and the versioned on-disk record that carries a
+//! learned assistant reference across restarts ([`assistant_reference`]).
+//! Queueing policy, epochs, metrics, the per-daemon
 //! playout LEDGERS behind the flush-ack — and the VALUES they report
 //! (fan-in's pre-DSP mix-commit estimate vs outputd's DAC-true one) — and
 //! final mixing engines stay per-daemon; they may legitimately diverge
@@ -25,6 +27,7 @@
 
 use std::io::{self, BufRead, Read};
 
+pub mod assistant_reference;
 pub mod loudness;
 
 /// Wire frames are interleaved stereo.

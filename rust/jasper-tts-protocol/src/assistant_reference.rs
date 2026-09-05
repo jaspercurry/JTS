@@ -2,18 +2,16 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Small, versioned persistence record for outputd's last achieved assistant
-//! level.
+//! Small, versioned persistence record for the last achieved assistant level.
 //!
-//! The bonded-member post-DSP mix owns this value, exactly as fan-in owns its
-//! own (`rust/jasper-fanin/src/assistant_reference.rs`). The on-disk record
-//! shape is deliberately identical — same version, same ±24 LU calibration
-//! clamp, same fail-closed validation — so the learned quiet-room reference
-//! survives restarts on a grouped follower the way it does on a solo speaker.
-//! The file path differs (JASPER_OUTPUTD_ASSISTANT_REFERENCE_PATH) so a box
-//! that flips between solo and bonded never cross-contaminates the two engines'
-//! learned values. Disk I/O runs on a dedicated thread so the audio loop only
-//! performs a non-blocking channel send.
+//! One record shape for both playout owners — fan-in's pre-DSP mix on a solo
+//! speaker, outputd's post-DSP mix on a bonded member — so the learned
+//! quiet-room reference survives restarts identically in either role. Each
+//! daemon resolves its OWN path, so a box that flips between solo and bonded
+//! never cross-contaminates the two engines' learned values.
+//!
+//! Disk I/O runs on a dedicated thread so the audio loop only performs a
+//! non-blocking channel send.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -23,11 +21,21 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::loudness::HeldLoudnessReference;
+use crate::loudness::{HeldLoudnessReference, MAX_SAFE_ASSISTANT_CALIBRATION_LU};
 
 const RECORD_VERSION: u8 = 2;
 const MATERIAL_CHANGE_DB: f32 = 0.1;
-const MAX_CALIBRATION_OFFSET_LU: f32 = 24.0;
+
+/// What the hosting daemon supplies: the `event=` / thread-name prefix, the
+/// writer thread's stack budget, and the two emit paths — fan-in routes them
+/// through the `log` crate, outputd writes stderr directly.
+#[derive(Clone, Copy)]
+pub struct DaemonHooks {
+    pub event_prefix: &'static str,
+    pub writer_stack_bytes: usize,
+    pub info: fn(&str),
+    pub warn: fn(&str),
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedAssistantReference {
@@ -38,25 +46,26 @@ struct PersistedAssistantReference {
     updated_at_unix: u64,
 }
 
-pub fn load(path: &Path) -> Option<HeldLoudnessReference> {
+pub fn load(path: &Path, hooks: DaemonHooks) -> Option<HeldLoudnessReference> {
+    let prefix = hooks.event_prefix;
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
         Err(error) => {
-            eprintln!(
-                "event=outputd.assistant_reference.load_failed path={} detail={error}",
+            (hooks.warn)(&format!(
+                "event={prefix}.assistant_reference.load_failed path={} detail={error}",
                 path.display(),
-            );
+            ));
             return None;
         }
     };
     let record: PersistedAssistantReference = match serde_json::from_slice(&bytes) {
         Ok(record) => record,
         Err(error) => {
-            eprintln!(
-                "event=outputd.assistant_reference.load_failed path={} reason=invalid_json detail={error}",
+            (hooks.warn)(&format!(
+                "event={prefix}.assistant_reference.load_failed path={} reason=invalid_json detail={error}",
                 path.display(),
-            );
+            ));
             return None;
         }
     };
@@ -65,19 +74,19 @@ pub fn load(path: &Path) -> Option<HeldLoudnessReference> {
         || !valid_db(record.canonical_db)
         || !valid_calibration_offset(record.calibration_offset_lu)
     {
-        eprintln!(
-            "event=outputd.assistant_reference.load_failed path={} reason=invalid_record version={}",
+        (hooks.warn)(&format!(
+            "event={prefix}.assistant_reference.load_failed path={} reason=invalid_record version={}",
             path.display(),
             record.version,
-        );
+        ));
         return None;
     }
-    eprintln!(
-        "event=outputd.assistant_reference.loaded path={} speaker_lufs={:.1} canonical_db={:.1}",
+    (hooks.info)(&format!(
+        "event={prefix}.assistant_reference.loaded path={} speaker_lufs={:.1} canonical_db={:.1}",
         path.display(),
         record.achieved_speaker_lufs,
         record.canonical_db,
-    );
+    ));
     Some(HeldLoudnessReference {
         speaker_lufs: record.achieved_speaker_lufs,
         canonical_db: record.canonical_db,
@@ -88,11 +97,13 @@ pub fn load(path: &Path) -> Option<HeldLoudnessReference> {
 pub fn spawn_writer(
     path: PathBuf,
     initial: Option<HeldLoudnessReference>,
+    hooks: DaemonHooks,
 ) -> std::io::Result<(Sender<HeldLoudnessReference>, JoinHandle<()>)> {
+    let prefix = hooks.event_prefix;
     let (tx, rx) = mpsc::channel::<HeldLoudnessReference>();
     let handle = thread::Builder::new()
-        .name("outputd-assistant-reference-writer".to_string())
-        .stack_size(crate::HELPER_STACK_BYTES)
+        .name(format!("{prefix}-assistant-reference-writer"))
+        .stack_size(hooks.writer_stack_bytes)
         .spawn(move || {
             let mut last_written = initial;
             while let Ok(reference) = rx.recv() {
@@ -102,17 +113,17 @@ pub fn spawn_writer(
                 match write_atomic(&path, reference) {
                     Ok(()) => {
                         last_written = Some(reference);
-                        eprintln!(
-                            "event=outputd.assistant_reference.persisted path={} speaker_lufs={:.1} canonical_db={:.1}",
+                        (hooks.info)(&format!(
+                            "event={prefix}.assistant_reference.persisted path={} speaker_lufs={:.1} canonical_db={:.1}",
                             path.display(),
                             reference.speaker_lufs,
                             reference.canonical_db,
-                        );
+                        ));
                     }
-                    Err(error) => eprintln!(
-                        "event=outputd.assistant_reference.persist_failed path={} detail={error}",
+                    Err(error) => (hooks.warn)(&format!(
+                        "event={prefix}.assistant_reference.persist_failed path={} detail={error}",
                         path.display(),
-                    ),
+                    )),
                 }
             }
         })?;
@@ -130,7 +141,7 @@ fn valid_db(value: f32) -> bool {
 }
 
 fn valid_calibration_offset(value: f32) -> bool {
-    value.is_finite() && value.abs() <= MAX_CALIBRATION_OFFSET_LU
+    value.is_finite() && value.abs() <= MAX_SAFE_ASSISTANT_CALIBRATION_LU
 }
 
 fn write_atomic(path: &Path, reference: HeldLoudnessReference) -> std::io::Result<()> {
@@ -157,10 +168,17 @@ fn write_atomic(path: &Path, reference: HeldLoudnessReference) -> std::io::Resul
 mod tests {
     use super::*;
 
+    const HOOKS: DaemonHooks = DaemonHooks {
+        event_prefix: "test",
+        writer_stack_bytes: 512 * 1024,
+        info: |_| {},
+        warn: |_| {},
+    };
+
     #[test]
     fn record_round_trips_and_invalid_json_fails_soft() {
         let dir = std::env::temp_dir().join(format!(
-            "jts-outputd-assistant-reference-{}-{}",
+            "jts-assistant-reference-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -174,9 +192,9 @@ mod tests {
             calibration_offset_lu: 0.5,
         };
         write_atomic(&path, reference).unwrap();
-        assert_eq!(load(&path), Some(reference));
+        assert_eq!(load(&path, HOOKS), Some(reference));
         fs::write(&path, b"not-json").unwrap();
-        assert_eq!(load(&path), None);
+        assert_eq!(load(&path, HOOKS), None);
 
         for invalid in [
             r#"{"version":1,"achieved_speaker_lufs":-39.5,"canonical_db":-30.0,"calibration_offset_lu":0.0,"updated_at_unix":1}"#,
@@ -185,7 +203,11 @@ mod tests {
             r#"{"version":2,"achieved_speaker_lufs":null,"canonical_db":-30.0,"calibration_offset_lu":0.0,"updated_at_unix":1}"#,
         ] {
             fs::write(&path, invalid).unwrap();
-            assert_eq!(load(&path), None, "record should fail closed: {invalid}");
+            assert_eq!(
+                load(&path, HOOKS),
+                None,
+                "record should fail closed: {invalid}"
+            );
         }
         let _ = fs::remove_dir_all(dir);
     }
