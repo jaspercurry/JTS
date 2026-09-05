@@ -3889,12 +3889,16 @@ class WakeLoop:
                     elapsed_sec=f"{HARD_RECORDING_CAP_SEC:.1f}",
                 )
                 self._input_ended = True
+                self._stamp_turn_stage("end_input")
                 await self._end_turn()
                 return
 
             eou_check = getattr(self._turn, "server_speech_detected", None)
             if eou_check is not None and callable(eou_check) and eou_check():
                 self._input_ended = True
+                # Not via `_end_session_input`: the server already committed
+                # the buffer, so calling it would send a second end_input.
+                self._stamp_turn_stage("end_input")
 
             await self._send_session_audio(frame)
             return
@@ -4007,16 +4011,18 @@ class WakeLoop:
             if self._manual_endpoint_this_turn
             else self._vad.predict
         )
-        drained, speech = await drain_acquire_buffer(
+        # Before the drain, not after: these frames ARE this turn's first
+        # audio on a sourced button turn, and stamping on the way out would
+        # charge the whole drain to the provider.
+        if self._acquire_buffer:
+            self._stamp_turn_stage("first_audio_to_provider")
+        return await drain_acquire_buffer(
             self._acquire_buffer,
             self._turn,  # type: ignore[arg-type]
             vad_predict=vad_predict,
             speech_threshold=END_OF_UTTERANCE_SPEECH_THRESHOLD,
             peak_min=SPEECH_RUN_PEAK_MIN,
         )
-        if drained:
-            self._stamp_turn_stage("first_audio_to_provider")
-        return drained, speech
 
     async def _await_connection(self, timeout_sec: float) -> bool:
         """Nudge a paused connection and wait a bounded time for it.
