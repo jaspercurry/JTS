@@ -25,8 +25,9 @@ distances are DECLARED by the caller, never read from the sidecar, which pins
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +66,7 @@ from .feature_classifier import (
 from .feature_optics import (
     DETREND_FRACTION,
     MAGNITUDE_SMOOTH_FRACTION,
+    NEIGHBOURHOOD_OCT,
     PHASE_GATE_LEAD_MS,
     detrend,
 )
@@ -145,6 +147,37 @@ REFUSE_GATE_NOT_POSITIVE = "close_reference_gate_not_positive"
 #: Two rounds captured at different rates cannot be subtracted. The selector's
 #: own two refusals live with it, in :mod:`.round_captures`.
 REFUSE_RATE_MISMATCH = "close_reference_rate_mismatch"
+
+#: Refused before any computation: a bin outside :data:`SPEC_BANDS` has no
+#: tolerance to be graded against, and inventing one would publish a verdict
+#: no spec ever stated.
+REFUSE_AT_HZ_OFF_SPEC_TABLE = "close_reference_at_hz_off_spec_table"
+
+
+def _narrow_band(at_hz: float | None) -> tuple[tuple[float, float, float], ...]:
+    """The one narrow band a caller named, in :data:`SPEC_BANDS`' own shape.
+
+    :data:`~.feature_optics.NEIGHBOURHOOD_OCT` wide either side -- the
+    half-width every other reader of this grid states a feature over -- and
+    graded against the tolerance of the SPEC band it sits inside, never a bar
+    of its own: the narrow row is the spec row asked at one frequency, not a
+    second standard.
+    """
+    if at_hz is None:
+        return ()
+    for lo_hz, hi_hz, tolerance_db in SPEC_BANDS:
+        if lo_hz <= at_hz < hi_hz:
+            return (
+                (
+                    at_hz * 2**-NEIGHBOURHOOD_OCT,
+                    at_hz * 2**NEIGHBOURHOOD_OCT,
+                    float(tolerance_db),
+                ),
+            )
+    raise RoundCapturesRefused(
+        REFUSE_AT_HZ_OFF_SPEC_TABLE,
+        {"at_hz": at_hz, "spec_table_hz": [SPEC_BANDS[0][0], SPEC_BANDS[-1][1]]},
+    )
 
 
 def cancellation_depth_db(f_hz: float, lag_s: float) -> float | None:
@@ -261,6 +294,7 @@ def _verdict(
 
 def _bands(
     *,
+    table: Sequence[tuple[float, float, float]],
     grid: np.ndarray,
     far_curve: np.ndarray,
     close_curve: np.ndarray,
@@ -273,7 +307,7 @@ def _bands(
 ) -> list[dict[str, Any]]:
     delta = close_curve - far_curve
     out: list[dict[str, Any]] = []
-    for nominal_lo, nominal_hi, tolerance_db in SPEC_BANDS:
+    for nominal_lo, nominal_hi, tolerance_db in table:
         graded = intersect_bands(
             (float(nominal_lo), float(nominal_hi)), comparison_band_hz
         )
@@ -328,6 +362,7 @@ def compare_impulse_responses(
     driver_diameter_m: float | None = None,
     far_gate_ms: float | None = None,
     close_gate_ms: float | None = None,
+    at_hz: float | None = None,
     geometry: DeclaredGeometry | None = None,
     sound_speed_m_s: float = DEFAULT_SOUND_SPEED_M_S,
 ) -> dict[str, Any]:
@@ -337,6 +372,10 @@ def compare_impulse_responses(
     Returns the whole report as plain data: ``frame``, ``geometry``,
     ``validity``, ``alignment`` and one ``windows`` entry per declared gate
     length. Nothing is printed and nothing is written.
+
+    ``at_hz`` adds ONE narrow row per window beside the spec rows, under
+    ``features`` -- the same reading at one frequency, for a question the
+    low-mid spec band is too wide to be an answer to.
 
     **Both alignment segments are cut at the SHORTER of the two gates**
     (published as ``alignment.alignment_gate_ms``): the far capture's clean
@@ -352,6 +391,7 @@ def compare_impulse_responses(
                 REFUSE_GATE_NOT_POSITIVE,
                 {"window": window_name, "gate_ms": gate_ms},
             )
+    narrow = _narrow_band(at_hz)
     far = np.asarray(far_ir, dtype=np.float64)
     close = np.asarray(close_ir, dtype=np.float64)
     if far.ndim != 1 or close.ndim != 1:
@@ -455,6 +495,20 @@ def compare_impulse_responses(
         # Each window grades down to ITS OWN resolution floor: the close
         # capture's longer clean window is the whole reason to take it.
         window_band = (max(CLASSIFICATION_GRID_LO_HZ, f_trusted_floor_hz(span / sr)), hi_edge)
+        graded = partial(
+            _bands,
+            grid=grid,
+            far_curve=detrend(smoothed_curve(far_seg, sr, grid), grid),
+            close_curve=detrend(smoothed_curve(close_seg, sr, grid), grid),
+            freqs=freqs,
+            far_power=far_power,
+            direct_power=direct_power,
+            residual_power=residual_power,
+            comparison_band_hz=(
+                window_band[0], max(window_band[0], window_band[1])
+            ),
+            alignment_trusted=alignment_trusted,
+        )
         windows.append({
             "name": name,
             "gate_ms": float(gate_ms),
@@ -465,19 +519,10 @@ def compare_impulse_responses(
             "declared_clean_window_ms": declared_ms,
             "trusted_floor_hz": f_trusted_floor_hz(span / sr),
             "comparison_band_hz": list(window_band),
-            "bands": _bands(
-                grid=grid,
-                far_curve=detrend(smoothed_curve(far_seg, sr, grid), grid),
-                close_curve=detrend(smoothed_curve(close_seg, sr, grid), grid),
-                freqs=freqs,
-                far_power=far_power,
-                direct_power=direct_power,
-                residual_power=residual_power,
-                comparison_band_hz=(
-                    window_band[0], max(window_band[0], window_band[1])
-                ),
-                alignment_trusted=alignment_trusted,
-            ),
+            "bands": graded(table=SPEC_BANDS),
+            "features": [
+                {"requested_hz": at_hz, **row} for row in graded(table=narrow)
+            ],
         })
 
     return {
@@ -581,6 +626,7 @@ def compare_rounds(
     driver_diameter_m: float | None = None,
     far_gate_ms: float | None = None,
     close_gate_ms: float | None = None,
+    at_hz: float | None = None,
     geometry: DeclaredGeometry | None = None,
     sound_speed_m_s: float = DEFAULT_SOUND_SPEED_M_S,
 ) -> dict[str, Any]:
@@ -605,6 +651,7 @@ def compare_rounds(
         driver_diameter_m=driver_diameter_m,
         far_gate_ms=far_gate_ms,
         close_gate_ms=close_gate_ms,
+        at_hz=at_hz,
         geometry=geometry,
         sound_speed_m_s=sound_speed_m_s,
     )
@@ -670,5 +717,9 @@ def summary_lines(report: Mapping[str, Any]) -> list[str]:
         )
         lines += [
             f"  {window['name']} {_band_line(row)}" for row in window["bands"]
+        ]
+        lines += [
+            f"  {window['name']} at {row['requested_hz']:g} Hz {_band_line(row)}"
+            for row in window["features"]
         ]
     return lines
