@@ -26,6 +26,9 @@ session_artifacts = [
   "docs/multiroom-pairing-reliability-plan.md",
   # Sub-page UX/IA audit and cleanup program; a work queue, deleted when done.
   "docs/UX-AUDIT-2026-09-03.md",
+  # Voice-loop (wake -> turn -> TTS) audit and cleanup program; a work queue,
+  # deleted when its ledger is done. Evidence in docs/voice-audit-2026-09-05/.
+  "docs/VOICE-AUDIT-2026-09-05.md",
 ]
 # Prior-art research artifacts: long-lived studies kept as reference (each
 # tagged `Status: research` in-doc), not canonical operational scan targets.
