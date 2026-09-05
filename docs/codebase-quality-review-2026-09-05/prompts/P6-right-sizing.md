@@ -44,6 +44,10 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
 - Issue #3769, last comment — the tuning steward's close-out: what wave 9 landed, what it
   deferred, the wave-10 candidates. The zone is parked (see Territory); this tells you what not to
   re-find.
+- Issue #4139 and its comment — the idle-efficiency review: the only lane with hands on all three
+  boxes (jts.local, jts3, jts4). Its measured numbers, the nine PRs it merged, the tickets it filed
+  (#4121–#4124, #4190) and its "leave-alone (measured)" list are facts at HEAD; do not re-propose
+  what it measured and refuted, and route every "measure once on hardware" row through it.
 
 ## Territory
 
@@ -154,7 +158,11 @@ Two rows from the general steward's round-2 queue (#4085): `jasper-fanin`, `jasp
 `jasper-clock` and `jasper-env` declare `rust-version = "1.75"` while `jasper-daemon` (sd-notify
 0.5) sets 1.82 and both daemons reach it — the workspace row fixes it once, in
 `[workspace.package]`; and `JASPER_SYSTEM_ENV_FILE` (wake-corpus recorder, a codified test seam)
-versus `JASPER_ENV_FILE` (everything else) are two knobs for one file — one goes.
+versus `JASPER_ENV_FILE` (everything else) are two knobs for one file — one goes. From the
+idle-efficiency review (#4139): `pyproject` still carries a stale `jasper.web.spotify_setup:main`
+entry beside the real `jasper/web/__main__.py` (add it to the wizard-`main()` row), and its
+measured leave-alone list — numpy/rapidfuzz/pydantic trimming, interpreter merges (bt-agent vs
+jasper-input; usbmic `PartOf` aec-bridge), zram at 0.5× — is settled: do not re-propose those.
 
 Owner decisions you must price and put in front of the owner, not act on: the `bass_extension` park
 (~4,000 + ~3,900 test; ADR-0018 forbids deletion on orphan grounds); the v1 commissioning chain

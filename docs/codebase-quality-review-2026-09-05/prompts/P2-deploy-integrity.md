@@ -44,6 +44,10 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
 - Issue #3769, last comment — the tuning steward's close-out: what wave 9 landed, what it
   deferred, the wave-10 candidates. The zone is parked (see Territory); this tells you what not to
   re-find.
+- Issue #4139 and its comment — the idle-efficiency review: the only lane with hands on all three
+  boxes (jts.local, jts3, jts4). Its measured numbers, the nine PRs it merged, the tickets it filed
+  (#4121–#4124, #4190) and its "leave-alone (measured)" list are facts at HEAD; do not re-propose
+  what it measured and refuted, and route every "measure once on hardware" row through it.
 
 ## Territory
 
@@ -148,6 +152,16 @@ Verified at HEAD by the review (two of them by execution under a stubbed `ssh`/`
 - #4173 gave the docs link check a push-to-main trigger (it had been red on `main` unseen); the
   classifier's rename-skip row in P7 stands.
 - The Pi-side copy of 11 of 12 `deploy/lib/install/*.sh` has no consumer (one-line glob fix).
+- From the idle-efficiency review (#4139): **#4190** — `install.sh` runs as a child of the SSH
+  session, so the installer's wlan0 `device-reapply` can drop the session and kill the install
+  half-applied (seen on jts4; the fix is run-detached-and-poll); **#4123** — install-time reconcile
+  races on a half-synced tree (the same family as the rsync-before-venv row above); **#4137**
+  (merged, non-negotiable tier) moved the low-memory Rust build profile from `opt-level` 0 to 2 —
+  fan-in idle CPU on the Zero 2 W fell from 24 % to 4 % and a full deploy there is ~27 min, which
+  is the budget your deploy path must respect; an undeclared drop-in
+  (`/etc/systemd/system/jasper-aec-bridge.service.d/zz-no-rt-hotfix.conf`, not in the repo) has
+  sat on jts.local for ~10 weeks — "a changed source of every class ships" needs the inverse too:
+  the deploy or doctor discloses on-box files the repo does not own (agree the doctor half with P4).
 
 Go deeper than the review did: **`deploy/bin/` was never tiled** — 22 root executables, 8,942
 lines, read only in slices; give it its own Opus tile, especially `jasper-aec-reconcile` (2,307) and

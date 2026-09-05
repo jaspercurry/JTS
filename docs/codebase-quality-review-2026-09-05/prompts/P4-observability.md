@@ -44,6 +44,10 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
 - Issue #3769, last comment — the tuning steward's close-out: what wave 9 landed, what it
   deferred, the wave-10 candidates. The zone is parked (see Territory); this tells you what not to
   re-find.
+- Issue #4139 and its comment — the idle-efficiency review: the only lane with hands on all three
+  boxes (jts.local, jts3, jts4). Its measured numbers, the nine PRs it merged, the tickets it filed
+  (#4121–#4124, #4190) and its "leave-alone (measured)" list are facts at HEAD; do not re-propose
+  what it measured and refuted, and route every "measure once on hardware" row through it.
 
 ## Territory
 
@@ -148,6 +152,16 @@ Verified at HEAD by the review:
 - `wifi_guardian_state.py:74,88,116` forks `nmcli`×2 + `journalctl -n 200` per `/state` build for a
   boot-oneshot fact; `aec_bridge.py:1007,1021` RMS line is prose parsed by two doctor regexes
   (blocks #4118's cadence change).
+- From the idle-efficiency review (#4139): #4127 **landed** as "omit the two crossover-v2 checks on
+  streambox" (they timed out at 15 s importing the crossover stack) — the memoized reader is still
+  the right fix, then un-omit; #4099 stopped the drift row re-reporting the boot-loop guard's own
+  `/run` drop-ins; #4128 made an absent `usb_mic.env` a skipped row, not a fail; #4126 stopped
+  jasper-control access-logging its own `/healthz` self-poll (104–116 lines/h/box); **#4122** — the
+  flight recorder's hourly 1000-line ring replay is 27 % of jts.local's journal (P1 owns its
+  redaction; the cadence and the trigger are yours); the doctor's measurement template names
+  `jasper-bluetooth-agent` where the unit is `bt-agent.service`; an undeclared systemd drop-in sat
+  on jts.local for ~10 weeks undetected — the drift check should enumerate on-box `*.d/` files the
+  repo does not own (agree the deploy half with P2).
 - Doctor rows handed over by the general steward (#4085, round 2, items 2 and 9): #4169 —
   `cli/doctor/audio.py:1418-1424` `check_sound_profile` warns `REASON_SOUND_PROFILE_NOT_ACTIVE`
   while active-leader-bonded because the bake names are absent from `sound/camilla_yaml.py:68-74`
