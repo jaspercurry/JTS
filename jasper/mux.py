@@ -1766,18 +1766,15 @@ class Mux:
             )
             return None
         try:
-            from .accounts import Registry, maybe_migrate_legacy
+            from .accounts import DEFAULT_REGISTRY_PATH, LEGACY_CACHE_PATH, Registry, maybe_migrate_legacy
             from .spotify_router import Router, build_clients
             registry = Registry.load(os.environ.get(
                 "JASPER_SPOTIFY_ACCOUNTS_PATH",
-                "/var/lib/jasper-intsecrets/spotify/accounts.json",
+                DEFAULT_REGISTRY_PATH,
             ))
             maybe_migrate_legacy(
                 registry,
-                os.environ.get(
-                    "SPOTIFY_CACHE_PATH",
-                    "/var/lib/jasper-intsecrets/.spotify-cache",
-                ),
+                os.environ.get("SPOTIFY_CACHE_PATH", LEGACY_CACHE_PATH),
                 default_name="default",
             )
             result = build_clients(

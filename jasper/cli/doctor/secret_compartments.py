@@ -47,6 +47,7 @@ import os
 import stat as _stat
 from dataclasses import dataclass, field
 
+from ...accounts import DEFAULT_CACHE_DIR, DEFAULT_REGISTRY_PATH, LEGACY_CACHE_PATH
 from . import privsep
 from ._registry import doctor_check
 from ._shared import REASON_SYSTEMCTL_UNAVAILABLE, CheckResult
@@ -131,9 +132,9 @@ COMPARTMENTS: tuple[SecretCompartment, ...] = (
             "/var/lib/jasper-intsecrets/home_assistant.env",
             "/var/lib/jasper-intsecrets/spotify_credentials.env",
             # Legacy single-account Spotify cache + the multi-account tree.
-            "/var/lib/jasper-intsecrets/.spotify-cache",
-            "/var/lib/jasper-intsecrets/spotify/accounts.json",
-            "/var/lib/jasper-intsecrets/spotify/caches/*.json",
+            LEGACY_CACHE_PATH,
+            DEFAULT_REGISTRY_PATH,
+            f"{DEFAULT_CACHE_DIR}/*.json",
         ),
     ),
 )
