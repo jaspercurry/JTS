@@ -27,7 +27,10 @@ from jasper.cli.doctor.resilience import (
     check_supply_voltage,
 )
 
-from .doctor_test_support import _registered_check_names
+from .doctor_test_support import (
+    _make_unit_states_fake,
+    _registered_check_names,
+)
 
 # ------------------------------------------------- check_service_runtime_state
 
@@ -352,3 +355,66 @@ def test_check_supply_voltage_verdicts(monkeypatch, current, status, reason):
 )
 def test_resilience_checks_are_registered(check_name):
     assert check_name in _registered_check_names()
+
+
+# --------------------------------------- check_outputd_failure_reconcile_park
+
+
+@pytest.mark.parametrize(
+    "stamp, unit_active, status, reason, silent",
+    [
+        (None, "active", "skipped",
+         resilience.REASON_OUTPUTD_RECONCILE_UNOBSERVED, False),
+        ("absent", "active", "ok",
+         resilience.REASON_OUTPUTD_RECONCILE_NONE, False),
+        ("garbage", "active", "warn",
+         resilience.REASON_OUTPUTD_RECONCILE_UNINTELLIGIBLE, False),
+        ("epoch", "active", "ok",
+         resilience.REASON_OUTPUTD_RECONCILED, False),
+        ("epoch", "failed", "fail",
+         resilience.REASON_OUTPUTD_PARKED, True),
+    ],
+    ids=["no-runtime-dir", "no-reconcile", "truncated", "recovered", "parked"],
+)
+def test_outputd_failure_reconcile_park_branches(
+    tmp_path, monkeypatch, stamp, unit_active, status, reason, silent,
+):
+    """outputd owns the DAC write loop, so the park branch is the one result
+    here that proves silence."""
+    if stamp is None:
+        target = tmp_path / "gone" / "failure-reconcile.stamp"
+    else:
+        target = tmp_path / "failure-reconcile.stamp"
+        if stamp == "garbage":
+            target.write_text("truncated")
+        elif stamp == "epoch":
+            target.write_text(str(int(time.time()) - 10))
+    monkeypatch.setenv("JASPER_OUTPUTD_CONFIG_RETRY_STATE", str(target))
+    monkeypatch.setattr(
+        _evidence,
+        "read_unit_states",
+        _make_unit_states_fake({"jasper-outputd.service": {
+            "active_state": unit_active, "result": "exit-code",
+        }}),
+    )
+    result = resilience.check_outputd_failure_reconcile_park()
+    assert (result.status, result.reason) == (status, reason)
+    assert result.speaker_silent is silent
+
+
+def test_outputd_failure_reconcile_park_skips_without_systemctl(
+    tmp_path, monkeypatch,
+):
+    stamp = tmp_path / "failure-reconcile.stamp"
+    stamp.write_text(str(int(time.time())))
+    monkeypatch.setenv("JASPER_OUTPUTD_CONFIG_RETRY_STATE", str(stamp))
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", _make_unit_states_fake(unavailable=True),
+    )
+    result = resilience.check_outputd_failure_reconcile_park()
+    assert result.status == "skipped"
+    assert result.reason == resilience.REASON_OUTPUTD_RECONCILE_UNOBSERVED
+
+
+def test_outputd_failure_reconcile_park_is_registered():
+    assert "check_outputd_failure_reconcile_park" in _registered_check_names()

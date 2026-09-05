@@ -665,11 +665,12 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     "JASPER_FANIN_STATUS_SOCKET": "AirPlay helper probe path, not a fanin knob",
     "JASPER_OUTPUTD_STATUS_SOCKET": "AirPlay helper probe path, not an outputd knob",
     # outputd failure-reconcile helper state. These tune the stamp that bounds
-    # the helper to one reconcile per window across every failure class; they
-    # are consumed only by deploy/bin/jasper-outputd-failure-reconcile, not by
-    # the Rust daemon.
-    "JASPER_OUTPUTD_CONFIG_RETRY_STATE": "outputd failure helper reconcile stamp path; script-only",
-    "JASPER_OUTPUTD_CONFIG_RETRY_WINDOW_SEC": "outputd failure helper reconcile window; script-only",
+    # the helper to one reconcile per window across every failure class. Written
+    # by deploy/bin/jasper-outputd-failure-reconcile and read back by
+    # jasper/outputd_failure_reconcile_state.py (the doctor + /state reader);
+    # the Rust daemon reads neither.
+    "JASPER_OUTPUTD_CONFIG_RETRY_STATE": "outputd failure helper reconcile stamp path; shell writer + jasper.outputd_failure_reconcile_state reader",
+    "JASPER_OUTPUTD_CONFIG_RETRY_WINDOW_SEC": "outputd failure helper reconcile window; shell writer + jasper.outputd_failure_reconcile_state reader",
     # The retired content lane's capture PCM. outputd no longer reads it
     # (ADR-0100 deleted the lane) and nothing writes it any more: the reconciler
     # sweep removed the last writes and now actively REMOVES the key line from

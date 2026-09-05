@@ -12,6 +12,7 @@ from typing import Any
 
 from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
 from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
+from ... import outputd_failure_reconcile_state
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
@@ -41,6 +42,15 @@ REASON_REBOOT_STATE_UNREADABLE = "reboot_state_unreadable"
 REASON_REBOOT_STATE_CORRUPT = "reboot_state_corrupt"
 REASON_REBOOT_STATE_FUTURE_DATED = "reboot_state_future_dated"
 REASON_REBOOT_STATE_ARMED = "reboot_state_armed"
+
+REASON_OUTPUTD_RECONCILE_UNOBSERVED = "outputd_failure_reconcile_unobserved"
+REASON_OUTPUTD_RECONCILE_UNREADABLE = "outputd_failure_reconcile_unreadable"
+REASON_OUTPUTD_RECONCILE_UNINTELLIGIBLE = (
+    "outputd_failure_reconcile_unintelligible"
+)
+REASON_OUTPUTD_RECONCILE_NONE = "outputd_failure_reconcile_none"
+REASON_OUTPUTD_RECONCILED = "outputd_failure_reconciled"
+REASON_OUTPUTD_PARKED = "outputd_failure_reconcile_parked"
 
 REASON_BOOTLOOP_GUARD_NOT_RUN = "bootloop_guard_not_run"
 REASON_BOOTLOOP_GUARD_RELOAD_FAILED = "bootloop_guard_reload_failed"
@@ -327,6 +337,81 @@ def _classify_reboot_state(path: Path, *, now: float | None = None) -> CheckResu
         reason=REASON_REBOOT_STATE_ARMED,
     )
 
+
+@doctor_check()
+def check_outputd_failure_reconcile_park() -> CheckResult:
+    """outputd is not parked behind a spent failure-reconcile window.
+
+    ``jasper-outputd.service``'s ``ExecStopPost=`` helper refreshes the
+    output-hardware env once per window and gives a CONFIG failure (exit 78)
+    one explicit retry; a second failure inside that window gets nothing, and
+    ``RestartPreventExitStatus=78`` leaves the unit failed with no automatic
+    path back. ``speaker_silent`` on that branch: outputd owns the DAC write
+    loop (docs/audio-paths.md), so with it failed nothing writes the card and
+    the speaker emits NOTHING.
+    """
+    label = "outputd failure-reconcile"
+    state = outputd_failure_reconcile_state.snapshot(
+        evidence.unit_state(outputd_failure_reconcile_state.UNIT),
+    )
+    reason = state.get("reason")
+    path = state.get("path")
+
+    if reason == outputd_failure_reconcile_state.REASON_RUNTIME_DIR_ABSENT:
+        return CheckResult(
+            label, "skipped",
+            f"no {Path(str(path)).parent} — outputd has not run this boot",
+            reason=REASON_OUTPUTD_RECONCILE_UNOBSERVED,
+        )
+    if reason == outputd_failure_reconcile_state.REASON_UNIT_STATE_UNAVAILABLE:
+        return CheckResult(
+            label, "skipped",
+            "systemctl unavailable — a park cannot be ruled out",
+            reason=REASON_OUTPUTD_RECONCILE_UNOBSERVED,
+        )
+    if reason == outputd_failure_reconcile_state.REASON_UNREADABLE:
+        return CheckResult(
+            label, "warn",
+            f"reconcile stamp at {path} exists but could not be read "
+            f"({state.get('error')}) — a park cannot be ruled out. Check "
+            "`journalctl -u jasper-outputd` for "
+            "event=outputd.failure_reconcile.*",
+            reason=REASON_OUTPUTD_RECONCILE_UNREADABLE,
+        )
+    if reason == outputd_failure_reconcile_state.REASON_UNINTELLIGIBLE:
+        return CheckResult(
+            label, "warn",
+            f"reconcile stamp at {path} carries no epoch second (a truncated "
+            "write) — the helper reads it as no reconcile and will spend a "
+            "fresh window on the next failure",
+            reason=REASON_OUTPUTD_RECONCILE_UNINTELLIGIBLE,
+        )
+    if reason == outputd_failure_reconcile_state.REASON_NO_RECONCILE:
+        return CheckResult(
+            label, "ok", "outputd has not failed this boot",
+            reason=REASON_OUTPUTD_RECONCILE_NONE,
+        )
+    if reason == outputd_failure_reconcile_state.REASON_PARKED:
+        return CheckResult(
+            label, "fail",
+            "PARKED — outputd is failed "
+            f"(result={state.get('result') or '?'}) after its ExecStopPost "
+            f"reconcile pass {state.get('age_s')}s ago did not bring it back. "
+            "Exit 78 (bad output config) is held by "
+            "RestartPreventExitStatus, so nothing retries it. Fix the "
+            "output env, then `systemctl restart jasper-outputd`.",
+            speaker_silent=True,
+            reason=REASON_OUTPUTD_PARKED,
+        )
+    return CheckResult(
+        label, "ok",
+        f"reconciled {state.get('age_s')}s ago; outputd is not failed"
+        + (
+            f" (window of {state.get('window_sec')}s still spent)"
+            if state.get("window_spent") else ""
+        ),
+        reason=REASON_OUTPUTD_RECONCILED,
+    )
 
 @doctor_check()
 def check_bootloop_guard() -> CheckResult:
