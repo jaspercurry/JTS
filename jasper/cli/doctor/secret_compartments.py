@@ -380,7 +380,7 @@ def _check_compartment(group: str) -> CheckResult:
     return _classify_compartment(label, comp, members, non_members)
 
 
-@doctor_check(order=23.6, group="privsep")
+@doctor_check()
 def check_jasper_secrets_compartment() -> CheckResult:
     """The ``jasper-secrets`` compartment (LLM keys + Google) must be readable
     by voice+web ONLY. FAIL if a non-member or the world can read a secret;
@@ -389,7 +389,7 @@ def check_jasper_secrets_compartment() -> CheckResult:
     return _check_compartment("jasper-secrets")
 
 
-@doctor_check(order=23.61, group="privsep")
+@doctor_check()
 def check_jasper_intsecrets_compartment() -> CheckResult:
     """The ``jasper-intsecrets`` compartment (Home Assistant + Spotify) must be
     readable by voice/control/mux/web ONLY. FAIL if a non-member or the world

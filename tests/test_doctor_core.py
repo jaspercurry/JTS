@@ -161,15 +161,14 @@ def test_legacy_endpoint_token_doctor_behaves_as_streambox(monkeypatch):
         doctor,
         "registered_checks",
         lambda: [
-            RegisteredCheck(order=0, group="env", func=env_check),
+            RegisteredCheck(module="env", func=env_check),
             RegisteredCheck(
-                order=1,
-                group="voice",
+                module="voice",
                 func=voice_check,
                 needs_cfg=True,
                 label="provider key",
             ),
-            RegisteredCheck(order=1.5, group="web", func=web_check),
+            RegisteredCheck(module="web", func=web_check),
         ],
     )
 
@@ -257,27 +256,24 @@ def test_streambox_profile_doctor_keeps_local_audio_groups(monkeypatch):
         "registered_checks",
         lambda: [
             RegisteredCheck(
-                order=0,
-                group="voice",
+                module="voice",
                 func=voice_check,
                 needs_cfg=True,
                 label="provider key",
             ),
             RegisteredCheck(
-                order=1,
-                group="audio",
+                module="audio",
                 func=check_mic_capture,
                 needs_cfg=True,
                 label="mic capture",
             ),
             RegisteredCheck(
-                order=2,
-                group="renderers",
+                module="renderers",
                 func=renderer_check,
                 needs_cfg=True,
                 label="librespot.service",
             ),
-            RegisteredCheck(order=3, group="correction", func=correction_check),
+            RegisteredCheck(module="correction", func=correction_check),
         ],
     )
 
@@ -319,12 +315,12 @@ def test_run_async_parallelizes_blocking_checks_but_preserves_order(
         doctor,
         "registered_checks",
         lambda: [
-            RegisteredCheck(order=0, group="test", func=make_check("a", 0.15)),
-            RegisteredCheck(order=1, group="test", func=make_check("b", 0.15)),
-            RegisteredCheck(order=2, group="test", func=make_check("c", 0.15)),
-            RegisteredCheck(order=3, group="test", func=make_check("d", 0.15)),
-            RegisteredCheck(order=4, group="test", func=make_check("e", 0.15)),
-            RegisteredCheck(order=5, group="test", func=make_check("f", 0.15)),
+            RegisteredCheck(module="env", func=make_check("a", 0.15)),
+            RegisteredCheck(module="env", func=make_check("b", 0.15)),
+            RegisteredCheck(module="env", func=make_check("c", 0.15)),
+            RegisteredCheck(module="env", func=make_check("d", 0.15)),
+            RegisteredCheck(module="env", func=make_check("e", 0.15)),
+            RegisteredCheck(module="env", func=make_check("f", 0.15)),
         ],
     )
 
@@ -364,18 +360,16 @@ def test_run_async_serializes_checks_in_same_exclusive_group(monkeypatch):
         "registered_checks",
         lambda: [
             RegisteredCheck(
-                order=0,
-                group="test",
+                module="env",
                 func=exclusive("a"),
                 exclusive_group="audio-probe",
             ),
             RegisteredCheck(
-                order=1,
-                group="test",
+                module="env",
                 func=exclusive("b"),
                 exclusive_group="audio-probe",
             ),
-            RegisteredCheck(order=2, group="test", func=ordinary),
+            RegisteredCheck(module="env", func=ordinary),
         ],
     )
 

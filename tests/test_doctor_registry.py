@@ -4,12 +4,11 @@
 
 """Guard the jasper-doctor registry's ordering and output contracts.
 
-Ordering: every check carries an explicit `order=` sort key and the registry
-sorts by it, so orders must be unique sparse keys (gaps allowed so a mid-list
-insert never renumbers), async / exclusive-lane metadata must be explicit, and
-the decorator must reject a duplicate order at registration — a duplicate would
-silently fall back to import-order tie-breaking, the fragility the registry
-exists to remove.
+Ordering (ADR-0233 rule 4): a check registers from the module of the subsystem
+it observes, and `MODULE_ROSTER` alone decides display position and group
+label, so the run sequence must follow the roster, the roster must name exactly
+the modules that register checks, a module the roster does not name must be
+rejected at registration, and async / exclusive-lane metadata must be explicit.
 
 Output (ADR-0233 rule 3): a status outside the closed set is rejected, every
 warn/fail row carries a machine-stable `reason` drawn from its module's
@@ -30,20 +29,31 @@ import pytest
 
 from jasper.cli import doctor
 from jasper.cli.doctor import CheckResult, _registry, _shared
-from jasper.cli.doctor._registry import doctor_check, registered_checks
+from jasper.cli.doctor._registry import (
+    MODULE_ROSTER,
+    doctor_check,
+    registered_checks,
+)
 
 
-def test_registered_check_orders_are_unique_and_strictly_increasing():
+def test_display_order_follows_the_module_roster():
     checks = registered_checks()
     assert checks, "registry is empty — the per-domain modules did not register"
-    orders = [c.order for c in checks]
-    assert len(orders) == len(set(orders)), f"duplicate order keys: {orders}"
-    # Sparse sort keys: gaps are intentional (a mid-list insert picks a value
-    # between its neighbours, e.g. 20.5, renumbering nothing). registered_checks()
-    # returns sorted, so the only remaining invariant is a tie-free sequence.
-    assert all(a < b for a, b in zip(orders, orders[1:])), (
-        f"orders must be strictly increasing (unique, no ties), got {orders}"
+    positions = {module: i for i, (module, _) in enumerate(MODULE_ROSTER)}
+    seen = [positions[c.module] for c in checks]
+    assert seen == sorted(seen), (
+        "a module's checks must display as one contiguous block, in roster "
+        f"order: {[c.module for c in checks]}"
     )
+
+
+def test_the_roster_names_exactly_the_modules_that_register_checks():
+    """The roster is the source of truth for order and group label, so it goes
+    stale in both directions: a new module with no entry has nowhere to
+    display, and an entry whose module registers nothing is a dead label."""
+    rostered = [module for module, _ in MODULE_ROSTER]
+    assert len(rostered) == len(set(rostered)), f"duplicate roster rows: {rostered}"
+    assert set(rostered) == {c.module for c in registered_checks()}
 
 
 def test_async_checks_keep_explicit_registry_metadata():
@@ -69,16 +79,15 @@ def test_hardware_sensitive_checks_are_marked_exclusive():
     )
 
 
-def test_duplicate_order_is_rejected_at_registration():
-    """The decorator must enforce the documented uniqueness invariant — a
-    silent duplicate would reintroduce import-order tie-breaking."""
+def test_a_check_from_an_unrostered_module_is_rejected():
+    """Roster membership is the structural guard: a module the roster does not
+    name has neither a display position nor a group label, so registering from
+    one must fail loudly at import rather than land somewhere arbitrary."""
     saved = list(_registry._REGISTRY)
     try:
-        taken = next(iter(c.order for c in registered_checks()))
-        with pytest.raises(ValueError, match="already registered"):
-            doctor_check(order=taken, group="test")(lambda: None)
+        with pytest.raises(ValueError, match="MODULE_ROSTER"):
+            doctor_check()(lambda: None)
     finally:
-        # Restore the registry even if the guard regressed and appended.
         _registry._REGISTRY[:] = saved
 
 

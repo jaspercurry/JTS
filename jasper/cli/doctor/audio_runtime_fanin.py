@@ -105,7 +105,7 @@ REASON_ALOOP_PROC_UNREADABLE = "aloop_proc_unreadable"
 REASON_ALOOP_UNREGISTERED_SUBSTREAM_OPEN = "aloop_unregistered_substream_open"
 
 
-@doctor_check(order=49, group="audio")
+@doctor_check()
 def check_fanin_binary_installed() -> CheckResult:
     """The jasper-fanin Rust daemon ships as an installed binary at
     /opt/jasper/bin/jasper-fanin.
@@ -246,7 +246,7 @@ def _assistant_gain_fault(loudness: dict[str, object]) -> str | None:
     return None
 
 
-@doctor_check(order=50, group="audio")
+@doctor_check()
 def check_fanin_asound_wiring() -> CheckResult:
     """Verify the deployed ALSA graph is the fan-in graph.
 
@@ -362,7 +362,7 @@ def check_fanin_asound_wiring() -> CheckResult:
 
     return CheckResult(label, "ok", "renderer/test lanes 0..4")
 
-@doctor_check(order=51, group="audio")
+@doctor_check()
 def check_fanin_service() -> CheckResult:
     """The jasper-fanin systemd unit is required for renderer audio.
 
@@ -669,7 +669,7 @@ def _host_clock_health_from_status(data: dict[str, object]) -> CheckResult:
     )
 
 
-@doctor_check(order=51.52, group="audio")
+@doctor_check()
 def check_fanin_host_clock() -> CheckResult:
     """Report persistent USB host-clock recovery/fallback with exact cause."""
     status = evidence.fanin_status()
@@ -684,7 +684,7 @@ def check_fanin_host_clock() -> CheckResult:
         )
     return _host_clock_health_from_status(status.payload)
 
-@doctor_check(order=51.5, group="audio")
+@doctor_check()
 def check_fanin_tts_drops() -> CheckResult:
     """Report fan-in TTS protocol errors and pending-budget drops.
 
@@ -759,7 +759,7 @@ def check_fanin_tts_drops() -> CheckResult:
     )
 
 
-@doctor_check(order=51.55, group="audio")
+@doctor_check()
 def check_fanin_ring_stall() -> CheckResult:
     """A live fan-in→CamillaDSP ring stall (issue #1524).
 
@@ -824,7 +824,7 @@ def check_fanin_ring_stall() -> CheckResult:
     return CheckResult(name, "ok", f"no active stall ({counts})")
 
 
-@doctor_check(order=51.68, group="audio")
+@doctor_check()
 def check_fanin_coupling_value() -> CheckResult:
     """The persisted fan-in coupling must be a RECOGNIZED token.
 
@@ -890,7 +890,7 @@ def _requires_roleful_graph() -> bool:
         return False
 
 
-@doctor_check(order=51.7, group="audio")
+@doctor_check()
 def check_fanin_coupling() -> CheckResult:
     """The loaded CamillaDSP graph must name this box's ring devices.
 
@@ -1138,11 +1138,7 @@ def _aloop_substream_owner(status_text: str) -> str:
     return " ".join(parts)
 
 
-@doctor_check(
-    order=75.96,
-    group="audio",
-    exclusive_group="audio-probe",
-)
+@doctor_check(exclusive_group="audio-probe")
 def check_aloop_registered_substreams() -> CheckResult:
     """snd-aloop is loaded only for the bounded aloop remnant this check
     measures — nothing else holds it.

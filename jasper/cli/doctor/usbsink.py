@@ -292,7 +292,7 @@ def _audio_wanted() -> _AudioIntent:
         return _AudioIntent(False, "parked_follower")
     return _AudioIntent(True, "enabled")
 
-@doctor_check(order=57, group="usbsink")
+@doctor_check()
 def check_usb_data_role() -> CheckResult:
     """Explain the resolved host/peripheral role and pending reboot state."""
 
@@ -331,7 +331,7 @@ def check_usb_data_role() -> CheckResult:
         reason=REASON_DATA_ROLE_GADGET_UNAVAILABLE,
     )
 
-@doctor_check(order=58, group="usbsink")
+@doctor_check()
 def check_usbsink_state() -> CheckResult:
     """Check the USB readiness marker against observed gadget state.
 
@@ -438,7 +438,7 @@ def check_usbsink_state() -> CheckResult:
         f"host_connected={connected} (activity/level owned by fan-in STATUS)",
     )
 
-@doctor_check(order=59, group="usbsink")
+@doctor_check()
 def check_usbsink_card() -> CheckResult:
     """When jasper-usbsink is enabled, the UAC2Gadget ALSA card MUST
     be present — otherwise jasper-usbgadget.service either didn't run
@@ -460,7 +460,7 @@ def check_usbsink_card() -> CheckResult:
     )
 
 
-@doctor_check(order=59.3, group="usbsink")
+@doctor_check()
 def check_usbsink_host_stream() -> CheckResult:
     """Disclose whether the HOST has actually started the USB audio stream.
 
@@ -511,7 +511,7 @@ def check_usbsink_host_stream() -> CheckResult:
     )
 
 
-@doctor_check(order=59.5, group="usbsink")
+@doctor_check()
 def check_usbsink_low_latency_contract() -> CheckResult:
     """When the route claims low latency, verify the live USB data plane."""
 
@@ -625,7 +625,7 @@ def check_usbsink_low_latency_contract() -> CheckResult:
     return CheckResult("usbsink low-latency contract", "ok", detail)
 
 
-@doctor_check(order=59.7, group="usbsink")
+@doctor_check()
 def check_usb_mic_export() -> CheckResult:
     """Cross-check USB-microphone intent, descriptor, relay, and privacy."""
 
@@ -799,7 +799,7 @@ def check_usb_mic_export() -> CheckResult:
         f"{latency_detail}",
     )
 
-@doctor_check(order=59.8, group="usbsink")
+@doctor_check()
 def check_usb_combo_consistency() -> CheckResult:
     """Cross-check canonical USB permission against the resolved combo state.
 
@@ -905,7 +905,7 @@ def check_usb_combo_consistency() -> CheckResult:
         reason=REASON_COMBO_DISARMED,
     )
 
-@doctor_check(order=62, group="usbsink")
+@doctor_check()
 def check_usbsink_name(modules_root: str = "/lib/modules") -> CheckResult:
     """When jasper-usbsink is enabled, verify the host-visible device
     name has been patched to track the Speaker Name.
@@ -1006,7 +1006,7 @@ def check_usbsink_name(modules_root: str = "/lib/modules") -> CheckResult:
         reason=REASON_NAME_STALE,
     )
 
-@doctor_check(order=60, group="usbsink")
+@doctor_check()
 def check_usbsink_active_libcomposite() -> CheckResult:
     """The mirror of check_usbsink_state's RAM-drift check: when the
     readiness marker IS active but libcomposite is NOT loaded, the marker will
@@ -1035,7 +1035,7 @@ def check_usbsink_active_libcomposite() -> CheckResult:
         reason=REASON_ACTIVE_MODULES_UNLOADED,
     )
 
-@doctor_check(order=60.5, group="usbsink")
+@doctor_check()
 def check_usbgadget_composition() -> CheckResult:
     """The composed gadget functions must match the composed *intent*.
 
