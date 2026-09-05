@@ -1254,7 +1254,9 @@ both are required to measure.
   poses the round actually measured, **derived** from the banked bundle (owner
   [`position_cycle.py`](../jasper/active_speaker/crossover_v2/position_cycle.py)),
   never from what the round *meant* to stage. When the bundle cannot support the
-  index the runner names what was missing and writes nothing.
+  index the runner names what was missing and writes nothing. `jasper-round
+  bank` derives the same file, through the same writer, for a round banked on
+  the box; a round with nothing to index is named in its `provenance.json`.
 - **Refused before anything runs**, eight configurations: an `--apply` with an
   empty fingerprint or with `--per-position` at any value; `--angles` without
   `--attest-rig-clear`; an unreadable `--alignment-prescription` or
