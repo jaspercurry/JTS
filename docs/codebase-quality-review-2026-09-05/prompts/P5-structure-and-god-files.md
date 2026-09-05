@@ -51,6 +51,17 @@ attribute needs a change there, write it up as a suggestion (file:line, what, wh
 or ask the owner for a one-off. Other stewards merge to `main` concurrently: rebase before every
 push, judge every PR by `git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
 
+**Sibling lanes.** Seven sibling sessions run the other attributes of the same review (P1 #4193, P2 #4194,
+P3 #4195, P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202; the index and sequencing are in
+`docs/codebase-quality-review-2026-09-05/prompts/README.md`). Ordering that matters: **P6
+(right-sizing)** deletes ~2,300 product LOC — do not `git mv` anything on P6's deletion list; post
+your move table on P6's issue in your first day so the lists are disjoint, and start moves only
+after P6's deletion PRs for the affected packages have merged (the cycle fix, the layers contract
+and the deferred-import rule need no wait). **P7 (tests)** restructures tests after your moves
+land; tests move with their modules in your PRs, nothing more. **P2** owns `deploy/install.sh`
+(hand it the STEPS table). **P8** owns docs; your move PRs update `docs/doc-map.toml` and any
+path a doc names, P8 does the prose.
+
 ## What "A" means here
 
 **A = a newcomer can find where a thing lives from the tree, every fact has one owner, and the
@@ -134,7 +145,7 @@ Phase 1 — **scout** (read-only Opus/Sonnet fan-out, parallel, each blind to th
 every finding above at HEAD and go deeper than the review did on the corners it names as unread.
 Each scout returns file:line evidence and a one-line fix; no scout edits anything.
 
-Phase 2 — **plan**: write ONE page (as a GitHub issue comment, not a repo file): the target state in
+Phase 2 — **plan**: write ONE page (as a comment on this issue, not a repo file): the target state in
 a paragraph, the gap between HEAD and it, and a sequenced list of PRs — one concern each, under 400
 changed lines unless pure deletion or a mechanical move — each with its proof (the test or command
 that shows it landed) and, where the attribute can regress, the **one** guard that keeps it landed
