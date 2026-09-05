@@ -179,6 +179,7 @@ pub const CORRECTION_INTEGRAL_GAIN: f64 = 0.05;
 // Compile-time tripwire: the shipped integral gain must stay a healthy factor
 // below the ~0.25 ring threshold measured against the real inner loop, and be
 // strictly positive (a zero/negative gain would freeze or reverse the trim).
+// PANIC-AUDITED: const context: a violation fails the build, so this never runs
 const _: () = assert!(CORRECTION_INTEGRAL_GAIN > 0.0 && CORRECTION_INTEGRAL_GAIN <= 0.1);
 
 /// Probe step-phase duration, in seconds.

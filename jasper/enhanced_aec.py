@@ -178,7 +178,6 @@ def request_install(
     now = _utc_now()
     with advisory_file_lock(
         state_lock_path,
-        mode=0o660,
         timeout_sec=2.0,
     ):
         existing = read_intent(path=intent_path)
@@ -226,7 +225,6 @@ def write_job_state(
         payload.update(extra)
     with advisory_file_lock(
         state_lock_path,
-        mode=0o660,
         timeout_sec=5.0,
     ):
         _write_json(path, payload)

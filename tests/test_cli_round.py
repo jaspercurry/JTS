@@ -2,15 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""``jasper-round``: the three wizard round verbs, driven from the speaker.
+"""``jasper-round``: the four round verbs, driven from the speaker.
 
 Every request is served by a fake opener -- :class:`WizardClient`'s own
-transport seam -- so these pin what the CLI SENDS, what it PRINTS and what it
-EXITS with, without a wizard, a network or a speaker.
+transport seam -- so these pin what the CLI SENDS, what it ANSWERS on stdout
+and what it EXITS with, without a wizard, a network or a speaker.
 """
 from __future__ import annotations
 
 import io
+import sys
 import json
 import urllib.error
 
@@ -19,6 +20,7 @@ import pytest
 from jasper.active_speaker import wizard_client as wc
 from jasper.active_speaker.crossover_v2_flow import TIERS as _FLOW_TIERS
 from jasper.cli import round as cli
+from jasper.cli._refusal import STATUS_BY_CODE
 
 _FINGERPRINT = "a" * 64
 _OTHER = "b" * 64
@@ -113,8 +115,10 @@ def _lost(code: int) -> Exception:
 
 
 def _run(argv, opener, monkeypatch, capsys):
+    """The verb's exit code and the ONE document it answered with on stdout."""
     monkeypatch.setattr(cli, "read_identity", lambda: _Identity())
-    code = cli.main([*argv, "--json"], opener=opener)
+    monkeypatch.setattr(cli, "speaker_url", lambda path: f"http://jts3.local{path}")
+    code = cli.main(list(argv), opener=opener)
     return code, json.loads(capsys.readouterr().out)
 
 
@@ -181,8 +185,12 @@ def test_open_posts_the_stage_and_tier_it_was_given(
     assert code == cli.EXIT_OK
     posted = opener.posted_to(path)
     assert [json.loads(r.data.decode()) for r in posted] == [body]
-    assert receipt["status"] == "opened"
     assert receipt["session_id"] == "s1"
+    # The answer hands the ONE url a human drives the round on, and the verb
+    # that follows -- neither is a thing its reader should have to know.
+    assert receipt["handoff_url"] == "http://jts3.local/sound/crossover/"
+    assert receipt["next"] == "jasper-round wait"
+    assert "status" not in receipt
     # Every request claims this speaker's own name, never 127.0.0.1.
     assert {r.get_header("Host") for r in opener.requests} == {"jts3.local"}
 
@@ -203,7 +211,7 @@ def test_open_carries_the_alignment_and_topology_documents(
     document = tmp_path / "alignment.json"
     document.write_text(json.dumps(alignment))
     monkeypatch.setattr(
-        cli.sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps(topology).encode()))
+        sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps(topology).encode()))
     )
     opener = _opener(v2={"session_id": "s1", "phase": "check"})
 
@@ -238,8 +246,9 @@ def test_a_malformed_prescription_document_is_refused_before_the_open(
     )
 
     assert code == cli.EXIT_REFUSED
+    assert receipt["status"] == STATUS_BY_CODE[cli.EXIT_REFUSED]
     assert receipt["reason"] == cli.REASON_OPEN_REFUSED
-    assert str(document) in receipt["detail"]
+    assert str(document) in receipt["detail"]["error"]
     assert opener.posts() == []
 
 
@@ -251,6 +260,7 @@ def test_the_measuring_stage_refuses_an_absent_tier_without_posting(
     code, receipt = _run(["open"], opener, monkeypatch, capsys)
 
     assert code == cli.EXIT_REFUSED
+    assert receipt["status"] == STATUS_BY_CODE[cli.EXIT_REFUSED]
     assert receipt["reason"] == cli.REASON_TIER_REQUIRED
     assert opener.posts() == []
 
@@ -278,9 +288,10 @@ def test_apply_refuses_a_fingerprint_that_is_not_the_live_one(
     )
 
     assert code == cli.EXIT_REFUSED
+    assert receipt["status"] == STATUS_BY_CODE[cli.EXIT_REFUSED]
     assert receipt["reason"] == reason
-    assert receipt["refused_by"] == "client"
-    assert receipt["expected_candidate_fingerprint"] == _FINGERPRINT
+    assert receipt["detail"]["refused_by"] == "client"
+    assert receipt["detail"]["expected_candidate_fingerprint"] == _FINGERPRINT
     assert opener.posted_to(wc.APPLY_PATH) == []
 
 
@@ -294,7 +305,8 @@ def test_apply_posts_the_named_fingerprint_when_it_is_the_live_one(
     )
 
     assert code == cli.EXIT_OK
-    assert receipt["status"] == "applied"
+    assert receipt["candidate_fingerprint"] == _FINGERPRINT
+    assert "status" not in receipt
     posted = opener.posted_to(wc.APPLY_PATH)
     assert [json.loads(r.data.decode()) for r in posted] == [
         {"expected_candidate_fingerprint": _FINGERPRINT}
@@ -313,8 +325,9 @@ def test_an_apply_that_answered_but_did_not_apply_is_a_refusal(
     )
 
     assert code == cli.EXIT_REFUSED
+    assert receipt["status"] == STATUS_BY_CODE[cli.EXIT_REFUSED]
     assert receipt["reason"] == wc.REASON_NOT_APPLIED
-    assert receipt["refused_by"] == "wizard"
+    assert receipt["detail"]["refused_by"] == "wizard"
 
 
 # --------------------------------------------------------------------------- #
@@ -322,45 +335,111 @@ def test_an_apply_that_answered_but_did_not_apply_is_a_refusal(
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize(
-    "steady, scripted, expected",
-    [
-        (
-            {"session_id": "s1", "phase": "review",
-             "candidate": {"fingerprint": _FINGERPRINT}},
-            [_envelope(session_id="s1", phase="measure")],
-            {"status": "terminal", "reason": "", "phase": "review",
-             "candidate_fingerprint": _FINGERPRINT, "code": cli.EXIT_OK},
-        ),
-        (
-            {"session_id": "s1", "phase": "measure",
-             "failure": {"error": "capture refused"}},
-            [_envelope(session_id="s1", phase="measure")],
-            {"status": "failed", "reason": wc.REASON_SESSION_FAILED,
-             "phase": "measure", "candidate_fingerprint": "",
-             "code": cli.EXIT_REFUSED},
-        ),
-        (
-            {"session_id": "s1", "phase": "measure"},
-            [],
-            {"status": "timed_out", "reason": wc.REASON_WAIT_TIMEOUT,
-             "phase": "measure", "candidate_fingerprint": "",
-             "code": cli.EXIT_UNREADABLE},
-        ),
-    ],
-)
-def test_wait_reports_the_state_it_stopped_on(
-    steady, scripted, expected, monkeypatch, capsys
-):
-    opener = _opener(v2=steady, envelopes=scripted)
+def test_wait_answers_the_session_it_watched_stop(monkeypatch, capsys):
+    opener = _opener(
+        v2={"session_id": "s1", "phase": "review",
+            "candidate": {"fingerprint": _FINGERPRINT}},
+        envelopes=[_envelope(session_id="s1", phase="measure")],
+    )
     code, receipt = _run(
         ["wait", "--timeout-s", "0.05", "--poll-s", "0.01"],
         opener, monkeypatch, capsys,
     )
 
-    assert code == expected.pop("code")
-    assert {key: receipt[key] for key in expected} == expected
+    assert code == cli.EXIT_OK
+    assert receipt["phase"] == "review"
+    assert receipt["candidate_fingerprint"] == _FINGERPRINT
+    assert "status" not in receipt
     # A wait writes nothing at all.
+    assert opener.posts() == []
+
+
+def test_wait_names_the_session_directory_the_bank_verb_takes(
+    tmp_path, monkeypatch, capsys
+):
+    """The bundle path is the wizard's to know, never its reader's to guess:
+    the ``session_id`` on the envelope is the capture provider's."""
+    bundle = tmp_path / "sessions" / "b0c1d2e3"
+    bundle.mkdir(parents=True)
+    (bundle / "info.json").write_text(
+        json.dumps({"session_id": bundle.name, "started_at": 1.0})
+    )
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
+    opener = _opener(
+        v2={"session_id": "s1", "phase": "review",
+            "candidate": {"fingerprint": _FINGERPRINT}},
+        envelopes=[_envelope(session_id="s1", phase="measure")],
+    )
+
+    code, receipt = _run(
+        ["wait", "--timeout-s", "0.05", "--poll-s", "0.01"],
+        opener, monkeypatch, capsys,
+    )
+
+    assert code == cli.EXIT_OK
+    assert receipt["session_dir"] == str(bundle)
+    assert receipt["next"] == f"jasper-round bank {bundle}"
+
+
+def test_a_rejected_take_the_next_one_replaces_is_not_a_failed_round(
+    monkeypatch, capsys
+):
+    """Durable state carries one refused capture's code and the next accepted
+    take clears it, so the block alone is not the round's verdict."""
+    from jasper.active_speaker.crossover_v2.refusal_copy import NON_RETRIABLE_CODES
+
+    retriable = "clipped"
+    assert retriable not in NON_RETRIABLE_CODES
+    opener = _opener(
+        v2={"session_id": "s1", "phase": "review",
+            "candidate": {"fingerprint": _FINGERPRINT}},
+        envelopes=[
+            _envelope(session_id="s1", phase="measure",
+                      failure={"code": retriable}),
+        ],
+    )
+
+    code, receipt = _run(
+        ["wait", "--timeout-s", "5", "--poll-s", "0.01"],
+        opener, monkeypatch, capsys,
+    )
+
+    assert code == cli.EXIT_OK
+    assert receipt["phase"] == "review"
+    assert receipt["candidate_fingerprint"] == _FINGERPRINT
+
+
+@pytest.mark.parametrize(
+    "steady, reason, exit_code",
+    [
+        (
+            {"session_id": "s1", "phase": "measure",
+             "failure": {"code": "program_unplayable"}},
+            wc.REASON_SESSION_FAILED,
+            cli.EXIT_REFUSED,
+        ),
+        (
+            {"session_id": "s1", "phase": "measure"},
+            wc.REASON_WAIT_TIMEOUT,
+            cli.EXIT_UNREADABLE,
+        ),
+    ],
+)
+def test_wait_that_did_not_reach_a_stop_answers_a_refusal(
+    steady, reason, exit_code, monkeypatch, capsys
+):
+    opener = _opener(
+        v2=steady, envelopes=[_envelope(session_id="s1", phase="measure")]
+    )
+    code, receipt = _run(
+        ["wait", "--timeout-s", "0.05", "--poll-s", "0.01"],
+        opener, monkeypatch, capsys,
+    )
+
+    assert code == exit_code
+    assert receipt["status"] == STATUS_BY_CODE[exit_code]
+    assert receipt["reason"] == reason
+    assert receipt["detail"]["phase"] == "measure"
     assert opener.posts() == []
 
 
@@ -380,6 +459,7 @@ def test_wait_stops_on_the_first_unanswered_status_read(
     )
 
     assert exit_code == cli.EXIT_UNREADABLE
+    assert receipt["status"] == STATUS_BY_CODE[cli.EXIT_UNREADABLE]
     assert receipt["reason"] == wc.REASON_ANSWER_LOST
     assert len(opener.requests) == 1
 
@@ -398,6 +478,7 @@ def test_an_apply_whose_answer_is_lost_is_not_a_wizard_refusal(
     )
 
     assert code == cli.EXIT_UNREADABLE
+    assert receipt["status"] == STATUS_BY_CODE[cli.EXIT_UNREADABLE]
     assert receipt["reason"] == wc.REASON_ANSWER_LOST
-    assert receipt["refused_by"] == ""
-    assert receipt["http"] == 0
+    assert receipt["detail"]["refused_by"] == ""
+    assert receipt["detail"]["http"] == 0

@@ -375,9 +375,6 @@ STATUS_PATH_CONSUMERS: dict[str, dict[str, str]] = {
     "jasper/control/audio_health.py": {"outputd": "outputd"},
     "jasper/audio_validation.py": {
         "outputd_status": "outputd",
-        "first_outputd": "outputd",
-        "final_outputd": "outputd",
-        "preflight_outputd": "outputd",
     },
     "jasper/cli/doctor/audio_runtime_fanin.py": {"evidence.fanin_status": "fanin"},
     "jasper/cli/doctor/audio_runtime_outputd.py": {

@@ -755,7 +755,9 @@ fn fold_reference_pairwise_composite(
     samples_4ch: &[ProgramSample],
     out_stereo: &mut [ProgramSample],
 ) {
+    // PANIC-AUDITED: the composite is the daemon's own fixed 4-channel geometry
     assert_eq!(samples_4ch.len() % 4, 0);
+    // PANIC-AUDITED: out_stereo is allocated by the same caller from that same fixed geometry
     assert_eq!(
         out_stereo.len(),
         (samples_4ch.len() / 4) * (CHANNELS as usize)
@@ -805,8 +807,11 @@ fn fold_reference(
     channels: usize,
     out_stereo: &mut [ProgramSample],
 ) {
+    // PANIC-AUDITED: channels is the daemon's fixed content-channel config at the only call site
     debug_assert!(channels >= 1);
+    // PANIC-AUDITED: the daemon's own content pipeline always emits whole frames
     debug_assert_eq!(content_nch.len() % channels, 0);
+    // PANIC-AUDITED: out_stereo is allocated by the same caller from that same fixed geometry
     debug_assert_eq!(
         out_stereo.len(),
         (content_nch.len() / channels) * (CHANNELS as usize)
@@ -1091,6 +1096,7 @@ impl ReferenceSideOutputs {
             let dual_mono = self
                 .chip_downsampler
                 .as_mut()
+                // PANIC-AUDITED: chip_tx and chip_downsampler are constructed together
                 .expect("chip ref downsampler is present when chip_tx is present")
                 .process(&self.narrow_staging);
             if dual_mono.is_empty() {
@@ -1679,6 +1685,7 @@ fn notify_systemd(message: &str) -> io::Result<()> {
 fn notify_systemd_abstract(socket_path: &str, message: &str) -> io::Result<()> {
     let name = socket_path
         .strip_prefix('@')
+        // PANIC-AUDITED: the caller dispatches on the '@' prefix before calling this
         .expect("abstract notify socket must start with @");
     let name_bytes = name.as_bytes();
     if name_bytes.is_empty() {

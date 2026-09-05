@@ -280,19 +280,23 @@ def _fire_burst(
 ) -> None:
     """Fire one hook invocation per volume message, the way shairport does.
 
-    Messages are scheduled against an absolute clock, so Popen's own cost
-    doesn't stretch the burst the assertions are written about.
+    Each spawn is scheduled `spacing` after the PREVIOUS one actually
+    returned, not against an idealized absolute clock: a starved runner
+    that falls behind schedule then stretches the burst instead of firing
+    every remaining spawn back-to-back, which would pile on exactly the
+    fork/fd pressure it has none left to spare.
     """
     env = _hook_env(runtime_dir)
-    started = time.monotonic()
     running = []
-    for index, percent in enumerate(percents):
-        delay = started + index * spacing - time.monotonic()
+    next_at = time.monotonic()
+    for percent in percents:
+        delay = next_at - time.monotonic()
         if delay > 0:
             time.sleep(delay)
         running.append(
             subprocess.Popen(_hook_argv(_db_for(percent), port=port), env=env)
         )
+        next_at = time.monotonic() + spacing
     for process in running:
         assert process.wait(timeout=60) == 0
 
@@ -388,6 +392,7 @@ def test_a_reconnect_restores_the_remembered_level_before_the_animation(
         port=port,
         spacing=FADE_SPACING_S,
     )
+    finished = time.monotonic()
 
     session = _Recorder.posts[opened:]
     # One write: the restore. The settled level is the same value, so the
@@ -396,9 +401,11 @@ def test_a_reconnect_restores_the_remembered_level_before_the_animation(
     # Still the session's opening write, so a mute latched at the speaker is
     # still left alone (ADR-0206).
     assert session[0][1].get("observation_initial") is True
-    # Inside the animation's first few steps — where the settle-only hook
-    # posted nothing at all until the animation had run its ~2 s course.
-    assert _Recorder.times[opened] - started < FADE_SPACING_S * 4
+    # Inside the animation's first few steps, not after the settle-only
+    # hook's ~2 s course — a fraction of this burst's own wall time rather
+    # than a fixed deadline, so a slow runner (stretching both alike) still
+    # tells the two cases apart.
+    assert _Recorder.times[opened] - started < (finished - started) / 2
 
 
 @requires_flock

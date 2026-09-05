@@ -19,13 +19,12 @@ doctor checks, the AEC bridge, the reconciler, and BRINGUP.
    you need; do NOT pad with `None` or sentinels just to "match
    the shape."
 3. Wire the profile into the runtime detector/reconciler that selects it. Do
-   not add a registry until that registry has a real consumer; the old
-   `PROFILES` mapping was removed because nothing read it.
-4. If the mic needs to be the active AEC mic, the reconciler
-   ([deploy/bin/jasper-aec-reconcile](../../deploy/bin/jasper-aec-reconcile))
-   currently hardcodes the XVF card name. It'll need an upgrade —
-   either Python-ize it, or split per-mic reconciler scripts. Don't
-   speculatively generalize until that lands.
+   not add a cross-family registry until a second family exists to need one
+   (ADR-0235 R5) — a registry with one row is a seam nothing consumes.
+4. If the mic needs to be the active AEC mic, see how the XVF profile reaches
+   the reconciler under "Consumers today" below; its static fallback
+   candidates and mixer control names are still XVF literals in bash
+   (ADR-0235 G10).
 
 ## Why no `MicProfile` interface?
 
@@ -45,17 +44,19 @@ docstring in [`__init__.py`](__init__.py) for the longer rationale.
   `check_xvf_firmware_6ch`, `check_xvf_mixer_state`, and
   `check_aec_bridge_running` functions read constants and call
   helpers from `jasper.mics.xvf3800` (no inline literals).
-- [`jasper.cli.aec_bridge`](../cli/aec_bridge.py) — reads
-  `ALSA_CARD_NAME`, `MIC_CHANNEL_INDEX`, and the recommended
-  channel count from the XVF profile.
+- [`jasper.cli.aec_bridge_capture`](../cli/aec_bridge_capture.py) — reads
+  `MIC_CHANNEL_INDEX` and the recommended channel count from the XVF
+  profile; [`jasper.cli.aec_bridge`](../cli/aec_bridge.py) consumes those
+  plus the chip beam-plan helpers.
 - [`jasper.cli.xvf_profile`](../cli/xvf_profile.py) — import-cheap
   resolver/CLI that emits the detected XVF variant, geometry, and
   beam-plan state as JSON or shell-safe env assignments. Shell-only
   layers consume this instead of copying geometry rules.
 - [`deploy/bin/jasper-aec-reconcile`](../../deploy/bin/jasper-aec-reconcile)
   — bash, so it cannot import the profile directly. It calls
-  `python -m jasper.cli.xvf_profile`, writes the resolved
-  `JASPER_XVF_*` env keys, and uses those keys for chip-AEC gating.
+  `python -m jasper.cli.xvf_profile`, writes the resolved `JASPER_XVF_*`
+  env keys, and derives its detected card and chip-AEC gating from them;
+  its fallback candidate list and mixer control names are still literals.
 
 ## What this package is NOT
 

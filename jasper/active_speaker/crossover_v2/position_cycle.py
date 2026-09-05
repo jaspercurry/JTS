@@ -22,6 +22,8 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from jasper.atomic_io import atomic_write_text
+
 from ..commissioning_evidence_store import EVIDENCE_ROOT
 from .contracts import BANKED_TAKE_GLOB, POSITION_EVIDENCE_KIND
 from .journey import PHASE_ENTRY_BASELINE, PHASE_LATERAL
@@ -54,6 +56,14 @@ _BANKED_POSITIONS_GLOB = (
 #: ``sources``.
 _TAKE_FIELDS = ("index", "attempt", "take_id", "position_deg", "role",
                 "regime", "wav_sha256")
+
+#: What :func:`read_lateral_take` DEFAULTS rather than projects, and what
+#: :func:`read_position_cycle` therefore exempts at the MISSING end: a document
+#: written before one of these existed reads, while a key neither reader knows
+#: still refuses. ``candidate_id`` rides here because a cycled pose measures
+#: several candidates at ONE bearing — without it those rows are
+#: indistinguishable — and ``""`` is a take that named no candidate.
+_DEFAULTED_TAKE_FIELDS = ("vertical_deg", "candidate_id")
 
 #: The three arrays that make a retained entry-baseline take the durable copy.
 #: A take without all three predates the curve riding here and is not readable
@@ -201,10 +211,11 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
     ``lateral_poses`` block. A second reader with its own idea of what a
     lateral take is would disagree with this one silently.
 
-    Returns the record narrowed to :data:`_TAKE_FIELDS` plus ``vertical_deg``
-    — the identity, the pose, and the verifier. The banked record stays the
-    place to go for the rest. A take banked before ``vertical_deg`` existed
-    reads back as 0, the elevation a walk that could not state a rise took.
+    Returns the record narrowed to :data:`_TAKE_FIELDS` plus
+    :data:`_DEFAULTED_TAKE_FIELDS` — the identity, the candidate, the pose, and
+    the verifier. The banked record stays the place to go for the rest. A take
+    banked before one of the defaulted fields existed reads back as 0 or ``""``,
+    which is what a walk that could not state a rise or a candidate took.
     """
     try:
         raw = json.loads(path.read_text())
@@ -218,6 +229,7 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
         return None
     take: dict[str, Any] = {field: raw.get(field) for field in _TAKE_FIELDS}
     take["vertical_deg"] = raw.get("vertical_deg") or 0
+    take["candidate_id"] = raw.get("candidate_id") or ""
     return take
 
 
@@ -477,10 +489,19 @@ def position_cycle_document(
             f"under {_BANKED_POSITIONS_GLOB} — this round's walk was refused at "
             f"take time, or its poses were never accepted"
         )
-    takes = sorted(
-        records,
-        key=lambda take: (int(take["index"] or 0), int(take["attempt"] or 0)),
-    )
+    try:
+        takes = sorted(
+            records,
+            key=lambda take: (int(take["index"] or 0), int(take["attempt"] or 0)),
+        )
+    except (TypeError, ValueError) as exc:
+        # Named, not coerced: this module's callers all handle its own error,
+        # and one that escaped as a bare ValueError would unwind whatever the
+        # caller was in the middle of (a bank, for one).
+        raise PositionCycleError(
+            f"{root}: a banked take carries a non-numeric index or attempt "
+            f"({exc}), so the walk order cannot be derived"
+        ) from exc
     stamp = derived_at or datetime.now(timezone.utc)
     return {
         "kind": POSITION_CYCLE_KIND,
@@ -491,6 +512,32 @@ def position_cycle_document(
         "sources": sources,
         "takes": takes,
     }
+
+
+def write_position_cycle(
+    round_dir: str | Path,
+) -> tuple[Path, dict[str, Any]]:
+    """Derive the index for a banked round and write it INTO that round.
+
+    The ONE writer of :data:`POSITION_CYCLE_FILENAME`, shared by the on-box
+    bank and the laptop transport, so a round carries the same index at the
+    same name however it was banked. Returns the path written and the document
+    written there, so a caller reporting on it never re-reads the file.
+
+    Written atomically, so a reader never finds a torn index at a path
+    ``provenance.json`` may be about to call absent.
+
+    Raises exactly two things, which is what lets both callers treat it as
+    best-effort with one handler: :class:`PositionCycleError` for a round with
+    nothing to index (the ordinary shape of a round that ran no lateral walk,
+    and of one whose records are corrupt) and :class:`OSError` for a
+    destination that would not take the file. A round that measured is not
+    un-measured by an index that could not be derived.
+    """
+    document = position_cycle_document(round_dir)
+    path = Path(round_dir) / POSITION_CYCLE_FILENAME
+    atomic_write_text(path, json.dumps(document, indent=2) + "\n")
+    return path, document
 
 
 def read_position_cycle(path: str | Path) -> dict[str, Any]:
@@ -526,14 +573,15 @@ def read_position_cycle(path: str | Path) -> dict[str, Any]:
     if not isinstance(takes, list) or not takes:
         raise PositionCycleError(f"{path}: takes must be a non-empty list")
     for offset, take in enumerate(takes, start=1):
-        # ``vertical_deg`` is exempted at the MISSING end only: a document
-        # written before it existed reads, a document inventing a key does not.
         if not isinstance(take, Mapping) or not (
-            set(_TAKE_FIELDS) <= set(take) <= set(_TAKE_FIELDS) | {"vertical_deg"}
+            set(_TAKE_FIELDS)
+            <= set(take)
+            <= set(_TAKE_FIELDS) | set(_DEFAULTED_TAKE_FIELDS)
         ):
             raise PositionCycleError(
                 f"{path}: take {offset} must carry exactly "
-                f"{sorted(_TAKE_FIELDS)}, optionally with ['vertical_deg']"
+                f"{sorted(_TAKE_FIELDS)}, optionally with "
+                f"{sorted(_DEFAULTED_TAKE_FIELDS)}"
             )
     return dict(raw)
 

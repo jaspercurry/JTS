@@ -312,15 +312,6 @@ class BlendPrescriptionRefused(ValueError):
         self.detail = detail
         self.evidence: Mapping[str, Any] = dict(evidence or {})
 
-    def to_dict(self) -> dict[str, Any]:
-        """The refusal as the prescriber reads it back."""
-        return {
-            "accepted": False,
-            "reason": self.reason,
-            "detail": self.detail,
-            "evidence": dict(self.evidence),
-        }
-
 
 @dataclass(frozen=True)
 class PositionalSupport:

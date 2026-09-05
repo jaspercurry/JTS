@@ -207,6 +207,7 @@ impl PeriodAssembler {
     /// the spine — the same widen the ALSA content lane performs, at a different
     /// door, and the same width the ring arm's wire carries for the same reason.
     fn pop_period(&mut self, out: &mut [ProgramSample]) -> bool {
+        // PANIC-AUDITED: the only caller (FifoReader::fill) sizes out from this same period_bytes
         debug_assert_eq!(out.len() * 2, self.period_bytes);
         if self.staging.len() < self.period_bytes {
             return false;

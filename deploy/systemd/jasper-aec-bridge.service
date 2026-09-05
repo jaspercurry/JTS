@@ -10,11 +10,8 @@ Description=AEC bridge — carries XVF mic audio via software AEC3 or chip-AEC
 # 127.0.0.1:JASPER_AEC_UDP_PORT (default 9876) instead of running
 # WebRTC AEC3.
 #
-# Historical note: this used to write to a second snd-aloop card
-# (LoopbackAEC) that jasper-voice read via PortAudio. Replaced
-# with UDP in PR 2 of the resilience-ladder series — snd-aloop's
-# kernel-side loopback_cable wedged on consumer SIGKILL and
-# required a reboot to clear. UDP has no such state.
+# The transport to jasper-voice is UDP localhost, not a second snd-aloop
+# card — see ADR-0102.
 #
 # Software engine: when chip-AEC is not armed, WebRTC AEC3 runs via the
 # jasper_aec3 pybind11 binding around Trixie's libwebrtc-audio-processing-1

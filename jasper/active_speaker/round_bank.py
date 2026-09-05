@@ -6,9 +6,10 @@
 
 The same tree ``scripts/bank-crossover-round.sh`` assembles on a laptop, built
 on the box itself so a round outlives session retention (#3498, #2882). It is
-exactly the tree
+the tree
 :func:`~jasper.active_speaker.crossover_v2.round_views.load_banked_round`
-reads::
+reads, plus the two files this path derives for whoever opens the round
+directory next::
 
     <campaign-root>/<round-id>/
       bundle/<session-id>/...    the live session bundle, hard-linked
@@ -17,6 +18,8 @@ reads::
       applied-profile.json       applied baseline profile SSOT (optional)
       repeat-floor.json          measured repeat floor SSOT (optional)
       declared-geometry.json     declared rig geometry SSOT (optional)
+      position_cycle.json        which take was measured at which pose,
+                                 derived here from the bundle (optional)
       provenance.json            when it was banked, off which build
 
 ``provenance.json``'s key set is owned here: ``banked_at_utc`` is spelled and
@@ -165,6 +168,29 @@ def _round_id(session_dir: Path, session_id: str) -> str:
     return session_id
 
 
+def _index_poses(target: Path) -> list[str]:
+    """Derive the banked round's pose index into ``target``.
+
+    Returns what the round did NOT get, for ``provenance.json``'s ``missing``.
+    Best-effort, and deliberately so: a round that ran no lateral walk has
+    nothing to index, and neither that nor a filesystem that would not take one
+    more file un-measures the round. Both are named absent instead — which is
+    why nothing here reaches the caller's ``except OSError``, whose job is to
+    unwind a half-assembled round.
+    """
+    from .crossover_v2.position_cycle import (
+        POSITION_CYCLE_FILENAME,
+        PositionCycleError,
+        write_position_cycle,
+    )
+
+    try:
+        write_position_cycle(target)
+    except (PositionCycleError, OSError):
+        return [POSITION_CYCLE_FILENAME]
+    return []
+
+
 def bank_round(
     session_dir: Path,
     *,
@@ -185,12 +211,17 @@ def bank_round(
     and the installed build's SHA (``None`` with ``git_absent`` when the box
     records none).
 
+    The pose index is derived from the bundle just banked (:func:`_index_poses`)
+    rather than left to whoever reads the round next, so a banked round answers
+    "which take is which pose" without a second tool.
+
     Raises :class:`RoundBankError` with ``reason`` :data:`REASON_NOT_A_BUNDLE`,
     :data:`REASON_SESSION_UNFINISHED` (banking an ``open``/``proposal_ready``
     session would claim its round id mid-flight, and an id is never re-banked)
     or :data:`REASON_ALREADY_BANKED` — a banked round is never overwritten. An
-    absent SSOT document is skipped and named in ``provenance.json``'s
-    ``missing``: a partially banked round is a normal thing to read.
+    SSOT document that was absent, and a pose index that could not be derived,
+    are both named in ``provenance.json``'s ``missing``: a partially banked
+    round is a normal thing to read.
 
     A filesystem failure is not a refusal: the :class:`OSError` propagates, so
     the CLI exits on its filesystem-failure code rather than telling the
@@ -240,6 +271,7 @@ def bank_round(
                 shutil.copy2(source, target / name)
             else:
                 missing.append(name)
+        missing += _index_poses(target)
         sha = _detect_build_sha()
         provenance: dict[str, Any] = {
             "banked_at_utc": datetime.now(timezone.utc).strftime(

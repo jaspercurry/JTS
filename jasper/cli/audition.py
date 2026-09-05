@@ -25,14 +25,16 @@ abandoned SSH session ends the audition instead of stranding one. Killing it
 outright is still safe: nothing durable moved, so ``stop`` or any CamillaDSP
 restart reverts.
 
-Exit 0 when the speaker ends on its full graph; 1 on any refusal.
+Exit 0 when the speaker ends on its full graph; 1 on any refusal. Either way
+the answer is ONE JSON document on stdout -- the audition's state, or
+``_refusal``'s ``{status, reason, detail}`` -- and the human rendering is
+stderr's.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import logging
 import sys
 import time
@@ -50,10 +52,15 @@ from jasper.active_speaker.audition import (
     stop_audition,
 )
 from jasper.cli._logging import CLI_LOG_FORMAT
-from jasper.cli._refusal import EXIT_OK, EXIT_REFUSED
+from jasper.cli._refusal import EXIT_OK as EXIT_OK, EXIT_REFUSED, answered, failed
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
+
+#: ``start`` returned with the speaker still off its applied graph -- a second
+#: ``start`` took the door, or the restore did not land. Not one of the engine's
+#: ``END_*`` words: those say why the hold ENDED, this says what is playing.
+NOT_RESTORED = "audition_not_restored"
 
 
 def _camilla_controller() -> Any:
@@ -78,27 +85,32 @@ def _play_cue(slug: str) -> None:
     control.post("/cue/play", {"slug": slug}, timeout=35)
 
 
+def _say(line: str = "") -> None:
+    """The human rendering, on stderr: stdout carries the answer."""
+    print(line, file=sys.stderr)
+
+
 def _print_status(payload: dict[str, Any]) -> None:
     layer = payload["layer"]
-    print(f"audition: {payload.get('status')}")
-    print(f"  layer: {layer}")
+    _say(f"audition: {payload.get('status')}")
+    _say(f"  layer: {layer}")
     if payload.get("deadline_at"):
         remaining = float(payload["deadline_at"]) - time.time()
         if remaining > 0:
-            print(f"  auto-restores in: {remaining / 60.0:.0f} min")
+            _say(f"  auto-restores in: {remaining / 60.0:.0f} min")
         else:
             # Past the deadline with the record still here means the owner died
             # without restoring. Nothing will now: say so instead of counting
             # down to a zero that never arrives.
-            print("  STALE: the owner is gone; run `jasper-audition stop`")
+            _say("  STALE: the owner is gone; run `jasper-audition stop`")
     if payload.get("louder_than_full_db"):
-        print(
+        _say(
             "  NOT level-matched: dropping the measured correction hands back "
             f"up to {float(payload['louder_than_full_db']):.1f} dB where it "
             "was cutting, so this layer plays louder in those bands"
         )
     if payload.get("entry_config_path"):
-        print(f"  durable graph (untouched): {payload['entry_config_path']}")
+        _say(f"  durable graph (untouched): {payload['entry_config_path']}")
 
 
 def _cmd_start(args: argparse.Namespace) -> int:
@@ -108,29 +120,24 @@ def _cmd_start(args: argparse.Namespace) -> int:
         state = await start_audition(cam=cam, layer=args.layer, play_cue=_play_cue)
         if state.get("status") != "auditioning":
             return state
-        if not args.json:
-            _print_status(state)
-            print("Listening. Ctrl-C, or `jasper-audition stop`, to go back.")
+        _print_status(state)
+        _say("Listening. Ctrl-C, or `jasper-audition stop`, to go back.")
         reason = await hold_audition(state, cam=cam, play_cue=_play_cue)
         return _ended(reason)
 
     try:
         payload = asyncio.run(_run())
     except AuditionRefused as exc:
-        return _refused(exc, json_output=args.json)
+        return _refused(exc)
     except KeyboardInterrupt:
         payload = _ended(END_INTERRUPTED)
-        print("", file=sys.stderr)
-    if args.json:
-        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
-    else:
-        _print_status(payload)
-        if payload["layer"] != AUDITION_LAYER_FULL:
-            print(
-                "the applied graph is NOT back; run `jasper-audition stop`",
-                file=sys.stderr,
-            )
-    return EXIT_OK if payload["layer"] == AUDITION_LAYER_FULL else EXIT_REFUSED
+        _say()
+    _print_status(payload)
+    if payload["layer"] != AUDITION_LAYER_FULL:
+        return failed(
+            EXIT_REFUSED, NOT_RESTORED, {**payload, "next": "jasper-audition stop"}
+        )
+    return answered(payload)
 
 
 def _ended(reason: str) -> dict[str, Any]:
@@ -154,12 +161,9 @@ def _cmd_stop(args: argparse.Namespace) -> int:
             stop_audition(cam=_camilla_controller(), play_cue=_play_cue)
         )
     except AuditionRefused as exc:
-        return _refused(exc, json_output=args.json)
-    if args.json:
-        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
-    else:
-        _print_status(payload)
-    return EXIT_OK
+        return _refused(exc)
+    _print_status(payload)
+    return answered(payload)
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
@@ -169,14 +173,11 @@ def _cmd_status(args: argparse.Namespace) -> int:
         if state is not None
         else {"status": "not_auditioning", "layer": AUDITION_LAYER_FULL}
     )
-    if args.json:
-        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
-    else:
-        _print_status(payload)
-    return EXIT_OK
+    _print_status(payload)
+    return answered(payload)
 
 
-def _refused(exc: AuditionRefused, *, json_output: bool) -> int:
+def _refused(exc: AuditionRefused) -> int:
     log_event(
         logger,
         "active_speaker.audition",
@@ -185,17 +186,7 @@ def _refused(exc: AuditionRefused, *, json_output: bool) -> int:
         reason=exc.reason,
         detail=exc.detail,
     )
-    if json_output:
-        print(
-            json.dumps(
-                {"status": "refused", "reason": exc.reason, "detail": exc.detail},
-                indent=2,
-                sort_keys=True,
-            )
-        )
-    else:
-        print(f"refused ({exc.reason}): {exc.detail}", file=sys.stderr)
-    return EXIT_REFUSED
+    return failed(EXIT_REFUSED, exc.reason, exc.detail)
 
 
 #: Authority tier for the generated tool-menu index
@@ -234,11 +225,13 @@ def build_parser() -> argparse.ArgumentParser:
             "  0  the speaker ends this call on its full (applied) graph --\n"
             "     start after a clean stop, or stop/status themselves\n"
             "  1  AuditionRefused (start already running elsewhere,\n"
-            "     CamillaDSP unreachable, ...), or start ended WITHOUT the\n"
-            "     full graph restored (a second start superseded this\n"
-            "     one); \"refused (<reason>): <detail>\" on stderr, and as\n"
-            "     JSON with --json. status/stop always exit 0 -- read the\n"
-            "     printed layer, not the code, for their outcome"
+            "     CamillaDSP unreachable, ...) under its own reason, or\n"
+            "     start ended WITHOUT the full graph restored (a second\n"
+            "     start superseded this one) under audition_not_restored,\n"
+            "     which carries the live state. {status, reason, detail} on\n"
+            "     stdout, one sentence on stderr. status/stop always exit\n"
+            "     0 -- read the printed layer, not the code, for their\n"
+            "     outcome"
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -257,15 +250,12 @@ def build_parser() -> argparse.ArgumentParser:
             "(asking for it is the restore)"
         ),
     )
-    start.add_argument("--json", action="store_true")
     start.set_defaults(func=_cmd_start)
 
     stop = sub.add_parser("stop", help="put the applied graph back now")
-    stop.add_argument("--json", action="store_true")
     stop.set_defaults(func=_cmd_stop)
 
     status = sub.add_parser("status", help="which layer is playing, and until when")
-    status.add_argument("--json", action="store_true")
     status.set_defaults(func=_cmd_status)
 
     return parser

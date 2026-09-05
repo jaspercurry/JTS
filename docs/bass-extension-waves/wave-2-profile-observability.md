@@ -8,7 +8,7 @@ then this file completely. Prereq: Wave 1 merged.
 Create the Bass Extension Profile artifact: schema, typed refusal
 vocabulary, persistence, staleness evaluation, plus the read-only
 observability skeleton (doctor check, `/state` section,
-bass-management resolver field). **No runtime behavior, no CamillaDSP
+`/bass/status`'s `bass_extension` field). **No runtime behavior, no CamillaDSP
 imports, no HTTP handlers, no graph knowledge** — this wave makes the
 profile a durable, evaluable fact and nothing more.
 
@@ -26,7 +26,8 @@ profile a durable, evaluable fact and nothing more.
    `baseline_candidate_fingerprint` (what you bind to); skim.
 5. `jasper/audio_measurement/evidence_identity.py` —
    `json_fingerprint`, `ArtifactIdentity` (reuse, do not reimplement).
-6. `jasper/bass_management.py` (small; you add one additive field).
+6. `jasper/web/correction_bass_flow.py`'s `status_payload()` (small;
+   you add one additive field).
 7. `jasper/control/state_aggregate.py` — one existing fail-soft
    section as the pattern (e.g. how `active_speaker_setup` is read).
 8. `jasper/cli/doctor/audio.py` — one `@doctor_check` as exemplar,
@@ -41,8 +42,9 @@ profile a durable, evaluable fact and nothing more.
 - `jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state`
   and `baseline_candidate_fingerprint` exist (names may have drifted —
   if so, STOP and report; do not guess a substitute).
-- `jasper.bass_management.resolve_bass_management` returns a frozen
-  `BassManagementState` dataclass.
+- `jasper.output_topology.bass_management_corner_hz()` returns the
+  local subwoofer's corner in Hz, or `None` (`jasper.bass_management`
+  is gone — ADR-0237).
 - Locate the repo's atomic text-write helper (grep
   `atomic_write_text`; `design_draft.py` uses it). Use that helper;
   if it doesn't exist under that name, stop and report.
@@ -57,13 +59,13 @@ Create:
   test file; there is no monolithic state-aggregate test file)
 
 Modify (small, additive):
-- `jasper/bass_management.py` — add `bass_extension` field to the
-  state (default `None`), populated from `profile.py`'s summary
-  reader; keep the resolver total/fail-soft.
+- `jasper/web/correction_bass_flow.py` — add `bass_extension` field to
+  `status_payload()`'s dict (default `None`), populated from
+  `profile.py`'s summary reader; keep it total/fail-soft.
 - `jasper/control/state_aggregate.py` — add a `bass_extension`
   section (fail-soft null).
 - `jasper/cli/doctor/audio.py` — add `check_bass_extension_profile`.
-- `tests/test_bass_management.py` (exists — extend, don't fork).
+- `tests/test_web_correction_bass_flow.py` (exists — extend, don't fork).
 
 ## Frozen interface (`profile.py`)
 
@@ -122,7 +124,7 @@ def evaluate_bass_extension_profile(*, path=None, topology,
     # refusals, not just the first.
 
 def bass_extension_state_summary(path=None) -> dict | None
-    # the small read-only dict for /state and bass_management:
+    # the small read-only dict for /state and correction_bass_flow.py:
     # {commissioned, status, profile_id, deepest_hz, natural_hz,
     #  margin, anchors: [{target_id, max_listening_level, evidence}]}
     # totally fail-soft: any exception -> None.
@@ -164,9 +166,10 @@ reads in this wave.
   fragment.
 - `/state` section: fail-soft null when the profile module raises
   (monkeypatch), populated dict otherwise.
-- `bass_management`: state gains the field with default None; the
-  existing resolver behavior is unchanged when no profile exists
-  (extend the existing tests, don't rewrite them).
+- `status_payload()`: the dict gains the field with default None; the
+  existing bass-management corner/configured behavior is unchanged
+  when no profile exists (extend the existing tests, don't rewrite
+  them).
 
 ## Anti-overengineering fences
 
@@ -184,6 +187,6 @@ them).
 
 ```
 .venv/bin/pytest tests/test_bass_extension_profile.py -q
-.venv/bin/pytest tests/test_bass_management.py -q   # or the module's actual test file
+.venv/bin/pytest tests/test_web_correction_bass_flow.py -q
 scripts/test-fast
 ```

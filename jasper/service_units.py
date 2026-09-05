@@ -2,11 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The systemd unit roster and the one ``systemctl show`` reader.
+"""The systemd unit roster and a shared ``systemctl show`` reader.
 
-jasper-control's samplers, jasper-doctor and jasper-system-soak all read
-unit state; they read it through here so one roster and one parser exist
-(ADR-0233 rule 1). Stdlib only: the doctor imports this on every run.
+jasper-control's samplers, jasper-doctor and jasper-system-soak read unit
+state through here, sharing one roster and one parser (ADR-0233 rule 1).
+Stdlib only: the doctor imports this on every run.
 """
 from __future__ import annotations
 

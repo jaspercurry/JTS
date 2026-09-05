@@ -396,16 +396,18 @@ fi
 # none of them has an owning source file, so no changed-file mapping above can
 # ever select one -- any diff could break them while this lane stayed green.
 # test_deploy_wiring_guards covers deploy/systemd/* and deploy/lib/install/*,
-# which match no case arm at all. Only the cheap scanners run here; the
-# slower unroutable ones (test_async_wait_contract, test_lazy_imports,
-# test_env_vars_codified) stay in test-merge so this lane doesn't double in
-# runtime. test_ci_classifier is already covered by the routing-policy phase
-# above.
+# which match no case arm at all. test_correction_boundary_ssot and
+# test_runtime_import_closure are the tuning-layer import-boundary pins. Only
+# the cheap scanners run here; the slower unroutable ones
+# (test_async_wait_contract, test_lazy_imports, test_env_vars_codified) stay
+# in test-merge so this lane doesn't double in runtime. test_ci_classifier is
+# already covered by the routing-policy phase above.
 echo "==> pytest always-on fast guards"
 lane_pipe_pytest "${phase_tmp}" "${pytest_bin}" -q --tb=short \
   tests/test_dependency_groups.py tests/test_lint_contracts.py \
   tests/test_deploy_wiring_guards.py tests/test_shell_awk_environ_convention.py \
-  tests/test_docs_impact.py "$@"
+  tests/test_docs_impact.py tests/test_correction_boundary_ssot.py \
+  tests/test_runtime_import_closure.py "$@"
 _lane_passed_total=$(( _lane_passed_total + $(lane_extract_passed_count "${phase_tmp}") ))
 
 # LAST statement, deliberately: every phase the lane promises has now run, so

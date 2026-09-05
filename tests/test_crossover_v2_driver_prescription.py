@@ -3434,13 +3434,13 @@ def test_an_oversized_driver_document_refuses_in_its_own_vocabulary(
 
     code = cli.main([
         "propose", str(session), "--drivers", str(draft_path),
-        "--prescription", str(prescription_path), "--json",
+        "--prescription", str(prescription_path),
     ])
 
     out = json.loads(capsys.readouterr().out)
     assert code == cli.EXIT_REFUSED
     assert out["reason"] == dp.DRIVER_PRESCRIPTION_TOO_LARGE
-    assert out["evidence"]["max_bytes"] == dp.DRIVER_PRESCRIPTION_MAX_BYTES
+    assert out["detail"]["evidence"]["max_bytes"] == dp.DRIVER_PRESCRIPTION_MAX_BYTES
 
 
 def test_every_bound_is_the_constant_the_fit_engine_already_emits_up_to():
@@ -4099,13 +4099,17 @@ def test_the_document_names_which_gate_reads_it(tmp_path, capsys, monkeypatch):
 
     code = cli.main([
         "propose", str(session), "--drivers", str(draft_path),
-        "--prescription", str(prescription_path), "--json",
+        "--prescription", str(prescription_path), "--out", str(tmp_path / "r.json"),
     ])
 
     out = json.loads(capsys.readouterr().out)
     assert code == 0
     assert out["accepted"] is True
-    assert list(out["candidate_fields"]) == [LINEARIZATION_CANDIDATE_FIELD]
+    assert out["candidate_fields"] == [LINEARIZATION_CANDIDATE_FIELD]
+    # The next command carries the rebuild input this one was judged with: a
+    # rebuild without --drivers resolves it against the machine instead and
+    # fingerprints differently, which is what refuses the same document.
+    assert f"--drivers {draft_path}" in out["next"]
 
 
 def test_the_cli_refuses_a_per_driver_document_without_the_drivers_flag(
@@ -4129,7 +4133,7 @@ def test_the_cli_refuses_a_per_driver_document_without_the_drivers_flag(
     prescription_path.write_text(json.dumps(_document([_cut()], packet)))
 
     code = cli.main([
-        "propose", str(session), "--prescription", str(prescription_path), "--json",
+        "propose", str(session), "--prescription", str(prescription_path),
     ])
 
     out = json.loads(capsys.readouterr().out)
@@ -4627,8 +4631,13 @@ def test_without_an_incumbent_record_the_displacement_is_unknown_not_zero(tmp_pa
     assert prescription.displaced_boost_role is None
 
 
-def test_the_cli_tells_the_operator_what_staging_this_would_delete(tmp_path, capsys):
+def test_the_cli_tells_the_operator_what_staging_this_would_delete(
+    tmp_path, capsys, monkeypatch
+):
     """The disclosure's operator-facing reader: one line, before staging."""
+    # A LIVE bundle is daemon-owned, so the accepted result lands beside the
+    # CALLER, which here must not be the checkout.
+    monkeypatch.chdir(tmp_path)
     session, _ = _bundle(tmp_path / "bundle")
     round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
     (round_dir / "feature_classification.json").write_text(
@@ -4660,13 +4669,16 @@ def test_the_cli_tells_the_operator_what_staging_this_would_delete(tmp_path, cap
     assert "+8.00 dB" in err
 
 
-def test_the_cli_tells_the_operator_a_trim_will_not_be_re_solved(tmp_path, capsys):
+def test_the_cli_tells_the_operator_a_trim_will_not_be_re_solved(
+    tmp_path, capsys, monkeypatch
+):
     """A pin moves a LEVEL, so it cannot be invisible at the decision point.
 
     The control matters as much as the pin: an ordinary document says nothing
     about trims, and an operator who never sees the line must be able to read
     its absence as "this round solves them all".
     """
+    monkeypatch.chdir(tmp_path)
     session, _ = _bundle(tmp_path / "bundle")
     round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
     (round_dir / "feature_classification.json").write_text(

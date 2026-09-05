@@ -66,7 +66,7 @@ _lane_output_tmp="$(mktemp "${TMPDIR:-/tmp}/jts-test-merge-output.XXXXXX")"
 # exit code -- there is nothing to do differently on failure that `cleanup`
 # doesn't already handle, so there is no `set +e`/capture dance to write.
 lane_pipe_pytest "${_lane_output_tmp}" \
-  "${pytest_bin}" -q --tb=short --ignore=tests/voice_eval -n 4 "$@"
+  "${pytest_bin}" -q --tb=short --ignore=tests/voice_eval -n 4 --durations=25 "$@"
 _lane_passed_total="$(lane_extract_passed_count "${_lane_output_tmp}")"
 
 # LAST statement, deliberately: everything the lane promises has now run, so

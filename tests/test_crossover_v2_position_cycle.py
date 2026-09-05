@@ -16,6 +16,7 @@ import pytest
 from jasper.active_speaker.crossover_v2 import position_cycle
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
 from jasper.active_speaker.crossover_v2.position_cycle import (
+    POSITION_CYCLE_FILENAME,
     POSITION_CYCLE_KIND,
     POSITION_EVIDENCE_KIND,
     SCHEMA_VERSION,
@@ -27,11 +28,13 @@ from jasper.active_speaker.crossover_v2.position_cycle import (
     read_position_cycle,
     staged_stops,
     takes_by_position,
+    write_position_cycle,
 )
 from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
 from jasper.active_speaker.crossover_v2.spatial import (
     LATERAL_POSE_REGIME,
     LateralPose,
+    TakeClaim,
     entry_baseline_record,
     lateral_pose_record,
 )
@@ -103,6 +106,7 @@ def test_staged_stops_counts_what_the_walk_will_serve():
 
 def _record(
     index: int, position_deg: int, *, attempt: int = 1, vertical_deg: int = 0,
+    candidate_id: str = "",
 ) -> dict:
     """One take, built by the SPEAKER's own producer.
 
@@ -126,6 +130,7 @@ def _record(
         session_id="sess-1", graph_fingerprint="fp-applied",
         captured_at="2026-08-26T00:00:00Z",
         wav_sha256=f"sha-{index}-{attempt}",
+        claim=TakeClaim(candidate_id=candidate_id),
     )
 
 
@@ -177,15 +182,31 @@ def test_the_index_projects_the_speakers_own_take_records(tmp_path):
         f"bundle/sess-1/{_BANKED_ARTIFACTS}/capture-1/positions"
     ]
     assert document["takes"] == [
-        {"index": 1, "attempt": 1, "take_id": "lateral_01_a01", "position_deg": 0,
-         "vertical_deg": 0, "role": "onax", "regime": LATERAL_POSE_REGIME,
-         "wav_sha256": "sha-1-1"},
-        {"index": 2, "attempt": 1, "take_id": "lateral_02_a01", "position_deg": 7,
-         "vertical_deg": 0, "role": "offax", "regime": LATERAL_POSE_REGIME,
-         "wav_sha256": "sha-2-1"},
-        {"index": 3, "attempt": 1, "take_id": "lateral_03_a01", "position_deg": -7,
-         "vertical_deg": 0, "role": "offax", "regime": LATERAL_POSE_REGIME,
-         "wav_sha256": "sha-3-1"},
+        {"index": 1, "attempt": 1, "take_id": "lateral_01_a01", "candidate_id": "",
+         "position_deg": 0, "vertical_deg": 0, "role": "onax",
+         "regime": LATERAL_POSE_REGIME, "wav_sha256": "sha-1-1"},
+        {"index": 2, "attempt": 1, "take_id": "lateral_02_a01", "candidate_id": "",
+         "position_deg": 7, "vertical_deg": 0, "role": "offax",
+         "regime": LATERAL_POSE_REGIME, "wav_sha256": "sha-2-1"},
+        {"index": 3, "attempt": 1, "take_id": "lateral_03_a01", "candidate_id": "",
+         "position_deg": -7, "vertical_deg": 0, "role": "offax",
+         "regime": LATERAL_POSE_REGIME, "wav_sha256": "sha-3-1"},
+    ]
+
+
+def test_each_take_at_a_cycled_pose_names_the_candidate_it_measured(tmp_path):
+    """Three candidates at ONE bearing are three rows; the id is what tells
+    them apart, and without it the curves at that pose are anonymous."""
+    _bank(tmp_path, [
+        _record(1, 0, candidate_id="cand-a"),
+        _record(2, 0, candidate_id="cand-b"),
+        _record(3, 0, candidate_id="cand-c"),
+    ])
+
+    takes = position_cycle_document(tmp_path, derived_at=STAMP)["takes"]
+
+    assert [take["candidate_id"] for take in takes] == [
+        "cand-a", "cand-b", "cand-c",
     ]
 
 
@@ -218,6 +239,17 @@ def test_a_take_banked_before_elevation_existed_indexes_as_mark_height(tmp_path)
     take, = position_cycle_document(tmp_path, derived_at=STAMP)["takes"]
 
     assert take["vertical_deg"] == 0
+
+
+def test_a_take_banked_before_candidates_existed_names_no_candidate(tmp_path):
+    """``""`` is the honest reading of a walk that cycled nothing — never
+    ``None``, which would put a null in front of every packet reader."""
+    legacy = {k: v for k, v in _record(1, 7).items() if k != "candidate_id"}
+    _bank(tmp_path, [legacy])
+
+    take, = position_cycle_document(tmp_path, derived_at=STAMP)["takes"]
+
+    assert take["candidate_id"] == ""
 
 
 def test_every_indexed_value_is_present_in_the_banked_record(tmp_path):
@@ -577,6 +609,25 @@ def test_the_refusal_names_where_it_looked(tmp_path):
         position_cycle_document(tmp_path)
 
 
+def test_a_non_numeric_ordinal_refuses_as_this_modules_error(tmp_path):
+    """A corrupt sidecar costs the round its index, never the caller's whole
+    operation: a bare ``ValueError`` out of the sort would unwind a bank."""
+    _bank(tmp_path, [dict(_record(1, 0), index="1a")])
+
+    with pytest.raises(PositionCycleError, match="non-numeric"):
+        position_cycle_document(tmp_path, derived_at=STAMP)
+
+
+def test_the_writer_puts_the_index_where_the_reader_looks(tmp_path):
+    """The one writer of the file, round-tripped through the one reader."""
+    _bank(tmp_path / "round", [_record(1, 0), _record(2, 7)])
+
+    path, document = write_position_cycle(tmp_path / "round")
+
+    assert path == tmp_path / "round" / POSITION_CYCLE_FILENAME
+    assert read_position_cycle(path) == document
+
+
 # --------------------------------------------------------------------------- #
 # the reader
 # --------------------------------------------------------------------------- #
@@ -637,8 +688,9 @@ def test_a_take_carrying_an_extra_field_is_refused(tmp_path, document):
         read_position_cycle(_written(tmp_path, document))
 
 
-def test_a_take_missing_a_DEFAULTED_field_still_reads(tmp_path, document):
-    """The strict reader's one exemption, at the MISSING end only.
+@pytest.mark.parametrize("field", ["vertical_deg", "candidate_id"])
+def test_a_take_missing_a_DEFAULTED_field_still_reads(tmp_path, document, field):
+    """The strict reader's exemptions, at the MISSING end only.
 
     Strictness exists so a NEWER document is never read as an older one, and
     the test above keeps that: an unknown key still refuses. What this exempts
@@ -647,7 +699,7 @@ def test_a_take_missing_a_DEFAULTED_field_still_reads(tmp_path, document):
     throw away a banked round to gain one number the round never had.
     """
     document["takes"] = [
-        {k: v for k, v in take.items() if k != "vertical_deg"}
+        {k: v for k, v in take.items() if k != field}
         for take in document["takes"]
     ]
 

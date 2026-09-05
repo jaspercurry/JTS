@@ -438,6 +438,7 @@ impl LaneResampler {
     /// [`spine_acc_to_i16`]: the ring is spine-scale, so dividing the exact
     /// power-of-two widening back out before the round is bit-transparent.
     pub fn render_period(&mut self, out: &mut [i16]) -> usize {
+        // PANIC-AUDITED: out is the caller's own period buffer, sized period_frames x channels
         debug_assert_eq!(out.len(), self.period_frames * self.channels);
         let ratio = match self.plan_period() {
             RenderPlan::Silence => {
@@ -472,6 +473,7 @@ impl LaneResampler {
     /// `>> 16` anywhere on this route, so a hi-res source's low bits reach the
     /// mixer's sum intact.
     pub fn render_period_wide(&mut self, out: &mut [i32]) -> usize {
+        // PANIC-AUDITED: out is the caller's own period buffer, sized period_frames x channels
         debug_assert_eq!(out.len(), self.period_frames * self.channels);
         let ratio = match self.plan_period() {
             RenderPlan::Silence => {
