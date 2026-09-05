@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Wired measurement-mic capture: the Pi records its own excitation (#2662 W2b).
+"""Wired measurement-mic capture: the Pi records its own excitation (#2662).
 
 The capture ENGINE behind :mod:`jasper.web.correction_crossover_v2_wired`: parameterized ALSA
 capture from a Pi-attached measurement-class microphone, with the frame accounting and dropout

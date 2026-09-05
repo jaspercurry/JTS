@@ -35,7 +35,7 @@ __all__ = [
 #: what it said, so it does not move this number.
 OPERATOR_NOTES_SCHEMA_VERSION = 1
 
-#: ``jts_<owner>_<name>`` — the shape ticket 2.8's artifact-kind ruling requires
+#: ``jts_<owner>_<name>`` — the shape the artifact-kind ruling requires
 #: of a new kind, which ``bundles.validate_artifact_kind`` accepts this string
 #: against. Kinds written before that rule are grandfathered, not renamed.
 OPERATOR_NOTES_KIND = "jts_crossover_v2_operator_notes"

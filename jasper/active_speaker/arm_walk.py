@@ -257,6 +257,10 @@ class Poll:
     ``ended`` is the TERMINAL ``capture.status`` a finished session published
     (:data:`SESSION_ENDED_STATUSES`), or empty -- a third state, not the negation of
     ``in_flight``: no capture block at all means no session has opened yet.
+
+    ``hand_released`` is the session saying a PERSON releases this hold, which is why
+    ``pending`` is empty beside it: the same flag that made
+    :func:`pending_from_capture` decline it.
     """
 
     pending: Pending | None
@@ -264,6 +268,7 @@ class Poll:
     failed_error: str | None = None
     readable: bool = True
     ended: str = ""
+    hand_released: bool = False
 
 
 class Mover(Protocol):
@@ -607,6 +612,22 @@ class ArmWalk:
                     )
                     return EXIT_STATUS_UNREACHABLE
 
+            if poll.hand_released:
+                # Decided before any clock, so the operator reads the real
+                # reason instead of the stuck alarm's #2506 diagnosis five
+                # minutes later. Nothing moved: this is the same class as the
+                # configuration refusals, discovered off the envelope.
+                self._trail.emit(
+                    "hand_released",
+                    level=logging.ERROR,
+                    detail=(
+                        "a person is walking this round from the browser -- "
+                        "serve has nothing to move and must not release a "
+                        "hold meant for a hand"
+                    ),
+                )
+                return EXIT_REFUSED
+
             if poll.pending is not None:
                 # An already-served hold falls through deliberately: not
                 # progress, resets no clock, ends on the idle ceiling if it
@@ -853,11 +874,18 @@ class ArmWalk:
 def pending_from_capture(capture: Mapping[str, Any]) -> Pending | None:
     """``capture.position_pending`` -> :class:`Pending`, or ``None``.
 
-    Absent, malformed, or missing its index all read the same way: nothing to
-    serve. A hold this loop cannot parse is one it must not move for.
+    Absent, malformed, missing its index, or held for a PERSON all read the
+    same way: nothing to serve. A hold this loop cannot parse -- or was not
+    asked for -- is one it must not move for.
     """
     raw = capture.get("position_pending")
     if not isinstance(raw, Mapping) or "index" not in raw or "degrees" not in raw:
+        return None
+    # The reciprocal of the browser's own ``hand_released`` check: nothing
+    # stops a serve running beside a hand-walked round, and one that claimed
+    # its holds would turn the turntable while a household is standing at the
+    # microphone.
+    if raw.get("hand_released"):
         return None
     try:
         return Pending(
@@ -891,7 +919,13 @@ def poll_from_status(status: Mapping[str, Any] | None) -> Poll:
     if state == "failed":
         failed = str(capture.get("error") or "(the session supplied no error)")
     ended = state if state in SESSION_ENDED_STATUSES else ""
-    return Poll(pending_from_capture(capture), not ended, failed, ended=ended)
+    held = capture.get("position_pending")
+    return Poll(
+        pending_from_capture(capture), not ended, failed, ended=ended,
+        hand_released=bool(
+            isinstance(held, Mapping) and held.get("hand_released")
+        ),
+    )
 
 
 def staged_walk_pending() -> bool:

@@ -53,7 +53,7 @@ from .journey import (
 # level policy
 # --------------------------------------------------------------------------- #
 
-#: The gain solver backs off this far below each driver's exact cap: the W2 gate
+#: The gain solver backs off this far below each driver's exact cap: testing
 #: found ``prepare_driver_excitation_plan``'s strict ``>`` can refuse an
 #: exactly-at-cap plan by one ulp.
 GAIN_CAP_BACKOFF_DB = 0.01
@@ -262,7 +262,7 @@ class SessionExcitation:
     def verify_program(self, *, extra_backoff_db: float = 0.0) -> ExcitationProgram:
         """The mono summed sweep, clamped to the MOST RESTRICTIVE cap.
 
-        Cap-aware (W6.1): VERIFY plays a MONO summed sweep through the APPLIED
+        Cap-aware: VERIFY plays a MONO summed sweep through the APPLIED
         production graph with NO play-time admission gate (it does not ride
         ``play_program``/``readmit``), so the compose-time clamp here is the ONLY
         level guard. A summed signal reaches every driver, so it is clamped to

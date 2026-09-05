@@ -102,8 +102,8 @@ function responseRun(slot, id) {
 }
 
 const catalog = [
-  { id: "a", started_at: 1000, state: "applied" },
-  { id: "b", started_at: 900, state: "applied" },
+  { id: "a", name: "a", origin: "live", started_at: 1000, state: "applied" },
+  { id: "round:r3", name: "r3", origin: "banked", started_at: 900, state: "applied" },
 ];
 let mode = "normal";
 const requests = [];
@@ -113,10 +113,10 @@ async function getJSON(url) {
   if (mode === "empty") {
     return { catalog: [], selected: { a: null, b: null }, view: null };
   }
-  const withB = url.includes("b=b");
+  const withB = url.includes("b=");
   return {
     catalog,
-    selected: { a: "a", b: withB ? "b" : null },
+    selected: { a: "a", b: withB ? "round:r3" : null },
     view: { runs: withB ? [responseRun("a", "a"), responseRun("b", "b")] : [responseRun("a", "a")] },
   };
 }
@@ -152,6 +152,11 @@ check(
   elements.get("measurement-run-b").value === "",
   "initial selection is run A with no run B",
 );
+check(
+  descendants(elements.get("measurement-run-a"), "option")
+    .map((option) => option.children[0]).join("|").includes("banked r3"),
+  "the picker says which entries are banked rounds",
+);
 let chart = chartPayloads.at(-1);
 check(
   chart.series.map((series) => series.draw).join(",") === "true,false,false",
@@ -182,12 +187,12 @@ check(
   "revealing a position updates its trace and its own validity shading",
 );
 
-elements.get("measurement-run-b").value = "b";
+elements.get("measurement-run-b").value = "round:r3";
 await elements.get("measurement-run-b").dispatch("change");
 chart = chartPayloads.at(-1);
 check(
-  requests.at(-1) === "data?a=a&b=b" && chart.series.length === 6,
-  "selecting run B loads and draws the A/B view",
+  requests.at(-1) === "data?a=a&b=round%3Ar3" && chart.series.length === 6,
+  "selecting a banked round as run B loads and draws the A/B view",
 );
 
 mode = "empty";

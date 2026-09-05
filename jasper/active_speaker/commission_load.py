@@ -755,7 +755,7 @@ async def load_driver_commissioning_config(
     candidate_path = preflight.get("candidate_config_path")
     evidence = preflight.get("audible_evidence") or {}
     staged_path = (staged.get("config") or {}).get("path") or str(staged_config_path())
-    # WHICH TRANSPORT THE SWAP LANDED ON (#2412 Wave 4), so the journal can tell
+    # WHICH TRANSPORT THE SWAP LANDED ON (#2412), so the journal can tell
     # "the swap failed" from "the swap failed ON THE RING" — the one new failure
     # mode commissioning-on-the-ring introduces. Read off the candidate the
     # preflight already resolved, which is the same field its own

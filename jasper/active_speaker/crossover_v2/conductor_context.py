@@ -433,7 +433,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         )
     # The declaration's per-role EFFECTIVE datasheet sensitivities -- naked
     # figure with any declared in-line pad folded in (#1665) -- threaded into
-    # every cap resolution below. This is the one owner of that fact (W6.5).
+    # every cap resolution below. This is the one owner of that fact (ADR-0227 §9).
     declared_sensitivities = declared_effective_driver_sensitivities(draft)
     # The declaration's per-role driver technology class (#1665), threaded
     # into the conductor construction sites below so the Layer-1a
@@ -451,7 +451,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
             # admission-gated CHECK/MEASURE programs, whose channel routing
             # carries each driver's crossover filter (the tweeter's protective
             # HP included) by construction — the proven-HP path, the same
-            # justification as session_volume_plan. Without it the W6.5
+            # justification as session_volume_plan. Without it the ADR-0227 §9
             # derived HF ceiling is inert exactly where it matters: these
             # context caps clamp every composed level (CHECK pilot bases,
             # MEASURE back_off_gain, VERIFY min(caps)).
@@ -510,7 +510,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         role_targets=role_targets,
         safety_profile=safety_profile,
         session_volume_db=session_volume_db,
-        # W6 CHECKLIST ITEM: driver_spacing_m stays 0.0 until a declared
+        # driver_spacing_m stays 0.0 until a declared
         # woofer↔tweeter spacing input exists (topology/preset carry none
         # today), so the §3.2 parallax correction is INERT — the analysis
         # subtracts nothing. Do not assume VERIFY covers this: a missing
@@ -518,10 +518,10 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         # same geometric excess is baked into both MEASURE and VERIFY), so
         # VERIFY passes while the LISTENING POSITION carries the full error
         # (~23° at 2 kHz for 15 cm spacing measured at 1 m).
-        # W6 CHECKLIST ITEM (pre-existing): a deliberate household volume
+        # A deliberate household volume
         # action mid-session (remote / voice "louder" / :8780 HTTP) still moves
         # the CamillaDSP main volume — the session measurement pause holds off
-        # the idle reconciler, not VolumeCoordinator writes. W6 validation
+        # the idle reconciler, not VolumeCoordinator writes. Validation
         # runs hands-off; a session-long volume guard is a follow-up.
         driver_spacing_m=0.0,
         topology=topology,

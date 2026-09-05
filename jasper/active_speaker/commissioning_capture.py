@@ -782,7 +782,7 @@ def _record_alignment_snr(summed_record: Any) -> tuple[bool | None, bool]:
     indistinguishable from no evidence at all and must not degrade. This branch
     was once the one every real summed capture took, because the legacy
     crossover flow bolted a scalar ``noise_floor_dbfs`` onto every summed
-    record; W5b (``9666ff836``) deleted that flow, and no production caller
+    record; commit ``9666ff836`` deleted that flow, and no production caller
     reaches it today (issue #2010, 2026-08-01 — see
     ``driver_acoustics._capture_band_levels``'s docstring for the reachability
     evidence and why it is load-bearing).
