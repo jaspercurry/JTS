@@ -137,7 +137,7 @@ install_jasper() {
     # in main() (write_build_manifest), so a failure anywhere downstream —
     # the WebRTC/Rust builds, unit install, nginx config — leaves the prior
     # good manifest rather than a SHA the box isn't cleanly running.
-    # (Problem #4, docs/install-update-resilience-plan.md.)
+    # (See ADR-0172.)
 
     # WS1 Phase 4a — the per-account Google OAuth token tree + client secret
     # live in the group-`jasper-secrets` compartment (jasper-voice + jasper-web
@@ -451,7 +451,7 @@ install_streambox_jasper() {
     install -d -m 0755 -o root -g root "${STATE_DIR}/audio-validation"
 
     # Build manifest is written as the FINAL mutation in main(), not here —
-    # see install_jasper's note and write_build_manifest for why (problem #4).
+    # see install_jasper's note and write_build_manifest for why (ADR-0172).
 
     rsync -a --delete \
         --exclude='.venv' --exclude='__pycache__' --exclude='.git' \

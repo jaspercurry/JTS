@@ -265,8 +265,10 @@ def test_the_distance_flag_prints_both_terms(capsys):
         ["close-reference", "--distance", "--driver-diameter-in", "5.5",
          "--fc-hz", "2500"]
     ) == EXIT_OK
-    record = json.loads(capsys.readouterr().out)["distance"]
+    # It writes no artifact, so the derivation's own fields ARE the answer.
+    record = json.loads(capsys.readouterr().out)
     assert record["distance_in"] == pytest.approx(12.4, abs=0.1)
     assert record["margin_term_m"] > record["far_field_term_m"]
     assert record["placement_tolerance_db"] > 0.0
+    assert "status" not in record
 

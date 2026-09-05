@@ -1116,6 +1116,7 @@ impl TtsMixer {
         // per-segment flushed total in normal operation.
         let events = self.ledger.flush();
         let flushed = self.clear_queue();
+        // PANIC-AUDITED: both totals come from the one flush performed two lines above
         debug_assert_eq!(
             flushed,
             events.iter().map(|e| e.flushed_frames).sum::<u64>(),

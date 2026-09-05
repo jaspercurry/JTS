@@ -1011,6 +1011,7 @@ impl KWeightedWindow {
     }
 
     fn push_interleaved(&mut self, samples: &[i16]) -> Option<f32> {
+        // PANIC-AUDITED: every real producer emits whole interleaved frames
         debug_assert_eq!(samples.len() % (CHANNELS as usize), 0);
         if samples.is_empty() {
             return None;

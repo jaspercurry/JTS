@@ -38,6 +38,7 @@ from jasper.cli.measure import (
     REFUSE_ONE_POSITION_PER_RUN,
     REFUSE_SPEC_INVALID,
     REFUSE_SPECS_MIXED_POSE,
+    REFUSE_SPECS_UNREADABLE,
     REFUSE_SPECS_WITH_TAKE_FLAGS,
     BoxDeclaration,
     MeasureFlagError,
@@ -183,16 +184,27 @@ def test_the_engine_s_own_refusals_reach_the_operator_as_input_errors():
     assert caught.value.detail
 
 
-def test_the_flag_refusal_exits_as_an_input_error(capsys):
-    """Exit 2 and a machine-readable reason — the code a script branches on."""
-    code = measure.main(
-        ["--kind", MEASURE_KIND_CANDIDATE, "--level-matched", "--json"]
-    )
+@pytest.mark.parametrize(
+    "argv,reason",
+    [
+        (["--level-matched"], REFUSE_CANDIDATE_ID_REQUIRED),
+        (["--specs", "/nonexistent/specs.json"], REFUSE_SPECS_UNREADABLE),
+    ],
+)
+def test_the_flag_refusal_exits_as_an_input_error(argv, reason, capsys):
+    """Exit 2 and the shared refusal document, with nothing beside it.
+
+    Ungated: the document is what a script branches on, so a flag deciding
+    whether it appears would make the refusal readable only by luck.
+    """
+    code = measure.main(["--kind", MEASURE_KIND_CANDIDATE, *argv])
 
     assert code == EXIT_UNREADABLE
-    assert json.loads(capsys.readouterr().out)["reason"] == (
-        REFUSE_CANDIDATE_ID_REQUIRED
-    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "status": "unreadable", "reason": reason, "detail": payload["detail"],
+    }
+    assert isinstance(payload["detail"], str) and payload["detail"]
 
 
 def _stub_box_reads(monkeypatch, *, preview_status: str) -> None:
@@ -414,14 +426,19 @@ def test_one_run_opens_measures_banks_and_puts_the_speaker_back(speaker, capsys)
 
     code = measure.main(["--kind", MEASURE_KIND_BASELINE, "--position", "0"])
 
-    payload = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
     assert code == EXIT_OK
     assert payload["status"] == "measured"
+    assert payload["n_takes"] == 1
     assert len(payload["record_ids"]) == 1
     assert len(payload["specs"]) == 1
     assert payload["specs"][0]["graph_fingerprint"]
-    assert [s["position_deg"] for s in payload["specs"][0]["stimuli"]] == [0]
-    assert [s["incident"] for s in payload["specs"][0]["stimuli"]] == [""]
+    assert payload["specs"][0]["n_takes"] == 1
+    assert payload["specs"][0]["incidents"] == []
+    # stdout IS the answer: the bank verb, spelled with this run's own bundle.
+    assert payload["next"] == f"jasper-round bank {payload['bundle_dir']}"
+    assert payload["bundle_dir"] in captured.err
     assert speaker["capture"].arounds == 1
     assert len(speaker["played"]) == 1
     # Given back: the entry graph is what the DSP last loaded, and the fader is
@@ -444,10 +461,13 @@ def test_a_level_ladder_plays_every_rung_against_one_open_session(speaker, capsy
 
     payload = json.loads(capsys.readouterr().out)
     assert code == EXIT_OK
-    stimuli = payload["specs"][0]["stimuli"]
-    assert [s["stimulus_dbfs"] for s in stimuli] == [-12.0, -18.0]
-    assert len(payload["record_ids"]) == 2
-    assert all(s["level_db"] == pytest.approx(-20.0) for s in stimuli)
+    assert payload["n_takes"] == 2
+    banked = [
+        json.loads((Path(payload["bundle_dir"]) / ARTIFACTS / rid).read_text())
+        for rid in payload["record_ids"]
+    ]
+    assert [r["stimulus_dbfs"] for r in banked] == [-12.0, -18.0]
+    assert all(r["level_db"] == pytest.approx(-20.0) for r in banked)
 
 
 def test_a_box_with_no_microphone_refuses_before_it_takes_the_speaker(
@@ -462,7 +482,7 @@ def test_a_box_with_no_microphone_refuses_before_it_takes_the_speaker(
         "jasper.audio_measurement.wired_capture.resolve_wired_mic", lambda **kw: None,
     )
 
-    code = measure.main(["--kind", MEASURE_KIND_BASELINE, "--json"])
+    code = measure.main(["--kind", MEASURE_KIND_BASELINE])
 
     assert code == EXIT_REFUSED
     assert json.loads(capsys.readouterr().out)["reason"] == REFUSE_NO_MIC
@@ -499,7 +519,7 @@ def test_a_refused_run_does_not_abandon_the_live_session_s_bundle(
         "jasper.active_speaker.session_volume_plan.live_measurement_session",
         lambda **kw: "a measurement session is already running",
     )
-    code = measure.main(["--kind", MEASURE_KIND_BASELINE, "--json"])
+    code = measure.main(["--kind", MEASURE_KIND_BASELINE])
 
     assert code == EXIT_REFUSED
     assert json.loads(capsys.readouterr().out)["reason"] == (
@@ -543,10 +563,13 @@ def test_a_walk_that_stops_part_way_still_names_what_it_banked(
 
     payload = json.loads(capsys.readouterr().out)
     assert code == EXIT_REFUSED
-    assert payload["status"] == "partial"
-    assert payload["reason"] == REFUSE_GRAPH_LOST
-    assert len(payload["record_ids"]) == 1, "the banked take was not reported"
-    assert payload["bundle_dir"]
+    assert payload["status"] == "refused"
+    assert payload["reason"] == "interrupted"
+    detail = payload["detail"]
+    assert detail["reason"] == REFUSE_GRAPH_LOST
+    assert len(detail["record_ids"]) == 1, "the banked take was not reported"
+    assert detail["bundle_dir"]
+    assert detail["stopped_at"]["index"] == 0
     # Still given back: a partial result is not a stranded speaker.
     assert speaker["cam"].volume_db == pytest.approx(HOUSEHOLD_DB)
 
@@ -576,10 +599,12 @@ def test_a_give_back_failure_after_a_clean_batch_still_renders_json(
 
     payload = json.loads(capsys.readouterr().out)
     assert code == EXIT_REFUSED
-    assert payload["status"] == "restore_failed"
-    assert payload["restore_error"]["reason"] == REFUSE_GRAPH_LOST
-    assert len(payload["record_ids"]) == 1, "the banked take was not reported"
-    assert len(payload["specs"]) == 1
+    assert payload["status"] == "refused"
+    assert payload["reason"] == "restore_failed"
+    detail = payload["detail"]
+    assert detail["reason"] == REFUSE_GRAPH_LOST
+    assert len(detail["record_ids"]) == 1, "the banked take was not reported"
+    assert len(detail["specs"]) == 1
 
 
 def test_a_banked_take_carries_what_the_microphone_reported(speaker, capsys):
@@ -799,8 +824,8 @@ def test_a_batch_measures_every_spec_against_one_open_session(
     assert [s["candidate_id"] for s in payload["specs"]] == [
         "plain", "inv_tw", "dly_wf",
     ]
-    assert len(payload["record_ids"]) == 3
-    assert all(s["record_ids"] for s in payload["specs"])
+    assert payload["n_takes"] == 3
+    assert all(s["n_takes"] for s in payload["specs"])
     # Three specs, three VARIANT graphs: the fingerprint is per spec, and one
     # value could not name them all.
     fingerprints = [s["graph_fingerprint"] for s in payload["specs"]]
@@ -851,11 +876,13 @@ def test_a_spec_scoped_refusal_discloses_and_the_batch_carries_on(
     payload = json.loads(capsys.readouterr().out)
     assert code == EXIT_OK, "a spec-scoped refusal must not end the batch"
     refused, kept = payload["specs"]
-    assert refused["record_ids"] == []
-    assert [s["incident"] for s in refused["stimuli"]] == [
+    assert refused["n_takes"] == 0
+    # The one fact nothing else records: a refused stimulus banks NO record,
+    # so its sentence exists only here.
+    assert refused["incidents"] == [
         program_transaction.STIMULUS_ADMISSION_REFUSED
     ]
-    assert kept["record_ids"], "the batch did not carry on to the next spec"
+    assert kept["n_takes"], "the batch did not carry on to the next spec"
 
 
 def test_a_session_scoped_failure_aborts_the_batch_and_names_where(
@@ -889,12 +916,12 @@ def test_a_session_scoped_failure_aborts_the_batch_and_names_where(
 
     payload = json.loads(capsys.readouterr().out)
     assert code == EXIT_REFUSED
-    assert payload["status"] == "partial"
-    assert payload["reason"] == REFUSE_GRAPH_LOST
-    assert payload["stopped_at"]["candidate_id"] == "second"
-    assert payload["stopped_at"]["index"] == 1
-    assert [s["candidate_id"] for s in payload["specs"]] == ["first"]
-    assert len(payload["record_ids"]) == 1
+    assert payload["status"] == "refused"
+    detail = payload["detail"]
+    assert detail["reason"] == REFUSE_GRAPH_LOST
+    assert detail["stopped_at"]["candidate_id"] == "second"
+    assert detail["stopped_at"]["index"] == 1
+    assert len(detail["record_ids"]) == 1
     assert speaker["cam"].volume_db == pytest.approx(HOUSEHOLD_DB)
 
 
@@ -905,7 +932,7 @@ def test_an_evidence_store_failure_aborts_as_the_same_partial_result(
 
     A store failure lands AFTER earlier specs banked, so a traceback would exit
     with no JSON while their takes sit on disk unnamed. It aborts through the
-    same partial payload the other session-scoped failures use — one shape,
+    same refusal document the other session-scoped failures use — one shape,
     with the banked ids and the zero-based index of the spec in flight.
     """
     from jasper.active_speaker.commissioning_evidence_store import (
@@ -939,10 +966,10 @@ def test_an_evidence_store_failure_aborts_as_the_same_partial_result(
 
     payload = json.loads(capsys.readouterr().out)
     assert code == EXIT_REFUSED
-    assert payload["status"] == "partial"
-    assert payload["reason"] == measure.REFUSE_STORE_LOST
-    assert payload["stopped_at"]["index"] == 1
-    assert [s["candidate_id"] for s in payload["specs"]] == ["first"]
-    assert len(payload["record_ids"]) == 1
+    assert payload["status"] == "refused"
+    detail = payload["detail"]
+    assert detail["reason"] == measure.REFUSE_STORE_LOST
+    assert detail["stopped_at"]["index"] == 1
+    assert len(detail["record_ids"]) == 1
     # Still given back: a partial result is not a stranded speaker.
     assert speaker["cam"].volume_db == pytest.approx(HOUSEHOLD_DB)

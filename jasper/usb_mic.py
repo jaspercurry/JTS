@@ -102,7 +102,6 @@ def write_usb_mic_enabled(
         path,
         {INTENT_KEY: "enabled" if enabled else "disabled"},
         mode=0o644,
-        lock_mode=0o660,
         max_bytes=_MAX_ENV_BYTES,
         lock_timeout_sec=2.0,
     )
@@ -138,7 +137,6 @@ def write_usb_mic_leg(
         path,
         {USB_MIC_LEG_KEY: leg},
         mode=0o644,
-        lock_mode=0o660,
         max_bytes=_MAX_ENV_BYTES,
         lock_timeout_sec=2.0,
     )

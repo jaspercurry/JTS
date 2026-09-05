@@ -13,6 +13,7 @@ ramping a speaker against an uncalibrated number.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -21,7 +22,11 @@ from jasper.audio_measurement.calibration import (
     MicSensitivity,
     resolve_mic_sensitivity,
 )
+from jasper.active_speaker.seat_level_reference import (
+    seat_level_reference_state_path,
+)
 from jasper.cli import seat_level
+from jasper.cli._refusal import STATUS_BY_CODE
 
 CAL_WITH_SENS = (
     '"Sens Factor =-12.07dB, AGain =18dB, SERNO: 8108494"\n10.0\t-6.6\n10.2\t-6.5\n'
@@ -74,19 +79,26 @@ def test_missing_calibration_refuses_before_the_mic_is_opened(tmp_path, monkeypa
 
 
 def test_a_missing_stimulus_refuses_first(tmp_path, capsys):
+    """The shared refusal document, whose ``status`` its exit code picks."""
     cal = tmp_path / "umik2.txt"
     cal.write_text(CAL_WITH_SENS)
     code = seat_level.main(
-        [
-            "--stimulus-wav",
-            str(tmp_path / "nope.wav"),
-            "--calibration-file",
-            str(cal),
-            "--json",
-        ]
+        ["--stimulus-wav", str(tmp_path / "nope.wav"), "--calibration-file", str(cal)]
     )
-    assert code == 1
-    assert seat_level.REFUSE_STIMULUS_MISSING in capsys.readouterr().out
+    assert code == seat_level.EXIT_REFUSED
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == STATUS_BY_CODE[seat_level.EXIT_REFUSED]
+    assert payload["reason"] == seat_level.REFUSE_STIMULUS_MISSING
+    # Everything the eight-key document used to publish as top-level keys.
+    assert set(payload["detail"]) == {
+        "detail",
+        "measured_db_spl",
+        "ramp",
+        "reachable_target_db_spl",
+        "reference_volume_db",
+        "restored",
+    }
 
 
 def test_the_verb_installs_a_handler_so_its_receipt_reaches_the_journal(
@@ -352,7 +364,7 @@ def test_the_generated_default_reaches_the_ramp_with_its_own_provenance(
     code = seat_level.main(["--calibration-file", str(cal)])
 
     assert code == 0
-    assert "converged" in capsys.readouterr().out
+    assert "converged" in capsys.readouterr().err
     assert handed["stimulus"].path == str(generated)
     # The declared band rides with the file, so the reference banks WHAT was
     # generated rather than leaving it to be re-parsed out of a filename.
@@ -416,7 +428,7 @@ def test_the_verb_reaches_the_ramp_on_a_healthy_commissioned_box(
     )
 
     assert code == 0
-    assert "converged" in capsys.readouterr().out
+    assert "converged" in capsys.readouterr().err
     # The bounds and the calibration reached the ramp intact.
     assert handed["max_main_volume_db"] == -30.0
     assert handed["spl_ceiling_db_spl"] == 85.0
@@ -976,7 +988,7 @@ def _stub_a_ramp_result(monkeypatch, tmp_path, result):
 
 
 def test_a_refusal_prints_the_window_it_stopped_in(tmp_path, monkeypatch, capsys):
-    """The operator's own terminal carries the discriminator, not just --json.
+    """The operator's own terminal carries the discriminator, not just stdout.
 
     jts3, 2026-08-23: two 75 dB SPL runs refused on a sample measuring 80.5 /
     80.9 dB SPL, and the line an operator read said only that -- with the prior
@@ -1060,16 +1072,23 @@ def test_a_re_measured_room_floor_is_disclosed_on_the_line(
     )
 
     code = seat_level.main(["--stimulus-wav", stimulus, "--calibration-file", cal])
-    out = capsys.readouterr().out
+    streams = capsys.readouterr()
 
     assert code == 0
-    assert "converged: reference -13.69 dB measured 72.6 dB SPL" in out
+    assert "converged: reference -13.69 dB measured 72.6 dB SPL" in streams.err
     # The sentence break, pinned because the nit survived two review rounds:
     # the phrase is appended to a detail that does not end in a period.
-    assert "measured 72.6 dB SPL. A climb reading landed below" in out
-    assert "landed below the 57.2 dB SPL ambient window" in out
-    assert "re-measured in silence: 49.7 dB SPL" in out
-    assert "which is the floor every rise above was measured against" in out
+    assert "measured 72.6 dB SPL. A climb reading landed below" in streams.err
+    assert "landed below the 57.2 dB SPL ambient window" in streams.err
+    assert "re-measured in silence: 49.7 dB SPL" in streams.err
+    assert "which is the floor every rise above was measured against" in streams.err
+    # The same disclosure rides the answer, which is what a driver reads.
+    answer = json.loads(streams.out)
+    assert answer["reference_volume_db"] == -13.69
+    assert answer["measured_db_spl"] == 72.63
+    assert answer["restored"] is True
+    assert "re-measured in silence: 49.7 dB SPL" in answer["detail"]
+    assert answer["out"] == str(seat_level_reference_state_path())
 
 
 def test_an_honest_ambient_floor_adds_nothing_to_the_line(
@@ -1095,12 +1114,12 @@ def test_an_honest_ambient_floor_adds_nothing_to_the_line(
     )
 
     code = seat_level.main(["--stimulus-wav", stimulus, "--calibration-file", cal])
-    out = capsys.readouterr().out
+    err = capsys.readouterr().err
 
     assert code == 0
-    assert "ambient window" not in out
-    assert "re-measured" not in out
-    assert out.strip().endswith("69.6 dB SPL")
+    assert "ambient window" not in err
+    assert "re-measured" not in err
+    assert err.strip().endswith("69.6 dB SPL")
 
 
 @pytest.mark.parametrize(

@@ -14,6 +14,7 @@ concern, pinned in test_doctor_usbsink.py.
 from __future__ import annotations
 
 import io
+import shutil
 import subprocess
 import urllib.error
 from datetime import datetime, timedelta, timezone
@@ -22,9 +23,9 @@ from unittest.mock import patch
 
 import pytest
 
-from jasper.cli import doctor
 from jasper.cli.doctor import _evidence
 from jasper.cli.doctor import network as doctor_network
+from jasper.cli.doctor import web
 from jasper.usb_network import (
     IPv4Observation,
     IPv4ObservationState,
@@ -87,9 +88,9 @@ def test_active_wifi_connection_requests_the_colon_safe_field_order(monkeypatch)
     contains its own colon. The parse itself is pinned on the shared function
     (tests/test_wifi_guardian_persistence.py)."""
     fake_run = _nmcli_active_run("802-11-wireless:wlan0:Home\\:2.4G\n")
-    monkeypatch.setattr(doctor.network, "_run", fake_run)
+    monkeypatch.setattr(doctor_network, "_run", fake_run)
 
-    assert doctor.network._active_wifi_connection("nmcli") == ("Home:2.4G", "wlan0")
+    assert doctor_network._active_wifi_connection("nmcli") == ("Home:2.4G", "wlan0")
     assert "TYPE,DEVICE,NAME" in fake_run.calls[0]
 
 
@@ -99,8 +100,8 @@ def test_active_wifi_connection_nonzero_returncode(monkeypatch):
     def fake_run(argv, *a, **kw):
         return _completed(argv, returncode=1)
 
-    monkeypatch.setattr(doctor.network, "_run", fake_run)
-    assert doctor.network._active_wifi_connection("nmcli") == (None, None)
+    monkeypatch.setattr(doctor_network, "_run", fake_run)
+    assert doctor_network._active_wifi_connection("nmcli") == (None, None)
 
 
 # ---------------------------------------------------- check_wifi_regdom
@@ -116,7 +117,7 @@ def _patch_doctor_iw_reg_get(monkeypatch, stdout: str, returncode: int = 0):
             stderr="boom" if returncode else "",
         )
 
-    monkeypatch.setattr(doctor.network, "_run", fake_run)
+    monkeypatch.setattr(doctor_network, "_run", fake_run)
 
 
 def test_check_wifi_regdom_ok_when_global_country_valid_and_phy_unlabeled(
@@ -133,7 +134,7 @@ country 99: DFS-UNSET
 \t(2402 - 2482 @ 40), (6, 20), (N/A)
 """,
     )
-    r = doctor.check_wifi_regdom()
+    r = doctor_network.check_wifi_regdom()
     assert r.status == "ok"
     assert r.reason == ""
     # `_format_phy_regdom_detail` has no unit test of its own — this is its
@@ -154,7 +155,7 @@ phy#0
 country 99: DFS-UNSET
 """,
     )
-    r = doctor.check_wifi_regdom()
+    r = doctor_network.check_wifi_regdom()
     assert r.status == "warn"
     assert r.reason == doctor_network.REASON_REGDOM_UNSET
 
@@ -166,7 +167,7 @@ def test_check_wifi_regdom_ok_with_valid_global_and_no_phy(monkeypatch):
 country DE: DFS-ETSI
 """,
     )
-    r = doctor.check_wifi_regdom()
+    r = doctor_network.check_wifi_regdom()
     assert r.status == "ok"
     assert r.reason == ""
     assert "global country=DE" in r.detail
@@ -196,7 +197,7 @@ def _mock_nmcli_proc(stdout: str = "", returncode: int = 0):
 
 
 def _patch_doctor_nmcli(monkeypatch, response_stack):
-    """Patch shutil.which to return a path and doctor._run to return
+    """Patch shutil.which to return a path and doctor_network._run to return
     the next CompletedProcess in response_stack for each call.
 
     Each entry can be either a string (treated as stdout, rc=0) or
@@ -205,7 +206,7 @@ def _patch_doctor_nmcli(monkeypatch, response_stack):
     the call with returncode=1.
     """
     monkeypatch.setattr(
-        doctor.shutil,
+        shutil,
         "which",
         lambda name: "/usr/bin/nmcli" if name == "nmcli" else None,
     )
@@ -220,7 +221,7 @@ def _patch_doctor_nmcli(monkeypatch, response_stack):
             return _mock_nmcli_proc(stdout=r)
         return r
 
-    monkeypatch.setattr(doctor.network, "_run", fake_run)
+    monkeypatch.setattr(doctor_network, "_run", fake_run)
 
 
 def test_check_wifi_guardian_ok_when_stash_matches_active(
@@ -241,7 +242,7 @@ def test_check_wifi_guardian_ok_when_stash_matches_active(
             "802-11-wireless.ssid:Home\n",
         ],
     )
-    r = doctor.check_wifi_guardian()
+    r = doctor_network.check_wifi_guardian()
     assert r.status == "ok"
     assert r.reason == ""
 
@@ -257,7 +258,7 @@ def test_check_wifi_guardian_ok_ethernet_only(monkeypatch, tmp_path):
             "802-3-ethernet:eth0:Wired connection 1\n",
         ],
     )
-    r = doctor.check_wifi_guardian()
+    r = doctor_network.check_wifi_guardian()
     assert r.status == "skipped"
     assert r.reason == doctor_network.REASON_GUARDIAN_NOT_APPLICABLE
 
@@ -277,7 +278,7 @@ def test_check_wifi_guardian_warns_when_stash_missing_but_active(
             "802-11-wireless.ssid:Home\n",
         ],
     )
-    r = doctor.check_wifi_guardian()
+    r = doctor_network.check_wifi_guardian()
     assert r.status == "warn"
     assert r.reason == doctor_network.REASON_GUARDIAN_STASH_MISSING
 
@@ -298,7 +299,7 @@ def test_check_wifi_guardian_warns_on_ssid_drift(monkeypatch, tmp_path):
             "802-11-wireless.ssid:Cafe\n",
         ],
     )
-    r = doctor.check_wifi_guardian()
+    r = doctor_network.check_wifi_guardian()
     assert r.status == "warn"
     assert r.reason == doctor_network.REASON_GUARDIAN_SSID_DRIFT
 
@@ -327,7 +328,7 @@ def test_check_wifi_guardian_matches_colon_ssid(monkeypatch, tmp_path):
             _mock_nmcli_proc(returncode=1),
         ],
     )
-    r = doctor.check_wifi_guardian()
+    r = doctor_network.check_wifi_guardian()
     assert r.status == "ok"
     assert r.reason == ""
     # Pins the colon-unescape end-to-end (the exact regression this test
@@ -353,7 +354,7 @@ def test_check_wifi_guardian_warns_when_active_wifi_missing(
             "",  # no active wifi
         ],
     )
-    r = doctor.check_wifi_guardian()
+    r = doctor_network.check_wifi_guardian()
     assert r.status == "warn"
     assert r.reason == doctor_network.REASON_GUARDIAN_NO_ACTIVE_WIFI
 
@@ -362,11 +363,11 @@ def test_check_wifi_guardian_skipped_without_nmcli(monkeypatch):
     """Pis without NetworkManager (or running this check in CI) →
     skip cleanly. The guardian itself is no-op on those machines."""
     monkeypatch.setattr(
-        doctor.shutil,
+        shutil,
         "which",
         lambda name: None if name == "nmcli" else f"/usr/bin/{name}",
     )
-    r = doctor.check_wifi_guardian()
+    r = doctor_network.check_wifi_guardian()
     assert r.status == "skipped"
     assert r.reason == doctor_network.REASON_GUARDIAN_SKIPPED_NO_NMCLI
 
@@ -388,7 +389,7 @@ def test_check_wifi_link_local_ipv6_ok(monkeypatch):
             "2: wlan0    inet6 fe80::1/64 scope link\n",
         ],
     )
-    r = doctor.check_wifi_link_local_ipv6()
+    r = doctor_network.check_wifi_link_local_ipv6()
     assert r.status == "ok"
     assert r.reason == ""
 
@@ -406,7 +407,7 @@ def test_check_wifi_link_local_ipv6_warns_when_profile_ignores_ipv6(monkeypatch)
             "ignore\n",
         ],
     )
-    r = doctor.check_wifi_link_local_ipv6()
+    r = doctor_network.check_wifi_link_local_ipv6()
     assert r.status == "warn"
     assert r.reason == doctor_network.REASON_IPV6_METHOD_DISABLED
     # Profile resolved with its colon intact (shlex.quote leaves a colon
@@ -424,7 +425,7 @@ def test_check_wifi_link_local_ipv6_warns_when_link_local_missing(monkeypatch):
             "",
         ],
     )
-    r = doctor.check_wifi_link_local_ipv6()
+    r = doctor_network.check_wifi_link_local_ipv6()
     assert r.status == "warn"
     assert r.reason == doctor_network.REASON_IPV6_LINK_LOCAL_MISSING
 
@@ -438,7 +439,7 @@ def test_check_avahi_jasper_control_ok_on_partial_timeout(monkeypatch):
     the local service. That is still evidence that jasper-control is
     advertised; it should not crash the whole doctor run."""
     monkeypatch.setattr(
-        doctor.network.shutil,
+        doctor_network.shutil,
         "which",
         lambda name: "/usr/bin/avahi-browse" if name == "avahi-browse" else None,
     )
@@ -452,9 +453,9 @@ def test_check_avahi_jasper_control_ok_on_partial_timeout(monkeypatch):
             ),
         )
 
-    monkeypatch.setattr(doctor.network, "_run", fake_run)
+    monkeypatch.setattr(doctor_network, "_run", fake_run)
 
-    r = doctor.check_avahi_jasper_control()
+    r = doctor_network.check_avahi_jasper_control()
 
     assert r.status == "ok"
     assert r.reason == doctor_network.REASON_AVAHI_BROWSE_PARTIAL_TIMEOUT
@@ -464,7 +465,7 @@ def test_check_avahi_jasper_control_fails_on_timeout_without_service(
     monkeypatch,
 ):
     monkeypatch.setattr(
-        doctor.network.shutil,
+        doctor_network.shutil,
         "which",
         lambda name: "/usr/bin/avahi-browse" if name == "avahi-browse" else None,
     )
@@ -472,9 +473,9 @@ def test_check_avahi_jasper_control_fails_on_timeout_without_service(
     def fake_run(cmd, timeout=5.0):
         raise subprocess.TimeoutExpired(cmd, timeout, output="")
 
-    monkeypatch.setattr(doctor.network, "_run", fake_run)
+    monkeypatch.setattr(doctor_network, "_run", fake_run)
 
-    r = doctor.check_avahi_jasper_control()
+    r = doctor_network.check_avahi_jasper_control()
 
     assert r.status == "fail"
     assert r.reason == doctor_network.REASON_AVAHI_BROWSE_TIMEOUT
@@ -484,41 +485,41 @@ def test_check_avahi_jasper_control_fails_on_timeout_without_service(
 
 
 def test_check_wifi_recover_timer_enabled_ok(monkeypatch):
-    monkeypatch.setattr(doctor.network.shutil, "which", lambda _x: "/usr/bin/systemctl")
+    monkeypatch.setattr(doctor_network.shutil, "which", lambda _x: "/usr/bin/systemctl")
     _seed_unit_states(**{
         "jasper-wifi-recover.timer": {
             "load_state": "loaded", "unit_file_state": "enabled",
         },
     })
-    r = doctor.check_wifi_recover_timer()
+    r = doctor_network.check_wifi_recover_timer()
     assert r.status == "ok"
     assert r.reason == ""
 
 
 def test_check_wifi_recover_timer_disabled_warns(monkeypatch):
-    monkeypatch.setattr(doctor.network.shutil, "which", lambda _x: "/usr/bin/systemctl")
+    monkeypatch.setattr(doctor_network.shutil, "which", lambda _x: "/usr/bin/systemctl")
     _seed_unit_states(**{
         "jasper-wifi-recover.timer": {
             "load_state": "loaded", "unit_file_state": "disabled",
         },
     })
-    r = doctor.check_wifi_recover_timer()
+    r = doctor_network.check_wifi_recover_timer()
     assert r.status == "warn"
     assert r.reason == doctor_network.REASON_RECOVER_TIMER_DISABLED
 
 
 def test_check_wifi_recover_timer_not_installed_skips(monkeypatch):
     """A dev box with systemctl but no JTS units: skip, don't warn."""
-    monkeypatch.setattr(doctor.network.shutil, "which", lambda _x: "/usr/bin/systemctl")
+    monkeypatch.setattr(doctor_network.shutil, "which", lambda _x: "/usr/bin/systemctl")
     _seed_unit_states(**{"jasper-wifi-recover.timer": {"load_state": "not-found"}})
-    r = doctor.check_wifi_recover_timer()
+    r = doctor_network.check_wifi_recover_timer()
     assert r.status == "skipped"
     assert r.reason == doctor_network.REASON_RECOVER_TIMER_NOT_INSTALLED
 
 
 def test_check_wifi_recover_timer_no_systemctl_skips(monkeypatch):
-    monkeypatch.setattr(doctor.network.shutil, "which", lambda _x: None)
-    r = doctor.check_wifi_recover_timer()
+    monkeypatch.setattr(doctor_network.shutil, "which", lambda _x: None)
+    r = doctor_network.check_wifi_recover_timer()
     assert r.status == "skipped"
     assert r.reason == doctor_network.REASON_RECOVER_TIMER_SKIPPED_NO_SYSTEMCTL
 
@@ -638,7 +639,7 @@ def _available_usb_role(monkeypatch, tmp_path):
 
 
 def test_usbnet_address_plan_valid_and_consistent_is_ok():
-    result = doctor.check_usbnet_address_plan()
+    result = doctor_network.check_usbnet_address_plan()
 
     assert result.status == "ok"
     assert result.reason == ""
@@ -656,7 +657,7 @@ def test_usbnet_address_plan_missing_fails_without_blocking_wifi(monkeypatch):
         lambda: (_ for _ in ()).throw(UsbNetworkPlanError("missing")),
     )
 
-    result = doctor.check_usbnet_address_plan()
+    result = doctor_network.check_usbnet_address_plan()
 
     assert result.status == "fail"
     assert result.reason == doctor_network.REASON_USBNET_PLAN_INVALID
@@ -671,7 +672,7 @@ def test_usbnet_address_plan_attests_current_pi_identity(monkeypatch):
         ),
     )
 
-    result = doctor.check_usbnet_address_plan()
+    result = doctor_network.check_usbnet_address_plan()
 
     assert result.status == "fail"
     assert result.reason == doctor_network.REASON_USBNET_PLAN_INVALID
@@ -682,7 +683,7 @@ def test_usbnet_address_plan_projection_drift_fails(monkeypatch, tmp_path):
     drifted.write_text("wrong generation\n")
     monkeypatch.setattr(doctor_network, "DEFAULT_NM_PATH", drifted)
 
-    result = doctor.check_usbnet_address_plan()
+    result = doctor_network.check_usbnet_address_plan()
 
     assert result.status == "fail"
     assert result.reason == doctor_network.REASON_USBNET_PLAN_PROJECTION_DRIFT
@@ -693,7 +694,7 @@ def test_usbnet_address_plan_pending_migration_is_visible_warn(monkeypatch, tmp_
     pending.write_text("pending\n")
     monkeypatch.setattr(doctor_network, "DEFAULT_PENDING_PATH", pending)
 
-    result = doctor.check_usbnet_address_plan()
+    result = doctor_network.check_usbnet_address_plan()
 
     assert result.status == "warn"
     assert result.reason == doctor_network.REASON_USBNET_PLAN_PENDING
@@ -723,7 +724,7 @@ def test_usbnet_interface_kill_switched_no_iface_is_ok(monkeypatch, tmp_path):
     monkeypatch.setattr(
         doctor_network, "USBNET_SYS_CLASS_NET", tmp_path / "sys-class-net",
     )
-    r = doctor.check_usbnet_interface()
+    r = doctor_network.check_usbnet_interface()
     assert r.status == "ok"
     assert r.reason == doctor_network.REASON_USBNET_KILLSWITCHED
 
@@ -735,7 +736,7 @@ def test_usbnet_interface_kill_switched_but_iface_present_is_warn(monkeypatch, t
     net_root = tmp_path / "sys-class-net"
     (net_root / "usb0").mkdir(parents=True)
     monkeypatch.setattr(doctor_network, "USBNET_SYS_CLASS_NET", net_root)
-    r = doctor.check_usbnet_interface()
+    r = doctor_network.check_usbnet_interface()
     assert r.status == "warn"
     assert r.reason == doctor_network.REASON_USBNET_IFACE_KILLSWITCH_DRIFT
 
@@ -752,7 +753,7 @@ def test_usbnet_interface_no_udc_pre_reboot_is_ok(monkeypatch, tmp_path):
     udc_dir = tmp_path / "udc"
     udc_dir.mkdir()
     monkeypatch.setenv("JASPER_UDC_CLASS_DIR", str(udc_dir))
-    r = doctor.check_usbnet_interface()
+    r = doctor_network.check_usbnet_interface()
     assert r.status == "skipped"
     assert r.reason == doctor_network.REASON_USBNET_NO_UDC
 
@@ -769,7 +770,7 @@ def test_usbnet_interface_absent_with_udc_is_fail(monkeypatch, tmp_path):
     udc_dir = tmp_path / "udc"
     (udc_dir / "3f980000.usb").mkdir(parents=True)
     monkeypatch.setenv("JASPER_UDC_CLASS_DIR", str(udc_dir))
-    r = doctor.check_usbnet_interface()
+    r = doctor_network.check_usbnet_interface()
     assert r.status == "fail"
     assert r.reason == doctor_network.REASON_USBNET_BIND_FAILED
 
@@ -790,7 +791,7 @@ def test_usbnet_interface_intentional_host_role_is_ok(monkeypatch, tmp_path):
         ),
     )
 
-    result = doctor.check_usbnet_interface()
+    result = doctor_network.check_usbnet_interface()
 
     assert result.status == "skipped"
     assert result.reason == doctor_network.REASON_USBNET_NOT_APPLICABLE
@@ -812,7 +813,7 @@ def test_usbnet_interface_role_change_pending_is_warn(monkeypatch, tmp_path):
         ),
     )
 
-    r = doctor.check_usbnet_interface()
+    r = doctor_network.check_usbnet_interface()
     assert r.status == "warn"
     assert r.reason == doctor_network.REASON_USBNET_ROLE_CHANGE_PENDING
 
@@ -831,7 +832,7 @@ def test_usbnet_interface_present_with_address_is_ok(monkeypatch, tmp_path):
             stderr="",
         ),
     })
-    r = doctor.check_usbnet_interface()
+    r = doctor_network.check_usbnet_interface()
     assert r.status == "ok"
     assert r.reason == ""
     # The plan-derived address and observed carrier state are the fact this
@@ -856,7 +857,7 @@ def test_usbnet_interface_present_no_carrier_is_ok(monkeypatch, tmp_path):
             [], 0, stdout=f"3: usb0    inet {PLAN.device_cidr} scope global usb0\n", stderr="",
         ),
     })
-    r = doctor.check_usbnet_interface()
+    r = doctor_network.check_usbnet_interface()
     assert r.status == "ok"
     assert r.reason == ""
     assert "carrier=down" in r.detail
@@ -873,7 +874,7 @@ def test_usbnet_interface_present_missing_address_is_fail(monkeypatch, tmp_path)
             [], 0, stdout="3: usb0    <no address>\\n", stderr="",
         ),
     })
-    r = doctor.check_usbnet_interface()
+    r = doctor_network.check_usbnet_interface()
     assert r.status == "fail"
     assert r.reason == doctor_network.REASON_USBNET_ADDR_MISSING
 
@@ -888,7 +889,7 @@ def test_usbnet_interface_ip_command_failure_is_warn(monkeypatch, tmp_path):
             [], 1, stdout="", stderr="Device \"usb0\" does not exist.",
         ),
     })
-    r = doctor.check_usbnet_interface()
+    r = doctor_network.check_usbnet_interface()
     assert r.status == "warn"
     assert r.reason == doctor_network.REASON_USBNET_ADDR_PROBE_FAILED
 
@@ -902,7 +903,7 @@ def test_usbnet_nm_profile_skips_no_iface(monkeypatch, tmp_path):
     monkeypatch.setattr(
         doctor_network, "USBNET_SYS_CLASS_NET", tmp_path / "sys-class-net",
     )
-    r = doctor.check_usbnet_nm_profile()
+    r = doctor_network.check_usbnet_nm_profile()
     assert r.status == "skipped"
     assert r.reason == doctor_network.REASON_USBNET_NOT_APPLICABLE
 
@@ -912,7 +913,7 @@ def test_usbnet_nm_profile_skips_no_nmcli(monkeypatch, tmp_path):
     (net_root / "usb0").mkdir(parents=True)
     monkeypatch.setattr(doctor_network, "USBNET_SYS_CLASS_NET", net_root)
     monkeypatch.setattr(doctor_network.shutil, "which", lambda name: None)
-    r = doctor.check_usbnet_nm_profile()
+    r = doctor_network.check_usbnet_nm_profile()
     assert r.status == "skipped"
     assert r.reason == doctor_network.REASON_USBNET_SKIPPED_NO_NMCLI
 
@@ -935,7 +936,7 @@ def test_usbnet_nm_profile_active_matches_is_ok(monkeypatch, tmp_path):
             stderr="",
         ),
     })
-    r = doctor.check_usbnet_nm_profile()
+    r = doctor_network.check_usbnet_nm_profile()
     assert r.status == "ok"
     assert r.reason == ""
 
@@ -947,7 +948,7 @@ def test_usbnet_nm_profile_no_active_connection_on_usb0_is_fail(monkeypatch, tmp
             [], 0, stdout="802-11-wireless:wlan0:Home WiFi\n", stderr="",
         ),
     })
-    r = doctor.check_usbnet_nm_profile()
+    r = doctor_network.check_usbnet_nm_profile()
     assert r.status == "fail"
     assert r.reason == doctor_network.REASON_USBNET_NM_PROFILE_MISSING
 
@@ -961,7 +962,7 @@ def test_usbnet_nm_profile_wrong_profile_on_usb0_is_fail(monkeypatch, tmp_path):
             [], 0, stdout="tun:usb0:netplan-usb0-legacy\n", stderr="",
         ),
     })
-    r = doctor.check_usbnet_nm_profile()
+    r = doctor_network.check_usbnet_nm_profile()
     assert r.status == "fail"
     assert r.reason == doctor_network.REASON_USBNET_NM_PROFILE_MISMATCH
 
@@ -973,7 +974,7 @@ def test_usbnet_nm_profile_nmcli_failure_is_warn(monkeypatch, tmp_path):
             [], 1, stdout="", stderr="nmcli: command failed",
         ),
     })
-    r = doctor.check_usbnet_nm_profile()
+    r = doctor_network.check_usbnet_nm_profile()
     assert r.status == "warn"
     assert r.reason == doctor_network.REASON_USBNET_NM_QUERY_FAILED
 
@@ -993,7 +994,7 @@ def test_usbnet_nm_profile_colon_bearing_name_unescaped(monkeypatch, tmp_path):
             [], 0, stdout="tun:usb0:legacy\\:profile\n", stderr="",
         ),
     })
-    r = doctor.check_usbnet_nm_profile()
+    r = doctor_network.check_usbnet_nm_profile()
     assert r.status == "fail"
     assert r.reason == doctor_network.REASON_USBNET_NM_PROFILE_MISMATCH
     # Pins the colon-unescape correctness end-to-end; the reason code has no
@@ -1008,7 +1009,7 @@ def test_usbnet_nm_profile_colon_bearing_name_unescaped(monkeypatch, tmp_path):
 
 def test_usbnet_dhcp_unit_skips_no_systemctl(monkeypatch):
     monkeypatch.setattr(doctor_network.shutil, "which", lambda name: None)
-    r = doctor.check_usbnet_dhcp_unit()
+    r = doctor_network.check_usbnet_dhcp_unit()
     assert r.status == "skipped"
     assert r.reason == doctor_network.REASON_USBNET_SKIPPED_NO_SYSTEMCTL
 
@@ -1020,7 +1021,7 @@ def test_usbnet_dhcp_unit_skips_not_installed(monkeypatch):
     _seed_unit_states(**{
         doctor_network.USBNET_DHCP_UNIT: {"load_state": "not-found"},
     })
-    r = doctor.check_usbnet_dhcp_unit()
+    r = doctor_network.check_usbnet_dhcp_unit()
     assert r.status == "skipped"
     assert r.reason == doctor_network.REASON_USBNET_DHCP_NOT_INSTALLED
 
@@ -1037,7 +1038,7 @@ def test_usbnet_dhcp_unit_active_with_iface_present_is_ok(monkeypatch, tmp_path)
             "load_state": "loaded", "active_state": "active",
         },
     })
-    r = doctor.check_usbnet_dhcp_unit()
+    r = doctor_network.check_usbnet_dhcp_unit()
     assert r.status == "ok"
     assert r.reason == ""
 
@@ -1056,7 +1057,7 @@ def test_usbnet_dhcp_unit_inactive_with_iface_absent_is_ok(monkeypatch, tmp_path
             "load_state": "loaded", "active_state": "inactive",
         },
     })
-    r = doctor.check_usbnet_dhcp_unit()
+    r = doctor_network.check_usbnet_dhcp_unit()
     assert r.status == "ok"
     assert r.reason == doctor_network.REASON_USBNET_DHCP_IDLE
 
@@ -1075,7 +1076,7 @@ def test_usbnet_dhcp_unit_iface_present_but_unit_inactive_is_fail(monkeypatch, t
             "load_state": "loaded", "active_state": "inactive",
         },
     })
-    r = doctor.check_usbnet_dhcp_unit()
+    r = doctor_network.check_usbnet_dhcp_unit()
     assert r.status == "fail"
     assert r.reason == doctor_network.REASON_USBNET_DHCP_NOT_SERVING
 
@@ -1095,7 +1096,7 @@ def test_usbnet_dhcp_unit_iface_absent_but_unit_active_is_warn(monkeypatch, tmp_
             "load_state": "loaded", "active_state": "active",
         },
     })
-    r = doctor.check_usbnet_dhcp_unit()
+    r = doctor_network.check_usbnet_dhcp_unit()
     assert r.status == "warn"
     assert r.reason == doctor_network.REASON_USBNET_DHCP_TEARDOWN_DRIFT
 
@@ -1109,7 +1110,7 @@ def test_usbnet_probe_skips_no_iface(monkeypatch, tmp_path):
     monkeypatch.setattr(
         doctor_network, "USBNET_SYS_CLASS_NET", tmp_path / "sys-class-net",
     )
-    r = doctor.check_usbnet_management_probe()
+    r = doctor_network.check_usbnet_management_probe()
     assert r.status == "skipped"
     assert r.reason == doctor_network.REASON_USBNET_NOT_APPLICABLE
 
@@ -1118,8 +1119,8 @@ def test_usbnet_probe_skips_no_nginx_site(monkeypatch, tmp_path):
     net_root = tmp_path / "sys-class-net"
     (net_root / "usb0").mkdir(parents=True)
     monkeypatch.setattr(doctor_network, "USBNET_SYS_CLASS_NET", net_root)
-    monkeypatch.setattr(doctor.web, "NGINX_SITE", tmp_path / "absent.conf")
-    r = doctor.check_usbnet_management_probe()
+    monkeypatch.setattr(web, "NGINX_SITE", tmp_path / "absent.conf")
+    r = doctor_network.check_usbnet_management_probe()
     assert r.status == "skipped"
     assert r.reason == doctor_network.REASON_USBNET_NGINX_NOT_INSTALLED
 
@@ -1130,7 +1131,7 @@ def _iface_and_nginx(monkeypatch, tmp_path):
     monkeypatch.setattr(doctor_network, "USBNET_SYS_CLASS_NET", net_root)
     site = tmp_path / "jasper.conf"
     site.write_text("# nginx site\n")
-    monkeypatch.setattr(doctor.web, "NGINX_SITE", site)
+    monkeypatch.setattr(web, "NGINX_SITE", site)
 
 
 class _Resp:
@@ -1151,7 +1152,7 @@ def test_usbnet_probe_200_is_ok(monkeypatch, tmp_path):
     _iface_and_nginx(monkeypatch, tmp_path)
     monkeypatch.setenv("JASPER_HOSTNAME", "jts3.local")
     with patch("urllib.request.urlopen", return_value=_Resp(200)) as m:
-        r = doctor.check_usbnet_management_probe()
+        r = doctor_network.check_usbnet_management_probe()
     assert r.status == "ok"
     assert r.reason == ""
     # The observed address and Host header are the fact this probe exists
@@ -1173,7 +1174,7 @@ def test_usbnet_probe_ipv4_inspection_error_fails_loudly(monkeypatch, tmp_path):
         ),
     )
 
-    result = doctor.check_usbnet_management_probe()
+    result = doctor_network.check_usbnet_management_probe()
 
     assert result.status == "fail"
     assert result.reason == doctor_network.REASON_USBNET_PROBE_IPV4_UNREADABLE
@@ -1187,7 +1188,7 @@ def test_usbnet_probe_existing_interface_without_ipv4_fails(monkeypatch, tmp_pat
         lambda _iface: IPv4Observation(IPv4ObservationState.NO_ADDRESS),
     )
 
-    result = doctor.check_usbnet_management_probe()
+    result = doctor_network.check_usbnet_management_probe()
 
     assert result.status == "fail"
     assert result.reason == doctor_network.REASON_USBNET_PROBE_NO_ADDRESS
@@ -1200,7 +1201,7 @@ def test_usbnet_probe_403_fails_with_guard_hint(monkeypatch, tmp_path):
         io.BytesIO(b'{"error": "host_not_allowed"}'),
     )
     with patch("urllib.request.urlopen", side_effect=err):
-        r = doctor.check_usbnet_management_probe()
+        r = doctor_network.check_usbnet_management_probe()
     assert r.status == "fail"
     assert r.reason == doctor_network.REASON_USBNET_PROBE_HTTP_ERROR
     # The 403/502/other statuses all share one reason code; the remediation
@@ -1217,7 +1218,7 @@ def test_usbnet_probe_502_fails(monkeypatch, tmp_path):
         io.BytesIO(b'{"error": "jasper-control unreachable"}'),
     )
     with patch("urllib.request.urlopen", side_effect=err):
-        r = doctor.check_usbnet_management_probe()
+        r = doctor_network.check_usbnet_management_probe()
     assert r.status == "fail"
     assert r.reason == doctor_network.REASON_USBNET_PROBE_HTTP_ERROR
 
@@ -1226,6 +1227,6 @@ def test_usbnet_probe_connection_refused_fails_naming_nginx(monkeypatch, tmp_pat
     _iface_and_nginx(monkeypatch, tmp_path)
     err = urllib.error.URLError(ConnectionRefusedError(111, "refused"))
     with patch("urllib.request.urlopen", side_effect=err):
-        r = doctor.check_usbnet_management_probe()
+        r = doctor_network.check_usbnet_management_probe()
     assert r.status == "fail"
     assert r.reason == doctor_network.REASON_USBNET_PROBE_NO_ANSWER

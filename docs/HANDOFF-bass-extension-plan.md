@@ -311,7 +311,7 @@ orchestration + per-rung retention, (d) LT/subsonic graph emission,
 | `jasper/active_speaker/camilla_yaml.py` | Optional bass-extension block on the bass-owner chain in `_emit_baseline_pipeline`; emit-gate extension |
 | `jasper/active_speaker/runtime_contract.py` | Teach the graph contract that an authorized baseline carrying the bass-extension filter set is still `approved_active_runtime`; one source-explicit boundary snapshots graph plus authority evidence for persisted state or accepts a complete desired in-memory candidate, while the low-level classifier remains disk-I/O-free (⚠ without this, startup/doctor/re-proof fails closed — see §12 risks) |
 | `jasper/dsp_apply.py` + `jasper/camilla.py` | Carry the existing writer-lock ownership task-locally and make every production file load, active-raw swap, patch, and reload enter it; refuse ordinary graph mutations while the durable bass apply intent exists, with only the Wave 3 recovery owner authorized |
-| `jasper/bass_management.py` | Extend the read resolver to also report bass-extension status (still read-only) |
+| `jasper/web/correction_bass_flow.py` | Extend `status_payload()`'s `bass_extension` section (`/bass/status`'s read-only surface; `jasper/bass_management.py` is gone, corner now reads from `output_topology.bass_management_corner_hz()`) |
 | `jasper/audio_measurement/deconv.py` | `harmonic_impulse_offsets(meta, orders)` + `extract_harmonic_windows(full_ir, meta, orders)` — new consumers of the *existing* unwindowed IR |
 | `jasper/audio_measurement/analysis.py` | `compression_curve()`, `thd_curve()`, `tracking_error()` (§7.5) |
 | `jasper/control/state_aggregate.py` | `/state.bass_extension` section |
@@ -375,17 +375,13 @@ ladder HTTP backend, and the hardware-validation scripts.
   ready, under the existing measurement window. No service, daemon,
   task, route, or permission is added. No new `jasper/config.py` field
   or scheduler environment override is authorized.
-- **Bass-owner identity:** `resolve_bass_management()` precedence is
-  reused. Exactly one physical bass system receives extension:
+- **Bass-owner identity:** `output_topology.bass_management_corner_hz()`
+  is the sole read now (independent subwoofers are deleted, so there is
+  no remote-bass-owner case to arbitrate; see ADR-0237). Exactly one
+  physical bass system receives extension:
   - Local-DAC subwoofer present → the **sub chain** owns extension;
     mains keep their bass-management HP untouched.
   - No sub → the **woofer way** owns it (both sides, linked).
-  - Wireless-sub bonds → **out of scope v1** (§13); the profile
-    refuses to arm when the box is in a bonded topology whose bass
-    owner is remote. An active-speaker bond with a local bass owner may
-    preserve the already-accepted natural pair on its driver-domain
-    graph, but profile mutation and runtime scheduling still refuse
-    while bonded.
 
 ---
 
@@ -1596,8 +1592,10 @@ and prints the family/anchor table from §1.1.
 evaluation), persistence + bundle integration,
 `/state.bass_extension` (reporting absent/stale only, no runtime
 yet), `check_bass_extension_profile` doctor check,
-`bass_management.py` read-resolver extension. Contract tests per §11.
-Depends: Wave 1 dataclasses.
+`correction_bass_flow.py`'s `status_payload()` `bass_extension` section
+(reads `output_topology.bass_management_corner_hz()` for the corner;
+`bass_management.py` is gone). Contract tests per §11. Depends: Wave 1
+dataclasses.
 
 ### Wave 3 — Graph emission + apply transaction (⚠ hot-file wave; small PRs)
 

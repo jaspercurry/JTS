@@ -609,7 +609,7 @@ def test_doctor_wake_check_does_not_load_sklearn() -> None:
     probe = (
         "import sys\n"
         "from types import SimpleNamespace\n"
-        "from jasper.cli.doctor import check_openwakeword_model\n"
+        "from jasper.cli.doctor.wake import check_openwakeword_model\n"
         "try:\n"
         "    check_openwakeword_model(SimpleNamespace(wake_model='hey_jarvis'))\n"
         "except BaseException:\n"
