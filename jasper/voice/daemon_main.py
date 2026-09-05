@@ -22,7 +22,6 @@ from ..audio_io import (
     InputDeviceUnavailable,
     TtsPlayout,
     make_mic_capture,
-    make_tts_playout,
 )
 from ..assistant_loudness import active_voice_identity, ensure_seed_profile
 from ..camilla import (
@@ -254,13 +253,9 @@ def _wake_ready_detail(cfg: Config, planned_wake_legs: list) -> str:
 
 
 def _tts_ready_detail(cfg: Config) -> str:
-    """Return the startup-log fields for the selected TTS transport."""
-    if cfg.tts_transport == "outputd":
-        return (
-            f"tts_transport=outputd tts_owner=fanin "
-            f"tts_socket={cfg.tts_outputd_socket}"
-        )
-    return f"tts_transport={cfg.tts_transport} unsupported=true"
+    """The startup line's ``tts_socket=`` field: where assistant audio
+    enters (fan-in solo, outputd when a bonded member overrides it)."""
+    return f"tts_socket={cfg.tts_outputd_socket}"
 
 
 def build_ducker(
@@ -1155,20 +1150,17 @@ async def run() -> None:
             _require_usable_input(
                 legs, manual_mics, cfg.manual_mic_sources.values(),
             )
-            tts = await stack.enter_async_context(make_tts_playout(
-                transport=cfg.tts_transport,
-                output_rate=cfg.tts_output_rate,
-                # outputd owns the final gain decision. This fallback is
-                # used only by chirps/legacy sounddevice paths.
+            tts = await stack.enter_async_context(TtsPlayout(
+                socket_path=cfg.tts_outputd_socket,
+                # outputd owns the final gain decision; this initial value
+                # only matters for chirps that play before the first real
+                # gain update lands.
                 gain_db=0.0,
                 drain_tail_sec=cfg.tts_drain_tail_sec,
-                outputd_socket=cfg.tts_outputd_socket,
                 provider=cfg.voice_provider,
                 model=_active_model(cfg),
                 voice=_active_voice(cfg),
-                assistant_loudness_profile_path=(
-                    cfg.assistant_loudness_profile_path
-                ),
+                profile_path=cfg.assistant_loudness_profile_path,
             ))
             content_activity = ContentActivityTracker(camilla)
             await content_activity.start()

@@ -38,7 +38,7 @@ from jasper.audio_io import (
     _OUTPUTD_AUDIO_FRAME_BYTES_WIDE,
     _OUTPUTD_MAX_AUDIO_CHUNK_BYTES,
     _SPINE_SCALE,
-    OutputdTtsPlayout,
+    TtsPlayout,
     _outputd_audio_chunks,
     _OutputdStreamAdapter,
     _quantize_to_wire,
@@ -99,7 +99,7 @@ class _Recorder:
 
 
 def _emit(pcm: bytes, *, wide: bool, **write_kwargs) -> bytes:
-    tts = OutputdTtsPlayout(socket_path="/nonexistent.sock", wire_wide=wide)
+    tts = TtsPlayout(socket_path="/nonexistent.sock", wire_wide=wide)
     rec = _Recorder()
     tts._stream = rec
 
@@ -336,7 +336,7 @@ def test_a_declared_wide_but_unarmed_box_speaks_the_narrow_verb(
     conservative verb.
     """
     _declare(monkeypatch, tmp_path, wire_format="S32_LE", coupling="loopback")
-    tts = OutputdTtsPlayout(socket_path="/nonexistent.sock")
+    tts = TtsPlayout(socket_path="/nonexistent.sock")
     assert tts._wire_wide is False
     assert tts._frame_bytes == _OUTPUTD_AUDIO_FRAME_BYTES
 
@@ -352,7 +352,7 @@ def test_a_declared_wide_undeclared_coupling_box_speaks_the_wide_verb(
     every assistant payload takes a needless conversion at the mixer.
     """
     _declare(monkeypatch, tmp_path, wire_format="S32_LE", coupling=None)
-    tts = OutputdTtsPlayout(socket_path="/nonexistent.sock")
+    tts = TtsPlayout(socket_path="/nonexistent.sock")
     assert tts._wire_wide is True
     assert tts._frame_bytes == _OUTPUTD_AUDIO_FRAME_BYTES_WIDE
 
@@ -398,11 +398,11 @@ def test_the_process_resolves_the_width_exactly_once(monkeypatch, tmp_path):
 
 def test_the_playout_resolves_its_width_when_none_is_given(monkeypatch, tmp_path):
     _declare(monkeypatch, tmp_path, wire_format="S32_LE", coupling="shm_ring")
-    tts = OutputdTtsPlayout(socket_path="/nonexistent.sock")
+    tts = TtsPlayout(socket_path="/nonexistent.sock")
     assert tts._wire_wide is True
     assert tts._frame_bytes == _OUTPUTD_AUDIO_FRAME_BYTES_WIDE
     _declare(monkeypatch, tmp_path, wire_format="S16_LE", coupling="shm_ring")
-    tts = OutputdTtsPlayout(socket_path="/nonexistent.sock")
+    tts = TtsPlayout(socket_path="/nonexistent.sock")
     assert tts._wire_wide is False
     assert tts._frame_bytes == _OUTPUTD_AUDIO_FRAME_BYTES
 
@@ -417,14 +417,14 @@ def test_a_startup_line_names_the_resolved_width_and_where_it_came_from(
     """
     _declare(monkeypatch, tmp_path, wire_format="S32_LE", coupling="shm_ring")
     with caplog.at_level("INFO"):
-        OutputdTtsPlayout(socket_path="/nonexistent.sock")
+        TtsPlayout(socket_path="/nonexistent.sock")
     assert "event=tts_wire.resolved" in caplog.text
     assert "width=S32_LE" in caplog.text
     assert "verb=AUDIO32" in caplog.text
     assert "source=box_declaration" in caplog.text
     caplog.clear()
     with caplog.at_level("INFO"):
-        OutputdTtsPlayout(socket_path="/nonexistent.sock", wire_wide=False)
+        TtsPlayout(socket_path="/nonexistent.sock", wire_wide=False)
     assert "width=S16_LE" in caplog.text
     assert "source=explicit" in caplog.text
 

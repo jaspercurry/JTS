@@ -197,16 +197,6 @@ def _validate(cfg: "Config") -> "Config":
         raise RuntimeError("JASPER_WEATHER_LAT must be between -90 and 90")
     if cfg.weather_default_lon is not None and not -180 <= cfg.weather_default_lon <= 180:
         raise RuntimeError("JASPER_WEATHER_LON must be between -180 and 180")
-    if cfg.tts_transport == "sounddevice":
-        raise RuntimeError(
-            "JASPER_TTS_TRANSPORT=sounddevice is not supported in this "
-            "outputd-loudness tree. Use JASPER_TTS_TRANSPORT=outputd, or "
-            "deploy a pre-outputd revision for rollback."
-        )
-    if cfg.tts_transport != "outputd":
-        raise RuntimeError(
-            "JASPER_TTS_TRANSPORT must be outputd"
-        )
     if cfg.duck_transport not in {"camilla", "fanin"}:
         raise RuntimeError("JASPER_DUCK_TRANSPORT must be camilla or fanin")
     if cfg.tts_outputd_socket == FANIN_TTS_SOCKET and cfg.duck_transport != "fanin":
@@ -284,10 +274,7 @@ class Config:
     mic_capture_channels: int
     wake_events_dir: str
     wake_events_max_audio_bytes: int
-    tts_device: str
-    tts_transport: str
     tts_outputd_socket: str
-    tts_output_rate: int
     assistant_loudness_profile_path: str
     assistant_loudness_auto_seed: bool
     tts_drain_tail_sec: float
@@ -649,24 +636,13 @@ class Config:
                 "JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES",
                 DEFAULT_WAKE_EVENTS_MAX_AUDIO_BYTES,
             ),
-            # JASPER_TTS_DEVICE: legacy PortAudio device name retained
-            # for pre-outputd archaeology. Current runtime rejects the
-            # sounddevice transport and sends assistant audio over the
-            # local TTS IPC socket below.
-            tts_device=_env("JASPER_TTS_DEVICE", "jasper_out"),
-            # TTS IPC transport. The transport name stays `outputd` for
-            # Python API compatibility with the line protocol, but the
-            # packaged socket is fan-in so TTS/cues enter before
-            # CamillaDSP crossover/protection on every output profile.
-            tts_transport=_env("JASPER_TTS_TRANSPORT", "outputd"),
+            # TTS IPC socket: jasper-fanin by default, so TTS/cues enter
+            # before CamillaDSP crossover/protection on every output
+            # profile; the grouping reconciler can point a bonded member
+            # at jasper-outputd's socket instead.
             tts_outputd_socket=_env(
                 VOICE_TTS_SOCKET_ENV, FANIN_TTS_SOCKET,
             ),
-            # Top-level pcm.jasper_out runs at 48 kHz (matches the
-            # dongle's native rate and CamillaDSP's chunk rate).
-            # TtsPlayout polyphase-upsamples provider 24 kHz PCM → 48
-            # kHz before write (factor 2, exact integer ratio).
-            tts_output_rate=_env_int("JASPER_TTS_OUTPUT_RATE", 48000),
             # Provider/model/voice source-loudness profiles. Python
             # can seed/learn these from silent calibration and live
             # assistant PCM; the active TTS IPC owner consumes them when

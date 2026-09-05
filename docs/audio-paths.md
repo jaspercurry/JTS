@@ -40,7 +40,7 @@ MUSIC chain (gets CamillaDSP processing)
               → jasper-outputd → outputd_dac → amp → speakers
 
 TTS / CUE chain (CROSSED OVER on every output profile)
-    jasper-voice OutputdTtsPlayout → /run/jasper-fanin/tts.sock
+    jasper-voice TtsPlayout → /run/jasper-fanin/tts.sock
                                    → jasper-fanin, mixed after program duck
                                    → jasper-camilla crossover/protection
                                    → Ring B, or the ACTIVE ring on a roleful box
@@ -322,7 +322,7 @@ in `jasper-fanin`.
 3. The mix owner snapshots the current content loudness before ducking,
    then ignores content-meter updates while the voice turn or correction
    measurement window is active.
-4. For each assistant/cue segment, `OutputdTtsPlayout` sends un-gained
+4. For each assistant/cue segment, `TtsPlayout` sends un-gained
    48 kHz stereo PCM plus optional source-loudness profile metadata.
    Sustained writes are paced (`_OUTPUTD_PACE_AHEAD_SEC`, 1.2 s) so at
    most ~1.2 s of audio is queued ahead of realtime: the mix owner's
@@ -519,7 +519,7 @@ voice daemon still waits through the stable methods below:
 - `wait_drained()` — single `asyncio.sleep` to the deadline. No
   polling because the deadline is known up-front.
 
-For interruption, `OutputdTtsPlayout.flush()` uses fan-in's
+For interruption, `TtsPlayout.flush()` uses fan-in's
 `FLUSH_SYNC` command and returns the daemon's compact playout
 acknowledgement (`audio_played_ms`, flushed frames, provider item id).
 That acknowledgement is for provider truncation/cancel logic; normal

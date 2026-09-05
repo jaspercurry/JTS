@@ -194,6 +194,11 @@ class _TailHeldTts:
     async def pause_content_meter(self) -> None:
         return None
 
+    async def pause_content_meter_for_measurement(
+        self, deadline_monotonic: float,
+    ) -> None:
+        return None
+
     async def resume_content_meter(self) -> None:
         return None
 
@@ -372,7 +377,9 @@ async def test_pause_setup_error_restores_output_admission_once() -> None:
         def __init__(self) -> None:
             self.resume_calls = 0
 
-        async def pause_content_meter(self) -> None:
+        async def pause_content_meter_for_measurement(
+            self, deadline_monotonic: float,
+        ) -> None:
             raise RuntimeError("meter pause failed")
 
         async def resume_content_meter(self) -> None:
@@ -398,7 +405,9 @@ async def test_unexpected_base_exception_after_opening_still_rolls_back(
     error_type: type[BaseException],
 ) -> None:
     class _UnexpectedMeter:
-        async def pause_content_meter(self) -> None:
+        async def pause_content_meter_for_measurement(
+            self, deadline_monotonic: float,
+        ) -> None:
             raise error_type("unexpected setup failure")
 
         async def resume_content_meter(self) -> None:
@@ -428,7 +437,9 @@ async def test_repeated_cancellation_waits_for_local_pause_rollback() -> None:
             return True
 
     class _HeldRollbackMeter:
-        async def pause_content_meter(self) -> None:
+        async def pause_content_meter_for_measurement(
+            self, deadline_monotonic: float,
+        ) -> None:
             return None
 
         async def resume_content_meter(self) -> None:
@@ -518,7 +529,9 @@ async def test_resume_reopens_admission_before_stuck_meter_recovers() -> None:
     release_resume = asyncio.Event()
 
     class _Meter:
-        async def pause_content_meter(self) -> None:
+        async def pause_content_meter_for_measurement(
+            self, deadline_monotonic: float,
+        ) -> None:
             return None
 
         async def resume_content_meter(self) -> None:
@@ -624,7 +637,7 @@ async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
     """A later AUDIO failure cannot erase an earlier command's audible tail."""
 
     import jasper.audio_io as audio_io_mod
-    from jasper.audio_io import OutputdTtsPlayout
+    from jasper.audio_io import TtsPlayout
 
     class _FailSecondWrite:
         def __init__(self) -> None:
@@ -673,9 +686,8 @@ async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
     )
     monkeypatch.setattr(audio_io_mod, "asyncio", fake_asyncio)
 
-    tts = OutputdTtsPlayout(
+    tts = TtsPlayout(
         socket_path=tts_socket,
-        output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=1.0,
         # STATED, not inherited: the S16 mute-click bytes below are 10 bytes,
@@ -722,7 +734,7 @@ async def test_cancelled_mute_write_waits_for_acceptance_and_physical_tail(
     tts_socket: str,
 ) -> None:
     """Cancellation cannot outrun an uncancellable socket-write worker."""
-    from jasper.audio_io import OutputdTtsPlayout
+    from jasper.audio_io import TtsPlayout
 
     write_started = threading.Event()
     release_write = threading.Event()
@@ -747,9 +759,8 @@ async def test_cancelled_mute_write_waits_for_acceptance_and_physical_tail(
         def resume_content_meter(self) -> None:
             return None
 
-    tts = OutputdTtsPlayout(
+    tts = TtsPlayout(
         socket_path=tts_socket,
-        output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=1.0,
         # STATED, not inherited: the S16 mute-click bytes below are 10 bytes,
@@ -812,7 +823,7 @@ async def test_cancelled_cue_tail_retains_output_episode(
     """Accepted cue PCM keeps admin/proactive ownership under cancellation."""
 
     import jasper.audio_io as audio_io_mod
-    from jasper.audio_io import OutputdTtsPlayout
+    from jasper.audio_io import TtsPlayout
 
     monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     drain_started = asyncio.Event()
@@ -828,9 +839,8 @@ async def test_cancelled_cue_tail_retains_output_episode(
         def write(self, _data: bytes) -> None:
             return None
 
-    tts = OutputdTtsPlayout(
+    tts = TtsPlayout(
         socket_path=tts_socket,
-        output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=0.0,
     )
@@ -1854,7 +1864,7 @@ async def test_cancelled_admin_cue_keeps_duck_until_physical_tail(
     import wave
 
     import jasper.audio_io as audio_io_mod
-    from jasper.audio_io import OutputdTtsPlayout
+    from jasper.audio_io import TtsPlayout
     from jasper.cues import AudioCueManager
     from jasper.cues.registry import find
 
@@ -1890,9 +1900,8 @@ async def test_cancelled_admin_cue_keeps_duck_until_physical_tail(
             )
             restored.set()
 
-    tts = OutputdTtsPlayout(
+    tts = TtsPlayout(
         socket_path=tts_socket,
-        output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=0.0,
     )
@@ -2142,7 +2151,9 @@ async def test_uds_slow_setup_reduces_drain_to_aggregate_remaining(
                 clock.advance(0.30)
 
     class _SlowMeter:
-        async def pause_content_meter(self) -> None:
+        async def pause_content_meter_for_measurement(
+            self, deadline_monotonic: float,
+        ) -> None:
             clock.advance(0.25)
 
         async def resume_content_meter(self) -> None:
@@ -2252,14 +2263,14 @@ async def test_uds_poisoned_meter_fails_closed_then_reconnects_on_next_access(
     """MEASURE_PAUSE never reconnects; a later ordinary control does once."""
 
     import jasper.audio_io as audio_io_mod
-    from jasper.audio_io import OutputdTtsPlayout
+    from jasper.audio_io import TtsPlayout
     from jasper.voice.daemon_main import _start_control_socket
 
     parent, child = socket.socketpair()
     poisoned = audio_io_mod._OutputdStreamAdapter(parent)
     poisoned.close()
     child.close()
-    tts = OutputdTtsPlayout(socket_path="/tmp/outputd-test.sock")
+    tts = TtsPlayout(socket_path="/tmp/outputd-test.sock")
     tts._stream = poisoned  # type: ignore[assignment]
     connect_calls = 0
 

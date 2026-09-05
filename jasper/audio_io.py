@@ -429,238 +429,6 @@ def make_mic_capture(
     )
 
 
-class TtsPlayout:
-    """Shared TtsPlayout base: gain validation, rate bookkeeping, and
-    drain-deadline timing. Playback (write/flush/segment lifecycle) is
-    subclass-owned except emission admission, which `write_segment` owns
-    here for every transport — `OutputdTtsPlayout` is the only one
-    `make_tts_playout` can construct, since both it and `Config`'s
-    `tts_transport` validation refuse anything else. The other methods
-    below raise until a subclass overrides them; they stay declared so
-    code typed on `TtsPlayout` (turn_playback.py, voice_daemon.py) still
-    type-checks against every transport's interface.
-
-    `output_rate` must be an exact multiple of `INPUT_RATE`: the output
-    device may not natively support 24 kHz, so the subclass
-    polyphase-upsamples 24 kHz → `output_rate` in its own write path.
-    """
-
-    INPUT_RATE = 24000
-
-    # Floor — below this, TTS is effectively silent. Used when the
-    # user mutes, when Camilla is unreachable at startup, or when a
-    # volume reading looks malformed.
-    MIN_TTS_GAIN_DB = -60.0
-
-    def __init__(
-        self,
-        output_rate: int = INPUT_RATE,
-        gain_db: float = 0.0,
-        *,
-        drain_tail_sec: float = 0.085,  # production wires from cfg.tts_drain_tail_sec
-    ) -> None:
-        if output_rate < self.INPUT_RATE:
-            raise RuntimeError(
-                f"output_rate {output_rate} must be >= {self.INPUT_RATE}"
-            )
-        if output_rate % self.INPUT_RATE != 0:
-            raise RuntimeError(
-                f"output_rate {output_rate} must be an integer multiple "
-                f"of {self.INPUT_RATE} (upsample ratio must be exact)"
-            )
-        self._output_rate = output_rate
-        self._upsample = output_rate // self.INPUT_RATE
-        # Initial value is the floor (effectively silent) so the daemon
-        # cannot accidentally play TTS loud during the brief window
-        # between TtsPlayout construction and the first configured
-        # gain. Until then we'd rather have inaudible TTS than blast.
-        self._gain_db = self.MIN_TTS_GAIN_DB
-        # Cumulative pacing-sleep time since the last take_paced_sec().
-        # Only the outputd/fan-in transport paces (a device-paced transport
-        # wouldn't need to), but the field lives here so every transport
-        # answers take_paced_sec() and callers stay transport-agnostic.
-        self._paced_total_sec = 0.0
-        self._stream: _OutputdStreamAdapter | None = None
-        # One-shot warning latch: if a caller invokes write() before
-        # entering the async context (so _stream is still None), log
-        # once. The class is a context manager and the underlying
-        # ALSA stream only opens in __aenter__; without that, write()
-        # used to silently no-op, which was the cause of "I can't
-        # hear the cue" being mis-diagnosed as routing problems.
-        self._closed_stream_warned = False
-        # Drain tracking — see `expected_drain_at`. None (not 0.0)
-        # because CLOCK_MONOTONIC's reference is platform-defined; 0.0
-        # is briefly a legitimate now() value on a freshly-booted Pi.
-        self._drain_tail_sec = float(drain_tail_sec)
-        self._ring_end_monotonic: float | None = None
-        # Emission-time admission authority — see set_emission_admission.
-        self._emission_admission: "Callable[[], str | None] | None" = None
-        self._emission_refusal_logged = False
-        # Apply the constructor's gain_db through the same validation +
-        # validation path as runtime updates. If a caller passes the
-        # legacy "-8.0 fixed gain" value, this becomes the active level.
-        self.set_gain_db(gain_db)
-
-    def set_gain_db(self, db: float) -> None:
-        """Update TTS gain. Non-finite inputs are rejected and very low
-        finite values floor to the mute-equivalent minimum. Single-float
-        assignment is atomic under the GIL, so no lock is needed for
-        concurrent reads of `gain_db`."""
-        try:
-            db = float(db)
-        except (TypeError, ValueError):
-            logger.warning("tts gain rejected (not a number): %r", db)
-            return
-        if db != db or db in (float("inf"), float("-inf")):
-            logger.warning("tts gain rejected (non-finite): %r", db)
-            return
-        clamped = max(self.MIN_TTS_GAIN_DB, db)
-        if clamped == self._gain_db:
-            return
-        self._gain_db = clamped
-        # DEBUG (not INFO): the active TTS IPC owner publishes the richer
-        # assistant loudness decision telemetry, and this low-level floor
-        # log is noisy.
-        if clamped != db:
-            logger.debug(
-                "tts gain set: requested %.1f dB -> floored to %.1f dB",
-                db, clamped,
-            )
-        else:
-            logger.debug("tts gain set: %.1f dB", clamped)
-
-    @property
-    def gain_db(self) -> float:
-        return self._gain_db
-
-    async def __aenter__(self) -> "TtsPlayout":
-        raise NotImplementedError
-
-    async def __aexit__(self, *exc) -> None:
-        raise NotImplementedError
-
-    def set_emission_admission(
-        self,
-        admission: "Callable[[], str | None] | None",
-    ) -> None:
-        """Install the authority asked before every write.
-
-        `admission` returns a refusal code while assistant audio must not
-        be heard at all (an armed room-correction window), else None. It is
-        asked per write, not per episode, so a caller that passed an earlier
-        check and is already mid-playout is refused too (issue #1913)."""
-        self._emission_admission = admission
-
-    async def write_segment(
-        self,
-        pcm: bytes,
-        *,
-        provider_item_id: str | None = None,
-        segment_kind: str = "assistant",
-        source_profile=None,
-        pcm_wide: bool = False,
-    ) -> None:
-        """Sole emission seam: every assistant byte passes through here —
-        cues, earcons, announcements and live-session TTS, directly or via
-        `write`. Refused bytes are dropped, not queued, so drain accounting
-        is untouched and an episode holding output still releases it."""
-        admission = self._emission_admission
-        refusal = admission() if admission is not None else None
-        if refusal is not None:
-            # Once per refusal streak: a burst-delivery provider hands over a
-            # whole response as many chunks, and one line each would flood the
-            # journal for the length of a held measurement session.
-            if not self._emission_refusal_logged:
-                self._emission_refusal_logged = True
-                log_event(
-                    logger,
-                    "tts_write.refused",
-                    reason=refusal,
-                    segment_kind=segment_kind,
-                )
-            return
-        self._emission_refusal_logged = False
-        await self._write_segment(
-            pcm,
-            provider_item_id=provider_item_id,
-            segment_kind=segment_kind,
-            source_profile=source_profile,
-            pcm_wide=pcm_wide,
-        )
-
-    async def _write_segment(
-        self,
-        pcm: bytes,
-        *,
-        provider_item_id: str | None = None,
-        segment_kind: str = "assistant",
-        source_profile=None,
-        pcm_wide: bool = False,
-    ) -> None:
-        raise NotImplementedError
-
-    async def end_segment(self) -> None:
-        raise NotImplementedError
-
-    async def prepare_assistant_context(
-        self,
-        *,
-        provider: str,
-        model: str,
-        voice: str,
-        tts_envelope_lufs: float,
-        canonical_volume_db: float | None = None,
-        downstream_volume_db: float | None = None,
-        context_tts_envelope_lufs: float | None = None,
-        muted: bool | None = None,
-        context_stamp_boot_ns: int | None = None,
-    ) -> None:
-        raise NotImplementedError
-
-    async def pause_content_meter(self) -> None:
-        raise NotImplementedError
-
-    async def resume_content_meter(self) -> None:
-        raise NotImplementedError
-
-    async def write(self, pcm: bytes) -> None:
-        raise NotImplementedError
-
-    async def flush(self) -> dict | None:
-        raise NotImplementedError
-
-    def expected_drain_at(self) -> float:
-        """Monotonic deadline at which the last-queued sample's tail
-        will have cleared the OS audio stack — i.e. the speaker is
-        silent. Returns ``0.0`` when nothing is queued (the sentinel
-        naturally compares as "already drained" against
-        ``time.monotonic()``)."""
-        if self._ring_end_monotonic is None:
-            return 0.0
-        return self._ring_end_monotonic + self._drain_tail_sec
-
-    async def wait_drained(self) -> None:
-        """Block until ``expected_drain_at`` has passed. Cheap when
-        nothing is queued (the 0.0 sentinel yields negative remaining,
-        which skips the sleep). Single ``asyncio.sleep`` otherwise —
-        deadline is known up-front, no polling."""
-        remaining = self.expected_drain_at() - time.monotonic()
-        if remaining > 0.0:
-            await asyncio.sleep(remaining)
-
-    def take_paced_sec(self) -> float:
-        """Pacing-sleep seconds accumulated since the last call; resets.
-
-        The voice daemon reads this once per turn for the turn-ended
-        accounting line. Zero means no write waited on the IPC owner's
-        pending budget (always true for a device-paced transport, which
-        never sleeps deliberately).
-        """
-        v = self._paced_total_sec
-        self._paced_total_sec = 0.0
-        return v
-
-
 _OUTPUTD_AUDIO_FRAME_BYTES = 4  # stereo S16_LE — the narrow wire
 _OUTPUTD_AUDIO_FRAME_BYTES_WIDE = 8  # stereo S32_LE — the wide wire
 _OUTPUTD_SAMPLE_RATE = 48_000
@@ -983,9 +751,9 @@ def _outputd_profile_tokens(profile) -> list[str] | None:
 
 
 class _OutputdStreamAdapter:
-    """Tiny sync writer used by OutputdTtsPlayout.
+    """Tiny sync writer used by TtsPlayout.
 
-    OutputdTtsPlayout does resample, mono-to-stereo, and drain accounting
+    TtsPlayout does resample, mono-to-stereo, and drain accounting
     before calling ``self._stream.write(bytes)`` in a worker thread. This
     adapter preserves the blocking stream shape while swapping the final
     sink from PortAudio to the local TTS Unix socket.
@@ -1289,7 +1057,7 @@ class _OutputdStreamAdapter:
 
     def start(self) -> None:
         # No-op: the stream stays open after FLUSH_SYNC. Satisfies the
-        # abort()+start() shape OutputdTtsPlayout.flush falls back to
+        # abort()+start() shape TtsPlayout.flush falls back to
         # when a stream has no flush_sync.
         return None
 
@@ -1300,40 +1068,64 @@ class _OutputdStreamAdapter:
             self._close_unlocked(send_close=True)
 
 
-class OutputdTtsPlayout(TtsPlayout):
-    """TtsPlayout-compatible client for the fan-in TTS IPC protocol.
+class TtsPlayout:
+    """Assistant-audio playout: gain validation, drain-deadline timing, and
+    the fan-in TTS IPC client.
 
-    The transport name is historical; the packaged socket is fan-in so
-    TTS/cues enter before CamillaDSP. Python's contract stays unchanged:
-    provider PCM enters as 24 kHz mono, write() resamples to 48 kHz,
-    duplicates mono to stereo, updates the drain deadline, and writes
-    bytes to this class's socket adapter. Gain travels as metadata so the
-    active TTS IPC owner can apply the final clamp at its mix boundary.
+    The name and "transport" language are historical; the packaged socket
+    is fan-in so TTS/cues enter before CamillaDSP. Provider PCM enters as
+    24 kHz mono; write() polyphase-upsamples it 2x to the fan-in socket's
+    fixed 48 kHz, duplicates mono to stereo, updates the drain deadline,
+    and writes bytes to this class's socket adapter. Gain travels as
+    metadata so the active TTS IPC owner can apply the final clamp at its
+    mix boundary.
     """
+
+    INPUT_RATE = 24000
+
+    # Floor — below this, TTS is effectively silent. Used when the
+    # user mutes, when Camilla is unreachable at startup, or when a
+    # volume reading looks malformed.
+    MIN_TTS_GAIN_DB = -60.0
 
     def __init__(
         self,
         socket_path: str = FANIN_TTS_SOCKET,
-        output_rate: int = _OUTPUTD_SAMPLE_RATE,
         gain_db: float = 0.0,
         *,
-        drain_tail_sec: float = 0.085,
+        drain_tail_sec: float = 0.085,  # production wires from cfg.tts_drain_tail_sec
         provider: str = "",
         model: str = "",
         voice: str = "",
         profile_path: str = ASSISTANT_LOUDNESS_PROFILE_PATH,
         wire_wide: bool | None = None,
     ) -> None:
-        if output_rate != _OUTPUTD_SAMPLE_RATE:
-            raise RuntimeError(
-                "fan-in TTS IPC transport requires 48 kHz stereo IPC; "
-                f"got output_rate={output_rate}"
-            )
-        super().__init__(
-            output_rate=output_rate,
-            gain_db=gain_db,
-            drain_tail_sec=drain_tail_sec,
-        )
+        # Initial value is the floor (effectively silent) so the daemon
+        # cannot accidentally play TTS loud during the brief window
+        # between construction and the first configured gain. Until
+        # then we'd rather have inaudible TTS than blast.
+        self._gain_db = self.MIN_TTS_GAIN_DB
+        # Cumulative pacing-sleep time since the last take_paced_sec().
+        self._paced_total_sec = 0.0
+        self._stream: _OutputdStreamAdapter | None = None
+        # One-shot warning latch: if a caller invokes write() before
+        # entering the async context (so _stream is still None), log
+        # once. The class is a context manager and the underlying
+        # ALSA stream only opens in __aenter__; without that, write()
+        # used to silently no-op, which was the cause of "I can't
+        # hear the cue" being mis-diagnosed as routing problems.
+        self._closed_stream_warned = False
+        # Drain tracking — see `expected_drain_at`. None (not 0.0)
+        # because CLOCK_MONOTONIC's reference is platform-defined; 0.0
+        # is briefly a legitimate now() value on a freshly-booted Pi.
+        self._drain_tail_sec = float(drain_tail_sec)
+        self._ring_end_monotonic: float | None = None
+        # Emission-time admission authority — see set_emission_admission.
+        self._emission_admission: "Callable[[], str | None] | None" = None
+        self._emission_refusal_logged = False
+        # Apply the constructor's gain_db through the same validation path
+        # as runtime updates.
+        self.set_gain_db(gain_db)
         self._socket_path = socket_path
         self._provider = provider
         self._model = model
@@ -1376,6 +1168,88 @@ class OutputdTtsPlayout(TtsPlayout):
         # and audio callers can each connect after the same poisoned adapter
         # and leave one live but unreachable socket behind.
         self._outputd_reconnect_lock = asyncio.Lock()
+
+    @property
+    def gain_db(self) -> float:
+        return self._gain_db
+
+    def set_emission_admission(
+        self,
+        admission: "Callable[[], str | None] | None",
+    ) -> None:
+        """Install the authority asked before every write.
+
+        `admission` returns a refusal code while assistant audio must not
+        be heard at all (an armed room-correction window), else None. It is
+        asked per write, not per episode, so a caller that passed an earlier
+        check and is already mid-playout is refused too (issue #1913)."""
+        self._emission_admission = admission
+
+    async def write_segment(
+        self,
+        pcm: bytes,
+        *,
+        provider_item_id: str | None = None,
+        segment_kind: str = "assistant",
+        source_profile=None,
+        pcm_wide: bool = False,
+    ) -> None:
+        """Sole emission seam: every assistant byte passes through here —
+        cues, earcons, announcements and live-session TTS, directly or via
+        `write`. Refused bytes are dropped, not queued, so drain accounting
+        is untouched and an episode holding output still releases it."""
+        admission = self._emission_admission
+        refusal = admission() if admission is not None else None
+        if refusal is not None:
+            # Once per refusal streak: a burst-delivery provider hands over a
+            # whole response as many chunks, and one line each would flood the
+            # journal for the length of a held measurement session.
+            if not self._emission_refusal_logged:
+                self._emission_refusal_logged = True
+                log_event(
+                    logger,
+                    "tts_write.refused",
+                    reason=refusal,
+                    segment_kind=segment_kind,
+                )
+            return
+        self._emission_refusal_logged = False
+        await self._write_segment(
+            pcm,
+            provider_item_id=provider_item_id,
+            segment_kind=segment_kind,
+            source_profile=source_profile,
+            pcm_wide=pcm_wide,
+        )
+
+    def expected_drain_at(self) -> float:
+        """Monotonic deadline at which the last-queued sample's tail
+        will have cleared the OS audio stack — i.e. the speaker is
+        silent. Returns ``0.0`` when nothing is queued (the sentinel
+        naturally compares as "already drained" against
+        ``time.monotonic()``)."""
+        if self._ring_end_monotonic is None:
+            return 0.0
+        return self._ring_end_monotonic + self._drain_tail_sec
+
+    async def wait_drained(self) -> None:
+        """Block until ``expected_drain_at`` has passed. Cheap when
+        nothing is queued (the 0.0 sentinel yields negative remaining,
+        which skips the sleep). Single ``asyncio.sleep`` otherwise —
+        deadline is known up-front, no polling."""
+        remaining = self.expected_drain_at() - time.monotonic()
+        if remaining > 0.0:
+            await asyncio.sleep(remaining)
+
+    def take_paced_sec(self) -> float:
+        """Pacing-sleep seconds accumulated since the last call; resets.
+
+        The voice daemon reads this once per turn for the turn-ended
+        accounting line.
+        """
+        v = self._paced_total_sec
+        self._paced_total_sec = 0.0
+        return v
 
     async def _connect_stream_adapter(
         self,
@@ -1430,7 +1304,7 @@ class OutputdTtsPlayout(TtsPlayout):
         logger.info("fan-in TTS IPC connected: socket=%s", self._socket_path)
         return stream
 
-    async def __aenter__(self) -> "OutputdTtsPlayout":
+    async def __aenter__(self) -> "TtsPlayout":
         self._stream = await self._connect_stream_adapter()
         return self
 
@@ -1470,7 +1344,37 @@ class OutputdTtsPlayout(TtsPlayout):
         return stream
 
     def set_gain_db(self, db: float) -> None:
-        super().set_gain_db(db)
+        """Update TTS gain and push the wire-level value into the stream.
+
+        Non-finite inputs are rejected and very low finite values floor
+        to the mute-equivalent minimum. Single-float assignment is atomic
+        under the GIL, so no lock is needed for concurrent reads of
+        `gain_db`. The stream push below runs regardless of whether the
+        clamp step above actually changed anything, so a rejected input
+        still re-syncs the stream to the (unchanged) active gain.
+        """
+        try:
+            parsed = float(db)
+        except (TypeError, ValueError):
+            logger.warning("tts gain rejected (not a number): %r", db)
+        else:
+            if parsed != parsed or parsed in (float("inf"), float("-inf")):
+                logger.warning("tts gain rejected (non-finite): %r", db)
+            else:
+                clamped = max(self.MIN_TTS_GAIN_DB, parsed)
+                if clamped != self._gain_db:
+                    self._gain_db = clamped
+                    # DEBUG (not INFO): the active TTS IPC owner publishes
+                    # the richer assistant loudness decision telemetry, and
+                    # this low-level floor log is noisy.
+                    if clamped != parsed:
+                        logger.debug(
+                            "tts gain set: requested %.1f dB -> floored to "
+                            "%.1f dB",
+                            parsed, clamped,
+                        )
+                    else:
+                        logger.debug("tts gain set: %.1f dB", clamped)
         stream = self._stream
         if isinstance(stream, _OutputdStreamAdapter) and stream.closed:
             return
@@ -1638,7 +1542,7 @@ class OutputdTtsPlayout(TtsPlayout):
         if self._stream is None:
             if not self._closed_stream_warned:
                 logger.warning(
-                    "OutputdTtsPlayout.write called on a closed stream - "
+                    "TtsPlayout.write called on a closed stream - "
                     "%d bytes silently dropped. Did you forget "
                     "`async with tts:`? (Suppressing further such "
                     "warnings for this instance.)",
@@ -1667,14 +1571,13 @@ class OutputdTtsPlayout(TtsPlayout):
             if self._assistant_meter is None:
                 self._assistant_meter = AssistantSourceMeter()
             self._assistant_meter.observe_pcm_24k(pcm)
-        if self._upsample > 1:
-            # __init__ pins output_rate to 48 kHz on this transport, so the
-            # only ratio that reaches here is 2.
-            arr = upsample_2x(arr).astype(np.float32, copy=False)
+        # The wire is fixed at 48 kHz; provider/cue PCM is always 24 kHz, so
+        # this upsample ratio is always exactly 2.
+        arr = upsample_2x(arr).astype(np.float32, copy=False)
         mono = _quantize_to_wire(arr, wide=self._wire_wide)
         stereo = np.repeat(mono, 2)
 
-        chunk_duration_sec = len(mono) / self._output_rate
+        chunk_duration_sec = len(mono) / _OUTPUTD_SAMPLE_RATE
         write_start = time.monotonic()
         for attempt in range(2):
             try:
@@ -1741,7 +1644,7 @@ class OutputdTtsPlayout(TtsPlayout):
             committed_end = self._ring_end_monotonic
             if committed_end is None or committed_end < sent_at:
                 committed_end = sent_at
-            committed_end += len(chunk) / (self._output_rate * self._frame_bytes)
+            committed_end += len(chunk) / (_OUTPUTD_SAMPLE_RATE * self._frame_bytes)
             self._ring_end_monotonic = committed_end
             if cancelled:
                 raise asyncio.CancelledError
@@ -1754,7 +1657,7 @@ class OutputdTtsPlayout(TtsPlayout):
             logger.warning(
                 "fan-in TTS IPC write slow: %.0fms for %.0fms of audio "
                 "(%d frames @ %d Hz)",
-                write_ms, chunk_ms, len(mono), self._output_rate,
+                write_ms, chunk_ms, len(mono), _OUTPUTD_SAMPLE_RATE,
             )
 
     def _profile_for_segment(self, segment_kind: str, *, source_profile=None):
@@ -1874,43 +1777,3 @@ class OutputdTtsPlayout(TtsPlayout):
             close = getattr(stream, "close", None)
             if close is not None:
                 await asyncio.to_thread(close)
-
-
-def make_tts_playout(
-    *,
-    transport: str,
-    output_rate: int,
-    gain_db: float,
-    drain_tail_sec: float,
-    outputd_socket: str = FANIN_TTS_SOCKET,
-    provider: str = "",
-    model: str = "",
-    voice: str = "",
-    assistant_loudness_profile_path: str = ASSISTANT_LOUDNESS_PROFILE_PATH,
-) -> TtsPlayout:
-    """Construct the selected TTS playout transport.
-
-    ``outputd`` is the only implementation `TtsPlayout` has: the base class
-    is a typed contract (it owns emission admission; the rest raises until
-    overridden) and `OutputdTtsPlayout` supplies the transport.
-    ``sounddevice`` is refused here rather than accepted and routed
-    nowhere.
-    """
-    if transport == "sounddevice":
-        raise RuntimeError(
-            "JASPER_TTS_TRANSPORT=sounddevice is not supported in this "
-            "outputd-loudness tree; deploy a pre-outputd revision for "
-            "that rollback path."
-        )
-    if transport == "outputd":
-        return OutputdTtsPlayout(
-            socket_path=outputd_socket,
-            output_rate=output_rate,
-            gain_db=gain_db,
-            drain_tail_sec=drain_tail_sec,
-            provider=provider,
-            model=model,
-            voice=voice,
-            profile_path=assistant_loudness_profile_path,
-        )
-    raise ValueError(f"unknown TTS transport: {transport!r}")

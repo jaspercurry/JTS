@@ -178,10 +178,8 @@ EnvironmentFile=-/var/lib/jasper/peering.env
 EnvironmentFile=-/var/lib/jasper/accessory-mics.env
 # Assistant audio routes to fan-in's outputd-compatible local socket so
 # TTS/cues enter before CamillaDSP, then get the same crossover,
-# correction, and protection path as renderer audio. The transport name
-# remains `outputd` for Python API compatibility; the socket endpoint is
-# the runtime owner.
-Environment="JASPER_TTS_TRANSPORT=outputd"
+# correction, and protection path as renderer audio. The socket endpoint
+# is the runtime owner.
 Environment="JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock"
 Environment="JASPER_DUCK_TRANSPORT=fanin"
 # Grouping-derived TTS playout route (Increment 5 PR-2): the reconciler's
