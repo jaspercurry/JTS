@@ -146,6 +146,46 @@ def test_provider_key_adjudicates_the_selection_by_status(
 
 
 @pytest.mark.parametrize(
+    "state, status, reason",
+    [
+        (
+            _state("unreadable"), "skipped",
+            doctor_voice.REASON_PROVIDER_IMPORTS_UNDETERMINED,
+        ),
+        (
+            _state("invalid", raw="nope"), "skipped",
+            doctor_voice.REASON_PROVIDER_IMPORTS_UNDETERMINED,
+        ),
+        (
+            _state("missing"), "ok",
+            doctor_voice.REASON_PROVIDER_IMPORTS_NOT_CONFIGURED,
+        ),
+        (
+            _state("unset"), "ok",
+            doctor_voice.REASON_PROVIDER_IMPORTS_NOT_CONFIGURED,
+        ),
+    ],
+    ids=["unreadable", "invalid", "file-missing", "unset"],
+)
+def test_provider_imports_status_when_it_probed_nothing(
+    monkeypatch, state, status, reason
+):
+    """An undetermined selection defers to check_provider_key's verdict, so
+    it never offers a second opinion (skipped). No provider configured yet
+    is operator intent, not a finding (ok)."""
+    monkeypatch.setattr(
+        doctor_voice, "read_active_provider_state", lambda: state,
+    )
+
+    r = doctor_voice.check_provider_importable()
+
+    assert r.status == status
+    assert r.reason == reason
+
+
+# The manifest gates jasper-aec-reconcile's start of jasper-voice, so a
+# missing or stale one is deafness (AGENTS.md non-negotiable 6), not a finding.
+@pytest.mark.parametrize(
     "body, status, reason",
     [
         (None, "fail", doctor_voice.REASON_MANIFEST_MISSING),
@@ -241,17 +281,17 @@ def test_pricing_warns_only_for_an_unpriced_active_model(
 @pytest.mark.parametrize(
     "status, verdict, reason",
     [
-        ("unreadable", "warn", "REASON_PRICING_MODEL_UNDETERMINED"),
-        ("invalid", "warn", "REASON_PRICING_MODEL_UNDETERMINED"),
+        ("unreadable", "skipped", "REASON_PRICING_MODEL_UNDETERMINED"),
+        ("invalid", "skipped", "REASON_PRICING_MODEL_UNDETERMINED"),
         ("missing", "ok", "REASON_PRICING_MODEL_NOT_CONFIGURED"),
         ("unset", "ok", "REASON_PRICING_MODEL_NOT_CONFIGURED"),
     ],
 )
-def test_pricing_warns_when_it_could_not_ask_which_model_is_active(
+def test_pricing_skips_when_it_could_not_ask_which_model_is_active(
     monkeypatch, status, verdict, reason
 ):
-    """A row that could not resolve its own question reports "can't tell",
-    not "fine" — first-time setup (missing/unset) stays ok."""
+    """A row that could not resolve its own question observed nothing, so it
+    skips rather than warning — first-time setup (missing/unset) stays ok."""
     monkeypatch.setattr(
         doctor_voice, "read_active_provider_state", lambda: _state(status),
     )
@@ -375,8 +415,8 @@ def _drop_last(rt):
 @pytest.mark.parametrize(
     "runtime, status, reason",
     [
-        # Control unreachable / older daemon: report the registry alone.
-        (None, "ok", doctor_voice.REASON_TOOL_PACKS_RUNTIME_UNAVAILABLE),
+        # Control unreachable / older daemon: registration never observed.
+        (None, "skipped", doctor_voice.REASON_TOOL_PACKS_RUNTIME_UNAVAILABLE),
         (_runtime(EXPECTED), "ok", doctor_voice.REASON_TOOL_PACKS_HEALTHY),
         (
             _runtime(EXPECTED, failed={EXPECTED[2]}), "fail",
@@ -454,7 +494,7 @@ def test_tool_packs_runtime_reader_parses_the_state_field(monkeypatch):
 @pytest.mark.parametrize(
     "runtime, status, reason",
     [
-        (None, "ok", doctor_voice.REASON_TOOL_PACKS_RUNTIME_UNAVAILABLE),
+        (None, "skipped", doctor_voice.REASON_TOOL_PACKS_RUNTIME_UNAVAILABLE),
         (
             _runtime(EXPECTED, failed={EXPECTED[1]}), "fail",
             doctor_voice.REASON_TOOL_PACKS_BUILD_FAILED,
