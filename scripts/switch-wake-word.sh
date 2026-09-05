@@ -84,7 +84,4 @@ echo "Switching ${PI_HOST}:JASPER_WAKE_MODEL → ${MODEL}"
 $SSH "sudo install -d -m 0750 /var/lib/jasper && \
       printf 'JASPER_WAKE_MODEL=%s\n' '${MODEL}' | sudo tee /var/lib/jasper/wake_model.env >/dev/null && \
       sudo chmod 0644 /var/lib/jasper/wake_model.env && \
-      sudo systemctl restart jasper-voice && \
-      sleep 2 && \
-      systemctl is-active jasper-voice && \
-      sudo journalctl -u jasper-voice -n 5 --no-pager 2>&1 | grep -v -E 'GetGpuDevices|device_discovery' | tail -5"
+      $(restart_voice_and_verify_cmd)"

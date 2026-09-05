@@ -179,6 +179,14 @@ quote_args() {
     printf '%s' "$out"
 }
 
+JASPER_VOICE_JOURNAL_NOISE_RE='GetGpuDevices|device_discovery'
+
+# restart_voice_and_verify_cmd
+restart_voice_and_verify_cmd() {
+    printf 'sudo systemctl restart jasper-voice && sleep 2 && systemctl is-active jasper-voice && sudo journalctl -u jasper-voice -n 5 --no-pager 2>&1 | grep -v -E %s | tail -5' \
+        "$(shell_quote "$JASPER_VOICE_JOURNAL_NOISE_RE")"
+}
+
 normalize_speaker_hostname() {
     local host="${1%.}"
     if [[ -z "$host" ]] || is_ipv4_host "$host"; then
