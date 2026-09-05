@@ -39,17 +39,32 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
   starting evidence.
 - Issue #4085 — the general steward's queue and its "came back clean" list; do not re-scout what
   it cleared unless your own evidence contradicts it.
+- Issue #3769, last comment — the tuning steward's close-out: what wave 9 landed, what it
+  deferred, the wave-10 candidates. The zone is parked (see Territory); this tells you what not to
+  re-find.
 
 ## Territory
 
-Other agents own: the tuning/measurement zone (`jasper/active_speaker/`, `jasper/audio_measurement/`,
-`jasper/correction/`, `jasper/bass_extension/`, anything `crossover_v2`, `jasper/web/correction_*.py`,
-the `jasper-round-*` CLIs), attached-hardware input (#4027: `jasper/audio_hardware/`,
-`output_hardware.py`, `usbsink/`, `accessories/`, udev), and the web UI (#4031: `jasper/web/`,
-`deploy/assets/`, nginx confs). Stay out of their code unless the owner says otherwise; when your
-attribute needs a change there, write it up as a suggestion (file:line, what, why) for that agent,
-or ask the owner for a one-off. Other stewards merge to `main` concurrently: rebase before every
-push, judge every PR by `git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
+Other agents own attached-hardware input (#4027: `jasper/audio_hardware/`, `output_hardware.py`,
+`usbsink/`, `accessories/`, udev) and the web UI (#4031: `jasper/web/`, `deploy/assets/`, nginx
+confs). Stay out of their code unless the owner says otherwise; when your attribute needs a change
+there, write it up as a suggestion (file:line, what, why) for that agent, or ask the owner for a
+one-off. Other stewards merge to `main` concurrently: rebase before every push, judge every PR by
+`git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
+
+**The tuning zone is parked, not open.** Its steward stood down with wave 9 on main (close-out:
+the last comment on #3769; `TARGET.md`, `WAVE-LOG.md` and `SURVEY-VISION.md` §7 live on branch
+`claude/tuning-rightsize/recon-reports` — fetch it, never merge it). Nobody owns
+`jasper/active_speaker/`, `jasper/audio_measurement/`, `jasper/correction/`, `jasper/bass_extension/`,
+anything `crossover_v2`, `jasper/web/correction_*.py` or the tuning CLIs (`jasper-round-*`,
+`measure`, `null`, `seat-level`, the prescriber and its views) until a wave-10 steward starts. Do
+not edit them on your own initiative: every tuning-zone item your attribute needs goes under its own
+**"Tuning zone — owner-gated"** heading in your plan, one row each with file:line and the proof,
+and you act on a row only after the owner ticks it at the plan gate. Two live constraints there:
+PR #4138 (the wired capture kernel; green, waiting on the owner's hardware null run) — leave
+`audio_measurement/wired_capture.py`, `web/correction_crossover_v2_wired.py`, `cli/null_door.py`,
+`cli/measure.py` and their tests alone until it merges; and #4031's Phase D is about to cut into
+`active_speaker/commissioning_*` — anything there is coordinated on #4031 before a branch exists.
 
 **Sibling lanes.** Seven sibling sessions run the other attributes of the same review (P1 #4193, P2 #4194,
 P3 #4195, P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202; the index and sequencing are in
@@ -77,7 +92,7 @@ decision is findable; and comments in code state constraints, not history.** Con
 - unit files carry `See ADR-NNNN` on every `StartLimitAction=reboot` and lose their 2,361 narrative
   lines to one-line invariants;
 - comments that are factually backwards at HEAD are deleted (the list below); the 207 history/PR/
-  date narrations in the active-speaker root are a suggestion to the tuning agent; module
+  date narrations in the active-speaker root are an owner-gated tuning-zone row; module
   docstrings exist on `voice_daemon.py` and `audio_io.py` and describe the module they head;
 - `BRINGUP.md` tells operators what the attended-sudo path gives up (until P2 fixes it).
 Mechanical measure: `docs/adr/INDEX.md` matches the directory; the link checker passes with `--all`;
@@ -105,7 +120,7 @@ Verified at HEAD by the review:
   196-198` says the opposite and is right); `graph_carrier.py:713-719` ("no production caller" — two);
   `peering/uds.py:22` ("used by doctor" — it is not); `coupling_reconcile.py:18` ("single writer") vs
   `:899-903` ("two writers"); `volume_owner.py:703-711`'s deletion promise; `crossover_v2/__init__.
-  py:5-13`'s import charter (tuning — suggest); `prompt.py:8-38` dated eval history pointing at a
+  py:5-13`'s import charter (owner-gated tuning row); `prompt.py:8-38` dated eval history pointing at a
   CLAUDE.md section that no longer exists; `RECONCILE_DUCK_SKIP_DB`'s unmet removal condition.
 - Prose ratios: 34–43% of lines in the voice, DSP-control, deploy-unit and install tiles;
   `ring-platform.sh:391-459` (69 comment lines over five `rm -f`); `jts-ring.conf` (89 comment
@@ -115,6 +130,12 @@ Verified at HEAD by the review:
 - `BRINGUP.md:202-206` says the deploy scripts "refuse to proceed without" passwordless sudo, which
   is only true off a tty; the options table two paragraphs down concedes the interactive path exists
   and never says what it gives up.
+- From the tuning steward's close-out: `REFACTOR-CUTOVER-2026-08.md` is the surviving half of #3769's
+  D2 (its still-binding §6 rulings go to ADRs, then it is deleted; `REFACTOR-TUNING` already went
+  that way via ADR-0228) — yours to price, owner-gated because the rulings are tuning doctrine; the
+  tuning program's `TARGET.md`, `WAVE-LOG.md` and `SURVEY-VISION.md` stay on their evidence branch,
+  never merged and never recreated as a handoff tier; #3769 D10 asks for one short ADR recording
+  the program — write it only if the owner ticks it.
 
 Go deeper than the review did: ~145 of 157 ADRs were not opened — a Sonnet sweep should classify
 each as {current, superseded-without-pointer, contradicted-by-code, batch} and produce the index;

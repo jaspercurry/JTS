@@ -39,17 +39,32 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
   starting evidence.
 - Issue #4085 — the general steward's queue and its "came back clean" list; do not re-scout what
   it cleared unless your own evidence contradicts it.
+- Issue #3769, last comment — the tuning steward's close-out: what wave 9 landed, what it
+  deferred, the wave-10 candidates. The zone is parked (see Territory); this tells you what not to
+  re-find.
 
 ## Territory
 
-Other agents own: the tuning/measurement zone (`jasper/active_speaker/`, `jasper/audio_measurement/`,
-`jasper/correction/`, `jasper/bass_extension/`, anything `crossover_v2`, `jasper/web/correction_*.py`,
-the `jasper-round-*` CLIs), attached-hardware input (#4027: `jasper/audio_hardware/`,
-`output_hardware.py`, `usbsink/`, `accessories/`, udev), and the web UI (#4031: `jasper/web/`,
-`deploy/assets/`, nginx confs). Stay out of their code unless the owner says otherwise; when your
-attribute needs a change there, write it up as a suggestion (file:line, what, why) for that agent,
-or ask the owner for a one-off. Other stewards merge to `main` concurrently: rebase before every
-push, judge every PR by `git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
+Other agents own attached-hardware input (#4027: `jasper/audio_hardware/`, `output_hardware.py`,
+`usbsink/`, `accessories/`, udev) and the web UI (#4031: `jasper/web/`, `deploy/assets/`, nginx
+confs). Stay out of their code unless the owner says otherwise; when your attribute needs a change
+there, write it up as a suggestion (file:line, what, why) for that agent, or ask the owner for a
+one-off. Other stewards merge to `main` concurrently: rebase before every push, judge every PR by
+`git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
+
+**The tuning zone is parked, not open.** Its steward stood down with wave 9 on main (close-out:
+the last comment on #3769; `TARGET.md`, `WAVE-LOG.md` and `SURVEY-VISION.md` §7 live on branch
+`claude/tuning-rightsize/recon-reports` — fetch it, never merge it). Nobody owns
+`jasper/active_speaker/`, `jasper/audio_measurement/`, `jasper/correction/`, `jasper/bass_extension/`,
+anything `crossover_v2`, `jasper/web/correction_*.py` or the tuning CLIs (`jasper-round-*`,
+`measure`, `null`, `seat-level`, the prescriber and its views) until a wave-10 steward starts. Do
+not edit them on your own initiative: every tuning-zone item your attribute needs goes under its own
+**"Tuning zone — owner-gated"** heading in your plan, one row each with file:line and the proof,
+and you act on a row only after the owner ticks it at the plan gate. Two live constraints there:
+PR #4138 (the wired capture kernel; green, waiting on the owner's hardware null run) — leave
+`audio_measurement/wired_capture.py`, `web/correction_crossover_v2_wired.py`, `cli/null_door.py`,
+`cli/measure.py` and their tests alone until it merges; and #4031's Phase D is about to cut into
+`active_speaker/commissioning_*` — anything there is coordinated on #4031 before a branch exists.
 
 **Sibling lanes.** Seven sibling sessions run the other attributes of the same review (P1 #4193, P2 #4194,
 P3 #4195, P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202; the index and sequencing are in
@@ -72,14 +87,14 @@ dependency direction is enforced by CI rather than by memory.** Concretely:
   source-scanning test is added for any of this;
 - the misfiled modules are in the package that names their job (`cli/aec_bridge_*` → `jasper/aec/`;
   `web/_systemd`, the platform half of `web/_common`, `control/{client,uds}`, `route_latency/status_
-  socket` → `jasper/platform/`; the crossover engine and backend out of `jasper/web/` — suggest to
-  #4031/tuning); the flat top level is regrouped into `platform/ net/ identity/ wake/ aec/ hardware/
+  socket` → `jasper/platform/`; the crossover engine and backend out of `jasper/web/` — an
+  owner-gated row, coordinated on #4031); the flat top level is regrouped into `platform/ net/ identity/ wake/ aec/ hardware/
   audio/ volume/ sources/ assistant/` per the corrected move table, pure `git mv` first, the moves
   that need a cut only after that cut;
 - function-local imports carry one of three stated reasons or are hoisted; the 109 redundant ones
   are deleted; the AGENTS.md rule exists;
 - no god files: `WakeLoop` loses its three stateless seams and its test doubles; `daemon_main.run`
-  becomes `Services`; `runtime_contract.py` splits into `types` + `queries` (suggest to tuning);
+  becomes `Services`; `runtime_contract.py` splits into `types` + `queries` (owner-gated tuning row);
   `multiroom/reconcile.main` extracts `RoleDecision`; `control/server.py` stops being reached through
   (#4114); `install.sh` becomes a STEPS table (P2 owns); the web closures become routes tables
   (suggest to #4031 — `correction_setup.py` is missing from its Phase D ledger);
@@ -134,8 +149,16 @@ Verified at HEAD by the review:
 
 Go deeper than the review did: it did not measure which of the 755 unexplained deferred imports are
 in library code vs entry points beyond a 120-site sample; it did not attempt the `runtime_contract`
-split (tuning territory — write the suggestion); it did not read `deploy/bin/` or the JS beyond two
-tiles. Keep the web and tuning god files as written suggestions unless the owner hands them to you.
+split (an owner-gated tuning row); it did not read `deploy/bin/` or the JS beyond two tiles. Keep
+the web god files as written suggestions to #4031 and the tuning god files as owner-gated rows.
+Two tuning-zone facts from the steward's close-out belong in your plan under that heading:
+`jasper-measure`'s AST closure reaches 23 `jasper/web` modules because
+`_default_setup_calibration_for_spec` lives in `web/correction_setup.py:1080` — lifting it with
+`_calibration_root()`/`_household_mic_path()` into `correction/household_mic.py` closes the
+`cli → web` edge and lets #4138 drop its boundary-allowlist entry (after #4138 merges, not before);
+and `crossover_v2/contracts.py` + `refusal_copy.py` pull numpy/scipy into every importer
+(the review's Wave-6 row; the steward measured `jasper-measure`'s 402-module closure and never asked
+ADR-0226's memory question — state closure size per entry point before and after your moves).
 The single highest-leverage PR is the layers contract in `scripts/test-merge`, green at L1–L3 —
 land it first so every later move is guarded.
 
