@@ -36,7 +36,7 @@ from statistics import median
 from typing import Any
 
 from jasper.camilla_config_contract import DEFAULT_CAMILLA_PORT
-from jasper.control.system_metrics import read_soc_temp_c
+from jasper.control.system_metrics import read_thermal_zone_temp_c
 from jasper.log_event import log_event
 from jasper.music_sources import MUSIC_SOURCE_SPECS
 from jasper.route_latency.status_socket import FANIN_STATUS_SOCKET
@@ -344,6 +344,11 @@ def _read_text_file(path: str) -> str | None:
         return None
 
 
+def _read_soc_temp_c() -> float | None:
+    raw = read_thermal_zone_temp_c()
+    return round(raw, 1) if raw is not None else None
+
+
 def _seconds_since_camilla_restart() -> float | None:
     """Seconds since jasper-camilla last (re)started — the controller-reset age.
 
@@ -390,7 +395,7 @@ def _seconds_since_deploy(now_wall: float) -> float | None:
 def _default_context_probe(now_wall: float) -> dict[str, Any]:
     """Cheap correlation context captured once at storm onset."""
     return {
-        "soc_temp_c": read_soc_temp_c(),
+        "soc_temp_c": _read_soc_temp_c(),
         "cpu_governor": _read_text_file(CPU_GOVERNOR_PATH),
         "cpu_freq_khz": _read_int_file(CPU_FREQ_PATH),
         "sec_since_camilla_restart": _seconds_since_camilla_restart(),
@@ -1480,7 +1485,7 @@ class AirPlayHealthSampler:
         cam = self._current_camilla if isinstance(self._current_camilla, dict) else {}
         rate_adjust = cam.get("rate_adjust")
         buffer_level = cam.get("buffer_level")
-        soc_temp = read_soc_temp_c()
+        soc_temp = _read_soc_temp_c()
         row = {
             "t_sec": round(now - (self._storm_started_at or now), 1),
             "rate_adjust": rate_adjust,

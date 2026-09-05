@@ -125,11 +125,19 @@ PROC_PRESSURE_MEMORY = "/proc/pressure/memory"
 PROC_VMSTAT = "/proc/vmstat"
 
 
+def read_thermal_zone_temp_c(path: str = THERMAL_ZONE_PATH) -> float | None:
+    try:
+        with open(path) as f:
+            raw = f.read().strip()
+        milli_c = float(raw)
+    except (OSError, ValueError):
+        return None
+    return milli_c / 1000.0
+
+
 def read_soc_temp_c(thermal_zone_path: str = THERMAL_ZONE_PATH) -> float | None:
-    """SoC temperature in Celsius: thermal-zone sysfs, falling back to
-    vcgencmd when the sysfs zone is unavailable. Shared by the /system
-    dashboard sampler and the AirPlay health sampler's storm forensics."""
-    sysfs_temp = SystemSampler._read_thermal_zone_temp_c(thermal_zone_path)
+    """Falls back to vcgencmd when the sysfs zone is unavailable."""
+    sysfs_temp = read_thermal_zone_temp_c(thermal_zone_path)
     if sysfs_temp is not None:
         return sysfs_temp
     try:
@@ -138,7 +146,7 @@ def read_soc_temp_c(thermal_zone_path: str = THERMAL_ZONE_PATH) -> float | None:
             capture_output=True, text=True,
             timeout=VCGENCMD_TIMEOUT_SEC,
         )
-    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+    except (subprocess.SubprocessError, OSError):
         return None
     # vcgencmd output: "temp=47.7'C\n"
     try:
@@ -411,7 +419,7 @@ class SystemSampler:
         """Slower thermal/throttling sample. Temperature prefers thermal
         sysfs and falls back to vcgencmd; throttled bits still use vcgencmd.
         Done every VCGENCMD_INTERVAL_SEC rather than every sample tick."""
-        temp = self._read_temp_c()
+        temp = read_soc_temp_c()
         throttled_now, throttled_history = self._read_throttled()
         with self._lock:
             self._temp_c = temp
@@ -558,24 +566,6 @@ class SystemSampler:
                 continue
             return {"rpm": rpm, "pwm": pwm}
         return None
-
-    @staticmethod
-    def _read_thermal_zone_temp_c(
-        path: str = THERMAL_ZONE_PATH,
-    ) -> float | None:
-        try:
-            with open(path) as f:
-                raw = f.read().strip()
-            milli_c = float(raw)
-        except (OSError, ValueError):
-            return None
-        return milli_c / 1000.0
-
-    @staticmethod
-    def _read_temp_c(
-        thermal_zone_path: str = THERMAL_ZONE_PATH,
-    ) -> float | None:
-        return read_soc_temp_c(thermal_zone_path)
 
     def _tick_services(
         self,
