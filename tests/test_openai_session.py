@@ -1630,6 +1630,57 @@ async def test_drop_signalled_during_a_reconnect_is_not_swallowed(conn_cls):
         await conn.stop()
 
 
+@pytest.mark.parametrize("conn_cls", [OpenAIRealtimeConnection, GrokRealtimeConnection])
+async def test_idle_context_reset_reopens_through_the_supervisor(conn_cls):
+    """The idle context reset hands its reopen to the supervisor.
+
+    One reopener per connection slot: the reset's session is opened from
+    a paused (supervisor-driven) state, and a drop signalled during that
+    reopen still settles CONNECTED with every superseded session closed.
+    """
+    factory = _FakeConnectFactory()
+    conn = conn_cls(
+        api_key="fake",
+        context_reset_sec=0.01,
+        backoff_schedule=(0.0, 0.0),
+        connect_factory=factory,
+    )
+    paused_at_open: list[bool] = []
+
+    def recording_factory(*, model: str):
+        paused_at_open.append(conn.is_paused())
+        cm = factory(model=model)
+        if len(factory.conns) == 2:
+            # A fresh drop lands while the reset's reopen is in flight.
+            conn._reconnect_event.set()
+        return cm
+
+    conn._connect_factory = recording_factory
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        turn1 = await conn.acquire_turn()
+        await turn1.release()
+        await asyncio.sleep(0.05)
+
+        turn2 = await asyncio.wait_for(conn.acquire_turn(), timeout=5.0)
+        await turn2.release()
+        await _wait_until(
+            lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0,
+        )
+        # The initial connect is the turn task's; every reopen after it
+        # belongs to the supervisor.
+        assert paused_at_open[0] is False
+        assert paused_at_open[1:] and all(paused_at_open[1:])
+        assert len(factory.conns) >= 2
+        # No orphan: the live session is the only one left open.
+        assert [c for c in factory.conns if not c.closed] == [conn._conn]
+        turn3 = await conn.acquire_turn()
+        await turn3.release()
+    finally:
+        await conn.stop()
+
+
 async def test_reconnect_escalation_cue_fires_once_per_outage():
     """The OpenAI loop, not only the shared helpers, drives the cue.
 
@@ -2055,7 +2106,7 @@ async def test_initial_connect_non_transient_error_skips_the_budget():
         fail_exc=_AuthError("bad key"),
     )
     with pytest.raises(_AuthError):
-        await conn._open_session_with_retry(phase="initial-connect")
+        await conn._open_session_with_retry()
     # Critical: NO sleeps fired. A non-transient error must not
     # cost the user a backoff wait.
     assert clock.sleeps == []

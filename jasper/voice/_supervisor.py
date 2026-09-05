@@ -396,6 +396,8 @@ class SupervisedConnection(Protocol):
     _active_turn: Any
     _stopping: asyncio.Event
     _reconnect_event: asyncio.Event
+    # Set on every successful open, cleared while a reopen is in flight.
+    _connected_event: asyncio.Event
     _nudge_event: asyncio.Event
     _deferred_reconnect: Deferred
     # Raised by a provider that schedules its own session rotation: the
@@ -422,6 +424,42 @@ class SupervisedConnection(Protocol):
         ...
 
 
+async def await_connected(conn: SupervisedConnection) -> None:
+    """Wait for an open session so a turn never opens against a
+    half-open WS.
+
+    Bounded by one backoff window. The bound is a backstop rather than
+    the normal user-facing wait: raising on it is what puts a
+    connection that never comes back on the caller's failure path,
+    where the daemon plays a cue for a paused connection, instead of
+    hanging the wake."""
+    if conn._connected_event.is_set():
+        return
+    schedule = conn._backoff_schedule
+    timeout = (
+        sum(schedule) + 5.0
+        if schedule is not None
+        else 15.0  # production: long enough for one full backoff cycle
+    )
+    try:
+        await asyncio.wait_for(conn._connected_event.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        raise RuntimeError(f"{conn._log_tag} not connected after backoff window")
+
+
+def request_planned_reopen(conn: SupervisedConnection) -> None:
+    """Ask the supervisor for a fresh session on a healthy connection.
+
+    One reopener per connection slot: the caller closes the connected
+    gate and hands the reopen over rather than opening a session of its
+    own beside the supervisor's. `_planned_rotate` is what spares the
+    first attempt a backoff wait; `run_reconnect_with_backoff` spends
+    it."""
+    conn._connected_event.clear()
+    conn._planned_rotate = True
+    conn._reconnect_event.set()
+
+
 async def run_supervisor_loop(conn: SupervisedConnection) -> None:
     """Reconnect for the connection's lifetime.
 
@@ -439,6 +477,10 @@ async def run_supervisor_loop(conn: SupervisedConnection) -> None:
             "voice.supervisor.wake",
             provider=conn.PROVIDER_NAME,
             state=conn._state.value,
+            # Read before the run below spends it: tells a reopen the
+            # connection asked for (rotation, context reset) apart from
+            # one a drop forced.
+            planned=conn._planned_rotate,
         )
         await run_reconnect_with_backoff(conn)
         log_event(

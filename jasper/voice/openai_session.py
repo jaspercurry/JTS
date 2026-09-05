@@ -45,9 +45,9 @@ Session lifecycle
   60-minute hard cap, no resumption mechanism (unlike Gemini). When the
   cap or any drop is hit, the supervisor reconnects the same way as for
   any other drop. Lost conversational context is acceptable — the
-  daemon already biases toward fresh sessions via the 5-minute idle
-  context-reset, which on OpenAI is just "tear down and reopen" since
-  there's no handle to drop.
+  daemon already biases toward fresh sessions via the opt-in idle
+  context-reset, which on OpenAI is just a reopen since there's no
+  handle to drop.
 """
 from __future__ import annotations
 
@@ -68,7 +68,9 @@ from ..tools import ToolRegistry, dispatch_tool
 from ._supervisor import (
     Deferred,
     OutageTracker,
+    await_connected,
     is_transient,
+    request_planned_reopen,
     run_supervisor_loop,
     survive_terminal_initial_connect,
 )
@@ -1021,21 +1023,7 @@ class OpenAIRealtimeConnection:
         if self._state is ConnectionState.CLOSED:
             raise RuntimeError(f"{self._log_tag} closed")
 
-        if not self._connected_event.is_set():
-            timeout = (
-                sum(self._backoff_schedule) + 5.0
-                if self._backoff_schedule is not None
-                else 15.0
-            )
-            try:
-                await asyncio.wait_for(
-                    self._connected_event.wait(), timeout=timeout,
-                )
-            except asyncio.TimeoutError:
-                raise RuntimeError(
-                    f"{self._log_tag} not connected after backoff window"
-                )
-
+        await await_connected(self)
         await self._maybe_reset_context()
 
         async with self._turn_lock:
@@ -1354,7 +1342,7 @@ class OpenAIRealtimeConnection:
         async with self._state_lock:
             self._set_state(ConnectionState.CONNECTING)
         try:
-            await self._open_session_with_retry(phase="initial-connect")
+            await self._open_session_with_retry()
         except Exception as e:  # noqa: BLE001
             async with self._state_lock:
                 self._set_state(ConnectionState.FAILED)
@@ -1362,7 +1350,7 @@ class OpenAIRealtimeConnection:
             # event=openai.initial_connect.fatal.
             survive_terminal_initial_connect(e, self._reconnect_event.set)
 
-    async def _open_session_with_retry(self, *, phase: str) -> None:
+    async def _open_session_with_retry(self) -> None:
         """Initial-connect retry loop with a time budget.
 
         Behaviour:
@@ -1409,7 +1397,6 @@ class OpenAIRealtimeConnection:
                     log_event(
                         logger,
                         "openai.initial_connect.success",
-                        phase=phase,
                         attempt=attempt,
                         elapsed_sec=f"{elapsed:.1f}",
                     )
@@ -1417,7 +1404,6 @@ class OpenAIRealtimeConnection:
                     log_event(
                         logger,
                         "openai.initial_connect.success",
-                        phase=phase,
                         attempt=attempt,
                     )
                 return
@@ -1426,7 +1412,6 @@ class OpenAIRealtimeConnection:
                     log_event(
                         logger,
                         "openai.initial_connect.fatal",
-                        phase=phase,
                         attempt=attempt,
                         exc=type(e).__name__,
                         reason=repr(self._outage.detail),
@@ -1439,7 +1424,6 @@ class OpenAIRealtimeConnection:
                     log_event(
                         logger,
                         "openai.initial_connect.exhausted",
-                        phase=phase,
                         attempts=attempt,
                         elapsed_sec=f"{elapsed:.1f}",
                         budget_sec=f"{budget_sec:.1f}",
@@ -1448,7 +1432,7 @@ class OpenAIRealtimeConnection:
                         level=logging.ERROR,
                     )
                     raise RuntimeError(
-                        f"{self._log_tag} {phase} budget of "
+                        f"{self._log_tag} initial-connect budget of "
                         f"{budget_sec:.0f}s exhausted after {attempt} "
                         f"attempt(s); last error: {e}"
                     )
@@ -1464,7 +1448,6 @@ class OpenAIRealtimeConnection:
                 log_event(
                     logger,
                     "openai.initial_connect.attempt",
-                    phase=phase,
                     attempt=attempt,
                     elapsed_sec=f"{elapsed:.1f}",
                     budget_sec=f"{budget_sec:.1f}",
@@ -1475,7 +1458,6 @@ class OpenAIRealtimeConnection:
                 log_event(
                     logger,
                     "openai.initial_connect.backoff",
-                    phase=phase,
                     attempt=attempt,
                     delay_sec=f"{delay:.2f}",
                     remaining_sec=f"{remaining:.1f}",
@@ -1865,14 +1847,14 @@ class OpenAIRealtimeConnection:
 
     async def _maybe_reset_context(self) -> None:
         """OpenAI Realtime has no resumption handle, so 'context reset'
-        is just 'tear down and reopen'. Long idle gaps theoretically
-        bleed conversational context across hours — in practice the
+        is just 'reopen'. Long idle gaps theoretically bleed
+        conversational context across hours — in practice the
         terse-tool system prompt makes this a hypothetical concern, so
         the reset is opt-in (default 0 = disabled). When enabled, busts
         the prompt cache on the first turn after reset and blocks the
-        wake event for 1-6 s during the reopen, so use a long threshold
-        (hours, not minutes) if at all. Skipped if no prior turn has
-        happened on this connection."""
+        wake event for the reopen, so use a long threshold (hours, not
+        minutes) if at all. Skipped if no prior turn has happened on
+        this connection."""
         if self._context_reset_sec <= 0:
             return
         if self._last_turn_end_at <= 0.0:
@@ -1885,17 +1867,8 @@ class OpenAIRealtimeConnection:
             "reopening for a fresh session",
             idle_for, self._context_reset_sec,
         )
-        await self._teardown_session()
-        try:
-            await self._open_session_with_retry(phase="context-reset-reopen")
-        except Exception as e:  # noqa: BLE001
-            logger.error(
-                f"{self._log_tag} context-reset reopen failed (%s: %s); "
-                "triggering supervisor reconnect",
-                type(e).__name__, e,
-            )
-            self._reconnect_event.set()
-            raise
+        request_planned_reopen(self)
+        await await_connected(self)
         self._last_turn_end_at = asyncio.get_event_loop().time()
 
     async def _handle_response_done(self, event, turn: "OpenAIRealtimeTurn | None") -> None:

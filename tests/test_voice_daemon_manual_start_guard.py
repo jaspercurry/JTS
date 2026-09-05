@@ -37,6 +37,17 @@ class _SpyCalls:
         self.kwargs = kwargs
 
 
+class _SpyCues:
+    """Stand-in cue manager so the REAL _play_cue path runs end to end."""
+
+    def __init__(self) -> None:
+        self.played: list[str] = []
+
+    async def play(self, slug: str) -> bool:
+        self.played.append(slug)
+        return True
+
+
 def _make_wake_loop():
     """A WakeLoop with only the attributes manual_session_start reads
     plus spies on the side effects we assert must NOT fire.
@@ -137,6 +148,36 @@ async def test_manual_start_refused_when_paused_asks_for_an_early_retry(
     assert state.nudges == 1
     assert wl._play_cue.called is True
     assert "reason=connection_paused" in caplog.text
+
+
+async def test_manual_start_failure_during_an_outage_is_cued():
+    """A press whose turn dies with the connection down still answers.
+
+    The idle context reset reopens inside `_begin_turn`, so a reopen
+    that never lands raises past the paused gate above and reaches the
+    failure handler — which must cue, not return a silent ERROR
+    (AGENTS.md's no-silent-deafness rule)."""
+    from jasper.voice._supervisor import CANT_CONNECT_CUE_SLUG
+
+    wl = _make_wake_loop()
+    wl._cues = _SpyCues()
+    paused = False
+
+    async def _begin_turn_that_loses_the_connection(**_kwargs) -> None:
+        nonlocal paused
+        paused = True
+        raise RuntimeError("live connection: not connected after backoff window")
+
+    wl._connection = types.SimpleNamespace(
+        is_paused=lambda: paused,
+        last_failure_detail=lambda: None,
+        wake_cue=lambda: CANT_CONNECT_CUE_SLUG,
+        request_reconnect_now=lambda: True,
+    )
+    wl._begin_turn = _begin_turn_that_loses_the_connection
+
+    assert await wl.manual_session_start() == "ERROR"
+    assert wl._cues.played == [CANT_CONNECT_CUE_SLUG]
 
 
 async def test_manual_start_waits_out_a_planned_rotation(monkeypatch):
@@ -347,17 +388,6 @@ async def test_manual_mic_loop_forwards_only_active_source():
     wl._active_manual_source = "wiim_remote_2"
     await wl._manual_mic_loop("wiim_remote_2")
     assert seen == ["frame-a"]
-
-
-class _SpyCues:
-    """Stand-in cue manager so the REAL _play_cue path runs end to end."""
-
-    def __init__(self) -> None:
-        self.played: list[str] = []
-
-    async def play(self, slug: str) -> bool:
-        self.played.append(slug)
-        return True
 
 
 def _ptt_only_wake_loop():
