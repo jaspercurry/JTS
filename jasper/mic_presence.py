@@ -66,7 +66,7 @@ from pathlib import Path
 from jasper.accessories.mic_env import read_accessory_mic_sources
 from jasper.atomic_io import read_json_mapping
 from jasper.voice.input_presence import (
-    voice_input_absent_marker_path,
+    voice_input_absent_marker_lines,
     voice_parked_no_mic,
 )
 
@@ -208,11 +208,7 @@ class MicPresence:
 
 def _marker_reason() -> str:
     """Best-effort reason text from the marker body (``reason=<text>``)."""
-    try:
-        body = Path(voice_input_absent_marker_path()).read_text()
-    except OSError:
-        return ""
-    for line in body.splitlines():
+    for line in voice_input_absent_marker_lines():
         if line.startswith("reason="):
             return line[len("reason="):].strip()
     return ""

@@ -22,12 +22,11 @@ StartLimitAction=reboot:
    (JASPER_LOCAL_MIC_PRESENT), and the daemon's leg planner reads that
    published fact rather than re-deriving mic presence from its own config.
 6. Closing the gate is AUDIBLE: the daemon plays the mic-loss cue once
-   during its own shutdown when the marker is there, and the wait for it
-   cannot outrun the unit's TimeoutStopSec (ADR-0239).
+   during its own shutdown when the marker is there, and the unit's
+   TimeoutStopSec clears MIC_LOSS_CUE_STOP_FLOOR_SEC (ADR-0239).
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 from pathlib import Path
@@ -49,6 +48,7 @@ from jasper.voice_daemon import (
     WakeLoop,
 )
 from tests._log_events import event_fields, event_records
+from tests.systemd_unit_helpers import value_for
 
 ROOT = Path(__file__).resolve().parents[1]
 UNIT = ROOT / "deploy" / "systemd" / "jasper-voice.service"
@@ -381,22 +381,17 @@ async def test_the_mic_loss_cue_follows_the_marker_at_shutdown(
     )
 
 
-@pytest.mark.parametrize("outcome", ["play_error", "timeout"])
 async def test_a_cue_that_cannot_play_warns_and_the_stop_still_finishes(
-    outcome: str, tmp_path, monkeypatch, caplog,
+    tmp_path, monkeypatch, caplog,
 ) -> None:
-    """A dead output path (outputd down, cue never baked) must not hold the
-    daemon past jasper-voice.service's TimeoutStopSec — SIGKILL mid-teardown
-    is a worse failure than a missed cue. Both shapes end the same way: the
-    code is named on the wire, at WARNING, and the caller gets it back."""
+    """A dead output path (outputd down, cue never baked) must not take the
+    shutdown down with it: the code is named on the wire, at WARNING, and the
+    caller gets it back."""
     from jasper.voice import daemon_main
 
     wake_loop = _shutting_down_daemon(True, tmp_path, monkeypatch)
-    monkeypatch.setattr(daemon_main, "MIC_LOSS_CUE_WAIT_SEC", 0.01)
 
     async def _cannot_play(_slug: str) -> str:
-        if outcome == "timeout":
-            await asyncio.sleep(60)
         raise RuntimeError("no output path")
 
     wake_loop.play_cue = _cannot_play
@@ -404,7 +399,18 @@ async def test_a_cue_that_cannot_play_warns_and_the_stop_still_finishes(
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
         result = await daemon_main._announce_mic_loss_at_shutdown(wake_loop)
 
-    assert result == outcome
-    assert event_fields(caplog, "voice.mic_loss_cue")["result"] == outcome
+    assert result == "play_error"
+    assert event_fields(caplog, "voice.mic_loss_cue")["result"] == "play_error"
     (record,) = event_records(caplog, "voice.mic_loss_cue")
     assert record.levelno == logging.WARNING
+
+
+def test_stop_budget_clears_the_mic_loss_cue_floor() -> None:
+    """The cue runs its natural length through the daemon's owned ducked
+    output — nothing bounds it — so the unit's stop budget has to cover it
+    (ADR-0239). Derived from the unit file, not restated."""
+    from jasper.voice.daemon_main import MIC_LOSS_CUE_STOP_FLOOR_SEC
+
+    raw = value_for(_unit_text(), "TimeoutStopSec")
+    assert raw is not None and raw.endswith("s"), raw
+    assert float(raw[:-1]) >= MIC_LOSS_CUE_STOP_FLOOR_SEC, raw

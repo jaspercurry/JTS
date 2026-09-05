@@ -81,6 +81,14 @@ def voice_input_absent_marker_path() -> str:
     )
 
 
+def voice_input_absent_marker_lines() -> list[str]:
+    """Marker body lines; ``[]`` when it is missing or unreadable."""
+    try:
+        return Path(voice_input_absent_marker_path()).read_text().splitlines()
+    except OSError:
+        return []
+
+
 def voice_parked_no_mic() -> bool:
     """True when the AEC reconciler has marked the speaker as having no
     usable voice input — neither a local microphone nor a paired accessory
@@ -100,14 +108,9 @@ def voice_park_is_transient() -> bool:
     """True when the current park is a transient round trip — e.g. the
     chip-AEC validation bounce (``jasper-aec-reconcile``'s
     ``activate_managed_chip_aec``, ADR-0239) — rather than a real absence of
-    voice input. Meaningless unless ``voice_parked_no_mic()`` is also true.
-
-    Fail-safe to False: a missing marker, an unreadable one, or one with no
-    ``transient=1`` line all read as "not transient", so a real absence can
-    never be misread as transient and lose its shutdown cue.
+    voice input. Meaningless unless ``voice_parked_no_mic()`` is also true,
+    and fail-safe to False so a real absence can never be misread as
+    transient and lose its shutdown cue.
     """
-    try:
-        body = Path(voice_input_absent_marker_path()).read_text()
-    except OSError:
-        return False
-    return any(line.strip() == "transient=1" for line in body.splitlines())
+    lines = voice_input_absent_marker_lines()
+    return any(line.strip() == "transient=1" for line in lines)

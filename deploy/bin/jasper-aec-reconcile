@@ -1901,7 +1901,7 @@ activate_managed_chip_aec() {
     VOICE_RESTART_NEEDED=1
     publish_alignment_record checking || true
     # Transient: this park is the ~8s validation round trip, not a real
-    # absence — the daemon's shutdown cue (ADR-0238) must not fire for it.
+    # absence — the daemon's shutdown cue (ADR-0239) must not fire for it.
     mark_voice_input_absent "validating commissioned chip-AEC alignment" 1
     run_systemctl stop jasper-voice.service jasper-aec-bridge.service
     reset_failed_units jasper-voice.service jasper-aec-bridge.service

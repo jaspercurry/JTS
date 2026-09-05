@@ -20,8 +20,10 @@
   shutting down. That reading IS the transition: the marker is written before
   the stop, and `ConditionPathExists=!` refuses every start while it stands,
   so a *running* daemon can only ever see it once, on the way down. A plain
-  restart carries no marker and says nothing. The wait is bounded at 3 s
-  against the unit's `TimeoutStopSec=5s`; a player that cannot play logs one
+  restart carries no marker and says nothing. The cue plays to its natural length
+  through the daemon's owned ducked-output path — cutting it short truncates queued
+  PCM — so `jasper-voice.service` raises `TimeoutStopSec` to 14 s, floored by
+  `MIC_LOSS_CUE_STOP_FLOOR_SEC`; a player that cannot play logs one
   `event=voice.mic_loss_cue result=<code>` at WARNING and shutdown continues.
   The reconciler spawns nothing, and its unconditional top-of-pass
   bridge-ready revoke (`:204`,
@@ -36,4 +38,5 @@
   `result=transient_park` instead — the two real parks (`:1718`, `:2036`)
   carry no such line and still announce. G13's residual window (the bridge
   restarting between the microphone vanishing and the reconciler's next
-  pass) is measured by H1, not guarded here.
+  pass) is measured by H1, not guarded here. A daemon killed by the watchdog
+  (`WatchdogSec=30s`, SIGABRT) or by SIGKILL never sees SIGTERM and plays no cue; that chain is P9's (#4208).

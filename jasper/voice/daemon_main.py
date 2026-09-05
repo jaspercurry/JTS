@@ -211,31 +211,17 @@ def _require_usable_input(
     )
 
 
-# Seconds this daemon will wait for the mic-loss cue before finishing its
-# stop. jasper-voice.service sets TimeoutStopSec=5s, and the teardown after
-# this call still has to run inside it, so the wait is bounded here rather
-# than at the cue's own ~6 s length.
-MIC_LOSS_CUE_WAIT_SEC = 3.0
+# Floor for jasper-voice.service TimeoutStopSec: the 4.65 s cue plus drain
+# and two 1 s-timeout duck legs is 8.7 s worst case, then the untimed
+# teardown. See ADR-0239.
+MIC_LOSS_CUE_STOP_FLOOR_SEC = 14.0
 
 
 async def _announce_mic_loss_at_shutdown(wake_loop: WakeLoop) -> str:
     """Say out loud that this speaker just lost its microphone. See ADR-0239.
 
-    This daemon's own stop is the only moment the cue can play. The AEC
-    reconciler writes the absence marker and then stops jasper-voice, and
-    ``ConditionPathExists=!`` refuses every start while the marker stands —
-    so a *running* daemon that finds the marker at shutdown is exactly the
-    transition into deafness, and an ordinary restart (no marker) is silent.
-
-    Returns the result code it logged, or ``not_parked`` when there is
-    nothing to announce. Never raises and never outruns the bound above:
-    going deaf in silence is bad, wedging the stop is worse.
-
-    A ``transient=1`` marker (the chip-AEC validation bounce inside
-    ``activate_managed_chip_aec``, ~8 s round trip) is a marked park but not
-    a real absence, so it skips the cue — logged as ``transient_park``
-    rather than silently returned like ``not_parked``, since the marker WAS
-    there and a discriminator not doing anything is worth a line.
+    Returns the result code it logged — ``not_parked``, ``transient_park``,
+    ``ok`` or ``play_error``. Never raises.
     """
     if not voice_parked_no_mic():
         return "not_parked"
@@ -243,12 +229,7 @@ async def _announce_mic_loss_at_shutdown(wake_loop: WakeLoop) -> str:
         result = "transient_park"
     else:
         try:
-            result = await asyncio.wait_for(
-                wake_loop.play_cue(NO_ROOM_MIC_CUE_SLUG),
-                timeout=MIC_LOSS_CUE_WAIT_SEC,
-            )
-        except asyncio.TimeoutError:
-            result = "timeout"
+            result = await wake_loop.play_cue(NO_ROOM_MIC_CUE_SLUG)
         except Exception:  # noqa: BLE001
             logger.exception("mic-loss cue play failed")
             result = "play_error"
