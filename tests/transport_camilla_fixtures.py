@@ -10,10 +10,8 @@ from __future__ import annotations
 class FakeCamilla:
     """Reports one loaded config path and records what it was asked to load.
 
-    Deliberately independent of the statefile the derivation reads: the jts3
-    clobber happened while CamillaDSP was still on the PRE-arm graph and the
-    statefile already pointed at the ring one, and a stub that conflated the two
-    could not express that state.
+    Deliberately independent of the statefile the derivation reads: a stub
+    that conflated the two could not express a PRE-arm/ring split (#2339).
     """
 
     def __init__(self, current_path: str) -> None:

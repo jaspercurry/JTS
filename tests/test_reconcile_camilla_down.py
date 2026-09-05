@@ -65,6 +65,7 @@ from tests.test_active_speaker_baseline_profile import (
     _measurements,
     _valid_config,
 )
+from tests.transport_camilla_fixtures import FakeCamilla
 
 
 # The width jts4's statefile was stuck at: the pre-#2601 narrow wire. The
@@ -350,8 +351,6 @@ async def test_a_live_camilla_still_reconciles_over_the_websocket(
     used the statefile for EVERY reconcile — which would silently stop asking
     the running daemon what it is actually playing.
     """
-
-    from tests.transport_camilla_fixtures import FakeCamilla
 
     stale, config_dir, statefile = _flat_streambox(tmp_path, monkeypatch)
 

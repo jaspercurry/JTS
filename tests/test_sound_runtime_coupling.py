@@ -25,6 +25,8 @@ import pytest
 from jasper.sound import runtime
 from jasper.sound.graph_carrier import ReemitResult
 
+from tests.transport_camilla_fixtures import FakeCamilla
+
 from .fanin_env_fixtures import declare_fanin_env
 
 
@@ -37,16 +39,6 @@ def _saved_passive_layout(tmp_path, monkeypatch):
     path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
     save_output_topology(_full_range_stereo(), path)
-
-
-class _FakeCamilla:
-    """Reports a stable loaded config path; never actually loads anything."""
-
-    def __init__(self, path: str) -> None:
-        self._path = path
-
-    async def get_config_file_path(self, *, best_effort: bool = False):
-        return self._path
 
 
 def _capture_reemit_coupling(monkeypatch, tmp_path):
@@ -112,7 +104,7 @@ def _capture_reemit_coupling(monkeypatch, tmp_path):
     result = asyncio.run(
         runtime.reconcile_current_dsp(
             config_dir=config_dir,
-            camilla_factory=lambda: _FakeCamilla(str(current)),
+            camilla_factory=lambda: FakeCamilla(str(current)),
         )
     )
     return result, seen
