@@ -73,14 +73,17 @@ jasper_env_quote_value() {
 # jasper_env_file_get FILE KEY
 # Print the LAST `KEY=` line's value verbatim (one matched surrounding
 # quote pair stripped, nothing evaluated); return 1 with no output when
-# FILE or the key is absent. Parses byte-for-byte like read_stash in
-# jasper/wifi_guardian_persistence.py, which reads the same files.
+# FILE or the key is absent. A single-quoted value additionally has
+# jasper_env_file_set's own '\'' splice undone, so set -> get round trips
+# an apostrophe-bearing value; otherwise this parses byte-for-byte like
+# read_stash in jasper/wifi_guardian_persistence.py, which reads the
+# same files.
 jasper_env_file_get() {
     local file="$1" key="$2" value
 
     [[ -r "$file" ]] || return 1
     value="$(awk -v key="$key" '
-        BEGIN { sq = "\047"; dq = "\042" }
+        BEGIN { sq = "\047"; dq = "\042"; splice = sq "\\" sq sq }
         {
             line = $0
             sub(/^[ \t\r\v\f]+/, "", line)
@@ -101,6 +104,16 @@ jasper_env_file_get() {
             q = substr(val, 1, 1)
             if (n >= 2 && q == substr(val, n, 1) && (q == sq || q == dq)) {
                 val = substr(val, 2, n - 2)
+                if (q == sq) {
+                    # index/substr, never a dynamic regex: mawk and gawk
+                    # disagree on backslash escapes inside one.
+                    out = ""
+                    while ((i = index(val, splice)) > 0) {
+                        out = out substr(val, 1, i - 1) sq
+                        val = substr(val, i + 4)
+                    }
+                    val = out val
+                }
             }
             print val
         }

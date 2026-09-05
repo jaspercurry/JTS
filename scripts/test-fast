@@ -260,10 +260,12 @@ while IFS= read -r changed; do
         done < <(grep -l -- "${script}" tests/test_*.py 2>/dev/null || true)
       fi
       ;;
-    deploy/lib/*)
+    deploy/lib/jasper-env-file.sh)
       # Shared bash libs are reached by subprocess, so no import graph routes
-      # them; deploy/lib/install/* additionally rides the always-on
-      # test_deploy_wiring_guards scanner below.
+      # them. Named exactly, not globbed: every sibling under deploy/lib/ has
+      # its own pins (e.g. jasper-alsa-card.sh -> tests/test_alsa_card_lib.py)
+      # and deploy/lib/install/* rides the always-on test_deploy_wiring_guards
+      # scanner below — a `deploy/lib/*` glob would swallow both.
       add_test_if_present "tests/test_env_file_lib.py"
       ;;
     deploy/systemd/jasper-wifi-guardian*)

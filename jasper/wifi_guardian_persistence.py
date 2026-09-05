@@ -98,9 +98,6 @@ def _parse_env_line(line: str) -> tuple[str, str] | None:
         return None
     key, _, value = line.partition("=")
     key = key.strip()
-    # Strip a single layer of matched quotes — nmcli output can wrap
-    # PSKs containing spaces in quotes when migrated in via the
-    # install.sh helper.
     if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
         value = value[1:-1]
     return key, value

@@ -29,6 +29,7 @@ LIB = ROOT / "deploy" / "lib" / "jasper-env-file.sh"
 RECONCILERS = [
     ROOT / "deploy" / "bin" / "jasper-aec-reconcile",
     ROOT / "deploy" / "bin" / "jasper-audio-hardware-reconcile",
+    ROOT / "deploy" / "bin" / "jasper-wifi-guardian",
 ]
 
 
@@ -287,6 +288,19 @@ def test_env_file_get_missing_file_returns_one(tmp_path: Path) -> None:
     result = _bash(f'jasper_env_file_get "{tmp_path / "absent.env"}" WANT')
     assert result.returncode == 1
     assert result.stdout == ""
+
+
+def test_env_file_get_round_trips_env_file_set(tmp_path: Path) -> None:
+    r"""The lib's two halves must agree: the writer wraps an apostrophe-
+    bearing value in single quotes and splices the apostrophe as `'\''`,
+    so the reader has to undo that splice or `set` becomes unreadable."""
+    env_file = tmp_path / "round.env"
+    result = _bash(
+        f'jasper_env_file_set "{env_file}" WANT "it\'s"\n'
+        f'jasper_env_file_get "{env_file}" WANT'
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "it's\n"
 
 
 def test_reconcilers_source_shared_lib_and_never_printf_q() -> None:
