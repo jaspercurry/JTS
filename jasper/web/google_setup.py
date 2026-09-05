@@ -62,6 +62,7 @@ from ..google_creds import (
 )
 from ..google_oauth import resolved_google_redirect_uri
 from ..log_event import log_event
+from ..secret_redaction import redact_secrets
 from ._common import (
     begin_request,
     canonical_banner,
@@ -78,6 +79,8 @@ from ._common import (
     restart_voice_daemon,
     safe_back_href,
     send_html_response,
+    send_see_other,
+    value_for_env,
     write_env_file,
     SECRET_ENV_MODE,
 )
@@ -115,8 +118,16 @@ _USERINFO_URI = "https://openidconnect.googleapis.com/v1/userinfo"
 # ----------------------------------------------------------------------
 
 
-def _read_creds_file(path: str = CREDS_FILE) -> dict[str, str]:
-    return read_env_file(path)
+def _creds(cfg: dict[str, Any]) -> tuple[str, str]:
+    """Client ID + secret, read fresh per request. A snapshot would hide
+    every other writer of the file (install migration, restore, hand
+    edit) until jasper-web restarts — AGENTS.md "Single-writer env
+    files". Env stays a fallback source, never a cache."""
+    state = read_env_file(cfg["creds_path"])
+    return (
+        value_for_env(state, "GOOGLE_CLIENT_ID"),
+        value_for_env(state, "GOOGLE_CLIENT_SECRET"),
+    )
 
 
 def _write_creds_file(client_id: str, client_secret: str, *, path: str = CREDS_FILE) -> None:
@@ -698,11 +709,12 @@ def _build_flow(cfg: dict[str, Any], *, state: str | None = None):
     client config. Imported lazily so the module is importable in
     unit tests without the google-auth-oauthlib wheel installed."""
     from google_auth_oauthlib.flow import Flow
+    client_id, client_secret = _creds(cfg)
     flow = Flow.from_client_config(
         {
             "web": {
-                "client_id": cfg["client_id"],
-                "client_secret": cfg["client_secret"],
+                "client_id": client_id,
+                "client_secret": client_secret,
                 "auth_uri": _AUTH_URI,
                 "token_uri": _TOKEN_URI,
                 "redirect_uris": [cfg["redirect_uri"]],
@@ -740,10 +752,7 @@ def _fetch_userinfo(access_token: str) -> dict[str, Any]:
 
 
 def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
-    """Returns a request handler class closed over the config dict.
-
-    `cfg` is mutated when the user submits credentials so the running
-    process can serve the OAuth flow without needing a restart."""
+    """Returns a request handler class closed over the config dict."""
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
@@ -786,7 +795,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 if not (code and state):
                     self._redirect("./?msg=Missing+code+or+state+from+Google")
                     return
-                if not (cfg["client_id"] and cfg["client_secret"]):
+                if not all(_creds(cfg)):
                     self._redirect(
                         "./?msg=Credentials+were+cleared+mid-flow.+Start+over."
                     )
@@ -807,9 +816,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     self._exchange_code(account_name, code, verifier)
                 except Exception as e:  # noqa: BLE001
                     logger.exception("oauth exchange failed")
-                    self._redirect(
-                        f"./?msg=Auth+exchange+failed:+{urllib.parse.quote(str(e))}"
-                    )
+                    detail = redact_secrets(str(e))[:220]
+                    send_see_other(self, "./", flash=f"Auth exchange failed: {detail}")
                     return
                 _restart_voice_daemon()
                 # No account name / token in the line — personal data + secret.
@@ -861,8 +869,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             status_msg: str = "",
             back_href: str = "/",
         ) -> None:
-            has_creds = bool(cfg["client_id"] and cfg["client_secret"])
-            if not has_creds:
+            client_id, client_secret = _creds(cfg)
+            if not (client_id and client_secret):
                 self._send_html(_setup_wizard_html(
                     cfg["redirect_uri"], csrf_token,
                     status_msg=status_msg, back_href=back_href,
@@ -871,12 +879,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             registry = GoogleRegistry.load(cfg["registry_path"])
             if not registry.accounts:
                 self._send_html(_redirect_uri_page_html(
-                    cfg["redirect_uri"], cfg["client_id"], csrf_token,
+                    cfg["redirect_uri"], client_id, csrf_token,
                     status_msg=status_msg, back_href=back_href,
                 ))
                 return
             self._send_html(_management_html(
-                registry, cfg["redirect_uri"], cfg["client_id"], csrf_token,
+                registry, cfg["redirect_uri"], client_id, csrf_token,
                 status_msg=status_msg, back_href=back_href,
             ))
 
@@ -902,8 +910,6 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     f"./?msg=Could+not+save+credentials:+{urllib.parse.quote(str(e))}"
                 )
                 return
-            cfg["client_id"] = client_id
-            cfg["client_secret"] = client_secret
             _restart_voice_daemon()
             # Action + requester only — never the client_id/secret.
             log_event(logger, "google.credentials", client=self.address_string())
@@ -914,14 +920,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
         def _handle_reset_credentials(self) -> None:
             _delete_creds_file()
-            cfg["client_id"] = ""
-            cfg["client_secret"] = ""
             _restart_voice_daemon()
             log_event(logger, "google.reset", client=self.address_string())
             self._redirect("./?msg=Credentials+cleared.")
 
         def _handle_start(self, form: dict[str, str]) -> None:
-            if not (cfg["client_id"] and cfg["client_secret"]):
+            if not all(_creds(cfg)):
                 self._redirect("./?msg=Set+up+Google+credentials+first.")
                 return
             name = form.get("name", "").strip()
@@ -1054,22 +1058,13 @@ def make_server(
     *,
     registry_path: str = "/var/lib/jasper-secrets/google/accounts.json",
     redirect_uri: str | None = None,
+    creds_path: str = CREDS_FILE,
 ) -> ThreadingHTTPServer:
     """Build a configured server. `target` is socket/tuple/int per
     _systemd.make_http_server's contract."""
     from . import _systemd
-    creds_from_file = _read_creds_file()
-    client_id = (
-        os.environ.get("GOOGLE_CLIENT_ID", "")
-        or creds_from_file.get("GOOGLE_CLIENT_ID", "")
-    )
-    client_secret = (
-        os.environ.get("GOOGLE_CLIENT_SECRET", "")
-        or creds_from_file.get("GOOGLE_CLIENT_SECRET", "")
-    )
     cfg = {
-        "client_id": client_id,
-        "client_secret": client_secret,
+        "creds_path": creds_path,
         "redirect_uri": redirect_uri or resolved_google_redirect_uri(),
         "registry_path": registry_path,
     }

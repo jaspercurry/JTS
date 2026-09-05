@@ -102,6 +102,7 @@ from ..spotify_oauth import (
 )
 from ..spotify_uri import parse_playlist_uri, playlist_id_from_uri
 from ..log_event import log_event
+from ..secret_redaction import redact_secrets
 from ._common import (
     SECRET_ENV_MODE,
     begin_request,
@@ -120,6 +121,7 @@ from ._common import (
     safe_back_href,
     send_html_response,
     send_json_response,
+    send_see_other,
     write_env_file,
 )
 
@@ -1215,9 +1217,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 self._exchange_code(account_name, code, verifier, challenge)
             except Exception as e:  # noqa: BLE001
                 logger.exception("oauth exchange failed")
-                self._redirect(
-                    f"./?msg=Auth+exchange+failed:+{urllib.parse.quote(str(e))}"
-                )
+                detail = redact_secrets(str(e))[:220]
+                send_see_other(self, "./", flash=f"Auth exchange failed: {detail}")
                 return
             _invalidate_health_cache()
             _restart_spotify_consumers()

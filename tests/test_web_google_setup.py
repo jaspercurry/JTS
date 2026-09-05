@@ -29,6 +29,7 @@ The public surface (`_index_html` analogue render fns, `make_server`,
 from __future__ import annotations
 
 import importlib
+import urllib.parse
 from email.message import Message
 from types import SimpleNamespace
 from unittest import mock
@@ -195,10 +196,9 @@ class _FakeHandler:
         self.errors.append(int(code))
 
 
-def _make_bound_handler(cfg, path):
-    """Return (fake, HandlerClass) with the real do_GET/do_POST/route bodies
-    bound to a _FakeHandler instance."""
-    HandlerClass = google_setup._make_handler(cfg)
+def _bind(HandlerClass, path):
+    """Return a _FakeHandler with the real do_GET/do_POST/route bodies bound
+    to it."""
     fake = _FakeHandler(path)
     # Bind the methods we exercise onto the fake instance.
     bound = {}
@@ -213,6 +213,25 @@ def _make_bound_handler(cfg, path):
     return fake
 
 
+def _make_bound_handler(cfg, path):
+    return _bind(google_setup._make_handler(cfg), path)
+
+
+def _write_creds(path, *, client_id=GOOD_CLIENT_ID, client_secret="secret"):
+    path.write_text(
+        f"GOOGLE_CLIENT_ID={client_id}\nGOOGLE_CLIENT_SECRET={client_secret}\n"
+    )
+    return str(path)
+
+
+@pytest.fixture(autouse=True)
+def _no_google_creds_env(monkeypatch):
+    """The wizard falls back to the process env; keep a value inherited from
+    the developer's shell out of the file-freshness assertions."""
+    monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+    monkeypatch.delenv("GOOGLE_CLIENT_SECRET", raising=False)
+
+
 @pytest.fixture
 def patched_common():
     """Patch the I/O surface the handler relies on."""
@@ -221,6 +240,7 @@ def patched_common():
                            return_value={"csrf_token": CSRF, "flash": ""}) as br, \
          mock.patch.object(google_setup, "send_html_response") as shr, \
          mock.patch.object(web_common, "send_see_other", send_see_other), \
+         mock.patch.object(google_setup, "send_see_other", send_see_other), \
          mock.patch.object(google_setup, "read_form", return_value={}) as rf, \
          mock.patch.object(google_setup, "guard_mutating_request", return_value=True) as vc, \
          mock.patch.object(google_setup, "reject_csrf") as rc, \
@@ -234,8 +254,7 @@ def patched_common():
 
 def _cfg(**over):
     base = {
-        "client_id": "",
-        "client_secret": "",
+        "creds_path": "/tmp/does-not-exist/google_credentials.env",
         "redirect_uri": REDIRECT,
         "registry_path": "/tmp/does-not-exist/accounts.json",
     }
@@ -301,8 +320,8 @@ def test_get_root_rejects_off_origin_return_link(patched_common):
     assert "evil.test" not in page
 
 
-def test_get_root_renders_state2_when_creds_no_accounts(patched_common):
-    cfg = _cfg(client_id=GOOD_CLIENT_ID, client_secret="secret")
+def test_get_root_renders_state2_when_creds_no_accounts(patched_common, tmp_path):
+    cfg = _cfg(creds_path=_write_creds(tmp_path / "creds.env"))
     fake = _make_bound_handler(cfg, "/")
     with mock.patch.object(google_setup.GoogleRegistry, "load",
                            return_value=SimpleNamespace(accounts=[], default_name=None)):
@@ -311,8 +330,8 @@ def test_get_root_renders_state2_when_creds_no_accounts(patched_common):
     assert b'action="start"' in page  # state 2: add-account form
 
 
-def test_get_root_renders_state3_when_accounts(patched_common):
-    cfg = _cfg(client_id=GOOD_CLIENT_ID, client_secret="secret")
+def test_get_root_renders_state3_when_accounts(patched_common, tmp_path):
+    cfg = _cfg(creds_path=_write_creds(tmp_path / "creds.env"))
     acct = google_setup.GoogleAccount(name="jasper", token_path="/x", email="j@x")
     fake = _make_bound_handler(cfg, "/")
     with mock.patch.object(google_setup.GoogleRegistry, "load",
@@ -347,43 +366,36 @@ def test_setup_credentials_rejects_bad_client_id(patched_common):
     patched_common.read_form.return_value = {
         "client_id": "not-a-google-id", "client_secret": "GOCSPX-abc",
     }
-    cfg = _cfg()
-    fake = _make_bound_handler(cfg, "/setup-credentials")
-    fake.do_POST()
-    # Redirected with a validation message; creds NOT persisted into cfg.
+    fake = _make_bound_handler(_cfg(), "/setup-credentials")
+    with mock.patch.object(google_setup, "_write_creds_file") as wcf:
+        fake.do_POST()
+    # Redirected with a validation message; creds NOT persisted.
     assert patched_common.send_see_other.called
-    assert cfg["client_id"] == ""
+    assert not wcf.called
 
 
-def test_setup_credentials_persists_and_restarts(patched_common, tmp_path):
+def test_setup_credentials_persists_and_restarts(patched_common):
     patched_common.read_form.return_value = {
         "client_id": GOOD_CLIENT_ID, "client_secret": "GOCSPX-abc",
     }
-    cfg = _cfg()
-    fake = _make_bound_handler(cfg, "/setup-credentials")
-    tmp_path / "google_credentials.env"
+    fake = _make_bound_handler(_cfg(), "/setup-credentials")
     with mock.patch.object(google_setup, "_write_creds_file") as wcf:
         fake.do_POST()
-        assert wcf.called
-    assert cfg["client_id"] == GOOD_CLIENT_ID
-    assert cfg["client_secret"] == "GOCSPX-abc"
+    assert wcf.call_args.args == (GOOD_CLIENT_ID, "GOCSPX-abc")
     assert patched_common.restart_voice_daemon.called
 
 
-def test_reset_credentials_clears_cfg(patched_common):
-    cfg = _cfg(client_id=GOOD_CLIENT_ID, client_secret="secret")
-    fake = _make_bound_handler(cfg, "/reset-credentials")
+def test_reset_credentials_deletes_creds_file(patched_common):
+    fake = _make_bound_handler(_cfg(), "/reset-credentials")
     with mock.patch.object(google_setup, "_delete_creds_file") as dcf:
         fake.do_POST()
-        assert dcf.called
-    assert cfg["client_id"] == ""
-    assert cfg["client_secret"] == ""
+    assert dcf.called
     assert patched_common.restart_voice_daemon.called
 
 
-def test_start_redirects_to_google_authorize(patched_common):
+def test_start_redirects_to_google_authorize(patched_common, tmp_path):
     patched_common.read_form.return_value = {"name": "jasper"}
-    cfg = _cfg(client_id=GOOD_CLIENT_ID, client_secret="secret")
+    cfg = _cfg(creds_path=_write_creds(tmp_path / "creds.env"))
     fake = _make_bound_handler(cfg, "/start")
     fake_registry = mock.Mock()
     fake_flow = SimpleNamespace(
@@ -407,9 +419,37 @@ def test_start_redirects_to_google_authorize(patched_common):
     assert (name, verifier) == ("jasper", "verifier123")
 
 
-def test_start_rejects_bad_name(patched_common):
+def test_start_uses_creds_rewritten_under_a_running_server(patched_common, tmp_path):
+    # Any other writer of the creds file (install migration, restore, hand
+    # edit) must be visible without restarting jasper-web.
+    creds = tmp_path / "creds.env"
+    _write_creds(creds)
+    server = google_setup.make_server(
+        ("127.0.0.1", 0),
+        registry_path=str(tmp_path / "accounts.json"),
+        redirect_uri=REDIRECT,
+        creds_path=str(creds),
+    )
+    server.server_close()
+    rotated = "999999999999-rotated.apps.googleusercontent.com"
+    _write_creds(creds, client_id=rotated)
+    patched_common.read_form.return_value = {"name": "jasper"}
+    fake = _bind(server.RequestHandlerClass, "/start")
+    google_setup._PENDING_FLOWS.clear()
+    with mock.patch.object(google_setup.GoogleRegistry, "load",
+                           return_value=mock.Mock()), \
+         mock.patch.object(google_setup, "default_token_path_for",
+                           return_value="/tok"):
+        fake.do_POST()
+
+    loc = patched_common.send_see_other.call_args.args[1]
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(loc).query)
+    assert query["client_id"] == [rotated]
+
+
+def test_start_rejects_bad_name(patched_common, tmp_path):
     patched_common.read_form.return_value = {"name": "has spaces!"}
-    cfg = _cfg(client_id=GOOD_CLIENT_ID, client_secret="secret")
+    cfg = _cfg(creds_path=_write_creds(tmp_path / "creds.env"))
     fake = _make_bound_handler(cfg, "/start")
     fake.do_POST()
     # The route calls self._redirect("./?msg=Invalid+name…"); the flash-cookie
@@ -420,8 +460,7 @@ def test_start_rejects_bad_name(patched_common):
 
 def test_default_sets_default_when_account_exists(patched_common):
     patched_common.read_form.return_value = {"name": "britt"}
-    cfg = _cfg(client_id=GOOD_CLIENT_ID, client_secret="secret")
-    fake = _make_bound_handler(cfg, "/default")
+    fake = _make_bound_handler(_cfg(), "/default")
     reg = mock.Mock()
     reg.get.return_value = object()  # account exists
     with mock.patch.object(google_setup.GoogleRegistry, "load", return_value=reg):
@@ -432,8 +471,7 @@ def test_default_sets_default_when_account_exists(patched_common):
 
 def test_remove_deletes_account_and_token(patched_common, tmp_path):
     patched_common.read_form.return_value = {"name": "jasper"}
-    cfg = _cfg(client_id=GOOD_CLIENT_ID, client_secret="secret")
-    fake = _make_bound_handler(cfg, "/remove")
+    fake = _make_bound_handler(_cfg(), "/remove")
     tok = tmp_path / "jasper.json"
     tok.write_text("{}")
     reg = mock.Mock()
@@ -446,8 +484,8 @@ def test_remove_deletes_account_and_token(patched_common, tmp_path):
     assert patched_common.restart_voice_daemon.called
 
 
-def test_callback_exchanges_code_and_restarts(patched_common):
-    cfg = _cfg(client_id=GOOD_CLIENT_ID, client_secret="secret")
+def test_callback_exchanges_code_and_restarts(patched_common, tmp_path):
+    cfg = _cfg(creds_path=_write_creds(tmp_path / "creds.env"))
     # Seed a pending flow as /start would: nonce → (account, verifier, ts).
     google_setup._PENDING_FLOWS.clear()
     google_setup._PENDING_FLOWS["nonce123"] = ("jasper", "verifier123", 0.0)
@@ -466,10 +504,30 @@ def test_callback_exchanges_code_and_restarts(patched_common):
     assert "Linked" in _flash(patched_common.send_see_other)
 
 
-def test_callback_rejects_unknown_state_without_exchange(patched_common):
+def test_callback_exchange_failure_flash_is_redacted(patched_common, tmp_path):
+    # The token endpoint's rejection text reaches the user through the flash
+    # cookie, scrubbed — never as a query param nginx would log.
+    cfg = _cfg(creds_path=_write_creds(tmp_path / "creds.env"))
+    google_setup._PENDING_FLOWS.clear()
+    google_setup._PENDING_FLOWS["nonce123"] = ("jasper", "verifier123", 0.0)
+    fake = _make_bound_handler(cfg, "/callback?code=abc&state=nonce123")
+    leaked = "GOCSPX-fakefake1234"
+    with mock.patch.object(
+        fake, "_exchange_code",
+        side_effect=RuntimeError(f"400 invalid_client: client_secret={leaked}"),
+    ), mock.patch.object(google_setup, "_gc_pending"):
+        fake.do_GET()
+
+    call = patched_common.send_see_other.call_args
+    assert call.args[1] == "./"  # no ?msg= query on the redirect target
+    assert leaked not in call.kwargs["flash"]
+    assert not patched_common.restart_voice_daemon.called
+
+
+def test_callback_rejects_unknown_state_without_exchange(patched_common, tmp_path):
     # CSRF guard: a forged callback with a state that was never issued
     # (or already consumed / expired) must not run the token exchange.
-    cfg = _cfg(client_id=GOOD_CLIENT_ID, client_secret="secret")
+    cfg = _cfg(creds_path=_write_creds(tmp_path / "creds.env"))
     google_setup._PENDING_FLOWS.clear()
     fake = _make_bound_handler(cfg, "/callback?code=abc&state=forged")
     with mock.patch.object(fake, "_exchange_code") as ex:
@@ -480,8 +538,7 @@ def test_callback_rejects_unknown_state_without_exchange(patched_common):
 
 
 def test_callback_with_error_redirects_without_exchange(patched_common):
-    cfg = _cfg(client_id=GOOD_CLIENT_ID, client_secret="secret")
-    fake = _make_bound_handler(cfg, "/callback?error=access_denied")
+    fake = _make_bound_handler(_cfg(), "/callback?error=access_denied")
     with mock.patch.object(fake, "_exchange_code") as ex:
         fake.do_GET()
         assert not ex.called
