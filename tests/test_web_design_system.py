@@ -16,6 +16,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 from jasper.web import _common
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -540,3 +542,69 @@ def test_design_language_doc_is_reachable_and_dated():
     assert "design-language.md" in (ROOT / "README.md").read_text(), (
         "docs/design-language.md must be listed in README's documentation map"
     )
+
+
+# ---------------------------------------------------------------- #
+# docs/UX-AUDIT-2026-09-03.md §5.2 — every page shell renders        #
+# `.app-header` (recurrence: /balance/ [deleted], /sync/).           #
+# ---------------------------------------------------------------- #
+
+# A "page" is a *_setup.py/*_flow.py module that owns a page shell (it calls
+# canonical_page() itself). A pure router that delegates every GET route to
+# another such module (correction_setup.py -> correction_room_flow etc.) or a
+# stateless helper (pair_flow.py, active_speaker_flow.py) renders no shell of
+# its own and is not a page for this guard.
+_PAGE_SHELL_MODULES = tuple(
+    p for p in (
+        sorted((ROOT / "jasper" / "web").glob("*_setup.py"))
+        + sorted((ROOT / "jasper" / "web").glob("*_flow.py"))
+    )
+    if "canonical_page(" in p.read_text()
+)
+
+# Shrink-only: a page listed here is missing `.app-header` today. Remove its
+# entry in the same PR that gives the page a header — the test below fails
+# on a stale entry (page fixed, allowlist not updated) exactly as it fails
+# on a brand-new regression.
+NO_APP_HEADER_ALLOWLIST = {
+    "sync_flow.py": (
+        "no header at all today; folds into /sound/pair/sync/ with its own "
+        "canonical_header (C.S4)"
+    ),
+}
+
+
+def _renders_app_header(path: Path) -> bool:
+    text = path.read_text()
+    if "canonical_header(" in text:
+        return True
+    if re.search(r'class=["\']app-header\b', text):
+        return True
+    # Client-rendered pages (chat, system-status): the header comes from the
+    # page's own JS module graph, not the Python source.
+    for slug in re.findall(r"/assets/([\w-]+)/js/", text):
+        js_dir = ROOT / "deploy" / "assets" / slug / "js"
+        if not js_dir.is_dir():
+            continue
+        for js_file in js_dir.rglob("*.js"):
+            js_text = js_file.read_text()
+            if "app-header" in js_text or "appHeader(" in js_text:
+                return True
+    return False
+
+
+@pytest.mark.parametrize(
+    "path", _PAGE_SHELL_MODULES, ids=lambda p: p.name,
+)
+def test_page_shell_renders_app_header(path):
+    has_header = _renders_app_header(path)
+    if path.name in NO_APP_HEADER_ALLOWLIST:
+        assert not has_header, (
+            f"{path.name} now renders .app-header — remove it from "
+            f"NO_APP_HEADER_ALLOWLIST ({NO_APP_HEADER_ALLOWLIST[path.name]})"
+        )
+    else:
+        assert has_header, (
+            f"{path.name} renders a page shell with no .app-header "
+            "(docs/UX-AUDIT-2026-09-03.md §5.2)"
+        )
