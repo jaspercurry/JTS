@@ -46,6 +46,7 @@ EXPECTED_DSTS = (
     "jasper-audio-hardware-reconcile",
     "jasper-output-hardware-hotplug",
     "jasper-outputd-failure-reconcile",
+    "jasper-lib-resolve.sh",
     "jasper-camilla-guard-common.sh",
     "jasper-camilla-pipe-guard",
     "jasper-camilla-recover",
@@ -134,6 +135,16 @@ def test_common_library_failure_does_not_overwrite_guard_consumers(tmp_path):
     assert r.returncode != 0
     attempted = _attempted_dsts(tmp_path)
     assert "jasper-camilla-guard-common.sh" in attempted
+    assert "jasper-camilla-pipe-guard" not in attempted
+    assert "jasper-camilla-crossover-guard" not in attempted
+
+
+def test_lib_resolver_failure_does_not_overwrite_guard_consumers(tmp_path):
+    r = _run(tmp_path, fail_basename="jasper-lib-resolve.sh")
+    assert r.returncode != 0
+    attempted = _attempted_dsts(tmp_path)
+    assert "jasper-lib-resolve.sh" in attempted
+    assert "jasper-camilla-guard-common.sh" not in attempted
     assert "jasper-camilla-pipe-guard" not in attempted
     assert "jasper-camilla-crossover-guard" not in attempted
 

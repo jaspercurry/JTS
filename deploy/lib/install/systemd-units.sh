@@ -115,7 +115,13 @@ install_local_audio_graph_unit_files() {
     rm -f /var/lib/jasper/usb_combo_fallback.json \
           /var/lib/jasper/combo_health_tick.json 2>/dev/null || true
     # The guards below are a coupled runtime set. Do not continue to overwrite
-    # either consumer when its required library could not be staged.
+    # either consumer when a required library could not be staged.
+    if ! install -m 0644 \
+            "${REPO_DIR}/deploy/lib/jasper-lib-resolve.sh" \
+            /usr/local/lib/jasper/jasper-lib-resolve.sh; then
+        echo "  ERROR: failed to install jasper lib-path resolver" >&2
+        return 1
+    fi
     if ! install -m 0644 \
             "${REPO_DIR}/deploy/lib/jasper-camilla-guard-common.sh" \
             /usr/local/lib/jasper/jasper-camilla-guard-common.sh; then

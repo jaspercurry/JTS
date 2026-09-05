@@ -102,14 +102,12 @@ log() {
 }
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-COMMON_LIB="${JASPER_CAMILLA_GUARD_COMMON_LIB:-}"
-if [ -z "$COMMON_LIB" ]; then
-    if [ -r "${SCRIPT_DIR}/../lib/jasper-camilla-guard-common.sh" ]; then
-        COMMON_LIB="${SCRIPT_DIR}/../lib/jasper-camilla-guard-common.sh"
-    else
-        COMMON_LIB="/usr/local/lib/jasper/jasper-camilla-guard-common.sh"
-    fi
-fi
+# shellcheck disable=SC1090  # bootstraps itself before any other lib is known
+source "${SCRIPT_DIR}/../lib/jasper-lib-resolve.sh" 2>/dev/null \
+    || source /usr/local/lib/jasper/jasper-lib-resolve.sh 2>/dev/null \
+    || { log skip reason=common_lib_unavailable; exit 0; }
+COMMON_LIB="$(jasper_lib_resolve_path sibling-first "${JASPER_CAMILLA_GUARD_COMMON_LIB:-}" \
+    "${SCRIPT_DIR}/../lib/jasper-camilla-guard-common.sh" /usr/local/lib/jasper/jasper-camilla-guard-common.sh)"
 # shellcheck disable=SC1090  # runtime path is repo-sibling or installed fallback
 if [ ! -r "$COMMON_LIB" ] || ! source "$COMMON_LIB"; then
     log skip reason=common_lib_unavailable
