@@ -171,10 +171,11 @@ def test_install_consumes_reconciled_output_without_reusing_dongle_mixer_card():
     assert "apply_observed_single_policy()" in reconcile
     assert 'OUTPUT_DAC_ID="$OBSERVED_OUTPUT_PROFILE_ID"' in reconcile
     assert 'OUTPUT_DAC_CARD="$OBSERVED_OUTPUT_SELECTED_CARD_ID"' in reconcile
-    # Classification is registry-backed: one dongle probe, no per-board names.
-    assert "find_card 'usb-c to 3.5mm'" in reconcile
-    assert "find_card 'hifiberry" not in reconcile
-    assert "find_card 'snd_rpi" not in reconcile
+    # Classification is registry-backed and the shell holds no hardware label:
+    # the classifier's env emitter names the Apple cards (ADR-0235 R2).
+    assert "usb-c to 3.5mm" not in reconcile.lower()
+    assert "find_card" not in reconcile
+    assert 'DONGLE_CARD="${OBSERVED_OUTPUT_APPLE_CARD_IDS%% *}"' in reconcile
     assert "DAC8X_OUTPUT_CARD=" not in reconcile
     assert "DAC8X_STUDIO_OUTPUT_CARD=" not in reconcile
     assert "jasper_asound_render_template" in install_sh

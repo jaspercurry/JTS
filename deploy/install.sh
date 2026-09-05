@@ -1078,7 +1078,7 @@ ensure_output_hardware_state() {
     if ! run_captured_command output env \
         JASPER_OUTPUT_HARDWARE_STATE_PATH=/run/jasper-output-hardware/output_hardware.json \
         JASPER_APLAY="${JASPER_APLAY:-aplay}" \
-        /opt/jasper/.venv/bin/python -m jasper.output_hardware --write; then
+        /opt/jasper/.venv/bin/python -m jasper.cli.output_hardware --write; then
         return 1
     fi
 }
