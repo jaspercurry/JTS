@@ -4,9 +4,14 @@ Frozen record behind [`../CODEBASE-QUALITY-REVIEW-2026-09-05.md`](../CODEBASE-QU
 Audited tree `2d571e6b8`. Nothing here is current operating truth; disposition of each finding lives in
 the steward issues.
 
-- `register.csv` — one row per distinct finding after dedup: id, severity as reported and as normalized,
-  theme, area, `file:line` refs, evidence, fix, LOC estimate, source reports, in-flight PR/issue, owning
-  territory, and whether a skeptic re-read it (`verify`).
+- `register.csv` — one row per distinct finding after dedup (269 rows): id, severity as reported and as
+  normalized, theme, area, `file:line` refs, evidence, fix, LOC estimate, source reports, in-flight
+  PR/issue, owning territory, and whether it was flagged for a skeptic (`verify`). Severities here are
+  **pre-verification**; the `reports/p3-*.md` verdicts override them, and the review's §2 is the
+  post-verification list.
+- `register.md` — the register's summary: counts by theme, top 40, refuted premises, merged
+  duplicates, the consolidated earns-its-keep list, the coverage ledger per tile, the restructuring
+  proposals side by side, and the open owner decisions.
 - `reports/BRIEF*.md` — the briefs every agent was given.
 - `reports/research-best-practices.md` — the structure and quality-measurement reference and the
   12-row grading rubric.
