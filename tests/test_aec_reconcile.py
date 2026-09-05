@@ -44,6 +44,36 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deploy" / "bin" / "jasper-aec-reconcile"
 VOICE_RESTART_CMD = "--no-block restart jasper-voice.service"
 
+# The registry constants `jasper-xvf-profile --env` publishes (ADR-0235), read
+# from the module the emitter reads so a resolver double cannot drift from the
+# registry it stands in for.
+_REGISTRY_ENV: tuple[tuple[str, str], ...] = (
+    ("JASPER_XVF_SUPPORTED_ALSA_CARDS", ",".join(xvf3800.ALSA_CARD_NAMES)),
+    (
+        "JASPER_XVF_RECOMMENDED_CHANNELS",
+        str(xvf3800.RECOMMENDED_CAPTURE_CHANNELS),
+    ),
+    ("JASPER_XVF_MIXER_CAPTURE_SWITCH", xvf3800.MIXER_CAPTURE_SWITCH),
+    ("JASPER_XVF_MIXER_CAPTURE_VOLUME", xvf3800.MIXER_CAPTURE_VOLUME),
+    ("JASPER_XVF_MIXER_VOLUME_MAX", str(xvf3800.MIXER_VOLUME_MAX)),
+)
+# printf arguments for the resolver doubles below. Doubly quoted on purpose:
+# the inner quote is the emitter's own (the reconciler evals the line), the
+# outer one is for the double's own shell.
+_REGISTRY_ENV_ARGS = " ".join(
+    shlex.quote(f"{key}={shlex.quote(value)}") for key, value in _REGISTRY_ENV
+)
+# The subset write_mic_profile_env re-publishes into jasper.env, so a staged
+# env file looks like one an earlier pass wrote.
+_PERSISTED_REGISTRY_ENV = "".join(
+    f"{key}={value}\n"
+    for key, value in _REGISTRY_ENV
+    if key in (
+        "JASPER_XVF_SUPPORTED_ALSA_CARDS",
+        "JASPER_XVF_RECOMMENDED_CHANNELS",
+    )
+)
+
 
 def _control_leg_defaults() -> dict[str, str]:
     """Return control's missing-key defaults in systemd-env form."""
@@ -136,9 +166,13 @@ def _fake_mixer_tools(tmp_path: Path) -> tuple[Path, Path]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "mixer.log"
+    # argv is logged PIPE-joined, never space-joined: the XVF capture mixer
+    # control names carry spaces, so a space-joined log cannot tell one
+    # argument from three and would read as covered over a quoting regression.
     script = (
         "#!/usr/bin/env bash\n"
-        "printf '%s %s\\n' \"${0##*/}\" \"$*\" >> \"$JASPER_MIXER_LOG\"\n"
+        "IFS='|'\n"
+        "printf '%s|%s\\n' \"${0##*/}\" \"$*\" >> \"$JASPER_MIXER_LOG\"\n"
         "exit 0\n"
     )
     for name in ("amixer", "alsactl"):
@@ -240,6 +274,7 @@ def _write_env(
         f"JASPER_MIC_DEVICE={mic_device}\n"
         f"{port_line}"
         "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n"
+        f"{_PERSISTED_REGISTRY_ENV}"
         f"{extra}"
     )
     if voice_provider:
@@ -445,7 +480,8 @@ def _write_synthetic_xvf_resolver(
         "    'JASPER_XVF_CHIP_REF_DEVICE=0' \\\n"
         "    'JASPER_XVF_CHIP_REF_RATE=16000' \\\n"
         "    'JASPER_XVF_CHIP_REF_PERIOD=128' \\\n"
-        "    'JASPER_XVF_CHIP_REF_BUFFER=256'\n"
+        "    'JASPER_XVF_CHIP_REF_BUFFER=256' \\\n"
+        f"    {_REGISTRY_ENV_ARGS}\n"
         "fi\n"
     )
     resolver.chmod(0o755)
@@ -472,6 +508,21 @@ def _outputd_status_payload(
             },
         },
     }
+
+
+def test_candidate_default_is_the_mic_registry_card_list(tmp_path: Path) -> None:
+    """With no operator override the default candidate list is the registry's
+    own card names — the script keeps no copy of them (ADR-0235). The detected
+    card is prepended, so compare the deduplicated order."""
+    _stage(tmp_path, "udp:9876", mode="auto")
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    field = re.search(r" candidates=(.*?) legs=", result.stderr)
+    assert field is not None, result.stderr
+    candidates = list(dict.fromkeys(field.group(1).split()))
+    assert candidates == list(xvf3800.ALSA_CARD_NAMES)
 
 
 def test_reconcile_clears_stale_udp_when_array_is_absent(tmp_path: Path) -> None:
@@ -991,11 +1042,11 @@ def test_reconcile_repairs_capture_mixer_before_arming_six_channel_aec(
 ) -> None:
     channels = xvf3800.RECOMMENDED_FIRMWARE.capture_channels
     expected = [
-        f"amixer -c Array cset name={xvf3800.MIXER_CAPTURE_SWITCH} "
+        f"amixer|-c|Array|cset|name={xvf3800.MIXER_CAPTURE_SWITCH}|"
         + ",".join(["on"] * channels),
-        f"amixer -c Array cset name={xvf3800.MIXER_CAPTURE_VOLUME} "
+        f"amixer|-c|Array|cset|name={xvf3800.MIXER_CAPTURE_VOLUME}|"
         + ",".join([str(xvf3800.MIXER_VOLUME_MAX)] * channels),
-        "alsactl store",
+        "alsactl|store",
     ]
     bin_dir, mixer_log = _fake_mixer_tools(tmp_path)
     _stage(tmp_path, "Array", mode="auto", channels=detected_channels)
@@ -3713,7 +3764,7 @@ def test_voice_irrelevant_keys_are_all_keys_the_script_writes() -> None:
 def test_measurement_mic_is_never_selected_even_on_a_widened_candidate_list(
     tmp_path: Path,
 ) -> None:
-    """Defense in depth. DEFAULT_MIC_DEVICE_CANDIDATES is a closed allowlist no
+    """Defense in depth. The registry card list is a closed allowlist no
     measurement mic appears in, so this only bites for an operator who widened
     JASPER_MIC_DEVICE_CANDIDATES — and then it must bite: a UMIK-2 carries no
     wake or AEC contract."""

@@ -60,6 +60,15 @@ def _env_lines(payload: dict[str, object]) -> str:
         "JASPER_XVF_CHIP_REF_BUFFER": str(
             xvf3800.CHIP_AEC_REFERENCE_BUFFER_FRAMES
         ),
+        # Registry constants, not detection: emitted on every path (including
+        # present=0) so the bash applier keeps no copy of them. See ADR-0235.
+        "JASPER_XVF_SUPPORTED_ALSA_CARDS": ",".join(xvf3800.ALSA_CARD_NAMES),
+        "JASPER_XVF_RECOMMENDED_CHANNELS": str(
+            xvf3800.RECOMMENDED_CAPTURE_CHANNELS
+        ),
+        "JASPER_XVF_MIXER_CAPTURE_SWITCH": xvf3800.MIXER_CAPTURE_SWITCH,
+        "JASPER_XVF_MIXER_CAPTURE_VOLUME": xvf3800.MIXER_CAPTURE_VOLUME,
+        "JASPER_XVF_MIXER_VOLUME_MAX": str(xvf3800.MIXER_VOLUME_MAX),
     }
     return "".join(
         f"{key}={shlex.quote(value)}\n"

@@ -12,21 +12,10 @@ from jasper.output_topology import output_topology_mutation
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SimpleEq, SoundProfile, load_profile, save_profile
 
+from tests.transport_camilla_fixtures import FakeCamilla
+
 from .correction_bundle_fixtures import write_golden_correction_bundle
 from .test_active_speaker_runtime_contract import _full_range_stereo
-
-
-class FakeCamilla:
-    def __init__(self, current_path: str) -> None:
-        self.current_path = current_path
-        self.loaded_path: str | None = None
-
-    async def get_config_file_path(self, *, best_effort: bool = False) -> str:
-        return self.loaded_path or self.current_path
-
-    async def set_config_file_path(self, path: str, *, best_effort: bool = False) -> bool:
-        self.loaded_path = path
-        return True
 
 
 def _context(tmp_path: Path) -> dict:

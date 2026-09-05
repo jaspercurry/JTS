@@ -553,6 +553,7 @@ def test_system_audio_quality_applies_and_try_restarts_renderers(
     server_with_coordinator,
 ):
     base, _ = server_with_coordinator
+    import jasper.control.handlers.system as system_mod
     import jasper.control.server as srv_mod
 
     applied: list[str] = []
@@ -568,7 +569,7 @@ def test_system_audio_quality_applies_and_try_restarts_renderers(
             "options": [],
         }
 
-    monkeypatch.setattr(srv_mod, "_apply_audio_quality", fake_apply)
+    monkeypatch.setattr(system_mod, "apply_requested_converter", fake_apply)
     monkeypatch.setattr(srv_mod.subprocess, "Popen", _recording_popen(popens))
 
     status, body = _post(
@@ -591,12 +592,12 @@ def test_system_audio_quality_rejects_unknown_converter(
     server_with_coordinator,
 ):
     base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.system as system_mod
 
     def fail_apply(_converter: str) -> dict:
         raise AssertionError("invalid converter should not apply")
 
-    monkeypatch.setattr(srv_mod, "_apply_audio_quality", fail_apply)
+    monkeypatch.setattr(system_mod, "apply_requested_converter", fail_apply)
 
     status, body = _post(
         f"{base}/system/audio-quality",
@@ -612,12 +613,12 @@ def test_system_audio_quality_rejects_missing_converter(
     server_with_coordinator,
 ):
     base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.system as system_mod
 
     def fail_apply(_converter: str) -> dict:
         raise AssertionError("missing converter should not apply")
 
-    monkeypatch.setattr(srv_mod, "_apply_audio_quality", fail_apply)
+    monkeypatch.setattr(system_mod, "apply_requested_converter", fail_apply)
 
     status, body = _post(f"{base}/system/audio-quality", {})
 
@@ -630,13 +631,14 @@ def test_system_usb_latency_applies_fixed_mode(
     server_with_coordinator,
 ):
     base, _ = server_with_coordinator
+    import jasper.control.handlers.system as system_mod
     import jasper.control.server as srv_mod
 
     applied: list[str] = []
     marked: list[str] = []
     monkeypatch.setattr(
-        srv_mod,
-        "_apply_usb_latency_mode",
+        system_mod,
+        "apply_requested_mode",
         lambda mode: applied.append(mode),
     )
     monkeypatch.setattr(
@@ -658,12 +660,12 @@ def test_system_usb_latency_surfaces_apply_failure(
     server_with_coordinator,
 ):
     base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.system as system_mod
 
     def fail(_mode: str) -> None:
-        raise srv_mod._UsbLatencyApplyError("fan-in restart failed")
+        raise system_mod.LatencyApplyError("fan-in restart failed")
 
-    monkeypatch.setattr(srv_mod, "_apply_usb_latency_mode", fail)
+    monkeypatch.setattr(system_mod, "apply_requested_mode", fail)
 
     status, body = _post(f"{base}/system/usb-latency", {"mode": "high"})
 

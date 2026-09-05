@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
+import time
 from unittest.mock import MagicMock
 
 from jasper.accounts import Account
@@ -238,6 +240,54 @@ def test_active_falls_back_to_default():
 def test_active_returns_none_with_no_clients():
     r = Router(clients={}, default_name="")
     assert asyncio.run(r.active(airplay_active=False)) is None
+
+
+# --- devices_named: shared account walk for mux + volume dispatch ---
+
+
+def test_devices_named_matches_across_accounts():
+    jasper = AccountClient(
+        account=Account(name="jasper"),
+        sp=MagicMock(devices=MagicMock(
+            return_value={"devices": [{"name": "Phone", "id": "p1"}]},
+        )),
+    )
+    brittany = AccountClient(
+        account=Account(name="brittany"),
+        sp=MagicMock(devices=MagicMock(
+            return_value={"devices": [{"name": "JTS", "id": "jts-1"}]},
+        )),
+    )
+    r = Router(clients={"jasper": jasper, "brittany": brittany}, default_name="jasper")
+    matches = asyncio.run(r.devices_named("JTS"))
+    assert matches == [(brittany, {"name": "JTS", "id": "jts-1"})]
+
+
+async def test_devices_named_a_wedged_account_does_not_block_the_others():
+    """A hung devices() call must not stall matching against every other
+    account — the volume-dispatch fix this method exists to provide."""
+    release = threading.Event()
+
+    def _hang():
+        release.wait(timeout=10.0)
+        return {"devices": []}
+
+    hung = AccountClient(account=Account(name="hung"), sp=MagicMock(devices=_hang))
+    good = AccountClient(
+        account=Account(name="good"),
+        sp=MagicMock(devices=MagicMock(
+            return_value={"devices": [{"name": "JTS", "id": "jts-1"}]},
+        )),
+    )
+    r = Router(clients={"hung": hung, "good": good}, default_name="good")
+    started = time.monotonic()
+    try:
+        matches = await r.devices_named("JTS", timeout=0.05)
+    finally:
+        release.set()
+    elapsed = time.monotonic() - started
+    assert elapsed < 1.0, f"devices_named blocked past its timeout ({elapsed:.2f}s)"
+    assert matches == [(good, {"name": "JTS", "id": "jts-1"})]
 
 
 # --- build_clients return value: BuildResult with per-account statuses ---
