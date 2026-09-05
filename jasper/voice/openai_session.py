@@ -79,6 +79,7 @@ from .session import (
     ConnectionState,
     CuePlayer,
     LiveTurn,
+    log_first_chunk,
 )
 
 logger = logging.getLogger(__name__)
@@ -192,6 +193,9 @@ class OpenAIRealtimeTurn:
         self._last_chunk_at: float = 0.0
         self._first_chunk_logged = False
         self._started_at_monotonic: float = _time.monotonic()
+        # When `response.create` went out, from either end-of-input path
+        # (daemon end_input, or the server-VAD trigger). 0.0 = not yet asked.
+        self._end_input_at_monotonic: float = 0.0
         self._bytes_sent: int = 0
         self._chunks_received: int = 0
         # Tracks chunk-size distribution per turn; logged at release so a uniform vs. front-loaded delivery is visible post hoc.
@@ -343,6 +347,7 @@ class OpenAIRealtimeTurn:
         if self._server_vad_active:
             return
         self._committed = True
+        self._end_input_at_monotonic = _time.monotonic()
         try:
             await self._conn._commit_and_create_response(self)
         except Exception as e:  # noqa: BLE001
@@ -663,11 +668,11 @@ class OpenAIRealtimeTurn:
         if not self._first_chunk_logged:
             self._first_chunk_logged = True
             self._first_chunk_bytes = chunk_bytes
-            first_ms = (_time.monotonic() - self._started_at_monotonic) * 1000
-            logger.info(
-                "first audio chunk from OpenAI in %.0fms (turn start→1st chunk, "
-                "%d bytes ~%.0fms audio)",
-                first_ms, chunk_bytes, chunk_bytes / 48.0,
+            log_first_chunk(
+                logger,
+                getattr(self._conn, "PROVIDER_NAME", "openai"),
+                turn_start_monotonic=self._started_at_monotonic,
+                end_input_monotonic=self._end_input_at_monotonic,
             )
         item_id = self._last_assistant_item_id
         if item_id:
@@ -1134,7 +1139,14 @@ class OpenAIRealtimeConnection:
 
     async def create_response_only(self) -> None:
         """Send response.create WITHOUT a preceding commit — used when
-        server_vad has already committed the audio buffer."""
+        server_vad has already committed the audio buffer.
+
+        This is the ask on a server-VAD turn, so it carries the same
+        first-chunk anchor `end_input()` sets on a daemon-endpointed one.
+        """
+        turn = self._active_turn
+        if turn is not None:
+            turn._end_input_at_monotonic = _time.monotonic()
         await self._send_event({"type": "response.create"})
 
     async def set_turn_detection(self, mode: dict | None) -> None:

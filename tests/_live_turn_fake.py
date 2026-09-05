@@ -2,9 +2,21 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Configurable LiveTurn stand-in for voice-daemon lifecycle tests."""
+"""Shared stand-ins for voice-daemon lifecycle tests: a configurable
+LiveTurn, and the 80 ms silent mic frame those tests feed the wake loop."""
 
 from __future__ import annotations
+
+import numpy as np
+
+#: One mic frame as the wake loop sees it — `MicCapture.OUTPUT_FRAME_SAMPLES`
+#: at 16 kHz mono int16, i.e. 80 ms.
+_FRAME_SAMPLES = 1280
+
+
+def silent_frame() -> np.ndarray:
+    return np.zeros(_FRAME_SAMPLES, dtype=np.int16)
+
 
 class FakeLiveTurn:
     def __init__(
@@ -18,6 +30,7 @@ class FakeLiveTurn:
     ) -> None:
         self.end_input_calls = 0
         self.release_calls = 0
+        self.send_audio_calls = 0
         self._user_text = user_text
         self._assistant_text = assistant_text
         self._metadata = metadata
@@ -29,6 +42,9 @@ class FakeLiveTurn:
 
     def last_activity_at(self) -> float:
         return 0.0
+
+    async def send_audio(self, _pcm_16khz_int16: bytes) -> None:
+        self.send_audio_calls += 1
 
     async def end_input(self) -> None:
         self.end_input_calls += 1
