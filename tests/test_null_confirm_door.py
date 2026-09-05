@@ -12,6 +12,7 @@ gate actually emits, and every banked row carries enough to be graded alone.
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 from dataclasses import replace
 from types import SimpleNamespace
@@ -722,8 +723,6 @@ def test_a_missing_microphone_exits_as_json_not_a_traceback(tmp_path, monkeypatc
     the absence of output. The sibling door renders the same case as refusal
     JSON; this matches it.
     """
-    import json
-
     from jasper.audio_measurement.wired_capture import WiredCaptureError
 
     def _no_mic():
@@ -757,6 +756,161 @@ def _fake_context():
         role_targets={},
         declared_sensitivities={},
     )
+
+
+def _hardware_free_walk(monkeypatch, *, depth_db: float = -20.0) -> None:
+    """Everything one walk needs that a hardware-free box cannot have.
+
+    The box declaration, the microphone, the emission and the depth read; the
+    door is the caller's, because how it ends is what each test is about.
+    """
+    monkeypatch.setattr(null_door, "_context", lambda: _fake_context())
+    monkeypatch.setattr(null_door, "_level_trims", lambda _c: ({}, "none"))
+    monkeypatch.setattr(null_door, "_protection_sections", lambda _c: None)
+    monkeypatch.setattr(
+        null_door, "_resolve_mic", lambda: SimpleNamespace(pcm=None),
+    )
+    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+
+    async def _play(*_args, **_kwargs) -> bytes:
+        return b"\x00" * 8
+
+    monkeypatch.setattr(null_door, "_play_and_capture", _play)
+    monkeypatch.setattr(null_door, "_depth", lambda *_a, **_k: (depth_db, _span()))
+
+
+def _install_door(monkeypatch, *, restore_error: Exception | None = None) -> None:
+    """The held speaker, optionally failing to give the entry graph back."""
+    from jasper.active_speaker.crossover_v2 import door as door_mod
+
+    class _Open:
+        def __init__(self) -> None:
+            self.plan = None
+            self.graph = SimpleNamespace(install=self._install)
+
+        async def _install(self, *_args, **_kwargs) -> str:
+            return "fingerprint-1"
+
+    class _Door:
+        async def __aenter__(self) -> _Open:
+            return _Open()
+
+        async def __aexit__(self, exc_type, _exc, _tb) -> bool:
+            if exc_type is None and restore_error is not None:
+                raise restore_error
+            return False
+
+    monkeypatch.setattr(door_mod, "measurement_door", lambda **_kw: _Door())
+
+
+def test_a_clean_walk_answers_with_the_scalars_and_the_path(
+    tmp_path, monkeypatch, capsys,
+):
+    """stdout IS the answer: the ask, one depth per row, and where the rows are.
+
+    A grid's shoulders, trims and fingerprints stay in the banked rows — the
+    document names the directory holding them and the verb that grades them,
+    so a reader pulls depth only when a number surprises it.
+    """
+    _hardware_free_walk(monkeypatch, depth_db=-18.5)
+    _install_door(monkeypatch)
+
+    code = null_door.main([
+        "--bundle-dir", str(tmp_path), "--delays", "0", "--fc-hz", "2000",
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == null_door.EXIT_OK
+    assert payload["status"] == "banked"
+    assert payload["fc_hz"] == 2000.0
+    assert payload["delays_us"] == [0.0]
+    assert payload["out"] == str(tmp_path / null_door.NULL_RUNS_DIR)
+    # `--polarity both` is the default: the pair at zero IS the polarity proof.
+    assert [row["polarity"] for row in payload["rows"]] == [
+        "in_phase", "inverted",
+    ]
+    assert all(row["depth_db"] == -18.5 for row in payload["rows"])
+    assert all(
+        (tmp_path / null_door.NULL_RUNS_DIR / row["row"]).exists()
+        for row in payload["rows"]
+    )
+    assert payload["next"].startswith("jasper-round-views delay-confirm")
+
+
+def test_a_row_that_could_not_be_read_refuses_and_carries_the_rows(
+    tmp_path, monkeypatch, capsys,
+):
+    """A walk that banked only unreadable coordinates is a refusal, not a bank.
+
+    The row's own reason decides — the module that could not read the depth
+    owns the word — and the rows ride under ``detail`` so a caller knows which
+    coordinates it still owes without listing the directory.
+    """
+    _hardware_free_walk(monkeypatch)
+    _install_door(monkeypatch)
+
+    def _no_depth(*_args, **_kwargs):
+        raise null_door.NullDoorRefused(
+            null_door.REFUSE_UNUSABLE_CAPTURE, "the capture failed quality gating"
+        )
+
+    monkeypatch.setattr(null_door, "_depth", _no_depth)
+
+    code = null_door.main([
+        "--bundle-dir", str(tmp_path), "--polarity", null_door.POLARITY_KEEP,
+        "--delays", "0",
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == null_door.EXIT_REFUSED
+    assert payload["status"] == "refused"
+    assert payload["reason"] == null_door.REFUSE_UNUSABLE_CAPTURE
+    rows = payload["detail"]["rows"]
+    assert [row["status"] for row in rows] == ["refused"]
+    assert rows[0]["depth_db"] is None
+    assert (tmp_path / null_door.NULL_RUNS_DIR / rows[0]["row"]).exists()
+
+
+def test_a_coordinate_off_the_grid_exits_as_an_input_error(
+    tmp_path, monkeypatch, capsys,
+):
+    """Exit 2 with the shared document, not a sentence on stderr and nothing else.
+
+    The grid is the one the proposal was computed on, so a coordinate off it
+    names a graph nobody modelled — an input fault a caller branches on.
+    """
+    _hardware_free_walk(monkeypatch)
+    _install_door(monkeypatch)
+
+    code = null_door.main([
+        "--bundle-dir", str(tmp_path), "--delays=999999",
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == null_door.EXIT_UNREADABLE
+    assert payload["status"] == "unreadable"
+    assert payload["reason"] == null_door.REFUSE_DELAY_OFF_GRID
+    assert payload["detail"]
+
+
+def test_a_box_that_cannot_answer_refuses_as_a_document(monkeypatch, capsys):
+    """The conductor's refusal used to leave `main` as a traceback with an
+    empty stdout, which no caller can tell from a crash."""
+    from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
+
+    def _refuse():
+        raise CrossoverV2Refused("this speaker has no active crossover to measure")
+
+    monkeypatch.setattr(null_door, "_context", _refuse)
+    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+
+    code = null_door.main([])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == null_door.EXIT_REFUSED
+    assert payload["status"] == "refused"
+    assert payload["reason"] == null_door.REFUSE_BOX_NOT_READY
+    assert payload["detail"]
 
 
 def test_a_refused_run_writes_no_stimulus(tmp_path, monkeypatch):
@@ -815,51 +969,13 @@ def test_a_give_back_failure_after_a_clean_walk_still_renders_json(
     ``body_error=None``) — this pins that the row already on disk is still
     reported rather than lost to a bare traceback.
     """
-    import json
-
-    from jasper.active_speaker.crossover_v2 import door as door_mod
     from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
 
-    monkeypatch.setattr(null_door, "_context", lambda: _fake_context())
-    monkeypatch.setattr(null_door, "_level_trims", lambda _c: ({}, "none"))
-    monkeypatch.setattr(null_door, "_protection_sections", lambda _c: None)
-    monkeypatch.setattr(
-        null_door, "_resolve_mic", lambda: SimpleNamespace(pcm=None),
-    )
-    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
-
-    async def _fake_play_and_capture(*_args, **_kwargs) -> bytes:
-        return b"\x00" * 8
-
-    def _fake_depth(*_args, **_kwargs):
-        return -20.0, _span()
-
-    monkeypatch.setattr(null_door, "_play_and_capture", _fake_play_and_capture)
-    monkeypatch.setattr(null_door, "_depth", _fake_depth)
-
-    class _FakeDoor:
-        def __init__(self) -> None:
-            self.plan = None
-            self.graph = SimpleNamespace(install=self._install)
-
-        async def _install(self, *_args, **_kwargs) -> str:
-            return "fingerprint-1"
-
-    class _RestoreFailsOnExit:
-        async def __aenter__(self) -> _FakeDoor:
-            return _FakeDoor()
-
-        async def __aexit__(self, exc_type, exc, _tb) -> bool:
-            if exc_type is None:
-                raise SessionGraphError(
-                    "the measurement graph was played but the entry graph "
-                    "could not be restored"
-                )
-            return False
-
-    monkeypatch.setattr(
-        door_mod, "measurement_door", lambda **_kw: _RestoreFailsOnExit(),
-    )
+    _hardware_free_walk(monkeypatch)
+    _install_door(monkeypatch, restore_error=SessionGraphError(
+        "the measurement graph was played but the entry graph could not be "
+        "restored"
+    ))
 
     code = null_door.main([
         "--bundle-dir", str(tmp_path),
@@ -869,10 +985,12 @@ def test_a_give_back_failure_after_a_clean_walk_still_renders_json(
 
     assert code == null_door.EXIT_REFUSED
     payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "partial"
-    assert payload["reason"] == null_door.REFUSE_GRAPH_LOST
-    assert len(payload["banked_row_ids"]) == 1
-    assert (tmp_path / "null_runs" / payload["banked_row_ids"][0]).exists()
+    assert payload["status"] == "refused"
+    assert payload["reason"] == "interrupted"
+    detail = payload["detail"]
+    assert detail["reason"] == null_door.REFUSE_GRAPH_LOST
+    assert len(detail["banked_row_ids"]) == 1
+    assert (tmp_path / "null_runs" / detail["banked_row_ids"][0]).exists()
 
 
 def test_rows_land_beside_the_takes(tmp_path):
