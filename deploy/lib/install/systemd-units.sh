@@ -1186,7 +1186,6 @@ locked_transform_env_file(
     path,
     migrate,
     mode=0o660,
-    group_from_parent=True,
     lock_mode=0o660,
     max_bytes=64 * 1024,
     lock_timeout_sec=2.0,

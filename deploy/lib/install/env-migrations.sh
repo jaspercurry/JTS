@@ -645,6 +645,14 @@ widen_control_secret_env_modes() {
     #     secret, so the migration must fix the upgrade path.
     #   - non-secret state: sound_profile.json / sound_settings.json (the EQ
     #     config the /state sound card reads). These carry no secret.
+    #   - wizard location state: transit.env (DOES carry a secret — the BusTime
+    #     API key — and jasper-control reads it off disk, see the doctor's
+    #     privsep MANIFEST) and weather.env (coords + units, no secret; the
+    #     /weather/ wizard reads it off disk as jasper-web). Both readers are
+    #     non-root and in group `jasper`.
+    #     REMOVAL CONDITION for transit.env weather.env: written root:root
+    #     before the env-file writers defaulted to the parent's group; drop
+    #     these two once every box has installed past that change.
     # NOTE: the WiFi guardian PSK stash is DELIBERATELY NOT widened here — it
     # holds the WiFi password, which jasper-control does not need the value of
     # (only the SSID, which it derives from nmcli/the journal), so it stays
@@ -656,7 +664,7 @@ widen_control_secret_env_modes() {
     # here (now keyless; control reads the provider name for /system/).
     local f path
     for f in voice_provider.env control_token household_secret \
-             sound_profile.json sound_settings.json; do
+             sound_profile.json sound_settings.json transit.env weather.env; do
         path="${STATE_DIR}/${f}"
         if [[ -L "${path}" ]]; then
             echo "  widen_control_secret_env_modes: skipping symlink ${path}"

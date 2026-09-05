@@ -168,6 +168,31 @@ def test_group_from_parent_chowns_temp_before_publish(tmp_path, monkeypatch):
     assert gid == os.stat(tmp_path).st_gid
 
 
+@pytest.mark.parametrize("writer", ["update", "transform"])
+def test_env_writers_publish_parent_group_by_default(tmp_path, monkeypatch, writer):
+    """The two env-file writers default to ``group_from_parent=True``, so a
+    root-run wizard cannot publish root:root into a state directory a non-root
+    daemon reads. Omitting the kwarg must behave exactly like passing True."""
+    from jasper.atomic_io import locked_transform_env_file, locked_update_env_file
+
+    path = tmp_path / "wizard.env"
+    calls: list[tuple[str, int, int]] = []
+    monkeypatch.setattr(
+        os, "chown", lambda target, uid, gid: calls.append((target, uid, gid))
+    )
+
+    if writer == "update":
+        locked_update_env_file(path, {"JASPER_X": "1"})
+    else:
+        locked_transform_env_file(path, lambda cur: {**cur, "JASPER_X": "1"})
+
+    assert path.read_text(encoding="utf-8") == "JASPER_X=1\n"
+    assert calls, "the env writers must set the temp file group by default"
+    target, uid, gid = calls[-1]
+    assert os.path.basename(target).startswith(".wizard.env.")
+    assert (uid, gid) == (-1, os.stat(tmp_path).st_gid)
+
+
 def test_group_from_parent_chown_failure_cleans_up_temp(tmp_path, monkeypatch):
     path = tmp_path / "secret.env"
 

@@ -707,7 +707,6 @@ def _default_write_intent(path: str, updates: Mapping[str, str]) -> None:
         path,
         updates,
         mode=_INTENT_FILE_MODE,
-        group_from_parent=True,
         lock_mode=_SHARED_LOCK_MODE,
         max_bytes=_MAX_INTENT_BYTES,
         lock_timeout_sec=_REQUEST_LOCK_TIMEOUT_SEC,
