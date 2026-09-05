@@ -51,147 +51,19 @@
 //! only ITS channel, and — unlike a follower, whose snapclient plays
 //! through an ALSA `ttable` plug — this lane has no ALSA hop to do the
 //! drop. `ChannelPick` therefore mirrors the channel-split vocabulary:
-//! `left`/`right` duplicate that program
-//! channel onto both DAC channels; `mono` averages (the clip-safe L+R sum
-//! at −6.02 dB, matching `jasper.camilla_emit.MONO_SUM_GAIN_DB`); `stereo`
-//! is passthrough. Both transports carry the same shared-stream format, so
-//! the pick is applied identically on either — and it is applied to a
-//! STARVED (silent) period too, so the `Sub` low-pass and the mains
-//! high-pass keep decaying through an outage instead of resuming from
-//! frozen state.
+//! `left`/`right` duplicate that program channel onto both DAC channels;
+//! `mono` averages (the clip-safe L+R sum at −6.02 dB, matching
+//! `jasper.camilla_emit.MONO_SUM_GAIN_DB`); `stereo` is passthrough. Both
+//! transports carry the same shared-stream format, so the pick is applied
+//! identically on either.
 
 use std::io;
 use std::os::fd::RawFd;
 
 use anyhow::Result;
-use jasper_tts_protocol::loudness::Biquad;
 
 use crate::shm_ring_source::ShmRingSource;
 use crate::types::{ProgramSample, SampleFormat};
-
-/// Sample rate of the round-trip lane. Pinned to the snapclient stream
-/// format (48000:16:2) — neither transport carries any other rate, so the
-/// sub low-pass / mains high-pass coefficients can be precomputed
-/// against this constant.
-pub const SUB_SAMPLE_RATE_HZ: f64 = 48_000.0;
-
-/// Default sub crossover corner when the env var is absent or blank. A
-/// "sub" member must NEVER play full-range, so a missing corner picks a
-/// safe conservative low-pass rather than bypassing the filter.
-pub const SUB_DEFAULT_CORNER_HZ: f64 = 80.0;
-
-/// Valid sub crossover corner range (Hz). Mirrors GroupingConfig's
-/// `crossover_hz` 40..200 contract; the reconciler clamps before it
-/// writes the env, and config.rs clamps again on read (defence in depth).
-pub const SUB_MIN_CORNER_HZ: f64 = 40.0;
-pub const SUB_MAX_CORNER_HZ: f64 = 200.0;
-
-/// Low-pass section via the RBJ audio-EQ cookbook. An LR4 low-pass is two of
-/// these cascaded at Q = 1/sqrt(2) (Butterworth).
-fn low_pass_biquad(corner_hz: f64, sample_rate_hz: f64, q: f64) -> Biquad {
-    let w0 = 2.0 * std::f64::consts::PI * corner_hz / sample_rate_hz;
-    let (sin_w0, cos_w0) = w0.sin_cos();
-    let alpha = sin_w0 / (2.0 * q);
-    let b1 = 1.0 - cos_w0;
-    let b0 = b1 / 2.0;
-    let a0 = 1.0 + alpha;
-    Biquad::new(
-        b0 / a0,
-        b1 / a0,
-        b0 / a0,
-        (-2.0 * cos_w0) / a0,
-        (1.0 - alpha) / a0,
-    )
-}
-
-/// High-pass section via the RBJ audio-EQ cookbook, complementary to the
-/// low-pass above.
-fn high_pass_biquad(corner_hz: f64, sample_rate_hz: f64, q: f64) -> Biquad {
-    let w0 = 2.0 * std::f64::consts::PI * corner_hz / sample_rate_hz;
-    let (sin_w0, cos_w0) = w0.sin_cos();
-    let alpha = sin_w0 / (2.0 * q);
-    let b0 = (1.0 + cos_w0) / 2.0;
-    let b1 = -(1.0 + cos_w0);
-    let a0 = 1.0 + alpha;
-    Biquad::new(
-        b0 / a0,
-        b1 / a0,
-        b0 / a0,
-        (-2.0 * cos_w0) / a0,
-        (1.0 - alpha) / a0,
-    )
-}
-
-/// 4th-order Linkwitz-Riley low-pass: two cascaded Butterworth biquads
-/// (Q = 1/sqrt(2) each) at the same corner, sample-rate-pinned to the
-/// SNAPFIFO 48 kHz stream. Stateful across periods (the per-section
-/// Direct Form I history persists), so a period boundary introduces no
-/// discontinuity. Unity passband, no added gain.
-#[derive(Debug, Clone, Copy)]
-pub struct Lr4LowPass {
-    s1: Biquad,
-    s2: Biquad,
-    corner_hz: f64,
-}
-
-/// Butterworth Q for a Linkwitz-Riley 4th-order section: 1/sqrt(2).
-const LR4_SECTION_Q: f64 = std::f64::consts::FRAC_1_SQRT_2;
-
-impl Lr4LowPass {
-    /// Build a fresh LR4 low-pass at `corner_hz`. State starts cleared,
-    /// so a (re)construct resets the filter — the contract's "reset on
-    /// (re)construct".
-    pub fn new(corner_hz: f64) -> Self {
-        Self {
-            s1: low_pass_biquad(corner_hz, SUB_SAMPLE_RATE_HZ, LR4_SECTION_Q),
-            s2: low_pass_biquad(corner_hz, SUB_SAMPLE_RATE_HZ, LR4_SECTION_Q),
-            corner_hz,
-        }
-    }
-
-    /// Process one mono sample through both cascaded sections.
-    #[inline]
-    fn process(&mut self, x: f64) -> f64 {
-        self.s2.process(self.s1.process(x))
-    }
-
-    /// The corner this filter was built at (for logs / STATUS).
-    pub fn corner_hz(self) -> f64 {
-        self.corner_hz
-    }
-}
-
-/// 4th-order Linkwitz-Riley high-pass: the complementary mains half of
-/// the wireless-sub crossover. Same sample-rate pin and state
-/// continuity contract as `Lr4LowPass`; unity passband, no added gain.
-#[derive(Debug, Clone, Copy)]
-pub struct Lr4HighPass {
-    s1: Biquad,
-    s2: Biquad,
-    corner_hz: f64,
-}
-
-impl Lr4HighPass {
-    /// Build a fresh LR4 high-pass at `corner_hz`.
-    pub fn new(corner_hz: f64) -> Self {
-        Self {
-            s1: high_pass_biquad(corner_hz, SUB_SAMPLE_RATE_HZ, LR4_SECTION_Q),
-            s2: high_pass_biquad(corner_hz, SUB_SAMPLE_RATE_HZ, LR4_SECTION_Q),
-            corner_hz,
-        }
-    }
-
-    /// Process one mono sample through both cascaded sections.
-    #[inline]
-    fn process(&mut self, x: f64) -> f64 {
-        self.s2.process(self.s1.process(x))
-    }
-
-    /// The corner this filter was built at (for logs / STATUS).
-    pub fn corner_hz(self) -> f64 {
-        self.corner_hz
-    }
-}
 
 /// Bound on staged FIFO data, in periods. Caps the extra latency this
 /// lane can accumulate if the producer briefly outpaces the DAC
@@ -203,13 +75,7 @@ impl Lr4HighPass {
 pub const MAX_STAGED_PERIODS: usize = 8;
 
 /// Which channel of the shared stereo program this speaker plays.
-///
-/// `Sub` carries only its corner frequency (Copy config data); the
-/// stateful low-pass FILTER it implies lives on `DacContentSource`
-/// (built from this corner in `new`), because filter memory must
-/// persist across periods and `ChannelPick` is a per-period Copy value.
-/// `PartialEq` (not `Eq`) because `Sub` holds an `f64`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChannelPick {
     /// Passthrough — both program channels as-is (solo / lab use).
     Stereo,
@@ -219,12 +85,6 @@ pub enum ChannelPick {
     Right,
     /// Clip-safe average of both program channels (a mono member).
     Mono,
-    /// Clip-safe mono sum THEN a 4th-order Linkwitz-Riley low-pass at the
-    /// carried corner (Hz) — a receiver-side "dumb wireless subwoofer".
-    /// The mono sum is the same clip-safe average as `Mono`; the LP is
-    /// applied by `DacContentSource` from its stateful filter. A `Sub`
-    /// member NEVER plays full-range.
-    Sub(f64),
 }
 
 impl ChannelPick {
@@ -237,15 +97,12 @@ impl ChannelPick {
             Self::Left => "left",
             Self::Right => "right",
             Self::Mono => "mono",
-            Self::Sub(_) => "sub",
         }
     }
 
-    /// Parse the channel-split vocabulary. `sub` parses to a `Sub` at the
-    /// default corner; the real corner is injected by config.rs from
-    /// `JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ` (it owns the env layer). Unknown
-    /// values are a configuration error — fail loud at startup, never guess
-    /// a channel (playing the WRONG channel is the silent failure class
+    /// Parse the channel-split vocabulary. Unknown values are a
+    /// configuration error — fail loud at startup, never guess a channel
+    /// (playing the WRONG channel is the silent failure class
     /// `check_grouping_channel_pick` exists for).
     pub fn parse(raw: &str) -> Result<Self, String> {
         match raw.trim().to_ascii_lowercase().as_str() {
@@ -253,10 +110,9 @@ impl ChannelPick {
             "left" => Ok(Self::Left),
             "right" => Ok(Self::Right),
             "mono" => Ok(Self::Mono),
-            "sub" => Ok(Self::Sub(SUB_DEFAULT_CORNER_HZ)),
             other => Err(format!(
                 "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL must be one of \
-                 stereo|left|right|mono|sub, got {other:?}"
+                 stereo|left|right|mono, got {other:?}"
             )),
         }
     }
@@ -273,25 +129,7 @@ impl ChannelPick {
     }
 
     /// Apply the pick in place to one interleaved-stereo period.
-    ///
-    /// Test-only wrapper for cases that exercise channel picking without
-    /// the optional mains high-pass.
-    #[cfg(test)]
-    fn apply(self, period: &mut [ProgramSample], sub_filter: Option<&mut Lr4LowPass>) {
-        self.apply_with_main_highpass(period, sub_filter, None);
-    }
-
-    /// Apply the pick plus an optional stateful stereo mains high-pass.
-    ///
-    /// `main_highpass` is used only for main-channel picks
-    /// (`Stereo|Left|Right|Mono`). A `Sub` member's safety contract is
-    /// mono+LP-or-silence; the HP env is ignored there by construction.
-    fn apply_with_main_highpass(
-        self,
-        period: &mut [ProgramSample],
-        sub_filter: Option<&mut Lr4LowPass>,
-        main_highpass: Option<&mut [Lr4HighPass; 2]>,
-    ) {
+    fn apply(self, period: &mut [ProgramSample]) {
         match self {
             Self::Stereo => {}
             Self::Left => {
@@ -311,59 +149,8 @@ impl ChannelPick {
                     frame[1] = avg;
                 }
             }
-            Self::Sub(_) => {
-                // A "sub" MUST NOT play full-range: missing filter state is
-                // a construction bug, not a bypass. Fail closed to silence
-                // (never the un-filtered mono sum) and warn — the contract
-                // forbids a sub ever emitting the full band.
-                let Some(filter) = sub_filter else {
-                    debug_assert!(false, "ChannelPick::Sub applied without a low-pass filter");
-                    eprintln!(
-                        "event=outputd.dac_content.sub_filter_missing action=mute_period \
-                         detail=a sub must never play full-range"
-                    );
-                    period.fill(0);
-                    return;
-                };
-                for frame in period.chunks_exact_mut(2) {
-                    // Clip-safe mono sum first (unity), then LP it in f64.
-                    let mono = Self::mono_avg(frame) as f64;
-                    let lp = filter.process(mono);
-                    // Saturate to the spine's rails — the LP passband is unity
-                    // and the input is already ≤ full scale, so this only guards
-                    // the tiny biquad transient ripple at a step edge. f64 was
-                    // already the filter's arithmetic; it now also has to CARRY
-                    // the sample, which is exactly why the spine's float math is
-                    // f64 and not f32 (a 24-bit mantissa cannot hold an i32).
-                    let s = clamp_to_spine(lp);
-                    frame[0] = s;
-                    frame[1] = s;
-                }
-                return;
-            }
-        }
-        if let Some(filters) = main_highpass {
-            for frame in period.chunks_exact_mut(2) {
-                let left = filters[0].process(frame[0] as f64);
-                let right = filters[1].process(frame[1] as f64);
-                frame[0] = clamp_to_spine(left);
-                frame[1] = clamp_to_spine(right);
-            }
         }
     }
-}
-
-/// Round and saturate one f64 filter output back to a program sample.
-///
-/// The biquads work in f64 and their outputs can ring a hair past the input's
-/// range at a step edge; this is the one place that lands them back on the
-/// spine. Named rather than inlined three times so the rounding and the rails
-/// have a single author.
-#[inline]
-fn clamp_to_spine(value: f64) -> ProgramSample {
-    value
-        .round()
-        .clamp(ProgramSample::MIN as f64, ProgramSample::MAX as f64) as ProgramSample
 }
 
 /// Pure byte-stream → period assembler with a bounded staging buffer.
@@ -608,15 +395,6 @@ enum Reader {
 pub struct DacContentSource {
     reader: Reader,
     channel: ChannelPick,
-    /// Stateful LR4 low-pass for a `Sub` channel — `Some` iff
-    /// `channel` is `ChannelPick::Sub`. Owned here (not on the Copy
-    /// `ChannelPick`) so its biquad memory persists across periods;
-    /// (re)construct resets it.
-    sub_filter: Option<Lr4LowPass>,
-    /// Optional stateful stereo LR4 high-pass for MAIN channels when a
-    /// wireless sub is present and bass management is enabled. Two filter
-    /// instances keep L/R state independent. `None` means full-range mains.
-    main_highpass: Option<[Lr4HighPass; 2]>,
     served_periods: u64,
     starved_periods: u64,
     last_period_served: bool,
@@ -625,18 +403,9 @@ pub struct DacContentSource {
 
 impl DacContentSource {
     /// The FIFO transport. No I/O here — see [`FifoReader::new`].
-    pub fn fifo(
-        path: &str,
-        channel: ChannelPick,
-        period_frames: u32,
-        main_highpass_hz: Option<f64>,
-    ) -> Self {
+    pub fn fifo(path: &str, channel: ChannelPick, period_frames: u32) -> Self {
         let period_bytes = (period_frames as usize) * 2 /* channels */ * 2 /* bytes */;
-        Self::with_reader(
-            Reader::Fifo(FifoReader::new(path, period_bytes)),
-            channel,
-            main_highpass_hz,
-        )
+        Self::with_reader(Reader::Fifo(FifoReader::new(path, period_bytes)), channel)
     }
 
     /// The SHM ring transport — attaches (or creates) the return ring at
@@ -655,34 +424,15 @@ impl DacContentSource {
         channel: ChannelPick,
         period_frames: u32,
         n_slots: u32,
-        main_highpass_hz: Option<f64>,
     ) -> io::Result<Self> {
         let ring = ShmRingSource::new(path, period_frames, 2, SampleFormat::S16Le, n_slots)?;
-        Ok(Self::with_reader(
-            Reader::Ring(ring),
-            channel,
-            main_highpass_hz,
-        ))
+        Ok(Self::with_reader(Reader::Ring(ring), channel))
     }
 
-    fn with_reader(reader: Reader, channel: ChannelPick, main_highpass_hz: Option<f64>) -> Self {
-        // A Sub channel owns a fresh (state-cleared) low-pass at its
-        // carried corner; every other pick has no filter.
-        let sub_filter = match channel {
-            ChannelPick::Sub(corner_hz) => Some(Lr4LowPass::new(corner_hz)),
-            _ => None,
-        };
-        let main_highpass = match (channel, main_highpass_hz) {
-            (ChannelPick::Sub(_), _) | (_, None) => None,
-            (_, Some(corner_hz)) => {
-                Some([Lr4HighPass::new(corner_hz), Lr4HighPass::new(corner_hz)])
-            }
-        };
+    fn with_reader(reader: Reader, channel: ChannelPick) -> Self {
         Self {
             reader,
             channel,
-            sub_filter,
-            main_highpass,
             served_periods: 0,
             starved_periods: 0,
             last_period_served: false,
@@ -726,15 +476,7 @@ impl DacContentSource {
                 self.logged_first_starvation = true;
             }
         }
-        // Applied on a starved period too, so the Sub low-pass and the mains
-        // high-pass decay through an outage instead of resuming from frozen
-        // state. On silence every pick is value-preserving except those two
-        // filters, which is exactly the point.
-        self.channel.apply_with_main_highpass(
-            out,
-            self.sub_filter.as_mut(),
-            self.main_highpass.as_mut(),
-        );
+        self.channel.apply(out);
         Ok(())
     }
 
@@ -743,10 +485,6 @@ impl DacContentSource {
             Reader::Fifo(_) => "fifo",
             Reader::Ring(_) => "ring",
         }
-    }
-
-    pub fn main_highpass_corner_hz(&self) -> Option<f64> {
-        self.main_highpass.map(|filters| filters[0].corner_hz())
     }
 
     pub fn metrics(&self) -> DacContentMetrics {
@@ -856,29 +594,22 @@ mod tests {
         assert_eq!(ChannelPick::parse("LEFT"), Ok(ChannelPick::Left));
         assert_eq!(ChannelPick::parse("right"), Ok(ChannelPick::Right));
         assert_eq!(ChannelPick::parse("mono"), Ok(ChannelPick::Mono));
-        // "sub" is now its own pick (mono sum + LR4 LP), no longer an
-        // alias for Mono. It parses at the default corner; config.rs
-        // injects the real JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ corner.
-        assert_eq!(
-            ChannelPick::parse("sub"),
-            Ok(ChannelPick::Sub(SUB_DEFAULT_CORNER_HZ))
-        );
-        assert_eq!(ChannelPick::parse("SUB"), Ok(ChannelPick::Sub(80.0)));
+        assert!(ChannelPick::parse("sub").is_err());
         assert!(ChannelPick::parse("both").is_err());
     }
 
     #[test]
     fn channel_pick_left_right_duplicate_and_mono_averages_clip_safe() {
         let mut p = wv(&[100, -200, 1000, 2000]);
-        ChannelPick::Left.apply(&mut p, None);
+        ChannelPick::Left.apply(&mut p);
         assert_eq!(p, wv(&[100, 100, 1000, 1000]));
 
         let mut p = wv(&[100, -200, 1000, 2000]);
-        ChannelPick::Right.apply(&mut p, None);
+        ChannelPick::Right.apply(&mut p);
         assert_eq!(p, wv(&[-200, -200, 2000, 2000]));
 
         let mut p = wv(&[100, -200, i16::MAX, i16::MAX]);
-        ChannelPick::Mono.apply(&mut p, None);
+        ChannelPick::Mono.apply(&mut p);
         assert_eq!(p[0], w(-50));
         assert_eq!(p[1], w(-50));
         // Full-scale L==R averages back to full scale, no overflow.
@@ -886,7 +617,7 @@ mod tests {
         assert_eq!(p[3], w(i16::MAX));
 
         let mut p = wv(&[1, 2, 3, 4]);
-        ChannelPick::Stereo.apply(&mut p, None);
+        ChannelPick::Stereo.apply(&mut p);
         assert_eq!(p, wv(&[1, 2, 3, 4]));
     }
 
@@ -897,356 +628,18 @@ mod tests {
         // out full-scale OPPOSITE polarity, the loudest defect a mono fold can
         // produce. The old i16 version had the same argument one width down.
         let mut p = [ProgramSample::MAX, ProgramSample::MAX];
-        ChannelPick::Mono.apply(&mut p, None);
+        ChannelPick::Mono.apply(&mut p);
         assert_eq!(p, [ProgramSample::MAX, ProgramSample::MAX]);
 
         let mut p = [ProgramSample::MIN, ProgramSample::MIN];
-        ChannelPick::Mono.apply(&mut p, None);
+        ChannelPick::Mono.apply(&mut p);
         assert_eq!(p, [ProgramSample::MIN, ProgramSample::MIN]);
 
         // And the -6.02 dB sum of an anti-correlated full-scale pair is silence,
         // not a wrap to a rail.
         let mut p = [ProgramSample::MAX, ProgramSample::MIN];
-        ChannelPick::Mono.apply(&mut p, None);
+        ChannelPick::Mono.apply(&mut p);
         assert_eq!(p, [0, 0]);
-    }
-
-    // ---------- pure: LR4 low-pass (the dumb-sub filter) ----------
-
-    /// Drive a fresh LR4 LP with a steady sinusoid and measure the
-    /// steady-state output amplitude (linear gain) at `freq`. The first
-    /// `settle` samples are discarded so the biquad transient does not
-    /// pollute the magnitude estimate.
-    fn lr4_gain_at(corner_hz: f64, freq: f64) -> f64 {
-        let mut lp = Lr4LowPass::new(corner_hz);
-        let n = 48_000usize; // 1 s — plenty of cycles even at 40 Hz
-        let settle = 4_800usize;
-        let amp = 10_000.0;
-        let mut peak = 0.0f64;
-        for i in 0..n {
-            let t = i as f64 / SUB_SAMPLE_RATE_HZ;
-            let x = amp * (2.0 * std::f64::consts::PI * freq * t).sin();
-            let y = lp.process(x);
-            if i >= settle {
-                peak = peak.max(y.abs());
-            }
-        }
-        peak / amp
-    }
-
-    /// Same measurement harness for the complementary LR4 HP.
-    fn lr4_hp_gain_at(corner_hz: f64, freq: f64) -> f64 {
-        let mut hp = Lr4HighPass::new(corner_hz);
-        let n = 48_000usize;
-        let settle = 4_800usize;
-        let amp = 10_000.0;
-        let mut peak = 0.0f64;
-        for i in 0..n {
-            let t = i as f64 / SUB_SAMPLE_RATE_HZ;
-            let x = amp * (2.0 * std::f64::consts::PI * freq * t).sin();
-            let y = hp.process(x);
-            if i >= settle {
-                peak = peak.max(y.abs());
-            }
-        }
-        peak / amp
-    }
-
-    fn lin_to_db(g: f64) -> f64 {
-        20.0 * g.log10()
-    }
-
-    #[test]
-    fn lr4_is_minus_3db_at_the_corner() {
-        // Linkwitz-Riley 4th-order is −6 dB at Fc (two cascaded
-        // Butterworth sections, each −3 dB). The contract asks for
-        // −3 dB ±~1 dB "at Fc"; LR4 by definition lands at −6 dB, which
-        // is the correct, documented LR crossover point. Assert the LR4
-        // signature directly.
-        let g = lin_to_db(lr4_gain_at(80.0, 80.0));
-        assert!(
-            (g - (-6.0)).abs() <= 1.0,
-            "LR4 corner gain {g:.2} dB not within 1 dB of -6 dB"
-        );
-    }
-
-    #[test]
-    fn lr4_rolls_off_about_24db_per_octave_above_corner() {
-        // 4th-order ⇒ ~24 dB/octave in the stopband. Measure one octave
-        // up (160 vs 320 Hz, both well above the 80 Hz corner).
-        let g1 = lin_to_db(lr4_gain_at(80.0, 160.0));
-        let g2 = lin_to_db(lr4_gain_at(80.0, 320.0));
-        let slope = g1 - g2; // dB drop across one octave
-        assert!(
-            (slope - 24.0).abs() <= 3.0,
-            "octave slope {slope:.2} dB not within 3 dB of 24 dB ({g1:.2} -> {g2:.2})"
-        );
-    }
-
-    #[test]
-    fn lr4_passes_very_low_frequencies_near_unity_no_boost() {
-        // Deep passband (one decade below corner): unity, never a boost.
-        let g = lin_to_db(lr4_gain_at(80.0, 8.0));
-        assert!(g <= 0.05, "passband gain {g:.3} dB shows a boost");
-        assert!(g >= -1.0, "passband gain {g:.3} dB unexpectedly low");
-    }
-
-    #[test]
-    fn lr4_dc_passes_at_unity() {
-        // A DC step settles to its input value (unity passband at 0 Hz).
-        let mut lp = Lr4LowPass::new(80.0);
-        let mut y = 0.0;
-        for _ in 0..48_000 {
-            y = lp.process(10_000.0);
-        }
-        assert!(
-            (y - 10_000.0).abs() < 1.0,
-            "DC settled to {y}, expected 10000"
-        );
-    }
-
-    // ---------- pure: LR4 high-pass (wireless-sub bass management) ----------
-
-    #[test]
-    fn lr4_highpass_is_minus_6db_at_the_corner() {
-        let g = lin_to_db(lr4_hp_gain_at(80.0, 80.0));
-        assert!(
-            (g - (-6.0)).abs() <= 1.0,
-            "LR4 HP corner gain {g:.2} dB not within 1 dB of -6 dB"
-        );
-    }
-
-    #[test]
-    fn lr4_highpass_attenuates_below_corner_and_passes_above() {
-        let low = lin_to_db(lr4_hp_gain_at(80.0, 8.0));
-        let high = lin_to_db(lr4_hp_gain_at(80.0, 800.0));
-        assert!(low < -35.0, "8 Hz leaked through HP: {low:.2} dB");
-        assert!(high <= 0.05, "HP passband gain {high:.3} dB shows a boost");
-        assert!(
-            high >= -1.0,
-            "HP passband gain {high:.3} dB unexpectedly low"
-        );
-    }
-
-    #[test]
-    fn lr4_highpass_rejects_dc() {
-        let mut hp = Lr4HighPass::new(80.0);
-        let mut y = 0.0;
-        for _ in 0..48_000 {
-            y = hp.process(10_000.0);
-        }
-        assert!(y.abs() < 1.0, "DC settled to {y}, expected near silence");
-    }
-
-    // ---------- pure: ChannelPick::Sub apply ----------
-
-    /// Run a Sub apply over `frames` frames of a steady stereo sine and
-    /// return the per-output-channel sample buffers (ch0, ch1).
-    ///
-    /// The signal is the SAME amplitude as before, expressed at the spine's
-    /// scale. Every amplitude threshold in the tests below is likewise written
-    /// `w(x)` — and that is a derivation, not a blind rescale: an LR4 biquad
-    /// cascade is LINEAR, so its attenuation at a given frequency is a ratio,
-    /// independent of the units the samples are counted in. A threshold stated as
-    /// a fraction of the input amplitude therefore transfers exactly, and `w(x)`
-    /// is that same fraction at the new width.
-    fn sub_apply_run(
-        corner_hz: f64,
-        freq: f64,
-        frames: usize,
-    ) -> (Vec<ProgramSample>, Vec<ProgramSample>) {
-        let mut filter = Lr4LowPass::new(corner_hz);
-        let pick = ChannelPick::Sub(corner_hz);
-        let amp = f64::from(w(10_000));
-        let mut ch0 = Vec::with_capacity(frames);
-        let mut ch1 = Vec::with_capacity(frames);
-        for i in 0..frames {
-            let t = i as f64 / SUB_SAMPLE_RATE_HZ;
-            let s = (amp * (2.0 * std::f64::consts::PI * freq * t).sin()) as ProgramSample;
-            // L == R so the clip-safe mono sum is the input amplitude.
-            let mut period = [s, s];
-            pick.apply(&mut period, Some(&mut filter));
-            ch0.push(period[0]);
-            ch1.push(period[1]);
-        }
-        (ch0, ch1)
-    }
-
-    /// Peak magnitude over a settled tail, in i64 so `abs()` cannot overflow at
-    /// `ProgramSample::MIN` (at i32 that is a real panic, not a theoretical one).
-    fn settled_peak(v: &[ProgramSample], from: usize) -> i64 {
-        v[from..].iter().map(|&s| i64::from(s).abs()).max().unwrap()
-    }
-
-    #[test]
-    fn sub_apply_writes_identical_mono_to_both_channels() {
-        let (ch0, ch1) = sub_apply_run(80.0, 50.0, 2_000);
-        assert_eq!(
-            ch0, ch1,
-            "sub must write the same mono sample to both channels"
-        );
-    }
-
-    #[test]
-    fn sub_apply_low_passes_high_content_away() {
-        // A 4 kHz tone (decades above the 80 Hz corner) is crushed to
-        // near silence; a 40 Hz tone (in band) survives. Same clip-safe
-        // mono sum feeds both — only the LP differs.
-        let (hi, _) = sub_apply_run(80.0, 4_000.0, 6_000);
-        let (lo, _) = sub_apply_run(80.0, 40.0, 6_000);
-        let hi_peak = settled_peak(&hi, 2_000);
-        let lo_peak = settled_peak(&lo, 2_000);
-        assert!(hi_peak < i64::from(w(200)), "4 kHz leaked: peak {hi_peak}");
-        assert!(
-            lo_peak > i64::from(w(5_000)),
-            "40 Hz wrongly attenuated: peak {lo_peak}"
-        );
-    }
-
-    #[test]
-    fn sub_apply_full_scale_input_does_not_overflow_the_spine() {
-        // Full-scale DC on both channels (mono sum = full scale). The LP
-        // settles to full scale; the saturating cast must not wrap.
-        let mut filter = Lr4LowPass::new(80.0);
-        let pick = ChannelPick::Sub(80.0);
-        let mut last = [0 as ProgramSample; 2];
-        for _ in 0..48_000 {
-            let mut period = [ProgramSample::MAX, ProgramSample::MAX];
-            pick.apply(&mut period, Some(&mut filter));
-            last = period;
-        }
-        // Settled near full scale, never wrapped to a negative value. The settle
-        // slack is 4 S16 LSBs — the same FRACTION of full scale the pre-spine
-        // assertion allowed (it read `> i16::MAX - 4`), which is the right form
-        // for a tolerance on a linear filter's settled DC value.
-        assert!(
-            last[0] > ProgramSample::MAX - 4 * w(1),
-            "DC step did not settle to full scale: {last:?}"
-        );
-        assert_eq!(last[0], last[1]);
-
-        // A sustained full-scale positive step drives the Butterworth LP
-        // into its step-overshoot region (an LR4 step response rings
-        // slightly past the final value). The saturating cast must clamp
-        // that overshoot to full scale, NEVER wrap to a negative sample.
-        let mut filter = Lr4LowPass::new(200.0); // higher corner = faster, larger overshoot
-        let mut saw_clamp = false;
-        for _ in 0..2_000 {
-            let mut period = [ProgramSample::MAX, ProgramSample::MAX];
-            pick.apply(&mut period, Some(&mut filter));
-            // A positive step can never legitimately produce a negative
-            // output here; a negative value would be an integer wrap.
-            assert!(period[0] >= 0, "full-scale step wrapped to {}", period[0]);
-            if period[0] == ProgramSample::MAX {
-                saw_clamp = true;
-            }
-        }
-        assert!(
-            saw_clamp,
-            "saturating clamp never engaged on a full-scale step"
-        );
-    }
-
-    #[test]
-    fn sub_apply_state_is_continuous_across_period_boundaries() {
-        // Process one big buffer vs two consecutive period calls on the
-        // SAME filter: the stateful filter must produce byte-identical
-        // output (no discontinuity at the period boundary).
-        let corner = 80.0;
-        let freq = 120.0;
-        let total = 1_024usize;
-        let amp = 12_000.0;
-        let sample = |i: usize| -> ProgramSample {
-            let t = i as f64 / SUB_SAMPLE_RATE_HZ;
-            w((amp * (2.0 * std::f64::consts::PI * freq * t).sin()) as i16)
-        };
-
-        // One big buffer.
-        let mut big_filter = Lr4LowPass::new(corner);
-        let pick = ChannelPick::Sub(corner);
-        let mut big = vec![0 as ProgramSample; total * 2];
-        for i in 0..total {
-            big[2 * i] = sample(i);
-            big[2 * i + 1] = sample(i);
-        }
-        pick.apply(&mut big, Some(&mut big_filter));
-
-        // Two halves through the same persistent filter.
-        let mut split_filter = Lr4LowPass::new(corner);
-        let half = total / 2;
-        let mut a = vec![0 as ProgramSample; half * 2];
-        let mut b = vec![0 as ProgramSample; half * 2];
-        for i in 0..half {
-            a[2 * i] = sample(i);
-            a[2 * i + 1] = sample(i);
-            b[2 * i] = sample(half + i);
-            b[2 * i + 1] = sample(half + i);
-        }
-        pick.apply(&mut a, Some(&mut split_filter));
-        pick.apply(&mut b, Some(&mut split_filter));
-
-        let mut joined = a;
-        joined.extend_from_slice(&b);
-        assert_eq!(big, joined, "period boundary introduced a discontinuity");
-    }
-
-    #[test]
-    fn sub_apply_without_filter_mutes_never_full_range() {
-        // Construction-bug guard: a Sub applied with no filter must fail
-        // CLOSED to silence — never emit the un-filtered (full-range)
-        // mono sum. (debug_assert fires in debug; release mutes.)
-        let pick = ChannelPick::Sub(80.0);
-        // Catch the debug_assert panic so the test asserts the muting
-        // behaviour on both debug and release builds.
-        let result = std::panic::catch_unwind(|| {
-            let mut p = [ProgramSample::MAX, ProgramSample::MAX, w(1234), w(1234)];
-            pick.apply(&mut p, None);
-            p
-        });
-        // Ok => release-build muting; Err => debug_assert tripped. Both
-        // are acceptable fail-closed outcomes (never the full-range sum).
-        if let Ok(p) = result {
-            assert_eq!(p, [0, 0, 0, 0], "missing-filter Sub must mute");
-        }
-    }
-
-    #[test]
-    fn source_sub_channel_builds_a_filter_and_default_corner_when_unspecified() {
-        // A "sub" pick at the default corner builds a low-pass on the
-        // source (a sub must never run filterless / full-range).
-        let fifo = TempFifo::create("sub-default");
-        let src = DacContentSource::fifo(
-            fifo.path_str(),
-            ChannelPick::Sub(SUB_DEFAULT_CORNER_HZ),
-            TEST_PERIOD_FRAMES,
-            None,
-        );
-        assert!(
-            src.sub_filter.is_some(),
-            "Sub source must own a low-pass filter"
-        );
-        assert_eq!(src.sub_filter.unwrap().corner_hz(), 80.0);
-    }
-
-    #[test]
-    fn source_main_highpass_is_built_for_mains_and_ignored_for_sub() {
-        let fifo = TempFifo::create("main-hp-build");
-        let src = DacContentSource::fifo(
-            fifo.path_str(),
-            ChannelPick::Left,
-            TEST_PERIOD_FRAMES,
-            Some(80.0),
-        );
-        assert_eq!(src.main_highpass_corner_hz(), Some(80.0));
-
-        let sub = DacContentSource::fifo(
-            fifo.path_str(),
-            ChannelPick::Sub(80.0),
-            TEST_PERIOD_FRAMES,
-            Some(80.0),
-        );
-        assert_eq!(sub.main_highpass_corner_hz(), None);
-        assert!(sub.sub_filter.is_some());
     }
 
     /// A starved period REPLACES whatever the caller left in the buffer.
@@ -1257,12 +650,8 @@ mod tests {
     #[test]
     fn a_starved_period_replaces_the_callers_buffer_with_silence() {
         let fifo = TempFifo::create("starved-silence");
-        let mut src = DacContentSource::fifo(
-            fifo.path_str(),
-            ChannelPick::Stereo,
-            TEST_PERIOD_FRAMES,
-            None,
-        );
+        let mut src =
+            DacContentSource::fifo(fifo.path_str(), ChannelPick::Stereo, TEST_PERIOD_FRAMES);
         let mut out = vec![w(12_345); (TEST_PERIOD_FRAMES as usize) * 2];
         src.fill_period(&mut out).unwrap();
         assert_eq!(out, vec![0 as ProgramSample; 8]);
@@ -1270,74 +659,6 @@ mod tests {
         assert!(!m.serving_fifo);
         assert_eq!(m.starved_periods, 1);
         assert_eq!(m.fifo_periods, 0);
-    }
-
-    /// A starved period still runs the pick's stateful filters.
-    ///
-    /// This is what survives of the deleted `apply_pick_to_fallback_period`
-    /// pins: their subject (a fallback period carrying the direct lane's
-    /// full-range stereo) went away with the fallback, but the
-    /// filter-continuity property they depended on is now the reason the pick
-    /// runs on silence — a filter frozen through an outage resumes from stale
-    /// memory and thumps.
-    ///
-    /// The distinguishing evidence is a `Sub` member's ring-down: after a loud
-    /// run the first starved periods are NOT silent, and the tail shrinks. A
-    /// source that skipped the pick on starvation would emit exact zeros from
-    /// the first starved period, so this fails on that mutation.
-    #[test]
-    fn a_starved_period_keeps_the_stateful_filters_running() {
-        let fifo = TempFifo::create("starved-sub-tail");
-        let mut src = DacContentSource::fifo(
-            fifo.path_str(),
-            ChannelPick::Sub(80.0),
-            TEST_PERIOD_FRAMES,
-            None,
-        );
-        let mut writer = connect_producer(&mut src, &fifo);
-        let mut out = vec![0 as ProgramSample; 8];
-        // Settle the LR4 low-pass at full scale: one period in, one period out,
-        // so staging never overflows. 600 x 4 frames = 50 ms, many time
-        // constants at an 80 Hz corner.
-        let loud = le_bytes(&[i16::MAX; 8]);
-        for _ in 0..600 {
-            writer.write_all(&loud).unwrap();
-            src.fill_period(&mut out).unwrap();
-        }
-        assert!(src.metrics().serving_fifo);
-        let settled = settled_peak(&out, 0);
-        assert!(
-            settled > i64::from(w(20_000)),
-            "LP never settled: {settled}"
-        );
-
-        // Producer stops. The lane is starving, but the low-pass keeps being
-        // driven with silence, so its charge rings DOWN instead of vanishing.
-        drop(writer);
-        let mut first_starved_peak = None;
-        let mut last_peak = i64::MAX;
-        for _ in 0..40 {
-            src.fill_period(&mut out).unwrap();
-            if src.metrics().serving_fifo {
-                continue; // still draining the kernel FIFO
-            }
-            let peak = settled_peak(&out, 0);
-            if first_starved_peak.is_none() {
-                first_starved_peak = Some(peak);
-            } else {
-                assert!(
-                    peak < last_peak,
-                    "the low-pass tail must decay through the outage: {peak} !< {last_peak}"
-                );
-            }
-            last_peak = peak;
-        }
-        let first = first_starved_peak.expect("the source never starved");
-        assert!(
-            first > i64::from(w(1_000)),
-            "a frozen filter would have emitted exact silence; got {first}"
-        );
-        assert!(src.metrics().starved_periods >= 2);
     }
 
     // ---------- end-to-end with a real FIFO ----------
@@ -1402,7 +723,7 @@ mod tests {
     fn fifo_serves_the_producers_periods_and_counts_them() {
         let fifo = TempFifo::create("fifo-serves");
         let mut src =
-            DacContentSource::fifo(fifo.path_str(), ChannelPick::Left, TEST_PERIOD_FRAMES, None);
+            DacContentSource::fifo(fifo.path_str(), ChannelPick::Left, TEST_PERIOD_FRAMES);
         let mut out = vec![0 as ProgramSample; 8];
 
         // No writer: silence, honest counters, no panic, no block.
@@ -1432,12 +753,8 @@ mod tests {
     #[test]
     fn fifo_starves_to_silence_when_the_writer_stops() {
         let fifo = TempFifo::create("fifo-outage");
-        let mut src = DacContentSource::fifo(
-            fifo.path_str(),
-            ChannelPick::Stereo,
-            TEST_PERIOD_FRAMES,
-            None,
-        );
+        let mut src =
+            DacContentSource::fifo(fifo.path_str(), ChannelPick::Stereo, TEST_PERIOD_FRAMES);
         let mut out = vec![0 as ProgramSample; 8];
         let mut writer = connect_producer(&mut src, &fifo);
         writer.write_all(&le_bytes(&[9i16; 8])).unwrap();
@@ -1468,12 +785,8 @@ mod tests {
     #[test]
     fn fifo_never_blocks_with_a_writer_that_sends_nothing() {
         let fifo = TempFifo::create("idle-writer");
-        let mut src = DacContentSource::fifo(
-            fifo.path_str(),
-            ChannelPick::Stereo,
-            TEST_PERIOD_FRAMES,
-            None,
-        );
+        let mut src =
+            DacContentSource::fifo(fifo.path_str(), ChannelPick::Stereo, TEST_PERIOD_FRAMES);
         // Writer connected but silent: reads must be EAGAIN, not a hang.
         let _writer = connect_producer(&mut src, &fifo);
         let mut out = vec![0 as ProgramSample; 8];
@@ -1496,7 +809,6 @@ mod tests {
             path.to_str().unwrap(),
             ChannelPick::Stereo,
             TEST_PERIOD_FRAMES,
-            None,
         );
         let mut out = vec![0 as ProgramSample; 8];
         for _ in 0..3 {
@@ -1562,7 +874,7 @@ mod tests {
     }
 
     fn ring_source(ring: &TempRing, channel: ChannelPick) -> DacContentSource {
-        DacContentSource::ring(ring.path_str(), channel, TEST_PERIOD_FRAMES, 2, None).unwrap()
+        DacContentSource::ring(ring.path_str(), channel, TEST_PERIOD_FRAMES, 2).unwrap()
     }
 
     #[test]
@@ -1654,7 +966,6 @@ mod tests {
                 ChannelPick::Stereo,
                 TEST_PERIOD_FRAMES,
                 2,
-                None,
             ) {
                 Ok(_) => panic!("{label} mismatch must be refused"),
                 Err(e) => e,
@@ -1677,12 +988,10 @@ mod tests {
             ChannelPick::Left,
             ChannelPick::Right,
             ChannelPick::Mono,
-            ChannelPick::Sub(80.0),
         ] {
             // FIFO arm.
             let fifo = TempFifo::create(&format!("pick-fifo-{}", pick.as_str()));
-            let mut fifo_src =
-                DacContentSource::fifo(fifo.path_str(), pick, TEST_PERIOD_FRAMES, None);
+            let mut fifo_src = DacContentSource::fifo(fifo.path_str(), pick, TEST_PERIOD_FRAMES);
             let mut writer = connect_producer(&mut fifo_src, &fifo);
             writer.write_all(&le_bytes(&wire)).unwrap();
             let mut from_fifo = vec![0 as ProgramSample; 8];
