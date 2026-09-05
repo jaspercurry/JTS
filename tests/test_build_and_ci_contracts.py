@@ -279,14 +279,17 @@ def test_ci_syncs_full_runtime_from_committed_uv_lock() -> None:
     workflow = TESTS_WORKFLOW.read_text(encoding="utf-8")
     test_merge = (ROOT / "scripts" / "test-merge").read_text(encoding="utf-8")
     lane_resolver = (ROOT / "scripts" / "_test_lane.sh").read_text(encoding="utf-8")
+    setup_action = (
+        ROOT / ".github" / "actions" / "setup-python-uv" / "action.yml"
+    ).read_text(encoding="utf-8")
 
     sync = "uv sync --locked --extra full --extra dev --group openwakeword-onnx"
     openwakeword = (
         "uv pip install --python .venv/bin/python --no-deps openwakeword==0.6.0"
     )
 
-    assert "astral-sh/setup-uv@" in workflow
-    assert 'version: "0.12.9"' in workflow
+    assert "astral-sh/setup-uv@" in setup_action
+    assert 'version: "0.12.9"' in setup_action
     assert sync in workflow
     assert openwakeword in workflow
     assert workflow.index(sync) < workflow.index(openwakeword)
