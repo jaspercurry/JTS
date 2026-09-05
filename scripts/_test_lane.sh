@@ -187,7 +187,8 @@ lane_extract_passed_count() {
 #
 # A second signal landing inside the trap's own execution window (its first
 # few milliseconds) can still lose the line entirely; that race is not
-# exempt from this fix and is regression-tested, not assumed away.
+# exempt from this fix. Regression-test the double-signal path; do not
+# assume it is unchanged.
 #
 # So the success shape is gated on a POSITIVE "the lane reached its end"
 # marker, with the signal test ahead of it for the honest-status case.

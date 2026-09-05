@@ -235,11 +235,12 @@ while IFS= read -r changed; do
       # About half are pinned by a test named for the script minus its
       # `jasper-` prefix; the rest are pinned by contract tests named for the
       # SUBJECT instead (e.g. jasper-apply-airplay-mode is covered by
-      # tests/test_airplay_render.py). Convention first, then the broad
-      # `grep` fallback -- not the rule, because the reconcile scripts are
-      # named in ~28 files each, several of them slow. The glob below also
-      # catches tests named by pattern rather than convention or grep
-      # (issue #3846).
+      # tests/test_airplay_render.py). The glob below runs unconditionally after the convention
+      # checks; the `grep` fallback runs only when no convention candidate matched, so a
+      # convention hit skips grep and the glob is what still catches a pattern-named test like
+      # tests/test_aec_reconcile_rule_pins.py (issue #3846). Grep itself is the fallback,
+      # not the rule, because the reconcile scripts are named in ~28 files each, several
+      # of them slow.
       script="${changed##*/}"
       script_module="${script#jasper-}"
       script_module="${script_module//-/_}"

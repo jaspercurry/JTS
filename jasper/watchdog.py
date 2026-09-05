@@ -11,12 +11,12 @@ This is Tier 1 of the JTS resilience ladder. Pairs with
     successfully completes one unit of useful work (a processed mic
     frame, a wake-loop iteration, etc.).
   - A background heartbeat thread wakes every `interval_sec` and
-    notifies systemd `WATCHDOG=1` ONLY if `now - last_progress`
-    is under `stale_threshold_sec`. If the loop wedges (PortAudio
-    blocked in a syscall, Python deadlock, etc.), the heartbeat
-    stops patting, systemd's `WatchdogSec=` timer expires, and
-    `Restart=on-watchdog` brings the daemon back with a fresh
-    process.
+    notifies systemd `WATCHDOG=1` ONLY if `now - last_progress` is
+    under `stale_threshold_sec`. If the loop wedges (PortAudio blocked
+    in a syscall, Python deadlock, etc.), the heartbeat stops patting,
+    systemd's `WatchdogSec=` timer expires, and the unit's `Restart=`
+    policy brings the daemon back with a fresh process (see
+    deploy/systemd/jasper-aec-bridge.service).
 
 The progress-sentinel pattern matters: a naive heartbeat thread
 that just pats every N seconds masks hangs in the work loop. A
@@ -26,8 +26,8 @@ loop.
 
 A wedge inside a blocking C call can hold the GIL indefinitely, so
 Python's own signal handler never runs and SIGTERM does nothing --
-the watchdog's SIGKILL-and-restart (`Restart=on-watchdog`) is the
-only way out of that class of hang.
+only the watchdog timer's own recovery path gets the daemon back; see
+the Tier 1+2 block in deploy/systemd/jasper-aec-bridge.service.
 
 Pure-Python `sdnotify` (no C extension); if the package is not
 installed or `NOTIFY_SOCKET` is unset (i.e. we're running

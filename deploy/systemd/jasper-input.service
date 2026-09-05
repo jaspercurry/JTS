@@ -88,7 +88,6 @@ MemoryMax=160M
 # OOM protection (Stage 1 of memory-resilience plan). Accessory bridges: direct
 # USB still works without the HID bridge, and the local mic (where there is
 # one) still works without the accessory mic adapter. Moderate protection.
-# MemoryHigh/MemoryMax are silent no-ops until the memory cgroup is enabled (Stage 2 of plan).
 OOMScoreAdjust=-300
 
 [Install]

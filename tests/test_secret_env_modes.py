@@ -92,8 +92,8 @@ def test_install_widens_secret_env_on_upgrade():
         # google_credentials.env is NOT in this list anymore — WS1 Phase 4a moved it to the
         # group-`jasper-secrets` compartment (voice+web only), so it is deliberately NOT
         # widened to the broad `jasper` group. Its relocation/perms are pinned by
-        # test_systemd_hardening's test_secrets_compartment_phase4a +
-        # test_install_creates_google_dir_setgid. WS1 Phase 4b likewise moved
+        # test_systemd_hardening::test_secrets_compartment_phase4a and
+        # test_google_creds::test_install_creates_google_dir_setgid. WS1 Phase 4b likewise moved
         # spotify_credentials.env + home_assistant.env to the group-`jasper-intsecrets`
         # compartment (voice/control/mux/web only), pinned by test_secrets_compartment_phase4b.
         "control_token",
