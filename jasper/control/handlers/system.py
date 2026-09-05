@@ -6,14 +6,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import subprocess
 from typing import Any, Callable
 
 from ...doctor_contract import (
     REASON_SNAPSHOT_PENDING,
     REASON_SNAPSHOT_UNAVAILABLE,
 )
+from ...log_event import log_event
 from .. import server as _server
-from ._base import ControlHandlerMixin
+from .. import state_aggregate
+from ._base import ControlHandlerMixin, logger
 
 
 class SystemRoutes(ControlHandlerMixin):
@@ -54,7 +58,7 @@ class SystemRoutes(ControlHandlerMixin):
         # parallel busctl + camilla WS probes).
         try:
             state = self._state_response_cache.get_or_compute(
-                lambda: _server.asyncio.run(
+                lambda: asyncio.run(
                     _server._get_state(
                         camilla_host=self._camilla_host,
                         camilla_port=self._camilla_port,
@@ -93,12 +97,12 @@ class SystemRoutes(ControlHandlerMixin):
                     TypeError,
                     ValueError,
                 ):
-                    _server.logger.exception("/state audio health snapshot failed")
+                    logger.exception("/state audio health snapshot failed")
                     state["audio_health"] = None
             state = dict(state)
             state["usb_gadget_forensics"] = _server.usb_gadget_forensics.snapshot()
         except Exception as e:  # noqa: BLE001
-            _server.logger.exception("/state aggregation failed")
+            logger.exception("/state aggregation failed")
             self._send_json({"error": str(e)}, status=502)
             return
         self._send_json(state)
@@ -118,7 +122,7 @@ class SystemRoutes(ControlHandlerMixin):
         except Exception:  # noqa: BLE001
             # Fail-soft per the existing aggregator convention —
             # never break /system/snapshot because HA is wedged.
-            _server.logger.exception("home assistant status snapshot failed")
+            logger.exception("home assistant status snapshot failed")
             ha_status = {
                 "configured": False,
                 "connected": False,
@@ -138,7 +142,7 @@ class SystemRoutes(ControlHandlerMixin):
                     else None
                 )
         except Exception:  # noqa: BLE001
-            _server.logger.exception("airplay health snapshot failed")
+            logger.exception("airplay health snapshot failed")
             airplay_health = {
                 "status": "unknown",
                 "reason": "AirPlay health sampler failed",
@@ -148,9 +152,9 @@ class SystemRoutes(ControlHandlerMixin):
             if self._audio_health_sampler is not None:
                 outputd_status = self._audio_health_sampler.outputd_snapshot()
             else:
-                outputd_status = _server.asyncio.run(_server._outputd_status())
+                outputd_status = asyncio.run(state_aggregate._outputd_status())
         except Exception:  # noqa: BLE001
-            _server.logger.exception("outputd status snapshot failed")
+            logger.exception("outputd status snapshot failed")
             outputd_status = None
 
         try:
@@ -160,7 +164,7 @@ class SystemRoutes(ControlHandlerMixin):
                 else None
             )
         except Exception:  # noqa: BLE001
-            _server.logger.exception("audio health snapshot failed")
+            logger.exception("audio health snapshot failed")
             audio_health = None
 
         # The park verdict the /system page's park card renders — the same
@@ -275,14 +279,14 @@ class SystemRoutes(ControlHandlerMixin):
         except ValueError as e:
             self._send_json({"error": str(e)}, status=400)
             return
-        except (OSError, _server.subprocess.SubprocessError) as e:
+        except (OSError, subprocess.SubprocessError) as e:
             self._send_json(
                 {"error": f"debug toggle failed: {e}"},
                 status=502,
             )
             return
-        _server.log_event(
-            _server.logger,
+        log_event(
+            logger,
             "debug.toggle",
             subsystem=subsystem,
             enabled=enabled,
@@ -314,8 +318,8 @@ class SystemRoutes(ControlHandlerMixin):
                 status=502,
             )
             return
-        _server.log_event(
-            _server.logger,
+        log_event(
+            logger,
             "usb_gadget.forensics_request",
             action=action,
             client=self.address_string(),
@@ -345,8 +349,8 @@ class SystemRoutes(ControlHandlerMixin):
             return
         try:
             state = _server._apply_audio_quality(converter)
-        except (OSError, _server.subprocess.SubprocessError) as e:
-            _server.logger.exception("audio quality apply failed")
+        except (OSError, subprocess.SubprocessError) as e:
+            logger.exception("audio quality apply failed")
             self._send_json(
                 {"error": f"audio quality apply failed: {e}"},
                 status=502,
@@ -355,21 +359,21 @@ class SystemRoutes(ControlHandlerMixin):
         try:
             # Refresh active renderers without resurrecting sources the
             # household explicitly disabled in /sources/.
-            _server.subprocess.Popen(
+            subprocess.Popen(
                 [
                     "systemctl",
                     "try-restart",
                     *_server.LOCAL_SOURCE_AUDIO_REFRESH_UNITS,
                 ],
             )
-        except (OSError, _server.subprocess.SubprocessError) as e:
+        except (OSError, subprocess.SubprocessError) as e:
             self._send_json(
                 {"error": f"renderer restart failed: {e}"},
                 status=502,
             )
             return
-        _server.log_event(
-            _server.logger,
+        log_event(
+            logger,
             "audio_quality.set",
             converter=converter,
             client=self.address_string(),
@@ -404,7 +408,7 @@ class SystemRoutes(ControlHandlerMixin):
         try:
             _server._apply_usb_latency_mode(mode)
         except (OSError, _server._UsbLatencyApplyError) as e:
-            _server.logger.exception("USB latency apply failed")
+            logger.exception("USB latency apply failed")
             self._send_json(
                 {
                     "error": f"USB latency apply failed: {e}",
@@ -414,8 +418,8 @@ class SystemRoutes(ControlHandlerMixin):
             )
             return
         _server._mark_usb_latency_applying(mode)
-        _server.log_event(
-            _server.logger,
+        log_event(
+            logger,
             "usb_latency.set",
             mode=mode,
             client=self.address_string(),
@@ -487,8 +491,8 @@ class SystemRoutes(ControlHandlerMixin):
         # distinguishes a dashboard-triggered restart/reboot/poweroff from a
         # watchdog or crash reset when debugging "the speaker restarted on
         # its own" (see AGENTS.md). No secrets — action + units + requester.
-        _server.log_event(
-            _server.logger,
+        log_event(
+            logger,
             "system.action",
             action=action,
             units=",".join(units) or "-",
@@ -496,25 +500,25 @@ class SystemRoutes(ControlHandlerMixin):
         )
         try:
             if action == "reboot":
-                _server.subprocess.Popen(["systemctl", "reboot"])
+                subprocess.Popen(["systemctl", "reboot"])
             elif action == "poweroff":
-                _server.subprocess.Popen(["systemctl", "poweroff"])
+                subprocess.Popen(["systemctl", "poweroff"])
             else:
                 # Use start-after-stop semantics for core services. Local
                 # source daemons use try-restart so dashboard audio restart
                 # never turns on a source the household disabled in
                 # /sources/ (USB would otherwise re-advertise its gadget).
                 if restart_units:
-                    _server.subprocess.Popen(["systemctl", "restart", *restart_units])
+                    subprocess.Popen(["systemctl", "restart", *restart_units])
                 if try_restart_units:
-                    _server.subprocess.Popen(
+                    subprocess.Popen(
                         [
                             "systemctl",
                             "try-restart",
                             *try_restart_units,
                         ]
                     )
-        except (OSError, _server.subprocess.SubprocessError) as e:
+        except (OSError, subprocess.SubprocessError) as e:
             self._send_json(
                 {"error": f"systemctl invocation failed: {e}"},
                 status=502,

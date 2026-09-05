@@ -17,10 +17,8 @@ from http.server import ThreadingHTTPServer
 import pytest
 
 from jasper.control import state_aggregate
-from jasper.control.server import (
-    _make_handler,
-    _percent_to_db,
-)
+from jasper.control.server import _make_handler
+from jasper.control.volume_ops import _percent_to_db
 
 from tests.control_server_fixtures import (
     _explicit_passive_output_topology,

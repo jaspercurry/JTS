@@ -365,7 +365,7 @@ def test_apply_save_rejects_unavailable_model(tmp_path: Path, monkeypatch):
 # Threshold-preservation across a /wake/ model save is now covered
 # by test_apply_save_preserves_threshold_in_state below; the daemon-
 # facing JASPER_WAKE_THRESHOLD validation is in jasper/config.py and
-# in jasper.control.server._write_wake_threshold.
+# in jasper.control.aec_endpoints._write_wake_threshold.
 
 
 def test_apply_save_preserves_threshold_in_state(monkeypatch, tmp_path: Path):

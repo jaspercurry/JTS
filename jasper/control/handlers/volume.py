@@ -6,11 +6,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
+from ...log_event import log_event
 from .. import measurement_hold
 from .. import server as _server
-from ._base import ControlHandlerMixin
+from .. import volume_ops
+from ._base import ControlHandlerMixin, logger
 
 
 class VolumeRoutes(ControlHandlerMixin):
@@ -18,9 +21,9 @@ class VolumeRoutes(ControlHandlerMixin):
         if self._maybe_forward_pair_action_to_leader():
             return
         try:
-            state = _server.asyncio.run(self._get_op())
+            state = asyncio.run(self._get_op())
         except Exception as e:  # noqa: BLE001
-            _server.logger.exception("get volume failed")
+            logger.exception("get volume failed")
             self._send_json({"error": str(e)}, status=502)
             return
         self._send_json(self._volume_payload(state))
@@ -32,12 +35,12 @@ class VolumeRoutes(ControlHandlerMixin):
         # renderer, it only chooses which active lane the
         # speaker should pass through.
         try:
-            result = _server.asyncio.run(_server._mux_socket_command("STATUS"))
+            result = asyncio.run(_server._mux_socket_command("STATUS"))
         except (
             FileNotFoundError,
             ConnectionRefusedError,
             OSError,
-            _server.asyncio.TimeoutError,
+            asyncio.TimeoutError,
         ) as e:
             self._send_json(
                 {"error": f"jasper-mux unreachable: {e}"},
@@ -45,7 +48,7 @@ class VolumeRoutes(ControlHandlerMixin):
             )
             return
         except Exception as e:  # noqa: BLE001
-            _server.logger.exception("source STATUS failed")
+            logger.exception("source STATUS failed")
             self._send_json({"error": str(e)}, status=502)
             return
         self._send_json(_server._augment_source_payload(result))
@@ -79,13 +82,13 @@ class VolumeRoutes(ControlHandlerMixin):
             )
             return
         try:
-            state = _server.asyncio.run(self._adjust_op(delta_pct))
+            state = asyncio.run(self._adjust_op(delta_pct))
         except Exception as e:  # noqa: BLE001
-            _server.logger.exception("adjust volume failed")
+            logger.exception("adjust volume failed")
             self._send_json({"error": str(e)}, status=502)
             return
-        _server.log_event(
-            _server.logger,
+        log_event(
+            logger,
             "volume.adjust",
             delta_pct=delta_pct,
             new_pct=state.effective_percent,
@@ -120,7 +123,7 @@ class VolumeRoutes(ControlHandlerMixin):
                 return
         elif "db" in body:
             try:
-                target_pct = _server._db_to_percent(float(body["db"]))
+                target_pct = volume_ops._db_to_percent(float(body["db"]))
             except (TypeError, ValueError):
                 self._send_json(
                     {"error": "db must be a number"},
@@ -169,8 +172,8 @@ class VolumeRoutes(ControlHandlerMixin):
         )
         if declined is not None:
             hold_owner, first_decline = declined
-            _server.log_event(
-                _server.logger,
+            log_event(
+                logger,
                 "volume.observation_declined",
                 source=str(source_name),
                 owner=hold_owner,
@@ -187,12 +190,12 @@ class VolumeRoutes(ControlHandlerMixin):
                 level=logging.INFO if first_decline else logging.DEBUG,
             )
             try:
-                state = _server.asyncio.run(self._get_op())
+                state = asyncio.run(self._get_op())
             except Exception as e:  # noqa: BLE001
                 # Same shape as _get_volume's guard: this reads the persisted
                 # projection, and a read failure is a 502, not a silent 200
                 # carrying whatever a half-built payload would have said.
-                _server.logger.exception("declined observation state read failed")
+                logger.exception("declined observation state read failed")
                 self._send_json({"error": str(e)}, status=502)
                 return
             payload = self._volume_payload(state)
@@ -202,7 +205,7 @@ class VolumeRoutes(ControlHandlerMixin):
         observation_applied: bool | None = None
         try:
             if source_name:
-                state, observation_applied = _server.asyncio.run(
+                state, observation_applied = asyncio.run(
                     self._observe_op(
                         str(source_name),
                         target_pct,
@@ -210,13 +213,13 @@ class VolumeRoutes(ControlHandlerMixin):
                     ),
                 )
             else:
-                state = _server.asyncio.run(self._set_op(target_pct))
+                state = asyncio.run(self._set_op(target_pct))
         except Exception as e:  # noqa: BLE001
-            _server.logger.exception("set volume failed")
+            logger.exception("set volume failed")
             self._send_json({"error": str(e)}, status=502)
             return
-        _server.log_event(
-            _server.logger,
+        log_event(
+            logger,
             "volume.set",
             new_pct=state.effective_percent,
             source=source_name or "authoritative",
@@ -266,15 +269,15 @@ class VolumeRoutes(ControlHandlerMixin):
             return
         try:
             if explicit is None:
-                state = _server.asyncio.run(self._mute_toggle_op())
+                state = asyncio.run(self._mute_toggle_op())
             else:
-                state = _server.asyncio.run(self._mute_set_op(explicit))
+                state = asyncio.run(self._mute_set_op(explicit))
         except Exception as e:  # noqa: BLE001
-            _server.logger.exception("mute failed")
+            logger.exception("mute failed")
             self._send_json({"error": str(e)}, status=502)
             return
-        _server.log_event(
-            _server.logger,
+        log_event(
+            logger,
             "volume.mute",
             new_pct=state.effective_percent,
             explicit=str(explicit),
@@ -293,13 +296,13 @@ class VolumeRoutes(ControlHandlerMixin):
             return
         action = self.path.rsplit("/", 1)[1]  # toggle | next | previous
         try:
-            result = _server.asyncio.run(_server._dispatch_transport(action))
+            result = asyncio.run(_server._dispatch_transport(action))
         except Exception as e:  # noqa: BLE001
-            _server.logger.exception("transport %s failed", action)
+            logger.exception("transport %s failed", action)
             self._send_json({"error": str(e)}, status=502)
             return
-        _server.log_event(
-            _server.logger,
+        log_event(
+            logger,
             "transport.dispatch",
             action=action,
             client=self.address_string(),
@@ -332,14 +335,14 @@ class VolumeRoutes(ControlHandlerMixin):
             )
             return
         try:
-            result = _server.asyncio.run(
+            result = asyncio.run(
                 _server._mux_socket_command(cmd, timeout=6.0),
             )
         except (
             FileNotFoundError,
             ConnectionRefusedError,
             OSError,
-            _server.asyncio.TimeoutError,
+            asyncio.TimeoutError,
         ) as e:
             self._send_json(
                 {"error": f"jasper-mux unreachable: {e}"},
@@ -347,11 +350,11 @@ class VolumeRoutes(ControlHandlerMixin):
             )
             return
         except Exception as e:  # noqa: BLE001
-            _server.logger.exception("source select failed")
+            logger.exception("source select failed")
             self._send_json({"error": str(e)}, status=502)
             return
-        _server.log_event(
-            _server.logger,
+        log_event(
+            logger,
             "source.select",
             source=source,
             client=self.address_string(),
