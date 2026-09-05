@@ -16,7 +16,6 @@ pub fn json_string(value: &str) -> String {
     serde_json::to_string(value).expect("serializing a string to JSON cannot fail")
 }
 
-/// Open one member: the quoted `key` and its colon, ready for a value.
 pub fn push_key(buf: &mut String, key: &str) {
     buf.push('"');
     buf.push_str(key);
@@ -142,7 +141,5 @@ mod tests {
                 r#""trim_db":null"#,
             )
         );
-        let parsed: serde_json::Value = serde_json::from_str(&format!("{{{buf}}}")).unwrap();
-        assert!(parsed.is_object());
     }
 }

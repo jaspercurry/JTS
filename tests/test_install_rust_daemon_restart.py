@@ -80,13 +80,9 @@ def _reachable_local_cargo_path_dependencies(crate_names: set[str]) -> set[str]:
 
 def _staged_shared_rust_crates() -> set[str]:
     build_body = _function_body(RUST_HELPERS.read_text(), "build_install_rust_daemon")
-    return set(
-        re.findall(
-            r'^\s*stage_rust_crate "\$\{REPO_DIR\}/rust/([a-z0-9-]+)"',
-            build_body,
-            re.MULTILINE,
-        )
-    )
+    listed = re.search(r"sibling_crates=\(\n(.*?)\n\s*\)", build_body, re.DOTALL)
+    assert listed is not None, "missing sibling_crates staging list"
+    return set(re.findall(r"jasper-[a-z0-9-]+", listed.group(1)))
 
 
 def test_source_build_stages_every_reachable_local_cargo_path_dependency():

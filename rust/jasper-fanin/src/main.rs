@@ -52,17 +52,7 @@ use crate::tts::{spawn_tts_server, tts_channels, TtsInput};
 use crate::watchdog::Heartbeat;
 use crate::xrun_log::XrunLog;
 
-pub(crate) use jasper_daemon::HELPER_STACK_BYTES;
-
-// Fan-in tags CONFIG-class only on the Ring A geometry declaration: the
-// rejections in `Config::from_env`'s ring block, plus the config-class subset
-// of what `RingWriter::create_or_attach` returns. That open is the one site
-// where both classes arrive through a single call, so `mixer::ring_open_error`
-// gates the marker on `io::ErrorKind::{InvalidInput, InvalidData}` — a held
-// open-lock (`WouldBlock`) or an unapplied tmpfs permission
-// (`PermissionDenied`) is transient and keeps the restart ladder.
-// `only_config_class_ring_open_errors_park_the_unit` pins both directions.
-pub use jasper_daemon::{ConfigClassError, EXIT_CONFIG};
+pub(crate) use jasper_daemon::{ConfigClassError, EXIT_CONFIG, HELPER_STACK_BYTES};
 
 /// [`EXIT_CONFIG`] when `error` carries the [`ConfigClassError`] marker
 /// ANYWHERE in its context chain, `None` otherwise. anyhow walks the whole
@@ -354,8 +344,8 @@ fn run() -> Result<()> {
     // Spawn the servo thread ONLY when armed AND the mixer exposes the direct
     // lane's signals. `enabled` without signals (resampler construction failed
     // → fail-soft) or direct-off both fall through to inert: no thread, the
-    // fragment stays the disabled block. Spawned BEFORE lock_memory() per the
-    // mlockall/pthread-stack ordering contract documented below.
+    // fragment stays the disabled block. Spawned BEFORE lock_memory(), per
+    // `jasper_daemon::lock_memory`.
     let host_clock_thread = match (host_clock_enabled_effective, host_clock_signals) {
         (true, Some(signals)) => {
             // The ctl card the servo thread opens — computed here (cheap string
@@ -450,8 +440,6 @@ fn run() -> Result<()> {
 
     heartbeat.notify_ready();
 
-    // All threads spawned; now safe to mlockall. See the multi-line
-    // comment above for why this can't go earlier under default ulimit.
     lock_memory();
 
     // Run the work loop. Returns Ok on graceful shutdown; Err on

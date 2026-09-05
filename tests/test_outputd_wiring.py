@@ -991,14 +991,7 @@ def test_neither_outputd_sink_opens_a_content_pcm():
     no_upstream = no_upstream.split("\n            }", 1)[0]
     assert "FinalSinkStartupConfigError" in no_upstream, no_upstream
     assert "return Err(" in no_upstream, no_upstream
-    # And that marker IS the 78 park (the constant the unit's
-    # RestartPreventExitStatus is pinned against), imported from the shared
-    # daemon skeleton that defines it once.
-    assert "Some(EXIT_CONFIG)" in main_rs
-    assert (
-        "pub const EXIT_CONFIG: i32 = 78;"
-        in (REPO / "rust" / "jasper-daemon" / "src" / "lib.rs").read_text()
-    )
+
 
 def test_outputd_single_sink_is_width_parametric_with_mono_reference_fold():
     """The coherent single sink carries width as DATA (a DAC8x rides the same

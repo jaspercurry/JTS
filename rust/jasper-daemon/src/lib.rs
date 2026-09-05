@@ -56,9 +56,10 @@ pub fn notify(state: NotifyState<'_>) -> std::io::Result<()> {
 /// Pin the daemon's pages in RAM: `mlockall(MCL_CURRENT | MCL_FUTURE)` keeps
 /// both currently-mapped pages and future allocations resident.
 ///
-/// Call it AFTER helper threads are spawned, so MCL_FUTURE does not try to
-/// lock pthread stack mmaps under a small local-dev RLIMIT_MEMLOCK. Failure is
-/// non-fatal and the caller decides how to say so: the systemd units grant
+/// With MCL_FUTURE active, a later thread spawn's stack mmap is locked too and
+/// fails with EAGAIN under a small RLIMIT_MEMLOCK — which is why fan-in calls
+/// this only once its helper threads are up. Failure is non-fatal and the
+/// caller decides how to say so: the systemd units grant
 /// `LimitMEMLOCK=infinity` so production succeeds, while `cargo test` / `cargo
 /// run` as non-root hits RLIMIT_MEMLOCK and degrades to the
 /// `Slice=jts-audio.slice` / `MemorySwapMax=0` belt, which is the load-bearing

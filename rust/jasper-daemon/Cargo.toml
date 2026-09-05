@@ -16,7 +16,9 @@ description = "Shared daemon skeleton for the JTS Rust audio daemons: JSON emit,
 license = "Apache-2.0"
 repository = "https://github.com/jaspercurry/JTS"
 authors = ["Jasper Curry <jaspercurry@gmail.com>"]
-rust-version = "1.75"
+# sd-notify 0.5 pins 1.82; this crate cannot claim a lower floor than its
+# dependencies, and neither can jasper-tts-protocol, which depends on it.
+rust-version = "1.82"
 
 [lib]
 name = "jasper_daemon"
