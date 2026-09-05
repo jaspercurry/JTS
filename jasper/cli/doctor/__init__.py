@@ -636,10 +636,6 @@ __all__ = [
     "check_grouping_snapcast_version",
     "check_grouping_tts_lane",
     "check_grouping_rate_adjust",
-    "_PROBE_REF_PASS_THRESHOLD",
-    "_PROBE_SINE_PATH",
-    "_PROBE_SINE_DURATION_S",
-    "probe_aec_ref_path",
     "render",
     "render_json",
     "_watch_line",
@@ -665,14 +661,6 @@ __all__ = [
     "Callable",
     "Optional",
 ]
-
-from . import aec_probe as aec_probe
-from .aec_probe import (
-    _PROBE_REF_PASS_THRESHOLD,
-    _PROBE_SINE_DURATION_S,
-    _PROBE_SINE_PATH,
-    probe_aec_ref_path,
-)
 
 def render(results: list[CheckResult]) -> int:
     print()
@@ -1012,13 +1000,6 @@ def main() -> None:
              "oneshot uses this so the non-root jasper-control can serve a "
              "root-fidelity report at /system/diagnostics (WS1 Phase 3b-2).",
     )
-    parser.add_argument(
-        "--probe-aec", action="store_true",
-        help="Active probe — play a brief sine into the correction lane "
-             "and verify the AEC bridge's `ref` rises in its rms log. "
-             "Skips the standard checks and runs only this one test. "
-             "Refuses if a renderer is currently playing.",
-    )
     args = parser.parse_args()
     # --out implies --json so the capture oneshot can pass either
     # `--json --out PATH` or a bare `--out PATH`.
@@ -1041,11 +1022,6 @@ def main() -> None:
             sys.exit(0 if args.out else 1)
         print(f"{RED}config error: {e}{RESET}", file=sys.stderr)
         sys.exit(1)
-    if args.probe_aec:
-        results = probe_aec_ref_path()
-        if args.json:
-            sys.exit(render_json(results, out_path=args.out))
-        sys.exit(render(results))
     if args.watch:
         sys.exit(asyncio.run(_watch_loop(cfg, args.interval)))
     started_at = time.monotonic()

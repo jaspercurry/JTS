@@ -115,9 +115,8 @@ def _doctor_check_modules() -> list[str]:
     """Every doctor module that CONSTRUCTS a CheckResult — the subjects of the
     reason contract.
 
-    Derived from the source, not from the registry: `aec_probe` emits rows
-    from the `--probe-aec-ref` path rather than from a registered check, and
-    the contract binds it exactly as it binds a registered module."""
+    Derived from the source, not from the registry, so a module that builds
+    rows outside a registered check is still bound by the contract."""
     names = []
     for path in sorted(_DOCTOR_PKG_DIR.glob("*.py")):
         if path.stem in _NON_DOMAIN_MODULES:
@@ -283,10 +282,9 @@ def test_a_reason_code_is_declared_in_exactly_one_module():
 
 def test_every_check_result_module_registers_a_check():
     """A module that builds rows but registers nothing is a check that fell
-    out of the registry. `aec_probe` is the one deliberate exception: its rows
-    come from the `--probe-aec-ref` operator path, not from a run."""
+    out of the registry."""
     registered = {c.func.__module__ for c in registered_checks()}
-    subjects = set(_doctor_check_modules()) - {"jasper.cli.doctor.aec_probe"}
+    subjects = set(_doctor_check_modules())
     assert subjects <= registered, sorted(subjects - registered)
 
 

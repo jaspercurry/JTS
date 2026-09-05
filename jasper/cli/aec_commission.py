@@ -153,14 +153,7 @@ class QueueWindow:
 
 
 class IsolationLease:
-    """Run a :class:`HeldWindow` on a dedicated thread and its own loop.
-
-    Inverted relative to ``doctor.aec_probe``, which keeps the window on the
-    main loop and pushes its body to ``asyncio.to_thread``: a signal unwinds
-    only the MAIN thread, and commissioning's body is the half that must
-    unwind — its ``finally`` restores the household fader and closes the chip.
-    So the body stays put and the window moves.
-    """
+    """Run a :class:`HeldWindow` on a dedicated thread and its own loop."""
 
     def __init__(self, gate_owner: str) -> None:
         self.gate_owner = gate_owner
