@@ -121,24 +121,16 @@ def emit_peaking_biquad(name: str, *, freq: float, q: float, gain: float) -> lis
 
 # ---------- Bass-management crossover corner — the ONE definition ----------
 #
-# The sub/main bass-management crossover corner (Hz) and its legal bounds.
-# BOTH sub features share this single vocabulary:
-#   - the WIRELESS sub (jasper.multiroom): a "sub" member LR4 low-passes here
-#     and every non-sub main LR4 high-passes at the SAME corner;
-#   - the LOCAL-DAC sub (jasper.active_speaker.LocalSubwoofer): the sub output
-#     LR4 low-passes here and the mains' lowest driver LR4 high-passes.
+# The local-DAC sub's bass-management crossover corner (Hz) and its legal
+# bounds (jasper.active_speaker.LocalSubwoofer): the sub output LR4 low-passes
+# here and the mains' lowest driver LR4 high-passes at the SAME corner.
 #
 # It lives in this stdlib-only leaf — next to `emit_linkwitz_riley`, the shared
 # primitive that spells the corner into YAML — because that is the one module
 # every corner consumer already imports (active_speaker.camilla_yaml directly,
 # and output_topology can import it without the circular active_speaker
-# dependency its bounds comment warned about). Before P5 the same three
-# numbers were re-declared four ways (multiroom.config, active_speaker.profile,
-# output_topology, multiroom.channel_split — the last removed as dead code in
-# the Wave 1 cleanup) — four independent numbers that could drift. The
-# surviving modules each BIND their public constant name to these values
-# (keeping the stable public spelling) so there is one source of truth. The 200 Hz ceiling
-# in particular is load-bearing safety: `graph_safety.sub_audible_guard_present`
+# dependency its bounds comment warned about). The 200 Hz ceiling in
+# particular is load-bearing safety: `graph_safety.sub_audible_guard_present`
 # caps an audible sub's low-pass at it, so a corner ceiling that drifted higher
 # than the guard's would let a wider-than-legal sub low-pass past the guard.
 #
@@ -270,7 +262,7 @@ def emit_mixer(
 
 # --- channel-select (inter-speaker pick) vocabulary --------------------------
 # The 2->2 mixer that picks WHICH channel of the stereo program a whole speaker
-# plays in a bond (left / right / a clip-safe mono+sub sum). This is the
+# plays in a bond (left / right / a clip-safe mono sum). This is the
 # INTER-speaker axis; it composes BEFORE any intra-speaker driver split. It is a
 # pure format/routing primitive (the "how"), so it lives here in the shared leaf
 # rather than in the caller — ``jasper.active_speaker.camilla_yaml`` (prepends
@@ -390,9 +382,7 @@ def emit_master_gain_pipeline(
     reproduces the sound emitter's solo pipeline byte-for-byte (the
     solo-impact contract). A distinct ``right_names`` is the
     multi-room leader-bake (per-seat correction per channel). Deliberately a
-    2-channel shape: the
-    config contract is stereo-pinned today; 2.1's 3-channel stream
-    generalises this WITH that contract, not alone. Returns a joined
+    2-channel shape: the config contract is stereo-pinned. Returns a joined
     block (callers splice it under a top-level ``pipeline:`` map).
     """
     left = "[" + ", ".join(left_names) + "]"
