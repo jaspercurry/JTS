@@ -64,6 +64,7 @@ the reconciler reads.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 # Keep in lockstep with deploy/bin/jasper-aec-reconcile's
 # VOICE_INPUT_ABSENT_MARKER default and jasper-voice.service's
@@ -80,6 +81,14 @@ def voice_input_absent_marker_path() -> str:
     )
 
 
+def voice_input_absent_marker_lines() -> list[str]:
+    """Marker body lines; ``[]`` when it is missing or unreadable."""
+    try:
+        return Path(voice_input_absent_marker_path()).read_text().splitlines()
+    except OSError:
+        return []
+
+
 def voice_parked_no_mic() -> bool:
     """True when the AEC reconciler has marked the speaker as having no
     usable voice input — neither a local microphone nor a paired accessory
@@ -93,3 +102,15 @@ def voice_parked_no_mic() -> bool:
         return os.path.exists(voice_input_absent_marker_path())
     except OSError:
         return False
+
+
+def voice_park_is_transient() -> bool:
+    """True when the current park is a transient round trip — e.g. the
+    chip-AEC validation bounce (``jasper-aec-reconcile``'s
+    ``activate_managed_chip_aec``, ADR-0239) — rather than a real absence of
+    voice input. Meaningless unless ``voice_parked_no_mic()`` is also true,
+    and fail-safe to False so a real absence can never be misread as
+    transient and lose its shutdown cue.
+    """
+    lines = voice_input_absent_marker_lines()
+    return any(line.strip() == "transient=1" for line in lines)
