@@ -244,15 +244,6 @@ details.disclosure[open] > summary {
   background: var(--card);
   color: var(--foreground);
 }
-.copy-feedback {
-  color: var(--status-ok);
-  font-size: 0.85em;
-  opacity: 0;
-  transition: opacity 0.15s ease;
-}
-.copy-feedback.shown {
-  opacity: 1;
-}
 
 /* The redirect-URL re-reference steps (numbered list inside disclosures). */
 ol.steps {

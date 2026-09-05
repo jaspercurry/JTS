@@ -9,7 +9,9 @@ Two concerns:
 1. The page renders canonical design-system bytes (links /assets/app.css
    and its page CSS, carries the shared .app-header, embeds the CSRF meta
    tag, uses the .field/.form-actions form vocabulary). It is a plain
-   server-rendered request/response form, so it ships no ES module.
+   server-rendered request/response form; its only client behaviour is the
+   shared confirm-forms.js guard on the Clear form, loaded as an ES module
+   (no inline `<script>`).
 2. The migration was presentation-only: the routes (GET /, POST /save,
    POST /clear), the CSRF handshake, the flash redirects, and the public
    module surface (render fn, make_server, main) are unchanged. The
@@ -124,10 +126,18 @@ def test_render_keeps_geocode_privacy_disclosure():
     assert "operations.osmfoundation.org" in out
 
 
-def test_render_ships_no_inline_script_or_style():
+def test_render_ships_es_module_not_inline_script_or_style():
     out = _render()
-    assert "<script" not in out
+    assert '<script type="module" src="/assets/weather/js/main.js">' in out
+    assert "<script>" not in out
     assert "<style>" not in out
+
+
+def test_clear_form_carries_confirm_guard():
+    out = _render()
+    assert 'action="./clear"' in out
+    assert "data-confirm=" in out
+    assert 'data-confirm-danger="1"' in out
 
 
 def test_render_no_legacy_chrome():

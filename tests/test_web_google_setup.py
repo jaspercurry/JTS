@@ -101,6 +101,9 @@ def test_redirect_uri_page_html_is_canonical():
     assert 'action="start"' in text
     assert 'action="reset-credentials"' in text
     assert "data-confirm" in text, "destructive confirm hook missing"
+    # confirm-forms.js reads dataset.confirmDanger === "1" — a bare
+    # data-confirm-danger attribute silently loses the red/danger style.
+    assert 'data-confirm-danger="1"' in text
     assert 'name="csrf_token"' in text
 
 
@@ -121,6 +124,9 @@ def test_management_html_is_canonical_and_escapes_accounts():
     assert "jasper@example.com" in text
     assert 'action="remove"' in text
     assert 'action="default"' in text
+    # confirm-forms.js reads dataset.confirmDanger === "1" — a bare
+    # data-confirm-danger attribute silently loses the red/danger style.
+    assert 'data-confirm-danger="1"' in text
     # Default badge present with the OK status tone.
     assert "--tone: var(--status-ok)" in text
 
