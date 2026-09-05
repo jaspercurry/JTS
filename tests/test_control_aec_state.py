@@ -298,11 +298,28 @@ def test_aec_mode_interleaved_writers_preserve_each_others_keys(
             and not first_write_paused.is_set()
         )
 
-    def pausing_atomic_write(path, text, *, mode=0o644):
+    def pausing_atomic_write(
+        path,
+        text,
+        *,
+        mode=0o644,
+        group_from_parent=False,
+        best_effort_group=False,
+        preserve_target_stat=False,
+        durable=False,
+    ):
         if should_pause(text):
             first_write_paused.set()
             assert release_first_write.wait(timeout=2)
-        return real_atomic_write(path, text, mode=mode)
+        return real_atomic_write(
+            path,
+            text,
+            mode=mode,
+            group_from_parent=group_from_parent,
+            best_effort_group=best_effort_group,
+            preserve_target_stat=preserve_target_stat,
+            durable=durable,
+        )
 
     def pausing_web_write(path, values, *, mode=0o644):
         text = "".join(f"{key}={value}\n" for key, value in values.items())
@@ -357,11 +374,28 @@ def test_wake_model_and_threshold_interleaved_writers_preserve_both_keys(
     release_model_write = threading.Event()
     errors: list[BaseException] = []
 
-    def pausing_atomic_write(path, text, *, mode=0o644):
+    def pausing_atomic_write(
+        path,
+        text,
+        *,
+        mode=0o644,
+        group_from_parent=False,
+        best_effort_group=False,
+        preserve_target_stat=False,
+        durable=False,
+    ):
         if "JASPER_WAKE_MODEL=alexa" in text and not model_write_paused.is_set():
             model_write_paused.set()
             assert release_model_write.wait(timeout=2)
-        return real_atomic_write(path, text, mode=mode)
+        return real_atomic_write(
+            path,
+            text,
+            mode=mode,
+            group_from_parent=group_from_parent,
+            best_effort_group=best_effort_group,
+            preserve_target_stat=preserve_target_stat,
+            durable=durable,
+        )
 
     def write_model():
         try:
