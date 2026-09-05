@@ -167,10 +167,9 @@ pub fn build_config(enabled: bool, probe_ppm: u32, target_fill_frames: u64) -> H
         probe_ppm: probe_ppm as f64,
         // Combo mode runs the CORRECTION-ppm observable: a lane resampler sits
         // between the gadget ring and the mix and absorbs the host clock, so the
-        // fill slope is structurally dead (the resampler flattens it — the
-        // hardware defect on jts.local 2026-07-03). The probe reads the
-        // resampler's own correction ppm, and the L0 servo drives it to 0.
-        // Correction is the crate's sole mode.
+        // fill slope is structurally dead (the resampler flattens it). The probe
+        // reads the resampler's own correction ppm, and the L0 servo drives it
+        // to 0. Correction is the crate's sole mode.
         obs_mode: ObsMode::Correction,
         log_prefix: LOG_PREFIX,
     }

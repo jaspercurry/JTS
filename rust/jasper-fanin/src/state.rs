@@ -1898,9 +1898,7 @@ mod tests {
         // and the stall fields are present. Parsed rather than substring-checked
         // so the assertion is SCOPED to `output.ring`: a whole-document check
         // cannot say which object a `drops` key belongs to, and this test is a
-        // claim about the ring's shape, not the document's. (Until 2026-08-14 the
-        // concrete false-match was the music-only tap's `music_output.drops`; that
-        // block is deleted, but the scoping is what the assertion needs.)
+        // claim about the ring's shape, not the document's.
         let parsed: serde_json::Value = serde_json::from_str(&j).expect("STATUS parses");
         let ring = &parsed["output"]["ring"];
         assert!(

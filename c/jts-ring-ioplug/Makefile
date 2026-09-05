@@ -70,9 +70,8 @@ bench: ring_writer_bench ring_reader_bench
 # SND_PCM_PLUGIN_SYMBOL on the PIC *preprocessor* macro (#ifdef PIC).
 # -fPIC alone does not define it, so without -DPIC the macro expands to
 # the static-build snd_dlsym_start registration path and the .so fails
-# at dlopen with "undefined symbol: snd_dlsym_start" (observed on
-# jts.local 2026-07-02). libtool passes -DPIC implicitly; hand-rolled
-# Makefiles must do it themselves.
+# at dlopen with "undefined symbol: snd_dlsym_start". libtool passes
+# -DPIC implicitly; hand-rolled Makefiles must do it themselves.
 plugin: pcm_jts_ring.c $(CORE) jts_ring_shm.h
 	$(CC) $(CFLAGS) -DPIC -shared -o $(PLUGIN_OUTPUT) pcm_jts_ring.c $(CORE) -lasound $(LDFLAGS)
 
