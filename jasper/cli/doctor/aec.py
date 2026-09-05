@@ -479,7 +479,7 @@ def _assess_audio_validation_summary(
         command = "sudo jasper-audio-validate --stdout"
     return CheckResult(
         "Audio validation",
-        "warn",
+        "warn" if state == "current" and status == "fail" else "ok",
         detail + f"; advisory: consider `{command}` after chip-AEC is active",
         reason=REASON_VALIDATION_ADVISORY,
     )
@@ -487,11 +487,11 @@ def _assess_audio_validation_summary(
 def _chip_aec_passive_evidence_pair(
     summary: dict[str, object],
 ) -> tuple[str, str] | None:
-    """Return the (mic, DAC) pair whose passive evidence clears the warn.
+    """Return the (mic, DAC) pair whose passive evidence banks the row.
 
     The artifact stays partial because no acoustic drift/delay probe exists
-    yet. Clean passive evidence on a registry-approved DAC is enough to stop
-    warning (ADR-0101): the gate below already answers "is this hardware
+    yet. Clean passive evidence on a registry-approved DAC is enough to bank
+    it (ADR-0101): the gate below already answers "is this hardware
     known good", so no second hard-coded pair table is kept here. The caller
     discloses the pair.
     """
