@@ -51,6 +51,7 @@ from .assistant_loudness import tts_envelope_lufs_for_level
 from .busctl import run_busctl
 from .log_event import log_event
 from .music_sources import SOURCE_TO_ACTIVE_KEY, Source, VolumeMode, volume_mode
+from .spotify_router import DEVICES_TIMEOUT_SEC
 from . import volume_diagnostics
 from .bluealsa_probe import active_transport_path
 from .volume_owner import VolumeOwner
@@ -2497,8 +2498,11 @@ class VolumeCoordinator:
         write_failed = False
         for ac, d in matches:
             try:
-                await asyncio.to_thread(
-                    ac.sp.volume, pct, device_id=d.get("id"),
+                await asyncio.wait_for(
+                    asyncio.to_thread(
+                        ac.sp.volume, pct, device_id=d.get("id"),
+                    ),
+                    timeout=DEVICES_TIMEOUT_SEC,
                 )
                 self._stamp_outbound(Source.SPOTIFY, level)
                 volume_diagnostics.record_source_push(

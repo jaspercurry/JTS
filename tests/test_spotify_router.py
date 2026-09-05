@@ -286,7 +286,7 @@ async def test_devices_named_a_wedged_account_does_not_block_the_others():
     finally:
         release.set()
     elapsed = time.monotonic() - started
-    assert elapsed < 5.0, f"devices_named blocked past its timeout ({elapsed:.2f}s)"
+    assert elapsed < 1.0, f"devices_named blocked past its timeout ({elapsed:.2f}s)"
     assert matches == [(good, {"name": "JTS", "id": "jts-1"})]
 
 

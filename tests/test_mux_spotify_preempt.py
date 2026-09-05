@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from jasper import spotify_router
 from jasper.mux import Mux, Source
 from jasper.spotify_router import Router
 
@@ -241,10 +242,8 @@ async def test_web_api_pause_exception_on_one_account_tries_next(
 
 
 # ----------------------------------------------------------------------
-# A hung Spotify API socket must NOT suspend the mux tick. spotipy has
-# no requests_timeout by default; the two to_thread calls in
-# _spotify_pause_via_web_api are wrapped in asyncio.wait_for so a stuck
-# account is bounded and the loop continues to the next account.
+# A hung Spotify API socket must NOT suspend the mux tick — see
+# Router.devices_named for the devices() bound.
 # ----------------------------------------------------------------------
 
 class _HangingSpClient:
@@ -278,10 +277,12 @@ class _HangingSpClient:
 @pytest.fixture
 def _clamp_wait_for(monkeypatch):
     """Clamp the wait_for timeout *as seen by jasper.mux* to a tiny value
-    so a hung call trips the timeout in milliseconds instead of the
-    production 5 s, keeping the test fast while still exercising the real
-    wrap. Returns the unclamped wait_for so the test's own outer guard
-    isn't shortened."""
+    so a hung pause_playback call trips the timeout in milliseconds
+    instead of the production 5 s, keeping the test fast while still
+    exercising the real wrap. Returns the unclamped wait_for so the
+    test's own outer guard isn't shortened. devices()'s bound lives on
+    Router.devices_named and is controlled separately (DEVICES_TIMEOUT_SEC),
+    not through this patch."""
     real_wait_for = asyncio.wait_for
 
     async def fast_wait_for(aw, timeout):
@@ -292,13 +293,12 @@ def _clamp_wait_for(monkeypatch):
     return real_wait_for
 
 
-async def test_web_api_hung_devices_does_not_hang_tick(
-    mux, monkeypatch, _clamp_wait_for,
-):
+async def test_web_api_hung_devices_does_not_hang_tick(mux, monkeypatch):
     """A hung sp.devices() call must time out and be skipped — the pause
     helper returns without suspending the mux tick. A second, healthy
     account still gets paused, proving the loop continues."""
     monkeypatch.setenv("JASPER_SPEAKER_NAME", "JTS")
+    monkeypatch.setattr(spotify_router, "DEVICES_TIMEOUT_SEC", 0.1)
     hung = _HangingSpClient("primary", [
         {"name": "JTS", "id": "jts-hung", "is_active": True},
     ], hang_on="devices")
@@ -306,9 +306,8 @@ async def test_web_api_hung_devices_does_not_hang_tick(
         {"name": "JTS", "id": "jts-good", "is_active": True},
     ])
     _attach_fake_router(mux, [hung, good])
-    real_wait_for = _clamp_wait_for
     try:
-        result = await real_wait_for(
+        result = await asyncio.wait_for(
             mux._spotify_pause_via_web_api(), timeout=5.0,
         )
     finally:

@@ -57,6 +57,10 @@ SPOTIFY_SCOPE = (
 # loop) can't be suspended forever on one stuck account.
 _SPOTIPY_REQUESTS_TIMEOUT_SEC = 4.0
 
+# Per-account bound for Router.devices_named()'s devices() call, read at
+# call time (not baked into the default arg) so tests can monkeypatch it.
+DEVICES_TIMEOUT_SEC = 5.0
+
 # Re-resolve a cached AirPlay-session→account decision after this many
 # seconds even if nothing else changed. Belt-and-suspenders against
 # stale tokens or a Spotify state we missed.
@@ -651,32 +655,44 @@ class Router:
         return first
 
     async def devices_named(
-        self, name: str, *, timeout: float = 5.0,
+        self, name: str, *, timeout: float | None = None,
     ) -> list[tuple[AccountClient, dict]]:
         """Every Spotify Connect device named ``name`` across all
         authorized accounts, paired with the account that reported it.
 
-        Each account's `devices()` call is bounded by ``timeout`` so one
-        wedged Web API request can't stall the others — or, upstream,
-        whatever dispatch (pause, volume) is waiting on this list.
+        Accounts are probed concurrently (like `active()` /
+        `_probe_and_match()`) so one wedged account costs ``timeout``
+        once, not once per account; results come back in account order.
+        ``timeout`` defaults to DEVICES_TIMEOUT_SEC, read at call time.
         """
-        matches: list[tuple[AccountClient, dict]] = []
-        for ac in self.clients.values():
+        bound = DEVICES_TIMEOUT_SEC if timeout is None else timeout
+
+        async def _devices_for(ac: AccountClient) -> list[dict]:
             try:
                 devices = await asyncio.wait_for(
-                    asyncio.to_thread(ac.sp.devices), timeout=timeout,
+                    asyncio.to_thread(ac.sp.devices), timeout=bound,
                 )
             except asyncio.TimeoutError:
-                logger.warning(
+                logger.debug(
                     "router: devices() timed out for %s", ac.account.name,
                 )
-                continue
+                return []
             except Exception as e:  # noqa: BLE001
                 logger.debug(
                     "router: devices() failed for %s: %s", ac.account.name, e,
                 )
+                return []
+            return devices.get("devices") or []
+
+        results = await asyncio.gather(
+            *(_devices_for(ac) for ac in self.clients.values()),
+            return_exceptions=True,
+        )
+        matches: list[tuple[AccountClient, dict]] = []
+        for ac, devices in zip(self.clients.values(), results):
+            if isinstance(devices, Exception):
                 continue
-            for d in (devices.get("devices") or []):
+            for d in devices:
                 if d.get("name") == name:
                     matches.append((ac, d))
         return matches
