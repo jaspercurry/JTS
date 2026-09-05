@@ -629,10 +629,10 @@ async def _serve_while_connecting(
 
     Hearing must not wait on the WAN: mics, cues and ``READY=1`` are up
     before this is reached, so a boot with the link down answers a wake
-    with a cue instead of silence. A connect that raises (a config or
-    setup error the supervisor cannot retry past) ends the run; one that
-    returns leaves the daemon serving. Whichever finishes first, the
-    other is cancelled on the way out.
+    with a cue instead of silence. A connect that raises ends the run; a
+    connect that returns leaves the daemon serving with the supervisor
+    retrying. Whichever finishes first, the other is cancelled on the
+    way out.
     """
     connect_task = asyncio.create_task(connect())
     serve_task = asyncio.create_task(serve())
@@ -640,7 +640,9 @@ async def _serve_while_connecting(
         done, _pending = await asyncio.wait(
             (connect_task, serve_task), return_when=asyncio.FIRST_COMPLETED,
         )
-        if serve_task not in done:
+        if connect_task in done:
+            # Both can land in one tick; the failure must not be left for
+            # the suppressed await below to eat.
             connect_task.result()
         await serve_task
     finally:

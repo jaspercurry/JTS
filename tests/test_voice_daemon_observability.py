@@ -137,6 +137,22 @@ async def test_background_connect_failure_ends_the_run() -> None:
         await _serve_while_connecting(_connect, _serve)
 
 
+async def test_a_connect_failing_in_the_same_tick_as_the_serve_ends_the_run(
+) -> None:
+    """Both tasks can land in one tick — a stop that races the failure.
+    The connect's exception must still reach `main()`; swallowing it
+    exits 0, which `Restart=on-failure` does not restart."""
+
+    async def _connect() -> None:
+        raise RuntimeError("connect failed")
+
+    async def _serve() -> None:
+        return None
+
+    with pytest.raises(RuntimeError):
+        await _serve_while_connecting(_connect, _serve)
+
+
 async def test_a_connect_that_returns_leaves_the_daemon_serving() -> None:
     """A connect handed over to the reconnect supervisor returns normally
     — the speaker keeps hearing and cues the outage, it does not exit."""
