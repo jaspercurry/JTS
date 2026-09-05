@@ -1850,7 +1850,7 @@ def test_audio_validation_advisory_ok_when_chip_aec_not_requested():
 
 
 @pytest.mark.parametrize(
-    "summary",
+    "summary, expected_status",
     [
         pytest.param(
             {
@@ -1859,6 +1859,7 @@ def test_audio_validation_advisory_ok_when_chip_aec_not_requested():
                 "artifact_path": "/var/lib/jasper/audio-validation",
                 "reason": "artifact not found",
             },
+            "ok",
             id="no_artifact",
         ),
         pytest.param(
@@ -1868,6 +1869,7 @@ def test_audio_validation_advisory_ok_when_chip_aec_not_requested():
                 "recommendation": "run_hardware_validation",
                 "artifact_path": "/var/lib/jasper/audio-validation/latest.json",
             },
+            "ok",
             id="run_hardware_validation",
         ),
         pytest.param(
@@ -1877,16 +1879,29 @@ def test_audio_validation_advisory_ok_when_chip_aec_not_requested():
                 "recommendation": "run_drift_delay_validation",
                 "artifact_path": "/var/lib/jasper/audio-validation/latest.json",
             },
+            "ok",
             id="run_drift_delay_validation",
+        ),
+        # A current artifact whose rollup FAILED is an observed defect, not a
+        # measurement that was never taken.
+        pytest.param(
+            {
+                "state": "current",
+                "status": "fail",
+                "recommendation": "fix_outputd_chip_reference_before_chip_aec",
+                "artifact_path": "/var/lib/jasper/audio-validation/latest.json",
+            },
+            "warn",
+            id="current_fail",
         ),
     ],
 )
-def test_audio_validation_advisory_never_warns_for_chip_aec(summary):
+def test_audio_validation_advisory_status_for_chip_aec(summary, expected_status):
     result = aec._assess_audio_validation_summary(
         summary, requested_profile="xvf_chip_aec",
     )
 
-    assert result.status == "ok"
+    assert result.status == expected_status
     assert result.reason == aec.REASON_VALIDATION_ADVISORY
 
 

@@ -479,7 +479,7 @@ def _assess_audio_validation_summary(
         command = "sudo jasper-audio-validate --stdout"
     return CheckResult(
         "Audio validation",
-        "ok",
+        "warn" if state == "current" and status == "fail" else "ok",
         detail + f"; advisory: consider `{command}` after chip-AEC is active",
         reason=REASON_VALIDATION_ADVISORY,
     )

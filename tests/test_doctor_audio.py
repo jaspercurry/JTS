@@ -1728,24 +1728,35 @@ def test_active_speaker_startup_hold_ok_when_no_hold_is_in_flight():
 
 
 @pytest.mark.parametrize(
-    "load_status, status, reason, silent",
+    "load_status, live_is_anchor, status, reason, silent",
     [
-        ("loaded", "ok", audio.REASON_STARTUP_HOLD_IN_FLIGHT, False),
-        # A hold with no load behind it keeps a commissioned box on its SILENT
-        # anchor across every reconcile.
-        ("rolled_back", "fail", audio.REASON_STARTUP_HOLD_STALE, True),
+        ("loaded", True, "ok", audio.REASON_STARTUP_HOLD_IN_FLIGHT, False),
+        # A hold with no load behind it keeps a box that is STILL on the anchor
+        # silent across every reconcile.
+        ("rolled_back", True, "fail", audio.REASON_STARTUP_HOLD_STALE, True),
+        # Off the anchor the box plays: the selector rung the marker feeds also
+        # requires the anchor graph, and /run empties before the next boot.
+        ("rolled_back", False, "warn", audio.REASON_STARTUP_HOLD_STALE, False),
     ],
-    ids=["in-flight", "stale"],
+    ids=["in-flight", "stale-on-anchor", "stale-but-playing"],
 )
 def test_active_speaker_startup_hold_verdicts(
-    monkeypatch, tmp_path, load_status, status, reason, silent
+    monkeypatch, tmp_path, load_status, live_is_anchor, status, reason, silent
 ):
     from jasper.active_speaker.startup_hold import hold_staged_startup
 
     assert hold_staged_startup() is True
+    anchor = tmp_path / "active_speaker_staged_startup.yml"
     state = tmp_path / "startup_load.json"
-    state.write_text(json.dumps({"status": load_status}), encoding="utf-8")
+    state.write_text(
+        json.dumps(
+            {"status": load_status, "candidate_config_path": str(anchor)}
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE", str(state))
+    live = anchor if live_is_anchor else tmp_path / "active_speaker_baseline.yml"
+    evidence.seed("camilla_config", (str(tmp_path / "statefile.yml"), str(live)))
 
     r = audio.check_active_speaker_startup_hold()
 
@@ -1817,6 +1828,17 @@ def test_active_speaker_startup_hold_verdicts(
             id="machine_fault_still_warns",
         ),
         pytest.param(
+            {
+                "required": True,
+                "allowed": False,
+                "authority": None,
+                "reason": "active_applied_profile_graph_mismatch",
+                "detail": "apply that crossover again",
+            },
+            "warn", audio.REASON_ROOM_AUTHORITY_BLOCKED,
+            id="non_receipt_denial_blocks_the_run",
+        ),
+        pytest.param(
             None, "warn", audio.REASON_ROOM_AUTHORITY_NO_DECISION,
             id="no_room_decision_published",
         ),
@@ -1827,10 +1849,10 @@ def test_room_correction_authority_discloses_but_never_fails(
 ):
     """The doctor line is the only place an unproven room run is visible.
 
-    Ruling S10 stopped the receipt from refusing the run, so nothing else tells
-    a household that the result it just measured is not banked as verified.
-    An unproven run is `ok` with its reason: nothing is broken and nothing is
-    stopped. Only a machine fault reading the record warns.
+    Ruling S10 stopped the RECEIPT from refusing the run, so nothing else tells
+    a household that the result it just measured is not banked as verified: an
+    unproven receipt is `ok` with its reason. A machine fault reading the
+    record, and every denial that is not a receipt at all, warn.
     """
     monkeypatch.setattr(
         setup_status_mod,
