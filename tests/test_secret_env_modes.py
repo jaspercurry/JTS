@@ -5,10 +5,10 @@
 """Pin env-file modes for cross-user daemon reads.
 
 The broad `/var/lib/jasper` state files that jasper-control still fresh-reads
-must be 0640 for the shared `jasper` group. Phase 4a/4b moved the real secrets
-into sibling compartments (`jasper-secrets`, `jasper-intsecrets`); those files
+must be 0640 for the shared `jasper` group. The real secrets live in sibling
+compartments (`jasper-secrets`, `jasper-intsecrets`); those files
 still use mode 0640, but their group membership and relocation are pinned by the
-Phase 4 hardening/migration tests instead of this broad-widening guard.
+compartment hardening/migration tests instead of this broad-widening guard.
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_secret_env_mode_is_group_readable_0640():
     assert _common.SECRET_ENV_MODE == 0o640, (
         "cross-daemon secret env files must be 0640; the owning group is set "
-        "by the broad state dir or the Phase 4 compartment."
+        "by the broad state dir or the secret compartment."
     )
 
 
@@ -74,7 +74,7 @@ def test_secret_wizards_use_secret_env_mode():
 
 def test_install_widens_secret_env_on_upgrade():
     """The upgrade path: install must still group-widen the broad files
-    jasper-control reads directly. Phase 4 compartment files are handled by
+    jasper-control reads directly. Secret compartment files are handled by
     their migration helpers instead."""
     full = (ROOT / "deploy/lib/install/env-migrations.sh").read_text(encoding="utf-8")
     assert "widen_control_secret_env_modes() {" in full, (
@@ -123,7 +123,7 @@ def test_install_widens_secret_env_on_upgrade():
         "home_assistant.env",
     ):
         assert fname not in widened_files, (
-            f"{fname} moved to a Phase 4 compartment and must not be "
+            f"{fname} moved to a secret compartment and must not be "
             "re-widened to the broad jasper group"
         )
     assert "jasper_env" in mig and "chgrp jasper" in mig, (

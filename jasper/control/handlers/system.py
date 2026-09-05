@@ -221,7 +221,7 @@ class SystemRoutes(ControlHandlerMixin):
         }
         self._send_json(payload)
 
-    # jasper-doctor is a ROOT tool (audio/mixer/journal/ renderer probes + `sudo -u
+    # jasper-doctor is a ROOT tool (audio/mixer/journal/renderer probes + `sudo -u
     # <renderer> aplay`), and jasper-control is now non-root — running the doctor
     # in-process here would make ~7 hardware checks fail on permissions (false red on
     # the dashboard). So the report is produced by the root jasper-doctor-json.service

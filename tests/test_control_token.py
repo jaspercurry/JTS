@@ -152,9 +152,7 @@ def test_cli_disable_when_already_off_is_noop(monkeypatch, tmp_path, capsys):
     assert "already disabled" in capsys.readouterr().out.lower()
 
 
-# -------------------------------------------------------------------------
-# ensure_token() makes the gate mandatory + invisible.
-# -------------------------------------------------------------------------
+# --- ensure_token() makes the gate mandatory + invisible. -----------------
 
 
 def test_ensure_token_generates_when_absent(monkeypatch, tmp_path):

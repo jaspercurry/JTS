@@ -73,11 +73,9 @@ LEGACY_CACHE_PATH = "/var/lib/jasper-intsecrets/.spotify-cache"
 
 # The OAuth token cache jasper-voice persists must be READABLE by the non-root
 # jasper-control (the /transport title-match Spotify router), jasper-mux, and
-# jasper-web (the /spotify wizard status), which share the `jasper-intsecrets`
-# group. spotipy's stock CacheFileHandler writes the cache umask-restricted
-# (0600, owner-only), so those dropped readers logged "Couldn't read cache" on
-# every poll and reported linked accounts as needs-relink. 0640 group-read is
-# now granted via the jasper-intsecrets compartment.
+# jasper-web (the /spotify wizard status) — readers sharing the
+# `jasper-intsecrets` group need 0640, widening spotipy's stock
+# CacheFileHandler default of 0600 owner-only.
 SPOTIFY_CACHE_FILE_MODE = 0o640
 
 _CACHE_HANDLER_CLS = None

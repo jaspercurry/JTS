@@ -154,9 +154,9 @@ def test_save_token_writes_mode_0640(tmp_path):
         scopes=["https://www.googleapis.com/auth/gmail.readonly"],
     )
     st = os.stat(path)
-    # 0o640: group-`jasper` read so the non-root jasper-voice can read its OAuth refresh token
-    # after systemd's StateDirectory recursive-chown re-owns the file to another jasper daemon.
-    # NO world read (the token is still a secret). Per-daemon isolation is Phase 4.
+    # 0o640: group-`jasper-secrets` read so jasper-voice + jasper-web can read this
+    # OAuth refresh token — the setgid jasper-secrets dir outside StateDirectory,
+    # not a StateDirectory chown. NO world read (the token is still a secret).
     assert stat.S_IMODE(st.st_mode) == 0o640
     payload = json.loads(Path(path).read_text())
     # The CLIENT_ID/SECRET fields are intentionally NOT persisted —
@@ -177,8 +177,8 @@ def test_install_creates_google_dir_setgid():
     """The Google tree's group access (so non-root voice + web can read/write OAuth tokens) is
     set authoritatively by install as root, setgid so tokens the /google/ wizard writes
     inherit the group directly. It lives in the jasper-secrets compartment at mode 2770 group
-    jasper-secrets (was the broad 2750 group jasper). Guard the setgid + group so the bit
-    can't be silently dropped — which would re-break a freshly linked account."""
+    jasper-secrets (was the broad 2750 group jasper). Guard the setgid + group so a
+    silently dropped bit can't leave a freshly linked account's tokens unreadable."""
     sh = _ENV_MIGRATIONS_SH.read_text()
     assert "install -d -m 2770 -g jasper-secrets" in sh and "google" in sh, (
         "env-migrations.sh must create the jasper-secrets Google tree setgid + "

@@ -586,7 +586,7 @@ def test_restart_aec_bridge_resets_start_limit_before_restart(
 ) -> None:
     # restart_aec_bridge asks jasper-control's restart broker (reset-failed to clear any
     # start-limit lockout, then restart) instead of shelling out to systemctl, so the wake-corpus
-    # flow needs no privilege of its own once jasper-web drops to a non-root service user.
+    # flow needs no privilege of its own, since jasper-web runs as a non-root service user.
     from jasper.control import restart_broker
 
     calls: list[tuple[tuple[str, ...], str | None]] = []

@@ -4,15 +4,15 @@
 
 """Drift guard: the Tier-A daemons keep their hardening stanza.
 
-A compromise of an always-on, network-facing `jasper-*` daemon is a full-root
-device compromise today (they all run as root). Phase 1 of the privilege-
-separation work hardens each so a root RCE can no longer write the
-filesystem, load kernel modules, change kernel tunables, or enter new
-namespaces — measured on hardware to drop
-`systemd-analyze security` from 8.7-9.6 (EXPOSED/UNSAFE) to ~6.2-6.6 (MEDIUM).
+A compromise of an always-on, network-facing `jasper-*` daemon is contained by
+this hardening: a root RCE can no longer write the filesystem, load kernel
+modules, change kernel tunables, or enter new namespaces — measured on
+hardware to drop `systemd-analyze security` from 8.7-9.6 (EXPOSED/UNSAFE) to
+~6.2-6.6 (MEDIUM). Each unit also runs as a dedicated non-root user (see
+test_user_drop below).
 
 This test pins that contract: an edit that removes `ProtectSystem=strict` or any
-of the phase-1 directives from a Tier-A unit fails CI. It deliberately encodes
+of the hardening directives from a Tier-A unit fails CI. It deliberately encodes
 the per-unit nuances (the reason a uniform block would break things), so the
 exceptions are explicit, not silent.
 """
@@ -171,7 +171,7 @@ def test_tier_a_required_directives(unit, path):
         elif (key, want) not in pairs:
             missing.append(f"{key}={want}")
     assert not missing, (
-        f"{unit} ({path.name}) lost hardening directive(s): "
+        f"{unit} ({path.name}) lost WS1 phase-1 hardening directive(s): "
         f"{missing}."
     )
 
@@ -331,9 +331,9 @@ def test_tmpfs_home_where_no_home_needed(unit):
 
 
 # --------------------------------------------------------------------------
-# The non-root user drop. 3b-1 dropped voice/mux/input; 3b-2 dropped jasper-control (polkit rule
+# The non-root user drop. voice/mux/input dropped first; jasper-control dropped next (polkit rule
 # for its broker/supervisor systemctl+reboot + group-readable secret env for the jasper-doctor
-# it spawns); 3b-3 dropped jasper-web (polkit rule for its NetworkManager wifi management +
+# it spawns); jasper-web dropped last (polkit rule for its NetworkManager wifi management +
 # bluetooth / systemd-journal groups). All five Tier-A daemons now run non-root.
 # --------------------------------------------------------------------------
 
@@ -351,7 +351,7 @@ DROPPED = {
     # and this one carries the volume and push-to-talk buttons. The adapter
     # gets that group from the service user instead — see the unit file.
     "jasper-input": ("jasper-input", {"input"}),
-    # 3b-2: control's privileged restarts/reboots are granted by polkit
+    # control's privileged restarts/reboots are granted by polkit
     # (deploy/polkit/49-jasper-control.rules), not a group; it opens no
     # ALSA/input device. `systemd-journal` — the airplay_health and
     # wifi_guardian /state cards read the journal. `jts-ring` (#2786) — /state's
@@ -364,7 +364,7 @@ DROPPED = {
         "jasper-control",
         {"systemd-journal", "jasper-intsecrets", "jts-ring"},
     ),
-    # 3b-3: web's NetworkManager writes (the /wifi/ wizard) are granted by polkit
+    # web's NetworkManager writes (the /wifi/ wizard) are granted by polkit
     # (deploy/polkit/49-jasper-web.rules), not a group. Its supplementary groups
     # are `audio` (ALSA correction_substream for active-speaker commissioning),
     # `bluetooth` (BlueZ Adapter1 Alias for the /speaker rename — a D-Bus policy
@@ -394,7 +394,7 @@ def test_user_drop(unit, expected):
     directives = _directives(TIER_A[unit])
     pairs = set(directives)
     assert ("User", expected_user) in pairs, (
-        f"{unit}: requires User={expected_user} (non-root drop)."
+        f"{unit}: WS1 Phase 3b-1 requires User={expected_user} (non-root drop)."
     )
     assert ("Group", "jasper") in pairs, (
         f"{unit}: must join the shared `jasper` group for cross-daemon "
@@ -420,7 +420,7 @@ def test_user_drop(unit, expected):
 
 
 def test_control_keeps_runtimedir_and_avahi_rwpaths_after_drop():
-    """jasper-control's 3b-2 drop must KEEP the directives the non-root user
+    """jasper-control's non-root drop must KEEP the directives the non-root user
     relies on: Group=jasper (broker socket reachable by mux/web), the
     RuntimeDirectory for the broker socket bind, and ReadWritePaths covering
     /etc/avahi/services (the peering advert it renders). ProtectHome must stay
@@ -681,7 +681,7 @@ def test_streambox_web_unit_sources_every_env_its_wizards_write():
 
 
 def test_streambox_web_unit_stays_root_until_validated():
-    """The streambox web unit intentionally stays root in 3b-3 — it's a Pi class
+    """The streambox web unit intentionally stays root — it's a Pi class
     (Pi Zero 2 W) the drop could not be hardware-validated on. install.sh installs
     the web polkit rule + group-writable dirs in BOTH profiles, so dropping it is
     a one-line `User=`/`Group=` edit here once validated. Guard against an
@@ -752,7 +752,7 @@ TIER_B_DAC_MIXER_UNITS = {
 def test_privileged_support_units_stay_root_until_validated(unit, path):
     assert path.is_file(), f"{unit}: expected unit at {path}"
     assert not any(k == "User" for k, _ in _directives(path)), (
-        f"{unit}: gained User= without updating the Tier-B plan and "
+        f"{unit}: gained User= without updating the WS1 Tier-B plan and "
         "validation guard. Drop these units one vertical slice at a time."
     )
 
@@ -1013,7 +1013,7 @@ def test_snapclient_unit_rate_limits_leader_offline_log_floods():
 # the `jasper` group with UMask=0007 — making their umask-derived sockets
 # root:jasper 0770 instead of 0755 (which only root could connect to). Removing
 # either directive silently re-bricks the non-root voice/mux (the exact failure
-# caught during 3b-1 hardware validation), so it gets its own guard.
+# caught during hardware validation), so it gets its own guard.
 _CROSS_USER_IPC_DAEMONS = {
     "jasper-fanin": ROOT / "deploy/systemd/jasper-fanin.service",
     "jasper-outputd": ROOT / "deploy/systemd/jasper-outputd.service",
@@ -1030,7 +1030,7 @@ def test_cross_user_ipc_socket_contract(unit, path):
     assert ("UMask", "0007") in pairs, (
         f"{unit}: must set UMask=0007 so its bind()'d socket is 0770 (group "
         "write) — connect() needs write permission; the umask-default 0755 "
-        "only let root connect, which crash-looped non-root voice in 3b-1."
+        "only let root connect, which crash-looped non-root voice."
     )
     assert ("RuntimeDirectoryMode", "0750") in pairs, (
         f"{unit}: RuntimeDirectory must be 0750 (root:jasper) so the `jasper` "

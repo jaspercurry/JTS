@@ -108,9 +108,8 @@ fi
 printf 'JASPER_VOICE_PROVIDER=%s\n' "$provider" >> "$tmp"
 # voice_provider.env is the NON-secret SSOT (the API keys live in voice_keys.env), so it
 # must be group-jasper readable (0640) for the non-root jasper-control to fresh-read the
-# active provider for /system/. Writing 0600 root:root here re-broke that read until the
-# next deploy/restart. (systemd StateDirectory re-owns it to <voice|mux>:jasper on the
-# restart below; we set the right group+mode now so the read works in the interim.)
+# active provider for /system/; set explicitly here since systemd's StateDirectory only
+# re-chowns it to <voice|mux>:jasper on the restart below.
 chown root:root "$tmp"
 chgrp jasper "$tmp" 2>/dev/null || true
 chmod 0640 "$tmp"

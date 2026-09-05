@@ -65,9 +65,9 @@ logger = logging.getLogger(__name__)
 
 # The Google token tree lives in the group-`jasper-secrets` dir (readable only by
 # jasper-voice + jasper-web), NOT under the shared /var/lib/jasper StateDirectory.
-# Overridable via JASPER_GOOGLE_ACCOUNTS_PATH (config.google_accounts_path). The
-# install-time migration moves an existing tree here and rewrites the absolute
-# token_path entries baked into accounts.json.
+# Overridable via JASPER_GOOGLE_ACCOUNTS_PATH (config.google_accounts_path). No
+# legacy tree remains to migrate; reassert_secrets_compartment_perms only
+# re-narrows ownership/modes here on every deploy.
 DEFAULT_REGISTRY_PATH = "/var/lib/jasper-secrets/google/accounts.json"
 DEFAULT_TOKEN_DIR = "/var/lib/jasper-secrets/google/tokens"
 

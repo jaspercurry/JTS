@@ -595,9 +595,7 @@ def _broker_restart_or_raise(unit: str, *, timeout_sec: float) -> None:
     non-root service user — so it asks the broker rather than shelling out to systemctl. The
     broker returns a result dict (it never raises); we re-raise on failure as
     ``subprocess.CalledProcessError`` to preserve this module's existing raise-on-failure
-    contract (callers catch CalledProcessError / OSError and surface a 500). While
-    jasper-web is still root the broker client falls back to a direct systemctl if the
-    broker is unreachable.
+    contract (callers catch CalledProcessError / OSError and surface a 500).
     """
     resp = restart_broker.manage_units(
         unit, verb="restart", reason="wake-corpus bridge outputs",

@@ -93,7 +93,7 @@ def test_normalize_unit(raw, normalized):
 
 
 def test_managed_units_excludes_tier_b_reconcilers():
-    """Tier-B reconcilers stay root in Phase 3 and must NOT be brokerable — a
+    """Tier-B reconcilers stay root and must NOT be brokerable — a
     non-root daemon must never be able to ask the broker to restart the
     self-healing units that recover Wi-Fi / output hardware / the DAC /
     the dongle."""

@@ -25,11 +25,11 @@ Why this is safe to centralise:
   ``restart`` consults it, so a grant would re-open restart-of-any-unit. Those verbs
   therefore fail-soft for a non-root broker; nothing routes through them today — voice's
   boot-enable is owned by the root ``jasper-aec-reconcile``. The verbs stay in the
-  vocabulary for a future root client / Phase-4 grant.)
+  vocabulary for a future root client grant.)
 - **Unit allowlist.** Every requested unit must be in :data:`MANAGED_UNITS` —
   the single source of truth for "units the privileged surface may generally
   touch" — or, for graph-transition root helpers, in
-  :data:`START_ONLY_UNITS` with verb ``start``. The Phase-3 *user-drop* PR
+  :data:`START_ONLY_UNITS` with verb ``start``. The *user-drop* work
   derives the polkit rule (which grants the ``jasper-control`` user
   ``manage-units`` for exactly these units) from the same constants, so the
   broker authz and the polkit grant can never drift. The broker, not polkit,
