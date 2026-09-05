@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # shellcheck shell=bash
-# WS1 Phase 3b/first Tier-B slice — dedicated non-root service users + the
+# Dedicated non-root service users + the
 # shared `jasper` group. Tier-A daemons dropped from root: jasper-voice /
 # jasper-mux / jasper-input (3b-1), jasper-control (3b-2, polkit-mediated
 # restarts/reboots), and jasper-web (3b-3, polkit-mediated NetworkManager +
@@ -24,7 +24,7 @@ create_jasper_service_users() {
     if ! getent group jasper >/dev/null 2>&1; then
         groupadd -r jasper
     fi
-    # WS1 Phase 4a — `jasper-secrets` narrows the high-value secrets (LLM API
+    # `jasper-secrets` narrows the high-value secrets (LLM API
     # keys + Google OAuth client secret + token tree) to just the voice + web
     # service users. Created HERE, before the -G group lists below reference it,
     # so a fresh install adds members in one shot. Safe to put in a -G list
@@ -33,7 +33,7 @@ create_jasper_service_users() {
     if ! getent group jasper-secrets >/dev/null 2>&1; then
         groupadd -r jasper-secrets
     fi
-    # WS1 Phase 4b — `jasper-intsecrets` narrows integration secrets (Home
+    # `jasper-intsecrets` narrows integration secrets (Home
     # Assistant token + Spotify credentials/OAuth token cache) to the daemons
     # that use them: voice, control, mux, and web. jasper-input is deliberately
     # excluded. Created before useradd -G references it, mirroring
@@ -103,7 +103,7 @@ create_jasper_service_users() {
         useradd -r -M -s /usr/sbin/nologin -g jasper -G audio jasper-usbmic
     fi
     usermod -aG audio jasper-usbmic 2>/dev/null || true
-    # WS1 Phase 3b-2 — jasper-control drops to non-root too. It binds TCP
+    # jasper-control drops to non-root too. It binds TCP
     # (0.0.0.0:8780), opens a localhost WebSocket to CamillaDSP, and writes
     # /var/lib/jasper + /etc/avahi/services — no /dev/snd or /dev/input. Its
     # privileged restarts/reboots are granted by polkit
@@ -126,7 +126,7 @@ create_jasper_service_users() {
     if getent group systemd-journal >/dev/null 2>&1; then
         usermod -aG systemd-journal jasper-control 2>/dev/null || true
     fi
-    # WS1 Phase 3b-3 — jasper-web (the wizard HTTP servers) drops to non-root too.
+    # jasper-web (the wizard HTTP servers) drops to non-root too.
     # One account serves every nginx-fronted wizard unit — jasper-web,
     # jasper-chat-web, jasper-correction-web, jasper-bluetooth-web,
     # jasper-system-web — because they share state files, the /run
@@ -160,7 +160,7 @@ create_jasper_service_users() {
     if getent group bluetooth >/dev/null 2>&1; then
         usermod -aG bluetooth jasper-web 2>/dev/null || true
     fi
-    # WS1 Tier-B DAC mixer slice — jasper-recon is the non-root service user
+    # Tier-B DAC mixer slice — jasper-recon is the non-root service user
     # for hardware reconcilers that only need ALSA mixer access: the declared
     # DAC mixer pins (`jasper-dac-init`) and the Apple dongle drift monitor
     # (`jasper-headphone-monitor`). Primary group `jasper`, supplementary `audio`
@@ -169,7 +169,7 @@ create_jasper_service_users() {
         useradd -r -M -s /usr/sbin/nologin -g jasper -G audio jasper-recon
     fi
     usermod -aG audio jasper-recon 2>/dev/null || true
-    # WS1 Phase 4a — ensure jasper-secrets membership on UPGRADE too (the
+    # Ensure jasper-secrets membership on UPGRADE too (the
     # useradd -G above is skipped when the user already exists, e.g. a Pi from a
     # pre-4a build). Idempotent; takes effect on the daemon's next start (the
     # deploy restarts jasper-voice; jasper-web is socket-activated so its next
@@ -178,7 +178,7 @@ create_jasper_service_users() {
         usermod -aG jasper-secrets jasper-voice 2>/dev/null || true
         usermod -aG jasper-secrets jasper-web 2>/dev/null || true
     fi
-    # WS1 Phase 4b — ensure jasper-intsecrets membership on UPGRADE too (the
+    # Ensure jasper-intsecrets membership on UPGRADE too (the
     # useradd -G above is skipped when the user already exists). Idempotent;
     # takes effect on daemon restart/socket activation.
     if getent group jasper-intsecrets >/dev/null 2>&1; then

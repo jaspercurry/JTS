@@ -100,16 +100,16 @@ EnvironmentFile=-/var/lib/jasper/speaker_name.env
 # daemon boot fine when this file doesn't exist yet (the
 # spotify_play tool then short-circuits to a "visit
 # JASPER_SPOTIFY_SETUP_URL" error which Gemini speaks).
-# WS1 Phase 4b — moved into the group-`jasper-intsecrets` dir alongside
-# the Spotify OAuth token cache.
+# Lives in the group-`jasper-intsecrets` dir alongside the Spotify OAuth
+# token cache.
 EnvironmentFile=-/var/lib/jasper-intsecrets/spotify_credentials.env
 # Voice provider SELECTION (JASPER_VOICE_PROVIDER + per-provider model /
 # voice) written by the wizard at https://jts.local/voice. Sourced AFTER
 # /etc/jasper/jasper.env so wizard-written values override operator
 # defaults. Optional via the leading `-`. The API keys themselves are
-# NOT here anymore — see voice_keys.env below (WS1 Phase 4a split).
+# NOT here anymore — see voice_keys.env below.
 EnvironmentFile=-/var/lib/jasper/voice_provider.env
-# WS1 Phase 4a — the GEMINI / OPENAI / XAI API keys, split out of
+# The GEMINI / OPENAI / XAI API keys, split out of
 # voice_provider.env into the group-`jasper-secrets` dir so only
 # jasper-voice + jasper-web can read them (mux/control/input cannot).
 # Readable because this unit joins the jasper-secrets supplementary
@@ -119,7 +119,7 @@ EnvironmentFile=-/var/lib/jasper-secrets/voice_keys.env
 # http://jts.local/google. Calendar + Gmail tools register only
 # when this file's CLIENT_ID/SECRET are set AND at least one
 # household member has linked an account. Optional via leading `-`.
-# WS1 Phase 4a — moved into the group-`jasper-secrets` dir alongside
+# Lives in the group-`jasper-secrets` dir alongside
 # the OAuth token tree (/var/lib/jasper-secrets/google/).
 EnvironmentFile=-/var/lib/jasper-secrets/google_credentials.env
 # Google Routes API key written by /transit/ for destination ETA /
@@ -221,7 +221,7 @@ RestartPreventExitStatus=66 78
 # longer backoff means fewer wasted restart cycles before the device
 # stabilises, and pairs with StartLimitBurst above to cap the spiral.
 RestartSec=5
-# WS1 Phase 3b — user drop (3b-1). jasper-voice runs as a dedicated non-root
+# jasper-voice runs as a dedicated non-root
 # service user in the shared `jasper` group so it can reach the cross-daemon
 # /run sockets and group-shared /var/lib/jasper files; `audio` (supplementary)
 # covers ALSA — the XVF mic is the "Array" ALSA card, NOT a raw USB endpoint
@@ -234,10 +234,10 @@ RestartSec=5
 # enforce).
 User=jasper-voice
 Group=jasper
-# WS1 Phase 4a — `jasper-secrets` (supplementary) grants read of the
+# `jasper-secrets` (supplementary) grants read of the
 # split-out LLM API keys + Google client secret/token tree in
-# /var/lib/jasper-secrets (which mux/control/input are NOT in). WS1 Phase
-# 4b — `jasper-intsecrets` grants read/write of HA + Spotify integration
+# /var/lib/jasper-secrets (which mux/control/input are NOT in).
+# `jasper-intsecrets` grants read/write of HA + Spotify integration
 # secrets/caches (input is NOT in it). `audio` covers ALSA.
 SupplementaryGroups=audio jasper-secrets jasper-intsecrets
 CapabilityBoundingSet=
@@ -267,27 +267,27 @@ RuntimeDirectoryMode=0750
 
 # Hardening — defense in depth around the highest-attack-surface
 # process on the speaker (parses microphone audio, third-party LLM
-# responses, Spotify/Google API responses). WS1 Phase 3b drops it to the
+# responses, Spotify/Google API responses). It drops to the
 # non-root jasper-voice user (above); /dev/snd access comes from the `audio`
-# supplementary group, not root. WS1 phase-1 hardening uses a strict read-only
+# supplementary group, not root. A strict read-only
 # FS (writes pinned by
 # ReadWritePaths + StateDirectory/RuntimeDirectory), ProtectHome=tmpfs hides
 # /root so a compromised voice can't read root's SSH key to pivot, no kernel
 # tunables/modules/logs, no extra namespaces. The capability + syscall filters
-# (CapabilityBoundingSet= / SystemCallFilter=@system-service, in the Phase-3b
-# block above) carry full value now that the process is non-root.
+# (CapabilityBoundingSet= / SystemCallFilter=@system-service, in the
+# non-root user-drop above) carry full value now that the process is non-root.
 ProtectSystem=strict
 ProtectHome=tmpfs
 PrivateTmp=true
 NoNewPrivileges=true
-# WS1 Phase 4a — jasper-voice only READS /var/lib/jasper-secrets (the LLM keys
+# jasper-voice only READS /var/lib/jasper-secrets (the LLM keys
 # arrive via EnvironmentFile, which systemd reads as root before the drop; the
 # Google token tree is read off disk via the jasper-secrets group). It never
 # WRITES there — the OAuth save_token / registry.save paths live in jasper-web +
 # the operator CLI, not the daemon. ProtectSystem=strict still allows reads, so
 # the dir is deliberately NOT in ReadWritePaths: least privilege, and no hard
 # dependency on a non-StateDirectory path for the most critical daemon.
-# WS1 Phase 4b — Spotify is different: spotipy can refresh and persist OAuth
+# Spotify is different: spotipy can refresh and persist OAuth
 # tokens from the voice runtime, so the integration-secret compartment is a
 # deliberate write path.
 ReadWritePaths=/var/lib/jasper /var/lib/jasper-intsecrets

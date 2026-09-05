@@ -26,7 +26,7 @@ ensure_state_dir() {
     # jasper-group writer (atomic_write_text's mkstemp/rename). Only create,
     # never re-chmod, an existing dir here.
     [[ -d "${STATE_DIR}" ]] || install -d -m 0750 "${STATE_DIR}"
-    # WS1 Phase 3b: once the shared `jasper` group exists (created by
+    # Once the shared `jasper` group exists (created by
     # create_jasper_service_users earlier in install), widen the state dir to
     # root:jasper 0770 so the now-non-root jasper-voice/-mux (group jasper) can
     # write group-shared state here (speaker_volume.json via atomic
@@ -42,7 +42,7 @@ ensure_state_dir() {
     heal_shared_state_modes
 }
 
-# WS1 — group-writable heal for the shared, multi-writer state files.
+# Group-writable heal for the shared, multi-writer state files.
 #
 # The dir mode (0770) + the daemons' UMask=0007 make NEW files group-writable,
 # but files CREATED BEFORE that landed (or by a root writer) can be
@@ -223,7 +223,7 @@ for spec in sys.argv[3:]:
 PY
 }
 
-# WS1 Phase 4a — the group-`jasper-secrets` secret compartment (LLM API keys +
+# The group-`jasper-secrets` secret compartment (LLM API keys +
 # Google client secret + OAuth token tree), narrowed to jasper-voice +
 # jasper-web. A SIBLING of STATE_DIR on purpose: STATE_DIR is voice/mux's
 # StateDirectory, whose recursive chown forces its contents' group back to
@@ -241,7 +241,7 @@ ensure_secrets_dir() {
     install -d -m 2770 -g jasper-secrets "${SECRETS_DIR}"
 }
 
-# WS1 Phase 4b — the group-`jasper-intsecrets` integration-secret compartment
+# The group-`jasper-intsecrets` integration-secret compartment
 # (Home Assistant token + Spotify credentials/OAuth token cache), narrowed to
 # jasper-voice + jasper-control + jasper-mux + jasper-web. Also a sibling of
 # STATE_DIR for the same StateDirectory recursive-chown reason as
@@ -257,7 +257,7 @@ ensure_intsecrets_dir() {
     install -d -m 2770 -g jasper-intsecrets "${INTSECRETS_DIR}"
 }
 
-# WS1 Phase 4a — re-assert ownership and modes across the jasper-secrets
+# Re-assert ownership and modes across the jasper-secrets
 # compartment (Google OAuth token tree + client secret + the LLM API keys) on
 # every deploy, and run the two key relocations that still have a producer.
 #
@@ -312,7 +312,7 @@ reassert_secrets_compartment_perms() {
     systemd-tmpfiles --create --prefix="${SECRETS_DIR}" 2>/dev/null || true
 }
 
-# WS1 Phase 4b — re-assert ownership and modes across the jasper-intsecrets
+# Re-assert ownership and modes across the jasper-intsecrets
 # integration-secret compartment (Home Assistant token + Spotify
 # credentials/OAuth token caches) on every deploy. Like the 4a re-assert above
 # this is confidentiality drift repair, not a migration: nothing writes these
@@ -352,11 +352,13 @@ reassert_intsecrets_compartment_perms() {
 # only in their compartment) has a live producer here, so unlike this file's
 # other relocations, this sweep is never gate-cleared by fleet deployment.
 
-# WS1 Phase 4a — move an operator's hand-seeded provider API key out of the
+# Move an operator's hand-seeded provider API key out of the
 # broad /etc/jasper/jasper.env into the group-jasper-secrets voice_keys.env.
 # An operator seeding a key for headless/CI imaging is the remaining producer;
 # the /voice wizard writes voice_keys.env directly. Safe: never strips a key
 # from jasper.env until its value is confirmed written to voice_keys.env.
+# Remove once no Pi's jasper.env still carries GEMINI_API_KEY, OPENAI_API_KEY,
+# or XAI_API_KEY; the function self-skips each key once it is absent.
 migrate_voice_keys_split() {
     getent group jasper-secrets >/dev/null 2>&1 || return 0
     local jasper_env="${ENV_DIR}/jasper.env"
@@ -407,6 +409,8 @@ _strip_key_from_broad() {
 # /etc/jasper/jasper.env into the group-jasper-secrets google_routes.env. Same
 # remaining producer as migrate_voice_keys_split: headless/CI seeding. The
 # /transit wizard writes google_routes.env directly.
+# Remove once no Pi's jasper.env still carries GOOGLE_ROUTES_API_KEY; the
+# function self-skips when the key is absent.
 migrate_google_routes_key() {
     getent group jasper-secrets >/dev/null 2>&1 || return 0
     ensure_secrets_dir
@@ -484,6 +488,9 @@ PY
 # file for routing (only the doctor inspects it), so a `.retired.*` copy would
 # preserve ghost state under a name the doctor does NOT warn about -- trading a
 # clearable warning for a silent one.
+#
+# Remove once jasper-doctor's check_fanin_asound_wiring drops its WARN on
+# audio_topology.env's presence; that check is what keeps this remover load-bearing.
 remove_retired_audio_topology_state() {
     rm -f "${STATE_DIR}/audio_topology.env" /etc/asound.conf.dmix-mode-backup
 }
@@ -504,6 +511,9 @@ remove_retired_audio_topology_state() {
 # in it because NM's own keyfile is also plaintext at 0600 — encrypting
 # our copy while NM's stays plaintext is theatre against a root-equiv
 # attacker. The PSK does NOT appear in any `echo` from this function.
+#
+# Remove once every Pi already has /var/lib/jasper/wifi_guardian.env; the
+# function self-skips once that stash file exists.
 migrate_wifi_guardian() {
     local stash="${STATE_DIR}/wifi_guardian.env"
 
@@ -578,7 +588,7 @@ EOF
     echo "  migrate_wifi_guardian: seeded ${stash} from active profile (SSID=${ssid}, key-mgmt=${key_mgmt})"
 }
 
-# WS1 Phase 3b-2 — widen the config/secret env files jasper-control reads OFF
+# Widen the config/secret env files jasper-control reads OFF
 # DISK so a non-root jasper-control (and the jasper-doctor it spawns) can read
 # them. This is the deliberate, documented group-`jasper` secret-exposure that
 # the jasper-control drop requires; per-daemon isolation is Phase 4
@@ -656,7 +666,7 @@ widen_control_secret_env_modes() {
     # (only the SSID, which it derives from nmcli/the journal), so it stays
     # owner-only 0600. Least privilege over blanket widening.
     #
-    # WS1 Phase 4a/4b — google_credentials.env moved to jasper-secrets, while
+    # google_credentials.env moved to jasper-secrets, while
     # spotify_credentials.env + home_assistant.env moved to jasper-intsecrets.
     # Those compartment migrations own their perms now. voice_provider.env stays
     # here (now keyless; control reads the provider name for /system/).

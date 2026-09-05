@@ -57,7 +57,7 @@ ExecStart=/opt/jasper/.venv/bin/jasper-control
 Restart=on-failure
 RestartSec=2
 
-# WS1 Phase 3b — user drop (3b-2). jasper-control runs as a dedicated non-root
+# jasper-control runs as a dedicated non-root
 # service user in the shared `jasper` group. The group is the cross-daemon
 # access boundary: (1) /run/jasper-control is jasper-control:jasper 0750 and the
 # broker socket is 0660 group jasper, so the non-root jasper-mux/-web reach the
@@ -123,7 +123,7 @@ SystemCallFilter=@system-service
 # the 2026-06-19 incident showed why.
 UMask=0007
 
-# WS1 Phase 3 — the privileged restart broker binds a UNIX socket at
+# The privileged restart broker binds a UNIX socket at
 # /run/jasper-control/restart.sock. RuntimeDirectory= makes systemd create
 # (and tear down) /run/jasper-control owned by jasper-control:jasper (the unit's
 # User:Group), so the broker can bind without a manual mkdir/chown. Mode 0750
@@ -158,7 +158,6 @@ NoNewPrivileges=true
 # contracts explicitly so future hardening and current peering advert
 # rendering cannot silently regress.
 ReadWritePaths=/var/lib/jasper /var/lib/jasper-intsecrets /etc/avahi/services
-# WS1 phase-1 hardening (hardened root).
 # ProtectKernelLogs is intentionally OMITTED: jasper-control spawns
 # jasper-doctor, whose watchdog-reset fingerprint check reads dmesg (/dev/kmsg).
 # ProtectHome stays read-only (above) for the same diagnostic-subprocess reason.

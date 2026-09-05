@@ -117,7 +117,7 @@ ReadWritePaths=/var/lib/jasper /run/jasper-fanin
 
 # Runtime dir auto-created on start. systemd cleans it up on stop, so the UDS
 # socket never leaks across daemon lifecycle.
-# WS1 Phase 3b: fanin stays root (final-output path), but joins the `jasper`
+# fanin stays root (final-output path), but joins the `jasper`
 # group + sets UMask=0007 so its tts.sock / control.sock are created
 # root:jasper 0770 (a UNIX socket needs WRITE permission to connect(), so the
 # old umask-derived 0755 blocked the now-non-root jasper-voice/jasper-mux — only

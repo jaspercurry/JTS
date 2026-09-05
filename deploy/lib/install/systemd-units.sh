@@ -66,7 +66,7 @@ install_jasper_support_files() {
 #   jasper-camilla-crossover.service — camilla#2 endpoint-crossover (:1235),
 #     not globally boot-enabled; grouping reconcile arms it only while the box
 #     is a bonded active leader.
-#   jasper-doctor-json.service — WS1 Phase 3b-2 root oneshot capturing
+#   jasper-doctor-json.service — root oneshot capturing
 #     jasper-doctor --json for /system/diagnostics (non-root jasper-control
 #     triggers it via polkit). On-demand only — not enabled.
 #   jasper-camilla-pipe-guard — ExecStartPre chain-breaker: re-points the
