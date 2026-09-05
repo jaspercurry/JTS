@@ -26,6 +26,10 @@ session_artifacts = [
   "docs/multiroom-pairing-reliability-plan.md",
   # Sub-page UX/IA audit and cleanup program; a work queue, deleted when done.
   "docs/UX-AUDIT-2026-09-03.md",
+  # Whole-codebase quality review (frozen snapshot; evidence in
+  # docs/codebase-quality-review-2026-09-05/). Disposition lives in the
+  # steward issues, not here.
+  "docs/CODEBASE-QUALITY-REVIEW-2026-09-05.md",
 ]
 # Prior-art research artifacts: long-lived studies kept as reference (each
 # tagged `Status: research` in-doc), not canonical operational scan targets.
