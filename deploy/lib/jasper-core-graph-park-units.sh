@@ -18,14 +18,8 @@
 # failure class the camilla EBUSY recovery handler exists to fix
 # (the 2026-06-25 JTS5 incident).
 #
-# This list was duplicated byte-for-byte across the recovery handler
-# (deploy/bin/jasper-camilla-recover) and the installer's pre-restart park
-# step (deploy/lib/install/park_audio_clients_for_core_graph_restart),
-# with no shared source and no test pinning them equal — so a future edit
-# to one (e.g. a new renderer that holds the DAC) would drift the other
-# and re-leak a holder. Both consumers now `source` this single definition
-# and iterate the array; tests/test_core_graph_park_units_contract.py pins
-# that no re-inlined copy survives in either file.
+# Both consumers source this single definition rather than re-inlining it;
+# tests/test_core_graph_park_units_contract.py pins that.
 #
 # Scope: this is the DEPLOY/RECOVERY park set (full speaker hardware
 # ownership reclaim). It is intentionally NOT the same set as
@@ -53,19 +47,21 @@ JASPER_CORE_GRAPH_PARK_UNITS=(
     jasper-mux.service
 )
 
-# The RESTORE side: the source clients the recovery ladder starts again
-# itself, in the order it starts them (shairport-sync carries Requires= and
-# After= on nqptp, so the clock leads). Started `is-enabled`-gated, so a unit
-# a profile or reconciler parked on purpose stays parked.
+# The RESTORE side: the source clients the ladder starts again itself, in the
+# order it starts them (shairport-sync carries Requires= and After= on nqptp,
+# so the clock leads).
 #
-# bt-agent.service is start-only, and deliberately absent from the park list:
-# the Bluetooth ALSA endpoint is bluealsa-aplay's, not the pairing agent's, so
-# stopping it reclaims no device and drops an in-flight pairing — but the
-# multiroom-follower park set does stop it, so the ladder puts it back with the
-# rest of the source clients.
+# bt-agent.service is start-only, and deliberately not parked above: the
+# Bluetooth ALSA endpoint is bluealsa-aplay's, not the pairing agent's, so
+# stopping it reclaims no device and drops an in-flight pairing.
 #
-# Consumed by jasper-camilla-recover only. The installer parks with the list
-# above and restores through its own ordered restart/reconcile steps instead.
+# jasper-voice.service is started here despite jasper-aec-reconcile owning its
+# gates: that reconciler's custom-JASPER_MIC_DEVICE branch exits without ever
+# starting voice. Harmless elsewhere — the absence marker no-ops it on a no-mic
+# box, is-enabled skips a provider-less park, and it precedes (so merges with)
+# the reconciler's own restart on a mic-bearing box.
+#
+# Consumed by jasper-camilla-recover.
 # shellcheck disable=SC2034
 JASPER_CORE_GRAPH_RESTORE_UNITS=(
     nqptp.service
@@ -74,39 +70,24 @@ JASPER_CORE_GRAPH_RESTORE_UNITS=(
     bt-agent.service
     jasper-mux.service
     bluealsa-aplay.service
+    jasper-voice.service
 )
 
-# Park-list units the ladder deliberately does NOT start directly, each paired
-# with the reconciler that re-arms it (`unit=owner`). Every owner must also be
-# in JASPER_CORE_GRAPH_RESTORE_RECONCILERS below, which the ladder kicks. Each
-# is gated on state only its owner holds, so a blind start would either
-# condition-fail or overrule a park the owner decided.
+# Park-list units the ladder does NOT start directly, paired with the
+# reconciler that re-arms each (`unit=owner`); the ladder kicks those owners.
+# Each start gate lives in its owner's script, not in a unit file, so a blind
+# start would condition-fail or overrule a park the owner decided.
+# jasper-outputd.service is absent: the ladder restarts it itself, earlier.
 #
-# jasper-outputd.service is absent because the ladder restarts it itself, as a
-# core-graph step ahead of these clients.
+# Consumed by jasper-camilla-recover and the contract test.
 # shellcheck disable=SC2034
 JASPER_CORE_GRAPH_RECONCILER_OWNED_UNITS=(
-    # ConditionPathExists=!/var/lib/jasper/voice-input-absent and the unit's
-    # enable state are both written by jasper-aec-reconcile, which restarts
-    # voice on every mic-bearing branch once it sees the unit inactive.
-    jasper-voice.service=jasper-aec-reconcile.service
-    # ConditionPathExists=/run/jasper-aec-reconcile/aec-bridge-ready — a marker
-    # only that reconciler publishes or revokes.
+    # Gate: /run/jasper-aec-reconcile/aec-bridge-ready.
     jasper-aec-bridge.service=jasper-aec-reconcile.service
-    # Armed only for an ACTIVE leader, and only after the crossover statefile
-    # is re-seeded with the re-proven driver-domain graph: a cold start off a
-    # stale statefile is the full-range-to-a-tweeter hazard the unit's
-    # ExecStartPre guard is documented NOT to convert.
+    # Gate: the arm-time statefile re-seed, without which a cold start is
+    # full-range to a tweeter.
     jasper-camilla-crossover.service=jasper-grouping-reconcile.service
-    # Which of the two runs is the bond ROLE — leader both, follower client
-    # only, solo neither — so a start would put a snapclient on an unbonded box.
+    # Gate: the bond role — leader both, follower client only, solo neither.
     jasper-snapclient.service=jasper-grouping-reconcile.service
     jasper-snapserver.service=jasper-grouping-reconcile.service
-)
-
-# The reconcilers the ladder kicks so the owned units above come back.
-# shellcheck disable=SC2034
-JASPER_CORE_GRAPH_RESTORE_RECONCILERS=(
-    jasper-aec-reconcile.service
-    jasper-grouping-reconcile.service
 )

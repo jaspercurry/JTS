@@ -2,40 +2,28 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Single-source-of-truth guard for the core-graph park list.
+"""Single-source-of-truth guard for the core-graph park/restore rosters.
 
 Before restarting the core DSP graph (CamillaDSP / outputd / fan-in), the
 units that can hold a DAC / Camilla / renderer ALSA endpoint must be
 stopped, or the graph start fails with "Device or resource busy" (EBUSY) —
 the exact failure class the camilla EBUSY recovery handler exists to fix.
-That list of "audio clients to park" was
-duplicated BYTE-FOR-BYTE across two bash files with no shared source and
-no test pinning them equal:
+Both the runtime handler (deploy/bin/jasper-camilla-recover) and the
+installer (park_audio_clients_for_core_graph_restart in
+deploy/lib/install/systemd-units.sh) drive that from one sourced fragment,
+deploy/lib/jasper-core-graph-park-units.sh; a second copy would drift and
+re-leak a holder. These tests pin that:
 
-  1. runtime recovery  deploy/bin/jasper-camilla-recover  (stop loop)
-  2. install-time      deploy/lib/install/systemd-units.sh
-                       park_audio_clients_for_core_graph_restart()
-
-A future edit to one (e.g. a new renderer that holds the DAC) would drift
-the other and re-leak a holder. The list now lives once in
-deploy/lib/jasper-core-graph-park-units.sh as JASPER_CORE_GRAPH_PARK_UNITS,
-sourced by both consumers. These tests pin that:
-
-  * the canonical fragment holds exactly the expected ordered set;
+  * the canonical fragment holds exactly the expected ordered park set;
   * the recovery script, run end-to-end, issues `stop` for every unit in
     the SOURCED list (behaviour, not source text — a stale copy could not
     pass this);
   * that same run leaves nothing it stopped stopped: every parked unit is
     either started again or named in the fragment as owned by a reconciler
     the run kicks;
-  * neither consumer re-inlines a park list (the consolidation can't
-    silently regress to a second hardcoded copy);
+  * neither consumer re-inlines a park list;
   * both install paths (full speaker + streambox) install the fragment to
     the runtime path the deployed recovery script sources.
-
-Mirrors tests/test_lib_deploy_direction.py /
-tests/test_wifi_profile_hardening_contract.py. See AGENTS.md
-"Pin promises with tests".
 
 Scope note: the multiroom-follower park set
 (jasper.local_sources.registry.local_source_park_units) is a DIFFERENT,
@@ -48,6 +36,10 @@ import os
 import re
 import subprocess
 from pathlib import Path
+
+import pytest
+
+from tests.test_camilla_recover_script import _fake_env, _run
 
 ROOT = Path(__file__).resolve().parents[1]
 FRAGMENT = ROOT / "deploy" / "lib" / "jasper-core-graph-park-units.sh"
@@ -88,56 +80,18 @@ def _source_fragment_array(name: str) -> list[str]:
     return [line for line in proc.stdout.splitlines() if line]
 
 
-def _run_recover(tmp_path: Path) -> list[str]:
-    """Run the recovery handler end to end and return the systemctl argv it
-    issued. The fake succeeds at everything, so the run takes the successful
-    restore ladder rather than either park leg."""
-    calls = tmp_path / "systemctl.calls"
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    asound = tmp_path / "asound"
-    (asound / "card0" / "pcm0p" / "sub0").mkdir(parents=True)
-    dev_snd = tmp_path / "dev_snd"
-    dev_snd.mkdir()
+@pytest.fixture(scope="module")
+def recover_calls(tmp_path_factory) -> dict[str, set[str]]:
+    """One successful recovery ladder, as {systemctl verb: units}.
 
-    fake_systemctl = bin_dir / "fake-systemctl"
-    fake_systemctl.write_text(
-        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> {calls}\nexit 0\n",
-        encoding="utf-8",
-    )
-    fake_systemctl.chmod(0o755)
-
-    env = os.environ.copy()
-    env.update(
-        {
-            "JASPER_SYSTEMCTL": str(fake_systemctl),
-            "JASPER_CAMILLA_RECOVER_STATE_DIR": str(tmp_path / "state"),
-            "JASPER_CAMILLA_RECOVER_RUN_DIR": str(run_dir),
-            "JASPER_CAMILLA_RECOVER_LIVENESS_WAIT_SEC": "0",
-            "JASPER_ASOUND_ROOT": str(asound),
-            "JASPER_DEV_SND_ROOT": str(dev_snd),
-            "PATH": f"{bin_dir}:{env.get('PATH', '')}",
-        }
-    )
-
-    result = subprocess.run(
-        [str(RECOVER), "--reason", "park-contract"],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
+    Module-scoped so every assertion below reads the SAME recorded run. The
+    sibling module owns the fake systemctl; this only groups its argv, dropping
+    a leading --no-block and any option between the verb and the unit."""
+    env, calls = _fake_env(tmp_path_factory.mktemp("recover"))
+    result = _run(env, "park-contract", timeout=15)
     assert result.returncode == 0, result.stderr
-    return calls.read_text(encoding="utf-8").splitlines()
-
-
-def _units_by_verb(calls: list[str]) -> dict[str, set[str]]:
-    """Recorded systemctl argv -> {verb: units}, ignoring a leading --no-block
-    and any option between the verb and the unit."""
     seen: dict[str, set[str]] = {}
-    for line in calls:
+    for line in calls.read_text(encoding="utf-8").splitlines():
         argv = line.split()
         if argv[:1] == ["--no-block"]:
             argv = argv[1:]
@@ -150,25 +104,24 @@ def test_fragment_defines_canonical_ordered_park_list():
     assert _source_fragment_array("JASPER_CORE_GRAPH_PARK_UNITS") == CANONICAL_PARK_UNITS
 
 
-def test_recover_script_stops_exactly_the_sourced_park_list(tmp_path):
+def test_recover_script_stops_exactly_the_sourced_park_list(recover_calls):
     """End-to-end: the recovery handler parks every unit in the SOURCED list.
 
     Binds the runtime stop behaviour to the single source — a drifted /
     stale copy of the list could not produce these exact `stop` calls."""
     expected = set(_source_fragment_array("JASPER_CORE_GRAPH_PARK_UNITS"))
     assert expected, "fragment produced no units"
-    stopped = _units_by_verb(_run_recover(tmp_path)).get("stop", set())
+    stopped = recover_calls.get("stop", set())
     assert expected <= stopped, (
         "the sourced park list drifted from the runtime stop loop; "
         f"never stopped: {sorted(expected - stopped)}"
     )
 
 
-def test_every_parked_unit_is_restored_or_owned_by_a_kicked_reconciler(tmp_path):
+def test_every_parked_unit_is_restored_or_owned_by_a_kicked_reconciler(recover_calls):
     """A successful pass leaves nothing it stopped stopped: every parked unit
     is started again, or named in the fragment as owned by a reconciler the
-    pass kicks — jasper-voice, whose park is otherwise silent deafness, among
-    them.
+    pass kicks.
 
     Remove this guard when park and restore live in one function.
     """
@@ -176,9 +129,8 @@ def test_every_parked_unit_is_restored_or_owned_by_a_kicked_reconciler(tmp_path)
         entry.split("=", 1)
         for entry in _source_fragment_array("JASPER_CORE_GRAPH_RECONCILER_OWNED_UNITS")
     )
-    verbs = _units_by_verb(_run_recover(tmp_path))
-    stopped = verbs.get("stop", set())
-    started = verbs.get("start", set()) | verbs.get("restart", set())
+    stopped = recover_calls.get("stop", set())
+    started = recover_calls.get("start", set()) | recover_calls.get("restart", set())
     assert stopped, "the handler stopped nothing"
 
     orphaned = stopped - started - set(owners)
@@ -187,6 +139,9 @@ def test_every_parked_unit_is_restored_or_owned_by_a_kicked_reconciler(tmp_path)
         "start them in the ladder or name their reconciler in "
         "JASPER_CORE_GRAPH_RECONCILER_OWNED_UNITS"
     )
+    # The wake path is not delegable: jasper-aec-reconcile's custom-mic branch
+    # exits without starting voice, so the ladder must start it itself.
+    assert "jasper-voice.service" in started, "the recovered box cannot hear"
 
     kicked_for = {owners[unit] for unit in stopped & set(owners)}
     assert kicked_for <= started, (
@@ -232,19 +187,6 @@ def test_installer_consumer_sources_fragment_and_has_no_inline_park_list():
     assert not _INLINE_PARK_BLOCK.search(text), (
         "park_audio_clients_for_core_graph_restart re-inlined the park list; "
         "iterate JASPER_CORE_GRAPH_PARK_UNITS from the shared fragment instead"
-    )
-
-
-def test_fragment_is_the_only_definition_of_the_inline_park_block():
-    """The hardcoded stop-list shape exists in exactly one file."""
-    matches = [
-        path.name
-        for path in (FRAGMENT, RECOVER, SYSTEMD_UNITS)
-        if _INLINE_PARK_BLOCK.search(path.read_text(encoding="utf-8"))
-    ]
-    assert matches == [FRAGMENT.name], (
-        f"the park-list literal should live only in {FRAGMENT.name}, "
-        f"found in: {matches}"
     )
 
 

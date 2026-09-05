@@ -45,7 +45,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PARK_UNITS_LIB="${JASPER_CORE_GRAPH_PARK_UNITS_LIB:-}"
 
 # Source the canonical core-graph rosters (the park list, the clients this
-# handler restarts, and the reconcilers that re-arm the rest). Sibling-first
+# handler restarts, and who owns the rest). Sibling-first
 # (the repo checkout's deploy/lib/ when this script runs from deploy/bin/,
 # e.g. tests), then the installed copy under /usr/local/lib/jasper/ for the
 # deployed /usr/local/sbin script which has no ../lib sibling — mirroring
@@ -394,18 +394,21 @@ restore_core_graph() {
             for unit in "${JASPER_CORE_GRAPH_RESTORE_UNITS[@]}"; do
                 start_if_enabled "$unit"
             done
-            # The park units NOT started above come back through these;
-            # JASPER_CORE_GRAPH_RECONCILER_OWNED_UNITS names which by whom.
-            # --no-block, matching park_core_graph: both are Type=oneshot
-            # with TimeoutStartSec=120 and 6346, and they run after the core
-            # graph is already back, so a blocking start would put this
-            # handler's whole budget behind them.
-            local reconcile
+            # The park units NOT started above come back through the owners
+            # JASPER_CORE_GRAPH_RECONCILER_OWNED_UNITS pairs them with, kicked
+            # once each. --no-block, matching park_core_graph: both are
+            # Type=oneshot with TimeoutStartSec=120 and 6346, and they run
+            # after the core graph is already back, so a blocking start would
+            # put this handler's whole budget behind them.
+            local owner kicked=""
             local reconcile_status
-            for reconcile in "${JASPER_CORE_GRAPH_RESTORE_RECONCILERS[@]}"; do
-                "$SYSTEMCTL" --no-block start "$reconcile" >/dev/null 2>&1
+            for owner in "${JASPER_CORE_GRAPH_RECONCILER_OWNED_UNITS[@]}"; do
+                owner="${owner#*=}"
+                case " ${kicked} " in *" ${owner} "*) continue ;; esac
+                kicked+=" ${owner}"
+                "$SYSTEMCTL" --no-block start "$owner" >/dev/null 2>&1
                 reconcile_status=$?
-                emit unit_action action "start" unit "$reconcile" \
+                emit unit_action action "start" unit "$owner" \
                     status "$reconcile_status" mode "no_block"
             done
             emit recovered action "core_graph_restarted"
