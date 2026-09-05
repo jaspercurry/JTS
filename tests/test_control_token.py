@@ -153,7 +153,7 @@ def test_cli_disable_when_already_off_is_noop(monkeypatch, tmp_path, capsys):
 
 
 # -------------------------------------------------------------------------
-# WS1 Phase 2: ensure_token() makes the gate mandatory + invisible.
+# ensure_token() makes the gate mandatory + invisible.
 # -------------------------------------------------------------------------
 
 

@@ -2,13 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the WS1 Phase 4 secret compartments in
-deploy/lib/install/env-migrations.sh — `reassert_secrets_compartment_perms`
-and `reassert_intsecrets_compartment_perms` (which re-narrow each
-compartment's ownership and modes on every deploy), plus the two key
+"""Tests for the secret compartments in deploy/lib/install/env-migrations.sh —
+`reassert_secrets_compartment_perms` and `reassert_intsecrets_compartment_perms` (which
+re-narrow each compartment's ownership and modes on every deploy), plus the two key
 relocations that still have a producer: `migrate_voice_keys_split` and
-`migrate_google_routes_key`, which move an operator-seeded key out of
-/etc/jasper/jasper.env into the jasper-secrets compartment.
+`migrate_google_routes_key`, which move an operator-seeded key out of /etc/jasper/jasper.env
+into the jasper-secrets compartment.
 
 These are the most confidentiality-sensitive bash in the installer, so the
 safety properties get pinned here: the mode re-narrow, idempotency, and the

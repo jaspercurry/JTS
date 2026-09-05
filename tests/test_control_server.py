@@ -1097,7 +1097,7 @@ def test_follower_mic_mute_refuses_with_pair_parked_state(follower_server):
 # --------------------------------------------------------------------------
 
 # Derived from the server's own frozenset so a newly gated route is exercised
-# automatically and the two can never drift (WS1 Phase 2 added
+# automatically and the two can never drift (the gate covers
 # /system/restart/voice + /system/restart/audio). The gate rejects before any
 # route dispatch, so iterating restart routes here triggers no side effect.
 import jasper.control.server as _srv_mod  # noqa: E402
@@ -1108,15 +1108,13 @@ _GATED_ROUTES = tuple(sorted(_srv_mod._TOKEN_GATED_ROUTES))
 def test_grouping_set_stays_in_token_gated_routes():
     """Pin the membership invariant the rest of this section derives from.
 
-    The gate-behavior tests below iterate `_TOKEN_GATED_ROUTES` itself, so
-    they'd stay green if `/grouping/set` were dropped — they'd just exercise
-    one fewer route. This test fails on that removal: `/grouping/set` MUST
-    remain token-gated. Dropping it would silently re-open the
-    multiroom-vs-privilege-separation contradiction (WS1 Phase 2 made the gate
-    mandatory; someone "fixing" the cross-device grouping fan-out by removing
-    the gate is exactly the regression this pins). The household-credential
-    work accepts that credential *in addition* to the control token on this
-    route — it never un-gates it.
+    The gate-behavior tests below iterate `_TOKEN_GATED_ROUTES` itself, so they'd stay
+    green if `/grouping/set` were dropped — they'd just exercise one fewer route. This
+    test fails on that removal: `/grouping/set` MUST remain token-gated. Dropping it would
+    silently re-open the multiroom-vs-privilege-separation contradiction (the gate is
+    mandatory; someone "fixing" the cross-device grouping fan-out by removing the gate is
+    exactly the regression this pins). The household-credential work accepts that
+    credential *in addition* to the control token on this route — it never un-gates it.
     """
     assert "/grouping/set" in _srv_mod._TOKEN_GATED_ROUTES
     # The full expected gated set, so adding/removing any route is a

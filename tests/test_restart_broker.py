@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Contract tests for the WS1 Phase 3 privileged restart broker.
+"""Contract tests for the privileged restart broker.
 
 Pins the closed verb vocabulary, the unit allowlist, SO_PEERCRED peer-uid
 auth, the request/response wire contract, and the root fallback — the

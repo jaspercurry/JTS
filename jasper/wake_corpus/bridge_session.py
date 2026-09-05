@@ -591,14 +591,13 @@ def build_capture_health(
 def _broker_restart_or_raise(unit: str, *, timeout_sec: float) -> None:
     """Blocking restart of one unit via jasper-control's restart broker.
 
-    WS1 Phase 3: the wake-corpus bridge-output flow runs inside the
-    jasper-web process, which the user-drop PR moves to a non-root service
-    user — so it asks the broker rather than shelling out to systemctl. The
+    The wake-corpus bridge-output flow runs inside the jasper-web process, which runs as a
+    non-root service user — so it asks the broker rather than shelling out to systemctl. The
     broker returns a result dict (it never raises); we re-raise on failure as
-    ``subprocess.CalledProcessError`` to preserve this module's existing
-    raise-on-failure contract (callers catch CalledProcessError / OSError and
-    surface a 500). While jasper-web is still root the broker client falls
-    back to a direct systemctl if the broker is unreachable.
+    ``subprocess.CalledProcessError`` to preserve this module's existing raise-on-failure
+    contract (callers catch CalledProcessError / OSError and surface a 500). While
+    jasper-web is still root the broker client falls back to a direct systemctl if the
+    broker is unreachable.
     """
     resp = restart_broker.manage_units(
         unit, verb="restart", reason="wake-corpus bridge outputs",
@@ -1019,10 +1018,9 @@ def voice_daemon_active() -> bool:
 
 
 def set_voice_daemon_state(action: str) -> None:
-    """Start or stop jasper-voice through jasper-control's restart broker
-    (WS1 Phase 3). Blocking + raise-on-failure (CalledProcessError) to
-    preserve the prior `systemctl ... check=True` contract — callers surface
-    the failure to the operator."""
+    """Start or stop jasper-voice through jasper-control's restart broker. Blocking +
+    raise-on-failure (CalledProcessError) to preserve the prior `systemctl ... check=True`
+    contract — callers surface the failure to the operator."""
     if action not in ("start", "stop"):
         raise ValueError("action must be start or stop")
     resp = restart_broker.manage_units(

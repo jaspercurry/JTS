@@ -51,11 +51,10 @@ def test_snapshot_disabled_when_no_stash_and_no_active(monkeypatch, stash_path):
 
 
 def test_snapshot_enabled_via_stat_when_psk_unreadable(monkeypatch, stash_path, caplog):
-    """WS1 Phase 3b-2: the non-root jasper-control cannot read the 0600
-    PSK-bearing stash. `enabled` must still be True (derived from a stat, not a
-    read), the SSID gracefully omitted, and the read NEVER attempted (so
-    read_stash can't log a permission WARNING on every /state poll) —
-    active_ssid still populated so the card degrades honestly."""
+    """The non-root jasper-control cannot read the 0600 PSK-bearing stash. `enabled` must
+    still be True (derived from a stat, not a read), the SSID gracefully omitted, and the
+    read NEVER attempted (so read_stash can't log a permission WARNING on every /state poll)
+    — active_ssid still populated so the card degrades honestly."""
     import os
 
     wifi_guardian_persistence.write_stash(stash_path, "Home", "p", "wpa-psk")

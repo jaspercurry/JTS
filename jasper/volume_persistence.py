@@ -467,12 +467,11 @@ class VolumePersistence:
                 payload["mute_token"] = self._current_mute_token
         body = json.dumps(payload, indent=2)
         try:
-            # Atomic write via the canonical helper (same-dir tempfile +
-            # os.replace). mode 0660 (group rw): WS1 Phase 3b drops jasper-voice
-            # and jasper-mux to non-root service users in the shared `jasper`
-            # group, and all three of voice/mux/control read+write this file
-            # fresh. Group rw + the group-shared /var/lib/jasper dir lets them
-            # converge; the file carries no secret (just the listening level),
+            # Atomic write via the canonical helper (same-dir tempfile + os.replace).
+            # mode 0660 (group rw): jasper-voice and jasper-mux run as non-root service
+            # users in the shared `jasper` group, and all three of voice/mux/control
+            # read+write this file fresh. Group rw + the group-shared /var/lib/jasper dir
+            # lets them converge; the file carries no secret (just the listening level),
             # so group read is not a disclosure concern.
             atomic_write_text(self._path, body, mode=0o660)
         except OSError as e:

@@ -53,7 +53,7 @@ def test_round_trip(tmp_path: Path):
 
 
 def test_saved_file_is_group_readable_0640_with_parent_group(tmp_path: Path):
-    """WS1 Phase 3b-2: the non-root jasper-control reads sound settings for
+    """The non-root jasper-control reads sound settings for
     /state; 0640 group jasper (these are non-secret EQ config), not 0600."""
     import os
     import stat

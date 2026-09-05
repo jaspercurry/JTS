@@ -13,10 +13,9 @@
 #
 # Each provider needs its own API key set in either the operator env
 # (/etc/jasper/jasper.env) or the wizard-owned keys file
-# (/var/lib/jasper-secrets/voice_keys.env — WS1 Phase 4a split the API keys
-# out of voice_provider.env into the group-jasper-secrets compartment) BEFORE
-# switching to it. The daemon refuses to start if the active provider's key is
-# missing. Other providers' keys may stay blank.
+# (/var/lib/jasper-secrets/voice_keys.env, split out of voice_provider.env into the
+# group-jasper-secrets compartment) BEFORE switching to it. The daemon refuses to start
+# if the active provider's key is missing. Other providers' keys may stay blank.
 #
 # Usage:
 #   bash scripts/switch-voice-provider.sh <provider-id>
@@ -31,7 +30,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SSH=(ssh -o ConnectTimeout=5 "${PI_USER}@${PI_HOST}")
 OPERATOR_ENV="/etc/jasper/jasper.env"
 PROVIDER_ENV="/var/lib/jasper/voice_provider.env"
-# WS1 Phase 4a — the provider API keys live here now (group jasper-secrets),
+# The provider API keys live here (group jasper-secrets),
 # split out of PROVIDER_ENV (which keeps the non-secret provider/model).
 KEYS_ENV="/var/lib/jasper-secrets/voice_keys.env"
 CATALOG_PY="/opt/jasper/.venv/bin/python"
@@ -83,11 +82,10 @@ if ! KEY_VAR="$(lookup_catalog_field "$PROVIDER" 2)"; then
     exit 2
 fi
 
-# Sanity-check the active provider's API key BEFORE flipping the env —
-# the daemon will refuse to start without it, which would leave the
-# Pi voiceless if we don't catch it here. WS1 Phase 4a: the key lives in
-# KEYS_ENV (group jasper-secrets) or the operator's jasper.env; PROVIDER_ENV is
-# still grepped to cover a not-yet-migrated Pi (tail -1 wins on the last match).
+# Sanity-check the active provider's API key BEFORE flipping the env — the daemon will refuse
+# to start without it, which would leave the Pi voiceless if we don't catch it here. The key
+# lives in KEYS_ENV (group jasper-secrets) or the operator's jasper.env; PROVIDER_ENV is still
+# grepped to cover a not-yet-migrated Pi (tail -1 wins on the last match).
 KEY_LINE=$("${SSH[@]}" "sudo sh -c 'grep -h -E \"^${KEY_VAR}=.*\" \"${OPERATOR_ENV}\" \"${KEYS_ENV}\" \"${PROVIDER_ENV}\" 2>/dev/null | tail -1 || true'")
 if [[ -z "$KEY_LINE" || "$KEY_LINE" == "${KEY_VAR}=" ]]; then
     echo "error: ${KEY_VAR} is not set for the effective voice config on ${PI_HOST}." >&2
@@ -108,12 +106,11 @@ if [ -f "$env" ]; then
     grep -v '^JASPER_VOICE_PROVIDER=' "$env" > "$tmp" || true
 fi
 printf 'JASPER_VOICE_PROVIDER=%s\n' "$provider" >> "$tmp"
-# WS1 Phase 4a/3b — voice_provider.env is the NON-secret SSOT (the API keys live
-# in voice_keys.env now), so it must be group-jasper readable (0640) for the
-# non-root jasper-control to fresh-read the active provider for /system/. Writing
-# 0600 root:root here re-broke that read until the next deploy/restart. (systemd
-# StateDirectory re-owns it to <voice|mux>:jasper on the restart below; we set
-# the right group+mode now so the read works in the interim.)
+# voice_provider.env is the NON-secret SSOT (the API keys live in voice_keys.env), so it
+# must be group-jasper readable (0640) for the non-root jasper-control to fresh-read the
+# active provider for /system/. Writing 0600 root:root here re-broke that read until the
+# next deploy/restart. (systemd StateDirectory re-owns it to <voice|mux>:jasper on the
+# restart below; we set the right group+mode now so the read works in the interim.)
 chown root:root "$tmp"
 chgrp jasper "$tmp" 2>/dev/null || true
 chmod 0640 "$tmp"
