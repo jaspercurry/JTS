@@ -18,6 +18,7 @@ at a plan gate the owner triages before code is written.
 | `P8-docs.md` | #4202 | Docs and prose | B |
 | `P9-voice-loop.md` | #4208 | The voice loop (wake → turn → answer) — a concern lane, built on `docs/VOICE-AUDIT-2026-09-05.md` | B / B− / C |
 | `P11-web-ui.md` | #4212 | The web UI (`jasper/web/`, assets, nginx) — a concern lane, built on the #4211 hand-off and `docs/web-ia.md` | C+ / B− |
+| `P12-hardware.md` | #4213 | Attached hardware (DACs, I2S amps, mics, usbsink, accessories, the two reconcilers) — a concern lane, built on ADR-0235 and the #4027 hand-off; asks from other lanes go to #4027 | A− (safety) / C (input side) |
 
 Hardware/audio safety is already A− and needs only R-016's belt-and-braces row (in P4's doctor work
 and P3's clamp event). The tuning zone is parked: its steward stood down with wave 9 on main
@@ -28,8 +29,7 @@ ticks them at the plan gate instead of a lane widening into a 263k-line domain u
 ## Sequencing
 
 Every lane starts with a scout and a one-page plan that stops at the owner's triage; those phases
-never conflict, so all eight can be kicked off at once. The hard ordering is only about code
-landing on `main`:
+never conflict. The hard ordering is only about code landing on `main`:
 
 1. **P6 deletions → P5 moves → P5 splits.** Do not move what is about to be deleted; do not split a
    file that is about to move. P5's cycle fix, layers contract and deferred-import rule need no wait.
@@ -44,46 +44,52 @@ landing on `main`:
    chain, and its C.R1 wave carries P6's wizard `main()` deletions, so those two coordinate on
    #4212 before either branches.
 
-| Batch | Lanes | Why together |
-|---|---|---|
-| 1 (now) | P1, P2, P6, P5 (plan, cycle fix, contract) | Disjoint files; P1/P2 are small and close the two non-negotiable seams; P6 clears the ground P5 moves on |
-| 2 (as P1/P2 close) | P3, P4, P8, P9, P11, P5 (moves) | P3/P4 split `jasper/control/` by file (stated in their prompts); P9 starts once #4198/#4203 and the voice close-out are in; P11 starts on #4210; P8 is prose-only |
-| 3 (after P5 moves merge) | P7, P5 (splits), P8 (stale-path pass), P11 (Phase D) | Tests and docs follow the tree; Phase D follows P6's v1-apply decision |
 
 ## Where each lane runs
 
-The owner has three Claude plans: two cloud plans (remote sessions, no route to the LAN) and one
-local plan (the owner's machine, which reaches the Pis). Rule: a lane goes to the cloud unless it
-needs the box; the local plan is the hands for everyone; spread the load so no plan runs more than
-two lanes at once.
+The owner has three Claude accounts: **James Crane** (remote), **Dip** (remote) and **Space Hater**
+(the owner's machine — the only one that reaches the Pis). One lane per account at a time: start
+the next lane on an account when the previous one has posted its handoff issue, or when it is
+parked at its plan gate waiting on the owner. Anything that needs a box runs on Space Hater; a
+cloud lane's hardware ask is a comment on #4027 with the exact command and the expected reading,
+and the lane on Space Hater answers on the asking lane's issue. There is no separate ops lane.
 
-| Plan | Batch 1 (now) | Batch 2 | Batch 3 |
+| Order | James Crane (remote) | Dip (remote) | Space Hater (local, hardware) |
 |---|---|---|---|
-| Local (hardware) | #4209 USB host-volume regression (evidence, bisect), then the ops lane (deploy, measure, verify for every other lane); the hardware-input lane (#4027) when its close-out is in | ops lane: P9's rows 0.2 and 1.4, P3's idle measurements, P2's spare-Pi installs | ops lane |
-| Cloud A | P1 secrets, P6 right-sizing | P3 resilience, P11 web UI | P7 tests, P8's stale-path pass |
-| Cloud B | P2 deploy integrity (code with stubbed ssh/rsync; every install-path PR gets one spare-Pi run via the local plan), P5 (plan, cycle fix, layers contract) | P9 voice loop, P4 observability, P5 moves | P5 splits, P11 Phase D |
+| 1 | P1 secrets #4193 | P2 deploy integrity #4194 | P12 attached hardware #4213 (#4209 first) |
+| 2 | P6 right-sizing #4200 | P4 observability #4197 | P9 voice loop #4208 (once #4198 and #4203 have merged) |
+| 3 | P3 resilience #4195 | P5 structure #4199 (plan, cycle fix and contract at once; moves after P6's deletions merge) | P11 web UI #4212 (merges #4210 first) |
+| 4 | P7 tests #4201 (scout and plan at once; execution after P5's moves merge) | P8 docs #4202 (its stale-path pass after P5's moves merge) | — |
 
-P8 (docs, prose-only) fits wherever a cloud plan has a free slot from batch 2 on; it is the lane to
-pause first when `main` thrashes.
+Kickoff message for a lane — paste it into a fresh session on the named account, changing only the
+issue number and the lane name in the last sentences:
 
-Hardware asks from a cloud lane are comments on the ops lane's issue, with the exact command and
-the expected reading; the ops lane answers on the asking lane's issue.
+> You are Fable: the architect, strategist, coordinator, debugger and the one with taste. You do
+> not do the work yourself — every survey, scout, edit and test run is delegated to a Sonnet
+> (mechanical) or Opus (judgement) subagent, and you name the model on every `Agent` call. Every
+> PR gets `/code-review` and `/simplify` before merge, no exceptions. The goal is a smaller,
+> simpler codebase: less cruft, less prose, one source of truth per fact, clear contracts, no god
+> files — never bigger. Your full brief is issue #4193 in jaspercurry/JTS (quality lane P1,
+> secrets). Read `AGENTS.md`, then read that issue in full and follow it exactly; it ends at a plan
+> gate where you stop and wait for me. Other lanes run concurrently; their issues are named in the
+> brief.
 
-The local plan's GitHub API quota is shared with the ops lane: builder briefs there forbid `gh`, the
-lane session polls CI itself with one slow waiter, rebases instead of `gh run rerun`, and runs only
-targeted tests locally (the doctor stream's lessons on #4028; each prompt's Mechanics repeats them).
+On Space Hater add: *You are on my machine and the Pis are reachable; other lanes' hardware asks
+arrive as comments on #4027 — answer them on the asking lane's issue.*
 
-Four sessions at a time is a comfortable ceiling: every lane rebases before each push, and more
-than that makes `main` thrash. The general steward (#4085) has stood down with nothing open; its
-round-2 queue is folded into P2–P8. The doctor/state steward overlaps P3/P4: stand it down (merge
-what is green, close what is not, one close-out comment) before batch 1, or point it at these
-issues; the Wave-6 systems rows in the review go to P4 once it has. #4031's Phase D and #4027 are
-being landed the same way; their close-outs redraw the map before the fresh sessions start.
-Waves 1–2 of the steward round (26 PRs, the sensitive-tier #4163 and #4187 among them) are on
-`main` and **not deployed**; the owner's deploy is their hardware confirmation and gates P3's
-daemon rows.
+The local account's GitHub API quota is one per machine: builder briefs there forbid `gh`; the lane
+session polls CI itself, one slow waiter, through `gh api` no faster than every two minutes;
+rebase instead of `gh run rerun`; targeted tests locally, the full suite on CI (the doctor and
+hardware streams' lessons on #4028 and #4027; each prompt's Mechanics repeats them).
 
-## Programs still landing (the map is redrawn once they have)
+Three lanes at a time keeps `main` calm: every lane rebases before each push. Every earlier
+program has stood down or handed off — the general steward (#4085), the tuning steward (#3769),
+the doctor/state stream (#4028), the idle-efficiency review (#4139), the web coordinator (#4211),
+the hardware coordinator (#4027) — and their queues are folded into the lanes. The
+2026-09-05 deploys (jts.local and jts4 on `3959524a6`, jts3 on `964baa037`) carry the steward
+round's #4163/#4187; fan-in and outputd are stable on them.
+
+## Where each hand-off went
 
 - **Voice loop** (brief `docs/VOICE-AUDIT-2026-09-05.md`, #4186 merged; #4191, #4192, #4206 merged;
   #4198 and #4203 open and rebasing after them; none hardware-verified beyond the owner's deploy of
@@ -98,21 +104,19 @@ daemon rows.
 - **Web UI**: the coordinator's hand-off is #4211 and the lane is **P11 (#4212)**; its first job
   is merging #4210 (Sound URLs under `/sound/`, `/correction/` aliases deleted). Phase B is already
   on jts.local and jts3 (`3959524a6` / `964baa037`); the owner's phone eyeball of the new landing
-  and the two hubs is the acceptance for it. **Hardware input** (#4027, open #4189 and #4205 — the
-  latter in the voice loop's files): close-out pending; it becomes a lane in the redrawn map.
+  and the two hubs is the acceptance for it.
+- **Attached hardware**: the coordinator's hand-off (ADR-0235; eleven of thirteen PRs merged, #4189
+  and #4205 in flight — the latter in the voice loop's files, and its ADR renumbers because `main`
+  took 0238) is the lane **P12 (#4213)**; #4027 stays the program's tracking issue and the address
+  for other lanes' hardware asks. Its first row is the USB host-volume regression #4209.
 - **Doctor/state stream** (brief and standing entry point: #4028; ADR-0233): landed `--core`
   (#4177), the `/state` contract (#4166) and nine more doctor PRs, measured `--core` against
   `jasper-deploy-health` on jts4 and redeployed jts4; its last message reads as a hand-off. Its
-  queue is folded: the config-free `--core` gate, the warn→skipped sweep, the two `state_aggregate`
-  payload helpers, the unread outputd park and the memory-pressure row are P4's; the deploy switch
-  + deletion and the installer's first-boot `jasper-control` gap are P2's; fan-in's `last_drop_ms`
+  queue is folded: the warn→skipped sweep, the two `state_aggregate` payload helpers, the unread
+  outputd park and the memory-pressure row are P4's; the deploy switch (carrying the config-free
+  `--core` fix) + deletion and the installer's first-boot `jasper-control` gap are P2's; fan-in's `last_drop_ms`
   is P3's Rust row; the shield-through-cancel twin is an owner-gated tuning row in P5. One
-  un-isolated non-critical warning on jts4 stays with the ops lane. Treat the stream as stood down.
-- **Idle-efficiency / ops review** (#4139): the daily deploy + health + idle-efficiency pass over
-  jts.local, jts3 and jts4 — the only lane with hands on the boxes, since the remote sessions cannot
-  reach the LAN. Proposed shape in the redrawn map: a measure-deploy-and-file lane (P10) that owns
-  no source tree, deploys `main`, measures, and files rows on the owning lane's issue; it opens code
-  PRs only as owner-approved one-offs. Every "measure once on hardware" row in P3, P4 and P9 is an
-  ask on its issue. Deploy state after the owner's and the doctor stream's deploys: jts.local and jts4 on
-  `3959524a6`, jts3 on `964baa037` — all three carry the general steward's #4163/#4187, and fan-in
-  and outputd are confirmed stable on them.
+  un-isolated non-critical warning on jts4 is P4's to find. Treat the stream as stood down.
+- **Idle-efficiency review** (#4139): stood down; its measured baselines, tickets and leave-alone
+  list are folded into P2, P3, P4, P5, P6, P9 and P11. No ops lane replaces it: the lane running
+  on Space Hater answers hardware asks posted on #4027.

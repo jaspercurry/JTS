@@ -47,7 +47,8 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
 - Issue #4139 and its comment — the idle-efficiency review: the only lane with hands on all three
   boxes (jts.local, jts3, jts4). Its measured numbers, the nine PRs it merged, the tickets it filed
   (#4121–#4124, #4190) and its "leave-alone (measured)" list are facts at HEAD; do not re-propose
-  what it measured and refuted, and route every "measure once on hardware" row through it.
+  what it measured and refuted. It has stood down: post every "measure once on hardware" row on
+  #4027 (the lane on the owner's machine) with the exact command and the expected reading.
 
 ## Territory
 
@@ -231,7 +232,7 @@ handoff as a GitHub issue. No HANDOFF docs; decisions go to `docs/adr/` (one dec
   source-text pins: retarget or delete, never add.
 - Subscribe to every PR you open; unsubscribe on merge; remove worktrees after merge; delete any
   routines you create when you stand down.
-- On the **local plan** (the owner's laptop, shared with the ops lane): the GitHub API quota is
+- On the **local plan** (the owner's laptop, the Space Hater account): the GitHub API quota is
   one per machine, so builder briefs forbid `gh` — the lane session alone polls CI, one slow
   waiter at a time; `gh run rerun` re-runs the stale merge commit, so rebase and push instead;
   head branches auto-delete on merge (never pass `--delete-branch`); run only the targeted tests

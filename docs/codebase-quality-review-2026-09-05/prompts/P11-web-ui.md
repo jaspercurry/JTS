@@ -89,7 +89,7 @@ before any branch exists.
 **Sibling lanes.** Ten other sessions run the other lanes (P1 #4193 secrets, P2 #4194 deploy
 integrity, P3 #4195 resilience, P4 #4197 observability, P5 #4199 structure and god files, P6 #4200
 right-sizing, P7 #4201 tests, P8 #4202 docs, P9 #4208 the voice loop, plus the hardware-input lane
-on #4027 and the ops lane on #4139; index and sequencing in
+on #4027; index and sequencing in
 `docs/codebase-quality-review-2026-09-05/prompts/README.md`). The rule between a concern lane and
 an attribute lane: the attribute lane owns the convention or guard and may land one repo-wide
 mechanical sweep across your files after telling you on this issue; anything behavioral in your
@@ -110,8 +110,9 @@ files is yours. Specifically:
 - **P9** owns the voice daemon's surfaces; the Assistant pages over them (`/voice/`, `/wake/`,
   `/tools/`, `/chat/`) are yours, and a page that needs the daemon to expose something new is an
   ask on P9's issue.
-- **The ops lane (#4139)** deploys and can screenshot; the phone eyeball after each Phase C wave is
-  the owner's, on the box the ops lane has deployed.
+- You run on the owner's machine (the account that reaches the Pis): you deploy each Phase C
+  wave yourself through `bash scripts/deploy-to-pi.sh` and can screenshot; the phone eyeball is
+  the owner's, on the box you deployed.
 
 ## What "A" means here
 
@@ -222,7 +223,7 @@ report, and a durable handoff as a GitHub issue. No HANDOFF docs; decisions go t
   viewport pass; a static page can be rendered from the install-time renderer without a Pi.
 - Subscribe to every PR you open; unsubscribe on merge; remove worktrees after merge; delete any
   routines you create when you stand down. Never use bare `git stash` in a worktree.
-- On the **local plan** (the owner's laptop, shared with the ops lane): the GitHub API quota is
+- On the **local plan** (the owner's laptop, the Space Hater account): the GitHub API quota is
   one per machine, so builder briefs forbid `gh` — the lane session alone polls CI, one slow
   waiter at a time; `gh run rerun` re-runs the stale merge commit, so rebase and push instead;
   head branches auto-delete on merge (never pass `--delete-branch`); run only the targeted tests
