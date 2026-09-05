@@ -10,8 +10,6 @@
 //! commands return a JSON error. `jasper-control /state`,
 //! `jasper-doctor`, and an operator can all consume the same surface.
 
-use std::io::{self, Read, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -31,16 +29,19 @@ use jasper_daemon::json::{
     json_string, push_kv_bool, push_kv_f64, push_kv_f64_opt, push_kv_i64, push_kv_i64_opt,
     push_kv_str, push_kv_str_opt, push_kv_u64, push_kv_u64_opt,
 };
+use jasper_daemon::uds::{CommandLimits, UdsCommandServer};
+use jasper_daemon::DaemonHooks;
 use jasper_ring::RingMetrics;
 use std::sync::OnceLock;
 
-const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(2);
-/// One local control command per connection. The longest production command is
-/// a short trim update; 256 bytes leaves ample diagnostic margin while keeping
-/// an idle/hostile local client from growing the state thread's buffer without
-/// bound.
-const MAX_COMMAND_BYTES: usize = 256;
-const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+/// What one control exchange may cost outputd's single server thread. The
+/// longest production command is a short trim update, so 256 bytes leaves
+/// ample diagnostic margin while keeping an idle/hostile local client from
+/// growing the state thread's buffer without bound.
+const COMMAND_LIMITS: CommandLimits = CommandLimits {
+    max_command_bytes: 256,
+    read_timeout: Duration::from_secs(2),
+};
 const NEVER_MS: u64 = u64::MAX;
 const OPTIONAL_U64_NONE: u64 = u64::MAX;
 const DAC_CONTENT_TRIM_DB_MIN_TENTHS: i32 = -240;
@@ -62,12 +63,12 @@ pub struct ChipRefWrite {
 ///
 /// The reader is `jasper-aec-init`, which needs a RUN of per-write
 /// `snd_pcm_delay` readings to resolve `SYS_DELAY = K - median(live queue)`.
-/// It cannot get that run by polling: this state server is a single thread that
-/// sleeps `ACCEPT_POLL_INTERVAL` between accepts and answers one command per
-/// connection, which caps a sequential reader at about two reads a second
-/// (measured on jts3: 11 reads in 5.14 s). Publishing the writer's own recent
-/// observations decouples how fast the reader polls from how many readings it
-/// sees, so one read carries seconds of history.
+/// It cannot get that run by polling: this state server is a single thread
+/// answering one command per connection, so a sequential reader's rate is
+/// bounded by its own round trips (measured on jts3: 11 reads in 5.14 s, when
+/// the accept still paid a blind 500 ms sleep). Publishing the writer's own
+/// recent observations decouples how fast the reader polls from how many
+/// readings it sees, so one read carries seconds of history.
 ///
 /// What the ring has to cover is the GAP BETWEEN two reads, since the reader
 /// only counts writes made while it was watching. 256 covers it at both ends of
@@ -1897,101 +1898,30 @@ impl OutputdState {
 }
 
 pub struct StateServer {
-    socket_path: PathBuf,
+    transport: UdsCommandServer,
     state: Arc<OutputdState>,
-    listener: UnixListener,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CommandReadError {
-    TooLong,
-    DeadlineExceeded,
-    InvalidUtf8,
-}
-
-impl CommandReadError {
-    fn response_json(self) -> String {
-        match self {
-            Self::TooLong => format!(
-                r#"{{"error":"command too long","code":"command_too_long","max_bytes":{MAX_COMMAND_BYTES}}}"#
-            ),
-            Self::DeadlineExceeded => r#"{"error":"command read deadline exceeded","code":"command_read_deadline_exceeded"}"#.to_string(),
-            Self::InvalidUtf8 => {
-                r#"{"error":"command must be UTF-8","code":"command_not_utf8"}"#.to_string()
-            }
-        }
-    }
 }
 
 impl StateServer {
-    pub fn bind(socket_path: PathBuf, state: Arc<OutputdState>) -> Result<Self> {
+    pub fn bind(
+        socket_path: PathBuf,
+        state: Arc<OutputdState>,
+        hooks: DaemonHooks,
+    ) -> Result<Self> {
         if let Some(parent) = socket_path.parent() {
             std::fs::create_dir_all(parent).with_context(|| {
                 format!("creating outputd state socket parent {}", parent.display())
             })?;
         }
-        let _ = std::fs::remove_file(&socket_path);
-        let listener = UnixListener::bind(&socket_path)
+        let transport = UdsCommandServer::bind(socket_path.clone(), hooks, COMMAND_LIMITS)
             .with_context(|| format!("binding outputd STATUS socket {}", socket_path.display()))?;
-        listener
-            .set_nonblocking(true)
-            .context("set_nonblocking on outputd state listener")?;
-        eprintln!(
-            "event=outputd.state_server.listening socket={}",
-            socket_path.display()
-        );
-
-        Ok(Self {
-            socket_path,
-            state,
-            listener,
-        })
+        Ok(Self { transport, state })
     }
 
     pub fn run(&self, shutdown: &AtomicBool) -> Result<()> {
-        while !shutdown.load(Ordering::Relaxed) {
-            match self.listener.accept() {
-                Ok((stream, _)) => {
-                    if let Err(e) = self.handle_connection(stream) {
-                        eprintln!("event=outputd.state_server.handle_failed detail={e:#}");
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(ACCEPT_POLL_INTERVAL);
-                }
-                Err(e) => {
-                    eprintln!("event=outputd.state_server.accept_failed detail={e}");
-                    std::thread::sleep(ACCEPT_POLL_INTERVAL);
-                }
-            }
-        }
-
-        let _ = std::fs::remove_file(&self.socket_path);
-        eprintln!("event=outputd.state_server.stopped");
+        self.transport
+            .serve(shutdown, |command| self.response_for_command(command));
         Ok(())
-    }
-
-    fn handle_connection(&self, stream: UnixStream) -> Result<()> {
-        self.handle_connection_with_timeout(stream, CONNECTION_READ_TIMEOUT)
-    }
-
-    fn handle_connection_with_timeout(
-        &self,
-        mut stream: UnixStream,
-        timeout: Duration,
-    ) -> Result<()> {
-        let mut response = match read_bounded_command(&mut stream, timeout) {
-            Ok(Ok(command)) => self.response_for_command(command.trim()),
-            Ok(Err(error)) => error.response_json(),
-            Err(error) if is_client_disconnect(&error) => return Ok(()),
-            Err(error) => return Err(error).context("reading outputd state command"),
-        };
-        response.push('\n');
-        match stream.write_all(response.as_bytes()) {
-            Ok(()) => Ok(()),
-            Err(error) if is_client_disconnect(&error) => Ok(()),
-            Err(error) => Err(error).context("writing outputd state response"),
-        }
     }
 
     fn response_for_command(&self, command: &str) -> String {
@@ -2015,80 +1945,6 @@ impl StateServer {
             )
         }
     }
-}
-
-/// Read one newline-delimited command under both a byte cap and a total
-/// monotonic deadline. Re-applying the *remaining* timeout before each read is
-/// load-bearing: a client that trickles one byte per socket timeout cannot keep
-/// outputd's single state-server thread occupied indefinitely.
-fn read_bounded_command(
-    stream: &mut UnixStream,
-    timeout: Duration,
-) -> io::Result<Result<String, CommandReadError>> {
-    let started = Instant::now();
-    let Some(deadline) = started.checked_add(timeout) else {
-        return Ok(Err(CommandReadError::DeadlineExceeded));
-    };
-    let mut bytes = Vec::with_capacity(64);
-    let mut chunk = [0u8; 64];
-
-    loop {
-        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-            return Ok(Err(CommandReadError::DeadlineExceeded));
-        };
-        if remaining.is_zero() {
-            return Ok(Err(CommandReadError::DeadlineExceeded));
-        }
-        stream.set_read_timeout(Some(remaining))?;
-
-        match stream.read(&mut chunk) {
-            Ok(0) => {
-                if Instant::now() >= deadline {
-                    return Ok(Err(CommandReadError::DeadlineExceeded));
-                }
-                break;
-            }
-            Ok(read) => {
-                if Instant::now() >= deadline {
-                    return Ok(Err(CommandReadError::DeadlineExceeded));
-                }
-                let newline = chunk[..read].iter().position(|byte| *byte == b'\n');
-                let command_bytes = &chunk[..newline.unwrap_or(read)];
-                if bytes.len().saturating_add(command_bytes.len()) > MAX_COMMAND_BYTES {
-                    return Ok(Err(CommandReadError::TooLong));
-                }
-                bytes.extend_from_slice(command_bytes);
-                if newline.is_some() {
-                    break;
-                }
-            }
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                return Ok(Err(CommandReadError::DeadlineExceeded));
-            }
-            Err(error) => return Err(error),
-        }
-    }
-
-    match String::from_utf8(bytes) {
-        Ok(command) => Ok(Ok(command)),
-        Err(_) => Ok(Err(CommandReadError::InvalidUtf8)),
-    }
-}
-
-fn is_client_disconnect(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::BrokenPipe
-            | io::ErrorKind::ConnectionAborted
-            | io::ErrorKind::ConnectionReset
-            | io::ErrorKind::NotConnected
-    )
 }
 
 /// The ONE shared `clock.rate_diff` telemetry writer (Inc 4). Every DLL
@@ -2233,13 +2089,22 @@ mod tests {
         }
     }
 
+    const TEST_HOOKS: DaemonHooks = DaemonHooks {
+        event_prefix: "outputd",
+        writer_stack_bytes: 0,
+        info: |_| {},
+        warn: |_| {},
+        error: |_| {},
+    };
+
     fn test_state_server(state: Arc<OutputdState>) -> StateServer {
         static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
 
         let id = NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed);
         // Keep the AF_UNIX path short on macOS (sun_path is only 104 bytes).
         let path = PathBuf::from(format!("/tmp/jts-outputd-{}-{id}.sock", std::process::id()));
-        let server = StateServer::bind(path.clone(), state).expect("bind test state server");
+        let server =
+            StateServer::bind(path.clone(), state, TEST_HOOKS).expect("bind test state server");
         // handle_connection only needs the state; unlink the otherwise-unused
         // listener path immediately so a test panic cannot leave filesystem
         // residue behind. The bound listener remains valid until server drops.
@@ -2248,15 +2113,17 @@ mod tests {
     }
 
     fn exchange_command(server: &StateServer, command: &[u8]) -> String {
+        use std::io::{Read, Write};
         use std::net::Shutdown;
+        use std::os::unix::net::UnixStream;
 
         let (mut client, server_stream) = UnixStream::pair().expect("socket pair");
         client.write_all(command).expect("write command");
         client
             .shutdown(Shutdown::Write)
             .expect("finish command write");
-        server
-            .handle_connection(server_stream)
+        COMMAND_LIMITS
+            .handle_connection(server_stream, |cmd| server.response_for_command(cmd))
             .expect("handle command");
 
         let mut response = String::new();
@@ -2305,109 +2172,6 @@ mod tests {
                 .expect("unknown-command response must be valid JSON");
         assert_eq!(unknown["error"].as_str(), Some("unknown command"));
         assert_eq!(unknown["received"].as_str(), Some("NOT_A_COMMAND"));
-    }
-
-    // Pre-existing macOS-only artifact, localized to the abandoned-client
-    // block at the end of this test (the `drop(abandoned)` case): once a
-    // UnixStream::pair() peer has both directions closed, XNU's
-    // sosetopt(SO_RCVTIMEO) -- reached from read_bounded_command's
-    // per-loop set_read_timeout call -- returns EINVAL. Every earlier
-    // exchange in this test only closes the write half
-    // (`shutdown(Write)`) and passes.
-    // CI's `rust` job runs on ubuntu-latest and is the authority; the test
-    // runs there unaffected. jasper-outputd's hard `alsa` dependency also
-    // does not build on macOS at all via the usual Homebrew path; this
-    // `ignore` therefore only bites when ALSA is available locally *and*
-    // the run is lib-scoped (`cargo test --lib`) — a full `cargo test` on
-    // macOS fails earlier compiling main.rs's test module
-    // (`libc::SOCK_CLOEXEC` is Linux/BSD-only).
-    #[test]
-    #[cfg_attr(
-        target_os = "macos",
-        ignore = "pre-existing AF_UNIX EINVAL on macOS (abandoned-client SO_RCVTIMEO); CI (Linux) is authoritative -- see comment above"
-    )]
-    fn state_server_command_cap_is_exact_and_errors_stay_bounded() {
-        let server = test_state_server(Arc::new(OutputdState::new(&test_config())));
-
-        let mut at_cap = vec![b'X'; MAX_COMMAND_BYTES];
-        at_cap.push(b'\n');
-        let accepted: serde_json::Value =
-            serde_json::from_str(exchange_command(&server, &at_cap).trim())
-                .expect("at-cap unknown command must return JSON");
-        assert_eq!(accepted["error"].as_str(), Some("unknown command"));
-        assert_eq!(
-            accepted["received"].as_str().map(str::len),
-            Some(MAX_COMMAND_BYTES)
-        );
-
-        let mut over_cap = vec![b'X'; MAX_COMMAND_BYTES + 1];
-        over_cap.push(b'\n');
-        let rejected_response = exchange_command(&server, &over_cap);
-        let rejected: serde_json::Value = serde_json::from_str(rejected_response.trim())
-            .expect("oversized command must return JSON");
-        assert_eq!(rejected["code"].as_str(), Some("command_too_long"));
-        assert_eq!(
-            rejected["max_bytes"].as_u64(),
-            Some(MAX_COMMAND_BYTES as u64)
-        );
-        assert!(
-            rejected_response.len() < 128,
-            "oversized input must not be echoed into an oversized response"
-        );
-
-        let invalid_utf8: serde_json::Value =
-            serde_json::from_str(exchange_command(&server, &[0xff, b'\n']).trim())
-                .expect("invalid UTF-8 must return JSON");
-        assert_eq!(invalid_utf8["code"].as_str(), Some("command_not_utf8"));
-
-        // A client that disappears before sending a command is normal local
-        // IPC churn, not a daemon fault that should emit handle_failed spam.
-        let (abandoned, server_stream) = UnixStream::pair().expect("socket pair");
-        drop(abandoned);
-        server
-            .handle_connection(server_stream)
-            .expect("abandoned client is handled quietly");
-    }
-
-    #[test]
-    fn state_server_total_deadline_rejects_a_slow_trickle() {
-        let server = test_state_server(Arc::new(OutputdState::new(&test_config())));
-        let (mut client, server_stream) = UnixStream::pair().expect("socket pair");
-
-        let writer = std::thread::spawn(move || {
-            client
-                .set_read_timeout(Some(Duration::from_secs(1)))
-                .expect("bound test response read");
-            for byte in b"STATUS\n" {
-                if client.write_all(&[*byte]).is_err() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            let mut response = String::new();
-            client
-                .read_to_string(&mut response)
-                .expect("read deadline response");
-            response
-        });
-
-        let started = Instant::now();
-        server
-            .handle_connection_with_timeout(server_stream, Duration::from_millis(50))
-            .expect("slow client receives a structured error");
-        let elapsed = started.elapsed();
-        let response = writer.join().expect("slow writer thread");
-        let error: serde_json::Value =
-            serde_json::from_str(response.trim()).expect("deadline response must be JSON");
-
-        assert_eq!(
-            error["code"].as_str(),
-            Some("command_read_deadline_exceeded")
-        );
-        assert!(
-            elapsed < Duration::from_millis(500),
-            "total deadline must not reset for each trickled byte: {elapsed:?}"
-        );
     }
 
     #[test]

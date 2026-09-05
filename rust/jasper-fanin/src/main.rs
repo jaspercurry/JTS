@@ -450,6 +450,10 @@ fn run() -> Result<()> {
     // structural failure (which systemd's Restart=on-failure handles
     // by bringing us back fresh).
     let result = mixer.run(&shutdown, &heartbeat);
+    // A structural failure returns without the signal handler having set the
+    // flag, and every helper below loops on it — so set it here or the joins
+    // wait out the systemd watchdog instead of restarting promptly.
+    shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
 
     // Drop the mixer (and its xrun_tx Sender) so the writer thread's
     // recv loop terminates. Then join the helper threads with a
