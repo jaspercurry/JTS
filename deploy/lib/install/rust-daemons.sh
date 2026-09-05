@@ -147,8 +147,13 @@ build_install_rust_daemon() {
     # incremental compile state in target/ between runs. --delete
     # removes stale source files (e.g., a renamed module).
     stage_rust_crate "${src_dir}" "${cache_dir}"
-    # Stage the shared wire-protocol crate as a sibling of the cache dir
-    # so `path = "../jasper-tts-protocol"` resolves like the repo layout.
+    # Stage the shared daemon-skeleton crate as a sibling of the cache dir so
+    # `path = "../jasper-daemon"` resolves like the repo layout. Both daemons
+    # and jasper-tts-protocol depend on it.
+    stage_rust_crate "${REPO_DIR}/rust/jasper-daemon" \
+        "$(dirname "${cache_dir}")/jasper-daemon"
+    chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-daemon"
+    # Same for the shared wire-protocol crate.
     stage_rust_crate "${REPO_DIR}/rust/jasper-tts-protocol" \
         "$(dirname "${cache_dir}")/jasper-tts-protocol"
     chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-tts-protocol"

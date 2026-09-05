@@ -478,6 +478,7 @@ jobs:
         with:
           workspaces: |
             rust/jasper-env
+            rust/jasper-daemon
             rust/jasper-clock
             rust/jasper-resampler
             rust/jasper-ring
@@ -493,6 +494,11 @@ jobs:
       - name: jasper-env — build + test (shared environment parsing crate)
         if: steps.rust-needed.outputs.run == 'true'
         working-directory: rust/jasper-env
+        run: cargo +"$RUST_TOOLCHAIN" test --release --locked
+
+      - name: jasper-daemon — build + test (shared daemon skeleton crate)
+        if: steps.rust-needed.outputs.run == 'true'
+        working-directory: rust/jasper-daemon
         run: cargo +"$RUST_TOOLCHAIN" test --release --locked
 
       - name: jasper-clock — build + test (pure DLL crate; no ALSA)

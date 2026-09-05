@@ -9,6 +9,11 @@ authors = ["Jasper Curry <jaspercurry@gmail.com>"]
 rust-version = "1.75"
 
 [dependencies]
+# The shared daemon skeleton: the hand-built JSON emitter, the systemd
+# notify seam (READY=1 / WATCHDOG=1 / STOPPING=1 for the unit's
+# Type=notify + WatchdogSec=30s contract), the config-class park contract,
+# and mlockall. Same crate jasper-fanin stands on.
+jasper-daemon = { path = "../jasper-daemon" }
 jasper-tts-protocol = { path = "../jasper-tts-protocol" }
 # Shared policy-light scalar environment parsing. Outputd keeps its own
 # optional-string and strictly-positive geometry policy.
@@ -41,13 +46,9 @@ libc = "0.2"
 # Plain-thread signal handling for clean systemd stop.
 signal-hook = "0.4"
 
-# JSON string quoting for the hand-built STATUS wire payload (src/json.rs); the
-# payload's fixed outer shape stays hand-rolled and allocation-conscious.
-serde_json = "1"
-
 [dev-dependencies]
 # Parse the hand-built STATUS payload in wire-contract tests as an independent
-# grammar oracle (serde_json is now also a runtime dependency, above).
+# grammar oracle; the emit side is jasper-daemon's.
 serde_json = "1"
 
 [profile.release]

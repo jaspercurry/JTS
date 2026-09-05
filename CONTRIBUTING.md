@@ -184,7 +184,7 @@ Two operational notes:
   the same `mypy` gate locally too; `ruff check .` stays covered locally
   by `scripts/test-fast` and `pre-commit`.
 - **Rust gate** — `scripts/check-rust.sh` owns the pinned-toolchain
-  formatting and Clippy pass for all eight CI crates. It works natively on
+  formatting and Clippy pass for all nine CI crates. It works natively on
   Linux and cross-checks the ALSA-backed crates from macOS without linking;
   use it before pushing any Rust edit. The internal `rust` CI job invokes the
   same script, then runs `cargo test --release --locked` on Linux when

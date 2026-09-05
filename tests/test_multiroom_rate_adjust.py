@@ -645,11 +645,13 @@ def test_outputd_config_exit_code_contract():
     import re
     from pathlib import Path
     root = Path(__file__).resolve().parents[1]
-    main_rs_path = root / "rust/jasper-outputd/src/main.rs"
+    daemon_rs_path = root / "rust/jasper-daemon/src/lib.rs"
     unit_path = root / "deploy/systemd/jasper-outputd.service"
-    rust_exit = re.search(r"EXIT_CONFIG:\s*i32\s*=\s*(\d+);", main_rs_path.read_text())
+    rust_exit = re.search(
+        r"EXIT_CONFIG:\s*i32\s*=\s*(\d+);", daemon_rs_path.read_text()
+    )
     unit_exit = re.search(r"RestartPreventExitStatus=(\d+)", unit_path.read_text())
-    assert rust_exit, f"EXIT_CONFIG constant not found in {main_rs_path}"
+    assert rust_exit, f"EXIT_CONFIG constant not found in {daemon_rs_path}"
     assert unit_exit, f"RestartPreventExitStatus not declared in {unit_path}"
     assert rust_exit.group(1) == unit_exit.group(1), (
         f"outputd's Rust EXIT_CONFIG ({rust_exit.group(1)}) and the unit's "
