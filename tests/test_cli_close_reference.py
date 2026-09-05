@@ -21,7 +21,10 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2.close_reference import (
+    REFUSE_AT_HZ_OFF_SPEC_TABLE,
     REFUSE_GATE_NOT_POSITIVE,
+    VERDICT_AGREEMENT,
+    VERDICT_ROOM_DOMINATED,
     VERDICT_UNRESOLVED,
 )
 from jasper.active_speaker.crossover_v2.round_captures import (
@@ -213,16 +216,24 @@ def test_an_unbindable_capture_is_a_refusal_not_a_traceback(
     assert payload["reason"] == reason
 
 
-def test_a_non_positive_gate_refuses_by_name_before_the_strict_writer_sees_it(
-    rounds, tmp_path, capsys
+@pytest.mark.parametrize(
+    "extra, reason",
+    [
+        # a non-positive gate, before an ``+inf`` trusted floor can reach the
+        # strict JSON writer
+        (["--far-gate-ms", "0"], REFUSE_GATE_NOT_POSITIVE),
+        # a bin no spec band covers has no tolerance to be graded against
+        (["--at-hz", "20"], REFUSE_AT_HZ_OFF_SPEC_TABLE),
+    ],
+)
+def test_an_ungradeable_input_refuses_by_name_before_any_computation(
+    rounds, tmp_path, capsys, extra, reason
 ):
-    """A non-positive ``--far-gate-ms`` refuses by name, before an ``+inf``
-    trusted floor can reach the strict JSON writer."""
-    argv = _compare_argv(rounds, tmp_path / "report.json") + ["--far-gate-ms", "0"]
+    argv = _compare_argv(rounds, tmp_path / "report.json") + extra
     assert main(argv) == EXIT_REFUSED
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "refused"
-    assert payload["reason"] == REFUSE_GATE_NOT_POSITIVE
+    assert payload["reason"] == reason
 
 
 def test_a_declared_geometry_sets_each_windows_gate(rounds, tmp_path, capsys):
@@ -258,6 +269,33 @@ def test_an_unwritable_out_is_named_not_a_traceback(rounds, tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "unwritable"
     assert payload["reason"] == REASON_UNWRITABLE
+
+
+def test_at_hz_grades_one_narrow_band_beside_the_spec_rows(rounds, tmp_path, capsys):
+    """``--at-hz`` answers AT a frequency: a +/-1/3-octave row per window in
+    the artifact, inside the spec band it is graded against, and the far
+    window's verdict as the answer's own scalar."""
+    out = tmp_path / "report.json"
+    assert main(_compare_argv(rounds, out) + ["--at-hz", "500"]) == EXIT_OK
+    answer = json.loads(capsys.readouterr().out)
+
+    report = json.loads(out.read_text())["close_reference"]
+    windows = {window["name"]: window for window in report["windows"]}
+    for window in windows.values():
+        (narrow,) = window["features"]
+        assert narrow["requested_hz"] == 500.0
+        assert narrow["nominal_band_hz"] == pytest.approx(
+            [500.0 * 2 ** (-1 / 3), 500.0 * 2 ** (1 / 3)]
+        )
+        spec = window["bands"][0]
+        assert narrow["tolerance_db"] == spec["tolerance_db"]
+        assert narrow["graded_band_hz"][1] - narrow["graded_band_hz"][0] < (
+            spec["graded_band_hz"][1] - spec["graded_band_hz"][0]
+        )
+        assert narrow["verdict"] in {
+            VERDICT_AGREEMENT, VERDICT_ROOM_DOMINATED, VERDICT_UNRESOLVED
+        }
+    assert answer["at_hz_verdict"] == windows["far_window"]["features"][0]["verdict"]
 
 
 def test_the_distance_flag_prints_both_terms(capsys):
