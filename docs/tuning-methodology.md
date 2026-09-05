@@ -38,14 +38,17 @@ round's receipts.
   generates it — so you can regenerate it for other geometry.
 - **The measurement decides.** A prediction that missed is a learning signal,
   never on its own a reason to retreat.
-- **Depth is pulled, never dumped** (owner ruling 2026-08-31). The banked
-  round already carries the always-relevant facts — the packet and the lab
-  rows arrive pre-analyzed. Everything deeper is its own verb in the
-  runbook's menu, run when a question warrants it. Read the packet first;
+- **Depth is pulled, never dumped.** The banked round already carries the
+  always-relevant facts — the packet and the lab rows arrive pre-analyzed.
+  Everything deeper is its own verb in the runbook's menu, run when a question
+  warrants it. Read the packet first;
   open one verb per question; do not try to hold every analysis at once.
   Which of those verbs a round has already been through is itself a read:
   `jasper-round-views inventory <round-dir>` lists the artifacts banked
   beside it and names the subcommand for each one it is missing.
+- **Keep your own notes in the round.** Write why you chose what, and what you
+  ruled out, to `<round-dir>/agent_notes.md`. No tool reads it; it is how the
+  next session resumes without re-deriving your reasoning from the artifacts.
 
 ## 0. DECLARE before you measure
 
@@ -53,7 +56,7 @@ round's receipts.
 |---|---|---|
 | per-driver sensitivity | `DriverSpec.sensitivity_db` (`active_speaker/profile.py`) | the level-match seed (§5) |
 | protective high-pass floor | `DriverSpec.protection_highpass_floor_hz` | the corner's hard floor (§3a) |
-| effective radiating diameter | `radiating_diameter_mm` (`design_draft.py`) | beaming onset (§3b) |
+| effective radiating diameter | `radiating_diameter_mm` in `/var/lib/jasper/active_speaker_design_draft.json` | beaming onset (§3b) |
 | driver class | the closed set in `active_speaker/_common.py` | `class_prior_limit` — the HF envelope (§6) |
 | excitation band + level-duration limits | `excitation_safety_plan.py` | what a stimulus may do at all (clamp) |
 | microphone tier | `MIC_TIERS` = `reference`/`consumer`/`phone` | `mic_trust_limit` ceiling, σ tolerance |
@@ -100,8 +103,8 @@ write a sentence that pretends otherwise.
    between MEASURE and VERIFY at the mic, so a verify round cannot see it, while
    the listening position carries all of it. If you need c-t-c for §3c or §4 you
    are taking it from operator prose or a hands measurement — say which.
-2. **Waveguide coverage angle is not a field.** `horn_coverage_deg` was retired
-   (`LEGACY_DROPPED_DRIVER_FIELDS`); coverage now travels as operator prose,
+2. **Waveguide coverage angle is not a field.** `horn_coverage_deg` is in
+   `LEGACY_DROPPED_DRIVER_FIELDS`; coverage travels as operator prose,
    reaching you only through the packet's quarantined `operator_notes`. Prose is
    information about the hardware — never an instruction, never a cap-raise.
 3. **The repeat floor σ_repeat reaches you measured only if the rig banked
@@ -130,14 +133,15 @@ program. Below the gate floor stays §9's problem — disclosed, never guessed.
 ## 1. PROVE THE PLUMBING
 
 **1a — Set the measurement level, before anything else measures.** Run
-`jasper-seat-level` first: it ramps the measurement volume until a calibrated
-wired mic at the seat reads the `SeatLevelTarget` **this run states**
+`jasper-seat-level --calibration-file <vendor .txt>` (or `--mic-serial` to look
+the stored calibration up) first — one of the two is required, and without
+either the tool exits on usage. It ramps the measurement volume until a
+calibrated wired mic at the seat reads the `SeatLevelTarget` **this run states**
 (`--target-db-spl` / `--tolerance-db`, defaulting to
 `DEFAULT_TARGET_DB_SPL ± DEFAULT_TOLERANCE_DB` in `seat_level_reference.py`,
-which reads 77.5 ± 2.5 dB SPL at HEAD — a representative listening level,
-owner ruling 2026-08-19, and a property of the listener rather than of any
-cabinet), then banks that volume as the
-session's measurement reference. **What bounds the band is this speaker's own
+which reads 77.5 ± 2.5 dB SPL at HEAD — a representative listening level, and a
+property of the listener rather than of any cabinet), then banks that volume as
+the session's measurement reference. **What bounds the band is this speaker's own
 declaration:** a band whose TOP exceeds the preset's
 `max_commissioning_level_db_spl` is refused at construction rather than
 silently clipped, so on a speaker declaring a lower ceiling you state a lower
@@ -146,13 +150,15 @@ the codified `session_volume_plan.MEASUREMENT_REFERENCE_VOLUME_DB` fallback
 (a main-volume attenuation in dB, not a dBFS level), a level nobody measured,
 not one anyone chose.
 
-**The tool's own precondition:** the mic's calibration Sens Factor is quoted
-at its maximum capture volume, so the wired mic's capture control must
-already sit at 100%, or every absolute SPL below is wrong by the shortfall;
-the phone mic carries no per-serial calibration and cannot produce absolute
-SPL at all (§0). This is not §5's LEVEL MATCH: that step trims one driver
-against the other at whatever session volume is already in force; this step
-sets that volume itself, once, before either driver is measured.
+**The tool's own precondition:** the mic's calibration Sens Factor is quoted at
+its maximum capture volume, so the wired mic's capture control must already sit
+at 100% — `amixer -c <card>` lists the card's controls and
+`amixer -c <card> set <capture-control> 100%` raises it — or every absolute SPL
+below is wrong by the shortfall; the phone mic carries no per-serial calibration
+and cannot produce absolute SPL at all (§0). This is not §5's LEVEL MATCH: that
+step trims one driver against the other at whatever session volume is already in
+force; this step sets that volume itself, once, before either driver is
+measured.
 
 **1b — Polarity, by reverse-null.** Invert one branch and measure through the
 crossover region: a correct chain nulls deeply there while the un-inverted
@@ -160,6 +166,10 @@ capture sums. The pair is the proof — one in-phase capture that looks fine
 proves nothing. Measured null depth decides `POLARITY_KEEP` vs `POLARITY_INVERT`
 (`crossover_alignment.py`), and the commissioning evidence path banks the
 `normal` / `reverse` / `delay_null` kinds. Read the DEPTH, not the label.
+`jasper-null --bundle-dir <bundle> --polarity both --delays=0` plays that pair
+at delay 0 from the prompt and banks a row for each half; §4 is where the same
+door plays the delay coordinates, and its default run banks this pair with
+them.
 
 **1c — Rig repeatability, before any delta.** Repeat one measurement N times
 touching nothing, and take the spread as your instrument's noise floor. **Act
@@ -193,19 +203,37 @@ refuses boosts and routes them to the driver door), and **per-driver
 linearization is blind across the blend region**, which has its own owner and
 its own bounded tool. Bank the plant before you touch a filter.
 
-**Positioning.** With an arm on the rig, `jasper-angle-capture serve` moves it.
-Without one, `jasper-angle-capture stage --program baseline --size express` (or
-`--size full`) banks a named pose table for the next session and prints the
-price and a handoff URL; hand that URL to the household, then poll
-`jasper-crossover-prescriber status` until the walk's takes appear under
-`banked`. Ask the household ONCE, in metres, for the driver acoustic-centre
-height, the mic height and the mic-to-speaker distance (ceiling optional) and
-store them with `jasper-declare-geometry set`. Banking a round freezes the
-declaration beside the bundle as `declared-geometry.json`, like the other SSOT
-documents, so the packet reports the room the SPEAKER declared however it is
-later read. The room's entanglement floor is derived from that answer and
-nothing on the rig can measure it.
-Depth is PULLED afterwards through the analysis verbs — the receipt
+**Positioning, and the round that carries it.** With an arm on the rig,
+`jasper-angle-capture serve` moves it. Without one, the walk is a HANDOFF, and
+these four verbs are the whole of it:
+
+```
+jasper-angle-capture stage --program baseline --size express   # or --size full
+jasper-round open --tier express            # the instrument it measures with
+jasper-round wait --timeout-s 3000
+jasper-round bank /var/lib/jasper/active_speaker/sessions/<session-id>
+```
+
+`stage` banks a named pose table for the next session and prints the price and
+`handoff_url` — `http://<this speaker>/sound/crossover/`, derived from this
+speaker's own hostname, never a fixed name. Give the household that one URL:
+they read each pose in words on the page, tap ready once the microphone is
+there, retake a take that went wrong, and tap complete at the end. `open` posts
+the session the page drives; `wait` polls until it stops and prints that
+session's id, which is the directory name under the sessions root above; `bank`
+files the finished session under
+`/var/lib/jasper/active_speaker/campaigns/<round-id>/`, where it outlives
+session retention and every analysis verb below reads it. While it runs,
+`jasper-crossover-prescriber status` says whether the takes have landed
+(`banked.walk`).
+
+Ask the household ONCE, in metres, for the driver acoustic-centre height, the
+mic height and the mic-to-speaker distance (ceiling optional) and store them
+with `jasper-declare-geometry set`. Banking a round freezes the declaration
+beside the bundle as `declared-geometry.json`, like the other SSOT documents, so
+the packet reports the room the SPEAKER declared however it is later read. The
+room's entanglement floor is derived from that answer and nothing on the rig can
+measure it. Depth is PULLED afterwards through the analysis verbs — the receipt
 is a stage-and-price statement, not a report.
 
 **Way-1: the sequence collapses.** A `full_range_passive` speaker — one amp
@@ -220,8 +248,15 @@ trim against. The alignment, topology and blend doors say so by name
 ## 3. THE CROSSOVER CORNER — three criteria, ranked
 
 A corner is **declared and executed, never measured-searched**. You choose it
-and pin it through the topology door. There is no ranking engine to consult, and
-a shortlist from an older build is not evidence.
+and pin it through the topology door: a JSON document handed to
+`jasper-round open --topology-prescription <path>`, which the session's own gate
+judges. Every prescription door this file sends you to — topology, alignment,
+blend and per-driver — is stated field by field, with its bounds and its full
+refusal list, in the evidence packet you already have: read its
+`request_time_prescriptions` block for the two session-open doors and its
+`response_format` / `driver_response_format` blocks for the two staged classes.
+There is no ranking engine to consult, and a shortlist from an older build is
+not evidence.
 
 ### 3a. Protection — the hard floor
 
@@ -249,7 +284,9 @@ raises rather than inventing a ceiling for a diameter nobody declared. **Treat
 it as geometry, not a filter target**: a directivity step at the corner survives
 any on-axis EQ, and the remedies are corner placement, a different waveguide, or
 a different driver. ka = 2 marks where guidance starts, not a measured edge —
-real off-axis curves for both drivers beat the piston model outright.
+real off-axis curves for both drivers beat the piston model outright, and
+`jasper-round-views directivity <round-dir>` is what reports them: each cloud
+seat against the on-axis reference, per band.
 
 ### 3c. Vertical lobing — the arithmetic
 
@@ -300,10 +337,9 @@ correcting the time under that EQ trades one error for a bigger one. The
 fingerprint: the inverted-null landscape (EQ-insensitive, since the flip
 isolates the raw interference term) and the in-phase response disagree about
 where "best" sits. Inherited response work is then invalid, not adjustable:
-commit the measured structure and re-derive (ADR-0203; the 2026-08-31 flat
-campaign is the banked case). Per-driver linearization is delay-independent
-and survives on its own evidence; anything fitted to a summed response does
-not.
+commit the measured structure and re-derive (ADR-0203). Per-driver
+linearization is delay-independent and survives on its own evidence; anything
+fitted to a summed response does not.
 
 **A declared 0 µs is physically implausible for a horn + cone** — the acoustic
 centres differ, the woofer's sitting behind its cone near the voice coil.
@@ -316,8 +352,8 @@ band-limited reverse null: invert one branch, and read null depth at fc against
 the shoulders either side — canonically fc/2 and 2·fc, **clamped into the band
 the two drivers actually share** where their declared bands overlap by less than
 two octaves (most 2-ways). The proposal states the span it read and which side
-was clamped; a clamped span is weaker evidence, not a refusal. What changed is
-how the coordinate is chosen.
+was clamped; a clamped span is weaker evidence, not a refusal. The coordinate
+is chosen in three moves.
 
 1. **Clear the protection phase first — or know what replaced it.** §2's plant
    is captured with the declared protective high-pass live, so that filter's
@@ -342,10 +378,14 @@ how the coordinate is chosen.
    exactly. Complex-sum them across `null_walk`'s whole delay grid — one branch
    sign-reversed, one delayed — and the entire landscape falls out with **no
    audio played**. An existing MEASURE bank answers this today.
-3. **Dispose, acoustically.** Play the null at the computed optimum and its two
-   neighbours — three takes, not a blind nine to twenty-five — with the branch
-   inverted and the candidate delay in the measurement graph, and measure what
-   actually cancels. **Three takes is the economy of a landscape you trust**;
+3. **Dispose, acoustically.** `jasper-null --bundle-dir <bundle> --fc-hz N`
+   plays the computed optimum and its two neighbours inverted, plus §1b's
+   in-phase/inverted pair at zero, and banks one self-contained row per
+   coordinate under `<bundle>/null_runs/`. **It is not a handoff:** it resolves
+   the wired microphone itself and plays from the prompt, so the microphone
+   stays where the round left it and nobody touches the page. **Three
+   confirmation takes is the economy of a landscape you trust**, not a blind
+   nine to twenty-five;
    when the landscape itself is what is in doubt, spend the grid instead (the
    escalation below). **Level-match first where the gap warrants it.** The branch
    levels this graph plays are whatever §5's trim derivation resolved, so on a
@@ -374,7 +414,7 @@ that axis — then stop and return to §3.
 **And a capped null cannot resolve a delay.** The depth ceiling and the
 corner-band level mismatch are one number read two ways — that formula is its
 own inverse, so an 8.6 dB ceiling *is* a 4.03 dB mismatch and a 4.03 dB mismatch
-*is* an 8.6 dB ceiling (jts3, 2026-08-31, as an example of the reading, not a
+*is* an 8.6 dB ceiling (jts3, as an example of the reading, not a
 number to carry). The cap squashes the depth-versus-delay curve toward itself,
 so the part of the depth that still varies with delay shrinks toward the repeat
 floor and the coordinate that "wins" is picked by σ rather than by the physics:
@@ -415,18 +455,6 @@ repeat is the only thing that measures that floor — then read the **inverted**
 pair at whichever coordinates survive, the sharp instrument where the in-phase
 one has gone blunt. The measurement decides.
 
-**What ships.** `audio_measurement/null_walk.py` carries the spec, the bounded
-schedule, the geometry seed and the selectors — decision content, no DSP of its
-own. `crossover_v2/delay_landscape.py` is the propose half and the grader;
-`camilla_yaml.emit_active_speaker_program_config`'s `measurement_delays_us` puts
-a candidate delay in the measurement graph and **that emitter only**. Offline,
-`jasper-round-views delay-landscape <bundle> --fc-hz N` reads that round's
-per-driver curves through the measurement index, prints the computed optimum,
-and hands back the `jasper-angle-capture stage` lines that confirm it. It opens
-no device and plays nothing. `jasper-round-views delay-confirm <bundle> --fc-hz N` then
-grades the `null_runs/` rows those coordinates were played at against the same
-landscape and banks the verdict as `delay_confirmation.json`.
-
 **Price orders the queue; it never empties it.** A delay the confirmation
 resolved is a measured physical error, so it gets applied — through the
 alignment door, as a standing step of the round, not a judgment call about
@@ -437,13 +465,22 @@ outside it. The one reason not to prescribe a measured delay is that the
 measurement did not resolve one — the disagreement rule above — never that the
 number came back small.
 
+**The chain, end to end.** `jasper-round-views delay-landscape <bundle>
+--fc-hz N` reads that round's per-driver curves, prints the computed optimum and
+hands back the confirm commands — it opens no device and plays nothing ·
+`jasper-null` plays them and banks a row per coordinate · `jasper-round-views
+delay-confirm <bundle> --fc-hz N` grades those rows against the same landscape,
+banks `delay_confirmation.json` and publishes `prescribable_delay_us` · the
+alignment door applies it. One microphone placement covers all four, and one
+emitter puts a candidate delay in a measurement graph at all —
+`camilla_yaml.emit_active_speaker_program_config`'s `measurement_delays_us`.
+
 **Applying the winner — the alignment door**, reached with
-`--alignment-prescription` on the round runner (a session-open key, not a
-prescriber verb). Fields: `delay_us`, `basis_delay_us`, `basis_artifacts`,
-`basis_note`, `polarity`, plus gate-written `checked_at_fc_hz` / `lobe_us` and
-derived `residual_us`. Units are µs; the sign frame is `(D_woofer − D_tweeter)`,
-so **positive delays the tweeter**. `polarity` takes `keep` / `invert`; absent
-means the automatic path.
+`jasper-round open --alignment-prescription <path>`: a session-open key, not a
+prescriber verb. The packet's `request_time_prescriptions.alignment` block names
+every field and every refusal. The one thing to carry in your head is the frame:
+units are µs and the sign is `(D_woofer − D_tweeter)`, so **positive delays the
+tweeter**.
 
 **The lobe bound is the one arithmetic gate here.** The door computes
 `lobe_us = half_period_us(fc)` and refuses `PRESCRIPTION_OUT_OF_LOBE` when
@@ -452,7 +489,8 @@ corner of the basis you declared. That is the guard against lobe-hopping — a
 delay a whole period away nulls just as deeply and is wrong by a whole
 wavelength. Declare an honest `basis_delay_us` or the bound checks nothing.
 
-Then **re-verify**. An alignment you did not re-measure is a hypothesis.
+Then **apply and re-verify** — §7's four verbs. An alignment you did not
+re-measure is a hypothesis.
 
 ## 5. LEVEL MATCH
 
@@ -475,8 +513,10 @@ error to the graph.
 acoustic confirm.** That confirm plays whatever trim this derivation resolved,
 and a gap wider than §4's bound caps the null before delay is even in question —
 so apply a measured level match first, then go and null. There is no separate
-verb to run; what the artifact is and when it is written belongs to
-[`testing-tooling.md`](testing-tooling.md), "Measured driver base trim".
+verb that derives it — the apply banks it, `jasper-round apply` on a measured
+candidate or `jasper-basic-profile apply` back to structure-plus-trim — and what
+the artifact is belongs to [`testing-tooling.md`](testing-tooling.md),
+"Measured driver base trim".
 
 **A trim is re-solved every round.** So **a transplanted chain needs its trim
 pinned, or a refit against the new trim.** Filters carried over from an earlier
@@ -540,10 +580,12 @@ provenance stated — never vetoes:
   reflections an ordinary room gives that lands somewhere under ~1 kHz; a
   longer window or a more distant boundary moves it, so take it off the row.
   The packet's position rows carry `gate_reflection_delay_ms` and
-  `gate_moved_rms_db` per capture, and `verify.gate` carries the same pair for
-  the verify. A reflected copy arriving Δt ms after the direct sound combs the
-  response at `1/Δt` kHz spacing — first constructive peak at `≈ 1000/Δt` Hz,
-  so a row reporting 2.8 ms puts one near 357 Hz and the rest at its multiples
+  `gate_moved_rms_db` per capture; `verify.gate` carries the same two numbers
+  under `reflection_delay_ms` and `moved_rms_db` — the `gate_` prefix is dropped
+  because the block is already the gate. A reflected copy arriving Δt ms after
+  the direct sound combs the response at `1/Δt` kHz spacing — first constructive
+  peak at `≈ 1000/Δt` Hz, so a row reporting 2.8 ms puts one near 357 Hz and the
+  rest at its multiples
   (that row's arithmetic, not a frequency to carry) — so a "feature" landing on
   that grid, or hugging the floor, is the room and the analysis window
   speaking, not the driver. `gate_rungs` below is the same question asked per
@@ -567,20 +609,19 @@ provenance stated — never vetoes:
   `GATE_DELTA_SLACK_DB` and `CENTRE_SHIFT_OCT`, each with the corpus reading
   behind it, and every artifact stamps their live values into `thresholds`.
   Two things a reader has to know rather than look up: the corrected delta is
-  a **smaller quantity** than the raw swing this bullet used to bound at
-  ~1–2 dB, because the window's own share is subtracted; and the growth ratio
+  a **smaller quantity** than the raw window swing, because the window's own
+  share is subtracted; and the growth ratio
   is **not read at all** below the sigma floor, because repeat takes at one
   pose have no across-pose disagreement and the ratio there is their own
   capture noise (`sigma_growth_readable` says so per row). Rungs past the
   primary re-admit reflections deliberately: convergence there is evidence of
   a real feature, fan-out of a reflection. [The bars are read off the banked
   validation corpus; none is a published law.]
-- **Ladder numbers banked before 2026-09-02 are in a different frame.** The
-  ladder moved onto the engine's window family then (P1 §6 row D — 25 % tail,
-  1 ms lead) from the classifier's own (row F, a full-span half-Hann tail with
-  no lead), and the two disagree by 1.72 dB on the same 7→20 ms change of the
-  same capture. `measurement.gate_ladder_frame` states the frame in full;
-  compare numbers only within one.
+- **Two ladder frames exist and their numbers do not compare.** The engine's
+  window family (P1 §6 row D — 25 % tail, 1 ms lead) and the classifier's own
+  (row F, a full-span half-Hann tail with no lead) disagree by 1.72 dB on the
+  same 7→20 ms change of the same capture. `measurement.gate_ladder_frame`
+  states which frame a number is in; compare only within one.
 - `pose_persistence` — the feature's depth/centre at each banked lateral pose.
   Stable within ~±0.5 dB across the walk: a source property, correctable.
   Shrinking by more than ~2 dB or migrating in frequency off-axis: axis-local
@@ -633,8 +674,8 @@ why the reader that stamps them is offline:
 writes the graded verdict carrying all five to
 `<round-dir>/spec_gate_sensitivity.json`. Read `gate_sensitivity_note` first: a
 `not_swept_` prefix means the ladder never ran, a bare slug means it ran and
-declined. `jasper-round-views gate-sweep --at-hz` is now only for a bin the verdict did
-*not* flag.
+declined. Reach for `jasper-round-views gate-sweep --at-hz` when you want a
+frequency this verdict did not stamp — §6a rung 2 is the standing case.
 
 **Prefer cuts; keep boosts modest and probe-verified.** The realization probe
 (`classify_delta_probe`) grades realized against commanded — `matched`,
@@ -643,11 +684,13 @@ static cap**, and let its history accumulate: `model_error_store` banks a
 bounded history of realized − predicted per verify — how wrong the PREDICTION
 was, pooled. For how much of what was COMMANDED actually arrived, **per band
 and across rounds**, read the controllability ledger
-(`jasper.active_speaker.controllability_ledger`, published on `/state` and
-printed by the round CLI). It hands over the rows each round banked and pools
-nothing — a mean or a spread is yours to take, across the rounds you judge
-comparable (ADR-0198). Two different questions, and neither answers the
-other: a speaker whose grade is predicted perfectly can still be a speaker
+(`jasper.active_speaker.controllability_ledger`), published in the crossover
+wizard's own status block at `GET /correction/crossover/status` and summarised
+by `scripts/run-crossover-round.py` on a laptop-driven round; no on-box CLI
+prints it and it is not on `:8780/state`. It hands over the rows each round
+banked and pools nothing — a mean or a spread is yours to take, across the
+rounds you judge comparable (ADR-0198). Two different questions, and neither
+answers the other: a speaker whose grade is predicted perfectly can still be a speaker
 whose commands land at 60% in one band. The classification bar DISCLOSES rather
 than refuses — filters no verdict backs are counted
 (`prescription.unvouched_filters`), not blocked. What still refuses is what a
@@ -701,17 +744,22 @@ window-divergent one. Read `features[].sensitivity.sigma_growth_ratio`,
 through [`gate_sweep.py`](../jasper/active_speaker/crossover_v2/gate_sweep.py)'s
 module docstring, which states the discriminator once. It licenses no filter —
 it is evidence for an attribution argument, never a verdict or an EQ
-instruction.
+instruction. `jasper-round-views classify-features <bundle-dir>` answers the
+same question per feature from the same round, and answers it only inside
+`classifiable_band_hz` — this round's trusted band pulled in by the ±⅓-octave
+neighbourhood a feature is read against, so the classifiable floor sits a third
+of an octave above the trusted floor. Below it a feature comes back
+unclassified, never as "not the room".
 
 **Rung 3 — `jasper-round-views close-reference`: how much of the far read was
 the room?**
 Only once rung 2 says room and the feature is worth one more capture. Ask
 `jasper-round-views close-reference --distance --driver-diameter-in D --fc-hz FC`
-where to stand the mic; the human takes that capture (the close-reference
-program row is #3498's amendment item 1 and is not built, so today you declare
-the distance yourself); then `jasper-round-views close-reference --far-round A
---close-round B --close-m M`. Read `alignment.trusted` before any band, then each
-`windows[].bands[].verdict`: `agreement` says the far read was already
+where to stand the mic; the human takes that capture and you declare the
+distance, because every measurement program measures at the walk's own mark
+distance and none stages a close one; then `jasper-round-views close-reference
+--far-round A --close-round B --close-m M`. Read `alignment.trusted` before any
+band, then each `windows[].bands[].verdict`: `agreement` says the far read was already
 speaker-dominated there, `room_dominated` prices the room's share, `unresolved`
 names which input was missing. It still prescribes nothing.
 
@@ -719,19 +767,26 @@ names which input was missing. It still prescribes nothing.
 floor-and-ceiling bounce geometry, so it cannot separate the sub-500 Hz
 arrivals it flags; height is the deciding axis (#3503). `baseline/full` already
 carries ±10/±20 elevation poses and `baseline/express` a ±10 pair, and staging
-walks them. Until a round banks a pose with a non-zero `vertical_deg` the
-deciding experiment is owed: report the axis as unsampled, never as flat
-(§3d's rule, for §3d's reason).
+walks them. Until a round banks a pose with a non-zero `vertical_deg`, report
+the axis as unsampled, never as flat (§3d's rule, for §3d's reason).
 
 Field-by-field reading for rungs 2 and 3 is the runbook's — "Reading a gate
 sweep" and "Reading a close-reference comparison".
 
 ## 7. SUMMED VERIFY
 
-Walk the full graph over the pose set and read four **independent** verdicts,
-never one overloaded pass/fail: capture validity, realization, benefit, spec.
-They compose into the adoption axes and one row of the adoption table is
-selected — read that table in code, since dated prose copies exist.
+Apply the candidate with `jasper-round apply --expected-fingerprint <fp>` — a
+fingerprint that is not the live one is refused before anything is sent — then
+walk the full graph over the pose set: `jasper-angle-capture stage`,
+`jasper-round open --stage post_apply` (which takes the instrument the measuring
+session recorded, so it needs no `--tier`), `wait`, `bank`. Read four
+**independent** verdicts off the round, never one overloaded pass/fail: capture
+validity, realization, benefit, spec. They compose into the adoption axes and
+one row of the adoption table is selected — read that table in code
+(`crossover_v2/contracts.py`'s `ADOPTION_ROWS`), never a prose copy.
+`jasper-round-views entry <round-dir>` grades the state the round opened in, and
+`jasper-round-views frequency <round-dir>` writes the renderer-neutral curve
+view §8 reads.
 
 Hold one diagnostic rule above all others:
 
@@ -769,9 +824,10 @@ and never gate — the band table is the acceptance lineage. When the
 single-axis number flatters a round and the pooled number does not, the
 single-axis one is the one fitting artifacts. The pooled window reads from
 SUMMED captures banked at bearings, which a per-driver-only lateral walk does
-not produce — walk `both_at` stops (per-driver AND summed at each angle, one
-mic move) and the pooled lens lights up; until then it reports absent-with-
-reason, never a fabricated number.
+not produce — a named program plays per-driver at every pose, so the stops that
+bank both are staged with `jasper-angle-capture stage --angles 0,7,-7 --regime
+both` (per-driver AND summed at each angle, one mic move). Without them the
+pooled lens reports absent-with-reason, never a fabricated number.
 
 ## 8. VOICING
 
@@ -795,6 +851,14 @@ By ear, change one axis at a time. `jasper-audition start --layer baseline` /
 graph with the measured-correction stages omitted, so the ear can attribute what
 it hears. It is runtime-only and reverts by doing nothing.
 
+**To show the household a curve**, hand them
+`http://<this speaker>/sound/measurements/` — an A/B overlay of saved
+measurements, one picker per run, drawn from the session bundles still in
+retention. It does not see banked rounds, so a round the campaign home holds and
+the sessions ring has evicted is not on it. Offline you get the same document
+from `jasper-round-views frequency <A> [<B>]`, which takes a round, a bundle, or
+a take file — two take files is how one pose's two takes are overlaid.
+
 ## 9. BELOW THE GATE FLOOR
 
 **Nothing gated is trustworthy.** A feature below the validity floor describes
@@ -804,10 +868,8 @@ the analysis window, not the speaker.
   does it, the band stays **disclosed-unverified**, never quietly reported flat.
 - **Below the room's transition frequency, single-point data is modes, not
   speaker.** No number of repeats at one seat changes that.
-- A gate number read without its floor source means nothing — the same small
-  `gate_moved_rms_db` says "clean capture" beside a measured reflection and
-  "nothing was proven" beside a search-span bound. The runbook owns that
-  reading.
+- A gate number read without its floor source means nothing. The runbook's
+  "Reading the gate and the reflector path honestly" owns that reading.
 - A feature ABOVE the validity floor and below the room's is not this section's
   — it was resolved, and §6a's ladder is what decides whose it is.
 
@@ -818,8 +880,11 @@ done — a round that passes keeps iterating while a flatter, more level result 
 still reachable, up to the series cap.
 
 Pre-register before you measure: the driver document's `expected_delta_db` is
-where the prediction lands, and `jasper-round-views frozen` reports it beside
-the move the round actually made.
+where the prediction lands, and `jasper-round-views frozen <baseline-round>
+<this-round>` reports it beside the move the round actually made. Each turn is
+the same five verbs as §2 — `stage`, `open`, `wait`, `bank`, then `apply` when
+the round earned it — and every banked round stays under the campaign home for
+the next comparison.
 
 When a verify surprises you, **diagnose from the receipts before composing the
 next candidate**: which band, level or shape, realized or not, and what the
@@ -842,9 +907,9 @@ intervention whose measured evidence stands.
 | **Correcting into a positional dip** — the dip moves with position, the feature carries an excess-GD spike, the classifier says `interference-barred` or `room` | a cancellation or boundary effect | **no EQ, ever**; route it to position, placement, or corner choice |
 | **Flat on-axis but hot** — top-octave overshoot after an on-axis-flat fit above the beaming onset; realization matches, listeners call it bright | you targeted the wrong curve | refit weighted to the listening window (§6) |
 | **Delay masquerading as a response error** — a ripple centred on fc that EQ cannot remove and that changes with a polarity flip | the branches are not time-aligned | stop EQ-ing, go to §4, re-verify, resume |
-| **A null that will not deepen** — best null short of the usable bar, the shoulders either side of fc disagree, and the declared per-driver sensitivities are far apart | branch LEVEL mismatch, not geometry: the gap bounds the null on its own and no delay coordinate gets under it | level-match the branches from banked evidence and re-measure **before** concluding lobing; where the box refuses for want of that evidence, apply a measured level match first (§5) — the apply banks it — then return to §4 |
+| **A null that will not deepen** — best null short of the usable bar, the shoulders either side of fc disagree, and the declared per-driver sensitivities are far apart | branch LEVEL mismatch, not geometry: the gap bounds the null on its own and no delay coordinate gets under it | level-match the branches from banked evidence and re-measure **before** concluding lobing; where the box refuses for want of that evidence, apply a measured level match first — `jasper-basic-profile apply` banks it (§5) — then return to §4 |
 | **Gate-floor artifacts** — features below `validity_floor_hz` that vary with position and vanish when the gate moves | the analysis window, not the speaker | disclose the band unverified; correct nothing there (§9) |
-| **Measuring-noise chasing** — round-to-round differences inside the rig's own repeatability band, the story changing each round | you are reading noise | stop iterating, re-measure the repeat floor, raise the action threshold above it |
+| **Measuring-noise chasing** — round-to-round differences inside the rig's own repeatability band, the story changing each round | you are reading noise | stop iterating, re-bank the floor with `jasper-round-views repeat-floor` (§1c), raise the action threshold above it |
 
 ## THE HONESTY RULES
 
