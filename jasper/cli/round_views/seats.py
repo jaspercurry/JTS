@@ -36,6 +36,7 @@ from jasper.active_speaker.crossover_v2.round_views import (
 
 from ._common import (
     _ROUND_DIR_HELP,
+    _ROUND_DIR_METAVAR,
     _add_norm_band_args,
     _load_round,
     _view_out,
@@ -163,7 +164,9 @@ def _cmd_directivity(args: argparse.Namespace) -> int:
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
     agreement = sub.add_parser("agreement", help="per-seat sign/magnitude testimony for every feature")
-    agreement.add_argument("round_dir", help=_ROUND_DIR_HELP)
+    agreement.add_argument(
+        "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP
+    )
     _add_norm_band_args(agreement)
     agreement.add_argument(
         "--lo", type=float, default=None,
@@ -178,7 +181,9 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     co_metrics = sub.add_parser(
         "co-metrics", help="NBD + SM (Olive 2004) on the on-axis and pooled-window curves — informational only",
     )
-    co_metrics.add_argument("round_dir", help=_ROUND_DIR_HELP)
+    co_metrics.add_argument(
+        "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP
+    )
     co_metrics.add_argument("--out", default=None, help="write the result here (- for stdout)")
     co_metrics.set_defaults(func=_cmd_co_metrics)
 
@@ -186,6 +191,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "directivity",
         help="every cloud seat's departure from on-axis, split per band into level and shape — observed only",
     )
-    directivity.add_argument("round_dir", help=_ROUND_DIR_HELP)
+    directivity.add_argument(
+        "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP
+    )
     directivity.add_argument("--out", default=None, help="write the result here (- for stdout)")
     directivity.set_defaults(func=_cmd_directivity)

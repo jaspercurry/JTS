@@ -50,6 +50,7 @@ from jasper.cli._refusal import (
 from ._common import (
     ARTIFACT_BY_VIEW,
     PROG,
+    _BUNDLE_DIR_METAVAR,
     _ROUND_TOOL_ERRORS,
     _write,
     add_rungs_ms_argument,
@@ -171,7 +172,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         help="classify a round's features as driver defects, interference, or the room",
     )
     classify.add_argument(
-        "bundle_dir", type=Path,
+        "bundle_dir", type=Path, metavar=_BUNDLE_DIR_METAVAR,
         help="commissioning bundle: info.json beside evidence/v1/artifacts/",
     )
     classify.add_argument(

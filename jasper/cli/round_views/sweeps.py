@@ -36,6 +36,7 @@ from jasper.cli._refusal import EXIT_UNREADABLE, stage
 from ._common import (
     ARTIFACT_BY_VIEW,
     _ROUND_DIR_HELP,
+    _ROUND_DIR_METAVAR,
     _ROUND_TOOL_ERRORS,
     _load_round,
     _view_out,
@@ -133,7 +134,9 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "spec-sweep",
         help="the round's spec verdict with room-or-speaker answered at each band's worst bin",
     )
-    spec_sweep.add_argument("round_dir", help=_ROUND_DIR_HELP)
+    spec_sweep.add_argument(
+        "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP
+    )
     add_rungs_ms_argument(spec_sweep)
     spec_sweep.add_argument("--out", default=None, help="write the result here (- for stdout)")
     spec_sweep.set_defaults(func=_cmd_spec_sweep)
@@ -142,7 +145,9 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "gate-sweep",
         help="sweep the gate window over this round's own captures — room or speaker, evidence only",
     )
-    gate_sweep.add_argument("round_dir", help=_ROUND_DIR_HELP)
+    gate_sweep.add_argument(
+        "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP
+    )
     add_rungs_ms_argument(gate_sweep)
     gate_sweep.add_argument(
         "--at-hz", type=float, nargs="+", default=None, metavar="HZ",

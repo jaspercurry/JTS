@@ -44,6 +44,11 @@ AUTHORITY_TIER = "advisory (classify-features projects a ring into the bundle)"
 #: the speaker, the banked one is what ``bank-crossover-round.sh`` made of it.
 _ROUND_DIR_HELP = "a banked round directory, or a live session bundle"
 
+#: What the usage line calls a directory positional, so ``--help`` reads as
+#: the shape to type rather than as this module's own parameter names.
+_ROUND_DIR_METAVAR = "<round-dir>"
+_BUNDLE_DIR_METAVAR = "<bundle-dir>"
+
 PROG = "jasper-round-views"
 
 #: The positionals a view's subcommand takes, with the inventoried round in

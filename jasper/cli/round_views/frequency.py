@@ -104,10 +104,11 @@ def _cmd_frequency(args: argparse.Namespace) -> int:
 def add_parser(sub: argparse._SubParsersAction) -> None:
     frequency = sub.add_parser("frequency", help="build the shared frequency-response view")
     frequency.add_argument(
-        "source_a", help="banked round, session bundle, or JSON document for A",
+        "source_a", metavar="<source-a>",
+        help="banked round, session bundle, or JSON document for A",
     )
     frequency.add_argument(
-        "source_b", nargs="?",
+        "source_b", nargs="?", metavar="<source-b>",
         help="optional banked round, session bundle, or JSON document for B",
     )
     frequency.add_argument("--out", default=None, help="write the result here (- for stdout)")

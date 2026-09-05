@@ -50,6 +50,7 @@ from jasper.cli._refusal import EXIT_UNREADABLE, StageFailed, stage
 from ..null_door import NULL_RUNS_DIR
 from ._common import (
     ARTIFACT_BY_VIEW,
+    _BUNDLE_DIR_METAVAR,
     _ROUND_TOOL_ERRORS,
     _write,
     answer,
@@ -176,7 +177,7 @@ def _add_landscape_arguments(child: argparse.ArgumentParser, *, out_name: str) -
     """The bundle, the corner and the pose — the landscape both verbs compute."""
 
     child.add_argument(
-        "bundle_dir",
+        "bundle_dir", metavar=_BUNDLE_DIR_METAVAR,
         help="a commissioning bundle directory (the one holding info.json "
              "beside evidence/v1/artifacts/crossover_v2/<capture-session-id>/)",
     )

@@ -29,6 +29,7 @@ from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
 from ._common import (
     _ROUND_DIR_HELP,
+    _ROUND_DIR_METAVAR,
     _ROUND_TOOL_ERRORS,
     _load_round,
     _view_out,
@@ -109,7 +110,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     forward.add_argument(
-        "round_dir",
+        "round_dir", metavar=_ROUND_DIR_METAVAR,
         help=f"{_ROUND_DIR_HELP} whose per-driver solos are the PREDICTION BASIS",
     )
     forward.add_argument(
