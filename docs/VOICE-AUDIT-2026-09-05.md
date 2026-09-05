@@ -377,8 +377,8 @@ Wave 0 — the ruler
 Wave 1 — deafness and boot
 - [ ] 1.1 Push-to-talk `CAP` and acquire-error cues + pins (voice-daemon H1, H2) — open as #4191; review also made all four manual refusal cues fire-and-forget (an awaited cue blocked the control-socket START reply past its 5 s timeout)
 - [ ] 1.2 Silent-response / lost-turn cue + counter (providers B2) — open as #4203
-- [ ] 1.3a Gemini transient initial-connect retry, one shared loop (providers A1) — open as #4192
-- [ ] 1.3b Boot order: mics, TTS and cues before the connect; `READY=1`/`TimeoutStartSec`; SIGTERM reaches the connect loop (providers A2, B1)
+- [ ] 1.3a First connect is one attempt handed to the reconnect supervisor; no exit at a connect failure (providers A1) — open as #4192
+- [ ] 1.3b Boot order: mics, TTS, cues and `READY=1` before the connect; a stop cancels a dialling connect; `CONNECTING` counts as paused (providers A2, B1) — open as #4206
 - [ ] 1.4 Owner gate: WAN-unplugged boot on a spare Pi
 
 Wave 2 — subtraction
