@@ -129,7 +129,7 @@ def test_doctor_check_exception_redacts_secret_like_values():
     assert "sk-super-secret-openai-key" not in result.detail
     assert "refresh_token=<redacted>" in result.detail
     assert "Bearer <redacted>" in result.detail
-    assert "sk-s...-key" in result.detail
+    assert result.detail.count("<redacted>") == 3
 
 
 def test_async_doctor_check_exception_becomes_fail_result():

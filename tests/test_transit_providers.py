@@ -421,48 +421,6 @@ def test_enumerate_live_routes_skips_visits_with_blank_line_names():
     assert routes == ("B35", "B70")
 
 
-# ---- scrub_secrets --------------------------------------------------------
-#
-# Defense against `httpx.HTTPError.__str__` interpolating the full URL
-# (including `?key=SECRET`) into user-facing error banners and journalctl.
-# Regression for B2 from the staff-engineer review.
-
-def test_scrub_secrets_redacts_key_param_in_url():
-    from jasper.transit.base import scrub_secrets
-    url = "https://bustime-classic.mta.info/api/?key=ABC-DEF-123&MonitoringRef=302680"
-    assert scrub_secrets(url) == (
-        "https://bustime-classic.mta.info/api/?key=***&MonitoringRef=302680"
-    )
-
-
-def test_scrub_secrets_redacts_key_when_not_first_param():
-    from jasper.transit.base import scrub_secrets
-    url = "https://example.com/?lat=40.65&key=ABC123&lon=-73.99"
-    assert "ABC123" not in scrub_secrets(url)
-    assert "key=***" in scrub_secrets(url)
-
-
-def test_scrub_secrets_handles_httpx_error_repr():
-    """Real httpx exceptions stringify with the full URL embedded —
-    this test pins the wrapping to ensure scrubbing reaches it."""
-    from jasper.transit.base import scrub_secrets
-    fake_repr = (
-        "HTTPStatusError(\"Server error '500' for url "
-        "'https://bustime-classic.mta.info/api/?key=SECRET_VAL&x=y'\")"
-    )
-    out = scrub_secrets(fake_repr)
-    assert "SECRET_VAL" not in out
-    assert "key=***" in out
-
-
-def test_scrub_secrets_does_not_match_prose_mentions_of_key():
-    """The regex requires a `?` or `&` boundary so we don't shred
-    sentences that happen to contain the word 'key'."""
-    from jasper.transit.base import scrub_secrets
-    msg = "the bus card asks for an MTA BusTime API key in the wizard"
-    assert scrub_secrets(msg) == msg
-
-
 # ---- Cache resilience (M2) ------------------------------------------------
 #
 # Tests for BusClient live in test_bus.py — this one verifies the

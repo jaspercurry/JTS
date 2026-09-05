@@ -69,7 +69,7 @@ from .. import google_routes, location_state, transit
 from ..atomic_io import locked_transform_env_file
 from ..bus import parse_bus_stops
 from ..transit import geocode as geocode_mod
-from ..transit.base import scrub_secrets
+from ..secret_redaction import redact_secrets
 from ..log_event import log_event
 from ._common import (
     api_key_token_is_valid,
@@ -385,9 +385,9 @@ def _apply_save(
                 {"JASPER_MTA_BUSTIME_KEY": new_key},
             )
         except Exception as e:  # noqa: BLE001
-            # scrub_secrets: an unanticipated httpx error repr carries the
-            # full URL with ?key=<BusTime key>; never let it reach the log.
-            logger.warning("bus credential probe raised: %s", scrub_secrets(repr(e)))
+            # An unanticipated httpx error repr carries the full URL with
+            # ?key=<BusTime key>; never let it reach the log.
+            logger.warning("bus credential probe raised: %s", redact_secrets(repr(e)))
             errors = {"JASPER_MTA_BUSTIME_KEY": "probe failed"}
         if errors:
             return current, (
@@ -764,10 +764,10 @@ def _bus_card_html(
     except transit.TransitError as e:
         error = str(e)
     except Exception as e:  # noqa: BLE001
-        # scrub_secrets: an httpx error repr carries the full URL with
-        # ?key=<BusTime key>; scrub before it reaches the log OR the
-        # html.escape()-d error banner served on the household LAN.
-        safe = scrub_secrets(repr(e))
+        # An httpx error repr carries the full URL with ?key=<BusTime key>;
+        # scrub before it reaches the log OR the html.escape()-d error
+        # banner served on the household LAN.
+        safe = redact_secrets(repr(e))
         logger.warning("bus stops fetch raised: %s", safe)
         error = f"unexpected error: {safe}"
 
@@ -991,7 +991,7 @@ def _citibike_card_html(
         # Citi Bike is keyless (no live secret), but mirror the bus path's
         # scrub discipline so an error repr with any URL is masked
         # consistently in the log and the LAN-served error banner.
-        safe = scrub_secrets(repr(e))
+        safe = redact_secrets(repr(e))
         logger.warning("citibike stops fetch raised: %s", safe)
         error = f"unexpected error: {safe}"
 

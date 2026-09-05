@@ -182,6 +182,14 @@ while IFS= read -r changed; do
       ;;
     tests/voice_eval/*)
       ;;
+    jasper/secret_redaction.py|scripts/_diagnostic_redaction.sh)
+      # The Python and bash redactors are pinned side by side against one
+      # case table, so an edit to either has to run both files' tests.
+      # Without this arm scripts/_diagnostic_redaction.sh matches no arm at
+      # all and jasper/secret_redaction.py routes only to its own test.
+      add_test_if_present "tests/test_secret_redaction.py"
+      add_test_if_present "tests/test_diagnostic_redaction_scripts.py"
+      ;;
     jasper/*/*.py)
       # issue #3142: a module nested one directory deeper than the top-level
       # package only has `package` (e.g. "cli") and `module` to route with,

@@ -994,7 +994,7 @@ def test_e2e_save_and_test_redacts_provider_error_and_still_saves(
         assert status == 303
         assert "Saved, but OpenAI Realtime voice test failed" in flash
         assert "sk-secret-tail9999" not in flash
-        assert "sk-s" in flash and "9999" in flash
+        assert "<redacted>" in flash
 
         state = _common.read_env_file(str(tmp_path / "voice_provider.env"))
         assert "OPENAI_API_KEY" not in state  # split into voice_keys.env (4a)

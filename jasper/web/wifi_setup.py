@@ -56,6 +56,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import subprocess
 import time
 import urllib.parse
@@ -66,6 +67,7 @@ from typing import Any
 from .. import wifi_guardian_persistence, wifi_scan_repair
 from ..control.restart_broker import manage_units
 from ..log_event import log_event
+from ..secret_redaction import redact_secrets
 from ._common import (
     JsonBodyError,
     begin_request,
@@ -161,9 +163,9 @@ def _run_nmcli(
     inspect returncode + stdout/stderr.
 
     `log_argv=False` is used by callers that pass a PSK on the
-    command line — they pre-scrub and log a redacted version
-    themselves via _scrub_argv(). Other callers can log the full
-    argv safely (nmcli takes no other secret args we use)."""
+    command line — they log a redacted argv themselves. Other callers
+    can log the full argv safely (nmcli takes no other secret args we
+    use)."""
     if log_argv:
         logger.info("nmcli: %s", " ".join(cmd))
     try:
@@ -178,7 +180,7 @@ def _run_nmcli(
         logger.warning(
             "nmcli timed out after %ss: %s",
             timeout,
-            " ".join(_scrub_argv(cmd)),
+            redact_secrets(shlex.join(cmd)),
         )
         # Synthesize a CompletedProcess so callers don't have to
         # special-case TimeoutExpired in addition to non-zero returns.
@@ -189,21 +191,6 @@ def _run_nmcli(
         )
 
 
-def _scrub_argv(cmd: list[str]) -> list[str]:
-    """Return a copy of cmd with the value after `password` (and any
-    other known secret-introducing arg) replaced with ***. Used for
-    log lines around `nmcli dev wifi connect ... password <psk>`."""
-    scrubbed = list(cmd)
-    for marker in ("password",):
-        try:
-            idx = scrubbed.index(marker)
-        except ValueError:
-            continue
-        if idx + 1 < len(scrubbed):
-            scrubbed[idx + 1] = "***"
-    return scrubbed
-
-
 def _run_nmcli_secret(
     cmd: list[str],
     *,
@@ -211,7 +198,7 @@ def _run_nmcli_secret(
 ) -> subprocess.CompletedProcess[str]:
     """Same as _run_nmcli but logs a redacted argv (PSK → ***).
     Use for any command that has a PSK on the command line."""
-    logger.info("nmcli: %s", " ".join(_scrub_argv(cmd)))
+    logger.info("nmcli: %s", redact_secrets(shlex.join(cmd)))
     return _run_nmcli(cmd, timeout=timeout, log_argv=False)
 
 

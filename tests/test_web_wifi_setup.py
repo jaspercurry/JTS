@@ -314,7 +314,7 @@ def test_nmcli_timeout_log_scrubs_psk_from_secret_argv(monkeypatch, caplog):
 
     assert proc.returncode == 124
     assert psk not in caplog.text
-    assert "password ***" in caplog.text
+    assert "password <redacted>" in caplog.text
 
 
 def test_connect_new_scrubs_psk_from_returned_message(monkeypatch):

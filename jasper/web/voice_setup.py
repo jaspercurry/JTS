@@ -94,6 +94,7 @@ from jasper.usage import (
     tuning_usage_db_path,
 )
 from jasper.log_event import log_event
+from jasper.secret_redaction import redact_secrets
 
 from ._common import (
     api_key_token_is_valid,
@@ -243,14 +244,9 @@ def _seed_config_from_state(state: dict[str, str]) -> SimpleNamespace:
     return SimpleNamespace(**values)
 
 
-def _redact_provider_error(exc: Exception, state: dict[str, str]) -> str:
+def _redact_provider_error(exc: Exception) -> str:
     """Return a flash-safe error string without raw provider secrets."""
-    msg = str(exc) or exc.__class__.__name__
-    for provider in PROVIDERS:
-        secret = _value_for(state, provider.key_env)
-        if secret:
-            msg = msg.replace(secret, mask_secret(secret))
-    msg = " ".join(msg.split())
+    msg = " ".join(redact_secrets(str(exc) or exc.__class__.__name__).split())
     if len(msg) > 220:
         msg = msg[:217] + "..."
     return msg
@@ -1452,7 +1448,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     retry_backoff_sec=0.0,
                 )
             except Exception as e:  # noqa: BLE001
-                seed_error = _redact_provider_error(e, new)
+                seed_error = _redact_provider_error(e)
                 log_event(
                     logger,
                     "voice_loudness_seed",

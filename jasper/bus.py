@@ -60,7 +60,8 @@ if TYPE_CHECKING:
     import httpx
 
 from .log_event import log_event
-from .transit.base import TransitError, scrub_secrets
+from .secret_redaction import redact_secrets
+from .transit.base import TransitError
 
 logger = logging.getLogger(__name__)
 
@@ -304,7 +305,7 @@ class BusClient:
                 logger,
                 "transit.bus.fetch.error",
                 stop=stop_id,
-                err=scrub_secrets(repr(e)),
+                err=redact_secrets(repr(e)),
                 level=logging.WARNING,
             )
             return None
@@ -313,7 +314,7 @@ class BusClient:
                 logger,
                 "transit.bus.parse.error",
                 stop=stop_id,
-                err=scrub_secrets(repr(e)),
+                err=redact_secrets(repr(e)),
                 level=logging.WARNING,
             )
             return None
