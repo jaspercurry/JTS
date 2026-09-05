@@ -1594,6 +1594,17 @@ def _make_handler(
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
 
+        def log_request(  # noqa: A003
+            self, code: int | str = "-", size: int | str = "-",
+        ) -> None:
+            # The supervisor polls its own /healthz every few seconds
+            # (system_supervisor.py); a 200 there is a liveness no-op, not
+            # an event, and was ~45% of this daemon's idle journal volume.
+            # Every other response, and any non-200 /healthz, still logs.
+            if self.path == "/healthz" and code == 200:
+                return
+            super().log_request(code, size)
+
         def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
             body = json.dumps(payload).encode("utf-8")
             self.send_response(status)
