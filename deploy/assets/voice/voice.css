@@ -2,11 +2,12 @@
  *
  * Only the visuals the shared /assets/app.css doesn't already cover live here:
  * the active-provider radio group, the spend-cap form layout, the
- * provider setting/key sections, the collapsible pricing-rate disclosures, and
- * the monospace research-prompt textareas. Everything else (.page, .info-card, .field, .form-actions,
- * .form-hint, .badge, .btn--*, .banner, .eyebrow, .section) comes from
- * app.css. This file adds classes only — it defines no :root tokens and reads
- * the shared design tokens so it re-skins with the rest of the system.
+ * provider setting/key sections, and the monospace research-prompt
+ * textareas. Everything else (.page, .info-card, .field, .form-actions,
+ * .form-hint, .badge, .btn--*, .banner, .eyebrow, .section, .disclosure)
+ * comes from app.css. This file adds classes only — it defines no :root
+ * tokens and reads the shared design tokens so it re-skins with the rest
+ * of the system.
  *
  * Loaded via canonical_page(page_css_href="/assets/voice/voice.css"), served
  * static by nginx from /assets/ and cache-busted by the build SHA. */
@@ -145,53 +146,9 @@
   }
 }
 
-/* Collapsible disclosures (pricing editor, research prompt) --------------- */
-/* app.css ships no shared <details> component, so the wizard styles its own
- * here. A card-style summary with a caret that rotates on open; the body sits
- * just below in a recessed panel. Scoped to .pricing-disclosure so it can't
- * collide with any future shared disclosure primitive. */
-.pricing-disclosure {
-  margin-block-start: 0.4rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-}
-
-.pricing-disclosure > summary {
-  list-style: none;
-  cursor: pointer;
-  padding: 0.6rem 0.8rem;
-  font-family: var(--font-display);
-  font-size: 0.9rem;
-  font-weight: 600;
-  color: var(--foreground);
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  user-select: none;
-  -webkit-user-select: none;
-}
-
-.pricing-disclosure > summary::-webkit-details-marker {
-  display: none;
-}
-
-.pricing-disclosure > summary::before {
-  content: "▸";
-  color: var(--muted);
-  transition: transform 0.15s ease;
-  display: inline-block;
-}
-
-.pricing-disclosure[open] > summary::before {
-  transform: rotate(90deg);
-}
-
-.pricing-disclosure > .pricing-disclosure__body {
-  padding: 0 0.8rem 0.8rem;
-  display: grid;
-  gap: 0.6rem;
-}
+/* Pricing editor and research-prompt disclosures use the shared .disclosure
+   primitive (app.css); margin-block-start clears the field above them. */
+.pricing-disclosure { margin-block-start: 0.4rem; }
 
 .price-model {
   display: grid;
@@ -204,10 +161,4 @@
 .prompt-box {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.8rem;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .pricing-disclosure > summary::before {
-    transition: none;
-  }
 }

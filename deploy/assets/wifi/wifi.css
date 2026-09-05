@@ -7,7 +7,7 @@
    the inline Connect/Forget panels, the scan-health note, the
    lockout warning banner, and the join-by-name field tweaks. Shared
    primitives (.page, .info-card, .deflist, .badge, .btn--*, .toggle,
-   .eyebrow, .section__title, .form-hint, .spinner) come from
+   .eyebrow, .section__title, .form-hint, .spinner, .disclosure) come from
    app.css — don't redefine them. Colours read the canonical tokens
    (var(--surface)/--card/--border/--muted/--radius/--status-*), so
    this page re-skins with the rest of the design system.
@@ -224,55 +224,7 @@
 #manual-result:empty { display: none; }
 #manual-result { margin: 8px 0; }
 
-/* Saved-networks collapse. <details> styled as a card-edged disclosure
-   with a rotating caret, matching the legacy wizards' look. */
-details.disclosure { margin-top: 28px; }
-details.disclosure > summary {
-  list-style: none;
-  cursor: pointer;
-  user-select: none;
-  -webkit-user-select: none;
-  padding: 14px 2.4em 14px 16px;
-  border-radius: var(--radius-md);
-  background: color-mix(in oklab, var(--secondary) 50%, transparent);
-  box-shadow: inset 0 0 0 1px var(--border);
-  font-family: var(--font-display);
-  font-weight: 600;
-  font-size: 14px;
-  color: var(--text);
-  position: relative;
-  transition: background 150ms ease;
-}
-details.disclosure > summary:hover { background: var(--surface-hover); }
-details.disclosure[open] > summary {
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
-}
-details.disclosure > summary::-webkit-details-marker { display: none; }
-details.disclosure > summary .saved-count {
-  color: var(--muted);
-  font-family: var(--font-sans);
-  font-weight: 400;
-  margin-left: 6px;
-}
-details.disclosure > summary::after {
-  content: "▸";
-  position: absolute;
-  right: 16px;
-  top: 50%;
-  transform: translateY(-50%);
-  color: var(--muted);
-  transition: transform 150ms ease;
-}
-details.disclosure[open] > summary::after { transform: translateY(-50%) rotate(90deg); }
-details.disclosure > .disclosure-body {
-  padding: 8px 16px 16px;
-  border-radius: 0 0 var(--radius-md) var(--radius-md);
-  box-shadow: inset 0 0 0 1px var(--border);
-  border-top: 0;
-}
-details.disclosure > .disclosure-body .net-list { margin: 0; }
-@media (prefers-reduced-motion: reduce) {
-  details.disclosure > summary,
-  details.disclosure > summary::after { transition: none; }
-}
+/* Saved-networks disclosure: shared .disclosure primitive, spaced below the
+   manual-connect card above it, plus the inline count next to its summary. */
+.saved-networks { margin-top: 28px; }
+.saved-count { color: var(--muted); font-family: var(--font-sans); font-weight: 400; margin-left: 6px; }

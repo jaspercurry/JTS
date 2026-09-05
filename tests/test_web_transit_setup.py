@@ -225,7 +225,7 @@ def test_outside_coverage_shows_no_coverage_card():
 def test_advanced_section_present_in_every_state(stub_gbfs):
     for state in ({}, NYC_STATE, LONDON_STATE):
         out = _render(state)
-        assert 'class="advanced"' in out
+        assert 'class="disclosure advanced-coords"' in out
         # Manual lat/lon override form still posts to geocode.
         assert 'name="manual_lat"' in out
 

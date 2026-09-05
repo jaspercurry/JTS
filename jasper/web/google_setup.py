@@ -473,7 +473,7 @@ def _connection_details_html(client_id: str) -> str:
     return f"""
 <details class="disclosure">
   <summary>Connection details (scopes, project, OAuth client)</summary>
-  <div class="disclosure-body">
+  <div class="disclosure__body">
     <h3>What this app reads</h3>
     <ul>
       <li>Google Calendar — <strong>read-only</strong></li>
@@ -546,7 +546,7 @@ def _redirect_uri_page_html(
 
 <details class="disclosure">
   <summary>OAuth client troubleshooting (redirect URI, reset credentials)</summary>
-  <div class="disclosure-body">
+  <div class="disclosure__body">
     <p>If sign-in fails with <code>redirect_uri_mismatch</code>, your OAuth client doesn't have the redirect URL in its allow-list yet — add it here.</p>
     {_redirect_uri_section_html(redirect_uri)}
     <form method="post" action="reset-credentials" style="margin-top:2em"
@@ -638,14 +638,14 @@ def _management_html(
 
 <details class="disclosure">
   <summary>Google Cloud setup guide</summary>
-  <div class="disclosure-body">
+  <div class="disclosure__body">
     {_setup_wizard_body(redirect_uri, csrf_token, read_only=True)}
   </div>
 </details>
 
 <details class="disclosure">
   <summary>OAuth client settings (redirect URI, reset credentials)</summary>
-  <div class="disclosure-body">
+  <div class="disclosure__body">
     {_redirect_uri_section_html(redirect_uri)}
     <form method="post" action="reset-credentials" style="margin-top:2em"
           data-confirm="Clear the saved Client ID and Secret? Existing OAuthed accounts will keep working until their refresh tokens are revoked." data-confirm-danger>

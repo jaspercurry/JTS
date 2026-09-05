@@ -132,7 +132,13 @@ def test_spinner_primitive_is_shared_without_page_local_copies():
     assert "--button-spinner-color: var(--primary-foreground);" in wifi_css
 
 
-def test_page_css_does_not_redeclare_canonical_toggle():
+# Bare selectors app.css owns outright: no page sheet may redeclare these
+# (a scoped override like `.wake-page .btn { … }` is unaffected — only a
+# bare `.toggle`/`.disclosure` compound at the start of a rule is checked).
+OWNED_BARE_SELECTORS = (".toggle", ".disclosure")
+
+
+def test_page_css_does_not_redeclare_owned_selectors():
     offenders = []
     # The same inventory used by the focus-contract guards includes static
     # sheets/HTML and every jasper.web module that can carry a page_css string.
@@ -140,10 +146,11 @@ def test_page_css_does_not_redeclare_canonical_toggle():
         if path == APP_CSS:
             continue
         css = _without_css_comments(path.read_text())
-        if re.search(r"(?m)^\s*\.toggle(?![\w-])", css):
-            offenders.append(str(path.relative_to(ROOT)))
+        for selector in OWNED_BARE_SELECTORS:
+            if re.search(rf"(?m)^\s*{re.escape(selector)}(?![\w-])", css):
+                offenders.append(f"{path.relative_to(ROOT)} ({selector})")
     assert not offenders, (
-        "canonical .toggle styling belongs only in deploy/assets/app.css: "
+        "canonical styling belongs only in deploy/assets/app.css: "
         + ", ".join(offenders)
     )
 
