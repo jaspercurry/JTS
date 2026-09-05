@@ -12,6 +12,8 @@ from typing import Any
 
 from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
 from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
+from ...service_units import unit_unstable
+from ... import outputd_failure_reconcile_state
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
@@ -41,6 +43,12 @@ REASON_REBOOT_STATE_UNREADABLE = "reboot_state_unreadable"
 REASON_REBOOT_STATE_CORRUPT = "reboot_state_corrupt"
 REASON_REBOOT_STATE_FUTURE_DATED = "reboot_state_future_dated"
 REASON_REBOOT_STATE_ARMED = "reboot_state_armed"
+
+REASON_OUTPUTD_RECONCILE_UNOBSERVED = "outputd_failure_reconcile_unobserved"
+REASON_OUTPUTD_PARK_RECORD_STALE = "outputd_park_record_stale"
+REASON_OUTPUTD_UNIT_FAILED = "outputd_failed_without_park_record"
+REASON_OUTPUTD_UNIT_UNSTABLE = "outputd_unstable_without_park_record"
+REASON_OUTPUTD_PARKED = "outputd_failure_reconcile_parked"
 
 REASON_BOOTLOOP_GUARD_NOT_RUN = "bootloop_guard_not_run"
 REASON_BOOTLOOP_GUARD_RELOAD_FAILED = "bootloop_guard_reload_failed"
@@ -73,10 +81,7 @@ def check_service_runtime_state() -> CheckResult:
             n_restarts = 0
         if active == "failed":
             failed.append(f"{unit} state=failed/{sub or '?'} result={result or '?'}")
-        elif (
-            active in {"activating", "deactivating"}
-            and unit not in _ONESHOT_RUNTIME_STATE_UNITS
-        ):
+        elif unit_unstable(state) and unit not in _ONESHOT_RUNTIME_STATE_UNITS:
             # A oneshot sits in `activating` for its whole normal run, so only
             # its `failed` end-state is a finding.
             failed.append(f"{unit} state={active}/{sub or '?'}")
@@ -325,6 +330,97 @@ def _classify_reboot_state(path: Path, *, now: float | None = None) -> CheckResu
         name, "ok",
         f"last supervisor reboot {age / 3600:.1f}h ago — 24h rate-limit armed",
         reason=REASON_REBOOT_STATE_ARMED,
+    )
+
+
+# Wall-clock before this reads as "the clock was not set yet", not as an age:
+# /run records survive no reboot, but a Pi with no RTC stamps 1970 until NTP
+# lands, and "2000000000s ago" is worse than saying so.
+_CLOCK_SET_EPOCH = 1577836800  # 2020-01-01T00:00:00Z
+
+
+def _parked_ago(parked_at: int | None, *, now: float | None = None) -> str:
+    if parked_at is None:
+        return "at an unrecorded time"
+    if parked_at < _CLOCK_SET_EPOCH:
+        return "with the clock unset at park time"
+    age = (time.time() if now is None else now) - parked_at
+    return f"{age:.0f}s ago"
+
+
+@doctor_check()
+def check_outputd_failure_reconcile_park() -> CheckResult:
+    """outputd is running, and carries no park record from its stop helper.
+
+    Why a stop can park outputd for good: see
+    deploy/bin/jasper-outputd-failure-reconcile. This check owns outputd's
+    runtime state (it is deliberately not in ``_RUNTIME_STATE_UNITS``), so one
+    failed outputd is one fail row — including a stuck ``activating``/
+    ``deactivating`` unit, which warns rather than fails: not yet silent, but
+    not settled either. ``speaker_silent`` on both fail branches: outputd owns
+    the DAC write loop (docs/audio-paths.md), so with it down nothing writes
+    the card and the speaker emits NOTHING.
+    """
+    label = "outputd failure-reconcile"
+    reader = outputd_failure_reconcile_state
+    unit_state = evidence.unit_state(reader.UNIT)
+    state = reader.snapshot(unit_state)
+    reason = state.get("reason")
+    path = state.get("path")
+
+    if reason == reader.REASON_UNOBSERVED:
+        error = state.get("error")
+        return CheckResult(
+            label, "skipped",
+            f"park record at {path} unreadable ({error})" if error
+            else "systemctl unavailable — a park cannot be ruled out",
+            reason=REASON_OUTPUTD_RECONCILE_UNOBSERVED,
+        )
+    if reason == reader.REASON_PARKED:
+        return CheckResult(
+            label, "fail",
+            "PARKED — jasper-outputd's stop helper recorded a park "
+            f"{_parked_ago(state.get('parked_at'))} "
+            f"(exit_status={state.get('exit_status') or '?'}, "
+            f"reason={state.get('park_reason') or '?'}) and nothing retries "
+            f"it. Fix the output env, `systemctl restart jasper-outputd`, "
+            f"then delete {path} if it survives.",
+            speaker_silent=True,
+            reason=REASON_OUTPUTD_PARKED,
+        )
+    if reason == reader.REASON_UNIT_FAILED:
+        return CheckResult(
+            label, "fail",
+            f"{reader.UNIT} is failed with no park record — its stop helper "
+            "did not judge this terminal, so systemd's Restart=on-failure "
+            "should be retrying. Check `journalctl -u jasper-outputd`.",
+            speaker_silent=True,
+            reason=REASON_OUTPUTD_UNIT_FAILED,
+        )
+    if reason == reader.REASON_UNIT_UNSTABLE:
+        active = str((unit_state or {}).get("active_state") or "?")
+        sub = str((unit_state or {}).get("sub_state") or "?")
+        n_restarts = (unit_state or {}).get("n_restarts")
+        detail = (
+            f"{reader.UNIT} is {active}/{sub} with no park record — stuck "
+            "mid-transition. Check `systemctl status jasper-outputd`."
+        )
+        if n_restarts:
+            detail += f" NRestarts={n_restarts}."
+        return CheckResult(
+            label, "warn", detail,
+            reason=REASON_OUTPUTD_UNIT_UNSTABLE,
+        )
+    if reason == reader.REASON_RECORD_STALE:
+        return CheckResult(
+            label, "warn",
+            f"park record at {path} is stale — outputd is running, so the "
+            "unit's ExecStartPost removal did not fire. Delete it; a later "
+            "unrelated failure would otherwise read as this park.",
+            reason=REASON_OUTPUTD_PARK_RECORD_STALE,
+        )
+    return CheckResult(
+        label, "ok", f"{reader.UNIT} is running and carries no park record",
     )
 
 

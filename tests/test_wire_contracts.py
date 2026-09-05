@@ -670,6 +670,10 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     # the Rust daemon.
     "JASPER_OUTPUTD_CONFIG_RETRY_STATE": "outputd failure helper reconcile stamp path; script-only",
     "JASPER_OUTPUTD_CONFIG_RETRY_WINDOW_SEC": "outputd failure helper reconcile window; script-only",
+    # The park record that same helper writes on the branches that leave outputd
+    # parked, read back by jasper/outputd_failure_reconcile_state.py for the
+    # doctor and /state. The Rust daemon reads neither end.
+    "JASPER_OUTPUTD_RECONCILE_PARK_STATE": "outputd park record path; shell writer + jasper.outputd_failure_reconcile_state reader",
     # The retired content lane's capture PCM. outputd no longer reads it
     # (ADR-0100 deleted the lane) and nothing writes it any more: the reconciler
     # sweep removed the last writes and now actively REMOVES the key line from

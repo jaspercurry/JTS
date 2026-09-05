@@ -11,7 +11,7 @@ Stdlib only: the doctor imports this on every run.
 from __future__ import annotations
 
 import subprocess
-from typing import Any
+from typing import Any, Mapping
 
 # Dashboard group per JTS unit. A jasper-*.service not listed here still
 # renders, under "JTS".
@@ -84,6 +84,50 @@ SHOW_PROPERTIES = (
     "NRestarts", "MainPID", "TasksCurrent", "MemoryCurrent", "CPUUsageNSec",
     "ControlGroup",
 )
+
+
+def unit_failed(record: Mapping[str, Any] | None) -> bool:
+    """Whether a ``read_unit_states`` record says the unit is not doing its job.
+
+    The union of the copies already in the tree, which is
+    ``control.audio_health._service_failed``'s — the wider one, and the correct
+    one:
+
+    * ``active_state == "failed"`` — systemd's own verdict.
+    * ``load_state`` ``error``/``not-found`` — a unit systemd cannot load is not
+      running either, and it reads ``inactive`` rather than ``failed``.
+    * a non-success ``Result`` while not ``active`` — ``Result`` survives into
+      ``inactive`` (a start-limited unit sits there carrying ``exit-code``), and
+      the ``active`` guard keeps a unit that has since recovered out of it.
+
+    ``None`` (systemctl unavailable) is NOT failed: that is unknown, and a
+    caller must say so rather than report a healthy speaker.
+    """
+    if not record:
+        return False
+    active_state = str(record.get("active_state") or "")
+    return (
+        active_state == "failed"
+        or str(record.get("load_state") or "") in {"error", "not-found"}
+        or (
+            str(record.get("result") or "") not in {"", "success"}
+            and active_state != "active"
+        )
+    )
+
+
+def unit_unstable(record: Mapping[str, Any] | None) -> bool:
+    """Whether a ``read_unit_states`` record is stuck mid-transition.
+
+    ``active_state`` ``activating``/``deactivating`` is a Type=oneshot unit's
+    NORMAL in-flight state, not instability — a caller tracking oneshots must
+    exclude those itself (see
+    ``jasper.cli.doctor._shared._ONESHOT_RUNTIME_STATE_UNITS``); on a
+    long-running daemon it signals a stuck start/stop.
+    """
+    if not record:
+        return False
+    return str(record.get("active_state") or "") in {"activating", "deactivating"}
 
 
 def systemd_int(value: str | None) -> int | None:
