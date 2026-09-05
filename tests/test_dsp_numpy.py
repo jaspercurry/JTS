@@ -12,8 +12,8 @@ kernel's own contract; scipy is a second oracle, for correctness rather than
 for float order, and a drifting one, because it rounds that same recursion
 its own way from release to release, so it is held to float rounding and not
 to the bit. The scipy comparisons run whenever scipy is importable; the
-shape, gain, stability and chunk-continuity checks run always, because the
-boxes this ships to have no scipy at all.
+textbook-recursion, shape, gain, stability and chunk-continuity checks run
+always, because the boxes this ships to have no scipy at all.
 """
 from __future__ import annotations
 
@@ -175,24 +175,38 @@ def _df2t(sos, x, zi):
     return np.array(out), np.array(state)
 
 
-@pytest.mark.parametrize("signal", ["speechlike", "square"])
-def test_sosfilt_matches_the_textbook_recursion_and_scipy(signal):
-    scipy_signal = pytest.importorskip("scipy.signal")
+def _sosfilt_fixture(signal):
     sos = butter2_highpass_sos(125.0, MIC_RATE)
     source = (
         _speechlike(1_280, MIC_RATE) if signal == "speechlike"
         else _full_scale_square(1_280, MIC_RATE)
     )
     zi = np.zeros((sos.shape[0], 2))
+    return sos, source, zi
+
+
+@pytest.mark.parametrize("signal", ["speechlike", "square"])
+def test_sosfilt_matches_the_textbook_recursion(signal):
+    sos, source, zi = _sosfilt_fixture(signal)
 
     out, state = sosfilt(sos, source, zi=zi)
     textbook, textbook_state = _df2t(sos, source, zi)
-    reference, ref_state = scipy_signal.sosfilt(sos, source, zi=zi)
 
-    assert out.shape == reference.shape
+    assert out.shape == textbook.shape
     # The recursion and the float order it is evaluated in are the contract.
     assert float(np.max(np.abs(out - textbook))) == 0.0
     assert float(np.max(np.abs(state - textbook_state))) == 0.0
+
+
+@pytest.mark.parametrize("signal", ["speechlike", "square"])
+def test_sosfilt_agrees_with_scipy_to_float_rounding(signal):
+    scipy_signal = pytest.importorskip("scipy.signal")
+    sos, source, zi = _sosfilt_fixture(signal)
+
+    out, state = sosfilt(sos, source, zi=zi)
+    reference, ref_state = scipy_signal.sosfilt(sos, source, zi=zi)
+
+    assert out.shape == reference.shape
     # scipy computes the same recursion with less rounding than plain float64,
     # so it pins correctness only, to a tolerance a hundredth of an int16 LSB.
     np.testing.assert_allclose(out, reference, rtol=0.0, atol=1e-8)
