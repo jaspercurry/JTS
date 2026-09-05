@@ -129,9 +129,12 @@ exist.
    files `harmonic_distortion.json` beside it;
    `jasper-round-views frozen | per-seat | repeat | agreement | frequency`
    grades it.
-4. **Propose.** Author the prescription JSON yourself, then
-   `jasper-crossover-prescriber propose --packet <round-dir>/packet.json
-   --prescription -` — a true dry run sharing the whole gate with `stage`.
+4. **Propose.** Author the prescription JSON yourself — `propose --help` lists
+   each class's top-level fields, generated from the contracts that gate them,
+   and the packet's `response_format` / `driver_response_format` blocks carry
+   the bounds — then `jasper-crossover-prescriber propose --packet
+   <round-dir>/packet.json --prescription -`, a true dry run sharing the whole
+   gate with `stage`.
 5. **Stage.** `jasper-crossover-prescriber stage --packet
    <round-dir>/packet.json --state
    /var/lib/jasper/active_speaker_crossover_v2_state.json --prescription -` —
@@ -147,9 +150,10 @@ exist.
    the same two wizard verbs, over the same transport, for when there is no
    laptop on the network, and it carries the alignment and topology doors on
    the open like the laptop runner does. It stages no walk (that stays
-   `jasper-angle-capture`); `jasper-round bank <session-dir>` — the session id
-   `wait` prints, under `/var/lib/jasper/active_speaker/sessions/` — banks the
-   finished session into the campaign home
+   `jasper-angle-capture`); `jasper-round bank <session-dir>` — the
+   `session_dir` `wait` answers with, under
+   `/var/lib/jasper/active_speaker/sessions/` — banks the finished session into
+   the campaign home
    (`/var/lib/jasper/active_speaker/campaigns/<round-id>/`), where it outlives
    session retention and `jasper-round-views` reads it. That home is
    operator-pruned — nothing evicts a banked round; `jasper-doctor` discloses
@@ -467,9 +471,10 @@ surfaces every tuning tool sits beside:
 | `/sound/measurements/` | the household's frequency-response chart: pick one saved measurement, or two for an A/B overlay. Its catalog is the session bundles still in retention, so a **banked round is not on it**; `jasper-round-views frequency` writes the same document offline from a round, a bundle or a take file | advisory | `jasper/web/correction_measurements.py`; JSON at `/sound/measurements/data?a=&b=` |
 
 **The program menu is three live pieces.** The **walk**
-(`jasper-angle-capture plan | stage | withdraw` declares one angle walk and banks
-it for the next session; `plan` resolves and prints without writing, `stage`
-writes, `withdraw` clears), the **poses**
+(`jasper-angle-capture plan | stage | show | withdraw` declares one angle walk
+and banks it for the next session; `plan` resolves and prints without writing,
+`stage` writes, `show` reads the slot back without consuming it, `withdraw`
+clears), the **poses**
 (`scripts/run-crossover-round.py --per-position N` takes N captures at one pose,
 so one mic movement answers more questions than one capture can;
 which pose each take was measured at is derived from the bank into

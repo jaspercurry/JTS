@@ -211,19 +211,23 @@ these four verbs are the whole of it:
 jasper-angle-capture stage --program baseline --size express   # or --size full
 jasper-round open --tier express            # the instrument it measures with
 jasper-round wait --timeout-s 3000
-jasper-round bank /var/lib/jasper/active_speaker/sessions/<session-id>
+jasper-round bank <session_dir, from wait>
 ```
 
-`stage` banks a named pose table for the next session and prints the price and
-`handoff_url` — `http://<this speaker>/sound/crossover/`, derived from this
-speaker's own hostname, never a fixed name. Give the household that one URL:
-they read each pose in words on the page, tap ready once the microphone is
-there, retake a take that went wrong, and tap complete at the end. `open` posts
-the session the page drives; `wait` polls until it stops and prints that
-session's id, which is the directory name under the sessions root above; `bank`
-files the finished session under
-`/var/lib/jasper/active_speaker/campaigns/<round-id>/`, where it outlives
-session retention and every analysis verb below reads it. While it runs,
+**Each receipt hands you the next command or the path it needs, so nothing here
+is composed by hand.** `stage` banks a named pose table for the next session and
+answers with the price and `handoff_url`, which is
+`http://<this speaker>/sound/crossover/` — this speaker's own hostname, never a
+fixed name. Give the household that one URL: they read each pose in words on the
+page, tap ready once the microphone is there, retake a take that went wrong, and
+tap complete at the end. `open` posts the session the page drives and echoes the same
+`handoff_url`; `wait` polls until it stops and answers with `session_dir` — the
+bundle `bank` takes, which the wizard's `session_id` does not name — and the
+`bank` line to run; `bank` files the finished session under
+`/var/lib/jasper/active_speaker/campaigns/<round-id>/`, where it outlives session
+retention, and answers with the `round_dir` every analysis verb below takes.
+Before the handoff, `jasper-angle-capture show` prints the staged walk without
+consuming it (`{"staged": false}` when the slot is empty); during it,
 `jasper-crossover-prescriber status` says whether the takes have landed
 (`banked.walk`).
 
@@ -254,7 +258,9 @@ judges. Every prescription door this file sends you to — topology, alignment,
 blend and per-driver — is stated field by field, with its bounds and its full
 refusal list, in the evidence packet you already have: read its
 `request_time_prescriptions` block for the two session-open doors and its
-`response_format` / `driver_response_format` blocks for the two staged classes.
+`response_format` / `driver_response_format` blocks for the two staged classes,
+whose top-level fields `jasper-crossover-prescriber propose --help` also lists,
+generated from those same contracts.
 There is no ranking engine to consult, and a shortlist from an older build is
 not evidence.
 
@@ -779,7 +785,8 @@ Apply the candidate with `jasper-round apply --expected-fingerprint <fp>` — a
 fingerprint that is not the live one is refused before anything is sent — then
 walk the full graph over the pose set: `jasper-angle-capture stage`,
 `jasper-round open --stage post_apply` (which takes the instrument the measuring
-session recorded, so it needs no `--tier`), `wait`, `bank`. Read four
+session recorded, so it needs no `--tier`), `wait`, `bank` — §2's receipts, so
+`show`, `handoff_url` and `session_dir` carry the verify round too. Read four
 **independent** verdicts off the round, never one overloaded pass/fail: capture
 validity, realization, benefit, spec. They compose into the adoption axes and
 one row of the adoption table is selected — read that table in code
@@ -882,7 +889,7 @@ still reachable, up to the series cap.
 Pre-register before you measure: the driver document's `expected_delta_db` is
 where the prediction lands, and `jasper-round-views frozen <baseline-round>
 <this-round>` reports it beside the move the round actually made. Each turn is
-the same five verbs as §2 — `stage`, `open`, `wait`, `bank`, then `apply` when
+the same four verbs as §2 — `stage`, `open`, `wait`, `bank`, then `apply` when
 the round earned it — and every banked round stays under the campaign home for
 the next comparison.
 
