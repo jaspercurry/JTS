@@ -90,8 +90,9 @@ emit() {
 }
 
 # Scrub PSK occurrences from a string. Used to clean nmcli stderr
-# before logging it on a recreate failure. Mirrors
-# jasper.web.wifi_setup._scrub_psk.
+# before logging it on a recreate failure. The same two passes as
+# jasper.web.wifi_setup._scrub_psk, with this script's own `***`
+# placeholder: it has to run with no Python on hand.
 #
 # Two passes:
 #   1. Replace any literal occurrence of $PSK with `***` (defends

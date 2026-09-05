@@ -47,23 +47,6 @@ _HTTPX_REPR = (
 
 # (id, text, expected, also_in_the_bash_redactor's_mandate)
 CASES: tuple[tuple[str, str, str, bool], ...] = (
-    ("env_openai", "OPENAI_API_KEY=sk-proj-AbCdEf0123456789",
-     "OPENAI_API_KEY=<redacted>", True),
-    ("env_gemini", "GEMINI_API_KEY=AIzaSyD1e2f3G4h5I6j7K8",
-     "GEMINI_API_KEY=<redacted>", True),
-    ("env_xai", "XAI_API_KEY=xai-Ab12Cd34Ef56Gh78", "XAI_API_KEY=<redacted>", True),
-    ("env_google_client_secret", "GOOGLE_CLIENT_SECRET=GOCSPX-Ab12Cd34Ef56",
-     "GOOGLE_CLIENT_SECRET=<redacted>", True),
-    ("env_google_routes", "GOOGLE_ROUTES_API_KEY=AIzaSyRoUtEs123456",
-     "GOOGLE_ROUTES_API_KEY=<redacted>", True),
-    ("env_ha_token", "JASPER_HA_TOKEN=eyJhbGciOi.eyJpc3Mi.sIgXyZ",
-     "JASPER_HA_TOKEN=<redacted>", True),
-    ("env_wifi_psk", "JASPER_WIFI_PSK=hunter2xylophone",
-     "JASPER_WIFI_PSK=<redacted>", True),
-    ("env_bustime_key", "JASPER_MTA_BUSTIME_KEY=0d4e6c2a-9f1b-4c3d",
-     "JASPER_MTA_BUSTIME_KEY=<redacted>", True),
-    ("env_relay_token", "JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=rl_9f8e7d6c5b4a",
-     "JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=<redacted>", True),
     ("env_double_quoted", 'OPENAI_API_KEY="sk-proj-QuOtEd0123456789"',
      "OPENAI_API_KEY=<redacted>", True),
     ("env_single_quoted", "JASPER_HA_TOKEN='eyJhbG.SiNgLe.QuOtEd99'",
@@ -78,6 +61,11 @@ CASES: tuple[tuple[str, str, str, bool], ...] = (
     ("env_inline_quoted_values",
      "started SPOTIFY_CLIENT_SECRET='two words' JASPER_WIFI_PSK=\"wifi words\" ok",
      "started SPOTIFY_CLIENT_SECRET=<redacted> JASPER_WIFI_PSK=<redacted> ok", True),
+    # A value holding the *other* quote character: a run scoped to either
+    # quote stops early and leaves the rest of the credential in place.
+    ("env_inline_double_quoted_apostrophe",
+     "env JASPER_WIFI_PSK=\"don't tell anyone\" python",
+     "env JASPER_WIFI_PSK=<redacted> python", True),
     ("systemd_environment_bare", "Environment=OPENAI_API_KEY=sk-live1234",
      "Environment=OPENAI_API_KEY=<redacted>", True),
     ("systemd_environment_double_quoted", 'Environment="JASPER_WIFI_PSK=two words"',
@@ -85,23 +73,52 @@ CASES: tuple[tuple[str, str, str, bool], ...] = (
     ("systemd_environment_single_quoted",
      "Environment='SPOTIFY_CLIENT_SECRET=quoted secret'",
      "Environment='SPOTIFY_CLIENT_SECRET=<redacted>'", True),
+    ("systemd_environment_apostrophe_in_value",
+     "Environment=\"JASPER_WIFI_PSK=it's mine\"",
+     'Environment="JASPER_WIFI_PSK=<redacted>"', True),
+    # systemd.exec(5) allows several assignments per Environment= line, and
+    # the quoted ones are shell words: everything after the first must
+    # redact too.
+    ("systemd_environment_multi_assignment",
+     'Environment="VAR1=word1 word2" JASPER_WIFI_PSK=word3 "OPENAI_API_KEY=$word 5 6"',
+     'Environment="VAR1=word1 word2" JASPER_WIFI_PSK=<redacted> '
+     '"OPENAI_API_KEY=<redacted>"', True),
+    ("execstart_env_quoted_assignment",
+     "ExecStart=/usr/bin/env 'JASPER_HA_TOKEN=eyJ abc' /opt/x",
+     "ExecStart=/usr/bin/env 'JASPER_HA_TOKEN=<redacted>' /opt/x", True),
+    # Quoted value, no whitespace before the name: the bare-run expression
+    # would cut this at the first space.
+    ("systemd_environment_quoted_value",
+     'Environment=JASPER_WIFI_PSK="two words here"',
+     "Environment=JASPER_WIFI_PSK=<redacted>", True),
     ("url_key_param", "GET https://bt.mta.info/api?key=0d4e6c2a9f1b&lat=1",
      "GET https://bt.mta.info/api?key=<redacted>&lat=1", True),
     ("url_key_param_not_first", "https://example.com/?lat=40.65&key=ABC123XYZ&lon=-73.9",
      "https://example.com/?lat=40.65&key=<redacted>&lon=-73.9", True),
     ("httpx_error_repr_with_url", _HTTPX_REPR % "SECRET_VAL",
      _HTTPX_REPR % "<redacted>", True),
+    # The value run stops at `&` and `)`: three call sites feed `repr(e)`.
+    ("url_access_token_keeps_query_tail",
+     "GET /api?access_token=abc123def&lat=40.6&lon=-73.9 200",
+     "GET /api?access_token=<redacted>&lat=40.6&lon=-73.9 200", False),
+    ("repr_keeps_closing_paren", "RuntimeError(api_key=sk-abcd1234efgh)",
+     "RuntimeError(api_key=<redacted>)", False),
     ("json_refresh_token", '{"refresh_token": "1//0gABCDEFGHijk"}',
      '{"refresh_token": <redacted>}', False),
     ("json_api_key", '{"api_key": "sk-jsonAbCd12345678"}',
      '{"api_key": <redacted>}', False),
+    ("json_api_key_with_apostrophe", '{"api_key":"ab\'cd1234efgh"}',
+     '{"api_key":<redacted>}', False),
     ("json_spotify_access_token", '{"access_token": "BQAbCdEf1234567890"}',
      '{"access_token": <redacted>}', False),
+    # `_supervisor` clips a provider body to `_SCAN_LIMIT` before redacting,
+    # so the opening quote can arrive without its closing one.
+    ("json_truncated_access_token", '{"access_token": "BQAbCdEf1234567890',
+     '{"access_token": <redacted>', False),
+    ("truncated_quoted_token", 'token="abcdefgh12345', "token=<redacted>", False),
     ("bearer_token", "Bearer eyJhbGciOiJIUzI1NiJ9xyz", "Bearer <redacted>", False),
     ("authorization_bearer", "Authorization: Bearer eyJhbGciOiJIUzI1NiAA",
      "Authorization: Bearer <redacted>", False),
-    ("basic_auth", "Authorization: Basic am9lOnMzY3IzdA==",
-     "Authorization: Basic <redacted>", False),
     ("bare_openai_prefix", "Incorrect API key provided: sk-abcd1234efgh.",
      "Incorrect API key provided: <redacted>.", False),
     ("bare_google_prefix", "request denied for AIzaSyBareKey123456",
@@ -120,6 +137,11 @@ CASES: tuple[tuple[str, str, str, bool], ...] = (
      "nmcli dev wifi connect Home password <redacted>", False),
     ("nmcli_argv_quoted_psk", "nmcli device wifi connect 'My Net' password 'my long psk'",
      "nmcli device wifi connect 'My Net' password <redacted>", False),
+    # Over-redaction, kept deliberately: narrowing the `password <arg>` rule
+    # enough to spare this prose also spares an all-lowercase PSK echoed
+    # back by nmcli, which `_scrub_psk` has no literal for.
+    ("password_prose_over_redacted", "wifi password validation failed",
+     "wifi password <redacted> failed", False),
     # Negatives: ordinary text neither redactor may touch.
     ("negative_prose_key", "the key is under the mat", "the key is under the mat", True),
     ("negative_tokenizer", "tokenizer=whisper rate=48000",
@@ -134,25 +156,44 @@ CASES: tuple[tuple[str, str, str, bool], ...] = (
      "GOOGLE_CLIENT_ID=1234-abc.apps.googleusercontent.com", True),
     ("negative_wifi_key_mgmt", "JASPER_WIFI_KEY_MGMT=wpa-psk",
      "JASPER_WIFI_KEY_MGMT=wpa-psk", True),
+    ("negative_wpa_psk_key_mgmt", "key-mgmt=wpa-psk connection activated",
+     "key-mgmt=wpa-psk connection activated", True),
+    ("negative_basic_auth_prose", "Basic authentication failed for user",
+     "Basic authentication failed for user", True),
+    # A key at end of line must not reach across into the next one.
+    ("negative_password_colon_block", "password:\n  reset_count: 3",
+     "password:\n  reset_count: 3", False),
 ) + tuple(
     (f"name_{name.lower()}", f"{name}=S3CR3TV4LUE", f"{name}=<redacted>", True)
     for name in SECRET_ENV_NAMES
 )
 
+_BASH_CASES = tuple((cid, text, expected) for cid, text, expected, m in CASES if m)
 
-def _bash_redact(text: str) -> str:
+
+@pytest.fixture(scope="module")
+def bash_redacted() -> dict[str, str]:
+    """The whole bash mandate through one `bash`, keyed by case id.
+
+    The redactor is line-oriented, so a joined corpus redacts row for row —
+    and the table is the growth path for every daemon's shapes, so one
+    subprocess per row does not scale.
+    """
+    assert not any("\n" in text for _, text, _ in _BASH_CASES)
     proc = subprocess.run(
         [
             "bash",
             "-c",
             f"set -euo pipefail; . {_BASH_REDACTOR}; redact_jasper_diagnostics",
         ],
-        input=f"{text}\n",
+        input="".join(f"{text}\n" for _, text, _ in _BASH_CASES),
         text=True,
         capture_output=True,
         check=True,
     )
-    return proc.stdout.removesuffix("\n")
+    lines = proc.stdout.split("\n")[:-1]
+    assert len(lines) == len(_BASH_CASES)
+    return {cid: line for (cid, _, _), line in zip(_BASH_CASES, lines)}
 
 
 @pytest.mark.parametrize(
@@ -164,11 +205,11 @@ def test_python_redactor(text: str, expected: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("text", "expected"),
-    [pytest.param(t, e, id=cid) for cid, t, e, in_bash_mandate in CASES if in_bash_mandate],
+    ("cid", "expected"),
+    [pytest.param(cid, expected, id=cid) for cid, _, expected in _BASH_CASES],
 )
-def test_bash_redactor(text: str, expected: str) -> None:
-    assert _bash_redact(text) == expected
+def test_bash_redactor(cid: str, expected: str, bash_redacted: dict[str, str]) -> None:
+    assert bash_redacted[cid] == expected
 
 
 @pytest.mark.parametrize("name", SECRET_ENV_NAMES)

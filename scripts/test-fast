@@ -189,6 +189,14 @@ while IFS= read -r changed; do
       # all and jasper/secret_redaction.py routes only to its own test.
       add_test_if_present "tests/test_secret_redaction.py"
       add_test_if_present "tests/test_diagnostic_redaction_scripts.py"
+      # These five assert on the redactor's output vocabulary directly, so
+      # they break on a placeholder or rule change even though nothing in
+      # their own subject moved.
+      add_test_if_present "tests/test_failure_detail.py"
+      add_test_if_present "tests/test_doctor_core.py"
+      add_test_if_present "tests/test_web_wifi_setup.py"
+      add_test_if_present "tests/test_voice_setup.py"
+      add_test_if_present "tests/test_web_transit_setup.py"
       ;;
     jasper/*/*.py)
       # issue #3142: a module nested one directory deeper than the top-level

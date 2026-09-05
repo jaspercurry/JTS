@@ -44,7 +44,8 @@ Security:
   - PSKs ride argv into nmcli (briefly visible in /proc to root) and
     are persisted by NetworkManager itself under /etc/NetworkManager/
     system-connections/ at mode 0600 — we never touch those files.
-  - PSKs are NEVER logged: the subprocess wrapper scrubs `password ***`.
+  - PSKs are NEVER logged: the subprocess wrapper replaces the PSK
+    argv element with `<redacted>` before the argv is joined.
   - HTTP, not HTTPS — matches the rest of the JTS wizard surface. The
     PSK is the most sensitive thing we transmit; the deployment posture
     is LAN-only.
@@ -153,6 +154,22 @@ _SCAN_REPAIR_ROOT_TIMEOUT = _env_float("JASPER_WIFI_SCAN_REPAIR_ROOT_TIMEOUT", 2
 # ============================================================
 
 
+def _redacted_argv(cmd: list[str]) -> str:
+    """Shell-quoted argv with the element after `password` replaced.
+
+    Positional, not pattern-based: `shlex.join` renders a PSK holding a
+    quote as `'don'"'"'t'`, and no pattern can recover the element from
+    that. WPA passphrases are 8-63 printable ASCII, quotes included."""
+    parts: list[str] = []
+    redact_next = False
+    for arg in cmd:
+        # A display form, never re-run: the placeholder goes in unquoted so
+        # the log reads `password <redacted>`, not `password '<redacted>'`.
+        parts.append("<redacted>" if redact_next else shlex.quote(arg))
+        redact_next = arg == "password"
+    return " ".join(parts)
+
+
 def _run_nmcli(
     cmd: list[str],
     *,
@@ -180,7 +197,7 @@ def _run_nmcli(
         logger.warning(
             "nmcli timed out after %ss: %s",
             timeout,
-            redact_secrets(shlex.join(cmd)),
+            _redacted_argv(cmd),
         )
         # Synthesize a CompletedProcess so callers don't have to
         # special-case TimeoutExpired in addition to non-zero returns.
@@ -196,9 +213,9 @@ def _run_nmcli_secret(
     *,
     timeout: float = _DEFAULT_NMCLI_TIMEOUT,
 ) -> subprocess.CompletedProcess[str]:
-    """Same as _run_nmcli but logs a redacted argv (PSK → ***).
+    """Same as _run_nmcli but logs a redacted argv (PSK → `<redacted>`).
     Use for any command that has a PSK on the command line."""
-    logger.info("nmcli: %s", redact_secrets(shlex.join(cmd)))
+    logger.info("nmcli: %s", _redacted_argv(cmd))
     return _run_nmcli(cmd, timeout=timeout, log_argv=False)
 
 
@@ -790,14 +807,13 @@ def _connect_wifi_command(
 
 
 def _scrub_psk(text: str, password: str | None) -> str:
-    """Mask the household PSK out of nmcli output before it is logged or
-    returned to the browser. Ports deploy/bin/jasper-wifi-guardian's
-    scrub_psk: (1) replace the literal PSK, (2) replace `password <arg>`
-    echo-back (nmcli can quote the PSK back verbatim in error text, and
-    the PSK rode this same nmcli's argv)."""
+    """Scrub the household PSK out of nmcli output before it is logged or
+    returned to the browser. Two passes: the literal PSK (nmcli quotes it
+    back verbatim in echo-back errors), then the shared redactor for the
+    `password <arg>` echo we hold no literal for."""
     if password:
-        text = text.replace(password, "***")
-    return re.sub(r"password\s+\S+", "password ***", text)
+        text = text.replace(password, "<redacted>")
+    return redact_secrets(text)
 
 
 def _readable_nmcli_error(
