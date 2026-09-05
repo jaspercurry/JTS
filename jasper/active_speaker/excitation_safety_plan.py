@@ -629,7 +629,7 @@ def resolve_driver_excitation_ceilings(
     )
     permitted_band = FrequencyBand(lower, upper)
     maximum_peak, level_provenance = declared_level_ceiling_dbfs(target)
-    # Supersede-the-seed rule (W6.5): only on the proven-HP path, only for
+    # Supersede-the-seed rule (ADR-0227 §9): only on the proven-HP path, only for
     # high-frequency roles, and only when NO driver-specific level was declared
     # (see :func:`declared_level_ceiling_dbfs`). A declared value is always
     # respected as-is. The resulting step is real: a delegated ceiling resolves

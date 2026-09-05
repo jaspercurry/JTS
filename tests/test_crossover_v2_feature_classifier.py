@@ -1388,10 +1388,12 @@ def _pose_curve(
 
 def test_off_axis_persistence_reads_present_and_not_resolved(tmp_path):
     """6.2: a feature present at every pose reads a depth/centre there; a
-    pose whose curve never swept the feature's band reads not-resolved.
+    pose whose curve never swept the feature's band reads not-resolved, and
+    the block leads with the spread across the poses that DID resolve.
 
     ``absent is not zero`` (the ticket's own words): the not-resolved pose's
-    numbers are ``None``, never a fabricated 0 dB.
+    numbers are ``None``, never a fabricated 0 dB, and it is out of the sigma
+    rather than in it as one.
     """
     bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
     round_dir, _ = round_artifact_dir(bundle)
@@ -1412,8 +1414,16 @@ def test_off_axis_persistence_reads_present_and_not_resolved(tmp_path):
     )
     assert artifact["pose_bank"] == {"available": True, "n_poses": 3}
     persistence = artifact["rows"][0]["pose_persistence"]
-    assert len(persistence) == 3
-    by_pose = {entry["pose_id"]: entry for entry in persistence}
+    assert persistence["n_poses"] == 3
+    assert persistence["n_resolved"] == 2
+    by_pose = {entry["pose_id"]: entry for entry in persistence["poses"]}
+    assert persistence["sigma_pooled_db"] == pytest.approx(
+        float(np.std(
+            [by_pose[pose]["pooled_db"] for pose in
+             ("lateral_00_a01", "lateral_01_a01")],
+            ddof=1,
+        ))
+    )
     for pose_id, degrees in (("lateral_00_a01", -15), ("lateral_01_a01", 15)):
         entry = by_pose[pose_id]
         assert entry["resolved"] is True
@@ -1430,11 +1440,16 @@ def test_off_axis_persistence_reads_present_and_not_resolved(tmp_path):
 def test_no_lateral_poses_reads_as_not_run(peak_artifact):
     """6.2(d): a round with no banked pose curves gets the classifier's own
     NOT-RUN shape (mirroring ``_timing_scatter``'s), and every row's
-    persistence table is empty rather than absent.
+    persistence block is empty -- and its spread ``None``, not 0.0 -- rather
+    than absent.
     """
     assert peak_artifact["pose_bank"]["available"] is False
     assert peak_artifact["pose_bank"]["n_poses"] == 0
-    assert all(row["pose_persistence"] == [] for row in peak_artifact["rows"])
+    assert all(
+        row["pose_persistence"]
+        == {"n_poses": 0, "n_resolved": 0, "sigma_pooled_db": None, "poses": []}
+        for row in peak_artifact["rows"]
+    )
 
 
 def _bank_lateral_pose(
@@ -1506,11 +1521,15 @@ def test_the_cli_reads_banked_lateral_poses_into_persistence(tmp_path, capsys):
     banked = json.loads((round_dir / CLASSIFICATION_ARTIFACT).read_text())
     assert banked["pose_bank"] == {"available": True, "n_poses": 1}
     persistence = banked["rows"][0]["pose_persistence"]
-    assert len(persistence) == 1
-    assert persistence[0]["pose_id"] == "lateral_00_a02"
-    assert persistence[0]["position_deg"] == -20
-    assert persistence[0]["vertical_deg"] == 10
-    assert persistence[0]["resolved"] is True
+    assert persistence["n_poses"] == 1
+    # One resolved pose is no spread: a fabricated 0.0 would read as a walk
+    # this round never took.
+    assert persistence["sigma_pooled_db"] is None
+    (pose,) = persistence["poses"]
+    assert pose["pose_id"] == "lateral_00_a02"
+    assert pose["position_deg"] == -20
+    assert pose["vertical_deg"] == 10
+    assert pose["resolved"] is True
 
 
 # --------------------------------------------------------------------------- #
@@ -1691,10 +1710,18 @@ def test_the_cli_files_the_verdict_where_the_packet_reads_it(tmp_path, capsys):
     bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
     code = cli.main(["classify-features", str(bundle), "--dumps", str(dumps)])
     assert code == cli.EXIT_OK
+    answer = json.loads(capsys.readouterr().out)
     round_dir, _ = round_artifact_dir(bundle)
     assert round_dir is not None
     banked = json.loads((round_dir / CLASSIFICATION_ARTIFACT).read_text())
     assert read_feature_verdicts(banked)[0].classification == DEFECT_CUTTABLE
+    # The floor the REFUSAL already names, on success too, so what this
+    # instrument can be asked about is known before a run rather than after
+    # one declines. Read off the artifact, never re-derived here.
+    assert (
+        answer["classifiable_band_hz"]
+        == banked["measurement"]["classifiable_band_hz"]
+    )
 
 
 def test_the_cli_classifies_a_bank_shape_round(tmp_path, capsys):

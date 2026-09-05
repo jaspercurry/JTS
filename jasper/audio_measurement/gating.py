@@ -29,7 +29,7 @@ distinguish "reflection found and removed" from "nothing found; capped at the se
 — they print identically and mean opposite things (#1966). The operator-facing sentence is
 :func:`jasper.audio_measurement.gate_disclosure.describe_gate`.
 
-The prominence vote (R9 WO-6, issue #1969): a bare hysteresis crossing is a *confident* answer
+The prominence vote (R9, issue #1969): a bare hysteresis crossing is a *confident* answer
 with no confidence behind it — on our own ESS chain 18.1 % of criteria-region positives fired
 EARLY against 12.4 % that found nothing. So a crossing must also *stand out* by
 :data:`REFLECTION_PROMINENCE_DB` above the envelope's own minimum since the direct peak; a
@@ -70,7 +70,7 @@ WINDOW_KIND = "half_hann_tail"
 # count as "found". Tuned to catch a domestic floor bounce (~-3..-10 dB at LF) while sitting
 # just above a bandlimited driver's own first sinc sidelobe (~-13 dB).
 #
-# DO NOT RAISE K (issue #1983; measured, `captures/detector-certification-20260801/` §WO-6,
+# DO NOT RAISE K (issue #1983; measured, `captures/detector-certification-20260801/`,
 # criteria frozen before the run). Raising K past the P_D maximum is STRICTLY DOMINATED — both
 # error rates get worse together. Measured at the shipped vote (Q = 7.5 dB), 12,750 positive /
 # 6,000 negative:
@@ -80,7 +80,7 @@ WINDOW_KIND = "half_hann_tail"
 #     P_FA    0.008  0.096  0.162  0.210  0.268  0.304  0.331  0.417  0.492
 #
 # K is ALSO bounded below by hardware: at Q = 7.5 the real jts3 woofer reflection is found
-# 13/13 at K = 12, but only 10/13 at K = 11 and 0/13 at K = 10 (§WO-6). K = 12 is the FLOOR of
+# 13/13 at K = 12, but only 10/13 at K = 11 and 0/13 at K = 10. K = 12 is the FLOOR of
 # the range that reproduces this speaker's established anatomy, not merely a corpus optimum.
 #
 # The two failure directions are NOT symmetric:
@@ -95,7 +95,7 @@ REFLECTION_THRESHOLD_DB = 12.0
 # Q: how far a candidate's envelope peak must rise above the envelope's own minimum since the
 # direct peak, for that crossing to become a window bound — the early-fire mechanism fix.
 #
-# 7.5 dB is measured, not assumed: `captures/detector-certification-20260801/` §WO-6, a
+# 7.5 dB is measured, not assumed: `captures/detector-certification-20260801/`, a
 # 315-cell (K, Q) grid. Against the no-vote detector at K = 12: P_D 0.674 -> 0.712, P_FA
 # 0.279 -> 0.268, early-fire rate 0.181 -> 0.124 (-31%), with detection on clean captures
 # barely moving (0.124 -> 0.130) since a voted-down candidate doesn't end the search.

@@ -4,11 +4,16 @@
 
 //! The daemon skeleton `jasper-fanin` and `jasper-outputd` share: the
 //! hand-built JSON emitter their observability payloads are written with
-//! ([`json`]), the systemd notify seam, the config-class park contract, and
-//! the helper-thread stack budget. Audio-free and ALSA-free.
+//! ([`json`]), the [`DaemonHooks`] each daemon speaks through, the local
+//! control socket they answer on ([`uds`]), the systemd notify seam, the
+//! config-class park contract, and the helper-thread stack budget. Audio-free
+//! and ALSA-free.
 
+pub mod hooks;
 pub mod json;
+pub mod uds;
 
+pub use hooks::DaemonHooks;
 pub use sd_notify::NotifyState;
 
 /// Stack bytes for every helper thread in a JTS audio daemon.
@@ -58,19 +63,76 @@ pub fn notify(state: NotifyState<'_>) -> std::io::Result<()> {
 ///
 /// With MCL_FUTURE active, a later thread spawn's stack mmap is locked too and
 /// fails with EAGAIN under a small RLIMIT_MEMLOCK — which is why fan-in calls
-/// this only once its helper threads are up. Failure is non-fatal and the
-/// caller decides how to say so: the systemd units grant
-/// `LimitMEMLOCK=infinity` so production succeeds, while `cargo test` / `cargo
-/// run` as non-root hits RLIMIT_MEMLOCK and degrades to the
+/// this only once its helper threads are up. Failure is non-fatal: the systemd
+/// units grant `LimitMEMLOCK=infinity` so production succeeds, while `cargo
+/// test` / `cargo run` as non-root hits RLIMIT_MEMLOCK and degrades to the
 /// `Slice=jts-audio.slice` / `MemorySwapMax=0` belt, which is the load-bearing
 /// protection anyway.
-pub fn lock_memory() -> std::io::Result<()> {
+pub fn lock_memory(hooks: DaemonHooks) {
     // SAFETY: mlockall is a single syscall with no aliasing concerns. It does
     // not dereference Rust pointers or create aliases.
     let rc = unsafe { libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) };
-    if rc == 0 {
+    let outcome = if rc == 0 {
         Ok(())
     } else {
         Err(std::io::Error::last_os_error())
+    };
+    report_lock_memory(outcome, hooks);
+}
+
+fn report_lock_memory(outcome: std::io::Result<()>, hooks: DaemonHooks) {
+    let prefix = hooks.event_prefix;
+    match outcome {
+        Ok(()) => (hooks.info)(&format!("event={prefix}.mlockall_ok")),
+        Err(error) => (hooks.error)(&format!(
+            "event={prefix}.mlockall_failed errno={} detail={error}",
+            error.raw_os_error().unwrap_or(0),
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::io;
+
+    thread_local! {
+        static EMITTED: RefCell<Vec<(&'static str, String)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn push(channel: &'static str, message: &str) {
+        EMITTED.with(|cell| cell.borrow_mut().push((channel, message.to_string())));
+    }
+
+    fn drained() -> Vec<(&'static str, String)> {
+        EMITTED.with(|cell| cell.borrow_mut().drain(..).collect())
+    }
+
+    const HOOKS: DaemonHooks = DaemonHooks {
+        event_prefix: "test",
+        writer_stack_bytes: 0,
+        info: |message| push("info", message),
+        warn: |message| push("warn", message),
+        error: |message| push("error", message),
+    };
+
+    /// Both outcomes name the hosting daemon; the failure takes the `error`
+    /// channel so it carries journal priority for operator triage.
+    #[test]
+    fn both_lock_memory_outcomes_render_under_the_daemon_prefix() {
+        report_lock_memory(Ok(()), HOOKS);
+        assert_eq!(drained(), [("info", "event=test.mlockall_ok".to_string())]);
+
+        let errno = libc::EAGAIN;
+        report_lock_memory(Err(io::Error::from_raw_os_error(errno)), HOOKS);
+        let detail = io::Error::from_raw_os_error(errno);
+        assert_eq!(
+            drained(),
+            [(
+                "error",
+                format!("event=test.mlockall_failed errno={errno} detail={detail}"),
+            )]
+        );
     }
 }

@@ -824,7 +824,7 @@ def test_the_cli_stage_banks_the_walk_when_the_speaker_is_idle(slot, capsys):
     body = json.loads(capsys.readouterr().out)
     assert body["out"] == str(path)
     assert body["bytes"] == path.stat().st_size
-    assert body["stops"] == len(CAMPAIGN_ANGLES)
+    assert body["stops_count"] == len(CAMPAIGN_ANGLES)
     assert body["mover"] == MOVER_HUMAN
 
     assert spool.take_staged_angle_request() == per_driver_at(
@@ -897,7 +897,7 @@ def test_stage_banks_a_named_program_with_its_receipt(slot, capsys):
     body = json.loads(capsys.readouterr().out)
 
     assert (body["program"], body["size"]) == ("baseline", "express")
-    assert body["stops"] == express.capture_count == 8
+    assert body["stops_count"] == express.capture_count == 8
     assert body["next"] == "jasper-round open --tier express"
     assert body["price"] == {
         "mic_moves": express.mic_move_count,
@@ -972,7 +972,7 @@ def test_a_spot_stages_one_raised_pose(slot, capsys):
     assert cli._cmd_stage(args) == cli.EXIT_OK
     body = json.loads(capsys.readouterr().out)
 
-    assert (body["program"], body["size"], body["stops"]) == ("spot", "", 1)
+    assert (body["program"], body["size"], body["stops_count"]) == ("spot", "", 1)
     # A spot names no tier of its own, so the round it hands off to is the
     # quick one rather than an unstated default.
     assert body["next"] == "jasper-round open --tier express"
@@ -1074,12 +1074,57 @@ def test_show_reads_back_the_staged_walk_without_consuming_it(slot, capsys):
     assert body["staged"] is True
     assert (body["program"], body["size"]) == ("baseline", "full")
     assert body["mover"] == MOVER_HUMAN
-    assert body["stops"] == mp.program("baseline", "full").capture_count
+    assert body["stops_count"] == mp.program("baseline", "full").capture_count
+    # The walk itself, one record per stop; a walk that measures the speaker as
+    # it stands names no variant.
+    assert body["stops"][0] == {
+        "index": 1,
+        "azimuth_deg": 0,
+        "vertical_deg": 0,
+        "regime": REGIME_PER_DRIVER,
+        "candidate_id": None,
+    }
     assert body["out"] == str(path)
     assert body["next"] == "jasper-round open --tier full"
 
     # A peek, not a take: the session that opens next still gets the walk.
     assert spool.take_staged_angle_request() is not None
+
+
+def test_the_walk_names_the_candidate_each_stop_plays(slot, capsys):
+    """Which variant a stop measures -- in the answer, and on the row.
+
+    A cycle expands pose-major/candidate-minor, so the stops at one pose are
+    otherwise identical: a caller reading the receipt and a person reading the
+    terminal both need the walk to say which of them plays which. The rendering
+    is one function, so ``plan`` and ``stage`` answer and print the same way.
+    """
+    # Sized like the real thing -- a fingerprint is sha256 hex -- because the
+    # row abbreviates it while the receipt carries it whole.
+    request = request_for_program(
+        mp.program("tournament", "express"), candidates=("a1" * 32, "b2" * 32),
+    )
+    spool.stage_angle_request(request)
+    capsys.readouterr()
+
+    assert cli.main(["show"]) == cli.EXIT_OK
+    printed = capsys.readouterr()
+    played = [stop.candidate_id for stop in request.stops]
+
+    body = json.loads(printed.out)
+    assert body["stops_count"] == len(played)
+    assert [stop["candidate_id"] for stop in body["stops"]] == played
+    assert [stop["index"] for stop in body["stops"]] == list(
+        range(1, len(played) + 1)
+    )
+
+    rows = [
+        line for line in printed.err.splitlines()
+        if line.startswith("  ") and line.strip()[:1].isdigit()
+    ]
+    assert [row.rsplit("cand ", 1)[-1] for row in rows] == [
+        fingerprint[:12] for fingerprint in played
+    ]
 
 
 def test_plan_answers_with_the_stage_line_that_would_bank_it(slot, capsys):
@@ -1191,7 +1236,7 @@ def test_the_staged_event_goes_to_stderr_and_never_to_stdout(tmp_path):
     result = _stage_in_a_real_process(tmp_path)
 
     assert "event=angle_capture.request_staged" not in result.stdout
-    assert json.loads(result.stdout)["stops"] == 5
+    assert json.loads(result.stdout)["stops_count"] == 5
     assert "staged at" in result.stderr
 
 

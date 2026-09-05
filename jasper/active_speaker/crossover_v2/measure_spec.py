@@ -130,7 +130,7 @@ class MeasureSpec:
     (:data:`~.contracts.DESIGN_AXIS_DEG`) and produce one record shape, never
     two spellings of the same place. ``pose_prompts`` is what the mover was
     TOLD, one per position, and it is the ``place`` block's ``prompt`` field;
-    nothing here names the mover (MS-17).
+    nothing here names the mover (ADR-0228 §8).
 
     ``vertical_deg`` is one signed whole-degree elevation above mark height for
     the whole spec, in the same frame. Nothing on this rig swings in elevation,

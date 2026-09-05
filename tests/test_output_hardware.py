@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import shlex
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -13,6 +15,7 @@ import pytest
 from jasper.audio_hardware import dac
 from jasper.audio_hardware.hat_eeprom import HatEeprom
 from jasper.audio_hardware.usb_port_role import UsbPortRoleState
+import jasper.cli.output_hardware as output_hardware_cli
 import jasper.output_hardware as output_hardware
 from jasper.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
@@ -267,7 +270,7 @@ def test_hat_eeprom_routes_the_shared_studio_name_into_the_record(
     monkeypatch,
     capsys,
 ) -> None:
-    """`python -m jasper.output_hardware --write` is the record's one writer.
+    """`python -m jasper.cli.output_hardware --write` is the record's one writer.
 
     Both card-discovery paths must consult the same EEPROM, and the record has
     to carry the evidence it routed on — `/state` and doctor read only what
@@ -275,22 +278,22 @@ def test_hat_eeprom_routes_the_shared_studio_name_into_the_record(
     """
     state_file = tmp_path / "output_hardware.json"
     monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(state_file))
-    monkeypatch.setattr(output_hardware, "read_hat_eeprom", lambda: _STUDIO_HAT)
+    monkeypatch.setattr(output_hardware_cli, "read_hat_eeprom", lambda: _STUDIO_HAT)
     if discovery == "sysfs":
         sys_class, proc_asound = _unified_studio_sysfs(tmp_path)
         monkeypatch.setenv("JASPER_SYS_CLASS_SOUND", str(sys_class))
         monkeypatch.setenv("JASPER_PROC_ASOUND", str(proc_asound))
     else:
-        monkeypatch.setattr(output_hardware, "probe_system_cards", lambda **_: ())
+        monkeypatch.setattr(output_hardware_cli, "probe_system_cards", lambda **_: ())
         monkeypatch.setattr(
-            output_hardware,
+            output_hardware_cli,
             "probe_aplay_listing",
             lambda _aplay: (
                 f"hw:CARD=HiFiBerryStudio,DEV=0\n    {_UNIFIED_STUDIO_LABEL}\n"
             ),
         )
 
-    assert output_hardware.main(["--write"]) == 0
+    assert output_hardware_cli.main(["--write"]) == 0
 
     capsys.readouterr()
     published = json.loads(state_file.read_text(encoding="utf-8"))
@@ -315,9 +318,9 @@ def test_the_shared_studio_name_parks_and_publishes_a_null_hat_eeprom(
     monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(state_file))
     monkeypatch.setenv("JASPER_SYS_CLASS_SOUND", str(sys_class))
     monkeypatch.setenv("JASPER_PROC_ASOUND", str(proc_asound))
-    monkeypatch.setattr(output_hardware, "read_hat_eeprom", lambda: None)
+    monkeypatch.setattr(output_hardware_cli, "read_hat_eeprom", lambda: None)
 
-    assert output_hardware.main(["--write"]) == 0
+    assert output_hardware_cli.main(["--write"]) == 0
 
     capsys.readouterr()
     published = json.loads(state_file.read_text(encoding="utf-8"))
@@ -1295,7 +1298,7 @@ def test_published_record_carries_the_partial_composite_reason(
     monkeypatch,
     capsys,
 ) -> None:
-    """`python -m jasper.output_hardware --write` is the record's one writer.
+    """`python -m jasper.cli.output_hardware --write` is the record's one writer.
 
     The reconciler and `/state` both read what this publishes, so the policy
     has to be applied here rather than by each consumer.
@@ -1306,12 +1309,12 @@ def test_published_record_carries_the_partial_composite_reason(
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(state_file))
     monkeypatch.setattr(
-        output_hardware,
+        output_hardware_cli,
         "probe_system_cards",
         lambda **_kwargs: (_apple_child("A", "left", "1-1"),),
     )
 
-    assert output_hardware.main(["--write"]) == 0
+    assert output_hardware_cli.main(["--write"]) == 0
 
     capsys.readouterr()
     published = json.loads(state_file.read_text(encoding="utf-8"))
@@ -1398,3 +1401,74 @@ def test_active_dac_profile_id_reads_only_the_reconciler_record(
         published_dac_id({"JASPER_AUDIO_DAC_ID": HIFIBERRY_DAC8X_DEVICE_ID})
         == HIFIBERRY_DAC8X_DEVICE_ID
     )
+
+
+# The `jasper.cli.output_hardware --env` contract (ADR-0235 R2). Every name
+# here is a variable `deploy/bin/jasper-audio-hardware-reconcile` reads after
+# `eval`; a rename that lands on only one side has to fail here rather than
+# read as an empty string in the shell.
+_ENV_CONTRACT_KEYS = {
+    "OBSERVED_OUTPUT_PROFILE_ID",
+    "OBSERVED_OUTPUT_PROFILE_STATUS",
+    "OBSERVED_OUTPUT_SELECTED_CARD_ID",
+    "OBSERVED_OUTPUT_CHILD_DEVICE_IDS",
+    "OBSERVED_OUTPUT_APPLE_CARD_IDS",
+    "OBSERVED_OUTPUT_BLOCKER_CODES",
+    "OBSERVED_OUTPUT_RECORD_CHANGED",
+    "OBSERVED_OUTPUT_USB_MANAGEMENT_TRANSPORT_AVAILABLE",
+    "OBSERVED_OUTPUT_DUAL_MAPPING_OK",
+    "OBSERVED_OUTPUT_DUAL_MAPPING_REASON",
+    "OBSERVED_OUTPUT_DUAL_ORDER_SOURCE",
+    "OBSERVED_OUTPUT_DUAL_DAC_A_PCM",
+    "OBSERVED_OUTPUT_DUAL_DAC_B_PCM",
+}
+
+
+@pytest.mark.parametrize(
+    "card_id",
+    ["A", "two words", "it's \"quoted\"", "$(touch pwned) `id` ; rm -rf /"],
+    ids=["plain", "space", "quotes", "injection"],
+)
+def test_env_emitter_hands_bash_the_whole_contract_and_nothing_it_must_parse(
+    card_id: str, tmp_path: Path,
+) -> None:
+    """What Python quotes, bash evals — for every key, whatever the card is.
+
+    A card id is hardware-supplied text that reaches a shell owner, so the
+    round trip is asserted through a real `bash -u` eval rather than by
+    re-reading the quoting rule. `-u` also proves the emitter defines every
+    key: a missing one is an unbound-variable failure, not an empty string.
+    """
+    card = OutputCardFact(
+        card_id=card_id,
+        label="Apple USB-C to 3.5mm Headphone Jack Adapter",
+        device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        vendor_id="05ac",
+        product_id="110a",
+        pcm=f"hw:CARD={card_id},DEV=0",
+    )
+    state = classify_output_cards((card,))
+    payload = output_hardware_cli.env_lines(state, (card,), record_changed=True)
+
+    emitted = {}
+    for line in payload.splitlines():
+        key, _, quoted = line.partition("=")
+        parts = shlex.split(quoted)
+        emitted[key] = parts[0] if parts else ""
+    assert set(emitted) == _ENV_CONTRACT_KEYS
+    assert emitted["OBSERVED_OUTPUT_SELECTED_CARD_ID"] == card_id
+    assert emitted["OBSERVED_OUTPUT_APPLE_CARD_IDS"] == card_id
+    assert emitted["OBSERVED_OUTPUT_RECORD_CHANGED"] == "1"
+
+    keys = sorted(_ENV_CONTRACT_KEYS)
+    reader = "; ".join(f'printf "%s\\n" "${{{key}}}"' for key in keys)
+    seen = subprocess.run(
+        ["bash", "-uc", f'eval "$1"; {reader}', "bash", payload],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+    assert seen.returncode == 0, seen.stderr
+    assert seen.stdout.splitlines() == [emitted[key] for key in keys]
+    assert not (tmp_path / "pwned").exists()

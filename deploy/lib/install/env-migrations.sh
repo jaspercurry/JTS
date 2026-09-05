@@ -26,12 +26,12 @@ ensure_state_dir() {
     # jasper-group writer (atomic_write_text's mkstemp/rename). Only create,
     # never re-chmod, an existing dir here.
     [[ -d "${STATE_DIR}" ]] || install -d -m 0750 "${STATE_DIR}"
-    # WS1 Phase 3b: once the shared `jasper` group exists (created by
+    # Once the shared `jasper` group exists (created by
     # create_jasper_service_users earlier in install), widen the state dir to
     # root:jasper 0770 so the now-non-root jasper-voice/-mux (group jasper) can
     # write group-shared state here (speaker_volume.json via atomic
     # tempfile+rename, which needs dir write). Owner stays root (rollback-safe);
-    # idempotent and a no-op before the group exists (pre-3b / fresh install
+    # idempotent and a no-op before the group exists (fresh install
     # before users are created). Called repeatedly across install, so it lives
     # here rather than as a one-shot — any later `install -d -m 0750` above
     # would otherwise reset the mode/group.
@@ -42,7 +42,7 @@ ensure_state_dir() {
     heal_shared_state_modes
 }
 
-# WS1 — group-writable heal for the shared, multi-writer state files.
+# Group-writable heal for the shared, multi-writer state files.
 #
 # The dir mode (0770) + the daemons' UMask=0007 make NEW files group-writable,
 # but files CREATED BEFORE that landed (or by a root writer) can be
@@ -50,7 +50,8 @@ ensure_state_dir() {
 # sole StateDirectory=jasper owner, its restart re-chowns the tree to its user;
 # other writers in the same `jasper` group then cannot write a 0644 file they
 # no longer own, and the voice DBs raise
-# "attempt to write a readonly database" (the 2026-06-19 incident). This
+# "attempt to write a readonly database" — shared state files must land 0660
+# so the non-owner in group jasper can write them. This
 # one-time heal fixes the EXISTING files on upgrade; UMask=0007 keeps new ones
 # correct. It carries the same repair for the wizard units that later dropped
 # from root to jasper-web: state their root incarnation created has to become
@@ -162,9 +163,10 @@ heal_shared_state_modes() {
     # The tuning spend ledger is SQLite, written in place rather than
     # replaced, so a root-owned file left by the pre-drop jasper-correction-web
     # would raise "attempt to write a readonly database" for the new writer —
-    # the 2026-06-19 class again, and here it would silently stop the paid
-    # tuning calls counting against the household spend cap. 0644 is the mode
-    # jasper.web.correction_tuning maintains for its group-`jasper` readers.
+    # the file must stay writable by the non-owner in group jasper, and here
+    # that failure would silently stop the paid tuning calls counting against
+    # the household spend cap. 0644 is the mode jasper.web.correction_tuning
+    # maintains for its group-`jasper` readers.
     for sidecar in \
         "${STATE_DIR}/usage-tuning.db" \
         "${STATE_DIR}/usage-tuning.db-wal" \
@@ -223,7 +225,7 @@ for spec in sys.argv[3:]:
 PY
 }
 
-# WS1 Phase 4a — the group-`jasper-secrets` secret compartment (LLM API keys +
+# The group-`jasper-secrets` secret compartment (LLM API keys +
 # Google client secret + OAuth token tree), narrowed to jasper-voice +
 # jasper-web. A SIBLING of STATE_DIR on purpose: STATE_DIR is voice/mux's
 # StateDirectory, whose recursive chown forces its contents' group back to
@@ -241,7 +243,7 @@ ensure_secrets_dir() {
     install -d -m 2770 -g jasper-secrets "${SECRETS_DIR}"
 }
 
-# WS1 Phase 4b — the group-`jasper-intsecrets` integration-secret compartment
+# The group-`jasper-intsecrets` integration-secret compartment
 # (Home Assistant token + Spotify credentials/OAuth token cache), narrowed to
 # jasper-voice + jasper-control + jasper-mux + jasper-web. Also a sibling of
 # STATE_DIR for the same StateDirectory recursive-chown reason as
@@ -257,7 +259,7 @@ ensure_intsecrets_dir() {
     install -d -m 2770 -g jasper-intsecrets "${INTSECRETS_DIR}"
 }
 
-# WS1 Phase 4a — re-assert ownership and modes across the jasper-secrets
+# Re-assert ownership and modes across the jasper-secrets
 # compartment (Google OAuth token tree + client secret + the LLM API keys) on
 # every deploy, and run the two key relocations that still have a producer.
 #
@@ -312,10 +314,10 @@ reassert_secrets_compartment_perms() {
     systemd-tmpfiles --create --prefix="${SECRETS_DIR}" 2>/dev/null || true
 }
 
-# WS1 Phase 4b — re-assert ownership and modes across the jasper-intsecrets
+# Re-assert ownership and modes across the jasper-intsecrets
 # integration-secret compartment (Home Assistant token + Spotify
-# credentials/OAuth token caches) on every deploy. Like the 4a re-assert above
-# this is confidentiality drift repair, not a migration: nothing writes these
+# credentials/OAuth token caches) on every deploy. Like reassert_secrets_compartment_perms
+# above, this is confidentiality drift repair, not a migration: nothing writes these
 # files under the broad /var/lib/jasper StateDirectory any more.
 #
 # Spotify is read-write: voice, control, mux, and web can all refresh/persist
@@ -352,7 +354,7 @@ reassert_intsecrets_compartment_perms() {
 # only in their compartment) has a live producer here, so unlike this file's
 # other relocations, this sweep is never gate-cleared by fleet deployment.
 
-# WS1 Phase 4a — move an operator's hand-seeded provider API key out of the
+# Move an operator's hand-seeded provider API key out of the
 # broad /etc/jasper/jasper.env into the group-jasper-secrets voice_keys.env.
 # An operator seeding a key for headless/CI imaging is the remaining producer;
 # the /voice wizard writes voice_keys.env directly. Safe: never strips a key
@@ -471,8 +473,7 @@ PY
 
 # Remove the retired dmix/fanin topology switch's state file.
 #
-# WHY THIS ONE LINE SURVIVED THE #2285 DELETION when the migration around it did
-# not: `jasper-doctor`'s `check_fanin_asound_wiring` WARNs on this file's
+# `jasper-doctor`'s `check_fanin_asound_wiring` WARNs on this file's
 # presence and names re-running the installer as the fix, and this is the only
 # thing in the tree that makes that sentence true. Deleting the remover with the
 # rest of the migration would have left a WARN no operator action could ever
@@ -484,6 +485,9 @@ PY
 # file for routing (only the doctor inspects it), so a `.retired.*` copy would
 # preserve ghost state under a name the doctor does NOT warn about -- trading a
 # clearable warning for a silent one.
+#
+# Remove once jasper-doctor's check_fanin_asound_wiring drops its WARN on
+# audio_topology.env's presence AND no Pi still has /etc/asound.conf.dmix-mode-backup.
 remove_retired_audio_topology_state() {
     rm -f "${STATE_DIR}/audio_topology.env" /etc/asound.conf.dmix-mode-backup
 }
@@ -504,6 +508,9 @@ remove_retired_audio_topology_state() {
 # in it because NM's own keyfile is also plaintext at 0600 — encrypting
 # our copy while NM's stays plaintext is theatre against a root-equiv
 # attacker. The PSK does NOT appear in any `echo` from this function.
+#
+# Remove once the /wifi/ wizard is the only way WiFi gets provisioned (no
+# Imager/raspi-config pre-set WiFi left to adopt).
 migrate_wifi_guardian() {
     local stash="${STATE_DIR}/wifi_guardian.env"
 
@@ -578,11 +585,10 @@ EOF
     echo "  migrate_wifi_guardian: seeded ${stash} from active profile (SSID=${ssid}, key-mgmt=${key_mgmt})"
 }
 
-# WS1 Phase 3b-2 — widen the config/secret env files jasper-control reads OFF
+# Widen the config/secret env files jasper-control reads OFF
 # DISK so a non-root jasper-control (and the jasper-doctor it spawns) can read
 # them. This is the deliberate, documented group-`jasper` secret-exposure that
-# the jasper-control drop requires; per-daemon isolation is Phase 4
-# (LoadCredential). Mirrors the Google-token-tree widening (3b-1, python-runtime.sh).
+# the jasper-control drop requires.
 #
 # Two distinct surfaces fresh-read these as the jasper-control uid:
 #   - /system/diagnostics spawns `jasper-doctor --json`, which loads EVERY
@@ -629,7 +635,7 @@ widen_control_secret_env_modes() {
 
     # The wizard-written secret files (under /var/lib/jasper, already group
     # jasper via StateDirectory) only need the group-read MODE bit. control_token
-    # is the Phase-2 mandatory gate: jasper-control reads it to verify, and
+    # is the mandatory gate: jasper-control reads it to verify, and
     # jasper-web embeds it via canonical_page() — _stored_token() FAILS SAFE to
     # gate-OFF on EACCES, so an unreadable token would SILENTLY DISABLE the gate.
     # It is owned jasper-voice (StateDirectory chown), so 0640 group read is the
@@ -656,7 +662,7 @@ widen_control_secret_env_modes() {
     # (only the SSID, which it derives from nmcli/the journal), so it stays
     # owner-only 0600. Least privilege over blanket widening.
     #
-    # WS1 Phase 4a/4b — google_credentials.env moved to jasper-secrets, while
+    # google_credentials.env moved to jasper-secrets, while
     # spotify_credentials.env + home_assistant.env moved to jasper-intsecrets.
     # Those compartment migrations own their perms now. voice_provider.env stays
     # here (now keyless; control reads the provider name for /system/).

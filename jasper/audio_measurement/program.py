@@ -50,7 +50,7 @@ PROGRAM_KIND = "jts_excitation_program"
 PROGRAM_SAMPLE_RATE_HZ = 48_000
 
 # Phase vocabulary, distinct from crossover_v2.journey's PHASE_* family
-# (ticket 2.9) — string VALUES must match between the two, NAMES must stay
+# — string VALUES must match between the two, NAMES must stay
 # disjoint; test_audio_measurement_program.py pins this.
 PROGRAM_PHASE_CHECK = "check"
 PROGRAM_PHASE_MEASURE = "measure"
@@ -126,7 +126,7 @@ NULL_CONFIRM_SHOULDER_MARGIN = 1.25
 #: Gate fade, in seconds — enough to not step the waveform into a click.
 NULL_CONFIRM_GATE_FADE_S = 0.010
 
-# Leading VERIFY pilot's OWN band (W6.7 ruling 2, the W6 run-7 fix):
+# Leading VERIFY pilot's OWN band:
 # 200-800 Hz PROVISIONAL flat region, clamped to fc/VERIFY_PILOT_FC_CLEARANCE_RATIO,
 # falling back to [fc/8, fc/4].
 VERIFY_PILOT_F_LO_HZ = 200.0
@@ -988,7 +988,7 @@ def build_verify_program(
     low bound when the crossover is low: ``f1 = min(VERIFY_F_LO_HZ, fc/2)``.
     ``fc_hz=None`` is the NO-CROSSOVER mode, requiring ``measurement_band_hz``.
     ``leading_pilot_gains_db`` and ``courtesy_prelude`` are opt-ins (module
-    docstring); the pilot rides its own band (W6.7 ruling 2) to avoid the
+    docstring); the pilot rides its own band to avoid the
     crossover notch. VERIFY has no program-admission gate, so the prelude's
     compose-time clamp is the only level guard for it.
     """

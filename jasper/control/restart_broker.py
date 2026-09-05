@@ -16,21 +16,20 @@ Why this is safe to centralise:
   from the kernel — unforgeable, no token to steal. Only the known JTS service
   users (and root) may call. The socket also lives at 0660 under
   jasper-control's ``RuntimeDirectory``, so filesystem perms are a second gate.
-- **Closed verb vocabulary.** The broker NEVER runs an arbitrary ``systemctl``
-  verb or argument — :data:`ALLOWED_VERBS` maps each verb to a fixed argv
-  prefix. A compromised client cannot smuggle ``systemctl ... ; rm -rf`` or a
-  ``--property=ExecStart=`` injection. (Note: the ``enable`` / ``enable-now`` /
-  ``disable-now`` verbs map to ``org.freedesktop.systemd1.manage-unit-files``,
-  which the WS1 Phase 3b-2 polkit rule deliberately does NOT grant the non-root
-  ``jasper-control`` — it can't be unit-scoped and ``restart`` consults it, so a
-  grant would re-open restart-of-any-unit. Those verbs therefore fail-soft for a
-  non-root broker; nothing routes through them today — voice's boot-enable is
-  owned by the root ``jasper-aec-reconcile``. The verbs stay in the vocabulary
-  for a future root client / Phase-4 grant.)
+- **Closed verb vocabulary.** The broker NEVER runs an arbitrary ``systemctl`` verb or
+  argument — :data:`ALLOWED_VERBS` maps each verb to a fixed argv prefix. A compromised
+  client cannot smuggle ``systemctl ... ; rm -rf`` or a ``--property=ExecStart=``
+  injection. (Note: the ``enable`` / ``enable-now`` / ``disable-now`` verbs map to
+  ``org.freedesktop.systemd1.manage-unit-files``, which the polkit rule deliberately
+  does NOT grant the non-root ``jasper-control`` — it can't be unit-scoped and
+  ``restart`` consults it, so a grant would re-open restart-of-any-unit. Those verbs
+  therefore fail-soft for a non-root broker; nothing routes through them today — voice's
+  boot-enable is owned by the root ``jasper-aec-reconcile``. The verbs stay in the
+  vocabulary for a future root client grant.)
 - **Unit allowlist.** Every requested unit must be in :data:`MANAGED_UNITS` —
   the single source of truth for "units the privileged surface may generally
   touch" — or, for graph-transition root helpers, in
-  :data:`START_ONLY_UNITS` with verb ``start``. The Phase-3 *user-drop* PR
+  :data:`START_ONLY_UNITS` with verb ``start``. The *user-drop* work
   derives the polkit rule (which grants the ``jasper-control`` user
   ``manage-units`` for exactly these units) from the same constants, so the
   broker authz and the polkit grant can never drift. The broker, not polkit,
@@ -120,7 +119,7 @@ MANAGED_UNITS = frozenset({
     "jasper-fanin.service",
     # Root oneshot that captures `jasper-doctor --json` at full fidelity for the
     # /system/diagnostics card — the non-root jasper-control `systemctl start`s
-    # it via its polkit manage-units grant (WS1 Phase 3b-2).
+    # it via its polkit manage-units grant.
     "jasper-doctor-json.service",
     # AirPlay / Spotify / USB renderers (/sources, /airplay, mux, correction)
     "shairport-sync.service",

@@ -2,17 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Drift guard: the Tier-A daemons keep their WS1 phase-1 hardening stanza.
+"""Drift guard: the Tier-A daemons keep their hardening stanza.
 
-A compromise of an always-on, network-facing `jasper-*` daemon is a full-root
-device compromise today (they all run as root). Phase 1 of the privilege-
-separation work hardens each so a root RCE can no longer write the
-filesystem, load kernel modules, change kernel tunables, or enter new
-namespaces — measured on hardware to drop
-`systemd-analyze security` from 8.7-9.6 (EXPOSED/UNSAFE) to ~6.2-6.6 (MEDIUM).
+A compromise of an always-on, network-facing `jasper-*` daemon is contained by
+this hardening: a root RCE can no longer write the filesystem, load kernel
+modules, change kernel tunables, or enter new namespaces — measured on
+hardware to drop `systemd-analyze security` from 8.7-9.6 (EXPOSED/UNSAFE) to
+~6.2-6.6 (MEDIUM). Each unit also runs as a dedicated non-root user (see
+test_user_drop below).
 
 This test pins that contract: an edit that removes `ProtectSystem=strict` or any
-of the phase-1 directives from a Tier-A unit fails CI. It deliberately encodes
+of the hardening directives from a Tier-A unit fails CI. It deliberately encodes
 the per-unit nuances (the reason a uniform block would break things), so the
 exceptions are explicit, not silent.
 """
@@ -331,11 +331,10 @@ def test_tmpfs_home_where_no_home_needed(unit):
 
 
 # --------------------------------------------------------------------------
-# WS1 Phase 3b — the non-root user drop. 3b-1 dropped voice/mux/input; 3b-2
-# dropped jasper-control (polkit rule for its broker/supervisor systemctl+reboot
-# + group-readable secret env for the jasper-doctor it spawns); 3b-3 dropped
-# jasper-web (polkit rule for its NetworkManager wifi management + bluetooth /
-# systemd-journal groups). All five Tier-A daemons now run non-root.
+# The non-root user drop. voice/mux/input dropped first; jasper-control dropped next (polkit rule
+# for its broker/supervisor systemctl+reboot + group-readable secret env for the jasper-doctor
+# it spawns); jasper-web dropped last (polkit rule for its NetworkManager wifi management +
+# bluetooth / systemd-journal groups). All five Tier-A daemons now run non-root.
 # --------------------------------------------------------------------------
 
 # unit -> (expected User=, expected SupplementaryGroups set)
@@ -352,7 +351,7 @@ DROPPED = {
     # and this one carries the volume and push-to-talk buttons. The adapter
     # gets that group from the service user instead — see the unit file.
     "jasper-input": ("jasper-input", {"input"}),
-    # 3b-2: control's privileged restarts/reboots are granted by polkit
+    # control's privileged restarts/reboots are granted by polkit
     # (deploy/polkit/49-jasper-control.rules), not a group; it opens no
     # ALSA/input device. `systemd-journal` — the airplay_health and
     # wifi_guardian /state cards read the journal. `jts-ring` (#2786) — /state's
@@ -365,7 +364,7 @@ DROPPED = {
         "jasper-control",
         {"systemd-journal", "jasper-intsecrets", "jts-ring"},
     ),
-    # 3b-3: web's NetworkManager writes (the /wifi/ wizard) are granted by polkit
+    # web's NetworkManager writes (the /wifi/ wizard) are granted by polkit
     # (deploy/polkit/49-jasper-web.rules), not a group. Its supplementary groups
     # are `audio` (ALSA correction_substream for active-speaker commissioning),
     # `bluetooth` (BlueZ Adapter1 Alias for the /speaker rename — a D-Bus policy
@@ -421,7 +420,7 @@ def test_user_drop(unit, expected):
 
 
 def test_control_keeps_runtimedir_and_avahi_rwpaths_after_drop():
-    """jasper-control's 3b-2 drop must KEEP the directives the non-root user
+    """jasper-control's non-root drop must KEEP the directives the non-root user
     relies on: Group=jasper (broker socket reachable by mux/web), the
     RuntimeDirectory for the broker socket bind, and ReadWritePaths covering
     /etc/avahi/services (the peering advert it renders). ProtectHome must stay
@@ -504,15 +503,13 @@ def test_install_creates_every_dropped_user():
 
 
 def test_secrets_compartment_phase4a():
-    """WS1 Phase 4a — the high-value secrets (LLM API keys, Google client
-    secret/token tree, Google Routes API key) live in the group-`jasper-secrets` compartment, readable
-    only by jasper-voice + jasper-web. Pin: (1) the group is created; (2) voice +
-    web source voice_keys.env + the RELOCATED google_credentials.env; (3) only
-    jasper-web (which WRITES the compartment via the /voice + /google wizards)
-    gets it in ReadWritePaths — jasper-voice only READS (keys via EnvironmentFile,
-    Google tree via the group), so under ProtectSystem=strict it needs NO write
-    grant; (4) the daemons that must NOT see the keys (mux/control/input) don't
-    source voice_keys.env."""
+    """The high-value secrets (LLM API keys, Google client secret/token tree, Google Routes API key)
+    live in the group-`jasper-secrets` compartment, readable only by jasper-voice + jasper-web. Pin:
+    (1) the group is created; (2) voice + web source voice_keys.env + the RELOCATED
+    google_credentials.env; (3) only jasper-web (which WRITES the compartment via the /voice + /google
+    wizards) gets it in ReadWritePaths — jasper-voice only READS (keys via EnvironmentFile, Google
+    tree via the group), so under ProtectSystem=strict it needs NO write grant; (4) the daemons that
+    must NOT see the keys (mux/control/input) don't source voice_keys.env."""
     secret_keys = "/var/lib/jasper-secrets/voice_keys.env"
     secret_google = "/var/lib/jasper-secrets/google_credentials.env"
     secret_routes = "/var/lib/jasper-secrets/google_routes.env"
@@ -568,12 +565,11 @@ def test_secrets_compartment_phase4a():
 
 
 def test_secrets_compartment_phase4b():
-    """WS1 Phase 4b — integration secrets (Home Assistant token + Spotify
-    credentials/cache tree) live in the group-`jasper-intsecrets` compartment.
-    Pin: (1) the group is created; (2) Spotify creds are sourced from the
-    relocated file by every Spotify consumer; (3) the old broad env paths are
-    gone; (4) voice/control/mux/web all have the write grant because spotipy can
-    persist refreshed tokens from each; (5) jasper-input is excluded."""
+    """Integration secrets (Home Assistant token + Spotify credentials/cache tree) live in the
+    group-`jasper-intsecrets` compartment. Pin: (1) the group is created; (2) Spotify creds are
+    sourced from the relocated file by every Spotify consumer; (3) the old broad env paths are gone;
+    (4) voice/control/mux/web all have the write grant because spotipy can persist refreshed tokens
+    from each; (5) jasper-input is excluded."""
     int_spotify = "/var/lib/jasper-intsecrets/spotify_credentials.env"
     int_ha = "/var/lib/jasper-intsecrets/home_assistant.env"
     int_dir = "/var/lib/jasper-intsecrets"
@@ -685,7 +681,7 @@ def test_streambox_web_unit_sources_every_env_its_wizards_write():
 
 
 def test_streambox_web_unit_stays_root_until_validated():
-    """The streambox web unit intentionally stays root in 3b-3 — it's a Pi class
+    """The streambox web unit intentionally stays root — it's a Pi class
     (Pi Zero 2 W) the drop could not be hardware-validated on. install.sh installs
     the web polkit rule + group-writable dirs in BOTH profiles, so dropping it is
     a one-line `User=`/`Group=` edit here once validated. Guard against an
@@ -700,13 +696,12 @@ def test_streambox_web_unit_stays_root_until_validated():
 
 
 # --------------------------------------------------------------------------
-# Remaining WS1 scope - Tier-B / adjacent privileged support units.
+# Remaining scope - Tier-B / adjacent privileged support units.
 #
-# These are not Tier-A network-facing daemons, but they still run privileged
-# boot/udev/recovery work. The next WS1 increments should move them only one
-# validated vertical slice at a time. Guard against accidental half-drops:
-# adding User= here must come with the matching hardware validation and
-# installer user/group contract.
+# These are not Tier-A network-facing daemons, but they still run privileged boot/udev/recovery
+# work. The next increments should move them only one validated vertical slice at a time. Guard
+# against accidental half-drops: adding User= here must come with the matching hardware
+# validation and installer user/group contract.
 # --------------------------------------------------------------------------
 
 DEFERRED_PRIVILEGED_SUPPORT_UNITS = {
@@ -723,7 +718,7 @@ DEFERRED_PRIVILEGED_SUPPORT_UNITS = {
     ),
     # The BLE connection-event reservation for the WiiM remote mic writes a
     # raw HCI command, which the kernel gates on CAP_NET_RAW. It stays root
-    # (with a CAP_NET_RAW-only bounding set) until a validated WS1 slice moves
+    # (with a CAP_NET_RAW-only bounding set) until a validated slice moves
     # it; see test_wiim_remote_ce_unit_grants_only_raw_hci below.
     "jasper-wiim-remote-ce": ROOT / "deploy/systemd/jasper-wiim-remote-ce.service",
     "jasper-grouping-reconcile": (
@@ -736,7 +731,7 @@ DEFERRED_PRIVILEGED_SUPPORT_UNITS = {
     # jasper-usbsink-init. It is a root oneshot of exactly that class
     # (modprobe libcomposite, write ConfigFS descriptors, rmmod the gadget
     # modules on stop) and stays root by design — no User= until a validated
-    # WS1 slice moves it.
+    # slice moves it.
     "jasper-usbgadget": ROOT / "deploy/systemd/jasper-usbgadget.service",
     "jasper-bootloop-guard": ROOT / "deploy/systemd/jasper-bootloop-guard.service",
 }
@@ -934,7 +929,7 @@ def test_usb_network_plan_unit_allows_netlink_for_if_nameindex():
 
 @pytest.mark.parametrize("unit,path", sorted(TIER_B_DAC_MIXER_UNITS.items()))
 def test_dac_mixer_units_run_as_recon_user(unit, path):
-    """WS1 Tier-B DAC mixer slice: the service/daemon pin paths are non-root.
+    """Tier-B DAC mixer slice: the service/daemon pin paths are non-root.
 
     The matching installer contract is below. The udev RUN+= fast path is tested
     separately because it deliberately remains root-owned for immediate hotplug
@@ -1018,7 +1013,7 @@ def test_snapclient_unit_rate_limits_leader_offline_log_floods():
 # the `jasper` group with UMask=0007 — making their umask-derived sockets
 # root:jasper 0770 instead of 0755 (which only root could connect to). Removing
 # either directive silently re-bricks the non-root voice/mux (the exact failure
-# caught during 3b-1 hardware validation), so it gets its own guard.
+# caught during hardware validation), so it gets its own guard.
 _CROSS_USER_IPC_DAEMONS = {
     "jasper-fanin": ROOT / "deploy/systemd/jasper-fanin.service",
     "jasper-outputd": ROOT / "deploy/systemd/jasper-outputd.service",
@@ -1035,7 +1030,7 @@ def test_cross_user_ipc_socket_contract(unit, path):
     assert ("UMask", "0007") in pairs, (
         f"{unit}: must set UMask=0007 so its bind()'d socket is 0770 (group "
         "write) — connect() needs write permission; the umask-default 0755 "
-        "only let root connect, which crash-looped non-root voice in 3b-1."
+        "only let root connect, which crash-looped non-root voice."
     )
     assert ("RuntimeDirectoryMode", "0750") in pairs, (
         f"{unit}: RuntimeDirectory must be 0750 (root:jasper) so the `jasper` "
@@ -1043,7 +1038,7 @@ def test_cross_user_ipc_socket_contract(unit, path):
     )
 
 
-# WS1 — the shared-state writers set UMask=0007 so files they CREATE in
+# The shared-state writers set UMask=0007 so files they CREATE in
 # /var/lib/jasper are group-`jasper`-writable (0660), not the umask-default 0644.
 # usage.db / wake-events.sqlite3 / timers.db / speaker_volume.json are written by
 # more than one of these same-group daemons; jasper-voice (the sole

@@ -135,8 +135,8 @@ class StimulusOutcome:
 
 
 #: The session's own reason code for the one refusal it owns: the fader could
-#: not be proven for this stimulus, so the capture is not banked. MS-14's
-#: refusal in ruling S10's shape — the stimulus still played.
+#: not be proven for this stimulus, so the capture is not banked. The
+#: ADR-0231 §4 refusal, in ruling S10's shape — the stimulus still played.
 UNPROVEN_LEVEL = "unproven_level"
 
 
@@ -152,8 +152,8 @@ class MeasureOutcome:
     nothing, and each such entry says why in its own ``incident``: a stub
     stopped the whole call before anything played (``stimuli`` is then empty),
     the play transaction did not complete ``play``, or it played and the fader
-    could not be proven — MS-14 refusing to CLAIM, the one that leaves a played
-    stimulus with no record.
+    could not be proven — refusing to CLAIM (ADR-0231 §4), the one that leaves
+    a played stimulus with no record.
     """
 
     spec: MeasureSpec
@@ -309,12 +309,12 @@ class TuningSession:
            ``stimuli`` is empty and nothing played.
         2. **One play transaction per stimulus**, ready → admit → lock → play →
            restore, with **the graph proven-or-reinstalled immediately before
-           each one** (MS-13/S6: the idempotent ``install`` IS the health check),
+           each one** (the idempotent ``install`` IS the health check),
            because between two stimuli another DSP writer may have replaced it.
            The record's ``graph_fingerprint`` is that prove's answer. The unit is
            position × ladder rung: a ladder moves the stimulus level, never the
            claim.
-        3. **The level is proven per stimulus** (MS-14). A claim can be preempted
+        3. **The level is proven per stimulus** (ADR-0231 §4). A claim can be preempted
            between two positions of one walk, so a single proof taken before the
            walk would stamp an unverified level into every record after it. An
            unproven fader refuses to BANK that stimulus and nothing else — the
@@ -446,9 +446,9 @@ class TuningSession:
     ) -> StimulusOutcome:
         """Prove the graph, prove the level, play, and bank exactly one stimulus.
 
-        **The graph is proven per stimulus, not only at open** (MS-13, ruling
-        S6). Between two stimuli the writer lock is released and arbitrary time
-        passes, so another DSP writer may have replaced the running graph;
+        **The graph is proven per stimulus, not only at open.** Between two
+        stimuli the writer lock is released and arbitrary time passes, so
+        another DSP writer may have replaced the running graph;
         ``install()`` is the install-or-prove that puts it back. The fingerprint
         the record carries is THIS prove's answer, so a record names the graph
         its own stimulus actually played through. A stage bound to

@@ -571,7 +571,7 @@ def notch_excluded_tracking_error_db(
     """Same as :func:`tracking_error_db`, but first drops any bin whose PREDICTED level sits
     more than ``notch_exclusion_db`` below the band's own predicted median — inside a deep
     predicted notch, depth is hypersensitive to sub-dB branch differences and is not a
-    meaningful tracking signal (W6.7 ruling 1: a 27.8 dB "max" tracking error was entirely a
+    meaningful tracking signal (a 27.8 dB "max" tracking error was entirely a
     shifted predicted notch).
 
     Deliberately asymmetric: keys on the PREDICTED level only, never measured — a deep MEASURED

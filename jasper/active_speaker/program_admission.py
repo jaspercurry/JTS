@@ -2,14 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Multi-segment excitation-program admission (crossover session, Wave 2).
+"""Multi-segment excitation-program admission.
 
 A CHECK/MEASURE program (:mod:`jasper.audio_measurement.program`) is one 2-channel
 WAV that sequences per-driver stimuli by channel. Before it may play, and again
 at play time from a fresh byte readback, it must be admitted. Admission has two
 independent parts
-(docs/historical/crossover-measurement-productization-design.md §5.3 + the
-Wave 2 attestation strengthening):
+(docs/historical/crossover-measurement-productization-design.md §5.3):
 
 1. **N per-segment prepared plans.** Every non-silence segment is turned into a
    :class:`~jasper.active_speaker.excitation_safety_plan.RequestedDriverExcitationPlan`

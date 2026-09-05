@@ -216,8 +216,8 @@ _NO_CAPTURES = "the fixture banks no WAVs, so no capture ring and no summed take
 
 class _FixtureRound(NamedTuple):
     """The two rounds ``tests/crossover_v2_banked_round`` banks -- stage 1's
-    solos and entry baseline, stage 2's VERIFY sum -- and the bundle inside the
-    first, which the bundle-taking verbs read instead of the tree."""
+    solos, ladder and entry baseline, stage 2's VERIFY sum -- and the bundle
+    inside the first, which the bundle-taking verbs read instead of the tree."""
 
     measured: Path
     verified: Path
@@ -225,7 +225,7 @@ class _FixtureRound(NamedTuple):
 
 
 def _fixture_round(root: Path) -> _FixtureRound:
-    measured = bank_measure_round(root)
+    measured = bank_measure_round(root, candidates=("cand-a", "cand-b"))
     bundle, = (measured / "bundle").iterdir()
     return _FixtureRound(
         measured=measured, verified=bank_verify_round(root), bundle=bundle,
@@ -240,6 +240,7 @@ _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "per-seat": _NO_CLOUD_GROUP,
     "repeat": _NO_CLOUD_GROUP,
     "repeat-floor": _NO_CLOUD_GROUP,
+    "candidates": lambda r: ["candidates", str(r.measured)],
     "agreement": _NO_CLOUD_GROUP,
     "co-metrics": _NO_CLOUD_GROUP,
     "directivity": _NO_CLOUD_GROUP,
@@ -252,6 +253,7 @@ _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "frequency": lambda r: ["frequency", str(r.measured)],
     "distortion": _NO_CAPTURES,
     "classify-features": _NO_CAPTURES,
+    "findings": lambda r: ["findings", str(r.measured)],
     "close-reference": _NO_CAPTURES,
     "delay-landscape": lambda r: ["delay-landscape", str(r.bundle), "--fc-hz", "1800"],
     "delay-confirm": "the fixture banks no null_runs rows; jasper-null writes those",

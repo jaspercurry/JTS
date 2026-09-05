@@ -13,7 +13,7 @@ realized at Q 0.476 while every gate in the fit engine evaluated them at Q
 used the same wrong evaluator, so a shelf that missed its design by up to
 1.70 dB scored as exact — *a model cannot audit itself*
 (:mod:`jasper.active_speaker.delta_probe`;
-:data:`jasper.camilla_config_contract.SHELF_Q`). PR-L2 fixed that one bug and
+:data:`jasper.camilla_config_contract.SHELF_Q`). A fix closed that one bug and
 :mod:`~jasper.active_speaker.delta_probe` catches the class *in the room*, on a
 household's post-apply measurement. This subpackage catches the same class
 **offline, before anything is applied and without a microphone**, by rendering

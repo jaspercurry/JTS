@@ -532,6 +532,12 @@ svg { display: block; }
           <svg class="chevron"><use href="#icon-chevron"></use></svg></a>
    Rows are scoped to the list because `.setting-row` is also an unrelated
    page-local class in deploy/assets/sound-profile/sound.css. */
+.groups {
+  display: flex;
+  flex-direction: column;
+  gap: 2.5rem;
+  padding-top: 1.5rem;
+}
 .group-title {
   display: block;
   padding: 0 0.25rem 0.75rem;

@@ -1,4 +1,4 @@
-// WS1 Phase 3b-2 — polkit grant for the non-root `jasper-control` service user.
+// Polkit grant for the non-root `jasper-control` service user.
 //
 // Installed to
 // /etc/polkit-1/rules.d/49-jasper-control.rules (root:root 0644) by

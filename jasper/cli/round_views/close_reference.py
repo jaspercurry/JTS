@@ -10,8 +10,10 @@
   direct arrival, then gated and subtracted. Per spec band it reports the
   close-vs-far delta, the subtraction residual, and one verdict —
   ``agreement`` (the far read was speaker-dominated), ``room_dominated``, or
-  ``unresolved``. Writes ``close_reference.json`` beside the FAR round — the
-  read whose room share it explains — under :func:`default_out`'s rule.
+  ``unresolved``; ``--at-hz`` grades one narrow band beside those rows, for a
+  frequency the low-mid spec band is too wide to answer at. Writes
+  ``close_reference.json`` beside the FAR round — the read whose room share it
+  explains — under :func:`default_out`'s rule.
 * ``close-reference --distance --driver-diameter-in D --fc-hz FC`` — where to
   stand the mic for that close capture, from the driver's diameter and the
   crossover corner, with both terms of the derivation and the placement
@@ -35,6 +37,7 @@ from typing import Any
 
 from jasper.active_speaker.branch_chain import recommended_distance
 from jasper.active_speaker.crossover_v2.close_reference import (
+    WINDOW_FAR,
     compare_rounds,
     summary_lines,
 )
@@ -112,6 +115,7 @@ def _compare(args: argparse.Namespace, diameter_m: float | None) -> int:
             driver_diameter_m=diameter_m,
             far_gate_ms=args.far_gate_ms,
             close_gate_ms=args.close_gate_ms,
+            at_hz=args.at_hz,
             geometry=_geometry(args.geometry),
         )
     except RoundCapturesRefused as exc:
@@ -129,12 +133,19 @@ def _compare(args: argparse.Namespace, diameter_m: float | None) -> int:
         resolved_out(far_dir, ARTIFACT_BY_VIEW[args.command].artifact),
     )
     alignment = report["alignment"]
+    # The FAR window's answer at the named bin: the far read is the one whose
+    # room share the whole report explains. Each window's own narrow row, and
+    # the numbers behind both, are in the artifact.
+    far_window = next(w for w in report["windows"] if w["name"] == WINDOW_FAR)
     return answer(
         args.command, out=written,
         comparison_band_hz=report["validity"]["comparison_band_hz"],
         residual_lag_us=alignment["residual_lag_us"],
         alignment_confidence=alignment["confidence"],
         alignment_trusted=alignment["trusted"],
+        at_hz_verdict=next(
+            (row["verdict"] for row in far_window["features"]), None
+        ),
         bands=[
             {
                 "window": window["name"],
@@ -168,6 +179,7 @@ def _cmd_close_reference(args: argparse.Namespace) -> int:
                 ("--far-round", args.far_round),
                 ("--close-round", args.close_round),
                 ("--close-m", args.close_m),
+                ("--at-hz", args.at_hz),
                 ("--out", args.out),
             ) if value is not None
         ]
@@ -222,6 +234,12 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         help="override the close window. Derived from the declared heights by "
              "default and LONGER than the far one, because the first bounce's "
              "excess path grows as the direct path shrinks",
+    )
+    close.add_argument(
+        "--at-hz", type=float, default=None, metavar="HZ",
+        help="also grade one +/-1/3-octave band about this frequency, beside "
+             "the spec rows and against the spec band it sits in — for a "
+             "frequency the low-mid band is too wide to answer at",
     )
     close.add_argument(
         "--geometry", default=DEFAULT_PATH,

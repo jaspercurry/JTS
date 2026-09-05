@@ -5,9 +5,12 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from jasper.tts_routing import FANIN_TTS_SOCKET
 from tests._live_turn_fake import silent_frame
 from jasper.voice.daemon_main import _tts_ready_detail
+from jasper.voice.daemon_main import _serve_while_connecting
 
 
 def test_tts_ready_detail_reports_outputd_socket() -> None:
@@ -314,3 +317,76 @@ async def test_server_vad_turn_carries_end_of_input(caplog):
 
     assert wl._input_ended is True
     assert "end_input_ms" in event_fields(caplog, "turn.timeline")
+
+
+async def test_background_connect_failure_ends_the_run() -> None:
+    """Backgrounding the connect must not swallow it: a failure the
+    supervisor cannot retry past still ends `run()` non-zero."""
+
+    async def _connect() -> None:
+        raise RuntimeError("connect failed")
+
+    async def _serve() -> None:
+        await asyncio.sleep(3600)
+
+    with pytest.raises(RuntimeError):
+        await _serve_while_connecting(_connect, _serve)
+
+
+async def test_a_connect_failing_in_the_same_tick_as_the_serve_ends_the_run(
+) -> None:
+    """Both tasks can land in one tick — a stop that races the failure.
+    The connect's exception must still reach `main()`; swallowing it
+    exits 0, which `Restart=on-failure` does not restart."""
+
+    async def _connect() -> None:
+        raise RuntimeError("connect failed")
+
+    async def _serve() -> None:
+        return None
+
+    with pytest.raises(RuntimeError):
+        await _serve_while_connecting(_connect, _serve)
+
+
+async def test_a_connect_that_returns_leaves_the_daemon_serving() -> None:
+    """A connect handed over to the reconnect supervisor returns normally
+    — the speaker keeps hearing and cues the outage, it does not exit."""
+    stop = asyncio.Event()
+
+    async def _connect() -> None:
+        return None
+
+    async def _serve() -> None:
+        await stop.wait()
+
+    task = asyncio.ensure_future(_serve_while_connecting(_connect, _serve))
+    await asyncio.sleep(0.05)
+    assert not task.done()
+    stop.set()
+    await asyncio.wait_for(task, timeout=5.0)
+
+
+async def test_stop_cancels_a_still_dialling_connect() -> None:
+    """SIGTERM ends the wake loop; a connect still waiting on the WAN must
+    not outlive it — the unit's TimeoutStopSec is 5 s."""
+    dialling = asyncio.Event()
+    cancelled = asyncio.Event()
+    stop = asyncio.Event()
+
+    async def _connect() -> None:
+        dialling.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    async def _serve() -> None:
+        await stop.wait()
+
+    task = asyncio.ensure_future(_serve_while_connecting(_connect, _serve))
+    await asyncio.wait_for(dialling.wait(), timeout=5.0)
+    stop.set()
+    await asyncio.wait_for(task, timeout=5.0)
+    assert cancelled.is_set()

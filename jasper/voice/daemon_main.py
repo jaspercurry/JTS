@@ -12,12 +12,12 @@ import signal
 import sys
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterable
+from functools import partial
 from typing import Any
 
 from jasper.log_event import log_event
 
 from .. import flight_recorder, transit
-from ..accounts import Registry, maybe_migrate_legacy
 from ..audio_io import (
     InputDeviceUnavailable,
     TtsPlayout,
@@ -44,7 +44,7 @@ from ..install_profile import (
 )
 from ..renderer import RendererClient
 from ..research import ResearchScheduler, active_research_provider
-from ..spotify_router import BuildResult, Router, build_clients
+from ..spotify_router import Router, build_router
 from ..timers import Timer, TimerScheduler, announcement_text
 from ..tools import ToolRegistry, UntrustedContentMonitor
 from ..tools.packs import ToolDeps, outcomes_to_state, register_packs
@@ -434,45 +434,26 @@ def _build_router(cfg: Config) -> Router | None:
     The returned router carries a `rebuild_fn` so it can recover from
     a startup-time revocation (or a re-link via the web wizard)
     without a daemon restart: when `router.clients` is empty, the next
-    tool call triggers a rebuild via Router.refresh_if_empty(). The
-    rebuild also picks up a wizard-changed default account (POST
-    /default mutates registry.default_name; BuildResult carries it
-    forward; Router.refresh_if_empty updates self.default_name)."""
+    tool call triggers a rebuild via Router.refresh_if_empty()."""
     if not cfg.spotify_enabled:
         return None
-
-    def _do_build() -> BuildResult:
-        # Re-load the registry on every build — the wizard may have
-        # added/removed accounts, written a fresh cache file, or
-        # changed the default since the daemon started.
-        # maybe_migrate_legacy is a no-op after the first call so it's
-        # safe to run each time.
-        accounts = Registry.load(cfg.spotify_accounts_path)
-        maybe_migrate_legacy(
-            accounts, cfg.spotify_cache_path, default_name="default",
-        )
-        return build_clients(
-            accounts,
-            client_id=cfg.spotify_client_id,
-            redirect_uri=cfg.spotify_redirect_uri,
-        )
-
-    result = _do_build()
-    if not result.clients:
+    router = build_router(
+        client_id=cfg.spotify_client_id,
+        redirect_uri=cfg.spotify_redirect_uri,
+        accounts_path=cfg.spotify_accounts_path,
+        cache_path=cfg.spotify_cache_path,
+        with_rebuild=True,
+    )
+    if not router.clients:
         # Surface the per-account reasons at startup so a "Spotify
         # tools are silent" report has a forensic trail.
         log_event(
             logger,
             "spotify.startup_empty",
-            statuses=[(s.name, s.state) for s in result.statuses],
+            statuses=[(s.name, s.state) for s in router.statuses],
             setup_url=cfg.spotify_setup_url,
         )
-    return Router(
-        clients=result.clients,
-        default_name=result.default_name,
-        statuses=result.statuses,
-        rebuild_fn=_do_build,
-    )
+    return router
 
 
 def _build_registry(
@@ -638,6 +619,37 @@ async def _start_control_socket(
         logger.warning("voice control socket chmod failed: %s", e)
     logger.info("voice control socket: %s", socket_path)
     return server
+
+
+async def _serve_while_connecting(
+    connect: Callable[[], Awaitable[None]],
+    serve: Callable[[], Awaitable[None]],
+) -> None:
+    """Serve wake while the first provider connect is still dialling.
+
+    Hearing must not wait on the WAN: mics, cues and ``READY=1`` are up
+    before this is reached, so a boot with the link down answers a wake
+    with a cue instead of silence. A connect that raises ends the run; a
+    connect that returns leaves the daemon serving with the supervisor
+    retrying. Whichever finishes first, the other is cancelled on the
+    way out.
+    """
+    connect_task = asyncio.create_task(connect())
+    serve_task = asyncio.create_task(serve())
+    try:
+        done, _pending = await asyncio.wait(
+            (connect_task, serve_task), return_when=asyncio.FIRST_COMPLETED,
+        )
+        if connect_task in done:
+            # Both can land in one tick; the failure must not be left for
+            # the suppressed await below to eat.
+            connect_task.result()
+        await serve_task
+    finally:
+        for task in (connect_task, serve_task):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
 
 
 async def run() -> None:
@@ -1040,7 +1052,8 @@ async def run() -> None:
         # unrelated tools (observed misroute: lights → get_current_time
         # + get_now_playing on May 22 2026).
         ha_configured = ha is not None
-        await connection.start(
+        connect_live_session = partial(
+            connection.start,
             registry,
             lambda: _build_system_instruction(
                 cfg.weather_prompt_location,
@@ -1236,7 +1249,9 @@ async def run() -> None:
                 wake_loop, cfg.voice_control_socket,
             )
             try:
-                await wake_loop.run()
+                await _serve_while_connecting(
+                    connect_live_session, wake_loop.run,
+                )
             finally:
                 registry.set_dispatch_observer(None)
                 heartbeat.stop()

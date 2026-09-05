@@ -222,7 +222,7 @@ def load_branch_pair(
     instead: that is a defect rather than an absence, and folding it into the
     same ``None`` would hide it.
 
-    No cache (ticket 3.8): a 40-take bank walks in ~7 ms, and the returned pair
+    No cache: a 40-take bank walks in ~7 ms, and the returned pair
     is reused across candidates at ~0.12 ms per :func:`predict_sum`.
     """
     found = read_pose_curve_pair(

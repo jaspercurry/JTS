@@ -41,16 +41,14 @@ def test_shared_parser_extracts_first_matching_card(tmp_path: Path):
     assert result.stdout == "DAC8x\n"
 
 
-def test_install_and_hotplug_reconciler_share_parser():
+def test_install_uses_the_shared_parser_and_ships_it():
+    """install.sh is the parser's one shell consumer: the reconciler takes its
+    Apple card from the classifier's env emitter (ADR-0235 R2)."""
     install = (ROOT / "deploy/install.sh").read_text(encoding="utf-8")
-    reconcile = (ROOT / "deploy/bin/jasper-audio-hardware-reconcile").read_text(
-        encoding="utf-8"
-    )
     units = (ROOT / "deploy/lib/install/systemd-units.sh").read_text(
         encoding="utf-8"
     )
 
     assert 'source "${REPO_DIR}/deploy/lib/jasper-alsa-card.sh"' in install
     assert 'jasper_find_alsa_card "$1" "$2"' in install
-    assert 'jasper_find_alsa_card "$APLAY" "$1"' in reconcile
     assert "/usr/local/lib/jasper/jasper-alsa-card.sh" in units

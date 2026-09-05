@@ -1148,10 +1148,7 @@ def check_crossover_unit_installed() -> CheckResult:
     A missing or unparseable unit on an active leader is a real gap (the
     reconciler PR would have nothing to arm), so it warns."""
     from ...multiroom.config import is_active_leader, load_config
-    from ...output_topology import (
-        OutputTopologyError,
-        load_output_topology_strict,
-    )
+    from ...output_topology import OutputTopologyError
 
     label = "grouping: crossover unit"
     cfg = load_config()
@@ -1170,7 +1167,7 @@ def check_crossover_unit_installed() -> CheckResult:
     )
 
     try:
-        topology = load_output_topology_strict()
+        topology = evidence.output_topology_strict()
     except OutputTopologyError:
         # No usable topology means this is not a commissioned active speaker,
         # so camilla#2 is not its concern. Skip rather than warn — the active

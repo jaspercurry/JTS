@@ -2,17 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# The daemon skeleton both Rust audio daemons (jasper-fanin, jasper-outputd)
-# stand on: the hand-built JSON emitter their observability payloads share, the
-# systemd notify seam, the config-class park contract (ADR-0141), and the
-# helper-thread stack budget. Nothing audio-specific and no ALSA, so it sits
-# under every other JTS crate in the graph.
+# Nothing audio-specific and no ALSA, so this sits under every other JTS crate
+# in the graph. src/lib.rs's crate doc lists what it carries.
 
 [package]
 name = "jasper-daemon"
 version = "0.1.0"
 edition = "2021"
-description = "Shared daemon skeleton for the JTS Rust audio daemons: JSON emit, systemd notify, config-class exit, memory locking."
+description = "Shared daemon skeleton for the JTS Rust audio daemons."
 license = "Apache-2.0"
 repository = "https://github.com/jaspercurry/JTS"
 authors = ["Jasper Curry <jaspercurry@gmail.com>"]

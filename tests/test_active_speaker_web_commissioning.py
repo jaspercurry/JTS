@@ -603,36 +603,6 @@ def test_commission_tone_select_fanin_lane_indeterminate_recovery_standalone(
     ]
 
 
-def test_commission_tone_select_fanin_lane_indeterminate_recovery_nested(
-    monkeypatch,
-):
-    """SELECT response lost while nested under a correction measurement
-    window: recovery must NOT release the outer owner's gate — it restores
-    the outer owner's prior label instead (still a TEST_SELECT, never a
-    TEST_RELEASE)."""
-
-    calls: list[str] = []
-
-    def flaky_mux_command(cmd: str) -> dict:
-        calls.append(cmd)
-        if len(calls) == 1:
-            raise RuntimeError("response lost")
-        return {"active_source": "correction"}
-
-    monkeypatch.setattr(web, "_commission_tone_mux_command", flaky_mux_command)
-    fanin_gate_context = web.FaninGateContext(
-        owner="correction-measurement", restore_label="correction",
-    )
-
-    with pytest.raises(RuntimeError, match="response lost"):
-        web._commission_tone_select_fanin_lane(fanin_gate_context)
-
-    assert calls == [
-        "TEST_SELECT correction correction-measurement",
-        "TEST_SELECT correction correction-measurement",
-    ]
-    assert all("TEST_RELEASE" not in call for call in calls)
-
 
 def test_async_commission_tone_mux_command_runs_off_event_loop(monkeypatch):
     worker_thread_ids: list[int] = []
@@ -655,40 +625,15 @@ def test_async_commission_tone_mux_command_runs_off_event_loop(monkeypatch):
     assert worker_thread_ids[0] != loop_thread_id
 
 
-@pytest.mark.parametrize(
-    ("fanin_gate_context", "expected_calls"),
-    [
-        (
-            None,
-            [
-                "TEST_SELECT correction active-speaker-commissioning",
-                "TEST_RELEASE active-speaker-commissioning",
-            ],
-        ),
-        (
-            web.FaninGateContext(
-                owner="correction-measurement",
-                restore_label="correction",
-            ),
-            [
-                "TEST_SELECT correction correction-measurement",
-                "TEST_SELECT correction correction-measurement",
-            ],
-        ),
-    ],
-)
 def test_async_commission_tone_select_cancellation_settles_and_releases_gate(
     monkeypatch,
-    fanin_gate_context,
-    expected_calls,
 ):
     """Cancellation cannot orphan a late successful mux TEST_SELECT.
 
     ``asyncio.to_thread`` cannot stop its worker. Model the mux committing the
     selection only after caller cancellation, then cancel the caller again
     while release/restore is blocked. Cancellation must not propagate until
-    the same owner has given the standalone gate back or restored the nested
-    outer label.
+    the same owner has given the gate back.
     """
 
     select_started = threading.Event()
@@ -715,7 +660,7 @@ def test_async_commission_tone_select_cancellation_settles_and_releases_gate(
 
     async def scenario() -> None:
         task = asyncio.create_task(
-            web._commission_tone_select_fanin_lane_async(fanin_gate_context)
+            web._commission_tone_select_fanin_lane_async()
         )
         await wait_for_thread_event(select_started)
 
@@ -736,7 +681,10 @@ def test_async_commission_tone_select_cancellation_settles_and_releases_gate(
 
     asyncio.run(scenario())
 
-    assert calls == expected_calls
+    assert calls == [
+        "TEST_SELECT correction active-speaker-commissioning",
+        "TEST_RELEASE active-speaker-commissioning",
+    ]
 
 
 def _driver_capture_sweep_boundary(monkeypatch, *, play_admitted=None):
@@ -744,7 +692,7 @@ def _driver_capture_sweep_boundary(monkeypatch, *, play_admitted=None):
     REAL _commission_tone_select/release_fanin_lane() in place — only the
     lowest-level socket call (_commission_tone_mux_command) is faked — so
     tests can inspect the actual TEST_SELECT/TEST_RELEASE strings sent to
-    jasper-mux for standalone vs nested (FaninGateContext) commissioning.
+    jasper-mux.
     """
     topology = _topology()
     measurements = {
@@ -812,9 +760,8 @@ def _driver_capture_sweep_boundary(monkeypatch, *, play_admitted=None):
 def test_driver_capture_sweep_standalone_mode_owns_and_releases_its_own_gate(
     monkeypatch,
 ):
-    """No FaninGateContext (today's /sound/ commissioning path): unchanged
-    behavior — claims its own owner and releases it, never touching
-    correction's gate."""
+    """The ``/sound/`` commissioning path claims its own owner and releases
+    it, never touching correction's gate."""
 
     mux_calls = _driver_capture_sweep_boundary(monkeypatch)
 
@@ -832,74 +779,6 @@ def test_driver_capture_sweep_standalone_mode_owns_and_releases_its_own_gate(
         "TEST_RELEASE active-speaker-commissioning",
     ]
 
-
-def test_driver_capture_sweep_nested_mode_selects_and_restores_under_outer_owner(
-    monkeypatch,
-):
-    """FaninGateContext set (the crossover-driver-sweep capture flow, running
-    inside a correction measurement window): the tone selects under the
-    OUTER owner (never its own 'active-speaker-commissioning') and, on
-    completion, relabels back to the outer owner's prior label — never a
-    TEST_RELEASE. The gate stays continuously held by one owner across the
-    window; the coordinator's own end-of-window release is the only
-    release. This is the PR #1508 regression pin: before the fix, the
-    second-owner SELECT was refused with 'test fan-in gate is owned by
-    correction-measurement' (hardware-observed on JTS3)."""
-
-    mux_calls = _driver_capture_sweep_boundary(monkeypatch)
-    fanin_gate_context = web.FaninGateContext(
-        owner="correction-measurement", restore_label="correction",
-    )
-
-    payload = asyncio.run(
-        web.play_driver_capture_sweep(
-            {"speaker_group_id": "mono", "role": "woofer"},
-            camilla_factory=lambda: object(),
-            locked_main_volume_db=-4.0,
-            fanin_gate_context=fanin_gate_context,
-        )
-    )
-
-    assert payload["status"] == "completed"
-    assert mux_calls == [
-        "TEST_SELECT correction correction-measurement",
-        "TEST_SELECT correction correction-measurement",
-    ]
-    assert all("TEST_RELEASE" not in call for call in mux_calls)
-    assert all("correction-measurement" in call for call in mux_calls)
-
-
-def test_driver_capture_sweep_nested_mode_restores_label_on_crash(monkeypatch):
-    """Crash mid-tone (the admitted capture raises) still restores the outer
-    owner's label via the finally block — the nested gate is never left
-    dangling on an unhandled exception, and it is still a restore, not a
-    release."""
-
-    async def crashing_play_admitted(**kwargs):
-        raise RuntimeError("simulated mid-tone crash")
-
-    mux_calls = _driver_capture_sweep_boundary(
-        monkeypatch, play_admitted=crashing_play_admitted,
-    )
-    fanin_gate_context = web.FaninGateContext(
-        owner="correction-measurement", restore_label="correction",
-    )
-
-    with pytest.raises(RuntimeError, match="simulated mid-tone crash"):
-        asyncio.run(
-            web.play_driver_capture_sweep(
-                {"speaker_group_id": "mono", "role": "woofer"},
-                camilla_factory=lambda: object(),
-                locked_main_volume_db=-4.0,
-                fanin_gate_context=fanin_gate_context,
-            )
-        )
-
-    assert mux_calls == [
-        "TEST_SELECT correction correction-measurement",
-        "TEST_SELECT correction correction-measurement",
-    ]
-    assert all("TEST_RELEASE" not in call for call in mux_calls)
 
 
 @pytest.mark.parametrize(

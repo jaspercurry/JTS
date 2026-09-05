@@ -44,6 +44,7 @@ MODULE_ROSTER: tuple[str, ...] = (
     "env",
     "voice",
     "audio",
+    "active_speaker",
     "boot_config",
     "wake",
     "renderers",
@@ -93,6 +94,11 @@ STREAMBOX_OMITTED_DOCTOR_CHECKS = frozenset({
     "check_mic_card_matches_config",
     "check_mic_capture",
     "check_tts_open",
+    # A streambox has no crossover at all; the ``correction`` module still
+    # owns a cert-SAN check that does apply, so only these two are omitted
+    # rather than the whole module.
+    "check_crossover_v2_cloud_pipeline",
+    "check_crossover_v2_applied_is_graded",
 })
 
 

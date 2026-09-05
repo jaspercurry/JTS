@@ -20,10 +20,11 @@ from ._supervisor import (
     Deferred,
     OutageTracker,
     await_connected,
+    hand_off_first_connect,
     http_status,
     request_planned_reopen,
+    request_unplanned_reopen,
     run_supervisor_loop,
-    survive_terminal_initial_connect,
 )
 from .session import (
     CONNECTION_NOISY_TRANSITIONS,
@@ -56,14 +57,6 @@ SESSION_ROTATE_AFTER_SEC = 135.0
 # response from subsequent turns as "stale from a prior turn".
 # 30 s is a couple x the worst observed first-chunk latency.
 UNACK_AGE_OUT_SEC = 30.0
-
-# Connect retry schedule for the initial daemon-startup connect.
-# Total wall-time on repeated failure is 15 s, which gives Google's
-# session-release lag a generous window after a systemd restart hits
-# the previous process's still-lingering WebSocket — empirically the
-# prior 7 s budget (0+1+2+4) was occasionally too tight on busy
-# regions.
-INITIAL_CONNECT_BACKOFF_SCHEDULE = (0.0, 1.0, 2.0, 4.0, 8.0)
 
 # GoAway deferral threshold. When the server sends a GoAway mid-turn
 # (it fires near the ~15-min audio cap and can land while the user is
@@ -713,8 +706,8 @@ class GeminiLiveConnection:
         invoked on initial connect, every reconnect, and every
         context-reset reopen.
 
-        A terminal first connect leaves the connection FAILED and returns
-        rather than raising — see ``survive_terminal_initial_connect``."""
+        A first connect that fails leaves the connection FAILED and the
+        retry with the supervisor — see ``hand_off_first_connect``."""
         self._registry = registry
         if callable(system_instruction):
             self._system_instruction_provider = system_instruction
@@ -790,6 +783,7 @@ class GeminiLiveConnection:
 
     def is_paused(self) -> bool:
         return self._state in (
+            ConnectionState.CONNECTING,
             ConnectionState.RECONNECTING,
             ConnectionState.PAUSED_FOR_BACKOFF,
             ConnectionState.FAILED,
@@ -1046,100 +1040,11 @@ class GeminiLiveConnection:
         async with self._state_lock:
             self._set_state(ConnectionState.CONNECTING)
         try:
-            await self._open_session_with_409_retry()
+            await self._open_session()
         except Exception as e:  # noqa: BLE001
             async with self._state_lock:
                 self._set_state(ConnectionState.FAILED)
-            survive_terminal_initial_connect(e, self._trigger_reconnect)
-
-    async def _open_session_with_409_retry(self) -> None:
-        """Run ``_open_session`` with a 409-aware retry loop.
-
-        Used by ``_do_initial_connect`` (daemon startup). The
-        supervisor's reconnect path uses its own loop because it
-        also needs to coordinate with the state machine (PAUSED_FOR
-        _BACKOFF transitions, stop-event checks); the 409 detection
-        and handle-drop logic there is duplicated rather than shared
-        to avoid coupling state-machine code into this helper.
-
-        Behaviour:
-          * Each attempt calls ``_open_session()``; on success returns.
-          * On 409: log the status code accurately (read from
-            ``e.status_code`` first, then ``e.response.status_code``),
-            then — if a resumption handle is currently cached AND
-            we haven't already dropped it within this retry loop —
-            drop the handle so the NEXT attempt connects as a fresh
-            session. A stale / invalidated resumption handle is the
-            single most common cause of 409 here (next is
-            concurrent-session-limit), and dropping the handle is
-            both the recommended Live-API recovery and harmless
-            otherwise (we lose conversational context, not the
-            connection).
-          * On non-409: re-raise immediately (auth errors / malformed
-            config don't fix themselves with a wait).
-          * After exhausting the schedule: raise ``RuntimeError``.
-        """
-        schedule = INITIAL_CONNECT_BACKOFF_SCHEDULE
-        last_exc: Exception | None = None
-        handle_dropped = False
-        for attempt, delay in enumerate(schedule):
-            if delay > 0:
-                logger.warning(
-                    f"{self._log_tag} initial connect retry %d after %.1fs "
-                    "(last: %s: %s)",
-                    attempt, delay,
-                    type(last_exc).__name__ if last_exc else "?",
-                    self._outage.detail if last_exc else "?",
-                )
-                await asyncio.sleep(delay)
-            try:
-                await self._open_session()
-                if handle_dropped:
-                    logger.info(
-                        f"{self._log_tag} initial connect recovered after "
-                        "dropping stale resumption handle on attempt %d",
-                        attempt + 1,
-                    )
-                return
-            except Exception as e:  # noqa: BLE001
-                last_exc = e
-                is_409, status = _is_409_conflict(e)
-                if not is_409:
-                    raise
-                # Visible, structured 409 log so journalctl filtering
-                # for "409 Conflict" surfaces every occurrence, with
-                # enough context (attempt, status, exc type, partial
-                # handle) to attribute the cause.
-                handle_short = (
-                    (self._resumption_handle or "")[:8]
-                    if self._resumption_handle
-                    else "<none>"
-                )
-                logger.warning(
-                    f"{self._log_tag} 409 Conflict on attempt %d/%d "
-                    "(status=%s, exc=%s, handle=%s)",
-                    attempt + 1, len(schedule),
-                    status, type(e).__name__, handle_short,
-                )
-                # First 409 with a cached resumption handle: drop it.
-                # Stale / server-invalidated handles are the single
-                # most common 409 source on reconnect — the bare
-                # concurrent-session-limit case is much rarer, and
-                # dropping the handle doesn't hurt that case (the
-                # next attempt just connects fresh once Google's
-                # release lag passes).
-                if not handle_dropped and self._resumption_handle is not None:
-                    logger.warning(
-                        f"{self._log_tag} dropping cached resumption "
-                        "handle (handle=%s) and will retry as fresh session",
-                        handle_short,
-                    )
-                    self._resumption_handle = None
-                    handle_dropped = True
-        raise RuntimeError(
-            f"{self._log_tag} initial connect failed after "
-            f"{len(schedule)} retries; last error: {last_exc}"
-        )
+            hand_off_first_connect(self, e)
 
     async def _open_session(self) -> None:
         """Open a session, recording the outcome on the outage tracker.
@@ -1304,14 +1209,6 @@ class GeminiLiveConnection:
         teardown_ms = (_time.monotonic() - t0) * 1000
         logger.info(f"{self._log_tag} session torn down in %.0fms", teardown_ms)
 
-    def _trigger_reconnect(self) -> None:
-        """Wake the supervisor for an UNPLANNED reconnect.
-
-        Clears any queued planned-rotation flag so a genuine failure can
-        never inherit the rotation's zero-backoff first attempt."""
-        self._planned_rotate = False
-        self._reconnect_event.set()
-
     def _on_reconnect_attempt_failed(
         self, exc: Exception, attempt: int, transient: bool,
     ) -> None:
@@ -1390,7 +1287,7 @@ class GeminiLiveConnection:
                     logger.warning(
                         f"{self._log_tag} _receive returned None (clean close), reconnecting"
                     )
-                    self._trigger_reconnect()
+                    request_unplanned_reopen(self)
                     return
                 # Connection-level: session resumption handle.
                 sru = getattr(response, "session_resumption_update", None)
@@ -1428,7 +1325,7 @@ class GeminiLiveConnection:
                         f"{self._log_tag} GoAway received, time_left=%s, will reconnect",
                         time_left,
                     )
-                    self._trigger_reconnect()
+                    request_unplanned_reopen(self)
                     continue
                 # Per-turn routing — but first check whether this
                 # response is "stale" from a prior turn we already
@@ -1501,7 +1398,7 @@ class GeminiLiveConnection:
                     f"{self._log_tag} receive loop error (%s: %s), reconnecting",
                     type(e).__name__, e,
                 )
-            self._trigger_reconnect()
+            request_unplanned_reopen(self)
 
     async def _maybe_reset_context(self) -> None:
         """If the connection has been idle longer than the configured
