@@ -120,7 +120,7 @@ doctrine most exists to close.
 
 A **Feature** is a self-contained vertical that the host *composes*. Today
 JTS has two forming (the async "research" feature and the calibration agent)
-and a third arriving (the conversation-history page). Each currently
+and a third shipped (the conversation-history page). Each currently
 reinvents the same plumbing — its own store, its own LLM-provider layer, its
 own web surface, its own background-work and proactive-speech hooks. That
 duplication is the signal that the shape is real.

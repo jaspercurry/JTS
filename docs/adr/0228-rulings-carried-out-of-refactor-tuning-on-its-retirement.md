@@ -1,7 +1,8 @@
 # ADR-0228: Rulings carried out of REFACTOR-TUNING-2026-08 on its retirement
 
 - **Date:** 2026-09-03
-- **Status:** Accepted
+- **Status:** Accepted. Entry 9 (row 4g) is superseded by
+  [ADR-0230](0230-the-summed-graph-commissioning-lane-is-deleted.md).
 
 ## Context
 
