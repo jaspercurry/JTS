@@ -168,9 +168,10 @@ def test_sosfilt_matches_scipy(signal):
     reference, ref_state = scipy_signal.sosfilt(sos, source, zi=zi)
 
     assert out.shape == reference.shape
-    # Same recursion in the same order: bit-identical, not merely close.
-    assert float(np.max(np.abs(out - reference))) == 0.0
-    assert float(np.max(np.abs(state - ref_state))) == 0.0
+    # scipy is the oracle here, and its accumulation order is not stable
+    # across its own versions, so parity is to float rounding, not bit-exact.
+    np.testing.assert_allclose(out, reference, rtol=0.0, atol=1e-8)
+    np.testing.assert_allclose(state, ref_state, rtol=0.0, atol=1e-8)
     assert _lag_of_peak_correlation(out, reference) == 0
 
 
