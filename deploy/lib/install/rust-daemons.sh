@@ -51,14 +51,18 @@ rust_cargo_build_env() {
     fi
 
     # 1 GB and Zero-class boxes have enough CPU for the runtime daemons, but not
-    # enough RAM to reliably compile the normal release profile with fat LTO or
-    # LLVM's heavier optimization passes. Keep 2 GB+ full speakers on the
-    # normal release profile and relax Cargo only on constrained hosts.
+    # enough RAM to reliably compile the normal release profile with fat LTO.
+    # Keep 2 GB+ full speakers on the normal release profile and relax Cargo
+    # only on constrained hosts.
+    #
+    # opt-level stays >= 2: unoptimised, jasper-fanin burns ~24% of a Zero 2 W
+    # core summing five idle lanes at 187 periods/s, where an optimised
+    # CamillaDSP doing strictly more DSP work idles at ~11% on the same box.
     printf '%s\n' \
         "CARGO_BUILD_JOBS=1" \
         "CARGO_PROFILE_RELEASE_LTO=false" \
         "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16" \
-        "CARGO_PROFILE_RELEASE_OPT_LEVEL=0"
+        "CARGO_PROFILE_RELEASE_OPT_LEVEL=2"
 }
 
 # Build-cache staging format. Bump when the staging/freshness contract
@@ -177,7 +181,7 @@ build_install_rust_daemon() {
         cargo_env+=("${cargo_arg}")
     done < <(rust_cargo_build_env)
     if [[ "${#cargo_env[@]}" -gt 0 ]]; then
-        echo "  ${name}: low-memory Rust build profile active ($(rust_build_memtotal_kb) kB RAM; opt-level=0, lto=false, codegen-units=16, jobs=1)"
+        echo "  ${name}: low-memory Rust build profile active ($(rust_build_memtotal_kb) kB RAM; ${cargo_env[*]})"
     fi
 
     # Contain the sudo -> pi -> cargo -> rustc subtree: cargo manages its
