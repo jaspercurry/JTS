@@ -23,15 +23,20 @@ an LLM at an SSH prompt drives a human through a round, separates room from
 speaker, proposes, stages, re-measures — the toolbox is roughly **half built,
 and the missing half is small.** Measured, not reasoned:
 
-- **The LLM is locked out of the human-mover loop, by design.** A hand-walked
-  round is driven from a phone at `/sound/crossover/`; the walk's live hold
-  (`capture.position_pending`) has one on-box reader and it is the turntable
-  loop; `jasper-round` has no verb to read the hold, release it, close the set
-  or re-ask a spot; `angle-capture serve` accepts only `--mover turntable`. The
-  LLM stages, opens, tells the human in chat to open a URL, and is blind for
-  up to 46 minutes. `jasper-measure --prompt "what the mover was told"` is the
-  toolbox recording that the conversation happens out-of-band.
-  (`vision-human-mover.md` §7; `angle_capture.py:797-799`, `arm_walk.py:853-869`)
+- **The handoff is built; nobody has watched it.** The owner's vision
+  (clarified 2026-09-05) is a handoff, not remote control: the LLM stages a
+  measurement, gives the human one URL, the human drives the flow in the
+  browser (stimulus, redo, next pose), the LLM banks and reads. That exists:
+  `angle-capture stage --mover human` prints `handoff_url`
+  (`https://<speaker>/sound/crossover/`, `cli/angle_capture.py:344,464`); the
+  page tells the human where to put the mic in words, has a ready button,
+  `retake` and `complete` (`correction_setup.py:2972,3013,3037`); `jasper-round
+  open/wait/bank` closes the loop; the turntable flow is `serve --mover
+  turntable`. What is missing is small: no verb says what is staged (the
+  epilog points at the wrong tool), `wait` reports a retriable mid-walk
+  rejection as `session_failed`, vertical poses reach the human in degrees
+  only, and nothing has verified how the page feels on hardware.
+  (`vision-human-mover.md` §2, §3, §5, §8)
 - **The methodology never names the verb that measures, applies or banks.**
   `jasper-round`, `jasper-measure`, `jasper-basic-profile`: zero mentions in
   872 lines; doctrine §1's loop has no apply step; three filesystem paths a
@@ -72,16 +77,22 @@ as JSON under the round, room correction out of scope. The CLI modules
 themselves are honest and small; `jasper/cli/_refusal.py` (109 lines) is the
 best-designed thing in the toolbox.
 
-**Should we walk a round on hardware before writing more code?** Yes for the
-walk path and no for the map. Six facts the human-mover lane could not settle
-statically (`vision-human-mover.md` §8) — whether the browser release actually
-posts on a live wired round, whether an 11-stop walk fits the 46-minute
-ceiling, whether four identical "leave it at 0°" screens read as a bug — decide
-the shape of the loop verbs. But the docs-as-map, stream and inventory rows are
-pure surface: they are wrong today by inspection and a hardware round cannot
-make them righter. So: **Round A now (owner, browser, the §10 sequence) in
-parallel with batch 1; batch 2 shaped by Round A's friction log; Round B
-LLM-driven through the new verbs.**
+**Is there a clear path?** Yes, and it is short. The vision needs three
+things: a smart LLM (given), a tool chest with documented tools the LLM
+controls (ten binaries with `--help`, one exit vocabulary — built, with the
+answers on the wrong stream), and a plan that names the tools and leaves the
+LLM free to deviate (the methodology, which names the analysis tools and not
+the measure, apply, bank or handoff verbs). The handoff UX exists. So the
+path is: fix the map (9.1), put every answer on stdout (9.2–9.4), and walk one
+round on hardware to judge the page. **Should we walk a round before writing
+more code?** Yes for the walk path — six facts the human-mover lane could not
+settle statically (`vision-human-mover.md` §8: whether the release posts on a
+live wired round, whether an 11-stop walk fits the 46-minute ceiling, whether
+four identical "leave it at 0°" screens read as a bug) — and no for the map
+and the streams, which are wrong by inspection. So: **Round A now (owner,
+browser, the §10 sequence) in parallel with batch 1; batch 2 shaped by
+Round A's friction log; Round B is the LLM staging test configs A/B/C, handing
+off one URL, and reading the result.**
 
 ## 2. LANDING re-verified at HEAD
 
@@ -111,8 +122,9 @@ in `tests/test_ring_active_endpoint.py`, the `jasper-round wait` doc one-liner,
 | Vision item (#4029 §1) | Measured status | Lane |
 |---|---|---|
 | The human is told where to put the mic | TRUE, on the phone only: "Turn the microphone to -20° (20° LEFT of the design axis). Keep it 1 m from the speaker and pointed at it." + a ready button. No terminal, no cue. Vertical poses in degrees only; the button flattens every vertical pose to 0. | human-mover §2, §3 |
-| The LLM asks for a position, waits for ready, triggers, sees the take | FALSE. No read/release/complete/retake verb; `serve` is turntable-only. `WizardClient` already has `get_json`/`post_json` + CSRF; the endpoints exist. | human-mover §7 |
+| The LLM hands off one URL and the human drives (stimulus, redo, next pose) | TRUE for the human mover: `stage` prints `handoff_url`; the page has ready, retake, complete. Rough edges: no "what is staged" verb; `wait`'s false `failed`; vertical in degrees. The turntable flow is `serve --mover turntable`, complete with exit table and trail. | human-mover §1–§3, §7 |
 | A bad take is re-asked | TRUE in the browser (`retake`); `jasper-round wait` misreports a retriable rejection as `session_failed` (`wizard_client.py:322-327`). | human-mover §5 |
+| The LLM stages test configs A/B/C for one handoff | PARTIAL: `--candidates` stages an alignment ladder (pose-major); a linearization-EQ candidate is refused; a full DSP-graph ladder has a door (`republish`) and no sequencing. | config-ladder §3, §5 |
 | Configs A/B/C at a held position | PARTIAL: `--candidates` walks it; nothing reads `candidate_id` back; only alignment candidates; `repeat` is a noise instrument and would lie if used as the comparator. | config-ladder |
 | Room vs speaker attribution | PARTIAL: `gate-sweep` gives one machine verdict (`window_verdict`); `close-reference` answers per spec band; classifier floor ~450 Hz; `attribution` package unreachable; a ROOM verdict is reachable, a defensible SPEAKER verdict is not, and the asymmetry is stated nowhere. | attribution §4 |
 | Every capability a subcommand with a menu row and a methodology pointer | TRUE for the menu; FALSE for the pointers (measure/apply/bank unnamed; `directivity`/`entry`/`frequency` exist only in the menu blob; `both_at`/`--regime both` documented nowhere). | walk §A, §D |
@@ -132,9 +144,11 @@ show paid for itself.
 
 Wrong or underweighted:
 1. **Scored against TARGET, not the vision.** "85% of the vision" was 85% of
-   TARGET. The vision's centre — the LLM driving the human — was never traced;
-   it is closed to the LLM by a documented design choice
-   (`runbook:350`) that nobody re-examined against §1.
+   TARGET. The vision's centre — the LLM hands off, the human drives on a
+   page — was built and never watched; three sessions reasoned about it and
+   none walked it. (My own first draft of this survey made the opposite
+   error and read the vision as remote control of the human; corrected
+   above on the owner's clarification.)
 2. **"Answer small: PARTIAL, coherent."** For an SSH-driving LLM the stderr
    convention is the defect it feels on every command. This should have been
    wave 4's row, before any relocation.
@@ -211,7 +225,7 @@ worktrees from fresh `origin/main`; premise re-verified first, stop if false.
 
 | Row | Concern | Tag | Proof | Gate | Size |
 |---|---|---|---|---|---|
-| 9.9 | **The LLM drives the human.** Four verbs on `jasper-round`: `pending` (prints `capture.position_pending` verbatim), `position-ready --index N`, `complete`, `retake` — thin argparse over `WizardClient.get_json`/`post_json` and endpoints that already ship; `angle-capture show` over `peek_staged_angle_request` and the two stale epilog lines repointed; `measure.py`'s false "run-crossover-round calls this" epilog deleted. | W | seam tests over a fake wizard; Round B driven with them | code-review high (touches the live walk) + owner: Round B | small |
+| 9.9 | **The handoff is legible.** `angle-capture show [--json]` over the existing `peek_staged_angle_request` says what is staged and for whom; the two epilog lines that send the reader to `prescriber status` repointed; `jasper-round open`'s receipt echoes `handoff_url` so the LLM has one line to give the human; `measure.py`'s false "run-crossover-round calls this" epilog deleted. | W | seam test over a fake spool; Round B | code-review | small |
 | 9.10 | **Walk transport truth.** `wait` returns `failed` only when the phase is terminal or the failure code is non-retriable; `pending_from_capture` returns `None` when `hand_released` is set; vertical poses carry the cm and `position_vertical_deg` through screen/pending/button. | W | one pin each | code-review | small |
 | 9.11 | **Attribution reachable.** `round-views findings <round> [--phase]` over `storage.read_finding_set` for all three phases; the resolved `echo_band_hz` published beside the findings with the sentence that the band bounds the set; `classify-features` prints `classifiable_band_hz` in its summary and `inventory` shows it. | W | fixture with findings; `inventory` names them | code-review | small |
 | 9.12 | **The packet reads all three finding phases** and carries `produced_by`/`present` so "ran and found nothing" ≠ "never ran". | W | fixture pin | code-review | tiny |
@@ -239,9 +253,9 @@ worktrees from fresh `origin/main`; premise re-verified first, stop if false.
   browser-paced, timed; the friction log is batch 2's input. Confirm the
   #3991 debt at the same deploy: emitted CamillaDSP config reads
   `volume_limit: 0.0`.
-- **Round B, after batch 2:** the same round driven from SSH through
-  `jasper-round pending/position-ready/complete/retake`, the LLM telling the
-  human nothing in chat that a verb could say.
+- **Round B, after batch 2:** the LLM stages test configs A/B/C
+  (`--candidates`), hands the human one URL, and reads `round-views
+  candidates` when the walk is banked — the loop the owner wants, end to end.
 
 Batching: batch 1 through one integration branch (lanes are file-disjoint:
 docs | round_views | prescriber | round.py | angle/basic/audition/seat |
@@ -265,6 +279,9 @@ read every answer on stdout, and copy every command `inventory` prints.
 - **Renaming the nouns** (round/bundle/session; the seven proposal words; the
   two `round_views` modules): churn across hundreds of files for one word
   each. Glossary in `maintainer-legibility.md` §5 instead.
+- **SSH verbs that drive the human** (`pending`/`position-ready`/`complete`/
+  `retake` on `jasper-round`): the vision is a handoff to a page, not remote
+  control of the person; the endpoints stay the browser's.
 - **`jasper-round republish`** for a DSP-graph ladder: the runbook says the
   open part is sequencing (hold the next capture until apply lands), and that
   is a design to write after Round B shows what the alignment ladder costs.
@@ -304,8 +321,8 @@ read every answer on stdout, and copy every command `inventory` prints.
 1. Every command in §10 is derivable from the methodology and runbook (the
    seven ⚠ rows are zero); menu `--check` green.
 2. stdout is the answer on all ten binaries, pinned by invoking each `main`.
-3. The LLM drives a hand-walked round from SSH (Round B), with the human told
-   nothing in chat that a verb could say.
+3. The LLM stages a measurement (baseline or configs A/B/C), hands the human
+   one URL, and reads the banked result without a script (Round B).
 4. `inventory` prints copy-pasteable commands with sizes; `status` prints
    commands.
 5. `round-views findings` and `candidates` exist; band floors are disclosed
