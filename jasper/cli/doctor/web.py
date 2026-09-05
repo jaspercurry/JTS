@@ -129,7 +129,7 @@ MANAGEMENT_502_HINT = (
 )
 
 
-@doctor_check()
+@doctor_check(core=True)
 def check_management_surface() -> CheckResult:
     """The management UI must answer through nginx under the speaker's
     real hostname.
@@ -441,7 +441,7 @@ def _wizard_socket_state(unit: str) -> tuple[str, str] | None:
     )
 
 
-@doctor_check()
+@doctor_check(core=True)
 def check_wizard_socket_start_limits() -> CheckResult:
     """A failed ``.socket`` is what a start-limited wizard looks like.
 

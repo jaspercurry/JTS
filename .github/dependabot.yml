@@ -46,6 +46,18 @@ updates:
         patterns:
           - "*"
 
+  # Dependabot does not descend into composite action directories from "/";
+  # each one needs its own entry for its pinned `uses:` refs to be tracked.
+  - package-ecosystem: "github-actions"
+    directory: "/.github/actions/setup-python-uv"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
   # One entry keeps the shared `alsa` dependency atomic across every crate that
   # links libasound. Dependabot groups cannot span separate update entries, and
   # tests/test_build_and_ci_contracts.py requires these manifests to agree.
@@ -68,6 +80,7 @@ updates:
   - package-ecosystem: "cargo"
     directories:
       - "/rust/jasper-env"
+      - "/rust/jasper-daemon"
       - "/rust/jasper-tts-protocol"
       - "/rust/jasper-clock"
       - "/rust/jasper-resampler"

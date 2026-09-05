@@ -298,7 +298,7 @@ def transport_coherence_report(
         # reconciler has not written yet — that box is not on a second route, it
         # is on the ring with nothing written down. Only a coupling that
         # EXPLICITLY names the ring while outputd's bridge does not is a split,
-        # and doctor's `check_ring_split_transport` is its evidence-based owner
+        # and doctor's `check_content_transport_coherence` is its evidence-based owner
         # (it compares the LOADED GRAPH against the bridge). Reaching this shape
         # under such a coupling already means outputd is the end that is off, so
         # the bridge predicate is not re-run here.

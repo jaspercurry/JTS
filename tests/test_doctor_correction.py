@@ -268,7 +268,7 @@ def test_check_correction_state_dirs_warns_on_missing(monkeypatch, tmp_path):
     assert r.reason == correction.REASON_STATE_DIRS_MISSING
 
 
-def test_check_correction_state_dirs_fails_when_locked_out_by_mode(
+def test_check_correction_state_dirs_warns_when_locked_out_by_mode(
     monkeypatch, tmp_path
 ):
     """_pretend_group_is_jasper pins the group match so MODE ALONE (0700 — the
@@ -287,7 +287,7 @@ def test_check_correction_state_dirs_fails_when_locked_out_by_mode(
 
     r = correction.check_correction_state_dirs()
 
-    assert r.status == "fail"
+    assert r.status == "warn"
     assert r.reason == correction.REASON_STATE_DIRS_NOT_WRITABLE
 
 
@@ -322,7 +322,7 @@ def test_check_correction_uploaded_calibration_sign_flags_only_uploads(
     )
 
     r = correction.check_correction_uploaded_calibration_sign()
-    assert r.status == "warn"
+    assert r.status == "ok"
     assert r.reason == correction.REASON_UPLOADED_CALIBRATION_SIGN_REVIEW
 
     # An upload that already declares the response convention is clean, and
@@ -336,7 +336,7 @@ def test_check_correction_uploaded_calibration_sign_flags_only_uploads(
         sign_convention="response",
         root=tmp_path,
     )
-    assert correction.check_correction_uploaded_calibration_sign().status == "warn"
+    assert correction.check_correction_uploaded_calibration_sign().status == "ok"
 
     monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "empty"))
     clean = correction.check_correction_uploaded_calibration_sign()
@@ -662,7 +662,7 @@ def _verify_cloud(*, passed, flatness):
 @pytest.mark.parametrize(
     "overrides, status, reason",
     [
-        # Nothing applied: never a manufactured warn.
+        # Nothing applied: never a manufactured finding.
         pytest.param(
             {"applied": False}, "ok",
             correction.REASON_APPLIED_GRADE_NOT_APPLIED, id="not-applied",
@@ -670,7 +670,7 @@ def _verify_cloud(*, passed, flatness):
         # Applied with no post-apply group and no VERIFY outcome — the silence
         # `check_crossover_v2_cloud_pipeline` structurally cannot see.
         pytest.param(
-            {}, "warn", correction.REASON_APPLIED_GRADE_NEVER_GRADED,
+            {}, "ok", correction.REASON_APPLIED_GRADE_NEVER_GRADED,
             id="never-graded",
         ),
         # Express tier omits the post-apply position group, so a passing VERIFY
@@ -679,7 +679,7 @@ def _verify_cloud(*, passed, flatness):
             {"verify": {"outcome": "pass"}}, "ok", "", id="verify-alone",
         ),
         pytest.param(
-            {"verify": {"outcome": "inconclusive"}}, "warn",
+            {"verify": {"outcome": "inconclusive"}}, "ok",
             correction.REASON_APPLIED_GRADE_VERIFY_INCONCLUSIVE,
             id="verify-inconclusive",
         ),
@@ -691,7 +691,7 @@ def _verify_cloud(*, passed, flatness):
                 "verify": {"outcome": "pass"},
                 "cloud": _verify_cloud(passed=False, flatness=_FAILED_GAUGE),
             },
-            "warn", correction.REASON_APPLIED_GRADE_SPATIAL_FAILED,
+            "ok", correction.REASON_APPLIED_GRADE_SPATIAL_FAILED,
             id="spatial-failed",
         ),
         # passed=False with evaluable=False means "could not be measured", not
@@ -702,13 +702,13 @@ def _verify_cloud(*, passed, flatness):
                 "verify": {"outcome": "pass"},
                 "cloud": _verify_cloud(passed=False, flatness=_UNMEASURABLE_GAUGE),
             },
-            "warn", correction.REASON_APPLIED_GRADE_SPATIAL_UNMEASURABLE,
+            "ok", correction.REASON_APPLIED_GRADE_SPATIAL_UNMEASURABLE,
             id="spatial-unmeasurable",
         ),
         # #2098: a Full session verified only at the mark is not the claim Full
         # promised.
         pytest.param(
-            {"tier": "full", "verify": {"outcome": "pass"}}, "warn",
+            {"tier": "full", "verify": {"outcome": "pass"}}, "ok",
             correction.REASON_APPLIED_GRADE_MARK_ONLY, id="full-mark-only",
         ),
         # A group that closed but could not combine reaches the same arm — the
@@ -723,11 +723,11 @@ def _verify_cloud(*, passed, flatness):
                     ),
                 },
             },
-            "warn", correction.REASON_APPLIED_GRADE_MARK_ONLY,
+            "ok", correction.REASON_APPLIED_GRADE_MARK_ONLY,
             id="full-closed-but-unavailable",
         ),
-        # The mark IS express's whole promise; warning here would fire on every
-        # express session ever run.
+        # The mark IS express's whole promise; a finding here would fire on
+        # every express session ever run.
         pytest.param(
             {"tier": "express", "verify": {"outcome": "pass"}}, "ok", "",
             id="express-mark",
@@ -740,7 +740,7 @@ def _verify_cloud(*, passed, flatness):
             },
             "ok", "", id="spatial-passed",
         ),
-        # #2464: a failed mark-VERIFY caps this line at warn whatever the
+        # #2464: a failed mark-VERIFY names verify_failed whatever the
         # spatial group says.
         pytest.param(
             {
@@ -751,7 +751,7 @@ def _verify_cloud(*, passed, flatness):
                 },
                 "cloud": _verify_cloud(passed=True, flatness=_PASSING_GAUGE),
             },
-            "warn", correction.REASON_APPLIED_GRADE_VERIFY_FAILED,
+            "ok", correction.REASON_APPLIED_GRADE_VERIFY_FAILED,
             id="verify-failed-behind-a-passing-group",
         ),
         # The capture was clean and the crossover-region claim missed its
@@ -769,7 +769,7 @@ def _verify_cloud(*, passed, flatness):
                 },
                 "cloud": _verify_cloud(passed=True, flatness=_PASSING_GAUGE),
             },
-            "warn", correction.REASON_APPLIED_GRADE_VERIFY_FAILED,
+            "ok", correction.REASON_APPLIED_GRADE_VERIFY_FAILED,
             id="failed-absolute-claim",
         ),
         pytest.param(
@@ -778,7 +778,7 @@ def _verify_cloud(*, passed, flatness):
                 "verify": {"outcome": "inconclusive"},
                 "cloud": _verify_cloud(passed=False, flatness=_FAILED_GAUGE),
             },
-            "warn", correction.REASON_APPLIED_GRADE_VERIFY_INCONCLUSIVE,
+            "ok", correction.REASON_APPLIED_GRADE_VERIFY_INCONCLUSIVE,
             id="inconclusive-behind-a-closed-group",
         ),
         # The result code is DISCLOSED beside the grade and never gates it:
@@ -810,7 +810,7 @@ def _verify_cloud(*, passed, flatness):
         # The same posture one tier over: every instrument that grades the
         # CHECKING passed, and the result code is `inconclusive` anyway because
         # the crossover region carried no spec tolerance for an absolute
-        # verdict. A warn here would fire on a healthy commission.
+        # verdict. A finding here would fire on a healthy commission.
         pytest.param(
             {
                 "tier": "express",
@@ -840,10 +840,11 @@ def test_check_crossover_v2_applied_is_graded_verdicts(
     assert r.reason == reason
 
 
-def test_an_unknown_spatial_word_from_a_later_build_warns(monkeypatch):
+def test_an_unknown_spatial_word_from_a_later_build_is_disclosed(monkeypatch):
     """The direction ``state`` already follows for a value this build cannot
-    read is WARN, never the passing wording (S1, #2242). The grade is injected
-    directly because no producer path can emit it — that is the point."""
+    read is the unrecognized reason code, never the passing wording (S1,
+    #2242). The grade is injected directly because no producer path can emit
+    it — that is the point."""
     from jasper.web import correction_crossover_v2 as v2host
     from jasper.web import correction_crossover_v2_status as v2status
 
@@ -865,7 +866,7 @@ def test_an_unknown_spatial_word_from_a_later_build_warns(monkeypatch):
 
     r = correction.check_crossover_v2_applied_is_graded()
 
-    assert r.status == "warn"
+    assert r.status == "ok"
     assert r.reason == correction.REASON_APPLIED_GRADE_SPATIAL_UNRECOGNIZED
 
 

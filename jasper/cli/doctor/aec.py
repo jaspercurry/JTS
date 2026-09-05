@@ -479,7 +479,7 @@ def _assess_audio_validation_summary(
         command = "sudo jasper-audio-validate --stdout"
     return CheckResult(
         "Audio validation",
-        "warn",
+        "warn" if state == "current" and status == "fail" else "ok",
         detail + f"; advisory: consider `{command}` after chip-AEC is active",
         reason=REASON_VALIDATION_ADVISORY,
     )
@@ -487,11 +487,11 @@ def _assess_audio_validation_summary(
 def _chip_aec_passive_evidence_pair(
     summary: dict[str, object],
 ) -> tuple[str, str] | None:
-    """Return the (mic, DAC) pair whose passive evidence clears the warn.
+    """Return the (mic, DAC) pair whose passive evidence banks the row.
 
     The artifact stays partial because no acoustic drift/delay probe exists
-    yet. Clean passive evidence on a registry-approved DAC is enough to stop
-    warning (ADR-0101): the gate below already answers "is this hardware
+    yet. Clean passive evidence on a registry-approved DAC is enough to bank
+    it (ADR-0101): the gate below already answers "is this hardware
     known good", so no second hard-coded pair table is kept here. The caller
     discloses the pair.
     """
@@ -649,11 +649,12 @@ def check_aec_bridge_running() -> CheckResult:
     )
 
 
-# The bridge emits one of two RMS window shapes per 5 s, chosen by whether
-# production chip AEC is armed (jasper/cli/aec_bridge.py):
-#   software AEC3: "rms over 5.0s: ref=15694 mic=2077 aec=311 →
+# The bridge emits one of two RMS window shapes at RMS_LOG_INTERVAL_SEC
+# cadence (jasper/cli/aec_bridge.py), chosen by whether production chip AEC
+# is armed:
+#   software AEC3: "rms over Ns: ref=15694 mic=2077 aec=311 →
 #                   attenuation=-16.5 dB (...)"
-#   chip AEC:      "chip_aec rms over 5.0s: ref=15694 near=chip_aec_210:2077
+#   chip AEC:      "chip_aec rms over Ns: ref=15694 near=chip_aec_210:2077
 #                   primary=chip_aec_150:311 level_delta=-16.5 dB raw0=2411
 #                   (...)"
 # `raw0` is the raw mic-0 capture channel. Optional: builds before it emitted
@@ -1106,16 +1107,17 @@ def _assess_aec_bridge_output(
             reason=remediation_reason,
         )
 
-    # An active bridge writes an RMS window every 5 s, so an empty 90 s
-    # window is missing evidence, not evidence of health: a restart loop, a
-    # wedged processing thread, or a journal not capturing INFO all look
-    # like this. Warn rather than assert an unverified ok.
+    # An active bridge writes an RMS window at RMS_LOG_INTERVAL_SEC cadence
+    # (jasper/cli/aec_bridge.py), so an empty 90 s window is missing
+    # evidence, not evidence of health: a restart loop, a wedged processing
+    # thread, or a journal not capturing INFO all look like this. Warn
+    # rather than assert an unverified ok.
     if total_windows == 0:
         return CheckResult(
             "AEC bridge output", "warn",
             "no recent RMS windows logged while the bridge is running "
-            "(expected one per 5 s) — bridge may have just restarted, or "
-            "its processing loop is wedged. Check: journalctl -u "
+            "(expected periodic windows) — bridge may have just restarted, "
+            "or its processing loop is wedged. Check: journalctl -u "
             "jasper-aec-bridge -e",
             reason=REASON_BRIDGE_OUTPUT_NO_WINDOWS,
         )

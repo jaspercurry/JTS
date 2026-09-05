@@ -146,6 +146,17 @@ def test_host_clock_doctor_ok_for_l0_and_bounded_retry():
     assert retry.reason == audio_runtime_fanin.REASON_HOST_CLOCK_PROBING
 
 
+def test_host_clock_doctor_probing_exemption_precedes_the_actuator_fail():
+    """A fresh session in `probing` with the ctl device still opening
+    (`ready=False`, bounded per the docstring) must read as recovering, not
+    hard-fail on the actuator-unavailable branch."""
+    result = audio_runtime_fanin._host_clock_health_from_status(
+        _host_clock_status(ladder="probing", ready=False, phase="await_lock", attempt=1)
+    )
+    assert result.status == "ok"
+    assert result.reason == audio_runtime_fanin.REASON_HOST_CLOCK_PROBING
+
+
 def test_host_clock_doctor_warns_on_a_persistent_l2_fallback():
     result = audio_runtime_fanin._host_clock_health_from_status(
         _host_clock_status(ladder="l2_fallback", reason="probe_noncompliant")
@@ -168,12 +179,36 @@ def test_host_clock_doctor_warns_on_a_persistent_l2_fallback():
         {"control_generation": 3},
     ],
 )
-def test_host_clock_doctor_warns_on_unavailable_or_generation_mismatch(status_kwargs):
+def test_host_clock_doctor_fails_on_unavailable_or_generation_mismatch(status_kwargs):
+    """A dead steering actuator is a drift FAULT, not an advisory: nothing is
+    correcting the host clock and the box is on the direct resampler."""
     result = audio_runtime_fanin._host_clock_health_from_status(
         _host_clock_status(**status_kwargs)
     )
-    assert result.status == "warn"
+    assert result.status == "fail"
     assert result.reason == audio_runtime_fanin.REASON_HOST_CLOCK_ACTUATOR_UNAVAILABLE
+
+
+@pytest.mark.parametrize(
+    "payload, reason",
+    [
+        ({}, audio_runtime_fanin.REASON_HOST_CLOCK_TELEMETRY_MISSING),
+        (
+            {"host_clock": {"enabled": True, "probe": {}}},
+            audio_runtime_fanin.REASON_HOST_CLOCK_ACTUATOR_TELEMETRY_MISSING,
+        ),
+        (
+            {"host_clock": {"enabled": True, "actuator": {}}},
+            audio_runtime_fanin.REASON_HOST_CLOCK_PROBE_TELEMETRY_MISSING,
+        ),
+    ],
+    ids=["no-host-clock", "no-actuator", "no-probe"],
+)
+def test_host_clock_telemetry_a_build_does_not_publish_is_skipped(payload, reason):
+    """Nothing observed is `skipped`, never `warn` (ADR-0233 rule 3)."""
+    result = audio_runtime_fanin._host_clock_health_from_status(payload)
+    assert result.status == "skipped"
+    assert result.reason == reason
 
 
 def _patch_unreachable_status(monkeypatch):
@@ -208,7 +243,7 @@ def test_one_doctor_pass_opens_the_fanin_status_socket_once(monkeypatch):
         audio_runtime_fanin.check_fanin_service,
         audio_runtime_fanin.check_fanin_host_clock,
         audio_runtime_fanin.check_fanin_tts_drops,
-        audio_runtime_fanin.check_fanin_ring_stall,
+        audio_runtime_ring.check_ring_reader_stall,
         audio_runtime_ring.check_renderer_ring_lanes,
     ):
         check()
@@ -406,6 +441,20 @@ def test_check_fanin_service_warns_on_malformed_pre_dsp_tts_loudness(monkeypatch
     assert r.reason == audio_runtime_fanin.REASON_FANIN_ASSISTANT_GAIN_NOT_NUMERIC
 
 
+def test_check_fanin_service_is_ok_when_loudness_telemetry_is_absent(monkeypatch):
+    """An older fan-in publishes no assistant_loudness: nothing was observed
+    about the gain, and the SERVICE is still active and responding."""
+    _seed_units()
+    payload = json.loads(_fanin_status_payload().decode())
+    del payload["tts"]["assistant_loudness"]
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
+
+    r = audio_runtime_fanin.check_fanin_service()
+
+    assert r.status == "ok"
+    assert r.reason == audio_runtime_fanin.REASON_FANIN_LOUDNESS_TELEMETRY_MISSING
+
+
 def test_check_fanin_service_fails_on_invalid_status_json(monkeypatch):
     _seed_units()
     _patch_status_reader(monkeypatch, b"not-json")
@@ -422,15 +471,72 @@ def test_check_fanin_service_fails_when_status_socket_unreachable(monkeypatch):
     assert r.reason == audio_runtime_fanin.REASON_FANIN_STATUS_UNREACHABLE
 
 
-def test_check_fanin_service_fails_on_small_runtime_input_buffer(monkeypatch):
+def test_check_fanin_service_warns_on_small_runtime_input_buffer(monkeypatch):
+    """4096 is where AirPlay burst absorption was validated, not where audio
+    breaks: a smaller buffer is a WARN on a speaker that still plays."""
     _seed_units()
     _patch_status_reader(
         monkeypatch,
         _fanin_status_payload(input_buffer_frames=2048),
     )
     r = audio_runtime_fanin.check_fanin_service()
-    assert r.status == "fail"
+    assert r.status == "warn"
     assert r.reason == audio_runtime_fanin.REASON_FANIN_INPUT_BUFFER_UNDERSIZED
+
+
+def _reorder_inputs(payload: dict) -> None:
+    payload["inputs"].reverse()
+
+
+def _drift_one_input(payload: dict) -> None:
+    payload["inputs"][0]["pcm"] = "hw:Loopback,1,7"
+
+
+def _duplicate_one_input(payload: dict) -> None:
+    payload["inputs"].append(dict(payload["inputs"][0]))
+
+
+def _drift_the_roster_and_wedge_the_work_loop(payload: dict) -> None:
+    payload["inputs"][0]["pcm"] = "hw:Loopback,1,7"
+    payload["input_buffer_frames"] = 2048
+    payload["watchdog"]["last_progress_age_ms"] = 60_000
+
+
+@pytest.mark.parametrize(
+    "mutator, status, reason",
+    [
+        (_reorder_inputs, "ok", ""),
+        (_drift_one_input, "warn", audio_runtime_fanin.REASON_FANIN_INPUTS_DRIFTED),
+        (_duplicate_one_input, "warn", audio_runtime_fanin.REASON_FANIN_INPUTS_DRIFTED),
+        (
+            _drift_the_roster_and_wedge_the_work_loop,
+            "warn",
+            audio_runtime_fanin.REASON_FANIN_PROGRESS_STALE,
+        ),
+    ],
+    ids=[
+        "reordered-roster-is-not-drift",
+        "drifted-lane-warns",
+        "duplicated-lane-warns",
+        "wedged-work-loop-is-not-masked-by-roster-or-buffer-faults",
+    ],
+)
+def test_check_fanin_service_input_roster_compare(monkeypatch, mutator, status, reason):
+    """The roster compare is order-insensitive but multiplicity-preserving: a
+    lane-map REORDERING is not drift, but a duplicated lane must still be
+    caught — a `set` compare would forgive it by collapsing the duplicate.
+    The roster and buffer branches must not mask a wedged work loop: a box
+    with all three defects reports the watchdog fault, not the cosmetic
+    ones."""
+    _seed_units()
+    payload = json.loads(_fanin_status_payload().decode())
+    mutator(payload)
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
+
+    r = audio_runtime_fanin.check_fanin_service()
+
+    assert r.status == status
+    assert r.reason == reason
 
 
 def test_fanin_asound_wiring_fails_on_bare_renderer_lane(monkeypatch, tmp_path):
@@ -502,10 +608,10 @@ def _fanin_payload_with_tts(tts: dict) -> bytes:
     return json.dumps(payload).encode()
 
 
-def test_check_fanin_tts_drops_ok_when_counters_zero(monkeypatch):
-    _patch_status_reader(
-        monkeypatch,
-        _fanin_payload_with_tts(
+@pytest.mark.parametrize(
+    "tts, reason",
+    [
+        (
             {
                 "enabled": True,
                 "pending_frames": 0,
@@ -513,60 +619,44 @@ def test_check_fanin_tts_drops_ok_when_counters_zero(monkeypatch):
                 "protocol_errors": 0,
                 "dropped_commands": 0,
                 "dropped_audio_frames": 0,
-            }
+            },
+            "",
         ),
-    )
-    r = audio_runtime_fanin.check_fanin_tts_drops()
-    assert r.status == "ok"
-    assert r.reason == ""
-
-
-def test_check_fanin_tts_drops_warns_on_protocol_error(monkeypatch):
-    _patch_status_reader(
-        monkeypatch,
-        _fanin_payload_with_tts(
+        (
             {
                 "enabled": True,
                 "protocol_errors": 1,
                 "dropped_commands": 0,
                 "dropped_audio_frames": 0,
-            }
+            },
+            audio_runtime_fanin.REASON_FANIN_TTS_PROTOCOL_ERRORS,
         ),
-    )
-
-    r = audio_runtime_fanin.check_fanin_tts_drops()
-    assert r.status == "warn"
-    assert r.reason == audio_runtime_fanin.REASON_FANIN_TTS_PROTOCOL_ERRORS
-
-
-def test_check_fanin_tts_drops_warns_on_dropped_audio(monkeypatch):
-    # 82 dropped commands / 523200 frames ≈ 10.9 s at 48 kHz — the real
-    # incident's order of magnitude.
-    _patch_status_reader(
-        monkeypatch,
-        _fanin_payload_with_tts(
+        # 82 dropped commands / 523200 frames ≈ 10.9 s at 48 kHz — the real
+        # incident's order of magnitude.
+        (
             {
                 "enabled": True,
                 "pending_frames": 89216,
                 "budget_frames": 96000,
                 "dropped_commands": 82,
                 "dropped_audio_frames": 523200,
-            }
+            },
+            audio_runtime_fanin.REASON_FANIN_TTS_AUDIO_DROPPED,
         ),
-    )
-    r = audio_runtime_fanin.check_fanin_tts_drops()
-    assert r.status == "warn"
-    assert r.reason == audio_runtime_fanin.REASON_FANIN_TTS_AUDIO_DROPPED
+        ({"enabled": False}, audio_runtime_fanin.REASON_FANIN_TTS_LANE_DISABLED),
+    ],
+    ids=["quiet", "protocol-error", "dropped-audio", "lane-disabled"],
+)
+def test_check_fanin_tts_counters_never_latch(monkeypatch, tts, reason):
+    """Cumulative-since-start counters are reported, never warned on: one drop
+    at boot would otherwise stay red until fan-in restarts, and a healer that
+    restarts fan-in to clear it costs the household more audio."""
+    _patch_status_reader(monkeypatch, _fanin_payload_with_tts(tts))
 
-
-def test_check_fanin_tts_drops_ok_when_lane_disabled(monkeypatch):
-    _patch_status_reader(
-        monkeypatch,
-        _fanin_payload_with_tts({"enabled": False}),
-    )
     r = audio_runtime_fanin.check_fanin_tts_drops()
+
     assert r.status == "ok"
-    assert r.reason == audio_runtime_fanin.REASON_FANIN_TTS_LANE_DISABLED
+    assert r.reason == reason
 
 
 def test_check_fanin_tts_drops_skips_when_status_unreachable(monkeypatch):
@@ -576,68 +666,6 @@ def test_check_fanin_tts_drops_skips_when_status_unreachable(monkeypatch):
     r = audio_runtime_fanin.check_fanin_tts_drops()
     assert r.status == "skipped"
     assert r.reason == audio_runtime_fanin.REASON_FANIN_TTS_STATUS_NOT_PROBED
-
-
-# ---------------------------------------------------------------------------
-# check_fanin_ring_stall — a live fan-in→CamillaDSP ring stall (issue #1524):
-# the SHM ring is full and CamillaDSP is not draining it. Skip-if-loopback.
-# ---------------------------------------------------------------------------
-
-
-def _fanin_payload_with_ring(ring: dict | None) -> bytes:
-    """A shm_ring-transport fan-in STATUS payload with (or without) a ring block."""
-    payload = json.loads(_fanin_status_payload(transport="shm_ring").decode())
-    if ring is not None:
-        payload["output"]["ring"] = ring
-    return json.dumps(payload).encode()
-
-
-_RING_DRAINING = {
-    "path": "/dev/shm/jts-ring/program.ring",
-    "slots": 8, "occupancy": 2, "published": 123456,
-    "full_waits": 0, "stuck_reader_drops": 0, "drop_no_reader": 0,
-    "stall_active": False, "last_stall_ms": 0,
-}
-_RING_STALLED = {
-    "path": "/dev/shm/jts-ring/program.ring",
-    "slots": 8, "occupancy": 8, "published": 500,
-    "full_waits": 32, "stuck_reader_drops": 375, "drop_no_reader": 0,
-    "stall_active": True, "last_stall_ms": 4200,
-}
-
-
-@pytest.mark.parametrize(
-    "ring, unreachable, status, reason",
-    [
-        # A STATUS-shape guard, not a topology branch: with no counters there
-        # is nothing to assess, and the missing block is the 'jasper-fanin
-        # service' check's failure to report.
-        (None, False, "skipped",
-         audio_runtime_fanin.REASON_FANIN_RING_STALL_BLOCK_ABSENT),
-        (_RING_DRAINING, False, "ok", ""),
-        (_RING_STALLED, False, "warn",
-         audio_runtime_fanin.REASON_FANIN_RING_STALL_ACTIVE),
-        # Reachability is the 'jasper-fanin service' check's job; this check
-        # must not double-report a down daemon.
-        (None, True, "skipped",
-         audio_runtime_fanin.REASON_FANIN_RING_STALL_STATUS_NOT_PROBED),
-    ],
-    ids=["no-ring-block", "draining", "stalled", "status-unreachable"],
-)
-def test_check_fanin_ring_stall_verdicts(
-    monkeypatch, ring, unreachable, status, reason,
-):
-    if unreachable:
-        _patch_unreachable_status(monkeypatch)
-    elif ring is None:
-        _patch_status_reader(monkeypatch, _fanin_status_payload(ring=None))
-    else:
-        _patch_status_reader(monkeypatch, _fanin_payload_with_ring(ring))
-
-    r = audio_runtime_fanin.check_fanin_ring_stall()
-
-    assert r.status == status
-    assert r.reason == reason
 
 
 # ===========================================================================
@@ -746,7 +774,7 @@ def test_registered_open_pair_is_ok_jts4_shape(proc_root, tmp_path):
 
 @pytest.mark.parametrize("pcm_dir", ["pcm0p", "pcm0c", "pcm1p", "pcm1c"])
 @pytest.mark.parametrize("pair", _RETIRED_PAIRS)
-def test_positive_control_foreign_substream_fails(
+def test_positive_control_foreign_substream_warns(
     proc_root, tmp_path, pcm_dir, pair
 ):
     """POSITIVE CONTROL — a deliberately-opened foreign substream trips it.
@@ -762,12 +790,12 @@ def test_positive_control_foreign_substream_fails(
     """
     proc_root(_make_card(tmp_path, {pcm_dir: [pair]}))
     result = audio_runtime_fanin.check_aloop_registered_substreams()
-    assert result.status == "fail"
+    assert result.status == "warn"
     assert result.reason == audio_runtime_fanin.REASON_ALOOP_UNREGISTERED_SUBSTREAM_OPEN
 
 
 def test_offender_owner_line_names_the_pid():
-    """The offender line the FAIL carries names the holder.
+    """The offender line the row carries names the holder.
 
     Asserted on the owner helper, whose whole output IS that string; the
     check's own verdict is pinned on status + reason above.
@@ -800,14 +828,14 @@ def test_offender_detail_is_bounded(proc_root, tmp_path, monkeypatch):
         )
     )
     result = audio_runtime_fanin.check_aloop_registered_substreams()
-    assert result.status == "fail"
+    assert result.status == "warn"
     cap = audio_runtime_fanin._ALOOP_OFFENDER_DETAIL_CAP
     shown = result.detail.count("/sub")
     assert shown <= cap, f"listed {shown} offenders, cap is {cap}"
 
 
-def test_unreadable_proc_is_warn_not_fail(proc_root, tmp_path):
-    """FAIL-SOFT: 'I could not look' must never become 'something is wrong'.
+def test_unreadable_proc_is_skipped(proc_root, tmp_path):
+    """'I could not look' is `skipped` — nothing was observed (ADR-0233).
 
     Every status path is made a DIRECTORY, so read_text raises IsADirectoryError
     (an OSError) without needing permission games that behave differently under
@@ -820,7 +848,7 @@ def test_unreadable_proc_is_warn_not_fail(proc_root, tmp_path):
             (card / pcm_dir / f"sub{pair}" / "status").mkdir(parents=True)
     proc_root(root)
     result = audio_runtime_fanin.check_aloop_registered_substreams()
-    assert result.status == "warn"
+    assert result.status == "skipped"
     assert result.reason == audio_runtime_fanin.REASON_ALOOP_PROC_UNREADABLE
 
 
@@ -881,9 +909,17 @@ def test_walker_range_matches_modprobe_pcm_substreams():
 # --------------------------------------------------------------------------
 
 def test_derived_set_matches_the_expected_allocation():
-    """Dropping a pair from the owning constant changes this set."""
+    """Dropping a pair from the owning constant changes this set.
+
+    Also THE structural pin that every entry of `_FANIN_EXPECTED_ALOOP_INPUTS`
+    parses as an snd-aloop triple: an entry that does not would silently shrink
+    the registered set, and the module derives it rather than guarding for it
+    at runtime.
+    """
     derived = audio_runtime_fanin._derive_registered_pairs()
     assert tuple(sorted(derived)) == _EXPECTED_REGISTERED_PAIRS
+    assert len(derived) == len(audio_runtime_fanin._FANIN_EXPECTED_ALOOP_INPUTS)
+    assert audio_runtime_fanin._pair_from_loopback_pcm("hw:OtherCard,1,0") is None
 
 
 @pytest.mark.parametrize("pair", _EXPECTED_REGISTERED_PAIRS)
@@ -898,44 +934,6 @@ def test_every_registered_pair_open_is_ok(proc_root, tmp_path, pair):
     proc_root(_make_card(tmp_path, {"pcm0p": [pair], "pcm1c": [pair]}))
     result = audio_runtime_fanin.check_aloop_registered_substreams()
     assert result.status == "ok", f"pair {pair} open read as {result.detail}"
-
-
-def test_derivation_is_all_or_nothing_on_a_bad_input(monkeypatch):
-    """A partial derivation would SHRINK the set and red-doctor a healthy box,
-    so an unparseable source must return None (-> warn), never a subset."""
-    from jasper.cli.doctor import audio_runtime_fanin
-
-    monkeypatch.setattr(
-        audio_runtime_fanin,
-        "_FANIN_EXPECTED_ALOOP_INPUTS",
-        [("spotify", "hw:Loopback,1,0"), ("airplay", "not-a-pcm")],
-    )
-    assert audio_runtime_fanin._derive_registered_pairs() is None
-
-
-def test_derivation_rejects_a_non_loopback_card(monkeypatch):
-    from jasper.cli.doctor import audio_runtime_fanin
-
-    monkeypatch.setattr(
-        audio_runtime_fanin,
-        "_FANIN_EXPECTED_ALOOP_INPUTS",
-        [("spotify", "hw:SomeOtherCard,1,0")],
-    )
-    assert audio_runtime_fanin._derive_registered_pairs() is None
-
-
-def test_unparseable_source_constant_is_warn(proc_root, tmp_path, monkeypatch):
-    """An unparseable owner degrades the FULL check to warn, never to a
-    shrunken set that red-doctors a healthy box."""
-    from jasper.cli.doctor import audio_runtime_fanin
-
-    monkeypatch.setattr(
-        audio_runtime_fanin, "_FANIN_EXPECTED_ALOOP_INPUTS", [("spotify", "not-a-pcm")]
-    )
-    proc_root(_make_card(tmp_path))
-    result = audio_runtime_fanin.check_aloop_registered_substreams()
-    assert result.status == "warn"
-    assert result.reason == audio_runtime_fanin.REASON_ALOOP_REGISTERED_SET_UNDERIVABLE
 
 
 @pytest.mark.parametrize("pair", _RETIRED_PAIRS)

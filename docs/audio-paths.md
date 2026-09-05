@@ -40,7 +40,7 @@ MUSIC chain (gets CamillaDSP processing)
               → jasper-outputd → outputd_dac → amp → speakers
 
 TTS / CUE chain (CROSSED OVER on every output profile)
-    jasper-voice OutputdTtsPlayout → /run/jasper-fanin/tts.sock
+    jasper-voice TtsPlayout → /run/jasper-fanin/tts.sock
                                    → jasper-fanin, mixed after program duck
                                    → jasper-camilla crossover/protection
                                    → Ring B, or the ACTIVE ring on a roleful box
@@ -322,7 +322,7 @@ in `jasper-fanin`.
 3. The mix owner snapshots the current content loudness before ducking,
    then ignores content-meter updates while the voice turn or correction
    measurement window is active.
-4. For each assistant/cue segment, `OutputdTtsPlayout` sends un-gained
+4. For each assistant/cue segment, `TtsPlayout` sends un-gained
    48 kHz stereo PCM plus optional source-loudness profile metadata.
    Sustained writes are paced (`_OUTPUTD_PACE_AHEAD_SEC`, 1.2 s) so at
    most ~1.2 s of audio is queued ahead of realtime: the mix owner's
@@ -519,7 +519,7 @@ voice daemon still waits through the stable methods below:
 - `wait_drained()` — single `asyncio.sleep` to the deadline. No
   polling because the deadline is known up-front.
 
-For interruption, `OutputdTtsPlayout.flush()` uses fan-in's
+For interruption, `TtsPlayout.flush()` uses fan-in's
 `FLUSH_SYNC` command and returns the daemon's compact playout
 acknowledgement (`audio_played_ms`, flushed frames, provider item id).
 That acknowledgement is for provider truncation/cancel logic; normal
@@ -738,6 +738,21 @@ park normal output rather than silently routing four active lanes to the wrong
 dongle. Generic USB DAC aggregation through ALSA `multi`/`dmix`/`plug` or
 CamillaDSP multi-device output remains unsupported.
 
+**Adding a DAC**: add one `DacProfile` row to `jasper/audio_hardware/dac.py`.
+Detection is by ALSA card label (`supported_card_matches`), by HAT EEPROM
+product (`hat_products`, gating a shared card label through
+`eeprom_gated_card_matches`), or by the wizard's I2S HAT toggle — an `i2s`
+row with a `dtoverlay` and no `hat_products` (e.g.
+`INNOMAKER_HIFI_AMP_PRO`). A commissioned row carries a measured
+`latency_floor` and `final_edge_format`; an uncommissioned row ships the
+safe defaults (no `latency_floor`, default `S16_LE` edge) with its removal
+condition in a comment beside it (see the `HIFIBERRY_DAC8X_STUDIO` row and
+ADR-0232). The wizard's I2S HAT select, the classifier's profile
+lookups, and the boot-config writer resolve rows through the registry's
+lookup functions (`profile_for_card_label`, `profile_for_hat`,
+`selectable_i2s_hat_profiles`), so a new row needs no wizard or
+classifier change (ADR-0234).
+
 ## AEC bridge implications
 
 The bridge receives outputd's speaker monitor over localhost UDP, and that
@@ -767,6 +782,7 @@ tap reads.
 
 ---
 
-Last verified: 2026-08-26 against `deploy/alsa/asoundrc.jasper`,
-`deploy/alsa/conf.d/`, `deploy/modprobe.d/snd-aloop.conf`, and
-`jasper/control/transport_park.py`.
+Last verified: 2026-09-05 against `deploy/alsa/asoundrc.jasper`,
+`deploy/alsa/conf.d/`, `deploy/modprobe.d/snd-aloop.conf`,
+`jasper/control/transport_park.py`, and the DAC section against
+`jasper/audio_hardware/dac.py` and `jasper/output_hardware.py`.

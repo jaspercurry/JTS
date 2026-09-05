@@ -8,8 +8,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from jasper.voice import input_policy
 from jasper.voice.input_policy import (
     build_effective_speech_input_policy,
+    contract_from_config,
     validate_openai_noise_reduction,
 )
 
@@ -48,6 +50,24 @@ def test_auto_disables_openai_noise_reduction_for_software_aec3_input():
     assert policy.input_contract.profile == "xvf_software_aec3"
     assert policy.openai_noise_reduction is None
     assert policy.openai_noise_reduction_source == "auto_processed_input"
+
+
+@pytest.mark.parametrize(
+    "mic_device, configured_port, expected_profile",
+    [
+        ("udp:9876", 9876, "xvf_software_aec3"),  # default port
+        ("udp:5555", 5555, "xvf_software_aec3"),  # non-default port that matches
+        ("udp:9876", 5555, "custom_udp"),  # udp device on a different port
+    ],
+)
+def test_udp_mic_device_classified_against_configured_aec3_port(
+    monkeypatch, mic_device, configured_port, expected_profile,
+):
+    monkeypatch.setattr(input_policy, "DEFAULT_AEC_ON_PORT", configured_port)
+
+    contract = contract_from_config(_cfg(mic_device=mic_device))
+
+    assert contract.profile == expected_profile
 
 
 def test_auto_uses_far_field_for_raw_direct_mic_input():

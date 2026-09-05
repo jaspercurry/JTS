@@ -34,7 +34,7 @@ from jasper.audio_measurement.frame_ledger import (
 class CaptureBeginRefused(RuntimeError):
     """The conductor refused a provider's ``begin_capture`` request.
 
-    Admission stays conductor-owned (SPEC W2.3). ``code`` is the stable
+    Admission stays conductor-owned (ADR-0231 §1). ``code`` is the stable
     machine reason; ``user_message`` is the operator-facing copy
     (refusal-naming pattern, #1534)."""
 

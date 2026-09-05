@@ -84,6 +84,7 @@ REASON_WRITER_LOCK_PROC_UNREADABLE = "writer_lock_proc_unreadable"
 
 REASON_RING_READER_STALLED = "ring_reader_stalled"
 REASON_RING_READER_NO_LIVE_RING = "ring_reader_no_live_ring"
+REASON_RING_READER_STALL_DROPS = "ring_reader_stall_drops"
 
 REASON_RING_GEOMETRY_MODULES_UNAVAILABLE = "ring_geometry_modules_unavailable"
 REASON_RING_SLOTS_ENV_INVALID = "ring_slots_env_invalid"
@@ -116,6 +117,8 @@ REASON_TRANSPORT_ENDPOINT_ARMED_WITHOUT_ACTIVE_MODE = (
 )
 REASON_TRANSPORT_TOPOLOGY_UNCLASSIFIED = "transport_topology_unclassified"
 REASON_TRANSPORT_PARKED = "transport_parked"
+
+REASON_RECONCILE_IN_FLIGHT = "reconcile_in_flight"
 
 
 def _jts_ring_path_for(pcm: str) -> str | None:
@@ -257,70 +260,108 @@ def _grouped_dac_content_lane_parked() -> bool:
     )
 
 
-@doctor_check()
-def check_ring_split_transport() -> CheckResult:
-    """The two ends of the post-DSP hop must agree about the ring.
+def _crossed_transport_pair(label: str, reason: str, stranded: str) -> CheckResult:
+    """A crossed rung: a `warn` while a pass in flight explains it, the silence
+    `fail` once none is.
 
-    One predicate, both directions, and either one is SILENCE:
+    The ladder's OWN in-flight signal, not a clock: the reconcile entry lock is
+    held for the whole pass, so a held lock is the pass itself saying it is
+    between rungs.
+    """
+    from jasper.fanin.coupling_reconcile import reconcile_in_progress
+
+    remedy = (
+        "Converge the pair: sudo /opt/jasper/.venv/bin/"
+        "jasper-fanin-coupling-reconcile shm_ring."
+    )
+    if reconcile_in_progress() is True:
+        return CheckResult(
+            label,
+            "warn",
+            f"{stranded} — a reconcile pass holds the coupling entry lock right "
+            f"now, so an arm ladder still in flight explains it. {remedy}",
+            reason=REASON_RECONCILE_IN_FLIGHT,
+        )
+    return CheckResult(
+        label,
+        "fail",
+        f"CROSSED TRANSPORT PAIR: {stranded} — this speaker is SILENT while "
+        f"every daemon looks healthy. {remedy}",
+        speaker_silent=True,
+        reason=reason,
+    )
+
+
+@doctor_check()
+def check_content_transport_coherence() -> CheckResult:
+    """The post-DSP hop's three ends must agree: graph, bridge, and ring path.
+
+    One check over both rungs of the ring arm ladder: every disagreement
+    between them is the same finding — the speaker emits nothing while every
+    daemon looks healthy — under the same remedy.
 
     * the loaded CamillaDSP graph writes a post-DSP ring while
-      ``JASPER_OUTPUTD_CONTENT_BRIDGE`` is not ``shm_ring`` — outputd reads its
-      ALSA content lane and nobody consumes the ring;
-    * the bridge is ``shm_ring`` while the loaded graph writes somewhere else —
-      outputd waits on a ring CamillaDSP is not filling.
-
-    Both leave the speaker silent with every daemon healthy and every other
-    check green, which is why this is a ``fail``.
+      ``JASPER_OUTPUTD_CONTENT_BRIDGE`` is not ``shm_ring``: nobody consumes
+      the ring;
+    * the bridge is ``shm_ring`` while the graph writes somewhere else: outputd
+      waits on a ring CamillaDSP is not filling;
+    * both name the central ring while ``JASPER_OUTPUTD_SHM_RING_PATH`` lags
+      the endpoint marker. outputd enforces a biconditional — the active ring
+      file may be read only by an armed active endpoint and vice versa — and
+      bails at startup with ``RestartPreventExitStatus=78``, so that rung reads
+      PERSISTED evidence: ``check_outputd_service`` returns the systemd failure
+      first and never reaches the contradiction.
 
     KEYED ON THE BRIDGE, not on ``JASPER_FANIN_CAMILLA_COUPLING``: under
     ADR-0100 that file selects nothing, while the bridge
-    (``rust/jasper-outputd/src/config.rs``) decides what outputd reads and is
-    observable from outputd's own env.
+    (``rust/jasper-outputd/src/config.rs``) decides what outputd reads.
 
-    IT IS ALSO THE DETECTION SURFACE FOR AN INTERRUPTED CONVERGENCE:
-    ``jasper.fanin.converge`` moves the graph to the ring and flips the bridge
-    seconds later, and a process killed between those leaves exactly this split.
-    It self-heals at the next boot, deploy or DAC hotplug.
+    TWO TERMS, NOT THREE, on the first two rungs: a ``writer_alive:false``
+    conjunct would make them never fire. outputd publishes that reader-reported
+    metric only inside its ``shm_ring`` block, which exists iff the bridge is
+    ``shm_ring`` (``rust/jasper-outputd/src/state.rs``) — absent exactly when
+    it would be needed.
 
-    TWO TERMS, NOT THREE: a ``writer_alive:false`` conjunct would make the check
-    never fire. ``writer_alive`` is a READER-REPORTED metric
-    (``jts_ring_shm.h``), and outputd publishes it only inside its ``shm_ring``
-    block, which exists iff ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring``
-    (``rust/jasper-outputd/src/state.rs``) — absent exactly when this check would
-    need it.
-
-    Out of scope: a box with NEITHER end on the ring (that pair is coherent; see
-    :func:`check_ring_transport_park` and :func:`check_fanin_coupling`), and the
-    grouped park, which runs ``JASPER_OUTPUTD_CONTENT_BRIDGE=direct`` by design
-    while its graph still loads the stereo ring.
-
-    A bonded member in either round-trip spelling is stood down on below: the
-    marker-armed one plays the bond off the return ring, the legacy FIFO one is
+    Out of scope: a box with NEITHER end on the ring (coherent; see
+    :func:`check_ring_transport_park` and :func:`check_fanin_coupling`), and a
+    bonded member in either round-trip spelling — the marker-armed one plays the
+    bond off the return ring, the legacy FIFO one is
     :func:`check_ring_transport_park`'s named park.
 
-    KNOWN TRANSIENT: the arm ladder moves the graph first and the bridge later,
-    so a doctor run taken inside an active ladder can FAIL here for the seconds
-    between those rungs. The arm's own terminal doctor pass is authoritative.
+    PER-RUNG STAND-DOWNS, not one gate over all three: the legacy-FIFO park is
+    keyed on ``JASPER_OUTPUTD_DAC_CONTENT_FIFO`` alone, so a parked box can
+    still carry a ring bridge whose path lags the marker — outputd refuses that
+    pair at startup whatever the lane is doing. It stands the SPLIT rungs down
+    (its ``direct`` bridge beside a stereo-ring graph reads as one) and leaves
+    the path rung live.
+
+    The ladder moves these keys one rung at a time, so a run taken inside one
+    legitimately reads crossed; :func:`_crossed_transport_pair` tells that
+    window from a wedge by the reconcile entry lock.
     """
     from jasper.audio_runtime_plan import (
         DEFAULT_CAMILLA2_STATEFILE_PATH,
+        DEFAULT_OUTPUTD_ENV_PATH,
         output_endpoint_evidence_from_statefiles,
     )
+    from jasper.env_file import read_value
+    from jasper.fanin.coupling_reconcile import _outputd_ring_path_for
     from jasper.fanin_coupling import (
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
+        OUTPUTD_RING_PATH_ENV_VAR,
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_PLAYBACK_DEVICE,
         dac_content_marker_contradicted,
         dac_content_ring_served,
         outputd_bridge_is_ring,
+        resolve_outputd_ring_path,
     )
 
-    label = "ring split transport"
+    label = "content transport coherence"
+    # LAYERED, because a bonded box's grouping env carries the marker and the
+    # unit reads that file last — the stand-downs have to see what outputd sees.
     outputd_env = _outputd_reconciled_env()
     if dac_content_ring_served(outputd_env):
-        # Its content comes off the return ring, so the graph-vs-bridge pair
-        # below has no subject and would FAIL "this speaker is SILENT" on a
-        # speaker making sound.
         return CheckResult(
             label,
             "skipped",
@@ -329,25 +370,12 @@ def check_ring_split_transport() -> CheckResult:
             reason=REASON_SPLIT_BONDED_RETURN_RING,
         )
     if dac_content_marker_contradicted(outputd_env):
-        # The marker beside a declared bridge: outputd refuses that pair at
-        # startup, so the graph-vs-bridge comparison below would report a
-        # daemon that cannot run as a coherent pair.
-        # `check_ring_transport_park` owns it by name.
         return CheckResult(
             label,
             "skipped",
             "dac-content marker declared beside a content bridge; see the "
             "transport-park check",
             reason=REASON_SPLIT_MARKER_CONTRADICTED,
-        )
-    if _grouped_dac_content_lane_parked():
-        # The LEGACY FIFO shape reads as a split too, and it has an owner:
-        # `check_ring_transport_park` names it with its tracked issue.
-        return CheckResult(
-            label,
-            "skipped",
-            "grouped dac_content lane; see the transport-park check",
-            reason=REASON_SPLIT_GROUPED_DAC_CONTENT_LANE,
         )
     # `(unset, = the ring)` rather than a bare `(unset)`: an undeclared bridge IS
     # the ring (config.rs), so a reader who saw only "unset" beside a ring graph
@@ -356,8 +384,8 @@ def check_ring_split_transport() -> CheckResult:
         str(outputd_env.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR) or "").strip()
         or "(unset, = the ring)"
     )
-    # The bridge key alone: the marker stand-down above already returned, so the
-    # two questions have the same answer from here down.
+    # The bridge key alone: the marker stand-downs above already returned, so
+    # `outputd_content_is_central_ring` has the same answer from here down.
     outputd_on_ring = outputd_bridge_is_ring(
         outputd_env.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
     )
@@ -376,119 +404,64 @@ def check_ring_split_transport() -> CheckResult:
         RING_PLAYBACK_DEVICE,
         RING_ACTIVE_PLAYBACK_DEVICE,
     )
-    if graph_on_ring == outputd_on_ring:
-        return CheckResult(
+    pair = (
+        f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}={bridge}, loaded graph playback="
+        f"{playback_device or '(none)'}"
+    )
+    if graph_on_ring != outputd_on_ring:
+        # THE SPLIT RUNGS ONLY: the legacy-FIFO member runs the `direct` bridge
+        # its writer no longer emits while its own graph still loads the stereo
+        # ring, which reads as a split about a box `check_ring_transport_park`
+        # already names. The path rung below is a different fact and stays live.
+        if _grouped_dac_content_lane_parked():
+            return CheckResult(
+                label,
+                "skipped",
+                "grouped dac_content lane; see the transport-park check",
+                reason=REASON_SPLIT_GROUPED_DAC_CONTENT_LANE,
+            )
+        if graph_on_ring:
+            return _crossed_transport_pair(
+                label,
+                REASON_SPLIT_RING_UNCONSUMED,
+                f"the loaded graph writes {playback_device} but "
+                f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}={bridge}, which names no "
+                "transport outputd can serve — it parks instead of reading, and "
+                "nothing consumes the ring",
+            )
+        return _crossed_transport_pair(
             label,
-            "ok",
-            f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}={bridge}, loaded graph playback="
-            f"{playback_device or '(none)'}",
-        )
-    if graph_on_ring:
-        split_reason = REASON_SPLIT_RING_UNCONSUMED
-        stranded = (
-            f"the loaded graph writes {playback_device} but "
-            f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}={bridge}, which names no "
-            "transport outputd can serve — it parks instead of reading, and "
-            "nothing consumes the ring"
-        )
-    else:
-        split_reason = REASON_SPLIT_RING_UNFED
-        stranded = (
+            REASON_SPLIT_RING_UNFED,
             f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}={bridge} but the loaded graph "
             f"writes {playback_device or '(none)'}, so outputd waits on a ring "
-            "CamillaDSP is not filling"
+            "CamillaDSP is not filling",
         )
-    return CheckResult(
-        label,
-        "fail",
-        f"SPLIT TRANSPORT: {stranded} — this speaker is SILENT while every "
-        "daemon looks healthy. Converge the pair: sudo /opt/jasper/.venv/bin/"
-        "jasper-fanin-coupling-reconcile shm_ring. (Transient and expected if "
-        "an arm ladder is running right now; the ladder's own final doctor pass "
-        "is the authoritative read.)",
-        speaker_silent=True,
-        reason=split_reason,
-    )
-
-
-@doctor_check()
-def check_active_ring_path_projection() -> CheckResult:
-    """A ring PATH that lags its endpoint marker is SILENT — outputd refuses it.
-
-    The complement of :func:`check_ring_split_transport`: that one owns every
-    state where the graph and the bridge disagree about the ring, this one starts
-    where they agree ON it.
-
-    outputd enforces a biconditional — the active ring file may be read only by
-    an armed active endpoint, and an armed active endpoint may read only that
-    file — so it bails at startup on the crossed pair, with
-    ``RestartPreventExitStatus=78`` parking the unit rather than looping. That is
-    why this reads PERSISTED evidence only: at its own target state outputd is
-    not active, so ``check_outputd_service`` returns the systemd failure first
-    and never reaches the same contradiction.
-
-    One predicate covers both directions: the arm lag (marker armed, path still
-    Ring B) and the disarm lag (marker cleared, path still the active ring).
-
-    KNOWN TRANSIENT, like its sibling: the marker's writer runs first and the
-    path's writer follows, so a doctor run between those rungs FAILs here.
-    """
-    from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_ENV_PATH
-    from jasper.fanin.coupling_reconcile import _outputd_ring_path_for
-    from jasper.fanin_coupling import (
-        OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
-        OUTPUTD_RING_PATH_ENV_VAR,
-        outputd_content_is_central_ring,
-        resolve_outputd_ring_path,
-    )
-    from jasper.env_file import read_value
-
-    label = "active ring path projection"
-    # WHAT OUTPUTD ATTACHES, not the persisted coupling: outputd's ring-path
-    # allowlist runs iff the CENTRAL ring is its content source, so that is what
-    # makes this check live or inert. Both ways off it are somebody else's
-    # subject — a retired-route box parks (the transport-park check), and a
-    # marker-armed bonded member reads the return ring instead (which attaches
-    # no ring path at all).
-    #
-    # LAYERED, because a bonded box's grouping env carries the marker and the
-    # unit reads that file last — the gate has to see what outputd sees.
-    layered = _outputd_reconciled_env()
-    declared = str(layered.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR) or "").strip()
-    if not outputd_content_is_central_ring(layered):
+    if not outputd_on_ring:
         return CheckResult(
-            label,
-            "skipped",
-            f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}="
-            f"{declared or '(unset)'}; no central ring path to read",
+            label, "ok", f"{pair}; no central ring path to read",
             reason=REASON_RING_PATH_NOT_CENTRAL_RING,
         )
     # The SUBJECT stays outputd.env's own text: the marker and the ring path are
     # single-writer keys of that file, and `_outputd_ring_path_for` is contracted
     # on one snapshot of the file being reconciled.
     try:
-        outputd_env = Path(DEFAULT_OUTPUTD_ENV_PATH).read_text(encoding="utf-8")
+        outputd_text = Path(DEFAULT_OUTPUTD_ENV_PATH).read_text(encoding="utf-8")
     except OSError:
-        outputd_env = ""
+        outputd_text = ""
     carried = resolve_outputd_ring_path(
-        read_value(outputd_env, OUTPUTD_RING_PATH_ENV_VAR)
+        read_value(outputd_text, OUTPUTD_RING_PATH_ENV_VAR)
     )
-    derived = _outputd_ring_path_for(outputd_env)
-    if carried == derived:
-        return CheckResult(label, "ok", f"{OUTPUTD_RING_PATH_ENV_VAR}={carried}")
+    derived = _outputd_ring_path_for(outputd_text)
+    if carried != derived:
+        return _crossed_transport_pair(
+            label,
+            REASON_RING_PATH_LAGS_MARKER,
+            f"{OUTPUTD_RING_PATH_ENV_VAR}={carried} but this box's endpoint "
+            f"marker derives {derived}; outputd refuses that pair at startup "
+            "(exit 78, no restart)",
+        )
     return CheckResult(
-        label,
-        "fail",
-        f"RING PATH LAGS ITS MARKER: {OUTPUTD_RING_PATH_ENV_VAR}={carried} but "
-        f"this box's endpoint marker derives {derived}. outputd may read the "
-        "active ring file only from an armed active endpoint and vice versa, so "
-        "it refuses the pair at startup (exit 78, no restart) — this speaker is "
-        "SILENT. Converge the pair: sudo /opt/jasper/.venv/bin/"
-        "jasper-fanin-coupling-reconcile shm_ring. (Transient and expected if an "
-        "arm ladder is running right now; the ladder's own final doctor pass is "
-        "the authoritative read.)",
-        speaker_silent=True,
-        reason=REASON_RING_PATH_LAGS_MARKER,
+        label, "ok", f"{pair}, {OUTPUTD_RING_PATH_ENV_VAR}={carried}"
     )
 
 
@@ -607,7 +580,8 @@ def check_ring_ioplug_provenance() -> CheckResult:
     unvouched plugin costs anything:
 
     * a wire that renders no conf.d field beyond the ioplug's own defaults needs
-      nothing from any installed plugin, so "cannot vouch" is a ``warn``;
+      nothing from any installed plugin, so "cannot vouch" and "stale" are
+      informational ``ok`` rows carrying their reason;
     * a wire that declares a non-default sample FORMAT is refused at the arm by
       ``ring_wire_caps_ready``, which is a ``fail``: a stale/mismatched ioplug
       otherwise presents as CamillaDSP crash-looping on ``-EINVAL`` at ``open()``
@@ -649,7 +623,7 @@ def check_ring_ioplug_provenance() -> CheckResult:
     if not record.recorded:
         return CheckResult(
             label,
-            "warn",
+            "ok",
             f"{so_path} is installed but UNVOUCHED: no usable record at "
             f"{ring_assets.RING_IOPLUG_PROVENANCE}. Either this box has not been "
             "redeployed since the installer began recording, or a deploy revoked "
@@ -663,15 +637,17 @@ def check_ring_ioplug_provenance() -> CheckResult:
     )
     if installed is None:
         return CheckResult(
-            label, "warn", f"{so_path} could not be read to compare against the record",
+            label, "skipped",
+            f"{so_path} could not be read to compare against the record",
             reason=REASON_RING_IOPLUG_UNREADABLE,
         )
     if installed != record.sha256:
         return CheckResult(
             label,
-            "warn",
-            f"STALE ioplug: {so_path} hashes {installed[:12]}… but the installer "
-            f"recorded {record.sha256[:12]}…, so the plugin on disk is NOT the one "
+            "ok",
+            f"ioplug older than the installed plugin: {so_path} hashes "
+            f"{installed[:12]}… but the installer recorded {record.sha256[:12]}…, "
+            "so the plugin on disk is not the one "
             "the last successful install produced. The ioplug build degrades to a "
             "WARN and leaves the previous .so in place — redeploy and check the "
             "transcript for a jts_ring ioplug build failure.",
@@ -781,11 +757,11 @@ def check_ring_writer_lock_exclusivity() -> CheckResult:
     Statuses:
       ok    — no lock path has more than one live holder (the normal state,
               including "no writer anywhere" on an unarmed box).
-      skipped — no ``/proc`` on this host, so nothing was swept.
+      skipped — no ``/proc`` on this host, or it was only partially readable so
+              the sweep observed no complete answer.
       warn  — a holder's lock file has been UNLINKED out from under it (one
               writer, but exclusivity is already void: the next opener will
-              create a fresh inode and will NOT be excluded), or ``/proc`` was
-              only partially readable so the sweep was blind to some pids.
+              create a fresh inode and will NOT be excluded).
       fail  — two or more live pids hold one ring's writer lock, confirmed on a
               second sample ``_WRITER_LOCK_CONFIRM_DELAY_SEC`` later so an
               ordinary create-or-attach race cannot masquerade as the defect.
@@ -858,7 +834,7 @@ def check_ring_writer_lock_exclusivity() -> CheckResult:
     if unreadable:
         return CheckResult(
             label,
-            "warn",
+            "skipped",
             f"could not read /proc/<pid>/fd for {unreadable} process(es), so "
             "this sweep was partially blind — run jasper-doctor as root for a "
             "complete answer.",
@@ -877,12 +853,11 @@ def check_ring_writer_lock_exclusivity() -> CheckResult:
 def check_ring_reader_stall() -> CheckResult:
     """A ring being WRITTEN but not READ, judged from the SHARED HEADER.
 
-    THE INDEPENDENT OBSERVER. Its sibling ``check_fanin_ring_stall`` asks
-    fan-in's STATUS socket, which works only for Ring A. Every other ring's
-    writer is the C ioplug, whose ``published_slots`` / ``drop_no_reader`` /
-    ``full_waits`` are process-local fields printed at close rather than
-    shared-header fields, and whose reader is blocked in ``writei`` during
-    exactly this fault. The doctor is blocked in neither end.
+    THE SHARED HEADER IS THE PRIMARY OBSERVER: every ring's writer is the C
+    ioplug (counters are process-local fields printed at close) and its
+    reader is blocked in ``writei`` during exactly this fault, so only the
+    header is free to read. Ring A alone falls back to fan-in's own STATUS
+    witness (below) when the header itself cannot be judged.
 
     THE CONJUNCTION: ``writer_heartbeat_ns`` FRESH while ``reader_heartbeat_ns``
     is STALE. Not ``read_seq``-flat — the writer advances ``read_seq`` on the
@@ -890,15 +865,30 @@ def check_ring_reader_stall() -> CheckResult:
     exactly when the drops begin. See
     :class:`jasper.ring_assets.RingStallVerdict`.
 
-    Judges every ring in the tuple below and reports per-ring so an operator
-    knows which daemon to look at. ``present=False`` keeps absent/idle rings
-    silent, which covers the unarmed fleet.
+    Judges every ring below and reports per-ring so an operator knows which
+    daemon to look at. ``present=False`` keeps absent/idle rings silent, which
+    covers the unarmed fleet.
+
+    RING A ALSO CARRIES FAN-IN'S OWN WITNESS (issue #1524), read through the
+    evidence memo's fan-in STATUS (``evidence.fanin_status()``) so this costs
+    no second socket read of a daemon another check already asked this run:
+    fan-in's ``output.ring.stall_active`` is the fallback for when the shared
+    header cannot be judged at all (no coherent SHM header — fan-in
+    restarting, ring cleared), the one thing the header-based judge above
+    cannot see for itself; and fan-in's cumulative ``stuck_reader_drops`` /
+    ``drop_no_reader`` counters ride along as Ring A detail. Those counters
+    are cumulative SINCE FAN-IN START, so they are detail, not a verdict on
+    their own — an episode the reader already recovered from must not stay
+    red until the next fan-in restart.
 
     Returns:
-      - ok when no ring is stalled
-      - skipped on a box where no ring is being written, so there is nothing
-        to judge
-      - warn naming each stalled ring, its two heartbeat ages, and the reader
+      - ok when no ring is stalled, carrying `ring_reader_stall_drops` when
+        Ring A's counters are non-zero from an episode that has since
+        recovered
+      - skipped on a box where no ring is being written and fan-in's STATUS
+        carries no ring block either, so there is nothing to judge
+      - warn naming each stalled ring, its two heartbeat ages (or, for Ring A
+        with no coherent header, fan-in's STATUS witness), and the reader
         daemon to check. WARN not FAIL: the ring self-recovers the instant the
         reader resumes, and the household's remedy is the same either way.
     """
@@ -911,21 +901,57 @@ def check_ring_reader_stall() -> CheckResult:
     )
 
     name = "ring reader stall"
-    rings = (
-        ("Ring A (fan-in -> CamillaDSP)", RING_A_PROGRAM_FILE),
+    ring_a_label = "Ring A (fan-in -> CamillaDSP)"
+    other_rings = (
         ("Ring B (CamillaDSP -> outputd)", RING_B_CONTENT_FILE),
         ("ACTIVE ring (CamillaDSP -> outputd)", RING_ACTIVE_CONTENT_FILE),
         ("GROUPING ring (snapclient -> CamillaDSP)", GROUPING_RING_FILE),
     )
     stalled: list[str] = []
     judged: list[str] = []
-    for label, path in rings:
+
+    # Ring A: judged by its own header when coherent, else by fan-in's own
+    # witness (issue #1524) — the same evidence memo key every other fan-in
+    # check reads, so asking for it this pass costs nothing extra.
+    ring_a_verdict = ring_stall_verdict(RING_A_PROGRAM_FILE)
+    ring_a_stalled = False
+    status = evidence.fanin_status()
+    output = status.payload.get("output") if status.payload else None
+    fanin_ring = output.get("ring") if isinstance(output, dict) else None
+    if ring_a_verdict.present:
+        judged.append(ring_a_label)
+        if ring_a_verdict.stalled:
+            ring_a_stalled = True
+            stalled.append(f"{ring_a_label}: {ring_a_verdict.detail}")
+    elif isinstance(fanin_ring, dict):
+        judged.append(ring_a_label)
+        if bool(fanin_ring.get("stall_active")):
+            ring_a_stalled = True
+            stalled.append(
+                f"{ring_a_label}: fan-in STATUS reports stall_active "
+                "(no coherent ring header to judge)"
+            )
+
+    drops_detail = ""
+    drops_reason = ""
+    if isinstance(fanin_ring, dict) and not ring_a_stalled:
+        stuck = int(fanin_ring.get("stuck_reader_drops") or 0)
+        no_reader = int(fanin_ring.get("drop_no_reader") or 0)
+        if stuck or no_reader:
+            drops_detail = (
+                f"; Ring A cumulative since fan-in start: "
+                f"stuck_reader_drops={stuck}, drop_no_reader={no_reader}"
+            )
+            drops_reason = REASON_RING_READER_STALL_DROPS
+
+    for label, path in other_rings:
         verdict = ring_stall_verdict(path)
         if not verdict.present:
             continue
         judged.append(label)
         if verdict.stalled:
             stalled.append(f"{label}: {verdict.detail}")
+
     if stalled:
         return CheckResult(name, "warn", "; ".join(stalled), reason=REASON_RING_READER_STALLED)
     if not judged:
@@ -936,7 +962,11 @@ def check_ring_reader_stall() -> CheckResult:
             reason=REASON_RING_READER_NO_LIVE_RING,
         )
     return CheckResult(
-        name, "ok", f"reader keeping up on {len(judged)} live ring(s): {', '.join(judged)}"
+        name,
+        "ok",
+        f"reader keeping up on {len(judged)} live ring(s): {', '.join(judged)}"
+        + drops_detail,
+        reason=drops_reason,
     )
 
 
@@ -958,7 +988,9 @@ def check_ring_geometry_coherence() -> CheckResult:
 
     UNCONDITIONAL since ADR-0100: Ring A is the only fan-in → CamillaDSP
     transport, so the graph opens it on every box. A mismatch is ``fail`` (the
-    graph cannot run); an indeterminate conf.d/env is ``warn``.
+    graph cannot run); a torn conf.d is ``warn``; a ring file with no header
+    yet is ``ok`` — the ordinary state between fan-in restarts, and the next
+    start creates it coherently.
     """
     label = "ring geometry"
     try:
@@ -970,7 +1002,7 @@ def check_ring_geometry_coherence() -> CheckResult:
     except ImportError as e:  # pragma: no cover - always importable in prod
         return CheckResult(
             label,
-            "warn",
+            "skipped",
             f"ring modules unavailable: {e}",
             reason=REASON_RING_GEOMETRY_MODULES_UNAVAILABLE,
         )
@@ -1021,7 +1053,7 @@ def check_ring_geometry_coherence() -> CheckResult:
         # No coherent on-disk ring yet (fan-in between restarts, or the ring was
         # cleared). env/conf.d agree, so the next writer create is coherent.
         return CheckResult(
-            label, "warn",
+            label, "ok",
             f"env + conf.d agree (n_slots={fanin_slots}) but {ring_assets.RING_A_PROGRAM_FILE} "
             "has no valid ring header yet (fan-in restarting / ring cleared). It "
             "will be created coherently on the next fan-in start.",
@@ -1238,7 +1270,7 @@ def check_renderer_ring_lanes() -> CheckResult:
     if read.payload is None:
         return CheckResult(
             label_name,
-            "warn",
+            "skipped",
             f"{len(armed)} lane(s) armed ({', '.join(armed)}) but fan-in STATUS is "
             f"unreadable ({type(read.error).__name__}) — cannot confirm they are "
             "attached",
@@ -1247,7 +1279,13 @@ def check_renderer_ring_lanes() -> CheckResult:
     inputs = read.payload.get("inputs")
     if not isinstance(inputs, list):
         return CheckResult(
-            label_name, "warn", "fan-in STATUS carries no inputs[] to judge",
+            label_name,
+            "warn",
+            f"{len(armed)} lane(s) armed ({', '.join(armed)}) but fan-in STATUS "
+            "carries no inputs[] to judge — every shipped fan-in emits that key "
+            "unconditionally (rust/jasper-fanin/src/state.rs), so the running "
+            "binary is not the installed one: sudo systemctl restart jasper-fanin, "
+            "then redeploy if it persists",
             reason=REASON_RENDERER_LANES_STATUS_NO_INPUTS,
         )
     by_label = {
@@ -1419,10 +1457,11 @@ def check_ring_transport_park() -> CheckResult:
     ``jasper.control.transport_park``, the reader
     ``/state.resilience.transport_park`` and the household audio card also use.
 
-    Three shapes land between ``ok`` and a park and all WARN, because none
-    carries a rebuild issue or a command (the bar ADR-0178 sets for a class): the
-    ADR-0184 coverage seam, a converge refusal, and ADR-0189's mirror of the
-    seam.
+    Three shapes land between ``ok`` and a park — the ADR-0184 coverage seam, a
+    converge refusal, and ADR-0189's mirror of the seam. All three are operator
+    signals their own reader declares to be neither a park nor a household
+    claim, so each is an ``ok`` carrying its reason. ``unclassified`` stays a
+    ``warn``: the ring demonstrably cannot serve that box.
     """
     label = "ring transport parks"
 
@@ -1432,7 +1471,7 @@ def check_ring_transport_park() -> CheckResult:
     if status == "unavailable":
         return CheckResult(
             label,
-            "warn",
+            "skipped",
             "the saved output topology or outputd's env could not be read "
             f"({state.get('error')}) — a transport park cannot be ruled out.",
             reason=REASON_TRANSPORT_PARK_EVIDENCE_UNAVAILABLE,
@@ -1445,7 +1484,7 @@ def check_ring_transport_park() -> CheckResult:
             # scoped out.
             return CheckResult(
                 label,
-                "warn",
+                "ok",
                 "the wide ring resolves a width for this box, but outputd's "
                 "active-ring endpoint marker is not armed and this is not an "
                 "active-crossover layout, so none of the four named parks "
@@ -1461,7 +1500,7 @@ def check_ring_transport_park() -> CheckResult:
             # own sentence, carried verbatim.
             return CheckResult(
                 label,
-                "warn",
+                "ok",
                 f"the ring can serve this box, but {refusal}. Not parked — the "
                 "graph it already had keeps playing, so nothing is claimed to "
                 "the household. Re-emit the active-speaker baseline onto the "
@@ -1474,7 +1513,7 @@ def check_ring_transport_park() -> CheckResult:
             # here means reconfiguration lag or a genuine mismatch.
             return CheckResult(
                 label,
-                "warn",
+                "ok",
                 "outputd's active-ring endpoint marker is armed, but this "
                 "layout declares no active-crossover mode, so nothing here "
                 "should have armed it (ADR-0189). Not parked — whatever graph "

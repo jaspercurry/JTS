@@ -11,6 +11,7 @@ pure formatter module; static checks still guard the important wiring.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -20,6 +21,7 @@ import pytest
 from jasper.memory_policy import (
     DISK_FAIL_PERCENT,
     DISK_WARN_PERCENT,
+    MEM_PSI_WARN_AVG60,
     memory_headroom_thresholds,
 )
 
@@ -27,6 +29,25 @@ ROOT = Path(__file__).resolve().parents[1]
 SYSTEM_JS = ROOT / "deploy" / "assets" / "system-status" / "js"
 FORMAT_JS = SYSTEM_JS / "format.js"
 SECTIONS_JS = SYSTEM_JS / "sections.js"
+
+
+def _psi_bounds() -> tuple[float, float]:
+    """The dashboard's ``(warn, danger)`` PSI bounds, read from the JS itself.
+
+    The warn bound has a Python owner (:data:`MEM_PSI_WARN_AVG60`) because
+    jasper-doctor bands against it too; the danger bound is dashboard-only, so
+    it is parsed rather than duplicated here. Either way the probe values below
+    are derived, never typed twice.
+    """
+    found = re.search(
+        r"toneForPercent\(psi,\s*([\d.]+),\s*([\d.]+)\)", FORMAT_JS.read_text()
+    )
+    assert found, "format.js no longer bands PSI with toneForPercent"
+    warn, danger = float(found.group(1)), float(found.group(2))
+    assert warn == MEM_PSI_WARN_AVG60, (
+        f"dashboard warns at {warn}%, jasper-doctor at {MEM_PSI_WARN_AVG60}%"
+    )
+    return warn, danger
 
 
 def test_system_vitals_use_named_threshold_helpers() -> None:
@@ -50,6 +71,7 @@ def test_system_threshold_helpers_document_the_colours() -> None:
     assert "value > capacity" in text
     assert "value >= capacity * 0.75" in text
     assert "toneForPercent(Number(pct) || 0, 85, 95)" in text
+    _psi_bounds()  # asserts the PSI call shape and its warn/doctor parity
     assert "temp >= 80 || throttledNow" in text
     assert "Thermal sensor unavailable" in text
 
@@ -59,6 +81,7 @@ def test_system_threshold_helpers_scale_by_capacity_with_low_ram_floors() -> Non
     if not node:
         pytest.skip("Node.js unavailable; static threshold tests still run")
 
+    psi_warn, psi_danger = _psi_bounds()
     script = f"""
       import {{ readFileSync }} from "node:fs";
       const source = readFileSync({json.dumps(str(FORMAT_JS))}, "utf8");
@@ -96,9 +119,9 @@ def test_system_threshold_helpers_scale_by_capacity_with_low_ram_floors() -> Non
         tempDanger: mod.temperatureInfo(80, 0, 0).tone,
         tempMissing: mod.temperatureDisplay(null, 0, 0),
         tempZero: mod.temperatureDisplay(0, 0, 0),
-        psiOk: mod.memoryPressureInfo(9.9, 0).tone,
-        psiWarn: mod.memoryPressureInfo(10, 0).tone,
-        psiDanger: mod.memoryPressureInfo(20, 0).tone,
+        psiOk: mod.memoryPressureInfo({psi_warn - 0.1}, 0).tone,
+        psiWarn: mod.memoryPressureInfo({psi_warn}, 0).tone,
+        psiDanger: mod.memoryPressureInfo({psi_danger}, 0).tone,
         psiOomOutranksCalmStall: mod.memoryPressureInfo(0, 1).tone,
         psiAbsent: mod.memoryPressureInfo(null, null),
       }};

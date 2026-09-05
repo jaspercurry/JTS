@@ -404,59 +404,53 @@ def test_check_grouping_leader_reads_degraded_when_config_not_piped(
 
 
 @pytest.mark.parametrize(
-    "snapclient_state, status",
+    "snapclient_state, dac_content, status, reason",
     [
-        ("failed", "warn"),
-        # A follower has no producer concept: with snapclient active it reads
-        # ok, and the missing leader-side producer can never degrade it. The
-        # parked source-resource stack reads inactive, which cannot degrade
-        # health either (only desired=start units can).
-        ("active", "ok"),
+        # Health degraded (leader unreachable) wins outright — reported once,
+        # never doubled up with the pair-lock verdict it also drives.
+        ("failed", None, "warn", grouping.REASON_RUNTIME_DEGRADED),
+        # Health ok, no local outputd STATUS to read: the pair lock's own
+        # terminal branch — clock lock is unobservable from Snapcast RPC,
+        # which is `ok` with a reason, not a permanent warn (ADR-0233 r.3).
+        ("active", None, "ok", grouping.REASON_PAIR_LOCK_UNKNOWN),
+        # Health ok, local FIFO serving bytes: same terminal branch — bytes
+        # flowing is not proof of clock lock, still `ok` with a reason.
+        (
+            "active", {"enabled": True, "serving_fifo": True}, "ok",
+            grouping.REASON_PAIR_LOCK_UNKNOWN,
+        ),
+        # Health ok, local FIFO NOT serving bytes: the pair lock's own
+        # degraded branch.
+        (
+            "active", {"enabled": True, "serving_fifo": False}, "warn",
+            grouping.REASON_PAIR_LOCK_DEGRADED,
+        ),
     ],
-    ids=["unreachable-leader", "connected"],
+    ids=[
+        "unreachable-leader",
+        "pair-lock-unknown-no-status",
+        "pair-lock-unknown-clock-unobservable",
+        "pair-lock-degraded-fifo-not-serving",
+    ],
 )
-def test_check_grouping_follower_verdicts(monkeypatch, snapclient_state, status):
+def test_check_grouping_follower_verdicts(
+    monkeypatch, snapclient_state, dac_content, status, reason
+):
     _patch_grouping(
         monkeypatch,
         _grouping_cfg(**_FOLLOWER),
         unit_states={"jasper-snapclient.service": snapclient_state},
     )
+    if dac_content is not None:
+        monkeypatch.setattr(
+            _evidence,
+            "read_status_socket",
+            lambda _path, *, timeout=2.0: {"dac_content": dac_content},
+        )
 
     r = grouping.check_grouping()
 
     assert r.status == status
-    assert r.reason == (grouping.REASON_RUNTIME_DEGRADED if status == "warn" else "")
-
-
-@pytest.mark.parametrize(
-    "dac_content, reason",
-    [
-        (
-            {"enabled": True, "serving_fifo": True},
-            grouping.REASON_PAIR_LOCK_UNKNOWN,
-        ),
-        (
-            {"enabled": True, "serving_fifo": False},
-            grouping.REASON_PAIR_LOCK_DEGRADED,
-        ),
-    ],
-    ids=["clock-unobservable", "fifo-not-serving"],
-)
-def test_check_grouping_pair_lock_warns(monkeypatch, dac_content, reason):
-    _patch_grouping(
-        monkeypatch,
-        _grouping_cfg(**_FOLLOWER),
-        unit_states={"jasper-snapclient.service": "active"},
-    )
-    monkeypatch.setattr(
-        _evidence,
-        "read_status_socket",
-        lambda _path, *, timeout=2.0: {"dac_content": dac_content},
-    )
-
-    r = grouping.check_grouping_pair_lock()
-
-    assert r.status == "warn"
     assert r.reason == reason
 
 
@@ -526,7 +520,7 @@ def test_check_grouping_tts_lane_warns_when_the_authority_is_unreadable(
     [
         "check_grouping_snapcast_version",
         "check_crossover_unit_installed",
-        "check_grouping_pair_lock",
+        "check_grouping",
     ],
 )
 def test_grouping_checks_are_registered(check_name):

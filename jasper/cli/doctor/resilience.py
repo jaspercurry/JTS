@@ -12,6 +12,9 @@ from typing import Any
 
 from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
 from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
+from ...service_units import unit_unstable
+from ...voice.input_presence import voice_parked_no_mic
+from ... import outputd_failure_reconcile_state
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
@@ -19,6 +22,7 @@ from ._shared import (
     CheckResult,
     _ONESHOT_RUNTIME_STATE_UNITS,
     _RUNTIME_STATE_UNITS,
+    install_profile_is_streambox,
 )
 
 # Machine-stable codes naming which branch of a resilience check produced a
@@ -27,6 +31,14 @@ from ._shared import (
 # reports "skipped" with a reason rather than "ok" — ADR-0233 rule 3.
 REASON_UNITS_FAILED_OR_UNSTABLE = "units_failed_or_unstable"
 REASON_UNITS_RESTARTED = "units_restarted"
+
+REASON_REQUIRED_UNIT_INACTIVE = "required_unit_inactive"
+
+REASON_VOICE_UNIT_NOT_FULL_PROFILE = "voice_unit_not_full_profile"
+REASON_VOICE_UNIT_UNOBSERVED = "voice_unit_unobserved"
+REASON_VOICE_UNIT_PARKED_NO_INPUT = "voice_unit_parked_no_voice_input"
+REASON_VOICE_UNIT_INACTIVE = "voice_unit_inactive"
+REASON_VOICE_UNIT_INACTIVE_PAIRED_REMOTE = "voice_unit_inactive_paired_remote"
 
 REASON_SUPERVISOR_ISSUES = "supervisor_issues"
 REASON_CONTROL_UNAVAILABLE = "supervisor_snapshots_control_unavailable"
@@ -42,17 +54,24 @@ REASON_REBOOT_STATE_CORRUPT = "reboot_state_corrupt"
 REASON_REBOOT_STATE_FUTURE_DATED = "reboot_state_future_dated"
 REASON_REBOOT_STATE_ARMED = "reboot_state_armed"
 
+REASON_OUTPUTD_RECONCILE_UNOBSERVED = "outputd_failure_reconcile_unobserved"
+REASON_OUTPUTD_PARK_RECORD_STALE = "outputd_park_record_stale"
+REASON_OUTPUTD_UNIT_FAILED = "outputd_failed_without_park_record"
+REASON_OUTPUTD_UNIT_UNSTABLE = "outputd_unstable_without_park_record"
+REASON_OUTPUTD_PARKED = "outputd_failure_reconcile_parked"
+
 REASON_BOOTLOOP_GUARD_NOT_RUN = "bootloop_guard_not_run"
 REASON_BOOTLOOP_GUARD_RELOAD_FAILED = "bootloop_guard_reload_failed"
 REASON_BOOTLOOP_GUARD_ARMED = "bootloop_guard_armed"
 REASON_BOOTLOOP_GUARD_TRIPPED = "bootloop_guard_tripped"
 
-@doctor_check()
+@doctor_check(core=True)
 def check_service_runtime_state() -> CheckResult:
-    """Surface failed units and restart-count changes in the one-shot doctor.
-
-    A unit can be start-limited or repeatedly restarting with no live cgroup
-    left for the dashboard's resource sampler to display."""
+    """Judge the tracked units' runtime state: `failed`, or a non-oneshot
+    stuck in `activating`/`deactivating`, fails the row. A non-zero
+    `NRestarts` rides in the detail but is informational only — systemd
+    latches the counter until `reset-failed` or reboot, so it cannot be
+    acted on."""
     states = evidence.unit_states()
     if states is None:
         return CheckResult(
@@ -73,10 +92,7 @@ def check_service_runtime_state() -> CheckResult:
             n_restarts = 0
         if active == "failed":
             failed.append(f"{unit} state=failed/{sub or '?'} result={result or '?'}")
-        elif (
-            active in {"activating", "deactivating"}
-            and unit not in _ONESHOT_RUNTIME_STATE_UNITS
-        ):
+        elif unit_unstable(state) and unit not in _ONESHOT_RUNTIME_STATE_UNITS:
             # A oneshot sits in `activating` for its whole normal run, so only
             # its `failed` end-state is a finding.
             failed.append(f"{unit} state={active}/{sub or '?'}")
@@ -92,13 +108,148 @@ def check_service_runtime_state() -> CheckResult:
         )
     if restarted:
         return CheckResult(
-            "service runtime state", "warn",
-            "restart counts non-zero: " + ", ".join(restarted),
+            "service runtime state", "ok",
+            "no failed or unstable units; restart counts non-zero (cumulative "
+            "since the last reset-failed or reboot, not a live fault): "
+            + ", ".join(restarted),
             reason=REASON_UNITS_RESTARTED,
         )
     return CheckResult(
         "service runtime state", "ok",
         f"{len(_RUNTIME_STATE_UNITS)} tracked units have no failed state or restarts",
+    )
+
+
+# Units both install profiles install and enable, whose cleanly `inactive`
+# state no other row reports. One down unit is one row, so a unit whose own
+# check already names it stays out: nginx and jasper-control belong to
+# `web.check_management_surface`, and the audio-path daemons to
+# `_service_state_failure`, `check_outputd_failure_reconcile_park`,
+# `renderers` and `check_voice_unit_running` below.
+_REQUIRED_ACTIVE_UNITS: tuple[str, ...] = (
+    "jasper-input.service",
+    # A `.path` unit reads `active` while it WAITS, so a stopped one is
+    # `inactive`, never `failed`.
+    "jasper-accessory-reconcile.path",
+)
+
+
+@doctor_check(core=True)
+def check_required_units_active() -> CheckResult:
+    """Every required unit is running.
+
+    The gap: ``check_service_runtime_state`` judges only ``failed`` and
+    stuck-mid-transition units, so a cleanly ``inactive`` one — stopped by
+    hand, never enabled, an install that did not finish — produced no row.
+    """
+    label = "required units active"
+    states = evidence.unit_states()
+    if states is None:
+        return CheckResult(
+            label, "skipped", "systemctl unavailable — skipped (not Linux?)",
+            reason=REASON_SYSTEMCTL_UNAVAILABLE,
+        )
+    down: list[str] = []
+    for unit in _REQUIRED_ACTIVE_UNITS:
+        state = states.get(unit) or {}
+        active = str(state.get("active_state") or "unknown")
+        if active != "inactive":
+            continue
+        load_state = str(state.get("load_state") or "unknown")
+        down.append(
+            f"{unit} is {active}"
+            + (f"/{load_state}" if load_state != "loaded" else "")
+        )
+    if down:
+        return CheckResult(
+            label, "fail",
+            ", ".join(down)
+            + " — required and stopped. Run `systemctl status <unit>`; a "
+            "not-found unit means the install did not finish, so re-run "
+            "install.sh.",
+            reason=REASON_REQUIRED_UNIT_INACTIVE,
+        )
+    return CheckResult(
+        label, "ok",
+        f"{len(_REQUIRED_ACTIVE_UNITS)} required units are active",
+    )
+
+
+_VOICE_UNIT = "jasper-voice.service"
+
+
+@doctor_check(core=True)
+def check_voice_unit_running() -> CheckResult:
+    """jasper-voice is up on a box whose speaker should be able to answer.
+
+    The gap: ``check_service_runtime_state`` counts only ``failed`` and
+    stuck-mid-transition units, so an ``inactive`` jasper-voice — including
+    one parked by ``RestartPreventExitStatus=66 78`` — produced no row.
+
+    ``speaker_silent`` is deliberately NOT set. That flag means the speaker
+    emits nothing; music still plays with the voice daemon down. What is
+    silent here is the ASSISTANT.
+
+    Severity follows the tier. A full box runs an always-on wake loop, so
+    ``inactive`` fails. A streambox runs the assistant only while a
+    mic-bearing remote is paired (ADR-0217): with none paired the state is
+    correct and reads ``skipped``, and with one paired ``inactive`` warns —
+    the remote's talk button gets no answer, but the reconciler that owns
+    that lifecycle may still be mid-pass.
+
+    Two other states are not a fault either: the unit's
+    ``ConditionPathExists=!/var/lib/jasper/voice-input-absent`` parks it
+    ``inactive`` on a box the AEC reconciler found to have neither a local
+    nor an accessory mic, and a unit systemd cannot load was not observed.
+    """
+    label = "voice daemon running"
+    streambox = install_profile_is_streambox()
+    if streambox and not evidence.mic_presence().accessory_present:
+        return CheckResult(
+            label, "skipped",
+            "streambox tier with no mic-bearing remote paired — the "
+            "assistant runs only while one is",
+            reason=REASON_VOICE_UNIT_NOT_FULL_PROFILE,
+        )
+    state = evidence.unit_state(_VOICE_UNIT)
+    if state is None or str(state.get("load_state") or "") != "loaded":
+        return CheckResult(
+            label, "skipped",
+            f"{_VOICE_UNIT} not observable — systemctl unavailable, or the "
+            "unit is not installed",
+            reason=REASON_VOICE_UNIT_UNOBSERVED,
+        )
+    active = str(state.get("active_state") or "")
+    if active != "inactive":
+        return CheckResult(
+            label, "ok",
+            f"{_VOICE_UNIT} is {active} — a failed or stuck unit is "
+            "`service runtime state`'s row",
+        )
+    if voice_parked_no_mic():
+        return CheckResult(
+            label, "skipped",
+            f"{_VOICE_UNIT} parked by its voice-input gate — the AEC "
+            "reconciler found neither a local nor an accessory mic",
+            reason=REASON_VOICE_UNIT_PARKED_NO_INPUT,
+        )
+    if streambox:
+        return CheckResult(
+            label, "warn",
+            f"{_VOICE_UNIT} is inactive while a mic-bearing remote is paired, "
+            "so the remote's talk button gets no answer. "
+            "`journalctl -u jasper-accessory-reconcile` names why the "
+            "reconciler that owns this unit's lifecycle did not start it.",
+            reason=REASON_VOICE_UNIT_INACTIVE_PAIRED_REMOTE,
+        )
+    return CheckResult(
+        label, "fail",
+        f"{_VOICE_UNIT} is inactive (not failed) on the full profile, so no "
+        "wake word gets an answer. `systemctl status jasper-voice` names "
+        "which of the parking exits it took (78 = no provider configured, "
+        "66 = mic could not be opened); otherwise `systemctl start "
+        "jasper-voice`.",
+        reason=REASON_VOICE_UNIT_INACTIVE,
     )
 
 
@@ -224,9 +375,10 @@ def _read_system_metrics_current() -> dict[str, Any] | None:
 
 @doctor_check()
 def check_supply_voltage() -> CheckResult:
-    """Surface the Pi firmware's under-voltage flags. jasper-control's
-    system-metrics sampler already polls ``vcgencmd get_throttled`` on a
-    timer; doctor is a one-shot CLI and must not add a second poller."""
+    """Surface the Pi firmware's under-voltage flags (`vcgencmd
+    get_throttled`, read from jasper-control's existing poller). NOW fails;
+    the since-boot history bit reports `ok` — latched until reboot, so it
+    cannot be acted on. Both bits stay in the detail."""
     name = "Supply voltage"
     current = _read_system_metrics_current()
     if current is None:
@@ -251,7 +403,7 @@ def check_supply_voltage() -> CheckResult:
         )
     if history_bits & _UNDER_VOLTAGE_HISTORY_BIT:
         return CheckResult(
-            name, "warn",
+            name, "ok",
             f"under-voltage occurred since boot — throttled_history="
             f"{hex(history_bits)}, bit 0 set (raw vcgencmd bit 16 — "
             "jasper-control publishes throttled_history pre-shifted). This "
@@ -325,6 +477,97 @@ def _classify_reboot_state(path: Path, *, now: float | None = None) -> CheckResu
         name, "ok",
         f"last supervisor reboot {age / 3600:.1f}h ago — 24h rate-limit armed",
         reason=REASON_REBOOT_STATE_ARMED,
+    )
+
+
+# Wall-clock before this reads as "the clock was not set yet", not as an age:
+# /run records survive no reboot, but a Pi with no RTC stamps 1970 until NTP
+# lands, and "2000000000s ago" is worse than saying so.
+_CLOCK_SET_EPOCH = 1577836800  # 2020-01-01T00:00:00Z
+
+
+def _parked_ago(parked_at: int | None, *, now: float | None = None) -> str:
+    if parked_at is None:
+        return "at an unrecorded time"
+    if parked_at < _CLOCK_SET_EPOCH:
+        return "with the clock unset at park time"
+    age = (time.time() if now is None else now) - parked_at
+    return f"{age:.0f}s ago"
+
+
+@doctor_check(core=True)
+def check_outputd_failure_reconcile_park() -> CheckResult:
+    """outputd is running, and carries no park record from its stop helper.
+
+    Why a stop can park outputd for good: see
+    deploy/bin/jasper-outputd-failure-reconcile. This check owns outputd's
+    runtime state (it is deliberately not in ``_RUNTIME_STATE_UNITS``), so one
+    failed outputd is one fail row — including a stuck ``activating``/
+    ``deactivating`` unit, which warns rather than fails: not yet silent, but
+    not settled either. ``speaker_silent`` on both fail branches: outputd owns
+    the DAC write loop (docs/audio-paths.md), so with it down nothing writes
+    the card and the speaker emits NOTHING.
+    """
+    label = "outputd failure-reconcile"
+    reader = outputd_failure_reconcile_state
+    unit_state = evidence.unit_state(reader.UNIT)
+    state = reader.snapshot(unit_state)
+    reason = state.get("reason")
+    path = state.get("path")
+
+    if reason == reader.REASON_UNOBSERVED:
+        error = state.get("error")
+        return CheckResult(
+            label, "skipped",
+            f"park record at {path} unreadable ({error})" if error
+            else "systemctl unavailable — a park cannot be ruled out",
+            reason=REASON_OUTPUTD_RECONCILE_UNOBSERVED,
+        )
+    if reason == reader.REASON_PARKED:
+        return CheckResult(
+            label, "fail",
+            "PARKED — jasper-outputd's stop helper recorded a park "
+            f"{_parked_ago(state.get('parked_at'))} "
+            f"(exit_status={state.get('exit_status') or '?'}, "
+            f"reason={state.get('park_reason') or '?'}) and nothing retries "
+            f"it. Fix the output env, `systemctl restart jasper-outputd`, "
+            f"then delete {path} if it survives.",
+            speaker_silent=True,
+            reason=REASON_OUTPUTD_PARKED,
+        )
+    if reason == reader.REASON_UNIT_FAILED:
+        return CheckResult(
+            label, "fail",
+            f"{reader.UNIT} is failed with no park record — its stop helper "
+            "did not judge this terminal, so systemd's Restart=on-failure "
+            "should be retrying. Check `journalctl -u jasper-outputd`.",
+            speaker_silent=True,
+            reason=REASON_OUTPUTD_UNIT_FAILED,
+        )
+    if reason == reader.REASON_UNIT_UNSTABLE:
+        active = str((unit_state or {}).get("active_state") or "?")
+        sub = str((unit_state or {}).get("sub_state") or "?")
+        n_restarts = (unit_state or {}).get("n_restarts")
+        detail = (
+            f"{reader.UNIT} is {active}/{sub} with no park record — stuck "
+            "mid-transition. Check `systemctl status jasper-outputd`."
+        )
+        if n_restarts:
+            detail += f" NRestarts={n_restarts}."
+        return CheckResult(
+            label, "warn", detail,
+            reason=REASON_OUTPUTD_UNIT_UNSTABLE,
+        )
+    if reason == reader.REASON_RECORD_STALE:
+        return CheckResult(
+            label, "warn",
+            f"park record at {path} is stale — outputd is running, so the "
+            "unit's ExecStartPost removal did not fire. Delete it; a later "
+            "unrelated failure would otherwise read as this park.",
+            reason=REASON_OUTPUTD_PARK_RECORD_STALE,
+        )
+    return CheckResult(
+        label, "ok", f"{reader.UNIT} is running and carries no park record",
     )
 
 

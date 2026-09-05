@@ -76,7 +76,7 @@ use std::sync::Mutex;
 
 use serde_json::Value;
 
-use crate::json::json_string;
+use jasper_daemon::json::json_string;
 
 /// Nanoseconds per second (for the frame → time mapping).
 const NANOS_PER_SEC: i128 = 1_000_000_000;

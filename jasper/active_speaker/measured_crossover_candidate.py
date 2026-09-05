@@ -105,6 +105,20 @@ _LINEARIZATION_OUTCOME_VALUES = frozenset({
 })
 
 
+#: The candidate keys ``from_mapping`` accepts as absent, each mapped to the
+#: type whose empty value that absence claims. ONE list: the unknown-field
+#: check, the reopen comparison's ``setdefault`` (without which a candidate
+#: written before a field refuses as ``candidate_tampered``) and the test that
+#: walks them all read it.
+_OPTIONAL_FIELD_TYPES: Mapping[str, type] = {
+    "linearization": dict,
+    "linearization_outcome": str,
+    "trim_decision": dict,
+    "exclusion_evidence": dict,
+    "blend_correction": list,
+}
+
+
 class MeasuredCrossoverCandidateError(ValueError):
     """A measured crossover candidate value is malformed or unsafe."""
 
@@ -218,6 +232,12 @@ class MeasuredCrossoverCandidate:
     ``fit_failed`` while carrying prescribed filters, and the entry's own
     ``prescribed_by`` is what distinguishes them.
 
+    ``trim_decision`` is WHICH trim pair ``role_attenuations_db`` came from,
+    never those dB: ``{"strategy", "committed_side", "anchor_drift_db"}``. It
+    exists because ``linearization_outcome`` cannot tell an anchored commit
+    from a resolved one. Empty where no pair was committed, and where a trim
+    pin displaced the one that was.
+
     ``exclusion_evidence`` is the exclusion reason of record for that fit. It
     deliberately duplicates the session's ``cloud_measure.json``, which bundle
     retention may prune, so the reason travels with the correction it justifies
@@ -242,6 +262,7 @@ class MeasuredCrossoverCandidate:
     alignment: MeasuredCrossoverAlignment = _NO_ALIGNMENT
     linearization: Mapping[str, Any] = field(default_factory=dict)
     linearization_outcome: str = ""
+    trim_decision: Mapping[str, Any] = field(default_factory=dict)
     exclusion_evidence: Mapping[str, Any] = field(default_factory=dict)
     blend_correction: Sequence[Mapping[str, Any]] = ()
     fingerprint: str = field(init=False, repr=False)
@@ -302,31 +323,17 @@ class MeasuredCrossoverCandidate:
         except NullWalkError as exc:
             _refuse("analysis_invalid", f"analysis must be exact JSON data: {exc}")
         object.__setattr__(self, "analysis", frozen_analysis)
-        if not isinstance(self.linearization, Mapping):
-            _refuse("linearization_invalid", "linearization must be a mapping")
-        try:
-            frozen_linearization = DspPredecessor(
-                {"linearization": dict(self.linearization)}
-            ).state["linearization"]
-        except NullWalkError as exc:
-            _refuse(
-                "linearization_invalid", f"linearization must be exact JSON data: {exc}"
-            )
-        object.__setattr__(self, "linearization", frozen_linearization)
-        if not isinstance(self.exclusion_evidence, Mapping):
-            _refuse(
-                "exclusion_evidence_invalid", "exclusion_evidence must be a mapping"
-            )
-        try:
-            frozen_exclusion = DspPredecessor(
-                {"exclusion_evidence": dict(self.exclusion_evidence)}
-            ).state["exclusion_evidence"]
-        except NullWalkError as exc:
-            _refuse(
-                "exclusion_evidence_invalid",
-                f"exclusion_evidence must be exact JSON data: {exc}",
-            )
-        object.__setattr__(self, "exclusion_evidence", frozen_exclusion)
+        # The mapping-shaped optional fields: one exact-JSON-data walk each,
+        # refusing as ``<name>_invalid``.
+        for name in (k for k, kind in _OPTIONAL_FIELD_TYPES.items() if kind is dict):
+            value = getattr(self, name)
+            if not isinstance(value, Mapping):
+                _refuse(f"{name}_invalid", f"{name} must be a mapping")
+            try:
+                frozen = DspPredecessor({name: dict(value)}).state[name]
+            except NullWalkError as exc:
+                _refuse(f"{name}_invalid", f"{name} must be exact JSON data: {exc}")
+            object.__setattr__(self, name, frozen)
         # A list, not a mapping, so the shape check differs from its neighbours
         # above; the exact-JSON-data walk and the freeze are the same.
         # Cuts-only is enforced at the emitter boundary
@@ -380,6 +387,8 @@ class MeasuredCrossoverCandidate:
             core["linearization"] = dict(self.linearization)
         if self.linearization_outcome:
             core["linearization_outcome"] = self.linearization_outcome
+        if self.trim_decision:
+            core["trim_decision"] = dict(self.trim_decision)
         if self.exclusion_evidence:
             core["exclusion_evidence"] = dict(self.exclusion_evidence)
         if self.blend_correction:
@@ -398,6 +407,7 @@ class MeasuredCrossoverCandidate:
             **self._core(),
             "linearization": dict(self.linearization),
             "linearization_outcome": self.linearization_outcome,
+            "trim_decision": dict(self.trim_decision),
             "exclusion_evidence": dict(self.exclusion_evidence),
             "blend_correction": [dict(f) for f in self.blend_correction],
             "fingerprint": self.fingerprint,
@@ -413,8 +423,7 @@ class MeasuredCrossoverCandidate:
         """Strictly reopen one persisted candidate without re-deriving evidence.
 
         A ``candidate.json`` written before an install can be reopened after it,
-        so each optional key (``linearization``, ``linearization_outcome``,
-        ``exclusion_evidence``, ``blend_correction``) may be absent and means
+        so each key in ``_OPTIONAL_FIELD_TYPES`` may be absent and means
         exactly what its explicit empty value means. Every other field stays
         strictly required.
         """
@@ -429,11 +438,9 @@ class MeasuredCrossoverCandidate:
             "alignment",
             "fingerprint",
         }
-        optional = {
-            "linearization", "linearization_outcome", "exclusion_evidence",
-            "blend_correction",
-        }
-        if not isinstance(raw, Mapping) or set(raw) - optional != required:
+        if not isinstance(raw, Mapping) or (
+            set(raw) - set(_OPTIONAL_FIELD_TYPES) != required
+        ):
             _refuse(
                 "candidate_malformed",
                 "measured crossover candidate has unknown or missing fields",
@@ -472,6 +479,10 @@ class MeasuredCrossoverCandidate:
                 "candidate linearization_outcome is malformed",
             )
         # Absent -> {} (era tolerance); present -> validated by __post_init__.
+        trim_decision_raw = raw.get("trim_decision", {})
+        if not isinstance(trim_decision_raw, Mapping):
+            _refuse("trim_decision_malformed", "candidate trim_decision is malformed")
+        # Absent -> {} (era tolerance); present -> validated by __post_init__.
         exclusion_evidence_raw = raw.get("exclusion_evidence", {})
         if not isinstance(exclusion_evidence_raw, Mapping):
             _refuse(
@@ -502,6 +513,7 @@ class MeasuredCrossoverCandidate:
                 ),
                 linearization=dict(linearization_raw),
                 linearization_outcome=linearization_outcome_raw,
+                trim_decision=dict(trim_decision_raw),
                 exclusion_evidence=dict(exclusion_evidence_raw),
                 blend_correction=list(blend_correction_raw),
             )
@@ -511,14 +523,10 @@ class MeasuredCrossoverCandidate:
             ) from exc
         # to_dict() always carries every optional key, while an older `raw`
         # claimed the empty value by never mentioning it — so compare against
-        # that claim made explicit. EVERY optional field in to_dict() needs a
-        # line here: without one, a deploy straddle makes every previously
-        # persisted candidate refuse as `candidate_tampered`.
+        # that claim made explicit.
         raw_for_comparison = dict(raw)
-        raw_for_comparison.setdefault("linearization", {})
-        raw_for_comparison.setdefault("linearization_outcome", "")
-        raw_for_comparison.setdefault("exclusion_evidence", {})
-        raw_for_comparison.setdefault("blend_correction", [])
+        for key, empty in _OPTIONAL_FIELD_TYPES.items():
+            raw_for_comparison.setdefault(key, empty())
         if candidate.to_dict() != raw_for_comparison:
             _refuse(
                 "candidate_tampered",

@@ -22,7 +22,7 @@ lease does not:
   1800 s ≈ 2× the session TTL), so a walked-away user cannot pin the speaker at
   measurement volume indefinitely;
 * abandon as a defined event set — explicit close, a session-death hook the
-  flow (Wave 5) calls, and the wall-clock ceiling — each draining the same
+  flow calls, and the wall-clock ceiling — each draining the same
   restore-once path;
 * self-owned stale-active handling via the timestamp. ``CrossoverLevelLease``'s
   ``recover_unresolved_volume_safety`` refuses ``active`` states (it relies on a
@@ -1033,7 +1033,7 @@ class SessionVolumePlan:
         *,
         reason: str = "session_abandoned",
     ) -> SessionVolumeRestoreResult:
-        """Session-death observation hook (Wave 5 calls it) — drains restore-once."""
+        """Session-death observation hook — drains restore-once."""
         return await self._drain_restore(door, reason=reason)
 
     async def enforce_ceiling(

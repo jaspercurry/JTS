@@ -41,6 +41,7 @@ from ...doctor_contract import (  # noqa: F401 — re-exported for the domain mo
     summarize,
 )
 from ...env_load import parse_env_file as _shared_parse_env_file
+from ...install_profile import is_streambox_install_profile, read_install_profile
 from ...secret_redaction import redact_secrets
 
 GREEN = "\033[32m"
@@ -222,17 +223,15 @@ def _sha256_file(path: Path) -> str:
             digest.update(chunk)
     return digest.hexdigest()
 
-def _meminfo_kb(field: str) -> int | None:
-    """One /proc/meminfo field (e.g. 'MemAvailable') in KiB, None on read
-    error."""
+def install_profile_is_streambox() -> bool:
+    """True on the streambox tier. Fails toward False so an unparseable
+    marker keeps the louder full-speaker check running rather than silently
+    skipping it."""
     try:
-        with open("/proc/meminfo") as f:
-            for line in f:
-                if line.startswith(field + ":"):
-                    return int(line.split()[1])
-    except Exception:  # noqa: BLE001
-        return None
-    return None
+        return is_streambox_install_profile(read_install_profile())
+    except (TypeError, ValueError, OSError):
+        return False
+
 
 # The household's per-source intent file is unreadable or malformed, so
 # nothing downstream of it can be judged.
@@ -325,14 +324,20 @@ def _parked_follower_result(label: str) -> CheckResult | None:
     )
 
 
+# NO jasper-outputd.service: resilience.check_outputd_failure_reconcile_park
+# owns its runtime state, park record and all, so one failed outputd is one
+# fail row rather than two saying different things about the same unit.
 _RUNTIME_STATE_UNITS = (
     "nginx.service",
-    "jasper-outputd.service",
     "jasper-fanin.service",
     "jasper-camilla.service",
     "jasper-voice.service",
     "jasper-aec-bridge.service",
     "jasper-control.service",
+    "jasper-input.service",
+    # A .path unit fails on a bad spec; resilience.check_required_units_active
+    # defers every non-`inactive` state to this row, so both must track it.
+    "jasper-accessory-reconcile.path",
     "jasper-mux.service",
     "nqptp.service",
     "shairport-sync.service",

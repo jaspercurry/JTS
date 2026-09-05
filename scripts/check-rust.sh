@@ -17,6 +17,7 @@ workflow="${repo_root}/.github/workflows/tests.yml"
 
 rust_crates=(
   rust/jasper-env
+  rust/jasper-daemon
   rust/jasper-clock
   rust/jasper-resampler
   rust/jasper-ring

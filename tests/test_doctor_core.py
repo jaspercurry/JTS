@@ -38,7 +38,7 @@ def test_json_mode_reports_unhandled_check_exception(monkeypatch, capsys):
     monkeypatch.setattr(_cli, "_load_env_files", lambda: None)
     monkeypatch.setattr(Config, "from_env", staticmethod(lambda: object()))
 
-    async def boom(_cfg):
+    async def boom(_cfg, **_scope):
         raise RuntimeError("synthetic failure")
 
     monkeypatch.setattr(_cli, "run_async", boom)
@@ -81,7 +81,7 @@ def test_json_mode_endpoint_tier_does_not_require_voice_provider(
     )
     monkeypatch.setenv("JASPER_USAGE_DB", "/tmp/jasper-endpoint-usage.db")
 
-    async def fake_run_async(cfg):
+    async def fake_run_async(cfg, **_scope):
         assert cfg.usage_db == "/tmp/jasper-endpoint-usage.db"
         return [doctor.CheckResult("endpoint smoke", "ok", "minimal cfg")]
 
@@ -167,7 +167,7 @@ def test_legacy_endpoint_token_doctor_behaves_as_streambox(monkeypatch):
     monkeypatch.setattr(
         _harness,
         "registered_checks",
-        lambda: [
+        lambda **_scope: [
             _reg(env_check),
             _reg(voice_check, module="voice", needs_cfg=True, label="provider key"),
             _reg(web_check, module="web"),
@@ -254,7 +254,7 @@ def test_streambox_profile_doctor_keeps_local_audio_groups(monkeypatch):
     monkeypatch.setattr(
         _harness,
         "registered_checks",
-        lambda: [
+        lambda **_scope: [
             _reg(voice_check, module="voice", needs_cfg=True, label="provider key"),
             _reg(
                 check_mic_capture,
@@ -307,7 +307,7 @@ def test_run_async_parallelizes_blocking_checks_but_preserves_order(
     monkeypatch.setattr(
         _harness,
         "registered_checks",
-        lambda: [
+        lambda **_scope: [
             _reg(make_check(name, 0.15)) for name in "abcdef"
         ],
     )
@@ -344,7 +344,7 @@ def test_run_async_serializes_checks_in_same_exclusive_group(monkeypatch):
     monkeypatch.setattr(
         _harness,
         "registered_checks",
-        lambda: [
+        lambda **_scope: [
             _reg(exclusive("a"), exclusive_group="audio-probe"),
             _reg(exclusive("b"), exclusive_group="audio-probe"),
             _reg(ordinary),
@@ -608,6 +608,34 @@ def _cfg_attrs_read_by(func) -> set[str]:
         and isinstance(node.value, ast.Name)
         and node.value.id == "cfg"
     }
+
+
+@pytest.mark.parametrize("argv, core_only", [([], False), (["--core"], True)])
+def test_core_flag_reaches_the_harness_and_keeps_json(
+    monkeypatch, capsys, argv, core_only,
+):
+    """`--core` is a scope, not a second code path: the same harness call, the
+    same JSON report, one flag through."""
+    seen: dict[str, object] = {}
+
+    async def fake_run_async(cfg, **scope):
+        seen.update(scope)
+        return [doctor.CheckResult("required units active", "ok", "ran")]
+
+    monkeypatch.setattr(_cli, "_load_env_files", lambda: None)
+    monkeypatch.setattr(_cli, "read_install_profile", lambda: "full")
+    monkeypatch.setattr(Config, "from_env", staticmethod(lambda: SimpleNamespace()))
+    monkeypatch.setattr(_cli, "run_async", fake_run_async)
+    monkeypatch.setattr(sys, "argv", ["jasper-doctor", *argv, "--json"])
+
+    with pytest.raises(SystemExit) as exit_info:
+        doctor.main()
+
+    assert exit_info.value.code == 0
+    assert seen["core_only"] is core_only
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["fails"] == 0
+    assert [row["name"] for row in payload["results"]] == ["required units active"]
 
 
 @pytest.mark.parametrize(

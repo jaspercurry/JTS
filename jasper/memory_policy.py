@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import NamedTuple
 
 
@@ -14,6 +15,37 @@ from typing import NamedTuple
 # is the operator-tunable early warning below it.
 DISK_WARN_PERCENT = 85
 DISK_FAIL_PERCENT = 95
+
+# Kernel pressure-stall information. `psi=1` on the cmdline (install.sh) plus
+# CONFIG_PSI; without either the file is absent and the fact is "no reading",
+# never a calm zero. "some avg60" is the share of the last 60 s in which at
+# least one task stalled waiting on memory.
+PROC_PRESSURE_MEMORY = "/proc/pressure/memory"
+# Cumulative OOM kills since boot. Absent on kernels without the counter.
+PROC_VMSTAT = "/proc/vmstat"
+PROC_MEMINFO = "/proc/meminfo"
+# Virtual (uncompressed) capacity of the zram swap device, in bytes. Absent
+# where zram is not in use at all.
+ZRAM_DISKSIZE_PATH = "/sys/block/zram0/disksize"
+
+# PSI "some avg60" percent at which memory stalls stop being noise on a 1 GB
+# board. Mirrors the /system dashboard's warn band —
+# `toneForPercent(psi, 10, 20)` in deploy/assets/system-status/js/format.js —
+# which tests/test_system_status_thresholds.py pins to this owner.
+MEM_PSI_WARN_AVG60 = 10.0
+
+# zram virtual capacity as a percent of RAM. deploy/rpi-swap/50-jts.conf sets
+# `RamMultiplier=0.5` and deploy/lib/install/memory-resilience.sh sizes to the
+# same number; tests/test_memory_policy.py pins both to this owner.
+ZRAM_TARGET_PERCENT = 50
+# Slack before the doctor calls a live zram device oversized. rpi-swap sizes
+# from MemTotal, which sits a few percent below installed RAM and moves with
+# the CMA/GPU split, so the live ratio never lands exactly on target; the old
+# 100%-of-RAM default this check exists to catch is far past the margin.
+ZRAM_OVERSIZE_MARGIN_PERCENT = 10
+# The band a live device is judged against, derived here so the doctor never
+# re-adds the two numbers itself.
+ZRAM_WARN_PERCENT = ZRAM_TARGET_PERCENT + ZRAM_OVERSIZE_MARGIN_PERCENT
 
 
 def memory_headroom_thresholds(total_mb: int) -> tuple[int, int]:
@@ -63,3 +95,107 @@ def disk_usage(path: str = "/") -> DiskUsage | None:
         return DiskUsage(path, 0, 0, 0.0)
     free = st.f_bavail * st.f_frsize
     return DiskUsage(path, total, free, (total - free) * 100 / total)
+
+
+class MemoryPressure(NamedTuple):
+    """Live memory-stall pressure, as the kernel reports it.
+
+    Either field is ``None`` where this kernel publishes no such counter —
+    distinct from a zero, which means "measured, and there is none".
+    ``oom_kills`` is cumulative since boot, so it describes history and never
+    the current verdict.
+    """
+
+    psi_some_avg60: float | None
+    oom_kills: int | None
+
+
+def memory_pressure(
+    *,
+    pressure_path: str = PROC_PRESSURE_MEMORY,
+    vmstat_path: str = PROC_VMSTAT,
+) -> MemoryPressure:
+    """Read PSI and the OOM-kill counter. Never raises.
+
+    One reader for both consumers (ADR-0233 rule 1): jasper-control's
+    system-metrics sampler feeds the dashboard tile from it, and
+    jasper-doctor's ``check_memory_pressure`` verdicts against
+    :data:`MEM_PSI_WARN_AVG60`.
+    """
+    return MemoryPressure(
+        _psi_some_avg60(pressure_path), _proc_value(vmstat_path, "oom_kill")
+    )
+
+
+def _psi_some_avg60(path: str) -> float | None:
+    """Line shape: ``some avg10=0.00 avg60=1.23 avg300=0.41 total=12345``."""
+    try:
+        with open(path) as f:
+            for line in f:
+                if not line.startswith("some "):
+                    continue
+                for field in line.split()[1:]:
+                    key, _, value = field.partition("=")
+                    if key == "avg60":
+                        return float(value)
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _proc_value(path: str, key: str) -> int | None:
+    """The integer on ``key``'s line in a ``/proc`` file, or ``None``.
+
+    Covers both shapes this module reads: ``/proc/vmstat``'s ``oom_kill 3``
+    and ``/proc/meminfo``'s ``MemTotal:  1014768 kB``. An absent file and an
+    absent counter are the same fact here — no reading.
+    """
+    try:
+        with open(path) as f:
+            for line in f:
+                fields = line.split()
+                if len(fields) >= 2 and fields[0].rstrip(":") == key:
+                    return int(fields[1])
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def meminfo_kb(field: str, *, path: str = PROC_MEMINFO) -> int | None:
+    """One ``/proc/meminfo`` field (e.g. ``MemAvailable``), in KiB."""
+    return _proc_value(path, field)
+
+
+class ZramUsage(NamedTuple):
+    """Virtual zram capacity against installed RAM.
+
+    ``disksize_bytes == 0`` is a device present but not yet sized;
+    ``total_bytes == 0`` is a MemTotal that could not be read. Either way
+    ``percent_of_ram`` is 0 and the caller decides which fact that is.
+    ``percent_of_ram`` floors to whole percent, the unit
+    :data:`ZRAM_WARN_PERCENT` is stated in.
+    """
+
+    disksize_bytes: int
+    total_bytes: int
+    percent_of_ram: int
+
+
+def zram_usage(
+    *,
+    disksize_path: str = ZRAM_DISKSIZE_PATH,
+    meminfo_path: str = PROC_MEMINFO,
+) -> ZramUsage | None:
+    """Return zram sizing, or ``None`` where there is no zram0 device at all.
+
+    Fail-soft like :func:`disk_usage`: an older RPi OS on dphys-swapfile and a
+    dev laptop both simply have no such device, which is not a fault.
+    """
+    try:
+        disksize = int(Path(disksize_path).read_text().strip())
+    except (OSError, ValueError):
+        return None
+    total = (_proc_value(meminfo_path, "MemTotal") or 0) * 1024
+    if disksize <= 0 or total <= 0:
+        return ZramUsage(max(disksize, 0), total, 0)
+    return ZramUsage(disksize, total, disksize * 100 // total)

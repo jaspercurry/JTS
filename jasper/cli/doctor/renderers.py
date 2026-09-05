@@ -344,7 +344,7 @@ def check_nqptp_running() -> CheckResult:
         reason=REASON_NQPTP_NOT_ACTIVE,
     )
 
-@doctor_check()
+@doctor_check(core=True)
 def check_jasper_mux() -> CheckResult:
     """jasper-mux arbitrates which renderer plays when. Without it,
     source selection and guarded handoff stop working; if fan-in has
@@ -352,9 +352,15 @@ def check_jasper_mux() -> CheckResult:
     parked = _parked_follower_result("jasper-mux")
     if parked is not None:
         return parked
-    state = (evidence.unit_state("jasper-mux.service") or {}).get(
-        "active_state",
-    ) or "unknown"
+    unit_state = evidence.unit_state("jasper-mux.service")
+    if unit_state is None:
+        return CheckResult(
+            "jasper-mux",
+            "skipped",
+            "systemctl unavailable — skipped (not Linux?)",
+            reason=REASON_SYSTEMCTL_UNAVAILABLE,
+        )
+    state = unit_state.get("active_state") or "unknown"
     if state == "active":
         return CheckResult(
             "jasper-mux", "ok",
@@ -1255,7 +1261,7 @@ def _fanin_lane_busy_owner_matches(device: str, unit: str) -> tuple[bool, str]:
         return True, f"busy/owned pid={pid}"
     return False, f"busy but owner pid={pid} {why}"
 
-@doctor_check(exclusive_group="audio-probe")
+@doctor_check(exclusive_group="audio-probe", core=True)
 def check_renderer_device_resolvable() -> CheckResult:
     """Verify each music renderer can actually open the ALSA device it is
     configured to write to, AS its runtime systemd User=.

@@ -146,7 +146,7 @@ build_install_jts_ring_ioplug() {
     if ! run_contained_build "jts-ring-ioplug" -- \
         sudo -u "${BUILD_USER}" -H bash -c "cd '${cache_dir}' && make plugin"; then
         echo "  WARN: jts_ring ioplug build failed; ring platform unavailable this deploy" >&2
-        echo "  WARN: the ring arm's capability gate now has nothing vouching for the installed plugin — doctor 'ring ioplug provenance' carries the verdict (fail on a box whose wire declares a non-default ring sample format, which since the wide-wire default is every box that has not pinned itself narrow; warn otherwise)" >&2
+        echo "  WARN: the ring arm's capability gate now has nothing vouching for the installed plugin — doctor 'ring ioplug provenance' carries the verdict (fail on a box whose wire declares a non-default ring sample format, which since the wide-wire default is every box that has not pinned itself narrow; an informational ok otherwise)" >&2
         # STALE-BINARY HAZARD (the 2026-07-02 class): the pre-build rm -f above
         # only cleans the CACHE copy, so on a box with a prior good deploy the
         # PREVIOUS .so is still installed at so_dest. We do NOT remove the stale

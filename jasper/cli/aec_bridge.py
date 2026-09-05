@@ -178,6 +178,12 @@ OUT_PORT_AEC3_SWEEP = {
 # starvation, clock drift past the margin), log and drop rather than block.
 QUEUE_MAXSIZE = 32
 
+# Cadence of the `rms`/`chip_aec rms` INFO telemetry line. jasper/cli/doctor/aec.py
+# falls back to a rolling 90 s journal window when schema-v4 stats are
+# missing/stale, and its silent-reference thresholds (silent_ref_count >= 5)
+# need >=5 samples in that window to be reachable.
+RMS_LOG_INTERVAL_SEC = 15.0
+
 _shutdown = threading.Event()
 
 
@@ -982,7 +988,7 @@ def _aec_loop(  # noqa: PLR0915
                 raw0_window_frames += 1
 
             now = time.monotonic()
-            if now - last_log > 5.0:
+            if now - last_log > RMS_LOG_INTERVAL_SEC:
                 if rms_window_frames > 0:
                     mic_rms = math.sqrt(sum_mic_sq / rms_window_frames)
                     ref_rms = math.sqrt(sum_ref_sq / rms_window_frames)

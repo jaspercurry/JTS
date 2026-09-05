@@ -26,7 +26,6 @@
 mod config;
 mod host_clock;
 mod impulse_tap;
-mod json;
 mod lane_resampler;
 mod loudness;
 mod mixer;
@@ -43,7 +42,8 @@ use std::sync::mpsc::channel;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use jasper_tts_protocol::assistant_reference::{self, DaemonHooks};
+use jasper_daemon::DaemonHooks;
+use jasper_tts_protocol::assistant_reference;
 use log::{error, info, warn};
 
 use crate::config::Config;
@@ -53,50 +53,16 @@ use crate::tts::{spawn_tts_server, tts_channels, TtsInput};
 use crate::watchdog::Heartbeat;
 use crate::xrun_log::XrunLog;
 
-/// Stack bytes for every helper thread here. `mlockall(MCL_CURRENT|MCL_FUTURE)`
-/// populates and pins a thread's WHOLE stack, so Rust's 2 MiB default costs
-/// 2 MiB of unswappable RAM per thread; the mixer loop runs on `main`, not here.
-pub(crate) const HELPER_STACK_BYTES: usize = 512 * 1024;
+pub(crate) use jasper_daemon::{ConfigClassError, EXIT_CONFIG, HELPER_STACK_BYTES};
 
-/// Exit code for a CONFIG-validation failure (sysexits.h EX_CONFIG).
-/// The unit pairs it with `RestartPreventExitStatus=78`: a fail-closed config
-/// rejection PARKS the unit failed (visible on /state + doctor) instead of
-/// crash-looping — restarting cannot fix bad config, and on this unit the loop
-/// escalates to `StartLimitAction=reboot` after five starts in five minutes.
-/// See ADR-0141; fan-in carries only the exit-78 half.
-const EXIT_CONFIG: i32 = 78;
-
-/// Marker attached (as an `anyhow` context layer) to an error whose cause is
-/// CONFIG-class. It covers the Ring A geometry declaration — every rejection
-/// in `Config::from_env`'s ring block (an unparseable
-/// `JASPER_FANIN_RING_WIRE_FORMAT`, an out-of-range `JASPER_FANIN_RING_SLOTS`,
-/// a period that would shear a slot), all of which are pure env parsing, plus
-/// the CONFIG-CLASS SUBSET of what `RingWriter::create_or_attach` can fail
-/// with. None of those is repairable by restarting, so [`main`] downcasts for
-/// the marker and exits [`EXIT_CONFIG`].
-///
-/// The marker is deliberately narrow. Fan-in's other startup failures (a
-/// missing snd-aloop substream, a de-enumerated USB DAC) DO clear on a retry,
-/// which is exactly what `Restart=on-failure` is for; marking every config
-/// error would park the speaker on a transient hardware blip.
-///
-/// The ring open is the one site where both classes arrive through a single
-/// call, so it does NOT tag blindly: `mixer::ring_open_error` gates the marker
-/// on `io::ErrorKind::{InvalidInput, InvalidData}` — the two kinds
-/// `jasper_ring` sets for a bad geometry declaration and an attach mismatch.
-/// A held open-lock (`WouldBlock`) or an unapplied tmpfs permission
-/// (`PermissionDenied`) is transient and keeps the restart ladder.
-/// `only_config_class_ring_open_errors_park_the_unit` pins both directions.
-#[derive(Debug)]
-pub struct ConfigClassError;
-
-impl std::fmt::Display for ConfigClassError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "config-class startup fault (park, do not restart-loop)")
-    }
-}
-
-impl std::error::Error for ConfigClassError {}
+/// Fan-in's voice for shared code that emits on its behalf.
+const HOOKS: DaemonHooks = DaemonHooks {
+    event_prefix: "fanin",
+    writer_stack_bytes: HELPER_STACK_BYTES,
+    info: |message| info!("{message}"),
+    warn: |message| warn!("{message}"),
+    error: |message| error!("{message}"),
+};
 
 /// [`EXIT_CONFIG`] when `error` carries the [`ConfigClassError`] marker
 /// ANYWHERE in its context chain, `None` otherwise. anyhow walks the whole
@@ -225,21 +191,15 @@ fn run() -> Result<()> {
 
     let (tts_input, tts_metrics, assistant_reference_writer) =
         if let Some(socket_path) = &config.tts_socket_path {
-            let hooks = DaemonHooks {
-                event_prefix: "fanin",
-                writer_stack_bytes: HELPER_STACK_BYTES,
-                info: |message| info!("{message}"),
-                warn: |message| warn!("{message}"),
-            };
             let assistant_reference = assistant_reference::load(
                 std::path::Path::new(&config.assistant_reference_path),
-                hooks,
+                HOOKS,
             );
             let (assistant_reference_tx, assistant_reference_writer) =
                 match assistant_reference::spawn_writer(
                     PathBuf::from(&config.assistant_reference_path),
                     assistant_reference,
-                    hooks,
+                    HOOKS,
                 ) {
                     Ok((tx, handle)) => (Some(tx), Some(handle)),
                     Err(error) => {
@@ -388,8 +348,8 @@ fn run() -> Result<()> {
     // Spawn the servo thread ONLY when armed AND the mixer exposes the direct
     // lane's signals. `enabled` without signals (resampler construction failed
     // → fail-soft) or direct-off both fall through to inert: no thread, the
-    // fragment stays the disabled block. Spawned BEFORE lock_memory() per the
-    // mlockall/pthread-stack ordering contract documented below.
+    // fragment stays the disabled block. Spawned BEFORE lock_memory(), per
+    // `jasper_daemon::lock_memory`.
     let host_clock_thread = match (host_clock_enabled_effective, host_clock_signals) {
         (true, Some(signals)) => {
             // The ctl card the servo thread opens — computed here (cheap string
@@ -484,9 +444,7 @@ fn run() -> Result<()> {
 
     heartbeat.notify_ready();
 
-    // All threads spawned; now safe to mlockall. See the multi-line
-    // comment above for why this can't go earlier under default ulimit.
-    lock_memory();
+    jasper_daemon::lock_memory(HOOKS);
 
     // Run the work loop. Returns Ok on graceful shutdown; Err on
     // structural failure (which systemd's Restart=on-failure handles
@@ -528,32 +486,6 @@ fn run() -> Result<()> {
     }
     heartbeat.notify_stopping();
     result
-}
-
-/// Pin the daemon's pages in RAM. mlockall(MCL_CURRENT | MCL_FUTURE)
-/// keeps both currently-mapped pages and future allocations resident.
-///
-/// Non-fatal on failure: log and continue. The systemd unit grants
-/// LimitMEMLOCK=infinity so production lockall succeeds; `cargo test`
-/// or `cargo run` as non-root hits RLIMIT_MEMLOCK and silently
-/// degrades to the Slice=jts-audio.slice / MemorySwapMax=0 belt
-/// (which is the load-bearing protection anyway).
-fn lock_memory() {
-    // SAFETY: mlockall is a single syscall with no aliasing concerns.
-    // It does not dereference Rust pointers or create aliases. We call
-    // it after helper threads are spawned so MCL_FUTURE does not try to
-    // lock pthread stack mmaps under a small local-dev RLIMIT_MEMLOCK.
-    let rc = unsafe { libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) };
-    if rc == 0 {
-        info!("event=fanin.mlockall_ok");
-    } else {
-        let err = std::io::Error::last_os_error();
-        error!(
-            "event=fanin.mlockall_failed errno={} detail={}",
-            err.raw_os_error().unwrap_or(0),
-            err,
-        );
-    }
 }
 
 fn install_signal_handlers(shutdown: &Arc<AtomicBool>) -> Result<()> {

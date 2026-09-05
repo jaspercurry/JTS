@@ -3354,11 +3354,10 @@ mod tests {
         // value) so a future kernel/state addition that should be treated as live is
         // a conscious edit here.
         //
-        // NOTE: that the STATUS ioctl actually returns Err/Disconnected across a
-        // real gadget rebuild (vs `avail_update` continuing to return Ok(0)) is
-        // kernel behavior no unit test can pin; it is the on-device obligation —
-        // `curl .../state | jq .audio_graph.fanin ... card_gen_reopens` must tick
-        // across a `systemctl restart jasper-usbsink` on jts.local.
+        // That the STATUS ioctl actually returns Err/Disconnected across a real gadget rebuild
+        // (vs `avail_update` continuing to return Ok(0)) is kernel behavior no unit test can
+        // pin; it is the on-device obligation — `curl .../state | jq .audio_graph.fanin ...
+        // card_gen_reopens` must tick across a `systemctl restart jasper-usbsink` on jts.local.
         for state in [
             State::Open,
             State::Setup,

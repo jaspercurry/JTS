@@ -18,9 +18,13 @@ in `rust/jasper-outputd/src/state.rs`.
 from __future__ import annotations
 
 import ast
+import asyncio
 import re
+import subprocess
 from functools import lru_cache
 from pathlib import Path
+
+import pytest
 
 from jasper.cli.aec_init import RECENT_WRITES_KEY, _reference_writes
 
@@ -594,11 +598,16 @@ def test_control_socket_paths_agree_across_processes(monkeypatch):
 async def test_state_aggregate_probes_both_daemon_control_sockets(
     monkeypatch, tmp_path,
 ):
-    """`/state` reaches both daemons over the paths their units bind.
+    """`/state` reaches both daemons over the paths their units bind, and
+    forks nothing to do it (ADR-0233 rule 2).
 
     Run the real aggregate with a recording status probe: a probe that moved
     to a different socket, or stopped being called at all, is the drift this
-    exists to catch.
+    exists to catch. The spawn ban is the other half of the same contract —
+    a probe that needs `busctl`, `nmcli` or `journalctl` reads a sampler that
+    already holds the fact, or moves to the doctor. Spawns are recorded rather
+    than raised on: the aggregate is fail-soft, so a raising stub would be
+    swallowed by the very handler that hides the fork.
     """
     from jasper.control import state_aggregate
 
@@ -611,6 +620,16 @@ async def test_state_aggregate_probes_both_daemon_control_sockets(
     async def no_status(*_args, **_kwargs):
         return None
 
+    spawned: list[tuple] = []
+
+    def record_spawn(*args, **_kwargs):
+        spawned.append(args)
+        raise AssertionError("/state must not spawn a process per request")
+
+    monkeypatch.setattr(subprocess, "run", record_spawn)
+    monkeypatch.setattr(subprocess, "Popen", record_spawn)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", record_spawn)
+    monkeypatch.setattr(asyncio, "create_subprocess_shell", record_spawn)
     monkeypatch.setattr(state_aggregate, "_audio_graph_state", lambda **_kw: None)
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "volume.json"))
     monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spotify.env"))
@@ -628,6 +647,94 @@ async def test_state_aggregate_probes_both_daemon_control_sockets(
 
     assert "/run/jasper-fanin/control.sock" in probed
     assert "/run/jasper-outputd/control.sock" in probed
+    assert spawned == []
+
+
+# ---------------------------------------------------------------------------
+# `/state`'s own key set (ADR-0233 rule 2).
+#
+# jasper-doctor and the dashboard both parse this payload by key, and every
+# reader of it is fail-soft: a key that moved a level down serves null on
+# every real speaker and throws nowhere (outputd's `aec_clock`, read one
+# nesting level too high, did exactly that). So the sets are written out
+# here rather than derived from the producer. `schema_version` is what a
+# consumer pins against — bump it in `state_aggregate` when a set changes.
+#
+# Scope: what the aggregate returns. The HTTP handler attaches two further
+# top-level keys of its own (`audio_health`, `usb_gadget_forensics`).
+# ---------------------------------------------------------------------------
+
+#: Fed to the aggregate as the daemons' STATUS bodies. The blocks below must
+#: publish each body flat and verbatim — nesting or wrapping one is the bug
+#: this pins.
+_FAKE_FANIN_STATUS = {"inputs": {}, "pings_skipped": 0}
+_FAKE_OUTPUTD_STATUS = {"dac": {"aec_clock": {"offset_ppm": 0.0}}, "xruns": 0}
+_FAKE_AEC_STATUS = {"requested": {}, "runtime": {}}
+
+_STATE_KEY_SETS: dict[tuple[str, ...], set[str]] = {
+    (): {
+        "schema_version", "ts", "voice", "microphone", "audio", "audio_graph",
+        "active_speaker_setup", "audition", "bass_extension", "renderers",
+        "speaker_name", "active_source", "fanin", "outputd", "aec",
+        "source_selection", "resilience", "home_assistant", "grouping",
+        "transit", "debug", "tools", "chat", "research", "measurement",
+        "usb_network",
+    },
+    ("fanin",): set(_FAKE_FANIN_STATUS),
+    ("outputd",): set(_FAKE_OUTPUTD_STATUS),
+    ("aec",): set(_FAKE_AEC_STATUS),
+    ("resilience",): {
+        "shairport", "grouping_supervisor", "system_supervisor",
+        "bootloop_guard", "camilla_recover",
+        "outputd_failure_reconcile", "transport_park", "multiroom_cascade",
+        "identity", "disk", "active_speaker_parked", "accessory_bridges",
+    },
+}
+
+
+async def _state_payload(monkeypatch, tmp_path):
+    """The real aggregate over stub daemon bodies."""
+    from jasper.control import state_aggregate
+
+    async def no_status(*_args, **_kwargs):
+        return None
+
+    async def daemon_status(path, *_args, **_kwargs):
+        if path.endswith("jasper-fanin/control.sock"):
+            return dict(_FAKE_FANIN_STATUS)
+        return dict(_FAKE_OUTPUTD_STATUS)
+
+    monkeypatch.setattr(state_aggregate, "_audio_graph_state", lambda **_kw: None)
+    monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "volume.json"))
+    monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spotify.env"))
+    return await state_aggregate._get_state(
+        camilla_host="127.0.0.1",
+        camilla_port=1234,
+        voice_socket_path=str(tmp_path / "voice.sock"),
+        voice_socket_command=no_status,
+        mux_socket_command=no_status,
+        local_status_json=daemon_status,
+        aec_full_status=lambda: dict(_FAKE_AEC_STATUS),
+        read_transit_state_func=lambda: {"packs": []},
+        ha_status_snapshot=lambda: {"configured": False, "connected": False},
+    )
+
+
+@pytest.mark.parametrize(
+    "path", sorted(_STATE_KEY_SETS),
+    ids=lambda path: ".".join(path) or "top_level",
+)
+async def test_state_payload_key_set_is_pinned(path, monkeypatch, tmp_path):
+    payload = await _state_payload(monkeypatch, tmp_path)
+    block = payload
+    for key in path:
+        block = block[key]
+    assert set(block) == _STATE_KEY_SETS[path]
+
+
+async def test_state_carries_its_schema_version(monkeypatch, tmp_path):
+    payload = await _state_payload(monkeypatch, tmp_path)
+    assert payload["schema_version"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -670,6 +777,10 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     # the Rust daemon.
     "JASPER_OUTPUTD_CONFIG_RETRY_STATE": "outputd failure helper reconcile stamp path; script-only",
     "JASPER_OUTPUTD_CONFIG_RETRY_WINDOW_SEC": "outputd failure helper reconcile window; script-only",
+    # The park record that same helper writes on the branches that leave outputd
+    # parked, read back by jasper/outputd_failure_reconcile_state.py for the
+    # doctor and /state. The Rust daemon reads neither end.
+    "JASPER_OUTPUTD_RECONCILE_PARK_STATE": "outputd park record path; shell writer + jasper.outputd_failure_reconcile_state reader",
     # The retired content lane's capture PCM. outputd no longer reads it
     # (ADR-0100 deleted the lane) and nothing writes it any more: the reconciler
     # sweep removed the last writes and now actively REMOVES the key line from

@@ -2269,7 +2269,7 @@ def prepare_driver_commissioning_config(
         "required_gates": gates,
         "issues": issues,
     }
-    # THE TRANSPORT, ON THE LINE THAT NAMES THE ROLE (#2412 Wave 4). This line
+    # THE TRANSPORT, ON THE LINE THAT NAMES THE ROLE (#2412). This line
     # already carried the role and the outputs and never the transport, so
     # Finding (C) — a commissioning graph whose sink was the ring while its
     # source was still the snd-aloop tap — was invisible in the journal even

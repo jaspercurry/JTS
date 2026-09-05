@@ -46,6 +46,10 @@ your home network. If you choose another hostname in Imager, such as
 | Speakers + speaker wire | (Whatever you have) |
 | Seeed ReSpeaker XVF3800 (USB UA variant) | 4-mic array with on-chip XMOS DSP |
 
+The Apple dongle above is the reference DAC; see the DAC section of
+[docs/audio-paths.md](docs/audio-paths.md) for the full list of supported
+output DACs and how to add one.
+
 The XVF3800's onboard 3.5mm jack / AIC3104 codec is **not** connected —
 speakers go to the Apple dongle. That non-standard choice is what drives
 most of the AEC complexity below.

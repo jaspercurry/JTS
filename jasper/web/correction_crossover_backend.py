@@ -20,7 +20,7 @@ import threading
 from contextlib import contextmanager
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from jasper.active_speaker import web_commissioning
 from jasper.active_speaker.commissioning_run import (
@@ -375,20 +375,6 @@ class CrossoverLevelLease:
             raise asyncio.CancelledError
         return result
 
-    def configure_targets(self, targets: Sequence[Mapping[str, Any]]) -> None:
-        """Freeze one complete, protected per-driver level plan."""
-
-        normalized = {
-            str(target["target_id"]): dict(target)
-            for target in targets
-            if str(target.get("target_id") or "")
-        }
-        if not normalized:
-            raise ValueError("crossover level plan has no driver targets")
-        if self._targets and self._targets != normalized:
-            raise RuntimeError("crossover level targets changed during measurement")
-        self._targets = normalized
-
     @staticmethod
     def _ramp_config_for_geometry(geometry: str) -> MeasurementRamp:
         """Freeze the same complete ramp config planning and execution consume."""
@@ -424,10 +410,9 @@ class CrossoverLevelLease:
     def phone_hard_timeout_ms(self, geometry: str) -> int:
         """The phone's hard capture deadline for this geometry, in ms.
 
-        Derived from the SAME ramp config ``run_level_match`` actually
-        executes (``_ramp_config_for_geometry``), so the phone's deadline can
-        never undercut the server's real ``MeasurementRamp.safety_timeout`` —
-        a flat client-side constant sized against today's defaults would
+        Derived from ``_ramp_config_for_geometry`` so the phone's deadline
+        can never undercut the server's real ``MeasurementRamp.safety_timeout``
+        — a flat client-side constant sized against today's defaults would
         silently drift out of sync the moment the ramp config (env-tuned
         knobs, geometry-specific caps) changes. ``PHONE_TRANSPORT_GRACE_S``
         is the same margin ``crossover_level_run.build_level_run_request``
@@ -436,124 +421,6 @@ class CrossoverLevelLease:
 
         safety_timeout_s = self._ramp_config_for_geometry(geometry).safety_timeout
         return math.ceil((safety_timeout_s + PHONE_TRANSPORT_GRACE_S) * 1000.0)
-
-    async def run_level_match(self, geometry: str, **ports: Any) -> Any:
-        from jasper.correction.level_match import LevelMatchSession
-
-        self.assert_volume_safety_resolved()
-        # The correction session adapter supplies these scheduler ports itself;
-        # keep the crossover adapter at the same host boundary. Requiring every
-        # web caller to know LevelMatchSession's test seams caused the hardware
-        # path to fail before the ramp could start.
-        loop = asyncio.get_running_loop()
-        ports.setdefault("clock", loop.time)
-        ports.setdefault("sleep", asyncio.sleep)
-        if self._running is not None:
-            raise RuntimeError("crossover level match already in progress")
-        from jasper.audio_measurement.ramp import RampState
-
-        if (
-            self._last is not None
-            and self._last.ramp.state is RampState.LOCKED
-            and self._last.ramp.restored is not True
-        ):
-            raise RuntimeError(
-                "crossover measurement level is already locked; finish or "
-                "cancel the current crossover measurement first"
-            )
-        from jasper.active_speaker.capture_geometry import (
-            parse_driver_level_geometry,
-        )
-
-        _capture_geometry, speaker_group_id, role = parse_driver_level_geometry(
-            str(geometry)
-        )
-        context_id = str(ports.pop("context_id", "") or "") or None
-        set_main_volume_db = ports.get("set_main_volume_db")
-        get_main_volume_db = ports.get("get_main_volume_db")
-        if not callable(set_main_volume_db) or not callable(get_main_volume_db):
-            raise RuntimeError("crossover level match has no volume control ports")
-        level_run_id = str(ports.pop("level_run_id", "") or "")
-        # The Room adapter must supply this explicit feature-owned binding once
-        # it claims a durable run. Never infer authority from the fail-soft
-        # public snapshot or silently execute a fresh env-derived ramp when an
-        # explicit claimed id is stale/corrupt. The empty case preserves the
-        # existing Room path until that thin adapter lands in its own lane.
-        if level_run_id and str(ports.get("run_token") or "") != level_run_id:
-            from jasper.active_speaker.crossover_level_run import (
-                CrossoverLevelRunError,
-            )
-
-            raise CrossoverLevelRunError(
-                "crossover level run id does not match the capture run token"
-            )
-        config = (
-            self._level_run_store.begin_backend(level_run_id, geometry=str(geometry))
-            if level_run_id
-            else self._ramp_config_for_geometry(str(geometry))
-        )
-        run = LevelMatchSession(
-            session_id=self.session_id,
-            store=self.level_lock_store,
-            config=config,
-        )
-        original = await get_main_volume_db()
-        if (
-            isinstance(original, bool)
-            or not isinstance(original, (int, float))
-            or not math.isfinite(float(original))
-            or float(original) > 0
-        ):
-            raise RuntimeError(
-                "CamillaDSP did not report a safe pre-level listening volume"
-            )
-        self._begin_volume_transition(
-            source="level_match",
-            speaker_group_id=speaker_group_id,
-            role=role,
-            original_main_volume_db=float(original),
-        )
-
-        async def frozen_original_volume() -> float:
-            return float(original)
-
-        ports["get_main_volume_db"] = frozen_original_volume
-        self._running = run
-        outcome = None
-        recovery = UnresolvedVolumeRecoveryResult.FAILED
-        try:
-            outcome = await run.run_for_geometry(geometry, **ports)
-            self._active_outcome = outcome
-        finally:
-            if self._running is run:
-                self._running = None
-            recovery_completed = False
-            try:
-                recovery = await self._drain_volume_recovery(
-                    set_main_volume_db,
-                    get_main_volume_db,
-                )
-                recovery_completed = True
-            finally:
-                if outcome is None or not recovery_completed:
-                    self.level_lock_store.discard(geometry)
-        assert outcome is not None
-        if recovery is not UnresolvedVolumeRecoveryResult.EXACT_RESTORED:
-            self.level_lock_store.discard(geometry)
-            raise RuntimeError(
-                "JTS could not restore the exact pre-level listening volume; "
-                + (
-                    "it applied the -60 dB safe fallback. Set your volume again."
-                    if recovery is UnresolvedVolumeRecoveryResult.EMERGENCY_ATTENUATED
-                    else "stop playback and recover the crossover volume before continuing."
-                )
-            )
-        with self._level_result_lock:
-            self._last = outcome
-            self._outcomes[geometry] = outcome
-            if outcome.locked:
-                self.context_id = context_id
-        return outcome
 
     async def cancel_level_match(self) -> bool:
         """Ask the retained crossover ramp to stop through its safe restore."""
@@ -589,35 +456,6 @@ class CrossoverLevelLease:
             logger,
             "correction.crossover_level_context_invalidated",
         )
-
-    def driver_sweep_locked_main_volume_db(
-        self,
-        speaker_group_id: str,
-        role: str,
-        *,
-        capture_geometry: str,
-    ) -> float | None:
-        """Return this geometry's raw ramp lock, or ``None`` when unusable.
-
-        ``None`` for a missing outcome, a non-finite lock, or a lock above
-        0 dB -- the caller treats that as "no lock" and refuses.
-        """
-
-        from jasper.active_speaker.capture_geometry import driver_level_geometry
-
-        geometry = driver_level_geometry(
-            speaker_group_id, role, capture_geometry
-        )
-        outcome = self._outcomes.get(geometry)
-        value = outcome.ramp.locked_main_volume_db if outcome is not None else None
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(float(value))
-            or float(value) > 0
-        ):
-            return None
-        return float(value)
 
     def discard_driver_level_outcome(
         self,
@@ -1635,42 +1473,6 @@ async def start_summed_test(
         "correction.crossover_summed_test",
         status=payload.get("status"),
         group_id=raw.get("speaker_group_id"),
-    )
-    return payload
-
-
-async def play_driver_capture_sweep(
-    raw: dict[str, Any],
-    *,
-    camilla_factory: CamillaFactory,
-    blocking_phase: str | None = None,
-    applied_profile: dict[str, Any] | None = None,
-    locked_main_volume_db: float | None = None,
-    fanin_gate_context: web_commissioning.FaninGateContext | None = None,
-) -> dict[str, Any]:
-    """Play a mic-capture sweep through an already-confirmed driver.
-
-    ``fanin_gate_context`` threads through to
-    ``web_commissioning.play_driver_capture_sweep`` — set only by the
-    capture flow when this sweep runs inside a correction measurement window
-    (see ``FaninGateContext``).
-    """
-
-    _LEVEL_LEASE.assert_volume_safety_resolved()
-    payload = await web_commissioning.play_driver_capture_sweep(
-        raw,
-        camilla_factory=camilla_factory,
-        blocking_phase=blocking_phase,
-        applied_profile=applied_profile,
-        locked_main_volume_db=locked_main_volume_db,
-        fanin_gate_context=fanin_gate_context,
-    )
-    log_event(
-        logger,
-        "correction.crossover_driver_capture_sweep",
-        status=payload.get("status"),
-        group_id=raw.get("speaker_group_id"),
-        role=raw.get("role"),
     )
     return payload
 

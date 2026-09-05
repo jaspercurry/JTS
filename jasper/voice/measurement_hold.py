@@ -228,23 +228,13 @@ class MeasurementHold:
                     deadline_monotonic=setup_deadline,
                     phase="volume_guard",
                 )
-                pause_meter_for_measurement = getattr(
-                    self._wake_loop._tts,
-                    "pause_content_meter_for_measurement",
-                    None,
+                await self._await_pause_step(
+                    self._wake_loop._tts.pause_content_meter_for_measurement(
+                        setup_deadline,
+                    ),
+                    deadline_monotonic=setup_deadline,
+                    phase="content_meter",
                 )
-                if callable(pause_meter_for_measurement):
-                    await self._await_pause_step(
-                        pause_meter_for_measurement(setup_deadline),
-                        deadline_monotonic=setup_deadline,
-                        phase="content_meter",
-                    )
-                else:
-                    await self._await_pause_step(
-                        self._wake_loop._tts.pause_content_meter(),
-                        deadline_monotonic=setup_deadline,
-                        phase="content_meter",
-                    )
                 meter_paused = True
 
                 drain = self._wake_loop._drain_inflight_output

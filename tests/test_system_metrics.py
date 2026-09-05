@@ -23,6 +23,7 @@ from unittest.mock import patch
 import pytest
 
 from jasper.control import system_metrics
+from jasper.memory_policy import MemoryPressure
 from jasper.control.server import _make_handler
 from jasper.control.system_metrics import SystemSampler, read_build_info
 
@@ -115,29 +116,6 @@ def test_read_meminfo_returns_sensible_values() -> None:
     assert out["swap_used_mb"] >= 0
 
 
-def test_memory_pressure_readers_parse_and_tolerate_absence(tmp_path) -> None:
-    """PSI + the OOM counter parse out of their real file shapes, and a
-    kernel that publishes neither yields None rather than a calm zero."""
-    pressure = tmp_path / "memory"
-    pressure.write_text(
-        "some avg10=0.00 avg60=12.34 avg300=1.20 total=987654\n"
-        "full avg10=0.00 avg60=3.21 avg300=0.40 total=123456\n",
-    )
-    vmstat = tmp_path / "vmstat"
-    vmstat.write_text("nr_free_pages 12345\noom_kill 3\npgmajfault 42\n")
-
-    assert SystemSampler._read_mem_psi_some_avg60(str(pressure)) == 12.34
-    assert SystemSampler._read_oom_kill(str(vmstat)) == 3
-
-    missing = str(tmp_path / "nope")
-    assert SystemSampler._read_mem_psi_some_avg60(missing) is None
-    assert SystemSampler._read_oom_kill(missing) is None
-    # Present but without the counter (older kernel) is also "no reading".
-    no_counter = tmp_path / "vmstat-old"
-    no_counter.write_text("nr_free_pages 12345\n")
-    assert SystemSampler._read_oom_kill(str(no_counter)) is None
-
-
 @pytest.mark.parametrize("psi,oom,expected", [
     (12.34, 3, {"mem_psi_some_avg60": 12.34, "oom_kill": 3}),
     (0.0, 0, {"mem_psi_some_avg60": 0.0, "oom_kill": 0}),
@@ -149,10 +127,9 @@ def test_snapshot_omits_memory_pressure_fields_when_unreadable(
     """Omitted, not zeroed: the dashboard must be able to tell "this kernel
     has no PSI" from "there is no pressure"."""
     s = SystemSampler(history_points=5)
-    with patch.object(
-        SystemSampler, "_read_mem_psi_some_avg60", return_value=psi,
-    ), patch.object(
-        SystemSampler, "_read_oom_kill", return_value=oom,
+    with patch(
+        "jasper.control.system_metrics.memory_pressure",
+        return_value=MemoryPressure(psi, oom),
     ), patch.object(
         SystemSampler, "_read_meminfo",
         return_value={"total_mb": 2048, "available_mb": 1024,
@@ -221,31 +198,31 @@ def test_read_disk_returns_pct_and_total() -> None:
 # ---------- vcgencmd readers (mock the subprocess) ----------------------
 
 
-def test_read_temp_c_parses_vcgencmd_output() -> None:
+def test_read_soc_temp_c_parses_vcgencmd_output() -> None:
     fake = type("R", (), {"stdout": "temp=47.7'C\n"})()
     with patch.object(system_metrics.subprocess, "run", return_value=fake):
-        assert SystemSampler._read_temp_c("/no/such/thermal-zone") == 47.7
+        assert system_metrics.read_soc_temp_c("/no/such/thermal-zone") == 47.7
 
 
-def test_read_temp_c_prefers_thermal_zone_sysfs(tmp_path) -> None:
+def test_read_soc_temp_c_prefers_thermal_zone_sysfs(tmp_path) -> None:
     thermal = tmp_path / "temp"
     thermal.write_text("45250\n")
     with patch.object(system_metrics.subprocess, "run") as run:
-        assert SystemSampler._read_temp_c(str(thermal)) == 45.25
+        assert system_metrics.read_soc_temp_c(str(thermal)) == 45.25
     run.assert_not_called()
 
 
-def test_read_temp_c_returns_none_on_missing_sources() -> None:
+def test_read_soc_temp_c_returns_none_on_missing_sources() -> None:
     with patch.object(
         system_metrics.subprocess, "run", side_effect=FileNotFoundError(),
     ):
-        assert SystemSampler._read_temp_c("/no/such/thermal-zone") is None
+        assert system_metrics.read_soc_temp_c("/no/such/thermal-zone") is None
 
 
-def test_read_temp_c_returns_none_on_unparseable() -> None:
+def test_read_soc_temp_c_returns_none_on_unparseable() -> None:
     fake = type("R", (), {"stdout": "garbage"})()
     with patch.object(system_metrics.subprocess, "run", return_value=fake):
-        assert SystemSampler._read_temp_c("/no/such/thermal-zone") is None
+        assert system_metrics.read_soc_temp_c("/no/such/thermal-zone") is None
 
 
 def test_read_throttled_splits_current_vs_history() -> None:
@@ -278,8 +255,8 @@ def test_vcgencmd_tick_records_temperature_history() -> None:
         history_points=12,
     )
     with patch.object(
-        SystemSampler,
-        "_read_temp_c",
+        system_metrics,
+        "read_soc_temp_c",
         side_effect=[41.0, 42.0, 43.0],
     ), patch.object(
         SystemSampler,
@@ -305,8 +282,8 @@ def test_vcgencmd_tick_reports_missing_temperature_as_null() -> None:
         history_points=12,
     )
     with patch.object(
-        SystemSampler,
-        "_read_temp_c",
+        system_metrics,
+        "read_soc_temp_c",
         return_value=None,
     ), patch.object(
         SystemSampler,

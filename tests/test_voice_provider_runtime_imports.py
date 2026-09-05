@@ -208,32 +208,32 @@ def probe(monkeypatch):
     return box
 
 
-def test_skips_when_no_provider_configured(monkeypatch, probe):
+def test_no_probe_when_no_provider_configured(monkeypatch, probe):
     monkeypatch.setattr(
         doctor_voice, "read_active_provider_state", lambda: _state("unset"),
     )
     result = doctor_voice.check_provider_importable()
-    assert result.status == "skipped"
+    assert result.status == "ok"
     assert result.reason == doctor_voice.REASON_PROVIDER_IMPORTS_NOT_CONFIGURED
     assert probe["calls"] == [], "must not spawn a probe with nothing selected"
 
 
-def test_skips_when_ssot_file_missing(monkeypatch, probe):
+def test_no_probe_when_ssot_file_missing(monkeypatch, probe):
     monkeypatch.setattr(
         doctor_voice, "read_active_provider_state", lambda: _state("missing"),
     )
-    assert doctor_voice.check_provider_importable().status == "skipped"
+    assert doctor_voice.check_provider_importable().status == "ok"
     assert probe["calls"] == []
 
 
-def test_warns_rather_than_failing_when_selection_unreadable(monkeypatch, probe):
+def test_does_not_probe_when_the_selection_is_unreadable(monkeypatch, probe):
     """A non-root doctor that cannot traverse /var/lib/jasper knows nothing
-    about the provider's imports — that is 'can't tell', not 'broken'."""
+    about the provider's imports, so it must spawn nothing. The verdict
+    itself is pinned in tests/test_doctor_voice.py."""
     monkeypatch.setattr(
         doctor_voice, "read_active_provider_state", lambda: _state("unreadable"),
     )
-    result = doctor_voice.check_provider_importable()
-    assert result.status == "warn"
+    doctor_voice.check_provider_importable()
     assert probe["calls"] == []
 
 

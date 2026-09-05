@@ -417,6 +417,10 @@ def test_both_profiles_refresh_only_active_sources_then_reapply_intent():
         assert "jasper-source-intent-reconcile.service" in body, (
             f"{fn}: the coordinator must also be enabled for boot convergence"
         )
+        assert "jasper-usbsink-volume.service" in body, (
+            f"{fn}: the USB volume bridge must also be restarted like its "
+            "sibling renderer daemons"
+        )
     # The shared helper is the ONE deploy path that runs the full coordinator.
     helper = _function_body(source, "reapply_source_intent")
     assert "jasper-source-intent-reconcile" in helper

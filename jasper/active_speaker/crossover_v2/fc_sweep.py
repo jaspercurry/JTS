@@ -7,8 +7,8 @@
 The corner is executed, not hunted: nothing here ranks corners. Only the two
 drivers' declared hard excitation bands may refuse one — never a bound that
 cannot name the damage mechanism it protects (#2870). The name is historical:
-R17's corner sweep was deleted (``docs/tuning-master-plan.md`` ruling R1,
-ticket 2.3); no sweep remains.
+R17's corner sweep was deleted (``docs/tuning-master-plan.md`` ruling R1);
+no sweep remains.
 """
 
 from __future__ import annotations

@@ -121,8 +121,8 @@ def claim_reconcile_request(path: str | None = None) -> str | None:
     racing request. A failed claim other than "no request" propagates: the
     request survives either way, so failing loudly leaves the oneshot in
     `failed` and stops the watcher at systemd's path trigger limit, which the
-    jasper-accessory-reconcile.path row in jasper-deploy-health reports.
-    Swallowing it would instead re-run full BlueZ passes silently forever.
+    doctor's `check_service_runtime_state` reports. Swallowing it would
+    instead re-run full BlueZ passes silently forever.
     """
     target = path or DEFAULT_RECONCILE_REQUEST_FILE
     claimed = target + _CLAIMED_SUFFIX

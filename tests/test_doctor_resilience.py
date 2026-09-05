@@ -27,7 +27,10 @@ from jasper.cli.doctor.resilience import (
     check_supply_voltage,
 )
 
-from .doctor_test_support import _registered_check_names
+from .doctor_test_support import (
+    _make_unit_states_fake,
+    _registered_check_names,
+)
 
 # ------------------------------------------------- check_service_runtime_state
 
@@ -60,9 +63,11 @@ def _unit_block(unit: str, active: str, sub: str, restarts: int = 0) -> str:
             "fail",
             resilience.REASON_UNITS_FAILED_OR_UNSTABLE,
         ),
+        # NRestarts is cumulative until reset-failed or a reboot, so a unit
+        # that is up now must not latch a warn for the rest of the boot.
         (
             [("jasper-voice.service", "active", "running", 2)],
-            "warn",
+            "ok",
             resilience.REASON_UNITS_RESTARTED,
         ),
         # A parked coupling oneshot leaves its evidence only in
@@ -117,6 +122,187 @@ def test_check_service_runtime_state_flags_a_non_oneshot_stuck_activating(
 
 def test_runtime_state_units_track_the_coupling_reconciler_oneshot():
     assert "jasper-fanin-coupling-auto.service" in _shared._RUNTIME_STATE_UNITS
+
+
+# ------------------------------------------------ check_required_units_active
+
+
+def test_required_units_are_all_tracked_for_failed_state():
+    """The row defers every non-`inactive` state to check_service_runtime_state,
+    which reads only _RUNTIME_STATE_UNITS — a required unit missing from that
+    tuple falls through both rows when it fails."""
+    assert set(resilience._REQUIRED_ACTIVE_UNITS) <= set(
+        _shared._RUNTIME_STATE_UNITS
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides, status, reason",
+    [
+        ({}, "ok", ""),
+        # The gap this row closes: `inactive` is neither failed nor unstable,
+        # so check_service_runtime_state saw nothing while the HID accessory
+        # bridge was simply gone.
+        (
+            {"jasper-input.service": {"active_state": "inactive"}},
+            "fail", resilience.REASON_REQUIRED_UNIT_INACTIVE,
+        ),
+        # An install that did not finish reads inactive/not-found, never failed.
+        (
+            {"jasper-accessory-reconcile.path": {
+                "active_state": "inactive", "load_state": "not-found",
+            }},
+            "fail", resilience.REASON_REQUIRED_UNIT_INACTIVE,
+        ),
+        # Every other state is someone else's: `failed` belongs to
+        # check_service_runtime_state (one down unit is one finding, not two),
+        # and a healthy unit mid-reload is no finding at all.
+        (
+            {"jasper-input.service": {"active_state": "failed"}}, "ok", "",
+        ),
+        (
+            {"jasper-input.service": {"active_state": "reloading"}}, "ok", "",
+        ),
+    ],
+    ids=["all-active", "inactive", "not-found", "failed", "reloading"],
+)
+def test_check_required_units_active_verdicts(
+    monkeypatch, overrides, status, reason,
+):
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", _make_unit_states_fake(overrides),
+    )
+
+    result = resilience.check_required_units_active()
+
+    assert (result.status, result.reason) == (status, reason)
+
+
+def test_check_required_units_active_skips_without_systemctl(monkeypatch):
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", _make_unit_states_fake(unavailable=True),
+    )
+
+    result = resilience.check_required_units_active()
+
+    assert (result.status, result.reason) == (
+        "skipped", _shared.REASON_SYSTEMCTL_UNAVAILABLE,
+    )
+
+
+# --------------------------------------------------- check_voice_unit_running
+
+
+@pytest.mark.parametrize(
+    "profile, unit, marker, remote, status, reason",
+    [
+        # The gap: `inactive` is neither failed nor unstable, so
+        # check_service_runtime_state sees nothing while no wake gets an
+        # answer.
+        (
+            "full", {"active_state": "inactive", "sub_state": "dead"}, False,
+            False, "fail", resilience.REASON_VOICE_UNIT_INACTIVE,
+        ),
+        # ConditionPathExists=!/var/lib/jasper/voice-input-absent parks the
+        # unit on a box with neither a local nor an accessory mic: hardware,
+        # not a fault.
+        (
+            "full", {"active_state": "inactive", "sub_state": "dead"}, True,
+            False, "skipped", resilience.REASON_VOICE_UNIT_PARKED_NO_INPUT,
+        ),
+        (
+            "full", {"active_state": "active", "sub_state": "running"}, False,
+            False, "ok", "",
+        ),
+        # A streambox runs the assistant only while a mic-bearing remote is
+        # paired (ADR-0217): with none paired, inactive is the correct state.
+        (
+            "streambox", {"active_state": "inactive", "sub_state": "dead"},
+            False, False, "skipped",
+            resilience.REASON_VOICE_UNIT_NOT_FULL_PROFILE,
+        ),
+        # With one paired, the remote's talk button gets no answer — a warn,
+        # because the reconciler that owns the lifecycle may still be mid-pass.
+        (
+            "streambox", {"active_state": "inactive", "sub_state": "dead"},
+            False, True, "warn",
+            resilience.REASON_VOICE_UNIT_INACTIVE_PAIRED_REMOTE,
+        ),
+        (
+            "streambox", {"active_state": "active", "sub_state": "running"},
+            False, True, "ok", "",
+        ),
+        # A unit systemd cannot load is not an inactive one.
+        (
+            "full",
+            {"active_state": "inactive", "load_state": "not-found"},
+            False, False, "skipped", resilience.REASON_VOICE_UNIT_UNOBSERVED,
+        ),
+    ],
+    ids=[
+        "full-inactive", "parked-no-mic", "active", "streambox-no-remote",
+        "streambox-remote-paired", "streambox-remote-answered", "not-found",
+    ],
+)
+def test_check_voice_unit_running_verdicts(
+    monkeypatch, tmp_path, profile, unit, marker, remote, status, reason,
+):
+    monkeypatch.setattr(_shared, "read_install_profile", lambda: profile)
+    absent = tmp_path / "voice-input-absent"
+    if marker:
+        absent.write_text("")
+    monkeypatch.setenv("JASPER_VOICE_INPUT_ABSENT_MARKER", str(absent))
+    # The accessory owner's published file is the one "a mic-bearing remote is
+    # paired" fact; write a real one so the real reader answers.
+    mic_env = tmp_path / "accessory-mics.env"
+    if remote:
+        mic_env.write_text("JASPER_MANUAL_MIC_SOURCES=wiim_remote_2=hw:WiiM\n")
+    monkeypatch.setenv("JASPER_ACCESSORY_MIC_ENV_FILE", str(mic_env))
+    monkeypatch.setattr(
+        _evidence, "read_unit_states",
+        _make_unit_states_fake({"jasper-voice.service": unit}),
+    )
+
+    result = resilience.check_voice_unit_running()
+
+    assert (result.status, result.reason) == (status, reason)
+
+
+def test_an_inactive_voice_unit_does_not_claim_playback_silence(
+    monkeypatch, tmp_path,
+):
+    """`speaker_silent` means the speaker emits NOTHING. Music keeps playing
+    with the voice daemon down — what is silent is the assistant."""
+    monkeypatch.setattr(_shared, "read_install_profile", lambda: "full")
+    monkeypatch.setenv(
+        "JASPER_VOICE_INPUT_ABSENT_MARKER", str(tmp_path / "absent"),
+    )
+    monkeypatch.setattr(
+        _evidence, "read_unit_states",
+        _make_unit_states_fake(
+            {"jasper-voice.service": {"active_state": "inactive"}},
+        ),
+    )
+
+    result = resilience.check_voice_unit_running()
+
+    assert result.status == "fail"
+    assert result.speaker_silent is False
+
+
+def test_check_voice_unit_running_skips_without_systemctl(monkeypatch, tmp_path):
+    monkeypatch.setattr(_shared, "read_install_profile", lambda: "full")
+    monkeypatch.setenv(
+        "JASPER_VOICE_INPUT_ABSENT_MARKER", str(tmp_path / "absent"),
+    )
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", _make_unit_states_fake(unavailable=True),
+    )
+
+    result = resilience.check_voice_unit_running()
+
+    assert result.status == "skipped"
+    assert result.reason == resilience.REASON_VOICE_UNIT_UNOBSERVED
 
 
 # ------------------------------------------------------- supervisor reboot state
@@ -321,10 +507,11 @@ def test_supervisor_snapshots_check_skips_when_state_unavailable(monkeypatch):
             resilience.REASON_UNDERVOLTAGE_NOW,
         ),
         # Bit 0 of throttled_history only (raw bit 16): happened since boot,
-        # not now.
+        # not now. The firmware latches it until the next reboot and there is
+        # nothing left to act on, so it reports rather than warns.
         (
             {"throttled_now": 0x0, "throttled_history": 0x1},
-            "warn",
+            "ok",
             resilience.REASON_UNDERVOLTAGE_HISTORY,
         ),
         # Other throttled bits set (frequency cap, temp limit) but neither
@@ -346,9 +533,93 @@ def test_check_supply_voltage_verdicts(monkeypatch, current, status, reason):
     "check_name",
     [
         "check_bootloop_guard",
+        "check_required_units_active",
         "check_supervisor_runtime_snapshots",
         "check_supply_voltage",
+        "check_voice_unit_running",
     ],
 )
 def test_resilience_checks_are_registered(check_name):
     assert check_name in _registered_check_names()
+
+
+# --------------------------------------- check_outputd_failure_reconcile_park
+
+
+def _park_check(monkeypatch, tmp_path, *, record: str | None, unit: dict):
+    target = tmp_path / "failure-reconcile.park"
+    if record is not None:
+        target.write_text(record)
+    monkeypatch.setenv("JASPER_OUTPUTD_RECONCILE_PARK_STATE", str(target))
+    monkeypatch.setattr(
+        _evidence, "read_unit_states",
+        _make_unit_states_fake({"jasper-outputd.service": unit}),
+    )
+    return resilience.check_outputd_failure_reconcile_park()
+
+
+_PARK = "parked_at=1000\nexit_status=78\nreason=recent\n"
+_RUNNING = {"active_state": "active", "result": "success"}
+_FAILED = {"active_state": "failed", "result": "exit-code"}
+_ACTIVATING = {"active_state": "activating", "sub_state": "start", "result": "success"}
+
+
+@pytest.mark.parametrize(
+    "record, unit, status, reason, silent",
+    [
+        (None, _RUNNING, "ok", "", False),
+        (None, _FAILED, "fail", resilience.REASON_OUTPUTD_UNIT_FAILED, True),
+        (None, _ACTIVATING, "warn", resilience.REASON_OUTPUTD_UNIT_UNSTABLE, False),
+        (_PARK, _FAILED, "fail", resilience.REASON_OUTPUTD_PARKED, True),
+        (_PARK, _RUNNING, "warn",
+         resilience.REASON_OUTPUTD_PARK_RECORD_STALE, False),
+    ],
+    ids=["healthy", "failed-no-record", "unstable-no-record", "parked", "stale-record"],
+)
+def test_outputd_failure_reconcile_park_verdicts(
+    tmp_path, monkeypatch, record, unit, status, reason, silent,
+):
+    """outputd owns the DAC write loop, so both fail branches prove silence."""
+    result = _park_check(monkeypatch, tmp_path, record=record, unit=unit)
+    assert (result.status, result.reason) == (status, reason)
+    assert result.speaker_silent is silent
+
+
+def test_outputd_failure_reconcile_park_skips_without_systemctl(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv(
+        "JASPER_OUTPUTD_RECONCILE_PARK_STATE",
+        str(tmp_path / "failure-reconcile.park"),
+    )
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", _make_unit_states_fake(unavailable=True),
+    )
+    result = resilience.check_outputd_failure_reconcile_park()
+    assert result.status == "skipped"
+    assert result.reason == resilience.REASON_OUTPUTD_RECONCILE_UNOBSERVED
+
+
+def test_a_failed_outputd_is_exactly_one_fail_row(tmp_path, monkeypatch):
+    """One fact, one row: check_service_runtime_state no longer tracks outputd,
+    so the park check is the only check that fails on it."""
+    park = _park_check(monkeypatch, tmp_path, record=_PARK, unit=_FAILED)
+    generic = resilience.check_service_runtime_state()
+    assert park.status == "fail"
+    assert generic.status == "ok"
+    assert "jasper-outputd.service" not in _shared._RUNTIME_STATE_UNITS
+
+
+@pytest.mark.parametrize(
+    "parked_at, shown",
+    [(1000, "clock unset"), (None, "unrecorded"), (1_800_000_000, "s ago")],
+    ids=["pre-2020-clock", "lost-field", "real-age"],
+)
+def test_a_pre_2020_park_stamp_is_named_not_counted(parked_at, shown):
+    """A Pi with no RTC stamps 1970 until NTP lands; "2000000000s ago" is
+    worse than saying the clock was unset."""
+    assert shown in resilience._parked_ago(parked_at, now=1_800_000_100.0)
+
+
+def test_outputd_failure_reconcile_park_is_registered():
+    assert "check_outputd_failure_reconcile_park" in _registered_check_names()

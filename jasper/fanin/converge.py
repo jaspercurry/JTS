@@ -34,7 +34,7 @@ leaves a state the next pass handles:
   spine, unchanged.
 
 While the moved graph and the endpoint marker disagree the doctor names it
-outright — ``check_ring_split_transport``, with the runnable remedy — and
+outright — ``check_content_transport_coherence``, with the runnable remedy — and
 the next pass converges it. A one-owner box gets a loud, actionable state and
 self-heals; that is the trade this ships instead of a durable restore point.
 

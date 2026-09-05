@@ -58,6 +58,7 @@ from ..route_latency.status_socket import (
     FANIN_STATUS_SOCKET,
     OUTPUTD_STATUS_SOCKET,
 )
+from .. import outputd_failure_reconcile_state
 from ..volume_diagnostics import (
     build_volume_policy_snapshot,
     read_diagnostics as _read_volume_diagnostics,
@@ -68,11 +69,9 @@ from . import (
     debug_control,
     grouping_supervisor,
     measurement_hold,
-    mpris,
     shairport_supervisor,
     system_supervisor,
     transport_park,
-    wifi_guardian_state,
 )
 from .aec_endpoints import _aec_full_status
 from .uds import _local_status_json, _mux_socket_command, _voice_socket_command
@@ -88,9 +87,14 @@ OUTPUTD_BASE_CAMILLA_CONFIG = "/etc/camilladsp/outputd-cutover.yml"
 # Per-probe ceiling for the CamillaDSP /state probe: a wedged-but-listening
 # DSP (TCP accepted, websocket read stalled) would otherwise hang the whole
 # aggregate indefinitely. On timeout the probe fails soft to its all-None
-# section, like its self-bounding siblings (voice/mpris 2 s, mux 1 s,
+# section, like its self-bounding siblings (voice 2 s, mux 1 s,
 # fan-in/outputd 2 s).
 _CAMILLA_PROBE_TIMEOUT_SEC = 2.0
+
+# Bump when the key sets pinned in tests/test_wire_contracts.py change shape,
+# so a consumer can branch on the number instead of probing for keys.
+# See ADR-0233 rule 2.
+STATE_SCHEMA_VERSION = 1
 
 # Liveness backstop for the entire cross-daemon fan-out. NOT a latency
 # control — the normal path completes in ~200 ms, with HA's cached network
@@ -770,12 +774,6 @@ async def _outputd_status(
     return await local_status_json(OUTPUTD_STATUS_SOCKET)
 
 
-async def _wifi_guardian_snapshot() -> dict[str, Any]:
-    """Run bounded nmcli/journal probes off the aggregate event loop."""
-
-    return await asyncio.to_thread(wifi_guardian_state.snapshot)
-
-
 def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Add on/off wizard availability to mux source status.
 
@@ -1072,13 +1070,11 @@ class _Probes(NamedTuple):
     """Built positionally: field order IS the gather order, ``ha_status`` last."""
 
     camilla: dict[str, Any]
-    airplay: bool | None
     voice: dict | None
     fanin: dict | None
     outputd: dict | None
     mux: dict | None
     aec: dict | None
-    wifi_guardian: dict[str, Any]
     ha_status: dict[str, Any]
 
 
@@ -1093,6 +1089,7 @@ async def _get_state(
     aec_full_status: Callable[[], dict] = _aec_full_status,
     read_transit_state_func: Callable[[], dict] = read_transit_state,
     ha_status_snapshot: Callable[[], dict[str, Any]] | None = None,
+    airplay_playing_snapshot: Callable[[], bool | None] | None = None,
     transport_park_snapshot: Callable[[], dict[str, Any]] = transport_park.snapshot,
     service_states_snapshot: (
         Callable[[], dict[str, dict[str, Any]]] | None
@@ -1126,21 +1123,22 @@ async def _get_state(
     sound_profile = _soft_read("sound profile state probe failed", _read_sound_profile)
 
     ha_status = _ha_status(ha_status_snapshot)
+    # The AirPlay health sampler's held MPRIS PlaybackStatus, so no `busctl`
+    # runs per request (ADR-0233 rule 2). None when the sampler is absent or
+    # has no sample yet; freshness is bounded by its own interval.
+    airplay_playing = (
+        None if airplay_playing_snapshot is None
+        else _soft_read("airplay playing snapshot failed", airplay_playing_snapshot)
+    )
     try:
         gathered = await asyncio.wait_for(
             asyncio.gather(
                 _camilla_status(host=camilla_host, port=camilla_port),
-                # The shared mpris probe owns the subprocess hygiene
-                # (kill-on-timeout so a DBus stall can't leak one busctl per
-                # /state poll; spawn OSError → None instead of 500ing the whole
-                # fail-soft aggregate).
-                mpris.shairport_playing(timeout=2.0),
                 _voice_status(voice_socket_command, voice_socket_path),
                 local_status_json(FANIN_STATUS_SOCKET),
                 _outputd_status(local_status_json=local_status_json),
                 _mux_status(mux_socket_command),
                 _aec_status(aec_full_status),
-                _wifi_guardian_snapshot(),
             ),
             timeout=_STATE_AGGREGATE_BUDGET_SEC,
         )
@@ -1186,7 +1184,7 @@ async def _get_state(
         voice_session=voice_session,
         mux_status=probes.mux,
         spotify_playing=spotify["playing"],
-        airplay_playing=probes.airplay,
+        airplay_playing=airplay_playing,
         usbsink_playing=bool(usbsink_state and usbsink_state.get("playing")),
     )
 
@@ -1265,6 +1263,7 @@ async def _get_state(
     mic_presence = read_mic_presence()
 
     return {
+        "schema_version": STATE_SCHEMA_VERSION,
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         "voice": {
             "provider": active_provider.provider,
@@ -1319,7 +1318,7 @@ async def _get_state(
         "renderers": {
             "spotify": spotify,
             "airplay": (
-                None if probes.airplay is None else {"playing": probes.airplay}
+                None if airplay_playing is None else {"playing": airplay_playing}
             ),
             # null when the feature is disabled (no state file), so a
             # consumer can show "off" as distinct from "idle".
@@ -1350,10 +1349,6 @@ async def _get_state(
             # failures (rate-limited 1/24h). Off via
             # JASPER_SYSTEM_SUPERVISOR=disabled.
             "system_supervisor": system_supervisor.snapshot(),
-            # Self-heal of the NM keyfile after dirty shutdown. Type=oneshot,
-            # so there is no daemon to ask: synthesised from the on-disk stash
-            # plus the most recent `event=wifi_guardian.*` journal line.
-            "wifi_guardian": probes.wifi_guardian,
             # Cross-boot circuit breaker for the StartLimitAction=reboot
             # ladder. {"ran": false} when the oneshot hasn't run this boot;
             # tripped=true means reboot escalation is disarmed for this boot —
@@ -1366,6 +1361,14 @@ async def _get_state(
             # {"status": "absent"} on a healthy boot. Same reader
             # jasper-doctor's check_camilla_recover_park uses.
             "camilla_recover": camilla_recover_state.snapshot(),
+            # jasper-outputd's ExecStopPost park record. parked=true means the
+            # stop helper judged the failure terminal: outputd owns the DAC
+            # write loop, so the speaker emits NOTHING until the output env is
+            # fixed and the unit restarted. Same reader jasper-doctor's
+            # check_outputd_failure_reconcile_park uses.
+            "outputd_failure_reconcile": outputd_failure_reconcile_state.snapshot(
+                (service_states or {}).get(outputd_failure_reconcile_state.UNIT),
+            ),
             # The four named parks of the one-audio-transport rule (ADR-0178).
             # Read from the audio-health sampler's cached verdict, and by the
             # same reader jasper-doctor's check_ring_transport_park uses, so

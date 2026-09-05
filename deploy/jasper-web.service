@@ -31,23 +31,23 @@ EnvironmentFile=-/var/lib/jasper/speaker_name.env
 # jasper.env so wizard-written values win. Leading `-` makes it
 # optional — fresh installs boot fine without it (and land on the
 # wizard).
-# WS1 Phase 4b — moved into the group-`jasper-intsecrets` dir alongside
-# the Spotify OAuth token cache.
+# Lives in the group-`jasper-intsecrets` dir alongside the Spotify OAuth
+# token cache.
 EnvironmentFile=-/var/lib/jasper-intsecrets/spotify_credentials.env
 # Optional file written by the voice-provider wizard at
 # /voice/. Same override pattern: wizard values beat operator
 # defaults. Sourced here so the wizard's process can render the
-# current state correctly even on cold boot. WS1 Phase 4a: this holds
+# current state correctly even on cold boot. This holds
 # only the non-secret selectors now; the API keys are in voice_keys.env.
 EnvironmentFile=-/var/lib/jasper/voice_provider.env
-# WS1 Phase 4a — the GEMINI/OPENAI/XAI API keys (group `jasper-secrets`).
+# The GEMINI/OPENAI/XAI API keys (group `jasper-secrets`).
 # The /voice/ wizard writes + renders them; jasper-web joins the
 # jasper-secrets group (below) so it can read/replace this file. systemd
 # itself reads EnvironmentFile= as root, so sourcing it always works.
 EnvironmentFile=-/var/lib/jasper-secrets/voice_keys.env
 # Optional file written by the Google wizard at /google/ — holds
 # GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET. Same override pattern.
-# WS1 Phase 4a — moved into the group-`jasper-secrets` dir.
+# Lives in the group-`jasper-secrets` dir.
 EnvironmentFile=-/var/lib/jasper-secrets/google_credentials.env
 # Google Routes API key written by /transit/. This is a billable Maps API
 # key, so it lives in the jasper-secrets compartment rather than transit.env.
@@ -93,7 +93,7 @@ ExecStart=/opt/jasper/.venv/bin/python -m jasper.web
 Restart=on-failure
 RestartSec=2
 
-# WS1 Phase 3b — user drop (3b-3). jasper-web is the most network-exposed
+# jasper-web is the most network-exposed
 # surface (untrusted SSID / form / OAuth input), so de-rooting it is the highest-
 # value drop — and the riskiest, because a Wi-Fi-management break is the
 # worst-case brick for a headless, often Ethernet-less speaker. It runs as a
@@ -125,9 +125,9 @@ RestartSec=2
 # (below) for the same diagnostic-subprocess caution as jasper-control.
 User=jasper-web
 Group=jasper
-# WS1 Phase 4a — `jasper-secrets` (supplementary) lets the wizards write
+# `jasper-secrets` (supplementary) lets the wizards write
 # + read the split-out LLM keys, Google client secret, and Google OAuth
-# token tree in /var/lib/jasper-secrets. WS1 Phase 4b — `jasper-intsecrets`
+# token tree in /var/lib/jasper-secrets. `jasper-intsecrets`
 # lets the wizards write/read HA + Spotify credentials and token caches.
 # `audio` (active-speaker commissioning correction_substream tone),
 # `bluetooth` (BlueZ Alias), `systemd-journal` (journalctl -k).
@@ -142,6 +142,9 @@ Group=jasper
 SupplementaryGroups=audio bluetooth systemd-journal jasper-secrets jasper-intsecrets jts-ring
 CapabilityBoundingSet=
 SystemCallFilter=@system-service
+# UMask=0007 — wizard-written state under /var/lib/jasper(-secrets|-intsecrets)
+# lands group-writable (0660), not 0644. Mirrors jasper-voice/-mux/-control.
+UMask=0007
 
 # Hardening — this process needs to read /etc/jasper/jasper.env,
 # read+write /var/lib/jasper/ and generated CamillaDSP configs,
@@ -158,10 +161,10 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
-# /var/lib/jasper-secrets (WS1 Phase 4a) is writable so the /voice +
+# /var/lib/jasper-secrets is writable so the /voice +
 # /google wizards can atomically replace the secret files + write OAuth
 # tokens there (setgid dir → group `jasper-secrets`).
-# /var/lib/jasper-intsecrets (WS1 Phase 4b) is writable so the /spotify +
+# /var/lib/jasper-intsecrets is writable so the /spotify +
 # /ha wizards can atomically replace integration secret files and Spotify
 # OAuth tokens there.
 ReadWritePaths=/var/lib/jasper /var/lib/jasper-secrets /var/lib/jasper-intsecrets /var/lib/camilladsp/configs /etc/bluetooth /etc/avahi/services
@@ -187,11 +190,10 @@ ReadWritePaths=/var/lib/jasper /var/lib/jasper-secrets /var/lib/jasper-intsecret
 RuntimeDirectory=jasper-active-speaker
 RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
-# WS1 phase-1 hardening: jasper-web gets
-# the full phase-1 stanza. ProtectKernelLogs is OMITTED — the wizards shell to
+# ProtectKernelLogs is OMITTED — the wizards shell to
 # nmcli / journalctl -k for Wi-Fi diagnostics and must not be starved of kernel-
-# log access. CapabilityBoundingSet= + SystemCallFilter= landed with the 3b-3
-# user drop (above).
+# log access. CapabilityBoundingSet= + SystemCallFilter= are set with the
+# non-root user-drop above.
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

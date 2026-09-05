@@ -1254,6 +1254,11 @@ class WakeLoop:
             async def pause_content_meter(self) -> None:
                 return None
 
+            async def pause_content_meter_for_measurement(
+                self, deadline_monotonic: float,
+            ) -> None:
+                return None
+
             async def prepare_assistant_context(self, **_kwargs) -> None:
                 return None
 

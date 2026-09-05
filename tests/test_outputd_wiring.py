@@ -171,10 +171,11 @@ def test_install_consumes_reconciled_output_without_reusing_dongle_mixer_card():
     assert "apply_observed_single_policy()" in reconcile
     assert 'OUTPUT_DAC_ID="$OBSERVED_OUTPUT_PROFILE_ID"' in reconcile
     assert 'OUTPUT_DAC_CARD="$OBSERVED_OUTPUT_SELECTED_CARD_ID"' in reconcile
-    # Classification is registry-backed: one dongle probe, no per-board names.
-    assert "find_card 'usb-c to 3.5mm'" in reconcile
-    assert "find_card 'hifiberry" not in reconcile
-    assert "find_card 'snd_rpi" not in reconcile
+    # Classification is registry-backed and the shell holds no hardware label:
+    # the classifier's env emitter names the Apple cards (ADR-0235 R2).
+    assert "usb-c to 3.5mm" not in reconcile.lower()
+    assert "find_card" not in reconcile
+    assert 'DONGLE_CARD="${OBSERVED_OUTPUT_APPLE_CARD_IDS%% *}"' in reconcile
     assert "DAC8X_OUTPUT_CARD=" not in reconcile
     assert "DAC8X_STUDIO_OUTPUT_CARD=" not in reconcile
     assert "jasper_asound_render_template" in install_sh
@@ -400,7 +401,6 @@ def test_voice_tts_socket_resolves_fanin_solo_and_outputd_when_bonded(monkeypatc
 
     solo = _resolve_systemd_unit_env(unit, {})
     solo_cfg = _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaSyTest", **solo)
-    assert solo_cfg.tts_transport == "outputd"
     assert solo_cfg.tts_outputd_socket == FANIN_TTS_SOCKET
     assert solo_cfg.duck_transport == "fanin"
 
@@ -992,9 +992,7 @@ def test_neither_outputd_sink_opens_a_content_pcm():
     no_upstream = no_upstream.split("\n            }", 1)[0]
     assert "FinalSinkStartupConfigError" in no_upstream, no_upstream
     assert "return Err(" in no_upstream, no_upstream
-    # And that marker IS the 78 park (the constant the unit's
-    # RestartPreventExitStatus is pinned against).
-    assert "const EXIT_CONFIG: i32 = 78;" in main_rs
+
 
 def test_outputd_single_sink_is_width_parametric_with_mono_reference_fold():
     """The coherent single sink carries width as DATA (a DAC8x rides the same
@@ -1315,7 +1313,7 @@ def test_outputd_ready_is_after_alsa_output_is_primed_and_started():
     started = run_alsa.index("sink.start()?;")
     ready = run_alsa.index("notify_ready(config)?;")
 
-    assert 'notify_systemd("READY=1")' not in main_fn
+    assert "notify(NotifyState::Ready)" not in main_fn
     assert "notify_ready(config)?" not in main_fn
     assert sink_open < primed < started < ready
     assert "swp.set_start_threshold(negotiated.buffer_frames as i64)" in backend_rs
@@ -1352,7 +1350,7 @@ def test_outputd_dual_apple_ready_is_after_multi_period_prime_and_start():
 def test_outputd_state_socket_is_bound_before_thread_spawn():
     main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
     spawn_state = main_rs.split("fn spawn_state_server(", 1)[1].split(
-        "fn lock_memory(",
+        "fn period_duration(",
         1,
     )[0]
     bind = spawn_state.index("StateServer::bind(path, state)")

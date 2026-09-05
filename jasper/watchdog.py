@@ -11,12 +11,12 @@ This is Tier 1 of the JTS resilience ladder. Pairs with
     successfully completes one unit of useful work (a processed mic
     frame, a wake-loop iteration, etc.).
   - A background heartbeat thread wakes every `interval_sec` and
-    notifies systemd `WATCHDOG=1` ONLY if `now - last_progress`
-    is under `stale_threshold_sec`. If the loop wedges (PortAudio
-    blocked in a syscall, Python deadlock, etc.), the heartbeat
-    stops patting, systemd's `WatchdogSec=` timer expires, and
-    `Restart=on-watchdog` brings the daemon back with a fresh
-    process.
+    notifies systemd `WATCHDOG=1` ONLY if `now - last_progress` is
+    under `stale_threshold_sec`. If the loop wedges (PortAudio blocked
+    in a syscall, Python deadlock, etc.), the heartbeat stops patting,
+    systemd's `WatchdogSec=` timer expires, and the unit's `Restart=`
+    policy brings the daemon back with a fresh process (see
+    deploy/systemd/jasper-aec-bridge.service).
 
 The progress-sentinel pattern matters: a naive heartbeat thread
 that just pats every N seconds masks hangs in the work loop. A
@@ -24,17 +24,10 @@ sentinel ensures the heartbeat reflects actual forward progress.
 The thread reads-only — no GIL-contention concerns with the work
 loop.
 
-Failure mode that motivated this (2026-05-11):
-  jasper-aec-bridge's `out_stream.write(clean)` blocked
-  indefinitely after the LoopbackAEC kernel-side timer wedged.
-  The main thread was inside a C call holding the GIL, so
-  Python's signal handler never ran, `_shutdown.set()` was never
-  called, systemd's SIGTERM did nothing, and after 90 s the
-  SIGKILL corrupted snd-aloop kernel state requiring a reboot.
-  With this Heartbeat in place, `bump()` would have stopped
-  firing the moment the loop wedged; systemd would have killed
-  the daemon within `WatchdogSec` and restarted it cleanly,
-  never reaching SIGKILL.
+A wedge inside a blocking C call can hold the GIL indefinitely, so
+Python's own signal handler never runs and SIGTERM does nothing --
+only the watchdog timer's own recovery path gets the daemon back; see
+the Tier 1+2 block in deploy/systemd/jasper-aec-bridge.service.
 
 Pure-Python `sdnotify` (no C extension); if the package is not
 installed or `NOTIFY_SOCKET` is unset (i.e. we're running

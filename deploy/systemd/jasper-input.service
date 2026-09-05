@@ -16,7 +16,7 @@ ExecStart=/opt/jasper/.venv/bin/jasper-input
 Restart=on-failure
 RestartSec=2
 
-# WS1 Phase 3b — user drop (3b-1). Non-root service user; `input`
+# Non-root service user; `input`
 # (supplementary) grants /dev/input/event* (root:input on Trixie), `jasper`
 # (primary) is the shared group and reaches jasper-control's restart-broker
 # socket. Needs no capability — CapabilityBoundingSet= drops them all and
@@ -59,7 +59,6 @@ ProtectHostname=true
 RestrictRealtime=true
 RemoveIPC=true
 UMask=0077
-# WS1 phase-1 hardening (hardened root).
 # AF_NETLINK is required for the pyudev hot-plug monitor; AF_INET for the
 # localhost POST to jasper-control. The one write is covered by
 # RuntimeDirectory= above, so ProtectSystem=strict needs no ReadWritePaths.
@@ -88,8 +87,6 @@ MemoryMax=160M
 # OOM protection (Stage 1 of memory-resilience plan). Accessory bridges: direct
 # USB still works without the HID bridge, and the local mic (where there is
 # one) still works without the accessory mic adapter. Moderate protection.
-# NOTE: MemoryHigh/MemoryMax are silent no-ops until the memory cgroup is
-# enabled (Stage 2 of plan).
 OOMScoreAdjust=-300
 
 [Install]

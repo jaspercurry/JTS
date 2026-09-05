@@ -2801,7 +2801,7 @@ pipeline:
     return yaml
 
 
-# --- channel-routed program graph (crossover measurement session, W2) --------
+# --- channel-routed program graph ---------------------------------------- #
 # The v2 crossover measurement flow plays ONE continuous 2-channel program WAV
 # (docs/historical/crossover-measurement-productization-design.md §5.4):
 # program capture ch0 carries the woofer stimulus, ch1 the tweeter stimulus,

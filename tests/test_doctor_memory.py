@@ -49,7 +49,7 @@ def _mock_meminfo(values: dict[str, int]):
         # covered SKU-agnostically by check_memory_headroom.
         ("streambox", "ok", doctor_memory.REASON_RAM_STREAMBOX_TIER),
         # A marker-read glitch must not silently suppress the warn on a real
-        # full speaker: _install_profile_is_streambox fails toward False.
+        # full speaker: install_profile_is_streambox fails toward False.
         (OSError("marker unreadable"), "warn", doctor_memory.REASON_RAM_UNDERSIZED),
     ],
     ids=["full", "streambox", "profile-unreadable"],
@@ -63,7 +63,7 @@ def test_check_ram_warns_only_for_an_undersized_full_install(profile, status, re
     with patch(
         "builtins.open",
         return_value=_mock_meminfo({"MemTotal": 426076}),  # ~416 MB
-    ), patch("jasper.cli.doctor.memory.read_install_profile", **kwargs):
+    ), patch("jasper.cli.doctor._shared.read_install_profile", **kwargs):
         r = doctor_memory.check_ram()
 
     assert r.status == status
@@ -673,3 +673,42 @@ def test_disk_snapshot_is_none_when_the_read_is_unusable(statvfs):
 
     with patch.object(memory_policy.os, "statvfs", replacement, create=True):
         assert state_aggregate._disk_snapshot("/") is None
+
+
+# ------------------------------------------------------ check_memory_pressure
+
+
+@pytest.mark.parametrize(
+    "psi, kills, status, reason",
+    [
+        (None, 0, "skipped", doctor_memory.REASON_MEMORY_PRESSURE_NO_PSI),
+        # Kills WERE observed, so the nothing-was-observed `skipped` would
+        # hide them; the cumulative counter still never drives the verdict.
+        (None, 3, "ok", doctor_memory.REASON_MEMORY_PRESSURE_NO_PSI),
+        (0.5, 0, "ok", doctor_memory.REASON_MEMORY_PRESSURE_LOW),
+        # Cumulative OOM kills are history, not the verdict: a box that was
+        # killed once must not latch this row into a permanent warn.
+        (0.5, 7, "ok", doctor_memory.REASON_MEMORY_PRESSURE_LOW),
+        (memory_policy.MEM_PSI_WARN_AVG60, 0, "warn",
+         doctor_memory.REASON_MEMORY_PRESSURE_HIGH),
+        (55.0, 0, "warn", doctor_memory.REASON_MEMORY_PRESSURE_HIGH),
+    ],
+    ids=[
+        "no-psi", "no-psi-but-killed", "quiet", "old-oom-kill-does-not-latch",
+        "at-warn", "thrashing",
+    ],
+)
+def test_check_memory_pressure_verdicts_on_the_live_average(
+    psi, kills, status, reason,
+):
+    with patch.object(
+        doctor_memory, "memory_pressure",
+        return_value=memory_policy.MemoryPressure(psi, kills),
+    ):
+        result = doctor_memory.check_memory_pressure()
+    assert (result.status, result.reason) == (status, reason)
+
+
+def test_check_memory_pressure_is_registered():
+    names = {check.func.__name__ for check in doctor.registered_checks()}
+    assert "check_memory_pressure" in names

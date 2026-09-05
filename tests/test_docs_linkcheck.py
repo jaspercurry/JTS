@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -86,6 +87,48 @@ def test_missing_anchor_fails(tmp_path):
 
     assert len(issues) == 1
     assert issues[0].message == "markdown anchor missing"
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ).stdout.strip()
+
+
+@pytest.mark.parametrize("deleted_name", ["a.md", "a.rs"])
+def test_a_deleted_file_of_any_type_falls_back_to_the_whole_tree(tmp_path, deleted_name):
+    """A renamed or deleted file of any type can break an untouched file's
+    inbound link, so the whole tree is checked: a delete has no post-diff
+    content of its own to check, and a non-Markdown target (e.g. a deleted
+    .rs file cited by a doc link) is just as able to break an inbound
+    Markdown link as a deleted .md."""
+    docs_linkcheck = load_docs_linkcheck()
+    docs_linkcheck.ROOT = tmp_path.resolve()
+
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.email", "tests@example.invalid")
+    _git(tmp_path, "config", "user.name", "JTS Tests")
+    _git(tmp_path, "config", "commit.gpgsign", "false")
+
+    (tmp_path / deleted_name).write_text("content\n", encoding="utf-8")
+    (tmp_path / "keep.md").write_text(f"[to it]({deleted_name})\n", encoding="utf-8")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "base")
+    base = _git(tmp_path, "rev-parse", "HEAD")
+
+    (tmp_path / deleted_name).unlink()
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", f"delete {deleted_name}")
+    head = _git(tmp_path, "rev-parse", "HEAD")
+
+    # keep.md is untouched by the diff, so a plain changed-files check would
+    # never look at its now-broken link to the deleted file on its own.
+    assert docs_linkcheck.main(["--base", base, "--head", head]) == 1
 
 
 def test_external_links_are_ignored(tmp_path):

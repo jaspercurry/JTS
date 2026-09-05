@@ -58,6 +58,7 @@ from jasper.usb_mic import (
 def test_intent_is_explicit_and_atomic(tmp_path: Path) -> None:
     path = tmp_path / "usb_mic.env"
     assert read_intent(path).valid is False
+    assert read_intent(path).absent is True
     assert usb_mic_enabled(path) is False
     write_usb_mic_enabled(True, path)
     assert usb_mic_enabled(path) is True
@@ -65,6 +66,7 @@ def test_intent_is_explicit_and_atomic(tmp_path: Path) -> None:
     write_usb_mic_enabled(False, path)
     assert usb_mic_enabled(path) is False
     assert read_intent(path).valid is True
+    assert read_intent(path).absent is False
 
 
 def test_usb_mic_leg_defaults_and_preserves_enable_intent(tmp_path: Path) -> None:
@@ -127,11 +129,13 @@ def test_intent_reads_reject_symlinks_and_oversized_files(
     intent_link = tmp_path / "intent-link.env"
     intent_link.symlink_to(target)
     assert read_intent(intent_link).valid is False
+    assert read_intent(intent_link).absent is False
     assert usb_mic_enabled(intent_link) is False
 
     oversized = tmp_path / "oversized.env"
     oversized.write_bytes(b"JASPER_USB_MIC=enabled\n" + (b"x" * 4096))
     assert read_intent(oversized).valid is False
+    assert read_intent(oversized).absent is False
     assert usb_mic_enabled(oversized) is False
 
 

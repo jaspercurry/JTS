@@ -66,7 +66,7 @@ install_jasper_support_files() {
 #   jasper-camilla-crossover.service — camilla#2 endpoint-crossover (:1235),
 #     not globally boot-enabled; grouping reconcile arms it only while the box
 #     is a bonded active leader.
-#   jasper-doctor-json.service — WS1 Phase 3b-2 root oneshot capturing
+#   jasper-doctor-json.service — root oneshot capturing
 #     jasper-doctor --json for /system/diagnostics (non-root jasper-control
 #     triggers it via polkit). On-demand only — not enabled.
 #   jasper-camilla-pipe-guard — ExecStartPre chain-breaker: re-points the
@@ -1235,6 +1235,7 @@ start_streambox_runtime_units() {
     systemctl enable jasper-fanin-coupling-auto.service
     systemctl try-restart bluealsa-aplay.service nqptp.service \
         shairport-sync.service librespot.service bt-agent.service \
+        jasper-usbsink-volume.service \
         2>/dev/null || true
     reapply_source_intent
     for unit in jasper-web jasper-bluetooth-web jasper-correction-web \
@@ -1812,6 +1813,7 @@ install_systemd_units() {
     systemctl enable --now jasper-mux.service
     systemctl try-restart bluealsa-aplay.service nqptp.service \
         shairport-sync.service librespot.service bt-agent.service \
+        jasper-usbsink-volume.service \
         2>/dev/null || true
     reapply_source_intent
     # The wizard services are socket-activated now. Any currently-

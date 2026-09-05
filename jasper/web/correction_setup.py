@@ -4474,6 +4474,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             if path == "/measurements/data":
                 from jasper.active_speaker import bundles as active_bundles
+                from jasper.active_speaker.round_bank import DEFAULT_CAMPAIGN_ROOT
                 from . import correction_measurements
 
                 query = parse_qs(urlparse(self.path).query)
@@ -4482,6 +4483,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 try:
                     self._send_json(correction_measurements.build_data(
                         sessions_dir=active_bundles.sessions_dir(),
+                        campaign_root=DEFAULT_CAMPAIGN_ROOT,
                         run_a_id=run_a_id,
                         run_b_id=run_b_id,
                     ))

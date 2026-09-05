@@ -35,7 +35,7 @@ CAMILLA_DIR="/opt/camilladsp"
 CAMILLA_CONF="/etc/camilladsp"
 ENV_DIR="/etc/jasper"
 STATE_DIR="/var/lib/jasper"
-# WS1 Phase 4a — the group-`jasper-secrets` secret compartment, a SIBLING of
+# The group-`jasper-secrets` secret compartment, a SIBLING of
 # STATE_DIR (not under it): STATE_DIR is jasper-voice/-mux's StateDirectory,
 # whose recursive chown would force this tree's group back to `jasper`.
 SECRETS_DIR="/var/lib/jasper-secrets"
@@ -433,8 +433,8 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      platform' check fails; on a REBUILD failure a prior good .so stays
      installed and the deploy REVOKES the installer's provenance record, so
      the doctor's 'ring ioplug provenance' check reports an unvouched
-     plugin — warn, or fail on a box whose wire needs a conf.d field only a
-     vouched plugin is known to parse.
+     plugin — an informational ok, or fail on a box whose wire needs a
+     conf.d field only a vouched plugin is known to parse.
    - The shairport-sync/nqptp source builds and Rust daemon builds
      run RAM-bounded and cgroup-contained via
      deploy/lib/install/build-sandbox.sh, so an OOM kills only the build,
@@ -662,23 +662,24 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
 5. Services and live actions
    - Create the \`jasper\` group and the non-root service users
      (jasper-voice / jasper-mux / jasper-input / jasper-usbmic /
-     jasper-control / jasper-web) the Tier-A daemons drop to, plus the Phase 4
+     jasper-control / jasper-web) the Tier-A daemons drop to, plus the
      secret-compartment groups.
    - Install /etc/polkit-1/rules.d/49-jasper-control.rules granting the
      non-root jasper-control its scoped systemctl (MANAGED_UNITS allowlist)
-     + reboot/power-off — its restart broker + supervisors run as that uid
-     (WS1 Phase 3b-2). Make /etc/avahi/services group-jasper writable so it
+     + reboot/power-off — its restart broker + supervisors run as that uid.
+     Make /etc/avahi/services group-jasper writable so it
      can render the peering advert.
    - Install /etc/polkit-1/rules.d/49-jasper-web.rules granting the non-root
      jasper-web the NetworkManager actions (scan / connect / forget / radio /
-     PSK re-read) the /wifi/ wizard drives (WS1 Phase 3b-3).
+     PSK re-read) the /wifi/ wizard drives.
    - Widen /etc/bluetooth + /var/lib/camilladsp/configs to group-jasper 2775
      so the non-root jasper-web can atomically replace the BlueZ name and the
-     generated sound profiles (WS1 Phase 3b-3).
+     generated sound profiles.
    - Widen the config/state files jasper-control reads off disk
      (jasper.env + voice_provider/control_token + non-secret sound state)
      to 0640 group jasper so the jasper-doctor it spawns + /state can read
-     them. Secret compartments stay isolated by WS1 Phase 4.
+     them. The secret compartments (jasper-secrets/jasper-intsecrets) stay
+     isolated separately.
    - Reload udev and systemd.
    - Enable socket-activated setup wizards and always-on audio/control
      services.
@@ -964,7 +965,7 @@ install_camilladsp() {
     # under configs/.
     install -d -m 0755 /var/lib/camilladsp
     # configs/ is written atomically (temp file in-dir + rename) by the non-root
-    # jasper-web user (WS1 privilege drop) for active-speaker staging and
+    # jasper-web user for active-speaker staging and
     # room-correction configs, so it must be group-writable from its FIRST
     # creation — not only after the later widen step below. A deploy that stops
     # between here and that widen (or a future reorder) must not leave it
@@ -1036,7 +1037,7 @@ install_camilladsp() {
     # contract which graph is legal and fails closed if no protected graph
     # exists.
 
-    # NOTE: aec-bridge is no longer a CamillaDSP instance. It is now a
+    # aec-bridge is no longer a CamillaDSP instance. It is now a
     # Python bridge (`jasper-aec-bridge`, see jasper/cli/aec_bridge.py)
     # that either runs WebRTC AEC3 for the software fallback profile or,
     # in chip-AEC profiles, carries the selected XVF hardware-AEC beam to
@@ -1078,7 +1079,7 @@ ensure_output_hardware_state() {
     if ! run_captured_command output env \
         JASPER_OUTPUT_HARDWARE_STATE_PATH=/run/jasper-output-hardware/output_hardware.json \
         JASPER_APLAY="${JASPER_APLAY:-aplay}" \
-        /opt/jasper/.venv/bin/python -m jasper.output_hardware --write; then
+        /opt/jasper/.venv/bin/python -m jasper.cli.output_hardware --write; then
         return 1
     fi
 }
@@ -1207,7 +1208,7 @@ ensure_crossover_camilla_statefile() {
     # the contract returns flat, so this would seed flat into a file named
     # crossover-statefile.yml. That is BENIGN today because camilla#2 is
     # INERT there (the unit is never enabled), so the flat seed is never
-    # loaded. NOTE: the crossover guard does NOT convert a flat statefile —
+    # loaded. The crossover guard does NOT convert a flat statefile —
     # it acts only on a dead bonded pipe — so the driver-domain guarantee
     # for an ARMED camilla#2 rests on the reconciler seeding it at arm time,
     # not on the guard. The later
@@ -1556,11 +1557,9 @@ reconcile_grouping_state() {
     # config, pins the snapcast stream bindings, and (re)starts the snap
     # units per the wizard intent. On a solo speaker it is a no-op
     # oneshot (grouping off => stop both units, clear derived env) —
-    # cost-free. NOTE: this enables the RECONCILER, not grouping:
-    # snapserver/snapclient still ship disabled and only the reconciler
-    # starts them on explicit wizard opt-in. (Boot gap found in the
-    # 2026-06-11 jts3 incident: a bonded follower rebooted and its
-    # snapclient stayed down because nothing ran the reconciler at boot.)
+    # cost-free. This enables the RECONCILER, not grouping: snapserver/
+    # snapclient still ship disabled and only the reconciler starts them
+    # on explicit wizard opt-in.
     systemctl enable jasper-grouping-reconcile.service
     systemctl restart jasper-grouping-reconcile.service || \
         echo "  WARN: grouping reconcile failed. Check logs with: journalctl -u jasper-grouping-reconcile -e"
@@ -1652,60 +1651,23 @@ install_management_static_assets() {
     # but no service restart.
     install -d -m 0755 /usr/share/jasper-web
     install -m 0644 "${index_src}" /usr/share/jasper-web/index.html
-    # Stamp the app.css cache-bust version (mirrors the wizards' build-SHA
-    # query string) so a deploy busts the year-immutable /assets cache.
-    # The landing page is static HTML, so we substitute at install time.
-    # Resolve the SHA directly (deploy env → git → prior manifest) rather
-    # than reading build.txt: the manifest is now written LAST, as the
-    # verified-install marker, so it still holds the PRIOR SHA at this
-    # point in the run. resolve_build_sha_short returns the same value the
+    # Resolve the cache-bust SHA directly (deploy env, then the checkout, then
+    # the prior manifest) rather than reading build.txt: the manifest is written
+    # LAST, as the verified-install marker, so it still holds the PRIOR SHA at
+    # this point in the run. resolve_build_sha_short returns the same value the
     # manifest will record, so the cache key matches the installed build.
     app_css_ver="$(resolve_build_sha_short)"
     [[ -n "${app_css_ver}" && "${app_css_ver}" != "unknown" ]] || app_css_ver="dev"
-    sed_inplace /usr/share/jasper-web/index.html \
-        "s/__APP_CSS_VERSION__/${app_css_ver}/g"
-    # Bake the install profile's capability map into the landing page so its
-    # capability-gated sections render correctly at FIRST PAINT — no
-    # /system/data.json round-trip to lay out the page, and it stays correct
-    # even if a backend daemon is down. Same map jasper-control serves at
-    # runtime (system_capabilities_for_profile), so baked and live agree by
-    # construction. The profile marker was persisted earlier in this run.
-    # Python (not sed) so JSON quotes don't fight the shell; fail loud rather
-    # than ship a page with an unreplaced placeholder. Also bakes the WS1
-    # control token into <meta name="jts-control-token"> so the landing page's
-    # mic-mute button can ride it on POST /mic/mute (the token-gated route);
-    # ensure_token() generates-if-absent at 0640 group jasper, the same value
-    # the wizards deliver. The token stays inside Python (never a shell arg / process
-    # table); the base64url alphabet is HTML-safe, but escape defensively.
-    if ! PYTHONPATH="${REPO_DIR}" python3 - /usr/share/jasper-web/index.html <<'PYBAKE'
-import json
-import sys
-from html import escape as html_escape
-
-from jasper.control import control_token
-from jasper.install_profile import (
-    read_install_profile,
-    system_capabilities_for_profile,
-)
-
-path = sys.argv[1]
-caps = json.dumps(system_capabilities_for_profile(read_install_profile()))
-token = html_escape(control_token.ensure_token())
-html = open(path, encoding="utf-8").read()
-if "__JTS_CAPS_JSON__" not in html:
-    sys.exit("landing page is missing the __JTS_CAPS_JSON__ placeholder")
-if "__JTS_CONTROL_TOKEN__" not in html:
-    sys.exit("landing page is missing the __JTS_CONTROL_TOKEN__ placeholder")
-html = html.replace("__JTS_CAPS_JSON__", caps)
-html = html.replace("__JTS_CONTROL_TOKEN__", token)
-with open(path, "w", encoding="utf-8") as f:
-    f.write(html)
-PYBAKE
-    then
-        echo "  ERROR: failed to bake landing-page capabilities/token; refusing to ship a broken page" >&2
+    # The renderer reads the control token itself, so it never reaches a shell
+    # argument or the process table. The profile marker it needs was persisted
+    # earlier in this run.
+    if ! PYTHONPATH="${REPO_DIR}" python3 -m jasper.web.landing \
+            /usr/share/jasper-web/index.html \
+            --app-css-version "${app_css_ver}"; then
+        echo "  ERROR: failed to render the landing page; refusing to ship a broken page" >&2
         return 1
     fi
-    echo "  landing page: baked install-profile capabilities + control token for first-paint layout"
+    echo "  landing page: rendered (capabilities, control token, icon sprite)"
     # All /assets/ content (app.css, fonts, per-page CSS + ES modules) +
     # the .install-manifest the doctor verifies — see
     # deploy/lib/install/web-assets.sh for the copy shape and the
@@ -1854,7 +1816,7 @@ install_avahi_jasper_control() {
         "${REPO_DIR}/deploy/avahi/jasper-control.service.template" \
         /etc/jasper/avahi-templates/jasper-control.service
 
-    # WS1 Phase 3b-2: a non-root jasper-control renders the peering advert
+    # A non-root jasper-control renders the peering advert
     # (jasper-peer.service) into this dir when /rooms/ peering is enabled
     # (off by default). os.replace needs WRITE on the parent dir, which
     # ReadWritePaths= does NOT grant (it only lifts ProtectSystem=strict;
@@ -1914,7 +1876,7 @@ PY
 }
 
 install_jasper_control_polkit() {
-    # WS1 Phase 3b-2 — the polkit grant for the non-root jasper-control user.
+    # The polkit grant for the non-root jasper-control user.
     # Without it, every systemctl/reboot/poweroff jasper-control runs (the
     # in-process restart broker + the system/shairport/grouping supervisors +
     # the /system buttons) is DENIED with "Interactive authentication required"
@@ -1930,7 +1892,7 @@ install_jasper_control_polkit() {
 }
 
 install_jasper_web_polkit() {
-    # WS1 Phase 3b-3 — the polkit grant for the non-root jasper-web user. The
+    # The polkit grant for the non-root jasper-web user. The
     # /wifi/ wizard drives NetworkManager (scan / connect / forget / radio /
     # PSK re-read); NM's implicit defaults DENY a sessionless daemon for every
     # one of those, so without this rule a non-root jasper-web cannot manage
@@ -1945,7 +1907,7 @@ install_jasper_web_polkit() {
 }
 
 widen_jasper_web_writable_dirs() {
-    # WS1 Phase 3b-3 — the non-root jasper-web user atomically replaces files in
+    # The non-root jasper-web user atomically replaces files in
     # two root-owned dirs: /etc/bluetooth/main.conf (BlueZ name persistence
     # across a bluetooth.service restart — the /speaker rename) and generated
     # CamillaDSP sound profiles under /var/lib/camilladsp/configs (the /sound/
@@ -2245,7 +2207,7 @@ main() {
         require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
         setup_build_swap_if_needed
         trap install_exit_cleanup EXIT
-        create_jasper_service_users  # WS1 Phase 3b: before unit install + state-dir creation
+        create_jasper_service_users  # before unit install + state-dir creation
         park_low_memory_build_units
         install_streambox_deps
         install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
@@ -2261,7 +2223,7 @@ main() {
         ensure_outputd_camilla_statefile
         ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
         reassert_secrets_compartment_perms  # assistant provider keys jasper-voice reads
-        reassert_intsecrets_compartment_perms  # WS1 Phase 4b: streambox Spotify creds/cache perms
+        reassert_intsecrets_compartment_perms  # streambox Spotify creds/cache perms
         build_install_jasper_fanin
         build_install_jasper_outputd
         install_jts_ring_platform  # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)
@@ -2272,13 +2234,13 @@ main() {
         migrate_cgroup_memory_enabled
         install_journald_persistent_storage
         install_avahi_jasper_control
-        install_jasper_control_polkit  # WS1 3b-2: grant non-root jasper-control its scoped systemctl/reboot
-        install_jasper_web_polkit  # WS1 3b-3: grant jasper-web NetworkManager wifi management
-        widen_jasper_web_writable_dirs  # WS1 3b-3: /etc/bluetooth + camilladsp/configs group-jasper writable
+        install_jasper_control_polkit  # grant non-root jasper-control its scoped systemctl/reboot
+        install_jasper_web_polkit  # grant jasper-web NetworkManager wifi management
+        widen_jasper_web_writable_dirs  # /etc/bluetooth + camilladsp/configs group-jasper writable
         install_peering_template
         provision_correction_tls
         install_streambox_nginx_site
-        widen_control_secret_env_modes  # WS1 3b-2: secret env group-jasper readable for the spawned doctor
+        widen_control_secret_env_modes  # secret env group-jasper readable for the spawned doctor
         # Final mutation: stamp the verified-install manifest only now that
         # every step above succeeded (set -e). run_doctor_summary below is
         # non-mutating diagnostics — keep write_build_manifest the LAST
@@ -2293,7 +2255,7 @@ main() {
     require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
     setup_build_swap_if_needed
     trap install_exit_cleanup EXIT
-    create_jasper_service_users  # WS1 Phase 3b: before unit install + state-dir creation
+    create_jasper_service_users  # before unit install + state-dir creation
     park_low_memory_build_units
     install_deps
     install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
@@ -2317,15 +2279,15 @@ main() {
     migrate_cgroup_memory_enabled  # Stage 2 audio-slice: cgroup memory + PSI in cmdline.txt
     install_journald_persistent_storage
     install_avahi_jasper_control
-    install_jasper_control_polkit  # WS1 3b-2: grant non-root jasper-control its scoped systemctl/reboot
-    install_jasper_web_polkit  # WS1 3b-3: grant jasper-web NetworkManager wifi management
-    widen_jasper_web_writable_dirs  # WS1 3b-3: /etc/bluetooth + camilladsp/configs group-jasper writable
+    install_jasper_control_polkit  # grant non-root jasper-control its scoped systemctl/reboot
+    install_jasper_web_polkit  # grant jasper-web NetworkManager wifi management
+    widen_jasper_web_writable_dirs  # /etc/bluetooth + camilladsp/configs group-jasper writable
     install_peering_template
     provision_correction_tls   # cert files must exist before nginx -t
     install_nginx_site
     install_camillagui
     regenerate_audio_cues
-    widen_control_secret_env_modes  # WS1 3b-2: secret env group-jasper readable for the spawned doctor
+    widen_control_secret_env_modes  # secret env group-jasper readable for the spawned doctor
     # Final mutation: stamp the verified-install manifest only now that
     # every step above succeeded (set -e). run_doctor_summary below is
     # non-mutating diagnostics — keep write_build_manifest the LAST state

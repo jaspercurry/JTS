@@ -51,14 +51,18 @@ rust_cargo_build_env() {
     fi
 
     # 1 GB and Zero-class boxes have enough CPU for the runtime daemons, but not
-    # enough RAM to reliably compile the normal release profile with fat LTO or
-    # LLVM's heavier optimization passes. Keep 2 GB+ full speakers on the
-    # normal release profile and relax Cargo only on constrained hosts.
+    # enough RAM to reliably compile the normal release profile with fat LTO.
+    # Keep 2 GB+ full speakers on the normal release profile and relax Cargo
+    # only on constrained hosts.
+    #
+    # opt-level stays >= 2: unoptimised, jasper-fanin burns ~24% of a Zero 2 W
+    # core summing five idle lanes at 187 periods/s, where an optimised
+    # CamillaDSP doing strictly more DSP work idles at ~11% on the same box.
     printf '%s\n' \
         "CARGO_BUILD_JOBS=1" \
         "CARGO_PROFILE_RELEASE_LTO=false" \
         "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16" \
-        "CARGO_PROFILE_RELEASE_OPT_LEVEL=0"
+        "CARGO_PROFILE_RELEASE_OPT_LEVEL=2"
 }
 
 # Build-cache staging format. Bump when the staging/freshness contract
@@ -147,54 +151,28 @@ build_install_rust_daemon() {
     # incremental compile state in target/ between runs. --delete
     # removes stale source files (e.g., a renamed module).
     stage_rust_crate "${src_dir}" "${cache_dir}"
-    # Stage the shared wire-protocol crate as a sibling of the cache dir
-    # so `path = "../jasper-tts-protocol"` resolves like the repo layout.
-    stage_rust_crate "${REPO_DIR}/rust/jasper-tts-protocol" \
-        "$(dirname "${cache_dir}")/jasper-tts-protocol"
-    chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-tts-protocol"
-    # Same for the shared environment-parsing crate. Both production daemons
-    # depend on `path = "../jasper-env"`, so source builds need this sibling
-    # staged beside either daemon cache.
-    stage_rust_crate "${REPO_DIR}/rust/jasper-env" \
-        "$(dirname "${cache_dir}")/jasper-env"
-    chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-env"
-    # Same for the shared clock crate (jasper-clock) so jasper-outputd's
-    # `path = "../jasper-clock"` resolves. Guarded by existence so a branch
-    # predating the crate still builds (its daemons don't depend on it).
-    if [[ -d "${REPO_DIR}/rust/jasper-clock" ]]; then
-        stage_rust_crate "${REPO_DIR}/rust/jasper-clock" \
-            "$(dirname "${cache_dir}")/jasper-clock"
-        chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-clock"
-    fi
-    # Same for the shared resampler crate (jasper-resampler) so the
-    # `path = "../jasper-resampler"` dep of jasper-outputd (the widen/narrow
-    # sample-format primitives on its i32 program spine) AND jasper-fanin (the
-    # per-input lane resampler) resolves.
-    # jasper-resampler itself depends on `path = "../jasper-clock"`, which the
-    # block above already stages as a sibling — so this single rsync covers the
-    # transitive dep. Guarded by existence so a branch predating the crate still
-    # builds.
-    if [[ -d "${REPO_DIR}/rust/jasper-resampler" ]]; then
-        stage_rust_crate "${REPO_DIR}/rust/jasper-resampler" \
-            "$(dirname "${cache_dir}")/jasper-resampler"
-        chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-resampler"
-    fi
-    # Same for the shared SHM ring crate (jasper-ring) so jasper-fanin's
-    # `path = "../jasper-ring"` dep (the default-off SHM ring writer) resolves.
-    # Guarded by existence so a branch predating the crate still builds.
-    if [[ -d "${REPO_DIR}/rust/jasper-ring" ]]; then
-        stage_rust_crate "${REPO_DIR}/rust/jasper-ring" \
-            "$(dirname "${cache_dir}")/jasper-ring"
-        chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-ring"
-    fi
-    # Same for the shared host-clock crate (jasper-host-clock) so jasper-fanin's
-    # Capture Pitch DLL dependency resolves. Guarded by existence so a branch
-    # predating the crate still builds.
-    if [[ -d "${REPO_DIR}/rust/jasper-host-clock" ]]; then
-        stage_rust_crate "${REPO_DIR}/rust/jasper-host-clock" \
-            "$(dirname "${cache_dir}")/jasper-host-clock"
-        chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-host-clock"
-    fi
+    # Every crate a production daemon reaches through `path = "../<name>"`,
+    # staged as a sibling of the cache dir so those paths resolve like the repo
+    # layout. jasper-resampler's own `../jasper-clock` dep is covered because
+    # jasper-clock is staged here too. Existence-guarded so a branch predating a
+    # crate still builds; tests/test_install_rust_daemon_restart.py pins this
+    # list against the manifests' actual reachable path dependencies.
+    local -a sibling_crates=(
+        jasper-daemon
+        jasper-tts-protocol
+        jasper-env
+        jasper-clock
+        jasper-resampler
+        jasper-ring
+        jasper-host-clock
+    )
+    local sibling sibling_dest
+    for sibling in "${sibling_crates[@]}"; do
+        [[ -d "${REPO_DIR}/rust/${sibling}" ]] || continue
+        sibling_dest="$(dirname "${cache_dir}")/${sibling}"
+        stage_rust_crate "${REPO_DIR}/rust/${sibling}" "${sibling_dest}"
+        chown -R "${BUILD_USER}:${BUILD_USER}" "${sibling_dest}"
+    done
     chown -R "${BUILD_USER}:${BUILD_USER}" "${cache_dir}"
 
     local -a cargo_env=()
@@ -203,7 +181,7 @@ build_install_rust_daemon() {
         cargo_env+=("${cargo_arg}")
     done < <(rust_cargo_build_env)
     if [[ "${#cargo_env[@]}" -gt 0 ]]; then
-        echo "  ${name}: low-memory Rust build profile active ($(rust_build_memtotal_kb) kB RAM; opt-level=0, lto=false, codegen-units=16, jobs=1)"
+        echo "  ${name}: low-memory Rust build profile active ($(rust_build_memtotal_kb) kB RAM; ${cargo_env[*]})"
     fi
 
     # Contain the sudo -> pi -> cargo -> rustc subtree: cargo manages its

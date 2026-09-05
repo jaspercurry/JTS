@@ -1,0 +1,23 @@
+name: Set up Python and uv
+description: Install the pinned Python + uv toolchain shared by the tests workflow's Python jobs. Run after actions/checkout.
+
+inputs:
+  python-version:
+    description: Python version for actions/setup-python and astral-sh/setup-uv.
+    required: false
+    default: "3.13"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
+      with:
+        # Pin uv itself so dependency installation is reproducible for the
+        # same reason `uv sync --locked` is.
+        version: "0.12.9"
+        python-version: ${{ inputs.python-version }}
+        enable-cache: true

@@ -41,6 +41,7 @@ title = "CI gates and branch protection"
 safety = "safe-ci"
 code = [
   ".github/workflows/tests.yml",
+  ".github/actions/**",
   # The executable test lanes and the PR lane classifier. AGENTS.md's "Agent
   # test routing" names these scripts as the source of truth for what a lane
   # runs ("update the script first, then adjust this short routing note and
@@ -205,7 +206,6 @@ code = [
   "jasper/audio_hardware/**",
 ]
 docs = [
-  "docs/PROPOSAL-dac-profile-registry.md",
   "docs/audio-paths.md",
 ]
 requires_docs_when = [
@@ -215,7 +215,7 @@ requires_docs_when = [
 verification = [
   "pytest tests/test_dac_profiles.py",
   "python3 scripts/docs-impact.py --validate-only",
-  "python3 scripts/docs-linkcheck.py --changed-file docs/PROPOSAL-dac-profile-registry.md",
+  "python3 scripts/docs-linkcheck.py --changed-file docs/audio-paths.md",
 ]
 
 [[subsystem]]
@@ -433,7 +433,6 @@ code = [
   "jasper/web/wifi_setup.py",
   "jasper/wifi_scan_repair.py",
   "jasper/wifi_guardian_persistence.py",
-  "jasper/control/wifi_guardian_state.py",
   "deploy/bin/jasper-wifi-guardian",
   "deploy/bin/jasper-wifi-recover",
   "deploy/systemd/jasper-wifi-guardian.service",
@@ -944,7 +943,6 @@ code = [
 docs = [
   "PLAN.md",
   "docs/adr/0145-remote-updates-stay-a-laptop-deploy.md",
-  "docs/PROPOSAL-dac-profile-registry.md",
   "docs/tool-platform-plan.md",
 ]
 requires_docs_when = [

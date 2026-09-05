@@ -15,7 +15,7 @@ from jasper.cli.doctor import _evidence, _shared, renderers
 from jasper.cli.doctor.renderers import _classify_mux_mode
 from jasper.music_sources import MUSIC_SOURCES
 
-from .doctor_test_support import _grouping_cfg
+from .doctor_test_support import _grouping_cfg, _make_unit_states_fake
 
 
 def _seed_unit_states(**by_unit):
@@ -1143,6 +1143,20 @@ def test_renderer_check_fails_when_household_off_runtime_is_active(monkeypatch):
 
     assert result.status == "fail"
     assert result.reason == renderers.REASON_SOURCE_OFF_DRIFT
+
+
+def test_jasper_mux_skips_without_systemctl(monkeypatch):
+    """ADR-0233 rule 3: unreachable evidence (no systemctl) is `skipped`,
+    never `fail` — nothing was observed, so there is nothing to fail."""
+    monkeypatch.setattr(renderers, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", _make_unit_states_fake(unavailable=True),
+    )
+    result = renderers.check_jasper_mux()
+
+    assert (result.status, result.reason) == (
+        "skipped", _shared.REASON_SYSTEMCTL_UNAVAILABLE,
+    )
 
 
 def test_renderer_check_fails_loud_on_invalid_source_intent(monkeypatch):

@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jasper.wake_corpus import bridge_session
+from jasper.wake_corpus import runtime_probe
 from jasper.wake_corpus import recording_backend
 from jasper.web import wake_corpus_setup
 
@@ -469,9 +469,9 @@ def test_metadata_records_audio_context_snapshot(
         "checks": {"measured_drift_delay": {"status": "pass"}},
         "recommendation": "chip_aec_validated",
     }))
-    monkeypatch.setattr(bridge_session, "AEC_MODE_PATH", aec_mode_path)
+    monkeypatch.setattr(runtime_probe, "AEC_MODE_PATH", aec_mode_path)
     monkeypatch.setattr(
-        bridge_session,
+        runtime_probe,
         "AUDIO_VALIDATION_ARTIFACT_PATH",
         validation_path,
     )
@@ -481,7 +481,7 @@ def test_metadata_records_audio_context_snapshot(
         "JASPER_OUTPUTD_CONTROL_SOCKET",
         "/run/stale-process-outputd.sock",
     )
-    monkeypatch.setattr(bridge_session, "aec_bridge_active", lambda: True)
+    monkeypatch.setattr(runtime_probe, "aec_bridge_active", lambda: True)
     _stub_xvf_runtime(monkeypatch)
 
     backend.begin_session(
@@ -560,8 +560,8 @@ def test_audio_context_snapshot_uses_chip_aec_dac_gate(
         "JASPER_WAKE_LEG_DTLN=0\n"
         "JASPER_WAKE_LEG_CHIP_AEC=0\n",
     )
-    monkeypatch.setattr(bridge_session, "AEC_MODE_PATH", aec_mode_path)
-    monkeypatch.setattr(bridge_session, "aec_bridge_active", lambda: True)
+    monkeypatch.setattr(runtime_probe, "AEC_MODE_PATH", aec_mode_path)
+    monkeypatch.setattr(runtime_probe, "aec_bridge_active", lambda: True)
     _stub_xvf_runtime(monkeypatch)
 
     backend.begin_session("jasper")
@@ -606,8 +606,8 @@ def test_standard_metadata_marks_on_leg_as_chip_primary_when_runtime_active(
         "JASPER_WAKE_LEG_DTLN=0\n"
         "JASPER_WAKE_LEG_CHIP_AEC=1\n",
     )
-    monkeypatch.setattr(bridge_session, "AEC_MODE_PATH", aec_mode_path)
-    monkeypatch.setattr(bridge_session, "aec_bridge_active", lambda: True)
+    monkeypatch.setattr(runtime_probe, "AEC_MODE_PATH", aec_mode_path)
+    monkeypatch.setattr(runtime_probe, "aec_bridge_active", lambda: True)
     _stub_xvf_runtime(monkeypatch)
 
     backend.begin_session("jasper", include_dtln=False)
@@ -711,8 +711,8 @@ def test_mic_chip_aec_available_reads_chip_aec_supported_field() -> None:
         chip_aec_supported=True,
     )
 
-    assert bridge_session._mic_chip_aec_available(unvalidated) is False
-    assert bridge_session._mic_chip_aec_available(validated) is True
+    assert runtime_probe.mic_chip_aec_available(unvalidated) is False
+    assert runtime_probe.mic_chip_aec_available(validated) is True
 
 
 # ---------------------------------------------------------------------------

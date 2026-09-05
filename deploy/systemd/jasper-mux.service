@@ -22,8 +22,8 @@ EnvironmentFile=-/var/lib/jasper/speaker_name.env
 # Spotify credentials are wizard-owned and live outside jasper.env.
 # Mux needs them for guarded Spotify handoff: without the Web API router,
 # Spotify starts in degraded_safe mode and Camilla stays attenuated.
-# WS1 Phase 4b — moved into the group-`jasper-intsecrets` dir alongside
-# the Spotify OAuth token cache.
+# Lives in the group-`jasper-intsecrets` dir alongside the Spotify OAuth
+# token cache.
 EnvironmentFile=-/var/lib/jasper-intsecrets/spotify_credentials.env
 # Optional fan-in overrides. Loading the same file here keeps
 # JASPER_FANIN_CONTROL_SOCKET aligned if an operator moves fan-in's
@@ -33,14 +33,14 @@ UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES
 ExecStart=/opt/jasper/.venv/bin/jasper-mux
 Restart=always
 RestartSec=5
-# WS1 Phase 3b — user drop (3b-1). Non-root service user in the shared `jasper`
-# group: lets mux reach the restart broker socket (/run/jasper-control, group
-# jasper) for its librespot-stall recovery — it is a non-root broker client now
-# with no direct-systemctl fallback — and read/write the group-shared
+# Non-root service user in the shared `jasper` group: lets mux reach the
+# restart broker socket (/run/jasper-control, group jasper) for its
+# librespot-stall recovery — it is a non-root broker client now with no
+# direct-systemctl fallback — and read/write the group-shared
 # speaker_volume.json. No capability needed.
 User=jasper-mux
 Group=jasper
-# WS1 Phase 4b — mux builds a Spotify Web API router for guarded handoff; spotipy
+# mux builds a Spotify Web API router for guarded handoff; spotipy
 # can refresh and persist OAuth tokens, so it joins the integration-secret group.
 SupplementaryGroups=jasper-intsecrets
 CapabilityBoundingSet=
@@ -53,16 +53,10 @@ MemoryMax=120M
 Nice=-3
 RuntimeDirectory=jasper-mux
 RuntimeDirectoryMode=0750
-# S2 — single StateDirectory owner: mux does NOT declare StateDirectory=jasper.
-# jasper-voice is the SOLE StateDirectory=jasper owner. When mux ALSO declared
-# it, systemd recursively re-chowned /var/lib/jasper to jasper-mux:jasper on
-# every mux restart (and back to jasper-voice:jasper on every voice restart) — an
-# owner-flip that left shared files unwritable by the non-owner (the 2026-06-19
-# readonly-DB incident). Mux now reaches /var/lib/jasper purely via ReadWritePaths
-# (below) under ProtectSystem=strict, for the durable source-selection pin
-# (mux_mode.json) and the shared speaker_volume.json. The dir is guaranteed to
-# exist by voice's StateDirectory + install.sh's ensure_state_dir; mux's
-# Restart=always rides out any transient dir-not-created-yet window.
+# Single StateDirectory owner: mux does NOT declare StateDirectory=jasper.
+# jasper-voice is the SOLE owner; a second declarer makes systemd re-chown
+# /var/lib/jasper on every restart of either unit, leaving shared files
+# unwritable by the other. Mux reaches the dir via ReadWritePaths (below).
 # UMask=0007 — files mux CREATES in /var/lib/jasper land group-`jasper`-writable
 # (0660), not 0644. voice (sole owner) re-chowns the tree to jasper-voice:jasper
 # on its restarts, so mux (same `jasper` group) must write shared files via the
@@ -73,22 +67,17 @@ UMask=0007
 # audible source-selection path: fan-in starts safe/closed and mux
 # opens the chosen renderer lane after volume handoff. Keep moderate
 # protection, but restart on every exit.
-# NOTE: MemoryHigh/MemoryMax above are silent no-ops until the
-# memory cgroup is enabled (Stage 2 of plan). Kept here as
-# documentation of intent.
 OOMScoreAdjust=-300
 
-# WS1 phase-1 hardening (hardened root).
-# mux scored 9.6 UNSAFE — it lacked even the basic stanza. Add the basics plus
-# the phase-1 directives. Writes are covered by RuntimeDirectory=jasper-mux +
-# ReadWritePaths (/var/lib/jasper for the source pin, /var/lib/jasper-intsecrets
-# for the WS1 Phase 4b Spotify token cache). The capability/syscall filters and the non-root user drop (mux is
-# now a broker client for its librespot-stall restart) are in the Phase-3b block
-# above.
+# Writes are covered by RuntimeDirectory=jasper-mux + ReadWritePaths
+# (/var/lib/jasper for the source pin, /var/lib/jasper-intsecrets for the
+# Spotify token cache). The capability/syscall filters and the non-root user
+# drop (mux is a broker client for its librespot-stall restart) are in the
+# non-root user-drop above.
 NoNewPrivileges=true
 ProtectSystem=strict
-# WS1 Phase 4b — Spotify token refreshes are legitimate runtime writes.
-# /var/lib/jasper (S2) — mux's write target for the source-selection pin
+# Spotify token refreshes are legitimate runtime writes.
+# /var/lib/jasper — mux's write target for the source-selection pin
 # (mux_mode.json) + shared speaker_volume.json, now that mux no longer declares
 # StateDirectory=jasper. Under ProtectSystem=strict these explicit paths are
 # what keep those writes possible.

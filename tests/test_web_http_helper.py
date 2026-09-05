@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Node-driven behaviour pins for the shared front-end module http.js.
+"""Node-driven behaviour pins for the shared front-end modules.
 
 ``deploy/assets/shared/js/http.js`` is the CSRF-aware fetch helper shared by
 every canonical (ES-module) wizard page. A stale, long-idle page's next
@@ -20,6 +20,11 @@ still surfaces its own message untouched.
 the hidden cadence instead of hammering the Pi, becoming visible comes
 current at once, a rejected ``fn`` is retried on the next tick, and ``stop()``
 is final.
+
+``tests/js/settings_status_test.mjs`` pins ``settings-status.js``, the
+settings-surface module the landing page and the area hubs share: gating runs
+off the install-baked capability map before any fetch and fails closed, and a
+poll tick fills the ``status-*`` sublabels without re-driving layout.
 
 Mirrors ``tests/test_dialog_helper.py`` / ``test_web_rooms_setup.py``'s
 ``test_dom_append_children_export_via_node`` — skip (not fail) when node
@@ -42,9 +47,13 @@ pytestmark = pytest.mark.skipif(_NODE is None, reason="node not on PATH")
 
 @pytest.mark.parametrize(
     ("harness", "min_passed"),
-    [("http_stale_session_test.mjs", 16), ("polling_test.mjs", 14)],
+    [
+        ("http_stale_session_test.mjs", 16),
+        ("polling_test.mjs", 14),
+        ("settings_status_test.mjs", 23),
+    ],
 )
-def test_http_helper_harness_via_node(harness: str, min_passed: int):
+def test_shared_module_harness_via_node(harness: str, min_passed: int):
     proc = subprocess.run(
         [_NODE, str(_JS_DIR / harness)],
         capture_output=True, text=True, timeout=30,

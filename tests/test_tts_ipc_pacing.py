@@ -17,7 +17,7 @@ open to the reply's full length — observed on JTS3 on 2026-06-11 as 82
 ``event=fanin.tts_command_dropped reason=pending_budget_exceeded``
 journal lines lining up with every long reply.
 
-The fix paces ``OutputdTtsPlayout.write_segment``: before each IPC
+The fix paces ``TtsPlayout.write_segment``: before each IPC
 chunk, sleep off whatever queued-ahead time exceeds
 ``_OUTPUTD_PACE_AHEAD_SEC``. These tests pin:
 
@@ -37,7 +37,7 @@ from pathlib import Path
 import numpy as np
 
 import jasper.audio_io as audio_io_mod
-from jasper.audio_io import OutputdTtsPlayout
+from jasper.audio_io import TtsPlayout
 
 
 class _CaptureStream:
@@ -57,11 +57,10 @@ class _CaptureStream:
         self.writes.append(data)
 
 
-def _make_playout(monkeypatch) -> tuple[OutputdTtsPlayout, _CaptureStream]:
+def _make_playout(monkeypatch) -> tuple[TtsPlayout, _CaptureStream]:
     monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
-    p = OutputdTtsPlayout(
+    p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
-        output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=0.0,
     )
