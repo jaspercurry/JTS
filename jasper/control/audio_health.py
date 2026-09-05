@@ -34,6 +34,7 @@ from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..local_sources.registry import local_source_lifecycles
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
 from ..route_latency.status_socket import OUTPUTD_STATUS_SOCKET
+from ..service_units import unit_failed
 from ..fanin.latency_mode import PRESETS, classify_runtime
 from ..route_latency.status_socket import FANIN_STALE_MS, OUTPUTD_STALE_MS
 from ..source_intent import read_source_intents
@@ -1401,7 +1402,7 @@ def _state_issues(
                         detail=SOURCE_OFF_DRIFT_DETAIL,
                     ))
                 continue
-            if not _service_failed(unit_state):
+            if not unit_failed(_mapping(unit_state)):
                 continue
             issues.append(_issue(
                 f"{source_id}.service.{unit}",
@@ -1429,8 +1430,9 @@ def _camilla_stopped(raw_state: Any) -> tuple[str, str] | None:
     systemd state and the `journalctl` line stay in doctor's
     `check_camilla_service`, which fails on the same fact.
 
-    Deliberately WIDER than :func:`_service_failed`, which only fires on
-    `failed`/`error`/`not-found`. A cleanly stopped CamillaDSP — `inactive`
+    Deliberately WIDER than :func:`jasper.service_units.unit_failed`, which
+    only fires on `failed`/`error`/`not-found`. A cleanly stopped CamillaDSP
+    — `inactive`
     with `result=success` — is reachable and was invisible to every surface
     (#2163): `jasper-camilla-recover` parks the unit stopped after an
     exhausted start-limit burst, and a kill between the coupling reconciler's
@@ -1485,19 +1487,6 @@ SOURCE_OFF_DRIFT_DETAIL = (
 )
 
 
-def _service_failed(raw_state: Any) -> bool:
-    """Whether cached systemd truth says this unit is not doing its job."""
-    state = _mapping(raw_state)
-    active_state = str(state.get("active_state") or "")
-    result = str(state.get("result") or "")
-    load_state = str(state.get("load_state") or "")
-    return (
-        active_state == "failed"
-        or load_state in {"error", "not-found"}
-        or (result not in {"", "success"} and active_state != "active")
-    )
-
-
 def _source_service_summary(
     source_id: str,
     service_states: Mapping[str, Any] | None,
@@ -1520,7 +1509,7 @@ def _source_service_summary(
     if not states:
         return None
     for unit in _SOURCE_HEALTH_UNITS.get(source_id, ()):
-        if _service_failed(states.get(unit)):
+        if unit_failed(_mapping(states.get(unit))):
             return (
                 "unavailable",
                 f"{_SOURCE_LABELS.get(source_id, source_id)} unavailable",

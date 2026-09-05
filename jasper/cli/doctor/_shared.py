@@ -41,6 +41,7 @@ from ...doctor_contract import (  # noqa: F401 — re-exported for the domain mo
     summarize,
 )
 from ...env_load import parse_env_file as _shared_parse_env_file
+from ...install_profile import is_streambox_install_profile, read_install_profile
 from ...secret_redaction import redact_secrets
 
 GREEN = "\033[32m"
@@ -221,6 +222,16 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(1 << 16), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+def install_profile_is_streambox() -> bool:
+    """True on the streambox tier. Fails toward False so an unparseable
+    marker keeps the louder full-speaker check running rather than silently
+    skipping it."""
+    try:
+        return is_streambox_install_profile(read_install_profile())
+    except (TypeError, ValueError, OSError):
+        return False
+
 
 def _meminfo_kb(field: str) -> int | None:
     """One /proc/meminfo field (e.g. 'MemAvailable') in KiB, None on read
