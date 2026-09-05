@@ -23,7 +23,7 @@ import numpy as np
 import pytest
 from scipy.signal import lfilter
 
-from jasper.active_speaker.crossover_v2 import gate_sweep
+from jasper.active_speaker.crossover_v2 import feature_classification, gate_sweep
 from jasper.active_speaker.crossover_v2.feature_classifier import (
     add_delayed_copy,
     biquad_peaking,
@@ -646,27 +646,34 @@ def test_only_the_axis_a_feature_moves_with_grows_its_own_sigma(
 def test_an_azimuth_only_round_reads_as_one_azimuth_family(
     pose_varying_report: dict,
 ) -> None:
-    """The legacy round shape: no second axis, so no second family.
+    """The legacy round shape: the second axis was never sampled, and says so.
 
     Every pose declares elevation 0, so the azimuth family IS the pose cloud
     and its sigma is the all-pose sigma exactly -- the split adds a block and
-    moves no number an azimuth-only round already published.
+    moves no number an azimuth-only round already published. The elevation
+    axis is present carrying ``sampled: false``: rung 4's experiment is owed,
+    which is not the same fact as a feature that does not move with height.
     """
     band = _low_band(pose_varying_report)
     by_axis = band["sigma_by_axis"]
 
-    assert set(by_axis) == {gate_sweep.AXIS_AZIMUTH}
-    assert by_axis[gate_sweep.AXIS_AZIMUTH]["n_poses"] == len(AZIMUTHS_DEG)
-    assert (
-        by_axis[gate_sweep.AXIS_AZIMUTH]["sigma_db_by_rung"]
-        == band["sigma_db_by_rung"]
-    )
+    assert set(by_axis) == {gate_sweep.AXIS_AZIMUTH, gate_sweep.AXIS_ELEVATION}
+    azimuth = by_axis[gate_sweep.AXIS_AZIMUTH]
+    assert azimuth["sampled"] is True
+    assert azimuth["n_poses"] == len(AZIMUTHS_DEG)
+    assert azimuth["sigma_db_by_rung"] == band["sigma_db_by_rung"]
+
+    elevation = by_axis[gate_sweep.AXIS_ELEVATION]
+    assert elevation["sampled"] is False
+    assert elevation["reason"] == gate_sweep.AXIS_NOT_VARIED
+    assert "sigma_db_by_rung" not in elevation
 
 
-def test_a_round_that_declares_no_height_forms_no_axis_family(
+def test_a_round_that_declares_no_height_names_both_axes_unsampled(
     in_memory_round: tuple[Path, tuple[PoseCapture, ...]],
 ) -> None:
-    """An undeclared pose field is not a zero: no family is honest (#3503)."""
+    """An undeclared pose field is not a zero: neither axis has a member, and
+    each publishes that reason rather than vanishing (#3503)."""
     _root, captures = in_memory_round
     unposed = tuple(
         replace(capture, vertical_deg=None, mark_distance_m=None)
@@ -674,4 +681,27 @@ def test_a_round_that_declares_no_height_forms_no_axis_family(
     )
 
     (feature,) = sweep_features(unposed, rungs_ms=(5.0, 20.0), at_hz=(FEATURE_HZ,))
-    assert feature["sigma_by_axis"] == {}
+    by_axis = feature["sigma_by_axis"]
+    assert set(by_axis) == {gate_sweep.AXIS_AZIMUTH, gate_sweep.AXIS_ELEVATION}
+    for family in by_axis.values():
+        assert family["sampled"] is False
+        assert family["reason"] == gate_sweep.AXIS_NOT_DECLARED
+
+
+def test_every_published_sigma_declares_the_kind_of_spread_it_is(
+    pose_varying_report: dict,
+) -> None:
+    """The σ an attribution argument is built on carries the register the
+    evidence packet already declares: an across-pose spread pools the field's
+    real variation with each capture's noise and separates neither, and the
+    growth RATIO is a discriminator rather than an error bar."""
+    register = pose_varying_report["frame"]["uncertainty"]
+
+    assert register["fields"] == {}
+    assert set(register["unseparated"]) == {
+        "sigma_db_by_rung", "band_mean_sigma_db_by_rung"
+    }
+    assert {
+        entry["kind"] for entry in register["unseparated"].values()
+    } == {feature_classification.UNCERTAINTY_UNSEPARATED}
+    assert set(register["not_uncertainties"]) == {"sigma_growth_ratio"}
