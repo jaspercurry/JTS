@@ -78,6 +78,42 @@ def candidate_artifact_paths(root: Path) -> list[Path]:
     return found[-MAX_CANDIDATE_ARTIFACTS_SCANNED:]
 
 
+def _bank_root(root: Path | None) -> Path:
+    """Where the bank IS, defaulting to the on-box bundle store both readers scan."""
+    from jasper.active_speaker.bundles import sessions_dir
+
+    return Path(root) if root is not None else sessions_dir()
+
+
+def banked_candidates(*, root: Path | None = None) -> list[BankedCandidate]:
+    """Every candidate the bounded scan can verify, in :func:`candidate_artifact_paths`
+    order. The LISTING behind :func:`find_banked_candidate`: a reader holding no
+    fingerprint yet needs the same bound, integrity check and identity resolution.
+    """
+    return _verified_candidates(candidate_artifact_paths(_bank_root(root)))
+
+
+def _verified_candidates(paths: list[Path]) -> list[BankedCandidate]:
+    """Those of ``paths`` that parse, verify, and resolve both halves of an identity."""
+    found: list[BankedCandidate] = []
+    for path in paths:
+        candidate = load_candidate_artifact(path)
+        if candidate is None:
+            continue
+        bundle_session_id, capture_session_id = _identity_from_path(path)
+        if not bundle_session_id or not capture_session_id:
+            continue
+        found.append(
+            BankedCandidate(
+                candidate=candidate,
+                bundle_session_id=bundle_session_id,
+                capture_session_id=capture_session_id,
+                path=path,
+            )
+        )
+    return found
+
+
 def _identity_from_path(path: Path) -> tuple[str, str]:
     """``(bundle_session_id, capture_session_id)`` for one artifact path. Positional, not parsed:
     the glob fixes the depth (capture session is the artifact's own directory, bundle is
@@ -117,37 +153,19 @@ def find_banked_candidate(
     ``fingerprint_required``, ``not_found`` (no artifact both matches and verifies), or
     ``ambiguous`` (two lineages carry this fingerprint).
     """
-    from jasper.active_speaker.bundles import sessions_dir
-
     wanted = str(fingerprint or "").strip()
     if not wanted:
         raise CandidateBankRefusal(
             "fingerprint_required", "a candidate fingerprint is required"
         )
 
-    bundle_root = Path(root) if root is not None else sessions_dir()
-    paths = candidate_artifact_paths(bundle_root)
-    matches: dict[tuple[str, str], BankedCandidate] = {}
-    verified = 0
-    for path in paths:
-        candidate = load_candidate_artifact(path)
-        if candidate is None:
-            continue
-        verified += 1
-        if str(candidate.fingerprint) != wanted:
-            continue
-        bundle_session_id, capture_session_id = _identity_from_path(path)
-        if not bundle_session_id or not capture_session_id:
-            continue
-        matches.setdefault(
-            (bundle_session_id, capture_session_id),
-            BankedCandidate(
-                candidate=candidate,
-                bundle_session_id=bundle_session_id,
-                capture_session_id=capture_session_id,
-                path=path,
-            ),
-        )
+    paths = candidate_artifact_paths(_bank_root(root))
+    banked = _verified_candidates(paths)
+    matches = {
+        (one.bundle_session_id, one.capture_session_id): one
+        for one in banked
+        if one.fingerprint == wanted
+    }
 
     if len(matches) > 1:
         raise CandidateBankRefusal(
@@ -155,8 +173,10 @@ def find_banked_candidate(
             f"{len(matches)} banked sessions claim this candidate fingerprint",
         )
     if not matches:
-        unverified = len(paths) - verified
-        detail = f"no banked candidate matches this fingerprint ({verified} examined)"
+        unverified = len(paths) - len(banked)
+        detail = (
+            f"no banked candidate matches this fingerprint ({len(banked)} examined)"
+        )
         if unverified:
             detail += f"; {unverified} could not be verified"
         raise CandidateBankRefusal("not_found", detail)
@@ -168,6 +188,6 @@ def find_banked_candidate(
         candidate_fingerprint=found.fingerprint,
         bundle_session_id=found.bundle_session_id,
         capture_session_id=found.capture_session_id,
-        examined=verified,
+        examined=len(banked),
     )
     return found
