@@ -169,9 +169,11 @@ Owner decisions you must price and put in front of the owner, not act on: the `b
 (21,667 LOC, `KNOWN DEFECT #2202`, ADR-0228 row 9, PR #3836; the tuning close-out puts this decision
 first among its wave-10 candidates, and #3769 D13 holds it for the owner's word — if approved, the
 cut is coordinated on #4031 before any branch, because Phase D is about to touch
-`active_speaker/commissioning_*`); `jasper-deploy-health` (read it first — nobody has); `s0-sync-*`
-vs `multiroom-spike-*` (2,150 LOC, both self-declared throwaway); `REFACTOR-CUTOVER-2026-08.md` and
-`multiroom-pairing-reliability-plan.md` into ADRs (P8 makes the docs change).
+`active_speaker/commissioning_*`); `s0-sync-*` vs `multiroom-spike-*` (2,150 LOC, both
+self-declared throwaway); `REFACTOR-CUTOVER-2026-08.md` and `multiroom-pairing-reliability-plan.md`
+into ADRs (P8 makes the docs change). The `jasper-deploy-health` decision is **resolved by
+measurement**: `jasper-doctor --core` (#4177) was measured against it on jts4 and clears the
+retirement; P2 lands the switch and the deletion (900 + 1,642 test LOC) — not your row.
 
 Go deeper than the review did: run a real dead-symbol scan (`vulture` if installable, else the
 review's AST script in `reports/p0-orphans.md`'s method) over the packages the duplicate lens

@@ -93,10 +93,10 @@ Concretely:
 - both guards run before any `rsync`, unconditionally — not gated on `SKIP_INSTALL`, not gated on
   whether sudo is passwordless (capture manifest and peer_id over a separate non-tty
   `ssh -o BatchMode=yes` channel; only `sudo` needs the pty); one pin per guard per branch;
-- a red core-health result is at least machine-readable (`event=deploy.health …`) and, once
-  ADR-0233 rule 5's `jasper-doctor --core` exists, gates the deploy (the current non-gating has a
-  written rationale — a known false-positive class — so land the gate only after that class is
-  reclassified; do not add a nanny);
+- the deploy's post-install health is `jasper-doctor --core` (it exists: #4177, 12 rows), not
+  `deploy/bin/jasper-deploy-health`; a red result is machine-readable (`event=deploy.health …`) and
+  gates the deploy only after the known false-positive class behind today's non-gating has been
+  reclassified (do not add a nanny);
 - the install is one `STEPS` table (`name | profiles | fn | plan phrase`) that `main()` iterates and
   `--dry-run` renders, with the rollback transaction and per-step `jasper_install_log` in the loop,
   for **both** profiles;
@@ -152,6 +152,18 @@ Verified at HEAD by the review (two of them by execution under a stubbed `ssh`/`
 - #4173 gave the docs link check a push-to-main trigger (it had been red on `main` unseen); the
   classifier's rename-skip row in P7 stands.
 - The Pi-side copy of 11 of 12 `deploy/lib/install/*.sh` has no consumer (one-line glob fix).
+- **The deploy-health switch is unblocked but not opened.** The doctor/state stream landed
+  `jasper-doctor --core` (#4177) and measured it against `jasper-deploy-health` on jts4 (Zero 2 W,
+  idle, one at a time): `--core` 4.9 s wall / 3.7 s CPU / 31.8 MB peak, 12 rows all ok;
+  `deploy-health` 3.6 s / 0.8 s / 11.0 MB; the full doctor 11.0 s / 9.6 s and it pushes jts4 into
+  swap, so `--core` is the only post-deploy tool there. The deploy still gates on
+  `deploy/bin/jasper-deploy-health` (`install.sh:2136`, `deploy-to-pi.sh:571`). Order for the
+  switch: P4 first relaxes the doctor CLI's voice-config gate (`cli/doctor/_cli.py` loads the voice
+  config before any check, so `--core` on a box with no API key exits with one config-error row);
+  then one PR switches `install.sh` and `deploy-to-pi.sh` to `--core` and deletes
+  `deploy/bin/jasper-deploy-health` with its 1,642-line test (non-negotiable tier: adversarial
+  review, owner's word). If `--core` becomes a oneshot unit, size it `MemoryMax=96M`,
+  `TimeoutStartSec=60`.
 - From the idle-efficiency review (#4139): **#4190** — `install.sh` runs as a child of the SSH
   session, so the installer's wlan0 `device-reapply` can drop the session and kill the install
   half-applied (seen on jts4; the fix is run-detached-and-poll); **#4123** — install-time reconcile

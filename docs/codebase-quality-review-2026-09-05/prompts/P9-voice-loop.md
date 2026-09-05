@@ -106,6 +106,9 @@ files is yours. Specifically:
   ADR-0158) are yours. Decisions you make go to `docs/adr/` as usual.
 - **P1**: provider-error bodies reach the redactor through `voice/_supervisor.py`; keep that call
   when you touch the supervisor and route any new error surface through it.
+- **The hardware lane (#4027)** opened #4205 in your files — a microphone-loss cue played at daemon
+  shutdown (ADR-0238). Read it (merged or open) before planning any Wave 1 or Wave 4 row that
+  touches shutdown or the cue path; it is the one outside PR in the voice loop since the brief.
 
 ## What "A" means here
 
