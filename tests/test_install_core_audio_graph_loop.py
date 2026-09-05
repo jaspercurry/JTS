@@ -23,7 +23,10 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from jasper import source_intent
+from jasper.local_sources.registry import local_source_audio_refresh_units
 
 ROOT = Path(__file__).resolve().parents[1]
 FRAGMENT = ROOT / "deploy" / "lib" / "install" / "systemd-units.sh"
@@ -400,7 +403,9 @@ def test_both_profiles_refresh_only_active_sources_then_reapply_intent():
         body = _function_body(source, fn)
         baseline_idx = body.find("enable_usbgadget")
         assert baseline_idx != -1, f"{fn}: network-only USB baseline missing"
-        restart_idx = body.find("systemctl try-restart bluealsa-aplay.service")
+        restart_idx = body.find(
+            'systemctl try-restart "${JASPER_LOCAL_SOURCE_REFRESH_UNITS[@]}"'
+        )
         assert restart_idx != -1, f"{fn}: active-only renderer refresh missing"
         assert "systemctl enable nqptp.service" not in body
         assert "systemctl restart nqptp.service" not in body
@@ -416,10 +421,6 @@ def test_both_profiles_refresh_only_active_sources_then_reapply_intent():
         )
         assert "jasper-source-intent-reconcile.service" in body, (
             f"{fn}: the coordinator must also be enabled for boot convergence"
-        )
-        assert "jasper-usbsink-volume.service" in body, (
-            f"{fn}: the USB volume bridge must also be restarted like its "
-            "sibling renderer daemons"
         )
     # The shared helper is the ONE deploy path that runs the full coordinator.
     helper = _function_body(source, "reapply_source_intent")
@@ -550,3 +551,61 @@ def test_reset_failed_targets_exclude_parked_units(tmp_path):
     assert targets.isdisjoint(park), (
         f"restart targets must not overlap parked clients: {targets & park}"
     )
+
+
+def _profile_runtime_harness(tmp_path: Path, function: str) -> str:
+    """Run one profile's unit-install function with every fragment-defined
+    helper stubbed into a recorder, so the systemctl argv it issues is
+    observable off-box. `set -e` is deliberately off: the function also calls
+    helpers defined in install.sh and on-box binaries under /usr/local/sbin,
+    neither of which exists here, and both are non-fatal on the box too."""
+    calls = tmp_path / "calls.log"
+    return f"""
+set -uo pipefail
+LOG='{calls}'
+REPO_DIR="{ROOT}"
+SYSTEMD_DIR="{tmp_path}/systemd"
+APPLE_DONGLE_SERVICE_CARD="jts-test-dongle"
+mkdir -p "$SYSTEMD_DIR"
+source "{FRAGMENT}"
+for _stub in $(declare -F | awk '{{print $3}}'); do
+    [[ "$_stub" == "{function}" ]] && continue
+    eval "${{_stub}}() {{ echo \\"fn ${{_stub}}\\" >> \\"$LOG\\"; return 0; }}"
+done
+systemctl() {{ echo "systemctl $*" >> "$LOG"; return 0; }}
+install() {{ return 0; }}
+mktemp() {{ local d; d="{tmp_path}/txn.$RANDOM"; mkdir -p "$d"; printf '%s\\n' "$d"; }}
+{function}
+"""
+
+
+@pytest.mark.parametrize(
+    "function",
+    ("start_streambox_runtime_units", "install_systemd_units"),
+)
+def test_both_profiles_restart_control_and_refresh_the_source_roster(
+    tmp_path, function
+):
+    """The full profile used to only `enable` jasper-control, so a from-scratch
+    install left the control plane (and, through its Wants=, CamillaDSP) down
+    until the next reboot while streambox restarted it. Both profiles must
+    restart it, and the try-restart set both issue must cover every unit
+    jasper's own local-source roster names.
+
+    Remove when the installer stops managing unit lifecycle.
+    """
+    result = subprocess.run(
+        ["bash", "-c", _profile_runtime_harness(tmp_path, function)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "calls.log").read_text().splitlines()
+
+    assert "systemctl restart jasper-control.service" in calls
+
+    refreshes = [c for c in calls if c.startswith("systemctl try-restart ")]
+    assert len(refreshes) == 1, refreshes
+    refreshed = set(refreshes[0].split()[2:])
+    assert set(local_source_audio_refresh_units()) <= refreshed
