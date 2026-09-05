@@ -154,9 +154,8 @@ def test_mono_sum_sources_is_exactly_clip_safe():
 
 
 def test_channel_select_mono_composes_the_shared_sum():
-    # channel_select("mono"/"sub") is the inter-speaker use of the one recipe.
+    # channel_select("mono") is the inter-speaker use of the one recipe.
     assert channel_select_sources("mono") == mono_sum_sources()
-    assert channel_select_sources("sub") == mono_sum_sources()
 
 
 def test_channel_select_sources_left_right_are_unity_routes():
@@ -169,10 +168,9 @@ def test_channel_select_sources_mono_is_clip_safe_sum():
     sources = channel_select_sources("mono")
     assert sources == [(0, MONO_SUM_GAIN_DB, False), (1, MONO_SUM_GAIN_DB, False)]
     assert sum(10 ** (g / 20.0) for _, g, _ in sources) == pytest.approx(1.0)
-    assert channel_select_sources("sub") == sources  # sub shares the mono sum
 
 
-@pytest.mark.parametrize("bad", ["stereo", "", "garbage"])
+@pytest.mark.parametrize("bad", ["stereo", "sub", "", "garbage"])
 def test_channel_select_sources_rejects_passthrough_or_unknown(bad):
     with pytest.raises(ValueError):
         channel_select_sources(bad)

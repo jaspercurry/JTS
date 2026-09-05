@@ -69,9 +69,8 @@ LOWEST_DRIVER_ROLE_BY_WAY: dict[int, str] = {
 
 # Local-subwoofer bass-management crossover corner. BOUND TO the one shared
 # bass-management corner definition (jasper.camilla_emit) — the same values the
-# wireless sub (jasper.multiroom.config) and the safety guard reference — so the
-# two sub features share one corner vocabulary and cannot drift. The public
-# spelling stays for this module's importers (graph_safety, runtime_contract,
+# safety guard references — so the corner cannot drift. The public spelling
+# stays for this module's importers (graph_safety, runtime_contract,
 # output_topology's mirror test).
 DEFAULT_SUB_CROSSOVER_HZ = BASS_MANAGEMENT_CORNER_HZ_DEFAULT
 SUB_CROSSOVER_HZ_LO = BASS_MANAGEMENT_CORNER_HZ_LO

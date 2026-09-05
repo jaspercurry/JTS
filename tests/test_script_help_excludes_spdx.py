@@ -28,13 +28,13 @@ _CASES = [
         "multiroom-spike.sh",
         ["--help"],
         0,
-        ("HEARING-SAFETY / CONTENTION", "--teardown", "Follower/sub have no default"),
+        ("HEARING-SAFETY / CONTENTION", "--teardown", "Follower/endpoint have no default"),
     ),
     (
         "multiroom-spike.sh",
         [],
         2,
-        ("HEARING-SAFETY / CONTENTION", "--teardown", "Follower/sub have no default"),
+        ("HEARING-SAFETY / CONTENTION", "--teardown", "Follower/endpoint have no default"),
     ),
     (
         "pi-run-diagnostic.sh",
