@@ -82,12 +82,18 @@ daemon rows.
   owner of those files; the WakeLoop / `daemon_main` god-file rows moved out of P5 into it. Landing order for the six PRs:
   #4186, #4191, #4192, #4206, #4198, #4203 (the last two rebase after their pairs merge); #4186 and
   this review both edit `docs/doc-map.toml`, so whichever merges second rebases once.
-- **Web UI** (#4031, session mid-PR on #4196), **hardware input** (#4027), **doctor/state**: close-outs
-  pending; each becomes or feeds a lane in the redrawn map.
+- **Web UI** (#4031, now on #4210) and **hardware input** (#4027, open #4189 and #4205 — the latter in
+  the voice loop's files): close-outs pending; each becomes a lane in the redrawn map.
+- **Doctor/state stream**: landed `--core` (#4177), the `/state` contract (#4166) and nine more doctor
+  PRs, measured `--core` against `jasper-deploy-health` on jts4 and redeployed jts4; its last message
+  reads as a hand-off. Its remaining queue is two rows already folded into P4 (the config-free
+  `--core` gate) and P2 (the deploy switch + deletion), plus one un-isolated non-critical warning on
+  jts4. Treat it as stood down unless it says otherwise.
 - **Idle-efficiency / ops review** (#4139): the daily deploy + health + idle-efficiency pass over
   jts.local, jts3 and jts4 — the only lane with hands on the boxes, since the remote sessions cannot
   reach the LAN. Proposed shape in the redrawn map: a measure-deploy-and-file lane (P10) that owns
   no source tree, deploys `main`, measures, and files rows on the owning lane's issue; it opens code
   PRs only as owner-approved one-offs. Every "measure once on hardware" row in P3, P4 and P9 is an
-  ask on its issue. Deploy state at its last comment: jts3 and jts4 on `bb5173924` (12:24), jts.local
-  on `6a255e2e7`; the general steward's #4163/#4187 (merged 17:09) are on no box yet.
+  ask on its issue. Deploy state after the owner's and the doctor stream's deploys: jts.local and jts4 on
+  `3959524a6`, jts3 on `964baa037` — all three carry the general steward's #4163/#4187, and fan-in
+  and outputd are confirmed stable on them.

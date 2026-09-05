@@ -106,9 +106,9 @@ speaker is silent — without grepping prose.** Concretely:
   mechanism is observable; `/state.voice.wake_legs` publishes the live task set; a wake-recency +
   idle-RMS detector catches the silence class;
 - doctor: no check that cannot fail is registered as a check; evidence is read once per run (rule
-  4); the three facts computed by both doctor and `/state` have one reader; `--core` exists and is
-  what the deploy reads; `render()` has a filter; the `voice` module runs on streambox where
-  `jasper-voice` is staged;
+  4); the three facts computed by both doctor and `/state` have one reader; `--core` (landed,
+  #4177) runs without a voice config and is what the deploy reads; `render()` has a filter; the
+  `voice` module runs on streambox where `jasper-voice` is staged;
 - no per-tick logging at INFO+ in any loop; `scripts/journal-review.sh` runs on a weekly timer.
 Mechanical measure: the vocabulary test passes with zero allowlist; `jasper-doctor --core` exists;
 the `/state` key-set test exists; `grep -rn 'event=' jasper/ | grep -v log_event` is empty.
@@ -162,6 +162,18 @@ Verified at HEAD by the review:
   `jasper-bluetooth-agent` where the unit is `bt-agent.service`; an undeclared systemd drop-in sat
   on jts.local for ~10 weeks undetected — the drift check should enumerate on-box `*.d/` files the
   repo does not own (agree the deploy half with P2).
+- **Landed by the doctor/state stream since the review** (re-verify each; its last message reads
+  as a hand-off): `/state` carries `STATE_SCHEMA_VERSION = 1` (#4166, "state-contract" — check
+  whether the top-level key-set test came with it), the wifi-guardian key is gone from `/state`
+  (so the per-build `nmcli`/`journalctl` forks row may be closed), `jasper-doctor --core` exists
+  (#4177: 12 rows, 4.9 s / 31.8 MB peak on jts4), one ring-stall check (#4167), one meminfo parser
+  (#4175), mux rows skipped without systemctl (#4185), the grouping evidence memoized (#4204,
+  #4207 — that is rule 4 for `grouping.py`; the `_parked_follower_result` ×14 row may be closed
+  too). **Your first row, because it blocks P2's deploy switch:** `cli/doctor/_cli.py` loads the
+  voice config before any check, so `--core` on a box with no API key exits with one
+  config-error row — `--core` must run config-free. Also measured there: the full doctor (11 s,
+  9.6 s CPU) pushes the Zero 2 W into swap, and jts4 reports one non-critical warning the stream
+  could not isolate in three passes.
 - Doctor rows handed over by the general steward (#4085, round 2, items 2 and 9): #4169 —
   `cli/doctor/audio.py:1418-1424` `check_sound_profile` warns `REASON_SOUND_PROFILE_NOT_ACTIVE`
   while active-leader-bonded because the bake names are absent from `sound/camilla_yaml.py:68-74`
