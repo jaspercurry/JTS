@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use alsa::pcm::{State, PCM};
 use anyhow::{Context, Result};
-use jasper_daemon::{ConfigClassError, NotifyState, EXIT_CONFIG};
+use jasper_daemon::{ConfigClassError, DaemonHooks, NotifyState, EXIT_CONFIG};
 use jasper_outputd::alsa_backend::{
     open_playback_pcm, prime_periods, AlsaBackend, FinalSinkStartupConfigError, IoCounters,
     NegotiatedPcm, PairedCompositeSink,
@@ -35,9 +35,19 @@ use jasper_outputd::state::{ChipRefWrite, OutputdState, StateServer};
 use jasper_outputd::tts::{spawn_tts_server, tts_channels, TtsBridge};
 use jasper_outputd::types::{narrow_period, ProgramSample, SampleFormat};
 use jasper_outputd::{CHANNELS, SAMPLE_RATE};
-use jasper_tts_protocol::assistant_reference::{self, DaemonHooks};
+use jasper_tts_protocol::assistant_reference;
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
+
+/// Outputd's voice for shared code that emits on its behalf. Every channel
+/// is stderr: this daemon installs no `log` implementation.
+const HOOKS: DaemonHooks = DaemonHooks {
+    event_prefix: "outputd",
+    writer_stack_bytes: jasper_outputd::HELPER_STACK_BYTES,
+    info: |message| eprintln!("{message}"),
+    warn: |message| eprintln!("{message}"),
+    error: |message| eprintln!("{message}"),
+};
 
 const REF_OUTPUT_QUEUE_CAPACITY: usize = 32;
 const CHIP_REF_RETRY_INITIAL: Duration = Duration::from_secs(1);
@@ -94,7 +104,7 @@ fn main() -> Result<()> {
         )?;
     }
 
-    lock_memory();
+    jasper_daemon::lock_memory(HOOKS);
 
     let result = match config.backend {
         BackendMode::Fake => {
@@ -455,21 +465,15 @@ fn run_alsa(
         // Learned quiet-room assistant reference: load the last value and arm
         // the persistence writer, mirroring fan-in. Best-effort — a writer
         // failure degrades to no learning and never blocks final output.
-        let hooks = DaemonHooks {
-            event_prefix: "outputd",
-            writer_stack_bytes: jasper_outputd::HELPER_STACK_BYTES,
-            info: |message| eprintln!("{message}"),
-            warn: |message| eprintln!("{message}"),
-        };
         let reference = assistant_reference::load(
             std::path::Path::new(&config.assistant_reference_path),
-            hooks,
+            HOOKS,
         );
         core.set_held_assistant_reference(reference);
         match assistant_reference::spawn_writer(
             PathBuf::from(&config.assistant_reference_path),
             reference,
-            hooks,
+            HOOKS,
         ) {
             Ok((reference_tx, handle)) => {
                 core.set_assistant_reference_sink(reference_tx);
@@ -1600,17 +1604,6 @@ fn spawn_state_server(
         })
         .context("spawning outputd state thread")?;
     Ok(())
-}
-
-fn lock_memory() {
-    match jasper_daemon::lock_memory() {
-        Ok(()) => eprintln!("event=outputd.mlockall_ok"),
-        Err(err) => eprintln!(
-            "event=outputd.mlockall_failed errno={} detail={}",
-            err.raw_os_error().unwrap_or(0),
-            err
-        ),
-    }
 }
 
 fn period_duration(period_frames: u32) -> Duration {

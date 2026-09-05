@@ -4,11 +4,14 @@
 
 //! The daemon skeleton `jasper-fanin` and `jasper-outputd` share: the
 //! hand-built JSON emitter their observability payloads are written with
-//! ([`json`]), the systemd notify seam, the config-class park contract, and
-//! the helper-thread stack budget. Audio-free and ALSA-free.
+//! ([`json`]), the [`DaemonHooks`] each daemon speaks through, the systemd
+//! notify seam, the config-class park contract, and the helper-thread stack
+//! budget. Audio-free and ALSA-free.
 
+pub mod hooks;
 pub mod json;
 
+pub use hooks::DaemonHooks;
 pub use sd_notify::NotifyState;
 
 /// Stack bytes for every helper thread in a JTS audio daemon.
@@ -58,19 +61,71 @@ pub fn notify(state: NotifyState<'_>) -> std::io::Result<()> {
 ///
 /// With MCL_FUTURE active, a later thread spawn's stack mmap is locked too and
 /// fails with EAGAIN under a small RLIMIT_MEMLOCK — which is why fan-in calls
-/// this only once its helper threads are up. Failure is non-fatal and the
-/// caller decides how to say so: the systemd units grant
-/// `LimitMEMLOCK=infinity` so production succeeds, while `cargo test` / `cargo
-/// run` as non-root hits RLIMIT_MEMLOCK and degrades to the
+/// this only once its helper threads are up. Failure is non-fatal: the systemd
+/// units grant `LimitMEMLOCK=infinity` so production succeeds, while `cargo
+/// test` / `cargo run` as non-root hits RLIMIT_MEMLOCK and degrades to the
 /// `Slice=jts-audio.slice` / `MemorySwapMax=0` belt, which is the load-bearing
 /// protection anyway.
-pub fn lock_memory() -> std::io::Result<()> {
+pub fn lock_memory(hooks: DaemonHooks) {
+    let prefix = hooks.event_prefix;
     // SAFETY: mlockall is a single syscall with no aliasing concerns. It does
     // not dereference Rust pointers or create aliases.
     let rc = unsafe { libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) };
     if rc == 0 {
-        Ok(())
+        (hooks.info)(&format!("event={prefix}.mlockall_ok"));
     } else {
-        Err(std::io::Error::last_os_error())
+        let error = std::io::Error::last_os_error();
+        (hooks.error)(&format!(
+            "event={prefix}.mlockall_failed errno={} detail={error}",
+            error.raw_os_error().unwrap_or(0),
+        ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static EMITTED: Mutex<Vec<(&'static str, String)>> = Mutex::new(Vec::new());
+
+    fn push(channel: &'static str, message: &str) {
+        EMITTED.lock().unwrap().push((channel, message.to_string()));
+    }
+
+    /// Both outcomes name the hosting daemon and land on the channel that
+    /// matches their severity: fan-in renders `error` at `error!`, so a
+    /// failure demoted to `info`/`warn` would drop out of a default-level
+    /// journal read.
+    #[test]
+    fn lock_memory_reports_one_outcome_under_the_daemon_prefix() {
+        const HOOKS: DaemonHooks = DaemonHooks {
+            event_prefix: "test",
+            writer_stack_bytes: 0,
+            info: |message| push("info", message),
+            warn: |message| push("warn", message),
+            error: |message| push("error", message),
+        };
+
+        lock_memory(HOOKS);
+        // SAFETY: munlockall is a single syscall; it undoes the MCL_FUTURE the
+        // call above may have armed for the rest of this test process.
+        unsafe { libc::munlockall() };
+
+        let emitted = EMITTED.lock().unwrap();
+        assert_eq!(emitted.len(), 1, "{emitted:?}");
+        let (channel, line) = &emitted[0];
+        match line.split_once(' ') {
+            None => {
+                assert_eq!(line, "event=test.mlockall_ok");
+                assert_eq!(*channel, "info");
+            }
+            Some((head, rest)) => {
+                assert_eq!(head, "event=test.mlockall_failed");
+                assert!(rest.starts_with("errno="), "{rest}");
+                assert!(rest.contains(" detail="), "{rest}");
+                assert_eq!(*channel, "error");
+            }
+        }
     }
 }

@@ -19,23 +19,13 @@ use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use jasper_daemon::DaemonHooks;
 use serde::{Deserialize, Serialize};
 
 use crate::loudness::{HeldLoudnessReference, MAX_SAFE_ASSISTANT_CALIBRATION_LU};
 
 const RECORD_VERSION: u8 = 2;
 const MATERIAL_CHANGE_DB: f32 = 0.1;
-
-/// What the hosting daemon supplies: the `event=` / thread-name prefix, the
-/// writer thread's stack budget, and the two emit paths — fan-in routes them
-/// through the `log` crate, outputd writes stderr directly.
-#[derive(Clone, Copy)]
-pub struct DaemonHooks {
-    pub event_prefix: &'static str,
-    pub writer_stack_bytes: usize,
-    pub info: fn(&str),
-    pub warn: fn(&str),
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedAssistantReference {
@@ -173,6 +163,7 @@ mod tests {
         writer_stack_bytes: 512 * 1024,
         info: |_| {},
         warn: |_| {},
+        error: |_| {},
     };
 
     #[test]
