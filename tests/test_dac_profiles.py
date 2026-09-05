@@ -288,21 +288,23 @@ def test_card_label_routing_matrix_over_hat_eeprom_evidence(
         (HIFIBERRY_DAC8X_STUDIO.hat_products[0].lower(), HIFIBERRY_DAC8X_STUDIO_ID),
         # A different board — must not inherit this row (#2250).
         ("StudioDAC8xPro", None),
-        # A HAT node that publishes no product routes nothing.
+        # A HAT node that publishes no product routes nothing, and neither
+        # does the absence of a HAT (None, as in the label matrix above).
         ("", None),
         ("unregistered_hat_product", None),
+        (None, None),
     ],
 )
 def test_profile_for_hat_matches_the_registrys_declared_hat_products(
-    product: str, expected_id: str | None
+    product: str | None, expected_id: str | None
 ) -> None:
-    hat = HatEeprom(vendor="HiFiBerry", product=product, uuid="uuid")
+    hat = (
+        None
+        if product is None
+        else HatEeprom(vendor="HiFiBerry", product=product, uuid="uuid")
+    )
     profile = dac.profile_for_hat(hat)
     assert (profile.id if profile is not None else None) == expected_id
-
-
-def test_profile_for_hat_returns_none_with_no_hat() -> None:
-    assert dac.profile_for_hat(None) is None
 
 
 def test_hat_eeprom_reader_reports_none_when_no_hat_node_exists(
@@ -1152,3 +1154,16 @@ def test_final_edge_format_for_round_trips_for_bash() -> None:
     # above, so a new profile cannot introduce an unparseable value.
     for profile in dac.all_profiles():
         assert dac.final_edge_format_for(profile.id) in ("S16_LE", "S24_3LE", "S32_LE")
+
+
+def test_every_registry_row_declares_a_sink_outputd_can_parse() -> None:
+    """The reconciler writes ``outputd_sink`` verbatim into JASPER_OUTPUTD_SINK
+    off the SAME probe as the edge format (ADR-0235 R1), so a spelling outputd's
+    parser does not know parks the final-output owner at exit 78 exactly as an
+    unknown format does. ``DacProfile.__post_init__`` only requires the field to
+    be non-empty, so this is what stops a new row from introducing one. The Rust
+    side of the vocabulary is pinned in tests/test_outputd_wiring.py.
+    """
+
+    for profile in dac.all_profiles():
+        assert profile.outputd_sink in ("single_alsa", "dual_apple")

@@ -236,9 +236,9 @@ def register_passive_only_dac(monkeypatch) -> DacProfile:
     that resolves or tests a profile BY ID sees the synthetic one. Registry
     ENUMERATION is deliberately left alone: ``all_profiles()`` reads
     ``REGISTRY``, so it will NOT list it. That fits the guard surfaces under
-    test, which all resolve
-    ``topology.hardware.device_id`` through ``by_id``; a test that needs the
-    synthetic profile enumerated has to patch ``REGISTRY`` as well.
+    test, which all resolve ``topology.hardware.device_id`` through ``by_id``;
+    a test that needs the synthetic profile enumerated has to patch
+    ``REGISTRY`` as well.
     """
 
     profile = DacProfile(

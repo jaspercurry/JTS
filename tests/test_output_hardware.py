@@ -811,16 +811,12 @@ def test_dual_apple_same_bus_gate_follows_the_composite_profile_field(
     """The mismatched-bus blocker fires only when the ARMED composite profile
     declares ``requires_same_usb_bus`` (ADR-0235 R1) — the classifier no
     longer hardcodes the check."""
-    composite = dataclasses.replace(
-        dac.DUAL_APPLE_USB_C_DAC_4CH, requires_same_usb_bus=requires_same_usb_bus
-    )
-    real_by_id = output_hardware._dac_profile_by_id
     monkeypatch.setattr(
         output_hardware,
-        "_dac_profile_by_id",
-        lambda profile_id: (
-            composite if profile_id == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
-            else real_by_id(profile_id)
+        "DUAL_APPLE_USB_C_DAC_4CH",
+        dataclasses.replace(
+            dac.DUAL_APPLE_USB_C_DAC_4CH,
+            requires_same_usb_bus=requires_same_usb_bus,
         ),
     )
 

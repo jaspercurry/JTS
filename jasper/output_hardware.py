@@ -29,6 +29,7 @@ from .atomic_io import atomic_write_json
 from .audio_hardware.dac import (
     APPLE_USB_C_DONGLE,
     APPLE_USB_C_DONGLE_ID,
+    DUAL_APPLE_USB_C_DAC_4CH,
     DUAL_APPLE_USB_C_DAC_4CH_ID,
     DacProfile,
     HIFIBERRY_DAC8X_ID,
@@ -528,12 +529,8 @@ def classify_output_cards(
         status = "ready"
         # Only the composite's own row decides whether mismatched USB
         # buses block it (DacProfile.requires_same_usb_bus, ADR-0235 R1).
-        composite_profile = _dac_profile_by_id(DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID)
-        same_bus = (
-            _same_usb_bus(apple)
-            if composite_profile is not None and composite_profile.requires_same_usb_bus
-            else True
-        )
+        requires_same_bus = DUAL_APPLE_USB_C_DAC_4CH.requires_same_usb_bus
+        same_bus = _same_usb_bus(apple) if requires_same_bus else True
         if same_bus is False:
             status = "partial"
             issues.append(_issue(

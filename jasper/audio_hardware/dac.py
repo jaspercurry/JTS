@@ -156,6 +156,10 @@ class DacProfile:
     coherent_clock_domain: bool
     clock_domain_label: str
     clock_domain_contract: ClockDomainContract
+    # Emitted VERBATIM as JASPER_OUTPUTD_SINK by jasper-audio-hardware-reconcile
+    # (ADR-0235 R1). outputd accepts only the spellings its config.rs parser
+    # lists and parks at exit 78 on any other, so a new row's value must be one
+    # of them (pinned by test_every_registry_row_declares_a_sink_outputd_can_parse).
     outputd_sink: str
     supported_card_matches: tuple[str, ...]
     # Card labels a driver emits for MORE THAN ONE board, routable only when

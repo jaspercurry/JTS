@@ -1112,12 +1112,12 @@ PY
 }
 
 # Resolve a recognized DAC's declared final-edge ALSA sample format AND its
-# outputd sink kind (DacProfile.outputd_sink — ADR-0235 R1) via the Python
-# DacProfile registry, in ONE interpreter spawn: line 1 is the format (e.g.
-# S32_LE for the InnoMaker HiFi AMP Pro), line 2 is the sink (single_alsa or
-# dual_apple). Prints nothing at all when the id is unrecognized or Python is
-# unavailable — the two facts come from the same profile lookup, so they are
-# never available independently of each other.
+# outputd sink kind (DacProfile.outputd_sink — ADR-0235 R1) from ONE profile
+# lookup: line 1 is the format (e.g. S32_LE for the InnoMaker HiFi AMP Pro),
+# line 2 is the sink. BOTH lines or neither — it prints nothing at all when the
+# id is unrecognized or Python is unavailable. A half answer is not a shape the
+# caller can handle: outputd's env_str defaults only on an UNSET key, so an
+# empty JASPER_OUTPUTD_SINK fails its config parse and parks it at exit 78.
 #
 # BLAST RADIUS — this is LIVE config, not a spare knob. jasper-outputd reads
 # JASPER_OUTPUTD_DAC_FORMAT and accepts exactly {S16_LE, S24_3LE, S32_LE} or
@@ -1156,10 +1156,10 @@ from jasper.audio_hardware.dac import by_id, final_edge_format_for
 
 dac_id = os.environ["JASPER_DAC_ID_QUERY"]
 fmt = final_edge_format_for(dac_id)
-if fmt:
+profile = by_id(dac_id)
+if fmt and profile is not None:
     print(fmt)
-    profile = by_id(dac_id)
-    print(profile.outputd_sink if profile is not None else "")
+    print(profile.outputd_sink)
 PY
 }
 
@@ -1214,10 +1214,7 @@ emit_dac_format_for_recognized() {
         "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DAC_FORMAT" "$dac_format" && dac_registry_changed=1
     set_env_file_var_if_changed \
         "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_SINK" "$dac_sink" && dac_registry_changed=1
-    if [[ "$dac_registry_changed" == "1" ]]; then
-        return 0
-    fi
-    return 1
+    [[ "$dac_registry_changed" == "1" ]]
 }
 
 # Resolve the CamillaDSP -> outputd content lane's sample format, via the one
@@ -1879,12 +1876,8 @@ apply_audio_runtime_env() {
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DAC_PCM" "dual_apple_usb_c_dac_4ch" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DUAL_DAC_A_PCM" "$DUAL_APPLE_DAC_A_PCM" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DUAL_DAC_B_PCM" "$DUAL_APPLE_DAC_B_PCM" && changed=1
-        # LIVE: outputd reads this and parks at exit 78 on anything outside
-        # {S16_LE, S24_3LE, S32_LE, empty}; the value also reaches STATUS
-        # dac.format and the chip-AEC alignment identity. A lost registry probe
-        # SKIPS the write and logs dac_format_skip rather than committing an
-        # empty value, which outputd would read as S16_LE. See
-        # emit_dac_format_for_recognized.
+        # Two LIVE outputd keys (DAC_FORMAT, SINK) from one registry probe; a
+        # lost probe skips BOTH. See emit_dac_format_for_recognized.
         emit_dac_format_for_recognized "$OUTPUT_DAC_ID" && changed=1
         dac_format="$(env_file_value_from "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DAC_FORMAT")"
         # Composite width is fixed at 4 (two stereo children); clear the
@@ -1965,12 +1958,8 @@ apply_audio_runtime_env() {
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DAC_PCM" "outputd_dac" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DUAL_DAC_A_PCM" "" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DUAL_DAC_B_PCM" "" && changed=1
-        # LIVE: outputd reads this and parks at exit 78 on anything outside
-        # {S16_LE, S24_3LE, S32_LE, empty}; the value also reaches STATUS
-        # dac.format and the chip-AEC alignment identity. A lost registry probe
-        # SKIPS the write and logs dac_format_skip rather than committing an
-        # empty value, which outputd would read as S16_LE. See
-        # emit_dac_format_for_recognized.
+        # Two LIVE outputd keys (DAC_FORMAT, SINK) from one registry probe; a
+        # lost probe skips BOTH. See emit_dac_format_for_recognized.
         emit_dac_format_for_recognized "$OUTPUT_DAC_ID" && changed=1
         dac_format="$(env_file_value_from "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DAC_FORMAT")"
         if [[ "$active_mode" == "1" ]]; then
