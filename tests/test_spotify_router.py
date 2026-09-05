@@ -536,10 +536,9 @@ def test_router_refresh_if_empty_propagates_statuses_even_when_clients_still_emp
 def test_build_router_migrates_legacy_cache_before_building_clients(
     tmp_path, monkeypatch,
 ):
-    """mux.py and the voice daemon each inlined this bootstrap and relied
-    on maybe_migrate_legacy running before build_clients so a pre-multi-
-    account install's single cache became the "default" account on first
-    use. build_router must preserve that ordering."""
+    """Migration runs before build_clients, so a legacy single cache
+    becomes the "default" account build_clients then builds a client
+    for."""
     from jasper import accounts as accounts_mod
     from jasper.spotify_router import BuildResult, build_router
 

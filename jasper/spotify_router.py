@@ -39,7 +39,10 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from .accounts import Account, Registry, build_cache_handler, maybe_migrate_legacy
+from .accounts import (
+    Account, Registry, build_cache_handler, legacy_cache_path,
+    maybe_migrate_legacy, registry_path,
+)
 from .log_event import log_event
 from .spotify_routing import _normalise as _normalise_title
 
@@ -714,19 +717,20 @@ def build_router(
     *,
     client_id: str,
     redirect_uri: str,
-    accounts_path: str,
-    cache_path: str,
+    accounts_path: str | None = None,
+    cache_path: str | None = None,
     with_rebuild: bool = False,
 ) -> Router:
-    """Registry.load -> maybe_migrate_legacy -> build_clients -> Router,
-    the bootstrap every long-lived Spotify caller (mux, the voice daemon)
-    repeats. `with_rebuild=True` wires the same load/migrate/build chain
-    as the returned Router's `rebuild_fn`, so a caller that keeps the
-    Router around can recover an empty one via `refresh_if_empty()`
-    without re-invoking this function."""
+    """Registry.load -> maybe_migrate_legacy -> build_clients -> Router.
+    `with_rebuild=True` wires the same chain as the returned Router's
+    `rebuild_fn`, so it can recover an empty result later via
+    `refresh_if_empty()`."""
+    resolved_accounts_path = accounts_path if accounts_path is not None else registry_path()
+    resolved_cache_path = cache_path if cache_path is not None else legacy_cache_path()
+
     def _do_build() -> BuildResult:
-        registry = Registry.load(accounts_path)
-        maybe_migrate_legacy(registry, cache_path, default_name="default")
+        registry = Registry.load(resolved_accounts_path)
+        maybe_migrate_legacy(registry, resolved_cache_path)
         return build_clients(registry, client_id=client_id, redirect_uri=redirect_uri)
 
     result = _do_build()
