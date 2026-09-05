@@ -475,7 +475,7 @@ def test_chip_rms_window_reports_the_raw_capture_level(
     Renders the real format string and reads it back through the real
     doctor parser."""
     import socket as real_socket
-    from jasper.cli import doctor
+    from jasper.cli.doctor import aec
     from jasper.mics import xvf3800
 
     monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
@@ -509,7 +509,7 @@ def test_chip_rms_window_reports_the_raw_capture_level(
     )
 
     rms_lines = [m for m in caplog.messages if m.startswith("chip_aec rms")]
-    windows = [w for w in map(doctor._parse_rms_window, rms_lines) if w]
+    windows = [w for w in map(aec._parse_rms_window, rms_lines) if w]
 
     assert len(windows) == len(rms_lines) > 0, caplog.messages
     assert windows[0].chip

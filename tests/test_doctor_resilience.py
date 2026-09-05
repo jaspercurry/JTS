@@ -17,8 +17,7 @@ import time
 import pytest
 
 from jasper import service_units
-from jasper.cli import doctor
-from jasper.cli.doctor import _evidence, resilience
+from jasper.cli.doctor import _evidence, _shared, resilience
 from jasper.cli.doctor.resilience import (
     _REBOOT_STATE_FUTURE_SKEW_SEC,
     _classify_reboot_state,
@@ -81,7 +80,7 @@ def test_check_service_runtime_state_verdicts(
 ):
     _systemctl_show(monkeypatch, "\n".join(_unit_block(*b) for b in blocks))
 
-    r = doctor.check_service_runtime_state()
+    r = resilience.check_service_runtime_state()
 
     assert r.status == status
     assert r.reason == reason
@@ -96,7 +95,7 @@ def test_check_service_runtime_state_ignores_an_in_flight_oneshot(monkeypatch):
         _unit_block("jasper-fanin-coupling-auto.service", "activating", "start"),
     )
 
-    r = doctor.check_service_runtime_state()
+    r = resilience.check_service_runtime_state()
 
     assert r.status == "ok"
 
@@ -110,14 +109,14 @@ def test_check_service_runtime_state_flags_a_non_oneshot_stuck_activating(
         monkeypatch, _unit_block("jasper-fanin.service", "activating", "start"),
     )
 
-    r = doctor.check_service_runtime_state()
+    r = resilience.check_service_runtime_state()
 
     assert r.status == "fail"
     assert r.reason == resilience.REASON_UNITS_FAILED_OR_UNSTABLE
 
 
 def test_runtime_state_units_track_the_coupling_reconciler_oneshot():
-    assert "jasper-fanin-coupling-auto.service" in doctor._RUNTIME_STATE_UNITS
+    assert "jasper-fanin-coupling-auto.service" in _shared._RUNTIME_STATE_UNITS
 
 
 # ------------------------------------------------------- supervisor reboot state

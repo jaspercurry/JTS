@@ -7,8 +7,7 @@
 import json
 
 from jasper import audio_runtime_plan
-from jasper.cli import doctor
-from jasper.cli.doctor import _evidence
+from jasper.cli.doctor import _evidence, audio_runtime_fanin, audio_runtime_outputd
 from jasper.cli.doctor._evidence import evidence
 
 #: Every unit the audio-runtime checks ask about, so a seeded run never falls
@@ -87,7 +86,7 @@ def _fanin_status_payload(
             "output": output,
             "inputs": [
                 {"label": label, "pcm": pcm, "xrun_count": 0}
-                for label, pcm in doctor._FANIN_EXPECTED_ALOOP_INPUTS
+                for label, pcm in audio_runtime_fanin._FANIN_EXPECTED_ALOOP_INPUTS
             ],
             "tts": {
                 "enabled": True,
@@ -122,7 +121,7 @@ def _outputd_status_payload(
     *,
     backend: str = "alsa",
     sink_mode: str = "single_alsa",
-    dac_pcm: str = doctor._OUTPUTD_EXPECTED_DAC_PCM,
+    dac_pcm: str = audio_runtime_outputd._OUTPUTD_EXPECTED_DAC_PCM,
     # Period-sized, because that is the honest synthetic every box publishes:
     # outputd opens no content ALSA PCM at all, so there is no negotiated
     # content buffer behind this number (ADR-0100).
