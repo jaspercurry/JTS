@@ -145,8 +145,6 @@ def test_absent_file_is_disabled_with_defaults(tmp_path):
     assert cfg.client_latency_ms == DEFAULT_CLIENT_LATENCY_MS
     assert cfg.left_delay_ms == 0.0
     assert cfg.right_delay_ms == 0.0
-    assert cfg.mains_highpass_enabled is True
-    assert cfg.subwoofer_present is False
     assert cfg.error is None
 
 
@@ -276,11 +274,12 @@ def test_invalid_empty_bond_id_sets_error(tmp_path):
     assert "BOND_ID" in cfg.error
 
 
-def test_invalid_bad_channel_sets_error(tmp_path):
+@pytest.mark.parametrize("channel", ["surround", "sub"])
+def test_invalid_bad_channel_sets_error(tmp_path, channel):
     body = (
         "JASPER_GROUPING=on\n"
         "JASPER_GROUPING_ROLE=leader\n"
-        "JASPER_GROUPING_CHANNEL=surround\n"
+        f"JASPER_GROUPING_CHANNEL={channel}\n"
         "JASPER_GROUPING_BOND_ID=den\n"
     )
     path = _write_env(tmp_path, body)
@@ -827,16 +826,17 @@ def test_validate_roster_rejects_foreign_addr_and_bad_channel():
 
     assert validate_roster(()) is None
     assert validate_roster((
-        BondMember(addr="192.168.1.8", name="Sub", channel="sub"),
+        BondMember(addr="192.168.1.8", name="Right", channel="right"),
     )) is None
     # Public IP — the SSRF rule rejects it.
     assert validate_roster((
-        BondMember(addr="8.8.8.8", name="x", channel="sub"),
+        BondMember(addr="8.8.8.8", name="x", channel="right"),
     )) is not None
-    # Unknown channel.
-    assert validate_roster((
-        BondMember(addr="10.0.0.5", name="x", channel="bogus"),
-    )) is not None
+    # Unknown channel ("sub" is retired, so a stale roster fails loud too).
+    for channel in ("bogus", "sub"):
+        assert validate_roster((
+            BondMember(addr="10.0.0.5", name="x", channel=channel),
+        )) is not None
 
 
 def test_parse_roster_skips_malformed_entries():
@@ -870,17 +870,17 @@ def test_validate_grouping_roster_matrix():
         **base,
         roster=(
             BondMember(addr="192.168.1.7", name="Right", channel="right"),
-            BondMember(addr="10.0.0.8", name="Sub", channel="sub"),
+            BondMember(addr="10.0.0.8", name="Mono", channel="mono"),
         ),
     ) is None
     # Non-private/loopback IPv4 addr — names the addr field.
     err = validate_grouping(
-        **base, roster=(BondMember(addr="8.8.8.8", name="x", channel="sub"),))
+        **base, roster=(BondMember(addr="8.8.8.8", name="x", channel="right"),))
     assert err is not None and "addr='8.8.8.8'" in err
     # Non-IPv4 (hostname) addr also rejected.
     assert validate_grouping(
         **base,
-        roster=(BondMember(addr="jts3.local", name="x", channel="sub"),),
+        roster=(BondMember(addr="jts3.local", name="x", channel="right"),),
     ) is not None
     # Bad channel.
     err = validate_grouping(
@@ -890,7 +890,7 @@ def test_validate_grouping_roster_matrix():
     # Over-long name.
     err = validate_grouping(
         **base,
-        roster=(BondMember(addr="10.0.0.9", name="x" * 65, channel="sub"),))
+        roster=(BondMember(addr="10.0.0.9", name="x" * 65, channel="right"),))
     assert err is not None and "name=" in err
 
 
@@ -904,182 +904,18 @@ def test_load_config_reads_roster(tmp_path):
         "JASPER_GROUPING_ROLE=leader\n"
         "JASPER_GROUPING_CHANNEL=left\n"
         "JASPER_GROUPING_BOND_ID=b\n"
-        "JASPER_GROUPING_ROSTER=192.168.1.7|Right|right,10.0.0.8|Sub|sub\n"
+        "JASPER_GROUPING_ROSTER=192.168.1.7|Right|right,10.0.0.8|Kitchen|mono\n"
     )
     cfg = load_config(_write_env(tmp_path, body))
     assert cfg.roster == (
         BondMember(addr="192.168.1.7", name="Right", channel="right"),
-        BondMember(addr="10.0.0.8", name="Sub", channel="sub"),
+        BondMember(addr="10.0.0.8", name="Kitchen", channel="mono"),
     )
     assert cfg.error is None
 
     # Absent key -> empty roster, no error.
     cfg2 = load_config(_write_env(tmp_path, _leader_env()))
     assert cfg2.roster == ()
-
-
-# ---------- crossover_hz: receiver-side wireless-sub low-pass corner ----
-
-
-def test_crossover_hz_default_when_absent_on_sub():
-    """A sub member with no JASPER_GROUPING_CROSSOVER_HZ resolves to the
-    80 Hz default (a "sub" must never play full-range) with no error."""
-    from jasper.multiroom.config import DEFAULT_CROSSOVER_HZ, load_config
-    import os
-    import tempfile
-
-    with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as f:
-        f.write(
-            "JASPER_GROUPING=on\n"
-            "JASPER_GROUPING_ROLE=follower\n"
-            "JASPER_GROUPING_CHANNEL=sub\n"
-            "JASPER_GROUPING_BOND_ID=b\n"
-            "JASPER_GROUPING_LEADER_ADDR=jts.local\n"
-        )
-        path = f.name
-    try:
-        cfg = load_config(path)
-    finally:
-        os.unlink(path)
-    assert cfg.crossover_hz == DEFAULT_CROSSOVER_HZ
-    assert cfg.error is None
-
-
-def test_crossover_hz_parse_and_validation_matrix():
-    """The wireless-sub crossover corner: parsed from the env file;
-    blank/garbage falls back to the 80 Hz default (never a bypass); an
-    out-of-range value is fail-LOUD on a sub, and on a main whenever a
-    sub is present."""
-    from jasper.multiroom.config import DEFAULT_CROSSOVER_HZ, load_config
-    import os
-    import tempfile
-
-    def cfg_for(channel: str, extra: str):
-        with tempfile.NamedTemporaryFile(
-            "w", suffix=".env", delete=False) as f:
-            f.write(
-                "JASPER_GROUPING=on\n"
-                "JASPER_GROUPING_ROLE=follower\n"
-                f"JASPER_GROUPING_CHANNEL={channel}\n"
-                "JASPER_GROUPING_BOND_ID=b\n"
-                "JASPER_GROUPING_LEADER_ADDR=jts.local\n" + extra
-            )
-            path = f.name
-        try:
-            return load_config(path)
-        finally:
-            os.unlink(path)
-
-    # Sub: in-range parses, blank/garbage default, out-of-range fail-LOUD.
-    assert cfg_for("sub", "JASPER_GROUPING_CROSSOVER_HZ=120\n").crossover_hz == 120.0
-    assert cfg_for("sub", "JASPER_GROUPING_CROSSOVER_HZ=120\n").error is None
-    assert cfg_for("sub", "").crossover_hz == DEFAULT_CROSSOVER_HZ
-    assert cfg_for(
-        "sub", "JASPER_GROUPING_CROSSOVER_HZ=loud\n"
-    ).crossover_hz == DEFAULT_CROSSOVER_HZ
-    assert cfg_for("sub", "JASPER_GROUPING_CROSSOVER_HZ=loud\n").error is None
-    assert "must be between" in cfg_for(
-        "sub", "JASPER_GROUPING_CROSSOVER_HZ=20\n").error
-    assert "must be between" in cfg_for(
-        "sub", "JASPER_GROUPING_CROSSOVER_HZ=500\n").error
-    # Non-sub: an out-of-range stray value is NOT an error (knob unused).
-    assert cfg_for("right", "JASPER_GROUPING_CROSSOVER_HZ=500\n").error is None
-    # Non-sub + sub-present: the bond still has a sub low-pass corner even
-    # when mains high-pass is off, so the carried bond-level corner is ranged.
-    assert "must be between" in cfg_for(
-        "right",
-        "JASPER_GROUPING_SUBWOOFER_PRESENT=on\n"
-        "JASPER_GROUPING_CROSSOVER_HZ=500\n",
-    ).error
-    assert "must be between" in cfg_for(
-        "right",
-        "JASPER_GROUPING_SUBWOOFER_PRESENT=on\n"
-        "JASPER_GROUPING_MAINS_HIGHPASS=off\n"
-        "JASPER_GROUPING_CROSSOVER_HZ=500\n",
-    ).error
-
-
-def test_validate_grouping_crossover_range_for_sub_or_sub_present_main():
-    """The shared rule ranges the corner for sub channels and sub-present mains.
-
-    Toggle-off disables the mains high-pass, not the sub's low-pass corner, so
-    a sub-present bond must keep carrying a valid crossover either way.
-    """
-    from jasper.multiroom.config import validate_grouping
-
-    assert "CROSSOVER_HZ" in validate_grouping(
-        role="follower", channel="sub", bond_id="b", leader_addr="jts.local",
-        crossover_hz=10.0,
-    )
-    assert validate_grouping(
-        role="follower", channel="sub", bond_id="b", leader_addr="jts.local",
-        crossover_hz=80.0,
-    ) is None
-    for ch in ("left", "right", "stereo", "mono"):
-        assert validate_grouping(
-            role="follower", channel=ch, bond_id="b", leader_addr="jts.local",
-            crossover_hz=10.0,
-        ) is None
-        assert "CROSSOVER_HZ" in validate_grouping(
-            role="follower",
-            channel=ch,
-            bond_id="b",
-            leader_addr="jts.local",
-            crossover_hz=10.0,
-            subwoofer_present=True,
-            mains_highpass_enabled=True,
-        )
-        assert "CROSSOVER_HZ" in validate_grouping(
-            role="follower",
-            channel=ch,
-            bond_id="b",
-            leader_addr="jts.local",
-            crossover_hz=10.0,
-            subwoofer_present=True,
-            mains_highpass_enabled=False,
-        )
-
-
-def test_mains_highpass_toggle_parse_and_validation(tmp_path):
-    path = _write_env(
-        tmp_path,
-        _leader_env()
-        + "JASPER_GROUPING_SUBWOOFER_PRESENT=on\n"
-        + "JASPER_GROUPING_MAINS_HIGHPASS=off\n",
-    )
-    cfg = load_config(path)
-    assert cfg.subwoofer_present is True
-    assert cfg.mains_highpass_enabled is False
-    assert cfg.error is None
-
-    bad = _write_env(
-        tmp_path,
-        _leader_env()
-        + "JASPER_GROUPING_MAINS_HIGHPASS=sometimes\n",
-    )
-    assert "MAINS_HIGHPASS" in load_config(bad).error
-
-
-def test_crossover_hz_default_constructor_and_disabled():
-    """crossover_hz is defaulted on the GroupingConfig constructor (wide
-    surface stays source-compatible) and on the _DISABLED solo config."""
-    from jasper.multiroom.config import (
-        DEFAULT_CROSSOVER_HZ,
-        GroupingConfig,
-        load_config,
-    )
-
-    cfg = GroupingConfig(
-        enabled=False, role="", channel="stereo", bond_id="",
-        leader_addr="", buffer_ms=400, codec="flac", error=None,
-    )
-    assert cfg.crossover_hz == DEFAULT_CROSSOVER_HZ
-    assert cfg.mains_highpass_enabled is True
-    assert cfg.subwoofer_present is False
-    # A missing file resolves to the disabled config carrying the default.
-    assert load_config("/nonexistent/grouping.env").crossover_hz == (
-        DEFAULT_CROSSOVER_HZ
-    )
 
 
 @pytest.mark.parametrize(
@@ -1090,7 +926,6 @@ def test_crossover_hz_default_constructor_and_disabled():
         ("jasper.multiroom.airplay_latency", "is_active_leader"),
         ("jasper.multiroom.member_config", "is_active_leader"),
         ("jasper.multiroom.member_config", "load_config"),
-        ("jasper.multiroom.reconcile", "bond_has_subwoofer"),
         ("jasper.multiroom.reconcile", "is_active_leader"),
         ("jasper.multiroom.reconcile", "is_active_member"),
         ("jasper.multiroom.reconcile", "load_config"),

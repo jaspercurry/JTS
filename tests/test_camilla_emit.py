@@ -154,9 +154,8 @@ def test_mono_sum_sources_is_exactly_clip_safe():
 
 
 def test_channel_select_mono_composes_the_shared_sum():
-    # channel_select("mono"/"sub") is the inter-speaker use of the one recipe.
+    # channel_select("mono") is the inter-speaker use of the one recipe.
     assert channel_select_sources("mono") == mono_sum_sources()
-    assert channel_select_sources("sub") == mono_sum_sources()
 
 
 def test_channel_select_sources_left_right_are_unity_routes():
@@ -169,10 +168,9 @@ def test_channel_select_sources_mono_is_clip_safe_sum():
     sources = channel_select_sources("mono")
     assert sources == [(0, MONO_SUM_GAIN_DB, False), (1, MONO_SUM_GAIN_DB, False)]
     assert sum(10 ** (g / 20.0) for _, g, _ in sources) == pytest.approx(1.0)
-    assert channel_select_sources("sub") == sources  # sub shares the mono sum
 
 
-@pytest.mark.parametrize("bad", ["stereo", "", "garbage"])
+@pytest.mark.parametrize("bad", ["stereo", "sub", "", "garbage"])
 def test_channel_select_sources_rejects_passthrough_or_unknown(bad):
     with pytest.raises(ValueError):
         channel_select_sources(bad)
@@ -332,7 +330,7 @@ def test_bass_management_corner_shared_constant_values():
 
 
 def test_every_corner_consumer_is_bound_to_the_shared_constant():
-    """All three corner-carrying layers reference the ONE shared definition."""
+    """Both corner-carrying layers reference the ONE shared definition."""
     from jasper.active_speaker.profile import (
         DEFAULT_SUB_CROSSOVER_HZ,
         SUB_CROSSOVER_HZ_HI,
@@ -344,11 +342,6 @@ def test_every_corner_consumer_is_bound_to_the_shared_constant():
         BASS_MANAGEMENT_CORNER_HZ_HI,
         BASS_MANAGEMENT_CORNER_HZ_LO,
         BASS_MANAGEMENT_CROSSOVER_ORDER,
-    )
-    from jasper.multiroom.config import (
-        CROSSOVER_HZ_HI,
-        CROSSOVER_HZ_LO,
-        DEFAULT_CROSSOVER_HZ,
     )
     from jasper.output_topology import (
         SUB_CROSSOVER_HZ_HI as OT_HI,
@@ -363,27 +356,12 @@ def test_every_corner_consumer_is_bound_to_the_shared_constant():
     # order constant stays `==` because small ints are interned (`4 is 4`
     # always), making an `is` pin vacuous there.
     #
-    # Default corner: wireless-sub config and local-DAC-sub profile are both
-    # THE shared default object.
-    assert (
-        DEFAULT_CROSSOVER_HZ
-        is DEFAULT_SUB_CROSSOVER_HZ
-        is BASS_MANAGEMENT_CORNER_HZ_DEFAULT
-    )
+    # Default corner: the local-DAC-sub profile is THE shared default object.
+    assert DEFAULT_SUB_CROSSOVER_HZ is BASS_MANAGEMENT_CORNER_HZ_DEFAULT
     # Lower bound across all consumers.
-    assert (
-        CROSSOVER_HZ_LO
-        is SUB_CROSSOVER_HZ_LO
-        is OT_LO
-        is BASS_MANAGEMENT_CORNER_HZ_LO
-    )
+    assert SUB_CROSSOVER_HZ_LO is OT_LO is BASS_MANAGEMENT_CORNER_HZ_LO
     # Upper bound (the load-bearing 200 Hz sub-LP safety ceiling) across all.
-    assert (
-        CROSSOVER_HZ_HI
-        is SUB_CROSSOVER_HZ_HI
-        is OT_HI
-        is BASS_MANAGEMENT_CORNER_HZ_HI
-    )
+    assert SUB_CROSSOVER_HZ_HI is OT_HI is BASS_MANAGEMENT_CORNER_HZ_HI
     # LR4 order is bound to the shared constant.
     assert SUB_CROSSOVER_ORDER == BASS_MANAGEMENT_CROSSOVER_ORDER
 

@@ -5,12 +5,11 @@
 """Multiroom speaker grouping ("bonds") for JTS.
 
 When a household wants two or more JTS speakers to play the same audio
-in sync — a stereo pair across a room, a leader plus a sub, whole-home
-mono — this package owns the coordination. A bond has one *leader*
-(runs a snapserver, the timing master) and one or more *followers*
-(run snapclients pointed at the leader); each speaker plays a single
-assigned *channel* (stereo / left / right / sub / mono) of the bond's
-stream.
+in sync — a stereo pair across a room, whole-home mono — this package
+owns the coordination. A bond has one *leader* (runs a snapserver, the
+timing master) and one or more *followers* (run snapclients pointed at
+the leader); each speaker plays a single assigned *channel*
+(stereo / left / right / mono) of the bond's stream.
 
 **Off by default.** A solo speaker pays nothing: with grouping `off`,
 no snapserver or snapclient runs, no channel split happens, no socket

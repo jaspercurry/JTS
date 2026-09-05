@@ -588,91 +588,6 @@ def test_channel_pick_check_active_endpoint_warns_on_stale_dumb_lane(
     assert r.reason == doctor_grouping.REASON_CHANNEL_PICK_ACTIVE_ENDPOINT_LANE_ARMED
 
 
-def _sub_corner_check(monkeypatch, *, cfg, env_text=None, env_path=None):
-    import jasper.cli.doctor.grouping as groupmod
-    import jasper.multiroom.config as cfgmod
-    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: cfg)
-    if env_text is not None:
-        env_path.write_text(env_text)
-    import jasper.multiroom.reconcile as recmod
-    monkeypatch.setattr(
-        recmod, "OUTPUTD_GROUPING_ENV_FILE",
-        str(env_path) if env_path else "/nonexistent/grouping-outputd.env",
-    )
-    return groupmod.check_grouping_sub_corner()
-
-
-def test_sub_corner_check_na_for_non_sub(monkeypatch):
-    r = _sub_corner_check(
-        monkeypatch,
-        cfg=_cfg(enabled=True, role="follower", channel="right",
-                 bond_id="b", leader_addr="jts.local"),
-    )
-    assert r.status == "skipped"
-    assert r.reason == doctor_grouping.REASON_NOT_APPLICABLE
-
-
-def test_sub_corner_check_warns_when_env_missing(monkeypatch):
-    r = _sub_corner_check(
-        monkeypatch,
-        cfg=_cfg(enabled=True, role="follower", channel="sub",
-                 bond_id="b", leader_addr="jts.local"),
-    )
-    assert r.status == "warn"
-    assert r.reason == doctor_grouping.REASON_SUB_CORNER_LANE_MISSING
-
-
-def test_sub_corner_check_na_for_active_speaker_box(monkeypatch):
-    """N2: an active-speaker box bonds via CamillaDSP (active endpoint), which
-    clears the outputd dumb lane — the SUB_HZ env is correctly absent there.
-    The check must be n/a, NOT a false 'corner missing' warn."""
-    import jasper.multiroom.reconcile as recmod
-    monkeypatch.setattr(recmod, "_output_topology_state", lambda: (True, False))
-    r = _sub_corner_check(
-        monkeypatch,
-        cfg=_cfg(enabled=True, role="follower", channel="sub",
-                 bond_id="b", leader_addr="jts.local"),
-    )
-    assert r.status == "skipped"
-    assert r.reason == doctor_grouping.REASON_NOT_APPLICABLE
-
-
-def test_sub_corner_check_warns_when_corner_absent(monkeypatch, tmp_path):
-    env = tmp_path / "grouping-outputd.env"
-    r = _sub_corner_check(
-        monkeypatch,
-        cfg=_cfg(enabled=True, role="follower", channel="sub",
-                 bond_id="b", leader_addr="jts.local", crossover_hz=120.0),
-        # Lane armed but the SUB_HZ key absent (a stale pre-feature file).
-        env_text=f"{DAC_CONTENT_LANE_ENV}=1\n",
-        env_path=env,
-    )
-    assert r.status == "warn"
-    assert r.reason == doctor_grouping.REASON_SUB_CORNER_MISSING
-
-
-def test_sub_corner_check_ok_when_wired(monkeypatch, tmp_path):
-    """The reconciler's own pure derive writes the file → the check passes:
-    the two ends of the contract are the same function."""
-    from jasper.multiroom.reconcile import (
-        OUTPUTD_DAC_CONTENT_SUB_HZ_ENV,
-    )
-    cfg = _cfg(enabled=True, role="follower", channel="sub", bond_id="b",
-               leader_addr="jts.local", crossover_hz=120.0)
-    derived = bonded_grouping_env(
-        cfg,
-        flat_output_allowed=True,
-    )
-    assert derived[OUTPUTD_DAC_CONTENT_SUB_HZ_ENV] == "120.0"
-    env = tmp_path / "grouping-outputd.env"
-    r = _sub_corner_check(
-        monkeypatch, cfg=cfg,
-        env_text="".join(f"{k}={v}\n" for k, v in derived.items()),
-        env_path=env,
-    )
-    assert r.status == "ok"
-
-
 def test_outputd_grouping_env_clears_when_not_active():
     """Disable-clears-stale: solo / invalid → the lane keys present as
     empty strings (outputd reads empty as unset → byte-identical solo
@@ -919,31 +834,6 @@ def test_tts_lane_check_ok_when_reconciler_wired_both_ends(monkeypatch, tmp_path
     assert r.status == "ok"
 
 
-def test_tts_lane_check_parked_sub_follower_is_ok(monkeypatch, tmp_path):
-    """A sub follower parks voice and must keep outputd TTS unarmed."""
-    from jasper.multiroom.reconcile import outputd_grouping_env, voice_grouping_env
-
-    cfg = _cfg(
-        enabled=True,
-        role="follower",
-        channel="sub",
-        bond_id="b",
-        leader_addr="jts.local",
-    )
-    voice_text = "".join(f"{k}={v}\n" for k, v in voice_grouping_env(cfg).items())
-    r = _tts_lane_check(
-        monkeypatch,
-        cfg=cfg,
-        voice_text=voice_text,
-        resolved_voice_text=voice_text,
-        outputd_text="".join(
-            f"{k}={v}\n" for k, v in outputd_grouping_env(cfg).items()
-        ),
-        tmp_path=tmp_path,
-    )
-    assert r.status == "ok"
-
-
 def test_grouping_tts_route_matrix_matches_reconciler_writers():
     """One matrix feeds both env writers, including special endpoints."""
     from jasper.multiroom.reconcile import outputd_grouping_env, voice_grouping_env
@@ -972,17 +862,6 @@ def test_grouping_tts_route_matrix_matches_reconciler_writers():
             ),
             True,
         ),
-        (
-            _cfg(
-                enabled=True,
-                role="follower",
-                channel="sub",
-                bond_id="b",
-                leader_addr="jts.local",
-            ),
-            False,
-        ),
-        (_cfg(enabled=True, role="leader", channel="sub", bond_id="b"), False),
     )
 
     for cfg, active_endpoint in cases:
@@ -1038,10 +917,9 @@ def test_voice_grouping_env_flips_socket_when_bonded_and_omits_when_solo():
         VOICE_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET,
         TTS_MIX_STAGE_ENV: TTS_MIX_STAGE_POST_DSP,
     }
-    # A non-sub FOLLOWER additionally carries the dumb-follower park flag (the
+    # A FOLLOWER additionally carries the dumb-follower park flag (the
     # validated signal jasper-aec-reconcile gates voice/AEC parking on) and the
-    # outputd socket route. Sub followers are parked too, but outputd TTS stays
-    # unarmed in their outputd env so speech cannot hit the sub post-low-pass.
+    # outputd socket route.
     follower = voice_grouping_env(
         _cfg(enabled=True, role="follower", channel="right",
              bond_id="b", leader_addr="jts.local"))
@@ -1061,19 +939,6 @@ def test_voice_grouping_env_flips_socket_when_bonded_and_omits_when_solo():
         active_endpoint=True,
     )
     assert active_follower == {VOICE_PARK_ENV: "1"}
-    sub_follower = voice_grouping_env(
-        _cfg(enabled=True, role="follower", channel="sub",
-             bond_id="b", leader_addr="jts.local"),
-    )
-    assert sub_follower == {
-        VOICE_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET,
-        TTS_MIX_STAGE_ENV: TTS_MIX_STAGE_POST_DSP,
-        VOICE_PARK_ENV: "1",
-    }
-    sub_leader = voice_grouping_env(
-        _cfg(enabled=True, role="leader", channel="sub", bond_id="b"),
-    )
-    assert sub_leader == {}
     for cfg in (
         _cfg(),  # off
         _cfg(enabled=True, role="", channel="left", bond_id="", error="bad"),

@@ -69,8 +69,7 @@ RESTORE_SOURCE = "grouping-follower-restore"
 # cfg.channel -> the driver-domain program-channel pick. A single active
 # 2-way follower has ONE set of drivers, so it plays one inter-speaker
 # channel: a side (left/right) or a clip-safe mono sum. "stereo" (both
-# channels) and "sub" (the wireless-sub member, gap 5) are NOT a single-box
-# pick — fail closed rather than guess.
+# channels) is NOT a single-box pick — fail closed rather than guess.
 _CHANNEL_TO_PROGRAM = {"left": "left", "right": "right", "mono": "mono"}
 
 
@@ -87,9 +86,9 @@ class ActiveFollowerError(RuntimeError):
 def program_channel_for(channel: str) -> str:
     """Map a bond ``channel`` to a driver-domain program-channel. PURE.
 
-    Raises :class:`ActiveFollowerError` (fail closed) for ``stereo`` / ``sub`` /
+    Raises :class:`ActiveFollowerError` (fail closed) for ``stereo`` and
     anything else — a single active 2-way follower cannot play a passthrough
-    stereo pair, and the wireless sub is a separate design (gap 5)."""
+    stereo pair."""
     program = _CHANNEL_TO_PROGRAM.get(channel)
     if program is None:
         raise ActiveFollowerError(

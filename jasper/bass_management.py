@@ -5,39 +5,23 @@
 """Resolve the active bass-management crossover corner — the single READ seam.
 
 The crossover *corner* itself has one shared definition (the constants in
-:mod:`jasper.camilla_emit`; the SPEAKER layer owns the value). Two subsystems
-*carry* a live corner, though, and they are chosen by hardware/bond state:
+:mod:`jasper.camilla_emit`; the SPEAKER layer owns the value). One subsystem
+*carries* a live corner: a LOCAL-DAC subwoofer, declared in the persisted
+output topology
+(:class:`jasper.output_topology.SpeakerChannel.crossover_fc_hz` on a
+``subwoofer`` group). An active main folds its own mains high-pass at that
+corner exactly when its preset declares a
+:class:`jasper.active_speaker.profile.LocalSubwoofer` — sub low-pass and mains
+high-pass are the two halves of one crossover inside that box's own CamillaDSP
+Layer-A graph.
 
-  - a LOCAL-DAC subwoofer, declared in the persisted output topology
-    (:class:`jasper.output_topology.SpeakerChannel.crossover_fc_hz` on a
-    ``subwoofer`` group) — the active-speaker Layer-A path high-passes the
-    mains and low-passes the sub at this corner in its own CamillaDSP graph;
-  - a WIRELESS subwoofer in a multi-room bond
-    (:data:`jasper.multiroom.config.GroupingConfig.crossover_hz`) — a "sub"
-    member low-passes and every main member high-passes at this corner.
-
-This module is the one place that composes those two reads into "what corner is
+This module is the one place that turns that read into "what corner is
 bass-managing this speaker right now, and who owns it." Two consumers use it:
 
   - the ROOM correction designer READS the corner (never re-picks it) so it can
     refuse to boost inside the crossover region (revision plan §3.3);
   - the ``/correction/bass/`` wizard DISPLAYS the corner, its owner, and the
     sub/mains-HP state (read-only — the wizard does not own the corner).
-
-CORNER PRECEDENCE (revision plan §6 default): when a speaker is BOTH an active
-main AND bonded to a wireless sub, the active-speaker LOCAL config wins — the
-wireless path defers (the reconciler's ``outputd_grouping_env`` clears the
-wireless HP for an active endpoint). For an active main WITH a local sub that
-means mains-HP is applied exactly once, in that box's CamillaDSP graph. KNOWN
-GAP — the fourth quadrant: an active main bonded to a wireless-only sub (no
-local sub) gets mains-HP applied ZERO times — its dac_content lane is cleared
-AND its Layer-A graph only folds a mains HP for a local sub. That wiring gap is
-the documented "Remaining" active-endpoint sub path; this resolver REPORTS it
-honestly
-(``mains_highpass_enabled=False`` with
-``mains_highpass_unwired_reason=MAINS_HP_UNWIRED_ACTIVE_ENDPOINT``) so displays
-never claim a high-pass the box does not run. In every quadrant the resolver
-reports what the reconciler actually wired.
 
 TOTAL + fail-soft. Every read is best-effort; any load/parse failure resolves
 to "no bass management" (corner ``None``) rather than raising — a room
@@ -74,8 +58,8 @@ class BassManagementState:
     """The resolved bass-management picture for this speaker, right now.
 
     ``corner_hz`` is ``None`` exactly when nothing is bass-managing the speaker
-    (no local-DAC sub, no wireless sub) — the room designer treats that as "no
-    crossover region to protect," and the wizard shows "not configured."
+    (no local-DAC sub) — the room designer treats that as "no crossover region
+    to protect," and the wizard shows "not configured."
     """
 
     corner_hz: float | None
@@ -83,16 +67,10 @@ class BassManagementState:
     sub_present: bool
     # Whether the mains high-pass (the complementary upper half of the sub
     # crossover) is actually wired ON THIS BOX. On a local-DAC active sub it is
-    # folded into the CamillaDSP graph whenever the sub is present. On a
-    # wireless bond it is the per-bond toggle for a dumb member — but False,
-    # with ``mains_highpass_unwired_reason`` set, for the fourth-quadrant gap
-    # (an active box whose wireless mains-HP is deferred yet whose graph has no
-    # local sub to fold one for).
+    # folded into the CamillaDSP graph whenever the sub is present.
     mains_highpass_enabled: bool
-    # Set (only with mains_highpass_enabled=False) when the bond WANTS mains-HP
-    # but this box does not actually wire it — today only
-    # MAINS_HP_UNWIRED_ACTIVE_ENDPOINT. None whenever the on/off state is the
-    # whole truth.
+    # Why mains-HP is not wired despite being wanted. Nothing sets it since
+    # the wireless sub was removed; the wizard payload still carries the key.
     mains_highpass_unwired_reason: str | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -144,30 +122,12 @@ def _local_dac_sub_corner() -> float | None:
     return None
 
 
-def _is_active_speaker_box() -> bool:
-    """Whether this box is a declared ACTIVE (multi-driver) speaker.
-
-    Deliberately the reconciler's OWN branch signal
-    (:func:`jasper.multiroom.reconcile.is_active_speaker_box`) rather than a
-    re-derivation, so this resolver can never disagree with the gate that
-    actually cleared (or kept) the wireless mains-HP env for this box. That
-    function is total + fail-soft (False on any load failure — the safe passive
-    read); the guard here only covers the lazy import itself."""
-    try:
-        from jasper.multiroom.reconcile import is_active_speaker_box
-    except ImportError:
-        return False
-    return is_active_speaker_box()
-
-
 def resolve_bass_management() -> BassManagementState:
     """Resolve the live bass-management corner + ownership, fail-soft.
 
-    Precedence (§6): a local-DAC (active-speaker) sub owns the corner over a
-    wireless-sub bond. When neither is present, returns the "no bass management"
-    state (``corner_hz=None``).
+    Returns the "no bass management" state (``corner_hz=None``) when this
+    speaker declares no local-DAC sub.
     """
-    # 1) Local-DAC active-speaker sub — highest precedence.
     local_corner = _local_dac_sub_corner()
     if local_corner is not None:
         return BassManagementState(
@@ -180,38 +140,6 @@ def resolve_bass_management() -> BassManagementState:
             # sub is only ever wired WITH bass management.
             mains_highpass_enabled=True,
         )
-
-    # 2) Wireless-sub bond — defers to a local sub, but wins over nothing.
-    try:
-        from jasper.multiroom.config import bond_has_subwoofer, load_config
-
-        cfg = load_config()
-        if cfg.enabled and cfg.error is None and bond_has_subwoofer(cfg):
-            wired = bool(cfg.mains_highpass_enabled)
-            unwired_reason: str | None = None
-            # The fourth quadrant (known gap — see module docstring): a NON-sub
-            # member of a wireless-sub bond that is itself an active-speaker box
-            # has its wireless mains-HP env CLEARED by the reconciler (§6
-            # defer), and — having no local sub, or we'd be in branch 1 — its
-            # Layer-A graph folds no mains HP either. The bond toggle says
-            # "on"; this box actually runs full-range. Report the truth for
-            # THIS box. (A channel=="sub" member never carries mains-HP itself;
-            # for it the toggle describes the bond's mains, so it is passed
-            # through unchanged.)
-            if wired and cfg.channel != "sub" and _is_active_speaker_box():
-                wired = False
-                unwired_reason = MAINS_HP_UNWIRED_ACTIVE_ENDPOINT
-            return BassManagementState(
-                corner_hz=float(cfg.crossover_hz),
-                owner=OWNER_WIRELESS_SUB,
-                sub_present=True,
-                mains_highpass_enabled=wired,
-                mains_highpass_unwired_reason=unwired_reason,
-            )
-    except (OSError, ValueError, TypeError, AttributeError, ImportError):
-        # Fail-soft: `load_config` is itself total (returns disabled on a
-        # missing/bad file), so this only guards the import + attribute reads.
-        logger.debug("wireless-sub corner read failed", exc_info=True)
 
     return _NO_BASS_MANAGEMENT
 

@@ -45,13 +45,9 @@ def expected_grouping_tts_route(
 
     Matrix:
       - solo/off/invalid: voice uses the fan-in unit default; outputd TTS off
-      - passive bonded non-sub: voice targets outputd; outputd TTS armed;
+      - passive bonded member: voice targets outputd; outputd TTS armed;
         followers also park voice/AEC through the shared park flag
       - active endpoint: voice uses fan-in; outputd TTS off
-      - sub follower: voice is parked; outputd TTS off so full-range speech can
-        never reach the subwoofer through outputd's post-low-pass mixer
-        (the voice socket override still targets the unarmed outputd socket so
-        an unexpected unpark fails silent instead of falling back to fan-in)
     """
     if not config.is_active_member(cfg):
         return GroupingTtsRoute(
@@ -73,25 +69,6 @@ def expected_grouping_tts_route(
             outputd_tts_socket="",
             voice_parked=voice_parked,
             ok_detail="active endpoint TTS uses fan-in upstream of crossover",
-        )
-
-    if cfg.channel == "sub":
-        if voice_parked:
-            return GroupingTtsRoute(
-                kind="parked_sub",
-                voice_env_socket=OUTPUTD_TTS_SOCKET,
-                expected_voice_socket=None,
-                outputd_tts_socket="",
-                voice_parked=True,
-                ok_detail="parked sub follower TTS keeps outputd unarmed",
-            )
-        return GroupingTtsRoute(
-            kind="sub",
-            voice_env_socket=None,
-            expected_voice_socket=FANIN_TTS_SOCKET,
-            outputd_tts_socket="",
-            voice_parked=False,
-            ok_detail="sub TTS uses fan-in; outputd TTS is unarmed",
         )
 
     return GroupingTtsRoute(

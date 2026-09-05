@@ -512,7 +512,7 @@ def test_grouping_set_disabled_path_validates_roster_no_persist(
 
     status, body = _post(f"{base}/grouping/set", {
         "enabled": False,
-        "roster": [{"addr": "8.8.8.8", "name": "x", "channel": "sub"}],
+        "roster": [{"addr": "8.8.8.8", "name": "x", "channel": "right"}],
     })
 
     assert status == 400
@@ -943,18 +943,18 @@ def test_grouping_set_roster_settable_preserved_and_validated(
     status, _ = _post(f"{base}/grouping/set", {
         **body, "roster": [
             {"addr": "192.168.1.7", "name": "Right", "channel": "right"},
-            {"addr": "10.0.0.8", "name": "Sub", "channel": "sub"},
+            {"addr": "10.0.0.8", "name": "Den", "channel": "mono"},
         ],
     })
     assert status == 200
     assert writes[-1]["JASPER_GROUPING_ROSTER"] == (
-        "192.168.1.7|Right|right,10.0.0.8|Sub|sub"
+        "192.168.1.7|Right|right,10.0.0.8|Den|mono"
     )
 
     # A bad member (non-private/loopback IPv4 addr) → 400 (shared validator).
     status, resp = _post(f"{base}/grouping/set", {
         **body, "roster": [
-            {"addr": "8.8.8.8", "name": "x", "channel": "sub"},
+            {"addr": "8.8.8.8", "name": "x", "channel": "right"},
         ],
     })
     assert status == 400 and "private/loopback" in resp["error"]

@@ -68,15 +68,6 @@ REASON_CHANNEL_PICK_PERIOD_MISMATCH = "channel_pick_period_mismatch"
 REASON_CHANNEL_PICK_FLAT_OUTPUT_DENIED = "channel_pick_flat_output_denied"
 REASON_CHANNEL_PICK_DRIFT = "channel_pick_drift"
 
-REASON_SUB_CORNER_LANE_MISSING = "sub_corner_lane_missing"
-REASON_SUB_CORNER_ENV_UNREADABLE = "sub_corner_env_unreadable"
-REASON_SUB_CORNER_MISSING = "sub_corner_missing"
-
-REASON_SUB_CONFLICT = "sub_conflict"
-REASON_LOCAL_SUB_ONLY = "local_sub_only"
-REASON_WIRELESS_SUB_ONLY = "wireless_sub_only"
-REASON_NO_SUB = "no_sub"
-
 REASON_TTS_VOICE_ENV_UNRESOLVED = "tts_voice_env_unresolved"
 REASON_TTS_SOCKET_DRIFT = "tts_socket_drift"
 REASON_TTS_PARK_FLAG_DRIFT = "tts_park_flag_drift"
@@ -831,136 +822,11 @@ def check_grouping_channel_pick() -> CheckResult:
 
 
 @doctor_check()
-def check_grouping_sub_corner() -> CheckResult:
-    """A "sub" member's outputd lane must carry the low-pass corner so it
-    plays only the low end. The reconciler emits
-    ``JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ`` ONLY for channel="sub"; a missing
-    key on a sub member means outputd would fall back to its safe default
-    rather than the configured corner — drift worth surfacing. n/a for any
-    non-sub member (the key is intentionally absent there)."""
-    from ...multiroom.config import is_active_member, load_config
-    from ...multiroom.reconcile import (
-        OUTPUTD_DAC_CONTENT_SUB_HZ_ENV,
-        OUTPUTD_GROUPING_ENV_FILE,
-        is_active_speaker_box,
-    )
-
-    label = "grouping: sub corner"
-    cfg = load_config()
-    if not is_active_member(cfg) or cfg.channel != "sub":
-        return CheckResult(
-            label, "skipped", "not an active sub member",
-            reason=REASON_NOT_APPLICABLE,
-        )
-    # An active-speaker box bonds via CamillaDSP (the active-endpoint path),
-    # which CLEARS the outputd dumb lane — JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ
-    # lives only on the dumb-follower lane, so its absence here is correct, not
-    # drift. (An active box can't actually be a sub today — program_channel_for
-    # fail-closes — so this is the contradictory-config case; either way the
-    # dumb-lane corner check does not apply.)
-    if is_active_speaker_box():
-        return CheckResult(
-            label, "skipped",
-            "active-speaker box — a sub low-pass would ride CamillaDSP, not "
-            "the outputd dumb lane",
-            reason=REASON_NOT_APPLICABLE,
-        )
-
-    path = Path(OUTPUTD_GROUPING_ENV_FILE)
-    if not path.exists():
-        return CheckResult(
-            label, "warn",
-            f"{OUTPUTD_GROUPING_ENV_FILE} missing but this is an active sub "
-            "member — outputd is not wired with the low-pass corner (run "
-            "jasper-grouping-reconcile)",
-            reason=REASON_SUB_CORNER_LANE_MISSING,
-        )
-    try:
-        env = _parse_env_file(path.read_text())
-    except OSError as e:
-        return CheckResult(
-            label, "warn", f"could not read {path}: {e}",
-            reason=REASON_SUB_CORNER_ENV_UNREADABLE,
-        )
-
-    corner = env.get(OUTPUTD_DAC_CONTENT_SUB_HZ_ENV, "")
-    if not corner:
-        return CheckResult(
-            label, "warn",
-            f"{OUTPUTD_DAC_CONTENT_SUB_HZ_ENV} missing while channel=sub — "
-            f"outputd would fall back to its safe default instead of the "
-            f"configured {cfg.crossover_hz} Hz; run jasper-grouping-reconcile",
-            reason=REASON_SUB_CORNER_MISSING,
-        )
-    return CheckResult(label, "ok", f"sub low-pass corner wired, {corner} Hz")
-
-
-@doctor_check()
-def check_grouping_local_vs_wireless_sub() -> CheckResult:
-    """A speaker must NOT carry BOTH a LOCAL sub (an output_topology
-    ``subwoofer`` group on its own spare DAC channel) AND a WIRELESS sub
-    (it is the leader of a bond whose roster has a ``channel="sub"`` member,
-    OR it is itself a ``channel="sub"`` follower). Two bass producers at
-    one speaker is a contradictory, confusing config — bass is doubled or
-    fights, and the operator has no single place to reason about the
-    crossover. The two subsystems are independent writers (the active-
-    speaker topology vs. the grouping bond), so the compiler can't and
-    shouldn't hard-block it; this is the one place the contradiction is
-    visible. n/a (ok) when at most one sub source is configured.
-
-    Local-sub detection reads the persisted output topology
-    (``routing.subwoofer_group_ids`` — the same field the active emitter
-    pins to a spare physical output). Wireless-sub detection reuses the
-    bond predicates so it can never disagree with the rest of the grouping
-    doctor about what the bond is doing."""
-    from ...multiroom.config import is_active_leader, is_active_member, load_config
-
-    label = "grouping: local vs wireless sub"
-
-    has_local_sub = bool(evidence.output_topology().routing.subwoofer_group_ids)
-
-    cfg = load_config()
-    is_wireless_sub_follower = is_active_member(cfg) and cfg.channel == "sub"
-    leads_wireless_sub = is_active_leader(cfg) and any(
-        m.channel == "sub" for m in cfg.roster
-    )
-    has_wireless_sub = is_wireless_sub_follower or leads_wireless_sub
-
-    if has_local_sub and has_wireless_sub:
-        which = (
-            "is itself a wireless sub follower (channel=sub)"
-            if is_wireless_sub_follower
-            else "leads a bond with a wireless sub member"
-        )
-        return CheckResult(
-            label, "warn",
-            "this speaker has a LOCAL sub (an output-topology subwoofer group "
-            f"on its own DAC) AND {which} — two bass producers at one speaker "
-            "is a contradictory config (doubled / fighting low end). Remove one: "
-            "drop the subwoofer group from the active-speaker topology, or "
-            "un-pair the wireless sub from http://jts.local/rooms",
-            reason=REASON_SUB_CONFLICT,
-        )
-    if has_local_sub:
-        return CheckResult(
-            label, "ok", "local sub only (no wireless sub)",
-            reason=REASON_LOCAL_SUB_ONLY,
-        )
-    if has_wireless_sub:
-        return CheckResult(
-            label, "ok", "wireless sub only (no local sub)",
-            reason=REASON_WIRELESS_SUB_ONLY,
-        )
-    return CheckResult(label, "ok", "no local or wireless sub", reason=REASON_NO_SUB)
-
-
-@doctor_check()
 def check_grouping_tts_lane() -> CheckResult:
-    """A bonded non-sub passive member's assistant TTS must route to its OWN
-    outputd (member-local, instant), not ride the synced stream (delayed by the
-    sync buffer + audible on every bonded speaker — the retired Increment 5
-    PR-1 interim behavior). Active endpoints are the crossover safety
-    exception, and wireless sub followers are parked with outputd TTS unarmed.
+    """A bonded passive member's assistant TTS must route to its OWN outputd
+    (member-local, instant), not ride the synced stream (delayed by the sync
+    buffer + audible on every bonded speaker — the retired Increment 5 PR-1
+    interim behavior). Active endpoints are the crossover safety exception.
     The route matrix wires grouping-voice.env and grouping-outputd.env so the
     voice socket, voice park flag, and outputd TTS server state agree.
 
