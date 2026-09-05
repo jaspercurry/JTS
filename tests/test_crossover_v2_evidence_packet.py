@@ -583,3 +583,35 @@ def test_an_unbanked_declaration_never_reads_the_machine_building_the_packet(
 
     assert block["status"] == "not_evaluated"
     assert block["reason"] == "source_absent"
+
+
+def test_a_nan_incumbent_gain_serializes_to_null_not_a_bare_nan_token(tmp_path):
+    """A non-finite applied gain must not leak an invalid ``NaN`` JSON token."""
+    from jasper.active_speaker.baseline_profile import (
+        BASELINE_PROFILE_KIND,
+        SCHEMA_VERSION as PROFILE_SCHEMA_VERSION,
+    )
+
+    session, _ = _bundle(tmp_path)
+    applied = tmp_path / "applied-profile.json"
+    applied.write_text(json.dumps({
+        "artifact_schema_version": PROFILE_SCHEMA_VERSION,
+        "kind": BASELINE_PROFILE_KIND,
+        "status": "applied",
+        "recomposition_snapshot": {
+            "corrections": {
+                "woofer": {
+                    "gain_db": float("nan"), "delay_ms": 0.0, "inverted": False,
+                },
+            },
+        },
+    }))
+
+    packet = build_crossover_evidence_packet(session, applied_profile_path=applied)
+
+    assert packet["incumbent"]["trim"]["woofer"]["applied_db"] is None
+    # allow_nan=False raises ValueError on any non-finite float anywhere in
+    # the tree, so this is the round-trip proof, not just the one field.
+    document = json.dumps(packet, allow_nan=False)
+    reloaded = json.loads(document)
+    assert reloaded["incumbent"]["trim"]["woofer"]["applied_db"] is None
