@@ -17,7 +17,7 @@ import time
 import pytest
 
 from jasper import service_units
-from jasper.cli.doctor import _evidence, _shared, resilience
+from jasper.cli.doctor import _evidence, _shared, resilience, web
 from jasper.cli.doctor.resilience import (
     _REBOOT_STATE_FUTURE_SKEW_SEC,
     _classify_reboot_state,
@@ -127,13 +127,15 @@ def test_runtime_state_units_track_the_coupling_reconciler_oneshot():
 # ------------------------------------------------ check_required_units_active
 
 
-def test_required_units_are_all_tracked_for_failed_state():
-    """The row defers every non-`inactive` state to check_service_runtime_state,
-    which reads only _RUNTIME_STATE_UNITS — a required unit missing from that
-    tuple falls through both rows when it fails."""
-    assert set(resilience._REQUIRED_ACTIVE_UNITS) <= set(
-        _shared._RUNTIME_STATE_UNITS
-    )
+def test_every_required_unit_has_an_owner_for_its_failed_state():
+    """The row judges only `inactive` and defers every other state: the
+    services to check_service_runtime_state, the wizard sockets to
+    web.check_wizard_socket_start_limits. A required unit neither of those
+    reads falls through every row when it fails."""
+    owned = set(_shared._RUNTIME_STATE_UNITS) | {
+        f"{unit}.socket" for unit in web.WIZARD_UNITS
+    }
+    assert set(resilience._REQUIRED_ACTIVE_UNITS) <= owned
 
 
 @pytest.mark.parametrize(
@@ -163,8 +165,18 @@ def test_required_units_are_all_tracked_for_failed_state():
         (
             {"jasper-input.service": {"active_state": "reloading"}}, "ok", "",
         ),
+        # check_wizard_socket_start_limits reads an inactive wizard socket as
+        # "not installed on this profile", so a stopped listener on a profile
+        # that DOES install it is only ever this row's finding.
+        (
+            {"jasper-web.socket": {"active_state": "inactive"}},
+            "fail", resilience.REASON_REQUIRED_UNIT_INACTIVE,
+        ),
     ],
-    ids=["all-active", "inactive", "not-found", "failed", "reloading"],
+    ids=[
+        "all-active", "inactive", "not-found", "failed", "reloading",
+        "wizard-socket-inactive",
+    ],
 )
 def test_check_required_units_active_verdicts(
     monkeypatch, overrides, status, reason,
@@ -191,6 +203,14 @@ def test_check_required_units_active_skips_without_systemctl(monkeypatch):
 
 
 # --------------------------------------------------- check_voice_unit_running
+
+
+def _voice_provider_file(monkeypatch, tmp_path, provider: str) -> None:
+    """Point the SSOT provider reader at a tmp file; "" leaves it absent."""
+    path = tmp_path / "voice_provider.env"
+    if provider:
+        path.write_text(f"JASPER_VOICE_PROVIDER={provider}\n")
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(path))
 
 
 @pytest.mark.parametrize(
@@ -258,6 +278,7 @@ def test_check_voice_unit_running_verdicts(
     if remote:
         mic_env.write_text("JASPER_MANUAL_MIC_SOURCES=wiim_remote_2=hw:WiiM\n")
     monkeypatch.setenv("JASPER_ACCESSORY_MIC_ENV_FILE", str(mic_env))
+    _voice_provider_file(monkeypatch, tmp_path, "gemini")
     monkeypatch.setattr(
         _evidence, "read_unit_states",
         _make_unit_states_fake({"jasper-voice.service": unit}),
@@ -277,6 +298,7 @@ def test_an_inactive_voice_unit_does_not_claim_playback_silence(
     monkeypatch.setenv(
         "JASPER_VOICE_INPUT_ABSENT_MARKER", str(tmp_path / "absent"),
     )
+    _voice_provider_file(monkeypatch, tmp_path, "gemini")
     monkeypatch.setattr(
         _evidence, "read_unit_states",
         _make_unit_states_fake(
@@ -288,6 +310,37 @@ def test_an_inactive_voice_unit_does_not_claim_playback_silence(
 
     assert result.status == "fail"
     assert result.speaker_silent is False
+
+
+@pytest.mark.parametrize(
+    "provider, status, reason",
+    [
+        ("", "skipped", resilience.REASON_VOICE_UNIT_NO_PROVIDER),
+        ("gemini", "fail", resilience.REASON_VOICE_UNIT_INACTIVE),
+    ],
+    ids=["no-provider", "provider-chosen"],
+)
+def test_voice_unit_parked_for_want_of_a_provider_is_not_a_failure(
+    monkeypatch, tmp_path, provider, status, reason,
+):
+    """A full box with a mic and no provider parks jasper-voice on EX_CONFIG
+    by design (RestartPreventExitStatus), so the state is configuration, not
+    breakage — the last row ADR-0173's removal condition named for --core."""
+    monkeypatch.setattr(_shared, "read_install_profile", lambda: "full")
+    monkeypatch.setenv(
+        "JASPER_VOICE_INPUT_ABSENT_MARKER", str(tmp_path / "absent"),
+    )
+    _voice_provider_file(monkeypatch, tmp_path, provider)
+    monkeypatch.setattr(
+        _evidence, "read_unit_states",
+        _make_unit_states_fake(
+            {"jasper-voice.service": {"active_state": "inactive"}},
+        ),
+    )
+
+    result = resilience.check_voice_unit_running()
+
+    assert (result.status, result.reason) == (status, reason)
 
 
 def test_check_voice_unit_running_skips_without_systemctl(monkeypatch, tmp_path):

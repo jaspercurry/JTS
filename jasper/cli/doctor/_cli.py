@@ -58,7 +58,7 @@ from ._shared import (
 )
 
 
-def render(results: list[CheckResult]) -> int:
+def render(results: list[CheckResult], *, core: bool = False) -> int:
     print()
     print(f"{BOLD}jasper-doctor{RESET}\n")
     fails = warns = 0
@@ -78,6 +78,13 @@ def render(results: list[CheckResult]) -> int:
                 fails += 1
         print(f"  {color}{mark}{RESET} {r.name:24s} {r.detail}")
     print()
+    if core:
+        # The deploy gates on the exit code; this is the journal's copy.
+        print(
+            f"event=deploy.health status={'fail' if fails else 'ok'} "
+            f"fail={fails} warn={warns} rows={len(results)} "
+            f"speaker_silent={str(silent).lower()}"
+        )
     # Silence leads the summary line, in the same phrase for a warn and a
     # fail: the household outcome is the same either way. Severity rides the
     # WORDS — colour and exit code keep their single meaning (red / 1 =
@@ -274,7 +281,11 @@ def main() -> None:
     _load_env_files()
     try:
         install_profile = read_install_profile()
-        cfg = _doctor_config_from_env(install_profile)
+        # --core needs no cfg, and Config.from_env() fails a provider-less box.
+        cfg: Config | SimpleNamespace = (
+            SimpleNamespace() if args.core
+            else _doctor_config_from_env(install_profile)
+        )
     except (RuntimeError, ValueError) as e:
         if args.json:
             _emit_json(
@@ -314,4 +325,4 @@ def main() -> None:
             out_path=args.out,
             duration_sec=time.monotonic() - started_at,
         ))
-    sys.exit(render(results))
+    sys.exit(render(results, core=args.core))
