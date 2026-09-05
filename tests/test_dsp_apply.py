@@ -9,6 +9,7 @@ import contextlib
 import os
 import subprocess
 import stat
+import time
 from pathlib import Path
 
 import pytest
@@ -43,7 +44,7 @@ from jasper.dsp_apply import (
     validate_camilla_config,
 )
 
-from ._async_wait import wait_signalled
+from ._async_wait import wait_signalled, wait_writer_lock_waiting
 
 
 def _fake_camilladsp(tmp_path: Path, *, exit_code: int = 0) -> Path:
@@ -176,26 +177,26 @@ async def test_cancelled_dsp_writer_waiter_cannot_acquire_late(tmp_path: Path):
         pass
 
 
-async def test_dsp_writer_lock_does_not_retry_after_late_wakeup(
+async def test_dsp_writer_lock_refuses_a_lock_won_after_its_deadline(
     tmp_path: Path,
     monkeypatch,
 ):
-    attempts = 0
-    real_sleep = asyncio.sleep
+    """Admission always means "inside the budget the caller was promised".
 
-    def pretend_contended_then_available(_lock) -> bool:
-        nonlocal attempts
-        attempts += 1
-        return attempts > 1
+    The wait runs on a worker thread, so a stalled worker (or loop) can hand
+    back a lock the caller's budget no longer covers. That lock is released,
+    not entered — the successor below proves it was not stranded.
+    """
 
-    async def oversleep(_delay: float) -> None:
-        await real_sleep(0.03)
+    real_lock = dsp_apply_module.advisory_file_lock
 
-    monkeypatch.setattr(
-        "jasper.dsp_apply._FileLock.try_acquire",
-        pretend_contended_then_available,
-    )
-    monkeypatch.setattr("jasper.dsp_apply.asyncio.sleep", oversleep)
+    @contextlib.contextmanager
+    def stalled_acquire(path, **kwargs):
+        time.sleep(0.05)
+        with real_lock(path, **kwargs) as handle:
+            yield handle
+
+    monkeypatch.setattr(dsp_apply_module, "advisory_file_lock", stalled_acquire)
 
     with pytest.raises(DspWriterLockTimeout):
         async with dsp_writer_lock(
@@ -205,7 +206,8 @@ async def test_dsp_writer_lock_does_not_retry_after_late_wakeup(
         ):
             pytest.fail("waiter was admitted after its deadline")
 
-    assert attempts == 1
+    async with dsp_writer_lock(tmp_path, timeout_s=1.0, source="successor"):
+        pass
 
 
 async def test_cancelling_contended_owner_is_not_logged_as_wait_cancellation(
@@ -360,25 +362,12 @@ async def test_task_local_reentry_inherits_only_outer_recovery_permission(
 
 async def test_pending_intent_race_orders_ordinary_writer_before_recovery(
     tmp_path: Path,
-    monkeypatch,
+    caplog,
 ) -> None:
+    caplog.set_level("INFO")
     intent = tmp_path / "bass-intent.json"
     ordinary_entered = asyncio.Event()
     release_ordinary = asyncio.Event()
-    publisher_contended = asyncio.Event()
-    real_try_acquire = dsp_apply_module._FileLock.try_acquire
-
-    def observe_contention(lock) -> bool:
-        acquired = real_try_acquire(lock)
-        if not acquired:
-            publisher_contended.set()
-        return acquired
-
-    monkeypatch.setattr(
-        dsp_apply_module._FileLock,
-        "try_acquire",
-        observe_contention,
-    )
 
     async def ordinary() -> None:
         async with _dsp_apply_lock(
@@ -401,7 +390,7 @@ async def test_pending_intent_race_orders_ordinary_writer_before_recovery(
     first = asyncio.create_task(ordinary())
     await wait_signalled(ordinary_entered, "ordinary writer entered", producer=first)
     publisher = asyncio.create_task(publish_intent())
-    await asyncio.wait_for(publisher_contended.wait(), timeout=1.0)
+    await wait_writer_lock_waiting(caplog, "bass_extension.apply")
     assert not intent.exists()
     release_ordinary.set()
     await first

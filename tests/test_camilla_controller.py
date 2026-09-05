@@ -17,7 +17,6 @@ from pathlib import Path
 import pytest
 
 import jasper.camilla as camilla_module
-import jasper.dsp_apply as dsp_apply_module
 from jasper.camilla import (
     CAMILLA_ATTEMPT_BUDGET_S,
     CAMILLA_OPERATION_TIMEOUT_S,
@@ -35,7 +34,7 @@ from jasper.dsp_apply import (
     dsp_writer_lock,
 )
 
-from ._async_wait import wait_signalled
+from ._async_wait import wait_signalled, wait_writer_lock_waiting
 
 
 class _FakeVolume:
@@ -583,7 +582,9 @@ async def test_all_direct_graph_mutations_refuse_pending_intent_before_wire_io(
 async def test_direct_graph_mutation_wins_race_before_intent_publication(
     tmp_path: Path,
     monkeypatch,
+    caplog,
 ) -> None:
+    caplog.set_level("INFO")
     intent = tmp_path / "bass-intent.json"
     monkeypatch.setattr(
         "jasper.bass_extension.BASS_EXTENSION_APPLY_INTENT_PATH",
@@ -593,20 +594,6 @@ async def test_direct_graph_mutation_wins_race_before_intent_publication(
     cam = _controller(fake, tmp_path)
     mutation_entered = asyncio.Event()
     release_mutation = asyncio.Event()
-    lock_contended = asyncio.Event()
-    real_try_acquire = dsp_apply_module._FileLock.try_acquire
-
-    def observe_contention(lock) -> bool:
-        acquired = real_try_acquire(lock)
-        if not acquired:
-            lock_contended.set()
-        return acquired
-
-    monkeypatch.setattr(
-        dsp_apply_module._FileLock,
-        "try_acquire",
-        observe_contention,
-    )
 
     async def blocked_call(fn):
         mutation_entered.set()
@@ -626,7 +613,7 @@ async def test_direct_graph_mutation_wins_race_before_intent_publication(
     mutation = asyncio.create_task(cam.reload())
     await wait_signalled(mutation_entered, "direct graph mutation entered", producer=mutation)
     publisher = asyncio.create_task(publish_intent())
-    await asyncio.wait_for(lock_contended.wait(), timeout=1.0)
+    await wait_writer_lock_waiting(caplog, "bass_extension.apply")
     assert not intent.exists()
 
     release_mutation.set()
@@ -640,7 +627,9 @@ async def test_direct_graph_mutation_wins_race_before_intent_publication(
 async def test_intent_publication_wins_race_before_direct_graph_mutation(
     tmp_path: Path,
     monkeypatch,
+    caplog,
 ) -> None:
+    caplog.set_level("INFO")
     intent = tmp_path / "bass-intent.json"
     monkeypatch.setattr(
         "jasper.bass_extension.BASS_EXTENSION_APPLY_INTENT_PATH",
@@ -650,20 +639,6 @@ async def test_intent_publication_wins_race_before_direct_graph_mutation(
     cam = _controller(fake, tmp_path)
     publication_entered = asyncio.Event()
     release_publication = asyncio.Event()
-    lock_contended = asyncio.Event()
-    real_try_acquire = dsp_apply_module._FileLock.try_acquire
-
-    def observe_contention(lock) -> bool:
-        acquired = real_try_acquire(lock)
-        if not acquired:
-            lock_contended.set()
-        return acquired
-
-    monkeypatch.setattr(
-        dsp_apply_module._FileLock,
-        "try_acquire",
-        observe_contention,
-    )
 
     async def publish_intent() -> None:
         async with dsp_writer_lock(
@@ -682,7 +657,7 @@ async def test_intent_publication_wins_race_before_direct_graph_mutation(
         producer=publisher,
     )
     mutation = asyncio.create_task(cam.reload())
-    await asyncio.wait_for(lock_contended.wait(), timeout=1.0)
+    await wait_writer_lock_waiting(caplog, "camilla.reload")
     assert not mutation.done()
 
     release_publication.set()
