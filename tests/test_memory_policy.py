@@ -18,7 +18,9 @@ import pytest
 from jasper.memory_policy import (
     ZRAM_OVERSIZE_MARGIN_PERCENT,
     ZRAM_TARGET_PERCENT,
+    ZRAM_WARN_PERCENT,
     memory_pressure,
+    zram_usage,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,6 +32,8 @@ _PRESSURE = (
     "full avg10=0.00 avg60=3.21 avg300=0.40 total=123456\n"
 )
 _VMSTAT = "nr_free_pages 12345\noom_kill 3\npgmajfault 42\n"
+# A 1 GB Pi: MemTotal sits a few percent under the nominal 1024 MB.
+_MEMINFO = "MemTotal:        1014768 kB\nMemFree:          123456 kB\n"
 
 
 def _write(tmp_path: Path, name: str, text: str) -> str:
@@ -90,3 +94,42 @@ def test_zram_warn_bound_sits_above_the_installer_target():
     which is a few percent below installed RAM."""
     assert 0 < ZRAM_OVERSIZE_MARGIN_PERCENT
     assert ZRAM_TARGET_PERCENT + ZRAM_OVERSIZE_MARGIN_PERCENT < 100
+
+
+@pytest.mark.parametrize(
+    "disksize, meminfo, expected",
+    [
+        (519561216, _MEMINFO, (519561216, 1039122432, 50)),
+        # rpi-swap sizes from MemTotal, so a real box lands a little above the
+        # nominal target — still inside the margin, never a warn.
+        (545259520, _MEMINFO, (545259520, 1039122432, 52)),
+        # The old zramswap 100%-of-RAM default this check exists to catch.
+        (1014767616, _MEMINFO, (1014767616, 1039122432, 97)),
+        # Device present but not yet sized, and a MemTotal that would not
+        # read: both are "no ratio", and the caller tells them apart by field.
+        (0, _MEMINFO, (0, 1039122432, 0)),
+        (519561216, "MemFree: 123456 kB\n", (519561216, 0, 0)),
+    ],
+    ids=["at-target", "inside-margin", "old-100pct-default", "unsized", "no-memtotal"],
+)
+def test_zram_usage_derives_the_percent_the_doctor_bands_against(
+    tmp_path, disksize, meminfo, expected,
+):
+    usage = zram_usage(
+        disksize_path=_write(tmp_path, "disksize", f"{disksize}\n"),
+        meminfo_path=_write(tmp_path, "meminfo", meminfo),
+    )
+    assert usage == expected
+
+
+def test_zram_usage_is_none_where_there_is_no_zram_device(tmp_path):
+    """A dev laptop and an older RPi OS on dphys-swapfile have no zram0 at
+    all — distinct from a device present with nothing sized into it."""
+    assert zram_usage(
+        disksize_path=str(tmp_path / "nope"),
+        meminfo_path=_write(tmp_path, "meminfo", _MEMINFO),
+    ) is None
+
+
+def test_zram_warn_percent_is_the_derived_band():
+    assert ZRAM_WARN_PERCENT == ZRAM_TARGET_PERCENT + ZRAM_OVERSIZE_MARGIN_PERCENT

@@ -682,6 +682,9 @@ def test_disk_snapshot_is_none_when_the_read_is_unusable(statvfs):
     "psi, kills, status, reason",
     [
         (None, 0, "skipped", doctor_memory.REASON_MEMORY_PRESSURE_NO_PSI),
+        # Kills WERE observed, so the nothing-was-observed `skipped` would
+        # hide them; the cumulative counter still never drives the verdict.
+        (None, 3, "ok", doctor_memory.REASON_MEMORY_PRESSURE_NO_PSI),
         (0.5, 0, "ok", doctor_memory.REASON_MEMORY_PRESSURE_LOW),
         # Cumulative OOM kills are history, not the verdict: a box that was
         # killed once must not latch this row into a permanent warn.
@@ -690,7 +693,10 @@ def test_disk_snapshot_is_none_when_the_read_is_unusable(statvfs):
          doctor_memory.REASON_MEMORY_PRESSURE_HIGH),
         (55.0, 0, "warn", doctor_memory.REASON_MEMORY_PRESSURE_HIGH),
     ],
-    ids=["no-psi", "quiet", "old-oom-kill-does-not-latch", "at-warn", "thrashing"],
+    ids=[
+        "no-psi", "no-psi-but-killed", "quiet", "old-oom-kill-does-not-latch",
+        "at-warn", "thrashing",
+    ],
 )
 def test_check_memory_pressure_verdicts_on_the_live_average(
     psi, kills, status, reason,
