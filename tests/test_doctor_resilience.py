@@ -18,6 +18,7 @@ import pytest
 
 from jasper import service_units
 from jasper.cli.doctor import _evidence, _shared, resilience, web
+from jasper.voice.provider_state import ActiveProviderState
 from jasper.cli.doctor.resilience import (
     _REBOOT_STATE_FUTURE_SKEW_SEC,
     _classify_reboot_state,
@@ -205,12 +206,15 @@ def test_check_required_units_active_skips_without_systemctl(monkeypatch):
 # --------------------------------------------------- check_voice_unit_running
 
 
-def _voice_provider_file(monkeypatch, tmp_path, provider: str) -> None:
-    """Point the SSOT provider reader at a tmp file; "" leaves it absent."""
-    path = tmp_path / "voice_provider.env"
-    if provider:
-        path.write_text(f"JASPER_VOICE_PROVIDER={provider}\n")
-    monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(path))
+def _stub_provider_state(monkeypatch, status: str) -> None:
+    """Stub the SSOT provider reader at the doctor's own call site."""
+    state = ActiveProviderState(
+        "gemini" if status == "configured" else "", None, status,
+        "/var/lib/jasper/voice_provider.env",
+    )
+    monkeypatch.setattr(
+        resilience, "read_active_provider_state", lambda: state,
+    )
 
 
 @pytest.mark.parametrize(
@@ -278,7 +282,7 @@ def test_check_voice_unit_running_verdicts(
     if remote:
         mic_env.write_text("JASPER_MANUAL_MIC_SOURCES=wiim_remote_2=hw:WiiM\n")
     monkeypatch.setenv("JASPER_ACCESSORY_MIC_ENV_FILE", str(mic_env))
-    _voice_provider_file(monkeypatch, tmp_path, "gemini")
+    _stub_provider_state(monkeypatch, "configured")
     monkeypatch.setattr(
         _evidence, "read_unit_states",
         _make_unit_states_fake({"jasper-voice.service": unit}),
@@ -298,7 +302,7 @@ def test_an_inactive_voice_unit_does_not_claim_playback_silence(
     monkeypatch.setenv(
         "JASPER_VOICE_INPUT_ABSENT_MARKER", str(tmp_path / "absent"),
     )
-    _voice_provider_file(monkeypatch, tmp_path, "gemini")
+    _stub_provider_state(monkeypatch, "configured")
     monkeypatch.setattr(
         _evidence, "read_unit_states",
         _make_unit_states_fake(
@@ -313,24 +317,37 @@ def test_an_inactive_voice_unit_does_not_claim_playback_silence(
 
 
 @pytest.mark.parametrize(
-    "provider, status, reason",
+    "profile, provider_status, status, reason",
     [
-        ("", "skipped", resilience.REASON_VOICE_UNIT_NO_PROVIDER),
-        ("gemini", "fail", resilience.REASON_VOICE_UNIT_INACTIVE),
+        ("full", "unset", "skipped", resilience.REASON_VOICE_UNIT_NO_PROVIDER),
+        # The same box on the other tier: nothing about an unchosen provider
+        # is the accessory reconciler's fault, so the paired-remote warn —
+        # which points the operator at that reconciler — must not win here.
+        (
+            "streambox", "missing", "skipped",
+            resilience.REASON_VOICE_UNIT_NO_PROVIDER,
+        ),
+        ("full", "configured", "fail", resilience.REASON_VOICE_UNIT_INACTIVE),
+        # A bad READ is not a box that has yet to choose: demoting it would
+        # hide a real 66-park behind an unprivileged doctor run.
+        ("full", "unreadable", "fail", resilience.REASON_VOICE_UNIT_INACTIVE),
     ],
-    ids=["no-provider", "provider-chosen"],
+    ids=["full-unset", "streambox-missing", "configured", "unreadable"],
 )
 def test_voice_unit_parked_for_want_of_a_provider_is_not_a_failure(
-    monkeypatch, tmp_path, provider, status, reason,
+    monkeypatch, tmp_path, profile, provider_status, status, reason,
 ):
-    """A full box with a mic and no provider parks jasper-voice on EX_CONFIG
-    by design (RestartPreventExitStatus), so the state is configuration, not
+    """A box with a mic and no provider parks jasper-voice on EX_CONFIG by
+    design (RestartPreventExitStatus), so the state is configuration, not
     breakage — the last row ADR-0173's removal condition named for --core."""
-    monkeypatch.setattr(_shared, "read_install_profile", lambda: "full")
+    monkeypatch.setattr(_shared, "read_install_profile", lambda: profile)
     monkeypatch.setenv(
         "JASPER_VOICE_INPUT_ABSENT_MARKER", str(tmp_path / "absent"),
     )
-    _voice_provider_file(monkeypatch, tmp_path, provider)
+    mic_env = tmp_path / "accessory-mics.env"
+    mic_env.write_text("JASPER_MANUAL_MIC_SOURCES=wiim_remote_2=hw:WiiM\n")
+    monkeypatch.setenv("JASPER_ACCESSORY_MIC_ENV_FILE", str(mic_env))
+    _stub_provider_state(monkeypatch, provider_status)
     monkeypatch.setattr(
         _evidence, "read_unit_states",
         _make_unit_states_fake(

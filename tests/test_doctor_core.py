@@ -634,6 +634,24 @@ def _cfg_attrs_read_by(func) -> set[str]:
     }
 
 
+def _main_json(monkeypatch, capsys, argv, *, from_env, run_async):
+    """Drive `main()` down the full-profile JSON path; `(exit code, payload)`."""
+    monkeypatch.setattr(_cli, "_load_env_files", lambda: None)
+    monkeypatch.setattr(_cli, "read_install_profile", lambda: "full")
+    monkeypatch.setattr(Config, "from_env", staticmethod(from_env))
+    monkeypatch.setattr(_cli, "run_async", run_async)
+    monkeypatch.setattr(sys, "argv", ["jasper-doctor", *argv, "--json"])
+
+    with pytest.raises(SystemExit) as exit_info:
+        doctor.main()
+
+    return exit_info.value.code, json.loads(capsys.readouterr().out)
+
+
+async def _one_core_row(_cfg, **_scope):
+    return [doctor.CheckResult("required units active", "ok", "ran")]
+
+
 @pytest.mark.parametrize("argv, core_only", [([], False), (["--core"], True)])
 def test_core_flag_reaches_the_harness_and_keeps_json(
     monkeypatch, capsys, argv, core_only,
@@ -644,20 +662,15 @@ def test_core_flag_reaches_the_harness_and_keeps_json(
 
     async def fake_run_async(cfg, **scope):
         seen.update(scope)
-        return [doctor.CheckResult("required units active", "ok", "ran")]
+        return await _one_core_row(cfg, **scope)
 
-    monkeypatch.setattr(_cli, "_load_env_files", lambda: None)
-    monkeypatch.setattr(_cli, "read_install_profile", lambda: "full")
-    monkeypatch.setattr(Config, "from_env", staticmethod(lambda: SimpleNamespace()))
-    monkeypatch.setattr(_cli, "run_async", fake_run_async)
-    monkeypatch.setattr(sys, "argv", ["jasper-doctor", *argv, "--json"])
+    code, payload = _main_json(
+        monkeypatch, capsys, argv,
+        from_env=lambda: SimpleNamespace(), run_async=fake_run_async,
+    )
 
-    with pytest.raises(SystemExit) as exit_info:
-        doctor.main()
-
-    assert exit_info.value.code == 0
+    assert code == 0
     assert seen["core_only"] is core_only
-    payload = json.loads(capsys.readouterr().out)
     assert payload["fails"] == 0
     assert [row["name"] for row in payload["results"]] == ["required units active"]
 
@@ -666,27 +679,16 @@ def test_core_scope_does_not_build_the_voice_config(monkeypatch, capsys):
     """A full box that has not been through /voice/ has no provider, so
     `Config.from_env()` raises — and every --core check is `needs_cfg=False`,
     so the deploy subset must never build it (ADR-0233 rule 5)."""
-    monkeypatch.setattr(_cli, "_load_env_files", lambda: None)
-    monkeypatch.setattr(_cli, "read_install_profile", lambda: "full")
-    monkeypatch.setattr(
-        Config,
-        "from_env",
-        staticmethod(
-            lambda: (_ for _ in ()).throw(VoiceProviderNotConfigured("no provider"))
-        ),
+
+    def unconfigured():
+        raise VoiceProviderNotConfigured("no provider")
+
+    code, payload = _main_json(
+        monkeypatch, capsys, ["--core"],
+        from_env=unconfigured, run_async=_one_core_row,
     )
 
-    async def fake_run_async(cfg, **_scope):
-        return [doctor.CheckResult("required units active", "ok", "ran")]
-
-    monkeypatch.setattr(_cli, "run_async", fake_run_async)
-    monkeypatch.setattr(sys, "argv", ["jasper-doctor", "--core", "--json"])
-
-    with pytest.raises(SystemExit) as exit_info:
-        doctor.main()
-
-    assert exit_info.value.code == 0
-    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
     assert [row["name"] for row in payload["results"]] == [
         "required units active"
     ]

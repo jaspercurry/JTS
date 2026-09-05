@@ -14,7 +14,7 @@ from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
 from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
 from ...service_units import unit_unstable
 from ...voice.input_presence import voice_parked_no_mic
-from ...voice.provider_state import read_active_provider
+from ...voice.provider_state import read_active_provider_state
 from ... import outputd_failure_reconcile_state
 from ._evidence import evidence
 from ._registry import doctor_check
@@ -133,11 +133,11 @@ _REQUIRED_ACTIVE_UNITS: tuple[str, ...] = (
     # A `.path` unit reads `active` while it WAITS, so a stopped one is
     # `inactive`, never `failed`.
     "jasper-accessory-reconcile.path",
-    # Both profiles install these. `web.check_wizard_socket_start_limits`
-    # reads an `inactive` wizard socket as "not on this profile" and owns
-    # only their `failed` state, so a stopped listener is this row's.
+    # `web.check_wizard_socket_start_limits` reads an `inactive` wizard
+    # socket as "not on this profile" and owns only their `failed` state,
+    # so a stopped listener is this row's. NOT jasper-system-web.socket:
+    # `web.check_management_surface` already probes through it.
     "jasper-web.socket",
-    "jasper-system-web.socket",
 )
 
 
@@ -204,7 +204,7 @@ def check_voice_unit_running() -> CheckResult:
     the remote's talk button gets no answer, but the reconciler that owns
     that lifecycle may still be mid-pass.
 
-    Three other states are not a fault either: the unit's
+    Three other states are not a fault on either tier: the unit's
     ``ConditionPathExists=!/var/lib/jasper/voice-input-absent`` parks it
     ``inactive`` on a box the AEC reconciler found to have neither a local
     nor an accessory mic, a box the ``/voice`` wizard has not given a
@@ -242,6 +242,15 @@ def check_voice_unit_running() -> CheckResult:
             "reconciler found neither a local nor an accessory mic",
             reason=REASON_VOICE_UNIT_PARKED_NO_INPUT,
         )
+    # Only a file that says nothing: an unreadable or invalid one is a
+    # bad read, not a box that has yet to choose, so it falls through.
+    if read_active_provider_state().status in ("unset", "missing"):
+        return CheckResult(
+            label, "skipped",
+            f"{_VOICE_UNIT} parked with no voice provider chosen yet — "
+            "visit /voice to pick one",
+            reason=REASON_VOICE_UNIT_NO_PROVIDER,
+        )
     if streambox:
         return CheckResult(
             label, "warn",
@@ -250,13 +259,6 @@ def check_voice_unit_running() -> CheckResult:
             "`journalctl -u jasper-accessory-reconcile` names why the "
             "reconciler that owns this unit's lifecycle did not start it.",
             reason=REASON_VOICE_UNIT_INACTIVE_PAIRED_REMOTE,
-        )
-    if not read_active_provider():
-        return CheckResult(
-            label, "skipped",
-            f"{_VOICE_UNIT} parked with no voice provider chosen yet — "
-            "visit /voice to pick one",
-            reason=REASON_VOICE_UNIT_NO_PROVIDER,
         )
     return CheckResult(
         label, "fail",

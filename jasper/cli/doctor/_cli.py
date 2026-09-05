@@ -33,6 +33,7 @@ from ...env_load import (
     load_env_files as _load_env_files,
 )
 from ...identity import resolve_hostname
+from ...log_event import render_logfmt
 from ...install_profile import (
     is_streambox_install_profile,
     read_install_profile,
@@ -58,33 +59,34 @@ from ._shared import (
 )
 
 
+_MARKS = {
+    "ok": (GREEN, "✓"),
+    "skipped": (DIM, "-"),
+    "warn": (YELLOW, "!"),
+    "fail": (RED, "✗"),
+}
+
+
 def render(results: list[CheckResult], *, core: bool = False) -> int:
     print()
     print(f"{BOLD}jasper-doctor{RESET}\n")
-    fails = warns = 0
-    silent = False
     for r in results:
-        if r.status == "ok":
-            color, mark = GREEN, "✓"
-        elif r.status == "skipped":
-            color, mark = DIM, "-"
-        else:
-            silent = silent or r.speaker_silent
-            if r.status == "warn":
-                color, mark = YELLOW, "!"
-                warns += 1
-            else:
-                color, mark = RED, "✗"
-                fails += 1
+        color, mark = _MARKS[r.status]
         print(f"  {color}{mark}{RESET} {r.name:24s} {r.detail}")
     print()
+    counts = summarize(results)
+    fails, warns, silent = (
+        counts["fails"], counts["warns"], counts["speaker_silent"],
+    )
     if core:
         # The deploy gates on the exit code; this is the journal's copy.
-        print(
-            f"event=deploy.health status={'fail' if fails else 'ok'} "
-            f"fail={fails} warn={warns} rows={len(results)} "
-            f"speaker_silent={str(silent).lower()}"
-        )
+        print(render_logfmt("deploy.health", {
+            "status": "fail" if fails else "ok",
+            "fail": fails,
+            "warn": warns,
+            "rows": len(results),
+            "speaker_silent": silent,
+        }))
     # Silence leads the summary line, in the same phrase for a warn and a
     # fail: the household outcome is the same either way. Severity rides the
     # WORDS — colour and exit code keep their single meaning (red / 1 =
