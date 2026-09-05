@@ -628,7 +628,9 @@ provenance stated — never vetoes:
   (row F, a full-span half-Hann tail with no lead) disagree by 1.72 dB on the
   same 7→20 ms change of the same capture. `measurement.gate_ladder_frame`
   states which frame a number is in; compare only within one.
-- `pose_persistence` — the feature's depth/centre at each banked lateral pose.
+- `pose_persistence` — the feature's depth/centre at each banked lateral pose,
+  under `sigma_pooled_db`, the spread across the poses that resolved it (`null`
+  under two of them, never a fabricated 0.0).
   Stable within ~±0.5 dB across the walk: a source property, correctable.
   Shrinking by more than ~2 dB or migrating in frequency off-axis: axis-local
   (diffraction, gating residual) — never fit it on one axis. Not-resolved is
