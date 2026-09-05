@@ -1,12 +1,12 @@
 # Re-run mic/AEC reconciliation whenever ALSA sound cards appear or
-# disappear. The reconciler is intentionally cheap and idempotent:
-# it only flips service/env state when the current mic config is one
-# JTS owns (Array, udp:PORT, or a configured candidate). Custom
+# disappear. The reconciler is cheap and idempotent: it only flips
+# service/env state when the current mic config is one JTS owns (a
+# registry card name, udp:PORT, or a configured candidate). Custom
 # JASPER_MIC_DEVICE values are left alone.
 #
-# This is deliberately keyed to sound control nodes rather than a
-# hard-coded XVF USB id. Supported mic identity lives in the mic profile
-# registry; JASPER_MIC_DEVICE_CANDIDATES remains only the direct-mic
-# fallback hint. The policy stays in the reconciler.
+# Keyed to sound control nodes, not a hard-coded XVF USB id. Supported mic
+# identity lives in the mic profile registry and reaches the reconciler
+# through `jasper-xvf-profile --env` (ADR-0235); JASPER_MIC_DEVICE_CANDIDATES
+# only overrides that list. The policy stays in the reconciler.
 
 ACTION=="add|remove", SUBSYSTEM=="sound", KERNEL=="controlC*", TAG+="systemd", ENV{SYSTEMD_WANTS}+="jasper-aec-reconcile.service"

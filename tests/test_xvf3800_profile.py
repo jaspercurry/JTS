@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -194,6 +195,54 @@ def test_cli_env_and_state_share_resolved_profile(tmp_path: Path) -> None:
     state = json.loads(state_path.read_text())
     assert state["variant_id"] == "xvf3800_flex_linear_6ch"
     assert state["chip_beam_plan"] is None
+
+
+@pytest.fixture(scope="module")
+def absent_mic_env(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
+    """``--env`` output with no XVF card present, parsed the way bash evals it."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "jasper.cli.xvf_profile",
+            "--asound-root",
+            str(tmp_path_factory.mktemp("empty-asound")),
+            "--env",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    values: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        key, _, value = shlex.split(line)[0].partition("=")
+        values[key] = value
+    return values
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        (
+            "JASPER_XVF_SUPPORTED_ALSA_CARDS",
+            ",".join(xvf3800.ALSA_CARD_NAMES),
+        ),
+        (
+            "JASPER_XVF_RECOMMENDED_CHANNELS",
+            str(xvf3800.RECOMMENDED_CAPTURE_CHANNELS),
+        ),
+        ("JASPER_XVF_MIXER_CAPTURE_SWITCH", xvf3800.MIXER_CAPTURE_SWITCH),
+        ("JASPER_XVF_MIXER_CAPTURE_VOLUME", xvf3800.MIXER_CAPTURE_VOLUME),
+        ("JASPER_XVF_MIXER_VOLUME_MAX", str(xvf3800.MIXER_VOLUME_MAX)),
+    ],
+)
+def test_registry_constant_reaches_bash_even_with_no_mic(
+    absent_mic_env: dict[str, str], key: str, value: str
+) -> None:
+    # The reconciler keeps no copy of these (ADR-0235), so they have to be on
+    # the emitter's output on every path, including the absent one — that is
+    # the pass where it still has to name candidates and a fallback mic.
+    assert absent_mic_env[key] == value
 
 
 def _reconciler_written_aec_keys() -> frozenset[str]:
