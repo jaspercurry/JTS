@@ -10,9 +10,8 @@ import logging
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
-# Route bodies keep the daemon's journal identity: `jasper-control` logs under
-# one logger name, not one per mixin module.
-logger = logging.getLogger("jasper.control.server")
+# Not `__name__`: one journal name for every route body, not one per mixin.
+logger = logging.getLogger("jasper.control")
 
 
 class ControlHandlerMixin(BaseHTTPRequestHandler):

@@ -219,7 +219,7 @@ def test_volume_set_event_log_level_tracks_state_change(
 
     # Applied observation -> INFO (state changed: the coordinator adopted
     # the observed value).
-    with caplog.at_level(logging.DEBUG, logger="jasper.control.server"):
+    with caplog.at_level(logging.DEBUG, logger="jasper.control"):
         status, body = _post(
             f"{base}/volume/set", {"percent": 42, "source": "usbsink"},
         )
@@ -237,7 +237,7 @@ def test_volume_set_event_log_level_tracks_state_change(
         return False
 
     fake.observe_source_volume = _decline
-    with caplog.at_level(logging.DEBUG, logger="jasper.control.server"):
+    with caplog.at_level(logging.DEBUG, logger="jasper.control"):
         status, body = _post(
             f"{base}/volume/set", {"percent": 43, "source": "usbsink"},
         )
@@ -253,7 +253,7 @@ def test_volume_set_event_log_level_tracks_state_change(
 
     # Authoritative set (no `source`, observation_applied stays None) ->
     # INFO — always a real state change.
-    with caplog.at_level(logging.DEBUG, logger="jasper.control.server"):
+    with caplog.at_level(logging.DEBUG, logger="jasper.control"):
         status, body = _post(f"{base}/volume/set", {"percent": 50})
     assert status == 200
     records = [r for r in caplog.records if "event=volume.set" in r.getMessage()]

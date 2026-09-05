@@ -761,7 +761,7 @@ def test_system_action_reboot_audits_and_invokes_systemctl(
 
     monkeypatch.setattr(srv_mod.subprocess, "Popen", _recording_popen(popens))
 
-    with caplog.at_level(logging.INFO, logger="jasper.control.server"):
+    with caplog.at_level(logging.INFO, logger="jasper.control"):
         status, body = _post(f"{base}/system/reboot", {})
 
     assert status == 200
