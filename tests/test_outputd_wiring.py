@@ -1349,7 +1349,7 @@ def test_outputd_dual_apple_ready_is_after_multi_period_prime_and_start():
 def test_outputd_state_socket_is_bound_before_thread_spawn():
     main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
     spawn_state = main_rs.split("fn spawn_state_server(", 1)[1].split(
-        "fn lock_memory(",
+        "fn period_duration(",
         1,
     )[0]
     bind = spawn_state.index("StateServer::bind(path, state)")

@@ -42,7 +42,8 @@ use std::sync::mpsc::channel;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use jasper_tts_protocol::assistant_reference::{self, DaemonHooks};
+use jasper_daemon::DaemonHooks;
+use jasper_tts_protocol::assistant_reference;
 use log::{error, info, warn};
 
 use crate::config::Config;
@@ -53,6 +54,15 @@ use crate::watchdog::Heartbeat;
 use crate::xrun_log::XrunLog;
 
 pub(crate) use jasper_daemon::{ConfigClassError, EXIT_CONFIG, HELPER_STACK_BYTES};
+
+/// Fan-in's voice for shared code that emits on its behalf.
+const HOOKS: DaemonHooks = DaemonHooks {
+    event_prefix: "fanin",
+    writer_stack_bytes: HELPER_STACK_BYTES,
+    info: |message| info!("{message}"),
+    warn: |message| warn!("{message}"),
+    error: |message| error!("{message}"),
+};
 
 /// [`EXIT_CONFIG`] when `error` carries the [`ConfigClassError`] marker
 /// ANYWHERE in its context chain, `None` otherwise. anyhow walks the whole
@@ -181,21 +191,15 @@ fn run() -> Result<()> {
 
     let (tts_input, tts_metrics, assistant_reference_writer) =
         if let Some(socket_path) = &config.tts_socket_path {
-            let hooks = DaemonHooks {
-                event_prefix: "fanin",
-                writer_stack_bytes: HELPER_STACK_BYTES,
-                info: |message| info!("{message}"),
-                warn: |message| warn!("{message}"),
-            };
             let assistant_reference = assistant_reference::load(
                 std::path::Path::new(&config.assistant_reference_path),
-                hooks,
+                HOOKS,
             );
             let (assistant_reference_tx, assistant_reference_writer) =
                 match assistant_reference::spawn_writer(
                     PathBuf::from(&config.assistant_reference_path),
                     assistant_reference,
-                    hooks,
+                    HOOKS,
                 ) {
                     Ok((tx, handle)) => (Some(tx), Some(handle)),
                     Err(error) => {
@@ -440,7 +444,7 @@ fn run() -> Result<()> {
 
     heartbeat.notify_ready();
 
-    lock_memory();
+    jasper_daemon::lock_memory(HOOKS);
 
     // Run the work loop. Returns Ok on graceful shutdown; Err on
     // structural failure (which systemd's Restart=on-failure handles
@@ -482,17 +486,6 @@ fn run() -> Result<()> {
     }
     heartbeat.notify_stopping();
     result
-}
-
-fn lock_memory() {
-    match jasper_daemon::lock_memory() {
-        Ok(()) => info!("event=fanin.mlockall_ok"),
-        Err(err) => error!(
-            "event=fanin.mlockall_failed errno={} detail={}",
-            err.raw_os_error().unwrap_or(0),
-            err,
-        ),
-    }
 }
 
 fn install_signal_handlers(shutdown: &Arc<AtomicBool>) -> Result<()> {
