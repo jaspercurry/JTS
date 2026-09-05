@@ -20,7 +20,8 @@ from ...audio_hardware.usb_port_role import (
     read_boot_config_or_none,
 )
 from ...control.transport_park import I2S_DAC_OVERLAY_CHECK_NAME as CHECK_NAME
-from ...output_topology import OutputTopologyError, load_output_topology_strict
+from ...output_topology import OutputTopologyError
+from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult
 
@@ -42,7 +43,7 @@ def check_i2s_dac_overlay_persists() -> CheckResult:
     label = CHECK_NAME
 
     try:
-        topology = load_output_topology_strict()
+        topology = evidence.output_topology_strict()
     except OutputTopologyError as exc:
         return _skipped(f"saved output topology is unavailable or invalid: {exc}")
 
