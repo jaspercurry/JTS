@@ -4005,6 +4005,18 @@ class WakeLoop:
             await asyncio.sleep(0.05)
         return True
 
+    def _spawn_manual_refusal_cue(self, slug: str) -> None:
+        """Play a manual-start refusal cue without holding up the reply.
+
+        `manual_session_start` answers a control-socket command whose
+        caller times out at 5 s (`control/uds.py`), while a cue runs ~6 s
+        with duck and drain; awaiting one here answers the button with a
+        503 and writes the real result to a closed socket.
+        """
+        self._create_fire_and_forget_task(
+            self._play_cue(slug), name=f"manual-refusal-cue:{slug}",
+        )
+
     async def manual_session_start(self, source: str | None = None) -> str:
         """Trigger a voice session from external IPC (remote hold-to-talk).
         Bypasses the openWakeWord trigger but honors the same gates
@@ -4051,7 +4063,7 @@ class WakeLoop:
                 ),
                 level=logging.WARNING,
             )
-            await self._play_cue(NO_ROOM_MIC_CUE_SLUG)
+            self._spawn_manual_refusal_cue(NO_ROOM_MIC_CUE_SLUG)
             return "NO_ROOM_MIC"
         if self._state is State.SESSION:
             return "BUSY"
@@ -4076,12 +4088,18 @@ class WakeLoop:
             )
             return "MEASURING"
         if not self._spend_cap.allowed():
+            log_event(
+                logger,
+                "session.manual_refused",
+                reason="spend_cap_reached",
+            )
+            self._spawn_manual_refusal_cue("spend_cap_reached")
             return "CAP"
         if self._connection.is_paused() and not await self._await_connection(
             PAUSED_CONNECTION_WAIT_SEC,
         ):
             # Still paused after the wait: this is a real outage, not a
-            # rotation. Cue first — a press that produces nothing is the
+            # rotation. Cued — a press that produces nothing is the
             # one refusal the household cannot explain to itself.
             log_event(
                 logger,
@@ -4089,7 +4107,7 @@ class WakeLoop:
                 reason="connection_paused",
                 waited_sec=PAUSED_CONNECTION_WAIT_SEC,
             )
-            await self._play_cue(self._connection.wake_cue())
+            self._spawn_manual_refusal_cue(self._connection.wake_cue())
             return "PAUSED"
         if source:
             self._active_manual_source = source
@@ -4131,7 +4149,9 @@ class WakeLoop:
             # — same condition and cue as the wake path's acquire
             # failure. See `_arbitrate_acquire_drain`.
             if self._connection.is_paused():
-                await self._play_cue(self._connection.wake_cue())
+                self._spawn_manual_refusal_cue(self._connection.wake_cue())
+            else:
+                self._spawn_manual_refusal_cue(INTERNAL_ERROR_CUE_SLUG)
             return "ERROR"
         finally:
             if source:
