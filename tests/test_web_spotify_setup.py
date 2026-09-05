@@ -466,8 +466,8 @@ def test_oauth_callback_exchange_failure_redirects_error(monkeypatch):
 
 
 def test_oauth_callback_exchange_failure_flash_is_redacted(monkeypatch):
-    """The provider's rejection text reaches the user scrubbed, and through
-    the flash cookie — never as a query param nginx would log."""
+    """The provider's rejection text reaches the user scrubbed and bounded;
+    the flash-cookie shim already kept it out of the URL."""
     state = "state-red"
     handler_cls = _handler_cls(client_id="0123456789abcdef0123456789abcdef")
     spotify_setup._PENDING_FLOWS.clear()

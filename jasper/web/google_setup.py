@@ -79,8 +79,6 @@ from ._common import (
     restart_voice_daemon,
     safe_back_href,
     send_html_response,
-    send_see_other,
-    value_for_env,
     write_env_file,
     SECRET_ENV_MODE,
 )
@@ -119,18 +117,15 @@ _USERINFO_URI = "https://openidconnect.googleapis.com/v1/userinfo"
 
 
 def _creds(cfg: dict[str, Any]) -> tuple[str, str]:
-    """Client ID + secret, read fresh per request. A snapshot would hide
-    every other writer of the file (install migration, restore, hand
-    edit) until jasper-web restarts — AGENTS.md "Single-writer env
-    files". Env stays a fallback source, never a cache."""
-    state = read_env_file(cfg["creds_path"])
-    return (
-        value_for_env(state, "GOOGLE_CLIENT_ID"),
-        value_for_env(state, "GOOGLE_CLIENT_SECRET"),
-    )
+    """Client ID + secret, read fresh from the file per request. The file is
+    the single writer; the process env holds only systemd's start-time
+    `EnvironmentFile=` copy of it, which would hide a later write and outlive
+    a reset — AGENTS.md "Single-writer env files"."""
+    creds = read_env_file(cfg["creds_path"])
+    return creds.get("GOOGLE_CLIENT_ID", ""), creds.get("GOOGLE_CLIENT_SECRET", "")
 
 
-def _write_creds_file(client_id: str, client_secret: str, *, path: str = CREDS_FILE) -> None:
+def _write_creds_file(client_id: str, client_secret: str, *, path: str) -> None:
     # WS1 Phase 4a: 0640 in the setgid jasper-secrets dir → group
     # `jasper-secrets` (voice + web only). GOOGLE_CLIENT_SECRET stays off the
     # broad `jasper` group; the root /system/diagnostics jasper-doctor reads it.
@@ -140,7 +135,7 @@ def _write_creds_file(client_id: str, client_secret: str, *, path: str = CREDS_F
     }, mode=SECRET_ENV_MODE)
 
 
-def _delete_creds_file(path: str = CREDS_FILE) -> None:
+def _delete_creds_file(path: str) -> None:
     delete_env_file(path)
 
 
@@ -704,17 +699,16 @@ def _new_nonce() -> str:
     return secrets.token_urlsafe(16)
 
 
-def _build_flow(cfg: dict[str, Any], *, state: str | None = None):
+def _build_flow(cfg: dict[str, Any], creds: tuple[str, str], *, state: str | None = None):
     """Construct a google_auth_oauthlib Flow with our Web-application
     client config. Imported lazily so the module is importable in
     unit tests without the google-auth-oauthlib wheel installed."""
     from google_auth_oauthlib.flow import Flow
-    client_id, client_secret = _creds(cfg)
     flow = Flow.from_client_config(
         {
             "web": {
-                "client_id": client_id,
-                "client_secret": client_secret,
+                "client_id": creds[0],
+                "client_secret": creds[1],
                 "auth_uri": _AUTH_URI,
                 "token_uri": _TOKEN_URI,
                 "redirect_uris": [cfg["redirect_uri"]],
@@ -816,8 +810,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     self._exchange_code(account_name, code, verifier)
                 except Exception as e:  # noqa: BLE001
                     logger.exception("oauth exchange failed")
-                    detail = redact_secrets(str(e))[:220]
-                    send_see_other(self, "./", flash=f"Auth exchange failed: {detail}")
+                    detail = urllib.parse.quote(redact_secrets(str(e))[:220])
+                    self._redirect(f"./?msg=Auth+exchange+failed:+{detail}")
                     return
                 _restart_voice_daemon()
                 # No account name / token in the line — personal data + secret.
@@ -903,12 +897,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 )
                 return
             try:
-                _write_creds_file(client_id, client_secret)
+                _write_creds_file(client_id, client_secret, path=cfg["creds_path"])
             except OSError as e:
                 logger.exception("could not write credentials file")
-                self._redirect(
-                    f"./?msg=Could+not+save+credentials:+{urllib.parse.quote(str(e))}"
-                )
+                detail = urllib.parse.quote(redact_secrets(str(e))[:220])
+                self._redirect(f"./?msg=Could+not+save+credentials:+{detail}")
                 return
             _restart_voice_daemon()
             # Action + requester only — never the client_id/secret.
@@ -919,13 +912,14 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             )
 
         def _handle_reset_credentials(self) -> None:
-            _delete_creds_file()
+            _delete_creds_file(cfg["creds_path"])
             _restart_voice_daemon()
             log_event(logger, "google.reset", client=self.address_string())
             self._redirect("./?msg=Credentials+cleared.")
 
         def _handle_start(self, form: dict[str, str]) -> None:
-            if not all(_creds(cfg)):
+            creds = _creds(cfg)
+            if not all(creds):
                 self._redirect("./?msg=Set+up+Google+credentials+first.")
                 return
             name = form.get("name", "").strip()
@@ -943,7 +937,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             _gc_pending()
             nonce = _new_nonce()
             try:
-                flow = _build_flow(cfg, state=nonce)
+                flow = _build_flow(cfg, creds, state=nonce)
                 # `prompt='consent'` forces Google to issue a refresh
                 # token even if the user has already consented — the
                 # one we get on first consent is the only one we'll
@@ -956,9 +950,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 )
             except Exception as e:  # noqa: BLE001
                 logger.exception("authorize-url build failed")
-                self._redirect(
-                    f"./?msg=Could+not+start+OAuth:+{urllib.parse.quote(str(e))}"
-                )
+                detail = urllib.parse.quote(redact_secrets(str(e))[:220])
+                self._redirect(f"./?msg=Could+not+start+OAuth:+{detail}")
                 return
             # google-auth-oauthlib defaults autogenerate_code_verifier=True,
             # so authorization_url() generated a PKCE verifier and stored
@@ -1011,7 +1004,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             account = registry.get(account_name)
             if account is None:
                 raise RuntimeError(f"unknown account: {account_name}")
-            flow = _build_flow(cfg, state=account_name)
+            flow = _build_flow(cfg, _creds(cfg), state=account_name)
             # Restore the PKCE verifier that /start stashed under the nonce
             # (the callback already popped the pending entry, so a redo
             # can't reuse it — the next /start creates a fresh nonce).

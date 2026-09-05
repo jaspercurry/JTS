@@ -121,7 +121,6 @@ from ._common import (
     safe_back_href,
     send_html_response,
     send_json_response,
-    send_see_other,
     write_env_file,
 )
 
@@ -1217,8 +1216,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 self._exchange_code(account_name, code, verifier, challenge)
             except Exception as e:  # noqa: BLE001
                 logger.exception("oauth exchange failed")
-                detail = redact_secrets(str(e))[:220]
-                send_see_other(self, "./", flash=f"Auth exchange failed: {detail}")
+                detail = urllib.parse.quote(redact_secrets(str(e))[:220])
+                self._redirect(f"./?msg=Auth+exchange+failed:+{detail}")
                 return
             _invalidate_health_cache()
             _restart_spotify_consumers()

@@ -226,8 +226,8 @@ def _write_creds(path, *, client_id=GOOD_CLIENT_ID, client_secret="secret"):
 
 @pytest.fixture(autouse=True)
 def _no_google_creds_env(monkeypatch):
-    """The wizard falls back to the process env; keep a value inherited from
-    the developer's shell out of the file-freshness assertions."""
+    """Keep a value inherited from the developer's shell out of the
+    file-freshness assertions. One test sets these back deliberately."""
     monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
     monkeypatch.delenv("GOOGLE_CLIENT_SECRET", raising=False)
 
@@ -240,7 +240,6 @@ def patched_common():
                            return_value={"csrf_token": CSRF, "flash": ""}) as br, \
          mock.patch.object(google_setup, "send_html_response") as shr, \
          mock.patch.object(web_common, "send_see_other", send_see_other), \
-         mock.patch.object(google_setup, "send_see_other", send_see_other), \
          mock.patch.object(google_setup, "read_form", return_value={}) as rf, \
          mock.patch.object(google_setup, "guard_mutating_request", return_value=True) as vc, \
          mock.patch.object(google_setup, "reject_csrf") as rc, \
@@ -374,23 +373,50 @@ def test_setup_credentials_rejects_bad_client_id(patched_common):
     assert not wcf.called
 
 
-def test_setup_credentials_persists_and_restarts(patched_common):
+def test_setup_credentials_persists_and_restarts(patched_common, tmp_path):
     patched_common.read_form.return_value = {
         "client_id": GOOD_CLIENT_ID, "client_secret": "GOCSPX-abc",
     }
-    fake = _make_bound_handler(_cfg(), "/setup-credentials")
+    cfg = _cfg(creds_path=str(tmp_path / "creds.env"))
+    fake = _make_bound_handler(cfg, "/setup-credentials")
     with mock.patch.object(google_setup, "_write_creds_file") as wcf:
         fake.do_POST()
     assert wcf.call_args.args == (GOOD_CLIENT_ID, "GOCSPX-abc")
+    assert wcf.call_args.kwargs["path"] == cfg["creds_path"]
     assert patched_common.restart_voice_daemon.called
 
 
-def test_reset_credentials_deletes_creds_file(patched_common):
-    fake = _make_bound_handler(_cfg(), "/reset-credentials")
+def test_reset_credentials_deletes_creds_file(patched_common, tmp_path):
+    cfg = _cfg(creds_path=_write_creds(tmp_path / "creds.env"))
+    fake = _make_bound_handler(cfg, "/reset-credentials")
     with mock.patch.object(google_setup, "_delete_creds_file") as dcf:
         fake.do_POST()
-    assert dcf.called
+    assert dcf.call_args.args == (cfg["creds_path"],)
     assert patched_common.restart_voice_daemon.called
+
+
+def test_reset_beats_the_systemd_env_snapshot(patched_common, tmp_path, monkeypatch):
+    # Both jasper-web units source the creds file via `EnvironmentFile=`, so
+    # the process env is a start-time copy that outlives the delete — read it
+    # and "clear credentials" would not take effect until the next restart.
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", GOOD_CLIENT_ID)
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "secret")
+    creds = tmp_path / "creds.env"
+    cfg = _cfg(creds_path=_write_creds(creds),
+               registry_path=str(tmp_path / "accounts.json"))
+
+    _make_bound_handler(cfg, "/reset-credentials").do_POST()
+    assert not creds.exists()
+
+    _make_bound_handler(cfg, "/").do_GET()
+    page = patched_common.send_html_response.call_args.args[1]
+    assert b"setup-steps" in page  # state 1: paste credentials
+    assert GOOD_CLIENT_ID.encode() not in page
+
+    patched_common.read_form.return_value = {"name": "jasper"}
+    with mock.patch.object(google_setup, "_build_flow") as bf:
+        _make_bound_handler(cfg, "/start").do_POST()
+    assert not bf.called
 
 
 def test_start_redirects_to_google_authorize(patched_common, tmp_path):
@@ -505,8 +531,8 @@ def test_callback_exchanges_code_and_restarts(patched_common, tmp_path):
 
 
 def test_callback_exchange_failure_flash_is_redacted(patched_common, tmp_path):
-    # The token endpoint's rejection text reaches the user through the flash
-    # cookie, scrubbed — never as a query param nginx would log.
+    # The token endpoint's rejection text reaches the user scrubbed and
+    # bounded; the flash-cookie shim already kept it out of the URL.
     cfg = _cfg(creds_path=_write_creds(tmp_path / "creds.env"))
     google_setup._PENDING_FLOWS.clear()
     google_setup._PENDING_FLOWS["nonce123"] = ("jasper", "verifier123", 0.0)
@@ -518,9 +544,8 @@ def test_callback_exchange_failure_flash_is_redacted(patched_common, tmp_path):
     ), mock.patch.object(google_setup, "_gc_pending"):
         fake.do_GET()
 
-    call = patched_common.send_see_other.call_args
-    assert call.args[1] == "./"  # no ?msg= query on the redirect target
-    assert leaked not in call.kwargs["flash"]
+    assert patched_common.send_see_other.call_args.args[1] == "./"
+    assert leaked not in _flash(patched_common.send_see_other)
     assert not patched_common.restart_voice_daemon.called
 
 
