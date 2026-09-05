@@ -899,10 +899,8 @@ def test_camilla_block_field_shared_scanner():
     assert _camilla_block_field("devices:\n  codec: 'flac'  # x\n", "devices", "codec") == "flac"
 
 
-# NOTE: the former check_grouping_tts_separation tests were REMOVED
-# 2026-06-11 with the check itself (the retired outputd-as-producer
-# machinery). The operator story it carried now lives in check_grouping's
-# runtime detail, covered by test_doctor_grouping.py::
+# The grouping-TTS-separation check retired with the outputd-as-producer
+# machinery; equivalent coverage now lives in test_doctor_grouping.py::
 # test_check_grouping_leader_reads_degraded_until_producer_built.
 
 

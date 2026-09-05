@@ -314,10 +314,9 @@ impl SroEstimator {
     }
 }
 
-/// Pure Layer-1 classification of a `(status, ppm)` snapshot. Free function so
-/// the /state serializer and any future consumer (e.g. a Layer-2 compensator)
-/// can classify without holding an `SroEstimator`. NOTE: this only observes;
-/// Layer 2 owns the decision of how to *act* on a `Compensable` verdict.
+/// Pure Layer-1 classification of a `(status, ppm)` snapshot. Free function so the /state
+/// serializer and other consumers (e.g. a Layer-2 compensator) can classify without an
+/// `SroEstimator`. Observes only; Layer 2 decides how to *act* on a `Compensable` verdict.
 pub fn verdict_for(status: SroStatus, sro_ppm: Option<f64>) -> AecClockVerdict {
     match status {
         SroStatus::Untrusted | SroStatus::Observing => AecClockVerdict::Fallback,

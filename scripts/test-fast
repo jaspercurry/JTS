@@ -17,12 +17,10 @@ cd "$(git rev-parse --show-toplevel)"
 # shellcheck source=scripts/_test_lane.sh
 source "${_lane_dir}/_test_lane.sh"
 
-# issue #1850: registered before resolve_lane_tool runs, so this is the
-# lane's single verdict point no matter where an exit happens -- normal
-# completion, one of the pytest phases below failing, or resolve_lane_tool's
-# FATAL block aborting first. The temp-file variables are initialized empty
-# (not left unset) so cleanup is safe under `set -u` even if the trap fires
-# before their mktemp lines run.
+# Registered before resolve_lane_tool runs, so this is the lane's single
+# verdict point regardless of where an exit happens (issue #1850). The
+# temp-file variables are initialized empty (not left unset) so cleanup is
+# safe under `set -u` even if the trap fires before their mktemp lines run.
 phase_tmp=""
 changed_file_tmp=""
 selected_test_tmp=""
@@ -108,23 +106,17 @@ add_pytest_target_if_present() {
   fi
 }
 
-# issue #1973: deploy/index.html (and other deploy/assets/* changes cheap
-# enough to also fold in) were invisible to the changed-file mapping below,
-# so editing the landing page gave a green test-fast while
-# tests/test_landing_page_html.py sat red at the same tree -- caught only by
-# running it explicitly. Read the registered bundle from ci-classify.py's
-# own --landing-pytest-targets rather than copying the list here, so the two
-# lanes cannot drift apart; guarded so a diff touching several landing paths
-# only pays for the one subprocess invocation.
+# issue #1973: deploy/index.html and other deploy/assets/* changes were
+# invisible to the changed-file mapping below, so editing the landing page
+# gave a green test-fast while its test sat red at the same tree. Read the
+# registered bundle from ci-classify.py's own --landing-pytest-targets rather
+# than copying the list here, so the two lanes cannot drift apart; guarded so
+# a diff touching several landing paths pays for one subprocess invocation.
 #
-# Captured into a variable and exit-status-checked exactly like the routing-
-# policy block above (not `done < <(...)`): a `while read` loop fed by a
-# failing process substitution has no visibility into that command's exit
-# code, so a broken/patched ci-classify.py that exits non-zero with no
-# output would silently queue zero landing tests and this lane would go
-# green with nothing checked -- the exact false-green class #1973 exists to
-# close. `(( ... == 0 ))` catches the same failure shape the workflow's
-# fast-landing job guards with `(( ${#landing_tests[@]} > 0 ))`.
+# Captured into a variable and exit-status-checked, not `done < <(...)`: a
+# `while read` loop fed by a failing process substitution can't see that
+# command's exit code, so a broken ci-classify.py could silently queue zero
+# landing tests and this lane would go green with nothing checked.
 _landing_tests_added=false
 add_landing_tests_if_needed() {
   if [[ "${_landing_tests_added}" == true ]]; then
@@ -191,15 +183,12 @@ while IFS= read -r changed; do
     tests/voice_eval/*)
       ;;
     jasper/*/*.py)
-      # issue #3142: a module nested a directory deeper than the top-level
-      # package (jasper/cli/doctor/audio_runtime_camilla.py) only had
-      # `package` ("cli") and `module` ("audio_runtime_camilla") to route
-      # with -- neither matches the doctor family's tests/test_doctor_<module>.py
-      # convention, so a doctor-only production change selected zero of
-      # its tests here and surfaced 36 red only in CI. `parent` is the
-      # immediate containing directory (equal to `package` when the file
-      # sits directly under the package, so this is a no-op arm in that
-      # case, not a special case for one package).
+      # issue #3142: a module nested one directory deeper than the top-level
+      # package only has `package` (e.g. "cli") and `module` to route with,
+      # which doesn't match the doctor family's tests/test_doctor_<module>.py
+      # convention. `parent` is the immediate containing directory (equal to
+      # `package` when the file sits directly under it, so this is a no-op
+      # arm then, not a special case for one package).
       package="${changed#jasper/}"
       package="${package%%/*}"
       module="${changed##*/}"
@@ -245,15 +234,12 @@ while IFS= read -r changed; do
       # import graph routes them and the jasper/*.py arms above never match.
       # About half are pinned by a test named for the script minus its
       # `jasper-` prefix; the rest are pinned by contract tests named for the
-      # SUBJECT instead (jasper-apply-airplay-mode is covered by
-      # tests/test_airplay_render.py, which is why the convention alone left
-      # it selecting zero tests). So: convention first, and only when that
-      # finds nothing, the tests that name the script literally -- the broad
-      # `grep` is the fallback and not the rule because the reconcile scripts
-      # are named in ~28 files each, several of them slow. issue #3846's
-      # tests/test_aec_reconcile_rule_pins.py sits beside the convention
-      # match and was silently unrun until this glob (same idiom as the
-      # jasper/*/*.py arm's add_globbed_tests calls above).
+      # SUBJECT instead (e.g. jasper-apply-airplay-mode is covered by
+      # tests/test_airplay_render.py). Convention first, then the broad
+      # `grep` fallback -- not the rule, because the reconcile scripts are
+      # named in ~28 files each, several of them slow. The glob below also
+      # catches tests named by pattern rather than convention or grep
+      # (issue #3846).
       script="${changed##*/}"
       script_module="${script#jasper-}"
       script_module="${script_module//-/_}"
@@ -275,9 +261,8 @@ while IFS= read -r changed; do
       ;;
     rust/*)
       # The Rust crates' static source guards are Python tests (cargo can't
-      # run in every dev env). Run them in the fast lane so a Rust edit that
-      # trips them fails here, not only in the merge lane — the exact way the
-      # panic-freedom guard slipped past `test-fast` before this mapping.
+      # run in every dev env). Run them in the fast lane, not only the merge
+      # lane, so a Rust edit that trips them fails immediately.
       add_test_if_present "tests/test_rust_runtime_panic_freedom.py"
       add_test_if_present "tests/test_outputd_wiring.py"
       add_test_if_present "tests/test_usbsink_impulse_tap_contract.py"
@@ -303,30 +288,18 @@ echo "==> ruff"
 
 echo "==> pytest last failures"
 
-# issue #1758: a cached node id that no longer resolves (a renamed or deleted
-# test) makes pytest's own --last-failed machinery silently degrade into
-# collecting and running the FULL suite serially -- `--last-failed-no-failures
-# none` only guards the case where the cache is EMPTY, not this one. The
-# degenerate sweep fires specifically when NO cached id resolves within the
-# collected scope (every cached id renamed/deleted, or every cached id from
-# outside the given scope): pytest correctly deselects a MIX of live and
-# stale ids on its own (verified 2026-07-29 against pytest 9.0.3: one live id
-# alongside one stale one narrowed cleanly to "1 selected", the stale entry
-# just dropped), so one stale entry riding along with a live one is NOT
-# itself the trigger. An all-stale cache is: that same probe showed
-# `--last-failed --last-failed-no-failures none` print "run-last-failure: N
-# known failures not in selected tests" and then run every item in the given
-# scope, not the (zero) that actually resolved -- the exact
-# ~17-minute-serial-sweep shape reported twice against the
-# flat-linearization ladder's renames, where a whole file's worth of cached
-# ids went stale at once.
+# issue #1758: when EVERY cached --last-failed id is stale (renamed/deleted,
+# or outside the given scope), pytest's own --last-failed machinery silently
+# degrades into collecting and running the FULL suite serially --
+# `--last-failed-no-failures none` only guards an EMPTY cache, not this case.
+# A cache mixing live and stale ids is unaffected; pytest deselects the stale
+# entries on its own.
 #
 # Fix: read the cache ourselves and validate before ever passing
-# --last-failed. One combined --collect-only probe (fast -- it only imports
-# the files these specific ids reference, not the whole suite) tells us
-# whether ANY are stale; only when it fails do we pay for the slower per-id
-# probe, so the common case (nothing renamed) costs one extra quick pytest
-# start, not N of them. A stale id then costs seconds, never the whole suite.
+# --last-failed. One combined --collect-only probe (cheap -- it only imports
+# the files these specific ids reference) checks whether ANY are stale; only
+# then do we pay for the slower per-id probe, so the common case costs one
+# extra quick pytest start, not N of them.
 lastfailed_file=".pytest_cache/v/cache/lastfailed"
 lastfailed_ids=()
 if [[ -f "${lastfailed_file}" ]]; then
@@ -420,15 +393,13 @@ fi
 
 # Repo-wide scanners: each walks whole trees instead of testing one module, and
 # none of them has an owning source file, so no changed-file mapping above can
-# ever select one — any diff could break them while this lane stayed green.
+# ever select one -- any diff could break them while this lane stayed green.
 # test_deploy_wiring_guards covers deploy/systemd/* and deploy/lib/install/*,
-# which match no case arm at all.
-#
-# The cheap ones only, measured: ~16s together, and it grows with the tree
-# rather than with the diff. The other unroutable scanners stay in test-merge —
-# test_async_wait_contract (67s), test_lazy_imports (45s) and
-# test_env_vars_codified (33s) would more than double this lane.
-# test_ci_classifier is already covered by the routing-policy phase above.
+# which match no case arm at all. Only the cheap scanners run here; the
+# slower unroutable ones (test_async_wait_contract, test_lazy_imports,
+# test_env_vars_codified) stay in test-merge so this lane doesn't double in
+# runtime. test_ci_classifier is already covered by the routing-policy phase
+# above.
 echo "==> pytest always-on fast guards"
 lane_pipe_pytest "${phase_tmp}" "${pytest_bin}" -q --tb=short \
   tests/test_dependency_groups.py tests/test_lint_contracts.py \

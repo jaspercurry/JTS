@@ -17,12 +17,11 @@ cd "$(git rev-parse --show-toplevel)"
 # shellcheck source=scripts/_test_lane.sh
 source "${_lane_dir}/_test_lane.sh"
 
-# issue #1850: registered before resolve_lane_tool runs, so this is the
-# lane's single verdict point no matter where an exit happens -- normal
-# completion, mypy or pytest failing below, or resolve_lane_tool's FATAL
-# block aborting first. `_lane_output_tmp` is initialized empty (not left
-# unset) so the cleanup call is safe under `set -u` even if the trap fires
-# before the mktemp line ever runs.
+# Registered before resolve_lane_tool runs, so this is the lane's single
+# verdict point regardless of where an exit happens (issue #1850).
+# `_lane_output_tmp` is initialized empty (not left unset) so the cleanup
+# call is safe under `set -u` even if the trap fires before the mktemp line
+# ever runs.
 _lane_output_tmp=""
 _lane_passed_total=0
 # Set true as the literal LAST statement of this script: the EXIT trap cannot
@@ -46,22 +45,14 @@ pytest_bin="$(resolve_lane_tool test-merge pytest PYTEST)" || exit 1
 mypy_bin="$(resolve_lane_tool test-merge mypy MYPY)" || exit 1
 
 # issue #1910: no local lane ran mypy at all, so a new unbaselined package
-# (e.g. jasper/attribution/) got full strictness while the rest of the tree
-# rode the lenient baseline, and its type errors surfaced only at CI's
-# py3.13 gate -- two wasted CI round-trips on PR #1908 for errors this step
-# would have caught in seconds. Bare invocation, deliberately no flags:
-# config (python_version, the `files = ["jasper"]` scope, and the
-# per-module baseline overrides) comes entirely from pyproject.toml's
-# [tool.mypy] table, exactly mirroring the "Type check (mypy; lenient
-# baseline)" step in .github/workflows/tests.yml (`run: .venv/bin/mypy`).
-# `set -e` with no `if`/`&&` guard means a nonzero exit here aborts the
+# could get full strictness while the rest of the tree rode the lenient
+# baseline, with type errors surfacing only at CI's py3.13 gate. Bare
+# invocation, deliberately no flags: config (python_version, the
+# `files = ["jasper"]` scope, and per-module baseline overrides) comes
+# entirely from pyproject.toml's [tool.mypy] table, mirroring CI's own mypy
+# step. `set -e` with no `if`/`&&` guard means a nonzero exit here aborts the
 # script immediately -- pytest never starts, and the EXIT trap above still
 # prints the lane's `==> test-merge: FAILED` sentinel as the true last line.
-# Measured cold (no .mypy_cache) on 2026-07-30, two runs: 31s and 34s wall
-# against the current 549 source files. mypy's own incremental cache makes a
-# repeated local run in the same worktree much faster (well under a second
-# when nothing changed); CI's checkout is always cold, so the 30-35s range
-# is what to plan around.
 echo "==> mypy (lenient baseline; config from pyproject.toml)"
 "${mypy_bin}"
 

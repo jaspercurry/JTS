@@ -388,10 +388,9 @@ migrate_voice_keys_split() {
             moved=1
         fi
     done
-    # NOTE: `if/then/fi`, NOT `[[ ... ]] && echo` — the latter returns the test's
-    # exit status (1 when moved=0, the common re-deploy case), which under
-    # install.sh's `set -e` would abort the whole install on every run after the
-    # first migration. The function must end on a clean (zero) status.
+    # `if/then/fi`, NOT `[[ ... ]] && echo`: the latter returns the test's exit status (1 when
+    # moved=0, the common re-deploy case), which under `set -e` aborts the whole install on
+    # every later run. The function must end on a clean status.
     if [[ "${moved}" == "1" ]]; then
         echo "  migrate_voice_keys_split: provider API keys -> ${keys_env}"
     fi
@@ -652,7 +651,7 @@ widen_control_secret_env_modes() {
     #     non-root and in group `jasper`.
     # Drop the chgrp once every box has installed past the atomic_io
     # default-group change; the chmod half heals an older 0600 class and stays.
-    # NOTE: the WiFi guardian PSK stash is DELIBERATELY NOT widened here — it
+    # The WiFi guardian PSK stash is DELIBERATELY NOT widened here — it
     # holds the WiFi password, which jasper-control does not need the value of
     # (only the SSID, which it derives from nmcli/the journal), so it stays
     # owner-only 0600. Least privilege over blanket widening.

@@ -6,20 +6,10 @@
 # Shared tool resolution for the executable test lanes (scripts/test-fast,
 # scripts/test-merge). Sourced, never executed.
 #
-# Why this exists (issue #1836): both lanes resolved their interpreter with a
-# bare `pytest` fallback and no existence check. In an agent worktree there is
-# no `.venv` -- `git rev-parse --show-toplevel` resolves to the worktree root,
-# not the main checkout -- so the fallback is the COMMON case there, not an
-# exotic one. When the fallback also missed, `test-merge`'s `exec` left only
-# bash's terse one-line "exec: pytest: not found" before the shell exited, and
-# `test-fast` surfaced the same 127 through an arithmetic status check. Neither
-# lane ever said which interpreter it had chosen, so a passing-looking
-# transcript could not be distinguished from one where nothing ran.
-#
-# The contract here: resolve explicitly, announce the choice and its
-# provenance, and refuse loudly with a named error when nothing can be
-# resolved. Announcements and errors go to stderr so a lane's stdout stays
-# pure test output for callers that capture it.
+# Resolves explicitly and refuses loudly when nothing can be resolved, rather
+# than falling back to a bare command that may not exist (issue #1836).
+# Announcements and errors go to stderr so a lane's stdout stays pure test
+# output for callers that capture it.
 #
 # The FATAL block is printed with `printf`, a bash builtin, rather than a `cat`
 # heredoc. The likeliest reason a tool could not be resolved is a mangled
@@ -89,19 +79,13 @@ resolve_lane_tool() {
   printf '%s\n' "${resolved}"
 }
 
-# issue #1850: a caller piping a lane through `2>&1 | tail -N` (the common way
-# an agent keeps a long test transcript short) sees exit 0 from a failed lane
-# whenever the shell lacks `set -o pipefail` -- `tail`/`tee` is the last
-# command in the pipe, and its own exit status is what `$?` reports. Neither
-# lane can fix that at the caller's shell, but each CAN make the failure
-# unmissable in the text itself: the functions below let a lane accumulate a
-# real passed-test count across however many pytest invocations it makes, and
-# print a single `==> <lane>: ...` line as the provably LAST line of stdout,
-# via an EXIT trap that fires on every exit path -- normal completion, an
-# explicit `exit`, or `set -e` aborting mid-script (including inside
-# resolve_lane_tool's FATAL block above). A truncating pipe then always shows
-# the verdict, never just whatever happened to be running when the transcript
-# got cut. lane_emit_verdict below owns the set of shapes that line can take.
+# issue #1850: the functions below make a lane always print a single
+# `==> <lane>: ...` verdict as the provably LAST line of stdout, via an EXIT
+# trap that fires on every exit path (normal completion, an explicit `exit`,
+# or `set -e` aborting mid-script) -- so a caller piping through `tail -N`
+# still sees the real verdict even when the shell lacks `set -o pipefail` and
+# `tail`'s own exit status would otherwise hide a failed lane's. lane_emit_verdict
+# below owns the set of shapes that line can take.
 #
 # N counts passing EXECUTIONS across phases, not distinct tests: test-fast
 # can run the same node id more than once (a changed test file matches both
@@ -121,28 +105,24 @@ _lane_summary_seen=0
 #
 # Runs a pytest invocation (or a stand-in in tests) through `tee` so the
 # caller can read back its summary line afterwards, while still streaming it
-# live to whoever is watching. PYTHONUNBUFFERED matters here: the instant a
-# Python process's stdout is no longer a tty (which `tee` makes true), CPython
-# switches from line- to block-buffered writes, turning a live-scrolling
-# `test-fast` run into silence followed by a wall of dots. The exit status is
-# returned via `$?` using `PIPESTATUS[0]` rather than relying on `pipefail`
-# alone, so this helper behaves the same even if a future caller sources it
-# without `set -o pipefail`.
+# live to whoever is watching. PYTHONUNBUFFERED is required: once a Python
+# process's stdout is not a tty (`tee` makes it not a tty), CPython switches
+# from line- to block-buffered writes, turning a live-scrolling run into
+# silence followed by a wall of dots. The exit status comes from
+# `PIPESTATUS[0]` rather than relying on `pipefail` alone, so this helper
+# behaves the same even if a future caller sources it without
+# `set -o pipefail`.
 #
-# PIPESTATUS[0] (pytest), not [1] (tee), is deliberate: pytest's own exit
-# code is the authoritative signal for whether the TESTS passed, and a `tee`
-# failure is a different failure mode (infrastructure, not test outcome).
-# That is not the same as swallowing a tee failure -- a dead/unresolvable
-# `tee` breaks the pipe pytest is writing to, so pytest itself then exits
-# nonzero too (observed directly while developing this: an unresolvable
-# `tee` produced a BrokenPipeError in the writing process, not a silent
-# pass). A failed tee SHOULD read FAILED, and in the realistic failure paths
-# it does, via that cascade rather than via [1].
+# PIPESTATUS[0] (pytest), not [1] (tee): pytest's own exit code is the
+# authoritative signal for whether the TESTS passed, and a `tee` failure is a
+# different failure mode (infrastructure, not test outcome) -- though in
+# practice a dead/unresolvable `tee` breaks the pipe pytest is writing to and
+# pytest itself then exits nonzero too, so a failed tee still reads FAILED.
 #
-# This is also where `_lane_summary_seen` is counted, and it has to be: this
-# function runs in the CURRENT shell, so it can set a global, whereas
-# lane_extract_passed_count cannot -- every one of its call sites is a
-# command substitution, i.e. a subshell whose variable writes die with it.
+# `_lane_summary_seen` is counted here rather than in
+# lane_extract_passed_count because this function runs in the CURRENT shell
+# and can set a global; every lane_extract_passed_count call site is a
+# command substitution (a subshell) whose variable writes die with it.
 lane_pipe_pytest() {
   local output_file="$1"
   shift
@@ -179,57 +159,38 @@ lane_extract_passed_count() {
 # lane_emit_verdict <lane-name> <exit-status>
 #
 # The tail of a lane's EXIT trap. Takes the pending exit status as an
-# EXPLICIT parameter rather than reading `$?` itself: this function is
-# called from a trap handler that also runs a cleanup `rm` first, and `$?`
-# only reflects the MOST RECENT command -- by the time a multi-statement trap
-# function reaches its last line, `$?` is whatever the cleanup step returned,
-# not the original failure that fired the trap. (Caught by running the
-# tests: an early version read `$?` in here and reported "0 passed" for a
-# lane that had actually failed, because `rm ... || true` had already reset
-# it to 0.) The caller must capture `$?` as ITS OWN first statement, before
-# running anything else, and pass that value through. The running total is
-# read from the fixed global `_lane_passed_total` rather than accepted as a
-# third parameter: bash 3.2 (macOS's shipped version, and this file's
-# portability floor) has no namerefs, so there is no portable way to pass a
-# variable BY REFERENCE into a function, and each lane script has only one
-# running total to report.
+# EXPLICIT parameter rather than reading `$?` itself: the trap handler runs a
+# cleanup `rm` first, and by the time this function's last line runs `$?`
+# would be the `rm`'s status, not the original failure that fired the trap.
+# The caller must capture `$?` as ITS OWN first statement, before running
+# anything else, and pass that value through. The running total is read from
+# the fixed global `_lane_passed_total` rather than accepted as a third
+# parameter: bash 3.2 (macOS's shipped version, and this file's portability
+# floor) has no namerefs, so there is no portable way to pass a variable BY
+# REFERENCE into a function, and each lane script has only one running total
+# to report.
 #
 # The passed status is necessary but NOT sufficient, which is why the two
-# globals below are consulted as well. Observed 2026-08-15: a `test-merge`
-# killed by SIGTERM at ~23% printed `==> test-merge: 0 passed` -- the
-# SUCCESS shape -- because bash's terminating-signal handler still runs the
-# EXIT trap, and the `$?` it handed that trap was 0, not 143. The lane's own
-# process status was honest (143); only the printed text lied, and "0
-# passed" reads as "nothing to run".
+# globals below are consulted too: bash's terminating-signal handler still
+# runs the EXIT trap, but hands it a STALE `$?` of 0 for SIGTERM and SIGHUP,
+# so the trap can't distinguish a genuine pass from a killed lane by status
+# alone. Per-signal behavior (bash 3.2.57), not one rule:
 #
-# What bash does here is PER-SIGNAL, not one rule. Measured on 3.2.57, this
-# file's portability floor:
-#
-#   SIGTERM, SIGHUP     the trap runs and `$?` is a STALE ZERO. The
-#                       incident, and a second unreported instance of it.
-#                       Only the `_lane_finished` marker can catch this --
-#                       a `>= 128` test cannot, because the status is 0.
-#   SIGINT              the trap runs with an HONEST 130. This is what the
+#   SIGTERM, SIGHUP     trap runs, `$?` is a stale zero. Only the
+#                       `_lane_finished` marker can catch this -- a `>= 128`
+#                       test cannot, because the status is 0.
+#   SIGINT              trap runs with an honest 130. This is what the
 #                       `>= 128` branch is for, and why it is tested FIRST:
 #                       it is the one path that can name the signal.
 #   SIGQUIT             no sentinel at all -- bash never runs the EXIT trap.
-#                       Structural and deterministic (3/3 group-wide AND
-#                       bash-only), identical before and after this fix. An
-#                       ABSENT verdict, which is not a false one.
+#                       An ABSENT verdict, which is not a false one.
 #
-# A second signal arriving DURING the trap is a race, not a category of its
-# own, and it is NOT exempt from this fix. A second SIGTERM landing inside
-# the trap's own execution window -- roughly the first few milliseconds --
-# loses the line. From +10 ms on, the trap has already printed and the
-# ordinary rules apply: pre-fix `0 passed`, post-fix `INTERRUPTED -- NO
-# VERDICT`, 10/10 at each of +10, +30, +100 and +300 ms. The window's edge
-# is fuzzy rather than a fixed cell -- +1 ms lost the line 10/10, while +0
-# and +3 ms still printed it 9 times in 10. Regression-test the
-# double-signal path; do not assume it is unchanged.
+# A second signal landing inside the trap's own execution window (its first
+# few milliseconds) can still lose the line entirely; that race is not
+# exempt from this fix and is regression-tested, not assumed away.
 #
 # So the success shape is gated on a POSITIVE "the lane reached its end"
 # marker, with the signal test ahead of it for the honest-status case.
-#
 # Fail-closed by construction: a future lane that forgets to set
 # `_lane_finished` prints INTERRUPTED, never a false pass. `>= 128` is
 # bash's own encoding of child signal death, so a program that deliberately

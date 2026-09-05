@@ -24,17 +24,10 @@ sentinel ensures the heartbeat reflects actual forward progress.
 The thread reads-only — no GIL-contention concerns with the work
 loop.
 
-Failure mode that motivated this (2026-05-11):
-  jasper-aec-bridge's `out_stream.write(clean)` blocked
-  indefinitely after the LoopbackAEC kernel-side timer wedged.
-  The main thread was inside a C call holding the GIL, so
-  Python's signal handler never ran, `_shutdown.set()` was never
-  called, systemd's SIGTERM did nothing, and after 90 s the
-  SIGKILL corrupted snd-aloop kernel state requiring a reboot.
-  With this Heartbeat in place, `bump()` would have stopped
-  firing the moment the loop wedged; systemd would have killed
-  the daemon within `WatchdogSec` and restarted it cleanly,
-  never reaching SIGKILL.
+A wedge inside a blocking C call can hold the GIL indefinitely, so
+Python's own signal handler never runs and SIGTERM does nothing --
+the watchdog's SIGKILL-and-restart (`Restart=on-watchdog`) is the
+only way out of that class of hang.
 
 Pure-Python `sdnotify` (no C extension); if the package is not
 installed or `NOTIFY_SOCKET` is unset (i.e. we're running

@@ -1036,7 +1036,7 @@ install_camilladsp() {
     # contract which graph is legal and fails closed if no protected graph
     # exists.
 
-    # NOTE: aec-bridge is no longer a CamillaDSP instance. It is now a
+    # aec-bridge is no longer a CamillaDSP instance. It is now a
     # Python bridge (`jasper-aec-bridge`, see jasper/cli/aec_bridge.py)
     # that either runs WebRTC AEC3 for the software fallback profile or,
     # in chip-AEC profiles, carries the selected XVF hardware-AEC beam to
@@ -1207,7 +1207,7 @@ ensure_crossover_camilla_statefile() {
     # the contract returns flat, so this would seed flat into a file named
     # crossover-statefile.yml. That is BENIGN today because camilla#2 is
     # INERT there (the unit is never enabled), so the flat seed is never
-    # loaded. NOTE: the crossover guard does NOT convert a flat statefile —
+    # loaded. The crossover guard does NOT convert a flat statefile —
     # it acts only on a dead bonded pipe — so the driver-domain guarantee
     # for an ARMED camilla#2 rests on the reconciler seeding it at arm time,
     # not on the guard. The later
@@ -1557,11 +1557,9 @@ reconcile_grouping_state() {
     # config, pins the snapcast stream bindings, and (re)starts the snap
     # units per the wizard intent. On a solo speaker it is a no-op
     # oneshot (grouping off => stop both units, clear derived env) —
-    # cost-free. NOTE: this enables the RECONCILER, not grouping:
-    # snapserver/snapclient still ship disabled and only the reconciler
-    # starts them on explicit wizard opt-in. (Boot gap found in the
-    # 2026-06-11 jts3 incident: a bonded follower rebooted and its
-    # snapclient stayed down because nothing ran the reconciler at boot.)
+    # cost-free. This enables the RECONCILER, not grouping: snapserver/
+    # snapclient still ship disabled and only the reconciler starts them
+    # on explicit wizard opt-in.
     systemctl enable jasper-grouping-reconcile.service
     systemctl restart jasper-grouping-reconcile.service || \
         echo "  WARN: grouping reconcile failed. Check logs with: journalctl -u jasper-grouping-reconcile -e"
