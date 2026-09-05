@@ -7,6 +7,7 @@
 import os
 import struct
 import subprocess
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,6 +21,7 @@ from jasper.audio_hardware.dac import (
 from jasper.cli import doctor
 from jasper.cli.doctor import _evidence, audio_runtime_outputd, audio_runtime_ring
 from jasper.cli.doctor._evidence import evidence
+from jasper.fanin.coupling_reconcile import RECONCILE_SETTLE_SECONDS
 from jasper.fanin_coupling import (
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_PLAYBACK_DEVICE,
@@ -35,6 +37,18 @@ from .doctor_test_support import record_active_dac
 from .test_doctor_audio_runtime_camilla import _silent_camilla_recover_park
 
 
+def _settle(path: Path, *, age_seconds: float | None = None) -> None:
+    """Backdate outputd.env past the reconcile settle window (or into it).
+
+    The merged transport check reads this file's mtime to tell an arm ladder
+    mid-flight from a wedge, so every arrangement has to say which it is.
+    """
+    if age_seconds is None:
+        age_seconds = RECONCILE_SETTLE_SECONDS + 60.0
+    when = time.time() - age_seconds
+    os.utime(path, (when, when))
+
+
 def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
     monkeypatch, tmp_path
 ):
@@ -42,7 +56,7 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
 
     The ACTIVE-ring arm waypoint — a loaded graph naming the ACTIVE ring while
     outputd is off the ring bridge — used to surface twice:
-    `check_ring_split_transport`
+    `check_content_transport_coherence`
     FAILed on it, and `check_outputd_service` separately elevated the same
     detector's note to a WARN. Same statefile, same two terms, two check names,
     two severities: a household or an operator reading `jasper-doctor` saw one
@@ -94,6 +108,10 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(outputd_env))
+    monkeypatch.setattr(
+        "jasper.audio_runtime_plan.DEFAULT_OUTPUTD_ENV_PATH", str(outputd_env)
+    )
+    _settle(outputd_env)
     _seed_units()
     _patch_status_reader(
         monkeypatch,
@@ -116,7 +134,7 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
 
     # Half two: the check that OWNS the split still fails on it — off the same
     # statefile half one just read.
-    split = audio_runtime_ring.check_ring_split_transport()
+    split = audio_runtime_ring.check_content_transport_coherence()
 
     assert split.status == "fail", split.detail
     assert split.reason == audio_runtime_ring.REASON_SPLIT_RING_UNCONSUMED
@@ -546,9 +564,9 @@ def _stage_ring_geometry(
         ({}, {"n_slots": 8}, "fail", audio_runtime_ring.REASON_RING_HEADER_CONF_MISMATCH),
         ({}, {"period_frames": 256}, "fail", audio_runtime_ring.REASON_RING_HEADER_CONF_MISMATCH),
         ({}, {"period_frames": 128}, "ok", ""),
-        # No valid on-disk ring yet (fan-in restarting). Not a hard failure —
-        # the next writer create will be coherent.
-        ({}, None, "warn", audio_runtime_ring.REASON_RING_HEADER_ABSENT),
+        # No valid on-disk ring yet (fan-in restarting) — the ordinary state on
+        # every restart, and the next writer create is coherent.
+        ({}, None, "ok", audio_runtime_ring.REASON_RING_HEADER_ABSENT),
         (
             {"fanin_env_text": "JASPER_FANIN_RING_SLOTS=99\n"},
             None,
@@ -1262,7 +1280,7 @@ def test_writer_lock_guard_warns_on_a_lone_orphaned_holder(monkeypatch, tmp_path
     assert result.reason == audio_runtime_ring.REASON_WRITER_LOCK_ORPHANED
 
 
-def test_writer_lock_guard_warns_when_proc_is_partially_unreadable(
+def test_writer_lock_guard_skips_when_proc_is_partially_unreadable(
     monkeypatch, tmp_path
 ):
     """A non-root sweep cannot read other users' /proc/<pid>/fd. That is a
@@ -1275,7 +1293,7 @@ def test_writer_lock_guard_warns_when_proc_is_partially_unreadable(
     finally:
         (root / "77" / "fd").chmod(0o755)
 
-    assert result.status == "warn"
+    assert result.status == "skipped"
     assert result.reason == audio_runtime_ring.REASON_WRITER_LOCK_PROC_UNREADABLE
 
 
@@ -1309,7 +1327,7 @@ def test_writer_lock_guard_counts_one_pid_once(monkeypatch, tmp_path):
 
 
 # ===========================================================================
-# check_ring_split_transport (#2285 P2, design §10.3)
+# check_content_transport_coherence (#2285 P2, design §10.3)
 #
 # The state under test: the loaded CamillaDSP graph and outputd's content
 # bridge disagree about the ring, in either direction. Nothing carries the
@@ -1358,6 +1376,8 @@ def _arrange(
     primary_config_missing: bool = False,
     grouped_park: bool = False,
     marker_armed: bool = False,
+    age_seconds: float | None = None,
+    env_lines: str = "",
 ) -> None:
     """Put the box in one (content-bridge, loaded-graph-playback) combination.
 
@@ -1375,7 +1395,7 @@ def _arrange(
     evidence.reset()
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text(
-        f"JASPER_OUTPUTD_CONTENT_BRIDGE={bridge}\n", encoding="utf-8"
+        f"JASPER_OUTPUTD_CONTENT_BRIDGE={bridge}\n" + env_lines, encoding="utf-8"
     )
     # The env-file seam the doctor's layered reader honours for the FIRST layer;
     # the module constant is what the ring-path derivation still reads.
@@ -1383,6 +1403,7 @@ def _arrange(
     monkeypatch.setattr(
         "jasper.audio_runtime_plan.DEFAULT_OUTPUTD_ENV_PATH", str(outputd_env)
     )
+    _settle(outputd_env, age_seconds=age_seconds)
     # The SECOND env layer, exactly where a bonded member's marker really lives
     # — never in the first file. Writing it here is what proves the doctor reads
     # the merge and not just `outputd.env`.
@@ -1425,7 +1446,7 @@ def test_a_stranded_ring_fails_loudly(monkeypatch, tmp_path, playback_device) ->
         monkeypatch, tmp_path, bridge=DIRECT_BRIDGE, playback_device=playback_device
     )
 
-    result = audio_runtime_ring.check_ring_split_transport()
+    result = audio_runtime_ring.check_content_transport_coherence()
 
     assert result.status == "fail", result
     assert result.reason == audio_runtime_ring.REASON_SPLIT_RING_UNCONSUMED
@@ -1442,7 +1463,7 @@ def test_a_bridge_waiting_on_a_ring_nobody_writes_fails_too(
         playback_device="outputd_content_playback",
     )
 
-    result = audio_runtime_ring.check_ring_split_transport()
+    result = audio_runtime_ring.check_content_transport_coherence()
 
     assert result.status == "fail", result
     assert result.reason == audio_runtime_ring.REASON_SPLIT_RING_UNFED
@@ -1472,7 +1493,7 @@ def test_a_bonded_follower_on_the_stereo_ring_is_not_a_split(
         grouped_park=True,
     )
 
-    result = audio_runtime_ring.check_ring_split_transport()
+    result = audio_runtime_ring.check_content_transport_coherence()
     assert result.status == "skipped"
     assert result.reason == audio_runtime_ring.REASON_SPLIT_GROUPED_DAC_CONTENT_LANE
 
@@ -1498,7 +1519,7 @@ def test_a_marker_armed_member_on_the_stereo_ring_is_not_a_split(
         marker_armed=True,
     )
 
-    result = audio_runtime_ring.check_ring_split_transport()
+    result = audio_runtime_ring.check_content_transport_coherence()
     assert result.status == "skipped", result
     assert result.reason == audio_runtime_ring.REASON_SPLIT_BONDED_RETURN_RING
 
@@ -1510,7 +1531,7 @@ def test_a_marker_armed_member_on_the_stereo_ring_is_not_a_split(
         bridge=DIRECT_BRIDGE,
         playback_device=RING_PLAYBACK_DEVICE,
     )
-    assert audio_runtime_ring.check_ring_split_transport().status == "fail"
+    assert audio_runtime_ring.check_content_transport_coherence().status == "fail"
 
 
 def test_the_marker_stand_down_needs_a_cleared_bridge(monkeypatch, tmp_path) -> None:
@@ -1529,7 +1550,7 @@ def test_the_marker_stand_down_needs_a_cleared_bridge(monkeypatch, tmp_path) -> 
             playback_device=playback,
             marker_armed=True,
         )
-        result = audio_runtime_ring.check_ring_split_transport()
+        result = audio_runtime_ring.check_content_transport_coherence()
         assert result.status == "skipped", (playback, result)
         assert result.reason == audio_runtime_ring.REASON_SPLIT_MARKER_CONTRADICTED
 
@@ -1552,7 +1573,7 @@ def test_conjunct_one_the_bridge_term_alone_does_not_fire(monkeypatch, tmp_path)
         playback_device="outputd_content_playback",
     )
 
-    assert audio_runtime_ring.check_ring_split_transport().status == "ok"
+    assert audio_runtime_ring.check_content_transport_coherence().status == "ok"
 
 
 def test_conjunct_two_the_graph_term_alone_does_not_fire(monkeypatch, tmp_path) -> None:
@@ -1562,7 +1583,7 @@ def test_conjunct_two_the_graph_term_alone_does_not_fire(monkeypatch, tmp_path) 
         playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
     )
 
-    assert audio_runtime_ring.check_ring_split_transport().status == "ok"
+    assert audio_runtime_ring.check_content_transport_coherence().status == "ok"
 
 
 @pytest.mark.parametrize("missing", [None, ""])
@@ -1577,7 +1598,7 @@ def test_an_unreadable_graph_does_not_manufacture_a_fault(
     """
     _arrange(monkeypatch, tmp_path, bridge=DIRECT_BRIDGE, playback_device=missing)
 
-    assert audio_runtime_ring.check_ring_split_transport().status == "ok"
+    assert audio_runtime_ring.check_content_transport_coherence().status == "ok"
 
 
 # --- The union of BOTH statefiles (#2285 panel finding C1). These two shapes
@@ -1605,7 +1626,7 @@ def test_a_program_bake_in_the_primary_does_not_hide_the_ring_in_camilla2(
         crossover_playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
     )
 
-    result = audio_runtime_ring.check_ring_split_transport()
+    result = audio_runtime_ring.check_content_transport_coherence()
 
     assert result.status == "fail", result
     assert result.reason == audio_runtime_ring.REASON_SPLIT_RING_UNCONSUMED
@@ -1629,7 +1650,7 @@ def test_a_primary_statefile_pointing_at_a_deleted_config_does_not_hide_the_spli
         primary_config_missing=True,
     )
 
-    assert audio_runtime_ring.check_ring_split_transport().status == "fail"
+    assert audio_runtime_ring.check_content_transport_coherence().status == "fail"
 
 
 def test_camilla2_evidence_still_respects_the_bridge_term(
@@ -1648,11 +1669,11 @@ def test_camilla2_evidence_still_respects_the_bridge_term(
         crossover_playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
     )
 
-    assert audio_runtime_ring.check_ring_split_transport().status == "ok"
+    assert audio_runtime_ring.check_content_transport_coherence().status == "ok"
 
 
 # ---------------------------------------------------------------------------
-# The ENDPOINT rung — check_active_ring_path_projection.
+# The ENDPOINT rung of the same merged check.
 #
 # The sibling above owns every state where the graph and the bridge disagree
 # about the ring. These pin the other side of that partition: with outputd ON
@@ -1660,20 +1681,25 @@ def test_camilla2_evidence_still_respects_the_bridge_term(
 # ---------------------------------------------------------------------------
 
 
-def _arrange_projection(monkeypatch, tmp_path, *, env_lines: str):
-    """Put outputd.env on disk for the projection check.
+def _arrange_projection(monkeypatch, tmp_path, *, marker: str, carried: str, **kw):
+    """The endpoint rung: a box whose graph and bridge already agree ON the ring.
 
-    A real file, not a stubbed mapping: the check reads persisted evidence
-    precisely BECAUSE outputd is not running in its target state, so what is
-    under test includes the read itself. Nothing else is arranged — the bridge
-    that gates this check lives in this same file.
+    A real outputd.env on disk, not a stubbed mapping — the rung reads persisted
+    evidence precisely BECAUSE outputd is not running in its target state, so
+    what is under test includes the read itself. The graph half is arranged too:
+    the rung is only REACHED once the pair agrees, which is the partition the
+    merge made explicit.
     """
-    evidence.reset()
-    env = tmp_path / "outputd.env"
-    env.write_text(env_lines, encoding="utf-8")
-    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env))
-    monkeypatch.setattr(
-        "jasper.audio_runtime_plan.DEFAULT_OUTPUTD_ENV_PATH", str(env)
+    _arrange(
+        monkeypatch,
+        tmp_path,
+        bridge=RING_BRIDGE,
+        playback_device=RING_PLAYBACK_DEVICE,
+        env_lines=(
+            f"JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT={marker}\n"
+            f"JASPER_OUTPUTD_SHM_RING_PATH={carried}\n"
+        ),
+        **kw,
     )
 
 
@@ -1696,17 +1722,9 @@ def test_a_ring_path_lagging_its_marker_fails_with_the_runnable_remedy(
     systemd failure before ever reaching the transport comparison. Nothing owned
     the finding, and the operator got "the unit is not running" with no cause.
     """
-    _arrange_projection(
-        monkeypatch,
-        tmp_path,
-        env_lines=(
-            "JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n"
-            f"JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT={marker}\n"
-            f"JASPER_OUTPUTD_SHM_RING_PATH={carried}\n"
-        ),
-    )
+    _arrange_projection(monkeypatch, tmp_path, marker=marker, carried=carried)
 
-    result = audio_runtime_ring.check_active_ring_path_projection()
+    result = audio_runtime_ring.check_content_transport_coherence()
 
     assert result.status == "fail", result
     assert result.reason == audio_runtime_ring.REASON_RING_PATH_LAGS_MARKER
@@ -1717,48 +1735,70 @@ def test_a_converged_ring_pair_is_ok(monkeypatch, tmp_path) -> None:
     _arrange_projection(
         monkeypatch,
         tmp_path,
-        env_lines=(
-            "JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n"
-            "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1\n"
-            "JASPER_OUTPUTD_SHM_RING_PATH=/dev/shm/jts-ring/active-content.ring\n"
-        ),
+        marker="1",
+        carried="/dev/shm/jts-ring/active-content.ring",
     )
 
-    assert audio_runtime_ring.check_active_ring_path_projection().status == "ok"
+    assert audio_runtime_ring.check_content_transport_coherence().status == "ok"
 
 
-def test_the_two_ladder_checks_partition_the_bridge(monkeypatch, tmp_path) -> None:
-    """Neither rung is unowned, and neither is double-reported.
+def test_a_coherent_off_ring_pair_says_the_path_rung_did_not_run(
+    monkeypatch, tmp_path
+) -> None:
+    """A box coherently OFF the ring is `ok`, and says which rung it skipped.
 
-    The projection check returns ok as soon as outputd is off the ring bridge;
-    the split check returns ok as soon as the graph agrees with whatever bridge
-    is set. Pinning the handoff means a later edit cannot leave a bridge value
-    that both checks ignore — the gap that let the endpoint rung go unowned in
-    the first place.
+    outputd never reads the ring path there, so the endpoint rung has no
+    subject — but the pair rung DID form a verdict, so this is an informational
+    `ok` carrying the reason, not a `skipped` row (ADR-0233 rule 3).
     """
-    _arrange_projection(
+    _arrange(
         monkeypatch,
         tmp_path,
+        bridge=DIRECT_BRIDGE,
+        playback_device="outputd_content_playback",
         env_lines=(
-            # STATED, because an absent key is the ring: this side of the
-            # partition is now something a box has to declare its way onto.
-            "JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n"
             "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1\n"
             "JASPER_OUTPUTD_SHM_RING_PATH=/dev/shm/jts-ring/content.ring\n"
         ),
     )
-    # Off the ring bridge outputd never reads the ring path, so the projection
-    # check stands down — and the split check is the one that owns anything
-    # wrong on this side.
-    stood_down = audio_runtime_ring.check_active_ring_path_projection()
-    assert stood_down.status == "skipped"
-    assert stood_down.reason == audio_runtime_ring.REASON_RING_PATH_NOT_CENTRAL_RING
 
-    _arrange(
-        monkeypatch, tmp_path, bridge=RING_BRIDGE,
-        playback_device=RING_PLAYBACK_DEVICE,
-    )
-    assert audio_runtime_ring.check_ring_split_transport().status == "ok"
+    result = audio_runtime_ring.check_content_transport_coherence()
+
+    assert result.status == "ok", result
+    assert result.reason == audio_runtime_ring.REASON_RING_PATH_NOT_CENTRAL_RING
+
+
+@pytest.mark.parametrize(
+    "arrange",
+    [
+        lambda m, t: _arrange(
+            m, t, bridge=DIRECT_BRIDGE,
+            playback_device=RING_ACTIVE_PLAYBACK_DEVICE, age_seconds=1.0,
+        ),
+        lambda m, t: _arrange(
+            m, t, bridge=RING_BRIDGE,
+            playback_device="outputd_content_playback", age_seconds=1.0,
+        ),
+        lambda m, t: _arrange_projection(
+            m, t, marker="1", carried="/dev/shm/jts-ring/content.ring",
+            age_seconds=1.0,
+        ),
+    ],
+    ids=["ring_unconsumed", "ring_unfed", "path_lags_marker"],
+)
+def test_a_crossed_pair_inside_the_settle_window_is_not_called_silence(
+    monkeypatch, tmp_path, arrange
+) -> None:
+    """A healer cannot tell an arm ladder mid-flight from a wedge; outputd.env's
+    settle age can. Inside the window every crossed rung is one reason a
+    consumer can wait on, and claims no silence."""
+    arrange(monkeypatch, tmp_path)
+
+    result = audio_runtime_ring.check_content_transport_coherence()
+
+    assert result.status == "warn", result
+    assert result.reason == audio_runtime_ring.REASON_RECONCILE_IN_FLIGHT
+    assert result.speaker_silent is False
 
 
 def _silent_split_transport(monkeypatch, tmp_path):
@@ -1768,20 +1808,14 @@ def _silent_split_transport(monkeypatch, tmp_path):
         bridge=DIRECT_BRIDGE,
         playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
     )
-    return audio_runtime_ring.check_ring_split_transport
+    return audio_runtime_ring.check_content_transport_coherence
 
 
 def _silent_ring_path_projection(monkeypatch, tmp_path):
     _arrange_projection(
-        monkeypatch,
-        tmp_path,
-        env_lines=(
-            "JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n"
-            "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1\n"
-            "JASPER_OUTPUTD_SHM_RING_PATH=/dev/shm/jts-ring/content.ring\n"
-        ),
+        monkeypatch, tmp_path, marker="1", carried="/dev/shm/jts-ring/content.ring"
     )
-    return audio_runtime_ring.check_active_ring_path_projection
+    return audio_runtime_ring.check_content_transport_coherence
 
 
 def _silent_ring_transport_park(monkeypatch, tmp_path):

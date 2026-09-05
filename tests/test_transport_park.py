@@ -550,13 +550,19 @@ def test_a_missing_topology_is_still_not_configured(tmp_path, monkeypatch):
 
 # --- doctor -----------------------------------------------------------------
 
+from jasper.cli.doctor.audio_runtime_ring import (  # noqa: E402
+    REASON_TRANSPORT_CONVERGE_REFUSED as _REASON_CONVERGE_REFUSED,
+    REASON_TRANSPORT_ENDPOINT_ARMED_WITHOUT_ACTIVE_MODE as _REASON_ARMED_NO_MODES,
+    REASON_TRANSPORT_ENDPOINT_UNPROVEN as _REASON_UNPROVEN,
+)
+
 
 @pytest.mark.parametrize(
     "status,expected",
     [
         ("ok", "ok"),
         ("parked", "fail"),
-        ("unavailable", "warn"),
+        ("unavailable", "skipped"),
         ("unclassified", "warn"),
     ],
 )
@@ -587,27 +593,28 @@ def test_doctor_severity_follows_the_park_status(monkeypatch, status, expected):
 
 
 @pytest.mark.parametrize(
-    "topology,env,unproven,expected",
+    "topology,env,unproven,expected_reason",
     [
-        (_stereo_plus_subwoofer(), {}, True, "warn"),
-        (_stereo_plus_subwoofer(), _ARMED, False, "warn"),
-        (_active_topology("stereo", "active_2_way"), _ARMED, False, "ok"),
-        (_full_range_stereo(), {}, False, "ok"),
+        (_stereo_plus_subwoofer(), {}, True, _REASON_UNPROVEN),
+        (_stereo_plus_subwoofer(), _ARMED, False, _REASON_ARMED_NO_MODES),
+        (_active_topology("stereo", "active_2_way"), _ARMED, False, ""),
+        (_full_range_stereo(), {}, False, ""),
     ],
     ids=["seam_unarmed", "armed_no_modes", "armed_active_crossover", "plain_stereo"],
 )
-def test_an_unproven_endpoint_warns_without_naming_a_park(
-    monkeypatch, topology, env, unproven, expected
+def test_an_unproven_endpoint_is_named_without_naming_a_park(
+    monkeypatch, topology, env, unproven, expected_reason
 ):
     """ADR-0184: a width resolves, nothing armed the endpoint, no class names it.
 
     ``requires_roleful_graph`` is True for a subwoofer box, so the ACTIVE width
     resolves and every topology class is skipped; ``active_modes`` is empty, so
-    the endpoint class is scoped out. The doctor's greenest verdict was the
-    result. It warns instead — and only there: the status stays ``ok``, no park
-    is invented, and the two boxes that were already proven are untouched.
+    the endpoint class is scoped out. The doctor's greenest verdict said nothing
+    at all about it. It now carries a REASON instead — an operator signal its
+    own reader declares to be neither a park nor a household claim, so the row
+    stays ``ok`` and the reason is what a consumer branches on.
 
-    ``armed_no_modes`` warns off a DIFFERENT boolean (ADR-0189), which is why
+    ``armed_no_modes`` names a DIFFERENT boolean (ADR-0189), which is why
     ``unproven`` is False on that row: ADR-0184's seam keeps its unarmed-marker
     condition, so the two never describe one box.
     """
@@ -619,7 +626,9 @@ def test_an_unproven_endpoint_warns_without_naming_a_park(
     assert state["parks"] == []
 
     monkeypatch.setattr(transport_park, "snapshot", lambda *a, **k: state)
-    assert check_ring_transport_park().status == expected
+    result = check_ring_transport_park()
+    assert result.status == "ok", result
+    assert result.reason == expected_reason
 
 
 @pytest.mark.parametrize(
@@ -745,40 +754,42 @@ def test_the_refusal_signal_reads_no_graph_off_its_own_gate(
 
 
 @pytest.mark.parametrize(
-    "topology,env,armed_without_modes,expected",
+    "topology,env,armed_without_modes,expected_reason",
     [
         pytest.param(
-            _stereo_plus_subwoofer(), _ARMED, True, "warn", id="non_composite_armed"
+            _stereo_plus_subwoofer(), _ARMED, True, _REASON_ARMED_NO_MODES,
+            id="non_composite_armed",
         ),
         pytest.param(
             _composite_stereo_plus_subwoofer(),
             _ARMED,
             False,
-            "ok",
+            "",
             id="composite_armed_is_served",
         ),
         pytest.param(
-            _stereo_plus_subwoofer(), {}, False, "warn", id="unarmed_is_the_0184_seam"
+            _stereo_plus_subwoofer(), {}, False, _REASON_UNPROVEN,
+            id="unarmed_is_the_0184_seam",
         ),
         pytest.param(
             _active_topology("stereo", "active_2_way"),
             _ARMED,
             False,
-            "ok",
+            "",
             id="active_crossover_is_the_refusal_gate",
         ),
-        pytest.param(_full_range_stereo(), _ARMED, False, "ok", id="no_active_ring"),
+        pytest.param(_full_range_stereo(), _ARMED, False, "", id="no_active_ring"),
     ],
 )
 def test_an_armed_endpoint_under_no_active_modes_discloses_off_composite(
-    monkeypatch, topology, env, armed_without_modes, expected
+    monkeypatch, topology, env, armed_without_modes, expected_reason
 ):
     """ADR-0189: the fourth combination stops reporting the greenest verdict.
 
     The composite row is the load-bearing one. Its sink is served with the
     marker armed and no active modes of its own, so a class-blind read would
-    warn on every healthy composite box; it must stay ``ok`` on the same env
-    that warns for the non-composite row directly above it.
+    name every healthy composite box; it must stay reasonless on the same env
+    that names the non-composite row directly above it.
     """
     from jasper.cli.doctor.audio_runtime_ring import check_ring_transport_park
 
@@ -788,7 +799,9 @@ def test_an_armed_endpoint_under_no_active_modes_discloses_off_composite(
     assert state["parks"] == []
 
     monkeypatch.setattr(transport_park, "snapshot", lambda *a, **k: state)
-    assert check_ring_transport_park().status == expected
+    result = check_ring_transport_park()
+    assert result.status == "ok", result
+    assert result.reason == expected_reason
 
 
 def test_the_two_endpoint_signals_are_never_both_true():
@@ -808,13 +821,15 @@ def test_the_two_endpoint_signals_are_never_both_true():
 
 
 @pytest.mark.parametrize(
-    "refusal,expected",
+    "refusal,expected_reason",
     [
-        pytest.param("the loaded graph plays hw:0,0", "warn", id="refused"),
-        pytest.param(None, "ok", id="converged"),
+        pytest.param(
+            "the loaded graph plays hw:0,0", _REASON_CONVERGE_REFUSED, id="refused"
+        ),
+        pytest.param(None, "", id="converged"),
     ],
 )
-def test_the_doctor_warns_on_a_converge_refusal(monkeypatch, refusal, expected):
+def test_the_doctor_names_a_converge_refusal(monkeypatch, refusal, expected_reason):
     """Parity with the ADR-0184 seam's branch beside it.
 
     The doctor is one of the surfaces ``transport_park``'s docstring promises
@@ -823,7 +838,6 @@ def test_the_doctor_warns_on_a_converge_refusal(monkeypatch, refusal, expected):
     SENTENCE is the snapshot's own, carried through rather than re-composed,
     so this surface cannot describe it differently from `/state` and the card.
     """
-    from jasper.cli.doctor import audio_runtime_ring
     from jasper.cli.doctor.audio_runtime_ring import check_ring_transport_park
 
     state = {
@@ -835,9 +849,8 @@ def test_the_doctor_warns_on_a_converge_refusal(monkeypatch, refusal, expected):
     }
     monkeypatch.setattr(transport_park, "snapshot", lambda *a, **k: state)
     result = check_ring_transport_park()
-    assert result.status == expected
-    if refusal:
-        assert result.reason == audio_runtime_ring.REASON_TRANSPORT_CONVERGE_REFUSED
+    assert result.status == "ok", result
+    assert result.reason == expected_reason
     # Never a park: the graph it already had keeps playing.
     assert result.speaker_silent is False
 

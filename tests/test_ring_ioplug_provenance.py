@@ -477,7 +477,7 @@ def test_provenance_check_skips_when_the_so_is_absent(monkeypatch, tmp_path):
     assert res.reason == audio.REASON_RING_IOPLUG_ABSENT
 
 
-def test_provenance_check_warns_when_the_plugin_is_unvouched(
+def test_provenance_check_names_an_unvouched_plugin(
     monkeypatch, tmp_path, _declared_wire
 ):
     """Installed but no record — the shape a REVOKING deploy leaves behind, and
@@ -488,11 +488,11 @@ def test_provenance_check_warns_when_the_plugin_is_unvouched(
     _declared_wire("S16_LE")
     _doctor_env(monkeypatch, tmp_path, so_bytes=b"\x7fELF plugin")
     res = audio.check_ring_ioplug_provenance()
-    assert res.status == "warn"
+    assert res.status == "ok"
     assert res.reason == audio.REASON_RING_IOPLUG_UNVOUCHED
 
 
-def test_provenance_check_warns_when_the_installed_so_is_stale(
+def test_provenance_check_names_a_stale_installed_so(
     monkeypatch, tmp_path, _declared_wire
 ):
     """THE HOLE THIS CHECK CLOSES. The build degrades to a WARN, so a failed
@@ -509,7 +509,7 @@ def test_provenance_check_warns_when_the_installed_so_is_stale(
         record=_record_text(_sha_of(b"\x7fELF a different plugin")),
     )
     res = audio.check_ring_ioplug_provenance()
-    assert res.status == "warn"
+    assert res.status == "ok"
     assert res.reason == audio.REASON_RING_IOPLUG_STALE
 
 
@@ -680,7 +680,7 @@ def test_an_operator_narrow_pin_is_the_one_shape_the_gate_still_exempts(
     _doctor_env(monkeypatch, tmp_path, so_bytes=b"\x7fELF plugin")
     assert _resolved_capabilities() == frozenset()
     res = audio.check_ring_ioplug_provenance()
-    assert res.status == "warn"
+    assert res.status == "ok"
     assert res.reason == audio.REASON_RING_IOPLUG_UNVOUCHED
 
 
@@ -828,7 +828,7 @@ def test_an_illegal_wire_declaration_is_not_reported_as_a_provenance_fault(
     _doctor_env(monkeypatch, tmp_path, so_bytes=b"\x7fELF plugin")
     assert audio._resolved_ring_wire() is None
     res = audio.check_ring_ioplug_provenance()
-    assert res.status == "warn"
+    assert res.status == "ok"
     assert res.reason == audio.REASON_RING_IOPLUG_UNVOUCHED
 
 

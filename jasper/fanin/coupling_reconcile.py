@@ -465,6 +465,21 @@ def _daemon_op_ceiling_sec(
 _COUPLING_AUTO_NON_DAEMON_WORK_SEC = 39.0
 
 
+def _ring_converge_spine_sec(*, broker_dead: bool) -> float:
+    """The ordered daemon spine :func:`_converge_ring` runs AFTER its env write."""
+
+    def op(timeout: float, reset_failed: bool) -> float:
+        return _daemon_op_ceiling_sec(
+            timeout, reset_failed=reset_failed, broker_dead=broker_dead
+        )
+
+    return (
+        op(_CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC, False)
+        + op(8.0, True)  # outputd restart
+        + op(8.0, True)  # fan-in restart
+    )
+
+
 def _coupling_auto_pass_ceiling_sec(*, broker_dead: bool) -> float:
     """One ``--auto`` pass, enumerated along its worst reachable path.
 
@@ -480,11 +495,7 @@ def _coupling_auto_pass_ceiling_sec(*, broker_dead: bool) -> float:
             timeout, reset_failed=reset_failed, broker_dead=broker_dead
         )
 
-    spine = (
-        op(_CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC, False)
-        + op(8.0, True)  # outputd restart
-        + op(8.0, True)  # fan-in restart
-    )
+    spine = _ring_converge_spine_sec(broker_dead=broker_dead)
     combo = (
         op(8.0, False)  # camilla stop: not a start verb, so no reset preamble
         + op(8.0, True)  # fan-in restart
@@ -517,6 +528,31 @@ _COUPLING_AUTO_CEILING_HEADROOM_SEC = 270.0
 COUPLING_AUTO_TIMEOUT_START_SEC = (
     COUPLING_AUTO_ENUMERATED_WORST_SEC + _COUPLING_AUTO_CEILING_HEADROOM_SEC
 )
+
+# How long a CROSSED transport pair stays explainable as a convergence in
+# flight rather than a wedge. :func:`_converge_ring` writes outputd.env FIRST
+# and lands the CamillaDSP graph LAST, so the two rungs are legitimately out of
+# step for the spine plus the camilla start that rung waits on.
+RECONCILE_SETTLE_SECONDS = (
+    _ring_converge_spine_sec(broker_dead=False) + _CAMILLA_START_TIMEOUT_SEC
+)
+
+
+def seconds_since_outputd_env_change(
+    path: "str | Path" = OUTPUTD_ENV_PATH,
+) -> float | None:
+    """Seconds since ``outputd.env`` was last written, or ``None`` if absent.
+
+    The settle age of the transport pair: both of its halves — the content
+    bridge and ring path this module writes, and the active-endpoint marker
+    ``jasper-audio-hardware-reconcile`` writes — live in this one file, so its
+    mtime dates the most recent rung of either ladder.
+    """
+    try:
+        mtime = os.stat(path).st_mtime
+    except OSError:
+        return None
+    return max(0.0, time.time() - mtime)
 
 
 def _start_audio_hardware_reconcile(
