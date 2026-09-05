@@ -39,7 +39,7 @@ STAGE_READY = "ready"
 STAGE_ADMIT = "admit"
 #: The declared level is held for this stimulus. Proving the fader agrees is the
 #: session's volume-claim slot's job, taken before this transaction is called
-#: (MS-14), and an unproven level still reaches this stage.
+#: (ADR-0231 §4), and an unproven level still reaches this stage.
 STAGE_LOCK = "lock"
 #: The stimulus plays.
 STAGE_PLAY = "play"

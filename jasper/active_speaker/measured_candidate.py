@@ -7,7 +7,7 @@
 Candidates from this boundary are non-authoritative, and say so in their own
 serialized shape: :data:`_CANDIDATE_FLAGS` pins ``score_available`` and
 ``acoustic_target_claimed`` False on every emitted candidate, and the input
-contract's ``candidate_output_enabled`` is False. Wave 3 can
+contract's ``candidate_output_enabled`` is False. It can
 refine only attenuation, retained polarity, and delay from exact evidence
 reopened by the commissioning evidence store. It owns no playback, search,
 persistence, apply transaction, or acoustic-target claim.

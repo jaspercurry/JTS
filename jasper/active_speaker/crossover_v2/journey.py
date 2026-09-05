@@ -382,7 +382,7 @@ STAGE_MEASURE_CAPABILITIES = V2StageCapabilities(
 )
 
 #: Stage 2 — the post-apply verdict. Binds rollback because this is the only
-#: stage that reaches the delta probe, and PR-L5's rollback is automatic on the
+#: stage that reaches the delta probe, and rollback is automatic on the
 #: non-matched verdicts. Requires the two stage-1 curves the probe and the
 #: tracking check grade against, plus #2291's entry baseline — without it the
 #: round cannot say the speaker got better, so its absence must reach the

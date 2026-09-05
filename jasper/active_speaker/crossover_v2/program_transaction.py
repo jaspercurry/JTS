@@ -54,7 +54,7 @@ __all__ = [
 #: The measurement volume was not open/confirmed/fresh, so nothing was played.
 #: One of :data:`BELOW_READY_INCIDENTS`.
 STIMULUS_LEVEL_NOT_READY = "session_level_not_ready"
-#: Fresh re-admission refused the program before any audio (MS-4's gate).
+#: Fresh re-admission refused the program before any audio. See ADR-0231 §3.
 STIMULUS_ADMISSION_REFUSED = "program_admission_refused"
 #: The program was admitted and the lock taken, and ``play_program``'s OWN
 #: family refused past that point. Kept apart from the mechanics family below

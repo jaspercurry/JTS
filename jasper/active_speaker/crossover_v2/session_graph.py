@@ -119,9 +119,9 @@ class MeasurementSessionGraph:
         """The emitted graph, emitted at most once per MEASUREMENT VARIANT.
 
         The emitter runs its fail-closed proofs on every call
-        (``_assert_program_graph_proven``), so caching the text is what turns
-        MS-13's *"once, before the first stimulus"* into a structural fact. R-1
-        makes that once per VARIANT: a sign-flipped branch, a candidate delay and
+        (``_assert_program_graph_proven``), so caching the text is what makes
+        *"once, before the first stimulus"* a structural fact. R-1 makes that
+        once per VARIANT: a sign-flipped branch, a candidate delay and
         a per-driver level match are three different graphs with three
         fingerprints, and every variant pays the same proofs.
         """
