@@ -34,6 +34,7 @@ from jasper.active_speaker.crossover_v2.forward_model import (
     SummationCandidate,
 )
 from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
+from jasper.active_speaker.crossover_v2.candidate_ladder import REFUSE_NO_LADDER
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
 from jasper.active_speaker.crossover_v2.round_views import (
     CLOUD_BINDING_FIT_INPUTS_NOT_BANKED,
@@ -2013,7 +2014,7 @@ def test_a_view_answers_on_stdout_and_leaves_the_curves_in_its_artifact(
 def _bank_lateral_pose(
     session_dir: Path, *, take_id: str, position_deg: int,
     curves: list[dict[str, Any]], vertical_deg: int = 0,
-    capture: str = "wired-TEST",
+    capture: str = "wired-TEST", candidate_id: str = "",
 ) -> None:
     """Directly write a banked ``positions/<take_id>.json`` lateral-pose
     take — the exact shape :func:`~jasper.active_speaker.crossover_v2.record_index.bundle_measurements`
@@ -2031,6 +2032,7 @@ def _bank_lateral_pose(
         "phase": PHASE_LATERAL,
         "position_deg": position_deg,
         "vertical_deg": vertical_deg,
+        "candidate_id": candidate_id,
         "curves": curves,
     }))
 
@@ -2914,3 +2916,27 @@ def test_every_import_in_the_round_views_package_resolves():
             ]
 
     assert unresolved == []
+
+
+# --------------------------------------------------------------------------- #
+# candidates -- the CLI shape over candidate_ladder
+# --------------------------------------------------------------------------- #
+
+
+def test_cli_candidates_publishes_the_ladders_named_refusal(tmp_path, capsys):
+    """The engine raises BY NAME and this verb publishes that name, not the
+    stage bucket a caught ``Exception`` would fall into.
+
+    The numbers, and what the refusal carries, are pinned on
+    ``candidate_ladder`` itself; the success shape is pinned once for every
+    view by ``tests/test_cli_exit_vocabulary.py``'s roster.
+    """
+    from jasper.cli import round_views as cli
+
+    assert cli.main(
+        ["candidates", str(bank_measure_round(tmp_path))]
+    ) == cli.EXIT_REFUSED
+
+    record = json.loads(capsys.readouterr().out)
+    assert record["status"] == "refused"
+    assert record["reason"] == REFUSE_NO_LADDER
