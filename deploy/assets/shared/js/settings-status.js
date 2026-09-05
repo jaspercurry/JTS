@@ -15,6 +15,17 @@ import { getJSON, startPolling } from "/assets/shared/js/http.js";
 // One snapshot serves every row; startPolling backs a hidden tab off further.
 const POLL_MS = 20000;
 
+// The install profile's capability ceiling, baked into the page as a JSON
+// island by the install-time render (jasper.web.landing, jasper.web.nav).
+// Absent or unparseable, every gated row stays hidden.
+export function bakedCaps() {
+  try {
+    return JSON.parse(document.getElementById("landing-caps").textContent);
+  } catch (_) {
+    return null;
+  }
+}
+
 export function setStatusText(id, value) {
   const el = document.getElementById(id);
   if (el && value != null && value !== "") el.textContent = value;
@@ -69,11 +80,7 @@ function renderSnapshot(snap, titleFollowsSpeakerName) {
     [short, build.JASPER_GIT_BRANCH || ""].filter(Boolean).join(" · "),
   );
   const cur = (snap.metrics && snap.metrics.current) || null;
-  if (cur) {
-    const summary = metricsSummary(cur);
-    setStatusText("status-system", summary);
-    setStatusText("system-summary", summary);
-  }
+  if (cur) setStatusText("system-summary", metricsSummary(cur));
 }
 
 // Gate on `caps` synchronously — before any fetch — then keep the sublabels
@@ -83,6 +90,12 @@ export function initSettingsStatus({ caps, titleFollowsSpeakerName } = {}) {
     const required = el.getAttribute("data-requires");
     if (required) el.hidden = !caps || caps[required] !== true;
   });
+  // A surface with no live sublabel has nothing to poll for — the /sound/ hub
+  // is rows only, and /system/data.json is a socket-activated wizard that an
+  // open tab would otherwise hold awake for no visible change.
+  if (!document.querySelector('[id^="status-"], #system-summary')) {
+    return () => {};
+  }
   return startPolling(
     async () => renderSnapshot(
       await getJSON("/system/data.json"), titleFollowsSpeakerName,

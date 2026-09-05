@@ -38,7 +38,6 @@ const STATUS_IDS = [
   "status-voice",
   "status-ha",
   "status-software",
-  "status-system",
   "system-summary",
 ];
 
@@ -53,6 +52,9 @@ const status = installFixedDocument(STATUS_IDS, {
   title: "JTS",
   removeEventListener() {},
   querySelectorAll: () => rows,
+  // This fixture's page carries every live sublabel; the no-sublabel case is
+  // its own test below.
+  querySelector: () => status.get("status-voice"),
 });
 const text = (id) => status.get(id).textContent;
 
@@ -136,8 +138,7 @@ async function a_snapshot_fills_the_status_sublabels() {
   check(text("status-voice") === "OpenAI", "provider is title-cased");
   check(text("status-ha") === "Home", "a connected HA shows its instance");
   check(text("status-software") === "abcdef1 · main", "short sha + branch");
-  check(text("status-system") === "20% CPU · 44 C · 13% disk", "metrics summary");
-  check(text("system-summary") === "20% CPU · 44 C · 13% disk", "footer summary");
+  check(text("system-summary") === "20% CPU · 44 C · 13% disk", "metrics summary");
   check(pairRow.hidden === false, "the snapshot refreshes values, never layout");
   stop();
 }
@@ -166,6 +167,22 @@ async function the_tab_title_is_left_alone_unless_the_page_asks() {
   stop();
 }
 
+// /system/data.json is a socket-activated wizard: a rows-only hub must not
+// hold it awake for sublabels it does not have.
+async function a_surface_with_no_live_sublabel_never_polls() {
+  const live = document.querySelector;
+  document.querySelector = () => null;
+  const stop = start({ pair_management: true });
+  await settle();
+
+  check(pairRow.hidden === false, "gating still runs");
+  check(fetched.length === 0, "nothing is fetched");
+  check(delays.length === 0, "and nothing is scheduled");
+  check(typeof stop === "function", "the caller still gets a stop()");
+  stop();
+  document.querySelector = live;
+}
+
 await runTestFunctions(
   [
     gating_is_applied_synchronously_on_return,
@@ -173,6 +190,7 @@ await runTestFunctions(
     a_snapshot_fills_the_status_sublabels,
     a_thin_snapshot_leaves_the_rendered_sublabels_alone,
     the_tab_title_is_left_alone_unless_the_page_asks,
+    a_surface_with_no_live_sublabel_never_polls,
   ],
   () => passed,
 );
