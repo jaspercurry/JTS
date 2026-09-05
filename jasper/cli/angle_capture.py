@@ -502,8 +502,11 @@ def _refuse(exc: Exception, *, reason: str | None = None) -> int:
 def _receipt(payload: dict[str, Any], **extra: Any) -> dict[str, Any]:
     """The walk's ANSWER: what was asked for, what it costs, where it is run.
 
-    The resolved stop table is the human rendering's rather than this
-    document's -- a reader who wants it reads ``plan``'s stderr.
+    ``stops`` is the walk itself: one record per stop, bounded by
+    :data:`~jasper.active_speaker.angle_capture_spool.MAX_STOPS`, carrying WHICH
+    stop, WHERE it points, and WHAT it plays there. The pose copy, the advance
+    policy and the program phase are the human rendering's -- a reader who wants
+    them reads ``plan``'s stderr.
     """
     program, _, size = str(payload["program"]).partition("/")
     return {
@@ -511,7 +514,19 @@ def _receipt(payload: dict[str, Any], **extra: Any) -> dict[str, Any]:
         "size": size,
         "mover": payload["mover"],
         "candidates": payload["candidates"],
-        "stops": len(payload["stops"]),
+        "stops_count": len(payload["stops"]),
+        "stops": [
+            {
+                "index": stop["index"],
+                "azimuth_deg": stop["angle_deg"],
+                "vertical_deg": stop["elevation_deg"],
+                "regime": stop["regime"],
+                # ``None`` rather than ``""``: a walk that measures the speaker
+                # as it stands names no variant.
+                "candidate_id": stop["candidate_id"] or None,
+            }
+            for stop in payload["stops"]
+        ],
         "price": payload["price"],
         "level": payload["level"],
         "handoff_url": payload["handoff_url"],
