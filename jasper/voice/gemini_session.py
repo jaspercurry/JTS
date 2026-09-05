@@ -17,15 +17,14 @@ from jasper.log_event import log_event
 
 from ..tools import ToolRegistry, dispatch_tool
 from ._supervisor import (
-    DEFAULT_INITIAL_CONNECT_BUDGET_SEC,
     Deferred,
     OutageTracker,
     await_connected,
+    hand_off_first_connect,
     http_status,
     request_planned_reopen,
-    run_initial_connect,
+    request_unplanned_reopen,
     run_supervisor_loop,
-    survive_terminal_initial_connect,
 )
 from .session import (
     CONNECTION_NOISY_TRANSITIONS,
@@ -571,7 +570,6 @@ class GeminiLiveConnection:
         self._client = genai.Client(api_key=api_key) if connect_factory is None else None
         self._connect_factory = connect_factory
         self._sleep = sleep if sleep is not None else asyncio.sleep
-        self._monotonic = _time.monotonic
         self._model = model
         self._voice = voice
         self._context_reset_sec = context_reset_sec
@@ -704,8 +702,8 @@ class GeminiLiveConnection:
         invoked on initial connect, every reconnect, and every
         context-reset reopen.
 
-        A terminal first connect leaves the connection FAILED and returns
-        rather than raising — see ``survive_terminal_initial_connect``."""
+        A first connect that fails leaves the connection FAILED and the
+        retry with the supervisor — see ``hand_off_first_connect``."""
         self._registry = registry
         if callable(system_instruction):
             self._system_instruction_provider = system_instruction
@@ -1037,13 +1035,11 @@ class GeminiLiveConnection:
         async with self._state_lock:
             self._set_state(ConnectionState.CONNECTING)
         try:
-            await run_initial_connect(
-                self, DEFAULT_INITIAL_CONNECT_BUDGET_SEC,
-            )
+            await self._open_session()
         except Exception as e:  # noqa: BLE001
             async with self._state_lock:
                 self._set_state(ConnectionState.FAILED)
-            survive_terminal_initial_connect(e, self._trigger_reconnect)
+            hand_off_first_connect(self, e)
 
     async def _open_session(self) -> None:
         """Open a session, recording the outcome on the outage tracker.
@@ -1208,14 +1204,6 @@ class GeminiLiveConnection:
         teardown_ms = (_time.monotonic() - t0) * 1000
         logger.info(f"{self._log_tag} session torn down in %.0fms", teardown_ms)
 
-    def _trigger_reconnect(self) -> None:
-        """Wake the supervisor for an UNPLANNED reconnect.
-
-        Clears any queued planned-rotation flag so a genuine failure can
-        never inherit the rotation's zero-backoff first attempt."""
-        self._planned_rotate = False
-        self._reconnect_event.set()
-
     def _on_reconnect_attempt_failed(
         self, exc: Exception, attempt: int, transient: bool,
     ) -> None:
@@ -1294,7 +1282,7 @@ class GeminiLiveConnection:
                     logger.warning(
                         f"{self._log_tag} _receive returned None (clean close), reconnecting"
                     )
-                    self._trigger_reconnect()
+                    request_unplanned_reopen(self)
                     return
                 # Connection-level: session resumption handle.
                 sru = getattr(response, "session_resumption_update", None)
@@ -1332,7 +1320,7 @@ class GeminiLiveConnection:
                         f"{self._log_tag} GoAway received, time_left=%s, will reconnect",
                         time_left,
                     )
-                    self._trigger_reconnect()
+                    request_unplanned_reopen(self)
                     continue
                 # Per-turn routing — but first check whether this
                 # response is "stale" from a prior turn we already
@@ -1405,7 +1393,7 @@ class GeminiLiveConnection:
                     f"{self._log_tag} receive loop error (%s: %s), reconnecting",
                     type(e).__name__, e,
                 )
-            self._trigger_reconnect()
+            request_unplanned_reopen(self)
 
     async def _maybe_reset_context(self) -> None:
         """If the connection has been idle longer than the configured

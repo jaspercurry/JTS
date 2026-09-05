@@ -26,7 +26,6 @@ import pytest
 
 from jasper.tools import ToolRegistry, tool
 from jasper.voice._supervisor import (
-    DEFAULT_INITIAL_CONNECT_BUDGET_SEC,
     NEEDS_ATTENTION_CUE_SLUG,
     run_reconnect_with_backoff,
 )
@@ -1954,70 +1953,33 @@ async def test_connection_lost_marks_active_turn_lost():
 
 
 # ---------------------------------------------------------------------------
-# Initial connect — the budget knob and what a failed one leaves on /state.
-# The retry loop itself is pinned in tests/test_voice_supervisor.py.
+# Initial connect — one attempt, then the supervisor's to retry.
 # ---------------------------------------------------------------------------
 
 
-class _FakeClock:
-    """Test-only monotonic clock the budget loop can fast-forward.
+async def test_transient_first_connect_leaves_the_daemon_up_and_connects():
+    """A link that is down at boot must not cost the process: `start()`
+    returns paused, and the supervisor's next attempt connects."""
+    conn, factory = _make_conn(backoff_schedule=(0.0,))
+    factory.next_exceptions = [
+        OSError(-3, "Temporary failure in name resolution"),
+    ]
+    await conn.start(ToolRegistry(), "")
+    try:
+        # No await between start() and these — the supervisor task is
+        # scheduled but has not run, so the post-failure state is intact.
+        assert conn._supervisor_task is not None
+        assert conn.is_paused()
 
-    The retry loop reads ``self._monotonic()`` to compute elapsed time
-    and ``self._sleep(delay)`` to pause between attempts. Wiring a
-    fake of each lets the test simulate a 10-minute budget exhausting
-    in ~0 wall-time."""
-
-    def __init__(self) -> None:
-        self.now = 1_000_000.0  # arbitrary epoch
-        self.sleeps: list[float] = []
-
-    def monotonic(self) -> float:
-        return self.now
-
-    async def sleep(self, delay: float) -> None:
-        self.sleeps.append(delay)
-        # Drive the budget forward by the requested delay, exactly as
-        # asyncio.sleep would on a real clock.
-        self.now += float(delay)
-        # Yield once so the receive_loop / supervisor tasks make
-        # progress between attempts (the real asyncio.sleep gives them
-        # the same opportunity).
-        await asyncio.sleep(0)
+        await _wait_until(
+            lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0,
+        )
+        assert conn.last_failure_detail() is None
+    finally:
+        await conn.stop()
 
 
-def _make_conn_with_clock(
-    *,
-    budget_sec: float,
-    fail_count: int = 0,
-    fail_exc: Exception | None = None,
-) -> tuple[OpenAIRealtimeConnection, _FakeConnectFactory, _FakeClock]:
-    """Build a connection wired to a fake clock + sleep + connect.
-
-    ``fail_count`` controls how many transient failures the connect
-    factory queues before the next call succeeds. ``fail_exc``
-    overrides the default ``OSError`` (mirrors a DNS failure shape).
-    """
-    if fail_exc is None:
-        # Mirrors the production stack trace seen on 2026-05-23:
-        # OSError [Errno -3] Temporary failure in name resolution.
-        # OSError has no `status_code`, so `is_transient` falls
-        # through to the no-status path and returns True.
-        fail_exc = OSError(-3, "Temporary failure in name resolution")
-    factory = _FakeConnectFactory()
-    factory.next_exceptions = [fail_exc for _ in range(fail_count)]
-    clock = _FakeClock()
-    conn = OpenAIRealtimeConnection(
-        api_key="fake",
-        backoff_schedule=(0.0, 0.0),
-        initial_connect_budget_sec=budget_sec,
-        connect_factory=factory,
-        clock=clock.monotonic,
-        sleep=clock.sleep,
-    )
-    return conn, factory, clock
-
-
-async def test_initial_connect_records_the_provider_reason():
+async def test_first_connect_records_the_provider_reason():
     """A restart mid-outage must not repeat the 2026-09-01 blind spot.
 
     websockets renders a refused handshake as a bare "HTTP 403"; the
@@ -2025,6 +1987,10 @@ async def test_initial_connect_records_the_provider_reason():
     the body reaches `last_failure_detail` (and so the journal and
     /state.voice.connection_error), not just the status line.
     """
+    class _RejectedResponse:
+        status_code = 403
+        body = b'{"error":"Your team has used all available credits."}'
+
     class _Rejected(Exception):
         def __init__(self) -> None:
             super().__init__(
@@ -2032,13 +1998,8 @@ async def test_initial_connect_records_the_provider_reason():
             )
             self.response = _RejectedResponse()
 
-    class _RejectedResponse:
-        status_code = 403
-        body = b'{"error":"Your team has used all available credits."}'
-
-    conn, _factory, _clock = _make_conn_with_clock(
-        budget_sec=600.0, fail_count=1, fail_exc=_Rejected(),
-    )
+    conn, factory = _make_conn(backoff_schedule=(0.0,))
+    factory.next_exceptions = [_Rejected()]
     await conn.start(ToolRegistry(), "")
     # Read before any await: the supervisor task is scheduled but has
     # not reconnected yet, so the outage detail still stands.
@@ -2048,72 +2009,6 @@ async def test_initial_connect_records_the_provider_reason():
         assert "used all available credits" in detail
     finally:
         await conn.stop()
-
-
-async def test_successful_connect_clears_the_failure_detail():
-    """`last_failure_detail` promises None while healthy, so a recovery
-    on ANY open path must clear it — otherwise /state reports a stale
-    outage on a working connection."""
-    conn, _factory, _clock = _make_conn_with_clock(
-        budget_sec=600.0, fail_count=2,
-    )
-    await conn.start(ToolRegistry(), "")
-    try:
-        assert conn._state is ConnectionState.CONNECTED
-        assert conn.last_failure_detail() is None
-    finally:
-        await conn.stop()
-
-
-def test_initial_connect_budget_env_default_when_unset(monkeypatch):
-    """Constructing with ``initial_connect_budget_sec=None`` reads
-    the env var; missing env var → the shared default
-    (DEFAULT_INITIAL_CONNECT_BUDGET_SEC = 600 s)."""
-    monkeypatch.delenv(
-        "JASPER_OPENAI_INITIAL_CONNECT_BUDGET_SEC", raising=False,
-    )
-    factory = _FakeConnectFactory()
-    conn = OpenAIRealtimeConnection(
-        api_key="fake",
-        connect_factory=factory,
-        backoff_schedule=(0.0,),
-    )
-    assert conn._initial_connect_budget_sec == DEFAULT_INITIAL_CONNECT_BUDGET_SEC
-
-
-def test_initial_connect_budget_env_override(monkeypatch):
-    """``JASPER_OPENAI_INITIAL_CONNECT_BUDGET_SEC`` env var overrides
-    the default at construction time. Explicit kwarg still wins (covered
-    by every other test in this section — they all pass ``budget_sec``
-    via the helper)."""
-    monkeypatch.setenv("JASPER_OPENAI_INITIAL_CONNECT_BUDGET_SEC", "42")
-    factory = _FakeConnectFactory()
-    conn = OpenAIRealtimeConnection(
-        api_key="fake",
-        connect_factory=factory,
-        backoff_schedule=(0.0,),
-    )
-    assert conn._initial_connect_budget_sec == 42.0
-
-
-def test_initial_connect_budget_env_garbage_falls_back(monkeypatch):
-    """Non-numeric / negative env values must not refuse to start the
-    daemon — log a warning, fall back to default. Better the daemon
-    boots with documented behaviour than refuses over a typo."""
-    for bad in ("not-a-number", "-5"):
-        monkeypatch.setenv(
-            "JASPER_OPENAI_INITIAL_CONNECT_BUDGET_SEC", bad,
-        )
-        factory = _FakeConnectFactory()
-        conn = OpenAIRealtimeConnection(
-            api_key="fake",
-            connect_factory=factory,
-            backoff_schedule=(0.0,),
-        )
-        assert (
-            conn._initial_connect_budget_sec
-            == DEFAULT_INITIAL_CONNECT_BUDGET_SEC
-        ), f"bad value {bad!r} should fall back to default"
 
 
 # ---------------------------------------------------------------------------

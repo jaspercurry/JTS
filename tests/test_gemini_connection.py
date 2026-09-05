@@ -670,9 +670,10 @@ async def test_acquire_turn_blocks_on_failed_state():
         await conn.stop()
 
 
-async def test_transient_failure_on_initial_connect_retries_until_connected():
-    """A box whose link is down at boot must retry, not exit: the
-    adapter hands its first connect to the supervisor's budgeted loop."""
+async def test_transient_first_connect_leaves_the_daemon_up_and_connects():
+    """A box whose link is down at boot must not cost the process:
+    `start()` returns paused, and the supervisor's next attempt
+    connects."""
     factory = _FakeConnect()
     factory.next_exceptions = [
         OSError(-3, "Temporary failure in name resolution"),
@@ -687,24 +688,31 @@ async def test_transient_failure_on_initial_connect_retries_until_connected():
         connect_factory=factory,
         sleep=lambda _delay: asyncio.sleep(0),
     )
-    await asyncio.wait_for(conn.start(ToolRegistry(), "system"), timeout=5.0)
+    await conn.start(ToolRegistry(), "system")
     try:
-        assert conn._state is ConnectionState.CONNECTED
-        assert len(factory.sessions) == 1
+        # No await between start() and these — the supervisor task is
+        # scheduled but has not run, so the post-failure state is intact.
+        assert conn._supervisor_task is not None
+        assert conn.is_paused()
+
+        await _wait_until(
+            lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0,
+        )
+        assert conn.last_failure_detail() is None
     finally:
         await conn.stop()
 
 
-async def test_terminal_initial_connect_stays_up_and_heals():
-    """A terminal first connect (403, account blocked) must not kill the
-    daemon: `start()` returns with the connection paused and the
-    supervisor running, and self-heals once the provider accepts."""
-
-    class _Blocked(Exception):
-        status_code = 403
-
+@pytest.mark.parametrize("attr, value", [("status_code", 403), ("code", 1007)])
+async def test_terminal_first_connect_stays_up_and_heals(attr, value):
+    """A blocked account (403) and a refused setup message (close 1007,
+    no HTTP status at all) both rule terminal, and neither may kill the
+    daemon: `start()` returns with the connection paused, the outage on
+    the fields `/state` reads, and self-heals once the provider
+    accepts."""
+    exc = type("_Terminal", (Exception,), {attr: value})("rejected")
     factory = _FakeConnect()
-    factory.next_exceptions = [_Blocked("team blocked")]
+    factory.next_exceptions = [exc]
     conn = GeminiLiveConnection(
         api_key="fake",
         model="fake-model",
@@ -727,34 +735,6 @@ async def test_terminal_initial_connect_stays_up_and_heals():
         )
         assert not conn.is_paused()
         assert conn.last_failure_detail() is None
-    finally:
-        await conn.stop()
-
-
-async def test_setup_rejection_on_initial_connect_stays_up():
-    """A close-1007 setup rejection carries no HTTP status, only a
-    provider code — it must still rule terminal so the daemon stays up
-    with the outage on `/state` instead of exiting into a crash loop."""
-
-    class _SetupRejected(Exception):
-        code = 1007
-
-    factory = _FakeConnect()
-    factory.next_exceptions = [_SetupRejected("setup rejected")]
-    conn = GeminiLiveConnection(
-        api_key="fake",
-        model="fake-model",
-        voice="Aoede",
-        context_reset_sec=9999.0,
-        rotate_after_sec=0.0,
-        backoff_schedule=(0.0,),
-        connect_factory=factory,
-    )
-    await conn.start(ToolRegistry(), "system")
-    try:
-        assert conn._supervisor_task is not None
-        assert conn.is_paused()
-        assert isinstance(conn.last_failure_detail(), str)
     finally:
         await conn.stop()
 

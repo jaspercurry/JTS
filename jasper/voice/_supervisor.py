@@ -41,12 +41,6 @@ NETWORK_DOWN_CUE_SLUG = "network_down"
 # still ahead of a rebooting router coming back.
 NETWORK_DOWN_ATTEMPTS = 4
 
-# Wall-clock ceiling on a process's first connect, deliberately not a
-# retry count: a boot races Wi-Fi association and DHCP, so a fixed
-# number of tries can be spent while name resolution is still failing.
-# A provider may override it (``JASPER_OPENAI_INITIAL_CONNECT_BUDGET_SEC``).
-DEFAULT_INITIAL_CONNECT_BUDGET_SEC = 600.0
-
 # The link itself is gone: name resolution failed, or no route to the
 # provider. Everything else an unreachable host produces — refused,
 # reset, timed out, TLS — is an ordinary blip and stays silent.
@@ -196,25 +190,6 @@ def is_transient(exc: BaseException) -> bool:
             return False
     # No status — treat as transient (network blip, WS reset, etc.).
     return True
-
-
-def survive_terminal_initial_connect(
-    exc: Exception, wake_supervisor: Callable[[], object],
-) -> None:
-    """Rule a failed first connect, from a provider's own except block.
-
-    A terminal rejection (blocked account, revoked key) does NOT
-    propagate: every provider's reconnect path already survives the same
-    rejection indefinitely, and dying here instead crash-looped the unit
-    into ``StartLimitAction=reboot``. Waking the supervisor leaves the
-    daemon up — wake word, cues and local tools alive, ``/state``
-    reporting the outage — until the provider accepts again.
-
-    A budget-exhausted TRANSIENT failure re-raises: a fresh process gets
-    a fresh budget, which is what that path is for."""
-    if is_transient(exc):
-        raise exc
-    wake_supervisor()
 
 
 def is_network_down(exc: BaseException) -> bool:
@@ -414,8 +389,6 @@ class SupervisedConnection(Protocol):
     # make schedule exhaustion observable.
     _backoff_schedule: tuple[float, ...] | None
     _sleep: Callable[[float], Awaitable[None]]
-    # Reads the initial-connect budget's wall clock; tests fast-forward it.
-    _monotonic: Callable[[], float]
 
     def _set_state(self, new_state: ConnectionState) -> None: ...
 
@@ -468,78 +441,31 @@ def request_planned_reopen(conn: SupervisedConnection) -> None:
     conn._reconnect_event.set()
 
 
-async def run_initial_connect(
-    conn: SupervisedConnection, budget_sec: float,
-) -> None:
-    """Open a process's first session, retrying transient failures.
+def request_unplanned_reopen(conn: SupervisedConnection) -> None:
+    """Ask the supervisor to reopen after a failure.
 
-    A terminal failure raises on the first attempt: a rejected key or a
-    refused setup message cannot be waited out. A transient one (DNS, no
-    route, a 5xx, a 409 against a session the previous process has not
-    released yet) retries on the shared backoff schedule until
-    ``budget_sec`` of wall time is spent, then raises — a clean exit
-    would leave systemd nothing to restart, and a restart is what grants
-    the next budget. Waiting in-process is also what keeps a WAN outage
-    at boot from spending the unit's crash-loop budget, which ends in
-    ``StartLimitAction=reboot`` (ADR-0103). What a raised failure costs
-    the daemon is the caller's call; see
-    ``survive_terminal_initial_connect``. A stop ends the wait and the
-    loop, leaving the session unopened.
-    """
-    budget_sec = max(0.0, budget_sec)
-    start = conn._monotonic()
-    deadline = start + budget_sec
-    attempt = 0
-    while not conn._stopping.is_set():
-        attempt += 1
-        try:
-            await conn._open_session()
-        except Exception as e:  # noqa: BLE001
-            now = conn._monotonic()
-            fields = {
-                "provider": conn.PROVIDER_NAME,
-                "attempt": attempt,
-                "elapsed_sec": f"{now - start:.1f}",
-                "budget_sec": f"{budget_sec:.1f}",
-                "exc": type(e).__name__,
-                "reason": failure_detail(e),
-            }
-            if not is_transient(e):
-                log_event(
-                    logger, "voice.initial_connect.fatal",
-                    fields=fields, level=logging.WARNING,
-                )
-                raise
-            if now >= deadline:
-                log_event(
-                    logger, "voice.initial_connect.exhausted",
-                    fields=fields, level=logging.ERROR,
-                )
-                raise RuntimeError(
-                    f"{conn._log_tag} initial-connect budget of "
-                    f"{budget_sec:.0f}s exhausted after {attempt} "
-                    f"attempt(s); last error: {fields['reason']}"
-                )
-            # Never oversleep the deadline: with 2 s of budget left, a
-            # 32 s wait would spend it on nothing.
-            delay = min(reconnect_delay(attempt, transient=True), deadline - now)
-            log_event(
-                logger, "voice.initial_connect.retry",
-                fields=fields, delay_sec=f"{delay:.2f}",
-                level=logging.WARNING,
-            )
-            # Interruptible: a stop during the wait must not hold the
-            # daemon until systemd's TimeoutStopSec kills it.
-            await sleep_or_nudge(delay, conn._stopping, sleep=conn._sleep)
-        else:
-            log_event(
-                logger,
-                "voice.initial_connect.success",
-                provider=conn.PROVIDER_NAME,
-                attempt=attempt,
-                elapsed_sec=f"{conn._monotonic() - start:.1f}",
-            )
-            return
+    Spends any queued planned-rotation flag, so a genuine failure never
+    inherits the rotation's zero-backoff first attempt."""
+    conn._planned_rotate = False
+    conn._reconnect_event.set()
+
+
+def hand_off_first_connect(conn: SupervisedConnection, exc: Exception) -> None:
+    """Give up a failed first connect to the reconnect supervisor.
+
+    A first connect fails for the reasons a reconnect does and is
+    retried the same way, so nothing here classifies it or exits: the
+    daemon stays up — wake word, cues and local tools alive, ``/state``
+    reporting the outage — until the provider answers. See ADR-0215."""
+    log_event(
+        logger,
+        "voice.initial_connect.failed",
+        provider=conn.PROVIDER_NAME,
+        exc=type(exc).__name__,
+        reason=failure_detail(exc),
+        level=logging.WARNING,
+    )
+    request_unplanned_reopen(conn)
 
 
 async def run_supervisor_loop(conn: SupervisedConnection) -> None:

@@ -66,14 +66,12 @@ from jasper.log_event import log_event
 
 from ..tools import ToolRegistry, dispatch_tool
 from ._supervisor import (
-    DEFAULT_INITIAL_CONNECT_BUDGET_SEC,
     Deferred,
     OutageTracker,
     await_connected,
+    hand_off_first_connect,
     request_planned_reopen,
-    run_initial_connect,
     run_supervisor_loop,
-    survive_terminal_initial_connect,
 )
 from .session import (
     CONNECTION_NOISY_TRANSITIONS,
@@ -821,23 +819,13 @@ class OpenAIRealtimeConnection:
         # the shared exponential-with-jitter schedule. Tests pass a
         # bounded tuple to make exhaustion observable.
         backoff_schedule: tuple[float, ...] | None = None,
-        # Initial-connect time budget in seconds. None → read from
-        # ``JASPER_OPENAI_INITIAL_CONNECT_BUDGET_SEC`` env var
-        # (default ``DEFAULT_INITIAL_CONNECT_BUDGET_SEC`` = 600 s).
-        # Tests pass a small value (e.g. 0.5) for fast budget-exhaustion
-        # assertions. Pass 0 for "single attempt, no retries"
-        # (preserves the auth-error-propagates-immediately behaviour
-        # that ``is_transient`` already encodes — non-transient errors
-        # never retry regardless of budget).
-        initial_connect_budget_sec: float | None = None,
         # Test seam: replace the SDK's connect call. The factory must be
         # callable as ``factory(model: str)`` and return an async context
         # manager whose ``__aenter__`` yields a connection-like object
         # exposing ``.send(event_dict) / .__aiter__() / .close()``.
         connect_factory=None,
-        # Test seam: monotonic clock source. Defaults to
-        # ``time.monotonic``; tests inject a fake clock so they can
-        # fast-forward through the budget without waiting in real time.
+        # Test seam: monotonic clock source, read by the reconnect
+        # nudge gate. Defaults to ``time.monotonic``.
         clock=None,
         # Test seam: sleep function. Defaults to ``asyncio.sleep``;
         # tests inject a no-op so backoff doesn't burn wall-time.
@@ -855,16 +843,7 @@ class OpenAIRealtimeConnection:
         self._session_max_sec = session_max_sec
         self._proactive_buffer_sec = proactive_buffer_sec
         self._backoff_schedule = backoff_schedule
-        # Resolve the initial-connect budget: explicit kwarg > env var >
-        # module default. Read once at construction so a test override
-        # via kwarg can't be quietly clobbered by an ambient env var.
-        if initial_connect_budget_sec is None:
-            self._initial_connect_budget_sec = _read_initial_connect_budget_env()
-        else:
-            self._initial_connect_budget_sec = float(initial_connect_budget_sec)
         self._connect_factory = connect_factory
-        # Wall-clock + sleep seams. Used by the initial-connect time
-        # budget so tests can fast-forward through the schedule.
         self._monotonic = clock if clock is not None else _time.monotonic
         self._sleep = sleep if sleep is not None else asyncio.sleep
         self._base_url = base_url
@@ -983,8 +962,8 @@ class OpenAIRealtimeConnection:
     ) -> None:
         """Connect and start the reconnect supervisor.
 
-        A terminal first connect leaves the connection FAILED and returns
-        rather than raising — see ``survive_terminal_initial_connect``."""
+        A first connect that fails leaves the connection FAILED and the
+        retry with the supervisor — see ``hand_off_first_connect``."""
         self._registry = registry
         if callable(system_instruction):
             self._system_instruction_provider = system_instruction
@@ -1339,13 +1318,11 @@ class OpenAIRealtimeConnection:
         async with self._state_lock:
             self._set_state(ConnectionState.CONNECTING)
         try:
-            await run_initial_connect(
-                self, self._initial_connect_budget_sec,
-            )
+            await self._open_session()
         except Exception as e:  # noqa: BLE001
             async with self._state_lock:
                 self._set_state(ConnectionState.FAILED)
-            survive_terminal_initial_connect(e, self._reconnect_event.set)
+            hand_off_first_connect(self, e)
 
     def _resolve_connect_call(self):
         """Return a callable ``(model: str) -> AsyncContextManager[conn]``
@@ -2079,33 +2056,3 @@ def _transcript_compare_key(text: str) -> str:
         for token in text.split()
         if token.strip(boundary)
     )
-
-
-def _read_initial_connect_budget_env() -> float:
-    """Read ``JASPER_OPENAI_INITIAL_CONNECT_BUDGET_SEC`` from the
-    environment, falling back to ``DEFAULT_INITIAL_CONNECT_BUDGET_SEC``.
-
-    Garbage values (non-numeric strings, negative numbers) log a
-    warning and fall back to the default — better the daemon boots
-    with the documented behaviour than refuses to start over a typo
-    in jasper.env."""
-    raw = os.environ.get("JASPER_OPENAI_INITIAL_CONNECT_BUDGET_SEC")
-    if raw is None or raw == "":
-        return DEFAULT_INITIAL_CONNECT_BUDGET_SEC
-    try:
-        value = float(raw)
-    except ValueError:
-        logger.warning(
-            "JASPER_OPENAI_INITIAL_CONNECT_BUDGET_SEC=%r is not a number; "
-            "falling back to default %.0fs",
-            raw, DEFAULT_INITIAL_CONNECT_BUDGET_SEC,
-        )
-        return DEFAULT_INITIAL_CONNECT_BUDGET_SEC
-    if value < 0:
-        logger.warning(
-            "JASPER_OPENAI_INITIAL_CONNECT_BUDGET_SEC=%s is negative; "
-            "falling back to default %.0fs",
-            raw, DEFAULT_INITIAL_CONNECT_BUDGET_SEC,
-        )
-        return DEFAULT_INITIAL_CONNECT_BUDGET_SEC
-    return value
