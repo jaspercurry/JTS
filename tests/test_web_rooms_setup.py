@@ -371,7 +371,6 @@ def test_rooms_json_shape(monkeypatch):
         "bonded": False,
         "can_create_pair": True,
         "can_balance_pair": False,
-        "show_subwoofer_controls": False,
     }
 
 
@@ -465,7 +464,6 @@ def test_rooms_json_carries_live_pair_balance_snapshot(monkeypatch):
     assert data["view"]["state"] == "paired"
     assert data["view"]["bonded"] is True
     assert data["view"]["can_balance_pair"] is True
-    assert data["view"]["show_subwoofer_controls"] is False
 
 
 def test_rooms_json_balance_snapshot_uses_short_peer_read(monkeypatch):

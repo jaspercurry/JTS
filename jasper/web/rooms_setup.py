@@ -452,9 +452,6 @@ def _rooms_view(grouping: dict, peers: list[dict], self_addr: str) -> dict:
             and any(p.get("address") for p in peers)
         ),
         "can_balance_pair": can_balance,
-        # The primary page must not surface sub/crossover controls; scripted
-        # same-bond edits still reach them through full member-list POSTs.
-        "show_subwoofer_controls": False,
     }
 
 
