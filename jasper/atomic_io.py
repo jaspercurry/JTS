@@ -466,7 +466,7 @@ def locked_update_env_file(
     updates: Mapping[str, str],
     *,
     mode: int = 0o644,
-    group_from_parent: bool = False,
+    group_from_parent: bool = True,
     lock_mode: int | None = None,
     max_bytes: int | None = None,
     lock_timeout_sec: float | None = None,
@@ -478,6 +478,12 @@ def locked_update_env_file(
     then publish whole-file replacements. This helper holds an advisory flock
     across the read, update, and atomic replace so cooperating writers preserve
     each other's keys.
+
+    ``group_from_parent`` defaults to TRUE here: every file these two helpers
+    write lives in a state directory shared with a non-root reader, so a
+    root-run writer that kept its own group would publish root:root and lock
+    that reader out. Pass ``False`` only for a root-only file that must keep
+    root's group.
     """
     fspath = os.fspath(path)
     parent = os.path.dirname(fspath) or "."
@@ -495,15 +501,9 @@ def locked_update_env_file(
             state = {}
         state.update(dict(updates))
         text = _format_env_text(state)
-        if group_from_parent:
-            atomic_write_text(
-                fspath,
-                text,
-                mode=mode,
-                group_from_parent=True,
-            )
-        else:
-            atomic_write_text(fspath, text, mode=mode)
+        atomic_write_text(
+            fspath, text, mode=mode, group_from_parent=group_from_parent
+        )
         return dict(state)
 
 
@@ -512,7 +512,7 @@ def locked_transform_env_file(
     transform: Callable[[dict[str, str]], "dict[str, str] | None"],
     *,
     mode: int = 0o644,
-    group_from_parent: bool = False,
+    group_from_parent: bool = True,
     lock_mode: int | None = None,
     max_bytes: int | None = None,
     lock_timeout_sec: float | None = None,
@@ -528,7 +528,8 @@ def locked_transform_env_file(
     check-then-act race). Holds the SAME advisory flock as
     ``locked_update_env_file`` on the same path, so both helpers mutually
     exclude writers of one file. Returns the written dict, or ``None`` when the
-    file was deleted or left absent.
+    file was deleted or left absent. ``group_from_parent`` carries the same
+    default-TRUE contract as ``locked_update_env_file``.
     """
     fspath = os.fspath(path)
     parent = os.path.dirname(fspath) or "."
@@ -552,13 +553,7 @@ def locked_transform_env_file(
                 pass
             return None
         text = _format_env_text(new_state)
-        if group_from_parent:
-            atomic_write_text(
-                fspath,
-                text,
-                mode=mode,
-                group_from_parent=True,
-            )
-        else:
-            atomic_write_text(fspath, text, mode=mode)
+        atomic_write_text(
+            fspath, text, mode=mode, group_from_parent=group_from_parent
+        )
         return dict(new_state)

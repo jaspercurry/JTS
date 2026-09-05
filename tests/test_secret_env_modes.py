@@ -102,7 +102,9 @@ def test_install_widens_secret_env_on_upgrade():
         # Non-secret state jasper-control also reads off disk for /state:
         "sound_profile.json",
         "sound_settings.json",
-        # BusTime/location wizard state, read by jasper-doctor:
+        # Wizard location state read off disk by non-root group-`jasper`
+        # daemons: transit.env (carries the BusTime API key; jasper-control
+        # reads it) and weather.env (coords + units; jasper-web reads it).
         "transit.env",
         "weather.env",
     ):

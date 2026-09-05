@@ -600,6 +600,11 @@ EOF
 # that never re-save a wizard. Idempotent, [[ -f ]]-guarded, no-op before the
 # `jasper` group exists. Owner is left as-is (StateDirectory recursive-chown
 # may have set it to jasper-voice); cross-daemon reads rely on GROUP, not owner.
+#
+# REMOVAL CONDITION: this pass only heals files written before their writer
+# published the parent directory's group (the jasper.atomic_io env-file writers
+# now default group_from_parent=True). Delete it once every fleet box has run
+# an install carrying that default.
 widen_control_secret_env_modes() {
     getent group jasper >/dev/null 2>&1 || return 0
 
@@ -644,9 +649,12 @@ widen_control_secret_env_modes() {
     #     for, and ensure()/adopt() deliberately never overwrite an existing
     #     secret, so the migration must fix the upgrade path.
     #   - non-secret state: sound_profile.json / sound_settings.json (the EQ
-    #     config the /state sound card reads); transit.env / weather.env (the
-    #     BusTime/location wizards' state, read by jasper-doctor). These carry
-    #     no secret.
+    #     config the /state sound card reads). These carry no secret.
+    #   - wizard location state: transit.env (DOES carry a secret — the BusTime
+    #     API key — and jasper-control reads it off disk, see the doctor's
+    #     privsep MANIFEST) and weather.env (coords + units, no secret; the
+    #     /weather/ wizard reads it off disk as jasper-web). Both readers are
+    #     non-root and in group `jasper`.
     # NOTE: the WiFi guardian PSK stash is DELIBERATELY NOT widened here — it
     # holds the WiFi password, which jasper-control does not need the value of
     # (only the SSID, which it derives from nmcli/the journal), so it stays

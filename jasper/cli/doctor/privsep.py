@@ -148,6 +148,9 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             "/var/lib/jasper/voice_provider.env",
             "/var/lib/jasper/wake_model.env",
             "/var/lib/jasper/transit.env",
+            # weather_setup._load_state opens this on every /weather/ render,
+            # same shape as transit.env above.
+            "/var/lib/jasper/weather.env",
             "/var/lib/jasper/speaker_name.env",
             "/var/lib/jasper/tool_state.env",
             # jasper-web hosts the bluetooth engine (web/bluetooth_setup.py ->

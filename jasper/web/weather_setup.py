@@ -142,10 +142,7 @@ def _seed_transit_from_weather_if_missing(
         return new_transit
 
     locked_transform_env_file(
-        transit_path,
-        _seed_transform,
-        mode=location_state.TRANSIT_FILE_MODE,
-        group_from_parent=True,
+        transit_path, _seed_transform, mode=location_state.TRANSIT_FILE_MODE,
     )
     return seeded
 
@@ -439,10 +436,7 @@ def _make_handler(cfg: dict[str, str]) -> type[BaseHTTPRequestHandler]:
 
             try:
                 locked_transform_env_file(
-                    cfg["state_path"],
-                    _save_transform,
-                    mode=WEATHER_FILE_MODE,
-                    group_from_parent=True,
+                    cfg["state_path"], _save_transform, mode=WEATHER_FILE_MODE,
                 )
                 _seed_transit_from_weather_if_missing(
                     new, transit_path=cfg["transit_path"],
@@ -472,10 +466,7 @@ def _make_handler(cfg: dict[str, str]) -> type[BaseHTTPRequestHandler]:
 
             try:
                 locked_transform_env_file(
-                    cfg["state_path"],
-                    _clear_transform,
-                    mode=WEATHER_FILE_MODE,
-                    group_from_parent=True,
+                    cfg["state_path"], _clear_transform, mode=WEATHER_FILE_MODE,
                 )
             except OSError as e:
                 logger.exception("could not clear weather.env")
