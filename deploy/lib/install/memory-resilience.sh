@@ -77,6 +77,25 @@ _print_reboot_required_marker() {
 }
 
 
+# --- Install-in-progress marker (issue #4123) ---
+#
+# Lives here because this file already owns /run/jasper-install. The
+# resolved default is duplicated as a `ConditionPathExists=!` literal in
+# each gated [Unit] section — units cannot read this seam, so a change to
+# one is a change to all of them.
+INSTALL_IN_PROGRESS_MARKER="${REBOOT_REQUIRED_MARKER%/*}/in_progress"
+
+mark_install_in_progress() {
+    install -d -m 0755 "${INSTALL_IN_PROGRESS_MARKER%/*}"
+    printf 'pid=%s sha=%s\n' "$$" "${JASPER_DEPLOY_SHA_FULL:-unknown}" \
+        > "${INSTALL_IN_PROGRESS_MARKER}"
+}
+
+clear_install_in_progress() {
+    rm -f "${INSTALL_IN_PROGRESS_MARKER}"
+}
+
+
 # Compute vm.min_free_kbytes from MemTotal_kB.
 # Formula: clamp(0.02 × memtotal_kb, 16384, 262144) — 2% of total RAM,
 # with a 16 MB floor (Raspberry Pi OS ships 16384 in

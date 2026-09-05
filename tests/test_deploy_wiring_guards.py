@@ -42,6 +42,10 @@ the Pi (1-4) or as a whole red lane on the laptop (5):
    hardware-free suites execute it on the developer's laptop, where macOS
    supplies BSD sed and bash 3.2. GNU-only and bash-4-only spellings turn
    every local lane red regardless of the diff under test.
+
+6. **Install-window gate.** Every unit an install can have started
+   behind its back must be gated on the in-progress marker, or it runs
+   against a half-synced /opt/jasper (issue #4123).
 """
 from __future__ import annotations
 
@@ -51,7 +55,7 @@ from pathlib import Path
 import pytest
 
 from ._shell_corpus import shell_files
-from .systemd_unit_helpers import values_for
+from .systemd_unit_helpers import value_for, values_for
 
 _REPO = Path(__file__).resolve().parent.parent
 _DEPLOY = _REPO / "deploy"
@@ -599,3 +603,56 @@ def test_start_time_hostname_readers_order_behind_the_identity_oneshot(reader):
     assert reader in values_for(
         (_SYSTEMD / _IDENTITY_ONESHOT).read_text(encoding="utf-8"), "Before",
     )
+
+
+# ----------------------------------------------------------------------
+# 6 — asynchronously activated units are gated on the install marker
+# ----------------------------------------------------------------------
+
+# Remove when the installer stops mutating /opt/jasper in place.
+_INSTALL_MARKER_GATE = "!/run/jasper-install/in_progress"
+_RUN_RE = re.compile(r'RUN\+="([^"\s]+)')
+_START_RE = re.compile(r"\bstart\s+([A-Za-z0-9@._-]+\.service)")
+
+
+def _async_activated_units() -> set[str]:
+    """Units something other than the installer can start mid-install.
+
+    udev SYSTEMD_WANTS targets, the units a RUN+= helper starts, and every
+    timer's service. Path-activated services are excluded: a Condition there
+    leaves the level-triggered .path re-triggering until TriggerLimitBurst
+    fails it, so the installer stops those units instead.
+    """
+    units: set[str] = set()
+    for rules in sorted(_DEPLOY.glob("udev/*.rules")):
+        text = rules.read_text(encoding="utf-8")
+        for unit in _WANTS_RE.findall(text):
+            units.add(unit.replace("@%k.service", "@.service"))
+        for run in _RUN_RE.findall(text):
+            helper = _DEPLOY / "bin" / Path(run).name
+            if helper.is_file():
+                units.update(_START_RE.findall(helper.read_text(encoding="utf-8")))
+    for timer in sorted(_DEPLOY.glob("systemd/*.timer")):
+        unit = value_for(timer.read_text(encoding="utf-8"), "Unit")
+        units.add(unit or f"{timer.stem}.service")
+    for watcher in sorted(_DEPLOY.glob("systemd/*.path")):
+        unit = value_for(watcher.read_text(encoding="utf-8"), "Unit")
+        units.discard(unit or f"{watcher.stem}.service")
+    return units
+
+
+def test_async_activated_units_are_gated_on_the_install_marker():
+    """A new udev rule or timer added without the gate is the recurrence risk
+    this pin exists for — not the six units that carry it today."""
+    expected = _async_activated_units()
+    # The #4123 unit reaches the set only through the udev chain, so its
+    # absence means the derivation broke rather than the units regressing.
+    assert "jasper-audio-hardware-reconcile.service" in expected
+    gated = {
+        unit.name
+        for unit in sorted(_DEPLOY.glob("systemd/*.service"))
+        if unit.is_file()
+        and _INSTALL_MARKER_GATE
+        in values_for(unit.read_text(encoding="utf-8"), "ConditionPathExists")
+    }
+    assert gated == expected

@@ -2204,10 +2204,13 @@ main() {
     hardware_tier_preflight  # log tier; fail fast on unsupported arch (before any mutation)
     if [[ "${install_profile}" == "streambox" ]]; then
         require_root
+        trap install_exit_cleanup EXIT
+        mark_install_in_progress
+        # Path-activated reconcilers take the gate as a stop, not a Condition (#4123).
+        systemctl stop jasper-accessory-reconcile.path jasper-enhanced-aec-reconcile.path 2>/dev/null || true
         persist_install_profile "${install_profile}"
         require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
         setup_build_swap_if_needed
-        trap install_exit_cleanup EXIT
         create_jasper_service_users  # before unit install + state-dir creation
         park_low_memory_build_units
         install_streambox_deps
@@ -2228,6 +2231,8 @@ main() {
         build_install_jasper_fanin
         build_install_jasper_outputd
         install_jts_ring_platform  # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)
+        # /opt/jasper is whole from here; the installer's own unit starts follow (#4123).
+        clear_install_in_progress
         install_streambox_systemd_units
         remove_retired_audio_topology_state  # retired dmix/fanin switch state; doctor WARNs on its presence
         migrate_wifi_guardian
@@ -2252,10 +2257,13 @@ main() {
         return 0
     fi
     require_root
+    trap install_exit_cleanup EXIT
+    mark_install_in_progress
+    # Path-activated reconcilers take the gate as a stop, not a Condition (#4123).
+    systemctl stop jasper-accessory-reconcile.path jasper-enhanced-aec-reconcile.path 2>/dev/null || true
     persist_install_profile "${install_profile}"
     require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
     setup_build_swap_if_needed
-    trap install_exit_cleanup EXIT
     create_jasper_service_users  # before unit install + state-dir creation
     park_low_memory_build_units
     install_deps
@@ -2274,6 +2282,8 @@ main() {
     build_install_jasper_fanin    # Rust daemon binary; enabled by install_systemd_units
     build_install_jasper_outputd  # Rust mainline final-output owner
     install_jts_ring_platform     # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)
+    # /opt/jasper is whole from here; the installer's own unit starts follow (#4123).
+    clear_install_in_progress
     install_systemd_units
     remove_retired_audio_topology_state  # retired dmix/fanin switch state; doctor WARNs on its presence
     migrate_memory_resilience   # Stage 1 OOM protection: sysctl + MGLRU + zram

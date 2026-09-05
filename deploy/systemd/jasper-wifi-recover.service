@@ -6,6 +6,8 @@ Description=Recover Wi-Fi after transient AP or Pi 5 scan-suppression loss
 # affects boot ordering.
 After=NetworkManager.service NetworkManager-wait-online.service
 Wants=NetworkManager.service
+# See #4123.
+ConditionPathExists=!/run/jasper-install/in_progress
 
 [Service]
 Type=oneshot

@@ -221,20 +221,25 @@ install_exit_cleanup() {
     # silent. Note the capture rescues only that shape: it cannot rescue an
     # aborting command, which returns 1 with or without it.
     #
-    # Order: tear the build swap down first. It is the step that must happen on
-    # every exit path, and `systemctl start` blocks on its job — unparking
-    # first lets one hung unit strand a 2 GB swap file and its swapon entry.
+    # Order: tear the build swap down before the unpark. It is the step that
+    # must happen on every exit path, and `systemctl start` blocks on its job —
+    # unparking first lets one hung unit strand a 2 GB swap file and its
+    # swapon entry.
     # This is NOT "give the daemons their RAM back first": swapoff PULLS pages
     # back into RAM, so this instant is a pressure spike, not relief. Doing it
     # first means the graph restarts onto the box's ordinary memory
     # configuration instead of onto a temporary swap about to be yanked.
     local rc=$?
+    if declare -F clear_install_in_progress >/dev/null 2>&1; then
+        clear_install_in_progress || true
+    fi
     cleanup_build_swap || true
     # Two guards, two different jobs — do not read either as cruft.
     #
-    # `declare -F`: defined in systemd-units.sh, which install.sh always
-    # sources, so a partial source (a stray test context) degrades to skipping
-    # the unpark rather than erroring inside the trap.
+    # `declare -F`: the cross-file callees live in memory-resilience.sh and
+    # systemd-units.sh, which install.sh always sources, so a partial source (a
+    # stray test context) degrades to skipping that step rather than erroring
+    # inside the trap.
     #
     # `|| true`: a caller's guard suspends `set -e` for the callee's ENTIRE
     # body, not just for the call itself. That is what lets the unpark's three
