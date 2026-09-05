@@ -18,6 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from jasper.cli.doctor import audio_runtime_ring
 from jasper.control import transport_park
 from jasper.control.transport_park import (
     PARK_GROUPED_DAC_CONTENT_LANE,
@@ -550,12 +551,6 @@ def test_a_missing_topology_is_still_not_configured(tmp_path, monkeypatch):
 
 # --- doctor -----------------------------------------------------------------
 
-from jasper.cli.doctor.audio_runtime_ring import (  # noqa: E402
-    REASON_TRANSPORT_CONVERGE_REFUSED as _REASON_CONVERGE_REFUSED,
-    REASON_TRANSPORT_ENDPOINT_ARMED_WITHOUT_ACTIVE_MODE as _REASON_ARMED_NO_MODES,
-    REASON_TRANSPORT_ENDPOINT_UNPROVEN as _REASON_UNPROVEN,
-)
-
 
 @pytest.mark.parametrize(
     "status,expected",
@@ -595,8 +590,14 @@ def test_doctor_severity_follows_the_park_status(monkeypatch, status, expected):
 @pytest.mark.parametrize(
     "topology,env,unproven,expected_reason",
     [
-        (_stereo_plus_subwoofer(), {}, True, _REASON_UNPROVEN),
-        (_stereo_plus_subwoofer(), _ARMED, False, _REASON_ARMED_NO_MODES),
+        (
+            _stereo_plus_subwoofer(), {}, True,
+            audio_runtime_ring.REASON_TRANSPORT_ENDPOINT_UNPROVEN,
+        ),
+        (
+            _stereo_plus_subwoofer(), _ARMED, False,
+            audio_runtime_ring.REASON_TRANSPORT_ENDPOINT_ARMED_WITHOUT_ACTIVE_MODE,
+        ),
         (_active_topology("stereo", "active_2_way"), _ARMED, False, ""),
         (_full_range_stereo(), {}, False, ""),
     ],
@@ -757,7 +758,8 @@ def test_the_refusal_signal_reads_no_graph_off_its_own_gate(
     "topology,env,armed_without_modes,expected_reason",
     [
         pytest.param(
-            _stereo_plus_subwoofer(), _ARMED, True, _REASON_ARMED_NO_MODES,
+            _stereo_plus_subwoofer(), _ARMED, True,
+            audio_runtime_ring.REASON_TRANSPORT_ENDPOINT_ARMED_WITHOUT_ACTIVE_MODE,
             id="non_composite_armed",
         ),
         pytest.param(
@@ -768,7 +770,8 @@ def test_the_refusal_signal_reads_no_graph_off_its_own_gate(
             id="composite_armed_is_served",
         ),
         pytest.param(
-            _stereo_plus_subwoofer(), {}, False, _REASON_UNPROVEN,
+            _stereo_plus_subwoofer(), {}, False,
+            audio_runtime_ring.REASON_TRANSPORT_ENDPOINT_UNPROVEN,
             id="unarmed_is_the_0184_seam",
         ),
         pytest.param(
@@ -824,7 +827,9 @@ def test_the_two_endpoint_signals_are_never_both_true():
     "refusal,expected_reason",
     [
         pytest.param(
-            "the loaded graph plays hw:0,0", _REASON_CONVERGE_REFUSED, id="refused"
+            "the loaded graph plays hw:0,0",
+            audio_runtime_ring.REASON_TRANSPORT_CONVERGE_REFUSED,
+            id="refused",
         ),
         pytest.param(None, "", id="converged"),
     ],

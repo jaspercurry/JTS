@@ -465,21 +465,6 @@ def _daemon_op_ceiling_sec(
 _COUPLING_AUTO_NON_DAEMON_WORK_SEC = 39.0
 
 
-def _ring_converge_spine_sec(*, broker_dead: bool) -> float:
-    """The ordered daemon spine :func:`_converge_ring` runs AFTER its env write."""
-
-    def op(timeout: float, reset_failed: bool) -> float:
-        return _daemon_op_ceiling_sec(
-            timeout, reset_failed=reset_failed, broker_dead=broker_dead
-        )
-
-    return (
-        op(_CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC, False)
-        + op(8.0, True)  # outputd restart
-        + op(8.0, True)  # fan-in restart
-    )
-
-
 def _coupling_auto_pass_ceiling_sec(*, broker_dead: bool) -> float:
     """One ``--auto`` pass, enumerated along its worst reachable path.
 
@@ -495,7 +480,11 @@ def _coupling_auto_pass_ceiling_sec(*, broker_dead: bool) -> float:
             timeout, reset_failed=reset_failed, broker_dead=broker_dead
         )
 
-    spine = _ring_converge_spine_sec(broker_dead=broker_dead)
+    spine = (
+        op(_CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC, False)
+        + op(8.0, True)  # outputd restart
+        + op(8.0, True)  # fan-in restart
+    )
     combo = (
         op(8.0, False)  # camilla stop: not a start verb, so no reset preamble
         + op(8.0, True)  # fan-in restart
@@ -528,31 +517,6 @@ _COUPLING_AUTO_CEILING_HEADROOM_SEC = 270.0
 COUPLING_AUTO_TIMEOUT_START_SEC = (
     COUPLING_AUTO_ENUMERATED_WORST_SEC + _COUPLING_AUTO_CEILING_HEADROOM_SEC
 )
-
-# How long a CROSSED transport pair stays explainable as a convergence in
-# flight rather than a wedge. :func:`_converge_ring` writes outputd.env FIRST
-# and lands the CamillaDSP graph LAST, so the two rungs are legitimately out of
-# step for the spine plus the camilla start that rung waits on.
-RECONCILE_SETTLE_SECONDS = (
-    _ring_converge_spine_sec(broker_dead=False) + _CAMILLA_START_TIMEOUT_SEC
-)
-
-
-def seconds_since_outputd_env_change(
-    path: "str | Path" = OUTPUTD_ENV_PATH,
-) -> float | None:
-    """Seconds since ``outputd.env`` was last written, or ``None`` if absent.
-
-    The settle age of the transport pair: both of its halves — the content
-    bridge and ring path this module writes, and the active-endpoint marker
-    ``jasper-audio-hardware-reconcile`` writes — live in this one file, so its
-    mtime dates the most recent rung of either ladder.
-    """
-    try:
-        mtime = os.stat(path).st_mtime
-    except OSError:
-        return None
-    return max(0.0, time.time() - mtime)
 
 
 def _start_audio_hardware_reconcile(
@@ -2014,6 +1978,43 @@ def _acquire_entry_lock(
     except OSError:
         pass  # pid stamp is diagnostic only — never fail an acquired lock on it
     return EntryLock(outcome="acquired", fh=fh)
+
+
+def reconcile_in_progress() -> bool | None:
+    """Is a reconcile pass holding the entry lock right now? ``None`` = cannot say.
+
+    The ladder's own in-flight signal, observed rather than inferred:
+    :func:`_acquire_entry_lock` holds this flock for the WHOLE pass, so a reader
+    that cannot take it shared knows a pass is between rungs. Same read-only
+    probe shape as
+    :meth:`jasper.camilla.CamillaController.graph_mutation_in_progress`.
+
+    NO ``O_CREAT``, unlike the acquire: a probe must never create the lock file
+    (a non-root doctor could not anyway, and a created-then-unlocked file would
+    read as "no pass" for a caller who then has to distinguish it from a real
+    one). A missing file therefore answers ``None``, not ``False`` — no pass has
+    run since boot, which is indistinguishable here from "/run is not this
+    box's".
+
+    SHARED, so two probes never exclude each other, and released inside this
+    call. It does conflict with the acquire's ``LOCK_EX``, but that acquire is
+    ``LOCK_NB`` inside a bounded retry loop (``ENTRY_LOCK_TIMEOUT_SECONDS`` at
+    ``ENTRY_LOCK_POLL_SECONDS``), so a pass starting inside a probe's window
+    retries a poll interval later instead of failing.
+    """
+    try:
+        fd = os.open(ENTRY_LOCK_PATH, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    return False
 
 
 def main(argv: "list[str] | None" = None) -> int:

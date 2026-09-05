@@ -761,8 +761,8 @@ def outputd_bridge_is_ring(raw: str | None) -> bool:
     ``env_str("JASPER_OUTPUTD_CONTENT_BRIDGE", "shm_ring")`` — and this predicate
     answers what outputd IS RUNNING, not what an operator happened to type. The
     inverse reading is what made a healthy undeclared box read as a split
-    transport: `check_ring_split_transport` compared a ring GRAPH against a
-    not-ring ANSWER and called a playing speaker silent.
+    transport: `check_content_transport_coherence` compared a ring GRAPH
+    against a not-ring ANSWER and called a playing speaker silent.
 
     Everything else answers False, away from the ring: a stale ``direct``, a
     retired lab spelling, a typo. Each of those makes outputd park (config.rs),

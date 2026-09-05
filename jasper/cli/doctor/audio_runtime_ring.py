@@ -260,26 +260,25 @@ def _grouped_dac_content_lane_parked() -> bool:
 
 
 def _crossed_transport_pair(label: str, reason: str, stranded: str) -> CheckResult:
-    """A crossed rung: a `warn` while a convergence can still explain it, the
-    silence `fail` once it cannot."""
-    from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_ENV_PATH
-    from jasper.fanin.coupling_reconcile import (
-        RECONCILE_SETTLE_SECONDS,
-        seconds_since_outputd_env_change,
-    )
+    """A crossed rung: a `warn` while a pass in flight explains it, the silence
+    `fail` once none is.
+
+    The ladder's OWN in-flight signal, not a clock: the reconcile entry lock is
+    held for the whole pass, so a held lock is the pass itself saying it is
+    between rungs.
+    """
+    from jasper.fanin.coupling_reconcile import reconcile_in_progress
 
     remedy = (
         "Converge the pair: sudo /opt/jasper/.venv/bin/"
         "jasper-fanin-coupling-reconcile shm_ring."
     )
-    age = seconds_since_outputd_env_change(DEFAULT_OUTPUTD_ENV_PATH)
-    if age is not None and age < RECONCILE_SETTLE_SECONDS:
+    if reconcile_in_progress() is True:
         return CheckResult(
             label,
             "warn",
-            f"{stranded} — outputd.env moved {age:.0f} s ago, inside the "
-            f"{RECONCILE_SETTLE_SECONDS:.0f} s reconcile settle window, so an "
-            f"arm ladder still in flight explains it. {remedy}",
+            f"{stranded} — a reconcile pass holds the coupling entry lock right "
+            f"now, so an arm ladder still in flight explains it. {remedy}",
             reason=REASON_RECONCILE_IN_FLIGHT,
         )
     return CheckResult(
@@ -323,14 +322,21 @@ def check_content_transport_coherence() -> CheckResult:
     it would be needed.
 
     Out of scope: a box with NEITHER end on the ring (coherent; see
-    :func:`check_ring_transport_park` and :func:`check_fanin_coupling`), the
-    grouped park, and a bonded member in either round-trip spelling — the
-    marker-armed one plays the bond off the return ring, the legacy FIFO one is
+    :func:`check_ring_transport_park` and :func:`check_fanin_coupling`), and a
+    bonded member in either round-trip spelling — the marker-armed one plays the
+    bond off the return ring, the legacy FIFO one is
     :func:`check_ring_transport_park`'s named park.
+
+    PER-RUNG STAND-DOWNS, not one gate over all three: the legacy-FIFO park is
+    keyed on ``JASPER_OUTPUTD_DAC_CONTENT_FIFO`` alone, so a parked box can
+    still carry a ring bridge whose path lags the marker — outputd refuses that
+    pair at startup whatever the lane is doing. It stands the SPLIT rungs down
+    (its ``direct`` bridge beside a stereo-ring graph reads as one) and leaves
+    the path rung live.
 
     The ladder moves these keys one rung at a time, so a run taken inside one
     legitimately reads crossed; :func:`_crossed_transport_pair` tells that
-    window from a wedge by outputd.env's settle age.
+    window from a wedge by the reconcile entry lock.
     """
     from jasper.audio_runtime_plan import (
         DEFAULT_CAMILLA2_STATEFILE_PATH,
@@ -370,13 +376,6 @@ def check_content_transport_coherence() -> CheckResult:
             "transport-park check",
             reason=REASON_SPLIT_MARKER_CONTRADICTED,
         )
-    if _grouped_dac_content_lane_parked():
-        return CheckResult(
-            label,
-            "skipped",
-            "grouped dac_content lane; see the transport-park check",
-            reason=REASON_SPLIT_GROUPED_DAC_CONTENT_LANE,
-        )
     # `(unset, = the ring)` rather than a bare `(unset)`: an undeclared bridge IS
     # the ring (config.rs), so a reader who saw only "unset" beside a ring graph
     # would think the pair disagreed when it agrees.
@@ -409,6 +408,17 @@ def check_content_transport_coherence() -> CheckResult:
         f"{playback_device or '(none)'}"
     )
     if graph_on_ring != outputd_on_ring:
+        # THE SPLIT RUNGS ONLY: the legacy-FIFO member runs the `direct` bridge
+        # its writer no longer emits while its own graph still loads the stereo
+        # ring, which reads as a split about a box `check_ring_transport_park`
+        # already names. The path rung below is a different fact and stays live.
+        if _grouped_dac_content_lane_parked():
+            return CheckResult(
+                label,
+                "skipped",
+                "grouped dac_content lane; see the transport-park check",
+                reason=REASON_SPLIT_GROUPED_DAC_CONTENT_LANE,
+            )
         if graph_on_ring:
             return _crossed_transport_pair(
                 label,
@@ -634,8 +644,9 @@ def check_ring_ioplug_provenance() -> CheckResult:
         return CheckResult(
             label,
             "ok",
-            f"STALE ioplug: {so_path} hashes {installed[:12]}… but the installer "
-            f"recorded {record.sha256[:12]}…, so the plugin on disk is NOT the one "
+            f"ioplug older than the installed plugin: {so_path} hashes "
+            f"{installed[:12]}… but the installer recorded {record.sha256[:12]}…, "
+            "so the plugin on disk is not the one "
             "the last successful install produced. The ioplug build degrades to a "
             "WARN and leaves the previous .so in place — redeploy and check the "
             "transcript for a jts_ring ioplug build failure.",
@@ -1213,7 +1224,13 @@ def check_renderer_ring_lanes() -> CheckResult:
     inputs = read.payload.get("inputs")
     if not isinstance(inputs, list):
         return CheckResult(
-            label_name, "warn", "fan-in STATUS carries no inputs[] to judge",
+            label_name,
+            "warn",
+            f"{len(armed)} lane(s) armed ({', '.join(armed)}) but fan-in STATUS "
+            "carries no inputs[] to judge — every shipped fan-in emits that key "
+            "unconditionally (rust/jasper-fanin/src/state.rs), so the running "
+            "binary is not the installed one: sudo systemctl restart jasper-fanin, "
+            "then redeploy if it persists",
             reason=REASON_RENDERER_LANES_STATUS_NO_INPUTS,
         )
     by_label = {

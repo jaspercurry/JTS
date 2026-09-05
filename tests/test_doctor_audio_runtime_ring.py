@@ -4,10 +4,10 @@
 
 """Unit tests for the jasper-doctor shared-memory-ring checks."""
 
+import fcntl
 import os
 import struct
 import subprocess
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,7 +21,7 @@ from jasper.audio_hardware.dac import (
 from jasper.cli import doctor
 from jasper.cli.doctor import _evidence, audio_runtime_outputd, audio_runtime_ring
 from jasper.cli.doctor._evidence import evidence
-from jasper.fanin.coupling_reconcile import RECONCILE_SETTLE_SECONDS
+from jasper.fanin import coupling_reconcile
 from jasper.fanin_coupling import (
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_PLAYBACK_DEVICE,
@@ -37,16 +37,16 @@ from .doctor_test_support import record_active_dac
 from .test_doctor_audio_runtime_camilla import _silent_camilla_recover_park
 
 
-def _settle(path: Path, *, age_seconds: float | None = None) -> None:
-    """Backdate outputd.env past the reconcile settle window (or into it).
+def _point_entry_lock_at(monkeypatch, tmp_path: Path) -> Path:
+    """Aim the reconcile entry-lock probe at a per-test path, absent by default.
 
-    The merged transport check reads this file's mtime to tell an arm ladder
-    mid-flight from a wedge, so every arrangement has to say which it is.
+    Absent is "no pass has run since boot", which the merged check reads as
+    "nobody is reconciling" — so every arrangement that does not create the file
+    is arranging a wedge, deterministically, off any real /run state.
     """
-    if age_seconds is None:
-        age_seconds = RECONCILE_SETTLE_SECONDS + 60.0
-    when = time.time() - age_seconds
-    os.utime(path, (when, when))
+    lock = tmp_path / "entry.lock"
+    monkeypatch.setattr(coupling_reconcile, "ENTRY_LOCK_PATH", str(lock))
+    return lock
 
 
 def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
@@ -111,7 +111,7 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
     monkeypatch.setattr(
         "jasper.audio_runtime_plan.DEFAULT_OUTPUTD_ENV_PATH", str(outputd_env)
     )
-    _settle(outputd_env)
+    _point_entry_lock_at(monkeypatch, tmp_path)
     _seed_units()
     _patch_status_reader(
         monkeypatch,
@@ -1376,7 +1376,6 @@ def _arrange(
     primary_config_missing: bool = False,
     grouped_park: bool = False,
     marker_armed: bool = False,
-    age_seconds: float | None = None,
     env_lines: str = "",
 ) -> None:
     """Put the box in one (content-bridge, loaded-graph-playback) combination.
@@ -1403,7 +1402,6 @@ def _arrange(
     monkeypatch.setattr(
         "jasper.audio_runtime_plan.DEFAULT_OUTPUTD_ENV_PATH", str(outputd_env)
     )
-    _settle(outputd_env, age_seconds=age_seconds)
     # The SECOND env layer, exactly where a bonded member's marker really lives
     # — never in the first file. Writing it here is what proves the doctor reads
     # the merge and not just `outputd.env`.
@@ -1418,6 +1416,7 @@ def _arrange(
     monkeypatch.setattr(
         audio_runtime_ring, "_grouped_dac_content_lane_parked", lambda: grouped_park
     )
+    _point_entry_lock_at(monkeypatch, tmp_path)
     primary = _write_pair(tmp_path, "primary", playback_device)
     if primary_config_missing:
         # The statefile parses but names a config that is gone — evidence
@@ -1768,37 +1767,92 @@ def test_a_coherent_off_ring_pair_says_the_path_rung_did_not_run(
     assert result.reason == audio_runtime_ring.REASON_RING_PATH_NOT_CENTRAL_RING
 
 
-@pytest.mark.parametrize(
-    "arrange",
-    [
-        lambda m, t: _arrange(
-            m, t, bridge=DIRECT_BRIDGE,
-            playback_device=RING_ACTIVE_PLAYBACK_DEVICE, age_seconds=1.0,
-        ),
-        lambda m, t: _arrange(
-            m, t, bridge=RING_BRIDGE,
-            playback_device="outputd_content_playback", age_seconds=1.0,
-        ),
-        lambda m, t: _arrange_projection(
-            m, t, marker="1", carried="/dev/shm/jts-ring/content.ring",
-            age_seconds=1.0,
-        ),
-    ],
-    ids=["ring_unconsumed", "ring_unfed", "path_lags_marker"],
-)
-def test_a_crossed_pair_inside_the_settle_window_is_not_called_silence(
+_CROSSED_ARRANGEMENTS = [
+    lambda m, t: _arrange(
+        m, t, bridge=DIRECT_BRIDGE, playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+    ),
+    lambda m, t: _arrange(
+        m, t, bridge=RING_BRIDGE, playback_device="outputd_content_playback",
+    ),
+    lambda m, t: _arrange_projection(
+        m, t, marker="1", carried="/dev/shm/jts-ring/content.ring",
+    ),
+]
+_CROSSED_IDS = ["ring_unconsumed", "ring_unfed", "path_lags_marker"]
+
+
+def _hold_entry_lock(tmp_path: Path):
+    """Hold the reconcile entry lock the way a pass holds it: a real exclusive
+    flock on a real file, for the length of the test.
+
+    A REAL LOCK, never a stubbed `fcntl`: what the probe asserts is that a
+    shared non-blocking acquire is REFUSED, and only the kernel can refuse it.
+    Faking the syscall would pass with the probe deleted.
+    """
+    fh = (tmp_path / "entry.lock").open("w", encoding="utf-8")
+    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return fh
+
+
+@pytest.mark.parametrize("arrange", _CROSSED_ARRANGEMENTS, ids=_CROSSED_IDS)
+def test_a_crossed_pair_under_a_held_entry_lock_is_not_called_silence(
     monkeypatch, tmp_path, arrange
 ) -> None:
-    """A healer cannot tell an arm ladder mid-flight from a wedge; outputd.env's
-    settle age can. Inside the window every crossed rung is one reason a
+    """A healer cannot tell an arm ladder mid-flight from a wedge; the ladder's
+    own entry lock can. While a pass holds it every crossed rung is one reason a
     consumer can wait on, and claims no silence."""
     arrange(monkeypatch, tmp_path)
-
-    result = audio_runtime_ring.check_content_transport_coherence()
+    fh = _hold_entry_lock(tmp_path)
+    try:
+        result = audio_runtime_ring.check_content_transport_coherence()
+    finally:
+        fh.close()
 
     assert result.status == "warn", result
     assert result.reason == audio_runtime_ring.REASON_RECONCILE_IN_FLIGHT
     assert result.speaker_silent is False
+
+
+@pytest.mark.parametrize("arrange", _CROSSED_ARRANGEMENTS, ids=_CROSSED_IDS)
+@pytest.mark.parametrize("lock_exists", [True, False], ids=["free", "absent"])
+def test_a_crossed_pair_with_nobody_reconciling_is_the_silence_fail(
+    monkeypatch, tmp_path, arrange, lock_exists
+) -> None:
+    """Both ways of answering "no pass is in flight" — the lock file present and
+    unheld, and never created since boot — are the wedge, not a window."""
+    arrange(monkeypatch, tmp_path)
+    if lock_exists:
+        (tmp_path / "entry.lock").write_text("", encoding="utf-8")
+
+    result = audio_runtime_ring.check_content_transport_coherence()
+
+    assert result.status == "fail", result
+    assert result.speaker_silent is True
+
+
+def test_the_legacy_fifo_park_does_not_gate_the_ring_path_rung(
+    monkeypatch, tmp_path
+) -> None:
+    """THE OVER-GATE this partition removes.
+
+    `PARK_GROUPED_DAC_CONTENT_LANE` is keyed on
+    `JASPER_OUTPUTD_DAC_CONTENT_FIFO` alone, so a parked box can still carry a
+    ring bridge whose path lags its marker — and outputd refuses THAT pair at
+    startup whatever the lane is doing. The park stands the split rungs down
+    (asserted by the bonded-follower test above); it must not swallow this one.
+    """
+    _arrange_projection(
+        monkeypatch,
+        tmp_path,
+        marker="1",
+        carried="/dev/shm/jts-ring/content.ring",
+        grouped_park=True,
+    )
+
+    result = audio_runtime_ring.check_content_transport_coherence()
+
+    assert result.status == "fail", result
+    assert result.reason == audio_runtime_ring.REASON_RING_PATH_LAGS_MARKER
 
 
 def _silent_split_transport(monkeypatch, tmp_path):
