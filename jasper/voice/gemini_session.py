@@ -739,36 +739,38 @@ class GeminiLiveConnection:
         async with self._state_lock:
             self._set_state(ConnectionState.CLOSED)
 
+    async def _await_connected(self) -> None:
+        """Wait for an open session so a turn never opens against a
+        half-open WS.
+
+        Bounded by one backoff window: the daemon's wake path checks
+        `is_paused()` before reaching here, so the bound is a backstop,
+        and raising on it is what puts a connection that never comes
+        back on the caller's failure-cue path instead of hanging the
+        wake."""
+        if self._connected_event.is_set():
+            return
+        timeout = (
+            sum(self._backoff_schedule) + 5.0
+            if self._backoff_schedule is not None
+            else 15.0  # production: long enough for one full backoff cycle
+        )
+        try:
+            await asyncio.wait_for(
+                self._connected_event.wait(), timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            raise RuntimeError(
+                f"{self._log_tag} not connected after backoff window"
+            )
+
     async def acquire_turn(self) -> LiveTurn:
         if self._state is ConnectionState.FAILED:
             raise RuntimeError(f"{self._log_tag} in FAILED state; daemon paused")
         if self._state is ConnectionState.CLOSED:
             raise RuntimeError(f"{self._log_tag} closed")
 
-        # If we're mid-reconnect, wait for the connected event so the
-        # turn doesn't open against a half-open WS. Bounded so we don't
-        # block the wake handler forever if the connection is in a
-        # protracted outage. The daemon's wake path checks is_paused()
-        # before reaching here, so this timeout is a defensive
-        # backstop, not the normal user-facing wait.
-        if not self._connected_event.is_set():
-            timeout = (
-                sum(self._backoff_schedule) + 5.0
-                if self._backoff_schedule is not None
-                else 15.0  # production: long enough for one full backoff cycle
-            )
-            try:
-                await asyncio.wait_for(
-                    self._connected_event.wait(), timeout=timeout,
-                )
-            except asyncio.TimeoutError:
-                raise RuntimeError(
-                    f"{self._log_tag} not connected after backoff window"
-                )
-
-        # Idle-context-reset: if the connection is healthy but has been
-        # idle too long, drop the resumption handle and reopen with a
-        # fresh session so stale conversational state doesn't leak in.
+        await self._await_connected()
         await self._maybe_reset_context()
 
         async with self._turn_lock:
@@ -1060,7 +1062,6 @@ class GeminiLiveConnection:
         try:
             await self._open_session_with_409_retry(
                 INITIAL_CONNECT_BACKOFF_SCHEDULE,
-                phase="initial-connect",
             )
         except Exception as e:  # noqa: BLE001
             async with self._state_lock:
@@ -1070,13 +1071,10 @@ class GeminiLiveConnection:
     async def _open_session_with_409_retry(
         self,
         schedule: tuple[float, ...],
-        *,
-        phase: str,
     ) -> None:
         """Run ``_open_session`` with a 409-aware retry loop.
 
-        Used by both ``_do_initial_connect`` (daemon startup) and
-        ``_maybe_reset_context`` (post-idle context reset). The
+        Used by ``_do_initial_connect`` (daemon startup). The
         supervisor's reconnect path uses its own loop because it
         also needs to coordinate with the state machine (PAUSED_FOR
         _BACKOFF transitions, stop-event checks); the 409 detection
@@ -1099,18 +1097,15 @@ class GeminiLiveConnection:
           * On non-409: re-raise immediately (auth errors / malformed
             config don't fix themselves with a wait).
           * After exhausting the schedule: raise ``RuntimeError``.
-
-        ``phase`` is included verbatim in log lines so journalctl
-        searches for "409" can tell whether the conflict happened on
-        startup or on a context reset.
         """
         last_exc: Exception | None = None
         handle_dropped = False
         for attempt, delay in enumerate(schedule):
             if delay > 0:
                 logger.warning(
-                    f"{self._log_tag} %s retry %d after %.1fs (last: %s: %s)",
-                    phase, attempt, delay,
+                    f"{self._log_tag} initial connect retry %d after %.1fs "
+                    "(last: %s: %s)",
+                    attempt, delay,
                     type(last_exc).__name__ if last_exc else "?",
                     self._outage.detail if last_exc else "?",
                 )
@@ -1119,9 +1114,9 @@ class GeminiLiveConnection:
                 await self._open_session()
                 if handle_dropped:
                     logger.info(
-                        f"{self._log_tag} %s recovered after dropping stale "
-                        "resumption handle on attempt %d",
-                        phase, attempt + 1,
+                        f"{self._log_tag} initial connect recovered after "
+                        "dropping stale resumption handle on attempt %d",
+                        attempt + 1,
                     )
                 return
             except Exception as e:  # noqa: BLE001
@@ -1139,9 +1134,9 @@ class GeminiLiveConnection:
                     else "<none>"
                 )
                 logger.warning(
-                    f"{self._log_tag} %s 409 Conflict on attempt %d/%d "
+                    f"{self._log_tag} 409 Conflict on attempt %d/%d "
                     "(status=%s, exc=%s, handle=%s)",
-                    phase, attempt + 1, len(schedule),
+                    attempt + 1, len(schedule),
                     status, type(e).__name__, handle_short,
                 )
                 # First 409 with a cached resumption handle: drop it.
@@ -1153,15 +1148,15 @@ class GeminiLiveConnection:
                 # release lag passes).
                 if not handle_dropped and self._resumption_handle is not None:
                     logger.warning(
-                        f"{self._log_tag} %s dropping cached resumption "
+                        f"{self._log_tag} dropping cached resumption "
                         "handle (handle=%s) and will retry as fresh session",
-                        phase, handle_short,
+                        handle_short,
                     )
                     self._resumption_handle = None
                     handle_dropped = True
         raise RuntimeError(
-            f"{self._log_tag} {phase} failed after {len(schedule)} retries; "
-            f"last error: {last_exc}"
+            f"{self._log_tag} initial connect failed after "
+            f"{len(schedule)} retries; last error: {last_exc}"
         )
 
     async def _open_session(self) -> None:
@@ -1543,35 +1538,12 @@ class GeminiLiveConnection:
             "reopening with no resumption handle",
             idle_for, self._context_reset_sec,
         )
-        # Drop the handle and roll the session.
         self._resumption_handle = None
-        await self._teardown_session()
-        # Use the same 409-aware retry wrapper as initial-connect. The
-        # bare `_open_session()` here was the single most common source
-        # of acquire_turn() failures: server-side session release lags
-        # client-side close, and the immediate post-teardown reopen
-        # would race that release and 409. Wrapping in the retry loop
-        # both spaces the attempts AND drops the (already-cleared, but
-        # re-set on error if a server message snuck in) handle.
-        try:
-            await self._open_session_with_409_retry(
-                INITIAL_CONNECT_BACKOFF_SCHEDULE,
-                phase="context-reset-reopen",
-            )
-        except Exception as e:  # noqa: BLE001
-            # Hard failure during context-reset reopen: the connection
-            # is now in an indeterminate state (no session, no
-            # supervisor reconnect triggered, _connected_event clear).
-            # Wake the supervisor so it can drive recovery from a clean
-            # state instead of leaving the daemon stuck waiting on a
-            # connect that nobody will retry.
-            logger.error(
-                f"{self._log_tag} context-reset reopen failed (%s: %s); "
-                "triggering supervisor reconnect",
-                type(e).__name__, e,
-            )
-            self._trigger_reconnect()
-            raise
+        # Reopen through the supervisor: one reopener per connection slot.
+        self._connected_event.clear()
+        self._planned_rotate = True
+        self._reconnect_event.set()
+        await self._await_connected()
         # Reset the idle marker so we don't immediately re-trigger.
         self._last_turn_end_at = asyncio.get_event_loop().time()
 
