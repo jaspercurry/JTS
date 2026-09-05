@@ -950,6 +950,13 @@ def _unit_active(unit: str) -> bool | None:
 
 
 def _unit_failed(unit: str) -> bool | None:
+    """`systemctl is-failed`, tri-state — NOT
+    :func:`jasper.service_units.unit_failed`, which is a predicate over a
+    parsed `systemctl show` record and collapses unknown to False. Two
+    reasons this stays its own probe: `_reset_failed_if_needed` must raise on
+    None rather than proceed on a guess, and the shared predicate's wider
+    `load_state in {error, not-found}` clause would demand a `reset-failed`
+    that can never converge on a unit systemd cannot load."""
     return _query_unit_state("is-failed", unit)
 
 

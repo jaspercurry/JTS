@@ -12,7 +12,9 @@ from typing import Any
 
 from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
 from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
+from ...install_profile import is_streambox_install_profile, read_install_profile
 from ...service_units import unit_unstable
+from ...voice.input_presence import voice_parked_no_mic
 from ... import outputd_failure_reconcile_state
 from ._evidence import evidence
 from ._registry import doctor_check
@@ -29,6 +31,11 @@ from ._shared import (
 # reports "skipped" with a reason rather than "ok" — ADR-0233 rule 3.
 REASON_UNITS_FAILED_OR_UNSTABLE = "units_failed_or_unstable"
 REASON_UNITS_RESTARTED = "units_restarted"
+
+REASON_VOICE_UNIT_NOT_FULL_PROFILE = "voice_unit_not_full_profile"
+REASON_VOICE_UNIT_UNOBSERVED = "voice_unit_unobserved"
+REASON_VOICE_UNIT_PARKED_NO_INPUT = "voice_unit_parked_no_voice_input"
+REASON_VOICE_UNIT_INACTIVE = "voice_unit_inactive"
 
 REASON_SUPERVISOR_ISSUES = "supervisor_issues"
 REASON_CONTROL_UNAVAILABLE = "supervisor_snapshots_control_unavailable"
@@ -57,10 +64,15 @@ REASON_BOOTLOOP_GUARD_TRIPPED = "bootloop_guard_tripped"
 
 @doctor_check()
 def check_service_runtime_state() -> CheckResult:
-    """Surface failed units and restart-count changes in the one-shot doctor.
+    """Judge the tracked units' runtime state in the one-shot doctor.
 
-    A unit can be start-limited or repeatedly restarting with no live cgroup
-    left for the dashboard's resource sampler to display."""
+    ``failed`` fails; ``activating``/``deactivating`` on a non-oneshot fails
+    too (a stuck start, not a transition anyone is waiting out). A non-zero
+    ``NRestarts`` is reported but does NOT fail or warn: systemd keeps the
+    counter until ``reset-failed`` or a reboot, so one auto-restart days ago
+    would otherwise latch this row for the life of the boot. The count still
+    rides in the detail — it is the only place the operator sees a unit that
+    is up now but has been restarting."""
     states = evidence.unit_states()
     if states is None:
         return CheckResult(
@@ -97,13 +109,88 @@ def check_service_runtime_state() -> CheckResult:
         )
     if restarted:
         return CheckResult(
-            "service runtime state", "warn",
-            "restart counts non-zero: " + ", ".join(restarted),
+            "service runtime state", "ok",
+            "no failed or unstable units; restart counts non-zero (cumulative "
+            "since the last reset-failed or reboot, not a live fault): "
+            + ", ".join(restarted),
             reason=REASON_UNITS_RESTARTED,
         )
     return CheckResult(
         "service runtime state", "ok",
         f"{len(_RUNTIME_STATE_UNITS)} tracked units have no failed state or restarts",
+    )
+
+
+_VOICE_UNIT = "jasper-voice.service"
+
+
+def _install_profile_is_streambox() -> bool:
+    """True on the streambox tier. Fails toward False so an unparseable
+    marker keeps the louder full-speaker row rather than silently skipping
+    it."""
+    try:
+        return is_streambox_install_profile(read_install_profile())
+    except (TypeError, ValueError, OSError):
+        return False
+
+
+@doctor_check()
+def check_voice_unit_running() -> CheckResult:
+    """jasper-voice is up on a tier whose speaker answers a wake word.
+
+    The gap this closes: ``check_service_runtime_state`` counts only
+    ``failed`` and stuck-mid-transition units, so a cleanly ``inactive``
+    jasper-voice — stopped by hand, never enabled, or parked by
+    ``RestartPreventExitStatus=66 78`` (no provider configured, mic
+    unopenable) — produced no row at all while the speaker could not answer.
+
+    ``speaker_silent`` is deliberately NOT set. That flag means the speaker
+    emits nothing; music still plays with the voice daemon down. What is
+    silent here is the ASSISTANT.
+
+    Two states are not a fault and read ``skipped``: the streambox tier has
+    no always-on wake loop, and the unit's
+    ``ConditionPathExists=!/var/lib/jasper/voice-input-absent`` parks it
+    ``inactive`` on a box the AEC reconciler found to have neither a local
+    nor an accessory mic.
+    """
+    label = "voice daemon running"
+    if _install_profile_is_streambox():
+        return CheckResult(
+            label, "skipped",
+            "streambox tier — no always-on wake loop to keep running",
+            reason=REASON_VOICE_UNIT_NOT_FULL_PROFILE,
+        )
+    state = evidence.unit_state(_VOICE_UNIT)
+    if state is None or str(state.get("load_state") or "") != "loaded":
+        return CheckResult(
+            label, "skipped",
+            f"{_VOICE_UNIT} not observable — systemctl unavailable, or the "
+            "unit is not installed",
+            reason=REASON_VOICE_UNIT_UNOBSERVED,
+        )
+    active = str(state.get("active_state") or "")
+    if active != "inactive":
+        return CheckResult(
+            label, "ok",
+            f"{_VOICE_UNIT} is {active} — a failed or stuck unit is "
+            "`service runtime state`'s row",
+        )
+    if voice_parked_no_mic():
+        return CheckResult(
+            label, "skipped",
+            f"{_VOICE_UNIT} parked by its voice-input gate — the AEC "
+            "reconciler found neither a local nor an accessory mic",
+            reason=REASON_VOICE_UNIT_PARKED_NO_INPUT,
+        )
+    return CheckResult(
+        label, "fail",
+        f"{_VOICE_UNIT} is inactive (not failed) on the full profile, so no "
+        "wake word gets an answer. `systemctl status jasper-voice` names "
+        "which of the parking exits it took (78 = no provider configured, "
+        "66 = mic could not be opened); otherwise `systemctl start "
+        "jasper-voice`.",
+        reason=REASON_VOICE_UNIT_INACTIVE,
     )
 
 
@@ -231,7 +318,13 @@ def _read_system_metrics_current() -> dict[str, Any] | None:
 def check_supply_voltage() -> CheckResult:
     """Surface the Pi firmware's under-voltage flags. jasper-control's
     system-metrics sampler already polls ``vcgencmd get_throttled`` on a
-    timer; doctor is a one-shot CLI and must not add a second poller."""
+    timer; doctor is a one-shot CLI and must not add a second poller.
+
+    Under-voltage NOW fails — there is something to do about it. The
+    since-boot history bit reports ``ok``: the firmware latches it until the
+    next reboot, so a single marginal moment during a cold boot would warn
+    for the whole uptime with nothing left to act on. The bits stay in the
+    detail either way."""
     name = "Supply voltage"
     current = _read_system_metrics_current()
     if current is None:
@@ -256,7 +349,7 @@ def check_supply_voltage() -> CheckResult:
         )
     if history_bits & _UNDER_VOLTAGE_HISTORY_BIT:
         return CheckResult(
-            name, "warn",
+            name, "ok",
             f"under-voltage occurred since boot — throttled_history="
             f"{hex(history_bits)}, bit 0 set (raw vcgencmd bit 16 — "
             "jasper-control publishes throttled_history pre-shifted). This "
