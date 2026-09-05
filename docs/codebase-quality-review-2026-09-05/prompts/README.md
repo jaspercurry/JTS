@@ -51,3 +51,17 @@ being landed the same way; their close-outs redraw the map before the fresh sess
 Waves 1–2 of the steward round (26 PRs, the sensitive-tier #4163 and #4187 among them) are on
 `main` and **not deployed**; the owner's deploy is their hardware confirmation and gates P3's
 daemon rows.
+
+## Programs still landing (the map is redrawn once they have)
+
+- **Voice loop** (brief `docs/VOICE-AUDIT-2026-09-05.md` on PR #4186; code PRs #4191, #4192,
+  #4198, #4203, #4206 — open, rebased on `main`, none merged or hardware-verified). Decision: the
+  wake→turn loop becomes its own concern lane rather than being split across P3–P8, because its
+  latency ruler (`event=turn.timeline`) and wave order only make sense in one head. It will own
+  `jasper/voice_daemon.py`, `jasper/voice/`, `jasper/cues/`, `jasper-voice.service`, the wake
+  legs and the provider adapters; P3, P4, P5 and P6 hand voice items over as suggestions, and the
+  WakeLoop / `daemon_main` god-file rows move out of P5 into it. Landing order for the six PRs:
+  #4186, #4191, #4192, #4206, #4198, #4203 (the last two rebase after their pairs merge); #4186 and
+  this review both edit `docs/doc-map.toml`, so whichever merges second rebases once.
+- **Web UI** (#4031, session mid-PR on #4196), **hardware input** (#4027), **doctor/state**: close-outs
+  pending; each becomes or feeds a lane in the redrawn map.
