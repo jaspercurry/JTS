@@ -69,8 +69,8 @@ import shutil
 from pathlib import Path
 
 from .. import atomic_io
+from ..dsp_apply import CANONICAL_CAMILLA_CONFIG_DIR
 from ..log_event import log_event
-from ..sound.runtime import DEFAULT_CONFIG_DIR
 from . import follower_config
 from .config import GroupingConfig
 from .follower_config import program_channel_for
@@ -78,17 +78,17 @@ from .follower_config import program_channel_for
 logger = logging.getLogger(__name__)
 
 # camilla#1's program bake + camilla#2's driver-domain config + its (throwaway)
-# compile state. Names registered in jasper.sound.camilla_yaml._JTS_GENERATED_RE
-# so a /sound or /correction read while bonded recognises them as JTS-generated
-# (never "custom"). DELIBERATELY leader-specific paths so neither clobbers the
+# compile state. DELIBERATELY leader-specific paths so neither clobbers the
 # solo baseline profile state at
 # state_paths.DEFAULT_BASELINE_PROFILE_STATE_PATH — that record must survive
 # the bond so the unbond restore can re-apply the solo
 # active baseline — and so neither collides with the active-FOLLOWER arm's files
 # (a box is a leader xor a follower at a time, but separate files keep the two
 # arms from ever fighting over one path).
-LEADER_BAKE_CONFIG_PATH = str(DEFAULT_CONFIG_DIR / "grouping_active_leader_bake.yml")
-CROSSOVER_CONFIG_PATH = str(DEFAULT_CONFIG_DIR / "grouping_active_leader_crossover.yml")
+LEADER_BAKE_CONFIG_PATH = str(CANONICAL_CAMILLA_CONFIG_DIR / "grouping_active_leader_bake.yml")
+CROSSOVER_CONFIG_PATH = str(
+    CANONICAL_CAMILLA_CONFIG_DIR / "grouping_active_leader_crossover.yml"
+)
 CROSSOVER_STATE_PATH = "/var/lib/jasper/active_leader_crossover_profile.json"
 
 # Persistent prior-config stash for camilla#1's solo-active baseline (NOT /run:

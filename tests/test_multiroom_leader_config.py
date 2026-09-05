@@ -136,11 +136,15 @@ def test_bonded_and_restore_names_are_jts_generated():
     as JTS-generated — else a profile save while bonded would refuse with
     the custom-config error (or worse, an unlisted name would be treated
     as hand-rolled). Pins the _JTS_GENERATED_RE registration."""
-    from jasper.multiroom.leader_config import CONFIG_DIR
+    from jasper.multiroom.leader_config import CANONICAL_CAMILLA_CONFIG_DIR
     from jasper.sound.camilla_yaml import is_jts_generated_config
 
-    assert is_jts_generated_config(BONDED_CONFIG_PATH, config_dir=CONFIG_DIR)
-    assert is_jts_generated_config(SOLO_RESTORE_PATH, config_dir=CONFIG_DIR)
+    assert is_jts_generated_config(
+        BONDED_CONFIG_PATH, config_dir=CANONICAL_CAMILLA_CONFIG_DIR,
+    )
+    assert is_jts_generated_config(
+        SOLO_RESTORE_PATH, config_dir=CANONICAL_CAMILLA_CONFIG_DIR,
+    )
 
 
 async def test_apply_bonded_leader_refuses_active_config(tmp_path, monkeypatch):
@@ -159,7 +163,9 @@ async def test_apply_bonded_leader_refuses_active_config(tmp_path, monkeypatch):
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
     # Redirect the bonded-config write target off /var/lib (the shared apply
     # engine mkdir's the candidate's parent before prepare runs).
-    monkeypatch.setattr(leader_config, "CONFIG_DIR", str(tmp_path / "configs"))
+    monkeypatch.setattr(
+        leader_config, "CANONICAL_CAMILLA_CONFIG_DIR", tmp_path / "configs",
+    )
     monkeypatch.setattr(
         leader_config,
         "BONDED_CONFIG_PATH",
@@ -242,7 +248,7 @@ async def _run_solo_restore(tmp_path, monkeypatch) -> Path:
     monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
     config_dir = tmp_path / "configs"
     solo_restore_path = tmp_path / "grouping_solo_restore.yml"
-    monkeypatch.setattr(leader_config, "CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr(leader_config, "CANONICAL_CAMILLA_CONFIG_DIR", config_dir)
     monkeypatch.setattr(
         leader_config, "BONDED_CONFIG_PATH", str(config_dir / "grouping_leader.yml")
     )

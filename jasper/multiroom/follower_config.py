@@ -41,8 +41,8 @@ import os
 from pathlib import Path
 
 from .. import atomic_io
+from ..dsp_apply import CANONICAL_CAMILLA_CONFIG_DIR
 from ..log_event import log_event
-from ..sound.runtime import DEFAULT_CONFIG_DIR
 from .config import GroupingConfig
 
 logger = logging.getLogger(__name__)
@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 # driver-domain compile never clobbers the solo baseline profile state at
 # state_paths.DEFAULT_BASELINE_PROFILE_STATE_PATH — that record must survive
 # the bond so the unbond restore can re-apply the solo active baseline.
-FOLLOWER_CONFIG_PATH = str(DEFAULT_CONFIG_DIR / "grouping_follower.yml")
+FOLLOWER_CONFIG_PATH = str(CANONICAL_CAMILLA_CONFIG_DIR / "grouping_follower.yml")
 FOLLOWER_STATE_PATH = "/var/lib/jasper/active_speaker_follower_profile.json"
 
 # Persistent prior-config stash (NOT /run: a bond survives reboots, and the

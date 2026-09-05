@@ -49,21 +49,20 @@ from ..camilla_config_contract import (
     parse_camilla_devices_config,
     read_camilla_devices_config,
 )
+from ..dsp_apply import CANONICAL_CAMILLA_CONFIG_DIR
 from ..log_event import log_event
-from ..sound.runtime import DEFAULT_CONFIG_DIR
 from .config import GroupingConfig
 from .member_config import member_camilla_kwargs
 
 logger = logging.getLogger(__name__)
 
-# The wizard config dir. The bonded / restore configs live HERE, with names
-# registered in the sound module's _JTS_GENERATED_RE — so a /sound or
+# The bonded / restore configs live in CANONICAL_CAMILLA_CONFIG_DIR, with
+# names registered in the sound module's _JTS_GENERATED_RE — so a /sound or
 # /correction apply while bonded recognises them as JTS-generated, preserves
 # their room PEQs, and regenerates THROUGH the member policy instead of
 # refusing (or worse, silently rewriting a "custom" config).
-CONFIG_DIR = str(DEFAULT_CONFIG_DIR)
-BONDED_CONFIG_PATH = CONFIG_DIR + "/grouping_leader.yml"
-SOLO_RESTORE_PATH = CONFIG_DIR + "/grouping_solo_restore.yml"
+BONDED_CONFIG_PATH = str(CANONICAL_CAMILLA_CONFIG_DIR / "grouping_leader.yml")
+SOLO_RESTORE_PATH = str(CANONICAL_CAMILLA_CONFIG_DIR / "grouping_solo_restore.yml")
 
 # Persistent prior-config stash (NOT /run: a bond survives reboots, and
 # the unwind may happen many boots after the bond formed). Cleared only
@@ -179,7 +178,7 @@ async def apply_bonded_leader_config(
         # disk read of the member policy, injecting its already-resolved cfg
         # kwargs (the pipe sink).
         carrier = carrier_for_loaded_config(
-            current or str(BASE_CONFIG_PATH), config_dir=CONFIG_DIR
+            current or str(BASE_CONFIG_PATH), config_dir=CANONICAL_CAMILLA_CONFIG_DIR
         )
         result = carrier.reemit(
             profile,
@@ -266,7 +265,7 @@ async def restore_solo_config(*, camilla_factory=_camilla) -> str | None:
             peqs = (
                 extract_room_peqs_from_config(current)
                 if current
-                and is_jts_generated_config(current, config_dir=CONFIG_DIR)
+                and is_jts_generated_config(current, config_dir=CANONICAL_CAMILLA_CONFIG_DIR)
                 else []
             )
             # Deliberately NOT routed through the graph carrier (unlike the
