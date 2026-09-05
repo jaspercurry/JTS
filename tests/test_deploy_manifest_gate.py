@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Behavioral test for deploy-to-pi.sh's verify_manifest_advanced gate
-(Workstream B, problem #4).
+"""Behavioral test for deploy-to-pi.sh's verify_manifest_advanced gate.
+See ADR-0172.
 
 install.sh writes the build manifest ONLY as its final step, so after a
 successful deploy the Pi's manifest must record the deployed full SHA with
