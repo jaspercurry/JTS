@@ -1045,24 +1045,6 @@ class GeminiLiveConnection:
                 self._set_state(ConnectionState.FAILED)
             survive_terminal_initial_connect(e, self._trigger_reconnect)
 
-    def _on_initial_attempt_failed(self, exc: Exception, attempt: int) -> None:
-        """Drop a cached handle a 409 may be rejecting.
-
-        A stale or server-invalidated resumption handle is the most
-        common source of a 409 here; the next most common,
-        concurrent-session-limit, is unharmed by connecting fresh.
-        See ADR-0166."""
-        is_409, status = _is_409_conflict(exc)
-        if not is_409 or self._resumption_handle is None:
-            return
-        logger.warning(
-            f"{self._log_tag} 409 Conflict on initial connect attempt %d "
-            "(status=%s, handle=%s); dropping cached resumption handle, "
-            "next attempt connects fresh",
-            attempt, status, self._resumption_handle[:8],
-        )
-        self._resumption_handle = None
-
     async def _open_session(self) -> None:
         """Open a session, recording the outcome on the outage tracker.
 
