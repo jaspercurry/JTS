@@ -530,6 +530,40 @@ def test_router_refresh_if_empty_propagates_statuses_even_when_clients_still_emp
     assert r.statuses[0].state == ACCOUNT_REVOKED
 
 
+# --- build_router (shared Registry.load -> migrate -> build_clients -> Router) ---
+
+
+def test_build_router_migrates_legacy_cache_before_building_clients(
+    tmp_path, monkeypatch,
+):
+    """mux.py and the voice daemon each inlined this bootstrap and relied
+    on maybe_migrate_legacy running before build_clients so a pre-multi-
+    account install's single cache became the "default" account on first
+    use. build_router must preserve that ordering."""
+    from jasper import accounts as accounts_mod
+    from jasper.spotify_router import BuildResult, build_router
+
+    monkeypatch.setattr(accounts_mod, "DEFAULT_CACHE_DIR", str(tmp_path / "caches"))
+    legacy_cache = tmp_path / ".spotify-cache"
+    legacy_cache.write_text('{"access_token": "xyz"}')
+    seen_account_names: list[str] = []
+
+    def fake_build_clients(registry, *, client_id, redirect_uri):
+        seen_account_names.extend(a.name for a in registry.accounts)
+        return BuildResult(clients={}, statuses=[], default_name=registry.default_name)
+
+    monkeypatch.setattr("jasper.spotify_router.build_clients", fake_build_clients)
+    router = build_router(
+        client_id="cid",
+        redirect_uri="http://127.0.0.1/callback",
+        accounts_path=str(tmp_path / "accounts.json"),
+        cache_path=str(legacy_cache),
+    )
+    assert seen_account_names == ["default"]
+    assert router.default_name == "default"
+    assert router.rebuild_fn is None
+
+
 def test_router_empty_reason_returns_empty_when_clients_present():
     ac = _ac("jasper", title="Hey Jude")
     r = Router(clients={"jasper": ac}, default_name="jasper")

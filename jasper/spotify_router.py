@@ -39,7 +39,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from .accounts import Account, Registry, build_cache_handler
+from .accounts import Account, Registry, build_cache_handler, maybe_migrate_legacy
 from .log_event import log_event
 from .spotify_routing import _normalise as _normalise_title
 
@@ -708,3 +708,31 @@ class Router:
     async def _is_playing(ac: AccountClient) -> bool:
         playback = await Router._current_playback(ac)
         return bool(playback and playback.get("is_playing"))
+
+
+def build_router(
+    *,
+    client_id: str,
+    redirect_uri: str,
+    accounts_path: str,
+    cache_path: str,
+    with_rebuild: bool = False,
+) -> Router:
+    """Registry.load -> maybe_migrate_legacy -> build_clients -> Router,
+    the bootstrap every long-lived Spotify caller (mux, the voice daemon)
+    repeats. `with_rebuild=True` wires the same load/migrate/build chain
+    as the returned Router's `rebuild_fn`, so a caller that keeps the
+    Router around can recover an empty one via `refresh_if_empty()`
+    without re-invoking this function."""
+    def _do_build() -> BuildResult:
+        registry = Registry.load(accounts_path)
+        maybe_migrate_legacy(registry, cache_path, default_name="default")
+        return build_clients(registry, client_id=client_id, redirect_uri=redirect_uri)
+
+    result = _do_build()
+    return Router(
+        clients=result.clients,
+        default_name=result.default_name,
+        statuses=result.statuses,
+        rebuild_fn=_do_build if with_rebuild else None,
+    )

@@ -1766,33 +1766,23 @@ class Mux:
             )
             return None
         try:
-            from .accounts import Registry, maybe_migrate_legacy
-            from .spotify_router import Router, build_clients
-            registry = Registry.load(os.environ.get(
-                "JASPER_SPOTIFY_ACCOUNTS_PATH",
-                "/var/lib/jasper-intsecrets/spotify/accounts.json",
-            ))
-            maybe_migrate_legacy(
-                registry,
-                os.environ.get(
+            from .spotify_router import build_router
+            router = build_router(
+                client_id=client_id,
+                redirect_uri=resolved_spotify_redirect_uri(),
+                accounts_path=os.environ.get(
+                    "JASPER_SPOTIFY_ACCOUNTS_PATH",
+                    "/var/lib/jasper-intsecrets/spotify/accounts.json",
+                ),
+                cache_path=os.environ.get(
                     "SPOTIFY_CACHE_PATH",
                     "/var/lib/jasper-intsecrets/.spotify-cache",
                 ),
-                default_name="default",
             )
-            result = build_clients(
-                registry,
-                client_id=client_id,
-                redirect_uri=resolved_spotify_redirect_uri(),
-            )
-            if not result.clients:
+            if not router.clients:
                 logger.debug("spotify Web API: no accounts authorized")
                 return None
-            self._spotify_router = Router(
-                clients=result.clients,
-                default_name=registry.default_name,
-                statuses=result.statuses,
-            )
+            self._spotify_router = router
             return self._spotify_router
         except Exception as e:  # noqa: BLE001
             logger.warning("spotify Web API router build failed: %s", e)
