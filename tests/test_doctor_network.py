@@ -160,6 +160,28 @@ country 99: DFS-UNSET
     assert r.reason == doctor_network.REASON_REGDOM_UNSET
 
 
+@pytest.mark.parametrize(
+    "stdout, returncode, reason",
+    [
+        ("", 1, "REASON_REGDOM_PROBE_FAILED"),
+        ("global\n", 0, "REASON_REGDOM_UNPARSEABLE"),
+    ],
+    ids=["probe-failed", "no-global-country"],
+)
+def test_check_wifi_regdom_skips_when_no_country_was_observed(
+    monkeypatch, stdout, returncode, reason
+):
+    """A failed or countryless `iw reg get` observed no WLAN country at all
+    (an Ethernet-only Pi is one), so the row is dim rather than a finding a
+    healer could act on."""
+    _patch_doctor_iw_reg_get(monkeypatch, stdout, returncode=returncode)
+
+    r = doctor_network.check_wifi_regdom()
+
+    assert r.status == "skipped"
+    assert r.reason == getattr(doctor_network, reason)
+
+
 def test_check_wifi_regdom_ok_with_valid_global_and_no_phy(monkeypatch):
     _patch_doctor_iw_reg_get(
         monkeypatch,
@@ -461,6 +483,17 @@ def test_check_avahi_jasper_control_ok_on_partial_timeout(monkeypatch):
     assert r.reason == doctor_network.REASON_AVAHI_BROWSE_PARTIAL_TIMEOUT
 
 
+def test_check_avahi_jasper_control_skips_without_avahi_browse(monkeypatch):
+    """No avahi-browse means the advertisement was never observed; the three
+    fail arms below all rest on a probe that actually ran."""
+    monkeypatch.setattr(doctor_network.shutil, "which", lambda _name: None)
+
+    r = doctor_network.check_avahi_jasper_control()
+
+    assert r.status == "skipped"
+    assert r.reason == doctor_network.REASON_AVAHI_BROWSE_MISSING
+
+
 def test_check_avahi_jasper_control_fails_on_timeout_without_service(
     monkeypatch,
 ):
@@ -479,6 +512,68 @@ def test_check_avahi_jasper_control_fails_on_timeout_without_service(
 
     assert r.status == "fail"
     assert r.reason == doctor_network.REASON_AVAHI_BROWSE_TIMEOUT
+
+
+# ------------------------------------------ check_hostname_avahi_consistency
+
+
+def _patch_avahi_resolve(
+    monkeypatch, *, sys_hostname="jts", resolve=("jts.local 192.168.1.9", 0),
+    own_ips="192.168.1.9", have_binary=True,
+):
+    monkeypatch.setattr(
+        doctor_network.shutil,
+        "which",
+        lambda name: "/usr/bin/avahi-resolve-host-name" if have_binary else None,
+    )
+
+    def fake_run(cmd, timeout=5.0):
+        if cmd[:2] == ["hostname", "-s"]:
+            return _completed(cmd, stdout=sys_hostname)
+        if cmd[:2] == ["hostname", "-I"]:
+            return _completed(cmd, stdout=own_ips)
+        stdout, returncode = resolve
+        return _completed(cmd, returncode=returncode, stdout=stdout)
+
+    monkeypatch.setattr(doctor_network, "_run", fake_run)
+
+
+@pytest.mark.parametrize(
+    "kwargs, status, reason",
+    [
+        ({}, "ok", ""),
+        ({"sys_hostname": ""}, "skipped", "REASON_HOSTNAME_UNREADABLE"),
+        ({"have_binary": False}, "skipped", "REASON_AVAHI_RESOLVE_MISSING"),
+        ({"resolve": ("", 1)}, "skipped", "REASON_AVAHI_RESOLVE_FAILED"),
+        (
+            {"resolve": ("jts.local", 0)},
+            "warn",
+            "REASON_AVAHI_RESOLVE_UNEXPECTED_OUTPUT",
+        ),
+        (
+            {"own_ips": "192.168.1.40"},
+            "fail",
+            "REASON_HOSTNAME_COLLISION",
+        ),
+    ],
+    ids=[
+        "resolves-to-us", "no-hostname", "no-avahi-utils", "resolve-failed",
+        "unparseable-output", "another-box-owns-the-name",
+    ],
+)
+def test_check_hostname_avahi_consistency_verdicts(
+    monkeypatch, kwargs, status, reason
+):
+    """Two boxes on one name breaks `<hostname>.local` for the whole
+    household, so the collision fails; the arms that resolved nothing at all
+    (no hostname, no avahi-utils, a daemon that is not advertising yet) skip,
+    and output that arrived but did not parse is still an observation."""
+    _patch_avahi_resolve(monkeypatch, **kwargs)
+
+    r = doctor_network.check_hostname_avahi_consistency()
+
+    assert r.status == status
+    assert r.reason == (getattr(doctor_network, reason) if reason else "")
 
 
 # ----- check_wifi_recover_timer (Wi-Fi flap recovery timer health) -----
@@ -535,10 +630,11 @@ def test_check_wifi_recover_timer_no_systemctl_skips(monkeypatch):
     "kwargs, status, reason",
     [
         ({}, "ok", ""),
-        # A collision means avahi renamed us: name the reachable address.
+        # A collision means avahi renamed us: discovery is broken for the
+        # household until the name is unique, so it fails.
         (
             {"collision": "1", "drift": "1", "avahi": "jts3-2.local"},
-            "warn",
+            "fail",
             doctor_network.REASON_IDENTITY_COLLISION,
         ),
         ({"drift": "1"}, "warn", doctor_network.REASON_IDENTITY_DRIFT),
@@ -556,7 +652,7 @@ def test_check_identity_coherence_verdicts(
     assert r.reason == reason
 
 
-def test_check_identity_coherence_warns_on_a_stale_snapshot(monkeypatch, tmp_path):
+def test_check_identity_coherence_discloses_a_stale_snapshot(monkeypatch, tmp_path):
     old = (datetime.now(timezone.utc) - timedelta(hours=2)).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
@@ -564,7 +660,7 @@ def test_check_identity_coherence_warns_on_a_stale_snapshot(monkeypatch, tmp_pat
 
     r = doctor_network.check_identity_coherence()
 
-    assert r.status == "warn"
+    assert r.status == "ok"
     assert r.reason == doctor_network.REASON_IDENTITY_SNAPSHOT_STALE
 
 

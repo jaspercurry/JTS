@@ -217,10 +217,8 @@ def check_provider_importable() -> CheckResult:
     """
     state = read_active_provider_state()
     if state.status in _PROVIDER_UNDETERMINED:
-        # check_provider_key adjudicates a bad or unreadable selection; say
-        # "can't tell" rather than inventing a second verdict on it.
         return CheckResult(
-            "voice provider imports", "warn",
+            "voice provider imports", "skipped",
             f"active provider undetermined ({state.detail}); imports not checked",
             reason=REASON_PROVIDER_IMPORTS_UNDETERMINED,
         )
@@ -289,7 +287,11 @@ def _voice_provider_ids_manifest_path() -> Path:
 
 @doctor_check()
 def check_voice_provider_ids_manifest() -> CheckResult:
-    """Verify the shell-readable provider-id projection is in sync."""
+    """Verify the shell-readable provider-id projection is in sync.
+
+    Missing or stale parks jasper-voice — `jasper-aec-reconcile` accepts the
+    active provider only as an exact line here — so both `fail` (ADR-0165;
+    non-negotiable 6). Non-canonical order still matches its `grep -Fxq`."""
     path = _voice_provider_ids_manifest_path()
     expected = provider_ids_manifest_text().splitlines()
     if not path.exists():
@@ -347,8 +349,8 @@ def _assess_tool_packs(
     """Compare the static tool-pack registry against what jasper-voice
     actually registered at startup. Pure — the runtime list is passed in.
 
-    - runtime None (control unreachable / older daemon): report the
-      registry alone, ok. Runtime is invisible, so this does not alarm.
+    - runtime None (control unreachable / older daemon): registration was
+      not observed at all, so skipped, naming the registry.
     - any pack status=="failed": fail — that tool family silently
       vanished from voice.
     - a registry pack absent from the runtime report: warn (the daemon
@@ -357,7 +359,7 @@ def _assess_tool_packs(
     label = "Tool packs"
     if runtime is None:
         return CheckResult(
-            label, "ok",
+            label, "skipped",
             f"{len(expected)} packs defined ({', '.join(expected)}); "
             "runtime status unavailable (jasper-control unreachable or "
             "daemon predates tool-pack telemetry).",
@@ -435,8 +437,6 @@ def check_spend_cap(cfg: Config) -> CheckResult:
         # create or re-own it and lock the owning daemon out of its own DB.
         # household_usage_reader opens every member read_only.
         tuning_db = tuning_usage_db_path(cfg.usage_db)
-        # Household spend folds in jasper-correction-web's paid tuning calls;
-        # the note says whether that sibling ledger exists yet.
         ledger_note = (
             "includes tuning ledger"
             if os.path.exists(tuning_db)
@@ -509,7 +509,7 @@ def check_pricing() -> CheckResult:
             )
             if state.status in _PROVIDER_UNDETERMINED:
                 return CheckResult(
-                    "voice model pricing", "warn", unchecked,
+                    "voice model pricing", "skipped", unchecked,
                     reason=REASON_PRICING_MODEL_UNDETERMINED,
                 )
             return CheckResult(

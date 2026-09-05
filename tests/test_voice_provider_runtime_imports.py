@@ -226,14 +226,14 @@ def test_skips_when_ssot_file_missing(monkeypatch, probe):
     assert probe["calls"] == []
 
 
-def test_warns_rather_than_failing_when_selection_unreadable(monkeypatch, probe):
+def test_does_not_probe_when_the_selection_is_unreadable(monkeypatch, probe):
     """A non-root doctor that cannot traverse /var/lib/jasper knows nothing
-    about the provider's imports — that is 'can't tell', not 'broken'."""
+    about the provider's imports, so it must spawn nothing. The verdict
+    itself is pinned in tests/test_doctor_voice.py."""
     monkeypatch.setattr(
         doctor_voice, "read_active_provider_state", lambda: _state("unreadable"),
     )
-    result = doctor_voice.check_provider_importable()
-    assert result.status == "warn"
+    doctor_voice.check_provider_importable()
     assert probe["calls"] == []
 
 
