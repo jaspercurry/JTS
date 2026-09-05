@@ -27,6 +27,8 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
+from jasper.active_speaker.crossover_v2.evidence_packet import CLASSIFICATION_ARTIFACT
+from jasper.active_speaker.crossover_v2.position_cycle import POSITION_CYCLE_FILENAME
 from jasper.active_speaker.crossover_v2.forward_model import (
     ACCEPTANCE_NOT_RUN,
     SummationCandidate,
@@ -1173,30 +1175,50 @@ def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
     payload = json.loads((round_dir / "inventory.json").read_text())
     rows = {row["artifact"]: row for row in payload["artifacts"]}
 
-    assert rows["per_seat.json"]["present"] is True
+    present = rows["per_seat.json"]
+    assert present["present"] is True
+    assert present["bytes"] == (round_dir / "per_seat.json").stat().st_size
+    assert payload["bytes_total"] == sum(
+        row["bytes"] or 0 for row in payload["artifacts"]
+    )
 
+    # Every path this round can fill is filled: the row is a line to run.
     missing = rows["directivity.json"]
     assert missing["present"] is False
-    assert missing["produced_by"] == "jasper-round-views directivity <this-round>"
+    assert missing["bytes"] is None
+    assert missing["produced_by"] == f"jasper-round-views directivity {round_dir}"
     assert missing["producer_needs_more_than_this_round"] is False
     assert missing["path"] == str(round_dir / "directivity.json")
     # The producer it named writes the artifact it named as missing.
-    assert cli.main(["directivity", str(round_dir)]) == 0
+    assert cli.main(missing["produced_by"].split()[1:]) == 0
     assert Path(missing["path"]).is_file()
 
     # A view whose subcommand takes MORE than this round says so, and places
     # this round in the slot that writes the artifact beside it — frozen
-    # grades the TARGET. Run as one round it is an invocation argparse rejects.
+    # grades the TARGET. What is left in brackets is what no inventory of one
+    # round can fill, and running it without that round argparse rejects.
     multi = rows["frozen_reference.json"]
     assert multi["produced_by"] == (
-        "jasper-round-views frozen <other-round> <this-round>"
+        f"jasper-round-views frozen <other-round> {round_dir}"
     )
     assert multi["producer_needs_more_than_this_round"] is True
     with pytest.raises(SystemExit):
         cli.main(["frozen", str(round_dir)])
 
-    assert rows["gate_sweep.json"]["produced_by"] == (
-        "jasper-round-views gate-sweep <this-round>"
+    # A bundle-taking verb is named with the bundle it must be pointed at, and
+    # nothing else stays open in it.
+    bundle = round_dir / "bundle" / "sess1"
+    assert rows[CLASSIFICATION_ARTIFACT]["produced_by"] == (
+        f"jasper-round-views classify-features {bundle}"
+    )
+    assert rows[CLASSIFICATION_ARTIFACT][
+        "producer_needs_more_than_this_round"
+    ] is False
+
+    # One row no view here writes: the banker's own pose index, named with the
+    # command that makes it rather than with this tool's prog.
+    assert rows[POSITION_CYCLE_FILENAME]["produced_by"] == (
+        f"jasper-round bank {bundle}"
     )
 
     # A view the evidence packet reads is read back where THAT reader looks —
@@ -1442,25 +1464,40 @@ def test_an_entry_grade_over_a_packet_missing_its_block_reads_as_unreadable(
     assert json.loads(capsys.readouterr().out)["status"] == "unreadable"
 
 
-def test_cli_writes_a_live_rounds_view_beside_the_caller(tmp_path, monkeypatch):
-    """A live session bundle is the daemon's directory, not the operator's.
+def test_where_a_view_pointed_at_a_session_bundle_files_its_artifact(
+    tmp_path, monkeypatch
+):
+    """Two bundles, two homes, and neither is inside the bundle itself.
 
-    Defaulting inside it made the ordinary invocation — grade the round I just
-    ran — depend on being able to write into the web host's own tree.
+    A bundle a round was banked AROUND files beside that round: the
+    bundle-taking verbs can only be pointed at the bundle, and filing beside
+    the caller would leave every artifact where ``inventory`` never looks. A
+    bundle no round holds is the daemon's own directory, and defaulting inside
+    it made the ordinary invocation — grade the round I just ran — depend on
+    writing into the web host's tree (#3498).
     """
     from jasper.cli.round_views import main
 
-    session_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    ) / "bundle" / "sess1"
+    curves = {"cloud_verify_02": ("onax", _flat_curve())}
+    round_dir = _make_round_dir(tmp_path, "r1", position_curves=curves)
+    banked_bundle = round_dir / "bundle" / "sess1"
+    # The on-speaker shape: /var/lib/jasper/active_speaker/sessions/<id>.
+    sessions = tmp_path / "daemon" / "sessions"
+    sessions.mkdir(parents=True)
+    live = sessions / "live-1"
+    (_make_round_dir(tmp_path / "other", "r2", position_curves=curves)
+     / "bundle" / "sess1").rename(live)
     here = tmp_path / "cwd"
     here.mkdir()
     monkeypatch.chdir(here)
 
-    assert main(["per-seat", str(session_dir)]) == 0
+    assert main(["per-seat", str(banked_bundle)]) == 0
+    assert main(["per-seat", str(live)]) == 0
 
-    assert (here / "sess1-per_seat.json").is_file()
-    assert not (session_dir / "per_seat.json").exists()
+    assert (round_dir / "per_seat.json").is_file()
+    assert not (banked_bundle / "per_seat.json").exists()
+    assert (here / "live-1-per_seat.json").is_file()
+    assert not (live / "per_seat.json").exists()
 
 
 # --------------------------------------------------------------------------- #
