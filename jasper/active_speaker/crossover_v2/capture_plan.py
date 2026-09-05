@@ -198,6 +198,19 @@ _VERTICAL_SIGNS = {"BELOW": -1, "ABOVE": 1}
 _VERTICAL_WORDS = {sign: word for word, sign in _VERTICAL_SIGNS.items()}
 
 
+def elevation_clause(elevation_deg: int) -> str:
+    """One pose's ELEVATION, worded — empty string at mark height.
+
+    The only generator of these words: the sentence a person reads and the
+    button they press to attest it are composed from this, so the two cannot
+    name one pose differently.
+    """
+    if not elevation_deg:
+        return ""
+    word = _VERTICAL_WORDS[1 if elevation_deg > 0 else -1]
+    return f"{abs(elevation_deg)}° {word} mark height"
+
+
 def _pose(
     template: str,
     offset_cm: float,
@@ -472,7 +485,11 @@ def remote_position_prompt(prompt: CloudPositionPrompt) -> CloudPositionPrompt:
     """One hand-walked pose, restated as the ANGLE a positioner turns to.
 
     Same pose, same ``offset_cm``, same role — only the copy changes, so
-    everything downstream reads exactly what Full's walk records.
+    everything downstream reads exactly what Full's walk records. A raise also
+    states its LENGTH, because the person holding the microphone has a tape
+    measure and no protractor. It names the mark distance beside it since that
+    is the standoff :func:`position_elevation_deg` derives the degrees against
+    (#2932: a bearing puts the capsule further out than that).
     """
     degrees_ = position_angle_deg(prompt)
     elevation = position_elevation_deg(prompt)
@@ -489,12 +506,16 @@ def remote_position_prompt(prompt: CloudPositionPrompt) -> CloudPositionPrompt:
         detail = (
             f"Keep it {MARK_DISTANCE_M:g} m from the speaker and pointed at it."
         )
-    if elevation == 0:
+    clause = elevation_clause(elevation)
+    if not clause:
         return replace(prompt, headline=f"{bearing}.", detail=detail)
-    updown = _VERTICAL_WORDS[1 if elevation > 0 else -1]
+    height = format_position_distance(round(prompt.vertical_offset_cm))
     return replace(
         prompt,
-        headline=f"{bearing}, and {abs(elevation)}° {updown} mark height.",
+        headline=(
+            f"{bearing}, and {clause} — that is {height} "
+            f"at the declared {MARK_DISTANCE_M:g} m."
+        ),
         detail=detail,
     )
 
@@ -887,10 +908,11 @@ class V2PlanShape:
         """Whether poses are stated as BEARINGS and every begin is HELD until
         something reports the microphone in place.
 
-        The POSE-STATEMENT axis: the prompt copy restates each pose as its angle
-        (:func:`_positioned_prompt`) and every entry declares that angle in
-        machine terms (:data:`POSITION_DEG_KEY` / :data:`POSITION_ROLE_KEY`,
-        :func:`_entry_policy`), which is what the host's position gate reads.
+        The POSE-STATEMENT axis: the prompt copy restates each pose as its
+        angles (:func:`_positioned_prompt`) and every entry declares them in
+        machine terms (:data:`POSITION_DEG_KEY`, :data:`POSITION_VERTICAL_DEG_KEY`,
+        :data:`POSITION_ROLE_KEY`, :func:`_entry_policy`), which is what the
+        host's position gate reads.
         True for the arm and for a hand-released round; only the arm also gets
         the countdown.
         """
@@ -1335,9 +1357,13 @@ def _entry_advance(shape: V2PlanShape | None) -> dict[str, str]:
 
 #: The per-entry screen keys that state a GATED entry's TARGET POSITION in
 #: machine terms, emitted only by a shape with
-#: :attr:`V2PlanShape.positions_gated`. The plan is the source of that angle;
-#: the gate and the envelope read it back off the entry.
+#: :attr:`V2PlanShape.positions_gated`. The plan is the source of that pose;
+#: the gate and the envelope read it back off the entry. The vertical key rides
+#: only a pose that LEAVES mark height — absent IS the mark — because a walk's
+#: vertical stops sit at 0° bearing and would otherwise publish as design-axis
+#: captures.
 POSITION_DEG_KEY = "position_deg"
+POSITION_VERTICAL_DEG_KEY = "position_vertical_deg"
 POSITION_ROLE_KEY = "position_role"
 
 
@@ -1356,10 +1382,12 @@ def _entry_policy(
     if shape is None or not shape.positions_gated:
         return policy
     degrees = position_angle_deg(prompt) if prompt is not None else 0
+    vertical = position_elevation_deg(prompt) if prompt is not None else 0
     role = prompt.role if prompt is not None else POSITION_ROLE_ONAX
     return {
         **policy,
         POSITION_DEG_KEY: str(degrees),
+        **({POSITION_VERTICAL_DEG_KEY: str(vertical)} if vertical else {}),
         POSITION_ROLE_KEY: role,
     }
 

@@ -162,7 +162,7 @@ def check_screens(screens: CheckScreens) -> str | None:
     4. **Pilot SNR**, ahead of linearity (#1838): below the floor the
        ambient-subtracted two-pilot delta is not evidence either way, so the
        honest finding is the room and the level, never the microphone.
-    5. **Linearity** (W6.12). CHECK is the one phase that can tell the room from
+    5. **Linearity.** CHECK is the one phase that can tell the room from
        the microphone, because its gain solve already produced a band-resolved
        ambient verdict against THIS capture.
     6. **The gain solve itself.** No plan, or a plan that could not clear the
@@ -536,7 +536,7 @@ def _gate_disclosure(response: Any) -> str | None:
 
 
 def _gate_moved_rms_db(response: Any) -> float | None:
-    """How far the gate moved the response's SHAPE, in dB RMS (ticket 1.5).
+    """How far the gate moved the response's SHAPE, in dB RMS.
 
     The number :func:`_gate_disclosure`'s sentence already narrates, taken off
     the same typed record rather than re-derived, so the digits in the prose and
@@ -555,7 +555,7 @@ def _gate_moved_rms_db(response: Any) -> float | None:
 
 
 def _gate_reflection_delay_ms(response: Any) -> float | None:
-    """The first reflection's arrival AFTER the direct one, in ms (ticket 1.5).
+    """The first reflection's arrival AFTER the direct one, in ms.
 
     The physical quantity, and deliberately NOT the gating block's own
     ``first_reflection_ms``, which is an absolute time inside the analysed IR and
@@ -614,7 +614,7 @@ def _gate_record(
     ``None``: no screen invents a gate that was never applied.
 
     The two numbers exist so a READER of the banked round does not have to parse
-    the sentence to get them (ticket 1.5); a screen still reads only
+    the sentence to get them; a screen still reads only
     ``disclosure`` and ``reflection_measured``.
     """
     if response is None or not getattr(response, "gating", None):
@@ -644,7 +644,7 @@ def _pilot_by_role(analysis: ProgramAnalysis, role: str) -> Any | None:
 def _pilot_transfer_by_role(analysis: ProgramAnalysis) -> dict[str, float]:
     """Per-role pilot transfer: captured hi level minus the programmed hi gain.
 
-    Measurement-honesty gate G3's raw material: VERIFY replays the identical
+    The measurement-honesty raw material: VERIFY replays the identical
     program through the identical applied graph on every attempt, so this
     transfer should not move between attempts either. Excludes any pilot whose
     ``programmed_hi_gain_db`` is unset — there is nothing to compare it against.

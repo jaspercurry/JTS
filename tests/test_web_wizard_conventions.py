@@ -12,11 +12,13 @@ jasper.web._common.
 from __future__ import annotations
 
 import ast
+import functools
 import http
 import inspect
 import json
 import re
 import textwrap
+import urllib.parse
 from email.message import Message
 from io import BytesIO
 from pathlib import Path
@@ -28,6 +30,7 @@ from jasper.web import (
     system_setup,
     wifi_setup,
 )
+from jasper.web.nav import NAV, hub_paths, render_hub
 
 
 WEB_SETUP_FILES = (
@@ -1087,4 +1090,186 @@ def test_web_pages_inline_style_counts_match_the_shrink_only_allowlist():
         "inline style= counts drifted from the shrink-only allowlist "
         "(docs/UX-AUDIT-2026-09-03.md §5.5) — lower an entry as its page is "
         f"cleaned up, never raise one without a ledger row: {counts}"
+    )
+
+
+# §5.1: a row's label is its page's <title> and its header title, and the page
+# goes back to the row's parent. Pages are scanned, not rendered — most need a
+# live daemon; a page whose header is client-rendered (`chrome.js`) is checked
+# on its <title> alone. A hub has no module: it is rendered (no daemon) and
+# read back the same way.
+_PAGE_MODULE = {
+    "/sources/": "sources_setup",
+    "/spotify/": "spotify_setup",
+    "/bluetooth/": "bluetooth_setup",
+    "/airplay/": "airplay_setup",
+    "/eq/": "sound_setup",
+    "/sound/setup/": "sound_setup",
+    "/sound/crossover/": "correction_crossover_flow",
+    "/sound/room/": "correction_room_flow",
+    "/sound/bass/": "correction_bass_flow",
+    "/sound/measurements/": "correction_measurements",
+    "/voice/": "voice_setup",
+    "/wake/": "wake_setup",
+    "/chat/": "chat_setup",
+    "/tools/": "tools_setup",
+    "/weather/": "weather_setup",
+    "/transit/": "transit_setup",
+    "/google/": "google_setup",
+    "/ha/": "home_assistant_setup",
+    "/wifi/": "wifi_setup",
+    "/rooms/": "rooms_setup",
+    "/system/": "system_setup",
+    "/speaker/": "speaker_setup",
+    "/wake-corpus/": "wake_corpus_setup",
+}
+
+# Shrink-only: every row whose page disagrees with its label today, against the
+# ledger row (docs/UX-AUDIT-2026-09-03.md §7) that retires the entry. Drop an
+# entry when its page is fixed; never add one without a ledger row. A `back`
+# entry is B.2 re-parenting: the row now hangs under a hub while its page still
+# links Home, and the Phase C row that moves the page fixes the link.
+_TITLE_ALLOWLIST = {
+    ("/sources/", "Playback sources"): {"title", "header"},         # C.R1
+    ("/spotify/", "Spotify accounts"): {"title", "header"},         # C.R1
+    ("/bluetooth/", "Bluetooth devices"): {"title", "header"},      # C.R1
+    ("/airplay/", "AirPlay sync"): {"title", "header"},             # C.R1
+    ("/eq/", "EQ"): {"back"},                                       # C.S1
+    ("/sound/setup/", "Sound setup"): {"back"},                     # C.S2
+    ("/rooms/", "Stereo pair"): {"back", "title", "header"},        # C.S4
+    ("/sound/crossover/", "Active speaker"): {"back", "title", "header"},  # C.S5
+    ("/sound/room/", "Room correction"): {"title"},                 # C.S5
+    ("/sound/bass/", "Bass"): {"back", "title", "header"},          # C.S5
+    ("/sound/measurements/", "Measurements"): {"back", "title"},    # C.S5
+    ("/voice/", "Voice"): {"back", "title", "header"},              # C.A2
+    ("/wake/", "Wake word"): {"back"},                              # C.A3
+    ("/tools/", "Tools"): {"back"},                                 # C.A4
+    ("/weather/", "Weather"): {"back"},                             # C.A5
+    ("/transit/", "Transit"): {"back"},                             # C.A5
+    ("/google/", "Google"): {"back", "title", "header"},            # C.A5
+    ("/ha/", "Home Assistant"): {"back"},                           # C.A5
+    ("/wake-corpus/", "Wake corpus"): {"title", "header"},          # C.Y1
+}
+
+_SHELL_KIND = {"canonical_page": "title", "canonical_header": "header"}
+
+
+def _scope(fn: ast.FunctionDef) -> tuple[dict, set, list]:
+    """What `fn`'s names can be, its parameter names, and the calls it makes."""
+    args = fn.args
+    positional = [*args.posonlyargs, *args.args]
+    names: dict[str, list] = {}
+    for param, default in zip(
+        positional[len(positional) - len(args.defaults):], args.defaults
+    ):
+        names[param.arg] = [default]
+    for param, default in zip(args.kwonlyargs, args.kw_defaults):
+        if default is not None:
+            names[param.arg] = [default]
+    calls = []
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    names.setdefault(target.id, []).append(node.value)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            kwargs = {k.arg: k.value for k in node.keywords}
+            calls.append((
+                node.func.id,
+                node.args[0] if node.args else kwargs.get("title"),
+                kwargs.get("back_href", ...),
+            ))
+    return names, {p.arg for p in [*positional, *args.kwonlyargs]}, calls
+
+
+def _literals(names: dict, node, resolve: bool = True) -> set[str]:
+    """Strings `node` can be. An interpolated part becomes NUL, so an f-string
+    URL still yields a comparable path."""
+    if isinstance(node, ast.Constant):
+        return {node.value} if isinstance(node.value, str) else set()
+    if isinstance(node, ast.JoinedStr):
+        return {"".join(
+            v.value if isinstance(v, ast.Constant) else "\x00" for v in node.values
+        )}
+    if isinstance(node, ast.IfExp):
+        return _literals(names, node.body, resolve) | _literals(
+            names, node.orelse, resolve
+        )
+    if not (isinstance(node, ast.Name) and resolve):
+        return set()
+    found: set[str] = set()
+    for value in names.get(node.id, ()):
+        found |= _literals(names, value, resolve=False)
+    return found
+
+
+@functools.lru_cache(maxsize=None)
+def _page_strings(module: str) -> tuple[frozenset, frozenset, frozenset]:
+    """(<title>s, header titles, back-link paths) a page module can render."""
+    tree = ast.parse(Path(f"jasper/web/{module}.py").read_text())
+    scopes = [
+        (fn.name, *_scope(fn))
+        for fn in ast.walk(tree)
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    # A module-local wrapper that forwards its own title parameter into a shell
+    # renders that shell's title too, so it counts as one.
+    kinds = {name: {kind} for name, kind in _SHELL_KIND.items()}
+    growing = True
+    while growing:
+        growing = False
+        for name, _names, params, calls in scopes:
+            for callee, title, _back in calls:
+                if not (isinstance(title, ast.Name) and title.id in params):
+                    continue
+                grown = kinds.get(name, set()) | kinds.get(callee, set())
+                if grown != kinds.get(name, set()):
+                    kinds[name] = grown
+                    growing = True
+    found = {"title": set(), "header": set()}
+    backs: set[str] = set()
+    for _name, names, _params, calls in scopes:
+        for callee, title, back in calls:
+            for kind in kinds.get(callee, ()):
+                if title is not None:
+                    found[kind] |= _literals(names, title)
+                if kind == "header":
+                    backs |= {"/"} if back is ... else _literals(names, back)
+    paths = {urllib.parse.urlsplit(b).path or "/" for b in backs}
+    return frozenset(found["title"]), frozenset(found["header"]), frozenset(paths)
+
+
+@functools.lru_cache(maxsize=None)
+def _hub_strings(path: str) -> tuple[frozenset, frozenset, frozenset]:
+    """The same three strings, read off a rendered hub page."""
+    page = render_hub(path, caps={}, app_css_version="testsha")
+    return (
+        frozenset(re.findall(r"<title>([^<]*)</title>", page)),
+        frozenset(re.findall(r'<h1 class="app-header__title">([^<]*)</h1>', page)),
+        frozenset(re.findall(r'<a class="icon-button" href="([^"]*)"', page)),
+    )
+
+
+def test_nav_row_labels_match_their_pages_or_the_shrink_only_allowlist():
+    mismatched = {}
+    for row in NAV:
+        titles, headers, backs = (
+            _hub_strings(row.path)
+            if row.path in hub_paths()
+            else _page_strings(_PAGE_MODULE[row.path])
+        )
+        bad = set()
+        if row.label not in titles:
+            bad.add("title")
+        if headers and row.label not in headers:
+            bad.add("header")
+        if backs and row.parent not in backs:
+            bad.add("back")
+        if bad:
+            mismatched[(row.path, row.label)] = bad
+
+    assert mismatched == _TITLE_ALLOWLIST, (
+        "landing label, <title>, header title and back link must agree "
+        "(docs/web-ia.md §2, docs/UX-AUDIT-2026-09-03.md §5.1) — drop an "
+        f"allowlist entry as its page is fixed: {mismatched}"
     )

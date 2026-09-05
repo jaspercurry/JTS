@@ -126,6 +126,11 @@ async def _run_async_doctor_check(
 # callers of the systemctl helpers report `skipped` with this.
 REASON_SYSTEMCTL_UNAVAILABLE = "systemctl_unavailable"
 
+# The saved output topology is torn/unreadable — both the audio-domain
+# output-hardware-match check and the active-speaker runtime-graph check
+# report this same reason for the same underlying evidence failure.
+REASON_TOPOLOGY_UNREADABLE = "output_topology_unreadable"
+
 
 def _run(cmd: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)

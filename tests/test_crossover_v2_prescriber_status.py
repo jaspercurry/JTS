@@ -28,6 +28,7 @@ from typing import Any
 
 import pytest
 
+from jasper.active_speaker.crossover_alignment import POLARITY_INVERT
 from jasper.active_speaker.crossover_v2 import prescription_spool as spool
 from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
 from jasper.active_speaker.crossover_v2.alignment_prescription import (
@@ -36,13 +37,18 @@ from jasper.active_speaker.crossover_v2.alignment_prescription import (
 from jasper.active_speaker.crossover_v2.topology_prescription import (
     TOPOLOGY_NO_CROSSOVER_REGION,
 )
+from jasper.active_speaker.measured_crossover_candidate import (
+    MeasuredCrossoverAlignment,
+)
 from jasper.active_speaker.seat_level_reference import (
     STATE_PATH_ENV as _SEAT_LEVEL_STATE_PATH_ENV,
 )
 from jasper.cli import crossover_prescriber as cli
 
+from tests.test_active_speaker_measured_crossover_candidate import _candidate
 from tests.test_active_speaker_session_volume_plan import _bank_reference
 from tests.test_crossover_v2_blend_prescription import _bundle, _receipt
+from tests.test_crossover_v2_candidate_republish import _publish
 from tests.test_crossover_v2_driver_prescription import (
     TWEETER_BAND,
     WOOFER_BAND,
@@ -65,6 +71,17 @@ def _isolated_spool(tmp_path: Path):
     (tmp_path / "spool").mkdir()
     yield
     spool.set_prescription_spool_path_for_tests(None)
+
+
+@pytest.fixture(autouse=True)
+def bank(tmp_path, monkeypatch) -> Path:
+    """The candidate bank this suite reads: never the one on the box running
+    pytest, whose contents would move the report and the cycle it offers."""
+    root = tmp_path / "sessions"
+    monkeypatch.setattr(
+        "jasper.active_speaker.bundles.sessions_dir", lambda: root
+    )
+    return root
 
 
 @pytest.fixture(autouse=True)
@@ -451,6 +468,58 @@ def test_a_raised_walk_publishes_its_elevations():
     assert (flat["angles_deg"], flat["elevations_deg"], flat["n_takes"]) == (
         [0], [0], 2,
     )
+
+
+def test_the_bank_lists_what_a_walk_may_stage_and_offers_the_cycle(
+    tmp_path, capsys, bank
+):
+    """The candidates an LLM may stage, and the one command that cycles them.
+
+    Every banked candidate is listed with what tells it apart -- its corner and
+    the alignment it was minted with -- and with the verdict the staging door
+    will give it, which is the SEAM's own
+    (``angle_capture.candidate_measure_axes``) rather than a second opinion
+    spelled here. The cycle is offered over the measurable ones only, so a
+    printed command cannot be one the door would refuse; below two there is
+    nothing to compare.
+    """
+    plain = _candidate()
+    flipped = _candidate(alignment=MeasuredCrossoverAlignment(
+        delay_us=250.0, delay_role="tweeter", polarity=POLARITY_INVERT,
+    ))
+    unplayable = _candidate(linearization={"woofer": {"filters": []}})
+    for index, candidate in enumerate((plain, flipped, unplayable)):
+        _publish(bank, candidate, capture=f"capture-{index}")
+    session, _ = _speaker_dirs(tmp_path)
+
+    _, payload = _status([str(session)], capsys)
+
+    listed = {
+        record["fingerprint"]: record
+        for record in payload["banked"]["candidates"]
+    }
+    assert set(listed) == {
+        one.fingerprint for one in (plain, flipped, unplayable)
+    }
+    assert listed[flipped.fingerprint]["corner"] == {
+        "between_roles": ["woofer", "tweeter"],
+        "fc_hz": 1600.0,
+        "filter_type": "Linkwitz-Riley",
+        "slope_db_per_octave": 24.0,
+    }
+    assert listed[flipped.fingerprint]["alignment"] == {
+        "polarity": POLARITY_INVERT,
+        "delay_us": 250.0,
+        "delay_role": "tweeter",
+    }
+    assert listed[plain.fingerprint]["measurable"] is True
+    # A candidate carrying linearization EQ is listed with why, not hidden.
+    assert listed[unplayable.fingerprint]["measurable"] is False
+    assert listed[unplayable.fingerprint]["reason"]
+    assert (
+        "jasper-angle-capture stage --program tournament --candidates "
+        f"{plain.fingerprint},{flipped.fingerprint}"
+    ) in payload["next"]
 
 
 def test_a_session_that_walked_nothing_says_so_rather_than_going_quiet():

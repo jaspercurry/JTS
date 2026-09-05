@@ -352,9 +352,15 @@ def check_jasper_mux() -> CheckResult:
     parked = _parked_follower_result("jasper-mux")
     if parked is not None:
         return parked
-    state = (evidence.unit_state("jasper-mux.service") or {}).get(
-        "active_state",
-    ) or "unknown"
+    unit_state = evidence.unit_state("jasper-mux.service")
+    if unit_state is None:
+        return CheckResult(
+            "jasper-mux",
+            "skipped",
+            "systemctl unavailable — skipped (not Linux?)",
+            reason=REASON_SYSTEMCTL_UNAVAILABLE,
+        )
+    state = unit_state.get("active_state") or "unknown"
     if state == "active":
         return CheckResult(
             "jasper-mux", "ok",

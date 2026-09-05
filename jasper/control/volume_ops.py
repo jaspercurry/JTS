@@ -99,25 +99,22 @@ def _build_spotify_router_or_none():
     if not client_id:
         return None
     try:
-        from ..accounts import DEFAULT_REGISTRY_PATH, LEGACY_CACHE_PATH, Registry, maybe_migrate_legacy
+        from ..accounts import Registry, legacy_cache_path, maybe_migrate_legacy, registry_path
         from ..spotify_router import Router, build_clients
-        accounts_path = os.environ.get(
-            "JASPER_SPOTIFY_ACCOUNTS_PATH",
-            DEFAULT_REGISTRY_PATH,
-        )
-        legacy_cache_path = os.environ.get("SPOTIFY_CACHE_PATH", LEGACY_CACHE_PATH)
+        accounts_path = registry_path()
+        cache_path = legacy_cache_path()
         redirect_uri = resolved_spotify_redirect_uri()
         registry = Registry.load(accounts_path)
         maybe_migrate_legacy(
             registry,
-            legacy_cache_path,
+            cache_path,
             default_name="default",
         )
         fingerprint = (
             client_id,
             redirect_uri,
             accounts_path,
-            legacy_cache_path,
+            cache_path,
             registry.default_name,
             _spotify_account_cache_fingerprint(registry),
         )

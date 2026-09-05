@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 from jasper.bass_extension import profile as profile_mod
 from jasper.bass_extension.profile import BassExtensionEvaluation, BassExtensionRefusal
-from jasper.cli.doctor import audio as doctor_audio
-from jasper.cli.doctor.audio import check_bass_extension_profile
+from jasper.cli.doctor import active_speaker as doctor_audio
+from jasper.cli.doctor.active_speaker import check_bass_extension_profile
 from jasper.control import state_aggregate
 
 

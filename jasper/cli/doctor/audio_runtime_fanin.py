@@ -820,16 +820,13 @@ def _requires_roleful_graph() -> bool:
     Every caller that ACTS on rolefulness reads the fail-CLOSED loaders instead.
     """
     from jasper.active_speaker.runtime_contract import classify_output_contract
-    from jasper.output_topology import (
-        OutputTopologyError,
-        load_output_topology_strict,
-    )
+    from jasper.output_topology import OutputTopologyError
 
     try:
         # The STRICT loader, not `evidence.output_topology()`: this one raises
         # on a torn/absent file instead of fail-softing, which is what the
         # `except` below classifies. Memoized so it stays one read per run.
-        topology = evidence.get("output_topology_strict", load_output_topology_strict)
+        topology = evidence.output_topology_strict()
         return bool(classify_output_contract(topology).requires_roleful_graph)
     except (OutputTopologyError, OSError, ValueError):
         return False

@@ -350,6 +350,8 @@ def canonical_page(
     csrf_token: str = "",
     page_css: str = "",
     page_css_href: str = "",
+    app_css_version: str = "",
+    control_token_meta: bool = True,
 ) -> bytes:
     """Wrap a body fragment in a full HTML document on the canonical
     design system (the redesigned management look).
@@ -368,10 +370,16 @@ def canonical_page(
       * the caller's `body` (which supplies its own <header>/<main>/
         <script>).
 
+    An install-time render passes `app_css_version` (the build SHA the run
+    installs — /var/lib/jasper/build.txt still holds the PRIOR one while
+    install.sh runs) and `control_token_meta=False`: a page written to disk
+    for nginx has no privileged POST to ride the token, so it must not bake
+    the secret into a world-readable file.
+
     Returns bytes; send via `send_html_response()`."""
-    version = html.escape(_asset_version())
+    version = html.escape(app_css_version or _asset_version())
     csrf = csrf_meta_html(csrf_token) if csrf_token else ""
-    ctl_token = control_token_meta_html()
+    ctl_token = control_token_meta_html() if control_token_meta else ""
     page_link = (
         f'<link rel="stylesheet" href="{html.escape(page_css_href)}?v={version}">'
         if page_css_href else ""

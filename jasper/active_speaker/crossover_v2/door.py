@@ -7,7 +7,7 @@
 One linear ``async with``, spelled once so two operator doors cannot disagree
 about the give-back. ``measurement_window()`` wraps the WHOLE session:
 without it jasper-voice's idle reconciler reverts the opened measurement volume
-toward the household level within ~200 ms (W6.1 hardware run 2), and cap
+toward the household level within ~200 ms, and cap
 enforcement then silently understates. The install is ``set_active_config_raw``,
 so a restart or ``kill -9`` restores the applied graph by doing nothing
 (ADR-0193).

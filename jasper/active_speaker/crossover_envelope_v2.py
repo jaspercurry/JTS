@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The v2 session screen envelope (Wave 5a; two-stage since PR-T3).
+"""The v2 session screen envelope.
 
 The pure ``status -> envelope`` function for the v2 screen sequence
 defined in ``docs/crossover-measurement-productization-design.md``
@@ -12,7 +12,7 @@ fix-and-retry / hard stop / session restart), and two special screens
 (``volume_recovery``, the VERIFY-fail one-default screen). Reached
 directly or via
 ``jasper.web.correction_crossover_flow._build_envelope_logged`` — the only
-crossover flow since W5b retired the legacy schema-6 envelope. It emits
+crossover flow; the legacy schema-6 envelope was retired. It emits
 the envelope dict shape (``schema_version`` / ``screen`` / ``steps`` /
 ``verdict_text`` / ``nudges`` / ``capture`` / ``next_action`` /
 ``alternate_actions`` / ``progress`` / ``applied``) the generic
@@ -329,7 +329,7 @@ def _candidate_review_payload(
             candidate.get("linearization_octave_reasons"),
             candidate.get("linearization_driver_class"),
         ),
-        # "This correction costs N dB of maximum level" (PR-L5). A
+        # "This correction costs N dB of maximum level." A
         # compound, not a bare float — pairing db with its basis (#1808)
         # makes rendering it under the wrong era unavailable.
         "headroom_cost": _headroom_cost_payload(candidate),
@@ -1076,7 +1076,7 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "severity": "warn",
             "text": "The predicted result does not meet the target.",
         })
-    # G1's reservation (#2087): last and quietest of the three, qualifying
+    # The ripple reservation (#2087): last and quietest of the three, qualifying
     # otherwise-fine evidence.
     nudges.extend(_ripple_reservation_nudges(status))
     nudges.extend(_calibration_reservation_nudges(status))
@@ -1094,7 +1094,7 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "label": "Measure again",
             "endpoint": "/correction/crossover/v2/session",
             "body": {},
-            # W6.12's escape hatch: a `stopping` session would otherwise
+            # An escape hatch: a `stopping` session would otherwise
             # blanket-hide every alternate, stranding the household.
             "show_during_capture": True,
         },
@@ -1154,7 +1154,7 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             + _ripple_reservation_lines(status)
         ),
         prediction=prediction,
-        # CC1: the frame gate banks its disagreement and PROCEEDS, so the
+        # The frame gate banks its disagreement and PROCEEDS, so the
         # proposal below it was reached over evidence two instruments read
         # differently — and the household was told nothing about that at the
         # exact moment they were asked to decide (#1949).
@@ -1503,7 +1503,7 @@ def _round_adoption_nudges(v2: Mapping[str, Any]) -> list[dict[str, str]]:
     return []
 
 
-# --- G1's ripple reservation (#2087) ----------------------------------------
+# --- ripple reservation (#2087) ---------------------------------------------
 #
 # Three functions, one owner. The flow decides, the host persists, and
 # everything a household or an operator READS about the reservation is composed
@@ -1532,7 +1532,7 @@ RIPPLE_RESERVATION_COPY = (
 
 
 def _ripple_reservation(status: Mapping[str, Any]) -> Mapping[str, Any]:
-    """G1's banked reservation, or an empty mapping (#2087).
+    """The banked ripple reservation, or an empty mapping (#2087).
 
     The validating reader for a key ``crossover_v2_status_block`` copies through
     unchecked. Empty is the honest answer for every unusable shape, because both
@@ -1956,7 +1956,7 @@ def _envelope(
         # them behind a <details>. Empty on every screen that has none.
         "expert_details": list(expert_details or []),
         # A terminal / restart screen must stop advertising the dead phone link
-        # and its QR (W6.10 fold-in) — the session it pointed at is gone.
+        # and its QR — the session it pointed at is gone.
         "capture": (_mapping(status.get("capture")) or None) if advertise_capture else None,
         "next_action": next_action,
         "alternate_actions": alternate_actions or [],
@@ -2170,7 +2170,7 @@ def _banked_progress_note(status: Mapping[str, Any]) -> str:
     )
 
 
-# --- banked findings (WO-1's read half; panel lens C, CC1) --------------------
+# --- banked findings ---------------------------------------------------------
 
 
 def _finding_notes(status: Mapping[str, Any]) -> list[dict[str, str]]:
@@ -2239,7 +2239,7 @@ def _verify_fail_envelope(
     for ``verify_deterministic_mismatch``, whose verdict IS that a
     second attempt agreed with the first, Re-measure is promoted to
     primary instead — keyed on the code's own registry row, template AND
-    budget. ``show_during_capture`` on the alternates (W6.12) keeps them
+    budget. ``show_during_capture`` on the alternates keeps them
     reachable while a capture is still transitioning (``stopping``);
     ``verify_retry`` deliberately omits it, since starting a brand-new
     session during teardown is the race the gate prevents.
@@ -2288,7 +2288,7 @@ def _verify_fail_envelope(
             _verify_expert_details(status, headline_code=code)
             + _verify_level_reference_lines(status)
             + _flatness_details_lines(status)
-            # G1's numbers (#2087), EXPERT ONLY — no household sentence,
+            # The ripple numbers (#2087), EXPERT ONLY — no household sentence,
             # so a second caveat doesn't compete with the one action asked.
             + _ripple_reservation_lines(status)
         ),
@@ -2408,7 +2408,7 @@ def _failure_envelope(
             },
             status=status,
             # The session this screen replaced is dead — don't re-advertise
-            # its phone link/QR (W6.10). Start over mints a fresh one.
+            # its phone link/QR. Start over mints a fresh one.
             advertise_capture=False,
         )
     if template == TEMPLATE_VERIFY_FAIL:
@@ -2616,7 +2616,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             status=status,
         )
     elif phase == PHASE_APPLYING:
-        # RETAINED but unreached since PR-T3 (D10): the household-visible
+        # RETAINED but unreached (D10): the household-visible
         # wait is the ``closing`` screen now; a blocked/errored apply
         # surfaces through the generic ``failure`` branch above.
         env = _envelope(
@@ -2641,7 +2641,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         env = _envelope(
             screen="verify", active_step="verify",
             verdict=verdict,
-            # STAGE 2's entry point (D2, PR-T3). The measuring session ended at
+            # STAGE 2's entry point (D2). The measuring session ended at
             # the review screen, so the post-apply check is a NEW session somebody
             # has to start — deliberately, because the session TTL begins
             # ticking at open while the household is still walking back to the
@@ -2846,7 +2846,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             verdict=done_verdict,
             next_action=next_action,
             alternate_actions=alternate_actions,
-            # The badge may not claim more than the evidence. G1's
+            # The badge may not claim more than the evidence. The ripple
             # reservation (#2087) is appended at the CALL SITE — owed
             # whichever badge won, regardless of ``_done_nudges``'s
             # non-pass early return.
@@ -2876,7 +2876,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 # R9's rule (#2087): owes the numbers behind any caveat above.
                 + _ripple_reservation_lines(status)
             ),
-            # CC1: rides the durable projection since stage 2 is a
+            # Rides the durable projection since stage 2 is a
             # different session in a different bundle.
             findings=_finding_notes(status),
         )
@@ -2952,7 +2952,7 @@ def crossover_v2_phase(
             return phase
     # Every phase this session ran is accepted. WHICH terminal state that is
     # depends on whether the session ever intended to verify (two-stage
-    # commission D3/PR-T2, work order premise 6 — a verified collision).
+    # commission D3, work order premise 6 — a verified collision).
     #
     # A MEASURE-ONLY session — stage 1 of the two-stage flow: CHECK, MEASURE,
     # CLOUD_MEASURE, no VERIFY — used to fall straight through to PHASE_DONE,
@@ -2977,7 +2977,7 @@ def crossover_v2_phase(
     # the bug being fixed.
     #
     # But an applied measure-only session is not DONE either (two-stage
-    # commission D2, PR-T3): stage 1 measured, the household applied from the
+    # commission D2): stage 1 measured, the household applied from the
     # review screen, and the post-apply check — stage 2 — has not been opened
     # yet. That is exactly PHASE_VERIFY: "the crossover is applied, put the
     # microphone back where it started", whose screen now carries the action
@@ -3369,13 +3369,13 @@ def prediction_status(state: Any) -> dict[str, Any] | None:
     any surface. This projects; it never grades.
 
     **Nothing renders it yet.** It is the wire half of the two-stage flow's
-    review screen (PR-T2's "what we predict" panel and the chart's third
+    review screen (the "what we predict" panel and the chart's third
     curve), landed on its own rung so that screen is built against data already
     proven on the wire rather than against a shape invented alongside it.
 
     **``curve`` and ``spec`` are independently absent, and all four
-    combinations are reachable.** Enumerated because a consumer — PR-T2's
-    review screen above all — has to render each one differently:
+    combinations are reachable.** Enumerated because a consumer — the review
+    screen above all — has to render each one differently:
 
     1. *Both present* — the ordinary closed session. Draw the curve, state the
        verdict.

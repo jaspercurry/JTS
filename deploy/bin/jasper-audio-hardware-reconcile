@@ -188,7 +188,6 @@ I2S_HAT_APPLY_ERROR=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ASOUND_RENDER_LIB="${JASPER_ASOUND_RENDER_LIB:-}"
 ENV_FILE_LIB="${JASPER_ENV_FILE_LIB:-}"
-ALSA_CARD_LIB="${JASPER_ALSA_CARD_LIB:-}"
 
 # Shared quoting helper (jasper_env_quote_value) — single
 # implementation for both reconcilers so the PR #534 bash-%q
@@ -241,22 +240,6 @@ load_asound_render_lib() {
     # warning severity.
     # shellcheck source=deploy/lib/jasper-asound-render.sh
     source "$ASOUND_RENDER_LIB"
-}
-
-load_alsa_card_lib() {
-    if [[ -z "$ALSA_CARD_LIB" ]]; then
-        if [[ -r "${SCRIPT_DIR}/../lib/jasper-alsa-card.sh" ]]; then
-            ALSA_CARD_LIB="${SCRIPT_DIR}/../lib/jasper-alsa-card.sh"
-        else
-            ALSA_CARD_LIB="/usr/local/lib/jasper/jasper-alsa-card.sh"
-        fi
-    fi
-    if [[ ! -r "$ALSA_CARD_LIB" ]]; then
-        echo "jasper-audio-hardware-reconcile: missing ALSA-card library: ${ALSA_CARD_LIB}" >&2
-        exit 66
-    fi
-    # shellcheck source=deploy/lib/jasper-alsa-card.sh
-    source "$ALSA_CARD_LIB"
 }
 
 usage() {
@@ -339,16 +322,11 @@ fi
 
 load_env_file_lib
 load_asound_render_lib
-load_alsa_card_lib
 
 # Quoting is the shared lib's jasper_env_quote_value (sourced by
 # load_env_file_lib above); this thin alias keeps print_env readable.
 quote_env_value() {
     jasper_env_quote_value "$1"
-}
-
-find_card() {
-    jasper_find_alsa_card "$APLAY" "$1"
 }
 
 publish_management_transport_marker() {
@@ -368,17 +346,8 @@ publish_management_transport_marker() {
 
 observe_output_hardware_state() {
     local should_write="${1:-0}"
-    local payload profile_id profile_status selected_card_id usb_topology usb_desired usb_active usb_available usb_management usb_reason blocker_codes
-    local action="observed" write_arg=""
-    local previous_profile_id="" previous_card_id=""
+    local payload action="observed" write_arg=""
     OBSERVED_OUTPUT_VALID=0
-    # Read BEFORE the write below replaces the record: the identity the mixer
-    # pin depends on (which profile, on which card). An absent record reads as
-    # empty, so a first write counts as a change.
-    if [[ "$should_write" == "1" && -f "$OUTPUT_HARDWARE_STATE_PATH" ]]; then
-        previous_profile_id="$(sed -n 's/.*"profile_id": *"\([^"]*\)".*/\1/p' "$OUTPUT_HARDWARE_STATE_PATH" 2>/dev/null || true)"
-        previous_card_id="$(sed -n 's/.*"selected_card_id": *"\([^"]*\)".*/\1/p' "$OUTPUT_HARDWARE_STATE_PATH" 2>/dev/null || true)"
-    fi
     if [[ "$should_write" == "1" ]]; then
         write_arg="--write"
         action="written"
@@ -390,93 +359,76 @@ observe_output_hardware_state() {
     if ! payload="$(
         JASPER_APLAY="$APLAY" \
         JASPER_OUTPUT_HARDWARE_STATE_PATH="$OUTPUT_HARDWARE_STATE_PATH" \
-        "$OUTPUT_HARDWARE_PYTHON" -m jasper.output_hardware ${write_arg:+"$write_arg"} 2>/dev/null
+        JASPER_OUTPUT_TOPOLOGY_PATH="$OUTPUT_TOPOLOGY_PATH" \
+        "$OUTPUT_HARDWARE_PYTHON" -m jasper.cli.output_hardware --env \
+            ${write_arg:+"$write_arg"} 2>/dev/null
     )"; then
         log_event "state_${action}_failed" "path=${OUTPUT_HARDWARE_STATE_PATH}"
         return 0
     fi
-    profile_id="$(printf '%s' "$payload" | sed -n 's/.*"profile_id": *"\([^"]*\)".*/\1/p')"
-    profile_status="$(printf '%s' "$payload" | sed -n 's/.*"status": *"\([^"]*\)".*/\1/p')"
-    selected_card_id="$(printf '%s' "$payload" | sed -n 's/.*"selected_card_id": *"\([^"]*\)".*/\1/p')"
-    # Same call that validates the payload also lifts out its BLOCKER CODES.
-    # The record is the only place the park's reason is written, and the sed
-    # extractions above cannot safely reach into the `issues` array; folding it
-    # into the existing interpreter spawn keeps the reason available to the
-    # journal at zero extra process cost on every pass.
-    if ! blocker_codes="$(
-        "$OUTPUT_HARDWARE_PYTHON" -c '
-import json, sys
-data = json.load(sys.stdin)
-if not isinstance(data, dict):
-    raise SystemExit(1)
-print(",".join(
-    str(issue.get("code") or "unnamed")
-    for issue in data.get("issues") or []
-    if isinstance(issue, dict) and issue.get("severity") == "blocker"
-))
-' <<<"$payload" 2>/dev/null
-    )" || [[ -z "$profile_id" || -z "$profile_status" ]]; then
+    # Every value is shlex-quoted by the emitter (ADR-0235 R2). A payload that
+    # evals but omits a key leaves that key at its cleared value, so the two
+    # the whole record hangs off are checked before anything reads the rest.
+    if ! eval "$payload" ||
+        [[ -z "$OBSERVED_OUTPUT_PROFILE_ID" || -z "$OBSERVED_OUTPUT_PROFILE_STATUS" ]]; then
+        clear_observed_output_state
         log_event "state_${action}_failed" "reason=invalid_payload path=${OUTPUT_HARDWARE_STATE_PATH}"
         return 0
     fi
-    OBSERVED_OUTPUT_BLOCKER_CODES="$blocker_codes"
     OBSERVED_OUTPUT_VALID=1
-    if [[ "$should_write" == "1" ]] &&
-        [[ "$profile_id" != "$previous_profile_id" ||
-           "$selected_card_id" != "$previous_card_id" ]]; then
+    if [[ "$OBSERVED_OUTPUT_RECORD_CHANGED" == "1" ]]; then
         OUTPUT_HARDWARE_RECORD_CHANGED=1
     fi
-    OBSERVED_OUTPUT_PAYLOAD="$payload"
-    OBSERVED_OUTPUT_PROFILE_ID="$profile_id"
-    OBSERVED_OUTPUT_PROFILE_STATUS="$profile_status"
-    OBSERVED_OUTPUT_SELECTED_CARD_ID="$selected_card_id"
-    usb_topology="$(printf '%s' "$payload" | sed -n 's/.*"board_topology": *"\([^"]*\)".*/\1/p')"
-    usb_desired="$(printf '%s' "$payload" | sed -n 's/.*"desired_role": *"\([^"]*\)".*/\1/p')"
-    usb_active="$(printf '%s' "$payload" | sed -n 's/.*"active_role": *"\([^"]*\)".*/\1/p')"
-    usb_available="$(printf '%s' "$payload" | sed -n 's/.*"gadget_available": *\([[:alpha:]][[:alpha:]]*\).*/\1/p')"
-    usb_management="$(printf '%s' "$payload" | sed -n 's/.*"management_transport_available": *\([[:alpha:]][[:alpha:]]*\).*/\1/p')"
-    case "$usb_available" in true|false) ;; *) usb_available="" ;; esac
-    case "$usb_management" in true|false) ;; *) usb_management="" ;; esac
+    if [[ -n "$OBSERVED_OUTPUT_APPLE_CARD_IDS" ]]; then
+        DONGLE_CARD="${OBSERVED_OUTPUT_APPLE_CARD_IDS%% *}"
+        APPLE_DONGLE_PRESENT=1
+        # APPLE_DONGLE_SERVICE_CARD stays "auto": ALSA card ids are not stable
+        # across a re-enumeration (a second card with the same id becomes
+        # `A_1`), and the mixer units bake this value in at install. Pinning
+        # the sampled id freezes a transient name the helpers can never
+        # re-resolve.
+    fi
     # Never fatal: every other failure in this function logs and returns, and a
     # full /run must not skip the DAC-role policy the caller runs next.
-    publish_management_transport_marker "$usb_management" || true
-    usb_reason="$(printf '%s' "$payload" | sed -n 's/.*"reason": *"\([^"]*\)".*/\1/p')"
+    publish_management_transport_marker \
+        "$OBSERVED_OUTPUT_USB_MANAGEMENT_TRANSPORT_AVAILABLE" || true
     log_event "state_${action}" \
-        "path=${OUTPUT_HARDWARE_STATE_PATH} profile_id=${profile_id:-unknown} status=${profile_status:-unknown}"
-    printf 'event=hardware.usb_role_resolved topology=%s desired=%s active=%s gadget_available=%s management_transport_available=%s reason=%s\n' \
-        "${usb_topology:-unknown}" "${usb_desired:-unknown}" \
-        "${usb_active:-unknown}" "${usb_available:-false}" \
-        "${usb_management:-false}" "${usb_reason:-state_missing}" >&2
+        "path=${OUTPUT_HARDWARE_STATE_PATH} profile_id=${OBSERVED_OUTPUT_PROFILE_ID:-unknown} status=${OBSERVED_OUTPUT_PROFILE_STATUS:-unknown}"
 }
 
 reconcile_i2s_hat_boot() {
-    local payload topology changed
+    # Declared before the eval, so a payload that omits a key leaves it empty
+    # -- the `case` below then exits 66 instead of tripping `set -u`, and an
+    # inherited JASPER_BOOT_* from the caller's environment can never stand in.
+    local payload
+    local JASPER_BOOT_I2S_HAT_CHANGED="" JASPER_BOOT_I2S_HAT_PROFILE=""
+    local JASPER_BOOT_BOARD_TOPOLOGY=""
     if payload="$(
         "$OUTPUT_HARDWARE_PYTHON" -m jasper.audio_hardware.usb_port_role \
-            --reconcile-boot \
+            --reconcile-boot --env \
             --i2s-hat-intent-file "$I2S_HAT_INTENT_FILE"
     )"; then
         :
-    elif [[ "$payload" == *'"boot_config_published_not_durable": true'* ]]; then
+    elif [[ "$payload" == *'JASPER_BOOT_CONFIG_PUBLISHED_NOT_DURABLE=true'* ]]; then
         I2S_HAT_APPLY_ERROR=1
     else
         log_event "i2s_hat_apply" "result=error action=preserve_boot_config"
         exit 66
     fi
-    topology="$(printf '%s' "$payload" | sed -n 's/.*"board_topology": *"\([^"]*\)".*/\1/p')"
-    I2S_HAT_DESIRED_PROFILE="$(printf '%s' "$payload" | sed -n 's/.*"i2s_hat_profile": *"\([^"]*\)".*/\1/p')"
-    changed="$(printf '%s' "$payload" | sed -n 's/.*"i2s_hat_boot_config_changed": *\([[:alpha:]][[:alpha:]]*\).*/\1/p')"
-    case "$changed" in true|false) ;; *) exit 66 ;; esac
-    if [[ "$topology" == "unsupported" ]]; then
+    # Every value is shlex-quoted by the emitter (ADR-0235 R2).
+    eval "$payload" || exit 66
+    case "$JASPER_BOOT_I2S_HAT_CHANGED" in true|false) ;; *) exit 66 ;; esac
+    I2S_HAT_DESIRED_PROFILE="$JASPER_BOOT_I2S_HAT_PROFILE"
+    if [[ "$JASPER_BOOT_BOARD_TOPOLOGY" == "unsupported" ]]; then
         log_event "i2s_hat_apply" "result=unavailable board_topology=unsupported"
         return 0
     fi
-    I2S_HAT_BOOT_CHANGED="$changed"
+    I2S_HAT_BOOT_CHANGED="$JASPER_BOOT_I2S_HAT_CHANGED"
     if [[ "$I2S_HAT_APPLY_ERROR" == "1" ]]; then
         log_event "i2s_hat_apply" "result=error error=boot_config_published_not_durable"
         return 0
     fi
-    log_event "i2s_hat_apply" "result=${changed:-unknown} profile=${I2S_HAT_DESIRED_PROFILE:-none}"
+    log_event "i2s_hat_apply" "result=${I2S_HAT_BOOT_CHANGED:-unknown} profile=${I2S_HAT_DESIRED_PROFILE:-none}"
 }
 
 sync_i2s_hat_reboot_marker() {
@@ -488,7 +440,7 @@ sync_i2s_hat_reboot_marker() {
     # so only the DESIRED id needs a child-devices lookup.
     local desired="$I2S_HAT_DESIRED_PROFILE" observed="$OBSERVED_OUTPUT_PROFILE_ID"
     [[ -n "$I2S_HAT_BOOT_CHANGED" && "$OBSERVED_OUTPUT_VALID" == "1" ]] || return 0
-    [[ -n "$desired" && "$OBSERVED_OUTPUT_PAYLOAD" == *'"child_devices": ['*"\"device_id\": \"$desired\""*']'* ]] &&
+    [[ -n "$desired" && " $OBSERVED_OUTPUT_CHILD_DEVICE_IDS " == *" $desired "* ]] &&
         observed="$desired"
     if [[ "$observed" == "$desired" ]]; then
         rm -f -- "$I2S_HAT_REBOOT_REQUIRED_PATH"
@@ -855,7 +807,6 @@ repair_generated_env_permissions() {
     jasper_env_file_repair_permissions "$FANIN_ENV_FILE" 0640 0750
 }
 
-APPLE_DONGLE_CARD=""
 APPLE_DONGLE_PRESENT=0
 APPLE_DONGLE_SERVICE_CARD="auto"
 DONGLE_CARD="A"
@@ -864,18 +815,34 @@ OUTPUT_DAC_ID="unknown"
 OUTPUT_DAC_RECOGNIZED=0
 OUTPUTD_ACTIVE_MODE=0
 OUTPUTD_ACTIVE_CHANNELS=""
-OBSERVED_OUTPUT_PROFILE_ID=""
-OBSERVED_OUTPUT_PROFILE_STATUS=""
-OBSERVED_OUTPUT_SELECTED_CARD_ID=""
-OBSERVED_OUTPUT_PAYLOAD=""
 # Set when this pass WROTE a record naming a different profile or card than the
 # one it replaced. The mixer pin reads that record, so it is the one thing that
-# has to re-run it.
+# has to re-run it. The emitter decides it: it reads the record it is about to
+# replace.
 OUTPUT_HARDWARE_RECORD_CHANGED=0
-# Blocker codes from the observed record, comma-joined. The record is where a
-# park's reason is written, so this is what lets `output_parked` name WHY
-# instead of only reporting `recognized=0`.
-OBSERVED_OUTPUT_BLOCKER_CODES=""
+# The `jasper.cli.output_hardware --env` fields this reconciler consumes,
+# cleared to what an ABSENT record means (ADR-0235 R2). Re-cleared when a
+# payload evals but fails validation, so half a record can never stand next
+# to half of another.
+clear_observed_output_state() {
+    OBSERVED_OUTPUT_PROFILE_ID=""
+    OBSERVED_OUTPUT_PROFILE_STATUS=""
+    OBSERVED_OUTPUT_SELECTED_CARD_ID=""
+    OBSERVED_OUTPUT_CHILD_DEVICE_IDS=""
+    OBSERVED_OUTPUT_APPLE_CARD_IDS=""
+    # Blocker codes from the observed record, comma-joined. The record is where
+    # a park's reason is written, so this is what lets `output_parked` name WHY
+    # instead of only reporting `recognized=0`.
+    OBSERVED_OUTPUT_BLOCKER_CODES=""
+    OBSERVED_OUTPUT_RECORD_CHANGED=0
+    OBSERVED_OUTPUT_USB_MANAGEMENT_TRANSPORT_AVAILABLE=""
+    OBSERVED_OUTPUT_DUAL_MAPPING_OK=0
+    OBSERVED_OUTPUT_DUAL_MAPPING_REASON=""
+    OBSERVED_OUTPUT_DUAL_ORDER_SOURCE=""
+    OBSERVED_OUTPUT_DUAL_DAC_A_PCM=""
+    OBSERVED_OUTPUT_DUAL_DAC_B_PCM=""
+}
+clear_observed_output_state
 DUAL_APPLE_DAC_A_PCM=""
 DUAL_APPLE_DAC_B_PCM=""
 DUAL_APPLE_ORDER_SOURCE=""
@@ -884,19 +851,6 @@ DUAL_APPLE_ORDER_SOURCE=""
 # Empty means "no endpoint field", which set_outputd_active_lane_pair reads as
 # NO ring marker (fail closed by positive equality).
 DUAL_APPLE_ACTIVE_ENDPOINT_DEVICE=""
-
-detect_roles() {
-    APPLE_DONGLE_CARD="$(find_card 'usb-c to 3.5mm')"
-    if [[ -n "$APPLE_DONGLE_CARD" ]]; then
-        DONGLE_CARD="$APPLE_DONGLE_CARD"
-        APPLE_DONGLE_PRESENT=1
-        # SERVICE_CARD stays "auto": ALSA card ids are not stable across a
-        # re-enumeration (a second card with the same id becomes `A_1`), and
-        # the mixer units bake this value in at install. Pinning the sampled
-        # id freezes a transient name the helpers can never re-resolve.
-    fi
-
-}
 
 apply_observed_single_policy() {
     # output_hardware classifies ordinary single devices from the DacProfile
@@ -924,34 +878,19 @@ apply_observed_composite_policy() {
             "status=${OBSERVED_OUTPUT_PROFILE_STATUS:-unknown} action=park_until_ready"
         return
     fi
-    local parsed
-    if ! parsed="$(
-        printf '%s' "$OBSERVED_OUTPUT_PAYLOAD" | JASPER_OUTPUT_TOPOLOGY_PATH="$OUTPUT_TOPOLOGY_PATH" "$OUTPUT_HARDWARE_PYTHON" -c '
-import json, sys
-from jasper.output_hardware import OutputHardwareState, dual_apple_runtime_mapping
-
-state = OutputHardwareState.from_mapping(json.load(sys.stdin))
-mapping = dual_apple_runtime_mapping(state)
-if not mapping.ok:
-    print(mapping.reason, file=sys.stderr)
-    raise SystemExit(1)
-print(mapping.order_source)
-for child in mapping.child_devices:
-    print(child.pcm or "")
-'
-    )"; then
+    if [[ "$OBSERVED_OUTPUT_DUAL_MAPPING_OK" != "1" ]]; then
         OUTPUT_DAC_ID="dual_apple_usb_c_dac_4ch"
         OUTPUT_DAC_CARD=""
         OUTPUT_DAC_RECOGNIZED=0
         APPLE_DONGLE_PRESENT=1
         APPLE_DONGLE_SERVICE_CARD="auto"
         log_event "dual_apple_detected" \
-            "status=ready action=park_unstable_child_order topology_path=${OUTPUT_TOPOLOGY_PATH}"
+            "status=ready action=park_unstable_child_order topology_path=${OUTPUT_TOPOLOGY_PATH} reason=${OBSERVED_OUTPUT_DUAL_MAPPING_REASON:-unknown}"
         return
     fi
-    DUAL_APPLE_ORDER_SOURCE="$(printf '%s\n' "$parsed" | sed -n '1p')"
-    DUAL_APPLE_DAC_A_PCM="$(printf '%s\n' "$parsed" | sed -n '2p')"
-    DUAL_APPLE_DAC_B_PCM="$(printf '%s\n' "$parsed" | sed -n '3p')"
+    DUAL_APPLE_ORDER_SOURCE="$OBSERVED_OUTPUT_DUAL_ORDER_SOURCE"
+    DUAL_APPLE_DAC_A_PCM="$OBSERVED_OUTPUT_DUAL_DAC_A_PCM"
+    DUAL_APPLE_DAC_B_PCM="$OBSERVED_OUTPUT_DUAL_DAC_B_PCM"
     local graph_status
     # The dual-Apple composite caps at 4 (two stereo children); the composite
     # sink is rigidly 4-channel in outputd regardless, so the dual branch needs
@@ -2016,7 +1955,6 @@ apply_audio_runtime_env() {
 }
 
 OBSERVED_AT_PASS_START="$(reconcile_observed_digest)"
-detect_roles
 if [[ "$PRINT_ENV" == "1" ]]; then
     observe_output_hardware_state 0
     apply_observed_single_policy

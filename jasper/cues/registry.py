@@ -51,8 +51,10 @@ CUES: tuple[CueDef, ...] = (
             "Visit {hostname} to manage."
         ),
         description=(
-            "Played when wake fires after JASPER_DAILY_SPEND_CAP_USD "
-            "is hit and voice is disabled until UTC rollover."
+            "Played when wake fires, or a push-to-talk press reaches "
+            "WakeLoop.manual_session_start, after "
+            "JASPER_DAILY_SPEND_CAP_USD is hit and voice is disabled "
+            "until UTC rollover."
         ),
     ),
     CueDef(
@@ -74,10 +76,11 @@ CUES: tuple[CueDef, ...] = (
             "Sorry, something went wrong on my end. Please try again."
         ),
         description=(
-            "Played when wake fires and turn-open hits an UNEXPECTED "
-            "local/internal error that is NOT a connectivity problem — "
-            "e.g. a failed state write — and again at end of turn when a "
-            "question was asked and the answer never came or stopped "
+            "Played when wake fires, or a push-to-talk press reaches "
+            "WakeLoop.manual_session_start, and turn-open hits an "
+            "UNEXPECTED local/internal error that is NOT a connectivity "
+            "problem — e.g. a failed state write — and again at end of turn "
+            "when a question was asked and the answer never came or stopped "
             "part-way, unless the connection is paused, whose own remedy "
             "cue speaks instead. Distinguished from cant_connect: "
             "that cue is truthful only when the live backend is genuinely "

@@ -208,7 +208,7 @@ def test_save_and_load_profile_round_trip(tmp_path):
     assert raw["curve_id"] == "bk"
     assert raw["simple_eq"]["bass_db"] == 2.0
     assert load_profile(path).curve_id == "bk"
-    # WS1 Phase 3b-2: 0640 group jasper so the non-root jasper-control can read
+    # 0640 group jasper so the non-root jasper-control can read
     # the active profile for /state (non-secret EQ config), not 0600.
     import os
     import stat
