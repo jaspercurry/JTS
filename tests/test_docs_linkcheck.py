@@ -100,20 +100,13 @@ def _git(repo: Path, *args: str) -> str:
     ).stdout.strip()
 
 
-@pytest.mark.parametrize(
-    ("deleted_name", "expected"),
-    [
-        ("a.md", 1),
-        ("a.rs", 0),
-    ],
-)
-def test_a_deleted_file_falls_back_to_the_whole_tree_only_if_markdown(
-    tmp_path, deleted_name, expected
-):
-    """A deleted Markdown file has no post-diff content of its own to check,
-    but an untouched file's now-broken inbound link must still be caught
-    (#4036). A deleted non-Markdown file cannot break a Markdown link, so it
-    must not trigger the same whole-tree fallback (#4153, #4030)."""
+@pytest.mark.parametrize("deleted_name", ["a.md", "a.rs"])
+def test_a_deleted_file_of_any_type_falls_back_to_the_whole_tree(tmp_path, deleted_name):
+    """A renamed or deleted file of any type can break an untouched file's
+    inbound link, so the whole tree is checked: a delete has no post-diff
+    content of its own to check, and a non-Markdown target (e.g. a deleted
+    .rs file cited by a doc link) is just as able to break an inbound
+    Markdown link as a deleted .md."""
     docs_linkcheck = load_docs_linkcheck()
     docs_linkcheck.ROOT = tmp_path.resolve()
 
@@ -135,7 +128,7 @@ def test_a_deleted_file_falls_back_to_the_whole_tree_only_if_markdown(
 
     # keep.md is untouched by the diff, so a plain changed-files check would
     # never look at its now-broken link to the deleted file on its own.
-    assert docs_linkcheck.main(["--base", base, "--head", head]) == expected
+    assert docs_linkcheck.main(["--base", base, "--head", head]) == 1
 
 
 def test_external_links_are_ignored(tmp_path):
