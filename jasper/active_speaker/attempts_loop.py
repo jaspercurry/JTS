@@ -136,7 +136,7 @@ MAX_USEFUL_REPEAT_AVERAGES = 4
 @dataclass(frozen=True)
 class AttemptBudget:
     """How many *tuning attempts* one speaker gets (a tune-and-grade cycle, not a measurement
-    repeat). ``target_attempts`` is WO-7's planning number, disclosed not enforced --
+    repeat). ``target_attempts`` is the planning number, disclosed not enforced --
     the only bound the kernel applies is ``hard_cap_attempts``. ``hard_cap_attempts`` is
     a policy bound (target plus one retry); no measurement sets it, and it is a
     different quantity from :data:`MAX_USEFUL_REPEAT_AVERAGES`.

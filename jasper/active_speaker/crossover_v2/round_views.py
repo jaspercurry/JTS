@@ -927,7 +927,7 @@ def forward_model_verify_delta(
     position_deg: int = DESIGN_AXIS_DEG,
 ) -> ForwardModelDeltaResult:
     """Predict a summed response from ``basis``'s per-driver solos, and delta it
-    against the VERIFY sum ``measured`` banked (ticket 4.5).
+    against the VERIFY sum ``measured`` banked.
 
     The two halves the question needs: a PREDICTION BASIS (a banked take at
     ``position_deg`` carrying both driver solos, magnitude and phase, per ruling
@@ -1357,7 +1357,7 @@ def agreement_table(
 
 # --------------------------------------------------------------------------- #
 # View 6 — audibility-weighted co-metrics: NBD + SM (Olive 2004 /
-# US 8,311,232 B2), ADR-0202, ticket 6.13
+# US 8,311,232 B2), ADR-0202
 # --------------------------------------------------------------------------- #
 
 #: The lateral-walk curve role this view pools onto the on-axis curve: the
@@ -1379,7 +1379,7 @@ class PooledWindowResult:
     """:func:`pooled_window_horizontal`'s output curve, plus its own provenance.
 
     NOT CTA-2034's "listening window": that average includes vertical poses this
-    rig does not capture, and the name is deliberate (ADR-0202 / ticket 6.13).
+    rig does not capture, and the name is deliberate (ADR-0202).
     This is the power average of whatever horizontal bearings — 0/±7/±22° or
     fewer — the round's lateral walk banked a :data:`_SUMMED_CURVE_ROLE` curve
     for. ``bearings_deg`` discloses the round's own coverage rather than assuming
@@ -1548,7 +1548,7 @@ def audibility_co_metrics(
     banked: BankedRound, *, band_hz: tuple[float, float] | None = None,
 ) -> AudibilityCoMetrics:
     """NBD + SM on the on-axis curve and the pooled horizontal window, for one
-    graded round (ADR-0202, ticket 6.13).
+    graded round (ADR-0202).
 
     A co-metric surface, additive beside the round's grade: ``banked.report`` is
     read once, for its own ``graded_band_hz`` default, and never touched again.
@@ -1988,7 +1988,7 @@ def cloud_binding_view(banked: BankedRound) -> CloudBindingView:
     radiating = {role: radiating_band_hz(role_sections[role]) for role in roles}
 
     def _fit_pair(*, wired: bool) -> dict[str, Any]:
-        """Both branches, composed before either is fitted — the PR-L5 order."""
+        """Both branches, composed before either is fitted."""
         envelopes = {
             role: compose_envelope(
                 role, responses[role],

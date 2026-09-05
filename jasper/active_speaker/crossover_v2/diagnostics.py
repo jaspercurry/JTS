@@ -500,7 +500,7 @@ def _log_verify_diag(
         analysis.summed_response.validity_floor_hz
         if analysis.summed_response is not None else None
     )
-    # Measurement-honesty gate G3's own diagnostics: the current
+    # Measurement-honesty gate diagnostics: the current
     # attempt's raw pilot transfer (re-derived fresh, read-only — never
     # the mutated session state) and the step vs baseline
     # ``_verify_verdict`` already computed and stashed transiently.
