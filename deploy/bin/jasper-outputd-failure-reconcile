@@ -26,7 +26,11 @@ SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
 CONFIG_EXIT_STATUS=78
 # Remove this bound once jasper-audio-hardware-reconcile runs as one
 # interpreter instead of a dozen-plus.
-RECONCILE_STAMP="${JASPER_OUTPUTD_CONFIG_RETRY_STATE:-/run/jasper-outputd/failure-reconcile.stamp}"
+# Deliberately OUTSIDE RuntimeDirectory=jasper-outputd: systemd removes that
+# directory when the unit stops without a restart — exactly the park this
+# stamp must survive, or the 300s dedup never fires and a park-then-restart
+# retries unboundedly.
+RECONCILE_STAMP="${JASPER_OUTPUTD_CONFIG_RETRY_STATE:-/run/jasper-outputd-failure-reconcile.stamp}"
 RECONCILE_WINDOW_SEC="${JASPER_OUTPUTD_CONFIG_RETRY_WINDOW_SEC:-300}"
 # Deliberately OUTSIDE RuntimeDirectory=jasper-outputd: systemd removes that
 # directory when the unit stops without a restart, which is exactly the park

@@ -12,6 +12,7 @@ from typing import Any
 
 from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
 from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
+from ...service_units import unit_unstable
 from ... import outputd_failure_reconcile_state
 from ._evidence import evidence
 from ._registry import doctor_check
@@ -46,6 +47,7 @@ REASON_REBOOT_STATE_ARMED = "reboot_state_armed"
 REASON_OUTPUTD_RECONCILE_UNOBSERVED = "outputd_failure_reconcile_unobserved"
 REASON_OUTPUTD_PARK_RECORD_STALE = "outputd_park_record_stale"
 REASON_OUTPUTD_UNIT_FAILED = "outputd_failed_without_park_record"
+REASON_OUTPUTD_UNIT_UNSTABLE = "outputd_unstable_without_park_record"
 REASON_OUTPUTD_PARKED = "outputd_failure_reconcile_parked"
 
 REASON_BOOTLOOP_GUARD_NOT_RUN = "bootloop_guard_not_run"
@@ -79,10 +81,7 @@ def check_service_runtime_state() -> CheckResult:
             n_restarts = 0
         if active == "failed":
             failed.append(f"{unit} state=failed/{sub or '?'} result={result or '?'}")
-        elif (
-            active in {"activating", "deactivating"}
-            and unit not in _ONESHOT_RUNTIME_STATE_UNITS
-        ):
+        elif unit_unstable(state) and unit not in _ONESHOT_RUNTIME_STATE_UNITS:
             # A oneshot sits in `activating` for its whole normal run, so only
             # its `failed` end-state is a finding.
             failed.append(f"{unit} state={active}/{sub or '?'}")
@@ -356,13 +355,16 @@ def check_outputd_failure_reconcile_park() -> CheckResult:
     Why a stop can park outputd for good: see
     deploy/bin/jasper-outputd-failure-reconcile. This check owns outputd's
     runtime state (it is deliberately not in ``_RUNTIME_STATE_UNITS``), so one
-    failed outputd is one fail row. ``speaker_silent`` on both fail branches:
-    outputd owns the DAC write loop (docs/audio-paths.md), so with it down
-    nothing writes the card and the speaker emits NOTHING.
+    failed outputd is one fail row — including a stuck ``activating``/
+    ``deactivating`` unit, which warns rather than fails: not yet silent, but
+    not settled either. ``speaker_silent`` on both fail branches: outputd owns
+    the DAC write loop (docs/audio-paths.md), so with it down nothing writes
+    the card and the speaker emits NOTHING.
     """
     label = "outputd failure-reconcile"
     reader = outputd_failure_reconcile_state
-    state = reader.snapshot(evidence.unit_state(reader.UNIT))
+    unit_state = evidence.unit_state(reader.UNIT)
+    state = reader.snapshot(unit_state)
     reason = state.get("reason")
     path = state.get("path")
 
@@ -394,6 +396,20 @@ def check_outputd_failure_reconcile_park() -> CheckResult:
             "should be retrying. Check `journalctl -u jasper-outputd`.",
             speaker_silent=True,
             reason=REASON_OUTPUTD_UNIT_FAILED,
+        )
+    if reason == reader.REASON_UNIT_UNSTABLE:
+        active = str((unit_state or {}).get("active_state") or "?")
+        sub = str((unit_state or {}).get("sub_state") or "?")
+        n_restarts = (unit_state or {}).get("n_restarts")
+        detail = (
+            f"{reader.UNIT} is {active}/{sub} with no park record — stuck "
+            "mid-transition. Check `systemctl status jasper-outputd`."
+        )
+        if n_restarts:
+            detail += f" NRestarts={n_restarts}."
+        return CheckResult(
+            label, "warn", detail,
+            reason=REASON_OUTPUTD_UNIT_UNSTABLE,
         )
     if reason == reader.REASON_RECORD_STALE:
         return CheckResult(

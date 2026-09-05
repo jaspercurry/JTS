@@ -116,6 +116,20 @@ def unit_failed(record: Mapping[str, Any] | None) -> bool:
     )
 
 
+def unit_unstable(record: Mapping[str, Any] | None) -> bool:
+    """Whether a ``read_unit_states`` record is stuck mid-transition.
+
+    ``active_state`` ``activating``/``deactivating`` is a Type=oneshot unit's
+    NORMAL in-flight state, not instability — a caller tracking oneshots must
+    exclude those itself (see
+    ``jasper.cli.doctor._shared._ONESHOT_RUNTIME_STATE_UNITS``); on a
+    long-running daemon it signals a stuck start/stop.
+    """
+    if not record:
+        return False
+    return str(record.get("active_state") or "") in {"activating", "deactivating"}
+
+
 def systemd_int(value: str | None) -> int | None:
     """An integer property, or None for unset: an empty value, a bracketed
     placeholder such as ``[not set]``, or UINT64_MAX (systemd's unset

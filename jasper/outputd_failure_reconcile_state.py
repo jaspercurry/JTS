@@ -22,7 +22,7 @@ import os
 from typing import Any, Mapping
 
 from .control import park_record
-from .service_units import unit_failed
+from .service_units import unit_failed, unit_unstable
 
 #: The unit whose ``ExecStopPost=`` writes the record and ``ExecStartPost=``
 #: removes it.
@@ -38,6 +38,7 @@ DEFAULT_RECORD_PATH = "/run/jasper-outputd-failure-reconcile.park"
 #: Closed vocabulary for ``snapshot()["reason"]``.
 REASON_PARKED = "parked"
 REASON_UNIT_FAILED = "unit_failed"
+REASON_UNIT_UNSTABLE = "unit_unstable"
 REASON_RECORD_STALE = "park_record_stale"
 REASON_UNOBSERVED = "unobserved"
 REASON_OK = "ok"
@@ -61,6 +62,8 @@ def snapshot(
       lost them.
     * ``unit_failed`` — no record, outputd failed: something other than a
       spent exit-78 window stopped it.
+    * ``unit_unstable`` — no record, outputd stuck ``activating``/
+      ``deactivating``: not failed yet, but not settled either.
     * ``park_record_stale`` — record present, outputd running: the removal
       hook did not fire.
     * ``unobserved`` — unreadable, or absent with no systemd view. A surface
@@ -79,10 +82,12 @@ def snapshot(
             out["reason"] = REASON_UNOBSERVED
         elif unit_state is None:
             out["reason"] = REASON_UNOBSERVED
+        elif unit_failed(unit_state):
+            out["reason"] = REASON_UNIT_FAILED
+        elif unit_unstable(unit_state):
+            out["reason"] = REASON_UNIT_UNSTABLE
         else:
-            out["reason"] = (
-                REASON_UNIT_FAILED if unit_failed(unit_state) else REASON_OK
-            )
+            out["reason"] = REASON_OK
         return out
 
     out.update({

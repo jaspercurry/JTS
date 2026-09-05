@@ -25,6 +25,7 @@ FAILED = {"active_state": "failed", "result": "exit-code"}
 RUNNING = {"active_state": "active", "result": "success"}
 START_LIMITED = {"active_state": "inactive", "result": "start-limit-hit"}
 NOT_INSTALLED = {"active_state": "inactive", "load_state": "not-found"}
+ACTIVATING = {"active_state": "activating", "result": "success"}
 
 
 def _record(tmp_path: Path, text: str = "parked_at=1000\nexit_status=78\nreason=recent\n") -> str:
@@ -40,6 +41,7 @@ def _record(tmp_path: Path, text: str = "parked_at=1000\nexit_status=78\nreason=
         (None, FAILED, reader.REASON_UNIT_FAILED, False),
         (None, START_LIMITED, reader.REASON_UNIT_FAILED, False),
         (None, NOT_INSTALLED, reader.REASON_UNIT_FAILED, False),
+        (None, ACTIVATING, reader.REASON_UNIT_UNSTABLE, False),
         (None, None, reader.REASON_UNOBSERVED, False),
         ("record", FAILED, reader.REASON_PARKED, True),
         ("record", None, reader.REASON_PARKED, True),
@@ -47,7 +49,7 @@ def _record(tmp_path: Path, text: str = "parked_at=1000\nexit_status=78\nreason=
     ],
     ids=[
         "healthy", "failed-no-record", "start-limited-no-record",
-        "not-installed-no-record",
+        "not-installed-no-record", "unstable-no-record",
         "no-systemd-view", "parked", "parked-without-systemd-view", "stale",
     ],
 )

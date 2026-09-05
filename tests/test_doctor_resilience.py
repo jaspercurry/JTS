@@ -375,6 +375,7 @@ def _park_check(monkeypatch, tmp_path, *, record: str | None, unit: dict):
 _PARK = "parked_at=1000\nexit_status=78\nreason=recent\n"
 _RUNNING = {"active_state": "active", "result": "success"}
 _FAILED = {"active_state": "failed", "result": "exit-code"}
+_ACTIVATING = {"active_state": "activating", "sub_state": "start", "result": "success"}
 
 
 @pytest.mark.parametrize(
@@ -382,11 +383,12 @@ _FAILED = {"active_state": "failed", "result": "exit-code"}
     [
         (None, _RUNNING, "ok", "", False),
         (None, _FAILED, "fail", resilience.REASON_OUTPUTD_UNIT_FAILED, True),
+        (None, _ACTIVATING, "warn", resilience.REASON_OUTPUTD_UNIT_UNSTABLE, False),
         (_PARK, _FAILED, "fail", resilience.REASON_OUTPUTD_PARKED, True),
         (_PARK, _RUNNING, "warn",
          resilience.REASON_OUTPUTD_PARK_RECORD_STALE, False),
     ],
-    ids=["healthy", "failed-no-record", "parked", "stale-record"],
+    ids=["healthy", "failed-no-record", "unstable-no-record", "parked", "stale-record"],
 )
 def test_outputd_failure_reconcile_park_verdicts(
     tmp_path, monkeypatch, record, unit, status, reason, silent,
