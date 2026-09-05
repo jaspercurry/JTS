@@ -61,6 +61,7 @@ from ..voice.input_policy import (
     EffectiveSpeechInputPolicy,
     build_effective_speech_input_policy,
 )
+from ..voice.input_presence import voice_parked_no_mic
 from ..voice.prompt import _build_system_instruction
 from ..voice.session import LiveConnection
 from ..volume_coordinator import VolumeCoordinator
@@ -73,6 +74,7 @@ from ..watchdog import Heartbeat
 from ..weather import WeatherClient
 from ..voice_daemon import (
     CAPTURE_RING_FRAMES,
+    NO_ROOM_MIC_CUE_SLUG,
     VOICE_MIC_UNAVAILABLE_EXIT,
     VOICE_PROVIDER_NOT_CONFIGURED_EXIT,
     VOICE_STARTUP_CONFIG_ERROR_EXIT,
@@ -207,6 +209,48 @@ def _require_usable_input(
         ",".join(declared_manual_devices) or "<none>",
         RuntimeError("no usable mic source: no wake leg, no manual mic"),
     )
+
+
+# Seconds this daemon will wait for the mic-loss cue before finishing its
+# stop. jasper-voice.service sets TimeoutStopSec=5s, and the teardown after
+# this call still has to run inside it, so the wait is bounded here rather
+# than at the cue's own ~6 s length.
+MIC_LOSS_CUE_WAIT_SEC = 3.0
+
+
+async def _announce_mic_loss_at_shutdown(wake_loop: WakeLoop) -> str:
+    """Say out loud that this speaker just lost its microphone. See ADR-0238.
+
+    This daemon's own stop is the only moment the cue can play. The AEC
+    reconciler writes the absence marker and then stops jasper-voice, and
+    ``ConditionPathExists=!`` refuses every start while the marker stands —
+    so a *running* daemon that finds the marker at shutdown is exactly the
+    transition into deafness, and an ordinary restart (no marker) is silent.
+
+    Returns the result code it logged, or ``not_parked`` when there is
+    nothing to announce. Never raises and never outruns the bound above:
+    going deaf in silence is bad, wedging the stop is worse.
+    """
+    if not voice_parked_no_mic():
+        return "not_parked"
+    try:
+        result = await asyncio.wait_for(
+            wake_loop.play_cue(NO_ROOM_MIC_CUE_SLUG),
+            timeout=MIC_LOSS_CUE_WAIT_SEC,
+        )
+    except asyncio.TimeoutError:
+        result = "timeout"
+    except Exception:  # noqa: BLE001
+        logger.exception("mic-loss cue play failed")
+        result = "play_error"
+    log_event(
+        logger,
+        "voice.mic_loss_cue",
+        slug=NO_ROOM_MIC_CUE_SLUG,
+        result=result,
+        level=logging.INFO if result == "ok" else logging.WARNING,
+    )
+    return result
 
 
 def _wake_detection_supported() -> bool:
@@ -1252,6 +1296,10 @@ async def run() -> None:
                 await _serve_while_connecting(
                     connect_live_session, wake_loop.run,
                 )
+                # Still inside the exit stack, so the cue manager and its
+                # TtsPlayout are open and the fan-in socket is live. Only on
+                # the clean stop: a crash is not a park.
+                await _announce_mic_loss_at_shutdown(wake_loop)
             finally:
                 registry.set_dispatch_observer(None)
                 heartbeat.stop()

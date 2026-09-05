@@ -21,9 +21,14 @@ StartLimitAction=reboot:
 5. The gate owner PUBLISHES which half it resolved
    (JASPER_LOCAL_MIC_PRESENT), and the daemon's leg planner reads that
    published fact rather than re-deriving mic presence from its own config.
+6. Closing the gate is AUDIBLE: the daemon plays the mic-loss cue once
+   during its own shutdown when the marker is there, and the wait for it
+   cannot outrun the unit's TimeoutStopSec (ADR-0238).
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,7 +43,12 @@ from jasper.voice.input_presence import (
     voice_input_absent_marker_path,
     voice_parked_no_mic,
 )
-from jasper.voice_daemon import VOICE_MIC_UNAVAILABLE_EXIT
+from jasper.voice_daemon import (
+    NO_ROOM_MIC_CUE_SLUG,
+    VOICE_MIC_UNAVAILABLE_EXIT,
+    WakeLoop,
+)
+from tests._log_events import event_fields, event_records
 
 ROOT = Path(__file__).resolve().parents[1]
 UNIT = ROOT / "deploy" / "systemd" / "jasper-voice.service"
@@ -313,3 +323,69 @@ def test_check_mic_capture_reports_expected_idle_when_marked(
     result = audio.check_mic_capture(SimpleNamespace())
     assert result.status == "skipped"
     assert result.reason == audio.REASON_MIC_ABSENT_DEFERRED
+
+
+def _shutting_down_daemon(marked: bool, tmp_path, monkeypatch):
+    """A WakeLoop whose cue path runs for real, and a marker to match."""
+    from tests.test_voice_daemon_manual_start_guard import _SpyCues
+
+    marker = tmp_path / "voice-input-absent"
+    if marked:
+        marker.write_text("reason=no candidate microphone present\n")
+    monkeypatch.setenv("JASPER_VOICE_INPUT_ABSENT_MARKER", str(marker))
+    wake_loop = WakeLoop.for_tests()
+    wake_loop._cues = _SpyCues()
+    return wake_loop
+
+
+@pytest.mark.parametrize("marked", [True, False], ids=("no-mic", "plain-restart"))
+async def test_the_mic_loss_cue_follows_the_marker_at_shutdown(
+    marked: bool, tmp_path, monkeypatch, caplog,
+) -> None:
+    """The daemon's own stop is the transition into deafness, because the
+    reconciler writes the marker and only then stops jasper-voice, and
+    ConditionPathExists=! refuses every start while it stands (ADR-0238).
+    So the marker at shutdown decides, and a plain restart stays silent —
+    including in the journal, so `voice.mic_loss_cue` means a real loss."""
+    from jasper.voice import daemon_main
+
+    wake_loop = _shutting_down_daemon(marked, tmp_path, monkeypatch)
+
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        result = await daemon_main._announce_mic_loss_at_shutdown(wake_loop)
+
+    assert wake_loop._cues.played == ([NO_ROOM_MIC_CUE_SLUG] if marked else [])
+    assert result == ("ok" if marked else "not_parked")
+    records = event_records(caplog, "voice.mic_loss_cue")
+    assert [record.levelno for record in records] == (
+        [logging.INFO] if marked else []
+    )
+
+
+@pytest.mark.parametrize("outcome", ["play_error", "timeout"])
+async def test_a_cue_that_cannot_play_warns_and_the_stop_still_finishes(
+    outcome: str, tmp_path, monkeypatch, caplog,
+) -> None:
+    """A dead output path (outputd down, cue never baked) must not hold the
+    daemon past jasper-voice.service's TimeoutStopSec — SIGKILL mid-teardown
+    is a worse failure than a missed cue. Both shapes end the same way: the
+    code is named on the wire, at WARNING, and the caller gets it back."""
+    from jasper.voice import daemon_main
+
+    wake_loop = _shutting_down_daemon(True, tmp_path, monkeypatch)
+    monkeypatch.setattr(daemon_main, "MIC_LOSS_CUE_WAIT_SEC", 0.01)
+
+    async def _cannot_play(_slug: str) -> str:
+        if outcome == "timeout":
+            await asyncio.sleep(60)
+        raise RuntimeError("no output path")
+
+    wake_loop.play_cue = _cannot_play
+
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        result = await daemon_main._announce_mic_loss_at_shutdown(wake_loop)
+
+    assert result == outcome
+    assert event_fields(caplog, "voice.mic_loss_cue")["result"] == outcome
+    (record,) = event_records(caplog, "voice.mic_loss_cue")
+    assert record.levelno == logging.WARNING

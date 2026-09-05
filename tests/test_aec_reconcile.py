@@ -711,6 +711,26 @@ def test_voice_input_absent_marker_mark_carries_the_reason(tmp_path: Path) -> No
     ) == ["no candidate microphone present and no accessory microphone paired"]
 
 
+def test_the_bridge_ready_revoke_precedes_the_absence_mark(tmp_path: Path) -> None:
+    """G13's ordering, pinned where it already holds. The unconditional
+    top-of-pass revoke (:204, ADR-0224) runs before this pass decides
+    anything, so by the time a no-candidate pass marks the absence the
+    bridge's next start is already a skipped ConditionPathExists — and a
+    condition skip does not count toward StartLimitBurst=4 /
+    StartLimitAction=reboot. No second revoke was added on the absence path:
+    it could only re-emit a verdict this pass has already published.
+    ADR-0235 R6."""
+    _stage(tmp_path, "udp:9876", mode="auto")
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    verdicts = re.findall(r"\bevent=(\S+) state=(\S+)", result.stderr)
+    assert verdicts.index(
+        ("aec_reconcile.bridge_ready", "revoked")
+    ) < verdicts.index(("aec_reconcile.voice_input_absent", "marked"))
+
+
 def test_voice_input_absent_marker_clear_carries_the_markers_own_reason(
     tmp_path: Path,
 ) -> None:
