@@ -216,15 +216,11 @@ def _write(path: Path, state: Mapping[str, Any]) -> None:
 
 @contextmanager
 def _locked(path: Path):
-    # WRITE paths only: ``snapshot`` reads lock-free (ADR-0196 decision 1). The
-    # lock is group-WRITABLE because taking it opens the file for write; a
-    # 0o640 lock a root poll created first was one no service account could
-    # then take, which was the live permission storm. See ADR-0196.
+    # WRITE paths only: ``snapshot`` reads lock-free (ADR-0196 decision 1).
     lock_path = path.with_name(f".{path.name}.lock")
     with _THREAD_LOCK:
         with advisory_file_lock(
             lock_path,
-            mode=0o660,
             timeout_sec=DEFAULT_LOCK_TIMEOUT_S,
         ):
             yield
