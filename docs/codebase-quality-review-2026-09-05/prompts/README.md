@@ -45,6 +45,22 @@ landing on `main`:
 | 2 (as P1/P2 close) | P3, P4, P8, P9, P5 (moves) | P3/P4 split `jasper/control/` by file (stated in their prompts); P9 starts once the six voice PRs and their close-out are in; P8 is prose-only |
 | 3 (after P5 moves merge) | P7, P5 (splits), P8 (stale-path pass) | Tests and docs follow the tree |
 
+## Where each lane runs
+
+The owner has three Claude plans: two cloud plans (remote sessions, no route to the LAN) and one
+local plan (the owner's machine, which reaches the Pis). Rule: a lane goes to the cloud unless it
+needs the box; the local plan is the hands for everyone; spread the load so no plan runs more than
+two lanes at once.
+
+| Plan | Batch 1 (now) | Batch 2 | Batch 3 |
+|---|---|---|---|
+| Local (hardware) | #4209 USB host-volume regression (evidence, bisect), then the ops lane (deploy, measure, verify for every other lane); the hardware-input lane (#4027) when its close-out is in | ops lane: P9's rows 0.2 and 1.4, P3's idle measurements, P2's spare-Pi installs | ops lane |
+| Cloud A | P1 secrets, P6 right-sizing | P3 resilience, P5 moves | P7 tests |
+| Cloud B | P2 deploy integrity (code with stubbed ssh/rsync; every install-path PR gets one spare-Pi run via the local plan), P5 (plan, cycle fix, layers contract) | P9 voice loop, P4 observability, P8 docs | web UI lane (#4031 successor), P8's stale-path pass |
+
+Hardware asks from a cloud lane are comments on the ops lane's issue, with the exact command and
+the expected reading; the ops lane answers on the asking lane's issue.
+
 Four sessions at a time is a comfortable ceiling: every lane rebases before each push, and more
 than that makes `main` thrash. The general steward (#4085) has stood down with nothing open; its
 round-2 queue is folded into P2–P8. The doctor/state steward overlaps P3/P4: stand it down (merge
