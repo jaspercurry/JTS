@@ -370,6 +370,49 @@ def test_the_drift_monitor_stays_up_and_re_asks_when_a_card_appears(tmp_path):
         monitor.wait()
 
 
+def _flaky_emitter_python(tmp_path: Path) -> Path:
+    """A `python` stand-in whose first `-m jasper.cli.output_hardware --env`
+    call fails (an OOM at boot, a transient non-zero exit); every later call
+    delegates to the real interpreter. Proves a failed probe is retried on
+    the next poll rather than latched (#4027)."""
+    counter = tmp_path / "emitter-calls"
+    counter.write_text("0", encoding="utf-8")
+    fake = tmp_path / "flaky-python"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        f"n=$(cat {shlex.quote(str(counter))})\n"
+        f"printf '%s' $((n + 1)) > {shlex.quote(str(counter))}\n"
+        'if [[ "$n" == "0" ]]; then\n'
+        "  exit 1\n"
+        "fi\n"
+        f'exec {shlex.quote(sys.executable)} "$@"\n',
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    return fake
+
+
+def test_the_drift_monitor_retries_a_failed_probe_on_the_next_poll(tmp_path):
+    """A probe that fails once must not latch the last-known (empty) card set
+    forever: the next poll has to re-ask the classifier for real, even though
+    the board's card population never changed across the failure (#4027)."""
+    bin_dir, log = _amixer_double(tmp_path)
+    flaky_python = _flaky_emitter_python(tmp_path)
+    monitor, _ = _start_monitor(
+        tmp_path,
+        bin_dir,
+        {
+            **_dual_apple_cards(tmp_path),
+            "JASPER_OUTPUT_HARDWARE_PYTHON": str(flaky_python),
+        },
+    )
+    try:
+        _await(monitor, log, _BOTH_APPLE_PINS)
+    finally:
+        monitor.kill()
+        monitor.wait()
+
+
 def test_the_drift_monitor_fails_loudly_when_the_classifier_cannot_run(tmp_path):
     """No card set, no work: the monitor names the reconciler's own
     probe-unavailable reason and exits instead of spinning on a stale one."""

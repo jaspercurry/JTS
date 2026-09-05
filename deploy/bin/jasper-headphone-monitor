@@ -99,7 +99,11 @@ refresh_apple_cards() {
         APPLE_CARDS=("$CONFIGURED_CARD")
         return 0
     fi
-    if ! payload="$("$PYTHON" -m jasper.cli.output_hardware --env 2>/dev/null)"; then
+    if ! payload="$("$PYTHON" -m jasper.cli.output_hardware --env)"; then
+        # Clear rather than leave stale ids, and force a real retry on the
+        # next poll regardless of whether the card population changes.
+        APPLE_CARDS=()
+        LAST_POPULATION="unprobed"
         return 1
     fi
     # Every value is shlex-quoted by the emitter, so the payload evals as-is.
@@ -134,12 +138,19 @@ card_index() {
 }
 
 absent_logged=0
+probe_failed_logged=0
 while true; do
-    # Once per failed probe, never an exit: an exit here would walk
-    # `Restart=always` into `StartLimitBurst` and park the unit with nothing
-    # left to revive it. The next card change asks again.
-    refresh_apple_cards ||
+    # Logged once per outage (like absent_logged below) and reset on the
+    # next successful probe; never an exit: an exit here would walk
+    # `Restart=always` into `StartLimitBurst` and park the unit with
+    # nothing left to revive it. A failed probe forces a real retry next
+    # poll (see refresh_apple_cards), so the outage self-heals.
+    if refresh_apple_cards; then
+        probe_failed_logged=0
+    elif [[ "$probe_failed_logged" != "1" ]]; then
         echo "event=apple_dongle.headphone_monitor.probe_failed reason=emitter_nonzero" >&2
+        probe_failed_logged=1
+    fi
 
     if [[ "${#APPLE_CARDS[@]}" -eq 0 ]]; then
         if [[ "$absent_logged" != "1" ]]; then
