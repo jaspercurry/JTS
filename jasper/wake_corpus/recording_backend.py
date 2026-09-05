@@ -57,11 +57,8 @@ from jasper.wake_ports import build_ports
 
 from .bridge_session import (
     AEC3_SWEEP_LEGS,
-    CORPUS_PROFILES,
     DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE,
     DTLN_LEG,
-    PROFILE_CHIP_AEC_COMPARISON,
-    PROFILE_STANDARD,
     RAW0_LEG,
     USB_CORPUS_LEGS,
     USB_DTLN_LEG,
@@ -72,12 +69,17 @@ from .bridge_session import (
     _metadata_flag,
     _session_aec3_sweep_source,
     build_capture_health,
-    build_capture_plan,
     build_session_audio_context,
-    CAPTURE_PLAN_STATE_SESSION,
     chip_aec_config_metadata,
     exit_corpus_test_mode,
     read_bridge_stats_snapshot,
+)
+from .capture_plan import (
+    CAPTURE_PLAN_STATE_SESSION,
+    CORPUS_PROFILES,
+    PROFILE_CHIP_AEC_COMPARISON,
+    PROFILE_STANDARD,
+    build_capture_plan,
     validate_active_capture_plan,
 )
 
