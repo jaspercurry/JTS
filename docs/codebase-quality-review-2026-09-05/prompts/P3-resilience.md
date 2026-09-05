@@ -47,12 +47,16 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
 
 ## Territory
 
-Other agents own attached-hardware input (#4027: `jasper/audio_hardware/`, `output_hardware.py`,
-`usbsink/`, `accessories/`, udev) and the web UI (#4031: `jasper/web/`, `deploy/assets/`, nginx
-confs). Stay out of their code unless the owner says otherwise; when your attribute needs a change
-there, write it up as a suggestion (file:line, what, why) for that agent, or ask the owner for a
-one-off. Other stewards merge to `main` concurrently: rebase before every push, judge every PR by
-`git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
+Other lanes own attached-hardware input (#4027: `jasper/audio_hardware/`, `output_hardware.py`,
+`usbsink/`, `accessories/`, udev), the web UI (#4031: `jasper/web/`, `deploy/assets/`, nginx
+confs), and **the voice loop (P9 #4208: `jasper/voice_daemon.py`, `jasper/voice/`, `jasper/cues/`,
+`jasper/tools/`, the top-level wake modules, `jasper-voice.service`, `tests/voice_eval/`)**. Stay
+out of their code unless the owner says otherwise; when your attribute needs a change there, write
+it up as a suggestion (file:line, what, why) on that lane's issue, or ask the owner for a one-off.
+The one exception: an attribute lane may land one repo-wide **mechanical** sweep (a helper adoption,
+a convention) across a concern lane's files after telling it on its issue; anything behavioral there
+is the concern lane's. Other lanes merge to `main` concurrently: rebase before every push, judge
+every PR by `git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
 
 **The tuning zone is parked, not open.** Its steward stood down with wave 9 on main (close-out:
 the last comment on #3769; `TARGET.md`, `WAVE-LOG.md` and `SURVEY-VISION.md` §7 live on branch
@@ -68,16 +72,18 @@ PR #4138 (the wired capture kernel; green, waiting on the owner's hardware null 
 `cli/measure.py` and their tests alone until it merges; and #4031's Phase D is about to cut into
 `active_speaker/commissioning_*` — anything there is coordinated on #4031 before a branch exists.
 
-**Sibling lanes.** Seven sibling sessions run the other attributes of the same review (P1 #4193, P2 #4194,
-P3 #4195, P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202; the index and sequencing are in
-`docs/codebase-quality-review-2026-09-05/prompts/README.md`). You share `jasper/control/` with
+**Sibling lanes.** Eight sibling sessions run the other lanes (P1 #4193, P2 #4194, P3 #4195,
+P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202, and P9 #4208 the voice loop; the index and
+sequencing are in `docs/codebase-quality-review-2026-09-05/prompts/README.md`). You share `jasper/control/` with
 **P4 (observability)**: you own `restart_broker.py`, `handlers/system.py`, `deploy/polkit/`, unit
 `Restart=`/`StartLimitAction=` policy, `peering/state.py`, and the clamp paths in
 `volume_coordinator.py`/`camilla.py`; P4 owns the `/state` payload, freshness, `jasper/cli/doctor/`
 and `log_event` conventions — a new `/state` field or doctor row you need is an ask on P4's issue,
 and the `event=` line for a behavior you change is yours. You share `jasper/peering/` with **P6
 (right-sizing)**, which deletes the mDNS/STATUS/PING half: if both PRs are open, P6 lands first and
-you rebase (it shrinks your surface).
+you rebase (it shrinks your surface). **P9 (voice loop)** owns `jasper-voice.service`'s content and
+the provider connect/reconnect path: your restart-policy matrix names the row it wants and P9 lands
+it; the `sdnotify` dependency + `ImportError` branch is settled with P9 so one lane deletes it.
 
 ## What "A" means here
 

@@ -47,12 +47,16 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
 
 ## Territory
 
-Other agents own attached-hardware input (#4027: `jasper/audio_hardware/`, `output_hardware.py`,
-`usbsink/`, `accessories/`, udev) and the web UI (#4031: `jasper/web/`, `deploy/assets/`, nginx
-confs). Stay out of their code unless the owner says otherwise; when your attribute needs a change
-there, write it up as a suggestion (file:line, what, why) for that agent, or ask the owner for a
-one-off. Other stewards merge to `main` concurrently: rebase before every push, judge every PR by
-`git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
+Other lanes own attached-hardware input (#4027: `jasper/audio_hardware/`, `output_hardware.py`,
+`usbsink/`, `accessories/`, udev), the web UI (#4031: `jasper/web/`, `deploy/assets/`, nginx
+confs), and **the voice loop (P9 #4208: `jasper/voice_daemon.py`, `jasper/voice/`, `jasper/cues/`,
+`jasper/tools/`, the top-level wake modules, `jasper-voice.service`, `tests/voice_eval/`)**. Stay
+out of their code unless the owner says otherwise; when your attribute needs a change there, write
+it up as a suggestion (file:line, what, why) on that lane's issue, or ask the owner for a one-off.
+The one exception: an attribute lane may land one repo-wide **mechanical** sweep (a helper adoption,
+a convention) across a concern lane's files after telling it on its issue; anything behavioral there
+is the concern lane's. Other lanes merge to `main` concurrently: rebase before every push, judge
+every PR by `git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
 
 **The tuning zone is parked, not open.** Its steward stood down with wave 9 on main (close-out:
 the last comment on #3769; `TARGET.md`, `WAVE-LOG.md` and `SURVEY-VISION.md` §7 live on branch
@@ -68,16 +72,18 @@ PR #4138 (the wired capture kernel; green, waiting on the owner's hardware null 
 `cli/measure.py` and their tests alone until it merges; and #4031's Phase D is about to cut into
 `active_speaker/commissioning_*` — anything there is coordinated on #4031 before a branch exists.
 
-**Sibling lanes.** Seven sibling sessions run the other attributes of the same review (P1 #4193, P2 #4194,
-P3 #4195, P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202; the index and sequencing are in
-`docs/codebase-quality-review-2026-09-05/prompts/README.md`). Ordering that matters: **P6
+**Sibling lanes.** Eight sibling sessions run the other lanes (P1 #4193, P2 #4194, P3 #4195,
+P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202, and P9 #4208 the voice loop; the index and
+sequencing are in `docs/codebase-quality-review-2026-09-05/prompts/README.md`). Ordering that matters: **P6
 (right-sizing)** deletes ~2,300 product LOC — do not `git mv` anything on P6's deletion list; post
 your move table on P6's issue in your first day so the lists are disjoint, and start moves only
 after P6's deletion PRs for the affected packages have merged (the cycle fix, the layers contract
 and the deferred-import rule need no wait). **P7 (tests)** restructures tests after your moves
 land; tests move with their modules in your PRs, nothing more. **P2** owns `deploy/install.sh`
 (hand it the STEPS table). **P8** owns docs; your move PRs update `docs/doc-map.toml` and any
-path a doc names, P8 does the prose.
+path a doc names, P8 does the prose. **P9 (voice loop)** wants a public `jasper.control.uds`
+client (its Wave 2.8) while you plan to move `control/uds` into `jasper/platform/`: agree on this
+issue which lands first; P9 consumes whichever path exists.
 
 ## What "A" means here
 
@@ -95,8 +101,8 @@ dependency direction is enforced by CI rather than by memory.** Concretely:
   that need a cut only after that cut;
 - function-local imports carry one of three stated reasons or are hoisted; the 109 redundant ones
   are deleted; the AGENTS.md rule exists;
-- no god files: `WakeLoop` loses its three stateless seams and its test doubles; `daemon_main.run`
-  becomes `Services`; `runtime_contract.py` splits into `types` + `queries` (owner-gated tuning row);
+- no god files: `WakeLoop` and `daemon_main` are P9's (the voice brief's Wave 4 decomposes them);
+  `runtime_contract.py` splits into `types` + `queries` (owner-gated tuning row);
   `multiroom/reconcile.main` extracts `RoleDecision`; `control/server.py` stops being reached through
   (#4114); `install.sh` becomes a STEPS table (P2 owns); the web closures become routes tables
   (suggest to #4031 — `correction_setup.py` is missing from its Phase D ledger);
@@ -139,7 +145,7 @@ Verified at HEAD by the review:
   names; `sound_setup.py:100-119` pulling 12–13 from `web_commissioning`).
 - God files and their splits are in §3.2 with the seams named per file; `WakeLoop`'s three seams
   share no mutable state with the wake→turn loop (measurement window is #4104; research announcer,
-  conversation capture remain; 185 LOC of `for_tests` doubles ship in the daemon).
+  conversation capture remain; 185 LOC of `for_tests` doubles ship in the daemon) — P9's rows now.
 - Primitive bypasses: 15 `atomic_io` hand-rolls (ratchet keyed on `mkstemp`, so `path + ".tmp"`
   escapes); 19 private env parsers; 6 "is this value true" spellings; 59 raw `event=` strings;
   `service_units` has 1 consumer vs 3 rival readers and 4 parsers; 12 fingerprint sites with three

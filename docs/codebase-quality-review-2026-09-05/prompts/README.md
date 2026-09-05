@@ -16,6 +16,7 @@ at a plan gate the owner triages before code is written.
 | `P6-right-sizing.md` | #4200 | Right-sizing | C |
 | `P7-tests.md` | #4201 | Tests | B− |
 | `P8-docs.md` | #4202 | Docs and prose | B |
+| `P9-voice-loop.md` | #4208 | The voice loop (wake → turn → answer) — a concern lane, built on `docs/VOICE-AUDIT-2026-09-05.md` | B / B− / C |
 
 Hardware/audio safety is already A− and needs only R-016's belt-and-braces row (in P4's doctor work
 and P3's clamp event). The tuning zone is parked: its steward stood down with wave 9 on main
@@ -35,11 +36,13 @@ landing on `main`:
    subjects in P6's; P7 rewrites only what neither list names until both have merged.
 3. **P5 moves → P8's last PR** (the stale-path pass). Everything else in P8 starts now.
 4. **P6's peering deletion → P3's `peering/state.py` fix**, if both are open at once.
+5. **The six voice PRs and their close-out → P9.** Its Waves 3 and 6 also wait on the owner's
+   ten-turn timeline numbers (the brief's ledger row 0.2).
 
 | Batch | Lanes | Why together |
 |---|---|---|
 | 1 (now) | P1, P2, P6, P5 (plan, cycle fix, contract) | Disjoint files; P1/P2 are small and close the two non-negotiable seams; P6 clears the ground P5 moves on |
-| 2 (as P1/P2 close) | P3, P4, P8, P5 (moves) | P3/P4 split `jasper/control/` by file (stated in their prompts); P8 is prose-only |
+| 2 (as P1/P2 close) | P3, P4, P8, P9, P5 (moves) | P3/P4 split `jasper/control/` by file (stated in their prompts); P9 starts once the six voice PRs and their close-out are in; P8 is prose-only |
 | 3 (after P5 moves merge) | P7, P5 (splits), P8 (stale-path pass) | Tests and docs follow the tree |
 
 Four sessions at a time is a comfortable ceiling: every lane rebases before each push, and more
@@ -58,9 +61,9 @@ daemon rows.
   #4198, #4203, #4206 — open, rebased on `main`, none merged or hardware-verified). Decision: the
   wake→turn loop becomes its own concern lane rather than being split across P3–P8, because its
   latency ruler (`event=turn.timeline`) and wave order only make sense in one head. It will own
-  `jasper/voice_daemon.py`, `jasper/voice/`, `jasper/cues/`, `jasper-voice.service`, the wake
-  legs and the provider adapters; P3, P4, P5 and P6 hand voice items over as suggestions, and the
-  WakeLoop / `daemon_main` god-file rows move out of P5 into it. Landing order for the six PRs:
+  `jasper/voice_daemon.py`, `jasper/voice/`, `jasper/cues/`, `jasper/tools/`, `jasper-voice.service`,
+  the wake legs and the provider adapters — that is **P9 (#4208)**, and P1–P8 now name it as the
+  owner of those files; the WakeLoop / `daemon_main` god-file rows moved out of P5 into it. Landing order for the six PRs:
   #4186, #4191, #4192, #4206, #4198, #4203 (the last two rebase after their pairs merge); #4186 and
   this review both edit `docs/doc-map.toml`, so whichever merges second rebases once.
 - **Web UI** (#4031, session mid-PR on #4196), **hardware input** (#4027), **doctor/state**: close-outs

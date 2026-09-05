@@ -47,12 +47,16 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
 
 ## Territory
 
-Other agents own attached-hardware input (#4027: `jasper/audio_hardware/`, `output_hardware.py`,
-`usbsink/`, `accessories/`, udev) and the web UI (#4031: `jasper/web/`, `deploy/assets/`, nginx
-confs). Stay out of their code unless the owner says otherwise; when your attribute needs a change
-there, write it up as a suggestion (file:line, what, why) for that agent, or ask the owner for a
-one-off. Other stewards merge to `main` concurrently: rebase before every push, judge every PR by
-`git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
+Other lanes own attached-hardware input (#4027: `jasper/audio_hardware/`, `output_hardware.py`,
+`usbsink/`, `accessories/`, udev), the web UI (#4031: `jasper/web/`, `deploy/assets/`, nginx
+confs), and **the voice loop (P9 #4208: `jasper/voice_daemon.py`, `jasper/voice/`, `jasper/cues/`,
+`jasper/tools/`, the top-level wake modules, `jasper-voice.service`, `tests/voice_eval/`)**. Stay
+out of their code unless the owner says otherwise; when your attribute needs a change there, write
+it up as a suggestion (file:line, what, why) on that lane's issue, or ask the owner for a one-off.
+The one exception: an attribute lane may land one repo-wide **mechanical** sweep (a helper adoption,
+a convention) across a concern lane's files after telling it on its issue; anything behavioral there
+is the concern lane's. Other lanes merge to `main` concurrently: rebase before every push, judge
+every PR by `git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
 
 **The tuning zone is parked, not open.** Its steward stood down with wave 9 on main (close-out:
 the last comment on #3769; `TARGET.md`, `WAVE-LOG.md` and `SURVEY-VISION.md` §7 live on branch
@@ -68,15 +72,19 @@ PR #4138 (the wired capture kernel; green, waiting on the owner's hardware null 
 `cli/measure.py` and their tests alone until it merges; and #4031's Phase D is about to cut into
 `active_speaker/commissioning_*` — anything there is coordinated on #4031 before a branch exists.
 
-**Sibling lanes.** Seven sibling sessions run the other attributes of the same review (P1 #4193, P2 #4194,
-P3 #4195, P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202; the index and sequencing are in
-`docs/codebase-quality-review-2026-09-05/prompts/README.md`). You share `jasper/control/` with
+**Sibling lanes.** Eight sibling sessions run the other lanes (P1 #4193, P2 #4194, P3 #4195,
+P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202, and P9 #4208 the voice loop; the index and
+sequencing are in `docs/codebase-quality-review-2026-09-05/prompts/README.md`). You share `jasper/control/` with
 **P3 (resilience)**: you own the `/state` payload and freshness, `jasper/cli/doctor/`, the
 `log_event`/`EVENTS` conventions, cue-manager instrumentation and the wake-recency detector; P3
 owns `restart_broker.py`, `handlers/system.py`, polkit and unit restart policy. **P1 (secrets)**
 may edit a doctor/`/state` leak site directly and will tell you on this issue; keep its redaction
 in place. The Wave-6 systems rows in the review (`VolumeObserver` gate, `MemoryMax`, the
 per-request `asyncio.run`) are the doctor/state steward's while it runs and yours once it stands down.
+**P9 (voice loop)** owns the fixes for R-005 and R-013, the `turn.timeline`/`voice.turn` lines, the
+`/state.voice` block and the cue manager's instrumentation; you own the vocabulary convention, the
+`/state` schema and freshness rule, and the doctor checks that read them — agree field shapes with
+P9 on its issue before either side adds a field.
 
 ## What "A" means here
 
@@ -110,7 +118,7 @@ doctor); reports `p2-L3-observability.md` (the whole lens: §1 publish topology,
 `p1-T13-1.md`, `p3-seams.md` rows G, H.
 
 Verified at HEAD by the review:
-- **R-005.** `voice_daemon.py:2373-2386,2500-2505`: wake-leg tasks are bare `create_task`s; the
+- **R-005 (P9 fixes it; your doctor row reads it).** `voice_daemon.py:2373-2386,2500-2505`: wake-leg tasks are bare `create_task`s; the
   shutdown path discards the exception; `:4783-4788` publishes the configured dict under a comment
   calling it runtime truth. **R-013.** No surface reports wake recency or idle mic RMS
   (`input_presence.py:26` is a start gate; `doctor/wake.py` has two static checks).
@@ -127,7 +135,7 @@ Verified at HEAD by the review:
   start/stop; the NN-1 fader clamp (`camilla.py:158` prose); the watchdog stall; the deep-quiet
   volume reconcile refusal (`volume_coordinator.py:1838,1874` silent).
 - `AudioCueManager.play` (`cues/manager.py:255-326`): one `log_event` across six branches, no
-  `/state`, no doctor check. `check_{outputd,fanin,camilla}_service` fail without
+  `/state`, no doctor check (P9 instruments it; you add the check). `check_{outputd,fanin,camilla}_service` fail without
   `speaker_silent=True`, so "daemon dead" cannot raise the dashboard's silent headline.
 - Doctor (`p1-T10.md`): 172 checks, 87 cannot fail (two security-posture regressions top out at
   warn); rule 4 not held (`_parked_follower_result` ×14 re-reads config; 8 more `load_config()` in
