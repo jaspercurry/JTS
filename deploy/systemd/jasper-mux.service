@@ -53,7 +53,7 @@ MemoryMax=120M
 Nice=-3
 RuntimeDirectory=jasper-mux
 RuntimeDirectoryMode=0750
-# S2 — single StateDirectory owner: mux does NOT declare StateDirectory=jasper.
+# Single StateDirectory owner: mux does NOT declare StateDirectory=jasper.
 # jasper-voice is the SOLE owner; a second declarer makes systemd re-chown
 # /var/lib/jasper on every restart of either unit, leaving shared files
 # unwritable by the other. Mux reaches the dir via ReadWritePaths (below).
@@ -69,16 +69,15 @@ UMask=0007
 # protection, but restart on every exit.
 OOMScoreAdjust=-300
 
-# mux scored 9.6 UNSAFE — it lacked even the basic stanza. Add the basics plus
-# the phase-1 directives. Writes are covered by RuntimeDirectory=jasper-mux +
-# ReadWritePaths (/var/lib/jasper for the source pin, /var/lib/jasper-intsecrets
-# for the Spotify token cache). The capability/syscall filters and the non-root
-# user drop (mux is now a broker client for its librespot-stall restart) are in
-# the Phase-3b block above.
+# Writes are covered by RuntimeDirectory=jasper-mux + ReadWritePaths
+# (/var/lib/jasper for the source pin, /var/lib/jasper-intsecrets for the
+# Spotify token cache). The capability/syscall filters and the non-root user
+# drop (mux is a broker client for its librespot-stall restart) are in the
+# non-root user-drop above.
 NoNewPrivileges=true
 ProtectSystem=strict
 # Spotify token refreshes are legitimate runtime writes.
-# /var/lib/jasper (S2) — mux's write target for the source-selection pin
+# /var/lib/jasper — mux's write target for the source-selection pin
 # (mux_mode.json) + shared speaker_volume.json, now that mux no longer declares
 # StateDirectory=jasper. Under ProtectSystem=strict these explicit paths are
 # what keep those writes possible.

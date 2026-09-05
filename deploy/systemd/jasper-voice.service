@@ -251,11 +251,12 @@ StateDirectoryMode=0770
 # UMask=0007 makes files this daemon CREATES here group-writable (0660) — the
 # "per-file modes" the dir-mode note above defers. usage.db, wake-events.sqlite3,
 # timers.db and speaker_volume.json are written by jasper-voice but ALSO by
-# jasper-mux/-control (same `jasper` group; mux co-owns StateDirectory=jasper and
-# re-chowns the tree to its own user on restart). Without group write they land
-# 0644 and the non-owner daemon hits "attempt to write a readonly database" (the
-# 2026-06-19 incident). Same directive jasper-fanin/-outputd already use for their
-# group-`jasper` sockets.
+# jasper-mux/-control (same `jasper` group, reaching the dir via ReadWritePaths
+# rather than their own StateDirectory). jasper-voice is the sole
+# StateDirectory=jasper owner, so its own restart re-chowns the tree to its
+# user; without group write the other two would then hit "attempt to write a
+# readonly database" on a 0644 file they don't own. Same directive
+# jasper-fanin/-outputd already use for their group-`jasper` sockets.
 UMask=0007
 # RuntimeDirectory creates /run/jasper at service start (auto-cleaned
 # at stop). voice_daemon binds /run/jasper/voice.sock there for
@@ -269,11 +270,10 @@ RuntimeDirectoryMode=0750
 # process on the speaker (parses microphone audio, third-party LLM
 # responses, Spotify/Google API responses). It drops to the
 # non-root jasper-voice user (above); /dev/snd access comes from the `audio`
-# supplementary group, not root. A strict read-only
-# FS (writes pinned by
-# ReadWritePaths + StateDirectory/RuntimeDirectory), ProtectHome=tmpfs hides
-# /root so a compromised voice can't read root's SSH key to pivot, no kernel
-# tunables/modules/logs, no extra namespaces. The capability + syscall filters
+# supplementary group, not root. ProtectSystem=strict pins writes to
+# ReadWritePaths + StateDirectory/RuntimeDirectory; ProtectHome=tmpfs hides
+# /root so a compromised voice can't read root's SSH key to pivot; no kernel
+# tunables/modules/logs; no extra namespaces. The capability + syscall filters
 # (CapabilityBoundingSet= / SystemCallFilter=@system-service, in the
 # non-root user-drop above) carry full value now that the process is non-root.
 ProtectSystem=strict

@@ -181,7 +181,7 @@ Environment="JASPER_FANIN_INPUT_BUFFER_FRAMES=4096"
 # defaults above are live.
 EnvironmentFile=-/var/lib/jasper/fanin.env
 
-# Renderer-ingress lane map (U3/P6a) — which renderer lanes reach this daemon
+# Renderer-ingress lane map — which renderer lanes reach this daemon
 # over an SHM slot ring rather than an snd-aloop capture substream. Written by
 # jasper.renderer_lanes (the single writer) and loaded by the RENDERER units too,
 # so both ends of a lane flip come from one file and no RENDER can leave the

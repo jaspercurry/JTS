@@ -5,9 +5,9 @@
 # shellcheck shell=bash
 # Dedicated non-root service users + the
 # shared `jasper` group. Tier-A daemons dropped from root: jasper-voice /
-# jasper-mux / jasper-input (3b-1), jasper-control (3b-2, polkit-mediated
-# restarts/reboots), and jasper-web (3b-3, polkit-mediated NetworkManager +
-# bluetooth/systemd-journal groups). The first Tier-B DAC mixer slice adds
+# jasper-mux / jasper-input, jasper-control (polkit-mediated
+# restarts/reboots), and jasper-web (polkit-mediated NetworkManager +
+# bluetooth/systemd-journal groups). Tier-B adds
 # jasper-recon for non-root amixer access via the `audio` group. The optional
 # USB host-microphone relay has its own `jasper-usbmic` identity so it can use
 # ALSA without inheriting `jasper-input`'s /dev/input authority. All share
@@ -17,7 +17,7 @@
 # to re-run (useradd only when absent; supplementary-group adds via usermod -aG
 # on the upgrade path).
 
-# Create the shared `jasper` group and the 3b-1 service users. The group is the
+# Create the shared `jasper` group and its service users. The group is the
 # cross-daemon access boundary: it owns the /run UDS dirs (so a connector can
 # traverse to a binder's socket) and group-shared /var/lib/jasper state.
 create_jasper_service_users() {
@@ -120,8 +120,8 @@ create_jasper_service_users() {
         useradd -r -M -s /usr/sbin/nologin -g jasper -G systemd-journal,jasper-intsecrets,jts-ring jasper-control
     fi
     # Ensure the systemd-journal membership on UPGRADE too — the useradd above is
-    # skipped when the user already exists (e.g. a Pi from an earlier 3b-2 build
-    # before the journal-reading /state cards needed it). Idempotent; takes
+    # skipped when the user already exists (e.g. a Pi from before the
+    # journal-reading /state cards needed it). Idempotent; takes
     # effect on jasper-control's next restart (the deploy restarts it).
     if getent group systemd-journal >/dev/null 2>&1; then
         usermod -aG systemd-journal jasper-control 2>/dev/null || true
@@ -160,7 +160,7 @@ create_jasper_service_users() {
     if getent group bluetooth >/dev/null 2>&1; then
         usermod -aG bluetooth jasper-web 2>/dev/null || true
     fi
-    # Tier-B DAC mixer slice — jasper-recon is the non-root service user
+    # jasper-recon is the non-root service user
     # for hardware reconcilers that only need ALSA mixer access: the declared
     # DAC mixer pins (`jasper-dac-init`) and the Apple dongle drift monitor
     # (`jasper-headphone-monitor`). Primary group `jasper`, supplementary `audio`
@@ -170,10 +170,10 @@ create_jasper_service_users() {
     fi
     usermod -aG audio jasper-recon 2>/dev/null || true
     # Ensure jasper-secrets membership on UPGRADE too (the
-    # useradd -G above is skipped when the user already exists, e.g. a Pi from a
-    # pre-4a build). Idempotent; takes effect on the daemon's next start (the
-    # deploy restarts jasper-voice; jasper-web is socket-activated so its next
-    # spawn picks it up).
+    # useradd -G above is skipped when the user already exists, e.g. a Pi
+    # created before the jasper-secrets group existed). Idempotent; takes
+    # effect on the daemon's next start (the deploy restarts jasper-voice;
+    # jasper-web is socket-activated so its next spawn picks it up).
     if getent group jasper-secrets >/dev/null 2>&1; then
         usermod -aG jasper-secrets jasper-voice 2>/dev/null || true
         usermod -aG jasper-secrets jasper-web 2>/dev/null || true
