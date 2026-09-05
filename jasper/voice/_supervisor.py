@@ -2,20 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Provider-agnostic helpers for the voice connection reconnect supervisor.
+"""The voice connection reconnect supervisor, shared by every provider.
 
-Each `LiveConnection` implementation runs its own reconnect supervisor
-because the recovery details differ (Gemini drops a resumption handle on
-1008; OpenAI just reopens the WebSocket). Voice-specific retry-loop
-primitives — transient/terminal exception classification and the
-once-per-outage escalation announcement — live here so behaviour stays
-consistent across providers. The generic retry schedule lives in
-:mod:`jasper.backoff` so non-voice subsystems do not depend on this
-private module.
+Every `LiveConnection` implementation drives the same loop from here:
+the supervisor task, its reconnect run with backoff, transient/terminal
+exception classification and the once-per-outage escalation
+announcement. The generic retry schedule lives in :mod:`jasper.backoff`
+so non-voice subsystems do not depend on this private module.
 
-What's NOT here: the supervisor task itself, provider-specific reconnect
-handling (Gemini's 409 / 1008) and resumption-handle logic. Those stay in
-`gemini_session.py` / `openai_session.py`.
+Providers differ only in what a failed attempt means to them — Gemini
+drops its ADR-0166 resumption handle, OpenAI just reopens the WebSocket
+— and that difference goes through
+`SupervisedConnection._on_reconnect_attempt_failed`.
 """
 from __future__ import annotations
 
@@ -24,12 +22,13 @@ import errno
 import logging
 import re
 import socket
-from typing import Callable
+from typing import Any, Awaitable, Callable, Protocol
 
+from ..backoff import reconnect_delay, sleep_or_nudge
 from ..log_event import log_event
 from ..os_fault import root_os_error
 from ..secret_redaction import redact_secrets
-from .session import CuePlayer
+from .session import ConnectionState, CuePlayer
 
 logger = logging.getLogger(__name__)
 
@@ -379,3 +378,174 @@ class Deferred:
         self._pending = False
         fire()
         return True
+
+
+class SupervisedConnection(Protocol):
+    """What the shared reconnect supervisor reads from a connection.
+
+    Every member already exists on both provider connections; naming
+    them here is what lets the loop below be type-checked."""
+
+    PROVIDER_NAME: str
+    # Prefix for this provider's human-readable log lines, e.g.
+    # "openai connection:".
+    _log_tag: str
+
+    _state: ConnectionState
+    _state_lock: asyncio.Lock
+    _turn_lock: asyncio.Lock
+    _active_turn: Any
+    _stopping: asyncio.Event
+    _reconnect_event: asyncio.Event
+    _nudge_event: asyncio.Event
+    _deferred_reconnect: Deferred
+    _outage: OutageTracker
+    # None in production (retry forever); a bounded tuple in tests, to
+    # make schedule exhaustion observable.
+    _backoff_schedule: tuple[float, ...] | None
+    _sleep: Callable[[float], Awaitable[None]]
+
+    def _set_state(self, new_state: ConnectionState) -> None: ...
+
+    async def _teardown_session(self) -> None: ...
+
+    async def _open_session(self) -> None: ...
+
+    async def _reconnect_with_backoff(self) -> None:
+        """Usually a thin call through to `run_reconnect_with_backoff`;
+        a provider owning pre-run state (Gemini's planned rotation)
+        settles it here first."""
+        ...
+
+    def _on_reconnect_attempt_failed(
+        self, exc: Exception, attempt: int, transient: bool,
+    ) -> None:
+        """One failed reopen. Logs the provider's own diagnosis and
+        applies whatever recovery its next attempt needs — for Gemini,
+        dropping a possibly-stale resumption handle (ADR-0166)."""
+        ...
+
+
+async def run_supervisor_loop(conn: SupervisedConnection) -> None:
+    """Reconnect for the connection's lifetime.
+
+    Wakes on `_reconnect_event`, which the receive loop sets when it
+    observes a drop, a GoAway or an unexpected exception, and which the
+    proactive/rotate watchdogs set for a planned reopen."""
+    while not conn._stopping.is_set():
+        await conn._reconnect_event.wait()
+        if conn._stopping.is_set():
+            return
+        # Cleared before the work so a signal during reopen survives. See #3915.
+        conn._reconnect_event.clear()
+        log_event(
+            logger,
+            "voice.supervisor.wake",
+            provider=conn.PROVIDER_NAME,
+            state=conn._state.value,
+        )
+        await conn._reconnect_with_backoff()
+        log_event(
+            logger,
+            "voice.supervisor.wait",
+            provider=conn.PROVIDER_NAME,
+            state=conn._state.value,
+        )
+
+
+async def run_reconnect_with_backoff(
+    conn: SupervisedConnection, *, first_delay: float | None = None,
+) -> None:
+    """Tear the session down, then reopen until it takes.
+
+    `first_delay` overrides the schedule for attempt 1 only: a planned
+    session rotation is not a failure and waits for nothing."""
+    async with conn._state_lock:
+        conn._set_state(ConnectionState.RECONNECTING)
+    # Tear down the old session before opening a new one so we don't
+    # leak a half-open WS through the SDK.
+    await conn._teardown_session()
+    # This reconnect subsumes any deferred one; clear the flag so a
+    # later turn release doesn't fire a spurious second reconnect.
+    conn._deferred_reconnect.clear()
+    # Mark the active turn (if any) as lost AND detach it. The daemon's
+    # idle watchdog will pick up `turn_lost()` and call `release()`, but
+    # in the meantime the connection's slot is free — clearing
+    # `_active_turn` lets a wake event after reconnect acquire a fresh
+    # turn rather than getting "a turn is already active" while the old
+    # one is still being torn down.
+    if conn._active_turn is not None:
+        conn._active_turn._on_connection_lost()
+        async with conn._turn_lock:
+            conn._active_turn = None
+
+    schedule = conn._backoff_schedule
+    bounded = schedule is not None
+    last_exc: Exception | None = None
+    # Seeds the first delay; the previous failure's classification picks
+    # every one after that.
+    last_transient = True
+    conn._nudge_event.clear()
+    attempt = 0
+    while not conn._stopping.is_set():
+        attempt += 1
+        if schedule is not None and attempt > len(schedule):
+            break
+        if attempt == 1 and first_delay is not None:
+            delay = first_delay
+        elif schedule is not None:
+            delay = schedule[attempt - 1]
+        else:
+            delay = reconnect_delay(attempt, transient=last_transient)
+        async with conn._state_lock:
+            conn._set_state(ConnectionState.PAUSED_FOR_BACKOFF)
+        logger.info(
+            "%s reconnect attempt %d after %.1fs backoff",
+            conn._log_tag, attempt, delay,
+        )
+        # A bare sleep would be uninterruptible, so the 15-minute
+        # terminal poll would ignore `request_reconnect_now` for up to
+        # 15 minutes. `stop()` cancels the supervisor task, which
+        # unwinds through here and cancels both waiters.
+        await sleep_or_nudge(delay, conn._nudge_event, sleep=conn._sleep)
+        if conn._stopping.is_set():
+            return
+        # This attempt answers every nudge raised so far, including any
+        # raised during the previous attempt. Clearing here (not inside
+        # the wait) is what keeps those from being discarded.
+        conn._nudge_event.clear()
+        try:
+            await conn._open_session()
+        except Exception as e:  # noqa: BLE001
+            last_exc = e
+            transient = is_transient(e)
+            conn._on_reconnect_attempt_failed(e, attempt, transient)
+            if transient and not last_transient and not bounded:
+                # The provider stopped rejecting us outright and is only
+                # failing normally now, so it is recovering. Restart the
+                # ramp at 1 s instead of resuming wherever the slow poll
+                # left the counter. Bounded (test) schedules index by
+                # `attempt`, so resetting one would replay the schedule
+                # forever.
+                attempt = 0
+            last_transient = transient
+            continue
+        if attempt > 1:
+            log_event(
+                logger,
+                "voice.supervisor.reconnected",
+                provider=conn.PROVIDER_NAME,
+                attempt=attempt,
+            )
+        return
+
+    # Only reached when (a) a bounded test schedule was exhausted, or
+    # (b) the daemon is stopping. Production never reaches this — the
+    # loop iterates forever until success.
+    if bounded and not conn._stopping.is_set():
+        async with conn._state_lock:
+            conn._set_state(ConnectionState.FAILED)
+        logger.error(
+            "%s bounded test schedule exhausted after %d retries. "
+            "Last error: %s", conn._log_tag, attempt - 1, last_exc,
+        )

@@ -12,7 +12,7 @@ from typing import AsyncIterator, Callable
 from google import genai
 from google.genai import types
 
-from jasper.backoff import ReconnectNudge, reconnect_delay, sleep_or_nudge
+from jasper.backoff import ReconnectNudge
 from jasper.log_event import log_event
 
 from ..tools import ToolRegistry, dispatch_tool
@@ -20,7 +20,8 @@ from ._supervisor import (
     Deferred,
     OutageTracker,
     http_status,
-    is_transient,
+    run_reconnect_with_backoff,
+    run_supervisor_loop,
     survive_terminal_initial_connect,
 )
 from .session import (
@@ -542,6 +543,11 @@ class GeminiLiveConnection:
     mono. Manual VAD: automatic_activity_detection.disabled = True; the
     daemon sends `activity_start` on wake and `activity_end` on idle.
     """
+
+    PROVIDER_NAME = "gemini"
+    # Prefix this module's own log lines already carry verbatim; the
+    # shared supervisor reads it from here.
+    _log_tag = "live connection:"
 
     INPUT_MIME = "audio/pcm;rate=16000"
 
@@ -1325,32 +1331,7 @@ class GeminiLiveConnection:
         self._reconnect_event.set()
 
     async def _supervisor_loop(self) -> None:
-        """Run for the connection's lifetime. Wakes on `_reconnect_event`,
-        runs through the bounded backoff schedule, and surfaces FAILED
-        if exhausted. Triggered by the receive loop when it observes a
-        drop, GoAway, or unexpected exception."""
-        try:
-            while not self._stopping.is_set():
-                await self._reconnect_event.wait()
-                if self._stopping.is_set():
-                    return
-                # Cleared before the work so a signal during reopen survives. See #3915.
-                self._reconnect_event.clear()
-                log_event(
-                    logger,
-                    "voice.supervisor.wake",
-                    provider="gemini",
-                    state=self._state.value,
-                )
-                await self._reconnect_with_backoff()
-                log_event(
-                    logger,
-                    "voice.supervisor.wait",
-                    provider="gemini",
-                    state=self._state.value,
-                )
-        except asyncio.CancelledError:
-            raise
+        await run_supervisor_loop(self)
 
     async def _reconnect_with_backoff(self) -> None:
         # Read-and-clear: a planned rotation is not a failure, so its
@@ -1358,141 +1339,45 @@ class GeminiLiveConnection:
         # that first attempt is an ordinary failure and backs off.
         planned = self._planned_rotate
         self._planned_rotate = False
-        async with self._state_lock:
-            self._set_state(ConnectionState.RECONNECTING)
-        # Tear down the old session before opening a new one so we don't
-        # leak a half-open WS through the SDK.
-        await self._teardown_session()
-        # A reconnect is now underway — any GoAway-deferred reconnect is
-        # subsumed by this one; clear the flag so a later turn release
-        # doesn't fire a spurious second reconnect.
-        self._deferred_reconnect.clear()
-        # Mark the active turn (if any) as lost AND detach it. The
-        # daemon's idle watchdog will pick up `turn_lost()` and call
-        # `release()`, but in the meantime the connection's slot is free
-        # — clearing `_active_turn` lets a wake event after reconnect
-        # acquire a fresh turn rather than getting "a turn is already
-        # active" while the old one is still being torn down.
-        if self._active_turn is not None:
-            self._active_turn._on_connection_lost()
-            async with self._turn_lock:
-                self._active_turn = None
+        await run_reconnect_with_backoff(
+            self, first_delay=0.0 if planned else None,
+        )
 
-        last_exc: Exception | None = None
-        handle_dropped = False
-        # Seeds the first delay; the previous failure's classification
-        # picks every one after that.
-        last_transient = True
-        self._nudge_event.clear()
-        attempt = 0
-        # Production: `self._backoff_schedule is None` → infinite loop.
-        # Tests pass a bounded tuple to make exhaustion observable.
-        bounded = self._backoff_schedule is not None
-        max_attempts = len(self._backoff_schedule) if bounded else None
-        while not self._stopping.is_set():
-            attempt += 1
-            if bounded and attempt > max_attempts:
-                break
-            delay = (
-                0.0
-                if planned and attempt == 1
-                else self._backoff_schedule[attempt - 1]
-                if bounded
-                else reconnect_delay(attempt, transient=last_transient)
+    def _on_reconnect_attempt_failed(
+        self, exc: Exception, attempt: int, transient: bool,
+    ) -> None:
+        is_409, status = _is_409_conflict(exc)
+        handle_short = (
+            (self._resumption_handle or "")[:8]
+            if self._resumption_handle
+            else "<none>"
+        )
+        if is_409:
+            logger.warning(
+                "live connection: reconnect 409 Conflict on attempt "
+                "%d (status=%s, exc=%s, handle=%s)",
+                attempt, status, type(exc).__name__, handle_short,
             )
-            async with self._state_lock:
-                self._set_state(ConnectionState.PAUSED_FOR_BACKOFF)
-            logger.info(
-                "live connection: reconnect attempt %d after %.1fs backoff",
-                attempt, delay,
+        else:
+            logger.warning(
+                "live connection: reconnect attempt %d failed "
+                "(%s: %s, handle=%s)",
+                attempt, type(exc).__name__,
+                self._outage.detail, handle_short,
             )
-            await self._backoff_sleep(delay)
-            if self._stopping.is_set():
-                return
-            # This attempt answers every nudge raised so far, including
-            # any raised during the previous attempt. Clearing here (not
-            # inside the wait) is what keeps those from being discarded.
-            self._nudge_event.clear()
-            try:
-                await self._open_session()
-                if handle_dropped:
-                    logger.info(
-                        "live connection: reconnect recovered on attempt %d "
-                        "after dropping stale resumption handle",
-                        attempt,
-                    )
-                return
-            except Exception as e:  # noqa: BLE001
-                last_exc = e
-                transient = is_transient(e)
-                is_409, status = _is_409_conflict(e)
-                handle_short = (
-                    (self._resumption_handle or "")[:8]
-                    if self._resumption_handle
-                    else "<none>"
-                )
-                if is_409:
-                    logger.warning(
-                        "live connection: reconnect 409 Conflict on attempt "
-                        "%d (status=%s, exc=%s, handle=%s)",
-                        attempt, status, type(e).__name__, handle_short,
-                    )
-                else:
-                    logger.warning(
-                        "live connection: reconnect attempt %d failed "
-                        "(%s: %s, handle=%s)",
-                        attempt, type(e).__name__,
-                        self._outage.detail, handle_short,
-                    )
-                if transient and not last_transient and not bounded:
-                    # The provider stopped rejecting us outright and is
-                    # only failing normally now, so it is recovering.
-                    # Restart the ramp at 1 s instead of resuming
-                    # wherever the slow poll left the counter. Bounded
-                    # (test) schedules index by `attempt`, so resetting
-                    # one would replay the schedule forever.
-                    attempt = 0
-                last_transient = transient
-                # Drop the cached resumption handle on the first failure
-                # of ANY kind. A server-invalidated handle that surfaces
-                # as anything other than a 409 (the killer: WebSocket
-                # close 1008 with reason "BidiGenerateContent session
-                # expired") used to lock the supervisor into an
-                # indefinite same-error retry loop because the drop was
-                # gated on 409 detection. The cost of dropping a handle
-                # we didn't strictly need to is one turn of context
-                # continuity; the cost of keeping a stale one is the
-                # entire session. The asymmetry justifies the broader
-                # drop.
-                if not handle_dropped and self._resumption_handle is not None:
-                    logger.warning(
-                        "live connection: reconnect dropping cached "
-                        "resumption handle (handle=%s) after first "
-                        "failure; next attempt will connect fresh",
-                        handle_short,
-                    )
-                    self._resumption_handle = None
-                    handle_dropped = True
-
-        # Only reached when (a) the test override exhausted its bounded
-        # schedule, or (b) the daemon is stopping. Production never
-        # reaches this — the loop iterates forever until success.
-        if bounded and not self._stopping.is_set():
-            async with self._state_lock:
-                self._set_state(ConnectionState.FAILED)
-            logger.error(
-                "live connection: bounded test schedule exhausted after %d "
-                "retries. Last error: %s", attempt - 1, last_exc,
+        # Drop the cached handle on the first failure of ANY kind, not
+        # just a 409: a server-invalidated handle also surfaces as
+        # WebSocket close 1008 "BidiGenerateContent session expired".
+        # Keeping a stale one costs the whole session; dropping a good
+        # one costs a turn of context. See ADR-0166.
+        if self._resumption_handle is not None:
+            logger.warning(
+                "live connection: reconnect dropping cached "
+                "resumption handle (handle=%s) after first "
+                "failure; next attempt will connect fresh",
+                handle_short,
             )
-
-    async def _backoff_sleep(self, delay: float) -> None:
-        """Wait out the backoff, unless a caller asks to retry now.
-
-        A bare sleep here is uninterruptible, so the 15-minute terminal
-        poll would ignore `request_reconnect_now` for up to 15 minutes.
-        `stop()` cancels the supervisor task, which unwinds through here
-        and cancels both waiters."""
-        await sleep_or_nudge(delay, self._nudge_event, sleep=self._sleep)
+            self._resumption_handle = None
 
     async def _receive_loop(self) -> None:
         """Iterate the SDK's lower-level `session._receive()` and route

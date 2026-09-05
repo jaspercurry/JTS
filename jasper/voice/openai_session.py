@@ -61,12 +61,7 @@ import os
 import time as _time
 from typing import AsyncIterator, Callable
 
-from jasper.backoff import (
-    ReconnectNudge,
-    reconnect_backoff_delay,
-    reconnect_delay,
-    sleep_or_nudge,
-)
+from jasper.backoff import ReconnectNudge, reconnect_backoff_delay
 from jasper.log_event import log_event
 
 from ..tools import ToolRegistry, dispatch_tool
@@ -74,6 +69,8 @@ from ._supervisor import (
     Deferred,
     OutageTracker,
     is_transient,
+    run_reconnect_with_backoff,
+    run_supervisor_loop,
     survive_terminal_initial_connect,
 )
 from .session import (
@@ -1673,106 +1670,19 @@ class OpenAIRealtimeConnection:
         self._reconnect_event.set()
 
     async def _supervisor_loop(self) -> None:
-        try:
-            while not self._stopping.is_set():
-                await self._reconnect_event.wait()
-                if self._stopping.is_set():
-                    return
-                # Cleared before the work so a signal during reopen survives. See #3915.
-                self._reconnect_event.clear()
-                log_event(
-                    logger,
-                    "voice.supervisor.wake",
-                    provider=self.PROVIDER_NAME,
-                    state=self._state.value,
-                )
-                await self._reconnect_with_backoff()
-                log_event(
-                    logger,
-                    "voice.supervisor.wait",
-                    provider=self.PROVIDER_NAME,
-                    state=self._state.value,
-                )
-        except asyncio.CancelledError:
-            raise
+        await run_supervisor_loop(self)
 
     async def _reconnect_with_backoff(self) -> None:
-        async with self._state_lock:
-            self._set_state(ConnectionState.RECONNECTING)
-        await self._teardown_session()
-        if self._active_turn is not None:
-            self._active_turn._on_connection_lost()
-            async with self._turn_lock:
-                self._active_turn = None
+        await run_reconnect_with_backoff(self)
 
-        last_exc: Exception | None = None
-        # Seeds the first delay; the previous failure's classification
-        # picks every one after that.
-        last_transient = True
-        self._nudge_event.clear()
-        attempt = 0
-        bounded = self._backoff_schedule is not None
-        max_attempts = len(self._backoff_schedule) if bounded else None
-        while not self._stopping.is_set():
-            attempt += 1
-            if bounded and attempt > max_attempts:
-                break
-            delay = (
-                self._backoff_schedule[attempt - 1]
-                if bounded
-                else reconnect_delay(attempt, transient=last_transient)
-            )
-            async with self._state_lock:
-                self._set_state(ConnectionState.PAUSED_FOR_BACKOFF)
-            logger.info(
-                f"{self._log_tag} reconnect attempt %d after %.1fs backoff",
-                attempt, delay,
-            )
-            await self._backoff_sleep(delay)
-            if self._stopping.is_set():
-                return
-            # This attempt answers every nudge raised so far, including
-            # any raised during the previous attempt. Clearing here (not
-            # inside the wait) is what keeps those from being discarded.
-            self._nudge_event.clear()
-            try:
-                await self._open_session()
-                return
-            except Exception as e:  # noqa: BLE001
-                last_exc = e
-                transient = is_transient(e)
-                logger.warning(
-                    f"{self._log_tag} reconnect attempt %d failed "
-                    "(%s: %s, transient=%s)",
-                    attempt, type(e).__name__, self._outage.detail,
-                    transient,
-                )
-                if transient and not last_transient and not bounded:
-                    # The provider stopped rejecting us outright and is
-                    # only failing normally now, so it is recovering.
-                    # Restart the ramp at 1 s instead of resuming
-                    # wherever the slow poll left the counter. Bounded
-                    # (test) schedules index by `attempt`, so resetting
-                    # one would replay the schedule forever.
-                    attempt = 0
-                last_transient = transient
-
-        if bounded and not self._stopping.is_set():
-            async with self._state_lock:
-                self._set_state(ConnectionState.FAILED)
-            logger.error(
-                f"{self._log_tag} bounded test schedule exhausted after %d "
-                "retries. Last error: %s", attempt - 1, last_exc,
-            )
-
-    async def _backoff_sleep(self, delay: float) -> None:
-        """Wait out the backoff, unless a caller asks to retry now.
-
-        A bare sleep here is uninterruptible, so the 15-minute terminal
-        poll would ignore `request_reconnect_now` for up to 15 minutes.
-        `stop()` cancels the supervisor task, which unwinds through here
-        and cancels both waiters."""
-        await sleep_or_nudge(delay, self._nudge_event, sleep=self._sleep)
+    def _on_reconnect_attempt_failed(
+        self, exc: Exception, attempt: int, transient: bool,
+    ) -> None:
+        logger.warning(
+            f"{self._log_tag} reconnect attempt %d failed "
+            "(%s: %s, transient=%s)",
+            attempt, type(exc).__name__, self._outage.detail, transient,
+        )
 
     async def _receive_loop(self, conn) -> None:
         """Iterate the SDK connection's event stream and route events.
