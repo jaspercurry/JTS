@@ -1477,42 +1477,6 @@ async def start_summed_test(
     return payload
 
 
-async def play_driver_capture_sweep(
-    raw: dict[str, Any],
-    *,
-    camilla_factory: CamillaFactory,
-    blocking_phase: str | None = None,
-    applied_profile: dict[str, Any] | None = None,
-    locked_main_volume_db: float | None = None,
-    fanin_gate_context: web_commissioning.FaninGateContext | None = None,
-) -> dict[str, Any]:
-    """Play a mic-capture sweep through an already-confirmed driver.
-
-    ``fanin_gate_context`` threads through to
-    ``web_commissioning.play_driver_capture_sweep`` — set only by the
-    capture flow when this sweep runs inside a correction measurement window
-    (see ``FaninGateContext``).
-    """
-
-    _LEVEL_LEASE.assert_volume_safety_resolved()
-    payload = await web_commissioning.play_driver_capture_sweep(
-        raw,
-        camilla_factory=camilla_factory,
-        blocking_phase=blocking_phase,
-        applied_profile=applied_profile,
-        locked_main_volume_db=locked_main_volume_db,
-        fanin_gate_context=fanin_gate_context,
-    )
-    log_event(
-        logger,
-        "correction.crossover_driver_capture_sweep",
-        status=payload.get("status"),
-        group_id=raw.get("speaker_group_id"),
-        role=raw.get("role"),
-    )
-    return payload
-
-
 async def play_summed_capture_sweep(
     raw: dict[str, Any],
     *,
