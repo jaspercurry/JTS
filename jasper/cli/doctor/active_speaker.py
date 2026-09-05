@@ -13,8 +13,7 @@ from pathlib import Path
 
 from ._evidence import evidence
 from ._registry import doctor_check
-from ._shared import CheckResult
-from .audio import REASON_TOPOLOGY_UNREADABLE
+from ._shared import REASON_TOPOLOGY_UNREADABLE, CheckResult
 from .correction import (
     REASON_CAMILLA_CONFIG_MISSING,
     REASON_CAMILLA_STATEFILE_UNREADABLE,

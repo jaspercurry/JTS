@@ -36,6 +36,7 @@ from ...mic_presence import MicPresence
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
+    REASON_TOPOLOGY_UNREADABLE,
     CheckResult,
     _group_writable_dir,
     _parked_follower_result,
@@ -81,7 +82,6 @@ REASON_OUTPUT_HARDWARE_BLOCKED = "output_hardware_blocked"
 REASON_OUTPUT_HARDWARE_MISMATCH = "output_hardware_mismatch"
 REASON_OUTPUT_HARDWARE_CLOCK_BLOCKED = "output_hardware_clock_blocked"
 
-REASON_TOPOLOGY_UNREADABLE = "output_topology_unreadable"
 REASON_TOPOLOGY_NOT_CONFIGURED = "output_topology_not_configured"
 
 REASON_CAMILLA_CONFIG_DIR_MISSING = "camilla_config_dir_missing"
