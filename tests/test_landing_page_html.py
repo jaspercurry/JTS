@@ -373,14 +373,17 @@ def test_landing_page_bakes_capability_ceiling_at_first_paint() -> None:
 
 
 def test_install_bakes_landing_capabilities() -> None:
-    # install.sh computes the profile's capability map from the SAME source
+    # The renderer computes the profile's capability map from the SAME source
     # the runtime snapshot uses (system_capabilities_for_profile) and replaces
-    # the placeholder, failing loud rather than shipping an unreplaced page.
+    # the placeholder; install.sh fails loud rather than shipping an
+    # unreplaced page.
     install = _INSTALL_PATH.read_text(encoding="utf-8")
+    landing = (_REPO / "jasper" / "web" / "landing.py").read_text(encoding="utf-8")
 
-    assert "system_capabilities_for_profile" in install
-    assert "read_install_profile" in install
-    assert "__JTS_CAPS_JSON__" in install
+    assert "system_capabilities_for_profile" in landing
+    assert "read_install_profile" in landing
+    assert "__JTS_CAPS_JSON__" in landing
+    assert "python3 -m jasper.web.landing" in install
     assert "refusing to ship a broken page" in install
 
 
@@ -769,7 +772,8 @@ def test_install_copies_and_stamps_app_css() -> None:
     # The static landing page's app.css link is cache-busted at install
     # time by substituting the build SHA into the version placeholder.
     assert "__APP_CSS_VERSION__" in _index_html()
-    assert "s/__APP_CSS_VERSION__/" in install
+    assert 'app_css_ver="$(resolve_build_sha_short)"' in install
+    assert '--app-css-version "${app_css_ver}"' in install
 
 
 def test_landing_page_stereo_pair_banner_wiring() -> None:
