@@ -429,7 +429,7 @@ the next implementer from re-discovering it):
 > (grounded in a real production incident, since landed and deleted per
 > ADR-0199) covered overlapping ground, and several of the failure modes
 > speculated about below have since been addressed in `install.sh` —
-> notably the "build manifest lied" case (#3/#4): the manifest is now
+> notably the "build manifest lied" case: the manifest is now
 > written **once, at the very end**, on success only
 > (`write_build_manifest`), so a mid-install abort leaves the prior good
 > SHA ([ADR-0172](../adr/0172-full-a-b-install-generations-stay-deferred.md)).

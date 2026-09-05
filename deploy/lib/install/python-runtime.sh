@@ -451,7 +451,7 @@ install_streambox_jasper() {
     install -d -m 0755 -o root -g root "${STATE_DIR}/audio-validation"
 
     # Build manifest is written as the FINAL mutation in main(), not here —
-    # see install_jasper's note and write_build_manifest for why (problem #4).
+    # see install_jasper's note and write_build_manifest for why (ADR-0172).
 
     rsync -a --delete \
         --exclude='.venv' --exclude='__pycache__' --exclude='.git' \

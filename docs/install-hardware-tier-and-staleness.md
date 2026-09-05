@@ -7,7 +7,8 @@
 > sibling workstreams landed too: A (memory-safe builds) as
 > [ADR-0163](adr/0163-installer-builds-run-the-inverse-of-the-audio-daemon-memory-policy.md),
 > B (atomic/recoverable updates) as ADR-0172–0174, and C (hot-plug
-> resilience) in the reconciler/udev wiring it names. This note records
+> resilience) in the mic/AEC and output-hardware reconcilers' udev-triggered
+> wiring already in the tree. This note records
 > *findings, decisions, and a scoped PR*; it is not ongoing operational
 > truth. Once the recommended work lands, the code plus the operational
 > docs it updates (`install.sh`, the deploy script, the test files) are
@@ -72,8 +73,9 @@ The scoped PR that falls out of this note (see
 deliberately small and behavior-neutral on supported hardware: detect
 the tier, surface it in the install log and both dry-run plans, and
 fail-fast (overridably) on an unsupported architecture. It establishes
-the tier vocabulary A/B/C plug into and fixes problem #5 ("the failure
-wasn't self-evident") by putting the tier in the deploy transcript.
+the tier vocabulary A/B/C plug into and closes the gap where a tier
+mismatch wasn't self-evident from the tooling, by putting the tier in the
+deploy transcript.
 
 ---
 
@@ -166,7 +168,7 @@ it cannot say "far behind *and* low-RAM = the cold-rebuild quadrant."
 > or is it just "more migrations"? Are stepwise/checkpointed updates
 > warranted?*
 
-Three hypotheses from the brief, each tested against the code:
+Three hypotheses, each tested against the code:
 
 ### (a) One-shot migration pile-up — **not a real risk**
 
@@ -283,8 +285,8 @@ files with current socket ports/names, fresh nginx site, re-rendered
 step through intermediate topologies, so "many topology changes at once"
 collapses to "install the current topology once." The residual risk is
 a **half-applied** install (a `set -e` abort mid-run leaving new code
-with un-restarted daemons — problem #3), which is Workstream B's
-transaction/rollback concern, not a function of skew.
+with un-restarted daemons), which is ADR-0172's transaction/rollback
+concern, not a function of skew.
 
 ### Recommendation: reject stepwise updates; surface the quadrant instead
 
@@ -302,9 +304,9 @@ The cheap, high-value staleness mitigation that *is* in D's lane:
 tier in the deploy preflight**, e.g. a one-line warning when a box is
 both behind and `low`/`constrained` — "this update will likely trigger
 cold rebuilds on a low-RAM box; expect a long, memory-pressured build."
-That turns problem #5 ("the failure wasn't self-evident") into an
-up-front, operator-visible signal. (The enforcement that makes it
-*safe* rather than just *visible* is A + B.)
+That turns a failure that wasn't self-evident into an up-front,
+operator-visible signal. (The enforcement that makes it *safe* rather
+than just *visible* is A + B.)
 
 ---
 
@@ -439,9 +441,9 @@ and a dedicated test pins that the guard does *not* fire during
 
 ---
 
-## Mapping to the brief's Definition of Done
+## Definition-of-done checklist
 
-| DoD invariant | This note's contribution |
+| Invariant | This note's contribution |
 |---|---|
 | Install/update degrade *loudly* across 512 MB–16 GB | Tier is detected and surfaced (log + plan); arch mismatch fails loud. Safe *degradation under build pressure* is A. |
 | A failed update is observable, never false-success | This note diagnoses *why* (cold-cache rebuilds on low-RAM); the manifest/rollback fix is B (landed). |

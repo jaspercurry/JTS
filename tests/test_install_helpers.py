@@ -1554,12 +1554,9 @@ def test_full_install_editable_pip_install_keeps_full_extra():
 
 
 # ----------------------------------------------------------------------
-# Build manifest = the VERIFIED-INSTALL success marker (Workstream B,
-# problem #4). On jts2 (2026-06-21) the manifest was written EARLY, before
-# an OOM-killed build aborted install.sh, so the box advertised a SHA it
-# wasn't cleanly running and misled the deploy direction-guard. The fix:
-# write the manifest as the FINAL mutation in main(), gated by set -e, so
-# a mid-install abort leaves the prior good manifest untouched.
+# Build manifest = the VERIFIED-INSTALL success marker (See ADR-0172):
+# written as the FINAL mutation in main(), gated by set -e, so a
+# mid-install abort leaves the prior good manifest untouched.
 # ----------------------------------------------------------------------
 
 _PYTHON_RUNTIME_LIB = _INSTALL_LIB_DIR / "python-runtime.sh"
@@ -1773,7 +1770,7 @@ def test_build_manifest_is_the_final_main_mutation():
     """In both main() paths the manifest is written immediately before the
     (non-mutating) run_doctor_summary, after the build steps, and nothing
     mutating runs after it — so reaching it means every build/install step
-    succeeded under set -e (the load-bearing invariant behind problem #4)."""
+    succeeded under set -e (the load-bearing invariant behind ADR-0172)."""
     text = _INSTALL_SH.read_text(encoding="utf-8")
     # Adjacency: write_build_manifest directly precedes run_doctor_summary
     # in both the full and streambox paths (whitespace-tolerant).
@@ -1819,12 +1816,10 @@ def test_landing_page_app_css_version_uses_resolved_build_sha():
 
 # build-sandbox.sh — unified RAM-aware + cgroup-contained build policy
 # ----------------------------------------------------------------------
-# ADR-0163. On jts2 (1 GB Pi 5, 2026-06-21) an unbounded `meson compile`
-# OOM-killed the build AND cascaded into nginx + jasper-voice. These tests
-# pin the two levers that generalize the PR #899 point-fix: RAM-aware `-j`
-# (_ram_bounded_jobs) and cgroup containment (run_contained_build), and
-# the inverse-of-audio-daemon policy that makes a build the OOM victim
-# instead of a daemon.
+# See ADR-0163. These tests pin the two levers that generalize the
+# point-fix: RAM-aware `-j` (_ram_bounded_jobs) and cgroup containment
+# (run_contained_build), and the inverse-of-audio-daemon policy that
+# makes a build the OOM victim instead of a daemon.
 
 _BUILD_SANDBOX_LIB = _INSTALL_LIB_DIR / "build-sandbox.sh"
 _RUST_DAEMONS_LIB = _INSTALL_LIB_DIR / "rust-daemons.sh"

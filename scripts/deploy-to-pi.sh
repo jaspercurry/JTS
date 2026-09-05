@@ -64,7 +64,7 @@ REMOTE_REPO_DIR="${REMOTE_REPO_DIR:-}"
 # (laptop and Pi clocks differ). 0 = not captured (scan skips).
 DEPLOY_START_EPOCH=0
 # Set to 1 by report_oom_collateral when a live production daemon was
-# OOM-killed during the install window (problem #2/#5).
+# OOM-killed during the install window. See ADR-0174.
 OOM_PRODUCTION_HIT=0
 # Set by preflight_deploy_direction (same/forward/downgrade/diverged/
 # unknown_installed) so the post-install verification can call out a
@@ -448,10 +448,10 @@ finish_airplay_health_maintenance() {
 }
 
 # Surface collateral OOM kills during the install window — even when the
-# install itself succeeded. Problem #2/#5 (the plan): on jts2 a source
-# build OOM-killed nginx AND jasper-voice, and the deploy tooling exited
-# silently; the collateral was only discoverable by SSHing in to read the
-# journal. We bound the kernel-log scan to the Pi-clock epoch captured at
+# install itself succeeded. See ADR-0174: on jts2 a source build OOM-killed
+# nginx AND jasper-voice, and the deploy tooling exited silently; the
+# collateral was only discoverable by SSHing in to read the journal. We
+# bound the kernel-log scan to the Pi-clock epoch captured at
 # install start, parse it with the pure _lib helpers, print what died, and
 # set OOM_PRODUCTION_HIT when a live production daemon was the victim.
 # Reading the kernel journal needs root, and `ssh -tt` (interactive sudo)
@@ -755,7 +755,7 @@ DEPLOY_START_EPOCH="$(ssh_remote 'date +%s' 2>/dev/null | tr -dc '0-9')" || true
 
 # Run install.sh but DON'T let set -e abort before we surface collateral:
 # capture the exit code, always scan for OOM kills in the install window,
-# then decide. (Problem #5: a failed build that OOM-killed live daemons
+# then decide. (See ADR-0174: a failed build that OOM-killed live daemons
 # must not exit silently.)
 install_rc=0
 run_remote_sudo "${install_env} bash $(shell_quote "${REMOTE_REPO_DIR}/deploy/install.sh")" || install_rc=$?

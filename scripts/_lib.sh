@@ -469,12 +469,10 @@ classify_installed_vs_main() {
 
 # ── OOM-collateral parsing (deploy post-install surfacing) ───────────────
 #
-# ADR-0174: on jts2 a source build OOM-killed nginx AND jasper-voice, and
-# the deploy tooling exited silently — the collateral was only discoverable
-# by SSHing in to read the journal. deploy-to-pi.sh now scans the kernel log
-# for the install window and surfaces what was killed. These are the pure
-# parsers behind that; the ssh/journalctl I/O stays in deploy-to-pi.sh so
-# they unit-test against captured journal text.
+# See ADR-0174. deploy-to-pi.sh scans the kernel log for the install window
+# and surfaces what was killed; these are the pure parsers behind that — the
+# ssh/journalctl I/O stays in deploy-to-pi.sh so they unit-test against
+# captured journal text.
 #
 # Two readings of one kernel OOM event:
 #   - the victim's cgroup (task_memcg=/system.slice/<unit>.service) names
@@ -520,7 +518,7 @@ oom_killed_comms() {
 
 # oom_unit_is_production <unit_name>
 # Return 0 when the OOM-killed unit is a live production daemon whose death
-# during an update is a real incident (problem #2). Build steps run in a
+# during an update is a real incident (See ADR-0174). Build steps run in a
 # transient ssh scope, not these units, so a build-tool OOM never matches.
 # This is the laptop-side analog of the on-Pi production-daemon set in
 # jasper/cli/doctor/_shared.py (`_RUNTIME_STATE_UNITS`); they can't share

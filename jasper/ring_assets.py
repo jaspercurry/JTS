@@ -6,11 +6,14 @@
 
 Single source of truth for the three ring-platform assets every box ships —
 the compiled ioplug ``.so``, the conf.d PCM definitions
-(:data:`RING_CONF_PCMS`), and the ``/dev/shm/jts-ring`` tmpfs directory — plus
-the live-ring health layer built on the on-disk SHM header
-(:class:`RingHeader`): stall/liveness verdicts (:func:`ring_stall_verdict`),
-priming/flow state (:func:`ring_flow_state`), and header-vs-conf.d coherence
-(:func:`ring_header_matches_conf`).
+(:data:`RING_CONF_PCMS`), and the ``/dev/shm/jts-ring`` tmpfs directory —
+plus the conf.d writer (:func:`render_ring_conf_wire`, the per-box writer
+the output-hardware reconciler shells into), the ioplug's on-disk provenance
+and wire-support readers (:class:`RingIoplugProvenance`,
+:func:`ring_ioplug_wire_supported`), and the live-ring health layer built on
+the on-disk SHM header (:class:`RingHeader`): stall/liveness verdicts
+(:func:`ring_stall_verdict`), priming/flow state (:func:`ring_flow_state`),
+and header-vs-conf.d coherence (:func:`ring_header_matches_conf`).
 
 Import-cheap (stdlib, plus the import-free ``jasper.fanin_coupling`` constants)
 so callers can resolve asset presence and ring health without pulling in the
