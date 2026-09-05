@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from jasper.web.nav import entry
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -18,7 +20,6 @@ def test_chat_web_is_socket_nginx_and_entrypoint_wired():
     install_units = (
         ROOT / "deploy" / "lib" / "install" / "systemd-units.sh"
     ).read_text()
-    landing = (ROOT / "deploy" / "index.html").read_text()
 
     assert "ListenStream=127.0.0.1:8787" in socket_unit
     assert "Type=notify" in service_unit
@@ -46,4 +47,4 @@ def test_chat_web_is_socket_nginx_and_entrypoint_wired():
     assert 'jasper-chat-web = "jasper.web.chat_setup:main"' in pyproject
     assert "jasper-chat-web" in install_units
     assert 'systemctl restart "${unit}.socket"' in install_units
-    assert 'href="/chat/"' in landing
+    assert entry("/chat/").label == "Chat history"

@@ -17,6 +17,7 @@ import pytest
 
 from jasper.web._common import CANONICAL_ICON_SPRITE
 from jasper.web.landing import render_landing, substitutions
+from jasper.web.nav import NAV
 
 LANDING_HTML = Path(__file__).resolve().parents[1] / "deploy" / "index.html"
 # Placeholder shape: __UPPER_SNAKE__, the only such tokens in the template.
@@ -28,8 +29,7 @@ FAKE_TEMPLATE = (
     '<link href="/assets/app.css?v=__APP_CSS_VERSION__">'
     '<meta content="__JTS_CONTROL_TOKEN__">'
     "<body>__JTS_ICON_SPRITE__"
-    '<a class="setting-row"><svg class="chevron"><use href="#icon-chevron">'
-    "</use></svg></a>"
+    '<nav class="groups">__JTS_NAV_GROUPS__</nav>'
     "__JTS_CAPS_ISLAND__"
     '<script type="module" src="/assets/landing/js/main.js"></script>'
 )
@@ -73,11 +73,26 @@ def test_render_escapes_the_control_token() -> None:
 
 
 def test_symbols_the_landing_page_references_are_in_the_shared_sprite() -> None:
-    used = set(re.findall(r'<use href="#(icon-[a-z]+)"', LANDING_HTML.read_text()))
+    used = set(re.findall(r'<use href="#(icon-[a-z]+)"', _render(LANDING_HTML.read_text())))
     shipped = set(re.findall(r'<symbol id="(icon-[a-z]+)"', CANONICAL_ICON_SPRITE))
 
     assert used, "expected the landing page to reference sprite symbols"
     assert used <= shipped, f"missing from the shared sprite: {sorted(used - shipped)}"
+
+
+def test_landing_settings_rows_are_the_nav_manifest_in_order() -> None:
+    """The served groups are `nav.NAV` rendered: same rows, same order, no
+    hand-written row left behind (docs/UX-AUDIT-2026-09-03.md §2)."""
+    groups = _render(LANDING_HTML.read_text()).split('<nav class="groups"', 1)[1]
+    rendered = re.findall(
+        r'<a class="setting-row[^"]*"[^>]*href="([^"]+)".*?'
+        r'<span class="setting-title">([^<]+)</span>\s*'
+        r'<span class="setting-status"(?: id="([^"]+)")?>',
+        groups,
+        re.DOTALL,
+    )
+
+    assert rendered == [(row.path, row.label, row.status_id) for row in NAV]
 
 
 @pytest.mark.parametrize("missing", TEMPLATE_PLACEHOLDERS)

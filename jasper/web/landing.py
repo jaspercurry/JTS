@@ -14,7 +14,9 @@ would compute per request is substituted once, here, by install.sh:
   * the WS1 control token the assistant-pause button rides on POST /mic/mute
     (kept inside this process — never a shell argument or a log line);
   * the shared icon sprite, so the landing and the Python-rendered pages draw
-    from one set (``_common.CANONICAL_ICON_SPRITE``).
+    from one set (``_common.CANONICAL_ICON_SPRITE``);
+  * the settings groups, rendered from the site-map manifest (``nav.NAV``)
+    so the landing page and the pages it links share one row table.
 
 An unsubstituted placeholder fails the install rather than shipping a page
 with a literal ``__JTS_…__`` in it.
@@ -33,6 +35,7 @@ from jasper.install_profile import (
 )
 
 from ._common import CANONICAL_ICON_SPRITE, json_island
+from .nav import landing_groups_html
 
 def substitutions(
     *, app_css_version: str, caps: dict[str, object], control_token: str
@@ -48,6 +51,7 @@ def substitutions(
         "__JTS_CAPS_ISLAND__": json_island("landing-caps", caps),
         "__JTS_CONTROL_TOKEN__": escape(control_token),
         "__JTS_ICON_SPRITE__": CANONICAL_ICON_SPRITE,
+        "__JTS_NAV_GROUPS__": landing_groups_html(),
     }
 
 
