@@ -45,6 +45,7 @@ INSTALL_PROFILE_DEFAULT="full"
 INSTALL_PROFILE_MARKER="${STATE_DIR}/install_profile"
 
 source "${REPO_DIR}/deploy/lib/jasper-sed-inplace.sh"
+source "${REPO_DIR}/deploy/lib/jasper-env-file.sh"
 source "${REPO_DIR}/deploy/lib/jasper-asound-render.sh"
 source "${REPO_DIR}/deploy/lib/jasper-alsa-card.sh"
 source "${REPO_DIR}/deploy/lib/install/env-migrations.sh"
@@ -1325,9 +1326,8 @@ install_alsa() {
         "${REPO_DIR}/deploy/bin/jasper-render-asound-conf" \
         /usr/local/sbin/jasper-render-asound-conf
     if [[ ! -e "${STATE_DIR}/audio_quality.env" ]]; then
-        printf 'JASPER_ALSA_RATE_CONVERTER=samplerate_medium\n' \
-            > "${STATE_DIR}/audio_quality.env"
-        chmod 0644 "${STATE_DIR}/audio_quality.env"
+        jasper_env_file_set "${STATE_DIR}/audio_quality.env" \
+            JASPER_ALSA_RATE_CONVERTER samplerate_medium 0644 0770
         echo "  /var/lib/jasper/audio_quality.env defaulted to samplerate_medium."
     fi
     install -d -m 0755 /var/lib/jasper-asound
@@ -1412,17 +1412,6 @@ EOF
     echo "  Build manifest (verified install): ${git_sha} on ${git_branch}"
 }
 
-# Generic "delete-and-append" rewrite of one KEY=value line in
-# /etc/jasper/jasper.env. Shared by the streambox env-refresh path.
-set_jasper_env_value() {
-    local key="$1"
-    local value="$2"
-    sed_inplace "${ENV_DIR}/jasper.env" "/^${key}=/d"
-    printf '%s=%s\n' "${key}" "${value}" >> "${ENV_DIR}/jasper.env"
-}
-
-
-
 migrate_calibration_sign_convention() {
     # A measurement mic's vendor calibration file (miniDSP UMIK, Dayton)
     # states the MICROPHONE'S RESPONSE; the correction JTS applies is its
@@ -1499,45 +1488,7 @@ reconcile_aec_state() {
             > "${STATE_DIR}/usb_mic.env"
         chmod 0644 "${STATE_DIR}/usb_mic.env"
     fi
-    # These keys live in aec_mode.env, all owned by the /wake/
-    # input-profile / wake-detection cards:
-    #   - JASPER_AUDIO_INPUT_PROFILE  canonical profile selection
-    #                                 (auto, xvf_chip_aec,
-    #                                 xvf_chip_aec_testing,
-    #                                 xvf_software_aec3, direct_mic,
-    #                                 custom)
-    #   - JASPER_AEC_MODE             master AEC bridge toggle
-    #   - JASPER_WAKE_LEG_RAW         additive raw chip-direct leg (~5 MB)
-    #   - JASPER_WAKE_LEG_DTLN        additive DTLN neural leg (~75 MB)
-    #   - JASPER_WAKE_LEG_CHIP_AEC    XVF3800 chip-AEC profile gate
-    #                                 (hardware-conditional, mutually
-    #                                 exclusive with raw/DTLN)
-    #   - JASPER_WAKE_LEG_CHIP_AEC_150 optional extra 150° chip-AEC wake
-    #                                  detector (~30 MB)
-    #   - JASPER_WAKE_LEG_CHIP_AEC_210 optional extra 210° chip-AEC wake
-    #                                  detector (~30 MB)
-    #   - JASPER_AEC_CHIP_REF_OBSERVE opt-in: on the software-AEC3 path,
-    #                                 arm outputd's chip-ref writer FOR
-    #                                 MEASUREMENT ONLY so the Layer-0 SRO
-    #                                 drift estimator gets fed (mic path
-    #                                 stays software AEC3). Default off.
-    # Defaults: profile auto. A managed XVF3800 resolves to the commissioned
-    # fixed chip-AEC profile only on supported mic/output hardware; otherwise
-    # the reconciler parks voice with an actionable reason. Named testing,
-    # software-AEC3, and direct-mic intents do not bypass that policy. Software
-    # AEC3/direct fallback remains available for non-XVF microphones, while
-    # low-level DTLN/raw/extra-beam lab work requires the explicit custom
-    # profile.
-    #
-    # On upgrade, the reconciler's ensure_mode_file appends any
-    # missing keys with these same defaults — preserving an
-    # operator's hand-set JASPER_AEC_MODE/leg fields while inferring a
-    # profile for pre-profile installs.
-    if [[ ! -f "${STATE_DIR}/aec_mode.env" ]]; then
-        printf 'JASPER_AUDIO_INPUT_PROFILE=auto\nJASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\nJASPER_WAKE_LEG_CHIP_AEC_150=0\nJASPER_WAKE_LEG_CHIP_AEC_210=0\nJASPER_AEC_CHIP_REF_OBSERVE=0\n' \
-            > "${STATE_DIR}/aec_mode.env"
-        chmod 0644 "${STATE_DIR}/aec_mode.env"
-    fi
+    # aec_mode.env has one writer: ensure_mode_file in the reconciler run below.
     local aec_bridge_marker="/run/jasper-aec-reconcile/aec-bridge-ready"
     systemctl enable jasper-aec-reconcile.service
     if ! /usr/local/sbin/jasper-aec-reconcile --reason install; then
@@ -1944,6 +1895,28 @@ widen_jasper_web_writable_dirs() {
     fi
 }
 
+ensure_peer_id() {
+    # The per-install identity peers key on across reboots, and the evidence
+    # scripts/_lib.sh's verify_or_record_peer_id aborts a deploy over: a
+    # truncated id (power loss mid-write) must be regenerated, not preserved,
+    # so the existence check is a validity check and the write is atomic.
+    local file="${STATE_DIR}/peer_id" pid tmp
+    local uuid_re='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    if [[ -f "${file}" && "$(cat "${file}")" =~ ${uuid_re} ]]; then
+        return 0
+    fi
+    pid="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || true)"
+    if [[ ! "${pid}" =~ ${uuid_re} ]]; then
+        echo "  ERROR: could not generate peer_id (kernel uuid unreadable)" >&2
+        exit 1
+    fi
+    tmp="$(mktemp "${STATE_DIR}/.peer_id.XXXXXX")"
+    printf '%s\n' "${pid}" > "${tmp}"
+    chmod 0644 "${tmp}"
+    mv -f "${tmp}" "${file}"
+    echo "  Generated stable peer_id at ${file}"
+}
+
 install_peering_template() {
     # Multi-device peering. The TEMPLATE goes under /etc/jasper/ so
     # Avahi doesn't try to parse it as a service file (the
@@ -1956,31 +1929,12 @@ install_peering_template() {
     # page). When peering is off (the default), no
     # rendered file exists and this Pi is invisible to siblings —
     # the goal property of "zero cost when alone".
-    #
-    # Also generates the per-install stable peer_id (a UUID) if one
-    # doesn't already exist. This ID persists across reboots and
-    # package upgrades — peers don't see a "new" device on every
-    # restart.
     install -d -m 0755 /etc/jasper/avahi-templates
     install -m 0644 \
         "${REPO_DIR}/deploy/avahi/jasper-peer.service.template" \
         /etc/jasper/avahi-templates/jasper-peer.service
     ensure_state_dir
-    if [[ ! -f /var/lib/jasper/peer_id ]]; then
-        # Guard the redirect: a `python3` failure (missing binary,
-        # broken `uuid` import) without this would leave an empty
-        # peer_id file. The daemon's load_config falls back to an
-        # *ephemeral* per-process UUID in that case — peers would see
-        # a new "device" on every restart, which silently breaks
-        # session-stickiness across reboots.
-        if ! pid="$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null)"; then
-            echo "  ERROR: could not generate peer_id (python3 missing or uuid failed)" >&2
-            exit 1
-        fi
-        printf '%s\n' "${pid}" > /var/lib/jasper/peer_id
-        chmod 0644 /var/lib/jasper/peer_id
-        echo "  Generated stable peer_id at /var/lib/jasper/peer_id"
-    fi
+    ensure_peer_id
     echo "  Peering template installed; peering is OFF by default — enable at http://${JASPER_HOSTNAME:-jts.local}/sound/pair/"
 }
 

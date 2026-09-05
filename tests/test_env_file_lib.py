@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -80,7 +81,7 @@ def test_quote_env_value(value: str, expected: str) -> None:
 
 def test_round_trip_through_source(tmp_path: Path) -> None:
     """Whatever the lib writes, `source` must read back the original."""
-    values = ["hw:CARD=A,DEV=0", "has space", "it's", "a,b;c d'e"]
+    values = ["hw:CARD=A,DEV=0", "has space", "it's", "a,b;c d'e", "x=1,y=2 z"]
     env_file = tmp_path / "round.env"
     for value in values:
         result = _bash(
@@ -90,6 +91,48 @@ def test_round_trip_through_source(tmp_path: Path) -> None:
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout == value
+
+
+def test_env_file_set_waits_out_a_concurrent_holder(tmp_path: Path) -> None:
+    """A second writer must wait, not clobber.
+
+    The holder here does what jasper/atomic_io.py's locked_update_env_file
+    does — take the advisory lock at `<dir>/.<basename>.lock`, read, then
+    write the whole file back — so an unlocked bash upsert landing inside
+    that window would be lost. Removal condition: a single Python owner
+    writes every env file.
+    """
+    env_file = tmp_path / "jasper.env"
+    env_file.write_text("SEED=1\n", encoding="utf-8")
+    lock = tmp_path / f".{env_file.name}.lock"
+    holding = tmp_path / "holding"
+    hold_seconds = 0.5
+    holder = subprocess.Popen(
+        [
+            "bash",
+            "-c",
+            f'exec 9>>"{lock}"\n'
+            "flock 9\n"
+            f'snapshot="$(cat "{env_file}")"\n'
+            f': > "{holding}"\n'
+            f"sleep {hold_seconds}\n"
+            f'printf "%s\\nHOLDER=1\\n" "$snapshot" > "{env_file}"\n',
+        ],
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not holding.exists():
+            assert time.monotonic() < deadline, "holder never took the lock"
+            time.sleep(0.01)
+        started = time.monotonic()
+        result = _bash(f'jasper_env_file_set "{env_file}" WRITER 2')
+        waited = time.monotonic() - started
+    finally:
+        holder.wait(timeout=30)
+
+    assert result.returncode == 0, result.stderr
+    assert waited >= hold_seconds / 2
+    assert env_file.read_text(encoding="utf-8") == "SEED=1\nHOLDER=1\nWRITER=2\n"
 
 
 def test_env_file_set_upserts_and_dedupes(tmp_path: Path) -> None:
@@ -135,9 +178,15 @@ def test_env_file_set_assigns_parent_group_before_publish(tmp_path: Path) -> Non
     )
 
     assert result.returncode == 0, result.stderr
+    # Two publishes, both taking the parent group: the advisory lock, then
+    # the tempfile that becomes the env file.
     args = chgrp_log.read_text().splitlines()
-    assert args[0] == f"--reference={env_file.parent}"
-    assert args[1].startswith(str(env_file.parent / ".KEY."))
+    assert args[:3] == [
+        f"--reference={env_file.parent}",
+        str(env_file.parent / f".{env_file.name}.lock"),
+        f"--reference={env_file.parent}",
+    ]
+    assert args[3].startswith(str(env_file.parent / ".KEY."))
 
 
 def test_env_file_set_preserves_existing_ownership_before_rename(
@@ -182,7 +231,10 @@ def test_env_file_set_preserves_existing_ownership_before_rename(
     assert args[0] == f"--reference={env_file}"
     assert args[1].startswith(str(env_file.parent / ".A."))
     assert args[1] != str(env_file)
-    assert not chgrp_log.exists(), "rewrites must not replace file group with parent group"
+    assert chgrp_log.read_text().splitlines() == [
+        f"--reference={env_file.parent}",
+        str(env_file.parent / f".{env_file.name}.lock"),
+    ], "only the advisory lock takes the parent group; the rewrite keeps the file's"
 
 
 def test_env_file_repair_permissions_uses_parent_group(tmp_path: Path) -> None:

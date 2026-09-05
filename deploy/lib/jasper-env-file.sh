@@ -4,7 +4,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Shared env-file quoting + atomic single-key writer for the JTS
+# Shared env-file quoting + atomic, locked single-key writer for every
+# bash writer of a JTS env file: deploy/install.sh and the two
 # reconcilers (jasper-aec-reconcile, jasper-audio-hardware-reconcile).
 #
 # Why this exists — and why NOT `printf %q`: bash 5.2 (Trixie) quotes
@@ -69,26 +70,49 @@ jasper_env_quote_value() {
     esac
 }
 
+# _jasper_env_lock_create DIR LOCK
+# Create an env file's advisory lock with DIR's group and mode 0660 — the
+# provisioning jasper/atomic_io.py's advisory_file_lock applies to the very
+# same path, so a root bash writer and a group-jasper Python writer contend
+# for one inode instead of two. Best effort: a non-owner can repair neither
+# bit, and the install heal (deploy/lib/install/env-migrations.sh) owns that.
+_jasper_env_lock_create() {
+    if touch "$2" 2>/dev/null; then
+        chgrp --reference="$1" "$2" 2>/dev/null || true
+        chmod 0660 "$2" 2>/dev/null || true
+    fi
+}
+
 # jasper_env_file_set FILE KEY VALUE [FILE_MODE] [DIR_MODE]
-# Atomic (tempfile + rename) single-key upsert: replaces the first
-# KEY= line in FILE (dropping duplicates) or appends one. Modes
-# default to the historical jasper-aec-reconcile posture (0600 file,
-# 0755 dir); callers with a different posture pass theirs explicitly.
+# Atomic (tempfile + rename) single-key upsert, serialized against every
+# other writer by the advisory lock jasper/atomic_io.py's _env_lock_path
+# names for FILE: replaces the first KEY= line in FILE (dropping
+# duplicates) or appends one. Returns 1 when the lock is not granted
+# within 10 s. Modes default to 0600 file / 0750 dir (what the installer
+# leaves /etc/jasper at); callers with a different posture pass theirs
+# explicitly.
 jasper_env_file_set() {
     local file="$1" key="$2" value="$3"
-    local file_mode="${4:-0600}" dir_mode="${5:-0755}"
-    local dir tmp quoted
+    local file_mode="${4:-0600}" dir_mode="${5:-0750}"
+    local dir tmp quoted lock lock_fd rc=0
 
     dir="$(dirname "$file")"
     # Only CREATE an absent dir; never re-mode an EXISTING one. The installer
     # owns each env dir's canonical mode/group (/var/lib/jasper is 0770
     # root:jasper so the now-non-root daemons can write group-shared state;
-    # /etc/jasper is 0755 so the group-jasper doctor-json oneshot can traverse)
+    # /etc/jasper is 0750 so the group-jasper doctor-json oneshot can traverse)
     # and this writer runs on every boot / udev reconcile — a blanket
     # `install -d -m $dir_mode` re-strips those bits (the trap #827 closed for
     # the audio-hardware reconciler's own writers; closing it here covers every
     # caller of the shared lib, e.g. jasper-aec-reconcile).
     [[ -d "$dir" ]] || install -d -m "$dir_mode" "$dir"
+    lock="${dir}/.${file##*/}.lock"
+    [[ -e "$lock" ]] || _jasper_env_lock_create "$dir" "$lock"
+    exec {lock_fd}>>"$lock" || return 1
+    if ! flock -w 10 "$lock_fd"; then
+        exec {lock_fd}>&-
+        return 1
+    fi
     tmp="$(mktemp "${dir}/.${key}.XXXXXX")"
     quoted="$(jasper_env_quote_value "$value")"
 
@@ -124,7 +148,9 @@ jasper_env_file_set() {
         chgrp --reference="$dir" "$tmp" 2>/dev/null || true
     fi
     chmod "$file_mode" "$tmp"
-    mv "$tmp" "$file"
+    mv "$tmp" "$file" || rc=1
+    exec {lock_fd}>&-
+    return "$rc"
 }
 
 # jasper_env_file_repair_permissions FILE [FILE_MODE] [DIR_MODE]
@@ -134,7 +160,7 @@ jasper_env_file_set() {
 # and /state drifts from root doctor.
 jasper_env_file_repair_permissions() {
     local file="$1"
-    local file_mode="${2:-0600}" dir_mode="${3:-0755}"
+    local file_mode="${2:-0600}" dir_mode="${3:-0750}"
     local dir
 
     dir="$(dirname "$file")"
@@ -152,19 +178,28 @@ jasper_env_file_repair_permissions() {
 # value with empty rather than deferring to it. When an operator-set key in an
 # earlier-loaded file (jasper.env) must win, the reconciler-owned later file
 # (outputd.env) must DROP the key entirely so systemd never sees a shadowing
-# assignment — that is what this helper provides. Returns 0 always; sets nothing
-# new. Modes default to the historical 0600/0755 posture.
+# assignment — that is what this helper provides. Sets nothing new; a missing
+# FILE or key is a no-op. Holds FILE's advisory lock like jasper_env_file_set
+# and returns 1 when it is not granted within 10 s. Modes default to 0600/0750.
 jasper_env_file_unset() {
     local file="$1" key="$2"
-    local file_mode="${3:-0600}" dir_mode="${4:-0755}"
-    local dir tmp
+    local file_mode="${3:-0600}" dir_mode="${4:-0750}"
+    local dir tmp lock lock_fd rc=0
 
     [[ -f "$file" ]] || return 0
-    if ! grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$file"; then
-        return 0
-    fi
     dir="$(dirname "$file")"
     [[ -d "$dir" ]] || install -d -m "$dir_mode" "$dir"
+    lock="${dir}/.${file##*/}.lock"
+    [[ -e "$lock" ]] || _jasper_env_lock_create "$dir" "$lock"
+    exec {lock_fd}>>"$lock" || return 1
+    if ! flock -w 10 "$lock_fd"; then
+        exec {lock_fd}>&-
+        return 1
+    fi
+    if ! grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$file"; then
+        exec {lock_fd}>&-
+        return 0
+    fi
     tmp="$(mktemp "${dir}/.${key}.XXXXXX")"
     awk -v key="$key" '
         $0 ~ "^[[:space:]]*" key "[[:space:]]*=" { next }
@@ -172,5 +207,7 @@ jasper_env_file_unset() {
     ' "$file" > "$tmp"
     chown --reference="$file" "$tmp" 2>/dev/null || true
     chmod "$file_mode" "$tmp"
-    mv "$tmp" "$file"
+    mv "$tmp" "$file" || rc=1
+    exec {lock_fd}>&-
+    return "$rc"
 }

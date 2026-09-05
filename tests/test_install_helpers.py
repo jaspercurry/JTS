@@ -636,6 +636,73 @@ def test_install_streambox_jasper_does_not_rechmod_an_existing_state_dir(tmp_pat
     )
 
 
+def test_streambox_env_refresh_writes_the_profile_through_the_shared_lib(tmp_path):
+    """The streambox refresh re-asserts JASPER_INSTALL_PROFILE on an EXISTING
+    jasper.env. It used to `sed -i` the key out and append it back unquoted,
+    leaving a window with the key absent from a file systemd reads via
+    EnvironmentFile=; it now goes through jasper_env_file_set, so the key must
+    land parsable by `source`, keep every other key, and keep mode 0640.
+
+    rsync/pip/install are stubbed so only the env step runs for real."""
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    env_dir = tmp_path / "etc"
+    env_dir.mkdir()
+    env_file = env_dir / "jasper.env"
+    env_file.write_text(
+        "JASPER_HOSTNAME=jts.local\nJASPER_INSTALL_PROFILE=full\n",
+        encoding="utf-8",
+    )
+    env_file.chmod(0o600)
+    install_dir = tmp_path / "opt/jasper"
+    (install_dir / ".venv/bin").mkdir(parents=True)
+    pip = install_dir / ".venv/bin/pip"
+    pip.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    pip.chmod(0o755)
+    fake_repo = tmp_path / "repo"
+    fake_repo.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ("install", "rsync"):
+        stub = bin_dir / name
+        stub.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        stub.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["JASPER_HOSTNAME"] = "jts.local"
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "source "
+            + shlex.quote(str(_INSTALL_SH))
+            + " >/dev/null && REPO_DIR="
+            + shlex.quote(str(fake_repo))
+            + " && STATE_DIR="
+            + shlex.quote(str(state_dir))
+            + " && ENV_DIR="
+            + shlex.quote(str(env_dir))
+            + " && INSTALL_DIR="
+            + shlex.quote(str(install_dir))
+            + " && install_streambox_jasper >/dev/null"
+            + " && source "
+            + shlex.quote(str(env_file))
+            + ' && printf "%s|%s" "$JASPER_INSTALL_PROFILE" "$JASPER_HOSTNAME"',
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "streambox|jts.local"
+    assert stat.S_IMODE(env_file.stat().st_mode) == 0o640
+    assert not list(env_dir.glob(".JASPER_INSTALL_PROFILE.*"))
+
+
 def test_retired_esp32_python_packages_are_uninstalled_from_jts_venv(tmp_path):
     install_root = tmp_path / "opt/jasper"
     pip = install_root / ".venv/bin/pip"
@@ -1647,6 +1714,45 @@ def test_write_build_manifest_is_atomic_tempfile_rename():
     text = _INSTALL_SH.read_text(encoding="utf-8")
     assert "build.txt.tmp.$$" in text
     assert 'mv -f "${tmp}" "${STATE_DIR}/build.txt"' in text
+
+
+@pytest.mark.parametrize(
+    "seeded,preserved",
+    [
+        (None, False),
+        ("", False),
+        ("3f2a91c4-88de-4b", False),
+        ("not-a-uuid\n", False),
+        ("3f2a91c4-88de-4b0c-9a71-2d5e6f70a1b2\n", True),
+    ],
+)
+def test_ensure_peer_id_publishes_a_valid_id(tmp_path, seeded, preserved):
+    """peer_id is the whole evidence base of the deploy direction guard
+    (scripts/_lib.sh verify_or_record_peer_id), and its writer used to be a
+    bare redirect behind an EXISTENCE check — so a truncated id survived every
+    later install and aborted every later deploy with an identity mismatch.
+    Unusable content is now replaced with a fresh UUID, published atomically;
+    a valid id is still left exactly as it was."""
+    state = tmp_path / "state"
+    state.mkdir()
+    peer_id = state / "peer_id"
+    if seeded is not None:
+        peer_id.write_text(seeded, encoding="utf-8")
+
+    result = _run_install_snippet("ensure_peer_id", state_dir=state)
+
+    assert result.returncode == 0, result.stderr
+    written = peer_id.read_text(encoding="utf-8")
+    assert re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        written.strip(),
+    )
+    assert not list(state.glob(".peer_id.*")), "tempfile left behind"
+    if preserved:
+        assert written == seeded
+    else:
+        assert written != seeded
+        assert stat.S_IMODE(peer_id.stat().st_mode) == 0o644
 
 
 def test_resolve_build_sha_short_prefers_deploy_env(tmp_path):
