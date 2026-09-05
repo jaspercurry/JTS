@@ -125,6 +125,28 @@ PROC_PRESSURE_MEMORY = "/proc/pressure/memory"
 PROC_VMSTAT = "/proc/vmstat"
 
 
+def read_soc_temp_c(thermal_zone_path: str = THERMAL_ZONE_PATH) -> float | None:
+    """SoC temperature in Celsius: thermal-zone sysfs, falling back to
+    vcgencmd when the sysfs zone is unavailable. Shared by the /system
+    dashboard sampler and the AirPlay health sampler's storm forensics."""
+    sysfs_temp = SystemSampler._read_thermal_zone_temp_c(thermal_zone_path)
+    if sysfs_temp is not None:
+        return sysfs_temp
+    try:
+        out = subprocess.run(
+            ["vcgencmd", "measure_temp"],
+            capture_output=True, text=True,
+            timeout=VCGENCMD_TIMEOUT_SEC,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        return None
+    # vcgencmd output: "temp=47.7'C\n"
+    try:
+        return float(out.stdout.split("=")[1].split("'")[0])
+    except (IndexError, ValueError):
+        return None
+
+
 class SystemSampler:
     """Background thread that snapshots /proc + vcgencmd into ring
     buffers. Lock-free for readers: snapshot() takes a brief lock,
@@ -553,24 +575,7 @@ class SystemSampler:
     def _read_temp_c(
         thermal_zone_path: str = THERMAL_ZONE_PATH,
     ) -> float | None:
-        sysfs_temp = SystemSampler._read_thermal_zone_temp_c(
-            thermal_zone_path,
-        )
-        if sysfs_temp is not None:
-            return sysfs_temp
-        try:
-            out = subprocess.run(
-                ["vcgencmd", "measure_temp"],
-                capture_output=True, text=True,
-                timeout=VCGENCMD_TIMEOUT_SEC,
-            )
-        except (subprocess.SubprocessError, FileNotFoundError, OSError):
-            return None
-        # vcgencmd output: "temp=47.7'C\n"
-        try:
-            return float(out.stdout.split("=")[1].split("'")[0])
-        except (IndexError, ValueError):
-            return None
+        return read_soc_temp_c(thermal_zone_path)
 
     def _tick_services(
         self,
