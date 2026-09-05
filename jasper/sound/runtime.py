@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from jasper.dsp_apply import same_config_file
+from jasper.dsp_apply import CANONICAL_CAMILLA_CONFIG_DIR, same_config_file
 from jasper.fanin_coupling import coupling_capture_kwargs_from_env
 from jasper.log_event import log_event
 from jasper.sound.profile import (
@@ -27,7 +27,7 @@ from jasper.sound.settings import SoundSettings, load_sound_settings, output_tri
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CONFIG_DIR = Path("/var/lib/camilladsp/configs")
+DEFAULT_CONFIG_DIR = CANONICAL_CAMILLA_CONFIG_DIR
 RECONCILE_PROFILE_ID = "reconcile-current-dsp"
 
 

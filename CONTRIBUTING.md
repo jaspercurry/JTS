@@ -137,10 +137,13 @@ Two operational notes:
     rsyncs to `/opt/jasper` and the product reads at runtime — that is
     product data, not prose, so it takes the full farm.
 
-  Everything else — including renames, deletions, mixed/unknown files,
-  dependencies, CI infrastructure, comparison failures, and every `main`
-  push — selects the full existing farm. A diff carrying both the landing
-  page and a document is mixed, and selects the full farm. The visible
+  A rename or delete still takes a narrow lane when its old path (and new
+  path, for a rename) already qualify for that lane on their own; any other
+  status change, or a path that does not qualify, falls back to full.
+  Everything else — including mixed/unknown files, dependencies, CI
+  infrastructure, comparison failures, and every `main` push — selects the
+  full existing farm. A diff carrying both the landing page and a document
+  is mixed, and selects the full farm. The visible
   `pytest` and `rust` jobs remain useful internal checks but are not
   separately required by branch protection.
 
@@ -184,7 +187,7 @@ Two operational notes:
   the same `mypy` gate locally too; `ruff check .` stays covered locally
   by `scripts/test-fast` and `pre-commit`.
 - **Rust gate** — `scripts/check-rust.sh` owns the pinned-toolchain
-  formatting and Clippy pass for all eight CI crates. It works natively on
+  formatting and Clippy pass for all nine CI crates. It works natively on
   Linux and cross-checks the ALSA-backed crates from macOS without linking;
   use it before pushing any Rust edit. The internal `rust` CI job invokes the
   same script, then runs `cargo test --release --locked` on Linux when

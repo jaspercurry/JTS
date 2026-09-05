@@ -11,6 +11,11 @@ rust-version = "1.75"
 # Why these dependencies — pinned to current stable versions on Trixie's
 # rustc (1.75+).
 [dependencies]
+# The shared daemon skeleton: the hand-built JSON emitter, the systemd
+# notify seam (READY=1 / WATCHDOG=1 / STOPPING=1 for the unit's
+# Type=notify + WatchdogSec=30s contract), the config-class park contract,
+# and mlockall. Same crate jasper-outputd stands on.
+jasper-daemon = { path = "../jasper-daemon" }
 jasper-tts-protocol = { path = "../jasper-tts-protocol" }
 # Shared policy-light scalar environment parsing. Fan-in keeps its own
 # feature-token, optional-string, fallback-key, and positive-dimension policy.
@@ -39,11 +44,6 @@ jasper-host-clock = { path = "../jasper-host-clock", features = ["alsa"] }
 # tests/test_build_and_ci_contracts.py owns that invariant.
 alsa = "0.12"
 
-# systemd notification socket: READY=1 on startup, WATCHDOG=1 keepalives,
-# STOPPING=1 on shutdown. The Type=notify + WatchdogSec=30s contract
-# in deploy/systemd/jasper-fanin.service requires this.
-sd-notify = "0.5"
-
 # Structured logging to stderr. journald captures it; the daemon's
 # stdout/stderr are how it surfaces event= lines for jasper-trace.sh
 # and the /state aggregator to consume.
@@ -59,16 +59,12 @@ signal-hook = "0.4"
 # structured errors; anyhow is the catch-all at main().
 anyhow = "1"
 
-# Direct libc bindings — needed for mlockall (the in-process
-# belt-and-suspenders alongside the systemd unit's LimitMEMLOCK=infinity
-# and Slice=jts-audio.slice MemorySwapMax=0).
+# Direct libc bindings — poll(2) on the control socket, clock_gettime, and
+# ALSA errno classification.
 libc = "0.2"
 
 # JSON parsing for the impulse-tap arm-body endpoint (src/impulse_tap.rs
-# `TapConfig::from_arm_body`) and canonical serialization of variable strings
-# inside fan-in's hand-built STATUS / xrun / tap observability objects. The
-# fixed outer emit shapes remain allocation-conscious; serde_json owns the
-# correctness-sensitive parse and string-quoting boundaries.
+# `TapConfig::from_arm_body`). The emit side is jasper-daemon's.
 serde_json = "1"
 
 [profile.release]

@@ -13,6 +13,15 @@ name = "jasper-clock"
 version = "0.1.0"
 
 [[package]]
+name = "jasper-daemon"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "sd-notify",
+ "serde_json",
+]
+
+[[package]]
 name = "jasper-resampler"
 version = "0.1.0"
 dependencies = [
@@ -23,10 +32,17 @@ dependencies = [
 name = "jasper-tts-protocol"
 version = "0.1.0"
 dependencies = [
+ "jasper-daemon",
  "jasper-resampler",
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "libc"
+version = "0.2.189"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "memchr"
@@ -50,6 +66,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfbc457d0c7a0759a614551b11a6409e5951f6c7537be1f1b7682b9ae9230368"
 dependencies = [
  "proc-macro2",
+]
+
+[[package]]
+name = "sd-notify"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e4ef7359e694bfaf1dd27a30f9d760b54c00dfae9f19bd0c05a39bc9128fe76"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

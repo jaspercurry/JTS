@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from jasper.atomic_io import advisory_file_lock
+from jasper.cli._logging import CLI_LOG_FORMAT
 from jasper.enhanced_aec import (
     INSTALL_LOCK_PATH,
     SOURCE_ROOT,
@@ -664,10 +665,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true", help="print JSON result")
     args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    # INFO floor, not configure_verbose_logging's WARNING: no --verbose flag
+    # exists here, and the install outcome is the only line this job prints.
+    logging.basicConfig(level=logging.INFO, format=CLI_LOG_FORMAT)
     try:
         result = install()
     except SourceChanged as exc:

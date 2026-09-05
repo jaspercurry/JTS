@@ -568,9 +568,8 @@ FIRMWARE_UPDATE_TARGETS_BY_ID = {
 # reboot, killing the raw mics in spite of correct chip-side state.
 # `deploy/bin/jasper-aec-reconcile::ensure_capture_mixer_open` resets both
 # controls to known-good values before arming the profile-managed six-channel
-# AEC path. The constants below are the canonical data source for that
-# Bash-owned repair; cross-language tests keep the duplicated shell literals
-# in sync.
+# AEC path. The constants below are the only source for that Bash-owned
+# repair, which takes them from `jasper-xvf-profile --env` (ADR-0235).
 #
 # These names are looked up via `amixer -c <card> cset name='...'`
 # (cset, not get — these controls aren't in any aggregated "simple

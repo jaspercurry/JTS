@@ -1849,63 +1849,78 @@ def test_audio_validation_advisory_ok_when_chip_aec_not_requested():
     assert result.reason == aec.REASON_VALIDATION_NOT_CHIP_PROFILE
 
 
-def test_audio_validation_warns_when_chip_aec_requested_and_missing():
+@pytest.mark.parametrize(
+    "summary, expected_status",
+    [
+        pytest.param(
+            {
+                "state": "missing",
+                "status": "unknown",
+                "artifact_path": "/var/lib/jasper/audio-validation",
+                "reason": "artifact not found",
+            },
+            "ok",
+            id="no_artifact",
+        ),
+        pytest.param(
+            {
+                "state": "current",
+                "status": "warn",
+                "recommendation": "run_hardware_validation",
+                "artifact_path": "/var/lib/jasper/audio-validation/latest.json",
+            },
+            "ok",
+            id="run_hardware_validation",
+        ),
+        pytest.param(
+            {
+                "state": "current",
+                "status": "warn",
+                "recommendation": "run_drift_delay_validation",
+                "artifact_path": "/var/lib/jasper/audio-validation/latest.json",
+            },
+            "ok",
+            id="run_drift_delay_validation",
+        ),
+        # A current artifact whose rollup FAILED is an observed defect, not a
+        # measurement that was never taken.
+        pytest.param(
+            {
+                "state": "current",
+                "status": "fail",
+                "recommendation": "fix_outputd_chip_reference_before_chip_aec",
+                "artifact_path": "/var/lib/jasper/audio-validation/latest.json",
+            },
+            "warn",
+            id="current_fail",
+        ),
+    ],
+)
+def test_audio_validation_advisory_status_for_chip_aec(summary, expected_status):
     result = aec._assess_audio_validation_summary(
-        {
-            "state": "missing",
-            "status": "unknown",
-            "artifact_path": "/var/lib/jasper/audio-validation",
-            "reason": "artifact not found",
-        },
-        requested_profile="xvf_chip_aec",
+        summary, requested_profile="xvf_chip_aec",
     )
 
-    assert result.status == "warn"
-    assert result.reason == aec.REASON_VALIDATION_ADVISORY
-
-
-def test_audio_validation_suggests_hardware_runner_when_ready_for_passive_evidence():
-    result = aec._assess_audio_validation_summary(
-        {
-            "state": "current",
-            "status": "warn",
-            "recommendation": "run_hardware_validation",
-            "artifact_path": "/var/lib/jasper/audio-validation/latest.json",
-        },
-        requested_profile="xvf_chip_aec",
-    )
-
-    assert result.status == "warn"
-    assert result.reason == aec.REASON_VALIDATION_ADVISORY
-
-
-def test_audio_validation_suggests_hardware_runner_for_drift_delay_recommendation():
-    result = aec._assess_audio_validation_summary(
-        {
-            "state": "current",
-            "status": "warn",
-            "recommendation": "run_drift_delay_validation",
-            "artifact_path": "/var/lib/jasper/audio-validation/latest.json",
-        },
-        requested_profile="xvf_chip_aec",
-    )
-
-    assert result.status == "warn"
+    assert result.status == expected_status
     assert result.reason == aec.REASON_VALIDATION_ADVISORY
 
 
 @pytest.mark.parametrize(
-    ("dac_id", "check_overrides", "expected_status"),
+    ("dac_id", "check_overrides", "expected_reason"),
     [
-        ("hifiberry_dac8x", {}, "ok"),
-        ("apple_usb_c_dongle", {}, "ok"),
-        ("innomaker_hifi_amp_pro", {}, "warn"),
-        ("unknown", {}, "warn"),
-        ("apple_usb_c_dongle", {"chip_convergence": "fail"}, "warn"),
+        ("hifiberry_dac8x", {}, aec.REASON_VALIDATION_PASSIVE_EVIDENCE),
+        ("apple_usb_c_dongle", {}, aec.REASON_VALIDATION_PASSIVE_EVIDENCE),
+        ("innomaker_hifi_amp_pro", {}, aec.REASON_VALIDATION_ADVISORY),
+        ("unknown", {}, aec.REASON_VALIDATION_ADVISORY),
+        (
+            "apple_usb_c_dongle",
+            {"chip_convergence": "fail"},
+            aec.REASON_VALIDATION_ADVISORY,
+        ),
     ],
 )
 def test_audio_validation_passive_evidence_follows_dac_approval(
-    dac_id, check_overrides, expected_status
+    dac_id, check_overrides, expected_reason
 ):
     statuses = {
         name: "pass" for name in _shared._CHIP_AEC_PASSIVE_REQUIRED_CHECKS
@@ -1924,12 +1939,8 @@ def test_audio_validation_passive_evidence_follows_dac_approval(
         requested_profile="xvf_chip_aec",
     )
 
-    assert result.status == expected_status
-    assert result.reason == (
-        aec.REASON_VALIDATION_PASSIVE_EVIDENCE
-        if expected_status == "ok"
-        else aec.REASON_VALIDATION_ADVISORY
-    )
+    assert result.status == "ok"
+    assert result.reason == expected_reason
 
 
 def test_audio_validation_readiness_filters_current_hardware(monkeypatch):

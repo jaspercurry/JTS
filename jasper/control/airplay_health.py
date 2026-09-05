@@ -36,6 +36,7 @@ from statistics import median
 from typing import Any
 
 from jasper.camilla_config_contract import DEFAULT_CAMILLA_PORT
+from jasper.control.system_metrics import read_thermal_zone_temp_c
 from jasper.log_event import log_event
 from jasper.music_sources import MUSIC_SOURCE_SPECS
 from jasper.route_latency.status_socket import FANIN_STATUS_SOCKET
@@ -321,7 +322,6 @@ STORM_TRAJECTORY_DIR = "/var/lib/jasper/rate-storms"
 STORM_TRAJECTORY_MAX_ROWS = 4000
 STORM_TRAJECTORY_KEEP_FILES = 20
 
-THERMAL_ZONE_PATH = "/sys/class/thermal/thermal_zone0/temp"
 CPU_GOVERNOR_PATH = "/sys/devices/system/cpu/cpufreq/policy0/scaling_governor"
 CPU_FREQ_PATH = "/sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq"
 CAMILLA_UNIT_FULL = "jasper-camilla.service"
@@ -345,8 +345,8 @@ def _read_text_file(path: str) -> str | None:
 
 
 def _read_soc_temp_c() -> float | None:
-    raw = _read_int_file(THERMAL_ZONE_PATH)
-    return round(raw / 1000.0, 1) if raw is not None else None
+    raw = read_thermal_zone_temp_c()
+    return round(raw, 1) if raw is not None else None
 
 
 def _seconds_since_camilla_restart() -> float | None:
@@ -863,11 +863,11 @@ class AirPlayHealthSampler:
             self._warmup_active = within_warmup
             self._suppressed_reason = reason
 
-    def _airplay_streaming(self) -> bool | None:
+    def airplay_streaming(self) -> bool | None:
         """Authoritative "is a sender streaming?" — shairport's MPRIS
         PlaybackStatus. Single source of truth shared by the dashboard
-        status (`_status_locked`) and the connect-grace
-        (`_airplay_active_now`).
+        status (`_status_locked`), the connect-grace (`_airplay_active_now`)
+        and `/state`'s AirPlay renderer row.
 
         NOT the fan-in frame rate: the airplay input lane free-runs at
         ~48 kHz of SILENCE whenever the pipeline is up (fan-in clocks every
@@ -884,14 +884,14 @@ class AirPlayHealthSampler:
 
     def _airplay_active_now(self) -> bool:
         """Whether a sender is actively streaming, for arming the connect
-        grace. Keyed on `_airplay_streaming()` (shairport MPRIS) — never the
+        grace. Keyed on `airplay_streaming()` (shairport MPRIS) — never the
         always-on silent frame rate — so the idle->active transition the
         grace watches reflects a real session start, not the pipeline simply
         coming up. Detection therefore lags up to one MPRIS sample interval;
         the boot warmup is the primary post-restart smoother, the connect
         grace a best-effort session-establish one.
         """
-        return self._airplay_streaming() is True
+        return self.airplay_streaming() is True
 
     def _sample_fanin(self, now: float, *, suppress_events: bool = False) -> None:
         status = self._fanin_probe()
@@ -1522,7 +1522,7 @@ class AirPlayHealthSampler:
         selected = fanin.get("selected_input")
         if selected:
             return str(selected)
-        return "airplay" if self._airplay_streaming() else None
+        return "airplay" if self.airplay_streaming() else None
 
     @staticmethod
     def _storm_stamp(ts: float) -> str:
@@ -1632,11 +1632,11 @@ class AirPlayHealthSampler:
             return "issue", "recent audio-path recovery event"
 
         # Is AirPlay actually streaming? Use the authoritative MPRIS signal
-        # (`_airplay_streaming`) — NOT the fan-in frame rate, which free-runs
+        # (`airplay_streaming`) — NOT the fan-in frame rate, which free-runs
         # ~48 kHz of silence whenever the pipeline is up and so reads
         # "active" even at idle. The frame rate is only a corroborating
         # fault check once we know audio *should* be flowing.
-        mpris_playing = self._airplay_streaming()
+        mpris_playing = self.airplay_streaming()
         airplay = fanin.get("airplay", {})
         airplay_rate = (
             _as_float(airplay.get("frames_per_sec"))

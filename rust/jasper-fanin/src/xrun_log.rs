@@ -31,7 +31,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use log::warn;
 
-use crate::json::json_string;
+use jasper_daemon::json::json_string;
 
 /// Soft size cap. Rotated by retaining the last N bytes when the
 /// file crosses this threshold. 10 KB is ~100 events at typical

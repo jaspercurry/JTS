@@ -154,6 +154,7 @@ REASON_ROOM_AUTHORITY_NOT_REQUIRED = "room_authority_not_required"
 REASON_ROOM_AUTHORITY_UNBANKED = "room_authority_unbanked"
 REASON_ROOM_AUTHORITY_RECEIPT_UNREADABLE = "room_authority_receipt_unreadable"
 REASON_ROOM_AUTHORITY_UNPROVEN = "room_authority_unproven"
+REASON_ROOM_AUTHORITY_BLOCKED = "room_authority_blocked"
 
 REASON_SETUP_NOTICES_NONE = "setup_notices_none"
 REASON_SETUP_NOTICES_STANDING = "setup_notices_standing"
@@ -1505,8 +1506,9 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
     applied candidate's bytes onto it fail-soft, after CamillaDSP confirmed the
     candidate live. A failed promote leaves that copy stale without affecting
     the audible graph, which the other readers of the canonical name (the
-    multiroom follower fallback, operators, this doctor) trust. WARN, never
-    FAIL: the live graph is the audible truth and is correct either way.
+    multiroom follower fallback, operators, this doctor) trust. Disclosed as
+    `ok`: the live graph is the audible truth until the next follower teardown
+    restores the canonical over it.
     """
     from jasper.active_speaker.baseline_profile import (
         active_layer_a_fingerprint,
@@ -1542,7 +1544,7 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
         )
     if not canonical.exists():
         return CheckResult(
-            label, "warn",
+            label, "ok",
             f"canonical baseline file is missing ({canonical}) while the live "
             f"config is an applied baseline candidate ({live_path}); the next "
             "apply or restore re-promotes it",
@@ -1550,7 +1552,7 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
         )
     if not live_path.exists():
         return CheckResult(
-            label, "warn",
+            label, "ok",
             f"live baseline candidate file is missing on disk ({live_path}); "
             f"cannot compare it against canonical ({canonical})",
             reason=REASON_BASELINE_CANONICAL_LIVE_MISSING,
@@ -1574,7 +1576,7 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
             f"({live_path})",
         )
     return CheckResult(
-        label, "warn",
+        label, "ok",
         f"canonical baseline file ({canonical}) does not match the live "
         f"applied config ({live_path}); the running graph is correct, but the "
         "canonical file is stale for other readers (multiroom follower "
@@ -1667,14 +1669,14 @@ def check_active_speaker_startup_hold() -> CheckResult:
     """A staged-startup hold marker with no startup load behind it is stale.
 
     ``load_protected_startup_config`` takes an ephemeral ``/run`` marker before
-    applying the all-muted staged anchor, and while it is present
-    ``safe_graph_for_current_topology`` preserves that anchor instead of
-    restoring the saved baseline. A marker outliving its load therefore keeps a
-    commissioned box SILENT across every reconcile — recoverable (a reboot or
-    rollback clears it) but invisible without this line. It is what the
-    household-facing ``staged_startup_hold_unavailable`` copy points at.
-
-    WARN, never FAIL: preserving an all-muted anchor is the safe direction.
+    applying the all-muted staged anchor; while it is present
+    ``safe_graph_for_current_topology`` preserves that anchor instead of the
+    saved baseline, which the household-facing
+    ``staged_startup_hold_unavailable`` copy points at. That rung ALSO requires
+    the live graph to BE the anchor, so a marker outliving its load silences
+    only a box still on the anchor path (`fail`); over any other live graph it
+    holds nothing and ``/run`` empties before the next boot reads it (`warn`,
+    not silent).
     """
 
     from ...active_speaker.startup_hold import (
@@ -1690,20 +1692,29 @@ def check_active_speaker_startup_hold() -> CheckResult:
             label, "ok", f"no staged-startup hold in flight ({marker})",
             reason=REASON_STARTUP_HOLD_NONE,
         )
-    status = str(load_startup_load_state().get("status") or "unknown")
+    state = load_startup_load_state()
+    status = str(state.get("status") or "unknown")
     if status == "loaded":
         return CheckResult(
             label, "ok",
             f"staged-startup hold held by an in-flight protected load ({marker})",
             reason=REASON_STARTUP_HOLD_IN_FLIGHT,
         )
+    anchor = str(state.get("candidate_config_path") or "")
+    live = evidence.camilla_config_path() or ""
+    on_anchor = bool(anchor and live and Path(anchor) == Path(live))
     return CheckResult(
-        label, "warn",
+        label, "fail" if on_anchor else "warn",
         f"stale staged-startup hold at {marker}: the startup load is "
-        f"'{status}', not 'loaded', so no commission is in flight — the graph "
-        "selector keeps preserving the silent all-muted anchor instead of "
-        "restoring the saved baseline. Roll back the startup load from "
-        "http://jts.local/sound/ or reboot to clear it (/run is tmpfs).",
+        f"'{status}', not 'loaded', so no commission is in flight, and the live "
+        f"graph ({live or 'unknown'}) is "
+        + ("still the anchor it staged, so the selector keeps preserving that "
+           "silent graph instead of the saved baseline."
+           if on_anchor else
+           f"not the anchor it staged ({anchor or 'unknown'}), so the hold "
+           "silences nothing and /run empties at the next boot.")
+        + " Roll the startup load back from http://jts.local/sound/.",
+        speaker_silent=on_anchor,
         reason=REASON_STARTUP_HOLD_STALE,
     )
 
@@ -1712,15 +1723,17 @@ def check_active_speaker_startup_hold() -> CheckResult:
 def check_room_correction_authority() -> CheckResult:
     """Room correction runs unproven — this is the line that says so.
 
-    Ruling S10 and ADR-0019: an unminted, stale or unreadable commissioning
-    receipt no longer refuses a room-correction run — it proceeds and simply
-    banks no verified result, so this is the only place a household learns the
-    difference. Never FAIL. The denials do not share one line because they do
-    not share a remedy (ADR-0196).
+    Ruling S10 and ADR-0019: only a RECEIPT denial lets the run proceed and
+    bank nothing (`ok`, the disclosure this line exists for); every other
+    denial stops room correction outright, so it warns. Never FAIL, and the
+    denials do not share one line because they do not share a remedy (ADR-0196).
     """
 
     from ...active_speaker._common import (
         ROOM_AUTHORITY_RECEIPT_ABSENT,
+        ROOM_AUTHORITY_RECEIPT_MALFORMED,
+        ROOM_AUTHORITY_RECEIPT_STALE,
+        ROOM_AUTHORITY_RECEIPT_SUPERSEDED,
         ROOM_AUTHORITY_RECEIPT_UNREADABLE,
     )
     label = "room correction authority"
@@ -1771,9 +1784,19 @@ def check_room_correction_authority() -> CheckResult:
             f"({cause or denial}): {detail}",
             reason=REASON_ROOM_AUTHORITY_RECEIPT_UNREADABLE,
         )
+    if denial in {
+        ROOM_AUTHORITY_RECEIPT_STALE,
+        ROOM_AUTHORITY_RECEIPT_MALFORMED,
+        ROOM_AUTHORITY_RECEIPT_SUPERSEDED,
+    }:
+        return CheckResult(
+            label, "ok", f"room correction runs unproven ({denial}): {detail}",
+            reason=REASON_ROOM_AUTHORITY_UNPROVEN,
+        )
     return CheckResult(
-        label, "warn", f"room correction runs unproven ({denial}): {detail}",
-        reason=REASON_ROOM_AUTHORITY_UNPROVEN,
+        label, "warn",
+        f"room correction is blocked, not merely unbanked ({denial}): {detail}",
+        reason=REASON_ROOM_AUTHORITY_BLOCKED,
     )
 
 
@@ -1806,7 +1829,7 @@ def check_active_speaker_setup_notices() -> CheckResult:
             reason=REASON_SETUP_NOTICES_NONE,
         )
     return CheckResult(
-        label, "warn",
+        label, "ok",
         "; ".join(
             f"{issue.get('code')}: {issue.get('message')}" for issue in notices
         ),

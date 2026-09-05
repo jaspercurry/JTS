@@ -39,6 +39,6 @@
 
 ACTION=="add", SUBSYSTEM=="sound", KERNEL=="controlC*", ATTRS{idVendor}=="05ac", ATTRS{idProduct}=="110a", ENV{JASPER_DONGLE_CARDNUM}="$attr{device/number}", RUN+="/usr/bin/amixer -c $env{JASPER_DONGLE_CARDNUM} sset Headphone 100%% unmute"
 
-ACTION=="add", SUBSYSTEM=="usb", DEVTYPE=="usb_device", ATTR{idVendor}=="05ac", ATTR{idProduct}=="110a", ATTR{power/control}="on"
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="05ac", ATTR{idProduct}=="110a", ATTR{power/control}="on"
 
 ACTION=="add", SUBSYSTEM=="sound", KERNEL=="controlC*", ATTRS{idVendor}=="05ac", ATTRS{idProduct}=="110a", TAG+="systemd", ENV{SYSTEMD_WANTS}+="jasper-dongle-recover.service"

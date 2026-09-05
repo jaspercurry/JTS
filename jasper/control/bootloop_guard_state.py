@@ -13,8 +13,8 @@ StartLimitAction=reboot). This module reads that marker fresh on every
 call so `/state` reflects the truth of the current boot, including a
 guard that never ran (fresh install, unit failed).
 
-Shape mirrors `wifi_guardian_state.snapshot()`: always returns a dict,
-never raises, with a top-level `ran` discriminator.
+Always returns a dict, never raises, with a top-level `ran`
+discriminator.
 """
 from __future__ import annotations
 

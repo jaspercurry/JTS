@@ -950,6 +950,8 @@ def _unit_active(unit: str) -> bool | None:
 
 
 def _unit_failed(unit: str) -> bool | None:
+    """Tri-state `systemctl is-failed`: None must make the caller raise
+    rather than guess; a not-found unit must never converge a reset-failed."""
     return _query_unit_state("is-failed", unit)
 
 

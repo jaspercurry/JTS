@@ -72,7 +72,7 @@ from tests.test_active_speaker_baseline_profile import (
     _measurements,
     _valid_config,
 )
-from tests.test_transport_endpoint_preservation import _FakeCamilla
+from tests.transport_camilla_fixtures import FakeCamilla
 
 
 def _reigning_candidate_box(tmp_path: Path, monkeypatch):
@@ -132,7 +132,7 @@ def _reigning_candidate_box(tmp_path: Path, monkeypatch):
     # not displaced" test only by never having been true.
     assert applied_profile_displacement(applied) == ""
 
-    return candidate, config_dir, _FakeCamilla(str(candidate))
+    return candidate, config_dir, FakeCamilla(str(candidate))
 
 
 async def test_a_kept_candidate_survives_the_deploy_reconcile(
@@ -230,7 +230,7 @@ async def test_a_kept_candidate_survives_the_deploy_reconcile(
     assert caplog.text.count("event=sound.reconcile_current_dsp") == 1
 
 
-class _RejectingCamilla(_FakeCamilla):
+class _RejectingCamilla(FakeCamilla):
     """CamillaDSP that refuses the candidate it is asked to load."""
 
     def __init__(self, current_path: str) -> None:

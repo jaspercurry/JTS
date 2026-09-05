@@ -68,32 +68,10 @@ from jasper.fanin_coupling import (
     TRANSPORT_RING,
 )
 from jasper.sound.profile import SimpleEq, SoundProfile, save_profile
+from tests.transport_camilla_fixtures import FakeCamilla
 
 ROUTE_LOGGER = "jasper.active_speaker.playback_route"
 STAGING_LOGGER = "jasper.active_speaker.staging"
-
-
-class _FakeCamilla:
-    """Reports one loaded config path and records what it was asked to load.
-
-    Deliberately independent of the statefile the derivation reads: the jts3
-    clobber happened while CamillaDSP was still on the PRE-arm graph and the
-    statefile already pointed at the ring one, and a stub that conflated the two
-    could not express that state.
-    """
-
-    def __init__(self, current_path: str) -> None:
-        self.current_path = current_path
-        self.loaded_path: str | None = None
-
-    async def get_config_file_path(self, *, best_effort: bool = False) -> str:
-        return self.loaded_path or self.current_path
-
-    async def set_config_file_path(
-        self, path: str, *, best_effort: bool = False
-    ) -> bool:
-        self.loaded_path = path
-        return True
 
 
 # --------------------------------------------------------------------------
@@ -359,7 +337,7 @@ async def test_reconcile_current_dsp_re_emits_through_the_live_endpoint(
     current.write_text(
         pre_arm if running == "retired_aloop_lane" else ring_graph, encoding="utf-8"
     )
-    camilla = _FakeCamilla(str(current))
+    camilla = FakeCamilla(str(current))
     profile_path = tmp_path / "sound_profile.json"
     save_profile(SoundProfile(simple_eq=SimpleEq(bass_db=3.0)), profile_path)
 
@@ -403,7 +381,7 @@ async def test_a_sound_save_preserves_the_boxs_endpoint(
         SoundProfile(simple_eq=SimpleEq(treble_db=4.5)),
         profile_path=tmp_path / "sound_profile.json",
         config_dir=config_dir,
-        camilla_factory=lambda: _FakeCamilla(str(current)),
+        camilla_factory=lambda: FakeCamilla(str(current)),
         source="sound_apply",
         persist_profile=True,
     )

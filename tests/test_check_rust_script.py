@@ -20,6 +20,7 @@ WORKFLOW = ROOT / ".github" / "workflows" / "tests.yml"
 
 RUST_CRATES = (
     "rust/jasper-env",
+    "rust/jasper-daemon",
     "rust/jasper-clock",
     "rust/jasper-resampler",
     "rust/jasper-ring",
@@ -285,7 +286,7 @@ def test_script_is_executable_and_is_the_ci_format_clippy_owner() -> None:
         for line in cache_steps[0]["with"]["workspaces"].splitlines()
         if line.strip()
     ]
-    assert len(RUST_CRATES) == len(set(RUST_CRATES)) == 8
+    assert len(RUST_CRATES) == len(set(RUST_CRATES)) == 9
     assert Counter(rust_test_crates) == Counter(RUST_CRATES)
     assert Counter(cache_crates) == Counter(RUST_CRATES)
     assert "scripts/check-rust.sh" in router
@@ -304,7 +305,7 @@ def test_darwin_lane_uses_workflow_pin_and_exact_ci_crate_contract(
 
     assert result.returncode == 0, result.stderr
     calls = _cargo_calls(tmp_path)
-    assert len(calls) == 16
+    assert len(calls) == 18
     assert [call.crate for call in calls if call.args.startswith("fmt ")] == [
         Path(crate).name for crate in RUST_CRATES
     ]
@@ -317,7 +318,7 @@ def test_darwin_lane_uses_workflow_pin_and_exact_ci_crate_contract(
         for line in (tmp_path / "rustup.log").read_text(encoding="utf-8").splitlines()
         if line.startswith("run ")
     ]
-    assert len(rustup_run_calls) == 16
+    assert len(rustup_run_calls) == 18
     assert all(line.startswith("run 9.9.9 cargo ") for line in rustup_run_calls)
     assert not (tmp_path / "bare-cargo.log").exists()
 

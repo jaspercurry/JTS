@@ -2,13 +2,19 @@
 name = "jasper-tts-protocol"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.82"
 description = "JTS shared TTS wire protocol and loudness helpers."
 license = "Apache-2.0"
 repository = "https://github.com/jaspercurry/JTS"
 authors = ["Jasper Curry <jaspercurry@gmail.com>"]
 
 [dependencies]
+# The shared hand-built JSON emitter. `loudness::push_status_json` writes the
+# same key/bool/u64 members both daemons' STATUS writers do, so it consumes
+# them rather than keeping a second copy; the finite-or-null float pair beside
+# it is this writer's own semantic. jasper-daemon is a leaf (no JTS deps), so
+# the edge stays acyclic and adds nothing ALSA-linked here.
+jasper-daemon = { path = "../jasper-daemon" }
 # The shared width primitives (`widen_i16_to_i32` / `narrow_i32_to_i16_round`)
 # the assistant wire's two representations convert through. Pure — no ALSA, no
 # threads, no I/O — so this crate stays host-buildable, and both consumers

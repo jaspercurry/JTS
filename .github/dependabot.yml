@@ -80,6 +80,7 @@ updates:
   - package-ecosystem: "cargo"
     directories:
       - "/rust/jasper-env"
+      - "/rust/jasper-daemon"
       - "/rust/jasper-tts-protocol"
       - "/rust/jasper-clock"
       - "/rust/jasper-resampler"

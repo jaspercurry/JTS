@@ -51,6 +51,7 @@ from .assistant_loudness import tts_envelope_lufs_for_level
 from .busctl import run_busctl
 from .log_event import log_event
 from .music_sources import SOURCE_TO_ACTIVE_KEY, Source, VolumeMode, volume_mode
+from .spotify_router import DEVICES_TIMEOUT_SEC
 from . import volume_diagnostics
 from .bluealsa_probe import active_transport_path
 from .volume_owner import VolumeOwner
@@ -2490,44 +2491,39 @@ class VolumeCoordinator:
                 "account via /spotify)",
             )
             return False
-        saw_device = False
+        matches = await self._spotify_router.devices_named(
+            self._spotify_device_name,
+        )
+        saw_device = bool(matches)
         write_failed = False
-        for ac in self._spotify_router.clients.values():
+        for ac, d in matches:
             try:
-                devices = await asyncio.to_thread(ac.sp.devices)
+                await asyncio.wait_for(
+                    asyncio.to_thread(
+                        ac.sp.volume, pct, device_id=d.get("id"),
+                    ),
+                    timeout=DEVICES_TIMEOUT_SEC,
+                )
+                self._stamp_outbound(Source.SPOTIFY, level)
+                volume_diagnostics.record_source_push(
+                    Source.SPOTIFY,
+                    level=level,
+                    ok=True,
+                    reason=volume_diagnostics.PUSH_OK,
+                    detail="device_visible",
+                )
+                logger.info(
+                    "spotify volume set: %d%% (account=%s)",
+                    pct, ac.account.name,
+                )
+                return True
             except Exception as e:  # noqa: BLE001
+                write_failed = True
                 logger.debug(
-                    "spotify devices() failed for %s: %s",
+                    "spotify volume() failed for %s: %s",
                     ac.account.name, e,
                 )
                 continue
-            for d in (devices.get("devices") or []):
-                if d.get("name") == self._spotify_device_name:
-                    saw_device = True
-                    try:
-                        await asyncio.to_thread(
-                            ac.sp.volume, pct, device_id=d.get("id"),
-                        )
-                        self._stamp_outbound(Source.SPOTIFY, level)
-                        volume_diagnostics.record_source_push(
-                            Source.SPOTIFY,
-                            level=level,
-                            ok=True,
-                            reason=volume_diagnostics.PUSH_OK,
-                            detail="device_visible",
-                        )
-                        logger.info(
-                            "spotify volume set: %d%% (account=%s)",
-                            pct, ac.account.name,
-                        )
-                        return True
-                    except Exception as e:  # noqa: BLE001
-                        write_failed = True
-                        logger.debug(
-                            "spotify volume() failed for %s: %s",
-                            ac.account.name, e,
-                        )
-                        continue
         reason = (
             volume_diagnostics.PUSH_WRITE_FAILED
             if write_failed

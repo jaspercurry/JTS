@@ -24,10 +24,13 @@ use crate::alsa_backend::{CompositeStatus, IoCounters, NegotiatedPcm};
 use crate::config::Config;
 use crate::dac_clock::DacClockObserver;
 use crate::dac_content::DacContentMetrics;
-use crate::json::json_string;
 use crate::tts::TtsMetrics;
 use crate::types::SampleFormat;
 use jasper_clock::DllSnapshot;
+use jasper_daemon::json::{
+    json_string, push_kv_bool, push_kv_f64, push_kv_f64_opt, push_kv_i64, push_kv_i64_opt,
+    push_kv_str, push_kv_str_opt, push_kv_u64, push_kv_u64_opt,
+};
 use jasper_ring::RingMetrics;
 use std::sync::OnceLock;
 
@@ -2086,69 +2089,6 @@ fn is_client_disconnect(error: &io::Error) -> bool {
             | io::ErrorKind::ConnectionReset
             | io::ErrorKind::NotConnected
     )
-}
-
-fn push_kv_str(buf: &mut String, key: &str, value: &str) {
-    push_key(buf, key);
-    buf.push_str(&json_string(value));
-}
-
-fn push_kv_str_opt(buf: &mut String, key: &str, value: Option<&str>) {
-    push_key(buf, key);
-    match value {
-        Some(value) => buf.push_str(&json_string(value)),
-        None => buf.push_str("null"),
-    }
-}
-
-fn push_kv_u64(buf: &mut String, key: &str, value: u64) {
-    push_key(buf, key);
-    buf.push_str(&value.to_string());
-}
-
-fn push_kv_u64_opt(buf: &mut String, key: &str, value: Option<u64>) {
-    push_key(buf, key);
-    match value {
-        Some(value) => buf.push_str(&value.to_string()),
-        None => buf.push_str("null"),
-    }
-}
-
-fn push_kv_i64(buf: &mut String, key: &str, value: i64) {
-    push_key(buf, key);
-    buf.push_str(&value.to_string());
-}
-
-fn push_kv_i64_opt(buf: &mut String, key: &str, value: Option<i64>) {
-    push_key(buf, key);
-    match value {
-        Some(value) => buf.push_str(&value.to_string()),
-        None => buf.push_str("null"),
-    }
-}
-
-fn push_kv_bool(buf: &mut String, key: &str, value: bool) {
-    push_key(buf, key);
-    buf.push_str(if value { "true" } else { "false" });
-}
-
-fn push_kv_f64(buf: &mut String, key: &str, value: f64, decimals: usize) {
-    push_key(buf, key);
-    buf.push_str(&format!("{:.*}", decimals, value));
-}
-
-fn push_kv_f64_opt(buf: &mut String, key: &str, value: Option<f64>, decimals: usize) {
-    push_key(buf, key);
-    match value {
-        Some(value) => buf.push_str(&format!("{:.*}", decimals, value)),
-        None => buf.push_str("null"),
-    }
-}
-
-fn push_key(buf: &mut String, key: &str) {
-    buf.push('"');
-    buf.push_str(key);
-    buf.push_str(r#"":"#);
 }
 
 /// The ONE shared `clock.rate_diff` telemetry writer (Inc 4). Every DLL
