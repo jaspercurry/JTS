@@ -50,18 +50,18 @@ from ..camilla_config_contract import (
     read_camilla_devices_config,
 )
 from ..log_event import log_event
+from ..sound.runtime import DEFAULT_CONFIG_DIR
 from .config import GroupingConfig
 from .member_config import member_camilla_kwargs
 
 logger = logging.getLogger(__name__)
 
-# The wizard config dir (sound_setup's DEFAULT_CONFIG_DIR). The bonded /
-# restore configs live HERE, with names registered in the sound module's
-# _JTS_GENERATED_RE — so a /sound or /correction apply while bonded
-# recognises them as JTS-generated, preserves their room PEQs, and
-# regenerates THROUGH the member policy instead of refusing (or worse,
-# silently rewriting a "custom" config).
-CONFIG_DIR = "/var/lib/camilladsp/configs"
+# The wizard config dir. The bonded / restore configs live HERE, with names
+# registered in the sound module's _JTS_GENERATED_RE — so a /sound or
+# /correction apply while bonded recognises them as JTS-generated, preserves
+# their room PEQs, and regenerates THROUGH the member policy instead of
+# refusing (or worse, silently rewriting a "custom" config).
+CONFIG_DIR = str(DEFAULT_CONFIG_DIR)
 BONDED_CONFIG_PATH = CONFIG_DIR + "/grouping_leader.yml"
 SOLO_RESTORE_PATH = CONFIG_DIR + "/grouping_solo_restore.yml"
 

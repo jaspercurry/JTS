@@ -70,6 +70,7 @@ from pathlib import Path
 
 from .. import atomic_io
 from ..log_event import log_event
+from ..sound.runtime import DEFAULT_CONFIG_DIR
 from . import follower_config
 from .config import GroupingConfig
 from .follower_config import program_channel_for
@@ -86,9 +87,8 @@ logger = logging.getLogger(__name__)
 # active baseline — and so neither collides with the active-FOLLOWER arm's files
 # (a box is a leader xor a follower at a time, but separate files keep the two
 # arms from ever fighting over one path).
-CONFIG_DIR = "/var/lib/camilladsp/configs"
-LEADER_BAKE_CONFIG_PATH = CONFIG_DIR + "/grouping_active_leader_bake.yml"
-CROSSOVER_CONFIG_PATH = CONFIG_DIR + "/grouping_active_leader_crossover.yml"
+LEADER_BAKE_CONFIG_PATH = str(DEFAULT_CONFIG_DIR / "grouping_active_leader_bake.yml")
+CROSSOVER_CONFIG_PATH = str(DEFAULT_CONFIG_DIR / "grouping_active_leader_crossover.yml")
 CROSSOVER_STATE_PATH = "/var/lib/jasper/active_leader_crossover_profile.json"
 
 # Persistent prior-config stash for camilla#1's solo-active baseline (NOT /run:
