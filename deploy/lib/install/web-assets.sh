@@ -53,26 +53,19 @@
 # rename from there couldn't be atomic) and lands via mv, so a killed
 # install can never leave a truncated manifest for the doctor to
 # trust; an orphaned temp from a killed run is swept on the next.
+# After the manifest publishes, any file under assets_root absent from
+# it is retired-page/JS fallout and is deleted (manifest is read back
+# from disk, not re-derived), so a page's removal from deploy/assets/
+# needs no matching entry here.
 # tests/test_install_web_assets.py pins the copy shape, the manifest
-# contract, the atomic-write promise, and the doctor/installer
-# round-trip.
+# contract, the atomic-write promise, the prune, and the
+# doctor/installer round-trip.
 install_web_assets() {
     local web_root="${JASPER_WEB_SHARE_DIR:-/usr/share/jasper-web}"
     local assets_root="${web_root}/assets"
     local manifest="${assets_root}/.install-manifest"
-    local manifest_tmp asset_dir page f
+    local manifest_tmp asset_dir page f rel
     install -d -m 0755 "${assets_root}"
-    # Upgrade cleanup for the retired ESP32 dial wizard. Page directories are
-    # copied additively, so this exact stale directory would otherwise survive
-    # forever on speakers that had already shipped it.
-    rm -rf -- "${assets_root:?}/dial"
-    # Same class: the retired /balance/ page.
-    rm -rf -- "${assets_root:?}/balance"
-    # Same class: the retired orbs.js and qr.js bundles. Without this, every
-    # speaker that already shipped them keeps serving the deleted,
-    # unmanifested files.
-    rm -f -- "${assets_root:?}/shared/js/orbs.js"
-    rm -f -- "${assets_root:?}/shared/js/qr.js"
     rm -f "${manifest}.tmp."*
     manifest_tmp="$(mktemp "${manifest}.tmp.XXXXXX")"
 
@@ -101,7 +94,7 @@ install_web_assets() {
         fi
         if [[ -d "${asset_dir}js" ]]; then
             while IFS= read -r -d '' f; do
-                local rel dest_dir
+                local dest_dir
                 rel="${f#"${asset_dir}"}"
                 dest_dir="${assets_root}/${page}/$(dirname "${rel}")"
                 install -d -m 0755 "${dest_dir}"
@@ -113,4 +106,13 @@ install_web_assets() {
     LC_ALL=C sort "${manifest_tmp}" -o "${manifest_tmp}"
     chmod 0644 "${manifest_tmp}"
     mv -f "${manifest_tmp}" "${manifest}"
+
+    # Prune assets absent from the manifest (read back from disk, never
+    # re-derived); then drop directories left empty.
+    while IFS= read -r -d '' f; do
+        [[ "${f}" == "${manifest}" || "${f}" == "${manifest}".tmp.* ]] && continue
+        rel="${f#"${assets_root}"/}"
+        grep -qxF "${rel}" "${manifest}" || rm -f -- "${f}"
+    done < <(find "${assets_root}" -type f -print0)
+    find "${assets_root}" -mindepth 1 -type d -empty -delete
 }

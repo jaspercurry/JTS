@@ -113,24 +113,35 @@ def test_empty_page_dir_is_tolerated_under_strict_mode(tmp_path: Path):
     assert r.returncode == 0, r.stderr
     manifest = (web_root / "assets" / MANIFEST_NAME).read_text()
     assert "empty-page" not in manifest
-    # The page dir itself is still created — matches the historical loop.
-    assert (web_root / "assets" / "empty-page").is_dir()
+    # Empty of manifested content, so the prune drops it along with any
+    # other stale directory left with nothing in it.
+    assert not (web_root / "assets" / "empty-page").exists()
 
 
-def test_retired_dial_assets_are_removed_on_upgrade(tmp_path: Path):
+def test_stale_assets_absent_from_the_manifest_are_pruned(tmp_path: Path):
+    """A retired page needs no hand-added rm line: anything on disk that
+    the freshly-written manifest doesn't name is deleted, and its now-empty
+    directory with it. Removal condition: until assets are installed from
+    a package with its own file list."""
     repo = _fake_repo(tmp_path)
     web_root = tmp_path / "web"
-    stale = web_root / "assets" / "dial" / "js" / "main.js"
+    stale = web_root / "assets" / "ghost" / "ghost.css"
     stale.parent.mkdir(parents=True)
     stale.write_text("retired")
+    nested_empty = web_root / "assets" / "ghost" / "js" / "unused"
+    nested_empty.mkdir(parents=True)
 
     result = _run(repo, web_root)
 
     assert result.returncode == 0, result.stderr
-    assert not (web_root / "assets" / "dial").exists()
-    assert "dial/" not in (
-        web_root / "assets" / MANIFEST_NAME
-    ).read_text(encoding="utf-8")
+    assert not (web_root / "assets" / "ghost").exists()
+    assert not nested_empty.exists()
+    manifest_path = web_root / "assets" / MANIFEST_NAME
+    assert manifest_path.is_file()
+    manifest = manifest_path.read_text(encoding="utf-8").splitlines()
+    assert "ghost/ghost.css" not in manifest
+    for rel in manifest:
+        assert (web_root / "assets" / rel).is_file(), f"{rel} missing on disk"
 
 
 def test_manifest_name_parity_between_installer_and_doctor():
