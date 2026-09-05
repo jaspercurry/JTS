@@ -356,13 +356,6 @@
   color: var(--text);
 }
 
-.status-line {
-  margin-top: 16px;
-  font-size: 13px;
-  color: var(--muted);
-  min-height: 1em;
-}
-
 @media (max-width: 640px) {
   .tool-pack-card__head,
   .tool-detail__head,

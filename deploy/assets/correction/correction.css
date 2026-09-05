@@ -128,53 +128,8 @@
   gap: 0.85rem;
 }
 
-/* Step indicator — a numbered spine of dots + labels. The current step is
-   filled and emphasised; done steps read muted-filled; upcoming steps are
-   hollow. Presentation only — the server owns which step is current. */
-.wizard-steps {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem 0.9rem;
-  counter-reset: wizard-step;
-}
-.wizard-step {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  counter-increment: wizard-step;
-  color: var(--muted);
-  font-size: 0.82rem;
-}
-.wizard-step__dot {
-  width: 1.4rem;
-  height: 1.4rem;
-  border-radius: 50%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1.5px solid var(--border-strong);
-  background: var(--surface);
-  font-size: 0.78rem;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-.wizard-step__dot::before { content: counter(wizard-step); }
-.wizard-step.done { color: var(--text); }
-.wizard-step.done .wizard-step__dot {
-  border-color: transparent;
-  background: color-mix(in oklab, var(--status-ok) 24%, transparent);
-  color: var(--text);
-}
-.wizard-step.current { color: var(--text); font-weight: 600; }
-.wizard-step.current .wizard-step__dot {
-  border-color: transparent;
-  background: var(--primary);
-  color: var(--primary-foreground);
-}
-.wizard-step__label { white-space: nowrap; }
+/* Step indicator markup/states are app.css's shared .wizard-steps
+   (docs/web-ia.md §3); this flow's step reads current. */
 
 /* The one plain-language verdict sentence for the current step. */
 .wizard-verdict {
@@ -232,7 +187,6 @@
 #wizard-next { align-self: flex-start; }
 @media (max-width: 30rem) {
   #wizard-next { align-self: stretch; }
-  .wizard-step__label { display: none; }
 }
 
 /* ---- Microphone panel + calibration rows ------------------------------ */

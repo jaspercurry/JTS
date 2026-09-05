@@ -74,7 +74,7 @@ export function buildSystemPanel(handlers) {
     h("p.info-card__note", null,
       "Restart services or shut down the Pi. Anyone on this Wi-Fi can run these actions."),
     capabilityNote,
-    h("div.btn-row", null,
+    h("div.form-actions", null,
       restartVoice,
       restartAudio,
       actionButton("Reboot speaker", { variant: "danger", onClick: handlers.reboot }),

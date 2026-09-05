@@ -68,7 +68,7 @@ export function buildPage(root, handlers, opts = {}) {
       h("div.field.chat-filter__field", null,
         h("label", { for: "chat-since" }, "Since"),
         sinceInput),
-      h("div.btn-row.chat-filter__actions", null,
+      h("div.form-actions.chat-filter__actions", null,
         actionButton("Apply", {
           variant: "primary",
           onClick(e) {

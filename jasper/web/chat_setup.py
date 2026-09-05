@@ -39,7 +39,7 @@ IDLE_SHUTDOWN_SEC = 1800.0
 def _render_page(csrf_token: str = "") -> bytes:
     body = (
         '<div id="app" aria-busy="true">'
-        '<p class="boot-note">Loading conversation history...</p>'
+        '<p class="status-line status-line--boot">Loading conversation history...</p>'
         '</div>\n'
         '<script type="module" src="/assets/chat/js/main.js"></script>'
     )

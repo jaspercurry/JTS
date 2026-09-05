@@ -156,7 +156,7 @@ export function buildEnhancedAecCard() {
   const status = h("span");
   const detail = h("p.optional-feature__detail");
   const action = actionButton("Loading…", { variant: "default" });
-  const actionRow = h("div.btn-row", null, action);
+  const actionRow = h("div.form-actions", null, action);
   const technical = h("div");
   const live = h("p.sr-only", {
     "attr:role": "status",

@@ -66,6 +66,6 @@ export function buildUsbForensicsCard() {
       "Leave this on while reproducing the USB audio fault. It survives deploys and reboots until turned off."),
     h("label.debug-row", null, toggle,
       h("span.debug-row__label", null, "USB gadget forensics")),
-    summary, h("div.btn-row", null, capture, repair), detail);
+    summary, h("div.form-actions", null, capture, repair), detail);
   return { card: collapsible({ title: "USB forensics", open: false, body }), update };
 }

@@ -1550,7 +1550,7 @@ def _follower_sound_html(csrf_token: str = "", *, page_mode: str) -> bytes:
     room correction, and volume shaping are rendered by the leader while the
     pair is active. Local crossover and driver-protection work stays with the
     speaker that owns the DAC path.</p>
-    <div class="actions">
+    <div class="form-actions">
       {leader_link}
       {local_setup_link}
       <a class="btn" href="/rooms/">Manage pair</a>
