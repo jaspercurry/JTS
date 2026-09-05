@@ -20,7 +20,7 @@
 // per-row action targets ride in escaped data-* attributes consumed by a single
 // delegated click handler (never inline onclick), exactly as before.
 
-import { jsonHeaders, postJSON } from "/assets/shared/js/http.js";
+import { jsonHeaders, postJSON, startPolling } from "/assets/shared/js/http.js";
 import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
 import { escapeHtml, cssIdSafe } from "/assets/shared/js/escape.js";
 import { toggleScanRequest } from "./scan.js";
@@ -38,7 +38,8 @@ let devices = new Map(); // path → device
 let evtSrc = null;
 let pairStreams = new Map(); // mac → EventSource
 let deviceMutations = new Map(); // mac → accepted server-owned action
-let stateTimer = null;
+let stopPoll = null;
+let pollMs = 0;
 let scanIntentUntil = 0;  // ms; client-side window where we treat
                            // the button as scanning even before the
                            // server polling catches up
@@ -152,8 +153,10 @@ function renderToggles() {
 }
 
 function schedulePoll(ms) {
-  if (stateTimer !== null) clearInterval(stateTimer);
-  stateTimer = setInterval(fetchState, ms);
+  if (ms === pollMs) return;
+  pollMs = ms;
+  if (stopPoll) stopPoll();
+  stopPoll = startPolling(fetchState, { intervalMs: ms });
 }
 
 function beginMutation() {
@@ -826,7 +829,6 @@ function iconSlug(s) { return String(s || 'device').replace(/[^a-zA-Z0-9_-]/g, '
 
 document.getElementById('sw-power').addEventListener('change', togglePower);
 document.getElementById('sw-disc').addEventListener('change', toggleDisc);
-fetchState();
 renderDevices();
 startDeviceStream();
 schedulePoll(5000);

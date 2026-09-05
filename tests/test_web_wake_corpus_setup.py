@@ -240,13 +240,16 @@ def test_module_uses_shared_helpers_not_inline_plumbing() -> None:
     """The module imports the shared http.js / dialog.js helpers rather than
     re-implementing CSRF headers or using native confirm()/alert()."""
     js = _MODULE_JS.read_text()
-    assert 'import { jsonHeaders } from "/assets/shared/js/http.js"' in js
+    import re as _re
+
+    assert _re.search(
+        r'import \{[^}]*\bjsonHeaders\b[^}]*\} from "/assets/shared/js/http\.js"', js
+    )
     assert 'import { jtsConfirm } from "/assets/shared/js/dialog.js"' in js
     # No raw JSON content-type header literal in CODE (gating-test rule) and no
     # native dialogs (the suppressible popups the shared helper replaces). Scan
     # only non-comment lines — the module's docstring legitimately names the
     # old hand-rolled header + native confirm() it replaced.
-    import re as _re
 
     code_lines = [
         ln for ln in js.splitlines() if not ln.lstrip().startswith("//")

@@ -35,6 +35,7 @@ const document = {
   },
   getElementById(id) { return id === "app" ? root : null; },
   addEventListener(type, fn) { documentListeners[type] = fn; },
+  removeEventListener(type) { delete documentListeners[type]; },
 };
 
 const location = { pathname: "/system/" };
@@ -108,18 +109,26 @@ function clearTimeout(id) {
 const noop = () => {};
 const quietConsole = { error: noop };
 
+// The page schedules through the real shared poller, which reads the browser
+// globals rather than this file's locals — so the stubs stand in for them.
+globalThis.document = document;
+globalThis.setTimeout = setTimeout;
+globalThis.clearTimeout = clearTimeout;
+const { startPolling } = await import("../../deploy/assets/shared/js/http.js");
+
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const run = new AsyncFunction(
   "document", "window", "location", "history", "setTimeout", "clearTimeout",
   "console",
   "buildSystemPanel", "update", "buildAudioPanel", "updateAudio", "header",
-  "getJSON", "postAction", "setQuality", "setLatencyMode", "runDiagnostics",
+  "getJSON", "startPolling",
+  "postAction", "setQuality", "setLatencyMode", "runDiagnostics",
   source,
 );
 await run(
   document, window, location, history, setTimeout, clearTimeout, quietConsole,
   buildSystemPanel, update, buildAudioPanel, updateAudio, header,
-  getJSON, noop, noop, noop, noop,
+  getJSON, startPolling, noop, noop, noop, noop,
 );
 
 assert.equal(builds.system, 1, "initial System panel is built once");

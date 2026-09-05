@@ -33,7 +33,7 @@
 // works standalone (http://host:8782/) AND behind nginx
 // (http://host/wake-corpus/) — absolute paths would 502 under the prefix strip.
 
-import { jsonHeaders } from "/assets/shared/js/http.js";
+import { jsonHeaders, startPolling } from "/assets/shared/js/http.js";
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { escapeHtml } from "/assets/shared/js/escape.js";
 import {
@@ -826,10 +826,8 @@ try {
 
 syncCorpusProfileControls(false);
 refreshCapturePlan();
-refreshStatus();
+startPolling(refreshStatus, { intervalMs: 2000 });
 refreshClips();
-refreshSessions();
-setInterval(refreshStatus, 2000);
 // Sessions list changes slowly (only on begin/load/delete) — refresh
 // every 30 s so external SSH edits show up without being chatty.
-setInterval(refreshSessions, 30000);
+startPolling(refreshSessions, { intervalMs: 30000 });

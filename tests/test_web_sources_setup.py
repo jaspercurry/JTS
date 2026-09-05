@@ -1022,7 +1022,7 @@ def test_es_module_prioritizes_actionable_degradation_over_unavailability():
 def test_bluetooth_confirmation_posts_captured_intent_not_polled_dom_state():
     text = SOURCES_MODULE.read_text(encoding="utf-8")
     handler_start = text.index('input.addEventListener("change"')
-    handler_end = text.index("setInterval(fetchState", handler_start)
+    handler_end = text.index("startPolling(fetchState", handler_start)
     handler = text[handler_start:handler_end]
 
     capture = handler.index("const want = !!input.checked;")

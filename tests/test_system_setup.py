@@ -744,7 +744,6 @@ def test_audio_view_is_normalized_fail_soft_and_progressively_disclosed() -> Non
     assert "Array.isArray(health.sources)" in audio_view
     assert "ageBucket" not in audio_view
     main_js = (_MODULE_DIR / "main.js").read_text()
-    assert "finally" in main_js
     assert "Dashboard data was incomplete" in main_js
     assert 'title: "Technical evidence", open: false' in audio_view
     assert 'title: "Audio conversion", open: false' in audio_view
