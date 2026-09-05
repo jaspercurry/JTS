@@ -2,10 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Install-time render of the static landing page (deploy/index.html).
+"""Install-time render of the static landing page and the area hubs.
 
-nginx serves the result straight from disk at `/`, so everything a daemon
-would compute per request is substituted once, here, by install.sh:
+The landing page is deploy/index.html with its placeholders substituted;
+the `/sound/` and `/assistant/` hubs are rendered whole from the same
+manifest and capability map (`nav.render_hub`).
+
+nginx serves both straight from disk, so everything a daemon would compute
+per request is substituted once, here, by install.sh:
 
   * the app.css cache-bust token, keyed on the build SHA the install records;
   * the install profile's capability map, as the JSON data island the
@@ -28,6 +32,7 @@ import sys
 from html import escape
 from pathlib import Path
 
+from jasper.atomic_io import atomic_write_text
 from jasper.control.control_token import ensure_token
 from jasper.install_profile import (
     read_install_profile,
@@ -35,7 +40,7 @@ from jasper.install_profile import (
 )
 
 from ._common import CANONICAL_ICON_SPRITE, json_island
-from .nav import landing_groups_html
+from .nav import children, hub_paths, landing_groups_html, render_hub
 
 def substitutions(
     *, app_css_version: str, caps: dict[str, object], control_token: str
@@ -51,7 +56,7 @@ def substitutions(
         "__JTS_CAPS_ISLAND__": json_island("landing-caps", caps),
         "__JTS_CONTROL_TOKEN__": escape(control_token),
         "__JTS_ICON_SPRITE__": CANONICAL_ICON_SPRITE,
-        "__JTS_NAV_GROUPS__": landing_groups_html(),
+        "__JTS_NAV_GROUPS__": landing_groups_html(children("/")),
     }
 
 
@@ -76,24 +81,51 @@ def render_landing(
     return template
 
 
+def write_hub_pages(
+    web_root: Path, *, caps: dict[str, object], app_css_version: str
+) -> None:
+    """Write `<web_root>/<hub>/index.html` for every hub in the manifest."""
+    for path in hub_paths():
+        page = web_root / path.strip("/") / "index.html"
+        # Atomic, with the modes spelled out: nginx (www-data) serves these
+        # straight from disk, so it must never read a half-written page, and
+        # the install shell's umask must not decide whether the household
+        # gets a 403.
+        atomic_write_text(
+            page,
+            render_hub(path, caps=caps, app_css_version=app_css_version),
+            mode=0o644,
+        )
+        page.parent.chmod(0o755)
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Render the landing page.")
+    parser = argparse.ArgumentParser(
+        description="Render the landing page and the area hubs."
+    )
     parser.add_argument("page", help="installed index.html, rewritten in place")
     parser.add_argument("--app-css-version", required=True)
+    parser.add_argument(
+        "--hub-dir", required=True, help="web root the hub pages are written under"
+    )
     args = parser.parse_args(argv)
 
     page = Path(args.page)
     try:
+        caps = system_capabilities_for_profile(read_install_profile())
         rendered = render_landing(
             page.read_text(encoding="utf-8"),
             app_css_version=args.app_css_version,
-            caps=system_capabilities_for_profile(read_install_profile()),
+            caps=caps,
             control_token=ensure_token(),
         )
     except ValueError as e:
         print(e, file=sys.stderr)
         return 1
-    page.write_text(rendered, encoding="utf-8")
+    atomic_write_text(page, rendered, mode=0o644)
+    write_hub_pages(
+        Path(args.hub_dir), caps=caps, app_css_version=args.app_css_version
+    )
     return 0
 
 

@@ -30,7 +30,7 @@ from jasper.web import (
     system_setup,
     wifi_setup,
 )
-from jasper.web.nav import NAV
+from jasper.web.nav import NAV, hub_paths, render_hub
 
 
 WEB_SETUP_FILES = (
@@ -1096,7 +1096,8 @@ def test_web_pages_inline_style_counts_match_the_shrink_only_allowlist():
 # §5.1: a row's label is its page's <title> and its header title, and the page
 # goes back to the row's parent. Pages are scanned, not rendered — most need a
 # live daemon; a page whose header is client-rendered (`chrome.js`) is checked
-# on its <title> alone.
+# on its <title> alone. A hub has no module: it is rendered (no daemon) and
+# read back the same way.
 _PAGE_MODULE = {
     "/sources/": "sources_setup",
     "/spotify/": "spotify_setup",
@@ -1107,6 +1108,7 @@ _PAGE_MODULE = {
     "/sound/crossover/": "correction_crossover_flow",
     "/sound/room/": "correction_room_flow",
     "/sound/bass/": "correction_bass_flow",
+    "/sound/measurements/": "correction_measurements",
     "/voice/": "voice_setup",
     "/wake/": "wake_setup",
     "/chat/": "chat_setup",
@@ -1124,20 +1126,29 @@ _PAGE_MODULE = {
 
 # Shrink-only: every row whose page disagrees with its label today, against the
 # ledger row (docs/UX-AUDIT-2026-09-03.md §7) that retires the entry. Drop an
-# entry when its page is fixed; never add one without a ledger row.
+# entry when its page is fixed; never add one without a ledger row. A `back`
+# entry is B.2 re-parenting: the row now hangs under a hub while its page still
+# links Home, and the Phase C row that moves the page fixes the link.
 _TITLE_ALLOWLIST = {
     ("/sources/", "Playback sources"): {"title", "header"},         # C.R1
     ("/spotify/", "Spotify accounts"): {"title", "header"},         # C.R1
     ("/bluetooth/", "Bluetooth devices"): {"title", "header"},      # C.R1
     ("/airplay/", "AirPlay sync"): {"title", "header"},             # C.R1
-    ("/sound/crossover/", "Active speaker"): {"title", "header"},   # C.S5
+    ("/eq/", "EQ"): {"back"},                                       # C.S1
+    ("/sound/setup/", "Sound setup"): {"back"},                     # C.S2
+    ("/rooms/", "Stereo pair"): {"back", "title", "header"},        # C.S4
+    ("/sound/crossover/", "Active speaker"): {"back", "title", "header"},  # C.S5
     ("/sound/room/", "Room correction"): {"title"},                 # C.S5
-    ("/sound/bass/", "Bass"): {"title", "header"},                  # C.S5
-    ("/voice/", "Voice"): {"title", "header"},                      # C.A2
-    ("/wake/", "Voice assistant"): {"title", "header"},             # C.A3
-    ("/google/", "Google"): {"title", "header"},                    # C.A5
-    ("/system/", "Software"): {"title"},                            # B.2 (row goes)
-    ("/wake-corpus/", "Developer tools"): {"title", "header"},      # C.Y1
+    ("/sound/bass/", "Bass"): {"back", "title", "header"},          # C.S5
+    ("/sound/measurements/", "Measurements"): {"back", "title"},    # C.S5
+    ("/voice/", "Voice"): {"back", "title", "header"},              # C.A2
+    ("/wake/", "Wake word"): {"back"},                              # C.A3
+    ("/tools/", "Tools"): {"back"},                                 # C.A4
+    ("/weather/", "Weather"): {"back"},                             # C.A5
+    ("/transit/", "Transit"): {"back"},                             # C.A5
+    ("/google/", "Google"): {"back", "title", "header"},            # C.A5
+    ("/ha/", "Home Assistant"): {"back"},                           # C.A5
+    ("/wake-corpus/", "Wake corpus"): {"title", "header"},          # C.Y1
 }
 
 _SHELL_KIND = {"canonical_page": "title", "canonical_header": "header"}
@@ -1228,10 +1239,25 @@ def _page_strings(module: str) -> tuple[frozenset, frozenset, frozenset]:
     return frozenset(found["title"]), frozenset(found["header"]), frozenset(paths)
 
 
+@functools.lru_cache(maxsize=None)
+def _hub_strings(path: str) -> tuple[frozenset, frozenset, frozenset]:
+    """The same three strings, read off a rendered hub page."""
+    page = render_hub(path, caps={}, app_css_version="testsha")
+    return (
+        frozenset(re.findall(r"<title>([^<]*)</title>", page)),
+        frozenset(re.findall(r'<h1 class="app-header__title">([^<]*)</h1>', page)),
+        frozenset(re.findall(r'<a class="icon-button" href="([^"]*)"', page)),
+    )
+
+
 def test_nav_row_labels_match_their_pages_or_the_shrink_only_allowlist():
     mismatched = {}
     for row in NAV:
-        titles, headers, backs = _page_strings(_PAGE_MODULE[row.path])
+        titles, headers, backs = (
+            _hub_strings(row.path)
+            if row.path in hub_paths()
+            else _page_strings(_PAGE_MODULE[row.path])
+        )
         bad = set()
         if row.label not in titles:
             bad.add("title")

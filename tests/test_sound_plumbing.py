@@ -72,9 +72,6 @@ def test_both_profiles_keep_stale_active_speaker_stop_ingress_direct():
     for filename in ("nginx-jasper.conf", "nginx-jasper-streambox.conf"):
         nginx = (ROOT / "deploy" / filename).read_text()
         compat = _location_block(nginx, "location /sound/")
-        redirect = _location_block(nginx, "location = /sound/")
 
         assert "proxy_pass http://127.0.0.1:8784/;" in compat
         assert "return 302" not in compat
-        assert "if ($request_method !~ ^(GET|HEAD)$) { return 405; }" in redirect
-        assert "return 302 /sound/setup/;" in redirect

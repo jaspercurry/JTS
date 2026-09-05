@@ -10,20 +10,10 @@
 import { jsonHeaders } from "/assets/shared/js/http.js";
 import { localWebHost } from "/assets/shared/js/local-web-host.js";
 import {
+  bakedCaps,
   initSettingsStatus,
   setStatusText,
 } from "/assets/shared/js/settings-status.js";
-
-// The install profile's capability ceiling, baked into the page by
-// jasper.web.landing (json_island). Absent or unparseable, every gated row
-// stays hidden.
-function bakedCaps() {
-  try {
-    return JSON.parse(document.getElementById("landing-caps").textContent);
-  } catch (_) {
-    return null;
-  }
-}
 
 // Volume slider. Talks to jasper-control's /volume endpoints
 // (proxied through nginx so this stays same-origin). Optimistic UI:
