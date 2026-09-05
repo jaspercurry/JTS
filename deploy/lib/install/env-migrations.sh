@@ -661,9 +661,15 @@ widen_control_secret_env_modes() {
     # spotify_credentials.env + home_assistant.env moved to jasper-intsecrets.
     # Those compartment migrations own their perms now. voice_provider.env stays
     # here (now keyless; control reads the provider name for /system/).
-    local f path
-    for f in voice_provider.env control_token household_secret \
-             sound_profile.json sound_settings.json transit.env weather.env; do
+    # Lock entries: chmod, never unlink — a live holder may hold the flock. Drop
+    # them once every box has installed past the shared-lock-mode default.
+    local entry f m path
+    for entry in voice_provider.env:0640 control_token:0640 \
+                 household_secret:0640 sound_profile.json:0640 \
+                 sound_settings.json:0640 transit.env:0640 weather.env:0640 \
+                 .wake_model.env.lock:0660 .aec_mode.env.lock:0660; do
+        f="${entry%%:*}"
+        m="${entry##*:}"
         path="${STATE_DIR}/${f}"
         if [[ -L "${path}" ]]; then
             echo "  widen_control_secret_env_modes: skipping symlink ${path}"
@@ -671,24 +677,7 @@ widen_control_secret_env_modes() {
         fi
         if [[ -f "${path}" ]]; then
             chgrp jasper "${path}" 2>/dev/null || true
-            chmod 0640 "${path}" 2>/dev/null || true
-        fi
-    done
-
-    # Env-file locks created before atomic_io defaulted lock_mode to 0660 can be
-    # 0644 (jasper-web sets no UMask=), which EACCESes the O_RDWR acquire from
-    # the peer unit that writes the same env file. chmod, NEVER unlink: the
-    # daemons are already restarted by this point, so a live holder may hold the
-    # flock and a fresh opener would lock a different inode.
-    for f in .wake_model.env.lock .aec_mode.env.lock; do
-        path="${STATE_DIR}/${f}"
-        if [[ -L "${path}" ]]; then
-            echo "  widen_control_secret_env_modes: skipping symlink ${path}"
-            continue
-        fi
-        if [[ -f "${path}" ]]; then
-            chgrp jasper "${path}" 2>/dev/null || true
-            chmod 0660 "${path}" 2>/dev/null || true
+            chmod "${m}" "${path}" 2>/dev/null || true
         fi
     done
     echo "  widen_control_secret_env_modes: config jasper-control reads is group-jasper readable (0640)"

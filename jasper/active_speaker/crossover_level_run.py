@@ -432,15 +432,9 @@ class CrossoverLevelRunStore:
             if lock_path is None:
                 yield
                 return
-            # Group-WRITE, and chmod only when the mode actually differs.
-            # Taking an advisory lock opens the file for write, so a group
-            # member that can only READ one cannot take it at all; and an
-            # unconditional chmod on a lock this process does not own raises
-            # EPERM even when the open succeeds.  Both are ADR-0196.
             try:
                 with advisory_file_lock(
                     lock_path,
-                    mode=0o660,
                     timeout_sec=DEFAULT_LOCK_TIMEOUT_S,
                 ):
                     yield

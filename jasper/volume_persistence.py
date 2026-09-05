@@ -155,7 +155,6 @@ class VolumePersistence:
             return
         with advisory_file_lock(
             self._state_lock_path,
-            mode=0o660,
         ):
             self._state_transaction_depth += 1
             try:
@@ -175,7 +174,6 @@ class VolumePersistence:
         """
         lock = advisory_file_lock(
             self._operation_lock_path,
-            mode=0o660,
             timeout_sec=timeout_sec,
         )
         acquire = asyncio.create_task(asyncio.to_thread(lock.__enter__))

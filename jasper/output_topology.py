@@ -2256,7 +2256,6 @@ def output_topology_mutation(
     target = topology_path(path)
     with advisory_file_lock(
         topology_lock_path(target),
-        mode=0o660,
         timeout_sec=timeout_sec,
     ):
         yield OutputTopologyMutation(target)

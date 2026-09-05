@@ -37,6 +37,9 @@ These properties are load-bearing and easy to get subtly wrong by hand:
     file it does not own must not re-own it. ``preserve_target_stat=True`` copies
     the EXISTING file's uid/gid/mode onto the tempfile before the rename — the
     stricter form of the bullet above, which sets the group only.
+  - **One shared lock mode.** Advisory locks — including the ones the env
+    writers take — default to ``SHARED_LOCK_MODE``, group-writable, so two
+    units running as different service users can share one lock.
 
 This module RAISES on failure (``OSError``) and cleans up the tempfile on any
 exception. Callers that want fail-soft behaviour (log-and-continue, as several
@@ -66,6 +69,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "CONFIG_FILE_MODE",
+    "SHARED_LOCK_MODE",
     "advisory_file_lock",
     "atomic_write_json",
     "atomic_write_text",
@@ -137,22 +141,31 @@ def _publish_parent_group(fd: int, parent_gid: int, *, path: str) -> None:
         )
 
 
+# Taking an advisory lock opens the file O_RDWR, so a peer that has only group
+# READ cannot take it at all; and units disagree on ``UMask=``, so the mode is
+# asserted on every acquire rather than left to whichever unit creates the
+# file. See ADR-0196.
+SHARED_LOCK_MODE = 0o660
+
+
 @contextmanager
 def advisory_file_lock(
     path: str | os.PathLike,
     *,
-    mode: int | None = None,
+    mode: int = SHARED_LOCK_MODE,
     group_from_parent: bool = True,
     timeout_sec: float | None = None,
 ):
     """Hold an exclusive advisory lock on ``path``.
 
-    ``group_from_parent`` follows the module docstring's parent-group
-    publishing rule, so a root-run holder cannot lock a non-root peer out of a
-    shared state directory. An explicit ``mode`` and the group are both
-    applied before the lock is made available to another process. Existing
-    pre-upgrade ownership drift still requires an install-time heal because a
-    non-owner cannot repair a lock it cannot open. ``timeout_sec`` adds
+    ``mode`` defaults to :data:`SHARED_LOCK_MODE`; pass a narrower one only for
+    a lock no second service user may take. ``group_from_parent`` follows the
+    module docstring's parent-group publishing rule, so a root-run holder
+    cannot lock a non-root peer out of a shared state directory. Mode and group
+    are both applied before the lock is made available to another process, and
+    both are BEST EFFORT: a non-owner cannot repair either, so a denial is
+    logged and the acquire proceeds on the descriptor it already opened, while
+    pre-upgrade drift is repaired by the install heal. ``timeout_sec`` adds
     bounded backpressure for request/deploy paths; the historical default
     remains a blocking lock for tiny internal state updates whose callers do
     not expose a latency contract.
@@ -171,8 +184,19 @@ def advisory_file_lock(
         # A group writer can open a correctly provisioned root-owned lock
         # but cannot chmod it.  Avoid an unnecessary privileged mutation
         # when install has already published the requested mode.
-        if mode is not None and stat.S_IMODE(os.fstat(fd).st_mode) != mode:
-            os.fchmod(fd, mode)
+        if stat.S_IMODE(os.fstat(fd).st_mode) != mode:
+            try:
+                os.fchmod(fd, mode)
+            except PermissionError:
+                # The open already succeeded, so the lock is functional; only a
+                # non-owner lands here, and the install heal repairs the mode.
+                log_event(
+                    logger,
+                    "atomic_io.lock_mode_failed",
+                    level=logging.WARNING,
+                    path=fspath,
+                    mode=f"0o{mode:o}",
+                )
         lock: TextIOWrapper = os.fdopen(fd, "a+", encoding="utf-8")
     except (OSError, ValueError):
         os.close(fd)
@@ -379,13 +403,6 @@ def _env_lock_path(path: str) -> str:
     return os.path.join(parent, f".{basename}.lock")
 
 
-# An env file can have writers running as different service users (group
-# jasper), and the lock is opened O_RDWR, so group write is required or the
-# second unit's acquire fails EACCES. Units disagree on UMask, so the mode is
-# asserted on every acquire rather than left to whichever unit creates it.
-_ENV_LOCK_MODE = 0o660
-
-
 def read_regular_bytes_nofollow(
     path: str | os.PathLike,
     *,
@@ -464,7 +481,7 @@ def locked_update_env_file(
     *,
     mode: int = 0o644,
     group_from_parent: bool = True,
-    lock_mode: int | None = _ENV_LOCK_MODE,
+    lock_mode: int = SHARED_LOCK_MODE,
     max_bytes: int | None = None,
     lock_timeout_sec: float | None = None,
 ) -> dict[str, str]:
@@ -474,8 +491,8 @@ def locked_update_env_file(
     protect two writers that both read the old file, update different keys, and
     then publish whole-file replacements. This helper holds an advisory flock
     across the read, update, and atomic replace so cooperating writers preserve
-    each other's keys. ``lock_mode`` defaults to group-writable so writers
-    running as different service users can share that lock.
+    each other's keys. ``lock_mode`` is the lock's own mode; see
+    :data:`SHARED_LOCK_MODE`.
     """
     fspath = os.fspath(path)
     parent = os.path.dirname(fspath) or "."
@@ -505,7 +522,7 @@ def locked_transform_env_file(
     *,
     mode: int = 0o644,
     group_from_parent: bool = True,
-    lock_mode: int | None = _ENV_LOCK_MODE,
+    lock_mode: int = SHARED_LOCK_MODE,
     max_bytes: int | None = None,
     lock_timeout_sec: float | None = None,
 ) -> dict[str, str] | None:
@@ -519,7 +536,8 @@ def locked_transform_env_file(
     use for a read-decide-skip (its read then runs under the lock, closing the
     check-then-act race). Holds the SAME advisory flock as
     ``locked_update_env_file`` on the same path, so both helpers mutually
-    exclude writers of one file. Returns the written dict, or ``None`` when the
+    exclude writers of one file. ``lock_mode`` is the lock's own mode; see
+    :data:`SHARED_LOCK_MODE`. Returns the written dict, or ``None`` when the
     file was deleted or left absent.
     """
     fspath = os.fspath(path)

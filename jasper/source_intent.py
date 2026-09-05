@@ -307,7 +307,6 @@ RECONCILE_BROKER_TIMEOUT_SECONDS = RECONCILE_SYSTEMD_TIMEOUT_SECONDS + 10.0
 _INVALIDATING_RECONCILE_LOCK_TIMEOUT_SECONDS = RECONCILE_SYSTEMD_TIMEOUT_SECONDS + 5.0
 _UAC2_CARD_PATH = "/proc/asound/UAC2Gadget"
 _INTENT_FILE_MODE = 0o660
-_SHARED_LOCK_MODE = 0o660
 _BLUETOOTH_SETTLE_ATTEMPTS = 12
 _BLUETOOTH_SETTLE_SECONDS = 0.25
 _BLUETOOTH_DBUS_TIMEOUT_SEC = 0.75
@@ -707,7 +706,6 @@ def _default_write_intent(path: str, updates: Mapping[str, str]) -> None:
         path,
         updates,
         mode=_INTENT_FILE_MODE,
-        lock_mode=_SHARED_LOCK_MODE,
         max_bytes=_MAX_INTENT_BYTES,
         lock_timeout_sec=_REQUEST_LOCK_TIMEOUT_SEC,
     )
@@ -764,7 +762,6 @@ def request_source_intent(
     try:
         with advisory_file_lock(
             request_lock_path,
-            mode=_SHARED_LOCK_MODE,
             timeout_sec=_REQUEST_LOCK_TIMEOUT_SEC,
         ):
             request_started_ns = time.monotonic_ns()
@@ -1902,7 +1899,6 @@ def source_reconcile_lock(
 
     return advisory_file_lock(
         f"{env_path}.reconcile.lock",
-        mode=_SHARED_LOCK_MODE,
         timeout_sec=timeout_sec,
     )
 
