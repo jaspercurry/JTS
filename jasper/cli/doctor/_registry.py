@@ -14,8 +14,8 @@ can run.
 - **The bare-vs-tuple distinction.** A check with ``needs_cfg=False`` is
   emitted as a bare function, so the harness derives its displayed/crash
   label from ``fn.__name__`` (``check_env_file`` → ``"env file"``). A
-  check with ``needs_cfg=True`` is emitted as ``(label, lambda: fn(cfg))``
-  — the explicit label plus the ``cfg`` closure.
+  check with ``needs_cfg=True`` is emitted as ``(label, fn bound to cfg)``
+  — the explicit label plus the ``cfg`` binding.
 
 - **Async and hardware-sensitive checks carry explicit metadata.** A
   check flagged ``is_async=True`` is awaited directly by the harness.
