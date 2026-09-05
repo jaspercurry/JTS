@@ -149,38 +149,34 @@ def advisory_file_lock(
 
     ``group_from_parent`` follows the module docstring's parent-group
     publishing rule, so a root-run holder cannot lock a non-root peer out of a
-    shared state directory. ``False`` also restores the historical
-    ``open(..., 'a+')`` ownership and umask behavior when no ``mode`` is given.
-    An explicit ``mode`` and the group are both applied before the lock is made
-    available to another process. Existing pre-upgrade ownership drift still
-    requires an install-time heal because a non-owner cannot repair a lock it
-    cannot open. ``timeout_sec`` adds bounded backpressure for request/deploy
-    paths; the historical default remains a blocking lock for tiny internal
-    state updates whose callers do not expose a latency contract.
+    shared state directory. An explicit ``mode`` and the group are both
+    applied before the lock is made available to another process. Existing
+    pre-upgrade ownership drift still requires an install-time heal because a
+    non-owner cannot repair a lock it cannot open. ``timeout_sec`` adds
+    bounded backpressure for request/deploy paths; the historical default
+    remains a blocking lock for tiny internal state updates whose callers do
+    not expose a latency contract.
     """
 
     fspath = os.fspath(path)
     parent = os.path.dirname(fspath) or "."
     os.makedirs(parent, exist_ok=True)
-    if mode is None and not group_from_parent:
-        lock: TextIOWrapper = open(fspath, "a+", encoding="utf-8")
-    else:
-        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(fspath, flags, 0o666)
-        try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
-                raise OSError(errno.EINVAL, "lock path is not a regular file", fspath)
-            if group_from_parent:
-                _publish_parent_group(fd, os.stat(parent).st_gid, path=fspath)
-            # A group writer can open a correctly provisioned root-owned lock
-            # but cannot chmod it.  Avoid an unnecessary privileged mutation
-            # when install has already published the requested mode.
-            if mode is not None and stat.S_IMODE(os.fstat(fd).st_mode) != mode:
-                os.fchmod(fd, mode)
-            lock = os.fdopen(fd, "a+", encoding="utf-8")
-        except (OSError, ValueError):
-            os.close(fd)
-            raise
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(fspath, flags, 0o666)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "lock path is not a regular file", fspath)
+        if group_from_parent:
+            _publish_parent_group(fd, os.stat(parent).st_gid, path=fspath)
+        # A group writer can open a correctly provisioned root-owned lock
+        # but cannot chmod it.  Avoid an unnecessary privileged mutation
+        # when install has already published the requested mode.
+        if mode is not None and stat.S_IMODE(os.fstat(fd).st_mode) != mode:
+            os.fchmod(fd, mode)
+        lock: TextIOWrapper = os.fdopen(fd, "a+", encoding="utf-8")
+    except (OSError, ValueError):
+        os.close(fd)
+        raise
     acquired = False
     try:
         if timeout_sec is None:
@@ -271,7 +267,7 @@ def atomic_write_text(
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
             if parent_gid is not None:
-                _publish_parent_group(f.fileno(), parent_gid, path=tmp)
+                _publish_parent_group(f.fileno(), parent_gid, path=fspath)
         if target_stat is not None:
             try:
                 os.chown(tmp, target_stat.st_uid, target_stat.st_gid)
