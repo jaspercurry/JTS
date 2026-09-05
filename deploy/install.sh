@@ -1830,7 +1830,7 @@ install_streambox_nginx_site() {
     if nginx -t 2>/dev/null; then
         systemctl enable --now nginx 2>/dev/null || true
         systemctl reload nginx
-        echo "  streambox nginx reloaded — http://<host>/{,spotify,sources,sound,system,voice,google,transit,weather,ha,tools,chat} + https://<host>/{correction,balance,sync} are live"
+        echo "  streambox nginx reloaded — http://<host>/{,spotify,sources,sound,system,voice,google,transit,weather,ha,tools,chat} + https://<host>/{correction,sync} are live"
     else
         echo "  ERROR: streambox nginx config test failed; not reloading. Run 'nginx -t' to debug." >&2
         return 1

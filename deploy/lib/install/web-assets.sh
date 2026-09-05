@@ -66,6 +66,8 @@ install_web_assets() {
     # copied additively, so this exact stale directory would otherwise survive
     # forever on speakers that had already shipped it.
     rm -rf -- "${assets_root:?}/dial"
+    # Same class: the retired /balance/ page.
+    rm -rf -- "${assets_root:?}/balance"
     # Same class: the retired orbs.js and qr.js bundles. Without this, every
     # speaker that already shipped them keeps serving the deleted,
     # unmanifested files.

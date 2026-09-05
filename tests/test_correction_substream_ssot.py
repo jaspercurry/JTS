@@ -167,7 +167,6 @@ def test_guard_detects_a_reintroduced_literal(tmp_path) -> None:
 _LIGHT_CONSUMERS = (
     "jasper.web.sound_setup",
     "jasper.web.sync_flow",
-    "jasper.web.balance_flow",
     "jasper.active_speaker.web_commissioning",
 )
 

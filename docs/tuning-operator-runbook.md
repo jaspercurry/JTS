@@ -169,7 +169,7 @@ as the override.
 **The measurement surfaces are HTTPS, and there are several.** `getUserMedia`
 needs a secure context, so nginx's 443 block serves the whole measurement
 family: the canonical `/sound/{room,crossover,bass}/` routes, their
-`/correction/*` compatibility aliases, and `/balance/` + `/sync/` — the last two
+`/correction/*` compatibility aliases, and `/sync/` — the last one
 **HTTPS-only** (port 80 404s them). Plain `http://` still serves the ordinary
 wizards. `install.sh` provisions the private CA; a device has to trust it once
 before any of this works. Route paths therefore have two spellings, and nginx

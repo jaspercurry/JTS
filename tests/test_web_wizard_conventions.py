@@ -39,7 +39,6 @@ WEB_PY_FILES = tuple(sorted(Path("jasper/web").glob("*.py")))
 _SHARED_JSON_OBJECT_READERS = {
     "bluetooth_setup.py": ("_read_json", "max_bytes=1_000_000"),
     "chat_setup.py": ("_read_json", "max_bytes=MAX_JSON_BYTES"),
-    "balance_flow.py": ("_read_json", "max_bytes=65_536"),
     "wifi_setup.py": ("_read_json", "max_bytes=_JSON_BODY_LIMIT"),
     "sources_setup.py": ("_read_json", "max_bytes=_JSON_BODY_LIMIT"),
     "wake_corpus_setup.py": ("_read_json", "max_bytes=_JSON_BODY_LIMIT"),
@@ -164,7 +163,7 @@ def test_migrated_json_body_reads_remain_after_csrf_guard():
     )
     assert correction_handler.index(
         "guard_mutating_request",
-    ) < correction_handler.index("self._dispatch_balance(path)")
+    ) < correction_handler.index("self._dispatch_sync(path)")
 
     delegated_readers = {
         "wake_setup.py": (
@@ -713,20 +712,6 @@ def test_sync_measurement_recorder_uses_worklet_without_mic_monitoring():
     assert "/assets/shared/js/measurement-audio.js" in src
     assert "createMonoRecorder" in src
     assert "float32ToWavBlob" in src
-    assert "getUserMedia" not in src
-    assert "new AudioContext" not in src
-    assert "AudioWorkletProcessor" not in src
-    assert "AudioWorkletNode" not in src
-    assert "createScriptProcessor" not in src
-    assert ".destination" not in src
-
-
-def test_balance_measurement_uses_shared_audio_primitives():
-    src = Path("deploy/assets/balance/js/main.js").read_text()
-
-    assert "/assets/shared/js/measurement-audio.js" in src
-    assert "createBandpassRmsMeter" in src
-    assert "rmsToDbfs" in src
     assert "getUserMedia" not in src
     assert "new AudioContext" not in src
     assert "AudioWorkletProcessor" not in src

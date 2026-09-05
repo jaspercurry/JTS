@@ -5,8 +5,9 @@
 // Issue #1842: the bond card's balance block used to render an
 // `https://<hostname>/balance/` link ("Balance automatically with a
 // microphone") — a capture design ADR-0188 parked. On the self-signed origin
-// that link fails hard (ERR_CERT_AUTHORITY_INVALID). This pins that the card
-// never builds an anchor at all: only the manual slider/reset controls.
+// that link fails hard (ERR_CERT_AUTHORITY_INVALID). The `/balance/` page is
+// gone entirely now (#4031); this still pins that the card never builds an
+// anchor at all: only the manual slider/reset controls.
 //
 // Loads main.js as a real ES module (dom.js/grouping-view.js/
 // pair-balance-controller.js run for real; only the network-touching
