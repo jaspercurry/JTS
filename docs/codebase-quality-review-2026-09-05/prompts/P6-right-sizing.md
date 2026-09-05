@@ -37,8 +37,10 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
   (severities there are pre-verification; `reports/p3-*.md` override them).
 - `docs/codebase-quality-review-2026-09-05/reports/` — the agent reports named below are your
   starting evidence.
-- Issue #4085 — the general steward's queue and its "came back clean" list; do not re-scout what
-  it cleared unless your own evidence contradicts it.
+- Issue #4085 — the general steward's handoff and its round-2 close-out (last comment): the
+  "came back clean" list still holds; the steward has stood down with nothing open, and its ten-item
+  queue is folded into the lanes below. Do not re-scout what it cleared unless your own evidence
+  contradicts it.
 - Issue #3769, last comment — the tuning steward's close-out: what wave 9 landed, what it
   deferred, the wave-10 candidates. The zone is parked (see Territory); this tells you what not to
   re-find.
@@ -138,6 +140,12 @@ the current guard passes on a prose mention and cites a deleted AGENTS.md rule. 
 (can only break the box), `JASPER_OUTPUTD_CONTENT_BRIDGE=direct` (has a stated expiry — wait for it),
 six volume knobs nobody sets, three calibration-agent knobs, five active_speaker knobs set only by
 tests, seven `*_WEB_HOST`.
+
+Two rows from the general steward's round-2 queue (#4085): `jasper-fanin`, `jasper-outputd`,
+`jasper-clock` and `jasper-env` declare `rust-version = "1.75"` while `jasper-daemon` (sd-notify
+0.5) sets 1.82 and both daemons reach it — the workspace row fixes it once, in
+`[workspace.package]`; and `JASPER_SYSTEM_ENV_FILE` (wake-corpus recorder, a codified test seam)
+versus `JASPER_ENV_FILE` (everything else) are two knobs for one file — one goes.
 
 Owner decisions you must price and put in front of the owner, not act on: the `bass_extension` park
 (~4,000 + ~3,900 test; ADR-0018 forbids deletion on orphan grounds); the v1 commissioning chain

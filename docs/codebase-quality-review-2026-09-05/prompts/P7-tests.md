@@ -37,8 +37,10 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
   (severities there are pre-verification; `reports/p3-*.md` override them).
 - `docs/codebase-quality-review-2026-09-05/reports/` — the agent reports named below are your
   starting evidence.
-- Issue #4085 — the general steward's queue and its "came back clean" list; do not re-scout what
-  it cleared unless your own evidence contradicts it.
+- Issue #4085 — the general steward's handoff and its round-2 close-out (last comment): the
+  "came back clean" list still holds; the steward has stood down with nothing open, and its ten-item
+  queue is folded into the lanes below. Do not re-scout what it cleared unless your own evidence
+  contradicts it.
 - Issue #3769, last comment — the tuning steward's close-out: what wave 9 landed, what it
   deferred, the wave-10 candidates. The zone is parked (see Territory); this tells you what not to
   re-find.
@@ -144,6 +146,13 @@ Verified at HEAD by the review:
   sibling clusters of 507 tests, 805 prose `match=` pins; the 15 non-negotiable files stay heavy)
   and 1.5 (~310 pseudo-public names). That is the largest block under your owner-gated heading —
   price it as one row with the counts re-measured at HEAD, and do not start it unasked.
+- From the general steward's round 2 (#4085): `tests/test_outputd_wiring.py` slices `main.rs`
+  between `fn <name>(` anchors that widen silently when a function is deleted (it bit twice in one
+  round) — retarget to behavior or, at minimum, assert the anchor exists; the `cli/aec_init.py`
+  fixture models a 500 ms status-socket ceiling #4187 removed; flakes seen once and never
+  reproduced, for your wall-time/descriptor-leak work: `test_airplay_volume_hook.py::
+  test_a_session_start_fade_up_is_adopted_once_at_its_settled_level`, `test_wake_corpus_http.py::
+  test_api_session_load_round_trip` (TimeoutError), one `jasper-fanin` cargo test.
 
 Go deeper than the review did: `tests/` was never tiled — 1,014 files were swept mechanically with
 ~15 read in full, and `pytest --collect-only` was blocked by the sandbox proxy (see #4085 for the

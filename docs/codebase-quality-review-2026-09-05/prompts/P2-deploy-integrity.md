@@ -37,8 +37,10 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
   (severities there are pre-verification; `reports/p3-*.md` override them).
 - `docs/codebase-quality-review-2026-09-05/reports/` — the agent reports named below are your
   starting evidence.
-- Issue #4085 — the general steward's queue and its "came back clean" list; do not re-scout what
-  it cleared unless your own evidence contradicts it.
+- Issue #4085 — the general steward's handoff and its round-2 close-out (last comment): the
+  "came back clean" list still holds; the steward has stood down with nothing open, and its ten-item
+  queue is folded into the lanes below. Do not re-scout what it cleared unless your own evidence
+  contradicts it.
 - Issue #3769, last comment — the tuning steward's close-out: what wave 9 landed, what it
   deferred, the wave-10 candidates. The zone is parked (see Territory); this tells you what not to
   re-find.
@@ -133,6 +135,14 @@ Verified at HEAD by the review (two of them by execution under a stubbed `ssh`/`
   `aplay -L | grep -B1` pipeline.
 - 14 installer one-shots with no removal condition (T23's table); `first-party-runtime.sh` (581
   lines of hand-written two-phase commit) whose activating env var is absent from the forwarding list.
+- Of those one-shots, the two key relocations in `env-migrations.sh` (voice keys, Google routes)
+  carry no removal condition **by design** — a live producer, and a fleet-state gate would invite
+  deleting secrets enforcement (#4085 owner call 4, landed in #4178); do not re-file them.
+- `deploy/install.sh:857` still claims a `rust-version=1.75` toolchain floor while `jasper-daemon`
+  (sd-notify 0.5) requires 1.82; the installer's toolchain floor is yours, the crate manifests are
+  P6's workspace row.
+- #4173 gave the docs link check a push-to-main trigger (it had been red on `main` unseen); the
+  classifier's rename-skip row in P7 stands.
 - The Pi-side copy of 11 of 12 `deploy/lib/install/*.sh` has no consumer (one-line glob fix).
 
 Go deeper than the review did: **`deploy/bin/` was never tiled** — 22 root executables, 8,942

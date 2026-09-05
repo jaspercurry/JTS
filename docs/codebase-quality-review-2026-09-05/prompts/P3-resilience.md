@@ -37,8 +37,10 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
   (severities there are pre-verification; `reports/p3-*.md` override them).
 - `docs/codebase-quality-review-2026-09-05/reports/` — the agent reports named below are your
   starting evidence.
-- Issue #4085 — the general steward's queue and its "came back clean" list; do not re-scout what
-  it cleared unless your own evidence contradicts it.
+- Issue #4085 — the general steward's handoff and its round-2 close-out (last comment): the
+  "came back clean" list still holds; the steward has stood down with nothing open, and its ten-item
+  queue is folded into the lanes below. Do not re-scout what it cleared unless your own evidence
+  contradicts it.
 - Issue #3769, last comment — the tuning steward's close-out: what wave 9 landed, what it
   deferred, the wave-10 candidates. The zone is parked (see Territory); this tells you what not to
   re-find.
@@ -125,9 +127,14 @@ Verified at HEAD by the review:
   failure memory (the journal flood was "fixed" by demoting the log); `output_hardware.py:660`
   `aplay -L` with no timeout on the DAC-vanished path; `rust/jasper-fanin/src/main.rs:201` unbounded
   xrun channel fed from the RT thread into an `fdatasync` writer; `tts.rs:1290`/outputd `tts.rs:254`
-  thread-per-connection with no cap and no read timeout under `mlockall`; outputd's blind 500 ms
-  accept sleep (`state.rs:1957-1961`) with fan-in's 20-line `poll()` fix already in the tree;
-  `watchdog.py:110-127` progress-stall state is prose-only.
+  thread-per-connection with no cap and no read timeout under `mlockall`; `watchdog.py:110-127`
+  progress-stall state is prose-only.
+- Landed on `main`, **not yet deployed**: #4187 gave both daemons one `UdsCommandServer` in
+  `jasper-daemon` (outputd's blind 500 ms accept sleep is gone; fan-in now has the 1024-byte cap and
+  a read deadline), and #4163 dropped outputd's abstract `NOTIFY_SOCKET` support. Both merged on
+  adversarial review without the owner's word; the owner's first deploy is their hardware
+  confirmation. Do not open the daemons' socket or notify paths until that deploy has happened and
+  `/system/` shows the SHA; if a daemon parks on boot, the fix is a revert, not a patch.
 - Astronaut engineering to delete: `host_clock.rs:530-545` `catch_unwind` (dead under `panic=abort`);
   the `sdnotify` dep + ImportError branch (fails closed the wrong way); the udev rule line that can
   never match (`05ac/…`); `deploy/avahi/jasper-control.service` fallback; `bluetooth/roles.py`.
