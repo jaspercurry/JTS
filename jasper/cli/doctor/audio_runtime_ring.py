@@ -853,11 +853,11 @@ def check_ring_writer_lock_exclusivity() -> CheckResult:
 def check_ring_reader_stall() -> CheckResult:
     """A ring being WRITTEN but not READ, judged from the SHARED HEADER.
 
-    THE INDEPENDENT OBSERVER. Every ring's writer is the C ioplug, whose
-    ``published_slots`` / ``drop_no_reader`` / ``full_waits`` are process-local
-    fields printed at close rather than shared-header fields, and whose reader
-    is blocked in ``writei`` during exactly this fault. The doctor is blocked
-    in neither end.
+    THE SHARED HEADER IS THE PRIMARY OBSERVER: every ring's writer is the C
+    ioplug (counters are process-local fields printed at close) and its
+    reader is blocked in ``writei`` during exactly this fault, so only the
+    header is free to read. Ring A alone falls back to fan-in's own STATUS
+    witness (below) when the header itself cannot be judged.
 
     THE CONJUNCTION: ``writer_heartbeat_ns`` FRESH while ``reader_heartbeat_ns``
     is STALE. Not ``read_seq``-flat — the writer advances ``read_seq`` on the
@@ -865,9 +865,9 @@ def check_ring_reader_stall() -> CheckResult:
     exactly when the drops begin. See
     :class:`jasper.ring_assets.RingStallVerdict`.
 
-    Judges every ring in the tuple below and reports per-ring so an operator
-    knows which daemon to look at. ``present=False`` keeps absent/idle rings
-    silent, which covers the unarmed fleet.
+    Judges every ring below and reports per-ring so an operator knows which
+    daemon to look at. ``present=False`` keeps absent/idle rings silent, which
+    covers the unarmed fleet.
 
     RING A ALSO CARRIES FAN-IN'S OWN WITNESS (issue #1524), read through the
     evidence memo's fan-in STATUS (``evidence.fanin_status()``) so this costs
@@ -902,55 +902,55 @@ def check_ring_reader_stall() -> CheckResult:
 
     name = "ring reader stall"
     ring_a_label = "Ring A (fan-in -> CamillaDSP)"
-    rings = (
-        (ring_a_label, RING_A_PROGRAM_FILE),
+    other_rings = (
         ("Ring B (CamillaDSP -> outputd)", RING_B_CONTENT_FILE),
         ("ACTIVE ring (CamillaDSP -> outputd)", RING_ACTIVE_CONTENT_FILE),
         ("GROUPING ring (snapclient -> CamillaDSP)", GROUPING_RING_FILE),
     )
     stalled: list[str] = []
     judged: list[str] = []
-    ring_a_header_present = False
-    ring_a_stalled = False
-    for label, path in rings:
-        verdict = ring_stall_verdict(path)
-        if label == ring_a_label:
-            ring_a_header_present = verdict.present
-        if not verdict.present:
-            continue
-        judged.append(label)
-        if verdict.stalled:
-            stalled.append(f"{label}: {verdict.detail}")
-            if label == ring_a_label:
-                ring_a_stalled = True
 
-    # Ring A's fan-in witness — same evidence memo key every other fan-in
-    # check reads, so a run that already asked for it this pass costs nothing.
-    drops_detail = ""
-    drops_reason = ""
+    # Ring A: judged by its own header when coherent, else by fan-in's own
+    # witness (issue #1524) — the same evidence memo key every other fan-in
+    # check reads, so asking for it this pass costs nothing extra.
+    ring_a_verdict = ring_stall_verdict(RING_A_PROGRAM_FILE)
+    ring_a_stalled = False
     status = evidence.fanin_status()
     output = status.payload.get("output") if status.payload else None
     fanin_ring = output.get("ring") if isinstance(output, dict) else None
-    if isinstance(fanin_ring, dict):
-        if ring_a_label not in judged:
-            judged.append(ring_a_label)
-        if not ring_a_header_present and not ring_a_stalled and bool(
-            fanin_ring.get("stall_active")
-        ):
+    if ring_a_verdict.present:
+        judged.append(ring_a_label)
+        if ring_a_verdict.stalled:
+            ring_a_stalled = True
+            stalled.append(f"{ring_a_label}: {ring_a_verdict.detail}")
+    elif isinstance(fanin_ring, dict):
+        judged.append(ring_a_label)
+        if bool(fanin_ring.get("stall_active")):
             ring_a_stalled = True
             stalled.append(
                 f"{ring_a_label}: fan-in STATUS reports stall_active "
                 "(no coherent ring header to judge)"
             )
-        if not ring_a_stalled:
-            stuck = int(fanin_ring.get("stuck_reader_drops") or 0)
-            no_reader = int(fanin_ring.get("drop_no_reader") or 0)
-            if stuck or no_reader:
-                drops_detail = (
-                    f"; Ring A cumulative since fan-in start: "
-                    f"stuck_reader_drops={stuck}, drop_no_reader={no_reader}"
-                )
-                drops_reason = REASON_RING_READER_STALL_DROPS
+
+    drops_detail = ""
+    drops_reason = ""
+    if isinstance(fanin_ring, dict) and not ring_a_stalled:
+        stuck = int(fanin_ring.get("stuck_reader_drops") or 0)
+        no_reader = int(fanin_ring.get("drop_no_reader") or 0)
+        if stuck or no_reader:
+            drops_detail = (
+                f"; Ring A cumulative since fan-in start: "
+                f"stuck_reader_drops={stuck}, drop_no_reader={no_reader}"
+            )
+            drops_reason = REASON_RING_READER_STALL_DROPS
+
+    for label, path in other_rings:
+        verdict = ring_stall_verdict(path)
+        if not verdict.present:
+            continue
+        judged.append(label)
+        if verdict.stalled:
+            stalled.append(f"{label}: {verdict.detail}")
 
     if stalled:
         return CheckResult(name, "warn", "; ".join(stalled), reason=REASON_RING_READER_STALLED)

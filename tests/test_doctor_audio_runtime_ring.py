@@ -1333,12 +1333,11 @@ def test_writer_lock_guard_counts_one_pid_once(monkeypatch, tmp_path):
 # check_ring_reader_stall — Ring A's fan-in STATUS witness (issue #1524).
 #
 # The header-only, four-ring sweep is pinned in test_ring_stall_alarm.py.
-# This section pins only what moved in from the retired fan-in ring-stall
-# check (#4147, #4150): fan-in's `output.ring.stall_active` stands in for a header
-# this check cannot judge (no coherent SHM header), and its cumulative
-# stuck_reader_drops/drop_no_reader ride along as Ring A detail, read through
-# the evidence memo (`evidence.fanin_status()`) — no second socket read of a
-# daemon another check already asked this run.
+# This section pins Ring A's fallback: fan-in's `output.ring.stall_active`
+# stands in for a header this check cannot judge (no coherent SHM header),
+# and its cumulative stuck_reader_drops/drop_no_reader ride along as Ring A
+# detail, read through the evidence memo (`evidence.fanin_status()`) — no
+# second socket read of a daemon another check already asked this run.
 # ===========================================================================
 
 _RING_A_DRAINING = {
@@ -1400,66 +1399,58 @@ def test_ring_reader_stall_warns_on_ring_a_header_stall(monkeypatch, tmp_path):
     assert r.reason == audio_runtime_ring.REASON_RING_READER_STALLED
 
 
-def test_ring_reader_stall_falls_back_to_status_when_header_unreadable(
-    monkeypatch, tmp_path,
+@pytest.mark.parametrize(
+    ("ring_status", "expected_status", "expected_reason"),
+    [
+        pytest.param(
+            _RING_A_STATUS_STALLED,
+            "warn",
+            audio_runtime_ring.REASON_RING_READER_STALLED,
+            id="stall_active_is_the_only_witness_left",
+        ),
+        pytest.param(
+            _RING_A_RECOVERED,
+            "ok",
+            audio_runtime_ring.REASON_RING_READER_STALL_DROPS,
+            id="recovered_drops_ride_along_as_detail",
+        ),
+        pytest.param(
+            None,
+            "skipped",
+            audio_runtime_ring.REASON_RING_READER_NO_LIVE_RING,
+            id="no_status_either_keeps_the_header_only_verdict",
+        ),
+    ],
+)
+def test_ring_reader_stall_without_a_ring_a_header(
+    monkeypatch, tmp_path, ring_status, expected_status, expected_reason,
 ):
-    """No coherent Ring A header — fan-in STATUS is the only witness left."""
+    """No coherent Ring A header: fan-in STATUS decides status and reason.
+
+    ``stall_active`` stands in for a header this check cannot judge;
+    cumulative drop counters must not latch a stall red once the episode
+    recovers; and with no STATUS to fall back on either, the check's
+    existing header-only behavior stands (see test_ring_stall_alarm.py's
+    unarmed-box pin).
+    """
     import jasper.ring_assets as ring_assets
 
     _absent_other_rings(monkeypatch, tmp_path)
     monkeypatch.setattr(
         ring_assets, "RING_A_PROGRAM_FILE", str(tmp_path / "absent-ring-a")
     )
-    _patch_status_reader(
-        monkeypatch, _fanin_payload_with_ring(_RING_A_STATUS_STALLED)
-    )
+    if ring_status is None:
+        def refused(path, *, timeout):
+            raise OSError("connection refused")
+
+        monkeypatch.setattr(_evidence, "read_status_socket", refused)
+    else:
+        _patch_status_reader(monkeypatch, _fanin_payload_with_ring(ring_status))
 
     r = audio_runtime_ring.check_ring_reader_stall()
 
-    assert r.status == "warn"
-    assert r.reason == audio_runtime_ring.REASON_RING_READER_STALLED
-
-
-def test_ring_reader_stall_reports_ring_a_drops_without_an_active_stall(
-    monkeypatch, tmp_path,
-):
-    """Cumulative Ring A drop counters must not latch a stall red once the
-    episode recovers — the rule the retired fan-in ring-stall check pinned."""
-    import jasper.ring_assets as ring_assets
-
-    _absent_other_rings(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        ring_assets, "RING_A_PROGRAM_FILE", str(tmp_path / "absent-ring-a")
-    )
-    _patch_status_reader(monkeypatch, _fanin_payload_with_ring(_RING_A_RECOVERED))
-
-    r = audio_runtime_ring.check_ring_reader_stall()
-
-    assert r.status == "ok"
-    assert r.reason == audio_runtime_ring.REASON_RING_READER_STALL_DROPS
-
-
-def test_ring_reader_stall_status_absent_keeps_the_header_only_verdict(
-    monkeypatch, tmp_path,
-):
-    """No fan-in STATUS to fall back on: the check's existing header-only
-    behavior stands (see test_ring_stall_alarm.py's unarmed-box pin)."""
-    import jasper.ring_assets as ring_assets
-
-    _absent_other_rings(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        ring_assets, "RING_A_PROGRAM_FILE", str(tmp_path / "absent-ring-a")
-    )
-
-    def refused(path, *, timeout):
-        raise OSError("connection refused")
-
-    monkeypatch.setattr(_evidence, "read_status_socket", refused)
-
-    r = audio_runtime_ring.check_ring_reader_stall()
-
-    assert r.status == "skipped"
-    assert r.reason == audio_runtime_ring.REASON_RING_READER_NO_LIVE_RING
+    assert r.status == expected_status
+    assert r.reason == expected_reason
 
 
 # ===========================================================================
