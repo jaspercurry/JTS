@@ -110,6 +110,7 @@ REASON_LOW_LATENCY_ATTR_UNEXPOSED = "low_latency_attr_unexposed"
 REASON_MIC_EXPORT_NOT_APPLICABLE = "mic_export_not_applicable"
 REASON_MIC_EXPORT_UNEXPECTED_ADVERTISE = "mic_export_unexpected_advertise"
 REASON_MIC_EXPORT_DISABLED = "mic_export_disabled"
+REASON_MIC_EXPORT_NOT_CONFIGURED = "mic_export_not_configured"
 REASON_MIC_EXPORT_AUDIO_NOT_WANTED = "mic_export_audio_not_wanted"
 REASON_MIC_EXPORT_NOT_ADVERTISED = "mic_export_not_advertised"
 REASON_MIC_EXPORT_DESCRIPTOR_STALE = "mic_export_descriptor_stale"
@@ -651,7 +652,7 @@ def check_usb_mic_export() -> CheckResult:
         ).strip()
     except OSError:
         bcd_device = ""
-    if not intent.valid:
+    if not intent.valid and not intent.absent:
         return CheckResult(
             "USB microphone export", "fail", intent.detail,
             reason=REASON_SOURCE_INTENT_INVALID,
@@ -673,6 +674,13 @@ def check_usb_mic_export() -> CheckResult:
                 f"{bcd_device or 'missing'}, expected {USB_NO_MIC_BCD_DEVICE}; "
                 f"restart {USBGADGET_UNIT}",
                 reason=REASON_MIC_EXPORT_UNEXPECTED_ADVERTISE,
+            )
+        if intent.absent:
+            return CheckResult(
+                "USB microphone export",
+                "ok",
+                "preference was never set; defaults to disabled (privacy-safe)",
+                reason=REASON_MIC_EXPORT_NOT_CONFIGURED,
             )
         return CheckResult(
             "USB microphone export", "ok", "disabled; host microphone absent",

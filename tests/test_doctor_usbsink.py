@@ -1073,11 +1073,13 @@ def _usb_mic_gadget(tmp_path: Path, *, p_chmask: str, bcd_device: str) -> Path:
     return gadget
 
 
-def _mic_intent(monkeypatch, *, valid=True, enabled=True, detail=""):
+def _mic_intent(monkeypatch, *, valid=True, enabled=True, detail="", absent=False):
     monkeypatch.setattr(
         usbsink,
         "read_usb_mic_intent",
-        lambda: SimpleNamespace(valid=valid, enabled=enabled, detail=detail),
+        lambda: SimpleNamespace(
+            valid=valid, enabled=enabled, detail=detail, absent=absent,
+        ),
     )
 
 
@@ -1107,14 +1109,35 @@ def test_usb_mic_export_skips_intent_when_the_gadget_is_unavailable(monkeypatch)
     assert result.reason == usbsink.REASON_MIC_EXPORT_NOT_APPLICABLE
 
 
-def test_usb_mic_export_rejects_a_missing_intent_when_the_gadget_is_available(
+def test_usb_mic_export_defaults_to_disabled_when_the_intent_was_never_set(
+    monkeypatch, tmp_path,
+):
+    """A never-written intent file is the factory default (disabled), not a
+    fault — only a present-but-corrupt file should fail."""
+    gadget = _usb_mic_gadget(tmp_path, p_chmask="0", bcd_device="0x0200")
+    monkeypatch.setattr(usbsink, "USBSINK_GADGET_PATH", gadget)
+    _mic_intent(
+        monkeypatch,
+        valid=False,
+        enabled=False,
+        detail="USB microphone preference is missing.",
+        absent=True,
+    )
+
+    result = usbsink.check_usb_mic_export()
+
+    assert result.status == "ok"
+    assert result.reason == usbsink.REASON_MIC_EXPORT_NOT_CONFIGURED
+
+
+def test_usb_mic_export_rejects_a_corrupt_intent_when_the_gadget_is_available(
     monkeypatch,
 ):
     _mic_intent(
         monkeypatch,
         valid=False,
         enabled=False,
-        detail="USB microphone preference is missing.",
+        detail="Unrecognised JASPER_USB_MIC value 'maybe'.",
     )
 
     result = usbsink.check_usb_mic_export()
