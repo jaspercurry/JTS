@@ -109,7 +109,6 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
         path,
         json.dumps(dict(payload), indent=2, sort_keys=True) + "\n",
         mode=0o664,
-        group_from_parent=True,
         durable=True,
     )
 
@@ -180,7 +179,6 @@ def request_install(
     with advisory_file_lock(
         state_lock_path,
         mode=0o660,
-        group_from_parent=True,
         timeout_sec=2.0,
     ):
         existing = read_intent(path=intent_path)
@@ -229,7 +227,6 @@ def write_job_state(
     with advisory_file_lock(
         state_lock_path,
         mode=0o660,
-        group_from_parent=True,
         timeout_sec=5.0,
     ):
         _write_json(path, payload)

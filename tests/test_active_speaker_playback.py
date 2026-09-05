@@ -46,21 +46,6 @@ def test_safe_playback_state_writer_publishes_private_mode(tmp_path: Path) -> No
     assert json.loads(path.read_text()) == {"status": "idle"}
 
 
-def test_safe_playback_state_writer_inherits_parent_group(monkeypatch) -> None:
-    import jasper.active_speaker.safe_playback as safe_playback
-
-    calls = []
-    monkeypatch.setattr(
-        safe_playback,
-        "atomic_write_json",
-        lambda path, payload, **kwargs: calls.append((path, payload, kwargs)),
-    )
-
-    safe_playback._write_state(Path("state.json"), {"status": "idle"})
-
-    assert calls[0][2] == {"mode": 0o640, "group_from_parent": True}
-
-
 def _preset() -> ActiveSpeakerPreset:
     return ActiveSpeakerPreset.from_mapping({
         "artifact_schema_version": 1,

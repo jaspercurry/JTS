@@ -167,7 +167,6 @@ def _record_commission_state(
         path,
         payload,
         mode=0o640,
-        group_from_parent=True,
     )
 
 

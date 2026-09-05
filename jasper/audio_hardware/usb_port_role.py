@@ -406,7 +406,6 @@ def write_i2s_hat_intent(
         Path(path),
         f"{I2S_HAT_INTENT_KEY}={profile_id or ''}\n",
         mode=0o660,
-        group_from_parent=True,
     )
 
 

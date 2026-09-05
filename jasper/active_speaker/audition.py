@@ -467,7 +467,6 @@ async def start_audition(
             atomic_write_json(
                 audition_state_path(state_path),
                 state,
-                group_from_parent=True,
                 best_effort_group=True,
             )
             armed = True

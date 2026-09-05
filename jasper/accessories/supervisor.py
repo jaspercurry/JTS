@@ -46,7 +46,7 @@ def _publish(health: Mapping[str, Any], status_path: str | os.PathLike) -> None:
     try:
         # 0640 + the parent's group: jasper-control (Group=jasper) reads it.
         atomic_write_json(
-            status_path, {"bridges": health}, mode=0o640, group_from_parent=True,
+            status_path, {"bridges": health}, mode=0o640,
         )
     except OSError as exc:
         # Fail-soft — an unwritable /run costs observability, never a bridge.

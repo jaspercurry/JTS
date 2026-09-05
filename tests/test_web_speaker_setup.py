@@ -204,7 +204,7 @@ def test_bluez_main_conf_uses_canonical_atomic_writer(tmp_path, monkeypatch):
         (
             conf,
             "[General]\nName = Kitchen\n",
-            {"mode": 0o644, "group_from_parent": True},
+            {"mode": 0o644},
         ),
     ]
 

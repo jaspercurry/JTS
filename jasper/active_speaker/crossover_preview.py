@@ -862,7 +862,6 @@ def save_crossover_preview(
         target,
         json.dumps(preview, indent=2, sort_keys=True) + "\n",
         mode=0o640,
-        group_from_parent=True,
         durable=durable,
     )
     return preview

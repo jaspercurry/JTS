@@ -180,10 +180,9 @@ def test_the_store_publishes_under_its_parent_group_so_the_wizard_can_read_it(
     The crossover-accept seam runs in the ROOT ``jasper-correction-web``
     process; ``/sound/`` reads this store as ``jasper-web`` (group ``jasper``).
     ``/var/lib/jasper`` is group ``jasper`` but NOT setgid, so a root write
-    without ``group_from_parent`` published ``root:root 0640`` and the design
-    page rendered empty against a store it could not open -- the API reporting
-    it "unreadable" at revision 0. Both halves are asserted: the mode, and that
-    the published file carries the DIRECTORY's group rather than the writer's.
+    that kept its own group published ``root:root 0640`` and the design page
+    rendered empty against a store it could not open -- the API reporting it
+    "unreadable" at revision 0.
     """
 
     import stat
@@ -204,11 +203,7 @@ def test_the_store_publishes_under_its_parent_group_so_the_wizard_can_read_it(
         # And the durable accept-seam write keeps the same contract.
         save_design_draft(_topology(), path=path, durable=True)
 
-    # The kwarg, not just the resulting stat: on a dev box the tempfile already
-    # inherits the test user's gid, so the filesystem check below cannot fail
-    # when the argument is dropped. This one can.
-    assert calls and all(call.get("group_from_parent") is True for call in calls)
-    assert all(call.get("mode") == 0o640 for call in calls)
+    assert calls and all(call.get("mode") == 0o640 for call in calls)
 
     published = path.stat()
     assert stat.S_IMODE(published.st_mode) == 0o640

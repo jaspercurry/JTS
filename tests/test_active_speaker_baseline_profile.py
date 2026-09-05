@@ -457,18 +457,9 @@ def test_baseline_profile_state_keeps_shared_parent_group(
     calls: list[dict[str, object]] = []
     real_write = baseline_profile_mod.atomic_write_text
 
-    def recording_write(path, text, *, mode, group_from_parent=False):
-        calls.append({
-            "path": Path(path),
-            "mode": mode,
-            "group_from_parent": group_from_parent,
-        })
-        real_write(
-            path,
-            text,
-            mode=mode,
-            group_from_parent=group_from_parent,
-        )
+    def recording_write(path, text, *, mode):
+        calls.append({"path": Path(path), "mode": mode})
+        real_write(path, text, mode=mode)
 
     monkeypatch.setattr(baseline_profile_mod, "atomic_write_text", recording_write)
     state_path = tmp_path / "baseline_profile.json"
@@ -486,7 +477,6 @@ def test_baseline_profile_state_keeps_shared_parent_group(
     state_writes = [call for call in calls if call["path"] == state_path]
     assert state_writes
     assert all(call["mode"] == 0o640 for call in state_writes)
-    assert all(call["group_from_parent"] is True for call in state_writes)
 
 
 def test_baseline_profile_compiles_with_local_subwoofer(tmp_path: Path) -> None:

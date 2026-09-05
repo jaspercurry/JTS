@@ -52,7 +52,7 @@ def _write_token(token: str) -> None:
     # otherwise create root:root 0640, which the non-root jasper-control
     # cannot read, silently failing the mandatory gate open.
     atomic_write_text(
-        path, token + "\n", mode=0o640, group_from_parent=True,
+        path, token + "\n", mode=0o640,
     )
 
 

@@ -1546,7 +1546,6 @@ def save_design_draft(
             # value, not at the evidence packet hours later (#2839).
             json.dumps(draft, allow_nan=False, indent=2, sort_keys=True) + "\n",
             mode=0o640,
-            group_from_parent=True,
             durable=durable,
         )
     return draft

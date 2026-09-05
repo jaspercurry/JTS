@@ -495,12 +495,8 @@ def test_save_crossover_preview_publishes_under_its_parent_group(
     ``jasper-correction-web`` process, three lines after it writes the design
     draft; ``/sound/`` reads both as ``jasper-web`` (group ``jasper``).
     ``/var/lib/jasper`` is group ``jasper`` but NOT setgid, so a root write
-    without ``group_from_parent`` publishes ``root:root 0640`` and the preview
-    silently disappears from the page that just asked for it.
-
-    The KWARG is asserted, not just the resulting stat: on a dev box the
-    tempfile already inherits the test user's gid, so a filesystem-only check
-    cannot fail when the argument is dropped.
+    that kept its own group published ``root:root 0640`` and the preview
+    silently disappeared from the page that just asked for it.
     """
 
     from jasper.active_speaker import crossover_preview as preview_mod
@@ -521,8 +517,7 @@ def test_save_crossover_preview_publishes_under_its_parent_group(
         _draft(), path=path, created_at="2026-06-10T12:31:00Z", durable=True,
     )
 
-    assert calls and all(call.get("group_from_parent") is True for call in calls)
-    assert all(call.get("mode") == 0o640 for call in calls)
+    assert calls and all(call.get("mode") == 0o640 for call in calls)
 
     published = path.stat()
     assert published.st_mode & 0o777 == 0o640

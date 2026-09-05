@@ -105,7 +105,7 @@ heal_shared_state_modes() {
         "f:0640:${STATE_DIR}/output_topology.json"
         # The crossover-accept seam writes these two from the ROOT
         # jasper-correction-web process while /sound/ reads them as jasper-web.
-        # Their writers now pass group_from_parent=True, but that only fixes
+        # Their writers now publish the parent's group, but that only fixes
         # FUTURE writes -- a box that accepted a measured crossover before this
         # shipped still carries root:root 0640 and renders an empty design page
         # until something happens to rewrite them. Heal the ones already on disk.
@@ -650,9 +650,15 @@ widen_control_secret_env_modes() {
     #     privsep MANIFEST) and weather.env (coords + units, no secret; the
     #     /weather/ wizard reads it off disk as jasper-web). Both readers are
     #     non-root and in group `jasper`.
-    #     REMOVAL CONDITION for transit.env weather.env: written root:root
-    #     before the env-file writers defaulted to the parent's group; drop
-    #     these two once every box has installed past that change.
+    # REMOVAL CONDITION for the CHGRP half of the loop below: every file it
+    # lists is written through jasper.atomic_io, which now publishes the parent
+    # directory's group by default, so the chgrp only still heals files an
+    # OLDER build left root:root -- transit.env, weather.env,
+    # voice_provider.env, household_secret and sound_profile.json omitted that
+    # kwarg; control_token and sound_settings.json always passed it. Drop the
+    # chgrp once every box has installed past this change. The chmod half heals
+    # a separate, older class (files an early build created 0600) and outlives
+    # it.
     # NOTE: the WiFi guardian PSK stash is DELIBERATELY NOT widened here — it
     # holds the WiFi password, which jasper-control does not need the value of
     # (only the SSID, which it derives from nmcli/the journal), so it stays

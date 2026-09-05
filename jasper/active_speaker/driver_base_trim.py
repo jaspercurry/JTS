@@ -339,7 +339,7 @@ def write_base_trim(
     # two halves of one apply: a power cut that keeps one but not the other
     # leaves the box levelling by numbers its graph is not playing.
     atomic_write_json(
-        path, payload, mode=0o640, group_from_parent=True, durable=True
+        path, payload, mode=0o640, durable=True
     )
     return payload
 

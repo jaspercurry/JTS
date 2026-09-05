@@ -167,7 +167,6 @@ def _record_state(
         path,
         payload,
         mode=0o640,
-        group_from_parent=True,
     )
 
 
@@ -1335,7 +1334,12 @@ def reemit_staged_startup_anchor(
                     device, source, "out_parent_missing",
                     detail=str(preview_path.parent),
                 )
-            atomic_write_text(preview_path, yaml, mode=0o640)
+            # Operator-named path: no group peer reads it, and a chgrp
+            # into a directory the operator is not a group member of
+            # (/tmp) would raise on Linux.
+            atomic_write_text(
+                preview_path, yaml, mode=0o640, group_from_parent=False
+            )
             return ReemitAnchorReport(
                 device, source, classification=graph.classification,
                 written_path=preview_path, preview=True, byte_count=len(yaml),
@@ -1371,7 +1375,6 @@ def reemit_staged_startup_anchor(
                     target,
                     yaml,
                     mode=target_mode,
-                    group_from_parent=True,
                     durable=True,
                 )
                 # Every field that names a LOCATION is rewritten — the three
@@ -1404,7 +1407,6 @@ def reemit_staged_startup_anchor(
                     meta_target,
                     published,
                     mode=0o640,
-                    group_from_parent=True,
                     durable=True,
                 )
         except StagedAnchorLockContended as exc:

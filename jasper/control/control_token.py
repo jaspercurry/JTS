@@ -130,7 +130,7 @@ def ensure_token() -> str:
     # world-readable while staying group-`jasper` readable (see docstring).
     # The parent directory's group is used because install.sh may mint this as
     # root before the daemon starts.
-    atomic_write_text(TOKEN_FILE, token + "\n", mode=0o640, group_from_parent=True)
+    atomic_write_text(TOKEN_FILE, token + "\n", mode=0o640)
     return token
 
 

@@ -22,11 +22,13 @@ Two properties are load-bearing and easy to get subtly wrong by hand:
     BEFORE the rename, so the file is never visible at the final path with a
     broader mode than requested (``mkstemp`` creates 0600, then we widen to
     ``mode`` only after, and the published name appears already-correct).
-  - **Optional parent-group publishing.** Some shared state files are written by
-    root during install and by non-root daemons at runtime. When requested, the
-    tempfile is chowned to the parent directory's group before chmod+rename, so a
-    root-run atomic replace does not publish ``root:root 0640`` into a
-    group-readable state directory.
+  - **Parent-group publishing, by default.** Some shared state files are written
+    by root during install and by non-root daemons at runtime. The tempfile is
+    chowned to the parent directory's group before chmod+rename, so a root-run
+    atomic replace does not publish ``root:root 0640`` into a group-readable
+    state directory. ``group_from_parent=False`` opts out a file that must
+    keep the WRITER's group instead: a root-only file, or one published to a
+    path an operator named rather than a shared state directory.
   - **Optional target-stat preservation.** A repair or migration that rewrites a
     file it does not own must not re-own it. ``preserve_target_stat=True`` copies
     the EXISTING file's uid/gid/mode onto the tempfile before the rename — the
@@ -116,14 +118,17 @@ def advisory_file_lock(
     path: str | os.PathLike,
     *,
     mode: int | None = None,
-    group_from_parent: bool = False,
+    group_from_parent: bool = True,
     timeout_sec: float | None = None,
 ):
     """Hold an exclusive advisory lock on ``path``.
 
-    The default preserves the historical ``open(..., 'a+')`` ownership and
-    umask behavior. Shared cross-user locks can opt into an explicit ``mode``
-    and the parent directory's group; both are applied before the lock is made
+    ``group_from_parent`` defaults to TRUE: the lock is published under the
+    parent directory's group, so a root-run holder cannot lock a non-root peer
+    out of a shared state directory. Pass ``False`` for a root-only lock that
+    must keep root's group; that also restores the historical
+    ``open(..., 'a+')`` ownership and umask behavior when no ``mode`` is given.
+    An explicit ``mode`` and the group are both applied before the lock is made
     available to another process. Existing pre-upgrade ownership drift still
     requires an install-time heal because a non-owner cannot repair a lock it
     cannot open. ``timeout_sec`` adds bounded backpressure for request/deploy
@@ -188,7 +193,7 @@ def atomic_write_text(
     text: str,
     *,
     mode: int = 0o644,
-    group_from_parent: bool = False,
+    group_from_parent: bool = True,
     best_effort_group: bool = False,
     preserve_target_stat: bool = False,
     durable: bool = False,
@@ -200,9 +205,12 @@ def atomic_write_text(
     complete new one — never a partial write. The parent directory is created
     if missing. ``mode`` is applied to the tempfile BEFORE the rename, so the
     published file never appears with a wider permission window than requested.
-    When ``group_from_parent`` is true, the tempfile's group is set to the
-    parent directory's group before chmod+rename; this keeps root-run writers
-    from publishing group-readable files under the wrong group.
+    ``group_from_parent`` defaults to TRUE: the tempfile's group is set to the
+    parent directory's group before chmod+rename, so a root-run writer cannot
+    publish ``root:root`` into a state directory a non-root reader shares. Pass
+    ``False`` for a file that must keep the writer's own group: a root-only
+    file, or one written to an operator-named path (only root, or a member of
+    the target group, may chgrp on Linux).
     ``best_effort_group=True`` keeps publication available when that group
     lookup or assignment fails: the failure is logged and the write continues
     with the tempfile's existing group. The default remains strict so callers
@@ -327,7 +335,7 @@ def atomic_write_json(
     payload: Any,
     *,
     mode: int = 0o644,
-    group_from_parent: bool = False,
+    group_from_parent: bool = True,
     best_effort_group: bool = False,
     preserve_target_stat: bool = False,
     durable: bool = False,
@@ -478,12 +486,6 @@ def locked_update_env_file(
     then publish whole-file replacements. This helper holds an advisory flock
     across the read, update, and atomic replace so cooperating writers preserve
     each other's keys.
-
-    ``group_from_parent`` defaults to TRUE here: every file these two helpers
-    write lives in a state directory shared with a non-root reader, so a
-    root-run writer that kept its own group would publish root:root and lock
-    that reader out. Pass ``False`` only for a root-only file that must keep
-    root's group.
     """
     fspath = os.fspath(path)
     parent = os.path.dirname(fspath) or "."
@@ -528,8 +530,7 @@ def locked_transform_env_file(
     check-then-act race). Holds the SAME advisory flock as
     ``locked_update_env_file`` on the same path, so both helpers mutually
     exclude writers of one file. Returns the written dict, or ``None`` when the
-    file was deleted or left absent. ``group_from_parent`` carries the same
-    default-TRUE contract as ``locked_update_env_file``.
+    file was deleted or left absent.
     """
     fspath = os.fspath(path)
     parent = os.path.dirname(fspath) or "."

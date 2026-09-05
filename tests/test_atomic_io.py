@@ -149,30 +149,14 @@ def test_fsync_directory_tolerance_contract(
     )
 
 
-def test_group_from_parent_chowns_temp_before_publish(tmp_path, monkeypatch):
-    path = tmp_path / "secret.env"
-    calls: list[tuple[str, int, int]] = []
-
-    def fake_chown(target: str, uid: int, gid: int) -> None:
-        calls.append((target, uid, gid))
-
-    monkeypatch.setattr(os, "chown", fake_chown)
-    atomic_write_text(path, "JASPER_X=1\n", mode=0o640, group_from_parent=True)
-
-    assert path.read_text(encoding="utf-8") == "JASPER_X=1\n"
-    assert calls, "group_from_parent must set the temp file group"
-    target, uid, gid = calls[-1]
-    assert os.path.dirname(target) == str(tmp_path)
-    assert os.path.basename(target).startswith(".secret.env.")
-    assert uid == -1
-    assert gid == os.stat(tmp_path).st_gid
-
-
-@pytest.mark.parametrize("writer", ["update", "transform"])
-def test_env_writers_publish_parent_group_by_default(tmp_path, monkeypatch, writer):
-    """The two env-file writers default to ``group_from_parent=True``, so a
-    root-run wizard cannot publish root:root into a state directory a non-root
-    daemon reads. Omitting the kwarg must behave exactly like passing True."""
+@pytest.mark.parametrize("writer", ["text", "json", "update", "transform"])
+def test_writers_publish_parent_group_by_default(tmp_path, monkeypatch, writer):
+    """Every publishing writer defaults to ``group_from_parent=True``, so a
+    root-run wizard or installer cannot publish root:root into a state
+    directory a non-root daemon reads. Omitting the kwarg must behave exactly
+    like passing True. Asserting the CALL, not the resulting stat: on a dev box
+    the tempfile already inherits the test user's gid, so a filesystem check
+    cannot fail when the group step is skipped."""
     from jasper.atomic_io import locked_transform_env_file, locked_update_env_file
 
     path = tmp_path / "wizard.env"
@@ -181,16 +165,46 @@ def test_env_writers_publish_parent_group_by_default(tmp_path, monkeypatch, writ
         os, "chown", lambda target, uid, gid: calls.append((target, uid, gid))
     )
 
-    if writer == "update":
-        locked_update_env_file(path, {"JASPER_X": "1"})
-    else:
-        locked_transform_env_file(path, lambda cur: {**cur, "JASPER_X": "1"})
+    {
+        "text": lambda: atomic_write_text(path, "JASPER_X=1\n"),
+        "json": lambda: atomic_write_json(path, {"JASPER_X": "1"}),
+        "update": lambda: locked_update_env_file(path, {"JASPER_X": "1"}),
+        "transform": lambda: locked_transform_env_file(
+            path, lambda cur: {**cur, "JASPER_X": "1"}
+        ),
+    }[writer]()
 
-    assert path.read_text(encoding="utf-8") == "JASPER_X=1\n"
-    assert calls, "the env writers must set the temp file group by default"
+    assert calls, "the writers must set the temp file group by default"
     target, uid, gid = calls[-1]
+    assert os.path.dirname(target) == str(tmp_path)
     assert os.path.basename(target).startswith(".wizard.env.")
     assert (uid, gid) == (-1, os.stat(tmp_path).st_gid)
+
+
+def test_advisory_lock_publishes_parent_group_by_default(tmp_path, monkeypatch):
+    """The lock the env writers serialize on carries the same default: without
+    the kwarg it takes the descriptor path and chgrps, so a root-held lock does
+    not lock a group peer out of a shared state directory. The parent group is
+    forced to differ because the real one already matches on a dev box."""
+    foreign_gid = os.stat(tmp_path).st_gid + 1
+    real_stat = os.stat
+
+    def parent_in_a_foreign_group(target, *args, **kwargs):
+        st = real_stat(target, *args, **kwargs)
+        if os.fspath(target) == str(tmp_path):
+            return os.stat_result(tuple(st)[:5] + (foreign_gid,) + tuple(st)[6:])
+        return st
+
+    fchowns: list[tuple[int, int]] = []
+    monkeypatch.setattr(atomic_io_module.os, "stat", parent_in_a_foreign_group)
+    monkeypatch.setattr(
+        atomic_io_module.os, "fchown", lambda fd, uid, gid: fchowns.append((uid, gid))
+    )
+
+    with advisory_file_lock(tmp_path / "wizard.env.lock"):
+        pass
+
+    assert fchowns == [(-1, foreign_gid)]
 
 
 def test_group_from_parent_chown_failure_cleans_up_temp(tmp_path, monkeypatch):
