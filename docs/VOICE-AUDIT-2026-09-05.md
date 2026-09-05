@@ -240,12 +240,12 @@ acquire-error path plays `internal_error` when the connection is not paused
 (`voice_daemon.py:4645,4695`); one behavior pin each. (b) A lost turn or a
 model that returns no audio plays a cue and increments
 `silent_responses_session` (`voice_daemon.py:5308`). (c) Boot order: open
-mics, TTS and the cue manager first, start the provider connection in the
-background and let the supervisor cue the outage; Gemini's initial connect
-retries transient failures on the same wall-clock budget OpenAI uses
-(`gemini_session.py:1051`, `openai_session.py:1353`); `READY=1` goes out
-before the connect or the unit gets a `TimeoutStartSec` above the budget —
-one or the other, and the stale claim is deleted. Gate: a spare Pi booted
+mics, TTS and the cue manager and send `READY=1` first, run the provider
+connect in the background, and let the supervisor cue the outage; the first
+connect is one attempt that hands any failure to the reconnect supervisor
+(which already owns backoff, nudging and edge-triggered cues), so no connect
+budget, no exit at exhaustion, and no `TimeoutStartSec`; the unit's stale
+budget comment is rewritten. Gate: a spare Pi booted
 with the WAN unplugged plays the network-down cue and never reaches
 `StartLimitAction`.
 
