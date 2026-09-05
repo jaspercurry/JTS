@@ -67,18 +67,24 @@ def read_json_source(path: str) -> Any:
 def refused(reason: str, detail: Any, *, exit_code: int, status: str = "refused") -> int:
     """Print the outcome on both streams and hand back ``exit_code``.
 
-    ``detail`` is one sentence, or the failing stage's own receipt fields as
-    an object -- everything the outcome carried beyond its code and reason.
+    ``detail`` is a sentence or the fields the failure carried -- everything the
+    tool would otherwise have published as top-level keys goes here, so one
+    reader parses every refusal.
     """
 
+    sentence = (
+        detail if isinstance(detail, str)
+        else json.dumps(detail, sort_keys=True, default=str)
+    )
     print(
         json.dumps(
             {"status": status, "reason": reason, "detail": detail},
             indent=2,
             sort_keys=True,
+            default=str,
         )
     )
-    print(f"{status} ({reason}): {detail}", file=sys.stderr)
+    print(f"{status} ({reason}): {sentence}", file=sys.stderr)
     return exit_code
 
 
