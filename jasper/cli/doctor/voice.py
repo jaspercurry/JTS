@@ -177,29 +177,21 @@ _IMPORT_PROBE = (
 # broken adapter. The probe needs nothing from cwd.
 _PROBE_INTERPRETER_FLAGS = ("-P",)
 
-# The probe must finish INSIDE the doctor's per-row guard
-# (DOCTOR_CHECK_TIMEOUT_SECONDS, 15 s). Two things break otherwise: the row
-# guard reports "check timed out" first, making this check's own
-# could-not-verify warn unreachable; and the cancelled row releases the
-# memory-sample lock while subprocess.run's child is still resident,
-# reopening the perturbation that lock exists to prevent. Derived from the
-# row guard rather than restated as a second constant, so the two cannot
-# drift.
+# The probe must finish inside the row guard this run is using: a row
+# cancelled first releases the memory-sample lock with subprocess.run's child
+# still resident (see check_provider_importable's exclusive_group below) and
+# makes this check's own could-not-verify warn unreachable.
 _IMPORT_PROBE_MARGIN_SEC = 5.0
 _IMPORT_PROBE_MIN_TIMEOUT_SEC = 1.0
 
 
-def _import_probe_timeout(row_timeout: float | None = None) -> float:
+def _import_probe_timeout() -> float:
     """Subprocess timeout for the import probe: strictly below the doctor's
     per-row guard, so the child is always killed by its own timeout first."""
-    if row_timeout is None:
-        # Lazy: the doctor package's __init__ imports this module, so a
-        # module-level import would be circular.
-        from . import DOCTOR_CHECK_TIMEOUT_SECONDS
-        row_timeout = DOCTOR_CHECK_TIMEOUT_SECONDS
+    row = evidence.check_timeout()
     return max(
-        min(_IMPORT_PROBE_MIN_TIMEOUT_SEC, row_timeout / 2),
-        row_timeout - _IMPORT_PROBE_MARGIN_SEC,
+        min(_IMPORT_PROBE_MIN_TIMEOUT_SEC, row / 2),
+        row - _IMPORT_PROBE_MARGIN_SEC,
     )
 
 

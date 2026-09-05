@@ -35,6 +35,7 @@ import pytest
 
 import jasper.cli.doctor as doctor_pkg
 from jasper.cli.doctor import voice as doctor_voice
+from jasper.cli.doctor._evidence import evidence as doctor_evidence
 from jasper.cli.doctor._registry import registered_checks
 from jasper.voice.catalog import PROVIDERS, ProviderCatalogEntry
 from jasper.voice.provider_state import ActiveProviderState
@@ -350,7 +351,8 @@ def test_probe_timeout_stays_under_the_row_guard(row_timeout):
     child is still resident.
     """
     row = float(row_timeout)
-    probe = doctor_voice._import_probe_timeout(row_timeout=row)
+    doctor_evidence.set_check_timeout(row)
+    probe = doctor_voice._import_probe_timeout()
     assert probe > 0, f"probe timeout must be positive, got {probe}"
     assert probe < row, (
         f"probe timeout {probe} is not below the row guard {row} — the row "
@@ -366,15 +368,17 @@ def test_probe_timeout_at_the_shipped_default_matches_the_doctor_ceiling():
 
 
 def test_check_passes_the_derived_timeout_to_the_probe(monkeypatch, probe):
-    """The derived value is what actually reaches subprocess.run — not a
-    constant the check computes and then ignores."""
+    """The value derived from *this run's* row guard is what reaches
+    subprocess.run — not the shipped constant the check would otherwise
+    recompute and ignore."""
     monkeypatch.setattr(
         doctor_voice,
         "read_active_provider_state",
         lambda: _state("configured", "gemini"),
     )
+    doctor_evidence.set_check_timeout(20.0)
     doctor_voice.check_provider_importable()
-    assert probe["timeouts"] == [10.0]
+    assert probe["timeouts"] == [15.0]
 
 
 # ---------------------------------------------------------------------------

@@ -7,7 +7,8 @@
 Each evidence source is read once per run; checks are functions over the
 cache. A reader here owns only the read and its fail-soft shape; the verdict
 stays in the check. ``run_async`` resets the cache at the start of every
-run, and a test fixture resets it between tests.
+run and records that run's row guard in it, so a check can read the guard it
+is running under; a test fixture resets it between tests.
 
 Test seams: patch this module's reader functions (``_run``,
 ``read_status_socket``, ``read_unit_states``) or ``evidence.seed(key, value)``
@@ -38,6 +39,12 @@ T = TypeVar("T")
 STATUS_TIMEOUT_SECONDS = 2.0
 STATUS_RETRY_DELAY_SECONDS = 0.1
 UNIT_SHOW_TIMEOUT_SECONDS = 10.0
+
+# Homed here rather than in the package that imports the checks, so a check
+# can read this run's row guard off the memo below without a circular import.
+DOCTOR_MAX_CONCURRENCY = 8
+DOCTOR_CHECK_TIMEOUT_SECONDS = 15.0
+
 _LOOPBACK_STATUS_GLOB = "/proc/asound/Loopback/pcm0p/sub*/status"
 
 
@@ -145,6 +152,17 @@ class Evidence:
             with self._guard:
                 self._memo[key] = value
             return value
+
+    # -- this run's settings ---------------------------------------------
+
+    def set_check_timeout(self, seconds: float) -> None:
+        """Record the per-row guard ``run_async`` is running this run under."""
+        self.seed("check_timeout", seconds)
+
+    def check_timeout(self) -> float:
+        """This run's per-row guard; the shipped default for a check called
+        directly, outside ``run_async``."""
+        return self.get("check_timeout", lambda: DOCTOR_CHECK_TIMEOUT_SECONDS)
 
     # -- daemon STATUS sockets ------------------------------------------
 
@@ -295,4 +313,10 @@ class Evidence:
 
 evidence = Evidence()
 
-__all__ = ["Evidence", "StatusRead", "evidence"]
+__all__ = [
+    "DOCTOR_CHECK_TIMEOUT_SECONDS",
+    "DOCTOR_MAX_CONCURRENCY",
+    "Evidence",
+    "StatusRead",
+    "evidence",
+]
