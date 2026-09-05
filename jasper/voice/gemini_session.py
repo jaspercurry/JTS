@@ -17,11 +17,13 @@ from jasper.log_event import log_event
 
 from ..tools import ToolRegistry, dispatch_tool
 from ._supervisor import (
+    DEFAULT_INITIAL_CONNECT_BUDGET_SEC,
     Deferred,
     OutageTracker,
     await_connected,
     http_status,
     request_planned_reopen,
+    run_initial_connect,
     run_supervisor_loop,
     survive_terminal_initial_connect,
 )
@@ -55,14 +57,6 @@ SESSION_ROTATE_AFTER_SEC = 135.0
 # response from subsequent turns as "stale from a prior turn".
 # 30 s is a couple x the worst observed first-chunk latency.
 UNACK_AGE_OUT_SEC = 30.0
-
-# Connect retry schedule for the initial daemon-startup connect.
-# Total wall-time on repeated failure is 15 s, which gives Google's
-# session-release lag a generous window after a systemd restart hits
-# the previous process's still-lingering WebSocket — empirically the
-# prior 7 s budget (0+1+2+4) was occasionally too tight on busy
-# regions.
-INITIAL_CONNECT_BACKOFF_SCHEDULE = (0.0, 1.0, 2.0, 4.0, 8.0)
 
 # GoAway deferral threshold. When the server sends a GoAway mid-turn
 # (it fires near the ~15-min audio cap and can land while the user is
@@ -577,6 +571,7 @@ class GeminiLiveConnection:
         self._client = genai.Client(api_key=api_key) if connect_factory is None else None
         self._connect_factory = connect_factory
         self._sleep = sleep if sleep is not None else asyncio.sleep
+        self._monotonic = _time.monotonic
         self._model = model
         self._voice = voice
         self._context_reset_sec = context_reset_sec
@@ -1042,100 +1037,31 @@ class GeminiLiveConnection:
         async with self._state_lock:
             self._set_state(ConnectionState.CONNECTING)
         try:
-            await self._open_session_with_409_retry()
+            await run_initial_connect(
+                self, DEFAULT_INITIAL_CONNECT_BUDGET_SEC,
+            )
         except Exception as e:  # noqa: BLE001
             async with self._state_lock:
                 self._set_state(ConnectionState.FAILED)
             survive_terminal_initial_connect(e, self._trigger_reconnect)
 
-    async def _open_session_with_409_retry(self) -> None:
-        """Run ``_open_session`` with a 409-aware retry loop.
+    def _on_initial_attempt_failed(self, exc: Exception, attempt: int) -> None:
+        """Drop a cached handle a 409 may be rejecting.
 
-        Used by ``_do_initial_connect`` (daemon startup). The
-        supervisor's reconnect path uses its own loop because it
-        also needs to coordinate with the state machine (PAUSED_FOR
-        _BACKOFF transitions, stop-event checks); the 409 detection
-        and handle-drop logic there is duplicated rather than shared
-        to avoid coupling state-machine code into this helper.
-
-        Behaviour:
-          * Each attempt calls ``_open_session()``; on success returns.
-          * On 409: log the status code accurately (read from
-            ``e.status_code`` first, then ``e.response.status_code``),
-            then — if a resumption handle is currently cached AND
-            we haven't already dropped it within this retry loop —
-            drop the handle so the NEXT attempt connects as a fresh
-            session. A stale / invalidated resumption handle is the
-            single most common cause of 409 here (next is
-            concurrent-session-limit), and dropping the handle is
-            both the recommended Live-API recovery and harmless
-            otherwise (we lose conversational context, not the
-            connection).
-          * On non-409: re-raise immediately (auth errors / malformed
-            config don't fix themselves with a wait).
-          * After exhausting the schedule: raise ``RuntimeError``.
-        """
-        schedule = INITIAL_CONNECT_BACKOFF_SCHEDULE
-        last_exc: Exception | None = None
-        handle_dropped = False
-        for attempt, delay in enumerate(schedule):
-            if delay > 0:
-                logger.warning(
-                    f"{self._log_tag} initial connect retry %d after %.1fs "
-                    "(last: %s: %s)",
-                    attempt, delay,
-                    type(last_exc).__name__ if last_exc else "?",
-                    self._outage.detail if last_exc else "?",
-                )
-                await asyncio.sleep(delay)
-            try:
-                await self._open_session()
-                if handle_dropped:
-                    logger.info(
-                        f"{self._log_tag} initial connect recovered after "
-                        "dropping stale resumption handle on attempt %d",
-                        attempt + 1,
-                    )
-                return
-            except Exception as e:  # noqa: BLE001
-                last_exc = e
-                is_409, status = _is_409_conflict(e)
-                if not is_409:
-                    raise
-                # Visible, structured 409 log so journalctl filtering
-                # for "409 Conflict" surfaces every occurrence, with
-                # enough context (attempt, status, exc type, partial
-                # handle) to attribute the cause.
-                handle_short = (
-                    (self._resumption_handle or "")[:8]
-                    if self._resumption_handle
-                    else "<none>"
-                )
-                logger.warning(
-                    f"{self._log_tag} 409 Conflict on attempt %d/%d "
-                    "(status=%s, exc=%s, handle=%s)",
-                    attempt + 1, len(schedule),
-                    status, type(e).__name__, handle_short,
-                )
-                # First 409 with a cached resumption handle: drop it.
-                # Stale / server-invalidated handles are the single
-                # most common 409 source on reconnect — the bare
-                # concurrent-session-limit case is much rarer, and
-                # dropping the handle doesn't hurt that case (the
-                # next attempt just connects fresh once Google's
-                # release lag passes).
-                if not handle_dropped and self._resumption_handle is not None:
-                    logger.warning(
-                        f"{self._log_tag} dropping cached resumption "
-                        "handle (handle=%s) and will retry as fresh session",
-                        handle_short,
-                    )
-                    self._resumption_handle = None
-                    handle_dropped = True
-        raise RuntimeError(
-            f"{self._log_tag} initial connect failed after "
-            f"{len(schedule)} retries; last error: {last_exc}"
+        A stale or server-invalidated resumption handle is the most
+        common source of a 409 here; the next most common,
+        concurrent-session-limit, is unharmed by connecting fresh.
+        See ADR-0166."""
+        is_409, status = _is_409_conflict(exc)
+        if not is_409 or self._resumption_handle is None:
+            return
+        logger.warning(
+            f"{self._log_tag} 409 Conflict on initial connect attempt %d "
+            "(status=%s, handle=%s); dropping cached resumption handle, "
+            "next attempt connects fresh",
+            attempt, status, self._resumption_handle[:8],
         )
+        self._resumption_handle = None
 
     async def _open_session(self) -> None:
         """Open a session, recording the outcome on the outage tracker.
