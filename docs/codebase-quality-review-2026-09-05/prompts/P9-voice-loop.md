@@ -153,8 +153,10 @@ and #4203 (the silent-turn cue) are open and rebase after them. Your Wave 0/1 ro
 those two merge; do not re-open what they carry.
 
 Hardware gates are the owner's: row 0.2 (ten spoken turns, numbers into the ledger) and row 1.4
-(WAN-unplugged boot). Nothing in Wave 3 or Wave 6 starts before 0.2 has numbers. The
-idle-efficiency review (#4139) is the lane with hands on the boxes: its measured baseline is voice
+(WAN-unplugged boot). Nothing in Wave 3 or Wave 6 starts before 0.2 has numbers. You run on the
+owner's machine (the account that reaches the Pis): the deploys behind 0.2 and 1.4 are yours to
+run with the owner present, through `bash scripts/deploy-to-pi.sh` only. The idle-efficiency
+review (#4139) measured the boxes before it stood down: its baseline is voice
 at ~12 % of a core idle on the Zero 2 W after #4125, and its leave-alone list settles the warm
 Gemini session with its 135 s rotation (0 measurable CPU — do not propose "go lazy"); #4118
 (merged) moved the `chip_aec rms` cadence to 15 s, which is the line P4 says the doctor parses.
@@ -221,7 +223,7 @@ the brief, and a durable handoff as a GitHub issue. No HANDOFF docs; decisions g
   last time).
 - Subscribe to every PR you open; unsubscribe on merge; remove worktrees after merge; delete any
   routines you create when you stand down.
-- On the **local plan** (the owner's laptop, shared with the ops lane): the GitHub API quota is
+- On the **local plan** (the owner's laptop, the Space Hater account): the GitHub API quota is
   one per machine, so builder briefs forbid `gh` — the lane session alone polls CI, one slow
   waiter at a time; `gh run rerun` re-runs the stale merge commit, so rebase and push instead;
   head branches auto-delete on merge (never pass `--delete-branch`); run only the targeted tests
