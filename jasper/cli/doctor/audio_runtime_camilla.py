@@ -34,7 +34,6 @@ from ...camilla_config_contract import (
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult, _service_state_failure
-from .correction import _active_camilla_config_path
 
 REASON_CAMILLA_UNIT_MISSING = "camilla_unit_missing"
 REASON_CAMILLA_UNIT_NOT_ENABLED = "camilla_unit_not_enabled"
@@ -52,7 +51,7 @@ REASON_CAMILLA_PARK_RECORD_UNINTELLIGIBLE = "camilla_park_record_unintelligible"
 REASON_CAMILLA_GRAPH_PARKED = "camilla_graph_parked"
 
 
-@doctor_check()
+@doctor_check(core=True)
 def check_camilla_service() -> CheckResult:
     """The jasper-camilla systemd unit must never stay stopped.
 
@@ -83,6 +82,12 @@ def check_camilla_service() -> CheckResult:
 def _camilla_statefile() -> Path:
     """The statefile behind :meth:`Evidence.camilla_config_path`, from the same
     single read (same memo key)."""
+    # Imported here, not at module scope, so this module — a `--core` member —
+    # does not drag `correction` (and its active-speaker/session-volume graph)
+    # into a post-deploy run that has no correction row. Same reason
+    # `Evidence.camilla_config_path` reaches for it this way.
+    from .correction import _active_camilla_config_path
+
     statefile, _config_path = evidence.get(
         "camilla_config", _active_camilla_config_path
     )
@@ -252,7 +257,7 @@ def check_audio_runtime_plan() -> CheckResult:
     return CheckResult("audio runtime plan", "ok", summary)
 
 
-@doctor_check()
+@doctor_check(core=True)
 def check_camilla_recover_park() -> CheckResult:
     """The core DSP graph is not parked by jasper-camilla-recover.
 

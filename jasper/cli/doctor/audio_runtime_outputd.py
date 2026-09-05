@@ -653,7 +653,7 @@ def _outputd_transport_health(
 
 
 
-@doctor_check()
+@doctor_check(core=True)
 def check_outputd_service() -> CheckResult:
     """Validate the outputd final-output-owner daemon.
 

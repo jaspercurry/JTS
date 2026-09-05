@@ -124,51 +124,177 @@ def test_runtime_state_units_track_the_coupling_reconciler_oneshot():
     assert "jasper-fanin-coupling-auto.service" in _shared._RUNTIME_STATE_UNITS
 
 
+# ------------------------------------------------ check_required_units_active
+
+
+@pytest.mark.parametrize(
+    "overrides, status, reason",
+    [
+        ({}, "ok", ""),
+        # The gap this row closes: `inactive` is neither failed nor unstable,
+        # so check_service_runtime_state saw nothing while the HID accessory
+        # bridge was simply gone.
+        (
+            {"jasper-input.service": {"active_state": "inactive"}},
+            "fail", resilience.REASON_REQUIRED_UNIT_INACTIVE,
+        ),
+        # An install that did not finish reads inactive/not-found, never failed.
+        (
+            {"nginx.service": {
+                "active_state": "inactive", "load_state": "not-found",
+            }},
+            "fail", resilience.REASON_REQUIRED_UNIT_INACTIVE,
+        ),
+        # `failed` and stuck-mid-transition belong to check_service_runtime_state
+        # — one down unit is one finding, not two.
+        (
+            {"jasper-control.service": {"active_state": "failed"}}, "ok", "",
+        ),
+        (
+            {"jasper-control.service": {"active_state": "activating"}}, "ok", "",
+        ),
+    ],
+    ids=["all-active", "inactive", "not-found", "failed", "activating"],
+)
+def test_check_required_units_active_verdicts(
+    monkeypatch, overrides, status, reason,
+):
+    monkeypatch.setattr(_shared, "read_install_profile", lambda: "full")
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", _make_unit_states_fake(overrides),
+    )
+
+    result = resilience.check_required_units_active()
+
+    assert (result.status, result.reason) == (status, reason)
+
+
+def test_check_required_units_active_skips_without_systemctl(monkeypatch):
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", _make_unit_states_fake(unavailable=True),
+    )
+
+    result = resilience.check_required_units_active()
+
+    assert (result.status, result.reason) == (
+        "skipped", _shared.REASON_SYSTEMCTL_UNAVAILABLE,
+    )
+
+
+# ---------------------------------------------- check_accessory_reconcile_path
+
+
+@pytest.mark.parametrize(
+    "unit, status, reason",
+    [
+        # A .path unit reads `active` while it WAITS; that is the armed state.
+        ({"active_state": "active"}, "ok", ""),
+        # Stopped or never enabled: every accessory refresh is dropped, and the
+        # unit never reaches `failed`, so nothing else on the box says so.
+        (
+            {"active_state": "inactive"},
+            "fail", resilience.REASON_ACCESSORY_PATH_INACTIVE,
+        ),
+        (
+            {"active_state": "inactive", "load_state": "not-found"},
+            "skipped", resilience.REASON_ACCESSORY_PATH_UNOBSERVED,
+        ),
+    ],
+    ids=["armed", "not-armed", "not-installed"],
+)
+def test_check_accessory_reconcile_path_verdicts(
+    monkeypatch, unit, status, reason,
+):
+    monkeypatch.setattr(
+        _evidence, "read_unit_states",
+        _make_unit_states_fake({"jasper-accessory-reconcile.path": unit}),
+    )
+
+    result = resilience.check_accessory_reconcile_path()
+
+    assert (result.status, result.reason) == (status, reason)
+
+
+def test_check_accessory_reconcile_path_skips_without_systemctl(monkeypatch):
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", _make_unit_states_fake(unavailable=True),
+    )
+
+    result = resilience.check_accessory_reconcile_path()
+
+    assert (result.status, result.reason) == (
+        "skipped", resilience.REASON_ACCESSORY_PATH_UNOBSERVED,
+    )
+
+
 # --------------------------------------------------- check_voice_unit_running
 
 
 @pytest.mark.parametrize(
-    "profile, unit, marker, status, reason",
+    "profile, unit, marker, remote, status, reason",
     [
         # The gap: `inactive` is neither failed nor unstable, so
         # check_service_runtime_state sees nothing while no wake gets an
         # answer.
         (
             "full", {"active_state": "inactive", "sub_state": "dead"}, False,
-            "fail", resilience.REASON_VOICE_UNIT_INACTIVE,
+            False, "fail", resilience.REASON_VOICE_UNIT_INACTIVE,
         ),
         # ConditionPathExists=!/var/lib/jasper/voice-input-absent parks the
         # unit on a box with neither a local nor an accessory mic: hardware,
         # not a fault.
         (
             "full", {"active_state": "inactive", "sub_state": "dead"}, True,
-            "skipped", resilience.REASON_VOICE_UNIT_PARKED_NO_INPUT,
+            False, "skipped", resilience.REASON_VOICE_UNIT_PARKED_NO_INPUT,
         ),
         (
             "full", {"active_state": "active", "sub_state": "running"}, False,
-            "ok", "",
+            False, "ok", "",
         ),
+        # A streambox runs the assistant only while a mic-bearing remote is
+        # paired (ADR-0217): with none paired, inactive is the correct state.
         (
             "streambox", {"active_state": "inactive", "sub_state": "dead"},
-            False, "skipped", resilience.REASON_VOICE_UNIT_NOT_FULL_PROFILE,
+            False, False, "skipped",
+            resilience.REASON_VOICE_UNIT_NOT_FULL_PROFILE,
+        ),
+        # With one paired, the remote's talk button gets no answer — a warn,
+        # because the reconciler that owns the lifecycle may still be mid-pass.
+        (
+            "streambox", {"active_state": "inactive", "sub_state": "dead"},
+            False, True, "warn",
+            resilience.REASON_VOICE_UNIT_INACTIVE_PAIRED_REMOTE,
+        ),
+        (
+            "streambox", {"active_state": "active", "sub_state": "running"},
+            False, True, "ok", "",
         ),
         # A unit systemd cannot load is not an inactive one.
         (
             "full",
             {"active_state": "inactive", "load_state": "not-found"},
-            False, "skipped", resilience.REASON_VOICE_UNIT_UNOBSERVED,
+            False, False, "skipped", resilience.REASON_VOICE_UNIT_UNOBSERVED,
         ),
     ],
-    ids=["full-inactive", "parked-no-mic", "active", "streambox", "not-found"],
+    ids=[
+        "full-inactive", "parked-no-mic", "active", "streambox-no-remote",
+        "streambox-remote-paired", "streambox-remote-answered", "not-found",
+    ],
 )
 def test_check_voice_unit_running_verdicts(
-    monkeypatch, tmp_path, profile, unit, marker, status, reason,
+    monkeypatch, tmp_path, profile, unit, marker, remote, status, reason,
 ):
     monkeypatch.setattr(_shared, "read_install_profile", lambda: profile)
     absent = tmp_path / "voice-input-absent"
     if marker:
         absent.write_text("")
     monkeypatch.setenv("JASPER_VOICE_INPUT_ABSENT_MARKER", str(absent))
+    # The accessory owner's published file is the one "a mic-bearing remote is
+    # paired" fact; write a real one so the real reader answers.
+    mic_env = tmp_path / "accessory-mics.env"
+    if remote:
+        mic_env.write_text("JASPER_MANUAL_MIC_SOURCES=wiim_remote_2=hw:WiiM\n")
+    monkeypatch.setenv("JASPER_ACCESSORY_MIC_ENV_FILE", str(mic_env))
     monkeypatch.setattr(
         _evidence, "read_unit_states",
         _make_unit_states_fake({"jasper-voice.service": unit}),
@@ -443,7 +569,9 @@ def test_check_supply_voltage_verdicts(monkeypatch, current, status, reason):
 @pytest.mark.parametrize(
     "check_name",
     [
+        "check_accessory_reconcile_path",
         "check_bootloop_guard",
+        "check_required_units_active",
         "check_supervisor_runtime_snapshots",
         "check_supply_voltage",
         "check_voice_unit_running",

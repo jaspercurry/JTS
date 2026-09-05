@@ -30,6 +30,7 @@ import pytest
 from jasper.cli import doctor
 from jasper.cli.doctor import CheckResult, _cli, _harness, _registry, _shared
 from jasper.cli.doctor._registry import (
+    CORE_MODULES,
     MODULE_ROSTER,
     STREAMBOX_OMITTED_DOCTOR_CHECKS,
     STREAMBOX_OMITTED_DOCTOR_MODULES,
@@ -57,6 +58,22 @@ def test_the_roster_names_exactly_the_modules_that_register_checks():
         f"duplicate roster rows: {MODULE_ROSTER}"
     )
     assert set(MODULE_ROSTER) == {c.module for c in registered_checks()}
+
+
+def test_core_modules_are_exactly_the_modules_holding_core_checks():
+    """`--core` imports CORE_MODULES and nothing else, so the tuple goes stale
+    in both directions: a `core=True` check in an unlisted module never runs on
+    a deploy, and a listed module with no core check costs the deploy gate an
+    import it gets no row from."""
+    assert set(CORE_MODULES) <= set(MODULE_ROSTER)
+    assert len(CORE_MODULES) == len(set(CORE_MODULES))
+    assert set(CORE_MODULES) == {c.module for c in registered_checks() if c.core}
+
+
+def test_core_scope_selects_exactly_the_core_checks():
+    core = registered_checks(core_only=True)
+    assert core, "the --core subset is empty"
+    assert core == [c for c in registered_checks() if c.core]
 
 
 def test_streambox_omissions_cannot_go_stale():

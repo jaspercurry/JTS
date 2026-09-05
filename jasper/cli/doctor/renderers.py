@@ -344,7 +344,7 @@ def check_nqptp_running() -> CheckResult:
         reason=REASON_NQPTP_NOT_ACTIVE,
     )
 
-@doctor_check()
+@doctor_check(core=True)
 def check_jasper_mux() -> CheckResult:
     """jasper-mux arbitrates which renderer plays when. Without it,
     source selection and guarded handoff stop working; if fan-in has
@@ -1255,7 +1255,7 @@ def _fanin_lane_busy_owner_matches(device: str, unit: str) -> tuple[bool, str]:
         return True, f"busy/owned pid={pid}"
     return False, f"busy but owner pid={pid} {why}"
 
-@doctor_check(exclusive_group="audio-probe")
+@doctor_check(exclusive_group="audio-probe", core=True)
 def check_renderer_device_resolvable() -> CheckResult:
     """Verify each music renderer can actually open the ALSA device it is
     configured to write to, AS its runtime systemd User=.

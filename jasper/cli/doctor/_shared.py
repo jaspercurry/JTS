@@ -346,6 +346,7 @@ _RUNTIME_STATE_UNITS = (
     "jasper-voice.service",
     "jasper-aec-bridge.service",
     "jasper-control.service",
+    "jasper-input.service",
     "jasper-mux.service",
     "nqptp.service",
     "shairport-sync.service",

@@ -7,6 +7,7 @@ run against, the ANSI report and the JSON report the /system dashboard reads.
 
 Usage:
     sudo /opt/jasper/.venv/bin/jasper-doctor             # one shot
+    sudo /opt/jasper/.venv/bin/jasper-doctor --core      # post-deploy subset
     sudo /opt/jasper/.venv/bin/jasper-doctor --watch     # loop, 5s
     sudo /opt/jasper/.venv/bin/jasper-doctor --watch -i 2  # loop, 2s
 
@@ -212,7 +213,9 @@ def _doctor_config_from_env(install_profile: str) -> Config | SimpleNamespace:
         return _local_audio_config_from_env()
     return Config.from_env()
 
-async def _watch_loop(cfg: Config | SimpleNamespace, interval: float) -> int:
+async def _watch_loop(
+    cfg: Config | SimpleNamespace, interval: float, *, core_only: bool = False,
+) -> int:
     """Run checks every `interval` seconds, print one line per pass.
     Returns 0 on Ctrl-C."""
     print(
@@ -222,7 +225,7 @@ async def _watch_loop(cfg: Config | SimpleNamespace, interval: float) -> int:
     )
     try:
         while True:
-            results = await run_async(cfg)
+            results = await run_async(cfg, core_only=core_only)
             print(_watch_line(results), flush=True)
             await asyncio.sleep(interval)
     except (KeyboardInterrupt, asyncio.CancelledError):
@@ -242,6 +245,13 @@ def main() -> None:
     parser.add_argument(
         "-i", "--interval", type=float, default=5.0,
         help="Seconds between iterations in --watch mode (default 5).",
+    )
+    parser.add_argument(
+        "--core", action="store_true",
+        help="Run only the post-deploy core subset: required units, the "
+             "audio-path daemons and their parks, renderer ALSA devices and "
+             "the management surface. Skips the modules the subset does not "
+             "need, so it is cheap on a low-memory box. Works with --json.",
     )
     parser.add_argument(
         "--json", action="store_true",
@@ -278,10 +288,12 @@ def main() -> None:
         print(f"{RED}config error: {e}{RESET}", file=sys.stderr)
         sys.exit(1)
     if args.watch:
-        sys.exit(asyncio.run(_watch_loop(cfg, args.interval)))
+        sys.exit(asyncio.run(
+            _watch_loop(cfg, args.interval, core_only=args.core)
+        ))
     started_at = time.monotonic()
     try:
-        results = asyncio.run(run_async(cfg))
+        results = asyncio.run(run_async(cfg, core_only=args.core))
     except Exception as e:  # noqa: BLE001
         if args.json:
             detail = _exception_detail(e)

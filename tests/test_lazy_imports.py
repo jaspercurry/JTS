@@ -633,10 +633,15 @@ def test_doctor_import_does_not_load_portaudio() -> None:
     module in the doctor's import graph has to keep that bargain: one
     top-level `import sounddevice` anywhere in it costs the load on every run
     and makes the doctor unimportable on a host without the library.
+
+    `registered_checks()`, not a bare package import: the check modules are
+    imported on demand now (ADR-0233 rule 5's `--core` subset), and the full
+    scope is what a default `jasper-doctor` run loads.
     """
     probe = (
         "import sys\n"
-        "import jasper.cli.doctor  # noqa: F401\n"
+        "from jasper.cli.doctor import registered_checks\n"
+        "registered_checks()\n"
         "assert 'jasper.cli.aec_bridge_config' in sys.modules, (\n"
         "    'probe never reached aec_bridge_config, the module whose "
         "lazy import this pins')\n"
@@ -647,6 +652,30 @@ def test_doctor_import_does_not_load_portaudio() -> None:
     assert result.get("sounddevice_loaded") is False, (
         "importing jasper.cli.doctor pulled sounddevice into sys.modules. "
         "Keep the import inside the function that opens or queries a device."
+    )
+
+
+def test_doctor_core_scope_imports_only_its_own_modules() -> None:
+    """`--core` runs after every deploy on a 415 MB Zero 2 W, and paying for
+    the check modules it has no row from is the cost ADR-0233 rule 5 exists to
+    remove. A fresh interpreter, because this one has already imported them."""
+    probe = (
+        "import sys\n"
+        "from jasper.cli.doctor._registry import (\n"
+        "    CORE_MODULES, MODULE_ROSTER, registered_checks)\n"
+        "registered_checks(core_only=True)\n"
+        "extra = {m for m in MODULE_ROSTER\n"
+        "         if f'jasper.cli.doctor.{m}' in sys.modules} - set(CORE_MODULES)\n"
+        "for name in sorted(extra):\n"
+        "    print(f'leaked_{name}=true')\n"
+        "print('core_scope_leaked=' + str(bool(extra)).lower())\n"
+    )
+    result = _run_probe(probe)
+    leaked = sorted(k[len("leaked_"):] for k in result if k.startswith("leaked_"))
+    assert result.get("core_scope_leaked") is False, (
+        f"a --core run imported check modules outside CORE_MODULES: {leaked}. "
+        "Something in a core module's import graph reaches them, so the "
+        "subset pays for the modules it skips."
     )
 
 

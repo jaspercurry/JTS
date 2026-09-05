@@ -24,9 +24,16 @@ can run.
   keeps ALSA/proc evidence probes from observing one another's temporary
   opens while still allowing the rest of the subprocess-heavy doctor to
   run concurrently.
+
+- **``core=True`` puts a check in ``--core``**, the post-deploy subset
+  that replaces ``jasper-deploy-health`` (ADR-0233 rule 5). Check modules
+  are imported on demand by :func:`registered_checks`, so a ``--core`` run
+  pays only for ``CORE_MODULES`` — the point of the subset on a 415 MB
+  Zero 2 W.
 """
 from __future__ import annotations
 
+import importlib
 from dataclasses import dataclass
 from typing import Awaitable, Callable, TypeVar
 
@@ -67,6 +74,18 @@ _ROSTER_POSITION: dict[str, int] = {
     module: position for position, module in enumerate(MODULE_ROSTER)
 }
 
+# The only modules a ``--core`` run imports: those declaring a ``core=True``
+# check. A module added here that contributes no core row costs the deploy
+# gate its import for nothing, which is what a registry test pins.
+CORE_MODULES: tuple[str, ...] = (
+    "renderers",
+    "web",
+    "resilience",
+    "audio_runtime_fanin",
+    "audio_runtime_camilla",
+    "audio_runtime_outputd",
+)
+
 STREAMBOX_OMITTED_DOCTOR_MODULES = frozenset({
     "voice",
     "wake",
@@ -92,6 +111,7 @@ class RegisteredCheck:
     is_async: bool = False
     label: str = ""
     exclusive_group: str = ""
+    core: bool = False
 
 
 _REGISTRY: list[RegisteredCheck] = []
@@ -103,6 +123,7 @@ def doctor_check(
     needs_cfg: bool = False,
     is_async: bool = False,
     exclusive_group: str = "",
+    core: bool = False,
 ) -> Callable[[F], F]:
     """Register a doctor check and return it unchanged.
 
@@ -122,6 +143,9 @@ def doctor_check(
             individually safe but can perturb one another when run at the
             same instant (for example, ALSA open probes and `/proc/asound`
             ownership reads). Empty string means no exclusive lane.
+        core: True iff ``--core`` runs this check. The defining module
+            must be in ``CORE_MODULES``, or ``--core`` would never import
+            it.
     """
 
     def _register(fn: F) -> F:
@@ -140,6 +164,7 @@ def doctor_check(
                 is_async=is_async,
                 label=label,
                 exclusive_group=exclusive_group,
+                core=core,
             )
         )
         return fn
@@ -147,12 +172,25 @@ def doctor_check(
     return _register
 
 
-def registered_checks() -> list[RegisteredCheck]:
-    """All registered checks in canonical order.
+def import_check_modules(modules: tuple[str, ...]) -> None:
+    """Import ``modules`` from this package so their decorators register.
+
+    Idempotent — a second call is a ``sys.modules`` hit."""
+    for name in modules:
+        importlib.import_module(f".{name}", __package__)
+
+
+def registered_checks(*, core_only: bool = False) -> list[RegisteredCheck]:
+    """All registered checks in canonical order, importing what it needs.
+
+    ``core_only`` narrows both halves: only ``CORE_MODULES`` are imported,
+    and only their ``core=True`` entries are returned.
 
     Modules follow ``MODULE_ROSTER``; within a module, source order. The
     sort is stable over the append-ordered registry, so the sequence is
     independent of the order in which the per-domain modules happened to
     be imported.
     """
-    return sorted(_REGISTRY, key=lambda c: _ROSTER_POSITION[c.module])
+    import_check_modules(CORE_MODULES if core_only else MODULE_ROSTER)
+    entries = [c for c in _REGISTRY if c.core] if core_only else list(_REGISTRY)
+    return sorted(entries, key=lambda c: _ROSTER_POSITION[c.module])
