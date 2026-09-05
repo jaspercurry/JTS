@@ -65,6 +65,7 @@ from tests.test_active_speaker_baseline_profile import (
     _measurements,
     _valid_config,
 )
+from tests.transport_camilla_fixtures import FakeCamilla
 
 
 # The width jts4's statefile was stuck at: the pre-#2601 narrow wire. The
@@ -351,14 +352,12 @@ async def test_a_live_camilla_still_reconciles_over_the_websocket(
     the running daemon what it is actually playing.
     """
 
-    from tests.test_transport_endpoint_preservation import _FakeCamilla
-
     stale, config_dir, statefile = _flat_streambox(tmp_path, monkeypatch)
 
     profile_path = tmp_path / "sound_profile.json"
     save_profile(SoundProfile(), profile_path)
 
-    camilla = _FakeCamilla(str(stale))
+    camilla = FakeCamilla(str(stale))
     payload = await reconcile_current_dsp(
         profile_path=profile_path,
         config_dir=config_dir,
