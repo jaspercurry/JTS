@@ -567,8 +567,9 @@ _SCRIPT_STATES = (
     # The env writer's permission arguments. A DAC reconcile must not turn
     # root:jasper jasper.env into root:root (jasper-control needs group read
     # for fresh /state), and must repair generated /var/lib/jasper env-file
-    # permissions on no-op runs.
-    'jasper_env_file_set "$ENV_FILE" "$key" "$value" 0640 0750',
+    # permissions on no-op runs. set_env_var/set_env_var_if_changed are thin
+    # $ENV_FILE-bound wrappers of the generic set_env_file_var* pair below, so
+    # this one call site is the sole source of the 0640/0750 mode contract.
     'jasper_env_file_set "$file" "$key" "$value" 0640 0750',
     'jasper_env_file_repair_permissions "$OUTPUTD_ENV_FILE" 0640 0750',
     'jasper_env_file_repair_permissions "$FANIN_ENV_FILE" 0640 0750',
