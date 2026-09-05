@@ -1630,8 +1630,7 @@ mark_voice_input_absent() {
     local reason="${1:-no usable microphone present}"
     # Non-empty $2 marks the park transient (a round trip, not a real
     # absence) via a second `transient=1` line; jasper/voice/input_presence.py
-    # voice_park_is_transient() reads it. Callers that omit $2 write no such
-    # line, and a missing/malformed line reads as not transient.
+    # voice_park_is_transient() reads it.
     local transient="${2:-}"
     # The parent dir (/var/lib/jasper) is guaranteed by ensure_mode_file,
     # which runs earlier in every non-check-only pass; we deliberately do

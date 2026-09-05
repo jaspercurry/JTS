@@ -241,29 +241,23 @@ async def _announce_mic_loss_at_shutdown(wake_loop: WakeLoop) -> str:
         return "not_parked"
     if voice_park_is_transient():
         result = "transient_park"
-        log_event(
-            logger,
-            "voice.mic_loss_cue",
-            slug=NO_ROOM_MIC_CUE_SLUG,
-            result=result,
-        )
-        return result
-    try:
-        result = await asyncio.wait_for(
-            wake_loop.play_cue(NO_ROOM_MIC_CUE_SLUG),
-            timeout=MIC_LOSS_CUE_WAIT_SEC,
-        )
-    except asyncio.TimeoutError:
-        result = "timeout"
-    except Exception:  # noqa: BLE001
-        logger.exception("mic-loss cue play failed")
-        result = "play_error"
+    else:
+        try:
+            result = await asyncio.wait_for(
+                wake_loop.play_cue(NO_ROOM_MIC_CUE_SLUG),
+                timeout=MIC_LOSS_CUE_WAIT_SEC,
+            )
+        except asyncio.TimeoutError:
+            result = "timeout"
+        except Exception:  # noqa: BLE001
+            logger.exception("mic-loss cue play failed")
+            result = "play_error"
     log_event(
         logger,
         "voice.mic_loss_cue",
         slug=NO_ROOM_MIC_CUE_SLUG,
         result=result,
-        level=logging.INFO if result == "ok" else logging.WARNING,
+        level=logging.INFO if result in ("ok", "transient_park") else logging.WARNING,
     )
     return result
 
