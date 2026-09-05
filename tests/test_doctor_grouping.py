@@ -410,12 +410,13 @@ def test_check_grouping_leader_reads_degraded_when_config_not_piped(
         # never doubled up with the pair-lock verdict it also drives.
         ("failed", None, "warn", grouping.REASON_RUNTIME_DEGRADED),
         # Health ok, no local outputd STATUS to read: the pair lock's own
-        # terminal branch — clock lock is unobservable from Snapcast RPC.
-        ("active", None, "warn", grouping.REASON_PAIR_LOCK_UNKNOWN),
+        # terminal branch — clock lock is unobservable from Snapcast RPC,
+        # which is `ok` with a reason, not a permanent warn (ADR-0233 r.3).
+        ("active", None, "ok", grouping.REASON_PAIR_LOCK_UNKNOWN),
         # Health ok, local FIFO serving bytes: same terminal branch — bytes
-        # flowing is not proof of clock lock.
+        # flowing is not proof of clock lock, still `ok` with a reason.
         (
-            "active", {"enabled": True, "serving_fifo": True}, "warn",
+            "active", {"enabled": True, "serving_fifo": True}, "ok",
             grouping.REASON_PAIR_LOCK_UNKNOWN,
         ),
         # Health ok, local FIFO NOT serving bytes: the pair lock's own
