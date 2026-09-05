@@ -6,22 +6,16 @@ components on 2026-07-31. Neither is installed; we own every rule below.
 
 ## 1. Scope — what this is for
 
-The craft reference for the **measurement-flow design pass**: the jasper.tech
-capture page and the Sound measurement wizards at `/sound/room/`,
-`/sound/crossover/` (**Active speaker**), and `/sound/bass/` (#1941's world).
-The direct `/correction/*` compatibility aliases render those same surfaces;
-they are not a second design contract.
-Written to be generally applicable — take a rule elsewhere when it's cheap and
-obvious — but its mandate is those surfaces.
-
-**It is not a codebase-wide compliance program.** Do not open "bring page X up
-to the design language" work on this doc's authority outside the pass. If the
-language proves itself on the measurement flow it may be pulled elsewhere
-later — opportunistically, and the owner's call.
+The craft reference for **every management page** — type, colour, depth, radii,
+touch targets, motion, copy — applied as each page is touched, never as a
+standalone compliance sweep. The jasper.tech capture page
+and the Sound measurement wizards at `/sound/room/`, `/sound/crossover/`
+(**Active speaker**), and `/sound/bass/` (#1941's world) carry the most design
+attention.
 
 | Question | Read |
 |---|---|
-| Which shared helper / primitive do I use? | [AGENTS.md](../AGENTS.md) "Web wizard conventions" |
+| Which shared helper / primitive do I use? | [web-ia.md](web-ia.md) |
 | How big, how far apart, what colour, how fast? | **this file** |
 
 ## 2. Already decided — do not re-derive

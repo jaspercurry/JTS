@@ -20,6 +20,7 @@ state are authoritative when prose conflicts with either.
 - [Extension contracts](extensibility.md)
 - [Testing and measurement tools](testing-tooling.md)
 - [Design language](design-language.md)
+- [Web IA](web-ia.md)
 - [Multi-user Spotify](multi-user-spotify.md)
 - [Third-party license notices](../LICENSE-third-party.md)
 - [Documentation impact map](doc-map.toml)
