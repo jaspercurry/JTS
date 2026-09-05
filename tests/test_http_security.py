@@ -108,13 +108,6 @@ def test_management_read_rejects_cross_site_fetch_metadata():
             (False, "host_not_allowed"),
             id="rejects_dns_rebinding_host_even_if_origin_matches",
         ),
-        # A plain dict with lowercase keys, not a Message — the allowlist
-        # must case-fold headers itself, not rely on Message's lookup.
-        pytest.param(
-            {"host": "evil.example:8780", "origin": "http://evil.example:8780"},
-            (False, "host_not_allowed"),
-            id="rejects_lowercase_bad_host_header",
-        ),
         pytest.param(
             {"Host": "192.168.1.23:8780", "Sec-Fetch-Site": "cross-site"},
             (False, "cross_site_request"),
@@ -129,6 +122,13 @@ def test_management_read_rejects_cross_site_fetch_metadata():
 )
 def test_mutating_request(headers, expected):
     assert http_security.mutating_request_allowed(headers) == expected
+
+
+def test_mutating_request_case_folds_header_keys():
+    ok, reason = http_security.mutating_request_allowed(
+        {"host": "evil.example:8780", "origin": "http://evil.example:8780"},
+    )
+    assert (ok, reason) == (False, "host_not_allowed")
 
 
 def test_management_read_accepts_usb_gadget_and_link_local_host_headers():

@@ -360,20 +360,22 @@ def test_enumerate_live_routes_empty_visits_returns_empty_tuple():
 # path is the one that surfaces "key rejected" to the user, so the route
 # probe itself must never break the wizard render.
 @pytest.mark.parametrize(
-    ("status", "json_body", "error"),
+    "response",
     [
-        pytest.param(401, None, None, id="401"),
-        pytest.param(503, None, None, id="5xx"),
-        pytest.param(None, None, httpx.ConnectError("network down"), id="network_error"),
+        401,
+        503,
+        pytest.param(httpx.ConnectError("network down"), id="network_error"),
         # SIRI returns JSON but the expected nested path is missing.
-        pytest.param(200, {"unexpected": "shape"}, None, id="malformed_envelope"),
+        pytest.param({"unexpected": "shape"}, id="malformed_envelope"),
     ],
 )
-def test_enumerate_live_routes_returns_empty_on(status, json_body, error):
+def test_enumerate_live_routes_returns_empty_on(response):
     def handler(request: httpx.Request) -> httpx.Response:
-        if error is not None:
-            raise error
-        return httpx.Response(status, json=json_body)
+        if isinstance(response, BaseException):
+            raise response
+        if isinstance(response, dict):
+            return httpx.Response(200, json=response)
+        return httpx.Response(response)
 
     provider = _bus_with_handler(handler)
     routes = provider.enumerate_live_routes(
