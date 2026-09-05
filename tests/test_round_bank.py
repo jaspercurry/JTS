@@ -285,8 +285,7 @@ def test_an_unreadable_info_json_exits_as_a_filesystem_failure(
     monkeypatch.setattr(Path, "read_text", _denied)
     parser = cli.build_parser()
     args = parser.parse_args(
-        ["bank", str(session_dir), "--campaign-root",
-         str(tmp_path / "campaigns"), "--json"]
+        ["bank", str(session_dir), "--campaign-root", str(tmp_path / "campaigns")]
     )
 
     assert args.func(args) == cli.EXIT_WRITE_FAILED
@@ -294,17 +293,13 @@ def test_an_unreadable_info_json_exits_as_a_filesystem_failure(
     assert json.loads(capsys.readouterr().out)["reason"] == "write_failed"
 
 
-def test_cli_json_carries_the_banked_path_and_its_provenance(tmp_path, capsys):
+def test_the_answer_carries_the_banked_path_and_its_provenance(tmp_path, capsys):
     session_dir, _state = _live_session(tmp_path)
-    argv = [
-        "bank", str(session_dir), "--campaign-root",
-        str(tmp_path / "campaigns"), "--json",
-    ]
+    argv = ["bank", str(session_dir), "--campaign-root", str(tmp_path / "campaigns")]
 
     assert cli.main(argv) == cli.EXIT_OK
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["banked"] is True
     assert Path(payload["round_dir"]) == tmp_path / "campaigns" / "r1"
     assert payload["provenance"]["session_id"] == session_dir.name
 
@@ -314,15 +309,14 @@ def test_cli_refusal_carries_the_reason_slug(tmp_path, capsys):
     not_a_bundle.mkdir()
     parser = cli.build_parser()
     args = parser.parse_args(
-        ["bank", str(not_a_bundle), "--campaign-root",
-         str(tmp_path / "campaigns"), "--json"]
+        ["bank", str(not_a_bundle), "--campaign-root", str(tmp_path / "campaigns")]
     )
 
     assert args.func(args) == cli.EXIT_REFUSED
 
     payload = json.loads(capsys.readouterr().out)
     assert payload == {
-        "banked": False,
+        "status": "refused",
         "reason": REASON_NOT_A_BUNDLE,
         "detail": payload["detail"],
     }
