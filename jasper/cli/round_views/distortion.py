@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
 from jasper.active_speaker.crossover_v2.harmonic_evidence import (
@@ -22,9 +21,9 @@ from jasper.active_speaker.crossover_v2.harmonic_evidence import (
     DEFAULT_FULL_RANGE_BAND_HZ,
     read_bundle_harmonics,
 )
-from jasper.cli._refusal import EXIT_OK, EXIT_UNREADABLE, stage
+from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
-from ._common import ARTIFACT_BY_VIEW, _ROUND_TOOL_ERRORS, _write
+from ._common import ARTIFACT_BY_VIEW, _ROUND_TOOL_ERRORS, _write, answer
 
 def _cmd_distortion(args: argparse.Namespace) -> int:
     round_dir, artifact = stage(
@@ -44,14 +43,17 @@ def _cmd_distortion(args: argparse.Namespace) -> int:
         artifact, args.out, round_dir / ARTIFACT_BY_VIEW[args.command].artifact
     )
     captures = artifact["captures"]
-    print(
-        f"distortion: H{'/H'.join(str(order) for order in artifact['orders'])} "
-        f"for {len(artifact['roles'])} (capture, role) block(s) from "
-        f"{captures['n_read']} capture(s), {captures['n_refused']} refused"
-        f"{f' -> {written}' if written else ''}",
-        file=sys.stderr,
+    return answer(
+        args.command, out=written, orders=artifact["orders"],
+        blocks=len(artifact["roles"]), captures_read=captures["n_read"],
+        captures_refused=captures["n_refused"],
+        line=(
+            f"distortion: H{'/H'.join(str(order) for order in artifact['orders'])} "
+            f"for {len(artifact['roles'])} (capture, role) block(s) from "
+            f"{captures['n_read']} capture(s), {captures['n_refused']} refused"
+            f"{f' -> {written}' if written else ''}"
+        ),
     )
-    return EXIT_OK
 
 
 def _band(text: str) -> tuple[float, float]:

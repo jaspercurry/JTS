@@ -41,7 +41,6 @@ from jasper.active_speaker.crossover_v2.ring_projection import (
     project_ring,
 )
 from jasper.cli._refusal import (
-    EXIT_OK,
     EXIT_UNREADABLE,
     EXIT_WRITE_FAILED,
     StageFailed,
@@ -54,6 +53,7 @@ from ._common import (
     _ROUND_TOOL_ERRORS,
     _write,
     add_rungs_ms_argument,
+    answer,
     refused_by_name,
 )
 
@@ -158,8 +158,11 @@ def _cmd_classify_features(args: argparse.Namespace) -> int:
         f"{artifact['measurement']['n_captures']} capture(s)"
         f"{f' -> {written}' if written else ''}"
     )
-    print("\n".join([summary, *summary_lines(artifact)]), file=sys.stderr)
-    return EXIT_OK
+    return answer(
+        args.command, out=written, features=len(artifact["rows"]),
+        captures=artifact["measurement"]["n_captures"],
+        line="\n".join([summary, *summary_lines(artifact)]),
+    )
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:

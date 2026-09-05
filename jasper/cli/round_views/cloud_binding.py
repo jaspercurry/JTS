@@ -18,12 +18,10 @@
 from __future__ import annotations
 
 import argparse
-import sys
 
 from jasper.active_speaker.crossover_v2.round_views import cloud_binding_view
-from jasper.cli._refusal import EXIT_OK
 
-from ._common import _ROUND_DIR_HELP, _load_round, _view_out, _write
+from ._common import _ROUND_DIR_HELP, _load_round, _view_out, _write, answer
 
 def _cmd_cloud_binding(args: argparse.Namespace) -> int:
     banked = _load_round(args.round_dir)
@@ -39,12 +37,22 @@ def _cmd_cloud_binding(args: argparse.Namespace) -> int:
         summary = (
             f"BOUND: {', '.join(moved)}" if moved else "NOT BOUND: no branch moved"
         ) + f"; refit vs banked {view.refit_vs_banked_db:.3f} dB"
-    print(
-        f"cloud-binding [observed only, no grade moves]: {summary}"
-        f"{f' -> {written}' if written else ''}",
-        file=sys.stderr,
+    return answer(
+        args.command, out=written, evaluable=view.evaluable,
+        # Only inside the evaluable arm: a drifted refit keeps its per-role
+        # numbers (:class:`CloudBindingView`), and the view declined to judge
+        # binding, so a bound role read off them is one nothing decided.
+        bound_roles=(
+            [role.role for role in view.roles if role.bound]
+            if view.evaluable else None
+        ),
+        refit_vs_banked_db=view.refit_vs_banked_db,
+        not_evaluated_reason=view.not_evaluated_reason,
+        line=(
+            f"cloud-binding [observed only, no grade moves]: {summary}"
+            f"{f' -> {written}' if written else ''}"
+        ),
     )
-    return EXIT_OK
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
