@@ -67,17 +67,9 @@ CHIP_AEC_PROFILE = "xvf_chip_aec"
 DAC8X_OUTPUTD_STABILITY_PROFILE = "hifiberry_dac8x_outputd_stability"
 DAC8X_DAC_ID = HIFIBERRY_DAC8X_DAC_ID
 CHIP_AEC_SUPPORTED_DAC_IDS = APPROVED_DAC_IDS
-HARDWARE_VALIDATION_PROFILES = (
-    CHIP_AEC_PROFILE,
-    DAC8X_OUTPUTD_STABILITY_PROFILE,
-)
 READINESS_SNAPSHOT_KIND = "readiness_snapshot"
 HARDWARE_VALIDATION_KIND = "hardware_validation_passive"
 DEFAULT_HARDWARE_OBSERVE_SECONDS = 10.0
-MAX_SHORT_HARDWARE_OBSERVE_SECONDS = 120.0
-LONG_HARDWARE_OBSERVE_SECONDS = 1800.0
-MAX_LONG_HARDWARE_OBSERVE_SECONDS = 1800.0
-DEFAULT_CHIP_POLL_INTERVAL_SECONDS = 5.0
 DEFAULT_SYSTEM_ENV_PATH = Path("/etc/jasper/jasper.env")
 DEFAULT_BUILD_MANIFEST_PATH = Path("/var/lib/jasper/build.txt")
 DEFAULT_BRIDGE_STATS_PATH = Path("/run/jasper/aec_bridge_stats.json")
@@ -453,11 +445,11 @@ def artifact_directory() -> Path:
     return _env_path("JASPER_AUDIO_VALIDATION_DIR", DEFAULT_ARTIFACT_DIR)
 
 
-def _read_mode_env(path: Path | None = None) -> dict[str, str]:
+def read_mode_env(path: Path | None = None) -> dict[str, str]:
     return parse_env_file(str(path or _env_path(AEC_MODE_FILE_ENV, DEFAULT_AEC_MODE_PATH)))
 
 
-def _read_system_env(path: Path | None = None) -> dict[str, str]:
+def read_system_env(path: Path | None = None) -> dict[str, str]:
     return parse_env_file(str(path or _env_path("JASPER_ENV_FILE", DEFAULT_SYSTEM_ENV_PATH)))
 
 
@@ -501,7 +493,7 @@ def _mic_details(mic: MicProbe) -> dict[str, JsonValue]:
     }
 
 
-def _outputd_socket_path(system_env: Mapping[str, str]) -> Path:
+def outputd_socket_path(system_env: Mapping[str, str]) -> Path:
     raw = (
         system_env.get("JASPER_OUTPUTD_CONTROL_SOCKET")
         or os.environ.get("JASPER_OUTPUTD_CONTROL_SOCKET")
@@ -510,7 +502,7 @@ def _outputd_socket_path(system_env: Mapping[str, str]) -> Path:
     return Path(raw)
 
 
-def _query_outputd_status(socket_path: Path, timeout: float = 1.0) -> dict[str, Any] | None:
+def query_outputd_status(socket_path: Path, timeout: float = 1.0) -> dict[str, Any] | None:
     sock: socket.socket | None = None
     try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -550,7 +542,7 @@ def _query_outputd_status(socket_path: Path, timeout: float = 1.0) -> dict[str, 
     return data if isinstance(data, dict) else None
 
 
-def _service_state(unit: str) -> str:
+def service_state(unit: str) -> str:
     try:
         result = subprocess.run(
             ["systemctl", "is-active", unit],
@@ -570,7 +562,7 @@ def _service_state(unit: str) -> str:
     return result.stdout.strip() or "unknown"
 
 
-def _read_bridge_stats(path: Path | None = None) -> dict[str, Any] | None:
+def read_bridge_stats(path: Path | None = None) -> dict[str, Any] | None:
     stats_path = path or _env_path(BRIDGE_STATS_PATH_ENV, DEFAULT_BRIDGE_STATS_PATH)
     try:
         data = json.loads(stats_path.read_text(encoding="utf-8"))
@@ -585,7 +577,7 @@ def _read_bridge_stats(path: Path | None = None) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def _read_voice_wake_legs(timeout: float = 1.0) -> set[str] | None:
+def read_voice_wake_legs(timeout: float = 1.0) -> set[str] | None:
     try:
         data = control.get_state(timeout=timeout)
     except (control.ControlError, ValueError) as e:
@@ -714,7 +706,7 @@ def current_artifact_filter_kwargs(
     cannot be established.
     """
 
-    env = dict(system_env) if system_env is not None else _read_system_env()
+    env = dict(system_env) if system_env is not None else read_system_env()
     mic = _mic_details(mic_probe if mic_probe is not None else _probe_xvf_mic())
     dac = _dac_details(env, outputd_status)
     return {
@@ -1133,7 +1125,7 @@ def _mapping_delta_total(
     return total
 
 
-def _profile_runtime_ready(checks: Mapping[str, JsonValue]) -> bool:
+def profile_runtime_ready(checks: Mapping[str, JsonValue]) -> bool:
     required = (
         "runtime_profile",
         "mic_detected",
@@ -1543,14 +1535,14 @@ def build_chip_aec_readiness_artifact(
     """
 
     now = datetime.now(timezone.utc) if now is None else now
-    mode_env = dict(mode_env) if mode_env is not None else _read_mode_env()
-    system_env = dict(system_env) if system_env is not None else _read_system_env()
+    mode_env = dict(mode_env) if mode_env is not None else read_mode_env()
+    system_env = dict(system_env) if system_env is not None else read_system_env()
     mic_probe = mic_probe or _probe_xvf_mic()
     service_states = (
         dict(service_states)
         if service_states is not None
         else {
-            unit: _service_state(unit)
+            unit: service_state(unit)
             for unit in (
                 "jasper-outputd.service",
                 "jasper-aec-bridge.service",
@@ -1560,11 +1552,11 @@ def build_chip_aec_readiness_artifact(
         }
     )
     if outputd_status is None:
-        outputd_status = _query_outputd_status(_outputd_socket_path(system_env))
+        outputd_status = query_outputd_status(outputd_socket_path(system_env))
     if bridge_stats is None:
-        bridge_stats = _read_bridge_stats()
+        bridge_stats = read_bridge_stats()
     if voice_wake_legs is None:
-        voice_wake_legs = _read_voice_wake_legs()
+        voice_wake_legs = read_voice_wake_legs()
 
     intent = _intent_from_env(mode_env)
     runtime = runtime_env_from_mapping(system_env, process_env=os.environ)
@@ -1645,12 +1637,12 @@ def build_outputd_stability_hardware_validation_artifact(
     """
 
     now = datetime.now(timezone.utc) if now is None else now
-    system_env = dict(system_env) if system_env is not None else _read_system_env()
+    system_env = dict(system_env) if system_env is not None else read_system_env()
     service_states = (
         dict(service_states)
         if service_states is not None
         else {
-            unit: _service_state(unit)
+            unit: service_state(unit)
             for unit in (
                 "jasper-outputd.service",
                 "jasper-camilla.service",
@@ -1662,7 +1654,7 @@ def build_outputd_stability_hardware_validation_artifact(
     if outputd_status is None and outputd_status_samples:
         outputd_status = outputd_status_samples[0]
     if outputd_status is None:
-        outputd_status = _query_outputd_status(_outputd_socket_path(system_env))
+        outputd_status = query_outputd_status(outputd_socket_path(system_env))
 
     dac = _dac_details(system_env, outputd_status)
     checks: dict[str, Mapping[str, Any]] = {
@@ -1759,8 +1751,8 @@ def build_chip_aec_hardware_validation_artifact(
         )
 
     now = datetime.now(timezone.utc) if now is None else now
-    mode_env = dict(mode_env) if mode_env is not None else _read_mode_env()
-    system_env = dict(system_env) if system_env is not None else _read_system_env()
+    mode_env = dict(mode_env) if mode_env is not None else read_mode_env()
+    system_env = dict(system_env) if system_env is not None else read_system_env()
     outputd_status_samples = list(outputd_status_samples or [])
     bridge_stats_samples = list(bridge_stats_samples or [])
     if outputd_status is None and outputd_status_samples:
@@ -1797,7 +1789,7 @@ def build_chip_aec_hardware_validation_artifact(
     checks["outputd_reference_health"] = outputd_health
     checks["bridge_counter_window"] = bridge_window
     skip_chip = chip_probe_skipped or not (
-        _profile_runtime_ready(checks)
+        profile_runtime_ready(checks)
         and outputd_health.get("status") == "pass"
     )
     skip_reason = chip_probe_skip_reason

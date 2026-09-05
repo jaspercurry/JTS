@@ -24,9 +24,9 @@ def test_run_audio_hardware_validation_refuses_inactive_without_force(monkeypatc
     system_env["JASPER_AEC_CHIP_AEC_ENABLED"] = "0"
     system_env["JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS"] = "disclosed_stale"
 
-    monkeypatch.setattr(audio_hw_validate, "_read_mode_env", lambda: mode_env)
-    monkeypatch.setattr(audio_hw_validate, "_read_system_env", lambda: system_env)
-    monkeypatch.setattr(audio_hw_validate, "_probe_xvf_mic", lambda: inputs["mic_probe"])
+    monkeypatch.setattr(audio_hw_validate, "read_mode_env", lambda: mode_env)
+    monkeypatch.setattr(audio_hw_validate, "read_system_env", lambda: system_env)
+    monkeypatch.setattr(audio_hw_validate, "probe_xvf_mic", lambda: inputs["mic_probe"])
     monkeypatch.setattr(
         audio_hw_validate,
         "_collect_service_states",
@@ -34,13 +34,13 @@ def test_run_audio_hardware_validation_refuses_inactive_without_force(monkeypatc
     )
     monkeypatch.setattr(
         audio_hw_validate,
-        "_query_outputd_status",
+        "query_outputd_status",
         lambda _socket: inputs["outputd_status"],
     )
-    monkeypatch.setattr(audio_hw_validate, "_read_bridge_stats", lambda: inputs["bridge_stats"])
+    monkeypatch.setattr(audio_hw_validate, "read_bridge_stats", lambda: inputs["bridge_stats"])
     monkeypatch.setattr(
         audio_hw_validate,
-        "_read_voice_wake_legs",
+        "read_voice_wake_legs",
         lambda: inputs["voice_wake_legs"],
     )
 
@@ -58,9 +58,9 @@ def test_run_audio_hardware_validation_report_only_does_not_write(monkeypatch):
     inputs = _active_chip_inputs()
     wrote: list[str] = []
 
-    monkeypatch.setattr(audio_hw_validate, "_read_mode_env", lambda: inputs["mode_env"])
-    monkeypatch.setattr(audio_hw_validate, "_read_system_env", lambda: inputs["system_env"])
-    monkeypatch.setattr(audio_hw_validate, "_probe_xvf_mic", lambda: inputs["mic_probe"])
+    monkeypatch.setattr(audio_hw_validate, "read_mode_env", lambda: inputs["mode_env"])
+    monkeypatch.setattr(audio_hw_validate, "read_system_env", lambda: inputs["system_env"])
+    monkeypatch.setattr(audio_hw_validate, "probe_xvf_mic", lambda: inputs["mic_probe"])
     monkeypatch.setattr(
         audio_hw_validate,
         "_collect_service_states",
@@ -68,13 +68,13 @@ def test_run_audio_hardware_validation_report_only_does_not_write(monkeypatch):
     )
     monkeypatch.setattr(
         audio_hw_validate,
-        "_query_outputd_status",
+        "query_outputd_status",
         lambda _socket: inputs["outputd_status"],
     )
-    monkeypatch.setattr(audio_hw_validate, "_read_bridge_stats", lambda: inputs["bridge_stats"])
+    monkeypatch.setattr(audio_hw_validate, "read_bridge_stats", lambda: inputs["bridge_stats"])
     monkeypatch.setattr(
         audio_hw_validate,
-        "_read_voice_wake_legs",
+        "read_voice_wake_legs",
         lambda: inputs["voice_wake_legs"],
     )
     monkeypatch.setattr(
@@ -117,9 +117,9 @@ def test_run_audio_hardware_validation_uses_one_bounded_window(
     sleeps: list[float] = []
     chip_poll_durations: list[float] = []
 
-    monkeypatch.setattr(audio_hw_validate, "_read_mode_env", lambda: inputs["mode_env"])
-    monkeypatch.setattr(audio_hw_validate, "_read_system_env", lambda: inputs["system_env"])
-    monkeypatch.setattr(audio_hw_validate, "_probe_xvf_mic", lambda: inputs["mic_probe"])
+    monkeypatch.setattr(audio_hw_validate, "read_mode_env", lambda: inputs["mode_env"])
+    monkeypatch.setattr(audio_hw_validate, "read_system_env", lambda: inputs["system_env"])
+    monkeypatch.setattr(audio_hw_validate, "probe_xvf_mic", lambda: inputs["mic_probe"])
     monkeypatch.setattr(
         audio_hw_validate,
         "_collect_service_states",
@@ -127,13 +127,13 @@ def test_run_audio_hardware_validation_uses_one_bounded_window(
     )
     monkeypatch.setattr(
         audio_hw_validate,
-        "_query_outputd_status",
+        "query_outputd_status",
         lambda _socket: next(outputd_samples),
     )
-    monkeypatch.setattr(audio_hw_validate, "_read_bridge_stats", lambda: next(bridge_samples))
+    monkeypatch.setattr(audio_hw_validate, "read_bridge_stats", lambda: next(bridge_samples))
     monkeypatch.setattr(
         audio_hw_validate,
-        "_read_voice_wake_legs",
+        "read_voice_wake_legs",
         lambda: inputs["voice_wake_legs"],
     )
     monkeypatch.setattr(audio_hw_validate.time, "sleep", lambda seconds: sleeps.append(seconds))
@@ -208,7 +208,7 @@ def test_run_outputd_stability_profile_does_not_probe_chip_or_voice(
     ])
     sleeps: list[float] = []
 
-    monkeypatch.setattr(audio_hw_validate, "_read_system_env", lambda: inputs["system_env"])
+    monkeypatch.setattr(audio_hw_validate, "read_system_env", lambda: inputs["system_env"])
     monkeypatch.setattr(
         audio_hw_validate,
         "_collect_service_states",
@@ -216,7 +216,7 @@ def test_run_outputd_stability_profile_does_not_probe_chip_or_voice(
     )
     monkeypatch.setattr(
         audio_hw_validate,
-        "_query_outputd_status",
+        "query_outputd_status",
         lambda _socket: next(outputd_samples),
     )
     monkeypatch.setattr(audio_hw_validate.time, "sleep", lambda seconds: sleeps.append(seconds))
@@ -224,10 +224,10 @@ def test_run_outputd_stability_profile_does_not_probe_chip_or_voice(
     def forbidden(*_args, **_kwargs):
         raise AssertionError("chip-AEC probe path should not run for outputd stability")
 
-    monkeypatch.setattr(audio_hw_validate, "_read_mode_env", forbidden)
-    monkeypatch.setattr(audio_hw_validate, "_probe_xvf_mic", forbidden)
-    monkeypatch.setattr(audio_hw_validate, "_read_bridge_stats", forbidden)
-    monkeypatch.setattr(audio_hw_validate, "_read_voice_wake_legs", forbidden)
+    monkeypatch.setattr(audio_hw_validate, "read_mode_env", forbidden)
+    monkeypatch.setattr(audio_hw_validate, "probe_xvf_mic", forbidden)
+    monkeypatch.setattr(audio_hw_validate, "read_bridge_stats", forbidden)
+    monkeypatch.setattr(audio_hw_validate, "read_voice_wake_legs", forbidden)
     monkeypatch.setattr(audio_hw_validate, "_read_chip_profile_parameters", forbidden)
     monkeypatch.setattr(audio_hw_validate, "_poll_chip_convergence", forbidden)
 

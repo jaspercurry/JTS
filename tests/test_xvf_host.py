@@ -57,6 +57,7 @@ _EXPECTED_XVF_COMMANDS_BY_CALLER = {
         "AUDIO_MGR_SYS_DELAY",
         "SHF_BYPASS",
     },
+    "jasper/cli/audio_hw_validate.py": set(),
     "deploy/bin/jasper-aec-reconcile": set(),
 }
 

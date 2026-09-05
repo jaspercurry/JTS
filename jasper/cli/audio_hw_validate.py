@@ -24,37 +24,41 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..audio_profile_state import probe_xvf_mic
 from ..audio_validation import (
     CHIP_AEC_CONVERGENCE_COMMAND,
     CHIP_AEC_PROFILE,
     CHIP_AEC_PROFILE_READBACK_COMMANDS,
     DAC8X_OUTPUTD_STABILITY_PROFILE,
-    DEFAULT_CHIP_POLL_INTERVAL_SECONDS,
     DEFAULT_HARDWARE_OBSERVE_SECONDS,
-    HARDWARE_VALIDATION_PROFILES,
-    LONG_HARDWARE_OBSERVE_SECONDS,
-    MAX_LONG_HARDWARE_OBSERVE_SECONDS,
-    MAX_SHORT_HARDWARE_OBSERVE_SECONDS,
     ValidationArtifact,
-    _outputd_socket_path,
-    _probe_xvf_mic,
-    _profile_runtime_ready,
-    _query_outputd_status,
-    _read_bridge_stats,
-    _read_mode_env,
-    _read_system_env,
-    _read_voice_wake_legs,
-    _service_state,
     artifact_directory,
     build_chip_aec_hardware_validation_artifact,
     build_chip_aec_readiness_artifact,
     build_outputd_stability_hardware_validation_artifact,
+    outputd_socket_path,
+    profile_runtime_ready,
+    query_outputd_status,
+    read_bridge_stats,
+    read_mode_env,
+    read_system_env,
+    read_voice_wake_legs,
+    service_state,
     write_artifact,
     write_latest_pointer,
 )
 from ..log_event import log_event
 
 logger = logging.getLogger("jasper.cli.audio_hw_validate")
+
+HARDWARE_VALIDATION_PROFILES = (
+    CHIP_AEC_PROFILE,
+    DAC8X_OUTPUTD_STABILITY_PROFILE,
+)
+MAX_SHORT_HARDWARE_OBSERVE_SECONDS = 120.0
+LONG_HARDWARE_OBSERVE_SECONDS = 1800.0
+MAX_LONG_HARDWARE_OBSERVE_SECONDS = 1800.0
+DEFAULT_CHIP_POLL_INTERVAL_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -69,7 +73,7 @@ class HardwareValidationRun:
 
 def _collect_service_states() -> dict[str, str]:
     return {
-        unit: _service_state(unit)
+        unit: service_state(unit)
         for unit in (
             "jasper-outputd.service",
             "jasper-camilla.service",
@@ -265,17 +269,17 @@ def run_audio_hardware_validation(
         force=int(force),
     )
 
-    system_env = _read_system_env()
+    system_env = read_system_env()
     if profile == DAC8X_OUTPUTD_STABILITY_PROFILE:
         service_states = _collect_service_states()
-        outputd_socket = _outputd_socket_path(system_env)
-        first_outputd = _query_outputd_status(outputd_socket)
+        outputd_socket = outputd_socket_path(system_env)
+        first_outputd = query_outputd_status(outputd_socket)
         outputd_samples: list[Mapping[str, Any]] = []
         if isinstance(first_outputd, Mapping):
             outputd_samples.append(first_outputd)
         if not report_only and duration_seconds > 0:
             time.sleep(duration_seconds)
-            final_outputd = _query_outputd_status(outputd_socket)
+            final_outputd = query_outputd_status(outputd_socket)
             if isinstance(final_outputd, Mapping):
                 outputd_samples.append(final_outputd)
         artifact = build_outputd_stability_hardware_validation_artifact(
@@ -296,13 +300,13 @@ def run_audio_hardware_validation(
             stdout=stdout,
         )
 
-    mode_env = _read_mode_env()
-    mic_probe = _probe_xvf_mic()
+    mode_env = read_mode_env()
+    mic_probe = probe_xvf_mic()
     service_states = _collect_service_states()
-    outputd_socket = _outputd_socket_path(system_env)
-    first_outputd = _query_outputd_status(outputd_socket)
-    first_bridge = _read_bridge_stats()
-    voice_wake_legs = _read_voice_wake_legs()
+    outputd_socket = outputd_socket_path(system_env)
+    first_outputd = query_outputd_status(outputd_socket)
+    first_bridge = read_bridge_stats()
+    voice_wake_legs = read_voice_wake_legs()
 
     readiness = build_chip_aec_readiness_artifact(
         now=now,
@@ -342,10 +346,10 @@ def run_audio_hardware_validation(
         preflight_seconds = min(1.0, duration_seconds)
         remaining_seconds = max(0.0, duration_seconds - preflight_seconds)
         time.sleep(preflight_seconds)
-        preflight_outputd = _query_outputd_status(outputd_socket)
+        preflight_outputd = query_outputd_status(outputd_socket)
         if isinstance(preflight_outputd, Mapping):
             outputd_samples.append(preflight_outputd)
-        preflight_bridge = _read_bridge_stats()
+        preflight_bridge = read_bridge_stats()
         if isinstance(preflight_bridge, Mapping):
             bridge_samples.append(preflight_bridge)
     probe_gate = build_chip_aec_hardware_validation_artifact(
@@ -369,7 +373,7 @@ def run_audio_hardware_validation(
     outputd_health = probe_gate.checks.get("outputd_reference_health")
     chip_probe_allowed = (
         not report_only
-        and _profile_runtime_ready(probe_gate.checks)
+        and profile_runtime_ready(probe_gate.checks)
         and isinstance(outputd_health, Mapping)
         and outputd_health.get("status") == "pass"
     )
@@ -397,10 +401,10 @@ def run_audio_hardware_validation(
         if remaining_seconds > 0:
             time.sleep(remaining_seconds)
     if not report_only and duration_seconds > preflight_seconds:
-        final_outputd = _query_outputd_status(outputd_socket)
+        final_outputd = query_outputd_status(outputd_socket)
         if isinstance(final_outputd, Mapping):
             outputd_samples.append(final_outputd)
-        final_bridge = _read_bridge_stats()
+        final_bridge = read_bridge_stats()
         if isinstance(final_bridge, Mapping):
             bridge_samples.append(final_bridge)
 
