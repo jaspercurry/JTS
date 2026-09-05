@@ -1126,7 +1126,7 @@ def test_usb_mic_export_defaults_to_disabled_when_the_intent_was_never_set(
 
     result = usbsink.check_usb_mic_export()
 
-    assert result.status == "ok"
+    assert result.status == "skipped"
     assert result.reason == usbsink.REASON_MIC_EXPORT_NOT_CONFIGURED
 
 

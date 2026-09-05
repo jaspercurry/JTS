@@ -678,7 +678,7 @@ def check_usb_mic_export() -> CheckResult:
         if intent.absent:
             return CheckResult(
                 "USB microphone export",
-                "ok",
+                "skipped",
                 "preference was never set; defaults to disabled (privacy-safe)",
                 reason=REASON_MIC_EXPORT_NOT_CONFIGURED,
             )
