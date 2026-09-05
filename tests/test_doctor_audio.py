@@ -1661,14 +1661,13 @@ async def test_active_speaker_baseline_canonical_ok_when_content_matches_live(
     assert r.reason == ""
 
 
-async def test_active_speaker_baseline_canonical_warns_on_divergence(
+async def test_active_speaker_baseline_canonical_discloses_divergence(
     monkeypatch,
     tmp_path,
 ):
     """Canonical holds run-8's promoted bytes; simulating CamillaDSP still
-    running the PRIOR candidate is a genuine content mismatch — warn, since the
-    live graph is the audible truth and is correct, but the canonical file is
-    stale for other readers."""
+    running the PRIOR candidate is a genuine content mismatch — disclosed, not
+    warned: the live graph is the audible truth, only the copy is stale."""
     from tests.test_active_speaker_baseline_profile import _apply_prior_then_run8
 
     (
@@ -1690,16 +1689,16 @@ async def test_active_speaker_baseline_canonical_warns_on_divergence(
 
     r = audio.check_active_speaker_baseline_canonical()
 
-    assert r.status == "warn"
+    assert r.status == "ok"
     assert r.reason == audio.REASON_BASELINE_CANONICAL_STALE
 
 
-def test_active_speaker_baseline_canonical_warns_on_missing_canonical(
+def test_active_speaker_baseline_canonical_discloses_missing_canonical(
     monkeypatch,
     tmp_path,
 ):
     """A live applied-candidate sibling with no canonical file yet (a box whose
-    last promote never ran) warns rather than failing — the next apply or
+    last promote never ran) is disclosed, not warned — the next apply or
     restore re-promotes it."""
     live = tmp_path / "active_speaker_baseline_candidate_abc123def456.yml"
     live.write_text("# a real applied candidate, never promoted\n", encoding="utf-8")
@@ -1712,7 +1711,7 @@ def test_active_speaker_baseline_canonical_warns_on_missing_canonical(
 
     r = audio.check_active_speaker_baseline_canonical()
 
-    assert r.status == "warn"
+    assert r.status == "ok"
     assert r.reason == audio.REASON_BASELINE_CANONICAL_MISSING
 
 
@@ -1729,17 +1728,17 @@ def test_active_speaker_startup_hold_ok_when_no_hold_is_in_flight():
 
 
 @pytest.mark.parametrize(
-    "load_status, status, reason",
+    "load_status, status, reason, silent",
     [
-        ("loaded", "ok", audio.REASON_STARTUP_HOLD_IN_FLIGHT),
+        ("loaded", "ok", audio.REASON_STARTUP_HOLD_IN_FLIGHT, False),
         # A hold with no load behind it keeps a commissioned box on its SILENT
         # anchor across every reconcile.
-        ("rolled_back", "warn", audio.REASON_STARTUP_HOLD_STALE),
+        ("rolled_back", "fail", audio.REASON_STARTUP_HOLD_STALE, True),
     ],
     ids=["in-flight", "stale"],
 )
 def test_active_speaker_startup_hold_verdicts(
-    monkeypatch, tmp_path, load_status, status, reason
+    monkeypatch, tmp_path, load_status, status, reason, silent
 ):
     from jasper.active_speaker.startup_hold import hold_staged_startup
 
@@ -1752,6 +1751,7 @@ def test_active_speaker_startup_hold_verdicts(
 
     assert r.status == status
     assert r.reason == reason
+    assert r.speaker_silent is silent
 
 
 # ---------------------------------------------------- room correction authority
@@ -1776,7 +1776,7 @@ def test_active_speaker_startup_hold_verdicts(
                 "reason": "active_commissioning_receipt_stale",
                 "detail": "re-mint it when convenient",
             },
-            "warn", audio.REASON_ROOM_AUTHORITY_UNPROVEN,
+            "ok", audio.REASON_ROOM_AUTHORITY_UNPROVEN,
             id="unproven_runs_anyway",
         ),
         pytest.param(
@@ -1822,14 +1822,15 @@ def test_active_speaker_startup_hold_verdicts(
         ),
     ],
 )
-def test_room_correction_authority_warns_but_never_fails(
+def test_room_correction_authority_discloses_but_never_fails(
     monkeypatch, acoustic, status, reason,
 ):
     """The doctor line is the only place an unproven room run is visible.
 
     Ruling S10 stopped the receipt from refusing the run, so nothing else tells
     a household that the result it just measured is not banked as verified.
-    WARN, never FAIL: nothing is broken and nothing is stopped.
+    An unproven run is `ok` with its reason: nothing is broken and nothing is
+    stopped. Only a machine fault reading the record warns.
     """
     monkeypatch.setattr(
         setup_status_mod,
@@ -1875,7 +1876,7 @@ def test_room_correction_authority_warns_when_setup_cannot_be_read(monkeypatch):
                 "code": "active_baseline_topology_changed",
                 "message": "topology changed since the applied baseline",
             }],
-            "warn", audio.REASON_SETUP_NOTICES_STANDING, id="topology_notice",
+            "ok", audio.REASON_SETUP_NOTICES_STANDING, id="topology_notice",
         ),
     ],
 )

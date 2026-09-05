@@ -1505,8 +1505,8 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
     applied candidate's bytes onto it fail-soft, after CamillaDSP confirmed the
     candidate live. A failed promote leaves that copy stale without affecting
     the audible graph, which the other readers of the canonical name (the
-    multiroom follower fallback, operators, this doctor) trust. WARN, never
-    FAIL: the live graph is the audible truth and is correct either way.
+    multiroom follower fallback, operators, this doctor) trust. Disclosed as
+    `ok`: the live graph is the audible truth and is correct either way.
     """
     from jasper.active_speaker.baseline_profile import (
         active_layer_a_fingerprint,
@@ -1542,7 +1542,7 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
         )
     if not canonical.exists():
         return CheckResult(
-            label, "warn",
+            label, "ok",
             f"canonical baseline file is missing ({canonical}) while the live "
             f"config is an applied baseline candidate ({live_path}); the next "
             "apply or restore re-promotes it",
@@ -1550,7 +1550,7 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
         )
     if not live_path.exists():
         return CheckResult(
-            label, "warn",
+            label, "ok",
             f"live baseline candidate file is missing on disk ({live_path}); "
             f"cannot compare it against canonical ({canonical})",
             reason=REASON_BASELINE_CANONICAL_LIVE_MISSING,
@@ -1574,7 +1574,7 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
             f"({live_path})",
         )
     return CheckResult(
-        label, "warn",
+        label, "ok",
         f"canonical baseline file ({canonical}) does not match the live "
         f"applied config ({live_path}); the running graph is correct, but the "
         "canonical file is stale for other readers (multiroom follower "
@@ -1674,7 +1674,7 @@ def check_active_speaker_startup_hold() -> CheckResult:
     rollback clears it) but invisible without this line. It is what the
     household-facing ``staged_startup_hold_unavailable`` copy points at.
 
-    WARN, never FAIL: preserving an all-muted anchor is the safe direction.
+    FAIL with ``speaker_silent``: nothing reaches a driver while it holds.
     """
 
     from ...active_speaker.startup_hold import (
@@ -1698,12 +1698,13 @@ def check_active_speaker_startup_hold() -> CheckResult:
             reason=REASON_STARTUP_HOLD_IN_FLIGHT,
         )
     return CheckResult(
-        label, "warn",
+        label, "fail",
         f"stale staged-startup hold at {marker}: the startup load is "
         f"'{status}', not 'loaded', so no commission is in flight — the graph "
         "selector keeps preserving the silent all-muted anchor instead of "
         "restoring the saved baseline. Roll back the startup load from "
         "http://jts.local/sound/ or reboot to clear it (/run is tmpfs).",
+        speaker_silent=True,
         reason=REASON_STARTUP_HOLD_STALE,
     )
 
@@ -1772,7 +1773,7 @@ def check_room_correction_authority() -> CheckResult:
             reason=REASON_ROOM_AUTHORITY_RECEIPT_UNREADABLE,
         )
     return CheckResult(
-        label, "warn", f"room correction runs unproven ({denial}): {detail}",
+        label, "ok", f"room correction runs unproven ({denial}): {detail}",
         reason=REASON_ROOM_AUTHORITY_UNPROVEN,
     )
 
@@ -1806,7 +1807,7 @@ def check_active_speaker_setup_notices() -> CheckResult:
             reason=REASON_SETUP_NOTICES_NONE,
         )
     return CheckResult(
-        label, "warn",
+        label, "ok",
         "; ".join(
             f"{issue.get('code')}: {issue.get('message')}" for issue in notices
         ),
