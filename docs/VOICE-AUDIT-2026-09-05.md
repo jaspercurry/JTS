@@ -16,6 +16,18 @@ re-derive before acting — the line numbers age fast in this repo.
 Out of scope: the renderer/mux/volume stack, the speaker tuning program, the
 web wizards. They were touched only where the voice loop calls into them.
 
+Coordination: the voice loop sits inside the general codebase steward's
+territory ([#4030](https://github.com/jaspercurry/JTS/issues/4030), queue in
+[#4085](https://github.com/jaspercurry/JTS/issues/4085)). Since the audit SHA
+that program landed the measurement-hold extraction
+([#4104](https://github.com/jaspercurry/JTS/pull/4104) →
+`jasper/voice/measurement_hold.py`), which is this brief's Wave 4.1; its queue
+items 2 (`TtsPlayout` collapse) and 3 (Rust daemon skeleton) touch this loop's
+edges and are not repeated here. It dropped a provider base class pending a
+re-scout; `report-providers` §2 is that re-scout (≈511 identical lines), so
+Wave 5 stands. Whether this brief runs as its own orchestrator or as lanes of
+the steward is owner decision 5 in §6.
+
 ## 0. How the orchestrator works
 
 Same method as [`UX-AUDIT-2026-09-03.md`](UX-AUDIT-2026-09-03.md) §0 — read
@@ -47,12 +59,13 @@ millisecond stage stamps. None of that needs redesign.
 
 **What is wrong is concentrated, and most of it is subtraction:**
 
-1. **One god file.** `jasper/voice_daemon.py` is 5,476 lines; `WakeLoop`
-   has 96 methods and 102 state fields and a 0.45 prose-to-code ratio. Four
-   concerns inside it are already loosely coupled (measurement pause 544
-   lines, cue/output episodes 500, research announce 360, push-to-talk 349,
-   peering 94) and the true wake→turn→end core is about 800 lines of code.
-   A 185-line test-only constructor (`for_tests`) ships to the Pi.
+1. **One god file.** `jasper/voice_daemon.py` was 5,476 lines at the audit
+   SHA (4,905 at `5fc3782f3`, after #4104 moved the measurement hold out);
+   `WakeLoop` had 96 methods and 102 state fields and a 0.45 prose-to-code
+   ratio. The concerns inside it are loosely coupled (cue/output episodes
+   500 lines, research announce 360, push-to-talk 349, peering 94) and the
+   true wake→turn→end core is about 800 lines of code. A 185-line test-only
+   constructor (`for_tests`) ships to the Pi.
 2. **Two provider adapters that copy each other.** About 511 lines of
    `gemini_session.py` are byte-identical (comments stripped) to
    `openai_session.py`; the code says "mirrors the other adapter" fourteen
@@ -135,7 +148,7 @@ jasper/voice/
   wake_loop.py         ~1400   WakeLoop core: legs, OR-gate, acquire/drain, turn open/end, session_status
   wake_telemetry.py     ~260   WakeFunnel: on_fire/stage/outcome/audio rings; the only SQLite seam; never awaited on a frame path
   assistant_output.py   ~590   cues, chirps, dynamic text, output episodes; FanInDucker converges with camilla.Ducker here
-  measurement_gate.py   ~540   pause/resume for the measurement window; is_active() is the only per-frame read
+  measurement_hold.py   ~610   landed (#4104): pause/pause_response/resume for the measurement window
   research_announcer.py ~370   announce/confirm state machine over a small TurnHost protocol
   push_to_talk.py       ~370   manual mic set, hold cap, keepalive, manual endpointer
   peering_client.py      ~95   arbitrate/session_started/session_ended
@@ -173,9 +186,9 @@ at all.
   mypy ignore baseline.
 - **`WakeFunnel`** (`on_fire`, `stage`, `outcome`, `attach_audio`) owns every
   `wake_events` call; its methods return before the row is written.
-- **`MeasurementGate`** (`is_active`, `pause`, `resume`) takes the output
-  gate, content tracker, volume coordinator and TTS as parameters and a
-  `session_active` callable for the BUSY check.
+- **`MeasurementHold`** landed in #4104 (`pause`, `pause_response`,
+  `resume`); the per-frame `is_set()` read on the hold event stays where it
+  is. Its scalar `pause()` has no production caller (Wave 2.3).
 - **`AssistantOutput`** (`play_cue`, `chirp`, `speak_text`, `begin_episode`,
   `end_episode`) owns the output gate, ducker, cue manager and earcon PCM.
 - **`TurnHost`** is the small protocol research and push-to-talk call back
@@ -240,9 +253,10 @@ with the WAN unplugged plays the network-down cue and never reaches
 - The server-VAD path end to end: six Protocol members, ~90 adapter lines,
   ~70 daemon lines, `JASPER_SERVER_VAD_ENABLED` (ADR-0152 is the removal
   condition; **owner decides** whether the experiment knob survives).
-- `for_tests` → `tests/_wake_loop.py`; `_synthetic_audio_profile` and the
-  `measurement_pause` scalar wrapper (zero production callers) deleted;
-  `trace.py` and `submit_recorded_audio` → `tests/voice_eval/`.
+- `_synthetic_audio_profile` and the scalar `MeasurementHold.pause()`
+  wrapper (zero production callers) deleted; `trace.py` and
+  `submit_recorded_audio` → `tests/voice_eval/`. `for_tests` moves to
+  `tests/_wake_loop.py` only under owner decision 6.
 - Dead re-exports, function-local re-imports, `getattr` ceremony on members
   both adapters implement, `QueueFull` handlers on unbounded queues, the
   unreachable flat-rate warning, `server_vad_active`, `_started_at`,
@@ -259,10 +273,13 @@ with the WAN unplugged plays the network-down cue and never reaches
 L6, in that order. Gate per PR: Wave 0's numbers before and after on the
 same Pi, in the PR description.
 
-**Wave 4 — decompose `WakeLoop` (Opus, one PR per module).** Order:
-`measurement_gate` → `peering_client` → `wake_telemetry` (this one also
-shrinks `_handle_wake_frame` from 285 lines to ~150) → `research_announcer`
-→ `push_to_talk` → `assistant_output`. Each PR moves its methods, its state
+**Wave 4 — decompose `WakeLoop` (Opus, one PR per module).** 4.1
+(`measurement_hold`) landed as #4104. Order for the rest: `peering_client` →
+`wake_telemetry` (this one also shrinks `_handle_wake_frame` from 285 lines
+to ~150) → `research_announcer` → `push_to_talk` → `assistant_output`. The
+steward's scout rejected the research extraction as "a redesign"; it is —
+the `TurnHost` seam in §3.2 is that redesign, so it is an Opus PR that lands
+the seam and the move together or not at all. Each PR moves its methods, its state
 fields and its tests; before moving a test file, convert its `caplog`
 substring assertions to `tests/_log_events.py` and delete the misfiled
 tests in `test_voice_daemon_wake_triple_stream.py:355-end` into files named
@@ -312,6 +329,16 @@ ADR when a constant moves. `daemon_main.py` table-driving and the
    earned (a query surface the corpus tooling and `flag_recent_issue` use);
    the fix is where its writes run, not whether it exists. Recommendation:
    keep it.
+5. Program ownership: run this brief as its own orchestrator session (the
+   UX-audit shape) or hand its waves to the #4030 steward as lanes.
+   Recommendation: own session, because Waves 0, 1, 3 and 6 need hardware
+   gates and one person reading the timeline; tell the steward to skip the
+   voice loop meanwhile.
+6. `for_tests` classmethods: #4085's came-back-clean list sanctions them as
+   a seam across eight modules; the voice-daemon audit found this one is
+   185 lines of stub classes plus a `setattr` back door shipped to the Pi.
+   Keep the seam or move it to `tests/`. Recommendation: move this one,
+   leave the other seven alone.
 
 ## 7. Sub-agent prompt template
 
@@ -346,7 +373,7 @@ Wave 1 — deafness and boot
 Wave 2 — subtraction
 - [ ] 2.1 `WakeFuser` + condition refresh (input-side F1; voice-daemon M4)
 - [ ] 2.2 Server-VAD path (providers C1) — after owner decision 1
-- [ ] 2.3 `for_tests` → tests; `_synthetic_audio_profile`; `measurement_pause` scalar (voice-daemon H4, M9, M11)
+- [ ] 2.3 `_synthetic_audio_profile`; scalar `MeasurementHold.pause()` (voice-daemon M9, M11); `for_tests` → tests only under decision 6 (H4)
 - [ ] 2.4 `trace.py` + `submit_recorded_audio` → `tests/voice_eval/` (providers G6)
 - [ ] 2.5 Dead code sweep (voice-daemon L1–L4; providers G1–G5, G7, C2, C3, C4; tools F3–F6)
 - [ ] 2.6 Prose sweep, `voice_daemon.py` (voice-daemon §4, M5, M6)
@@ -363,7 +390,7 @@ Wave 3 — our side of the latency
 - [ ] 3.7 Owner gate: before/after timeline numbers in each PR
 
 Wave 4 — decompose WakeLoop
-- [ ] 4.1 `measurement_gate.py`
+- [x] 4.1 `measurement_hold.py` — landed as #4104 before this brief
 - [ ] 4.2 `peering_client.py`
 - [ ] 4.3 `wake_telemetry.py` (also `_handle_wake_frame` inlay)
 - [ ] 4.4 `research_announcer.py` + `TurnHost`
