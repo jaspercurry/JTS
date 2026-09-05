@@ -179,15 +179,11 @@ quote_args() {
     printf '%s' "$out"
 }
 
-# Print the command chain that restarts <unit>, waits for it to settle,
-# confirms it went active, then tails its journal with routine device-
-# discovery noise filtered out. Splice into an ssh command string with
-# $(...) — switch-voice-provider.sh and switch-wake-word.sh both restart
-# jasper-voice this way.
-#
-#   restart_and_verify_unit <unit> [journal_filter_regex]
-restart_and_verify_unit() {
-    local unit="$1" filter="${2:-GetGpuDevices|device_discovery}"
+JASPER_VOICE_JOURNAL_NOISE_RE='GetGpuDevices|device_discovery'
+
+# restart_and_verify_cmd <unit> [journal_filter_regex]
+restart_and_verify_cmd() {
+    local unit="$1" filter="${2:-$JASPER_VOICE_JOURNAL_NOISE_RE}"
     printf 'sudo systemctl restart %s && sleep 2 && systemctl is-active %s && sudo journalctl -u %s -n 5 --no-pager 2>&1 | grep -v -E %s | tail -5' \
         "$unit" "$unit" "$unit" "$(shell_quote "$filter")"
 }

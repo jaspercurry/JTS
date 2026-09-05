@@ -136,12 +136,12 @@ if [[ -z "$MODEL" || "$MODEL" == *$'\n'* || ! "$MODEL" =~ ^[A-Za-z0-9._/-]+$ ]];
 fi
 
 echo "Switching ${PI_HOST}:JASPER_GEMINI_MODEL → ${MODEL}"
-"${SSH[@]}" "sudo sh -s -- ${MODEL} ${OPERATOR_ENV} ${PROVIDER_ENV}" <<'REMOTE'
+"${SSH[@]}" "sudo sh -s -- ${MODEL} ${OPERATOR_ENV} ${PROVIDER_ENV} /proc $(shell_quote "$JASPER_VOICE_JOURNAL_NOISE_RE")" <<'REMOTE'
 set -eu
 model="$1"
 operator_env="$2"
 provider_env="$3"
-proc_root="${4:-/proc}"
+proc_root="${4:-/proc}"; filter="$5"
 expected="JASPER_GEMINI_MODEL=${model}"
 
 # The wizard-owned provider file is sourced after jasper.env, so it is the
@@ -189,6 +189,6 @@ fi
 
 printf '%s\n' "$expected"
 journalctl -u jasper-voice -n 5 --no-pager 2>&1 \
-    | grep -v -E 'GetGpuDevices|device_discovery' \
+    | grep -v -E "$filter" \
     | tail -5
 REMOTE

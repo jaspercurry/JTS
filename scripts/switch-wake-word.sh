@@ -84,4 +84,4 @@ echo "Switching ${PI_HOST}:JASPER_WAKE_MODEL → ${MODEL}"
 $SSH "sudo install -d -m 0750 /var/lib/jasper && \
       printf 'JASPER_WAKE_MODEL=%s\n' '${MODEL}' | sudo tee /var/lib/jasper/wake_model.env >/dev/null && \
       sudo chmod 0644 /var/lib/jasper/wake_model.env && \
-      $(restart_and_verify_unit jasper-voice)"
+      $(restart_and_verify_cmd jasper-voice)"

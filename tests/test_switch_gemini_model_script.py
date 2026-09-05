@@ -407,6 +407,7 @@ def test_remote_switch_overrides_later_file_and_checks_restarted_environment(
             str(operator_env),
             str(provider_env),
             str(proc_root),
+            "GetGpuDevices|device_discovery",
         ],
         input=_switch_remote_source(),
         env=env,

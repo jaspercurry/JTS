@@ -30,6 +30,7 @@ ROBUST_SCRIPT_DIR = 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"'
 LIB_SOURCE = '. "${SCRIPT_DIR}/_lib.sh"'
 INVOCATIONS = {
     "switch-gemini-model.sh": (["3.1"], 0),
+    "switch-voice-provider.sh": (["gemini"], 0),
     "switch-wake-word.sh": (["jarvis_v2"], 0),
     "tail-pi-logs.sh": (["jasper-voice"], 0),
     "verify-ref-no-silence-bug.sh": ([], 1),
@@ -51,7 +52,7 @@ def script_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
     repo = tmp_path / "repo"
     scripts = repo / "scripts"
     scripts.mkdir(parents=True)
-    for name in (*SCRIPT_NAMES, "_lib.sh", "_wake_audio_metrics.py"):
+    for name in (*SCRIPT_NAMES, "switch-voice-provider.sh", "_lib.sh", "_wake_audio_metrics.py"):
         shutil.copy2(ROOT / "scripts" / name, scripts / name)
     (scripts / "_offline_wake_count.py").write_text("# test stub\n", encoding="utf-8")
 
@@ -79,6 +80,12 @@ def script_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
                     ;;
                 *"from jasper.wake_models import REGISTRY"*)
                     printf '  jarvis_v2      Jarvis v2 (recommended)\n'
+                    ;;
+                *"from jasper.voice.catalog import PROVIDERS"*)
+                    printf 'gemini\tGEMINI_API_KEY\tJASPER_GEMINI_MODEL\n'
+                    ;;
+                *"GEMINI_API_KEY=.*"*)
+                    printf 'GEMINI_API_KEY=fake123\n'
                     ;;
             esac
             """
@@ -365,6 +372,34 @@ def test_wake_word_current_and_usage_path_is_safe_with_stubbed_ssh(
     assert "Current wake model on explicit.invalid:" in result.stdout
     assert "Usage:  bash scripts/switch-wake-word.sh <key>" in result.stdout
     assert calls.count("operator@explicit.invalid") == 2
+
+
+def test_wake_word_switch_runs_the_shared_restart_and_verify_chain(
+    script_repo: tuple[Path, Path, Path],
+) -> None:
+    result, calls = _run_script(
+        script_repo,
+        "switch-wake-word.sh",
+        env_local=None,
+        inherited={"PI_HOST": "explicit.invalid", "PI_USER": "operator"},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "systemctl is-active jasper-voice" in calls
+
+
+def test_voice_provider_switch_runs_the_shared_restart_and_verify_chain(
+    script_repo: tuple[Path, Path, Path],
+) -> None:
+    result, calls = _run_script(
+        script_repo,
+        "switch-voice-provider.sh",
+        env_local=None,
+        inherited={"PI_HOST": "explicit.invalid", "PI_USER": "operator"},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "systemctl is-active jasper-voice" in calls
 
 
 @pytest.mark.parametrize("name", SCRIPT_NAMES)
