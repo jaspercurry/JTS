@@ -282,6 +282,7 @@ impl RingWriter {
     /// here — see the plan's `Output::Ring` pacing rule).
     pub fn publish_bytes(&mut self, payload: &[u8]) -> PublishOutcome {
         let g = self.map.geometry;
+        // PANIC-AUDITED: both fanin callers slice the payload from a buffer sized off this geometry
         assert_eq!(
             payload.len(),
             self.map.slot_bytes(),

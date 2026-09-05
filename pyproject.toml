@@ -186,7 +186,7 @@ jasper-xvf-profile = "jasper.cli.xvf_profile:main"
 jasper-xvf-firmware-update = "jasper.cli.xvf_firmware_update:main"
 jasper-enhanced-aec-install = "jasper.cli.enhanced_aec_install:main"
 jasper-audio-validate = "jasper.audio_validation:main"
-jasper-audio-hw-validate = "jasper.audio_validation:hardware_main"
+jasper-audio-hw-validate = "jasper.cli.audio_hw_validate:hardware_main"
 jasper-route-latency-harness = "jasper.cli.route_latency_harness:main"
 jasper-audio-config = "jasper.cli.audio_config:main"
 jasper-usbsink-volume = "jasper.cli.usbsink_volume_main:main"
@@ -374,7 +374,6 @@ module = [
     "jasper.citibike",
     "jasper.cli.aec_bridge",
     "jasper.cli.aec_init",
-    "jasper.cli.doctor",
     "jasper.cli.doctor.aec",
     "jasper.cli.doctor.audio",
     "jasper.cli.doctor.correction",

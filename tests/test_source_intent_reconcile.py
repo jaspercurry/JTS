@@ -434,7 +434,6 @@ def test_default_writer_publishes_env_and_inner_lock_for_both_web_owners(
             {"K": "V"},
             {
                 "mode": 0o660,
-                "lock_mode": 0o660,
                 "max_bytes": source_intent._MAX_INTENT_BYTES,
                 "lock_timeout_sec": source_intent._REQUEST_LOCK_TIMEOUT_SEC,
             },

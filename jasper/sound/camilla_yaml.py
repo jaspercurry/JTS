@@ -57,8 +57,7 @@ logger = logging.getLogger(__name__)
 BASE_CONFIG_PATH = Path("/etc/camilladsp/outputd-cutover.yml")
 # The PROGRAM's width: capture channels, the `master_gain` mixer's `in`, and the
 # channels `mono_sum_sources()` sums. FIXED — `emit_master_gain_pipeline` is a
-# deliberately 2-channel shape (the config contract is stereo-pinned; 2.1's
-# 3-channel stream generalises it WITH that contract, not alone).
+# deliberately 2-channel shape (the config contract is stereo-pinned).
 FLAT_PROGRAM_WIDTH = 2
 # The default OUTPUT width, stated once rather than re-derived by each caller
 # that needs to know which physical outputs the emitted graph addresses. A wider
@@ -374,8 +373,7 @@ def emit_sound_config(
     **byte-identical** to before this parameter existed (the solo-impact
     contract). ``[]`` bakes a FLAT right room segment (an uncalibrated
     follower ships flat, never the wrong-room curve). Deliberately a
-    2-channel axis — 2.1's 3-channel stream generalises it together with
-    the stereo-pinned config contract; do not pre-generalise it alone.
+    2-channel axis, matching the stereo-pinned config contract.
 
     ``channel_delays_ms`` is the room/pair time-of-arrival axis that
     belongs with measured correction, not Snapcast transport sync. It is

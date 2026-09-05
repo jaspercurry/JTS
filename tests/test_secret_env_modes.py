@@ -84,9 +84,15 @@ def test_install_widens_secret_env_on_upgrade():
     # the file), so an unrelated reference (migrate_wifi_guardian writes the
     # stash) doesn't false-match.
     mig = full.split("widen_control_secret_env_modes() {", 1)[1]
-    loop_match = re.search(r"for f in (?P<items>.*?); do", mig, flags=re.S)
+    loop_match = re.search(r"for entry in (?P<items>.*?); do", mig, flags=re.S)
     assert loop_match is not None, "widening must iterate an explicit file list"
-    widened_files = set(loop_match.group("items").replace("\\", " ").split())
+    # ONE loop over `name:mode` pairs: the env files jasper-control reads and
+    # the env-file locks a second unit acquires O_RDWR need different modes.
+    healed = dict(
+        item.split(":", 1)
+        for item in loop_match.group("items").replace("\\", " ").split()
+    )
+    widened_files = set(healed)
     for fname in (
         "voice_provider.env",
         # NOTE: google_credentials.env is NOT in this list anymore — WS1 Phase 4a
@@ -108,7 +114,9 @@ def test_install_widens_secret_env_on_upgrade():
         "transit.env",
         "weather.env",
     ):
-        assert fname in widened_files, f"widening loop must cover {fname}"
+        assert healed.get(fname) == "0640", (
+            f"widening loop must heal {fname} group-readable (0640)"
+        )
     for fname in (
         "google_credentials.env",
         "google_routes.env",
@@ -122,11 +130,21 @@ def test_install_widens_secret_env_on_upgrade():
     assert "jasper_env" in mig and "chgrp jasper" in mig, (
         "widening must still chgrp /etc/jasper/jasper.env"
     )
-    assert "chgrp jasper" in mig and "chmod 0640" in mig, (
-        "widening must chgrp jasper + chmod 0640 the files"
+    assert "chgrp jasper" in mig and 'chmod "${m}"' in mig, (
+        "widening must chgrp jasper + chmod each entry to its own mode"
     )
     assert '[[ -L "${path}" ]]' in mig, (
         "widening must refuse symlinks in the group-writable state directory"
+    )
+    # An env-file lock is acquired O_RDWR by a second unit: 0644 EACCESes it.
+    for lock_name in (".wake_model.env.lock", ".aec_mode.env.lock"):
+        assert healed.get(lock_name) == "0660", (
+            f"lock heal must make {lock_name} group-writable"
+        )
+    assert "rm -f" not in mig, (
+        "locks are chmodded, never removed — the daemons are already restarted, "
+        "so a live holder may hold the flock and a new opener would take a "
+        "different inode"
     )
     # The WiFi PSK stash is DELIBERATELY excluded — jasper-control needs only the
     # SSID (not the PSK value), so the PSK stays owner-only 0600 (least privilege).

@@ -266,12 +266,44 @@ def test_shared_lock_does_not_chmod_an_already_correct_root_owned_mode(
         raise AssertionError("an already-correct shared lock must not be chmodded")
 
     monkeypatch.setattr(os, "fchmod", unexpected_chmod)
-    with advisory_file_lock(
-        lock_path,
-        mode=0o660,
-        group_from_parent=True,
-    ):
+    with advisory_file_lock(lock_path, group_from_parent=True):
         pass
+
+
+def test_lock_is_acquired_when_the_mode_repair_is_denied(tmp_path, monkeypatch, caplog):
+    """Mode repair is BEST EFFORT: the open already succeeded, so a non-owner
+    that cannot chmod the lock still gets a functional lock. Only the
+    install-time heal can repair the mode for it."""
+
+    lock_path = tmp_path / "foreign.lock"
+    lock_path.touch(mode=0o644)
+
+    def deny(*_args, **_kwargs):
+        raise PermissionError("simulated chmod denial")
+
+    monkeypatch.setattr(atomic_io_module.os, "fchmod", deny)
+
+    with advisory_file_lock(lock_path) as handle:
+        assert not handle.closed
+
+    assert "event=atomic_io.lock_mode_failed" in caplog.text
+    assert stat.S_IMODE(lock_path.stat().st_mode) == 0o644
+
+
+@pytest.mark.parametrize("writer", ["update", "transform"])
+def test_env_lock_is_group_writable_whatever_the_creators_umask(tmp_path, writer):
+    """Some env files have writers in two units running as different service
+    users, and the units disagree on ``UMask=``. The lock is opened ``O_RDWR``,
+    so one left at the creator's 0644 EACCESes the peer's acquire."""
+    path = tmp_path / "wake_model.env"
+    previous_umask = os.umask(0o022)
+    try:
+        _write(writer, path)
+    finally:
+        os.umask(previous_umask)
+
+    lock = tmp_path / ".wake_model.env.lock"
+    assert stat.S_IMODE(lock.stat().st_mode) == 0o660
 
 
 @pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="requires O_NOFOLLOW")
@@ -283,11 +315,7 @@ def test_shared_lock_refuses_symlink_without_mutating_target(tmp_path):
     lock_path.symlink_to(target)
 
     with pytest.raises(OSError):
-        with advisory_file_lock(
-            lock_path,
-            mode=0o660,
-            group_from_parent=True,
-        ):
+        with advisory_file_lock(lock_path, group_from_parent=True):
             pass
 
     assert target.read_text(encoding="utf-8") == "sentinel"

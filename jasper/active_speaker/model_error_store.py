@@ -65,7 +65,6 @@ STATE_PATH_ENV = "JASPER_ACTIVE_SPEAKER_MODEL_ERROR_PATH"
 #: the point of the history is a trend in the model's error, and a trend that
 #: needs more than 32 points is one nobody is reading anyway.
 MAX_MODEL_ERROR_RECORDS = 32
-_STORE_LOCK_MODE = 0o660
 _STORE_LOCK_TIMEOUT_SEC = 5.0
 
 logger = logging.getLogger(__name__)
@@ -208,7 +207,6 @@ def adopt_floor(
     resolved = model_error_state_path(path)
     with advisory_file_lock(
         _store_lock_path(resolved),
-        mode=_STORE_LOCK_MODE,
         timeout_sec=_STORE_LOCK_TIMEOUT_SEC,
     ):
         state = load_state(resolved)
@@ -312,7 +310,6 @@ def record_model_error(
     resolved = model_error_state_path(path)
     with advisory_file_lock(
         _store_lock_path(resolved),
-        mode=_STORE_LOCK_MODE,
         timeout_sec=_STORE_LOCK_TIMEOUT_SEC,
     ):
         state = load_state(resolved)

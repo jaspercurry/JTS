@@ -985,33 +985,23 @@ def test_the_installer_ships_the_renderer_lane_confd():
 # --- fan-in's own contract ------------------------------------------------
 
 
-def _audio_runtime_fanin():
-    """The doctor's fan-in check module, imported through the package.
-
-    `jasper.cli.doctor` populates a global check registry at import and refuses
-    a duplicate order, so importing a submodule directly on a fresh interpreter
-    registers the same checks twice. Every other doctor test imports the
-    package for exactly this reason.
-    """
-    from jasper.cli import doctor
-
-    return doctor.audio_runtime_fanin
-
-
 def test_the_doctor_lane_roster_follows_the_armed_set(tmp_path):
     """An armed lane reports its RING PATH as its STATUS `pcm`, so the doctor's
     roster check must follow the map or it diagnoses a correctly-armed box as
     drifted."""
+    from jasper.cli.doctor import audio_runtime_fanin
+
     path = str(tmp_path / "lanes.env")
     rl.render_renderer_lanes_env(("spotify",), path=path)
 
-    roster = dict(_audio_runtime_fanin()._fanin_expected_inputs(lanes_env=path))
+    roster = dict(audio_runtime_fanin._fanin_expected_inputs(lanes_env=path))
     assert roster["spotify"] == rl.renderer_ring_path("spotify")
     assert roster["airplay"] == "hw:Loopback,1,1", "unarmed lanes are untouched"
 
 
 def test_the_doctor_lane_roster_is_the_shipped_one_when_nothing_is_armed(tmp_path):
-    audio_runtime_fanin = _audio_runtime_fanin()
+    from jasper.cli.doctor import audio_runtime_fanin
+
     path = str(tmp_path / "absent.env")
     assert (
         audio_runtime_fanin._fanin_expected_inputs(lanes_env=path)
@@ -1334,7 +1324,7 @@ def test_every_detach_reason_has_its_own_remedy():
     missing file when the real cause was an orphaned mapping. A new token added
     in Rust without a remedy here would silently inherit the same wrong advice.
     """
-    from jasper.cli import doctor
+    from jasper.cli.doctor import audio_runtime_ring
 
     rs = (
         REPO / "rust" / "jasper-fanin" / "src" / "mixer" / "ring_capture.rs"
@@ -1348,9 +1338,9 @@ def test_every_detach_reason_has_its_own_remedy():
     tokens = re.findall(r'=> "([a-z_]+)"', block.group(1))
     assert len(tokens) >= 4, tokens
 
-    remedies = {t: doctor.audio_runtime_ring._ring_detach_remedy(t) for t in tokens}
+    remedies = {t: audio_runtime_ring._ring_detach_remedy(t) for t in tokens}
     # The fallback text, identified by what only it says.
-    fallback = doctor.audio_runtime_ring._ring_detach_remedy("__no_such_token__")
+    fallback = audio_runtime_ring._ring_detach_remedy("__no_such_token__")
     for token, text in remedies.items():
         assert text, token
         if token == "unavailable":

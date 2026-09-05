@@ -36,7 +36,9 @@ pub fn mix_saturating(
     assistant: &[ProgramSample],
     out: &mut [ProgramSample],
 ) -> MixStats {
+    // PANIC-AUDITED: both buffers are period-sized scratch the daemon allocates once
     debug_assert_eq!(content.len(), assistant.len());
+    // PANIC-AUDITED: out is that same fixed-size period allocation
     debug_assert_eq!(content.len(), out.len());
 
     let mut clipped_samples = 0u32;

@@ -392,6 +392,7 @@ code = [
   "jasper/aec_engines/**",
   "jasper/audio_profile_state.py",
   "jasper/audio_validation*.py",
+  "jasper/cli/audio_hw_validate.py",
   "jasper/audio_input_view.py",
   "jasper/control/aec_endpoints.py",
   "jasper/mics/**",
@@ -872,7 +873,7 @@ verification = [
 
 [[subsystem]]
 id = "multiroom-grouping"
-title = "Multi-room speaker grouping (stereo pair / 2.1 / wireless sub)"
+title = "Multi-room speaker grouping (stereo pair)"
 safety = "hardware-risk"
 code = [
   "jasper/multiroom/**",

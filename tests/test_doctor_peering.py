@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-from jasper.cli import doctor
 from jasper.cli.doctor import peering
 
 _TWO_SIBLINGS = (
@@ -53,7 +52,7 @@ def test_check_peering_mode_verdicts(monkeypatch, tmp_path, body, status, reason
         lambda p: env if "peering.env" in p else Path(p),
     )
 
-    r = doctor.check_peering_mode()
+    r = peering.check_peering_mode()
 
     assert r.status == status
     assert r.reason == reason
@@ -68,7 +67,7 @@ def test_check_peering_mode_reports_unreadable_env(monkeypatch, tmp_path):
         lambda p: env if "peering.env" in p else Path(p),
     )
 
-    r = doctor.check_peering_mode()
+    r = peering.check_peering_mode()
 
     assert r.status == "warn"
     assert r.reason == peering.REASON_PEERING_ENV_UNREADABLE
@@ -89,9 +88,7 @@ def test_check_peering_discovery_counts_siblings_excluding_self(
     """The sibling count is a formatted number the reason vocabulary does not
     carry — this is the pure-formatting exception AGENTS.md allows to keep a
     `.detail` assertion."""
-    monkeypatch.setattr(
-        "jasper.cli.doctor.shutil.which", lambda p: "/usr/bin/avahi-browse"
-    )
+    monkeypatch.setattr("shutil.which", lambda p: "/usr/bin/avahi-browse")
     monkeypatch.setattr(
         "jasper.cli.doctor.peering._run",
         lambda *a, **kw: type("P", (), {"returncode": 0, "stdout": output})(),
@@ -101,7 +98,7 @@ def test_check_peering_discovery_counts_siblings_excluding_self(
             "jasper.cli.doctor.peering._local_peer_id", lambda: local_peer_id
         )
 
-    r = doctor.check_peering_discovery()
+    r = peering.check_peering_discovery()
 
     assert r.status == "ok"
     assert must_name in r.detail
@@ -109,24 +106,22 @@ def test_check_peering_discovery_counts_siblings_excluding_self(
 
 def test_check_peering_discovery_warns_without_avahi_browse(monkeypatch):
     """avahi-browse is an optional dep — unverifiable, not broken."""
-    monkeypatch.setattr("jasper.cli.doctor.shutil.which", lambda p: None)
+    monkeypatch.setattr("shutil.which", lambda p: None)
 
-    r = doctor.check_peering_discovery()
+    r = peering.check_peering_discovery()
 
     assert r.status == "warn"
     assert r.reason == peering.REASON_DISCOVERY_TOOL_MISSING
 
 
 def test_check_peering_discovery_warns_on_browse_failure(monkeypatch):
-    monkeypatch.setattr(
-        "jasper.cli.doctor.shutil.which", lambda p: "/usr/bin/avahi-browse"
-    )
+    monkeypatch.setattr("shutil.which", lambda p: "/usr/bin/avahi-browse")
     monkeypatch.setattr(
         "jasper.cli.doctor.peering._run",
         lambda *a, **kw: type("P", (), {"returncode": 1, "stdout": ""})(),
     )
 
-    r = doctor.check_peering_discovery()
+    r = peering.check_peering_discovery()
 
     assert r.status == "warn"
     assert r.reason == peering.REASON_DISCOVERY_BROWSE_FAILED

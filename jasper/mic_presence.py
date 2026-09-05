@@ -54,8 +54,8 @@ Three layers, kept strictly separate so the next microphone needs no change here
   ``xvf3800.RuntimeProfile``). When the present mic is a detected XVF, that
   enriches the record (card, channels, chip-AEC capability). A present non-XVF
   mic simply has no enrichment; the per-device doctor checks report its
-  specifics. When a second mic profile lands and ``jasper/mics/base.py`` is
-  extracted, enrichment generalises there — presence already does not care.
+  specifics. Enrichment stays XVF-specific until a second mic family needs
+  its own — presence already does not care.
 """
 from __future__ import annotations
 

@@ -426,7 +426,6 @@ def test_both_profiles_refresh_only_active_sources_then_reapply_intent():
         f"{int(source_intent.RECONCILE_BROKER_TIMEOUT_SECONDS)}s"
     ) in helper
     assert "mode=0o660" in helper
-    assert "lock_mode=0o660" in helper
     assert "--stop-disabled" not in helper
 
 
