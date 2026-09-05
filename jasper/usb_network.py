@@ -22,8 +22,7 @@ import re
 import socket
 import struct
 import sys
-import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
@@ -91,29 +90,26 @@ def owner_lock(
     *,
     timeout: float = 5.0,
 ):
-    """Serialize bounded plan/projection mutations across install and boot."""
+    """Serialize bounded plan/projection mutations across install and boot.
 
-    lock_path = Path(path)
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-    deadline = time.monotonic() + timeout
-    try:
-        while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    raise UsbNetworkPlanError(
-                        f"timed out acquiring USB network owner lock {lock_path}"
-                    )
-                time.sleep(0.05)
-        yield
-    finally:
+    Root-only state, so the lock keeps 0600 and root's own group.
+    """
+
+    # Lazy for the same reason as ``_write_boot_text``.
+    from jasper.atomic_io import advisory_file_lock
+
+    with ExitStack() as stack:
         try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        finally:
-            os.close(fd)
+            stack.enter_context(
+                advisory_file_lock(
+                    path, mode=0o600, group_from_parent=False, timeout_sec=timeout
+                )
+            )
+        except TimeoutError as exc:
+            raise UsbNetworkPlanError(
+                f"timed out acquiring USB network owner lock {path}"
+            ) from exc
+        yield
 
 
 @dataclass(frozen=True)
