@@ -394,40 +394,41 @@ observe_output_hardware_state() {
         "$OBSERVED_OUTPUT_USB_MANAGEMENT_TRANSPORT_AVAILABLE" || true
     log_event "state_${action}" \
         "path=${OUTPUT_HARDWARE_STATE_PATH} profile_id=${OBSERVED_OUTPUT_PROFILE_ID:-unknown} status=${OBSERVED_OUTPUT_PROFILE_STATUS:-unknown}"
-    printf 'event=hardware.usb_role_resolved topology=%s desired=%s active=%s gadget_available=%s management_transport_available=%s reason=%s\n' \
-        "${OBSERVED_OUTPUT_USB_TOPOLOGY:-unknown}" "${OBSERVED_OUTPUT_USB_DESIRED_ROLE:-unknown}" \
-        "${OBSERVED_OUTPUT_USB_ACTIVE_ROLE:-unknown}" "${OBSERVED_OUTPUT_USB_GADGET_AVAILABLE:-false}" \
-        "${OBSERVED_OUTPUT_USB_MANAGEMENT_TRANSPORT_AVAILABLE:-false}" "${OBSERVED_OUTPUT_USB_REASON:-state_missing}" >&2
 }
 
 reconcile_i2s_hat_boot() {
-    local payload topology changed
+    # Declared before the eval, so a payload that omits a key leaves it empty
+    # -- the `case` below then exits 66 instead of tripping `set -u`, and an
+    # inherited JASPER_BOOT_* from the caller's environment can never stand in.
+    local payload
+    local JASPER_BOOT_I2S_HAT_CHANGED="" JASPER_BOOT_I2S_HAT_PROFILE=""
+    local JASPER_BOOT_BOARD_TOPOLOGY=""
     if payload="$(
         "$OUTPUT_HARDWARE_PYTHON" -m jasper.audio_hardware.usb_port_role \
-            --reconcile-boot \
+            --reconcile-boot --env \
             --i2s-hat-intent-file "$I2S_HAT_INTENT_FILE"
     )"; then
         :
-    elif [[ "$payload" == *'"boot_config_published_not_durable": true'* ]]; then
+    elif [[ "$payload" == *'JASPER_BOOT_CONFIG_PUBLISHED_NOT_DURABLE=true'* ]]; then
         I2S_HAT_APPLY_ERROR=1
     else
         log_event "i2s_hat_apply" "result=error action=preserve_boot_config"
         exit 66
     fi
-    topology="$(printf '%s' "$payload" | sed -n 's/.*"board_topology": *"\([^"]*\)".*/\1/p')"
-    I2S_HAT_DESIRED_PROFILE="$(printf '%s' "$payload" | sed -n 's/.*"i2s_hat_profile": *"\([^"]*\)".*/\1/p')"
-    changed="$(printf '%s' "$payload" | sed -n 's/.*"i2s_hat_boot_config_changed": *\([[:alpha:]][[:alpha:]]*\).*/\1/p')"
-    case "$changed" in true|false) ;; *) exit 66 ;; esac
-    if [[ "$topology" == "unsupported" ]]; then
+    # Every value is shlex-quoted by the emitter (ADR-0235 R2).
+    eval "$payload" || exit 66
+    case "$JASPER_BOOT_I2S_HAT_CHANGED" in true|false) ;; *) exit 66 ;; esac
+    I2S_HAT_DESIRED_PROFILE="$JASPER_BOOT_I2S_HAT_PROFILE"
+    if [[ "$JASPER_BOOT_BOARD_TOPOLOGY" == "unsupported" ]]; then
         log_event "i2s_hat_apply" "result=unavailable board_topology=unsupported"
         return 0
     fi
-    I2S_HAT_BOOT_CHANGED="$changed"
+    I2S_HAT_BOOT_CHANGED="$JASPER_BOOT_I2S_HAT_CHANGED"
     if [[ "$I2S_HAT_APPLY_ERROR" == "1" ]]; then
         log_event "i2s_hat_apply" "result=error error=boot_config_published_not_durable"
         return 0
     fi
-    log_event "i2s_hat_apply" "result=${changed:-unknown} profile=${I2S_HAT_DESIRED_PROFILE:-none}"
+    log_event "i2s_hat_apply" "result=${I2S_HAT_BOOT_CHANGED:-unknown} profile=${I2S_HAT_DESIRED_PROFILE:-none}"
 }
 
 sync_i2s_hat_reboot_marker() {
@@ -819,9 +820,10 @@ OUTPUTD_ACTIVE_CHANNELS=""
 # has to re-run it. The emitter decides it: it reads the record it is about to
 # replace.
 OUTPUT_HARDWARE_RECORD_CHANGED=0
-# The whole `jasper.cli.output_hardware --env` contract, cleared to what an
-# ABSENT record means (ADR-0235 R2). Re-cleared when a payload evals but fails
-# validation, so half a record can never stand next to half of another.
+# The `jasper.cli.output_hardware --env` fields this reconciler consumes,
+# cleared to what an ABSENT record means (ADR-0235 R2). Re-cleared when a
+# payload evals but fails validation, so half a record can never stand next
+# to half of another.
 clear_observed_output_state() {
     OBSERVED_OUTPUT_PROFILE_ID=""
     OBSERVED_OUTPUT_PROFILE_STATUS=""
@@ -833,12 +835,7 @@ clear_observed_output_state() {
     # instead of only reporting `recognized=0`.
     OBSERVED_OUTPUT_BLOCKER_CODES=""
     OBSERVED_OUTPUT_RECORD_CHANGED=0
-    OBSERVED_OUTPUT_USB_TOPOLOGY=""
-    OBSERVED_OUTPUT_USB_DESIRED_ROLE=""
-    OBSERVED_OUTPUT_USB_ACTIVE_ROLE=""
-    OBSERVED_OUTPUT_USB_GADGET_AVAILABLE=""
     OBSERVED_OUTPUT_USB_MANAGEMENT_TRANSPORT_AVAILABLE=""
-    OBSERVED_OUTPUT_USB_REASON=""
     OBSERVED_OUTPUT_DUAL_MAPPING_OK=0
     OBSERVED_OUTPUT_DUAL_MAPPING_REASON=""
     OBSERVED_OUTPUT_DUAL_ORDER_SOURCE=""
