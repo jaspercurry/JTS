@@ -1340,9 +1340,9 @@ banks the volume as the crossover session's measurement reference.
 # bands, converge on 75-80 dB SPL and bank the result
 jasper-seat-level --mic-serial 810-8494
 
-# explicit stimulus, band, calibration file; machine-readable
+# explicit stimulus, band, calibration file
 jasper-seat-level --stimulus-wav check.wav --calibration-file umik2.txt \
-    --target-db-spl 72 --tolerance-db 2 --json
+    --target-db-spl 72 --tolerance-db 2
 
 # instrumented: every window's per-sample dB SPL series, one DEBUG line per window
 jasper-seat-level --mic-serial 810-8494 --verbose
@@ -1396,7 +1396,10 @@ jasper-seat-level --mic-serial 810-8494 --verbose
   any chain is swept in at most 7 bites, downward moves are uncapped, and no
   sample is discarded for being quiet. Audible time is bounded structurally at
   11 readings, so at most about **11 × `settle_timeout_s`** plus the fade legs.
-- **Exit codes**: `0` converged and banked, `1` any refusal. Every refusal
+- **Exit codes**: `0` converged and banked — stdout carries the reference
+  volume, the measured SPL, whether the household volume came back, and where
+  the reference was banked; `1` any refusal, as `{status, reason, detail}` with
+  the whole ramp telemetry under `detail`. Every refusal
   restores the household volume, banks nothing, and names itself — the mic ones
   (`mic_calibration_unavailable`, `measurement_mic_absent`, `mic_not_observing`,
   `mic_feed_lost`, `mic_clipping`), the target ones
