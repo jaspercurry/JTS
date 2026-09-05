@@ -3034,3 +3034,46 @@ async def test_cancelling_a_long_backoff_unwinds_at_once():
         await asyncio.wait_for(task, timeout=2.0)
     assert task.cancelled()
 
+
+
+@pytest.mark.parametrize("end_input_sent", [True, False])
+async def test_first_chunk_event_reports_latency_since_end_input(
+    caplog, end_input_sent,
+):
+    """`since_end_input_ms` is the provider's own latency — the interval
+    between the daemon asking for a response and the first audio coming
+    back. It is absent when the daemon never asked (server VAD commits the
+    buffer itself), because there is no honest number to report there.
+    `since_turn_start_ms` still spans the user's whole utterance plus local
+    endpointing, which is what made the old prose line unreadable as a
+    provider figure."""
+    from tests._log_events import event_fields
+
+    caplog.set_level(logging.INFO, logger="jasper.voice.openai_session")
+    conn, factory = _make_conn()
+    await conn.start(ToolRegistry(), "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        await asyncio.sleep(0.01)
+        if end_input_sent:
+            await turn.end_input()
+        sess.feed({
+            "type": "response.output_audio.delta",
+            "delta": _b64(b"chunk"),
+            "response_id": "resp_1",
+        })
+        await _wait_until(lambda: turn.chunks_received() >= 1)
+
+        fields = event_fields(caplog, "turn.first_chunk")
+        assert fields["provider"] == "openai"
+        assert int(fields["since_turn_start_ms"]) >= 10
+        if end_input_sent:
+            assert 0 <= int(fields["since_end_input_ms"]) <= int(
+                fields["since_turn_start_ms"]
+            )
+        else:
+            assert "since_end_input_ms" not in fields
+        await turn.release()
+    finally:
+        await conn.stop()

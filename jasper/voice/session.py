@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import (
@@ -15,6 +17,7 @@ from typing import (
     runtime_checkable,
 )
 
+from ..log_event import log_event
 from ..tools import ToolRegistry
 
 
@@ -474,3 +477,27 @@ class LiveConnection(Protocol):
         committed the user audio. Providers without daemon-controlled
         server VAD may omit the method."""
         ...
+
+
+def log_first_chunk(
+    logger: logging.Logger,
+    provider: str,
+    *,
+    turn_start_monotonic: float,
+    end_input_monotonic: float,
+) -> None:
+    """Emit ``event=turn.first_chunk`` for a turn's first assistant audio.
+
+    ``since_end_input_ms`` is the provider's own latency; it is omitted when
+    the daemon never sent ``end_input`` (server VAD commits the buffer
+    itself). ``since_turn_start_ms`` spans the user's whole utterance plus
+    local endpointing, so it is not a provider number.
+
+    ``end_input_monotonic`` of 0.0 means "never sent".
+    """
+    now = time.monotonic()
+    fields: dict[str, Any] = {"provider": provider}
+    if end_input_monotonic:
+        fields["since_end_input_ms"] = int((now - end_input_monotonic) * 1000)
+    fields["since_turn_start_ms"] = int((now - turn_start_monotonic) * 1000)
+    log_event(logger, "turn.first_chunk", **fields)

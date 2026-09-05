@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import asyncio
 from types import SimpleNamespace
 
 from jasper.tts_routing import FANIN_TTS_SOCKET
@@ -118,3 +119,131 @@ def test_priced_research_model_does_not_warn(caplog) -> None:
     assert not any(
         "event=pricing.unpriced" in r.getMessage() for r in caplog.records
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-turn latency timeline (`event=turn.timeline`, /state.voice.last_turn_ms)
+# ---------------------------------------------------------------------------
+
+
+def _timeline_loop(*, wake: bool):
+    """A WakeLoop parked mid-turn with a freshly anchored timeline.
+
+    `wake` picks which anchor the turn gets: a wake fire, or the turn's own
+    start (push-to-talk, remote, research confirmation).
+    """
+    import time
+
+    from jasper.voice_daemon import State, WakeLoop
+    from tests._live_turn_fake import FakeLiveTurn
+
+    wl = WakeLoop.for_tests()
+    wl._state = State.SESSION
+    wl._turn = FakeLiveTurn()
+    wl._session_id = 1
+    wl._bg_tasks = set()
+    wl._user_speech_seen = True
+    wl._input_ended = False
+    wl._manual_endpoint_this_turn = not wake
+    wl._server_vad_this_turn = False
+    wl._barge_in_active = False
+    wl._silence_started_at = 0.0
+    wl._turn_started_at_loop = asyncio.get_event_loop().time()
+    if wake:
+        wl._wake_event_at_monotonic = time.monotonic()
+    wl._anchor_turn_timeline()
+    return wl
+
+
+def _frame():
+    import numpy as np
+
+    return np.zeros(1280, dtype=np.int16)
+
+
+async def test_wake_turn_timeline_carries_every_stage_in_order(caplog):
+    """The ruler the rest of the loop is tuned against: one line per turn
+    whose deltas all count from the wake fire, in the order the stages
+    happen. Without the ordering pin a stage anchored on the wrong clock
+    still logs a plausible-looking number."""
+    import logging
+
+    from tests._log_events import event_fields
+
+    caplog.set_level(logging.INFO, logger="jasper.voice_daemon")
+    wl = _timeline_loop(wake=True)
+
+    # Real sleeps between stages so the ordering assertion below is a pin
+    # and not six numbers that happen to round to the same millisecond.
+    await wl._play_listening_chirp(going_on=True)
+    await asyncio.sleep(0.002)
+    await wl._send_session_audio(_frame())
+    await asyncio.sleep(0.002)
+    # Silent frame with speech already seen: starts the end-of-utterance
+    # silence clock, which is the honest end-of-speech moment.
+    await wl._handle_session_frame(_frame())
+    await asyncio.sleep(0.002)
+    await wl._end_session_input("test")
+    await asyncio.sleep(0.002)
+    await wl._record_response_started()
+    await wl._end_turn("test")
+
+    fields = event_fields(caplog, "turn.timeline")
+    assert fields["anchor"] == "wake"
+    assert fields["endpointer"] == wl._endpointer_label()
+    stages = [
+        "cue_ms", "first_audio_to_provider_ms", "speech_end_ms",
+        "end_input_ms", "first_response_ms", "total_ms",
+    ]
+    assert [key for key in stages if key in fields] == stages
+    deltas = [int(fields[key]) for key in stages]
+    assert deltas[0] >= 0
+    assert deltas == sorted(deltas)
+
+
+async def test_manual_turn_anchors_on_itself_and_omits_the_wake_stages(caplog):
+    """A push-to-talk press has no wake fire and no listening chirp, so the
+    line must say what ms 0 is and leave the stages that did not happen
+    out rather than reporting them as zero."""
+    import logging
+
+    from tests._log_events import event_fields
+
+    caplog.set_level(logging.INFO, logger="jasper.voice_daemon")
+    wl = _timeline_loop(wake=False)
+
+    await wl._send_session_audio(_frame())
+    await wl._end_session_input("test")
+    await wl._end_turn("test")
+
+    fields = event_fields(caplog, "turn.timeline")
+    assert fields["anchor"] == "manual"
+    assert "cue_ms" not in fields
+    assert "speech_end_ms" not in fields
+    assert "first_response_ms" not in fields
+    assert int(fields["first_audio_to_provider_ms"]) >= 0
+    assert int(fields["end_input_ms"]) >= 0
+
+
+async def test_a_consumed_wake_does_not_anchor_a_later_turn():
+    """A wake that never opened a turn (late cancel, lost arbitration) must
+    not become the anchor of the next press minutes later."""
+    wl = _timeline_loop(wake=True)
+
+    wl._anchor_turn_timeline()
+
+    assert wl._turn_anchor_kind == "manual"
+
+
+async def test_session_status_publishes_the_last_turn_timeline():
+    """`/state.voice.last_turn_ms` is the surface an operator reads without
+    a journal; it stays empty until a turn has actually been served."""
+    wl = _timeline_loop(wake=True)
+    assert wl.session_status()["last_turn_ms"] == {}
+
+    await wl._end_session_input("test")
+    await wl._end_turn("test")
+
+    last = wl.session_status()["last_turn_ms"]
+    assert last["anchor"] == "wake"
+    assert last["end_input_ms"] <= last["total_ms"]
