@@ -17,7 +17,7 @@ Group=jasper
 # leave the oneshot activating forever.
 TimeoutStartSec=600
 # Whole-cgroup ceiling, not a per-process one: the ~40 MB doctor import, up to
-# `_doctor_max_concurrency` (8) checks in flight, and every subprocess they
+# `DOCTOR_MAX_CONCURRENCY` (8) checks in flight, and every subprocess they
 # fork all count against it — the heaviest single child is the voice
 # provider-import probe at ~85 MB; the aplay/amixer/journalctl probes are a
 # few MB each. The bound stops a runaway probe from joining a global OOM

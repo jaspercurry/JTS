@@ -645,8 +645,8 @@ __all__ = [
     "_watch_line",
     "_watch_loop",
     "_build_doctor_checks",
-    "_doctor_check_timeout",
-    "_doctor_max_concurrency",
+    "DOCTOR_CHECK_TIMEOUT_SECONDS",
+    "DOCTOR_MAX_CONCURRENCY",
     "main",
     "run_async",
     "argparse",
@@ -801,42 +801,8 @@ def _env_int_for_doctor(name: str, default: int) -> int:
     return value
 
 
-def _env_float_for_doctor(name: str, default: float) -> float:
-    raw = os.environ.get(name, "")
-    if not raw:
-        return default
-    try:
-        value = float(raw)
-    except ValueError:
-        return default
-    if value <= 0:
-        return default
-    return value
-
-
-_DOCTOR_DEFAULT_CONCURRENCY = 8
-_DOCTOR_MAX_CONCURRENCY = 16
-_DOCTOR_DEFAULT_CHECK_TIMEOUT_SECONDS = 15.0
-
-
-def _doctor_max_concurrency() -> int:
-    return max(
-        1,
-        min(
-            _DOCTOR_MAX_CONCURRENCY,
-            _env_int_for_doctor(
-                "JASPER_DOCTOR_MAX_CONCURRENCY",
-                _DOCTOR_DEFAULT_CONCURRENCY,
-            ),
-        ),
-    )
-
-
-def _doctor_check_timeout() -> float:
-    return _env_float_for_doctor(
-        "JASPER_DOCTOR_CHECK_TIMEOUT_SECONDS",
-        _DOCTOR_DEFAULT_CHECK_TIMEOUT_SECONDS,
-    )
+DOCTOR_MAX_CONCURRENCY = 8
+DOCTOR_CHECK_TIMEOUT_SECONDS = 15.0
 
 
 def _local_audio_config_from_env() -> SimpleNamespace:
@@ -1075,7 +1041,12 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
-async def run_async(cfg: Config | SimpleNamespace) -> list[CheckResult]:
+async def run_async(
+    cfg: Config | SimpleNamespace,
+    *,
+    max_concurrency: int = DOCTOR_MAX_CONCURRENCY,
+    check_timeout: float = DOCTOR_CHECK_TIMEOUT_SECONDS,
+) -> list[CheckResult]:
     """Run every registered check and return the results in registry order.
 
     Checks run concurrently (most are subprocess/socket/file probes) but
@@ -1086,14 +1057,13 @@ async def run_async(cfg: Config | SimpleNamespace) -> list[CheckResult]:
     evidence.reset()
     install_profile = read_install_profile()
     checks = _build_doctor_checks(cfg, install_profile)
-    semaphore = asyncio.Semaphore(_doctor_max_concurrency())
+    semaphore = asyncio.Semaphore(max_concurrency)
     exclusive_locks = {
         c.exclusive_group: asyncio.Lock()
         for c in checks
         if c.exclusive_group
     }
-    timeout = _doctor_check_timeout()
     return list(await asyncio.gather(*[
-        _run_runnable_bounded(c, semaphore, exclusive_locks, timeout)
+        _run_runnable_bounded(c, semaphore, exclusive_locks, check_timeout)
         for c in checks
     ]))

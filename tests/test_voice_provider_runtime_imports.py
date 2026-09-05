@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import ast
 import dataclasses
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -337,21 +336,21 @@ def test_timeout_is_a_warning_not_a_failure(monkeypatch, probe):
 
 @pytest.mark.parametrize(
     "row_timeout",
-    ["0.5", "1", "1.5", "3", "6", "7", "10", "15", "20", "120"],
+    [0.5, 1, 1.5, 3, 6, 7, 10, 15, 20, 120],
 )
-def test_probe_timeout_stays_under_the_row_guard(monkeypatch, row_timeout):
-    """`.env.example` promises "Keep this above the low-level probe timeouts"
-    for JASPER_DOCTOR_CHECK_TIMEOUT_SECONDS. Nothing asserted it.
+def test_probe_timeout_stays_under_the_row_guard(row_timeout):
+    """The doctor's per-row guard is DOCTOR_CHECK_TIMEOUT_SECONDS (15 s by
+    default), and the import probe must finish strictly inside it.
 
-    It has to hold at *every* operator-configured row timeout, not just the
-    shipped 15 s: subtraction alone goes negative on a small row value, and a
-    probe timeout at or above the row guard means the row is cancelled first —
-    which makes this check's could-not-verify warn unreachable AND releases
-    the memory-sample lock while subprocess.run's child is still resident.
+    It has to hold at *every* row timeout the harness could be given, not
+    just the shipped 15 s: subtraction alone goes negative on a small row
+    value, and a probe timeout at or above the row guard means the row is
+    cancelled first — which makes this check's could-not-verify warn
+    unreachable AND releases the memory-sample lock while subprocess.run's
+    child is still resident.
     """
-    monkeypatch.setenv("JASPER_DOCTOR_CHECK_TIMEOUT_SECONDS", row_timeout)
-    row = doctor_pkg._doctor_check_timeout()
-    probe = doctor_voice._import_probe_timeout()
+    row = float(row_timeout)
+    probe = doctor_voice._import_probe_timeout(row_timeout=row)
     assert probe > 0, f"probe timeout must be positive, got {probe}"
     assert probe < row, (
         f"probe timeout {probe} is not below the row guard {row} — the row "
@@ -362,35 +361,20 @@ def test_probe_timeout_stays_under_the_row_guard(monkeypatch, row_timeout):
 def test_probe_timeout_at_the_shipped_default_matches_the_doctor_ceiling():
     """At the shipped 15 s row guard the probe gets 10 s — the same ceiling
     the doctor's other subprocess probes already use."""
-    assert doctor_pkg._DOCTOR_DEFAULT_CHECK_TIMEOUT_SECONDS == 15.0
+    assert doctor_pkg.DOCTOR_CHECK_TIMEOUT_SECONDS == 15.0
     assert doctor_voice._import_probe_timeout() == 10.0
-
-
-def test_env_example_ships_a_row_timeout_above_the_probe():
-    """The prose promise and the shipped value are checked together, so
-    editing one without the other fails here rather than in the field."""
-    text = (ROOT / ".env.example").read_text()
-    match = re.search(
-        r"^JASPER_DOCTOR_CHECK_TIMEOUT_SECONDS=([0-9.]+)$", text, re.MULTILINE,
-    )
-    assert match, ".env.example no longer ships JASPER_DOCTOR_CHECK_TIMEOUT_SECONDS"
-    assert "Keep this above the low-level probe timeouts." in text
-    shipped = float(match.group(1))
-    assert doctor_voice._IMPORT_PROBE_MARGIN_SEC > 0
-    assert shipped - doctor_voice._IMPORT_PROBE_MARGIN_SEC < shipped
 
 
 def test_check_passes_the_derived_timeout_to_the_probe(monkeypatch, probe):
     """The derived value is what actually reaches subprocess.run — not a
     constant the check computes and then ignores."""
-    monkeypatch.setenv("JASPER_DOCTOR_CHECK_TIMEOUT_SECONDS", "20")
     monkeypatch.setattr(
         doctor_voice,
         "read_active_provider_state",
         lambda: _state("configured", "gemini"),
     )
     doctor_voice.check_provider_importable()
-    assert probe["timeouts"] == [15.0]
+    assert probe["timeouts"] == [10.0]
 
 
 # ---------------------------------------------------------------------------
