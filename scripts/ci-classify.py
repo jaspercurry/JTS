@@ -242,12 +242,19 @@ def classify(event_name: str, changes: Sequence[Change]) -> Decision:
     if not frozen:
         return Decision("full", "empty pull-request diff", frozen)
     for change in frozen:
-        if change.status not in {"A", "M"}:
-            return Decision(
-                "full",
-                f"change status {change.status!r} is not safe for a narrow lane",
-                frozen,
-            )
+        if change.status in {"A", "M"}:
+            continue
+        # A docs-only rename/delete used to fall through to `full` and skip
+        # docs-linkcheck, the required check that catches a broken link (#4036).
+        if (change.status.startswith("R") or change.status == "D") and all(
+            is_docs_lane_path(path) for path in change.paths
+        ):
+            continue
+        return Decision(
+            "full",
+            f"change status {change.status!r} is not safe for a narrow lane",
+            frozen,
+        )
 
     paths = frozenset(path for change in frozen for path in change.paths)
     for lane, is_subject, is_lane_path in NARROW_LANES:
