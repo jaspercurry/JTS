@@ -164,7 +164,7 @@ def test_runtime_state_units_track_the_coupling_reconciler_oneshot():
 def test_check_voice_unit_running_verdicts(
     monkeypatch, tmp_path, profile, unit, marker, status, reason,
 ):
-    monkeypatch.setattr(resilience, "read_install_profile", lambda: profile)
+    monkeypatch.setattr(_shared, "read_install_profile", lambda: profile)
     absent = tmp_path / "voice-input-absent"
     if marker:
         absent.write_text("")
@@ -184,7 +184,7 @@ def test_an_inactive_voice_unit_does_not_claim_playback_silence(
 ):
     """`speaker_silent` means the speaker emits NOTHING. Music keeps playing
     with the voice daemon down — what is silent is the assistant."""
-    monkeypatch.setattr(resilience, "read_install_profile", lambda: "full")
+    monkeypatch.setattr(_shared, "read_install_profile", lambda: "full")
     monkeypatch.setenv(
         "JASPER_VOICE_INPUT_ABSENT_MARKER", str(tmp_path / "absent"),
     )
@@ -202,7 +202,7 @@ def test_an_inactive_voice_unit_does_not_claim_playback_silence(
 
 
 def test_check_voice_unit_running_skips_without_systemctl(monkeypatch, tmp_path):
-    monkeypatch.setattr(resilience, "read_install_profile", lambda: "full")
+    monkeypatch.setattr(_shared, "read_install_profile", lambda: "full")
     monkeypatch.setenv(
         "JASPER_VOICE_INPUT_ABSENT_MARKER", str(tmp_path / "absent"),
     )

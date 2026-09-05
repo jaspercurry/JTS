@@ -49,7 +49,7 @@ def _mock_meminfo(values: dict[str, int]):
         # covered SKU-agnostically by check_memory_headroom.
         ("streambox", "ok", doctor_memory.REASON_RAM_STREAMBOX_TIER),
         # A marker-read glitch must not silently suppress the warn on a real
-        # full speaker: _install_profile_is_streambox fails toward False.
+        # full speaker: install_profile_is_streambox fails toward False.
         (OSError("marker unreadable"), "warn", doctor_memory.REASON_RAM_UNDERSIZED),
     ],
     ids=["full", "streambox", "profile-unreadable"],
@@ -63,7 +63,7 @@ def test_check_ram_warns_only_for_an_undersized_full_install(profile, status, re
     with patch(
         "builtins.open",
         return_value=_mock_meminfo({"MemTotal": 426076}),  # ~416 MB
-    ), patch("jasper.cli.doctor.memory.read_install_profile", **kwargs):
+    ), patch("jasper.cli.doctor._shared.read_install_profile", **kwargs):
         r = doctor_memory.check_ram()
 
     assert r.status == status

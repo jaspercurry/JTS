@@ -19,7 +19,6 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
-from ...install_profile import is_streambox_install_profile, read_install_profile
 from ...memory_policy import (
     DISK_FAIL_PERCENT,
     DISK_WARN_PERCENT,
@@ -40,6 +39,7 @@ from ._shared import (
     CheckResult,
     _meminfo_kb,
     _run,
+    install_profile_is_streambox,
 )
 
 # Machine-stable codes naming which branch of a memory check produced a
@@ -85,18 +85,6 @@ REASON_JOURNALD_NOT_PERSISTENT = "journald_not_persistent"
 REASON_JOURNALD_CONFIG_UNREADABLE = "journald_config_unreadable"
 REASON_JOURNALD_CAP_REGRESSED = "journald_retention_cap_regressed"
 
-def _install_profile_is_streambox() -> bool:
-    """True when this box runs the streambox tier (local audio, no voice brain).
-
-    Fails toward False so a transient marker-read glitch keeps the louder
-    full-speaker RAM warning rather than silently suppressing it.
-    """
-    try:
-        return is_streambox_install_profile(read_install_profile())
-    except (TypeError, ValueError, OSError):
-        return False
-
-
 @doctor_check()
 def check_ram() -> CheckResult:
     try:
@@ -112,7 +100,7 @@ def check_ram() -> CheckResult:
                         # (a Zero 2 W -> streambox), so a board-size warn
                         # there is a false positive — live memory pressure is
                         # caught SKU-agnostically by check_memory_headroom.
-                        if _install_profile_is_streambox():
+                        if install_profile_is_streambox():
                             return CheckResult(
                                 "RAM", "ok",
                                 f"{mb} MB total (streambox tier; live "

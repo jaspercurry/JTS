@@ -12,7 +12,6 @@ from typing import Any
 
 from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
 from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
-from ...install_profile import is_streambox_install_profile, read_install_profile
 from ...service_units import unit_unstable
 from ...voice.input_presence import voice_parked_no_mic
 from ... import outputd_failure_reconcile_state
@@ -23,6 +22,7 @@ from ._shared import (
     CheckResult,
     _ONESHOT_RUNTIME_STATE_UNITS,
     _RUNTIME_STATE_UNITS,
+    install_profile_is_streambox,
 )
 
 # Machine-stable codes naming which branch of a resilience check produced a
@@ -64,15 +64,11 @@ REASON_BOOTLOOP_GUARD_TRIPPED = "bootloop_guard_tripped"
 
 @doctor_check()
 def check_service_runtime_state() -> CheckResult:
-    """Judge the tracked units' runtime state in the one-shot doctor.
-
-    ``failed`` fails; ``activating``/``deactivating`` on a non-oneshot fails
-    too (a stuck start, not a transition anyone is waiting out). A non-zero
-    ``NRestarts`` is reported but does NOT fail or warn: systemd keeps the
-    counter until ``reset-failed`` or a reboot, so one auto-restart days ago
-    would otherwise latch this row for the life of the boot. The count still
-    rides in the detail — it is the only place the operator sees a unit that
-    is up now but has been restarting."""
+    """Judge the tracked units' runtime state: `failed`, or a non-oneshot
+    stuck in `activating`/`deactivating`, fails the row. A non-zero
+    `NRestarts` rides in the detail but is informational only — systemd
+    latches the counter until `reset-failed` or reboot, so it cannot be
+    acted on."""
     states = evidence.unit_states()
     if states is None:
         return CheckResult(
@@ -124,16 +120,6 @@ def check_service_runtime_state() -> CheckResult:
 _VOICE_UNIT = "jasper-voice.service"
 
 
-def _install_profile_is_streambox() -> bool:
-    """True on the streambox tier. Fails toward False so an unparseable
-    marker keeps the louder full-speaker row rather than silently skipping
-    it."""
-    try:
-        return is_streambox_install_profile(read_install_profile())
-    except (TypeError, ValueError, OSError):
-        return False
-
-
 @doctor_check()
 def check_voice_unit_running() -> CheckResult:
     """jasper-voice is up on a tier whose speaker answers a wake word.
@@ -155,7 +141,7 @@ def check_voice_unit_running() -> CheckResult:
     nor an accessory mic.
     """
     label = "voice daemon running"
-    if _install_profile_is_streambox():
+    if install_profile_is_streambox():
         return CheckResult(
             label, "skipped",
             "streambox tier — no always-on wake loop to keep running",
@@ -316,15 +302,10 @@ def _read_system_metrics_current() -> dict[str, Any] | None:
 
 @doctor_check()
 def check_supply_voltage() -> CheckResult:
-    """Surface the Pi firmware's under-voltage flags. jasper-control's
-    system-metrics sampler already polls ``vcgencmd get_throttled`` on a
-    timer; doctor is a one-shot CLI and must not add a second poller.
-
-    Under-voltage NOW fails — there is something to do about it. The
-    since-boot history bit reports ``ok``: the firmware latches it until the
-    next reboot, so a single marginal moment during a cold boot would warn
-    for the whole uptime with nothing left to act on. The bits stay in the
-    detail either way."""
+    """Surface the Pi firmware's under-voltage flags (`vcgencmd
+    get_throttled`, read from jasper-control's existing poller). NOW fails;
+    the since-boot history bit reports `ok` — latched until reboot, so it
+    cannot be acted on. Both bits stay in the detail."""
     name = "Supply voltage"
     current = _read_system_metrics_current()
     if current is None:
