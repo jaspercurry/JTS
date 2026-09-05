@@ -74,6 +74,8 @@ from tests.crossover_v2_banked_round import (
     MODE_TWO_WAY,
     MODE_WAY1,
     SOLO_BAND_HZ,
+    bank_cloud_echo_band,
+    bank_findings,
     bank_measure_round,
     bank_verify_round,
 )
@@ -2940,3 +2942,79 @@ def test_cli_candidates_publishes_the_ladders_named_refusal(tmp_path, capsys):
     record = json.loads(capsys.readouterr().out)
     assert record["status"] == "refused"
     assert record["reason"] == REFUSE_NO_LADDER
+
+
+# --------------------------------------------------------------------------- #
+# findings -- the mechanism sets a round banked, and the band that bounds them
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [([], ["measure", "cloud_measure", "cloud_verify"]), (["--phase", "cloud_verify"], ["cloud_verify"])],
+    ids=["all-three-phases", "one-named-phase"],
+)
+def test_findings_reads_each_phase_and_the_band_that_bounds_the_set(
+    tmp_path, capsys, argv, expected
+):
+    """A phase that never ran reads ``null``; one that ran reads its count.
+
+    That distinction is what ``produced_by`` exists to preserve, and the echo
+    band rides beside it because nothing outside that band can become a
+    finding at all -- so an empty set below its floor is an instrument that
+    did not look, not a mechanism ruled out.
+    """
+    from jasper.cli import round_views as cli
+
+    round_dir = bank_measure_round(tmp_path)
+    produced_by = bank_findings(round_dir)
+    bank_cloud_echo_band(round_dir, band_hz=(4000.0, 19000.0), source="declared")
+
+    assert cli.main(["findings", str(round_dir), *argv]) == cli.EXIT_OK
+
+    answer = json.loads(capsys.readouterr().out)
+    # Key ORDER is the shared writer's (sort_keys); which phases were read
+    # is what this asserts.
+    assert set(answer["phases"]) == set(expected)
+    assert answer["phases"]["cloud_verify"] == 1
+    assert all(answer["phases"][p] is None for p in expected if p != "cloud_verify")
+    assert answer["findings"] == 1
+    assert answer["echo_band_hz"] == [4000.0, 19000.0]
+    # The group's whole provenance block, not just its source word: a band the
+    # HF-regime clamp narrowed must not read as the declared one.
+    assert answer["echo_band_provenance"] == {"source": "declared"}
+    tables = json.loads(Path(answer["out"]).read_text())["tables"]
+    banked, = [row for row in tables if row["present"]]
+    assert banked["produced_by"] == produced_by
+    assert banked["findings"][0]["mechanism"] == answer["mechanisms"][0]
+
+
+def test_findings_is_the_unreadable_exit_when_the_bundle_will_not_open(tmp_path):
+    """A store that refuses its own authority is an input fix, never a
+    traceback: its error is a ``RuntimeError`` no stage claims by default."""
+    from jasper.cli import round_views as cli
+
+    round_dir = bank_measure_round(tmp_path)
+    bundle_dir, = (round_dir / "bundle").iterdir()
+    info = json.loads((bundle_dir / "info.json").read_text())
+    (bundle_dir / "info.json").write_text(
+        json.dumps({**info, "session_id": "not-this-session"})
+    )
+
+    assert cli.main(["findings", str(round_dir)]) == cli.EXIT_UNREADABLE
+
+
+def test_findings_answers_a_round_that_banked_none_rather_than_refusing(
+    tmp_path, capsys
+):
+    """"Attribution never ran here" is the answer this verb exists to give."""
+    from jasper.cli import round_views as cli
+
+    round_dir = bank_measure_round(tmp_path)
+
+    assert cli.main(["findings", str(round_dir)]) == cli.EXIT_OK
+
+    answer = json.loads(capsys.readouterr().out)
+    assert set(answer["phases"].values()) == {None}
+    assert (answer["findings"], answer["mechanisms"]) == (0, [])
+    assert answer["echo_band_hz"] is None
