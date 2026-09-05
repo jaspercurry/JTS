@@ -35,10 +35,10 @@ from .round_views import default_out
 
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_PRESCRIPTION_MALFORMED,
-    REGION_UNAVAILABLE,
     BlendPrescription,
     BlendPrescriptionRefused,
     blend_prescription_to_candidate_fields,
+    prescription_response_format,
     prescription_sha256,
     read_blend_prescription,
     read_prescription_bytes,
@@ -47,14 +47,9 @@ from jasper.active_speaker.crossover_v2.driver_prescription import (
     DRIVER_PRESCRIPTION_KIND,
     DriverPrescription,
     check_driver_document_size,
+    driver_prescription_response_format,
     driver_prescription_to_candidate_fields,
     read_driver_prescription,
-)
-from jasper.active_speaker.crossover_v2.alignment_prescription import (
-    ALIGNMENT_NO_CROSSOVER_REGION,
-)
-from jasper.active_speaker.crossover_v2.topology_prescription import (
-    TOPOLOGY_NO_CROSSOVER_REGION,
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CrossoverEvidencePacketError,
@@ -81,16 +76,11 @@ from jasper.active_speaker.crossover_v2.round_inputs import (
     round_inputs,
 )
 from jasper.active_speaker.seat_level_reference import (
-    DEFAULT_TARGET_DB_SPL,
-    DEFAULT_TOLERANCE_DB,
     seat_level_reference_volume_db,
 )
-from jasper.active_speaker.session_volume_plan import (
-    MEASUREMENT_REFERENCE_VOLUME_DB,
-)
-from jasper.audio_measurement.program_analysis import (
-    ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
-)
+# One owner for how this tool is spelled under sudo: an SSH session gets no
+# EnvironmentFile and /opt/jasper/.venv is not on the default PATH.
+from jasper.active_speaker.tuning_handoff import ORIENTATION_COMMAND
 from jasper.identity import (
     CROSSOVER_PAGE_PATH,
     SOUND_SETUP_PAGE_PATH,
@@ -118,14 +108,15 @@ REASON_UNREADABLE = "evidence_unreadable"
 REASON_UNWRITABLE = "output_unwritable"
 
 
-def _answer(document: dict[str, Any]) -> int:
+def _answer(document: dict[str, Any], code: int = EXIT_OK) -> int:
     """One verb's answer, printed the one way every tuning tool prints one.
 
     stdout carries exactly this document and nothing else, so a reader parses
-    stdout rather than scraping the human line on stderr.
+    stdout rather than scraping the human line on stderr. ``status`` passes its
+    own code: it answers whether or not the evidence read.
     """
     print(json.dumps(document, indent=2, sort_keys=True))
-    return EXIT_OK
+    return code
 
 
 def _read_packet_file(path: Path) -> dict[str, Any]:
@@ -392,17 +383,17 @@ def _admitted(
     }
 
 
-def _stage_command(args: argparse.Namespace) -> str:
-    """The ``stage`` invocation for this evidence, with the paths in hand.
+def _evidence_words(args: argparse.Namespace) -> list[str]:
+    """The words that named this invocation's evidence, ready to re-run.
 
-    Every rebuild input comes along: a rebuild missing one resolves that flag
-    against the machine instead and fingerprints differently, which is the
-    mismatch the printed command exists to avoid. ``--state`` is the one input
-    ``propose`` does not need and ``stage`` refuses without, so an operator who
-    named none is handed the placeholder rather than a command that cannot run.
+    One owner for what a printed command must carry: a rebuild missing one of
+    these flags resolves it against the machine instead and fingerprints
+    differently, which is the mismatch a printed command must not walk into.
     """
-    evidence = ["--packet", args.packet] if args.packet else [
-        str(args.session_dir),
+    if args.packet:
+        return ["--packet", args.packet]
+    return [
+        *([str(args.session_dir)] if args.session_dir else []),
         *(
             word
             for flag, dest in _REBUILD_ONLY_FLAGS
@@ -410,8 +401,17 @@ def _stage_command(args: argparse.Namespace) -> str:
             for word in (flag, getattr(args, dest))
         ),
     ]
+
+
+def _stage_command(args: argparse.Namespace) -> str:
+    """The ``stage`` invocation for this evidence, with the paths in hand.
+
+    ``--state`` is the one input ``propose`` does not need and ``stage``
+    refuses without, so an operator who named none is handed the placeholder
+    rather than a command that cannot run.
+    """
     return shlex.join([
-        PROG, "stage", *evidence,
+        PROG, "stage", *_evidence_words(args),
         "--prescription", args.prescription,
         "--state", args.state or "<flow state JSON>",
     ])
@@ -922,123 +922,55 @@ def _status_sections(
     }
 
 
-def _next_actions(
+def _next_commands(
     sections: dict[str, Any],
     *,
-    state_supplied: bool,
-    crossover_url: str,
-    declaration_url: str,
+    seat_level_db: float | None,
+    session_dir: str | None,
+    evidence: list[str],
+    state: str | None,
 ) -> list[str]:
-    """What this speaker can do next, derived from what it has and has not.
+    """What to RUN next, with the paths already resolved.
 
-    Artifact dependencies, not a workflow: each line is the consequence of one
-    artifact being present or absent, and names the tool that would refuse for
-    want of it. Nothing here sequences anything — the refusals do that.
+    Artifact dependencies, not a workflow: each command is the consequence of
+    one artifact being present or absent. Why it is offered is never restated
+    here — the section that found the gap carries the reason, and a gap no
+    command closes (no round banked, no declared driver band) is answered by
+    ``speaker``'s two URLs.
     """
-    banked = sections["banked"]
-    declared = sections["declared"]
-    out: list[str] = []
-
-    if not banked["available"]:
-        out.append(
-            f"no round is banked here ({banked['reason']}) — point this verb at "
-            f"a commissioning bundle, or run a round at {crossover_url}"
+    commands: list[str] = []
+    if session_dir:
+        # Runnable AS PRINTED, so ``--state`` appears only when one was named:
+        # this verb's own placeholder would be a path that does not exist, and
+        # the packet it emits already reports the flow state's absence.
+        commands.append(shlex.join([
+            PROG, "packet", *evidence, *(["--state", state] if state else []),
+        ]))
+        banked = sections["banked"]
+        if banked["available"] and not banked["classification"]["available"]:
+            # Without it no per-driver filter can be shown to be aimed at a
+            # driver defect, so the per-driver door discloses every filter
+            # unvouched. That verb takes the BUNDLE directory, which this one
+            # resolves from a banked round tree — so the path is resolved
+            # through the reader the packet used, not echoed back.
+            try:
+                bundle = str(round_inputs(Path(session_dir)).session_dir)
+            except (CrossoverEvidencePacketError, OSError):
+                bundle = session_dir
+            commands.append(
+                shlex.join(["jasper-round-views", "classify-features", bundle])
+            )
+    if not sections["staged"]["available"]:
+        commands.append(
+            " ".join([ORIENTATION_COMMAND, *(shlex.quote(w) for w in evidence)])
         )
-    else:
-        region = banked["region"]
-        classification = banked["classification"]
-        prescribable = False
-        if region["available"]:
-            prescribable = True
-            out.append(
-                "a blend prescription can be written for the crossover region "
-                f"{_band_phrase(*region['band_hz'])}"
-            )
-        elif region["reason"] == ABSOLUTE_NO_CROSSOVER_TOPOLOGY:
-            out.append(
-                "this speaker has no crossover region, so the blend, alignment, "
-                "topology doors do not apply and refuse by name "
-                f"({REGION_UNAVAILABLE}, {ALIGNMENT_NO_CROSSOVER_REGION}, "
-                f"{TOPOLOGY_NO_CROSSOVER_REGION}) — the per-driver door below "
-                "is the whole loop here"
-            )
-        else:
-            out.append(
-                f"no crossover region is banked ({region['reason']}), so a blend "
-                "prescription has no bound and is refused by name"
-            )
-        if declared["available"] and classification["available"]:
-            prescribable = True
-            out.append(
-                "a per-driver prescription can be written for "
-                f"{', '.join(declared['roles'])}"
-            )
-        elif not declared["available"]:
-            # Both halves, because the reason tells the two apart and the
-            # operator may not be able to act on either alone.
-            out.append(
-                f"no declared driver band is available ({declared['reason']}) — "
-                "pass --drivers <design draft JSON>, or declare the drivers at "
-                f"{declaration_url}; without it a per-driver prescription has "
-                "no bound and is refused by name"
-            )
-        else:
-            # "readable", not "banked": this arm also covers an artifact that
-            # WAS banked and whose every row the typed reader dropped. The
-            # action is the same either way, and the reason tells them apart.
-            out.append(
-                "no readable feature classification for this round "
-                f"({classification['reason']}) — run "
-                "`jasper-round-views classify-features`; "
-                "without it no per-driver filter can be shown to be aimed at a "
-                "driver defect"
-            )
-        if prescribable:
-            out.append(
-                "write one against `packet`, then `propose` to see it judged and "
-                "`stage` to leave it for the next round"
-            )
-
-    applied_profile = sections["applied"]["from_applied_profile"]
-    if not applied_profile["available"]:
-        # Keyed on the packet's answer and carrying its reason: this is optional
-        # evidence whose absence has more than one cause, and "unreadable file"
-        # sends an operator somewhere different from "you did not pass it".
-        out.append(
-            f"no applied profile is available ({applied_profile['reason']}) — "
-            "pass --applied-profile <applied baseline profile JSON>; without it "
-            "this packet cannot name the correction the graph already carries, "
-            "and a per-driver prescription's displacement is unknown"
+    if seat_level_db is None:
+        # Absent a banked reference every measurement session rides a level
+        # nobody measured; the tool needs the mic this rig actually has.
+        commands.append(
+            shlex.join(["jasper-seat-level", "--mic-serial", "<mic serial>"])
         )
-
-    if not state_supplied:
-        out.append("pass --state <flow state JSON>: `stage` refuses without it")
-
-    staged = sections["staged"]
-    if not staged["available"]:
-        out.append(
-            f"the spool could not be read ({staged['reason']}) — run with sudo "
-            "for the full report"
-        )
-    elif staged["pending"]:
-        out.append(f"a prescription is already staged — {STAGED_LIFECYCLE_NOTE}")
-
-    # `seat_level_reference_volume_db()` already fails soft to `None` both when
-    # this box never ran the leveling step and when /var/lib/jasper does not
-    # exist at all. A banked reference adds NO line: the absence of this warning
-    # is itself the signal.
-    if seat_level_reference_volume_db() is None:
-        out.append(
-            "no seat-level measurement reference is banked — measurement "
-            f"sessions ride the {MEASUREMENT_REFERENCE_VOLUME_DB:g} dB "
-            "main-volume fallback; `jasper-seat-level` sets the seat to the "
-            f"default {DEFAULT_TARGET_DB_SPL - DEFAULT_TOLERANCE_DB:g}-"
-            f"{DEFAULT_TARGET_DB_SPL + DEFAULT_TOLERANCE_DB:g} dB SPL target "
-            "(--target-db-spl states another) and banks the reference"
-        )
-
-    out.append(f"run or apply a round at {crossover_url}")
-    return out
+    return commands
 
 
 #: Tier 0's front door (ADR-0204): the reading order an SSH-only agent lands on
@@ -1073,69 +1005,77 @@ def _doc_path(filename: str) -> str:
     return f"docs/{filename}"
 
 
-def _print_reading_order() -> None:
-    """The cold-start front door, printed before anything this verb measures.
+def _reading_order() -> list[dict[str, Any]]:
+    """The cold-start front door, in order, each doc sized where it was found.
 
     Orientation only — the doctrine's hard stops are enforced in code
-    regardless of whether anyone reads this line (ADR-0204 point 3).
+    regardless of whether anyone reads them (ADR-0204 point 3). The size is
+    published so a reader can budget the read instead of opening the longest
+    document on the box blind; a name that resolved to no file carries nulls.
     """
-    print("read in order:")
-    for n, (label, filename, gives) in enumerate(_READING_ORDER, start=1):
-        print(f"  {n}. {label:<18} {_doc_path(filename)}  ({gives})")
-    print()
-
-
-def _print_status(payload: dict[str, Any]) -> None:
-    """The reading order, then the report from the section summaries."""
-    _print_reading_order()
-    print(f"{'speaker:':9} {payload['speaker']['hostname']}")
-    for name in ("declared", "banked", "staged", "applied"):
-        print(f"{name + ':':9} {payload[name]['summary']}")
-    print("next:")
-    for action in payload["next_actions"]:
-        print(f"  - {action}")
+    order: list[dict[str, Any]] = []
+    for label, filename, gives in _READING_ORDER:
+        path = _doc_path(filename)
+        try:
+            blob = Path(path).read_bytes()
+        except OSError:
+            size, lines = None, None
+        else:
+            size, lines = len(blob), blob.count(b"\n")
+        order.append({
+            "label": label, "path": path, "gives": gives,
+            "bytes": size, "lines": lines,
+        })
+    return order
 
 
 def status_document(
-    packet: dict[str, Any] | None, packet_error: str, *, state_supplied: bool
+    packet: dict[str, Any] | None,
+    packet_error: str,
+    *,
+    session_dir: str | None,
+    evidence: list[str],
+    state: str | None,
 ) -> dict[str, Any]:
-    """Where this speaker stands, and what it can do next, as a value.
+    """Where this speaker stands, and what to run next, as a value.
 
-    Exactly what :func:`_print_status` prints and what ``status --json`` dumps.
     The packet is a parameter rather than an ``argparse.Namespace`` so a caller
-    that already built one need not walk the bundle again. An unreadable bundle
-    does not stop the report: the packet's failure becomes every evidence
-    section's reason, and the spool is reported truthfully regardless.
+    that already built one need not walk the bundle again; ``session_dir``,
+    ``evidence`` and ``state`` are what a printed command must carry to read
+    the same evidence this report read. An unreadable bundle does not stop the report:
+    the packet's failure becomes every evidence section's reason, and the spool
+    is reported truthfully regardless.
     """
-    crossover_url = speaker_url(CROSSOVER_PAGE_PATH)
-    declaration_url = speaker_url(SOUND_SETUP_PAGE_PATH)
     sections = _status_sections(packet, packet_error)
+    # A level nobody measured is what a session rides without one, so the
+    # banked value itself is published rather than a warning about its absence.
+    seat_level_db = seat_level_reference_volume_db()
     return {
         "speaker": {
             "hostname": read_identity().hostname,
-            "crossover_url": crossover_url,
-            "declaration_url": declaration_url,
+            "crossover_url": speaker_url(CROSSOVER_PAGE_PATH),
+            "declaration_url": speaker_url(SOUND_SETUP_PAGE_PATH),
         },
         "packet_fingerprint": (packet or {}).get("packet_fingerprint"),
         "packet_error": packet_error or None,
         **sections,
-        "next_actions": _next_actions(
-            sections,
-            state_supplied=state_supplied,
-            crossover_url=crossover_url,
-            declaration_url=declaration_url,
+        "seat_level_reference_volume_db": seat_level_db,
+        "reading_order": _reading_order(),
+        "next": _next_commands(
+            sections, seat_level_db=seat_level_db, session_dir=session_dir,
+            evidence=evidence, state=state,
         ),
     }
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
-    """Where this speaker stands, and what it can do next. Writes nothing.
+    """Where this speaker stands, and what to run next. Writes nothing.
 
-    The report prints either way; the exit code still says which of two things
-    happened, :data:`EXIT_UNREADABLE` when the packet could not be
-    built. Unlike its three siblings the human report goes to STDOUT: this verb
-    emits no document unless ``--json`` asks for one, and a report whose only
-    copy went to stderr would be invisible to the SSH agent reading it.
+    The document prints either way; the exit code still says which of two
+    things happened, :data:`EXIT_UNREADABLE` when the packet could not be
+    built. This verb is the loop's orientation, so its whole answer is the
+    document — a report whose only copy went to stderr would be invisible to
+    the SSH agent reading it.
     """
     packet: dict[str, Any] | None = None
     packet_error = ""
@@ -1153,13 +1093,14 @@ def _cmd_status(args: argparse.Namespace) -> int:
         except (CrossoverEvidencePacketError, OSError) as exc:
             packet_error = str(exc)
 
-    payload = status_document(packet, packet_error, state_supplied=bool(args.state))
-
-    if args.json:
-        print(json.dumps(payload, indent=2, sort_keys=True))
-    else:
-        _print_status(payload)
-    return EXIT_UNREADABLE if packet_error else EXIT_OK
+    return _answer(
+        status_document(
+            packet, packet_error,
+            session_dir=args.session_dir,
+            evidence=_evidence_words(args), state=args.state,
+        ),
+        EXIT_UNREADABLE if packet_error else EXIT_OK,
+    )
 
 
 #: What ``--state`` is, said once. The verbs differ only in whether they can
@@ -1245,6 +1186,34 @@ _PACKET_HELP = (
 )
 
 
+def _prescription_fields() -> str:
+    """The document's top-level fields, read off the contracts that gate it.
+
+    Generated rather than restated so a key added to either class's contract
+    reaches ``--help`` with no edit here, and so no field an author cannot
+    write is ever listed: the classes' own dataclasses carry derived fields
+    (the vouched and displaced counts) that only the gate fills in. The BOUNDS
+    stay where they are — each contract rides whole in the packet's
+    ``response_format`` / ``driver_response_format`` block.
+    """
+    lines = ["PRESCRIPTION DOCUMENT -- top-level fields, per class"]
+    for label, contract in (
+        ("blend     ", prescription_response_format()),
+        ("per-driver", driver_prescription_response_format()),
+    ):
+        required = ", ".join(sorted(contract["required_top_level"]))
+        optional = ", ".join(sorted(contract["optional_top_level"]))
+        lines.append(f"  {label} kind={contract['required_top_level']['kind']}")
+        lines.append(f"    required: {required}")
+        lines.append(f"    optional: {optional}")
+    lines.append(
+        "  bounds, and what each field means: this round's packet, in its\n"
+        "  response_format (blend) and driver_response_format (per-driver)\n"
+        "  blocks -- one owner, and it is the gate's own"
+    )
+    return "\n".join(lines)
+
+
 def _add_evidence_args(
     parser: argparse.ArgumentParser,
     *,
@@ -1255,6 +1224,7 @@ def _add_evidence_args(
     optional_positional = session_dir_optional or packet_source
     parser.add_argument(
         "session_dir",
+        metavar="<round-dir>",
         nargs="?" if optional_positional else None,
         help=(
             "a commissioning bundle directory (the one holding info.json and "
@@ -1351,9 +1321,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="print declared / banked / staged / applied state and what is next",
     )
     _add_evidence_args(status, session_dir_optional=True)
-    status.add_argument(
-        "--json", action="store_true", help="emit the report as JSON"
-    )
     status.set_defaults(func=_cmd_status)
 
     packet = sub.add_parser(
@@ -1383,6 +1350,8 @@ def build_parser() -> argparse.ArgumentParser:
     propose = sub.add_parser(
         "propose",
         help="validate a prescription against the round it answers",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=_prescription_fields(),
     )
     _add_evidence_args(propose, packet_source=True)
     propose.add_argument(
