@@ -1588,6 +1588,50 @@ async def test_reconnect_with_backoff_eventually_succeeds():
         await conn.stop()
 
 
+@pytest.mark.parametrize("conn_cls", [OpenAIRealtimeConnection, GrokRealtimeConnection])
+async def test_drop_signalled_during_a_reconnect_is_not_swallowed(conn_cls):
+    """A reconnect request raised while the supervisor is already
+    reconnecting must still be served. The supervisor loop is the only
+    owner of `_reconnect_event` and clears it before doing the work, so
+    a signal raised inside a reopen survives that reopen and drives one
+    more pass — instead of leaving a dead session behind a supervisor
+    that has parked thinking it is idle. See #3915."""
+    factory = _FakeConnectFactory()
+    conn = conn_cls(
+        api_key="fake",
+        backoff_schedule=(0.0, 0.0),
+        connect_factory=factory,
+    )
+
+    def signalling_factory(*, model: str):
+        cm = factory(model=model)
+        if len(factory.conns) == 2:
+            # The supervisor's reopen is in flight; a fresh drop lands
+            # before `_open_session_attempt` finishes.
+            conn._reconnect_event.set()
+        return cm
+
+    conn._connect_factory = signalling_factory
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        class _Drop(Exception):
+            class _Rcvd:
+                code = 1006
+                reason = "abnormal"
+            rcvd = _Rcvd()
+        factory.conns[0].feed_error(_Drop())
+
+        await _wait_until(lambda: len(factory.conns) >= 3, timeout=3.0)
+        await _wait_until(
+            lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0,
+        )
+        turn = await conn.acquire_turn()
+        await turn.release()
+    finally:
+        await conn.stop()
+
+
 async def test_reconnect_escalation_cue_fires_once_per_outage():
     """The OpenAI loop, not only the shared helpers, drives the cue.
 

@@ -442,6 +442,42 @@ async def test_reconnect_with_backoff_eventually_succeeds():
         await conn.stop()
 
 
+async def test_drop_signalled_during_a_reconnect_is_not_swallowed():
+    """A reconnect request raised while the supervisor is already
+    reconnecting must still be served. The supervisor loop is the only
+    owner of `_reconnect_event` and clears it before doing the work, so
+    a signal raised inside a reopen survives that reopen and drives one
+    more pass — instead of leaving a dead session behind a supervisor
+    that has parked thinking it is idle. See #3915."""
+    conn, factory = _make_conn(backoff_schedule=(0.0, 0.0))
+
+    def signalling_factory(*, model, config):
+        cm = factory(model=model, config=config)
+        if len(factory.sessions) == 2:
+            # The supervisor's reopen is in flight; a fresh drop lands
+            # before `_open_session_attempt` finishes.
+            conn._reconnect_event.set()
+        return cm
+
+    conn._connect_factory = signalling_factory
+    registry = ToolRegistry()
+    await conn.start(registry, "system")
+    try:
+        class _Drop(Exception):
+            class _Rcvd:
+                code = 1006
+                reason = "abnormal"
+            rcvd = _Rcvd()
+        factory.sessions[0].feed_error(_Drop())
+
+        await _wait_until(lambda: len(factory.sessions) >= 3, timeout=3.0)
+        await _wait_until(lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0)
+        turn = await conn.acquire_turn()
+        await turn.release()
+    finally:
+        await conn.stop()
+
+
 async def test_repeated_failures_surface_failed_state():
     """If every open in the backoff schedule fails, the connection
     transitions to FAILED. Subsequent acquire_turn() calls raise."""
