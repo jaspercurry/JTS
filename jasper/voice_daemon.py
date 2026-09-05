@@ -4787,8 +4787,19 @@ class WakeLoop:
                 if self._input_ended:
                     # An ending the household or the daemon chose is not
                     # "asked and got no answer", so it is neither counted
-                    # nor spoken about.
-                    if reason not in NO_ANSWER_CUE_SUPPRESSED_REASONS:
+                    # nor spoken about — but it is still journalled, or a
+                    # zero-answer turn would leave no trace at all.
+                    if reason in NO_ANSWER_CUE_SUPPRESSED_REASONS:
+                        log_event(
+                            logger,
+                            "turn.silent_response",
+                            provider=self._cfg.voice_provider,
+                            model=model,
+                            suppressed=reason,
+                            chunks_received=chunks_received,
+                            turn_lost=lost_mid_reply,
+                        )
+                    else:
                         self._silent_responses_session += 1
                         log_event(
                             logger,
@@ -4867,6 +4878,10 @@ class WakeLoop:
         await self._tts.resume_content_meter()
         self._session_id = None
         self._active_manual_source = None
+        # Per-turn, and read by `_handle_session_frame`'s input-closed
+        # branch: left set, the cue below scores its own audio for a
+        # barge-in against a turn that has already been released.
+        self._barge_in_active = False
         await self._output_gate.end_turn(self._turn_output_episode)
         self._turn_output_episode = None
         if research_window_job is not None:
@@ -4885,27 +4900,37 @@ class WakeLoop:
                     reason="silence",
                     job_id=research_window_job.id,
                 )
-        if play_no_answer_cue:
-            # After the gate release (`_play_cue` takes an "admin" episode of
-            # its own and will not preempt the turn's) and before State.WAKE:
-            # a cue is seconds of assistant speech, and only State.SESSION
-            # with `_input_ended` keeps it off the wake detectors —
-            # WAKE_REFRACTORY_SEC is 0.2 s and cannot cover it.
-            # A paused connection owns its own remedy cue; claiming an
-            # internal fault over one would be a false alarm (see the
-            # internal_error CueDef).
-            await self._play_cue(
-                self._connection.wake_cue()
-                if self._connection.is_paused()
-                else INTERNAL_ERROR_CUE_SLUG
+        try:
+            if play_no_answer_cue:
+                # After the gate release (`_play_cue` takes an "admin"
+                # episode of its own and will not preempt the turn's) and
+                # before State.WAKE: a cue is seconds of assistant speech,
+                # and only State.SESSION with `_input_ended` keeps it off
+                # the wake detectors — WAKE_REFRACTORY_SEC is 0.2 s and
+                # cannot cover it.
+                # A paused connection owns its own remedy cue; claiming an
+                # internal fault over one would be a false alarm (see the
+                # internal_error CueDef).
+                await self._play_cue(
+                    self._connection.wake_cue()
+                    if self._connection.is_paused()
+                    else INTERNAL_ERROR_CUE_SLUG
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("teardown no-answer cue failed: %s", e)
+        finally:
+            # Unskippable: State.SESSION on a released turn drops every mic
+            # frame at `_handle_session_frame`'s input-closed branch, and
+            # the next `_end_turn` trips the `_session_id` assert.
+            self._turn = None
+            self._state = State.WAKE
+            # No detector.reset() here: `_handle_wake_frame` reset every
+            # detector when the wake fired and none was fed a frame since
+            # (state was SESSION), so a second reset would only delay the
+            # buffer refilling when refractory expires.
+            self._refractory_until = (
+                asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC
             )
-        self._turn = None
-        self._state = State.WAKE
-        # No detector.reset() here: `_handle_wake_frame` reset every detector
-        # when the wake fired and none was fed a frame since (state was
-        # SESSION), so a second reset would only delay the buffer refilling
-        # when refractory expires.
-        self._refractory_until = asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC
         await self._drain_pending_research()
 
 

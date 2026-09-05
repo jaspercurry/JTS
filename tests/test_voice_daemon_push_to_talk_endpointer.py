@@ -937,91 +937,133 @@ async def test_no_answer_on_a_wake_turn_still_says_recording_timeout(caplog):
 
 
 @pytest.mark.parametrize(
-    "turn, cue, counted",
+    "turn, cue, counted, suppressed",
     [
         # Asked, and the model answered with nothing at all.
         pytest.param(
             {"chunks": 0, "input_ended": True, "user_speech": True},
-            "internal_error", 1, id="silent_response",
+            "internal_error", 1, None, id="silent_response",
         ),
         # The link went while the model was still speaking: the household
         # got half an answer and then the end chirp.
         pytest.param(
             {"chunks": 2, "input_ended": True, "user_speech": True,
              "turn_lost": True},
-            "internal_error", 1, id="lost_mid_reply",
+            "internal_error", 1, None, id="lost_mid_reply",
         ),
         # A button press proves intent, and nothing scores a button turn's
         # frames — a deaf press is exactly the symptom the cue exists for.
         pytest.param(
             {"chunks": 0, "input_ended": True, "manual": True},
-            "internal_error", 1, id="push_to_talk_release",
+            "internal_error", 1, None, id="push_to_talk_release",
         ),
         # A paused connection owns its own remedy cue; the two wake-path
         # failure sites pick it the same way.
         pytest.param(
             {"chunks": 0, "input_ended": True, "user_speech": True,
              "paused": True},
-            "cant_connect", 1, id="connection_paused",
+            "cant_connect", 1, None, id="connection_paused",
         ),
         # A turn the model answered: nothing to count, nothing to say.
         pytest.param(
             {"chunks": 3, "input_ended": True, "user_speech": True},
-            None, 0, id="answered",
+            None, 0, None, id="answered",
         ),
         # The link dropped only after the model had finished speaking.
         pytest.param(
             {"chunks": 3, "input_ended": True, "user_speech": True,
              "turn_lost": True, "server_turn_complete": True},
-            None, 0, id="lost_after_the_answer",
+            None, 0, None, id="lost_after_the_answer",
         ),
         # Whoever muted the mic knows why the speaker went quiet, so this
-        # is not "asked and got no answer": not counted, not spoken.
+        # is not "asked and got no answer": journalled, but not counted
+        # and not spoken.
         pytest.param(
             {"chunks": 0, "input_ended": True, "user_speech": True,
              "reason": "mic_muted"},
-            None, 0, id="mic_muted",
+            None, 0, "mic_muted", id="mic_muted",
         ),
         # Same for a shutdown, and for a wake taking the turn over.
         pytest.param(
             {"chunks": 0, "input_ended": True, "user_speech": True,
              "reason": "stopping"},
-            None, 0, id="shutdown",
+            None, 0, "stopping", id="shutdown",
         ),
         pytest.param(
             {"chunks": 0, "input_ended": True, "user_speech": True,
              "reason": "research_window_wake"},
-            None, 0, id="wake_interruption",
+            None, 0, "research_window_wake", id="wake_interruption",
         ),
     ],
 )
 async def test_a_turn_with_no_answer_is_heard_and_counted(
-    turn, cue, counted, caplog,
+    turn, cue, counted, suppressed, caplog,
 ):
     """Non-negotiable 6: the household hears the listening chirp, silence,
     and the end chirp, and is told nothing. A turn that was asked a question
     and produced no answer is counted for /state, logged with that count,
     and spoken about — unless the ending was one the household or the daemon
-    chose, which is neither a fault nor news to anyone."""
+    chose, which is neither a fault nor news to anyone, and which the
+    journal records at INFO instead."""
     wl = _teardown_loop()
-    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
         await _torn_down_mid_hold(wl=wl, **{"manual": False, **turn})
 
     assert wl._silent_responses_session == counted
     assert wl.session_status()["silent_responses_session"] == counted
     assert wl._cues.played == ([cue] if cue else [])
     records = event_records(caplog, "turn.silent_response")
-    assert len(records) == counted
-    if not counted:
+    assert len(records) == (1 if counted or suppressed else 0)
+    if not records:
         return
     # Only what the site can observe. It cannot tell a provider fault from
     # an idle-watchdog reap, so it carries fields, not a diagnosis.
     fields = event_fields(caplog, "turn.silent_response")
     assert fields["provider"] == "test"
+    assert int(fields["chunks_received"]) == turn["chunks"]
+    assert fields["turn_lost"] == ("true" if turn.get("turn_lost") else "false")
+    if suppressed:
+        # No count and no WARN, but the turn is not invisible.
+        assert records[0].levelno == logging.INFO
+        assert fields["suppressed"] == suppressed
+        assert "count" not in fields
+        return
+    assert records[0].levelno == logging.WARNING
     assert int(fields["bytes_sent"]) == 4096
     assert int(fields["count"]) == counted
     assert fields["reason"] == turn.get("reason", "test")
-    assert fields["turn_lost"] == ("true" if turn.get("turn_lost") else "false")
+
+
+@pytest.mark.parametrize("layer", ["cue_manager", "play_cue"])
+async def test_a_failing_no_answer_cue_still_finishes_the_teardown(
+    layer, caplog,
+):
+    """The state flip sits in a `finally` around the cue. Skipped, the
+    daemon is left in State.SESSION on a released turn: every mic frame
+    drops at `_handle_session_frame`'s input-closed branch — permanent
+    deafness — and the next `_end_turn` trips the `_session_id` assert."""
+    from jasper.voice_daemon import State
+
+    wl = _teardown_loop()
+
+    async def _boom(*_args, **_kwargs):
+        raise RuntimeError("cue backend down")
+
+    if layer == "cue_manager":
+        wl._cues.play = _boom
+    else:
+        wl._play_cue = _boom
+
+    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
+        await _torn_down_mid_hold(
+            wl=wl, manual=False, chunks=0, input_ended=True, user_speech=True,
+        )
+
+    # `_torn_down_mid_hold` already pins State.WAKE; the released turn and a
+    # usable `_end_turn` gate are the other half of "still able to listen".
+    assert wl._state is State.WAKE
+    assert wl._turn is None
+    assert wl._session_id is None
 
 
 async def test_the_no_answer_cue_waits_for_state_wake(caplog):
