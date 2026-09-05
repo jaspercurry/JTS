@@ -133,10 +133,11 @@ def sosfilt(
 ) -> tuple[np.ndarray[Any, Any], np.ndarray[Any, Any]]:
     """Cascaded biquads carrying state, returning `(filtered, final state)`.
 
-    Matches `scipy.signal.sosfilt(sos, x, zi=zi)` bit for bit: the same
-    transposed-direct-form-II recursion per section, in the same float order,
-    and the same `(n_sections, 2)` state layout, so filtering a stream in
-    chunks gives the same samples as filtering it whole. Sections run
+    Matches `scipy.signal.sosfilt(sos, x, zi=zi)` to float rounding (the test
+    pins `atol=1e-8`): the same transposed-direct-form-II recursion per
+    section, in the same float order, and the same `(n_sections, 2)` state
+    layout, so filtering a stream in chunks gives the same samples as
+    filtering it whole. Sections run
     outermost here and innermost in scipy, which is free to differ because
     each biquad is an independent stage — the per-sample arithmetic inside one
     is what has to match, and does. Like scipy, each section's `a0` (column 3)
