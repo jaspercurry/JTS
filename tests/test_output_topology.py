@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from jasper import output_topology as output_topology_mod
+from jasper.camilla_emit import BASS_MANAGEMENT_CORNER_HZ_DEFAULT
 from jasper.output_hardware import (
     OutputCardFact,
     OutputHardwareState,
@@ -32,6 +33,7 @@ from jasper.output_topology import (
     OutputTopology,
     OutputTopologyError,
     SpeakerChannel,
+    bass_management_corner_hz,
     channel_identity_report,
     clock_domain_report,
     composite_serial_repin_plan,
@@ -1600,6 +1602,39 @@ def test_sub_crossover_bounds_mirror_profile() -> None:
 
     assert SUB_CROSSOVER_HZ_LO == PROFILE_LO == SHARED_LO == 40.0
     assert SUB_CROSSOVER_HZ_HI == PROFILE_HI == SHARED_HI == 200.0
+
+
+def _subless_topology_raw() -> dict:
+    raw = _passive_sub_topology_raw(120.0)
+    raw["speaker_groups"] = raw["speaker_groups"][:2]
+    raw["routing"].pop("subwoofer_group_ids")
+    return raw
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (json.dumps(_passive_sub_topology_raw(120.0)), 120.0),
+        (
+            json.dumps(_passive_sub_topology_raw(None)),
+            BASS_MANAGEMENT_CORNER_HZ_DEFAULT,
+        ),
+        (json.dumps(_subless_topology_raw()), None),
+        ('{"kind": "jts_output_', None),
+    ],
+    ids=["declared corner", "default corner", "no subwoofer", "unreadable"],
+)
+def test_bass_management_corner_resolves_from_the_persisted_topology(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str,
+    expected: float | None,
+) -> None:
+    """Fail-soft: an unreadable topology resolves to "no subwoofer", never a
+    raise — a room correction and a display both depend on that."""
+    target = tmp_path / "topology.json"
+    target.write_text(text)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(target))
+
+    assert bass_management_corner_hz() == expected
 
 
 def _dual_apple_active_topology() -> OutputTopology:

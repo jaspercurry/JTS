@@ -1688,7 +1688,7 @@ class MeasurementSession:
         log_freqs = self.position_freqs
         # The room designer only READS the bass-management corner (the speaker
         # layer owns it), so it can refuse to boost inside the crossover region.
-        from jasper.bass_management import active_crossover_corner_hz
+        from jasper.output_topology import bass_management_corner_hz
 
         design = strategy.design_correction(
             averaged_db,
@@ -1696,7 +1696,7 @@ class MeasurementSession:
             target_choice=self.target_choice,
             strategy_choice=self.strategy_choice,
             position_magnitudes=self.position_magnitudes,
-            crossover_hz=active_crossover_corner_hz(),
+            crossover_hz=bass_management_corner_hz(),
         )
 
         self.measured_curve = CurveJSON(

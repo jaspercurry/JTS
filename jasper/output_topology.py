@@ -39,6 +39,7 @@ from .audio_hardware.dac import (
     physical_output_count_for as _dac_physical_output_count_for,
 )
 from .camilla_emit import (
+    BASS_MANAGEMENT_CORNER_HZ_DEFAULT,
     BASS_MANAGEMENT_CORNER_HZ_HI,
     BASS_MANAGEMENT_CORNER_HZ_LO,
 )
@@ -1071,6 +1072,27 @@ def subwoofer_speaker_groups(topology: OutputTopology) -> list[SpeakerGroup]:
             or group.id in routed_subwoofers
         )
     ]
+
+
+def bass_management_corner_hz() -> float | None:
+    """This speaker's live bass-management crossover corner (Hz), or ``None``
+    when it declares no subwoofer.
+
+    Fail-soft through :func:`load_output_topology`: an unreadable topology
+    resolves to "no subwoofer", never a raise, because a display and a room
+    correction must both survive a momentarily unreadable state file. A
+    subwoofer group with no explicit per-channel corner runs at the default
+    corner the active-speaker emitter falls back to.
+    """
+
+    groups = subwoofer_speaker_groups(load_output_topology())
+    if not groups:
+        return None
+    for group in groups:
+        for channel in group.channels:
+            if channel.crossover_fc_hz is not None:
+                return float(channel.crossover_fc_hz)
+    return float(BASS_MANAGEMENT_CORNER_HZ_DEFAULT)
 
 
 def topology_is_passive_mains(topology: OutputTopology) -> bool:
