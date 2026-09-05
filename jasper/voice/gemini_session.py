@@ -675,7 +675,7 @@ class GeminiLiveConnection:
         self._state = new_state
         if (old, new_state) not in self._noisy_transitions:
             logger.info(
-                f"{self._log_tag} state: %s → %s",
+                "live connection state: %s → %s",
                 old.value, new_state.value,
             )
 
