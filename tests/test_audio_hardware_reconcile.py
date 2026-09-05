@@ -3171,7 +3171,11 @@ def test_reconcile_leaves_the_edge_format_alone_when_the_registry_probe_is_absen
     the answer.) The composite arm shares the helper from a second call
     site; the seeded S24_3LE is the stale single-dongle format a box
     carries across a single -> dual upgrade, so the skip contract has to
-    hold independently of whether the stale value is survivable.
+    hold independently of whether the stale value is survivable. The
+    outputd sink kind (DacProfile.outputd_sink, ADR-0235 R1) comes from the
+    same probe call and degrades the same way — seeded here to the OTHER
+    shape's sink, so a preserved value is distinguishable from a re-derived
+    one exactly like the format axis.
     """
     extra_env = {
         "JASPER_OUTPUT_HARDWARE_PYTHON": str(
@@ -3182,6 +3186,7 @@ def test_reconcile_leaves_the_edge_format_alone_when_the_registry_probe_is_absen
     }
     listing = APPLE_LISTING
     expected_dac_id = "apple_usb_c_dongle"
+    stale_sink = "single_alsa" if composite else "dual_apple"
     if composite:
         listing = DUAL_APPLE_LISTING
         expected_dac_id = "dual_apple_usb_c_dac_4ch"
@@ -3200,7 +3205,10 @@ def test_reconcile_leaves_the_edge_format_alone_when_the_registry_probe_is_absen
         listing,
         "--reason",
         "test",
-        initial_outputd_env="JASPER_OUTPUTD_DAC_FORMAT=S24_3LE\n",
+        initial_outputd_env=(
+            "JASPER_OUTPUTD_DAC_FORMAT=S24_3LE\n"
+            f"JASPER_OUTPUTD_SINK={stale_sink}\n"
+        ),
         extra_env=extra_env,
     )
 
@@ -3210,6 +3218,7 @@ def test_reconcile_leaves_the_edge_format_alone_when_the_registry_probe_is_absen
     # spelling the unrecognized-DAC branch writes.
     assert "JASPER_OUTPUTD_DAC_FORMAT=S24_3LE" in outputd_env
     assert "JASPER_OUTPUTD_DAC_FORMAT=''" not in outputd_env
+    assert f"JASPER_OUTPUTD_SINK={stale_sink}" in outputd_env
     assert "event=audio_hardware_reconcile.dac_format_skip" in result.stderr
     assert "reason=registry_probe_unavailable" in result.stderr
     assert f"dac_id={expected_dac_id}" in result.stderr
