@@ -8,8 +8,9 @@ nginx serves the result straight from disk at `/`, so everything a daemon
 would compute per request is substituted once, here, by install.sh:
 
   * the app.css cache-bust token, keyed on the build SHA the install records;
-  * the install profile's capability map, applied synchronously at first paint
-    so the gated sections lay out correctly with every backend daemon down;
+  * the install profile's capability map, as the JSON data island the
+    landing module gates on (every gated section ships ``hidden``, so gating
+    only ever reveals — the page is right with every backend daemon down);
   * the WS1 control token the assistant-pause button rides on POST /mic/mute
     (kept inside this process — never a shell argument or a log line);
   * the shared icon sprite, so the landing and the Python-rendered pages draw
@@ -21,7 +22,6 @@ with a literal ``__JTS_…__`` in it.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from html import escape
 from pathlib import Path
@@ -32,15 +32,20 @@ from jasper.install_profile import (
     system_capabilities_for_profile,
 )
 
-from ._common import CANONICAL_ICON_SPRITE
+from ._common import CANONICAL_ICON_SPRITE, json_island
 
 def substitutions(
-    *, app_css_version: str, caps_json: str, control_token: str
+    *, app_css_version: str, caps: dict[str, object], control_token: str
 ) -> dict[str, str]:
-    """Placeholder → replacement: the landing template's whole contract."""
+    """Placeholder → replacement: the landing template's whole contract.
+
+    `caps` is `system_capabilities_for_profile`'s map as-is: mostly booleans
+    the page gates on, plus the `install_profile`/`role` strings — hence
+    `object`, not `bool`.
+    """
     return {
         "__APP_CSS_VERSION__": app_css_version,
-        "__JTS_CAPS_JSON__": caps_json,
+        "__JTS_CAPS_ISLAND__": json_island("landing-caps", caps),
         "__JTS_CONTROL_TOKEN__": escape(control_token),
         "__JTS_ICON_SPRITE__": CANONICAL_ICON_SPRITE,
     }
@@ -50,13 +55,13 @@ def render_landing(
     template: str,
     *,
     app_css_version: str,
-    caps_json: str,
+    caps: dict[str, object],
     control_token: str,
 ) -> str:
     """Substitute every landing-page placeholder, or raise ValueError."""
     subs = substitutions(
         app_css_version=app_css_version,
-        caps_json=caps_json,
+        caps=caps,
         control_token=control_token,
     )
     missing = [name for name in subs if name not in template]
@@ -78,9 +83,7 @@ def main(argv: list[str] | None = None) -> int:
         rendered = render_landing(
             page.read_text(encoding="utf-8"),
             app_css_version=args.app_css_version,
-            caps_json=json.dumps(
-                system_capabilities_for_profile(read_install_profile())
-            ),
+            caps=system_capabilities_for_profile(read_install_profile()),
             control_token=ensure_token(),
         )
     except ValueError as e:
