@@ -4,11 +4,10 @@
 
 """Wake-corpus session metadata persistence.
 
-The JSON-sidecar file I/O extracted from ``RecordingBackend``: finding,
-parsing, listing, and deleting the ``enroll_<member>_<session_id>.json``
-files under a recorder's metadata directory. No threading, no in-memory
-session state — ``RecordingBackend`` owns that and delegates here for the
-disk side.
+Finding, parsing, listing, and deleting the
+``enroll_<member>_<session_id>.json`` sidecar files under a recorder's
+metadata directory. No threading, no in-memory session state —
+``RecordingBackend`` owns that and delegates here for the disk side.
 """
 from __future__ import annotations
 
@@ -22,6 +21,7 @@ from jasper.aec_sweep import (
     config_metadata,
     variant_metadata,
 )
+from jasper.atomic_io import atomic_write_json
 
 from .bridge_session import (
     AEC3_SWEEP_LEGS,
@@ -34,9 +34,9 @@ from .bridge_session import (
     USB_DTLN_LEG,
     XVF_RAW0_DTLN_LEG,
     _enabled_legs_from_metadata,
-    _legacy_aec3_sweep_source,
     _metadata_flag,
     chip_aec_config_metadata,
+    saved_aec3_sweep_source,
 )
 
 logger = logging.getLogger("jasper-wake-corpus-web")
@@ -49,13 +49,9 @@ def session_metadata_path(
 
 
 def write_metadata_atomic(path: Path, data: Mapping[str, Any]) -> None:
-    """Atomic-rewrite the session JSON sidecar. Called after every clip
-    write + delete so the file on disk always reflects the current state
-    (resilient to a server crash mid-session)."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2)
-    tmp.replace(path)
+    """Publish a session JSON sidecar atomically (sorted keys, trailing
+    newline — see ``atomic_write_json``)."""
+    atomic_write_json(path, data)
 
 
 def find_session_file(metadata_dir: Path, session_id: str) -> Path | None:
@@ -86,13 +82,7 @@ def parse_session_data(
     if corpus_profile not in CORPUS_PROFILES:
         corpus_profile = PROFILE_STANDARD
     saved_config = data.get("aec3_sweep_config")
-    saved_source = (
-        saved_config.get("input_source")
-        if isinstance(saved_config, dict) else None
-    )
-    aec3_sweep_source = _legacy_aec3_sweep_source(
-        str(data.get("aec3_sweep_source") or saved_source or ""),
-    )
+    aec3_sweep_source = saved_aec3_sweep_source(data)
     include_raw_mic_0 = RAW0_LEG in enabled_legs
     include_usb_mic = bool(
         data.get(
@@ -164,25 +154,23 @@ def list_session_summaries(
     ports: dict[str, int],
     active_session_id: str | None,
 ) -> list[dict[str, Any]]:
-    """Scan the metadata dir, return one summary per session.
+    """Return one summary dict per session sidecar, newest-first by mtime.
 
-    Each summary: {session_id, member, mtime, clip_count,
-    deleted_count, enabled_legs, conditions: {<cond>: n, ...}}.
-    Sorted newest-first by mtime.
-
-    Failure-soft: corrupt JSON files are skipped + logged, not
-    raised — one bad file shouldn't black out the whole list.
+    Failure-soft: a sidecar that is missing, unreadable, unparsable, or has
+    a malformed field (e.g. an unrecognized AEC3 sweep source) is skipped
+    and logged rather than raising — one bad file must not black out the
+    whole list.
     """
     if not metadata_dir.is_dir():
         return []
     out: list[dict[str, Any]] = []
-    for p in sorted(
-        metadata_dir.glob("enroll_*.json"),
-        key=lambda f: f.stat().st_mtime, reverse=True,
-    ):
+    for p in metadata_dir.glob("enroll_*.json"):
         try:
+            mtime = p.stat().st_mtime
             data = json.loads(p.read_text())
-        except (OSError, json.JSONDecodeError) as e:
+            enabled_legs = _enabled_legs_from_metadata(data, ports)
+            aec3_sweep_source = saved_aec3_sweep_source(data)
+        except (OSError, json.JSONDecodeError, ValueError) as e:
             logger.warning("skip corrupt session %s: %s", p.name, e)
             continue
         clips = data.get("clips", [])
@@ -191,15 +179,6 @@ def list_session_summaries(
         for c in alive:
             k = c.get("condition", "?")
             conds[k] = conds.get(k, 0) + 1
-        enabled_legs = _enabled_legs_from_metadata(data, ports)
-        saved_config = data.get("aec3_sweep_config")
-        saved_source = (
-            saved_config.get("input_source")
-            if isinstance(saved_config, dict) else None
-        )
-        aec3_sweep_source = _legacy_aec3_sweep_source(
-            str(data.get("aec3_sweep_source") or saved_source or ""),
-        )
         audio_context = data.get("audio_context")
         if not isinstance(audio_context, dict):
             audio_context = {}
@@ -222,7 +201,7 @@ def list_session_summaries(
             "session_id": data.get("session_id", "?"),
             "member": data.get("member", "?"),
             "metadata_schema_version": data.get("metadata_schema_version"),
-            "mtime": p.stat().st_mtime,
+            "mtime": mtime,
             "clip_count": len(alive),
             "deleted_count": len(clips) - len(alive),
             "include_raw_mic_0": bool(data.get("include_raw_mic_0", False)),
@@ -256,6 +235,7 @@ def list_session_summaries(
                 and data.get("session_id") == active_session_id
             ),
         })
+    out.sort(key=lambda summary: summary["mtime"], reverse=True)
     return out
 
 

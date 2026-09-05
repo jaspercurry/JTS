@@ -140,6 +140,22 @@ TEST_MODE_STALE_SEC = 300.0
 
 METADATA_SCHEMA_VERSION = 2
 
+# session_store.parse_session_data()'s keys that map 1:1 onto a
+# RecordingBackend `self._<key>` attribute of the same name.
+_SESSION_STATE_KEYS = (
+    "session_id", "member", "enabled_legs", "include_raw_mic_0",
+    "include_dtln", "include_usb_mic", "include_usb_dtln",
+    "include_xvf_raw0_dtln", "include_aec3_sweep", "corpus_profile",
+    "chip_aec_config", "aec3_sweep_source", "aec3_sweep_variants",
+    "aec3_sweep_config", "capture_plan", "audio_context",
+)
+# Subset of the above returned verbatim in _load_session_data's summary.
+_SESSION_SUMMARY_KEYS = (
+    "session_id", "member", "include_raw_mic_0", "include_dtln",
+    "include_usb_mic", "include_usb_dtln", "include_xvf_raw0_dtln",
+    "include_aec3_sweep", "corpus_profile", "aec3_sweep_source",
+)
+
 
 # ---------------------------------------------------------------------------
 # Data shapes
@@ -753,35 +769,12 @@ class RecordingBackend:
         except (KeyError, TypeError) as e:
             raise ValueError(f"session schema mismatch: {e}") from e
         with self._lock:
-            self._session_id = parsed["session_id"]
-            self._member = parsed["member"]
+            for key in _SESSION_STATE_KEYS:
+                setattr(self, f"_{key}", parsed[key])
             self._clips = clips
-            self._include_raw_mic_0 = parsed["include_raw_mic_0"]
-            self._include_dtln = parsed["include_dtln"]
-            self._include_usb_mic = parsed["include_usb_mic"]
-            self._include_usb_dtln = parsed["include_usb_dtln"]
-            self._include_xvf_raw0_dtln = parsed["include_xvf_raw0_dtln"]
-            self._include_aec3_sweep = parsed["include_aec3_sweep"]
-            self._corpus_profile = parsed["corpus_profile"]
-            self._chip_aec_config = parsed["chip_aec_config"]
-            self._aec3_sweep_source = parsed["aec3_sweep_source"]
-            self._aec3_sweep_variants = parsed["aec3_sweep_variants"]
-            self._aec3_sweep_config = parsed["aec3_sweep_config"]
-            self._enabled_legs = parsed["enabled_legs"]
-            self._capture_plan = parsed["capture_plan"]
-            self._audio_context = parsed["audio_context"]
         return {
-            "session_id": parsed["session_id"],
-            "member": parsed["member"],
+            **{key: parsed[key] for key in _SESSION_SUMMARY_KEYS},
             "clip_count": sum(1 for c in clips if not c.deleted),
-            "include_raw_mic_0": parsed["include_raw_mic_0"],
-            "include_dtln": parsed["include_dtln"],
-            "include_usb_mic": parsed["include_usb_mic"],
-            "include_usb_dtln": parsed["include_usb_dtln"],
-            "include_xvf_raw0_dtln": parsed["include_xvf_raw0_dtln"],
-            "include_aec3_sweep": parsed["include_aec3_sweep"],
-            "corpus_profile": parsed["corpus_profile"],
-            "aec3_sweep_source": parsed["aec3_sweep_source"],
             "enabled_legs": list(parsed["enabled_legs"]),
             "has_capture_plan": parsed["capture_plan"] is not None,
             "has_audio_context": parsed["audio_context"] is not None,
