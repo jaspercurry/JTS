@@ -180,8 +180,9 @@ QUEUE_MAXSIZE = 32
 
 # Cadence of the `rms`/`chip_aec rms` INFO telemetry line. jasper/cli/doctor/aec.py
 # falls back to a rolling 90 s journal window when schema-v4 stats are
-# missing/stale, and needs >=3 samples in that window to assess health.
-RMS_LOG_INTERVAL_SEC = 30.0
+# missing/stale, and its silent-reference thresholds (silent_ref_count >= 5)
+# need >=5 samples in that window to be reachable.
+RMS_LOG_INTERVAL_SEC = 15.0
 
 _shutdown = threading.Event()
 
