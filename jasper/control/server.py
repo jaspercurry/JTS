@@ -553,10 +553,6 @@ class _SingleFlightTTLCache:
 
 VOLUME_MIN_DB = _volume_ops.VOLUME_MIN_DB
 VOLUME_MAX_DB = _volume_ops.VOLUME_MAX_DB
-_outputd_status = _state_aggregate._outputd_status
-_clamp_db = _volume_ops._clamp_db
-_db_to_percent = _volume_ops._db_to_percent
-_percent_to_db = _volume_ops._percent_to_db
 _read_volume_state = _volume_ops.read_volume_state
 
 
@@ -612,56 +608,6 @@ def _safe_usb_latency_state(airplay_health: Any = None) -> dict[str, Any]:
             "live_buffer_ms": None,
             "options": _usb_latency_options(),
         }
-
-
-def _parse_env_bool(raw: str, default: bool) -> bool:
-    return _aec_endpoints._parse_env_bool(raw, default)
-
-
-def _read_aec_state() -> dict:
-    return _aec_endpoints._read_aec_state()
-
-
-def _write_aec_leg(leg: str, enabled: bool) -> None:
-    _aec_endpoints._write_aec_leg(leg, enabled)
-
-
-def _write_audio_input_profile(profile: str) -> None:
-    _aec_endpoints._write_audio_input_profile(profile)
-
-
-def _atomic_rewrite_env(path: str, updates: dict) -> None:
-    """Compatibility patch seam for grouping env persistence."""
-
-    locked_update_env_file(path, updates, mode=0o644)
-
-
-def _read_wake_threshold() -> float:
-    return _aec_endpoints._read_wake_threshold()
-
-
-def _write_wake_threshold(value: float) -> None:
-    _aec_endpoints._write_wake_threshold(value)
-
-
-def _aec_bridge_active() -> bool:
-    return _aec_endpoints._aec_bridge_active()
-
-
-def _kick_aec_reconciler() -> None:
-    _aec_endpoints._kick_aec_reconciler()
-
-
-def _start_xvf_firmware_update() -> None:
-    _aec_endpoints._start_xvf_firmware_update()
-
-
-def _aec_full_status() -> dict:
-    return _aec_endpoints._aec_full_status()
-
-
-def _enhanced_aec_status() -> dict:
-    return _aec_endpoints._enhanced_aec_status()
 
 
 def _run_unit_systemctl(*args: str) -> subprocess.CompletedProcess[str]:
@@ -816,7 +762,7 @@ async def _get_state(
         voice_socket_command=_voice_socket_command,
         mux_socket_command=_mux_socket_command,
         local_status_json=_local_status_json,
-        aec_full_status=_aec_full_status,
+        aec_full_status=_aec_endpoints._aec_full_status,
         read_transit_state_func=read_transit_state,
         ha_status_snapshot=ha_status_snapshot,
         **extra,
@@ -1406,7 +1352,7 @@ def _write_grouping(
 ) -> None:
     """Persist a grouping role into the wizard-owned grouping.env.
 
-    Read-modify-write (via _atomic_rewrite_env) so operator-tuned
+    Read-modify-write (via locked_update_env_file) so operator-tuned
     JASPER_GROUPING_BUFFER_MS / _CODEC survive a role change. This is the
     single control-plane WRITER of grouping.env; jasper-grouping-reconcile is
     the single READER->action. The endpoint that calls this (/grouping/set) is
@@ -1444,7 +1390,7 @@ def _write_grouping(
     # config.format_roster).
     if roster is not None:
         updates["JASPER_GROUPING_ROSTER"] = roster
-    _atomic_rewrite_env(GROUPING_ENV_FILE, updates)
+    locked_update_env_file(GROUPING_ENV_FILE, updates, mode=0o644)
 
 
 
@@ -1758,7 +1704,7 @@ def _make_handler(
             """
             percent = int(state.effective_percent)
             return {
-                "db": round(_percent_to_db(percent), 3),
+                "db": round(_volume_ops._percent_to_db(percent), 3),
                 "percent": percent,
                 "muted": bool(state.muted),
                 "restore_percent": state.restore_percent,

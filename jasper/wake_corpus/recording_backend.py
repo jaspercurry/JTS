@@ -56,17 +56,15 @@ from jasper.wake_conditions import (
 from jasper.wake_ports import build_ports
 
 from .bridge_session import (
-    AEC3_SWEEP_LEGS,
+    CORPUS_PROFILES,
     DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE,
     DTLN_LEG,
+    PROFILE_CHIP_AEC_COMPARISON,
+    PROFILE_STANDARD,
     RAW0_LEG,
-    USB_CORPUS_LEGS,
     USB_DTLN_LEG,
     XVF_RAW0_DTLN_LEG,
     _default_enabled_legs,
-    _enabled_legs_from_metadata,
-    _legacy_aec3_sweep_source,
-    _metadata_flag,
     _session_aec3_sweep_source,
     build_capture_health,
     build_session_audio_context,
@@ -76,12 +74,10 @@ from .bridge_session import (
 )
 from .capture_plan import (
     CAPTURE_PLAN_STATE_SESSION,
-    CORPUS_PROFILES,
-    PROFILE_CHIP_AEC_COMPARISON,
-    PROFILE_STANDARD,
     build_capture_plan,
     validate_active_capture_plan,
 )
+from . import session_store
 
 logger = logging.getLogger("jasper-wake-corpus-web")
 
@@ -145,6 +141,22 @@ _STOP_LIFECYCLE_BUSY = "can't stop recording: lifecycle transition in progress"
 TEST_MODE_STALE_SEC = 300.0
 
 METADATA_SCHEMA_VERSION = 2
+
+# session_store.parse_session_data()'s keys that map 1:1 onto a
+# RecordingBackend `self._<key>` attribute of the same name.
+_SESSION_STATE_KEYS = (
+    "session_id", "member", "enabled_legs", "include_raw_mic_0",
+    "include_dtln", "include_usb_mic", "include_usb_dtln",
+    "include_xvf_raw0_dtln", "include_aec3_sweep", "corpus_profile",
+    "chip_aec_config", "aec3_sweep_source", "aec3_sweep_variants",
+    "aec3_sweep_config", "capture_plan", "audio_context",
+)
+# Subset of the above returned verbatim in _load_session_data's summary.
+_SESSION_SUMMARY_KEYS = (
+    "session_id", "member", "include_raw_mic_0", "include_dtln",
+    "include_usb_mic", "include_usb_dtln", "include_xvf_raw0_dtln",
+    "include_aec3_sweep", "corpus_profile", "aec3_sweep_source",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -750,114 +762,24 @@ class RecordingBackend:
         self._current_plan_conformance = None
 
     def _find_session_metadata(self, session_id: str) -> Path | None:
-        for p in self._metadata_dir.glob("enroll_*.json"):
-            try:
-                data = json.loads(p.read_text())
-            except (OSError, json.JSONDecodeError):
-                continue
-            if data.get("session_id") == session_id:
-                return p
-        return None
+        return session_store.find_session_file(self._metadata_dir, session_id)
 
     def _load_session_data(self, data: dict[str, Any]) -> dict[str, Any]:
         try:
-            session_id = data["session_id"]
-            member = data["member"]
-            clips = [
-                ClipMetadata(**c) for c in data.get("clips", [])
-            ]
+            parsed = session_store.parse_session_data(data, self._ports)
+            clips = [ClipMetadata(**c) for c in parsed["clips"]]
         except (KeyError, TypeError) as e:
             raise ValueError(f"session schema mismatch: {e}") from e
-        enabled_legs = _enabled_legs_from_metadata(data, self._ports)
-        corpus_profile = str(data.get("corpus_profile") or PROFILE_STANDARD)
-        if corpus_profile not in CORPUS_PROFILES:
-            corpus_profile = PROFILE_STANDARD
-        saved_config = data.get("aec3_sweep_config")
-        saved_source = (
-            saved_config.get("input_source")
-            if isinstance(saved_config, dict) else None
-        )
-        aec3_sweep_source = _legacy_aec3_sweep_source(
-            str(data.get("aec3_sweep_source") or saved_source or ""),
-        )
-        include_raw_mic_0 = RAW0_LEG in enabled_legs
-        include_usb_mic = bool(
-            data.get(
-                "include_usb_mic",
-                any(leg in USB_CORPUS_LEGS for leg in enabled_legs),
-            )
-            or (
-                aec3_sweep_source == AEC3_SWEEP_SOURCE_USB
-                and any(leg in AEC3_SWEEP_LEGS for leg in enabled_legs)
-            )
-        )
-        include_aec3_sweep = (
-            bool(data.get("include_aec3_sweep", False))
-            or any(leg in enabled_legs for leg in AEC3_SWEEP_LEGS)
-        )
-        saved_variants = data.get("aec3_sweep_variants")
-        if not isinstance(saved_variants, list):
-            saved_variants = []
-        if not isinstance(saved_config, dict):
-            saved_config = None
-        if include_aec3_sweep and not saved_variants:
-            saved_variants = variant_metadata(input_source=aec3_sweep_source)
-            saved_config = config_metadata(input_source=aec3_sweep_source)
-        elif include_aec3_sweep and saved_config is not None:
-            saved_config = dict(saved_config)
-            saved_config.setdefault("input_source", aec3_sweep_source)
-        include_dtln = _metadata_flag(data, "include_dtln", DTLN_LEG, enabled_legs)
-        include_usb_dtln = _metadata_flag(
-            data, "include_usb_dtln", USB_DTLN_LEG, enabled_legs,
-        )
-        include_xvf_raw0_dtln = _metadata_flag(
-            data, "include_xvf_raw0_dtln", XVF_RAW0_DTLN_LEG, enabled_legs,
-        )
-        chip_config = data.get("chip_aec_config")
-        if not isinstance(chip_config, dict):
-            chip_config = (
-                chip_aec_config_metadata()
-                if corpus_profile == PROFILE_CHIP_AEC_COMPARISON else None
-            )
-        audio_context = data.get("audio_context")
-        if not isinstance(audio_context, dict):
-            audio_context = None
-        capture_plan = data.get("capture_plan")
-        if not isinstance(capture_plan, dict):
-            capture_plan = None
         with self._lock:
-            self._session_id = session_id
-            self._member = member
+            for key in _SESSION_STATE_KEYS:
+                setattr(self, f"_{key}", parsed[key])
             self._clips = clips
-            self._include_raw_mic_0 = RAW0_LEG in enabled_legs
-            self._include_dtln = include_dtln
-            self._include_usb_mic = include_usb_mic
-            self._include_usb_dtln = include_usb_dtln
-            self._include_xvf_raw0_dtln = include_xvf_raw0_dtln
-            self._include_aec3_sweep = include_aec3_sweep
-            self._corpus_profile = corpus_profile
-            self._chip_aec_config = chip_config
-            self._aec3_sweep_source = aec3_sweep_source
-            self._aec3_sweep_variants = saved_variants
-            self._aec3_sweep_config = saved_config
-            self._enabled_legs = enabled_legs
-            self._capture_plan = capture_plan
-            self._audio_context = audio_context
         return {
-            "session_id": session_id,
-            "member": member,
+            **{key: parsed[key] for key in _SESSION_SUMMARY_KEYS},
             "clip_count": sum(1 for c in clips if not c.deleted),
-            "include_raw_mic_0": include_raw_mic_0,
-            "include_dtln": include_dtln,
-            "include_usb_mic": include_usb_mic,
-            "include_usb_dtln": include_usb_dtln,
-            "include_xvf_raw0_dtln": include_xvf_raw0_dtln,
-            "include_aec3_sweep": include_aec3_sweep,
-            "corpus_profile": corpus_profile,
-            "aec3_sweep_source": aec3_sweep_source,
-            "enabled_legs": list(enabled_legs),
-            "has_capture_plan": capture_plan is not None,
-            "has_audio_context": audio_context is not None,
+            "enabled_legs": list(parsed["enabled_legs"]),
+            "has_capture_plan": parsed["capture_plan"] is not None,
+            "has_audio_context": parsed["audio_context"] is not None,
         }
 
     def _maybe_load_recent_session(
@@ -1816,7 +1738,9 @@ class RecordingBackend:
     # ----- metadata persistence -------------------------------------
 
     def _metadata_path(self) -> Path:
-        return self._metadata_dir / f"enroll_{self._member}_{self._session_id}.json"
+        return session_store.session_metadata_path(
+            self._metadata_dir, self._member, self._session_id,
+        )
 
     def _save_metadata(self) -> None:
         """Atomic-rewrite the session JSON sidecar. Called after every
@@ -1847,10 +1771,7 @@ class RecordingBackend:
                 "audio_context": self._audio_context,
                 "clips": [c.to_json() for c in self._clips],
             }
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        with open(tmp, "w") as f:
-            json.dump(data, f, indent=2)
-        tmp.replace(path)
+        session_store.write_metadata_atomic(path, data)
 
     # ----- sessions management --------------------------------------
 
@@ -1864,90 +1785,9 @@ class RecordingBackend:
         Failure-soft: corrupt JSON files are skipped + logged, not
         raised — one bad file shouldn't black out the whole list.
         """
-        if not self._metadata_dir.is_dir():
-            return []
-        out: list[dict[str, Any]] = []
-        for p in sorted(
-            self._metadata_dir.glob("enroll_*.json"),
-            key=lambda f: f.stat().st_mtime, reverse=True,
-        ):
-            try:
-                data = json.loads(p.read_text())
-            except (OSError, json.JSONDecodeError) as e:
-                logger.warning("skip corrupt session %s: %s", p.name, e)
-                continue
-            clips = data.get("clips", [])
-            alive = [c for c in clips if not c.get("deleted")]
-            conds: dict[str, int] = {}
-            for c in alive:
-                k = c.get("condition", "?")
-                conds[k] = conds.get(k, 0) + 1
-            enabled_legs = _enabled_legs_from_metadata(data, self._ports)
-            saved_config = data.get("aec3_sweep_config")
-            saved_source = (
-                saved_config.get("input_source")
-                if isinstance(saved_config, dict) else None
-            )
-            aec3_sweep_source = _legacy_aec3_sweep_source(
-                str(data.get("aec3_sweep_source") or saved_source or ""),
-            )
-            audio_context = data.get("audio_context")
-            if not isinstance(audio_context, dict):
-                audio_context = {}
-            capture_plan = data.get("capture_plan")
-            if not isinstance(capture_plan, dict):
-                capture_plan = {}
-            resource = capture_plan.get("resource")
-            if not isinstance(resource, dict):
-                resource = {}
-            audio_profile = audio_context.get("production_audio_profile")
-            if not isinstance(audio_profile, dict):
-                audio_profile = {}
-            dac_reference = audio_context.get("dac_reference")
-            if not isinstance(dac_reference, dict):
-                dac_reference = {}
-            validation = dac_reference.get("validation")
-            if not isinstance(validation, dict):
-                validation = {}
-            out.append({
-                "session_id": data.get("session_id", "?"),
-                "member": data.get("member", "?"),
-                "metadata_schema_version": data.get("metadata_schema_version"),
-                "mtime": p.stat().st_mtime,
-                "clip_count": len(alive),
-                "deleted_count": len(clips) - len(alive),
-                "include_raw_mic_0": bool(data.get("include_raw_mic_0", False)),
-                "include_dtln": _metadata_flag(
-                    data, "include_dtln", DTLN_LEG, enabled_legs,
-                ),
-                "include_usb_mic": bool(data.get("include_usb_mic", False)),
-                "include_usb_dtln": _metadata_flag(
-                    data, "include_usb_dtln", USB_DTLN_LEG, enabled_legs,
-                ),
-                "include_xvf_raw0_dtln": _metadata_flag(
-                    data, "include_xvf_raw0_dtln", XVF_RAW0_DTLN_LEG, enabled_legs,
-                ),
-                "include_aec3_sweep": (
-                    bool(data.get("include_aec3_sweep", False))
-                    or any(leg in enabled_legs for leg in AEC3_SWEEP_LEGS)
-                ),
-                "corpus_profile": data.get("corpus_profile", PROFILE_STANDARD),
-                "aec3_sweep_source": aec3_sweep_source,
-                "enabled_legs": list(enabled_legs),
-                "has_audio_context": bool(audio_context),
-                "audio_profile_requested": audio_profile.get("requested"),
-                "audio_profile_active": audio_profile.get("active"),
-                "audio_profile_state": audio_profile.get("state"),
-                "audio_validation_status": validation.get("status"),
-                "capture_plan_recipe": capture_plan.get("recipe"),
-                "capture_plan_resource_level": resource.get("level"),
-                "conditions": conds,
-                "is_active": (
-                    self._session_id is not None
-                    and data.get("session_id") == self._session_id
-                ),
-            })
-        return out
+        return session_store.list_session_summaries(
+            self._metadata_dir, self._ports, self._session_id,
+        )
 
     def load_session(self, session_id: str) -> dict[str, Any]:
         """Switch the in-memory active session to an existing one on
@@ -2045,24 +1885,7 @@ class RecordingBackend:
             raise ValueError(f"session not found: {session_id}")
 
         data = json.loads(target.read_text())
-        wavs_deleted = 0
-        wavs_missing = 0
-        for c in data.get("clips", []):
-            if c.get("deleted"):
-                # Already-deleted clips have already had their WAVs
-                # removed by delete_clip(); skip + don't count.
-                continue
-            for path_str in (c.get("files") or {}).values():
-                p_wav = Path(path_str)
-                try:
-                    p_wav.unlink()
-                    wavs_deleted += 1
-                except FileNotFoundError:
-                    wavs_missing += 1
-                except OSError as e:
-                    logger.warning("failed to delete %s: %s", p_wav, e)
-                    wavs_missing += 1
-        target.unlink()
+        wavs_deleted, wavs_missing = session_store.delete_session_files(target, data)
 
         # If we just deleted the in-memory active session, clear state.
         with self._lock:

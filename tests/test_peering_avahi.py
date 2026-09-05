@@ -166,8 +166,7 @@ def test_skip_write_when_unchanged(tmp_path, monkeypatch):
     )
     # File content unchanged; reload not triggered.
     assert rendered.read_text() == original
-    # NOTE: We can't reliably assert mtime equality (filesystems
-    # have varying precision) — the load-bearing thing is no reload.
+    # Can't reliably assert mtime equality (filesystems have varying precision) — the load-bearing thing is no reload.
     assert reload_calls == []
 
 

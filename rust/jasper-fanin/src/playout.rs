@@ -126,6 +126,7 @@ pub struct PlayoutLedger {
 
 impl PlayoutLedger {
     pub fn new(sample_rate: u32) -> Self {
+        // PANIC-AUDITED: sample_rate is the daemon's fixed SAMPLE_RATE constant at every call site
         assert!(sample_rate > 0, "sample rate must be > 0");
         Self {
             sample_rate,

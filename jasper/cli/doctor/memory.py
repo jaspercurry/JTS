@@ -4,11 +4,6 @@
 
 """jasper-doctor checks — memory domain.
 
-Re-homed verbatim from the original monolithic
-``jasper/cli/doctor.py``; see ``jasper/cli/doctor/__init__.py``
-for the package overview and ``_registry.py`` for how order is
-preserved. No check logic changed in the split.
-
 The disk-pressure checks (``check_disk_space``,
 ``check_correction_storage``, ``check_wake_events_storage``) live
 here rather than in a new module because they share this domain's
@@ -28,8 +23,13 @@ from ...install_profile import is_streambox_install_profile, read_install_profil
 from ...memory_policy import (
     DISK_FAIL_PERCENT,
     DISK_WARN_PERCENT,
+    MEM_PSI_WARN_AVG60,
+    ZRAM_TARGET_PERCENT,
+    ZRAM_WARN_PERCENT,
     disk_usage,
     memory_headroom_thresholds,
+    memory_pressure,
+    zram_usage,
 )
 from ...wake_events import (
     DEFAULT_MAX_AUDIO_BYTES as _DEFAULT_WAKE_EVENTS_MAX_AUDIO_BYTES,
@@ -51,6 +51,10 @@ REASON_RAM_UNREADABLE = "ram_unreadable"
 REASON_MEMORY_HEADROOM_UNREADABLE = "memory_headroom_unreadable"
 REASON_MEMORY_HEADROOM_FAIL = "memory_headroom_critical"
 REASON_MEMORY_HEADROOM_WARN = "memory_headroom_tight"
+
+REASON_MEMORY_PRESSURE_NO_PSI = "memory_pressure_no_psi"
+REASON_MEMORY_PRESSURE_HIGH = "memory_pressure_high"
+REASON_MEMORY_PRESSURE_LOW = "memory_pressure_low"
 
 REASON_ZRAM_ABSENT = "zram_absent"
 REASON_ZRAM_UNSIZED = "zram_unsized"
@@ -183,40 +187,73 @@ def check_memory_headroom() -> CheckResult:
         f"{avail_mb} MB available ({pct}%)",
     )
 
+
+@doctor_check()
+def check_memory_pressure() -> CheckResult:
+    """Surface kernel memory-stall pressure, which MemAvailable does not show.
+
+    ``check_memory_headroom`` measures how much room is left; PSI measures how
+    much time the box already spends waiting on reclaim, swap-in, or page-cache
+    thrash. The verdict is the LIVE 60-second average only. The OOM-kill count
+    is cumulative since boot, so it rides in the detail and never latches the
+    row into a permanent warn.
+    """
+    name = "memory pressure"
+    pressure = memory_pressure()
+    psi = pressure.psi_some_avg60
+    kills = pressure.oom_kills
+    since_boot = "" if not kills else f"; {kills} OOM kill(s) since boot"
+    if psi is None:
+        # A kill observed without PSI is still an observation, so it is `ok`
+        # with the count and never `skipped` (jasper.doctor_contract); the
+        # /system tile draws the same line (sections.js: `cur.oom_kill > 0`).
+        return CheckResult(
+            name, "ok" if kills else "skipped",
+            "kernel publishes no PSI (needs psi=1 on the cmdline and "
+            f"CONFIG_PSI){since_boot}",
+            reason=REASON_MEMORY_PRESSURE_NO_PSI,
+        )
+    if psi >= MEM_PSI_WARN_AVG60:
+        return CheckResult(
+            name, "warn",
+            f"{psi:.1f}% of the last 60 s stalled on memory "
+            f"(warn at {MEM_PSI_WARN_AVG60:.0f}%) — reclaim/zram thrash, not "
+            f"just tight headroom{since_boot}",
+            reason=REASON_MEMORY_PRESSURE_HIGH,
+        )
+    return CheckResult(
+        name, "ok",
+        f"{psi:.1f}% of the last 60 s stalled on memory{since_boot}",
+        reason=REASON_MEMORY_PRESSURE_LOW,
+    )
+
 @doctor_check()
 def check_zram_size_ratio() -> CheckResult:
-    """Verify the rpi-swap drop-in sized zram to ≤60% of RAM. The
-    old zramswap default was 100% of RAM, which amplifies thrash
-    (more zsmalloc bookkeeping during reclaim). Stage 1 of the
-    memory-resilience plan reduces this to 50%.
-
-    Skip cleanly if:
-      - zram isn't in use at all (older RPi OS / dphys-swapfile setups)
-      - rpi-swap isn't installed (Bookworm or earlier — JTS's drop-in
-        targets rpi-swap exclusively, so on other zram managers there
-        is no actionable fix for the operator from this side)"""
-    try:
-        zram_size_bytes = int(Path("/sys/block/zram0/disksize").read_text().strip())
-    except (OSError, ValueError):
+    """Verify the rpi-swap drop-in sized zram near its target share of
+    RAM. The old zramswap default was 100% of RAM, which amplifies
+    thrash (more zsmalloc bookkeeping during reclaim);
+    ``jasper.memory_policy.ZRAM_TARGET_PERCENT`` is the one number the
+    installer sizes to, and ``ZRAM_WARN_PERCENT`` beside it is the band
+    this check reads that live sizing against."""
+    usage = zram_usage()
+    if usage is None:
         return CheckResult(
             "zram size", "skipped", "no zram0 device (rpi-swap not active)",
             reason=REASON_ZRAM_ABSENT,
         )
-    if zram_size_bytes == 0:
+    if usage.disksize_bytes == 0:
         return CheckResult(
             "zram size", "skipped", "zram0 present but unsized",
             reason=REASON_ZRAM_UNSIZED,
         )
-    total_kb = _meminfo_kb("MemTotal") or 0
-    if total_kb == 0:
+    if usage.total_bytes == 0:
         return CheckResult(
             "zram size", "warn", "couldn't compute ratio",
             reason=REASON_ZRAM_RATIO_UNREADABLE,
         )
-    total_bytes = total_kb * 1024
-    pct = (zram_size_bytes * 100) // total_bytes
-    zram_mb = zram_size_bytes // (1024 * 1024)
-    if pct > 60:
+    pct = usage.percent_of_ram
+    zram_mb = usage.disksize_bytes // (1024 * 1024)
+    if pct > ZRAM_WARN_PERCENT:
         # If rpi-swap isn't installed, the JTS drop-in is moot —
         # different package owns the zram device. Don't warn the
         # operator about something they can't fix from this side.
@@ -231,8 +268,8 @@ def check_zram_size_ratio() -> CheckResult:
             )
         return CheckResult(
             "zram size", "warn",
-            f"{zram_mb} MB ({pct}% of RAM) — old default; "
-            f"Stage 1 plan recommends 50%. If the drop-in is present "
+            f"{zram_mb} MB ({pct}% of RAM) — old default; the JTS "
+            f"drop-in targets {ZRAM_TARGET_PERCENT}%. If it is present "
             f"(check /etc/rpi/swap.conf.d/50-jts.conf), reboot to apply "
             f"— rpi-swap is a generator (runs at boot, not a service).",
             reason=REASON_ZRAM_OVERSIZED,

@@ -142,6 +142,9 @@ Group=jasper
 SupplementaryGroups=audio bluetooth systemd-journal jasper-secrets jasper-intsecrets jts-ring
 CapabilityBoundingSet=
 SystemCallFilter=@system-service
+# UMask=0007 — wizard-written state under /var/lib/jasper(-secrets|-intsecrets)
+# lands group-writable (0660), not 0644. Mirrors jasper-voice/-mux/-control.
+UMask=0007
 
 # Hardening — this process needs to read /etc/jasper/jasper.env,
 # read+write /var/lib/jasper/ and generated CamillaDSP configs,

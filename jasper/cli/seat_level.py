@@ -57,13 +57,15 @@ Usage::
 
     jasper-seat-level --mic-serial 810-8494
 
-Exit 0 only on a converged, banked reference; 1 on any refusal, with the
-``REFUSE_*`` reason on stderr and in the ``event=`` line. A refusal's line also
-carries the window the stop abandoned — how many samples it saw, their
-min/median/max dB SPL, and the sample that tripped with its offset from the
-volume step — so a stop can be told apart from a level that rose and stayed
-without reading the journal. ``--verbose`` adds the whole per-sample series,
-one DEBUG line per window.
+Exit 0 only on a converged, banked reference; 1 on any refusal. Either way the
+answer is ONE JSON document on stdout — the reference reached, or
+:mod:`jasper.cli._refusal`'s ``{status, reason, detail}`` — and one sentence
+goes to stderr, carrying the ``REFUSE_*`` reason the ``event=`` line carries
+too. A refusal also publishes the window the stop abandoned: how many samples
+it saw, their min/median/max dB SPL, and the sample that tripped with its
+offset from the volume step, so a stop can be told apart from a level that rose
+and stayed without reading the journal. ``--verbose`` adds the whole per-sample
+series, one DEBUG line per window.
 """
 
 from __future__ import annotations
@@ -94,6 +96,7 @@ from jasper.active_speaker.seat_level_reference import (
     SeatLevelTarget,
     SeatLevelTargetError,
     StimulusProvenance,
+    seat_level_reference_state_path,
 )
 from jasper.active_speaker.commission_wiring import CommissionPresetResolutionError
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
@@ -108,7 +111,7 @@ from jasper.audio_measurement.calibration import (
 )
 
 from ._logging import CLI_LOG_FORMAT
-from ._refusal import EXIT_OK, EXIT_REFUSED
+from ._refusal import EXIT_OK, EXIT_REFUSED, failed
 
 logger = logging.getLogger(__name__)
 
@@ -615,11 +618,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog="jasper-seat-level",
         description=(
             "Ramp the measurement volume until a calibrated mic at the seat "
-            "reads the target dB SPL, then bank that volume as the crossover "
-            "session's measurement reference. PRECONDITION: the mic's Sens "
-            "Factor is quoted at MAXIMUM capture volume — confirm "
-            "`amixer -c <card>` shows the capture control at 100%, or every "
-            "absolute SPL below is wrong by the shortfall."
+            "reads the target dB SPL and bank it as the crossover session's "
+            "measurement reference — PRECONDITION: `amixer -c <card>` shows "
+            "the mic's capture control at 100%, where its Sens Factor is "
+            "quoted, or every absolute SPL is wrong by the shortfall."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -634,11 +636,12 @@ def build_parser() -> argparse.ArgumentParser:
             "      --calibration-file /var/lib/jasper/mic-cal/umik2-7003219.txt\n"
             "\n"
             "EXIT CODES\n"
-            "  0  converged and banked; the human line and --json both carry\n"
-            "     the reference dB SPL reached\n"
-            "  1  refused -- \"refused (<reason>): <detail>\" on stderr names\n"
-            "     why (interrupted, or the ramp's own refusal vocabulary);\n"
-            "     --json emits the same reason/detail as structured fields\n"
+            "  0  converged and banked; stdout carries the reference dB\n"
+            "     SPL reached and where it was banked\n"
+            "  1  refused -- {status, reason, detail} on stdout under the\n"
+            "     reason (interrupted, or the ramp's own refusal\n"
+            "     vocabulary), with the window the stop abandoned and the\n"
+            "     whole ramp telemetry under detail; one sentence on stderr\n"
             "  2  usage error (argparse) -- most commonly neither\n"
             "     --calibration-file nor --mic-serial was passed"
         ),
@@ -679,7 +682,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="capture channel count the mic enumerates (default 1)",
     )
     parser.add_argument("--topology", default=None)
-    parser.add_argument("--json", action="store_true")
     parser.add_argument(
         "--verbose",
         action="store_true",
@@ -726,13 +728,30 @@ def main(argv: list[str] | None = None) -> int:
             "stopped by the operator; the stimulus was cut and nothing was "
             f"banked. {_restore_phrase(restored)}"
         )
-    if args.json:
-        print(json.dumps({**result.to_dict(), "detail": detail}, indent=2, sort_keys=True))
-    elif result.converged:
-        print(f"converged: {detail}")
-    else:
-        print(f"refused ({result.reason}): {detail}", file=sys.stderr)
-    return EXIT_OK if result.converged else EXIT_REFUSED
+    if not result.converged:
+        # Everything the old document carried, under the one key a refusal
+        # publishes: the window the stop abandoned is in ``ramp``, and the
+        # sentence that names it is ``detail``.
+        carried = result.to_dict()
+        del carried["status"], carried["reason"]
+        return failed(EXIT_REFUSED, str(result.reason), {**carried, "detail": detail})
+    print(f"converged: {detail}", file=sys.stderr)
+    # The ramp banked the reference; the telemetry behind it stays on the
+    # ``event=`` lines rather than riding a converged run's answer.
+    print(
+        json.dumps(
+            {
+                "reference_volume_db": result.reference_volume_db,
+                "measured_db_spl": result.measured_db_spl,
+                "restored": result.restored,
+                "detail": detail,
+                "out": str(seat_level_reference_state_path()),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return EXIT_OK
 
 
 if __name__ == "__main__":

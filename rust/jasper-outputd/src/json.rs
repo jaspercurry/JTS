@@ -6,6 +6,7 @@
 
 /// Serialize one string as a complete quoted JSON value.
 pub(crate) fn json_string(value: &str) -> String {
+    // PANIC-AUDITED: serializing a &str into an in-memory Vec has no failing branch
     serde_json::to_string(value).expect("serializing a string cannot fail")
 }
 

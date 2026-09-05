@@ -108,14 +108,6 @@ COMMISSIONING_TRANSPORT_GATE_ID = "commissioning_transport_supported"
 STAGED_CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH"
 STAGED_METADATA_PATH_ENV = "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH"
 
-# The staged anchor lock is opened by root (the `jasper-active-speaker` CLI)
-# and by `jasper-web` (the /sound/ wizard). `install.sh` publishes the
-# generated-config directory as `2775 root:jasper`, so a file created there
-# inherits group `jasper` and 0660 lets whichever writer creates it first hand
-# the lock to the other. No install-time heal is needed for a lock that has
-# never existed on any box: unlike `.dsp_apply.lock` there is no pre-upgrade
-# ownership drift to repair.
-STAGED_ANCHOR_LOCK_MODE = 0o660
 # Bounded, never open-ended: this wait sits on a /sound/ web request and on the
 # `baseline-reemit` CLI that deploys and operator ladder steps invoke.
 # It exceeds the holder's longest bounded step -- one `camilladsp --check`
@@ -245,6 +237,10 @@ def staged_anchor_lock(
     writes a byte of the pair.
     """
 
+    # Opened by root (the `jasper-active-speaker` CLI) and by `jasper-web` (the
+    # /sound/ wizard), so it takes the shared group-writable lock mode. Unlike
+    # `.dsp_apply.lock` this lock never existed pre-upgrade, so it needs no
+    # install-time ownership heal.
     lock_path = staged_anchor_lock_path(config_path)
     timeout = (
         STAGED_ANCHOR_LOCK_TIMEOUT_SEC if timeout_sec is None else timeout_sec
@@ -255,7 +251,6 @@ def staged_anchor_lock(
         try:
             handle = stack.enter_context(advisory_file_lock(
                 lock_path,
-                mode=STAGED_ANCHOR_LOCK_MODE,
                 timeout_sec=timeout,
             ))
         # `TimeoutError` IS an `OSError` subclass, so the bounded-wait refusal

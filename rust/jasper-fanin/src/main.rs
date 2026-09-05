@@ -310,6 +310,7 @@ fn run() -> Result<()> {
     let tap_config = mixer.direct_tap_config();
     let tap_receiver = mixer
         .take_direct_tap_receiver()
+        // PANIC-AUDITED: startup-only, taken once right after Mixer::new and before READY=1
         .expect("tap receiver taken exactly once");
     let tap_shutdown = Arc::clone(&shutdown);
     let tap_writer = std::thread::Builder::new()

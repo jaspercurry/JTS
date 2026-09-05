@@ -512,11 +512,10 @@ class UsageStore:
                 # and cost = duration × rate snapshot. Separate from `sessions`
                 # because sessions close with token usage while these rows cover
                 # active realtime duration for flat-rate providers.
-                # NOTE: do NOT clean up dangling intervals here — UsageStore is
-                # also constructed read-only by status surfaces, and closing the
-                # live connection's open interval from a reader would be wrong.
-                # Crash cleanup lives in BillableActivityMeter (daemon startup
-                # only).
+                # Do NOT clean up dangling intervals here — UsageStore is also
+                # constructed read-only by status surfaces, and closing the live
+                # connection's open interval from a reader would be wrong. Crash cleanup
+                # lives in BillableActivityMeter (daemon startup only).
                 self._conn.execute(_CONNECTION_INTERVALS_TABLE_DDL)
                 self._ensure_connection_interval_kind_column()
             self._connection_intervals_have_kind = (

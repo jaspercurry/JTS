@@ -8,7 +8,8 @@ from __future__ import annotations
 import pytest
 
 import jasper.citibike as citibike_mod
-from jasper.cli import doctor
+import jasper.home_assistant as ha_mod
+from jasper.cli.doctor import integrations
 from jasper.config import Config
 
 from .doctor_test_support import _fresh_cfg
@@ -36,7 +37,7 @@ def _routes_cfg(monkeypatch, **vars_) -> Config:
 @pytest.mark.parametrize(
     "vars_, status, reason",
     [
-        ({}, "skipped", "REASON_GOOGLE_ROUTES_NOT_CONFIGURED"),
+        ({}, "ok", "REASON_GOOGLE_ROUTES_NOT_CONFIGURED"),
         (
             {"GOOGLE_ROUTES_API_KEY": "AIzaSySynthetic"},
             "warn",
@@ -66,10 +67,10 @@ def _routes_cfg(monkeypatch, **vars_) -> Config:
 def test_check_google_routes_verdicts(monkeypatch, vars_, status, reason):
     cfg = _routes_cfg(monkeypatch, **vars_)
 
-    r = doctor.check_google_routes(cfg)
+    r = integrations.check_google_routes(cfg)
 
     assert r.status == status
-    assert r.reason == getattr(doctor.integrations, reason)
+    assert r.reason == getattr(integrations, reason)
 
 
 # ---------------------------------------------------------------- Citi Bike
@@ -92,18 +93,18 @@ def _gbfs(monkeypatch, station_ids):
 @pytest.mark.parametrize(
     "stations, live_ids, status, reason",
     [
-        ("", (), "skipped", "REASON_CITIBIKE_NOT_CONFIGURED"),
+        ("", (), "ok", "REASON_CITIBIKE_NOT_CONFIGURED"),
         (
             "abc|9 Av,def|Atlantic", ("abc", "def"), "ok",
             "REASON_CITIBIKE_CONNECTED",
         ),
-        # One station retired by Lyft: warn naming it, but the rest still work.
+        # One station retired by Lyft: named, but the rest still work.
         (
-            "abc|9 Av,def|Gone Station", ("abc",), "warn",
+            "abc|9 Av,def|Gone Station", ("abc",), "ok",
             "REASON_CITIBIKE_STATIONS_RETIRED",
         ),
         # More than three missing: still the same retirement reason.
-        ("a|A,b|B,c|C,d|D,e|E", (), "warn", "REASON_CITIBIKE_STATIONS_RETIRED"),
+        ("a|A,b|B,c|C,d|D,e|E", (), "ok", "REASON_CITIBIKE_STATIONS_RETIRED"),
     ],
     ids=["unconfigured", "all-resolve", "one-retired", "missing-list-capped"],
 )
@@ -113,10 +114,10 @@ def test_check_citibike_verdicts(
     _gbfs(monkeypatch, live_ids)
     cfg = _citibike_cfg(monkeypatch, stations=stations)
 
-    r = doctor.check_citibike(cfg)
+    r = integrations.check_citibike(cfg)
 
     assert r.status == status
-    assert r.reason == getattr(doctor.integrations, reason)
+    assert r.reason == getattr(integrations, reason)
 
 
 @pytest.mark.parametrize(
@@ -131,18 +132,89 @@ def test_check_citibike_reports_the_ebike_only_mode(monkeypatch, ebike_only, rea
     _gbfs(monkeypatch, ("abc",))
     cfg = _citibike_cfg(monkeypatch, stations="abc|9 Av", ebike_only=ebike_only)
 
-    r = doctor.check_citibike(cfg)
+    r = integrations.check_citibike(cfg)
 
-    assert r.reason == getattr(doctor.integrations, reason)
+    assert r.reason == getattr(integrations, reason)
 
 
-def test_check_citibike_fails_when_gbfs_unreachable(monkeypatch):
+def test_check_citibike_warns_when_gbfs_unreachable(monkeypatch):
     def _raise(url, ttl, **kw):
         raise RuntimeError("network down")
 
     monkeypatch.setattr(citibike_mod, "fetch_feed", _raise)
     cfg = _citibike_cfg(monkeypatch, stations="abc|9 Av")
 
-    r = doctor.check_citibike(cfg)
-    assert r.status == "fail"
-    assert r.reason == doctor.integrations.REASON_CITIBIKE_GBFS_UNREACHABLE
+    r = integrations.check_citibike(cfg)
+    assert r.status == "warn"
+    assert r.reason == integrations.REASON_CITIBIKE_GBFS_UNREACHABLE
+
+
+# ----------------------------------------------------------- Home Assistant
+
+
+def _ha_cfg(monkeypatch, *, url: str = "", token: str = "") -> Config:
+    return _fresh_cfg(
+        monkeypatch,
+        GEMINI_API_KEY="AIza-stub",
+        JASPER_HA_URL=url,
+        JASPER_HA_TOKEN=token,
+    )
+
+
+def _ha_probe(monkeypatch, result=None, raises: Exception | None = None):
+    async def fake_probe(url, token, *, force=False, verify_ssl=True):
+        if raises is not None:
+            raise raises
+        return dict(result or {}, url=url)
+
+    monkeypatch.setattr(ha_mod, "probe_status", fake_probe)
+
+
+_CONNECTED = {
+    "configured": True, "connected": True,
+    "instance_name": "Brooklyn House", "version": "2026.5.1", "error": None,
+}
+_UNREACHABLE = {
+    "configured": True, "connected": False,
+    "instance_name": None, "version": None, "error": "no route to host",
+}
+
+
+@pytest.mark.parametrize(
+    "creds, probe, status, reason",
+    [
+        ({}, None, "ok", "REASON_HOME_ASSISTANT_NOT_CONFIGURED"),
+        (
+            {"url": "http://ha.local:8123", "token": "t"},
+            {"result": _CONNECTED},
+            "ok",
+            "REASON_HOME_ASSISTANT_CONNECTED",
+        ),
+        (
+            {"url": "http://ha.local:8123", "token": "t"},
+            {"result": _UNREACHABLE},
+            "warn",
+            "REASON_HOME_ASSISTANT_UNREACHABLE",
+        ),
+        (
+            {"url": "http://ha.local:8123", "token": "t"},
+            {"raises": RuntimeError("network stack exploded")},
+            "warn",
+            "REASON_HOME_ASSISTANT_PROBE_RAISED",
+        ),
+    ],
+    ids=["unconfigured", "connected", "unreachable", "probe-raised"],
+)
+def test_check_home_assistant_verdicts(
+    monkeypatch, creds, probe, status, reason
+):
+    """An integration is not the speaker: an unreachable or exploding
+    Home Assistant is a warn a healer can act on, and never configuring one
+    is operator intent."""
+    if probe is not None:
+        _ha_probe(monkeypatch, **probe)
+
+    r = integrations.check_home_assistant(_ha_cfg(monkeypatch, **creds))
+
+    assert r.status == status
+    assert r.reason == getattr(integrations, reason)

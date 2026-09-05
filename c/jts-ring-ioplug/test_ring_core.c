@@ -2012,11 +2012,10 @@ static void test_reader_ebusy_second_reader(void) {
     uint64_t pid1 = atomic_load_explicit(&h->reader_pid, memory_order_relaxed);
     uint64_t rseq_before = atomic_load_explicit(&h->read_seq, memory_order_relaxed);
 
-    // NOTE: reader 1's pid == getpid() here (same process), so foreign_reader_is_live
-    // returns 0 for OUR pid — that is correct for re-prepare in the SAME process.
-    // To model a DIFFERENT process holding the ring, overwrite reader_pid with a
-    // foreign live pid (any nonzero != getpid()) and a fresh heartbeat, then try
-    // to open: it must return -EBUSY.
+    // reader 1's pid == getpid() here (same process), so foreign_reader_is_live returns 0
+    // for OUR pid — that is correct for re-prepare in the SAME process. To model a
+    // DIFFERENT process holding the ring, overwrite reader_pid with a foreign live pid (any
+    // nonzero != getpid()) and a fresh heartbeat, then try to open: it must return -EBUSY.
     uint64_t foreign = (uint64_t)getpid() + 1; // definitely not us
     atomic_store_explicit(&h->reader_pid, foreign, memory_order_relaxed);
     atomic_store_explicit(&h->reader_heartbeat_ns, jts_ring_monotonic_ns(),

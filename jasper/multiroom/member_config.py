@@ -35,15 +35,13 @@ from typing import Any
 from . import config
 from .config import GROUPING_ENV_FILE, GroupingConfig
 
-# NOTE: `load_config` / `is_active_leader` are resolved through the `config`
-# module at call time (``config.load_config`` / ``config.is_active_leader``),
-# NOT captured via ``from .config import ...``. A from-import binds a private
-# reference at import time; if this module was first imported while a test had
+# `load_config` / `is_active_leader` are resolved through the `config` module
+# at call time (``config.load_config`` / ``config.is_active_leader``), NOT
+# captured via ``from .config import ...``: a from-import binds a private
+# reference at import time, so if this module is imported while a test has
 # monkeypatched ``jasper.multiroom.config.load_config`` (the grouping-doctor
-# tests do exactly this), that reference stuck to the stub and survived the
-# monkeypatch teardown, poisoning later tests — pytest-xdist sharding hid it
-# by varying which test imported this module first (#1270). Call-time
-# resolution honours both the patch and its teardown.
+# tests do), the reference sticks to the stub past the monkeypatch teardown
+# (#1270). Call-time resolution honours both the patch and its teardown.
 
 
 def member_camilla_kwargs(

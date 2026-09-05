@@ -7,7 +7,6 @@
 import pytest
 
 from jasper import audio_runtime_plan
-from jasper.cli import doctor
 from jasper.cli.doctor import (
     audio_runtime_camilla,
     audio_runtime_fanin,
@@ -25,7 +24,7 @@ from ._doctor_audio_runtime_fixtures import (
 def test_check_camilla_service_ok_when_enabled_and_active(monkeypatch):
     _seed_units()
 
-    result = doctor.check_camilla_service()
+    result = audio_runtime_camilla.check_camilla_service()
 
     assert result.status == "ok"
 
@@ -44,7 +43,7 @@ def test_check_camilla_service_ok_when_enabled_and_active(monkeypatch):
 def test_check_camilla_service_failures(monkeypatch, enabled, active, reason):
     _seed_units(enabled=enabled, active=active)
 
-    result = doctor.check_camilla_service()
+    result = audio_runtime_camilla.check_camilla_service()
 
     assert result.status == "fail"
     assert result.reason == reason
@@ -54,22 +53,22 @@ def test_check_camilla_service_failures(monkeypatch, enabled, active, reason):
     ("check", "expected_status", "expected_reason"),
     [
         (
-            doctor.check_fanin_service,
+            audio_runtime_fanin.check_fanin_service,
             "fail",
             audio_runtime_fanin.REASON_FANIN_STATUS_MALFORMED,
         ),
         (
-            doctor.check_fanin_tts_drops,
+            audio_runtime_fanin.check_fanin_tts_drops,
             "skipped",
             audio_runtime_fanin.REASON_FANIN_TTS_STATUS_NOT_PROBED,
         ),
         (
-            doctor.check_outputd_service,
+            audio_runtime_outputd.check_outputd_service,
             "fail",
             audio_runtime_outputd.REASON_OUTPUTD_STATUS_MALFORMED,
         ),
         (
-            doctor.check_aec_clock_drift,
+            audio_runtime_outputd.check_aec_clock_drift,
             "skipped",
             audio_runtime_outputd.REASON_AEC_CLOCK_STATUS_UNAVAILABLE,
         ),
@@ -100,7 +99,7 @@ def test_audio_runtime_plan_doctor_warns_on_shadowed_knob(monkeypatch):
         lambda: plan,
     )
 
-    r = doctor.check_audio_runtime_plan()
+    r = audio_runtime_camilla.check_audio_runtime_plan()
 
     assert r.status == "warn"
     assert r.reason == audio_runtime_camilla.REASON_AUDIO_PLAN_WARNINGS
@@ -136,7 +135,7 @@ def test_audio_runtime_plan_doctor_reports_policy_and_emitted_apart(
         lambda: plan,
     )
 
-    r = doctor.check_audio_runtime_plan()
+    r = audio_runtime_camilla.check_audio_runtime_plan()
 
     assert r.status == "ok"
     assert r.reason == ""
@@ -160,7 +159,7 @@ def test_audio_runtime_plan_doctor_passes_a_ring_armed_bonded_box(monkeypatch):
         lambda: plan,
     )
 
-    assert doctor.check_audio_runtime_plan().status == "ok"
+    assert audio_runtime_camilla.check_audio_runtime_plan().status == "ok"
     assert plan.errors == ()
 
 
@@ -188,7 +187,7 @@ def test_audio_runtime_plan_doctor_fails_usb_route_with_legacy_lab_transport(
         lambda: plan,
     )
 
-    r = doctor.check_audio_runtime_plan()
+    r = audio_runtime_camilla.check_audio_runtime_plan()
 
     assert r.status == "fail"
     assert r.reason == audio_runtime_camilla.REASON_AUDIO_PLAN_ERRORS

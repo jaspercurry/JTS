@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from jasper.cli import doctor
+from jasper.cli.doctor import renderers
 from jasper.cli.doctor import voice as doctor_voice
 from jasper.config import Config
 from jasper.tools.packs import TOOL_PACKS
@@ -54,7 +55,7 @@ def test_provider_key_accepts_each_catalog_provider(
         **{f"{provider.id.replace('-', '_')}_api_key": key},
     )
 
-    r = doctor.check_provider_key(cfg)  # type: ignore[arg-type]
+    r = doctor_voice.check_provider_key(cfg)  # type: ignore[arg-type]
 
     assert r.status == "ok"
     assert r.name == provider.key_env
@@ -68,7 +69,7 @@ def test_provider_key_warns_on_wrong_prefix(monkeypatch, tmp_path: Path):
         OPENAI_API_KEY="WRONGPREFIX-1234",
     )
 
-    r = doctor.check_provider_key(cfg)
+    r = doctor_voice.check_provider_key(cfg)
     assert r.status == "warn"
     assert r.reason == doctor_voice.REASON_PROVIDER_KEY_WRONG_PREFIX
 
@@ -82,7 +83,7 @@ def test_provider_key_ignores_dormant_providers(monkeypatch, tmp_path: Path):
         OPENAI_API_KEY="sk-active1234",
     )
 
-    r = doctor.check_provider_key(cfg)
+    r = doctor_voice.check_provider_key(cfg)
     assert r.status == "ok"
 
 
@@ -101,7 +102,7 @@ def test_provider_key_checks_the_ssot_provider_not_the_environments(
         GEMINI_API_KEY="AIzaSyGemini1234",
     )
 
-    r = doctor.check_provider_key(cfg)
+    r = doctor_voice.check_provider_key(cfg)
 
     assert r.name == "GEMINI_API_KEY"
     assert r.status == "warn"
@@ -138,12 +139,52 @@ def test_provider_key_adjudicates_the_selection_by_status(
     # and jasper-doctor exits on it before building the check list.
     cfg = SimpleNamespace(voice_provider="gemini", gemini_api_key="AIzaSy1")
 
-    r = doctor.check_provider_key(cfg)  # type: ignore[arg-type]
+    r = doctor_voice.check_provider_key(cfg)  # type: ignore[arg-type]
 
     assert r.status == status
     assert r.reason == reason
 
 
+@pytest.mark.parametrize(
+    "state, status, reason",
+    [
+        (
+            _state("unreadable"), "skipped",
+            doctor_voice.REASON_PROVIDER_IMPORTS_UNDETERMINED,
+        ),
+        (
+            _state("invalid", raw="nope"), "skipped",
+            doctor_voice.REASON_PROVIDER_IMPORTS_UNDETERMINED,
+        ),
+        (
+            _state("missing"), "ok",
+            doctor_voice.REASON_PROVIDER_IMPORTS_NOT_CONFIGURED,
+        ),
+        (
+            _state("unset"), "ok",
+            doctor_voice.REASON_PROVIDER_IMPORTS_NOT_CONFIGURED,
+        ),
+    ],
+    ids=["unreadable", "invalid", "file-missing", "unset"],
+)
+def test_provider_imports_status_when_it_probed_nothing(
+    monkeypatch, state, status, reason
+):
+    """An undetermined selection defers to check_provider_key's verdict, so
+    it never offers a second opinion (skipped). No provider configured yet
+    is operator intent, not a finding (ok)."""
+    monkeypatch.setattr(
+        doctor_voice, "read_active_provider_state", lambda: state,
+    )
+
+    r = doctor_voice.check_provider_importable()
+
+    assert r.status == status
+    assert r.reason == reason
+
+
+# The manifest gates jasper-aec-reconcile's start of jasper-voice, so a
+# missing or stale one is deafness (AGENTS.md non-negotiable 6), not a finding.
 @pytest.mark.parametrize(
     "body, status, reason",
     [
@@ -162,7 +203,7 @@ def test_voice_provider_ids_manifest_verdicts(
         manifest.write_text(body)
     monkeypatch.setenv("JASPER_VOICE_PROVIDER_IDS_FILE", str(manifest))
 
-    r = doctor.check_voice_provider_ids_manifest()
+    r = doctor_voice.check_voice_provider_ids_manifest()
     assert r.status == status
     assert r.reason == reason
 
@@ -201,7 +242,7 @@ def test_spotify_connect_device_consumes_build_result(monkeypatch, tmp_path: Pat
         )
 
     with patch("jasper.spotify_router.build_clients", side_effect=fake_build_clients):
-        result = doctor.check_spotify_connect_device(cfg)
+        result = renderers.check_spotify_connect_device(cfg)
 
     assert result.status == "ok"
     assert "jasper" in result.detail
@@ -232,7 +273,7 @@ def test_pricing_warns_only_for_an_unpriced_active_model(
         lambda provider: model or default_model_id(provider),
     )
 
-    r = doctor.check_pricing()
+    r = doctor_voice.check_pricing()
     assert r.status == status
     assert r.reason == reason
 
@@ -240,22 +281,22 @@ def test_pricing_warns_only_for_an_unpriced_active_model(
 @pytest.mark.parametrize(
     "status, verdict, reason",
     [
-        ("unreadable", "warn", "REASON_PRICING_MODEL_UNDETERMINED"),
-        ("invalid", "warn", "REASON_PRICING_MODEL_UNDETERMINED"),
+        ("unreadable", "skipped", "REASON_PRICING_MODEL_UNDETERMINED"),
+        ("invalid", "skipped", "REASON_PRICING_MODEL_UNDETERMINED"),
         ("missing", "ok", "REASON_PRICING_MODEL_NOT_CONFIGURED"),
         ("unset", "ok", "REASON_PRICING_MODEL_NOT_CONFIGURED"),
     ],
 )
-def test_pricing_warns_when_it_could_not_ask_which_model_is_active(
+def test_pricing_skips_when_it_could_not_ask_which_model_is_active(
     monkeypatch, status, verdict, reason
 ):
-    """A row that could not resolve its own question reports "can't tell",
-    not "fine" — first-time setup (missing/unset) stays ok."""
+    """A row that could not resolve its own question observed nothing, so it
+    skips rather than warning — first-time setup (missing/unset) stays ok."""
     monkeypatch.setattr(
         doctor_voice, "read_active_provider_state", lambda: _state(status),
     )
 
-    r = doctor.check_pricing()
+    r = doctor_voice.check_pricing()
     assert r.status == verdict
     assert r.reason == getattr(doctor_voice, reason)
 
@@ -292,7 +333,7 @@ def test_pricing_prices_the_model_the_ssot_provider_resolves_from_files(
         lambda m, **kw: (priced.append(m), real(m, **kw))[1],
     )
 
-    result = doctor.check_pricing()
+    result = doctor_voice.check_pricing()
 
     assert seen_providers == ["gemini"]
     assert priced == ["gemini-3.1-flash-live-preview"]
@@ -374,8 +415,8 @@ def _drop_last(rt):
 @pytest.mark.parametrize(
     "runtime, status, reason",
     [
-        # Control unreachable / older daemon: report the registry alone.
-        (None, "ok", doctor_voice.REASON_TOOL_PACKS_RUNTIME_UNAVAILABLE),
+        # Control unreachable / older daemon: registration never observed.
+        (None, "skipped", doctor_voice.REASON_TOOL_PACKS_RUNTIME_UNAVAILABLE),
         (_runtime(EXPECTED), "ok", doctor_voice.REASON_TOOL_PACKS_HEALTHY),
         (
             _runtime(EXPECTED, failed={EXPECTED[2]}), "fail",
@@ -406,7 +447,7 @@ def _drop_last(rt):
     ],
 )
 def test_assess_tool_packs_verdicts(runtime, status, reason):
-    r = doctor._assess_tool_packs(EXPECTED, runtime)
+    r = doctor_voice._assess_tool_packs(EXPECTED, runtime)
 
     assert r.status == status
     assert r.reason == reason
@@ -435,7 +476,7 @@ def test_tool_packs_runtime_reader_is_fail_soft(monkeypatch, state):
 
     monkeypatch.setattr(control, "get_state", reader)
 
-    assert doctor._voice_tool_packs_runtime() is None
+    assert doctor_voice._voice_tool_packs_runtime() is None
 
 
 def test_tool_packs_runtime_reader_parses_the_state_field(monkeypatch):
@@ -444,7 +485,7 @@ def test_tool_packs_runtime_reader_parses_the_state_field(monkeypatch):
     payload = {"voice": {"tool_packs": _runtime(["audio", "timer"])}}
     monkeypatch.setattr(control, "get_state", lambda *a, **k: payload)
 
-    assert [p["name"] for p in doctor._voice_tool_packs_runtime()] == [
+    assert [p["name"] for p in doctor_voice._voice_tool_packs_runtime()] == [
         "audio",
         "timer",
     ]
@@ -453,7 +494,7 @@ def test_tool_packs_runtime_reader_parses_the_state_field(monkeypatch):
 @pytest.mark.parametrize(
     "runtime, status, reason",
     [
-        (None, "ok", doctor_voice.REASON_TOOL_PACKS_RUNTIME_UNAVAILABLE),
+        (None, "skipped", doctor_voice.REASON_TOOL_PACKS_RUNTIME_UNAVAILABLE),
         (
             _runtime(EXPECTED, failed={EXPECTED[1]}), "fail",
             doctor_voice.REASON_TOOL_PACKS_BUILD_FAILED,
@@ -464,7 +505,7 @@ def test_tool_packs_runtime_reader_parses_the_state_field(monkeypatch):
 def test_check_tool_packs_wires_the_runtime_reader(monkeypatch, runtime, status, reason):
     monkeypatch.setattr(doctor_voice, "_voice_tool_packs_runtime", lambda: runtime)
 
-    r = doctor.check_tool_packs()
+    r = doctor_voice.check_tool_packs()
 
     assert r.status == status
     assert r.reason == reason
@@ -473,7 +514,7 @@ def test_check_tool_packs_wires_the_runtime_reader(monkeypatch, runtime, status,
 def test_check_tool_packs_is_registered_in_the_voice_module():
     entry = next(
         c for c in doctor.registered_checks()
-        if c.func is doctor.check_tool_packs
+        if c.func is doctor_voice.check_tool_packs
     )
 
     assert entry.module == "voice"

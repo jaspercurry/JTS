@@ -77,9 +77,6 @@ REASON_CAMILLA_UNREACHABLE = "camilla_unreachable"
 REASON_CAMILLA_VOLUME_ABOVE_CEILING = "camilla_volume_above_ceiling"
 
 REASON_TTS_OUTPUTD_UNREACHABLE = "tts_outputd_unreachable"
-REASON_TTS_DEVICE_SHAPE_INVALID = "tts_device_shape_invalid"
-REASON_TTS_DEVICE_NO_OUTPUT_CHANNELS = "tts_device_no_output_channels"
-REASON_TTS_DEVICE_UNAVAILABLE = "tts_device_unavailable"
 
 REASON_OUTPUT_HARDWARE_STATE_UNAVAILABLE = "output_hardware_state_unavailable"
 REASON_OUTPUT_HARDWARE_BLOCKED = "output_hardware_blocked"
@@ -516,69 +513,37 @@ def check_mic_capture(cfg: Config) -> CheckResult:
 
 @doctor_check(label="tts output", needs_cfg=True)
 def check_tts_open(cfg: Config) -> CheckResult:
-    """Verify the TTS output device is enumerable.
+    """Verify the TTS IPC socket is reachable.
 
-    Does not open the stream: starting a `sd.RawOutputStream` against a dmix
-    device races the running jasper-voice writer and yields false "can't open"
-    errors while TTS works. `query_devices` confirms the device exists in
-    PortAudio's enumeration with output channels available."""
-    if cfg.tts_transport == "outputd":
-        socket_path = cfg.tts_outputd_socket
-        sock: socket.socket | None = None
-        try:
-            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            sock.settimeout(2.0)
-            sock.connect(socket_path)
-            return CheckResult(
-                "tts output",
-                "ok",
-                f"outputd transport reachable at {socket_path}",
-            )
-        except OSError as e:
-            return CheckResult(
-                "tts output",
-                "fail",
-                f"JASPER_TTS_TRANSPORT=outputd but {socket_path} is not reachable: {e}. "
-                "Start jasper-outputd or deploy a pre-outputd rollback tree to return to the "
-                "sounddevice path.",
-                reason=REASON_TTS_OUTPUTD_UNREACHABLE,
-            )
-        finally:
-            if sock is not None:
-                try:
-                    sock.close()
-                except OSError:
-                    pass
+    Connects to `cfg.tts_outputd_socket` (fan-in solo, outputd when
+    bonded); does not send anything, since a probe write would race the
+    running jasper-voice writer."""
+    socket_path = cfg.tts_outputd_socket
+    sock: socket.socket | None = None
     try:
-        import sounddevice as sd
-        info = sd.query_devices(cfg.tts_device)
-        if not isinstance(info, dict):
-            return CheckResult(
-                "tts output", "fail",
-                f"sd.query_devices({cfg.tts_device!r}) returned unexpected "
-                f"shape {type(info).__name__}",
-                reason=REASON_TTS_DEVICE_SHAPE_INVALID,
-            )
-        if int(info.get("max_output_channels", 0)) < 1:
-            return CheckResult(
-                "tts output", "fail",
-                f"{cfg.tts_device} enumerated but reports 0 output channels. "
-                f"Check /etc/asound.conf and that jasper-camilla is running.",
-                reason=REASON_TTS_DEVICE_NO_OUTPUT_CHANNELS,
-            )
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(2.0)
+        sock.connect(socket_path)
         return CheckResult(
-            "tts output", "ok",
-            f"{cfg.tts_device} present (default rate "
-            f"{int(info.get('default_samplerate', 0))} Hz, "
-            f"out channels {info.get('max_output_channels')})",
+            "tts output",
+            "ok",
+            f"outputd transport reachable at {socket_path}",
         )
-    except (ImportError, OSError, RuntimeError, ValueError, TypeError) as e:
+    except OSError as e:
         return CheckResult(
-            "tts output", "fail",
-            f"can't enumerate {cfg.tts_device}: {e}. "
-            f"Check /etc/asound.conf and that jasper-camilla is running.",
-            reason=REASON_TTS_DEVICE_UNAVAILABLE,
+            "tts output",
+            "fail",
+            f"{socket_path} is not reachable: {e}. "
+            "Start jasper-fanin (or jasper-outputd, if bonded) and check "
+            "that its TTS socket exists.",
+            reason=REASON_TTS_OUTPUTD_UNREACHABLE,
         )
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
 
 @doctor_check()
 def check_output_hardware_state() -> CheckResult:

@@ -71,7 +71,7 @@ don't.
   `csrf_fetch_helpers_js`, `jsonHeaders` exist in
   `jasper/web/_common.py`.
 - Shared JS modules exist at `/assets/shared/js/{dialog,escape,dom}.js`.
-- `resolve_bass_management()` state carries the Wave-2
+- `correction_bass_flow.py`'s `status_payload()` carries the Wave-2
   `bass_extension` field.
 
 ## File allowlist

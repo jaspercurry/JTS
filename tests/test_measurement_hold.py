@@ -390,7 +390,7 @@ def test_repeated_declines_log_once_at_info_then_debug(control_server, caplog):
     base, _ = control_server
     _post(f"{base}/measurement/hold", {"owner": "seat-level"})
 
-    with caplog.at_level(logging.DEBUG, logger="jasper.control.server"):
+    with caplog.at_level(logging.DEBUG, logger="jasper.control"):
         for _ in range(5):
             status, body = _post(
                 f"{base}/volume/set", {"percent": 91, "source": "usbsink"},
@@ -407,7 +407,7 @@ def test_a_new_hold_gets_its_own_info_line(control_server, caplog):
     """Per HOLD, not per process: the next measurement announces itself again."""
     base, _ = control_server
 
-    with caplog.at_level(logging.DEBUG, logger="jasper.control.server"):
+    with caplog.at_level(logging.DEBUG, logger="jasper.control"):
         for owner in ("seat-level", "correction-measurement"):
             _post(f"{base}/measurement/hold", {"owner": owner})
             _post(f"{base}/volume/set", {"percent": 91, "source": "usbsink"})
@@ -426,7 +426,7 @@ def test_a_renewal_does_not_re_announce(control_server, caplog):
     base, _ = control_server
     _post(f"{base}/measurement/hold", {"owner": "seat-level"})
 
-    with caplog.at_level(logging.DEBUG, logger="jasper.control.server"):
+    with caplog.at_level(logging.DEBUG, logger="jasper.control"):
         _post(f"{base}/volume/set", {"percent": 91, "source": "usbsink"})
         _post(f"{base}/measurement/hold", {"owner": "seat-level"})  # renewal
         _post(f"{base}/volume/set", {"percent": 92, "source": "usbsink"})

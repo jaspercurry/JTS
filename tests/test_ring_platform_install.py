@@ -351,11 +351,10 @@ export JTS_RING_ALSA_PLUGIN_DIR
 mkdir() {{ :; }}
 chown() {{ :; }}
 rsync() {{ :; }}
-# NOTE: rm is intentionally NOT stubbed here, so a stray `rm -f "${{so_dest}}"`
-# in the failure branch would really delete the file and fail this test. That is
-# also why the provenance override above is load-bearing rather than belt: the
-# revoke on this path runs a REAL rm, and without the override its target is
-# /var/lib/jasper/ring-ioplug.provenance on the host running the test.
+# rm is intentionally NOT stubbed here, so a stray `rm -f "${{so_dest}}"` in the failure branch would
+# really delete the file and fail this test. That is also why the provenance override above is
+# load-bearing rather than belt: the revoke on this path runs a REAL rm, and without the override
+# its target is /var/lib/jasper/ring-ioplug.provenance on the host running the test.
 sudo() {{ :; }}
 run_contained_build() {{ return 1; }}
 source "{RING_PLATFORM_SH}"

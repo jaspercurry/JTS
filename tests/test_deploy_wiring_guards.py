@@ -408,16 +408,17 @@ def test_nginx_recovery_dropin_installed_on_both_profiles():
 # three pieces after install.sh: surface collateral OOM kills, gate on the
 # build manifest having advanced to the deployed SHA, and surface runtime
 # health. These guard against a refactor silently dropping any of them —
-# the failure mode would be a green deploy that hides exactly the problems
-# (#2/#4/#5/#7) this work closed. The behavior of the helpers themselves is
-# pinned in test_deploy_oom_collateral.py and test_lib_deploy_direction.py.
+# the failure mode would be a green deploy that hides exactly what
+# ADR-0172, ADR-0173 and ADR-0174 close. The behavior of the helpers
+# themselves is pinned in test_deploy_oom_collateral.py and
+# test_lib_deploy_direction.py.
 
 
 def test_deploy_captures_install_rc_so_collateral_is_always_surfaced():
     """install.sh must run with its exit code captured (not under bare
     set -e), so report_oom_collateral runs even when the build failed —
     otherwise an OOM-killed build would abort the deploy before surfacing
-    the collateral (problem #5)."""
+    the collateral (See ADR-0174)."""
     text = _DEPLOY_TO_PI.read_text()
     assert re.search(
         r'run_remote_sudo "\$\{install_env\} bash[^\n]*"\s*\|\|\s*install_rc=\$\?',
@@ -463,7 +464,7 @@ def test_deploy_captures_pi_clock_for_oom_window():
 def test_deploy_manifest_gate_checks_verified_status_and_sha():
     """verify_manifest_advanced must confirm BOTH the deployed full SHA and
     the JASPER_INSTALL_STATUS=ok marker — proving the install ran to
-    completion, not just that some manifest exists (problem #4)."""
+    completion, not just that some manifest exists (See ADR-0172)."""
     text = _DEPLOY_TO_PI.read_text()
     start = text.index("verify_manifest_advanced() {")
     body = text[start: text.index("\n}", start)]

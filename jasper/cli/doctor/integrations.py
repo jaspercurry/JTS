@@ -41,7 +41,7 @@ def check_google_tokens(cfg: Config) -> CheckResult:
     """Verify Google OAuth state is healthy.
 
     Three states matter:
-      - CLIENT_ID/SECRET not set → ok (skipped, not enabled)
+      - CLIENT_ID/SECRET not set → ok (operator intent: tools off)
       - CLIENT_ID/SECRET set but no accounts linked → warn (wizard
         needs visiting; Calendar/Gmail tools are silently unregistered)
       - At least one account fails to refresh → warn (likely revoked
@@ -50,7 +50,7 @@ def check_google_tokens(cfg: Config) -> CheckResult:
     label = "Google OAuth"
     if not cfg.google_enabled:
         return CheckResult(
-            label, "skipped",
+            label, "ok",
             f"not configured — visit {cfg.google_setup_url} "
             f"to enable Calendar + Gmail tools",
             reason=REASON_GOOGLE_TOKENS_NOT_CONFIGURED,
@@ -59,7 +59,7 @@ def check_google_tokens(cfg: Config) -> CheckResult:
         from ...google_creds import GoogleRegistry, valid_access_token
     except ImportError as e:
         return CheckResult(
-            label, "fail",
+            label, "warn",
             f"google-auth import failed: {e}. Re-run install.sh.",
             reason=REASON_GOOGLE_TOKENS_IMPORT_FAILED,
         )
@@ -107,7 +107,7 @@ def check_google_routes(cfg: Config) -> CheckResult:
     if not status.api_key_present and not status.origin_present:
         return CheckResult(
             label,
-            "skipped",
+            "ok",
             f"not configured — visit {setup_url} to enable travel time",
             reason=REASON_GOOGLE_ROUTES_NOT_CONFIGURED,
         )
@@ -146,9 +146,9 @@ def check_home_assistant(cfg: Config) -> CheckResult:
     """Verify Home Assistant connectivity for the home_assistant voice tool.
 
     Three states matter:
-      - URL or token not set → skipped. The tool is gated on both.
-      - Both set, but GET /api/ fails (network, auth, 5xx) → fail with a hint
-        pointing at the setup wizard.
+      - URL or token not set → ok. Operator intent; the tool is gated on both.
+      - Both set, but GET /api/ fails (network, auth, 5xx) → warn with a hint
+        pointing at the setup wizard. An integration is not the speaker.
       - Both set, GET /api/ succeeds → ok with the instance name + version.
     """
     import asyncio as _asyncio
@@ -157,7 +157,7 @@ def check_home_assistant(cfg: Config) -> CheckResult:
     setup_url = f"http://{cfg.hostname}/ha"
     if not cfg.ha_enabled:
         return CheckResult(
-            label, "skipped",
+            label, "ok",
             f"not configured — visit {setup_url} to enable smart-home control",
             reason=REASON_HOME_ASSISTANT_NOT_CONFIGURED,
         )
@@ -165,7 +165,7 @@ def check_home_assistant(cfg: Config) -> CheckResult:
         from ...home_assistant import probe_status
     except ImportError as e:
         return CheckResult(
-            label, "fail", f"home_assistant import failed: {e}",
+            label, "warn", f"home_assistant import failed: {e}",
             reason=REASON_HOME_ASSISTANT_IMPORT_FAILED,
         )
     try:
@@ -179,12 +179,12 @@ def check_home_assistant(cfg: Config) -> CheckResult:
         ))
     except Exception as e:  # noqa: BLE001
         return CheckResult(
-            label, "fail", f"probe raised: {e}",
+            label, "warn", f"probe raised: {e}",
             reason=REASON_HOME_ASSISTANT_PROBE_RAISED,
         )
     if not result.get("connected"):
         return CheckResult(
-            label, "fail",
+            label, "warn",
             f"configured but unreachable at {result.get('url') or cfg.ha_url}: "
             f"{result.get('error') or 'unknown error'}. Re-check the URL "
             f"and token at {setup_url}.",
@@ -203,15 +203,15 @@ def check_citibike(cfg: Config) -> CheckResult:
     """Verify Citi Bike GBFS reachability + saved-station resolution.
 
     Four states:
-      - No saved stations → skipped. The tool is not registered.
-      - Saved stations, GBFS unreachable → fail. Tool will degrade to
+      - No saved stations → ok. Operator intent; the tool is not registered.
+      - Saved stations, GBFS unreachable → warn. Tool will degrade to
         cached / error responses at runtime.
       - Saved stations, GBFS responsive, all saved IDs present in
         the current station_information.json → ok with the count
         (and an "(e-bike-only mode)" suffix when the global flag is
         set).
       - Saved stations, GBFS responsive, one or more saved IDs
-        missing → warn with the affected labels. Lyft periodically
+        missing → ok with the affected labels. Lyft periodically
         retires stations; the user has to re-pick at /transit/.
     """
     label = "Citi Bike"
@@ -222,7 +222,7 @@ def check_citibike(cfg: Config) -> CheckResult:
     saved = list(parse_saved_stations(os.environ.get("JASPER_CITIBIKE_STATIONS", "")))
     if not saved:
         return CheckResult(
-            label, "skipped",
+            label, "ok",
             f"not configured — visit {setup_url} to enable",
             reason=REASON_CITIBIKE_NOT_CONFIGURED,
         )
@@ -234,14 +234,14 @@ def check_citibike(cfg: Config) -> CheckResult:
         )
     except ImportError as e:
         return CheckResult(
-            label, "fail", f"citibike module import failed: {e}",
+            label, "warn", f"citibike module import failed: {e}",
             reason=REASON_CITIBIKE_IMPORT_FAILED,
         )
     try:
         info = fetch_feed(STATION_INFO_URL, INFO_TTL_SECONDS)
     except Exception as e:  # noqa: BLE001
         return CheckResult(
-            label, "fail",
+            label, "warn",
             f"GBFS unreachable: {e}. Saved-station drift cannot be "
             f"validated; voice tool will degrade to cached data or "
             f"return {{error}} at runtime.",
@@ -257,7 +257,7 @@ def check_citibike(cfg: Config) -> CheckResult:
         names = ", ".join(lab for _, lab in missing[:3])
         suffix = "" if len(missing) <= 3 else f" (+{len(missing) - 3} more)"
         return CheckResult(
-            label, "warn",
+            label, "ok",
             f"{len(missing)}/{len(saved)} saved station(s) no longer in "
             f"GBFS — Lyft retired them: {names}{suffix}. "
             f"Re-pick at {setup_url}.",

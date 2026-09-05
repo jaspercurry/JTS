@@ -36,7 +36,7 @@ import time
 from array import array
 from typing import Any
 
-from ..memory_policy import disk_usage
+from ..memory_policy import disk_usage, memory_pressure
 from ..service_units import (
     EXTRA_SERVICE_GROUPS,
     JASPER_SERVICE_GROUPS,
@@ -113,16 +113,6 @@ CGROUP_MEMORY_STAT_FILE = "/sys/fs/cgroup/memory.stat"
 # guest_nice columns; the dashboard wants active vs total to compute
 # a per-core utilization percentage.
 PROC_STAT = "/proc/stat"
-
-# Kernel pressure-stall information. install.sh puts `psi=1` on the
-# cmdline; without it (or without CONFIG_PSI) the file is absent and the
-# sampler omits the field rather than reporting a zero that would read as
-# "no pressure". The "some" line's avg60 is the share of the last 60
-# seconds in which at least one task stalled waiting on memory, 0-100.
-PROC_PRESSURE_MEMORY = "/proc/pressure/memory"
-# Cumulative OOM kills since boot. Absent on kernels that don't publish
-# the counter.
-PROC_VMSTAT = "/proc/vmstat"
 
 
 class SystemSampler:
@@ -335,8 +325,7 @@ class SystemSampler:
     def _tick(self) -> None:
         """Cheap-metric sample — /proc reads + statvfs + sysfs only."""
         mem = self._read_meminfo()
-        mem_psi = self._read_mem_psi_some_avg60()
-        oom_kill = self._read_oom_kill()
+        pressure = memory_pressure()
         load = self._read_loadavg_1m()
         net = self._read_net_dev()
         disk_used_pct, disk_total_gb = self._read_disk()
@@ -372,8 +361,8 @@ class SystemSampler:
                 self._append(self._fan_rpm, 0.0)
                 self._append(self._fan_pwm, 0.0)
             self._mem_total_mb = mem["total_mb"]
-            self._mem_psi_some_avg60 = mem_psi
-            self._oom_kill = oom_kill
+            self._mem_psi_some_avg60 = pressure.psi_some_avg60
+            self._oom_kill = pressure.oom_kills
             self._net_rx_bytes = net["rx_bytes"]
             self._net_tx_bytes = net["tx_bytes"]
             self._disk_used_pct = disk_used_pct
@@ -430,41 +419,6 @@ class SystemSampler:
             "used_mb": (total_kb - avail_kb) // 1024,
             "swap_used_mb": (swap_total_kb - swap_free_kb) // 1024,
         }
-
-    @staticmethod
-    def _read_mem_psi_some_avg60(
-        path: str = PROC_PRESSURE_MEMORY,
-    ) -> float | None:
-        """Percent of the last 60 s in which at least one task stalled on
-        memory, or None where the kernel publishes no PSI.
-
-        Line shape: ``some avg10=0.00 avg60=1.23 avg300=0.41 total=12345``.
-        """
-        try:
-            with open(path) as f:
-                for line in f:
-                    if not line.startswith("some "):
-                        continue
-                    for field in line.split()[1:]:
-                        key, _, value = field.partition("=")
-                        if key == "avg60":
-                            return float(value)
-        except (OSError, ValueError):
-            return None
-        return None
-
-    @staticmethod
-    def _read_oom_kill(path: str = PROC_VMSTAT) -> int | None:
-        """OOM kills since boot (cumulative), or None where /proc/vmstat
-        has no ``oom_kill`` counter."""
-        try:
-            with open(path) as f:
-                for line in f:
-                    if line.startswith("oom_kill "):
-                        return int(line.split()[1])
-        except (OSError, ValueError, IndexError):
-            return None
-        return None
 
     @staticmethod
     def _read_loadavg_1m() -> float:

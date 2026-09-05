@@ -180,11 +180,10 @@ from jasper.active_speaker.crossover_v2.alignment_prescription import (
     ALIGNMENT_PRESCRIPTION_KEY,
 )
 from jasper.active_speaker.crossover_v2.position_cycle import (
-    POSITION_CYCLE_FILENAME,
     PositionCycleError,
     expand_angle_spec,
-    position_cycle_document,
     staged_stops,
+    write_position_cycle,
 )
 from jasper.active_speaker.crossover_v2.topology_prescription import (
     TOPOLOGY_PRESCRIPTION_KEY,
@@ -745,8 +744,8 @@ def bank_position_cycle(dest: Path, *, staged: int, trail: Trail) -> None:
     untarred carries one record per accepted take, each stamped by the speaker
     with the bearing the microphone was actually at, and this projects them
     into one sorted index at the round root. Nothing here writes a fact of its
-    own — see
-    ``position_cycle.position_cycle_document``.
+    own, and nothing here writes the FILE either — see
+    ``position_cycle.write_position_cycle``, which the on-box bank shares.
 
     ``staged`` is how many stops the walk was staged with. It is reported
     ALONGSIDE the derived count and never folded into the document: a shortfall
@@ -759,10 +758,8 @@ def bank_position_cycle(dest: Path, *, staged: int, trail: Trail) -> None:
     trail says so rather than the exit code. A failure is a printed line and an
     ``ok=false`` row naming what was missing, never a quiet return.
     """
-    path = dest / POSITION_CYCLE_FILENAME
     try:
-        document = position_cycle_document(dest)
-        path.write_text(json.dumps(document, indent=2) + "\n")
+        path, document = write_position_cycle(dest)
     except (PositionCycleError, OSError) as exc:
         trail.emit("position_cycle", ok=False, staged=staged, detail=str(exc)[:300])
         print(f"round: the poses could not be indexed: {exc}", file=sys.stderr)

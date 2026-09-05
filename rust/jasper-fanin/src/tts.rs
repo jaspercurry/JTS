@@ -39,8 +39,9 @@ use jasper_tts_protocol::{
 pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
 pub const DEFAULT_MAX_PENDING_FRAMES: u64 = 48_000 * 2;
 /// Fan-in's assistant wire protocol is contractually 48 kHz stereo
-/// (`OutputdTtsPlayout` rejects any other rate) and matches the snd-aloop
-/// mix rate, so the playout ledger's frames->ms math is fixed at 48 kHz.
+/// (`TtsPlayout.__init__` in jasper/audio_io.py hardcodes this rate) and
+/// matches the snd-aloop mix rate, so the playout ledger's frames->ms math
+/// is fixed at 48 kHz.
 const TTS_SAMPLE_RATE: u32 = 48_000;
 // Keep this above voice's `JASPER_IDLE_TIMEOUT_SEC` default (20 s):
 // fan-in only sees the one-shot duck IPC, not the provider turn state, so
@@ -1115,6 +1116,7 @@ impl TtsMixer {
         // per-segment flushed total in normal operation.
         let events = self.ledger.flush();
         let flushed = self.clear_queue();
+        // PANIC-AUDITED: both totals come from the one flush performed two lines above
         debug_assert_eq!(
             flushed,
             events.iter().map(|e| e.flushed_frames).sum::<u64>(),

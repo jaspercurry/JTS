@@ -64,7 +64,7 @@ def test_check_ram_warns_only_for_an_undersized_full_install(profile, status, re
         "builtins.open",
         return_value=_mock_meminfo({"MemTotal": 426076}),  # ~416 MB
     ), patch("jasper.cli.doctor.memory.read_install_profile", **kwargs):
-        r = doctor.check_ram()
+        r = doctor_memory.check_ram()
 
     assert r.status == status
     assert r.reason == reason
@@ -100,12 +100,12 @@ def test_memory_headroom_thresholds_scale_with_total_ram(
             {"MemTotal": total_kb, "MemAvailable": available_kb}
         ),
     ):
-        assert doctor.check_memory_headroom().status == status
+        assert doctor_memory.check_memory_headroom().status == status
 
 
 def test_memory_headroom_warns_when_meminfo_is_unreadable():
     with patch("builtins.open", side_effect=OSError("permission denied")):
-        r = doctor.check_memory_headroom()
+        r = doctor_memory.check_memory_headroom()
         assert r.status == "warn"
         assert r.reason == doctor_memory.REASON_MEMORY_HEADROOM_UNREADABLE
 
@@ -147,13 +147,13 @@ def test_check_zram_size_ratio_verdicts(zram_bytes, rpi_swap_installed, status):
     ), patch(
         "builtins.open", return_value=_mock_meminfo({"MemTotal": 1014768})
     ):
-        assert doctor.check_zram_size_ratio().status == status
+        assert doctor_memory.check_zram_size_ratio().status == status
 
 
 def test_check_zram_size_ratio_skips_without_a_zram_device():
     """Dev host / older RPi OS — no /sys/block/zram0."""
     with patch("pathlib.Path.read_text", side_effect=FileNotFoundError):
-        r = doctor.check_zram_size_ratio()
+        r = doctor_memory.check_zram_size_ratio()
         assert r.status == "skipped"
         assert r.reason == doctor_memory.REASON_ZRAM_ABSENT
 
@@ -179,7 +179,7 @@ def test_check_cgroup_memory_enabled_verdicts(
     if controllers is not None:
         monkeypatch.setattr(Path, "read_text", lambda self, **kw: controllers)
 
-    assert doctor.check_cgroup_memory_enabled().status == status
+    assert doctor_memory.check_cgroup_memory_enabled().status == status
 
 
 def test_audio_path_units_cover_every_protected_slice_unit():
@@ -203,8 +203,8 @@ def test_audio_path_units_cover_every_protected_slice_unit():
         if _directives(drop_in) & slices
     }
 
-    assert set(doctor._AUDIO_PATH_UNITS) == expected
-    assert len(doctor._AUDIO_PATH_UNITS) == len(set(doctor._AUDIO_PATH_UNITS))
+    assert set(doctor_memory._AUDIO_PATH_UNITS) == expected
+    assert len(doctor_memory._AUDIO_PATH_UNITS) == len(set(doctor_memory._AUDIO_PATH_UNITS))
 
 
 def _audio_unit_states_fake(pids: dict[str, int]):
@@ -215,7 +215,7 @@ def _audio_unit_states_fake(pids: dict[str, int]):
 
 
 def test_audio_path_no_swap_is_ok_when_every_daemon_is_swap_free(monkeypatch):
-    pids = {unit: 2001 + i for i, unit in enumerate(doctor._AUDIO_PATH_UNITS)}
+    pids = {unit: 2001 + i for i, unit in enumerate(doctor_memory._AUDIO_PATH_UNITS)}
     monkeypatch.setattr(
         _evidence, "read_unit_states", _audio_unit_states_fake(pids),
     )
@@ -223,7 +223,7 @@ def test_audio_path_no_swap_is_ok_when_every_daemon_is_swap_free(monkeypatch):
         "pathlib.Path.read_text",
         lambda self: "Name:\tfake\nVmRSS:\t100000 kB\nVmSwap:\t0 kB\n",
     ):
-        r = doctor.check_audio_path_no_swap()
+        r = doctor_memory.check_audio_path_no_swap()
         assert r.status == "ok"
         assert r.reason == doctor_memory.REASON_AUDIO_PATH_ALL_SWAP_FREE
 
@@ -238,13 +238,13 @@ def test_audio_path_no_swap_names_the_swapped_daemon_and_amount(monkeypatch):
 
     pids = {
         unit: 2003 if unit == "jasper-aec-bridge" else 3000 + i
-        for i, unit in enumerate(doctor._AUDIO_PATH_UNITS)
+        for i, unit in enumerate(doctor_memory._AUDIO_PATH_UNITS)
     }
     monkeypatch.setattr(
         _evidence, "read_unit_states", _audio_unit_states_fake(pids),
     )
     with patch("pathlib.Path.read_text", fake_read):
-        r = doctor.check_audio_path_no_swap()
+        r = doctor_memory.check_audio_path_no_swap()
 
     assert r.status == "warn"
     assert r.reason == doctor_memory.REASON_AUDIO_SWAP_DETECTED
@@ -254,7 +254,7 @@ def test_audio_path_no_swap_is_ok_without_systemctl(monkeypatch):
     monkeypatch.setattr(
         _evidence, "read_unit_states", lambda units, *, timeout: None,
     )
-    r = doctor.check_audio_path_no_swap()
+    r = doctor_memory.check_audio_path_no_swap()
     assert r.status == "ok"
     assert r.reason == doctor_memory.REASON_AUDIO_PATH_SOME_NOT_RUNNING
 
@@ -361,7 +361,7 @@ def test_check_disk_space_verdicts(
     fake = _fake_statvfs(total_bytes=total, free_bytes=int(free_fraction * total))
 
     with patch.object(memory_policy.os, "statvfs", fake):
-        r = doctor.check_disk_space()
+        r = doctor_memory.check_disk_space()
 
     assert r.status == status
     if reason:
@@ -370,7 +370,7 @@ def test_check_disk_space_verdicts(
 
 def test_check_disk_space_skips_on_a_non_posix_host():
     with patch.object(memory_policy.os, "statvfs", None, create=True):
-        r = doctor.check_disk_space()
+        r = doctor_memory.check_disk_space()
         assert r.status == "skipped"
         assert r.reason == doctor_memory.REASON_DISK_NOT_POSIX
 
@@ -380,7 +380,7 @@ def test_check_disk_space_warns_on_statvfs_oserror():
         raise OSError("nope")
 
     with patch.object(memory_policy.os, "statvfs", boom):
-        r = doctor.check_disk_space()
+        r = doctor_memory.check_disk_space()
         assert r.status == "warn"
         assert r.reason == doctor_memory.REASON_DISK_STATVFS_FAILED
 
@@ -389,7 +389,7 @@ def test_check_disk_space_skips_a_zero_sized_filesystem():
     with patch.object(
         memory_policy.os, "statvfs", _fake_statvfs(total_bytes=0, free_bytes=0)
     ):
-        r = doctor.check_disk_space()
+        r = doctor_memory.check_disk_space()
         assert r.status == "skipped"
         assert r.reason == doctor_memory.REASON_DISK_ZERO_SIZED
 
@@ -487,7 +487,7 @@ def test_storage_checks_warn_over_their_threshold(
     if warn_bytes is not None:
         monkeypatch.setenv(warn_env, warn_bytes)
 
-    r = getattr(doctor, check)()
+    r = getattr(doctor_memory, check)()
 
     assert r.status == status
     if status == "warn":
@@ -497,7 +497,7 @@ def test_storage_checks_warn_over_their_threshold(
 def test_correction_storage_absent_dir_is_skipped(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(tmp_path / "never"))
 
-    r = doctor.check_correction_storage()
+    r = doctor_memory.check_correction_storage()
     assert r.status == "skipped"
     assert r.reason == doctor_memory.REASON_STORAGE_ABSENT
 
@@ -516,7 +516,7 @@ def test_wake_events_warn_threshold_scales_with_the_configured_cap(
     monkeypatch.delenv("JASPER_WAKE_EVENTS_STORAGE_WARN_BYTES", raising=False)
     monkeypatch.setenv("JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES", str(1024**3))
 
-    assert doctor.check_wake_events_storage().status == "ok"
+    assert doctor_memory.check_wake_events_storage().status == "ok"
 
 
 @pytest.mark.parametrize(
@@ -616,7 +616,7 @@ def _journald(monkeypatch, *, booted=True, storage="persistent", eff_cap="500M",
 def test_check_journald_persistence_verdicts(monkeypatch, kwargs, status, reason):
     _journald(monkeypatch, **kwargs)
 
-    r = doctor.check_journald_persistence()
+    r = doctor_memory.check_journald_persistence()
 
     assert r.status == status
     if reason:
@@ -673,3 +673,42 @@ def test_disk_snapshot_is_none_when_the_read_is_unusable(statvfs):
 
     with patch.object(memory_policy.os, "statvfs", replacement, create=True):
         assert state_aggregate._disk_snapshot("/") is None
+
+
+# ------------------------------------------------------ check_memory_pressure
+
+
+@pytest.mark.parametrize(
+    "psi, kills, status, reason",
+    [
+        (None, 0, "skipped", doctor_memory.REASON_MEMORY_PRESSURE_NO_PSI),
+        # Kills WERE observed, so the nothing-was-observed `skipped` would
+        # hide them; the cumulative counter still never drives the verdict.
+        (None, 3, "ok", doctor_memory.REASON_MEMORY_PRESSURE_NO_PSI),
+        (0.5, 0, "ok", doctor_memory.REASON_MEMORY_PRESSURE_LOW),
+        # Cumulative OOM kills are history, not the verdict: a box that was
+        # killed once must not latch this row into a permanent warn.
+        (0.5, 7, "ok", doctor_memory.REASON_MEMORY_PRESSURE_LOW),
+        (memory_policy.MEM_PSI_WARN_AVG60, 0, "warn",
+         doctor_memory.REASON_MEMORY_PRESSURE_HIGH),
+        (55.0, 0, "warn", doctor_memory.REASON_MEMORY_PRESSURE_HIGH),
+    ],
+    ids=[
+        "no-psi", "no-psi-but-killed", "quiet", "old-oom-kill-does-not-latch",
+        "at-warn", "thrashing",
+    ],
+)
+def test_check_memory_pressure_verdicts_on_the_live_average(
+    psi, kills, status, reason,
+):
+    with patch.object(
+        doctor_memory, "memory_pressure",
+        return_value=memory_policy.MemoryPressure(psi, kills),
+    ):
+        result = doctor_memory.check_memory_pressure()
+    assert (result.status, result.reason) == (status, reason)
+
+
+def test_check_memory_pressure_is_registered():
+    names = {check.func.__name__ for check in doctor.registered_checks()}
+    assert "check_memory_pressure" in names

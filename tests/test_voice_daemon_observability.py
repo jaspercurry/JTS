@@ -9,20 +9,11 @@ from jasper.voice.daemon_main import _tts_ready_detail
 
 
 def test_tts_ready_detail_reports_outputd_socket() -> None:
-    cfg = SimpleNamespace(
-        tts_transport="outputd",
-        tts_outputd_socket=FANIN_TTS_SOCKET,
-        tts_device="jasper_out",
-    )
+    cfg = SimpleNamespace(tts_outputd_socket=FANIN_TTS_SOCKET)
 
     detail = _tts_ready_detail(cfg)
 
-    assert detail == (
-        "tts_transport=outputd "
-        "tts_owner=fanin "
-        f"tts_socket={FANIN_TTS_SOCKET}"
-    )
-    assert "jasper_out" not in detail
+    assert detail == f"tts_socket={FANIN_TTS_SOCKET}"
 
 
 def test_wake_ready_detail_names_the_model_when_legs_are_planned() -> None:
@@ -79,18 +70,6 @@ def test_require_usable_input_accepts_either_input_alone() -> None:
 
     _require_usable_input([object()], [], [])          # room mic only
     _require_usable_input([], [object()], ["udp:9892"])  # remote only
-
-
-def test_tts_ready_detail_marks_non_outputd_transport_unsupported() -> None:
-    cfg = SimpleNamespace(
-        tts_transport="sounddevice",
-        tts_outputd_socket=FANIN_TTS_SOCKET,
-        tts_device="jasper_out",
-    )
-
-    detail = _tts_ready_detail(cfg)
-
-    assert detail == "tts_transport=sounddevice unsupported=true"
 
 
 def test_unpriced_research_model_warns(caplog) -> None:

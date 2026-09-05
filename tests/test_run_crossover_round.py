@@ -1536,7 +1536,7 @@ def test_the_runner_never_claims_the_park_it_cannot_see(checkout, tmp_path):
 
 def test_a_session_failure_is_named_rather_than_waited_out(checkout, tmp_path):
     server = _Wizard(after_open={"phase": "measure", "session_id": "after",
-                                 "failure": {"code": "capture_rejected"}})
+                                 "failure": {"code": "program_unplayable"}})
     with _serving(server):
         proc, _, bank_lines = _run(
             checkout, server,

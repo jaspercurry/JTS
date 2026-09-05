@@ -10,7 +10,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper.cli import doctor
 from jasper.cli.doctor import _evidence, grouping
 from jasper.multiroom.tts_route import VOICE_PARK_ENV
 from jasper.tts_routing import (
@@ -105,7 +104,7 @@ def test_check_grouping_snapcast_installed_verdicts(
         "shutil.which", lambda name: f"/usr/bin/{name}" if installed else None
     )
 
-    r = doctor.check_grouping_snapcast_installed()
+    r = grouping.check_grouping_snapcast_installed()
 
     assert r.status == status
     assert r.reason == reason
@@ -190,9 +189,9 @@ def test_check_grouping_snapcast_version_verdicts(
         "shutil.which", lambda name: f"/usr/bin/{name}" if installed else None
     )
     if run is not None:
-        monkeypatch.setattr(doctor.grouping, "_run", run)
+        monkeypatch.setattr(grouping, "_run", run)
 
-    r = doctor.check_grouping_snapcast_version()
+    r = grouping.check_grouping_snapcast_version()
 
     assert r.status == status
     assert r.reason == reason
@@ -207,7 +206,7 @@ def test_check_grouping_snapcast_version_stdout_wins_over_stderr(monkeypatch):
     _patch_grouping(monkeypatch, _grouping_cfg(**_LEADER))
     monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(
-        doctor.grouping,
+        grouping,
         "_run",
         _probe(
             stdout="snapclient v0.31.0\n",
@@ -215,7 +214,7 @@ def test_check_grouping_snapcast_version_stdout_wins_over_stderr(monkeypatch):
         ),
     )
 
-    r = doctor.check_grouping_snapcast_version()
+    r = grouping.check_grouping_snapcast_version()
 
     assert r.status == "ok"
     assert r.reason == grouping.REASON_SNAPCAST_VERSION_MATCH
@@ -248,7 +247,7 @@ def test_check_grouping_household_credential_verdicts(
     monkeypatch.setattr(hc, "SECRET_FILE", str(secret))
     _patch_grouping(monkeypatch, _grouping_cfg(**cfg_kwargs))
 
-    r = doctor.check_grouping_household_credential()
+    r = grouping.check_grouping_household_credential()
 
     assert r.status == status
     assert r.reason == reason
@@ -259,7 +258,7 @@ def test_check_grouping_household_credential_verdicts(
 
 def _active_leader_topology(monkeypatch, tmp_path):
     """An ACTIVE-LEADER context: a roleful/protected output topology plus a
-    bonded-leader grouping config. Leaves `doctor.grouping._run` patchable."""
+    bonded-leader grouping config. Leaves `grouping._run` patchable."""
     import jasper.multiroom.config as mr_config
     from jasper.output_topology import save_output_topology
     from tests.test_active_speaker_runtime_contract import _active_topology
@@ -284,7 +283,7 @@ def test_check_crossover_unit_skips_when_not_an_active_leader(
     pair): both skip before touching topology or systemd."""
     _patch_grouping(monkeypatch, _grouping_cfg(**cfg_kwargs))
 
-    r = doctor.check_crossover_unit_installed()
+    r = grouping.check_crossover_unit_installed()
 
     assert r.status == "skipped"
     assert r.reason == grouping.REASON_NOT_APPLICABLE
@@ -301,7 +300,7 @@ def test_check_crossover_unit_skips_for_a_passive_leader(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     _patch_grouping(monkeypatch, _grouping_cfg(**_LEADER))
 
-    r = doctor.check_crossover_unit_installed()
+    r = grouping.check_crossover_unit_installed()
 
     assert r.status == "skipped"
     assert r.reason == grouping.REASON_NOT_APPLICABLE
@@ -337,15 +336,15 @@ def test_check_crossover_unit_active_leader_verdicts(
         ),
     )
     monkeypatch.setattr(
-        doctor.grouping,
+        grouping,
         "_run",
         lambda argv, *a, **kw: SimpleNamespace(
             returncode=returncode, stdout="", stderr=""
         ),
     )
-    monkeypatch.setattr(doctor.grouping.shutil, "which", lambda _n: systemd_analyze)
+    monkeypatch.setattr(grouping.shutil, "which", lambda _n: systemd_analyze)
 
-    r = doctor.check_crossover_unit_installed()
+    r = grouping.check_crossover_unit_installed()
 
     assert r.status == status
     assert r.reason == reason
@@ -357,7 +356,7 @@ def test_check_crossover_unit_active_leader_verdicts(
 def test_check_grouping_off_is_ok(monkeypatch):
     _patch_grouping(monkeypatch, _grouping_cfg(enabled=False))
 
-    r = doctor.check_grouping()
+    r = grouping.check_grouping()
 
     assert r.status == "ok"
     assert r.reason == grouping.REASON_GROUPING_OFF
@@ -372,7 +371,7 @@ def test_check_grouping_invalid_config_warns(monkeypatch):
     )
     _patch_grouping(monkeypatch, cfg)
 
-    r = doctor.check_grouping()
+    r = grouping.check_grouping()
 
     assert r.status == "warn"
     assert r.reason == grouping.REASON_CONFIG_INVALID
@@ -398,66 +397,60 @@ def test_check_grouping_leader_reads_degraded_when_config_not_piped(
         },
     )
 
-    r = doctor.check_grouping()
+    r = grouping.check_grouping()
 
     assert r.status == "warn"
     assert r.reason == grouping.REASON_RUNTIME_DEGRADED
 
 
 @pytest.mark.parametrize(
-    "snapclient_state, status",
+    "snapclient_state, dac_content, status, reason",
     [
-        ("failed", "warn"),
-        # A follower has no producer concept: with snapclient active it reads
-        # ok, and the missing leader-side producer can never degrade it. The
-        # parked source-resource stack reads inactive, which cannot degrade
-        # health either (only desired=start units can).
-        ("active", "ok"),
+        # Health degraded (leader unreachable) wins outright — reported once,
+        # never doubled up with the pair-lock verdict it also drives.
+        ("failed", None, "warn", grouping.REASON_RUNTIME_DEGRADED),
+        # Health ok, no local outputd STATUS to read: the pair lock's own
+        # terminal branch — clock lock is unobservable from Snapcast RPC,
+        # which is `ok` with a reason, not a permanent warn (ADR-0233 r.3).
+        ("active", None, "ok", grouping.REASON_PAIR_LOCK_UNKNOWN),
+        # Health ok, local FIFO serving bytes: same terminal branch — bytes
+        # flowing is not proof of clock lock, still `ok` with a reason.
+        (
+            "active", {"enabled": True, "serving_fifo": True}, "ok",
+            grouping.REASON_PAIR_LOCK_UNKNOWN,
+        ),
+        # Health ok, local FIFO NOT serving bytes: the pair lock's own
+        # degraded branch.
+        (
+            "active", {"enabled": True, "serving_fifo": False}, "warn",
+            grouping.REASON_PAIR_LOCK_DEGRADED,
+        ),
     ],
-    ids=["unreachable-leader", "connected"],
+    ids=[
+        "unreachable-leader",
+        "pair-lock-unknown-no-status",
+        "pair-lock-unknown-clock-unobservable",
+        "pair-lock-degraded-fifo-not-serving",
+    ],
 )
-def test_check_grouping_follower_verdicts(monkeypatch, snapclient_state, status):
+def test_check_grouping_follower_verdicts(
+    monkeypatch, snapclient_state, dac_content, status, reason
+):
     _patch_grouping(
         monkeypatch,
         _grouping_cfg(**_FOLLOWER),
         unit_states={"jasper-snapclient.service": snapclient_state},
     )
+    if dac_content is not None:
+        monkeypatch.setattr(
+            _evidence,
+            "read_status_socket",
+            lambda _path, *, timeout=2.0: {"dac_content": dac_content},
+        )
 
-    r = doctor.check_grouping()
+    r = grouping.check_grouping()
 
     assert r.status == status
-    assert r.reason == (grouping.REASON_RUNTIME_DEGRADED if status == "warn" else "")
-
-
-@pytest.mark.parametrize(
-    "dac_content, reason",
-    [
-        (
-            {"enabled": True, "serving_fifo": True},
-            grouping.REASON_PAIR_LOCK_UNKNOWN,
-        ),
-        (
-            {"enabled": True, "serving_fifo": False},
-            grouping.REASON_PAIR_LOCK_DEGRADED,
-        ),
-    ],
-    ids=["clock-unobservable", "fifo-not-serving"],
-)
-def test_check_grouping_pair_lock_warns(monkeypatch, dac_content, reason):
-    _patch_grouping(
-        monkeypatch,
-        _grouping_cfg(**_FOLLOWER),
-        unit_states={"jasper-snapclient.service": "active"},
-    )
-    monkeypatch.setattr(
-        _evidence,
-        "read_status_socket",
-        lambda _path, *, timeout=2.0: {"dac_content": dac_content},
-    )
-
-    r = doctor.check_grouping_pair_lock()
-
-    assert r.status == "warn"
     assert r.reason == reason
 
 
@@ -474,7 +467,7 @@ def _solo_tts_lane(monkeypatch, voice_env_path):
         "prop:Environment:jasper-voice",
         [f"{VOICE_TTS_SOCKET_ENV}={FANIN_TTS_SOCKET}"],
     )
-    return doctor.check_grouping_tts_lane()
+    return grouping.check_grouping_tts_lane()
 
 
 @pytest.mark.parametrize(
@@ -527,7 +520,7 @@ def test_check_grouping_tts_lane_warns_when_the_authority_is_unreadable(
     [
         "check_grouping_snapcast_version",
         "check_crossover_unit_installed",
-        "check_grouping_pair_lock",
+        "check_grouping",
     ],
 )
 def test_grouping_checks_are_registered(check_name):

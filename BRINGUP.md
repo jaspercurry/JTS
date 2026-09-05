@@ -132,10 +132,11 @@ If the Apple dongle isn't there: the analog jack is empty. Plug in
 headphones (or any analog load) and re-check.
 
 If "A" shows up as a different name (e.g. "USB-Audio", "Headset"):
-note it for Phase 3 — you'll need to set `JASPER_TTS_DEVICE`
-explicitly. The installer's auto-detection looks for "usb-c to
-3.5mm" in the device name; if your dongle reports differently,
-adjust.
+note it for Phase 3 — the output-hardware reconciler identifies the
+dongle by matching "usb-c to 3.5mm" in the card name
+(`jasper/audio_hardware/dac.py`'s `APPLE_USB_C_DONGLE` profile); a
+name that doesn't match needs a new pattern added there, not an env
+override.
 
 ---
 

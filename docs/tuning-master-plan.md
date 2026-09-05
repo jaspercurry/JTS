@@ -388,10 +388,10 @@ figure it is published as `unseparated` with the separation named as pending —
 1.7 Entry-time crossover-vocabulary validation: the wizard offers exactly
     what compiles and refuses the rest at entry (kills the silent
     `crossover_preview_filter_unsupported` late block).
-1.8 Orientation verb — `jasper-crossover-prescriber status`: prints declared
-    / banked / staged / applied state and possible next actions, reading the
-    same builders the doors read; hostname-derived URLs at every human
-    handoff point.
+1.8 Orientation verb — `jasper-crossover-prescriber status`: one JSON
+    document carrying declared / banked / staged / applied state, the sized
+    reading order, and the commands to run next, reading the same builders
+    the doors read; hostname-derived URLs at every human handoff point.
 1.9 `docs/tuning-operator-runbook.md`: the tool menu (as inventoried), the
     happy path, division-of-labor rules, the untrusted-notes rule, the
     program menu, the mechanism-signature table (the LLM's Block-D

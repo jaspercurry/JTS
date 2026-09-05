@@ -2273,6 +2273,7 @@ fn lane_mix_contributes(selected_input: i32, input_index: usize, label: &str, mu
 ///
 /// Pure (no ALSA) for unit testability — `drain_input_excess` does the I/O.
 fn catchup_drain_periods(avail: i64, period_frames: i64) -> i64 {
+    // PANIC-AUDITED: period_frames is the daemon's fixed period-size config, not external input
     debug_assert!(period_frames > 0);
     let high_water = period_frames * CATCHUP_HIGH_WATER_PERIODS;
     if avail <= high_water {
@@ -2910,6 +2911,7 @@ fn read_into_resampler_and_render(
             let avail = match input
                 .pcm
                 .as_ref()
+                // PANIC-AUDITED: an aloop resampler lane always opens Some(pcm)
                 .expect("aloop resampler lane always has Some(pcm)")
                 .avail_update()
             {
@@ -2946,6 +2948,7 @@ fn read_into_resampler_and_render(
                     let pcm = input
                         .pcm
                         .as_ref()
+                        // PANIC-AUDITED: an aloop resampler lane always opens Some(pcm)
                         .expect("aloop resampler lane always has Some(pcm)");
                     if wide {
                         let io = pcm
@@ -3351,11 +3354,10 @@ mod tests {
         // value) so a future kernel/state addition that should be treated as live is
         // a conscious edit here.
         //
-        // NOTE: that the STATUS ioctl actually returns Err/Disconnected across a
-        // real gadget rebuild (vs `avail_update` continuing to return Ok(0)) is
-        // kernel behavior no unit test can pin; it is the on-device obligation —
-        // `curl .../state | jq .audio_graph.fanin ... card_gen_reopens` must tick
-        // across a `systemctl restart jasper-usbsink` on jts.local.
+        // That the STATUS ioctl actually returns Err/Disconnected across a real gadget rebuild
+        // (vs `avail_update` continuing to return Ok(0)) is kernel behavior no unit test can
+        // pin; it is the on-device obligation — `curl .../state | jq .audio_graph.fanin ...
+        // card_gen_reopens` must tick across a `systemctl restart jasper-usbsink` on jts.local.
         for state in [
             State::Open,
             State::Setup,
