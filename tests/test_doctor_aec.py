@@ -145,7 +145,8 @@ _REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY = (
 @pytest.mark.parametrize(
     "journal, status, reason",
     [
-        # An active bridge logs a window every 5 s: none is missing evidence.
+        # An active bridge logs a window every RMS_LOG_INTERVAL_SEC
+        # (jasper/cli/aec_bridge.py): none is missing evidence.
         ("", "warn", _REASON_BRIDGE_OUTPUT_NO_WINDOWS),
         # Mic and ref both quiet — the speaker has been idle.
         (
