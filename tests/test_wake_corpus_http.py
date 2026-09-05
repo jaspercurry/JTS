@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.wake_corpus import bridge_session
+from jasper.wake_corpus import bridge_session, runtime_probe
 from jasper.web import wake_corpus_setup
 
 from tests.wake_corpus_setup_fixtures import (
@@ -643,9 +643,9 @@ def test_systemd_unit_active_is_bounded_and_parses_stable_states(
         calls.append((cmd, kwargs))
         return subprocess.CompletedProcess(cmd, 0, stdout="active\n")
 
-    monkeypatch.setattr(bridge_session.subprocess, "run", fake_run)
+    monkeypatch.setattr(runtime_probe.subprocess, "run", fake_run)
 
-    assert bridge_session._systemd_unit_active("example.service") is True
+    assert runtime_probe.systemd_unit_active("example.service") is True
     assert calls == [
         (
             ["systemctl", "is-active", "example.service"],
@@ -655,13 +655,13 @@ def test_systemd_unit_active_is_bounded_and_parses_stable_states(
 
     for state in ("inactive", "failed"):
         monkeypatch.setattr(
-            bridge_session.subprocess,
+            runtime_probe.subprocess,
             "run",
             lambda cmd, **kwargs: subprocess.CompletedProcess(
                 cmd, 3, stdout=f"{state}\n",
             ),
         )
-        assert bridge_session._systemd_unit_active("example.service") is False
+        assert runtime_probe.systemd_unit_active("example.service") is False
 
 
 @pytest.mark.parametrize(
@@ -702,7 +702,7 @@ def test_systemd_unit_active_rejects_unavailable_or_unstable_state(
     expected_detail: str,
 ) -> None:
     monkeypatch.setattr(
-        bridge_session.subprocess,
+        runtime_probe.subprocess,
         "run",
         lambda cmd, **kwargs: result,
     )
@@ -711,7 +711,7 @@ def test_systemd_unit_active_rejects_unavailable_or_unstable_state(
         OSError,
         match=rf"systemctl is-active example.service.*{expected_detail}",
     ):
-        bridge_session._systemd_unit_active("example.service")
+        runtime_probe.systemd_unit_active("example.service")
 
 
 @pytest.mark.parametrize(
@@ -728,8 +728,8 @@ def test_unit_active_wrappers_use_shared_probe(
 ) -> None:
     seen: list[str] = []
     monkeypatch.setattr(
-        bridge_session,
-        "_systemd_unit_active",
+        runtime_probe,
+        "systemd_unit_active",
         lambda candidate: seen.append(candidate) or True,
     )
 
@@ -756,7 +756,7 @@ def test_unit_active_wrappers_fail_soft_on_probe_error(
     def fail_probe(unit: str) -> bool:
         raise probe_error
 
-    monkeypatch.setattr(bridge_session, "_systemd_unit_active", fail_probe)
+    monkeypatch.setattr(runtime_probe, "systemd_unit_active", fail_probe)
 
     assert getattr(bridge_session, wrapper_name)() is False
 
@@ -782,7 +782,7 @@ def test_enter_corpus_test_mode_aborts_before_mutation_when_voice_unknown(
         assert unit == bridge_session.VOICE_UNIT
         raise probe_error
 
-    monkeypatch.setattr(bridge_session, "_systemd_unit_active", fail_probe)
+    monkeypatch.setattr(runtime_probe, "systemd_unit_active", fail_probe)
     monkeypatch.setattr(
         bridge_session,
         "set_voice_daemon_state",
@@ -823,7 +823,7 @@ def test_api_corpus_test_mode_enter_reports_voice_probe_timeout_without_mutation
         assert unit == bridge_session.VOICE_UNIT
         raise subprocess.TimeoutExpired(["systemctl", "is-active", unit], 1.5)
 
-    monkeypatch.setattr(bridge_session, "_systemd_unit_active", timeout_probe)
+    monkeypatch.setattr(runtime_probe, "systemd_unit_active", timeout_probe)
     monkeypatch.setattr(
         bridge_session,
         "set_voice_daemon_state",
@@ -868,7 +868,7 @@ def test_api_corpus_test_mode_enter_rejects_manager_error_without_mutation(
 
     mutations: list[str] = []
     monkeypatch.setattr(
-        bridge_session.subprocess,
+        runtime_probe.subprocess,
         "run",
         lambda cmd, **kwargs: subprocess.CompletedProcess(
             cmd,
@@ -930,8 +930,8 @@ def test_api_corpus_test_mode_enter_stops_voice_and_sets_outputs(
     voice_actions: list[str] = []
     restarts: list[str] = []
     monkeypatch.setattr(
-        bridge_session,
-        "_systemd_unit_active",
+        runtime_probe,
+        "systemd_unit_active",
         lambda unit: voice_active["value"],
     )
 
@@ -985,8 +985,8 @@ def test_api_corpus_test_mode_enter_can_enable_aec3_sweep(
     )
     voice_active = {"value": True}
     monkeypatch.setattr(
-        bridge_session,
-        "_systemd_unit_active",
+        runtime_probe,
+        "systemd_unit_active",
         lambda unit: voice_active["value"],
     )
     monkeypatch.setattr(

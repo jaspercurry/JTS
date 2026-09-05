@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 
 from jasper.chip_aec.policy import ChipAecGate
-from jasper.wake_corpus import bridge_session
+from jasper.wake_corpus import bridge_session, capture_plan, runtime_probe
 from jasper.web import wake_corpus_setup
 
 from tests.wake_corpus_setup_fixtures import (
@@ -407,172 +407,6 @@ def test_begin_session_chip_profile_records_usb_legs_when_requested(
     )
 
 
-def test_capture_plan_describes_chip_profile_layers(backend) -> None:
-    plan = wake_corpus_setup.build_capture_plan(
-        backend.ports(),
-        corpus_profile=wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
-        include_usb_mic=False,
-        include_usb_dtln=False,
-        include_bridge_readiness=False,
-    )
-
-    assert plan["schema_version"] == wake_corpus_setup.CAPTURE_PLAN_SCHEMA_VERSION
-    assert plan["recipe"] == "chip_aec_comparison"
-    assert plan["selected_physical_mics"] == ["xvf3800"]
-    by_token = {leg["token"]: leg for leg in plan["legs"]}
-    assert by_token["chip_aec_150"]["processing"] == "hardware_aec"
-    assert by_token["xvf_raw0_webrtc_aec3"]["native_stream"] == "raw_mic_0"
-    assert by_token["xvf_raw0_webrtc_aec3"]["processing"] == "webrtc_aec3"
-    assert by_token["ref"]["device_id"] == "speaker_reference"
-
-
-def test_capture_plan_chip_profile_is_canonical_bridge_contract(backend) -> None:
-    snapshot = {
-        "system_env": {"JASPER_XVF_ALSA_CARD": "Array"},
-        "merged_env": {"JASPER_AEC_USB_MIC_DEVICE": "Studio Mic"},
-        "bridge_outputs": {},
-        "fingerprints": {"mic": "mic-a", "dac_reference": "dac-a"},
-        "fingerprint_sources": {
-            "mic": {"variant_id": "xvf3800_legacy_square_6ch"},
-            "dac_reference": {"audio_dac_id": "apple_usb_c_dongle"},
-        },
-    }
-
-    plan = wake_corpus_setup.build_capture_plan(
-        backend.ports(),
-        corpus_profile=wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
-        include_bridge_readiness=True,
-        runtime_snapshot=snapshot,
-    )
-
-    assert plan["plan_id"]
-    assert plan["selected_legs"] == [
-        "chip_aec_150", "chip_aec_210", "raw0",
-        "xvf_raw0_webrtc_aec3", "ref",
-    ]
-    assert plan["expected_emitted_legs"] == plan["selected_legs"]
-    assert plan["required_bridge_outputs"] == [
-        "ref", "chip_aec", "xvf_raw0_webrtc_aec3", "outputd_ref",
-    ]
-    env = plan["required_bridge_env"]
-    assert env["JASPER_AEC_CORPUS_CHIP_AEC_ENABLED"] == "1"
-    assert env["JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED"] == "1"
-    assert env["JASPER_AEC_REF_SOURCE"] == "outputd_udp"
-    assert env["JASPER_OUTPUTD_REFERENCE_UDP_TARGET"] == (
-        wake_corpus_setup.OUTPUTD_REF_UDP_TARGET
-    )
-    assert plan["fingerprints"] == {"mic": "mic-a", "dac_reference": "dac-a"}
-
-
-def test_capture_plan_id_is_stable_and_changes_with_hardware(
-    backend,
-) -> None:
-    base_snapshot = {
-        "system_env": {},
-        "merged_env": {},
-        "bridge_outputs": {},
-        "fingerprints": {"mic": "mic-a", "dac_reference": "dac-a"},
-    }
-    plan1 = wake_corpus_setup.build_capture_plan(
-        backend.ports(),
-        include_dtln=False,
-        runtime_snapshot=base_snapshot,
-    )
-    plan2 = wake_corpus_setup.build_capture_plan(
-        backend.ports(),
-        include_dtln=False,
-        runtime_snapshot=dict(base_snapshot),
-    )
-    changed = {
-        **base_snapshot,
-        "fingerprints": {"mic": "mic-b", "dac_reference": "dac-a"},
-    }
-    plan3 = wake_corpus_setup.build_capture_plan(
-        backend.ports(),
-        include_dtln=False,
-        runtime_snapshot=changed,
-    )
-
-    assert plan1["plan_id"] == plan2["plan_id"]
-    assert plan1["plan_id"] != plan3["plan_id"]
-
-
-def test_chip_capture_plan_id_is_stable_across_its_own_env_apply(backend) -> None:
-    """Recorder-owned reference env must not change the plan that requested it."""
-    mic_source = {
-        "family": "xvf3800",
-        "variant_id": "xvf3800_legacy_square_6ch",
-        "selected_xvf_mic_device": "Array",
-        "selected_usb_mic_device": "Studio Mic",
-        "chip_primary_leg": "chip_aec_150",
-    }
-    dac_source = {
-        "audio_dac_id": "apple_usb_c_dongle",
-        "dac": {
-            "pcm": "outputd_dac",
-            "backend": "alsa",
-            "control_socket": "/run/jasper-outputd/control.sock",
-        },
-        "reference": {
-            "source": "alsa",
-            "outputd_chip_ref_pcm": "",
-            "outputd_reference_udp_target": "",
-            "outputd_chip_ref_sample_rate": 48000,
-            "outputd_chip_ref_period_frames": 256,
-            "outputd_chip_ref_buffer_frames": 1024,
-            "bridge_output_enabled": False,
-        },
-        "chip_gate": {"allowed": True},
-    }
-    before = {
-        "identity_recomputable": True,
-        "system_env": {"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"},
-        "merged_env": {
-            "JASPER_AEC_MIC_DEVICE": "Array",
-            "JASPER_AEC_USB_MIC_DEVICE": "Studio Mic",
-            "JASPER_AEC_CHIP_AEC_PRIMARY_LEG": "chip_aec_150",
-        },
-        "bridge_outputs": {"outputd_ref": False},
-        "dac_reference": {"validation": {"status": "unknown"}},
-        "fingerprint_sources": {
-            "mic": mic_source,
-            "dac_reference": dac_source,
-        },
-        "fingerprints": {
-            "mic": bridge_session.fingerprint_mapping(mic_source),
-            "dac_reference": bridge_session.fingerprint_mapping(dac_source),
-        },
-    }
-
-    planned = wake_corpus_setup.build_capture_plan(
-        backend.ports(),
-        corpus_profile=wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
-        runtime_snapshot=before,
-    )
-    after = {
-        **before,
-        "merged_env": {
-            **before["merged_env"],
-            **planned["required_bridge_env"],
-        },
-        "bridge_outputs": {
-            **before["bridge_outputs"],
-            "ref": True,
-            "chip_aec": True,
-            "xvf_raw0_webrtc_aec3": True,
-            "outputd_ref": True,
-        },
-    }
-    observed = wake_corpus_setup.build_capture_plan(
-        backend.ports(),
-        corpus_profile=wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
-        runtime_snapshot=after,
-    )
-
-    assert observed["plan_id"] == planned["plan_id"]
-    assert observed["fingerprints"] == planned["fingerprints"]
-
-
 # The serialized chip-AEC gate is a hash input: it rides
 # dac_reference_fingerprint_source, whose digest becomes the stored plan's
 # dac_reference fingerprint and, through it, the plan id. A session resumed
@@ -592,11 +426,11 @@ def _gate(**overrides: object) -> dict[str, object]:
 
 
 def _dac_reference_digest(gate: dict[str, object]) -> str:
-    return bridge_session.fingerprint_mapping({
+    return capture_plan.fingerprint_mapping({
         "audio_dac_id": "hifiberry_dac8x",
         "dac": {"pcm": "outputd_dac", "backend": "alsa"},
         "reference": {"source": "outputd_udp"},
-        "chip_gate": bridge_session.chip_gate_identity(gate),
+        "chip_gate": capture_plan.chip_gate_identity(gate),
     })
 
 
@@ -632,122 +466,6 @@ def test_dac_reference_digest_tracks_only_dac_identity_and_verdict(
     unchanged = _dac_reference_digest(gate) == _dac_reference_digest(_BASE_GATE)
 
     assert unchanged is same_digest
-
-
-def test_validate_active_capture_plan_refuses_missing_promised_leg(
-    backend,
-) -> None:
-    snapshot = {
-        "system_env": {},
-        "merged_env": {},
-        "bridge_outputs": {},
-        "fingerprints": {"mic": "mic-a", "dac_reference": "dac-a"},
-    }
-    plan = wake_corpus_setup.build_capture_plan(
-        backend.ports(),
-        corpus_profile=wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
-        runtime_snapshot=snapshot,
-    )
-    stats = {
-        "counters": {},
-        "active_capture_plan": {
-            "wake_corpus_plan_id": plan["plan_id"],
-            "emitted_legs": [
-                "chip_aec_150", "raw0", "xvf_raw0_webrtc_aec3", "ref",
-            ],
-        },
-    }
-
-    result = wake_corpus_setup.validate_active_capture_plan(
-        plan,
-        bridge_stats=stats,
-        runtime_snapshot=snapshot,
-    )
-
-    assert result.ok is False
-    assert result.missing_emitted_legs == ["chip_aec_210"]
-    assert "chip_aec_210" in result.errors[0]
-
-
-def test_validate_active_capture_plan_refuses_mic_fingerprint_change(
-    backend,
-) -> None:
-    snapshot = {
-        "system_env": {},
-        "merged_env": {},
-        "bridge_outputs": {},
-        "fingerprints": {"mic": "mic-a", "dac_reference": "dac-a"},
-    }
-    plan = wake_corpus_setup.build_capture_plan(
-        backend.ports(),
-        include_dtln=False,
-        runtime_snapshot=snapshot,
-    )
-    stats = {
-        "counters": {},
-        "active_capture_plan": {
-            "wake_corpus_plan_id": plan["plan_id"],
-            "emitted_legs": plan["expected_emitted_legs"],
-        },
-    }
-    changed_runtime = {
-        **snapshot,
-        "fingerprints": {"mic": "mic-b", "dac_reference": "dac-a"},
-    }
-
-    result = wake_corpus_setup.validate_active_capture_plan(
-        plan,
-        bridge_stats=stats,
-        runtime_snapshot=changed_runtime,
-    )
-
-    assert result.ok is False
-    assert result.fingerprint_mismatches == ["mic"]
-
-
-@pytest.mark.parametrize(
-    "active_profile",
-    ["xvf_chip_aec", "xvf_chip_aec_testing"],
-)
-def test_capture_plan_describes_on_leg_runtime_overlay(
-    backend,
-    active_profile: str,
-) -> None:
-    plan = wake_corpus_setup.build_capture_plan(
-        backend.ports(),
-        include_dtln=False,
-        include_bridge_readiness=False,
-        active_audio_profile={
-            "requested": active_profile,
-            "active": active_profile,
-            "state": "active",
-        },
-        runtime_audio_env={"chip_primary_leg": "chip_aec_210"},
-    )
-
-    by_token = {leg["token"]: leg for leg in plan["legs"]}
-    assert by_token["on"]["label"] == "Chip AEC ASR 210 primary"
-    assert by_token["on"]["kind"] == "hardware_aec"
-    assert by_token["on"]["processing"] == "hardware_aec"
-    assert by_token["on"]["source_channel"] == "fixed_beam_210"
-    assert by_token["on"]["runtime_role"] == "production_primary"
-    assert "on" not in plan["software_transforms"]["webrtc_aec3"]
-
-
-def test_capture_plan_warns_for_heavy_two_mic_dtln(backend) -> None:
-    plan = wake_corpus_setup.build_capture_plan(
-        backend.ports(),
-        corpus_profile=wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
-        include_usb_mic=True,
-        include_usb_dtln=True,
-        include_xvf_raw0_dtln=True,
-        include_bridge_readiness=False,
-    )
-
-    assert plan["recipe"] == "chip_aec_comparison_extended"
-    assert set(plan["selected_physical_mics"]) == {"xvf3800", "usb_mic"}
-    assert plan["resource"]["level"] in {"high", "unsafe"}
-    assert any("Multiple DTLN legs" in warning for warning in plan["warnings"])
 
 
 def test_begin_session_with_aec3_sweep_records_variant_legs(
@@ -1018,7 +736,7 @@ def test_set_bridge_outputs_enables_chip_profile_stack(
 
 
 def test_chip_ref_pcm_prefers_resolved_xvf_card() -> None:
-    assert bridge_session.chip_ref_pcm_for_env(
+    assert runtime_probe.chip_ref_pcm_for_env(
         {
             "JASPER_XVF_ALSA_CARD": "L16K6Ch",
             "JASPER_AEC_MIC_DEVICE": "Array",
