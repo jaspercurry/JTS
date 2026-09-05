@@ -192,25 +192,6 @@ def is_transient(exc: BaseException) -> bool:
     return True
 
 
-def survive_terminal_initial_connect(
-    exc: Exception, wake_supervisor: Callable[[], object],
-) -> None:
-    """Rule a failed first connect, from a provider's own except block.
-
-    A terminal rejection (blocked account, revoked key) does NOT
-    propagate: every provider's reconnect path already survives the same
-    rejection indefinitely, and dying here instead crash-looped the unit
-    into ``StartLimitAction=reboot``. Waking the supervisor leaves the
-    daemon up — wake word, cues and local tools alive, ``/state``
-    reporting the outage — until the provider accepts again.
-
-    A budget-exhausted TRANSIENT failure re-raises: a fresh process gets
-    a fresh budget, which is what that path is for."""
-    if is_transient(exc):
-        raise exc
-    wake_supervisor()
-
-
 def is_network_down(exc: BaseException) -> bool:
     """Whether this failure is the household's own link being down.
 
@@ -458,6 +439,33 @@ def request_planned_reopen(conn: SupervisedConnection) -> None:
     conn._connected_event.clear()
     conn._planned_rotate = True
     conn._reconnect_event.set()
+
+
+def request_unplanned_reopen(conn: SupervisedConnection) -> None:
+    """Ask the supervisor to reopen after a failure.
+
+    Spends any queued planned-rotation flag, so a genuine failure never
+    inherits the rotation's zero-backoff first attempt."""
+    conn._planned_rotate = False
+    conn._reconnect_event.set()
+
+
+def hand_off_first_connect(conn: SupervisedConnection, exc: Exception) -> None:
+    """Give up a failed first connect to the reconnect supervisor.
+
+    A first connect fails for the reasons a reconnect does and is
+    retried the same way, so nothing here classifies it or exits: the
+    daemon stays up — wake word, cues and local tools alive, ``/state``
+    reporting the outage — until the provider answers. See ADR-0238."""
+    log_event(
+        logger,
+        "voice.initial_connect.failed",
+        provider=conn.PROVIDER_NAME,
+        exc=type(exc).__name__,
+        reason=failure_detail(exc),
+        level=logging.WARNING,
+    )
+    request_unplanned_reopen(conn)
 
 
 async def run_supervisor_loop(conn: SupervisedConnection) -> None:

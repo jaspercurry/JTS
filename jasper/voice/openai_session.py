@@ -61,7 +61,7 @@ import os
 import time as _time
 from typing import AsyncIterator, Callable
 
-from jasper.backoff import ReconnectNudge, reconnect_backoff_delay
+from jasper.backoff import ReconnectNudge
 from jasper.log_event import log_event
 
 from ..tools import ToolRegistry, dispatch_tool
@@ -69,10 +69,9 @@ from ._supervisor import (
     Deferred,
     OutageTracker,
     await_connected,
-    is_transient,
+    hand_off_first_connect,
     request_planned_reopen,
     run_supervisor_loop,
-    survive_terminal_initial_connect,
 )
 from .session import (
     CONNECTION_NOISY_TRANSITIONS,
@@ -91,10 +90,6 @@ logger = logging.getLogger(__name__)
 # we polyphase-upsample 16 → 24 inside the turn before base64-encoding.
 OPENAI_AUDIO_RATE_HZ = 24000
 DAEMON_MIC_RATE_HZ = 16000
-
-# Override via ``JASPER_OPENAI_INITIAL_CONNECT_BUDGET_SEC``.
-# See :meth:`OpenAIRealtimeConnection._open_session_with_retry`.
-DEFAULT_INITIAL_CONNECT_BUDGET_SEC = 600.0
 
 # Default reasoning effort for ``gpt-realtime-2``. Smart-speaker queries
 # are short and concrete; we don't need ``medium`` / ``high`` reasoning
@@ -824,23 +819,13 @@ class OpenAIRealtimeConnection:
         # the shared exponential-with-jitter schedule. Tests pass a
         # bounded tuple to make exhaustion observable.
         backoff_schedule: tuple[float, ...] | None = None,
-        # Initial-connect time budget in seconds. None → read from
-        # ``JASPER_OPENAI_INITIAL_CONNECT_BUDGET_SEC`` env var
-        # (default ``DEFAULT_INITIAL_CONNECT_BUDGET_SEC`` = 600 s).
-        # Tests pass a small value (e.g. 0.5) for fast budget-exhaustion
-        # assertions. Pass 0 for "single attempt, no retries"
-        # (preserves the auth-error-propagates-immediately behaviour
-        # that ``is_transient`` already encodes — non-transient errors
-        # never retry regardless of budget).
-        initial_connect_budget_sec: float | None = None,
         # Test seam: replace the SDK's connect call. The factory must be
         # callable as ``factory(model: str)`` and return an async context
         # manager whose ``__aenter__`` yields a connection-like object
         # exposing ``.send(event_dict) / .__aiter__() / .close()``.
         connect_factory=None,
-        # Test seam: monotonic clock source. Defaults to
-        # ``time.monotonic``; tests inject a fake clock so they can
-        # fast-forward through the budget without waiting in real time.
+        # Test seam: monotonic clock source, read by the reconnect
+        # nudge gate. Defaults to ``time.monotonic``.
         clock=None,
         # Test seam: sleep function. Defaults to ``asyncio.sleep``;
         # tests inject a no-op so backoff doesn't burn wall-time.
@@ -858,16 +843,7 @@ class OpenAIRealtimeConnection:
         self._session_max_sec = session_max_sec
         self._proactive_buffer_sec = proactive_buffer_sec
         self._backoff_schedule = backoff_schedule
-        # Resolve the initial-connect budget: explicit kwarg > env var >
-        # module default. Read once at construction so a test override
-        # via kwarg can't be quietly clobbered by an ambient env var.
-        if initial_connect_budget_sec is None:
-            self._initial_connect_budget_sec = _read_initial_connect_budget_env()
-        else:
-            self._initial_connect_budget_sec = float(initial_connect_budget_sec)
         self._connect_factory = connect_factory
-        # Wall-clock + sleep seams. Used by the initial-connect time
-        # budget so tests can fast-forward through the schedule.
         self._monotonic = clock if clock is not None else _time.monotonic
         self._sleep = sleep if sleep is not None else asyncio.sleep
         self._base_url = base_url
@@ -986,8 +962,8 @@ class OpenAIRealtimeConnection:
     ) -> None:
         """Connect and start the reconnect supervisor.
 
-        A terminal first connect leaves the connection FAILED and returns
-        rather than raising — see ``survive_terminal_initial_connect``."""
+        A first connect that fails leaves the connection FAILED and the
+        retry with the supervisor — see ``hand_off_first_connect``."""
         self._registry = registry
         if callable(system_instruction):
             self._system_instruction_provider = system_instruction
@@ -1342,128 +1318,11 @@ class OpenAIRealtimeConnection:
         async with self._state_lock:
             self._set_state(ConnectionState.CONNECTING)
         try:
-            await self._open_session_with_retry()
+            await self._open_session()
         except Exception as e:  # noqa: BLE001
             async with self._state_lock:
                 self._set_state(ConnectionState.FAILED)
-            # A terminal one is already logged as
-            # event=openai.initial_connect.fatal.
-            survive_terminal_initial_connect(e, self._reconnect_event.set)
-
-    async def _open_session_with_retry(self) -> None:
-        """Initial-connect retry loop with a time budget.
-
-        Behaviour:
-          * Each attempt calls ``_open_session()``; on success returns.
-          * Auth / local-validation errors (non-transient per
-            ``is_transient``) propagate immediately — no retry, no
-            wait. Surfaces a bad API key or malformed config without
-            burning 10 minutes pretending it's a network issue.
-          * Transient errors (network blip, DNS failure, 5xx, WS
-            reset) retry with exponential backoff + jitter via the
-            shared ``reconnect_backoff_delay`` helper, until either
-            the next attempt succeeds OR the wall-time budget is
-            exhausted.
-          * On budget exhaustion: ``RuntimeError``. Caller (the
-            daemon's ``start()`` path) lets that propagate so the
-            process exits non-zero and systemd's ``Restart=on-failure``
-            spawns a fresh process with another full budget.
-
-        The budget MUST stay cumulative wall-time and never become a
-        retry count: at boot this daemon races WiFi recovery, so a
-        fixed number of tries can be spent while name resolution is
-        still failing, leaving the speaker silent with nothing left to
-        retry. Exhaustion MUST raise for the same reason — a clean exit
-        would leave systemd nothing to restart. See
-        deploy/systemd/jasper-voice.service and ADR-0103.
-
-        Structured logging: ``event=openai.initial_connect.{...}`` so
-        the boot-time funnel is greppable in journalctl alongside the
-        other ``event=...`` lines the daemon emits.
-        """
-        budget_sec = self._initial_connect_budget_sec
-        # Negative is meaningless; clamp to 0 ("single attempt").
-        if budget_sec < 0:
-            budget_sec = 0.0
-        start = self._monotonic()
-        deadline = start + budget_sec
-        attempt = 0
-        while True:
-            attempt += 1
-            try:
-                await self._open_session()
-                if attempt > 1:
-                    elapsed = self._monotonic() - start
-                    log_event(
-                        logger,
-                        "openai.initial_connect.success",
-                        attempt=attempt,
-                        elapsed_sec=f"{elapsed:.1f}",
-                    )
-                else:
-                    log_event(
-                        logger,
-                        "openai.initial_connect.success",
-                        attempt=attempt,
-                    )
-                return
-            except Exception as e:  # noqa: BLE001
-                if not is_transient(e):
-                    log_event(
-                        logger,
-                        "openai.initial_connect.fatal",
-                        attempt=attempt,
-                        exc=type(e).__name__,
-                        reason=repr(self._outage.detail),
-                        level=logging.WARNING,
-                    )
-                    raise
-                now = self._monotonic()
-                elapsed = now - start
-                if now >= deadline:
-                    log_event(
-                        logger,
-                        "openai.initial_connect.exhausted",
-                        attempts=attempt,
-                        elapsed_sec=f"{elapsed:.1f}",
-                        budget_sec=f"{budget_sec:.1f}",
-                        exc=type(e).__name__,
-                        reason=repr(self._outage.detail),
-                        level=logging.ERROR,
-                    )
-                    raise RuntimeError(
-                        f"{self._log_tag} initial-connect budget of "
-                        f"{budget_sec:.0f}s exhausted after {attempt} "
-                        f"attempt(s); last error: {e}"
-                    )
-                delay = reconnect_backoff_delay(attempt)
-                # Don't oversleep past the deadline — if there's only
-                # 2 s of budget left, sleeping 32 s would be pointless.
-                # The clamp lets us still get one more retry near the
-                # edge of the budget rather than burning the remaining
-                # time on a sleep that already missed the deadline.
-                remaining = deadline - now
-                if delay > remaining:
-                    delay = max(0.0, remaining)
-                log_event(
-                    logger,
-                    "openai.initial_connect.attempt",
-                    attempt=attempt,
-                    elapsed_sec=f"{elapsed:.1f}",
-                    budget_sec=f"{budget_sec:.1f}",
-                    exc=type(e).__name__,
-                    reason=repr(self._outage.detail),
-                    level=logging.WARNING,
-                )
-                log_event(
-                    logger,
-                    "openai.initial_connect.backoff",
-                    attempt=attempt,
-                    delay_sec=f"{delay:.2f}",
-                    remaining_sec=f"{remaining:.1f}",
-                    level=logging.WARNING,
-                )
-                await self._sleep(delay)
+            hand_off_first_connect(self, e)
 
     def _resolve_connect_call(self):
         """Return a callable ``(model: str) -> AsyncContextManager[conn]``
@@ -2197,33 +2056,3 @@ def _transcript_compare_key(text: str) -> str:
         for token in text.split()
         if token.strip(boundary)
     )
-
-
-def _read_initial_connect_budget_env() -> float:
-    """Read ``JASPER_OPENAI_INITIAL_CONNECT_BUDGET_SEC`` from the
-    environment, falling back to ``DEFAULT_INITIAL_CONNECT_BUDGET_SEC``.
-
-    Garbage values (non-numeric strings, negative numbers) log a
-    warning and fall back to the default — better the daemon boots
-    with the documented behaviour than refuses to start over a typo
-    in jasper.env."""
-    raw = os.environ.get("JASPER_OPENAI_INITIAL_CONNECT_BUDGET_SEC")
-    if raw is None or raw == "":
-        return DEFAULT_INITIAL_CONNECT_BUDGET_SEC
-    try:
-        value = float(raw)
-    except ValueError:
-        logger.warning(
-            "JASPER_OPENAI_INITIAL_CONNECT_BUDGET_SEC=%r is not a number; "
-            "falling back to default %.0fs",
-            raw, DEFAULT_INITIAL_CONNECT_BUDGET_SEC,
-        )
-        return DEFAULT_INITIAL_CONNECT_BUDGET_SEC
-    if value < 0:
-        logger.warning(
-            "JASPER_OPENAI_INITIAL_CONNECT_BUDGET_SEC=%s is negative; "
-            "falling back to default %.0fs",
-            raw, DEFAULT_INITIAL_CONNECT_BUDGET_SEC,
-        )
-        return DEFAULT_INITIAL_CONNECT_BUDGET_SEC
-    return value

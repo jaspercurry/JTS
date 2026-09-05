@@ -670,20 +670,14 @@ async def test_acquire_turn_blocks_on_failed_state():
         await conn.stop()
 
 
-async def test_409_on_initial_connect_retries():
-    """The initial-connect path keeps a separate 409-only retry loop
-    (predates the rework, kept as defense in depth). A single 409
-    followed by success must produce a healthy CONNECTED state."""
-
-    class _Conflict(Exception):
-        def __init__(self):
-            super().__init__("409 Conflict")
-            class _Resp:
-                status_code = 409
-            self.response = _Resp()
-
+async def test_transient_first_connect_leaves_the_daemon_up_and_connects():
+    """A box whose link is down at boot must not cost the process:
+    `start()` returns paused, and the supervisor's next attempt
+    connects."""
     factory = _FakeConnect()
-    factory.next_exceptions = [_Conflict()]
+    factory.next_exceptions = [
+        OSError(-3, "Temporary failure in name resolution"),
+    ]
     conn = GeminiLiveConnection(
         api_key="fake",
         model="fake-model",
@@ -692,50 +686,33 @@ async def test_409_on_initial_connect_retries():
         rotate_after_sec=0.0,
         backoff_schedule=(0.0,),
         connect_factory=factory,
+        sleep=lambda _delay: asyncio.sleep(0),
     )
-    registry = ToolRegistry()
-    # Should retry past the 409 and end up CONNECTED.
-    # The 1.0s sleep between retries dominates the test runtime — that's fine.
-    await asyncio.wait_for(conn.start(registry, "system"), timeout=5.0)
+    await conn.start(ToolRegistry(), "system")
     try:
-        assert conn._state is ConnectionState.CONNECTED
-        assert len(factory.sessions) == 1
+        # No await between start() and these — the supervisor task is
+        # scheduled but has not run, so the post-failure state is intact.
+        assert conn._supervisor_task is not None
+        assert conn.is_paused()
+
+        await _wait_until(
+            lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0,
+        )
+        assert conn.last_failure_detail() is None
     finally:
         await conn.stop()
 
 
-async def test_non_409_failure_on_initial_connect_does_not_retry():
-    """A transient non-409 exception on the initial connect path
-    propagates immediately — the 409 loop is for conflicts only, and a
-    fresh process gets a fresh budget."""
+@pytest.mark.parametrize("attr, value", [("status_code", 403), ("code", 1007)])
+async def test_terminal_first_connect_stays_up_and_heals(attr, value):
+    """A blocked account (403) and a refused setup message (close 1007,
+    no HTTP status at all) both rule terminal, and neither may kill the
+    daemon: `start()` returns with the connection paused, the outage on
+    the fields `/state` reads, and self-heals once the provider
+    accepts."""
+    exc = type("_Terminal", (Exception,), {attr: value})("rejected")
     factory = _FakeConnect()
-    factory.next_exceptions = [RuntimeError("malformed config")]
-    conn = GeminiLiveConnection(
-        api_key="fake",
-        model="fake-model",
-        voice="Aoede",
-        context_reset_sec=9999.0,
-        rotate_after_sec=0.0,
-        backoff_schedule=(0.0,),
-        connect_factory=factory,
-    )
-    registry = ToolRegistry()
-    with pytest.raises(RuntimeError, match="malformed config"):
-        await conn.start(registry, "system")
-    # State is FAILED, not CONNECTED.
-    assert conn._state is ConnectionState.FAILED
-
-
-async def test_terminal_initial_connect_stays_up_and_heals():
-    """A terminal first connect (403, account blocked) must not kill the
-    daemon: `start()` returns with the connection paused and the
-    supervisor running, and self-heals once the provider accepts."""
-
-    class _Blocked(Exception):
-        status_code = 403
-
-    factory = _FakeConnect()
-    factory.next_exceptions = [_Blocked("team blocked")]
+    factory.next_exceptions = [exc]
     conn = GeminiLiveConnection(
         api_key="fake",
         model="fake-model",
@@ -758,34 +735,6 @@ async def test_terminal_initial_connect_stays_up_and_heals():
         )
         assert not conn.is_paused()
         assert conn.last_failure_detail() is None
-    finally:
-        await conn.stop()
-
-
-async def test_setup_rejection_on_initial_connect_stays_up():
-    """A close-1007 setup rejection carries no HTTP status, only a
-    provider code — it must still rule terminal so the daemon stays up
-    with the outage on `/state` instead of exiting into a crash loop."""
-
-    class _SetupRejected(Exception):
-        code = 1007
-
-    factory = _FakeConnect()
-    factory.next_exceptions = [_SetupRejected("setup rejected")]
-    conn = GeminiLiveConnection(
-        api_key="fake",
-        model="fake-model",
-        voice="Aoede",
-        context_reset_sec=9999.0,
-        rotate_after_sec=0.0,
-        backoff_schedule=(0.0,),
-        connect_factory=factory,
-    )
-    await conn.start(ToolRegistry(), "system")
-    try:
-        assert conn._supervisor_task is not None
-        assert conn.is_paused()
-        assert isinstance(conn.last_failure_detail(), str)
     finally:
         await conn.stop()
 
@@ -838,49 +787,6 @@ def _make_websockets_409() -> Exception:
             super().__init__("server rejected WebSocket connection: HTTP 409")
 
     return _WSInvalidStatusCode()
-
-
-def _make_httpx_409() -> Exception:
-    """Build an exception that mirrors the legacy httpx-style 409 shape
-    used in the existing test_409_on_initial_connect_retries test —
-    kept here so both attribute paths get coverage."""
-    class _HttpxConflict(Exception):
-        def __init__(self):
-            super().__init__("409 Conflict")
-            class _Resp:
-                status_code = 409
-            self.response = _Resp()
-
-    return _HttpxConflict()
-
-
-async def test_409_detected_via_websockets_status_code_attribute():
-    """The real SDK raises ``websockets.legacy.exceptions.
-    InvalidStatusCode``, which carries the status on
-    ``exc.status_code`` (not ``exc.response.status_code``). The
-    pre-fix detection used only ``e.response.status_code`` and so
-    relied entirely on the substring fallback for every real 409 —
-    which would silently break on a websockets release that reformats
-    the error message. This test pins the websockets-shape detection
-    path explicitly."""
-    factory = _FakeConnect()
-    factory.next_exceptions = [_make_websockets_409()]
-    conn = GeminiLiveConnection(
-        api_key="fake",
-        model="fake-model",
-        voice="Aoede",
-        context_reset_sec=9999.0,
-        rotate_after_sec=0.0,
-        backoff_schedule=(0.0,),
-        connect_factory=factory,
-    )
-    registry = ToolRegistry()
-    # Should retry past the websockets-shaped 409 and end up CONNECTED.
-    await asyncio.wait_for(conn.start(registry, "system"), timeout=5.0)
-    try:
-        assert conn._state is ConnectionState.CONNECTED
-    finally:
-        await conn.stop()
 
 
 async def test_reconnect_409_drops_resumption_handle_and_retries_fresh():
