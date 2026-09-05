@@ -593,6 +593,19 @@ def build_candidate(
                 ),
             )
 
+    # The trim DECISION the applied profile remembers, read whole off the
+    # decision that made it — ``committed_side`` is that dataclass's own
+    # derivation, not a second one here. ``state`` is only the gate: a pin
+    # clears its strategy, and this block drops with it.
+    trim_decision: Mapping[str, Any] = {}
+    decision = None if fit_plan is None else fit_plan.trim
+    if state.trim_strategy is not None and decision is not None:
+        trim_decision = {
+            "strategy": decision.strategy.value,
+            "committed_side": decision.committed_side,
+            "anchor_drift_db": round(float(decision.anchor_drift_db), 3),
+        }
+
     return MeasuredCrossoverCandidate(
         program_id=analysis.program_id,
         analysis=analysis_json(analysis),
@@ -612,6 +625,7 @@ def build_candidate(
         # re-derived, so the candidate and the state beside it cannot describe
         # different builds.
         linearization_outcome=state.outcome,
+        trim_decision=trim_decision,
         # Carried VERBATIM from what the previous round's summed evidence
         # prescribed: the solve happens at that round's tail, and a second
         # derivation here would be a second owner of a filter that reaches

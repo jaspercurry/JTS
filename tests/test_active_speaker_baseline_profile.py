@@ -13,6 +13,7 @@ from dataclasses import replace
 import logging
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest import mock
 
 import numpy as np
@@ -4836,6 +4837,7 @@ def _v2_candidate(
     delay_role: str = "tweeter",
     polarity: str = "invert",
     tweeter_gain_db: float = -2.0,
+    **extra: Any,
 ) -> MeasuredCrossoverCandidate:
     return MeasuredCrossoverCandidate(
         program_id="prog-v2-1",
@@ -4845,6 +4847,7 @@ def _v2_candidate(
         alignment=MeasuredCrossoverAlignment(
             delay_us=delay_us, delay_role=delay_role, polarity=polarity
         ),
+        **extra,
     )
 
 
@@ -4896,13 +4899,7 @@ def test_build_baseline_profile_candidate_threads_linearization_outcome(
     preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
     preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
     assert preset is not None, issues
-    candidate = MeasuredCrossoverCandidate(
-        program_id="prog-v2-1",
-        analysis={"drift_ppm": 3.0, "sweeps": ["w", "t", "w"], **_MEASURE_EVIDENCE},
-        source_preset=preset,
-        role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
-        linearization_outcome="ineligible_mic_tier",
-    )
+    candidate = _v2_candidate(preset, linearization_outcome="ineligible_mic_tier")
 
     payload = build_baseline_profile_candidate(
         topology,
@@ -4948,6 +4945,59 @@ def test_build_baseline_profile_candidate_linearization_outcome_defaults_empty(
     )
 
     assert payload["linearization_outcome"] == ""
+
+
+_TRIM_DECISION = {
+    "strategy": "resolved_committed",
+    "committed_side": "resolved",
+    "anchor_drift_db": 1.25,
+}
+
+
+@pytest.mark.parametrize("trim", [{}, _TRIM_DECISION])
+def test_applied_profile_remembers_the_trim_decision(
+    tmp_path: Path, trim: dict
+) -> None:
+    """WHICH trim pair the tune committed reaches the applied profile.
+
+    Threaded off the candidate onto the payload's top level (never inside
+    ``recomposition_snapshot``, which ``baseline_candidate_fingerprint``
+    hashes) and back out of the frozen applied view, whose allowlist would
+    otherwise strip on every read what the write side persists. The empty
+    case is a profile written before the field: the key is ABSENT, not
+    empty, and must still load.
+    """
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    candidate = _v2_candidate(preset, trim_decision=trim)
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        write=False,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=candidate,
+    )
+
+    assert payload["trim_decision"] == trim
+    assert "trim_decision" not in payload["recomposition_snapshot"]
+
+    from jasper.active_speaker.baseline_profile import _frozen_applied_profile
+
+    saved = {**payload, "status": "applied"}
+    if not trim:
+        saved.pop("trim_decision")
+    frozen = _frozen_applied_profile(saved)
+    assert frozen is not None
+    assert frozen["trim_decision"] == trim
 
 
 def test_build_baseline_profile_candidate_v2_candidate_requires_automatic(

@@ -1358,6 +1358,8 @@ def _frozen_applied_profile(
         # persists it — see test_frozen_applied_profile_carries_linearization_top_level's
         # own docstring for the identical Gap 3c bug class this mirrors.
         "linearization_outcome": str(applied.get("linearization_outcome") or ""),
+        # Same allowlist duty as "linearization_outcome" above.
+        "trim_decision": dict(applied.get("trim_decision") or {}),
         # Crossover blend correction (design doc decision 10). Mirrors
         # "linearization" above exactly: an ALLOWLIST entry, so omitting it
         # would silently strip on every read a field the write side persists —
@@ -2630,6 +2632,10 @@ def build_baseline_profile_candidate(
     linearization_outcome = str(
         getattr(measured_candidate, "linearization_outcome", "") or ""
     )
+    # WHICH trim pair the candidate committed — the outcome above cannot tell
+    # an anchored commit from a resolved one. ``getattr`` default for the same
+    # eras as its neighbours, plus a round whose pair a trim pin displaced.
+    trim_decision = dict(getattr(measured_candidate, "trim_decision", None) or {})
     # Decision 10's blend correction, already in the emitter's flat shape (the
     # solver writes it that way). ``getattr`` with a default for the same
     # reason the two above use one: a legacy MeasuredElectricalCandidate has no
@@ -2927,6 +2933,10 @@ def build_baseline_profile_candidate(
         # wizard surfaces the in-session equivalent straight off the live
         # candidate.
         "linearization_outcome": linearization_outcome,
+        # The trim DECISION behind "corrections", not its values. Top level
+        # for the same reason "linearization_outcome" is, and NOT inside
+        # recomposition_snapshot, which baseline_candidate_fingerprint hashes.
+        "trim_decision": trim_decision,
         # Crossover blend correction (decision 10) — top-level convenience
         # copy, mirroring "linearization" above. The authoritative copy the
         # recompose re-emits lives inside recomposition_snapshot below; this
