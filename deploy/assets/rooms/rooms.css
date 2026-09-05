@@ -88,7 +88,7 @@ a.room-row:hover .room-row__go {
   border-radius: var(--radius-sm, 6px);
 }
 
-/* The honest forward-looking note about bond setup (stereo pair / 2.1 / sub).
+/* The honest forward-looking note about bond setup (stereo pair).
  * Reuses the .info-card__hint left-rule treatment from app.css; this only
  * adds the link styling so the docs pointer reads as a link without a focus
  * ring (the design system suppresses those globally). */
@@ -170,14 +170,6 @@ a.room-row:hover .room-row__go {
 }
 .bond-select:disabled {
   opacity: 0.6;
-}
-/* Subwoofer low-pass corner input — mirrors .bond-select, narrower (a number). */
-.bond-crossover {
-  flex: 0 0 6rem;
-  min-width: 0;
-  padding: 0.4rem 0.55rem;
-  border-radius: 8px;
-  font: inherit;
 }
 /* Bond save status — aria-live=polite (set in JS); hidden until it has text. */
 .bond-status:empty {
