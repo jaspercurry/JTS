@@ -4765,27 +4765,25 @@ class WakeLoop:
             ):
                 model = _active_model(self._cfg)
                 if self._input_ended:
-                    self._silent_responses_session += 1
-                    log_event(
-                        logger,
-                        "turn.silent_response",
-                        provider=self._cfg.voice_provider,
-                        model=model,
-                        bytes_sent=bytes_sent,
-                        chunks_received=chunks_received,
-                        turn_lost=lost_mid_reply,
-                        count=self._silent_responses_session,
-                        endpointer=self._endpointer_label(),
-                        level=logging.WARNING,
-                    )
-                    # Speak only when there was something to hear: scored
-                    # user speech, or an answer already under way. A button
-                    # turn scores no frames (`_handle_manual_session_frame`),
-                    # so a release with nothing said stays silent.
-                    play_no_answer_cue = (
-                        (self._user_speech_seen or chunks_received > 0)
-                        and reason not in NO_ANSWER_CUE_SUPPRESSED_REASONS
-                    )
+                    # An ending the household or the daemon chose is not
+                    # "asked and got no answer", so it is neither counted
+                    # nor spoken about.
+                    if reason not in NO_ANSWER_CUE_SUPPRESSED_REASONS:
+                        self._silent_responses_session += 1
+                        log_event(
+                            logger,
+                            "turn.silent_response",
+                            provider=self._cfg.voice_provider,
+                            model=model,
+                            reason=reason,
+                            bytes_sent=bytes_sent,
+                            chunks_received=chunks_received,
+                            turn_lost=lost_mid_reply,
+                            count=self._silent_responses_session,
+                            endpointer=self._endpointer_label(),
+                            level=logging.WARNING,
+                        )
+                        play_no_answer_cue = True
                 elif silent and self._manual_endpoint_this_turn:
                     # Same shape as RECORDING TIMEOUT below, but that text
                     # names a silence detector and a wake fire, neither of
@@ -4847,16 +4845,10 @@ class WakeLoop:
         self._volume_coordinator.note_voice_session(False)
         self._content_activity.resume()
         await self._tts.resume_content_meter()
-        self._turn = None
         self._session_id = None
         self._active_manual_source = None
-        self._state = State.WAKE
         await self._output_gate.end_turn(self._turn_output_episode)
         self._turn_output_episode = None
-        if play_no_answer_cue:
-            # Must follow the gate release above: `_play_cue` takes an
-            # "admin" episode of its own and will not preempt the turn's.
-            await self._play_cue(INTERNAL_ERROR_CUE_SLUG)
         if research_window_job is not None:
             self._research_window_active = False
             self._research_window_job = None
@@ -4873,6 +4865,22 @@ class WakeLoop:
                     reason="silence",
                     job_id=research_window_job.id,
                 )
+        if play_no_answer_cue:
+            # After the gate release (`_play_cue` takes an "admin" episode of
+            # its own and will not preempt the turn's) and before State.WAKE:
+            # a cue is seconds of assistant speech, and only State.SESSION
+            # with `_input_ended` keeps it off the wake detectors —
+            # WAKE_REFRACTORY_SEC is 0.2 s and cannot cover it.
+            # A paused connection owns its own remedy cue; claiming an
+            # internal fault over one would be a false alarm (see the
+            # internal_error CueDef).
+            await self._play_cue(
+                self._connection.wake_cue()
+                if self._connection.is_paused()
+                else INTERNAL_ERROR_CUE_SLUG
+            )
+        self._turn = None
+        self._state = State.WAKE
         # No detector.reset() here: `_handle_wake_frame` reset every detector
         # when the wake fired and none was fed a frame since (state was
         # SESSION), so a second reset would only delay the buffer refilling
