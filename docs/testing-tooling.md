@@ -1052,10 +1052,13 @@ jasper-angle-capture stage --program tournament --size full --candidates fp1,fp2
 
 # THE OPERATOR ESCAPE HATCH: a free-form angle list no program names
 jasper-angle-capture plan  --angles 0,7,-7,22,-22 --regime per_driver --mover human
-jasper-angle-capture stage --angles 0,7,-7,22,-22 --regime per_driver --json
+jasper-angle-capture stage --angles 0,7,-7,22,-22 --regime per_driver
 
 # R-1's reverse-null: the design-axis MEASURE capture with one branch flipped
 jasper-angle-capture stage --angles 0 --polarity inverted --inverted-role tweeter
+
+# WHAT IS STAGED: the peek, without taking it
+jasper-angle-capture show
 
 jasper-angle-capture withdraw
 ```
@@ -1063,11 +1066,13 @@ jasper-angle-capture withdraw
 - `--program` and `--angles` are mutually exclusive and one is required.
   `--program` names a row of
   [`measurement_programs.py`](../jasper/active_speaker/measurement_programs.py),
-  the only owner of the poses; `--regime` belongs to `--angles` alone. Both
-  print the same receipt: `program`, `price` (`mic_moves` / `captures` /
-  `ceiling_min`), `level`, `handoff_url`. `plan` is the **dry run of** `stage` —
-  same constructors, same refusals — and names, per stop, the capture index,
-  signed bearing, pose prompt, program, advance policy, and (for an arm) the
+  the only owner of the poses; `--regime` belongs to `--angles` alone. Every
+  verb answers with one JSON receipt on **stdout** — `program`, `size`,
+  `mover`, `stops`, `price` (`mic_moves` / `captures` / `ceiling_min`),
+  `level`, `handoff_url`, `next` — and renders the walk for a person on
+  **stderr**. `plan` is the **dry run of** `stage` — same constructors, same
+  refusals — and its stderr names, per stop, the capture index, signed
+  bearing, pose prompt, program, advance policy, and (for an arm) the
   `position_deg` the position gate waits for.
 - **`level` is absolute dB SPL at the microphone**, resolved by
   [`seat_level_reference.py`](../jasper/active_speaker/seat_level_reference.py)
@@ -1087,8 +1092,8 @@ jasper-angle-capture withdraw
   so `--polarity inverted` with no `--inverted-role` stages cleanly and refuses
   the next open. An inverted walk needs a WIRED session: only the wired source
   binds the engine MEASURE leg the flip rides.
-- **Exit codes**: `0` accepted, `2` refused (bad angle, unknown regime or mover,
-  session already running), `3` an accepted request could not be banked. `2`
+- **Exit codes**: `0` accepted, `1` refused (bad angle, unknown regime or mover,
+  session already running), `3` an accepted request could not be banked. `1`
   means fix the request; `3` means fix the filesystem.
 - **What it does not do**: it runs no capture and opens no session. `stage`
   writes one single-use, last-wins document to

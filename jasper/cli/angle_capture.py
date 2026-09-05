@@ -8,8 +8,9 @@ The operator's door onto :mod:`jasper.active_speaker.angle_capture` (#2732).
 ``plan`` prints the walk a request resolves to and writes nothing; ``stage``
 runs the SAME resolution and banks the request where the next measurement
 session takes it, once
-(:mod:`jasper.active_speaker.angle_capture_spool`). Neither runs a capture,
-opens a session, plays anything, or moves a microphone.
+(:mod:`jasper.active_speaker.angle_capture_spool`); ``show`` reads back what
+is staged. None of them runs a capture, opens a session, plays anything, or
+moves a microphone.
 
 ``serve`` is the other half and the only verb that moves anything: it runs
 :mod:`jasper.active_speaker.arm_walk`'s loop against a LIVE session, driving
@@ -30,9 +31,9 @@ validator here.
 **Exit codes are part of the contract**, and they are
 :mod:`jasper.cli._refusal`'s for every verb: ``0`` accepted, ``1`` refused
 (fix the request, or read the stall ``reason`` a walk stopped on), ``3`` the
-result could not be filed (fix the speaker's filesystem). Every refusal writes
-the human sentence to stderr; the machine-readable record goes to stdout --
-``serve`` always, the request verbs under ``--json``.
+result could not be filed (fix the speaker's filesystem). Every verb's answer
+-- a receipt or a refusal -- is ONE JSON document on stdout; the human
+rendering and the refusal's own sentence go to stderr.
 
 What a taken walk then does, and what it deliberately does not publish, is
 ``docs/testing-tooling.md`` ("Angle-walk door").
@@ -43,6 +44,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import shlex
 import sys
 from pathlib import Path
 from typing import Any, Sequence
@@ -71,6 +73,7 @@ from jasper.active_speaker.candidate_bank import (
 from jasper.active_speaker.angle_capture_spool import (
     AngleRequestRefused,
     angle_request_spool_path,
+    peek_staged_angle_request,
     stage_angle_request,
     withdraw_staged_angle_request,
 )
@@ -79,7 +82,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
     POLARITIES,
     POLARITY_NORMAL,
 )
-from jasper.active_speaker.crossover_v2_flow import CrossoverV2FlowError
+from jasper.active_speaker.crossover_v2_flow import TIER_EXPRESS, CrossoverV2FlowError
 from jasper.active_speaker.measurement_programs import MeasurementProgram
 from jasper.active_speaker.seat_level_reference import (
     LevelUnresolved,
@@ -99,6 +102,10 @@ from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_WRITE_FAILED, failed
 #: join, and it is NOT ``MOVERS`` (that says who moves the mic in a DECLARED
 #: walk, which is a different question).
 MOVER_TURNTABLE = "turntable"
+
+#: The slot could not be written or cleared: a filesystem problem, not a
+#: request problem. ``stage`` and ``withdraw`` fail alike, so they name it alike.
+STAGE_FAILED = "stage_failed"
 
 #: The named program does not exist. Not a walk refusal -- no walk was stated,
 #: so it does not borrow ``WALK_REFUSAL_REASONS``' vocabulary.
@@ -376,9 +383,16 @@ def _print_walk(payload: dict[str, Any]) -> None:
     cannot know that, so it declares no target and the column is empty. Saying
     only the first would tell a human operator their walk has no gate, which
     was true before that change and is not now.
+
+    On stderr: stdout carries the ANSWER, and this is the same walk rendered
+    for a person reading a terminal.
     """
+
+    def say(line: str) -> None:
+        print(line, file=sys.stderr)
+
     mover = payload["mover"]
-    print(
+    say(
         f"{len(payload['stops'])} stops, moved by {mover}"
         + (
             " (position gate armed; each stop declares its own target below)"
@@ -389,7 +403,7 @@ def _print_walk(payload: dict[str, Any]) -> None:
     )
     for stop in payload["stops"]:
         gate = stop["screen"].get("position_deg")
-        print(
+        say(
             f"  {stop['index']:>2}. {stop['angle_deg']:>+4d} deg  "
             f"{stop['regime']:<10}  plays {stop['program_phase']:<12} "
             f"advance {stop['screen']['auto_advance']}"
@@ -406,7 +420,7 @@ def _print_walk(payload: dict[str, Any]) -> None:
         # the branch is unnamed: a one-sided pair is refused when the session
         # adopts the walk, and an operator seeing nothing here would read the
         # staging that preceded that refusal as an ordinary success.
-        print(
+        say(
             f"  polarity: {payload['polarity']} on the design-axis MEASURE "
             f"capture, flipping {payload['inverted_role']!r}"
         )
@@ -415,7 +429,7 @@ def _print_walk(payload: dict[str, Any]) -> None:
         # a walk that reaches the graph carrying a confirmation delay must not
         # look identical to one that does not -- previously this was
         # traceable only through measure_spec.measurement_delays_for.
-        print(
+        say(
             f"  delay: {payload['delay_us']:g} us on "
             f"{payload['delayed_role']!r}"
         )
@@ -423,14 +437,14 @@ def _print_walk(payload: dict[str, Any]) -> None:
     if geometry is not None:
         # What the packet will bank, read from the same file it reads. Printed
         # only when the household declared one, which most have not.
-        print(
+        say(
             "  declared geometry (m): "
             + ", ".join(
                 f"{key} {value:g}" for key, value in geometry.to_dict().items()
             )
         )
     announced = payload["announced_indexes"]
-    print(
+    say(
         "  prelude: "
         + (
             ", ".join(str(i) for i in announced)
@@ -442,14 +456,14 @@ def _print_walk(payload: dict[str, Any]) -> None:
     if candidates:
         # Only when stated: an ordinary walk measures the speaker as it stands
         # and has no cycle to name.
-        print(f"  candidates: {', '.join(candidates)}")
+        say(f"  candidates: {', '.join(candidates)}")
     price = payload["price"]
-    print(
+    say(
         f"  price: {price['mic_moves']} spots, {price['captures']} captures, "
         f"up to {price['ceiling_min']} min for the session that takes it"
     )
     level = payload["level"]
-    print(
+    say(
         "  level: "
         + (
             f"{level['anchor_db_spl']:.1f} dB SPL at the mic (the banked "
@@ -460,115 +474,144 @@ def _print_walk(payload: dict[str, Any]) -> None:
             else f"unresolved -- {level['reason']}: {level['detail']}"
         )
     )
-    print(
+    say(
         f"  open {payload['handoff_url']} on the household's phone; the page "
         "states the price before Start"
     )
-    print(
+    say(
         "  done: jasper-crossover-prescriber status -- the walk's takes "
         "appear under banked.walk"
     )
 
 
-def _fs_failure(detail: str, *, as_json: bool) -> int:
-    """A filesystem failure, on both channels, as :data:`EXIT_WRITE_FAILED`.
+def _refuse(exc: Exception, *, reason: str | None = None) -> int:
+    """One refusal, under the slug its raiser named and the sentence it wrote."""
+    return failed(
+        EXIT_REFUSED,
+        reason or getattr(exc, "reason", None) or "angle_request_refused",
+        getattr(exc, "detail", None) or str(exc),
+    )
 
-    Shared by the two verbs that touch the slot, so the exit-code contract this
-    module states is answered from one place rather than restated per verb.
+
+def _receipt(payload: dict[str, Any], **extra: Any) -> dict[str, Any]:
+    """The walk's ANSWER: what was asked for, what it costs, where it is run.
+
+    The resolved stop table is the human rendering's rather than this
+    document's -- a reader who wants it reads ``plan``'s stderr.
     """
-    if as_json:
-        print(
-            json.dumps({"ok": False, "reason": "stage_failed", "detail": detail},
-                       indent=2)
-        )
-    print(detail, file=sys.stderr)
-    return EXIT_WRITE_FAILED
+    program, _, size = str(payload["program"]).partition("/")
+    return {
+        "program": program,
+        "size": size,
+        "mover": payload["mover"],
+        "candidates": payload["candidates"],
+        "stops": len(payload["stops"]),
+        "price": payload["price"],
+        "level": payload["level"],
+        "handoff_url": payload["handoff_url"],
+        **extra,
+    }
 
 
-def _refuse(exc: Exception, *, as_json: bool, reason: str | None = None) -> int:
-    """One refusal, on both channels, with the sentence its raiser wrote."""
-    detail = getattr(exc, "detail", None) or str(exc)
-    slug = reason or getattr(exc, "reason", None) or "angle_request_refused"
-    if as_json:
-        print(json.dumps({"ok": False, "reason": slug, "detail": detail}, indent=2))
-    print(f"refused ({slug}): {detail}", file=sys.stderr)
-    return EXIT_REFUSED
+def _open_round(size: str) -> str:
+    """The verb that RUNS a staged walk, at the tier its program was sized for."""
+    return f"jasper-round open --tier {size or TIER_EXPRESS}"
+
+
+def _answer(document: dict[str, Any]) -> int:
+    """The one JSON document a verb that succeeded puts on stdout."""
+    print(json.dumps(document, indent=2, sort_keys=True))
+    return EXIT_OK
 
 
 def _cmd_plan(args: argparse.Namespace) -> int:
     try:
         request = _build_request(args)
     except measurement_programs.UnknownProgramError as exc:
-        return _refuse(exc, as_json=args.json, reason=UNKNOWN_PROGRAM)
+        return _refuse(exc, reason=UNKNOWN_PROGRAM)
     except CandidateBankRefusal as exc:
-        return _refuse(exc, as_json=args.json, reason=exc.code)
+        return _refuse(exc, reason=exc.code)
     except CrossoverV2FlowError as exc:
-        return _refuse(exc, as_json=args.json)
+        return _refuse(exc)
     # An unresolved level is PRINTED here and refused by ``stage``: the dry run
     # exists to show an operator what is missing before they commit to it.
     payload = _walk_payload(request, _resolved_level())
-    if args.json:
-        print(json.dumps({"ok": True, **payload}, indent=2))
-    else:
-        _print_walk(payload)
-    return EXIT_OK
+    _print_walk(payload)
+    # The same invocation with the other verb, quoted back exactly: ``plan`` is
+    # the dry run of ``stage``, so nothing here re-spells the request.
+    staging = " ".join(
+        ["jasper-angle-capture", "stage", *map(shlex.quote, args.invocation[1:])]
+    )
+    return _answer(_receipt(payload, next=staging))
 
 
 def _cmd_stage(args: argparse.Namespace) -> int:
     try:
         request = _build_request(args)
     except measurement_programs.UnknownProgramError as exc:
-        return _refuse(exc, as_json=args.json, reason=UNKNOWN_PROGRAM)
+        return _refuse(exc, reason=UNKNOWN_PROGRAM)
     except CandidateBankRefusal as exc:
-        return _refuse(exc, as_json=args.json, reason=exc.code)
+        return _refuse(exc, reason=exc.code)
     except CrossoverV2FlowError as exc:
-        return _refuse(exc, as_json=args.json)
+        return _refuse(exc)
     # The methodology levels the seat before anything measures, so a level this
     # door cannot resolve names the step the operator skipped rather than
     # staging a walk whose captures nobody could read absolutely. It is not
     # written to the spool -- nothing downstream reads a level yet.
     level = _resolved_level()
     if isinstance(level, LevelUnresolved):
-        return _refuse(level, as_json=args.json)
+        return _refuse(level)
     payload = _walk_payload(request, level)
     try:
         path = stage_angle_request(request)
     except AngleRequestRefused as exc:
-        return _refuse(exc, as_json=args.json)
+        return _refuse(exc)
     except OSError as exc:
-        return _fs_failure(
+        return failed(
+            EXIT_WRITE_FAILED,
+            STAGE_FAILED,
             f"the request could not be written to "
             f"{angle_request_spool_path()}: {exc}",
-            as_json=args.json,
         )
-    if args.json:
-        print(json.dumps({"ok": True, "staged_at_path": str(path), **payload}, indent=2))
-    else:
-        _print_walk(payload)
-        print(f"staged at {path}")
-    return EXIT_OK
+    _print_walk(payload)
+    print(f"staged at {path}", file=sys.stderr)
+    receipt = _receipt(payload, out=str(path), bytes=path.stat().st_size)
+    return _answer({**receipt, "next": _open_round(receipt["size"])})
+
+
+def _cmd_show(args: argparse.Namespace) -> int:
+    """What is staged right now, read without consuming it."""
+    try:
+        request = peek_staged_angle_request()
+    except CrossoverV2FlowError as exc:
+        return _refuse(exc)
+    if request is None:
+        return _answer({"staged": False})
+    payload = _walk_payload(request, _resolved_level())
+    _print_walk(payload)
+    receipt = _receipt(payload, staged=True, out=str(angle_request_spool_path()))
+    return _answer({**receipt, "next": _open_round(receipt["size"])})
 
 
 def _cmd_withdraw(args: argparse.Namespace) -> int:
     try:
         removed = withdraw_staged_angle_request()
     except OSError as exc:
-        # The same exit code and the same channel split as ``stage``'s write
-        # failure, because it is the same class of problem: an unwritable slot
-        # directory. Without this the module's own exit-code contract is false
-        # for one verb -- an unlink that cannot proceed would exit ``1`` with a
-        # traceback, which tells a script neither "fix the request" nor "fix the
-        # filesystem".
-        return _fs_failure(
+        # The same exit code as ``stage``'s write failure, because it is the
+        # same class of problem: an unwritable slot directory. Without this an
+        # unlink that cannot proceed would exit ``1`` with a traceback, which
+        # tells a script neither "fix the request" nor "fix the filesystem".
+        return failed(
+            EXIT_WRITE_FAILED,
+            STAGE_FAILED,
             f"the staged walk could not be withdrawn from "
             f"{angle_request_spool_path()}: {exc}",
-            as_json=args.json,
         )
-    if args.json:
-        print(json.dumps({"ok": True, "withdrawn": removed}, indent=2))
-    else:
-        print("withdrew the staged walk" if removed else "no walk was staged")
-    return EXIT_OK
+    print(
+        "withdrew the staged walk" if removed else "no walk was staged",
+        file=sys.stderr,
+    )
+    return _answer({"staged": False, "withdrawn": removed})
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
@@ -767,9 +810,6 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
             "box with none refuses the walk rather than measuring unmatched"
         ),
     )
-    parser.add_argument(
-        "--json", action="store_true", help="emit the result (or refusal) as JSON"
-    )
 
 
 def _add_serve_args(parser: argparse.ArgumentParser) -> None:
@@ -884,9 +924,9 @@ def build_parser() -> argparse.ArgumentParser:
             "    (lab arm) or the guided web flow (human mover) is what\n"
             "    actually moves the microphone\n"
             "  - stage, when a walk is already staged -- check first with\n"
-            "    jasper-crossover-prescriber status, or withdraw the\n"
-            "    pending one\n"
-            "  - serve, when no walk is staged yet -- stage one first, or it\n"
+            "    jasper-angle-capture show, or withdraw the pending one\n"
+            "  - serve, when no walk is staged yet -- jasper-angle-capture\n"
+            "    show says whether one is; stage one first, or serve\n"
             "    refuses walk_not_staged with nothing moved\n"
             "  - serve, when a human is moving the mic by hand this session\n"
             "    -- that is stage --mover human\n"
@@ -897,14 +937,16 @@ def build_parser() -> argparse.ArgumentParser:
             "  jasper-angle-capture stage --program spot --azimuth 22\n"
             "  jasper-angle-capture stage --angles 0,7,-7 (operator escape\n"
             "    hatch: a free-form list no program names)\n"
+            "  jasper-angle-capture show\n"
             "  jasper-angle-capture withdraw\n"
             "  sudo -u pi /opt/jasper/.venv/bin/jasper-angle-capture serve \\\n"
             "      --mover turntable --attest-rig-clear --hostname jts3.local \\\n"
             "      --expect-angles 7,-7,22,-22 --complete-after 5\n"
             "\n"
             "EXIT CODES\n"
-            "  0  EXIT_OK -- resolved (plan), staged (stage), withdrew/no-op\n"
-            "     (withdraw), or a clean finish with the arm parked (serve)\n"
+            "  0  EXIT_OK -- resolved (plan), staged (stage), read back\n"
+            "     (show), withdrew/no-op (withdraw), or a clean finish with\n"
+            "     the arm parked (serve)\n"
             "  1  EXIT_REFUSED -- the request reached a door and was\n"
             "     refused, or a walk stopped short; \"refused (<reason>):\n"
             "     <detail>\" on stderr names why. serve's reason is the\n"
@@ -918,6 +960,9 @@ def build_parser() -> argparse.ArgumentParser:
             "  129/130/143  serve parked the arm after SIGHUP/SIGINT/SIGTERM"
         ),
     )
+    # The verb line ``plan`` quotes back as the ``stage`` it was the dry run
+    # of; ``main`` replaces it with what was actually typed.
+    parser.set_defaults(invocation=())
     sub = parser.add_subparsers(dest="command", required=True)
 
     plan = sub.add_parser(
@@ -934,12 +979,15 @@ def build_parser() -> argparse.ArgumentParser:
     _add_request_args(stage)
     stage.set_defaults(func=_cmd_stage)
 
+    show = sub.add_parser(
+        "show",
+        help="print the walk that is staged, without taking it",
+    )
+    show.set_defaults(func=_cmd_show)
+
     withdraw = sub.add_parser(
         "withdraw",
         help="remove a staged walk without running it",
-    )
-    withdraw.add_argument(
-        "--json", action="store_true", help="emit the result as JSON"
     )
     withdraw.set_defaults(func=_cmd_withdraw)
 
@@ -979,7 +1027,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     # at import, because a module that configures the root logger on import
     # imposes its choice on every importer, the test suite included.
     logging.basicConfig(level=logging.INFO, format=CLI_LOG_FORMAT)
-    args = build_parser().parse_args(list(argv) if argv is not None else None)
+    fields = list(argv) if argv is not None else sys.argv[1:]
+    args = build_parser().parse_args(fields)
+    args.invocation = fields
     result: int = args.func(args)
     return result
 
