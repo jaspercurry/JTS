@@ -10,13 +10,25 @@ import asyncio
 import subprocess
 from typing import Any, Callable
 
+from ...audio_quality import (
+    apply_requested_converter as _apply_audio_quality,
+    normalize_converter as _normalize_audio_converter,
+)
 from ...doctor_contract import (
     REASON_SNAPSHOT_PENDING,
     REASON_SNAPSHOT_UNAVAILABLE,
 )
+from ...fanin.latency_mode import (
+    LatencyApplyError as _UsbLatencyApplyError,
+    apply_requested_mode as _apply_usb_latency_mode,
+    normalize_mode as _normalize_usb_latency_mode,
+)
+from ...install_profile import system_capabilities_for_profile
+from ...local_sources import local_source_park_units
 from ...log_event import log_event
 from .. import server as _server
 from .. import state_aggregate
+from .. import usb_gadget_forensics
 from ._base import ControlHandlerMixin, logger
 
 
@@ -100,7 +112,7 @@ class SystemRoutes(ControlHandlerMixin):
                     logger.exception("/state audio health snapshot failed")
                     state["audio_health"] = None
             state = dict(state)
-            state["usb_gadget_forensics"] = _server.usb_gadget_forensics.snapshot()
+            state["usb_gadget_forensics"] = usb_gadget_forensics.snapshot()
         except Exception as e:  # noqa: BLE001
             logger.exception("/state aggregation failed")
             self._send_json({"error": str(e)}, status=502)
@@ -197,10 +209,10 @@ class SystemRoutes(ControlHandlerMixin):
             "voice_provider": read_active_provider(),
             "speaker_name": _read_speaker_name_state().__dict__,
             "home_assistant": ha_status,
-            "system_capabilities": _server.system_capabilities_for_profile(
+            "system_capabilities": system_capabilities_for_profile(
                 install_profile,
             ),
-            "usb_gadget_forensics": _server.usb_gadget_forensics.snapshot(),
+            "usb_gadget_forensics": usb_gadget_forensics.snapshot(),
         }
         self._send_json(payload)
 
@@ -306,9 +318,9 @@ class SystemRoutes(ControlHandlerMixin):
                         status=400,
                     )
                     return
-                result = _server.usb_gadget_forensics.set_enabled(body["enabled"])
+                result = usb_gadget_forensics.set_enabled(body["enabled"])
             else:
-                result = _server.usb_gadget_forensics.request(action)
+                result = usb_gadget_forensics.request(action)
         except ValueError as e:
             self._send_json({"error": str(e)}, status=409)
             return
@@ -343,12 +355,12 @@ class SystemRoutes(ControlHandlerMixin):
             )
             return
         try:
-            converter = _server._normalize_audio_converter(raw_converter)
+            converter = _normalize_audio_converter(raw_converter)
         except ValueError as e:
             self._send_json({"error": str(e)}, status=400)
             return
         try:
-            state = _server._apply_audio_quality(converter)
+            state = _apply_audio_quality(converter)
         except (OSError, subprocess.SubprocessError) as e:
             logger.exception("audio quality apply failed")
             self._send_json(
@@ -401,13 +413,13 @@ class SystemRoutes(ControlHandlerMixin):
             self._send_json({"error": "mode is required"}, status=400)
             return
         try:
-            mode = _server._normalize_usb_latency_mode(raw_mode)
+            mode = _normalize_usb_latency_mode(raw_mode)
         except ValueError as e:
             self._send_json({"error": str(e)}, status=400)
             return
         try:
-            _server._apply_usb_latency_mode(mode)
-        except (OSError, _server._UsbLatencyApplyError) as e:
+            _apply_usb_latency_mode(mode)
+        except (OSError, _UsbLatencyApplyError) as e:
             logger.exception("USB latency apply failed")
             self._send_json(
                 {
@@ -467,7 +479,7 @@ class SystemRoutes(ControlHandlerMixin):
                 # Restart only the units the follower profile keeps
                 # alive — derived from the local-source lifecycle
                 # registry so it cannot drift from follower parking.
-                parked_units = set(_server.local_source_park_units())
+                parked_units = set(local_source_park_units())
                 try_restart_units = [
                     u for u in try_restart_units if u not in parked_units
                 ]
