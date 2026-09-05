@@ -35,14 +35,12 @@ from .dac import (
     final_edge_format_for,
     is_boot_managed_i2s_profile,
     is_known_profile_id,
-    known_profile_ids,
     label_for,
     latency_floor_for,
     mixer_control_groups_for,
     profile_for_card_label,
     profile_for_hat,
     physical_output_count_for,
-    supports_physical_output_count,
 )
 
 __all__ = [
@@ -75,12 +73,10 @@ __all__ = [
     "final_edge_format_for",
     "is_boot_managed_i2s_profile",
     "is_known_profile_id",
-    "known_profile_ids",
     "label_for",
     "latency_floor_for",
     "mixer_control_groups_for",
     "profile_for_card_label",
     "profile_for_hat",
     "physical_output_count_for",
-    "supports_physical_output_count",
 ]

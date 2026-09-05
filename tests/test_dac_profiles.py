@@ -47,13 +47,6 @@ def test_registry_contains_current_output_profiles_in_stable_order() -> None:
         INNOMAKER_HIFI_AMP_PRO,
         DUAL_APPLE_USB_C_DAC_4CH,
     )
-    assert dac.known_profile_ids() == (
-        APPLE_USB_C_DONGLE_ID,
-        HIFIBERRY_DAC8X_ID,
-        HIFIBERRY_DAC8X_STUDIO_ID,
-        INNOMAKER_HIFI_AMP_PRO_ID,
-        DUAL_APPLE_USB_C_DAC_4CH_ID,
-    )
 
 
 def test_lookup_helpers_are_pure_and_unknown_safe() -> None:
@@ -75,9 +68,6 @@ def test_lookup_helpers_are_pure_and_unknown_safe() -> None:
         == "measured_sync_required"
     )
     assert dac.clock_domain_contract_for("unknown_usb_dac") is None
-    assert dac.supports_physical_output_count(HIFIBERRY_DAC8X_ID, 8) is True
-    assert dac.supports_physical_output_count(HIFIBERRY_DAC8X_ID, 4) is False
-    assert dac.supports_physical_output_count("unknown_usb_dac", 2) is False
 
 
 def test_apple_usb_c_dongle_profile_captures_current_mixer_policy() -> None:
@@ -88,7 +78,7 @@ def test_apple_usb_c_dongle_profile_captures_current_mixer_policy() -> None:
         "Single Apple USB audio device clock"
     )
     assert APPLE_USB_C_DONGLE.clock_domain_contract == "single_device"
-    assert APPLE_USB_C_DONGLE.outputd_sink == "alsa"
+    assert APPLE_USB_C_DONGLE.outputd_sink == "single_alsa"
     assert APPLE_USB_C_DONGLE.supports_active_outputd_lane is True
     assert APPLE_USB_C_DONGLE.active_outputd_lane_channels == 2
     assert APPLE_USB_C_DONGLE.usb_ids == ("05ac:110a",)
@@ -97,10 +87,6 @@ def test_apple_usb_c_dongle_profile_captures_current_mixer_policy() -> None:
     assert APPLE_USB_C_DONGLE.mixer_controls[0].name == "Headphone"
     assert APPLE_USB_C_DONGLE.mixer_controls[0].target_percent == 100
     assert APPLE_USB_C_DONGLE.mixer_controls[0].unmute is True
-    assert (
-        APPLE_USB_C_DONGLE.udev_rule
-        == "deploy/udev/99-jasper-apple-dongle.rules"
-    )
 
 
 def test_hifiberry_dac8x_profiles_cover_base_and_studio_runtime_ids() -> None:
@@ -113,7 +99,7 @@ def test_hifiberry_dac8x_profiles_cover_base_and_studio_runtime_ids() -> None:
         "Single HiFiBerry DAC8x device clock"
     )
     assert HIFIBERRY_DAC8X.clock_domain_contract == "single_device"
-    assert HIFIBERRY_DAC8X.outputd_sink == "alsa"
+    assert HIFIBERRY_DAC8X.outputd_sink == "single_alsa"
     assert HIFIBERRY_DAC8X.connection == "i2s"
     # Stage 2: the DAC-agnostic transport carries a coherent 8-channel single
     # DAC, so the DAC8x declares the active outputd lane at its full width.
@@ -136,7 +122,7 @@ def test_hifiberry_dac8x_profiles_cover_base_and_studio_runtime_ids() -> None:
     assert HIFIBERRY_DAC8X_STUDIO.label == "HiFiBerry DAC8x Studio"
     assert HIFIBERRY_DAC8X_STUDIO.physical_output_count == 8
     assert HIFIBERRY_DAC8X_STUDIO.clock_domain_contract == "single_device"
-    assert HIFIBERRY_DAC8X_STUDIO.outputd_sink == "alsa"
+    assert HIFIBERRY_DAC8X_STUDIO.outputd_sink == "single_alsa"
     assert HIFIBERRY_DAC8X_STUDIO.connection == "i2s"
     assert HIFIBERRY_DAC8X_STUDIO.supports_active_outputd_lane is True
     assert HIFIBERRY_DAC8X_STUDIO.active_outputd_lane_channels == 8
@@ -292,6 +278,31 @@ def test_card_label_routing_matrix_over_hat_eeprom_evidence(
     )
     profile = dac.profile_for_card_label(label, hat=hat)
     assert (profile.id if profile is not None else None) == expected_id
+
+
+@pytest.mark.parametrize(
+    ("product", "expected_id"),
+    [
+        (HIFIBERRY_DAC8X_STUDIO.hat_products[0], HIFIBERRY_DAC8X_STUDIO_ID),
+        # Whole-string, case-insensitive match (dac._declares_hat_product).
+        (HIFIBERRY_DAC8X_STUDIO.hat_products[0].lower(), HIFIBERRY_DAC8X_STUDIO_ID),
+        # A different board — must not inherit this row (#2250).
+        ("StudioDAC8xPro", None),
+        # A HAT node that publishes no product routes nothing.
+        ("", None),
+        ("unregistered_hat_product", None),
+    ],
+)
+def test_profile_for_hat_matches_the_registrys_declared_hat_products(
+    product: str, expected_id: str | None
+) -> None:
+    hat = HatEeprom(vendor="HiFiBerry", product=product, uuid="uuid")
+    profile = dac.profile_for_hat(hat)
+    assert (profile.id if profile is not None else None) == expected_id
+
+
+def test_profile_for_hat_returns_none_with_no_hat() -> None:
+    assert dac.profile_for_hat(None) is None
 
 
 def test_hat_eeprom_reader_reports_none_when_no_hat_node_exists(
@@ -725,7 +736,7 @@ def test_dac_channel_map_validation_is_fail_closed() -> None:
 
 
 def test_registry_children_reference_known_profiles() -> None:
-    known = set(dac.known_profile_ids())
+    known = {profile.id for profile in dac.all_profiles()}
     for profile in dac.all_profiles():
         assert set(profile.child_profile_ids) <= known
 

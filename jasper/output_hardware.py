@@ -525,8 +525,15 @@ def classify_output_cards(
 
     if len(apple) == 2:
         issues: list[dict[str, str]] = []
-        same_bus = _same_usb_bus(apple)
         status = "ready"
+        # Only the composite's own row decides whether mismatched USB
+        # buses block it (DacProfile.requires_same_usb_bus, ADR-0235 R1).
+        composite_profile = _dac_profile_by_id(DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID)
+        same_bus = (
+            _same_usb_bus(apple)
+            if composite_profile is not None and composite_profile.requires_same_usb_bus
+            else True
+        )
         if same_bus is False:
             status = "partial"
             issues.append(_issue(

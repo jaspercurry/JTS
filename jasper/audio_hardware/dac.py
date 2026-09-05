@@ -182,7 +182,6 @@ class DacProfile:
     validation_profile: str | None = None
     chip_aec_qualification: ChipAecQualification = "needs_calibration"
     chip_aec_detail: str = ""
-    udev_rule: str | None = None
     dtoverlay: str | None = None
     # The DECLARED sample format the DAC's hw device should open at, at the
     # final ALSA edge, and it is now what outputd ASKS ALSA for.
@@ -410,7 +409,7 @@ APPLE_USB_C_DONGLE = DacProfile(
     coherent_clock_domain=True,
     clock_domain_label="Single Apple USB audio device clock",
     clock_domain_contract="single_device",
-    outputd_sink="alsa",
+    outputd_sink="single_alsa",
     supported_card_matches=("usb-c to 3.5mm",),
     usb_ids=("05ac:110a",),
     mixer_controls=(APPLE_HEADPHONE_CONTROL,),
@@ -420,7 +419,6 @@ APPLE_USB_C_DONGLE = DacProfile(
     active_outputd_lane_channels=2,
     chip_aec_qualification="approved",
     chip_aec_detail="Apple USB-C dongle is the measured known-good chip-AEC baseline",
-    udev_rule="deploy/udev/99-jasper-apple-dongle.rules",
     # Measured stable floor on Apple-dongle lab boxes: CamillaDSP chunk 256 /
     # target 1536, outputd period 128 / dac_buffer 256. The exact 4x Camilla
     # target (1024) caused USB bridge playback xruns on jts.local under the
@@ -460,7 +458,7 @@ HIFIBERRY_DAC8X = DacProfile(
     coherent_clock_domain=True,
     clock_domain_label="Single HiFiBerry DAC8x device clock",
     clock_domain_contract="single_device",
-    outputd_sink="alsa",
+    outputd_sink="single_alsa",
     connection="i2s",
     # Exactly the one string the kernel emits for this board, and nothing
     # fuzzier. `rpi-simple-soundcard.c` binds compatible
@@ -571,7 +569,7 @@ HIFIBERRY_DAC8X_STUDIO = DacProfile(
     coherent_clock_domain=True,
     clock_domain_label="Single HiFiBerry DAC8x Studio device clock",
     clock_domain_contract="single_device",
-    outputd_sink="alsa",
+    outputd_sink="single_alsa",
     connection="i2s",
     # Both token orders, because the kernel and HiFiBerry disagree on it: the
     # driver emits "HiFiBerry Studio DAC8x" (studio first) while HiFiBerry's
@@ -690,7 +688,7 @@ INNOMAKER_HIFI_AMP_PRO = DacProfile(
     coherent_clock_domain=True,
     clock_domain_label="Single InnoMaker HiFi AMP Pro device clock",
     clock_domain_contract="single_device",
-    outputd_sink="alsa",
+    outputd_sink="single_alsa",
     connection="i2s",
     supported_card_matches=(
         r"\bsnd_rpi_merus_amp\b",
@@ -900,12 +898,6 @@ def by_id(profile_id: str) -> DacProfile | None:
     return _BY_ID.get(profile_id)
 
 
-def known_profile_ids() -> tuple[str, ...]:
-    """Return known DAC profile ids in stable display order."""
-
-    return tuple(profile.id for profile in REGISTRY)
-
-
 def is_known_profile_id(profile_id: str) -> bool:
     """Return True when ``profile_id`` is a registered DAC profile."""
 
@@ -1012,13 +1004,6 @@ def profile_for_hat(hat: HatEeprom | None) -> DacProfile | None:
         ),
         None,
     )
-
-
-def supports_physical_output_count(profile_id: str, output_count: int) -> bool:
-    """Return whether a known profile has exactly ``output_count`` outputs."""
-
-    profile = by_id(profile_id)
-    return profile is not None and profile.physical_output_count == output_count
 
 
 def active_outputd_lane_channels_for(profile_id: str) -> int | None:
@@ -1130,12 +1115,10 @@ __all__ = [
     "final_edge_format_for",
     "is_boot_managed_i2s_profile",
     "is_known_profile_id",
-    "known_profile_ids",
     "label_for",
     "latency_floor_for",
     "mixer_control_groups_for",
     "profile_for_card_label",
     "profile_for_hat",
     "physical_output_count_for",
-    "supports_physical_output_count",
 ]
