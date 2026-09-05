@@ -26,6 +26,7 @@ from ...memory_policy import (
     ZRAM_TARGET_PERCENT,
     ZRAM_WARN_PERCENT,
     disk_usage,
+    meminfo_kb,
     memory_headroom_thresholds,
     memory_pressure,
     zram_usage,
@@ -37,7 +38,6 @@ from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
-    _meminfo_kb,
     _run,
     install_profile_is_streambox,
 )
@@ -145,8 +145,8 @@ def check_memory_headroom() -> CheckResult:
     ~250 MB to single-digit MB over ~10 s as a PIO compile ramped
     up; this check catches that BEFORE the wedge if the operator
     runs the doctor first."""
-    total_kb = _meminfo_kb("MemTotal") or 0
-    avail_kb = _meminfo_kb("MemAvailable")
+    total_kb = meminfo_kb("MemTotal") or 0
+    avail_kb = meminfo_kb("MemAvailable")
     if avail_kb is None or total_kb == 0:
         return CheckResult(
             "memory headroom", "warn", "couldn't read /proc/meminfo",

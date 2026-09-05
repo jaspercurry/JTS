@@ -233,18 +233,6 @@ def install_profile_is_streambox() -> bool:
         return False
 
 
-def _meminfo_kb(field: str) -> int | None:
-    """One /proc/meminfo field (e.g. 'MemAvailable') in KiB, None on read
-    error."""
-    try:
-        with open("/proc/meminfo") as f:
-            for line in f:
-                if line.startswith(field + ":"):
-                    return int(line.split()[1])
-    except Exception:  # noqa: BLE001
-        return None
-    return None
-
 # The household's per-source intent file is unreadable or malformed, so
 # nothing downstream of it can be judged.
 REASON_SOURCE_INTENT_INVALID = "source_intent_invalid"

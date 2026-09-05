@@ -161,6 +161,11 @@ def _proc_value(path: str, key: str) -> int | None:
     return None
 
 
+def meminfo_kb(field: str, *, path: str = PROC_MEMINFO) -> int | None:
+    """One ``/proc/meminfo`` field (e.g. ``MemAvailable``), in KiB."""
+    return _proc_value(path, field)
+
+
 class ZramUsage(NamedTuple):
     """Virtual zram capacity against installed RAM.
 

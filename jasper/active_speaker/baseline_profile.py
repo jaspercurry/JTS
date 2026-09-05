@@ -3666,8 +3666,8 @@ def promote_applied_baseline_candidate(
     (``config.path``, which keeps the truthful applied sibling path -- this
     promotes a COPY, it never rewrites the SSOT) are already correct by the
     time this runs, so a copy failure must never fail an otherwise-successful
-    apply. jasper-doctor's baseline-canonical check surfaces a stale or
-    missing canonical file as a WARN, never a service disruption.
+    apply. jasper-doctor's baseline-canonical check discloses a stale or
+    missing canonical file as an `ok` row, never a service disruption.
     """
 
     applied_path_raw = (applied.get("config") or {}).get("path")
