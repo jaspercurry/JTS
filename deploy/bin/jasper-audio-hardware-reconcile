@@ -397,7 +397,12 @@ observe_output_hardware_state() {
 }
 
 reconcile_i2s_hat_boot() {
+    # Declared before the eval, so a payload that omits a key leaves it empty
+    # -- the `case` below then exits 66 instead of tripping `set -u`, and an
+    # inherited JASPER_BOOT_* from the caller's environment can never stand in.
     local payload
+    local JASPER_BOOT_I2S_HAT_CHANGED="" JASPER_BOOT_I2S_HAT_PROFILE=""
+    local JASPER_BOOT_BOARD_TOPOLOGY=""
     if payload="$(
         "$OUTPUT_HARDWARE_PYTHON" -m jasper.audio_hardware.usb_port_role \
             --reconcile-boot --env \
