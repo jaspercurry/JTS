@@ -544,7 +544,7 @@ def _patch_avahi_resolve(
         ({}, "ok", ""),
         ({"sys_hostname": ""}, "skipped", "REASON_HOSTNAME_UNREADABLE"),
         ({"have_binary": False}, "skipped", "REASON_AVAHI_RESOLVE_MISSING"),
-        ({"resolve": ("", 1)}, "skipped", "REASON_AVAHI_RESOLVE_FAILED"),
+        ({"resolve": ("", 1)}, "warn", "REASON_AVAHI_RESOLVE_FAILED"),
         (
             {"resolve": ("jts.local", 0)},
             "warn",
@@ -566,8 +566,10 @@ def test_check_hostname_avahi_consistency_verdicts(
 ):
     """Two boxes on one name breaks `<hostname>.local` for the whole
     household, so the collision fails; the arms that resolved nothing at all
-    (no hostname, no avahi-utils, a daemon that is not advertising yet) skip,
-    and output that arrived but did not parse is still an observation."""
+    (no hostname, no avahi-utils) skip, a daemon that answered but could not
+    resolve our own name warns (an observation, not nothing — check_avahi_daemon
+    only catches not-found/inactive, not this), and output that arrived but
+    did not parse is still an observation."""
     _patch_avahi_resolve(monkeypatch, **kwargs)
 
     r = doctor_network.check_hostname_avahi_consistency()
@@ -631,7 +633,7 @@ def test_check_wifi_recover_timer_no_systemctl_skips(monkeypatch):
     [
         ({}, "ok", ""),
         # A collision means avahi renamed us: discovery is broken for the
-        # household until the name is unique, so it fails.
+        # household until the name is unique, so a fresh snapshot fails.
         (
             {"collision": "1", "drift": "1", "avahi": "jts3-2.local"},
             "fail",
@@ -662,6 +664,25 @@ def test_check_identity_coherence_discloses_a_stale_snapshot(monkeypatch, tmp_pa
 
     assert r.status == "ok"
     assert r.reason == doctor_network.REASON_IDENTITY_SNAPSHOT_STALE
+
+
+def test_check_identity_coherence_stale_collision_warns(monkeypatch, tmp_path):
+    """A collision on a stale snapshot (the reconciler timer may be dead)
+    can't be asserted live, so it warns instead of failing — same reason,
+    stale note still folded into the detail."""
+    old = (datetime.now(timezone.utc) - timedelta(hours=2)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    _write_identity_env(
+        tmp_path, monkeypatch,
+        collision="1", avahi="jts3-2.local", checked_at=old,
+    )
+
+    r = doctor_network.check_identity_coherence()
+
+    assert r.status == "warn"
+    assert r.reason == doctor_network.REASON_IDENTITY_COLLISION
+    assert "min old" in r.detail
 
 
 @pytest.mark.parametrize(

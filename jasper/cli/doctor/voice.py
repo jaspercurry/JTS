@@ -224,7 +224,7 @@ def check_provider_importable() -> CheckResult:
         )
     if not state.configured:
         return CheckResult(
-            "voice provider imports", "skipped",
+            "voice provider imports", "ok",
             "no provider configured — pick one in the /voice wizard",
             reason=REASON_PROVIDER_IMPORTS_NOT_CONFIGURED,
         )
@@ -437,6 +437,8 @@ def check_spend_cap(cfg: Config) -> CheckResult:
         # create or re-own it and lock the owning daemon out of its own DB.
         # household_usage_reader opens every member read_only.
         tuning_db = tuning_usage_db_path(cfg.usage_db)
+        # Household spend folds in jasper-correction-web's paid tuning calls;
+        # the note says whether that sibling ledger exists yet.
         ledger_note = (
             "includes tuning ledger"
             if os.path.exists(tuning_db)

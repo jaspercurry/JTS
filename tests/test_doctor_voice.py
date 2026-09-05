@@ -146,29 +146,40 @@ def test_provider_key_adjudicates_the_selection_by_status(
 
 
 @pytest.mark.parametrize(
-    "state, reason",
+    "state, status, reason",
     [
-        (_state("unreadable"), doctor_voice.REASON_PROVIDER_IMPORTS_UNDETERMINED),
         (
-            _state("invalid", raw="nope"),
+            _state("unreadable"), "skipped",
             doctor_voice.REASON_PROVIDER_IMPORTS_UNDETERMINED,
         ),
-        (_state("missing"), doctor_voice.REASON_PROVIDER_IMPORTS_NOT_CONFIGURED),
-        (_state("unset"), doctor_voice.REASON_PROVIDER_IMPORTS_NOT_CONFIGURED),
+        (
+            _state("invalid", raw="nope"), "skipped",
+            doctor_voice.REASON_PROVIDER_IMPORTS_UNDETERMINED,
+        ),
+        (
+            _state("missing"), "ok",
+            doctor_voice.REASON_PROVIDER_IMPORTS_NOT_CONFIGURED,
+        ),
+        (
+            _state("unset"), "ok",
+            doctor_voice.REASON_PROVIDER_IMPORTS_NOT_CONFIGURED,
+        ),
     ],
     ids=["unreadable", "invalid", "file-missing", "unset"],
 )
-def test_provider_imports_skips_when_it_probed_nothing(monkeypatch, state, reason):
-    """No selection means no import was attempted, so the row observed
-    nothing — never a second verdict on the selection check_provider_key
-    already adjudicates."""
+def test_provider_imports_status_when_it_probed_nothing(
+    monkeypatch, state, status, reason
+):
+    """An undetermined selection defers to check_provider_key's verdict, so
+    it never offers a second opinion (skipped). No provider configured yet
+    is operator intent, not a finding (ok)."""
     monkeypatch.setattr(
         doctor_voice, "read_active_provider_state", lambda: state,
     )
 
     r = doctor_voice.check_provider_importable()
 
-    assert r.status == "skipped"
+    assert r.status == status
     assert r.reason == reason
 
 

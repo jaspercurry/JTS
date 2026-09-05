@@ -528,10 +528,10 @@ def check_hostname_avahi_consistency() -> CheckResult:
     # -4: IPv4 only. Output is one line: `<hostname>.local <IP>`.
     proc = _run([bin_path, "-4", f"{sys_hostname}.local"], timeout=4.0)
     if proc.returncode != 0:
-        # Nothing observed here — check_avahi_daemon already reports the
-        # root cause if the daemon isn't running.
+        # Don't fail — check_avahi_daemon already reports the root
+        # cause if the daemon isn't running.
         return CheckResult(
-            label, "skipped",
+            label, "warn",
             f"avahi-resolve-host-name {sys_hostname}.local exited "
             f"{proc.returncode}. Likely avahi-daemon not yet "
             f"advertising us — check_avahi_daemon reports the cause.",
@@ -671,8 +671,11 @@ def check_identity_coherence() -> CheckResult:
         f"configured={snap['configured_hostname']}"
     )
     if snap["status"] == "collision":
+        # A fresh snapshot is a live assertion: fail. A stale one (the
+        # reconciler timer may be dead) can't be asserted live — warn,
+        # same reason, stale_note already folded into the detail below.
         return CheckResult(
-            label, "fail",
+            label, "warn" if stale_note else "fail",
             f"Avahi renamed this speaker: {names}. Another device on the "
             "LAN is using your hostname. The management UI stays "
             f"reachable at http://{snap['avahi_hostname']}/ ; pick a "
