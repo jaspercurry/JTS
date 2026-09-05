@@ -272,6 +272,18 @@ class Evidence:
 
         return self.get("output_topology", load_output_topology)
 
+    def output_topology_strict(self) -> Any:
+        """The fail-closed topology load (ADR-0233 rule 4), read once per run.
+
+        Distinct from :meth:`output_topology`: that variant fails soft to an
+        empty draft, which a safety-authorizing caller must not do — it needs
+        to see (and fail on) a corrupt/unreadable saved topology, so
+        ``OutputTopologyError`` propagates here uncaught.
+        """
+        from ...output_topology import load_output_topology_strict
+
+        return self.get("output_topology_strict", load_output_topology_strict)
+
     def mic_presence(self) -> Any:
         from ...mic_presence import read_mic_presence
 

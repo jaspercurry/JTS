@@ -44,6 +44,7 @@ MODULE_ROSTER: tuple[str, ...] = (
     "env",
     "voice",
     "audio",
+    "active_speaker",
     "boot_config",
     "wake",
     "renderers",

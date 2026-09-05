@@ -315,7 +315,7 @@ orchestration + per-rung retention, (d) LT/subsonic graph emission,
 | `jasper/audio_measurement/deconv.py` | `harmonic_impulse_offsets(meta, orders)` + `extract_harmonic_windows(full_ir, meta, orders)` — new consumers of the *existing* unwindowed IR |
 | `jasper/audio_measurement/analysis.py` | `compression_curve()`, `thd_curve()`, `tracking_error()` (§7.5) |
 | `jasper/control/state_aggregate.py` | `/state.bass_extension` section |
-| `jasper/cli/doctor/audio.py` | `check_bass_extension_profile` (flat, one `CheckResult`) |
+| `jasper/cli/doctor/active_speaker.py` | `check_bass_extension_profile` (flat, one `CheckResult`) |
 
 ### Genuinely new (the build)
 
