@@ -13,4 +13,4 @@
 // http.js additionally exports postJSON(); import it directly from the shared
 // module when a new caller needs a JSON POST.
 
-export { csrfHeaders, jsonHeaders, getJSON } from "../../shared/js/http.js";
+export { csrfHeaders, jsonHeaders, getJSON, startPolling } from "../../shared/js/http.js";

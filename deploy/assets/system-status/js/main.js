@@ -6,24 +6,18 @@
 // Status views in-document, and polls /system/snapshot once for the active
 // view. Mounts into <div id="app">.
 //
-// The poll loop self-schedules (setTimeout after each completes) so a slow
-// response can't overlap the next tick, and it separates a transport failure
-// (→ "Disconnected", body dimmed) from rendering: a render failure is isolated
-// + logged per-section inside update(), so one bad field never blanks the page
-// or masquerades as a disconnect.
+// The shared poller owns the cadence and never overlaps a slow response. This
+// file separates a transport failure (→ "Disconnected", body dimmed) from
+// rendering: a render failure is isolated + logged per-section inside update(),
+// so one bad field never blanks the page or masquerades as a disconnect.
 
 import { buildSystemPanel, update } from "./views.js";
 import { buildAudioPanel, updateAudio } from "./audio-view.js";
 import { header } from "./components.js";
-import { getJSON } from "./api.js";
+import { getJSON, startPolling } from "./api.js";
 import { postAction, setQuality, setLatencyMode, runDiagnostics } from "./actions.js";
 
 const POLL_MS = 5000;
-// A hidden tab (background window, phone in a pocket) still costs a full
-// snapshot every 5 s — ~125 KB and ~80 ms of Pi CPU per poll, forever. Slow
-// right down instead of stopping outright, and come current the moment the
-// tab is looked at again. Same idiom as the crossover wizard's schedulePoll.
-const HIDDEN_POLL_MS = 60000;
 const root = document.getElementById("app");
 const initialView = root.dataset.view === "audio" ? "audio" : "system";
 
@@ -135,58 +129,21 @@ window.addEventListener("popstate", () => {
   activateView(viewFromPath(), { announce: true });
 });
 
-let pollTimer = null;
-let pollInFlight = false;
-let wakeRequested = false;
-
-function schedulePoll(delayMs = POLL_MS) {
-  if (pollTimer !== null) clearTimeout(pollTimer);
-  const hidden = document.visibilityState === "hidden";
-  pollTimer = setTimeout(() => {
-    pollTimer = null;
-    poll();
-  }, hidden ? Math.max(delayMs, HIDDEN_POLL_MS) : delayMs);
-}
-
 async function poll() {
-  // One chain only: a wake arriving mid-fetch must not start a second poller
-  // alongside the one already running — it hands the request to the chain in
-  // flight, which comes current as soon as it lands.
-  if (pollInFlight) {
-    wakeRequested = true;
+  let snap;
+  try {
+    snap = await getJSON("/system/data.json");
+  } catch (e) {
+    disconnectMessage = "Disconnected (" + e.message + "). Retrying…";
+    applyCurrentState();
     return;
   }
-  pollInFlight = true;
-  try {
-    let snap;
-    try {
-      snap = await getJSON("/system/data.json");
-    } catch (e) {
-      disconnectMessage = "Disconnected (" + e.message + "). Retrying…";
-      applyCurrentState();
-      return;
-    }
-    // Fetch succeeded: a render failure is isolated + logged per-section
-    // inside update(), so it can't masquerade as a disconnect here.
-    latestSnapshot = snap;
-    disconnectMessage = null;
-    document.body.classList.remove("stale");
-    updateEntry(activeEntry, snap);
-  } finally {
-    pollInFlight = false;
-    const wake = wakeRequested;
-    wakeRequested = false;
-    schedulePoll(wake ? 0 : POLL_MS);
-  }
+  // Fetch succeeded: a render failure is isolated + logged per-section inside
+  // update(), so it can't masquerade as a disconnect here.
+  latestSnapshot = snap;
+  disconnectMessage = null;
+  document.body.classList.remove("stale");
+  updateEntry(activeEntry, snap);
 }
 
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") {
-    // Re-apply the standing cadence — schedulePoll stretches it itself.
-    schedulePoll();
-    return;
-  }
-  schedulePoll(0);
-});
-
-poll();
+startPolling(poll, { intervalMs: POLL_MS });

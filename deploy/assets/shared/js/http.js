@@ -210,3 +210,59 @@ export async function postControlAction(path) {
   }
   return { ok: r.ok, status: r.status, body };
 }
+
+// --- polling ---------------------------------------------------------------
+// One scheduler for every live surface. A backgrounded tab (a phone in a
+// pocket) otherwise keeps a 1 GB Pi answering the same request every few
+// seconds for as long as the tab exists. A hidden tab slows to
+// hiddenIntervalMs instead of stopping, and comes current the moment it is
+// looked at again.
+const HIDDEN_INTERVAL_MS = 60000;
+
+// Run fn() now, then every intervalMs until the returned stop() is called.
+// Ticks never overlap (fn is awaited) and a rejected fn is retried on the next
+// tick, so one failed request can't end the poll.
+export function startPolling(fn, { intervalMs, hiddenIntervalMs = HIDDEN_INTERVAL_MS } = {}) {
+  let timer = null;
+  let running = false;
+  let stopped = false;
+  let wakePending = false;
+  const hidden = () => document.visibilityState === "hidden";
+
+  function schedule(delayMs) {
+    if (timer !== null) clearTimeout(timer);
+    if (stopped) return;
+    timer = setTimeout(tick, hidden() ? Math.max(delayMs, hiddenIntervalMs) : delayMs);
+  }
+
+  async function tick() {
+    timer = null;
+    // A tick landing mid-run is handed to the run in flight, which comes
+    // current the moment it settles instead of waiting out another interval.
+    if (running) {
+      wakePending = true;
+      return;
+    }
+    running = true;
+    try {
+      await fn();
+    } catch (err) {
+      console.error("poll failed", err);
+    }
+    running = false;
+    const soon = wakePending;
+    wakePending = false;
+    schedule(soon ? 0 : intervalMs);
+  }
+
+  function onVisibility() { schedule(hidden() ? intervalMs : 0); }
+
+  document.addEventListener("visibilitychange", onVisibility);
+  tick();
+  return function stop() {
+    stopped = true;
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+    document.removeEventListener("visibilitychange", onVisibility);
+  };
+}

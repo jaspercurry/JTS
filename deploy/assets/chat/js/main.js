@@ -4,12 +4,12 @@
 
 // main.js — /chat/ dashboard entry point.
 //
-// Reads the CSRF meta tag like the other migrated pages, fetches data.json via
-// the shared HTTP helper, and self-schedules polling without overlapping
-// requests. Rendering lives in views.js and uses text nodes only.
+// Reads the CSRF meta tag like the other migrated pages and fetches data.json
+// via the shared HTTP helper, on the shared poller. Rendering lives in views.js
+// and uses text nodes only.
 
 import { jtsAlert, jtsConfirm } from "/assets/shared/js/dialog.js";
-import { getJSON, postJSON } from "./api.js";
+import { getJSON, postJSON, startPolling } from "./api.js";
 import {
   buildPage,
   dateValueToSince,
@@ -27,7 +27,6 @@ const state = {
   lastError: "",
 };
 
-let pollTimer = null;
 let loading = false;
 let refreshPending = false;
 let refs = null;
@@ -36,12 +35,12 @@ const handlers = {
   applyFilter(value) {
     state.since = dateValueToSince(value);
     syncUrl();
-    refreshSoon();
+    refresh();
   },
   clearFilter() {
     state.since = "";
     syncUrl();
-    refreshSoon();
+    refresh();
   },
   async showErrorDetails() {
     await jtsAlert(state.lastError || "No error details are available.", {
@@ -52,10 +51,10 @@ const handlers = {
     setBusy(true);
     try {
       await postJSON("capture", { enabled: !!enabled });
-      refreshSoon();
+      refresh();
     } catch (err) {
       await jtsAlert(errorMessage(err), { title: "Conversation history" });
-      refreshSoon();
+      refresh();
     } finally {
       setBusy(false);
     }
@@ -69,7 +68,7 @@ const handlers = {
     setBusy(true);
     try {
       await postJSON("clear", {});
-      refreshSoon();
+      refresh();
     } catch (err) {
       await jtsAlert(errorMessage(err), { title: "Conversation history" });
     } finally {
@@ -82,7 +81,7 @@ refs = buildPage(root, handlers, {
   initialDate: sinceToDateValue(state.since),
 });
 
-refreshSoon();
+startPolling(refresh, { intervalMs: POLL_MS });
 
 function dataPath() {
   const params = new URLSearchParams();
@@ -98,11 +97,6 @@ function syncUrl() {
   window.history.replaceState(null, "", url);
 }
 
-function refreshSoon() {
-  if (pollTimer !== null) window.clearTimeout(pollTimer);
-  pollTimer = window.setTimeout(refresh, 0);
-}
-
 function setBusy(value) {
   if (!refs) return;
   if (refs.captureToggle) refs.captureToggle.disabled = !!value;
@@ -115,10 +109,6 @@ function errorMessage(err) {
 }
 
 async function refresh() {
-  if (pollTimer !== null) {
-    window.clearTimeout(pollTimer);
-    pollTimer = null;
-  }
   if (loading) {
     refreshPending = true;
     return;
@@ -140,9 +130,7 @@ async function refresh() {
     loading = false;
     if (refreshPending) {
       refreshPending = false;
-      refreshSoon();
-    } else {
-      pollTimer = window.setTimeout(refresh, POLL_MS);
+      return refresh();
     }
   }
 }
