@@ -47,10 +47,9 @@ def _write_token(token: str) -> None:
     created if missing (matches the wizard-file pattern in
     jasper/cli/airplay_mode.py)."""
     path = control_token.TOKEN_FILE
-    # WS1 Phase 3b-2: publish 0640 with the token directory's group
-    # (normally jasper). A root-run rotation in /var/lib/jasper would
-    # otherwise create root:root 0640, which the non-root jasper-control
-    # cannot read, silently failing the mandatory gate open.
+    # Publish 0640 with the token directory's group (normally jasper). A root-run
+    # rotation in /var/lib/jasper would otherwise create root:root 0640, which the
+    # non-root jasper-control cannot read, silently failing the mandatory gate open.
     atomic_write_text(path, token + "\n", mode=0o640)
 
 

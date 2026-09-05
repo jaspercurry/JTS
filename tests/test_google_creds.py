@@ -114,7 +114,7 @@ def test_registry_remove_updates_default():
 def test_default_token_path_blocks_traversal():
     p = default_token_path_for("alice/../etc/passwd")
     assert "/etc/passwd" not in p
-    # WS1 Phase 4a — the token tree moved into the jasper-secrets compartment.
+    # The token tree lives in the jasper-secrets compartment.
     assert p.startswith("/var/lib/jasper-secrets/google/tokens/")
     assert p.endswith(".json")
 
@@ -154,10 +154,9 @@ def test_save_token_writes_mode_0640(tmp_path):
         scopes=["https://www.googleapis.com/auth/gmail.readonly"],
     )
     st = os.stat(path)
-    # 0o640 (WS1 Phase 3b): group-`jasper` read so the now-non-root jasper-voice
-    # can read its OAuth refresh token after systemd's StateDirectory
-    # recursive-chown re-owns the file to another jasper daemon. NO world read
-    # (the token is still a secret). Per-daemon isolation is Phase 4.
+    # 0o640: group-`jasper-secrets` read so jasper-voice + jasper-web can read this
+    # OAuth refresh token — the setgid jasper-secrets dir outside StateDirectory,
+    # not a StateDirectory chown. NO world read (the token is still a secret).
     assert stat.S_IMODE(st.st_mode) == 0o640
     payload = json.loads(Path(path).read_text())
     # The CLIENT_ID/SECRET fields are intentionally NOT persisted —
@@ -175,12 +174,11 @@ _ENV_MIGRATIONS_SH = (
 
 
 def test_install_creates_google_dir_setgid():
-    """The Google tree's group access (so non-root voice + web can read/write
-    OAuth tokens) is set authoritatively by install as root, setgid so tokens the
-    /google/ wizard writes inherit the group directly. WS1 Phase 4a moved it into
-    the jasper-secrets compartment at mode 2770 group jasper-secrets (was the
-    broad 2750 group jasper). Guard the setgid + group so the bit can't be
-    silently dropped — which would re-break a freshly linked account."""
+    """The Google tree's group access (so non-root voice + web can read/write OAuth tokens) is
+    set authoritatively by install as root, setgid so tokens the /google/ wizard writes
+    inherit the group directly. It lives in the jasper-secrets compartment at mode 2770 group
+    jasper-secrets (was the broad 2750 group jasper). Guard the setgid + group so a
+    silently dropped bit can't leave a freshly linked account's tokens unreadable."""
     sh = _ENV_MIGRATIONS_SH.read_text()
     assert "install -d -m 2770 -g jasper-secrets" in sh and "google" in sh, (
         "env-migrations.sh must create the jasper-secrets Google tree setgid + "

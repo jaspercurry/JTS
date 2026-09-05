@@ -40,7 +40,7 @@ no fragile name-matching.
                     account's spotipy client
 ```
 
-Secret state lives in the WS1 Phase 4b integration-secret compartment:
+Secret state lives in the integration-secret compartment:
 ```
 /var/lib/jasper-intsecrets/spotify/
     accounts.json              registry index

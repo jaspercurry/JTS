@@ -2,8 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""WS1 Phase 3b-3 — pin the polkit rule that authorizes the non-root
-`jasper-web` service user's NetworkManager access.
+"""Pin the polkit rule that authorizes non-root `jasper-web`'s NetworkManager access.
 
 Once jasper-web drops to a non-root user, the /wifi/ wizard's nmcli operations
 (scan / connect / forget / radio toggle / saved-PSK re-read) are mediated by
