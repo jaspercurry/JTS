@@ -82,10 +82,7 @@ def check_camilla_service() -> CheckResult:
 def _camilla_statefile() -> Path:
     """The statefile behind :meth:`Evidence.camilla_config_path`, from the same
     single read (same memo key)."""
-    # Imported here, not at module scope, so this module — a `--core` member —
-    # does not drag `correction` (and its active-speaker/session-volume graph)
-    # into a post-deploy run that has no correction row. Same reason
-    # `Evidence.camilla_config_path` reaches for it this way.
+    # Lazy: at module scope this drags `correction` into every `--core` run.
     from .correction import _active_camilla_config_path
 
     statefile, _config_path = evidence.get(

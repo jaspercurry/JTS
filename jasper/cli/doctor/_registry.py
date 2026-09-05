@@ -25,11 +25,8 @@ can run.
   opens while still allowing the rest of the subprocess-heavy doctor to
   run concurrently.
 
-- **``core=True`` puts a check in ``--core``**, the post-deploy subset
-  that replaces ``jasper-deploy-health`` (ADR-0233 rule 5). Check modules
-  are imported on demand by :func:`registered_checks`, so a ``--core`` run
-  pays only for ``CORE_MODULES`` — the point of the subset on a 415 MB
-  Zero 2 W.
+- **``core=True`` puts a check in ``--core``** (ADR-0233 rule 5); a
+  ``--core`` run imports only ``CORE_MODULES``.
 """
 from __future__ import annotations
 
@@ -75,16 +72,15 @@ _ROSTER_POSITION: dict[str, int] = {
 }
 
 # The only modules a ``--core`` run imports: those declaring a ``core=True``
-# check. A module added here that contributes no core row costs the deploy
-# gate its import for nothing, which is what a registry test pins.
-CORE_MODULES: tuple[str, ...] = (
+# check.
+CORE_MODULES: frozenset[str] = frozenset({
     "renderers",
     "web",
     "resilience",
     "audio_runtime_fanin",
     "audio_runtime_camilla",
     "audio_runtime_outputd",
-)
+})
 
 STREAMBOX_OMITTED_DOCTOR_MODULES = frozenset({
     "voice",
@@ -172,25 +168,15 @@ def doctor_check(
     return _register
 
 
-def import_check_modules(modules: tuple[str, ...]) -> None:
-    """Import ``modules`` from this package so their decorators register.
-
-    Idempotent — a second call is a ``sys.modules`` hit."""
-    for name in modules:
-        importlib.import_module(f".{name}", __package__)
-
-
 def registered_checks(*, core_only: bool = False) -> list[RegisteredCheck]:
     """All registered checks in canonical order, importing what it needs.
-
-    ``core_only`` narrows both halves: only ``CORE_MODULES`` are imported,
-    and only their ``core=True`` entries are returned.
 
     Modules follow ``MODULE_ROSTER``; within a module, source order. The
     sort is stable over the append-ordered registry, so the sequence is
     independent of the order in which the per-domain modules happened to
     be imported.
     """
-    import_check_modules(CORE_MODULES if core_only else MODULE_ROSTER)
+    for name in CORE_MODULES if core_only else MODULE_ROSTER:
+        importlib.import_module(f".{name}", __package__)
     entries = [c for c in _REGISTRY if c.core] if core_only else list(_REGISTRY)
     return sorted(entries, key=lambda c: _ROSTER_POSITION[c.module])

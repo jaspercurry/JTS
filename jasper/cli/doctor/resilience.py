@@ -12,10 +12,6 @@ from typing import Any
 
 from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
 from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
-from ...install_profile import (
-    FULL_INSTALL_PROFILE,
-    STREAMBOX_INSTALL_PROFILE,
-)
 from ...service_units import unit_unstable
 from ...voice.input_presence import voice_parked_no_mic
 from ... import outputd_failure_reconcile_state
@@ -37,9 +33,6 @@ REASON_UNITS_FAILED_OR_UNSTABLE = "units_failed_or_unstable"
 REASON_UNITS_RESTARTED = "units_restarted"
 
 REASON_REQUIRED_UNIT_INACTIVE = "required_unit_inactive"
-
-REASON_ACCESSORY_PATH_UNOBSERVED = "accessory_reconcile_path_unobserved"
-REASON_ACCESSORY_PATH_INACTIVE = "accessory_reconcile_path_inactive"
 
 REASON_VOICE_UNIT_NOT_FULL_PROFILE = "voice_unit_not_full_profile"
 REASON_VOICE_UNIT_UNOBSERVED = "voice_unit_unobserved"
@@ -127,37 +120,27 @@ def check_service_runtime_state() -> CheckResult:
     )
 
 
-_BOTH_PROFILES = frozenset({FULL_INSTALL_PROFILE, STREAMBOX_INSTALL_PROFILE})
-
-# Units whose CLEANLY `inactive` state is a fault, per install profile. The
-# per-profile column is the fact, not decoration: the installer has a separate
-# unit path per tier, so what a tier requires is a tier-level answer.
-#
-# NOT here — each already owns its own inactive verdict, and two rows about
-# one down unit is worse than one: jasper-fanin, jasper-camilla
-# (`_service_state_failure`), jasper-outputd
-# (`check_outputd_failure_reconcile_park`), jasper-mux
-# (`renderers.check_jasper_mux`), jasper-voice (below), the source renderers
-# (`renderers`, which read household intent first).
-_REQUIRED_ACTIVE_UNITS: dict[str, frozenset[str]] = {
-    "nginx.service": _BOTH_PROFILES,
-    "jasper-control.service": _BOTH_PROFILES,
-    "jasper-input.service": _BOTH_PROFILES,
-}
+# Units both install profiles install and enable, whose cleanly `inactive`
+# state no other row reports. One down unit is one row, so a unit whose own
+# check already names it stays out: nginx and jasper-control belong to
+# `web.check_management_surface`, and the audio-path daemons to
+# `_service_state_failure`, `check_outputd_failure_reconcile_park`,
+# `renderers` and `check_voice_unit_running` below.
+_REQUIRED_ACTIVE_UNITS: tuple[str, ...] = (
+    "jasper-input.service",
+    # A `.path` unit reads `active` while it WAITS, so a stopped one is
+    # `inactive`, never `failed`.
+    "jasper-accessory-reconcile.path",
+)
 
 
 @doctor_check(core=True)
 def check_required_units_active() -> CheckResult:
-    """Every unit this install profile requires is running.
+    """Every required unit is running.
 
-    The gap this closes: ``check_service_runtime_state`` judges only
-    ``failed`` and stuck-mid-transition units, so a cleanly ``inactive``
-    nginx, jasper-control or jasper-input — stopped by hand, never enabled,
-    or an install that did not finish — produced no row while the management
-    UI, the control daemon or the HID accessory bridge was simply gone.
-
-    ``failed`` and stuck-mid-transition stay ``check_service_runtime_state``'s
-    row, so one down unit is one finding.
+    The gap: ``check_service_runtime_state`` judges only ``failed`` and
+    stuck-mid-transition units, so a cleanly ``inactive`` one — stopped by
+    hand, never enabled, an install that did not finish — produced no row.
     """
     label = "required units active"
     states = evidence.unit_states()
@@ -166,19 +149,11 @@ def check_required_units_active() -> CheckResult:
             label, "skipped", "systemctl unavailable — skipped (not Linux?)",
             reason=REASON_SYSTEMCTL_UNAVAILABLE,
         )
-    profile = (
-        STREAMBOX_INSTALL_PROFILE if install_profile_is_streambox()
-        else FULL_INSTALL_PROFILE
-    )
-    required = [
-        unit for unit, profiles in _REQUIRED_ACTIVE_UNITS.items()
-        if profile in profiles
-    ]
     down: list[str] = []
-    for unit in required:
+    for unit in _REQUIRED_ACTIVE_UNITS:
         state = states.get(unit) or {}
         active = str(state.get("active_state") or "unknown")
-        if active in ("active", "failed") or unit_unstable(state):
+        if active != "inactive":
             continue
         load_state = str(state.get("load_state") or "unknown")
         down.append(
@@ -189,55 +164,14 @@ def check_required_units_active() -> CheckResult:
         return CheckResult(
             label, "fail",
             ", ".join(down)
-            + f" — required on the {profile} profile. Run `systemctl status "
-            "<unit>`; a not-found unit means the install did not finish, so "
-            "re-run install.sh.",
+            + " — required and stopped. Run `systemctl status <unit>`; a "
+            "not-found unit means the install did not finish, so re-run "
+            "install.sh.",
             reason=REASON_REQUIRED_UNIT_INACTIVE,
         )
     return CheckResult(
         label, "ok",
-        f"{len(required)} units the {profile} profile requires are active",
-    )
-
-
-_ACCESSORY_RECONCILE_PATH_UNIT = "jasper-accessory-reconcile.path"
-
-
-@doctor_check(core=True)
-def check_accessory_reconcile_path() -> CheckResult:
-    """The accessory refresh watcher is armed.
-
-    ``jasper-accessory-reconcile.path`` is what makes accessory pairing
-    plug-and-play: it watches the pairing trigger and starts the reconcile
-    service that republishes the accessory mic sources and, on a streambox,
-    starts or stops jasper-voice (ADR-0217). A ``.path`` unit reads
-    ``active`` while it WAITS, so a stopped or never-enabled one is quietly
-    ``inactive`` and never ``failed`` — every accessory refresh is dropped
-    until the next reboot, and nothing else on the box says so.
-    """
-    label = "accessory refresh path"
-    state = evidence.unit_state(_ACCESSORY_RECONCILE_PATH_UNIT)
-    if state is None or str(state.get("load_state") or "") != "loaded":
-        return CheckResult(
-            label, "skipped",
-            f"{_ACCESSORY_RECONCILE_PATH_UNIT} not observable — systemctl "
-            "unavailable, or the unit is not installed",
-            reason=REASON_ACCESSORY_PATH_UNOBSERVED,
-        )
-    active = str(state.get("active_state") or "unknown")
-    if active == "active":
-        return CheckResult(
-            label, "ok",
-            f"{_ACCESSORY_RECONCILE_PATH_UNIT} is active (watching for "
-            "accessory refresh requests)",
-        )
-    return CheckResult(
-        label, "fail",
-        f"{_ACCESSORY_RECONCILE_PATH_UNIT} is {active}, so accessory pairing "
-        "changes never reach the reconciler and a remote paired now would do "
-        f"nothing. Run: sudo systemctl enable --now "
-        f"{_ACCESSORY_RECONCILE_PATH_UNIT}",
-        reason=REASON_ACCESSORY_PATH_INACTIVE,
+        f"{len(_REQUIRED_ACTIVE_UNITS)} required units are active",
     )
 
 
@@ -248,11 +182,9 @@ _VOICE_UNIT = "jasper-voice.service"
 def check_voice_unit_running() -> CheckResult:
     """jasper-voice is up on a box whose speaker should be able to answer.
 
-    The gap this closes: ``check_service_runtime_state`` counts only
-    ``failed`` and stuck-mid-transition units, so a cleanly ``inactive``
-    jasper-voice — stopped by hand, never enabled, or parked by
-    ``RestartPreventExitStatus=66 78`` (no provider configured, mic
-    unopenable) — produced no row at all while the speaker could not answer.
+    The gap: ``check_service_runtime_state`` counts only ``failed`` and
+    stuck-mid-transition units, so an ``inactive`` jasper-voice — including
+    one parked by ``RestartPreventExitStatus=66 78`` — produced no row.
 
     ``speaker_silent`` is deliberately NOT set. That flag means the speaker
     emits nothing; music still plays with the voice daemon down. What is

@@ -127,6 +127,15 @@ def test_runtime_state_units_track_the_coupling_reconciler_oneshot():
 # ------------------------------------------------ check_required_units_active
 
 
+def test_required_units_are_all_tracked_for_failed_state():
+    """The row defers every non-`inactive` state to check_service_runtime_state,
+    which reads only _RUNTIME_STATE_UNITS — a required unit missing from that
+    tuple falls through both rows when it fails."""
+    assert set(resilience._REQUIRED_ACTIVE_UNITS) <= set(
+        _shared._RUNTIME_STATE_UNITS
+    )
+
+
 @pytest.mark.parametrize(
     "overrides, status, reason",
     [
@@ -140,26 +149,26 @@ def test_runtime_state_units_track_the_coupling_reconciler_oneshot():
         ),
         # An install that did not finish reads inactive/not-found, never failed.
         (
-            {"nginx.service": {
+            {"jasper-accessory-reconcile.path": {
                 "active_state": "inactive", "load_state": "not-found",
             }},
             "fail", resilience.REASON_REQUIRED_UNIT_INACTIVE,
         ),
-        # `failed` and stuck-mid-transition belong to check_service_runtime_state
-        # — one down unit is one finding, not two.
+        # Every other state is someone else's: `failed` belongs to
+        # check_service_runtime_state (one down unit is one finding, not two),
+        # and a healthy unit mid-reload is no finding at all.
         (
-            {"jasper-control.service": {"active_state": "failed"}}, "ok", "",
+            {"jasper-input.service": {"active_state": "failed"}}, "ok", "",
         ),
         (
-            {"jasper-control.service": {"active_state": "activating"}}, "ok", "",
+            {"jasper-input.service": {"active_state": "reloading"}}, "ok", "",
         ),
     ],
-    ids=["all-active", "inactive", "not-found", "failed", "activating"],
+    ids=["all-active", "inactive", "not-found", "failed", "reloading"],
 )
 def test_check_required_units_active_verdicts(
     monkeypatch, overrides, status, reason,
 ):
-    monkeypatch.setattr(_shared, "read_install_profile", lambda: "full")
     monkeypatch.setattr(
         _evidence, "read_unit_states", _make_unit_states_fake(overrides),
     )
@@ -178,52 +187,6 @@ def test_check_required_units_active_skips_without_systemctl(monkeypatch):
 
     assert (result.status, result.reason) == (
         "skipped", _shared.REASON_SYSTEMCTL_UNAVAILABLE,
-    )
-
-
-# ---------------------------------------------- check_accessory_reconcile_path
-
-
-@pytest.mark.parametrize(
-    "unit, status, reason",
-    [
-        # A .path unit reads `active` while it WAITS; that is the armed state.
-        ({"active_state": "active"}, "ok", ""),
-        # Stopped or never enabled: every accessory refresh is dropped, and the
-        # unit never reaches `failed`, so nothing else on the box says so.
-        (
-            {"active_state": "inactive"},
-            "fail", resilience.REASON_ACCESSORY_PATH_INACTIVE,
-        ),
-        (
-            {"active_state": "inactive", "load_state": "not-found"},
-            "skipped", resilience.REASON_ACCESSORY_PATH_UNOBSERVED,
-        ),
-    ],
-    ids=["armed", "not-armed", "not-installed"],
-)
-def test_check_accessory_reconcile_path_verdicts(
-    monkeypatch, unit, status, reason,
-):
-    monkeypatch.setattr(
-        _evidence, "read_unit_states",
-        _make_unit_states_fake({"jasper-accessory-reconcile.path": unit}),
-    )
-
-    result = resilience.check_accessory_reconcile_path()
-
-    assert (result.status, result.reason) == (status, reason)
-
-
-def test_check_accessory_reconcile_path_skips_without_systemctl(monkeypatch):
-    monkeypatch.setattr(
-        _evidence, "read_unit_states", _make_unit_states_fake(unavailable=True),
-    )
-
-    result = resilience.check_accessory_reconcile_path()
-
-    assert (result.status, result.reason) == (
-        "skipped", resilience.REASON_ACCESSORY_PATH_UNOBSERVED,
     )
 
 
@@ -569,7 +532,6 @@ def test_check_supply_voltage_verdicts(monkeypatch, current, status, reason):
 @pytest.mark.parametrize(
     "check_name",
     [
-        "check_accessory_reconcile_path",
         "check_bootloop_guard",
         "check_required_units_active",
         "check_supervisor_runtime_snapshots",

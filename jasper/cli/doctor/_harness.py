@@ -171,9 +171,6 @@ async def run_async(
     results are gathered in registry order so CLI and dashboard output stay
     stable. ``exclusive_group=`` serializes hardware-sensitive probes within
     that lane while unrelated checks continue.
-
-    ``core_only`` runs the ``--core`` subset — same harness, same evidence
-    memo, same renderers, fewer rows and fewer imported modules.
     """
     evidence.reset()
     evidence.set_check_timeout(check_timeout)

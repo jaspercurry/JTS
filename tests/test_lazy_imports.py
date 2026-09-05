@@ -656,9 +656,9 @@ def test_doctor_import_does_not_load_portaudio() -> None:
 
 
 def test_doctor_core_scope_imports_only_its_own_modules() -> None:
-    """`--core` runs after every deploy on a 415 MB Zero 2 W, and paying for
-    the check modules it has no row from is the cost ADR-0233 rule 5 exists to
-    remove. A fresh interpreter, because this one has already imported them."""
+    """A `--core` run must not import a check module outside CORE_MODULES —
+    the modules it gets no row from are what the subset exists to skip. A
+    fresh interpreter, because this one has already imported them."""
     probe = (
         "import sys\n"
         "from jasper.cli.doctor._registry import (\n"
