@@ -162,6 +162,7 @@ from ._common import (
     begin_request,
     bonded_follower_active,
     bonded_follower_leader_web_url,
+    canonical_header,
     canonical_page,
     guard_mutating_request,
     guard_read_request,
@@ -1533,16 +1534,9 @@ def _follower_sound_html(csrf_token: str = "", *, page_mode: str) -> bytes:
         if page_mode == "eq"
         else ""
     )
+    header = canonical_header(title, back_id="back")
     body = f"""
-<header class="app-header">
-  <div class="app-header__row">
-    <a class="icon-button" id="back" href="/" aria-label="Home">
-      <svg class="ico" aria-hidden="true"><use href="#icon-back"></use></svg>
-    </a>
-    <h1 class="app-header__title">{title}</h1>
-    <span></span>
-  </div>
-</header>
+{header}
 <main class="page">
   <section class="info-card info-card--accent" role="note">
     <h2 class="section__title">Sound is controlled by the pair leader</h2>
@@ -1573,26 +1567,16 @@ def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
     if bonded_follower_active():
         return _follower_sound_html(csrf_token, page_mode=page_mode)
     title = "EQ" if page_mode == "eq" else "Sound setup"
+    eq_tabs_html = (
+        '<div><div class="segmented" role="tablist" aria-label="Sound source">'
+        '<button class="segmented__btn" id="tab-off" data-view="off" aria-pressed="true">Off</button>'
+        '<button class="segmented__btn" id="tab-saved" data-view="saved" aria-pressed="false">Saved</button>'
+        '<button class="segmented__btn" id="tab-draft" data-view="draft" aria-pressed="false">Draft</button>'
+        '</div></div>'
+    )
     editor_chrome = (
-        """
-<header class="app-header">
-  <div class="app-header__row">
-    <a class="icon-button" id="back" href="/" aria-label="Home">"""
-        + '<svg class="ico" aria-hidden="true"><use href="#icon-back"></use></svg>'
-        + """</a>
-    <h1 class="app-header__title">EQ</h1>
-    <span></span>
-  </div>
-  <div class="app-header__tabs">
-    <div>
-      <div class="segmented" role="tablist" aria-label="Sound source">
-        <button class="segmented__btn" id="tab-off" data-view="off" aria-pressed="true">Off</button>
-        <button class="segmented__btn" id="tab-saved" data-view="saved" aria-pressed="false">Saved</button>
-        <button class="segmented__btn" id="tab-draft" data-view="draft" aria-pressed="false">Draft</button>
-      </div>
-    </div>
-  </div>
-</header>
+        canonical_header(title, back_id="back", tabs_html=eq_tabs_html)
+        + """
 <main class="page">
   <section class="now-playing">
     <div class="row-between">
@@ -1610,16 +1594,8 @@ def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
 </main>
 """
         if page_mode == "eq"
-        else """
-<header class="app-header">
-  <div class="app-header__row">
-    <a class="icon-button" id="back" href="/" aria-label="Home">
-      <svg class="ico" aria-hidden="true"><use href="#icon-back"></use></svg>
-    </a>
-    <h1 class="app-header__title">Sound setup</h1>
-    <span></span>
-  </div>
-</header>
+        else canonical_header(title, back_id="back")
+        + """
 <main class="page">
   <div id="view-body"></div>
   <div class="status-line" id="status" role="status" aria-live="polite"></div>

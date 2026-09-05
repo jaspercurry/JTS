@@ -293,6 +293,8 @@ def canonical_header(
     back_href: str = "/",
     back_label: str = "Home",
     right_html: str = "",
+    back_id: str = "",
+    tabs_html: str = "",
 ) -> str:
     """The canonical sticky top bar (`.app-header`) for a migrated wizard.
 
@@ -304,19 +306,29 @@ def canonical_header(
     keeps the title optically centred, so the right slot defaults to an
     empty ``<span>`` placeholder rather than collapsing the grid.
 
+    ``back_id`` and ``tabs_html`` are opt-in, empty by default: the sole
+    consumer today is `sound_setup.py`'s EQ editor, whose JS binds the back
+    button by id and renders a segmented view strip that must stay inside
+    the sticky `.app-header` (`.app-header__tabs`, styled in `app.css`) to
+    keep scrolling with it.
+
     ``title`` / ``back_href`` / ``back_label`` are escaped; ``right_html``
-    is caller-trusted markup (it's the caller's job to escape any untrusted
-    strings it interpolates, exactly as with ``canonical_page``'s body)."""
+    and ``tabs_html`` are caller-trusted markup (it's the caller's job to
+    escape any untrusted strings it interpolates, exactly as with
+    ``canonical_page``'s body)."""
     right = right_html or "<span></span>"
+    back_id_attr = f' id="{html.escape(back_id, quote=True)}"' if back_id else ""
+    tabs = f'<div class="app-header__tabs">{tabs_html}</div>' if tabs_html else ""
     return (
         '<header class="app-header"><div class="app-header__row">'
-        f'<a class="icon-button" href="{html.escape(back_href, quote=True)}" '
+        f'<a class="icon-button"{back_id_attr} '
+        f'href="{html.escape(back_href, quote=True)}" '
         f'aria-label="{html.escape(back_label, quote=True)}">'
         '<svg class="ico" aria-hidden="true"><use href="#icon-back"></use></svg>'
         '</a>'
         f'<h1 class="app-header__title">{html.escape(title)}</h1>'
         f'{right}'
-        '</div></header>'
+        f'</div>{tabs}</header>'
     )
 
 

@@ -9,7 +9,8 @@
 // nodes through dom.js.
 
 import { h } from "/assets/shared/js/dom.js";
-import { actionButton, badge, header, livePill, titledCard } from "./components.js";
+import { appHeader } from "/assets/shared/js/chrome.js";
+import { actionButton, badge, livePill, titledCard } from "./components.js";
 
 const NO_USER_TRANSCRIPT = "No user transcript captured for this turn.";
 const NO_ASSISTANT_TRANSCRIPT = "No transcript for this turn.";
@@ -93,7 +94,7 @@ export function buildPage(root, handlers, opts = {}) {
   history.body.append(historyBody);
 
   root.replaceChildren(
-    header({ title: "Chat", backHref: "/" }),
+    appHeader({ title: "Chat history", backHref: "/" }),
     h(
       "main.app-main",
       null,
