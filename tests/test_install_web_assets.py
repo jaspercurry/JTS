@@ -17,6 +17,8 @@ import stat
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 WEB_ASSETS_LIB = ROOT / "deploy" / "lib" / "install" / "web-assets.sh"
 DOCTOR_WEB = ROOT / "jasper" / "cli" / "doctor" / "web.py"
@@ -113,35 +115,57 @@ def test_empty_page_dir_is_tolerated_under_strict_mode(tmp_path: Path):
     assert r.returncode == 0, r.stderr
     manifest = (web_root / "assets" / MANIFEST_NAME).read_text()
     assert "empty-page" not in manifest
-    # Empty of manifested content, so the prune drops it along with any
-    # other stale directory left with nothing in it.
-    assert not (web_root / "assets" / "empty-page").exists()
 
 
-def test_stale_assets_absent_from_the_manifest_are_pruned(tmp_path: Path):
-    """A retired page needs no hand-added rm line: anything on disk that
-    the freshly-written manifest doesn't name is deleted, and its now-empty
-    directory with it. Removal condition: until assets are installed from
-    a package with its own file list."""
-    repo = _fake_repo(tmp_path)
-    web_root = tmp_path / "web"
-    stale = web_root / "assets" / "ghost" / "ghost.css"
+def _seed_stale_nested_file(assets_root: Path) -> list[Path]:
+    stale = assets_root / "ghost" / "ghost.css"
     stale.parent.mkdir(parents=True)
     stale.write_text("retired")
-    nested_empty = web_root / "assets" / "ghost" / "js" / "unused"
-    nested_empty.mkdir(parents=True)
+    (assets_root / "ghost" / "js" / "unused").mkdir(parents=True)
+    return [stale, assets_root / "ghost"]
+
+
+def _seed_stale_symlink(assets_root: Path) -> list[Path]:
+    link = assets_root / "ghost.link"
+    link.symlink_to(assets_root / "does-not-exist")
+    return [link]
+
+
+def _seed_stale_dash_name(assets_root: Path) -> list[Path]:
+    dash = assets_root / "-s"
+    dash.write_text("retired")
+    return [dash]
+
+
+@pytest.mark.parametrize(
+    "make_stale",
+    [
+        pytest.param(_seed_stale_nested_file, id="nested-file-and-empty-dir"),
+        pytest.param(_seed_stale_symlink, id="symlink"),
+        pytest.param(_seed_stale_dash_name, id="leading-dash-name"),
+    ],
+)
+def test_stale_assets_absent_from_the_manifest_are_pruned(tmp_path: Path, make_stale):
+    """A retired page needs no hand-added rm line: anything on disk that
+    the freshly-written manifest doesn't name is deleted (files, stale
+    symlinks, and dash-leading names alike), along with any directory
+    left empty by the deletion. Removal condition: until assets are
+    installed from a package with its own file list."""
+    repo = _fake_repo(tmp_path)
+    web_root = tmp_path / "web"
+    assets_root = web_root / "assets"
+    assets_root.mkdir(parents=True)
+    stale_paths = make_stale(assets_root)
 
     result = _run(repo, web_root)
 
     assert result.returncode == 0, result.stderr
-    assert not (web_root / "assets" / "ghost").exists()
-    assert not nested_empty.exists()
-    manifest_path = web_root / "assets" / MANIFEST_NAME
+    for stale in stale_paths:
+        assert not stale.is_symlink() and not stale.exists()
+    manifest_path = assets_root / MANIFEST_NAME
     assert manifest_path.is_file()
-    manifest = manifest_path.read_text(encoding="utf-8").splitlines()
-    assert "ghost/ghost.css" not in manifest
-    for rel in manifest:
-        assert (web_root / "assets" / rel).is_file(), f"{rel} missing on disk"
+    for rel in manifest_path.read_text(encoding="utf-8").splitlines():
+        assert (assets_root / rel).is_file(), f"{rel} missing on disk"
 
 
 def test_manifest_name_parity_between_installer_and_doctor():

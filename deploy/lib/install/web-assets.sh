@@ -53,10 +53,6 @@
 # rename from there couldn't be atomic) and lands via mv, so a killed
 # install can never leave a truncated manifest for the doctor to
 # trust; an orphaned temp from a killed run is swept on the next.
-# After the manifest publishes, any file under assets_root absent from
-# it is retired-page/JS fallout and is deleted (manifest is read back
-# from disk, not re-derived), so a page's removal from deploy/assets/
-# needs no matching entry here.
 # tests/test_install_web_assets.py pins the copy shape, the manifest
 # contract, the atomic-write promise, the prune, and the
 # doctor/installer round-trip.
@@ -69,37 +65,31 @@ install_web_assets() {
     rm -f "${manifest}.tmp."*
     manifest_tmp="$(mktemp "${manifest}.tmp.XXXXXX")"
 
-    install -m 0644 "${REPO_DIR}/deploy/assets/app.css" "${assets_root}/app.css"
-    echo "app.css" >> "${manifest_tmp}"
+    # Installs one asset at its manifest-relative path and records it, so
+    # an installed file is manifested by construction.
+    _ship() {
+        install -d -m 0755 "$(dirname "${assets_root}/${2}")"
+        install -m 0644 "${1}" "${assets_root}/${2}"
+        echo "${2}" >> "${manifest_tmp}"
+    }
 
-    install -d -m 0755 "${assets_root}/fonts"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/assets/fonts/"* \
-        "${assets_root}/fonts/"
+    _ship "${REPO_DIR}/deploy/assets/app.css" "app.css"
+
     for f in "${REPO_DIR}/deploy/assets/fonts/"*; do
-        echo "fonts/$(basename "${f}")" >> "${manifest_tmp}"
+        _ship "${f}" "fonts/$(basename "${f}")"
     done
 
     for asset_dir in "${REPO_DIR}/deploy/assets/"*/; do
         page="$(basename "${asset_dir}")"
         [[ "${page}" == "fonts" ]] && continue
-        install -d -m 0755 "${assets_root}/${page}"
         if compgen -G "${asset_dir}"*.css > /dev/null; then
-            install -m 0644 \
-                "${asset_dir}"*.css \
-                "${assets_root}/${page}/"
             for f in "${asset_dir}"*.css; do
-                echo "${page}/$(basename "${f}")" >> "${manifest_tmp}"
+                _ship "${f}" "${page}/$(basename "${f}")"
             done
         fi
         if [[ -d "${asset_dir}js" ]]; then
             while IFS= read -r -d '' f; do
-                local dest_dir
-                rel="${f#"${asset_dir}"}"
-                dest_dir="${assets_root}/${page}/$(dirname "${rel}")"
-                install -d -m 0755 "${dest_dir}"
-                install -m 0644 "${f}" "${dest_dir}/"
-                echo "${page}/${rel}" >> "${manifest_tmp}"
+                _ship "${f}" "${page}/${f#"${asset_dir}"}"
             done < <(find "${asset_dir}js" -type f -name '*.js' -print0)
         fi
     done
@@ -107,12 +97,13 @@ install_web_assets() {
     chmod 0644 "${manifest_tmp}"
     mv -f "${manifest_tmp}" "${manifest}"
 
-    # Prune assets absent from the manifest (read back from disk, never
-    # re-derived); then drop directories left empty.
-    while IFS= read -r -d '' f; do
-        [[ "${f}" == "${manifest}" || "${f}" == "${manifest}".tmp.* ]] && continue
-        rel="${f#"${assets_root}"/}"
-        grep -qxF "${rel}" "${manifest}" || rm -f -- "${f}"
-    done < <(find "${assets_root}" -type f -print0)
+    # Read back from disk so the prune cannot disagree with what the doctor verifies.
+    comm -23 <(find "${assets_root}" ! -type d | while IFS= read -r f; do
+        printf '%s\n' "${f#"${assets_root}"/}"; done | LC_ALL=C sort) "${manifest}" |
+    while IFS= read -r rel; do
+        [[ "${rel}" == "${manifest##*/}" ]] && continue
+        rm -f -- "${assets_root}/${rel}"
+        echo "  pruned stale web asset: ${rel}"
+    done
     find "${assets_root}" -mindepth 1 -type d -empty -delete
 }
