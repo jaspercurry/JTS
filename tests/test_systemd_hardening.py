@@ -990,7 +990,7 @@ def test_apple_dongle_udev_mixer_fast_path_remains_root_exception():
         'sset Headphone 100%% unmute"'
     ) in text
     assert (
-        'ACTION=="add", SUBSYSTEM=="usb", DEVTYPE=="usb_device", '
+        'ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", '
         'ATTR{idVendor}=="05ac", ATTR{idProduct}=="110a", '
         'ATTR{power/control}="on"'
     ) in text
