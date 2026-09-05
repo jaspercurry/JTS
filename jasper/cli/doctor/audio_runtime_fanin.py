@@ -374,6 +374,9 @@ def check_fanin_service() -> CheckResult:
       - warn, composed over every remaining branch so none masks another: a
         stale work loop, an input roster off this box's lane map, an input
         buffer under its validated size, an off-contract assistant gain.
+        Every composed fault is a warn — there is no severity ranking among
+        them — and the reported reason is the FIRST fault found, not the
+        "worst" one.
     """
     service_failure = _service_state_failure(
         "jasper-fanin service",
@@ -448,11 +451,11 @@ def check_fanin_service() -> CheckResult:
             "active but STATUS response missing inputs[]",
             reason=REASON_FANIN_STATUS_MISSING_INPUTS,
         )
-    actual_inputs = {
+    actual_inputs = [
         (inp.get("label"), inp.get("pcm"))
         for inp in inputs
         if isinstance(inp, dict)
-    }
+    ]
 
     progress_age = data.get("watchdog", {}).get(
         "last_progress_age_ms", -1
@@ -499,13 +502,26 @@ def check_fanin_service() -> CheckResult:
     faults: list[tuple[str, str]] = []
     if progress_age > FANIN_STALE_MS:
         faults.append((REASON_FANIN_PROGRESS_STALE, "the work loop may be wedged"))
-    expected_inputs = set(_fanin_expected_inputs())
-    if actual_inputs != expected_inputs:
+    expected_inputs = _fanin_expected_inputs()
+    # Order-insensitive but multiplicity-preserving: a lane-map reordering is
+    # not drift, but a duplicated lane must still be caught, which a `set`
+    # compare forgives by collapsing the duplicate. A payload with a
+    # non-string label/pcm makes `sorted` raise on the mixed types; that is
+    # itself a malformed roster, so it falls back to a plain compare and
+    # reports the raw lists rather than crashing the check.
+    try:
+        roster_drifted = sorted(actual_inputs) != sorted(expected_inputs)
+        roster_detail = (
+            f"missing {sorted(set(expected_inputs) - set(actual_inputs))!r}, "
+            f"unexpected {sorted(set(actual_inputs) - set(expected_inputs))!r}"
+        )
+    except TypeError:
+        roster_drifted = actual_inputs != expected_inputs
+        roster_detail = f"actual={actual_inputs!r}, expected={expected_inputs!r}"
+    if roster_drifted:
         faults.append((
             REASON_FANIN_INPUTS_DRIFTED,
-            f"input roster drifted: missing "
-            f"{sorted(expected_inputs - actual_inputs)!r}, unexpected "
-            f"{sorted(actual_inputs - expected_inputs)!r} — check "
+            f"input roster drifted: {roster_detail} — check "
             "/var/lib/jasper/fanin.env and /var/lib/jasper/renderer_lanes.env",
         ))
     if input_buffer_frames < 4096:
@@ -615,6 +631,24 @@ def _host_clock_health_from_status(data: dict[str, object]) -> CheckResult:
         f"open_failures={actuator.get('open_failures', '?')}, "
         f"write_failures={actuator.get('write_failures', '?')}"
     )
+    phase = probe.get("phase")
+    attempt = probe.get("attempt")
+    max_attempts = probe.get("max_attempts")
+
+    if ladder == "probing":
+        # Await-lock, baseline, step and the single retry wait are bounded
+        # acquisition states, not permanent failures — including a fresh
+        # session whose ctl device is still opening, where `ready` is
+        # expected to be False. This exemption must be evaluated BEFORE the
+        # actuator-unavailable fail below, or that bounded, still-opening
+        # state hard-fails instead of reading as recovering.
+        return CheckResult(
+            label,
+            "ok",
+            f"recovering: phase={phase}, attempt={attempt}/{max_attempts}, "
+            f"generations={capture_generation}/{control_generation}; {counters}",
+            reason=REASON_HOST_CLOCK_PROBING,
+        )
 
     if not ready or not generations_match:
         return CheckResult(
@@ -637,20 +671,6 @@ def _host_clock_health_from_status(data: dict[str, object]) -> CheckResult:
             f"{counters}. Stop/start creates a new session; a gadget generation "
             "change self-heals automatically.",
             reason=REASON_HOST_CLOCK_L2_FALLBACK,
-        )
-
-    phase = probe.get("phase")
-    attempt = probe.get("attempt")
-    max_attempts = probe.get("max_attempts")
-    if ladder == "probing":
-        # Await-lock, baseline, step and the single retry wait are bounded
-        # acquisition states, not permanent failures.
-        return CheckResult(
-            label,
-            "ok",
-            f"recovering: phase={phase}, attempt={attempt}/{max_attempts}, "
-            f"generations={capture_generation}/{control_generation}; {counters}",
-            reason=REASON_HOST_CLOCK_PROBING,
         )
 
     return CheckResult(
@@ -917,7 +937,7 @@ def check_fanin_coupling() -> CheckResult:
     key may not be written yet (coupling-auto runs
     ``After=jasper-fanin.service``). The file's own legacy-token question
     belongs to :func:`check_fanin_coupling_value`, and whether outputd consumes
-    what this graph writes to :func:`check_ring_split_transport`.
+    what this graph writes to :func:`check_content_transport_coherence`.
     """
     from jasper.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
@@ -1105,14 +1125,21 @@ def _pair_from_loopback_pcm(pcm: str) -> int | None:
 def _derive_registered_pairs() -> dict[int, str]:
     """``{pair: provenance}`` derived from the owning facts (see header comment).
 
-    Every entry of the source constant parses; that is pinned by
-    tests/test_doctor_audio_runtime_fanin.py, not defended at runtime.
+    Every entry of the source constant must parse. A silently-dropped entry
+    would shrink the registered set and turn a healthy lane into an apparent
+    foreign occupier, so an unparseable entry raises here instead — pinned by
+    tests/test_doctor_audio_runtime_fanin.py.
     """
-    return {
-        pair: f"fan-in input lane {label!r}"
-        for label, pcm in _FANIN_EXPECTED_ALOOP_INPUTS
-        if (pair := _pair_from_loopback_pcm(pcm)) is not None
-    }
+    registered: dict[int, str] = {}
+    for label, pcm in _FANIN_EXPECTED_ALOOP_INPUTS:
+        pair = _pair_from_loopback_pcm(pcm)
+        if pair is None:
+            raise ValueError(
+                f"fan-in input lane {label!r} pcm {pcm!r} is not an "
+                f"snd-aloop hw:{_ALOOP_CARD_ID},<dev>,<sub> triple"
+            )
+        registered[pair] = f"fan-in input lane {label!r}"
+    return registered
 
 
 def _aloop_substream_owner(status_text: str) -> str:

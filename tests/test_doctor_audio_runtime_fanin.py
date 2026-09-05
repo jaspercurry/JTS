@@ -146,6 +146,17 @@ def test_host_clock_doctor_ok_for_l0_and_bounded_retry():
     assert retry.reason == audio_runtime_fanin.REASON_HOST_CLOCK_PROBING
 
 
+def test_host_clock_doctor_probing_exemption_precedes_the_actuator_fail():
+    """A fresh session in `probing` with the ctl device still opening
+    (`ready=False`, bounded per the docstring) must read as recovering, not
+    hard-fail on the actuator-unavailable branch."""
+    result = audio_runtime_fanin._host_clock_health_from_status(
+        _host_clock_status(ladder="probing", ready=False, phase="await_lock", attempt=1)
+    )
+    assert result.status == "ok"
+    assert result.reason == audio_runtime_fanin.REASON_HOST_CLOCK_PROBING
+
+
 def test_host_clock_doctor_warns_on_a_persistent_l2_fallback():
     result = audio_runtime_fanin._host_clock_health_from_status(
         _host_clock_status(ladder="l2_fallback", reason="probe_noncompliant")
@@ -473,45 +484,59 @@ def test_check_fanin_service_warns_on_small_runtime_input_buffer(monkeypatch):
     assert r.reason == audio_runtime_fanin.REASON_FANIN_INPUT_BUFFER_UNDERSIZED
 
 
-def test_check_fanin_service_reads_the_input_roster_as_a_set(monkeypatch):
-    """A lane-map REORDERING is not drift — the roster is a set, and a box
-    whose STATUS lists the same lanes in another order plays fine."""
-    _seed_units()
-    payload = json.loads(_fanin_status_payload().decode())
+def _reorder_inputs(payload: dict) -> None:
     payload["inputs"].reverse()
-    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
-
-    r = audio_runtime_fanin.check_fanin_service()
-
-    assert r.status == "ok"
 
 
-def test_check_fanin_service_warns_on_a_drifted_input_roster(monkeypatch):
+def _drift_one_input(payload: dict) -> None:
+    payload["inputs"][0]["pcm"] = "hw:Loopback,1,7"
+
+
+def _duplicate_one_input(payload: dict) -> None:
+    payload["inputs"].append(dict(payload["inputs"][0]))
+
+
+def _drift_the_roster_and_wedge_the_work_loop(payload: dict) -> None:
+    payload["inputs"][0]["pcm"] = "hw:Loopback,1,7"
+    payload["input_buffer_frames"] = 2048
+    payload["watchdog"]["last_progress_age_ms"] = 60_000
+
+
+@pytest.mark.parametrize(
+    "mutator, status, reason",
+    [
+        (_reorder_inputs, "ok", ""),
+        (_drift_one_input, "warn", audio_runtime_fanin.REASON_FANIN_INPUTS_DRIFTED),
+        (_duplicate_one_input, "warn", audio_runtime_fanin.REASON_FANIN_INPUTS_DRIFTED),
+        (
+            _drift_the_roster_and_wedge_the_work_loop,
+            "warn",
+            audio_runtime_fanin.REASON_FANIN_PROGRESS_STALE,
+        ),
+    ],
+    ids=[
+        "reordered-roster-is-not-drift",
+        "drifted-lane-warns",
+        "duplicated-lane-warns",
+        "wedged-work-loop-is-not-masked-by-roster-or-buffer-faults",
+    ],
+)
+def test_check_fanin_service_input_roster_compare(monkeypatch, mutator, status, reason):
+    """The roster compare is order-insensitive but multiplicity-preserving: a
+    lane-map REORDERING is not drift, but a duplicated lane must still be
+    caught — a `set` compare would forgive it by collapsing the duplicate.
+    The roster and buffer branches must not mask a wedged work loop: a box
+    with all three defects reports the watchdog fault, not the cosmetic
+    ones."""
     _seed_units()
     payload = json.loads(_fanin_status_payload().decode())
-    payload["inputs"][0]["pcm"] = "hw:Loopback,1,7"
+    mutator(payload)
     _patch_status_reader(monkeypatch, json.dumps(payload).encode())
 
     r = audio_runtime_fanin.check_fanin_service()
 
-    assert r.status == "warn"
-    assert r.reason == audio_runtime_fanin.REASON_FANIN_INPUTS_DRIFTED
-
-
-def test_a_drifted_roster_does_not_mask_a_wedged_work_loop(monkeypatch):
-    """The roster and buffer branches used to return before the watchdog one,
-    so a box with both defects reported only the cosmetic half."""
-    _seed_units()
-    payload = json.loads(
-        _fanin_status_payload(input_buffer_frames=2048, progress_age_ms=60_000).decode()
-    )
-    payload["inputs"][0]["pcm"] = "hw:Loopback,1,7"
-    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
-
-    r = audio_runtime_fanin.check_fanin_service()
-
-    assert r.status == "warn"
-    assert r.reason == audio_runtime_fanin.REASON_FANIN_PROGRESS_STALE
+    assert r.status == status
+    assert r.reason == reason
 
 
 def test_fanin_asound_wiring_fails_on_bare_renderer_lane(monkeypatch, tmp_path):
