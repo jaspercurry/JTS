@@ -710,7 +710,7 @@ def test_voice_input_absent_marker_mark_carries_the_reason(tmp_path: Path) -> No
         result.stderr, "aec_reconcile.voice_input_absent", "reason"
     ) == ["no candidate microphone present and no accessory microphone paired"]
     # stop_voice's park is a real absence, not the chip-AEC validation
-    # bounce's — no `transient=1` line (ADR-0238).
+    # bounce's — no `transient=1` line (ADR-0239).
     assert _marker(tmp_path).read_text().splitlines() == [
         "reason=no candidate microphone present and no accessory microphone paired"
     ]
@@ -719,7 +719,7 @@ def test_voice_input_absent_marker_mark_carries_the_reason(tmp_path: Path) -> No
 def test_validation_bounce_marks_the_park_transient(tmp_path: Path) -> None:
     """activate_managed_chip_aec's own park (:1897) is the ~8 s chip-AEC
     validation round trip, not a real absence — it marks `transient=1` so
-    the daemon's shutdown cue (ADR-0238) skips it. The pass's own
+    the daemon's shutdown cue (ADR-0239) skips it. The pass's own
     `restart_voice` clears the marker before `_run_reconcile` returns, so a
     fake systemctl snapshots it at the stop that immediately follows the
     write (mirrors `_drive_alignment_disposition`'s CHECKING branch)."""

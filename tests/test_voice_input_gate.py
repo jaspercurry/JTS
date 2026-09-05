@@ -23,7 +23,7 @@ StartLimitAction=reboot:
    published fact rather than re-deriving mic presence from its own config.
 6. Closing the gate is AUDIBLE: the daemon plays the mic-loss cue once
    during its own shutdown when the marker is there, and the wait for it
-   cannot outrun the unit's TimeoutStopSec (ADR-0238).
+   cannot outrun the unit's TimeoutStopSec (ADR-0239).
 """
 from __future__ import annotations
 
@@ -358,7 +358,7 @@ async def test_the_mic_loss_cue_follows_the_marker_at_shutdown(
 ) -> None:
     """The daemon's own stop is the transition into deafness, because the
     reconciler writes the marker and only then stops jasper-voice, and
-    ConditionPathExists=! refuses every start while it stands (ADR-0238).
+    ConditionPathExists=! refuses every start while it stands (ADR-0239).
     So the marker at shutdown decides, and a plain restart stays silent —
     including in the journal, so `voice.mic_loss_cue` means a real loss.
     transient-park is the chip-AEC validation bounce's own park

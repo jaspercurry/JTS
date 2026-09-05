@@ -1,4 +1,4 @@
-# ADR-0238: The voice daemon plays the mic-loss cue at shutdown; jasper-control has no player
+# ADR-0239: The voice daemon plays the mic-loss cue at shutdown; jasper-control has no player
 
 - **Date:** 2026-09-05
 - **Status:** Accepted

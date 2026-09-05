@@ -99,7 +99,7 @@ def voice_parked_no_mic() -> bool:
 def voice_park_is_transient() -> bool:
     """True when the current park is a transient round trip — e.g. the
     chip-AEC validation bounce (``jasper-aec-reconcile``'s
-    ``activate_managed_chip_aec``, ADR-0238) — rather than a real absence of
+    ``activate_managed_chip_aec``, ADR-0239) — rather than a real absence of
     voice input. Meaningless unless ``voice_parked_no_mic()`` is also true.
 
     Fail-safe to False: a missing marker, an unreadable one, or one with no

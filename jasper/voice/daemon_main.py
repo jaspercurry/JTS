@@ -219,7 +219,7 @@ MIC_LOSS_CUE_WAIT_SEC = 3.0
 
 
 async def _announce_mic_loss_at_shutdown(wake_loop: WakeLoop) -> str:
-    """Say out loud that this speaker just lost its microphone. See ADR-0238.
+    """Say out loud that this speaker just lost its microphone. See ADR-0239.
 
     This daemon's own stop is the only moment the cue can play. The AEC
     reconciler writes the absence marker and then stops jasper-voice, and
