@@ -1628,12 +1628,18 @@ accessory_mic_present() {
 # Do NOT re-mode the parent dir here — same trap as ensure_mode_file (#827).
 mark_voice_input_absent() {
     local reason="${1:-no usable microphone present}"
+    # Non-empty $2 marks the park transient (a round trip, not a real
+    # absence) via a second `transient=1` line; jasper/voice/input_presence.py
+    # voice_park_is_transient() reads it.
+    local transient="${2:-}"
     # The parent dir (/var/lib/jasper) is guaranteed by ensure_mode_file,
     # which runs earlier in every non-check-only pass; we deliberately do
     # NOT create or re-mode it here (re-moding 0770 root:jasper -> 0755
     # strips the group-write bit the non-root daemons need — the #827
     # trap).
-    if printf 'reason=%s\n' "$reason" > "$VOICE_INPUT_ABSENT_MARKER" 2>/dev/null; then
+    if { printf 'reason=%s\n' "$reason"
+         [[ -z "$transient" ]] || printf 'transient=1\n'
+       } > "$VOICE_INPUT_ABSENT_MARKER" 2>/dev/null; then
         chmod 0644 "$VOICE_INPUT_ABSENT_MARKER" 2>/dev/null || true
         log "event=aec_reconcile.voice_input_absent state=marked reason=${reason}"
         return
@@ -1894,7 +1900,9 @@ activate_managed_chip_aec() {
     # must not be able to gate itself off.
     VOICE_RESTART_NEEDED=1
     publish_alignment_record checking || true
-    mark_voice_input_absent "validating commissioned chip-AEC alignment"
+    # Transient: this park is the ~8s validation round trip, not a real
+    # absence — the daemon's shutdown cue (ADR-0239) must not fire for it.
+    mark_voice_input_absent "validating commissioned chip-AEC alignment" 1
     run_systemctl stop jasper-voice.service jasper-aec-bridge.service
     reset_failed_units jasper-voice.service jasper-aec-bridge.service
     # Init must sample outputd's final writer; bridge/voice stay parked.
