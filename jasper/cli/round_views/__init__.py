@@ -15,7 +15,7 @@ evidence it was computed from, and beside the CALLER for a live bundle, which
 belongs to the daemon (:func:`default_out`).
 
 Every subcommand prints its ANSWER as one JSON document on stdout and its one
-human line on stderr (:func:`._common.answer`, ADR-0235); ``--out PATH``
+human line on stderr (:func:`._common.answer`, ADR-0236); ``--out PATH``
 files the artifact elsewhere, ``-`` putting the whole artifact on stdout
 instead — which the two ``delay-`` verbs and ``repeat-floor``, whose record
 its owning module publishes, do not take. On failure the exit code names the

@@ -1,4 +1,4 @@
-# ADR-0235: A tuning tool's stdout is its answer
+# ADR-0236: A tuning tool's stdout is its answer
 
 - **Date:** 2026-09-05
 - **Status:** Accepted
