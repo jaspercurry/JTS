@@ -23,6 +23,7 @@ from jasper.active_speaker.state_paths import (
     BASELINE_PROFILE_STATE_ENV as STATE_PATH_ENV,
 )
 from jasper.cli import basic_profile as cli
+from jasper.cli._refusal import STATUS_BY_CODE
 
 _FINGERPRINT = "a" * 64
 
@@ -144,7 +145,7 @@ def applied_state(tmp_path, monkeypatch):
 def test_review_reports_the_fingerprint_and_that_nothing_is_carried(capsys):
     opener = _opener()
 
-    assert _run(["review", "--json"], opener) == cli.EXIT_OK
+    assert _run(["review"], opener) == cli.EXIT_OK
 
     payload = _stdout_json(capsys)
     assert payload["candidate_fingerprint"] == _FINGERPRINT
@@ -157,6 +158,9 @@ def test_review_reports_the_fingerprint_and_that_nothing_is_carried(capsys):
         "delay_ms": 0.35,
         "inverted": True,
     }
+    assert payload["next"] == (
+        f"jasper-basic-profile apply --expected-fingerprint {_FINGERPRINT}"
+    )
     # A pure read: the route's POST arm COMPILES, rewriting the baseline YAML
     # the CamillaDSP statefile may still select. Review must never send one.
     assert opener.posts() == []
@@ -164,11 +168,13 @@ def test_review_reports_the_fingerprint_and_that_nothing_is_carried(capsys):
 
 
 def test_review_prints_the_same_facts_for_a_human(capsys):
+    """The human rendering is stderr's; stdout carries the answer alone."""
     assert _run(["review"], _opener()) == cli.EXIT_OK
 
-    out = capsys.readouterr().out
-    assert _FINGERPRINT in out
-    assert "tweeter" in out and "woofer" in out
+    streams = capsys.readouterr()
+    assert _FINGERPRINT in streams.err
+    assert "tweeter" in streams.err and "woofer" in streams.err
+    assert json.loads(streams.out)["candidate_fingerprint"] == _FINGERPRINT
 
 
 def test_the_door_is_reached_at_its_own_daemons_paths_with_that_daemons_token():
@@ -180,7 +186,7 @@ def test_the_door_is_reached_at_its_own_daemons_paths_with_that_daemons_token():
     """
     opener = _opener(save_and_apply=json.dumps({"status": "applied"}))
 
-    _run(["apply", "--json"], opener)
+    _run(["apply"], opener)
 
     mints = [url for url in opener.paths() if url.endswith(cli.CSRF_PAGE_PATH)]
     assert mints == ["http://127.0.0.1" + cli.CSRF_PAGE_PATH]
@@ -206,7 +212,7 @@ def test_apply_pins_the_fingerprint_it_just_reviewed_and_proves_the_result(
         save_and_apply=json.dumps({"status": "applied", "issues": [disclosure]})
     )
 
-    assert _run(["apply", "--json"], opener) == cli.EXIT_OK
+    assert _run(["apply"], opener) == cli.EXIT_OK
 
     sent = opener.posted_to(cli.SAVE_AND_APPLY_PATH)
     assert [json.loads(request.data.decode()) for request in sent] == [
@@ -234,34 +240,57 @@ def test_a_fingerprint_that_is_not_the_live_one_sends_nothing(capsys, named):
         if not named
         else json.dumps(_CANDIDATE)
     )
-    argv = ["apply", "--json"] + (["--expected-fingerprint", named] if named else [])
+    argv = ["apply"] + (["--expected-fingerprint", named] if named else [])
 
     assert _run(argv, opener) == cli.EXIT_REFUSED
 
     payload = _stdout_json(capsys)
-    assert payload["status"] == "blocked"
-    assert payload["refused_by"] == "client"
-    assert [issue["code"] for issue in payload["issues"]] == [
+    assert payload["status"] == STATUS_BY_CODE[cli.EXIT_REFUSED]
+    assert payload["reason"] == cli.FINGERPRINT_MISMATCH_CODE
+    assert payload["detail"]["refused_by"] == "client"
+    assert [issue["code"] for issue in payload["detail"]["issues"]] == [
         cli.FINGERPRINT_MISMATCH_CODE
     ]
     assert opener.posts() == []
 
 
-def test_a_door_refusal_reaches_stdout_whole(capsys, applied_state):
-    opener = _opener(save_and_apply=json.dumps(_DOOR_REFUSAL))
+@pytest.mark.parametrize(
+    "answer, reason",
+    [
+        (_DOOR_REFUSAL, cli.FINGERPRINT_MISMATCH_CODE),
+        ({"status": "blocked", "issues": []}, "blocked"),
+        ({}, cli.DOOR_REFUSED),
+    ],
+    ids=["blocker-code", "status-only", "nothing-named"],
+)
+def test_a_door_refusal_reaches_stdout_whole_under_the_name_it_gave(
+    capsys, applied_state, answer, reason
+):
+    """One condition, one name: the door's own blocker code is the reason where
+    it named one, and its whole payload rides the detail rather than becoming
+    top-level keys."""
+    opener = _opener(save_and_apply=json.dumps(answer))
 
     assert _run(["apply"], opener) == cli.EXIT_REFUSED
-    assert json.loads(capsys.readouterr().out) == _DOOR_REFUSAL
+    assert json.loads(capsys.readouterr().out) == {
+        "status": STATUS_BY_CODE[cli.EXIT_REFUSED],
+        "reason": reason,
+        "detail": answer,
+    }
 
 
 def test_a_door_that_does_not_answer_is_not_a_traceback(capsys):
     opener = _FakeOpener({cli.REVIEW_PATH: "<html>the wizard is starting"})
 
     assert _run(["review"], opener) == cli.EXIT_UNREADABLE
-    err = capsys.readouterr().err
-    assert err.strip()
+    streams = capsys.readouterr()
+    payload = json.loads(streams.out)
+    assert payload["status"] == STATUS_BY_CODE[cli.EXIT_UNREADABLE]
+    assert payload["reason"] == cli.ANSWER_LOST
+    assert payload["detail"]["path"] == cli.REVIEW_PATH
     # A lost READ changed nothing, so it must not send the reader to check.
-    assert cli.LOST_ANSWER_ADVICE not in err
+    assert "advice" not in payload["detail"]
+    assert cli.LOST_ANSWER_ADVICE not in streams.err
 
 
 def test_a_lost_apply_answer_does_not_claim_the_apply_failed(capsys):
@@ -270,7 +299,10 @@ def test_a_lost_apply_answer_does_not_claim_the_apply_failed(capsys):
     opener = _opener(save_and_apply="<html>502 bad gateway")
 
     assert _run(["apply"], opener) == cli.EXIT_UNREADABLE
-    assert cli.LOST_ANSWER_ADVICE in capsys.readouterr().err
+    payload = _stdout_json(capsys)
+    assert payload["reason"] == cli.ANSWER_LOST
+    assert payload["detail"]["path"] == cli.SAVE_AND_APPLY_PATH
+    assert payload["detail"]["advice"] == cli.LOST_ANSWER_ADVICE
 
 
 def test_apply_still_reports_success_when_the_proof_cannot_be_read(
@@ -281,5 +313,5 @@ def test_apply_still_reports_success_when_the_proof_cannot_be_read(
     monkeypatch.setenv(STATE_PATH_ENV, str(tmp_path / "absent.json"))
     opener = _opener(save_and_apply=json.dumps({"status": "applied"}))
 
-    assert _run(["apply", "--json"], opener) == cli.EXIT_OK
+    assert _run(["apply"], opener) == cli.EXIT_OK
     assert _stdout_json(capsys)["proof"] is None
