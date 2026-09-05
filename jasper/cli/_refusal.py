@@ -64,21 +64,31 @@ def read_json_source(path: str) -> Any:
         raise ValueError(f"{path}: {exc}") from exc
 
 
-def refused(reason: str, detail: str, *, exit_code: int, status: str = "refused") -> int:
-    """Print the outcome on both streams and hand back ``exit_code``."""
+def refused(reason: str, detail: Any, *, exit_code: int, status: str = "refused") -> int:
+    """Print the outcome on both streams and hand back ``exit_code``.
 
+    ``detail`` is a sentence or the fields the failure carried -- everything the
+    tool would otherwise have published as top-level keys goes here, so one
+    reader parses every refusal.
+    """
+
+    sentence = (
+        detail if isinstance(detail, str)
+        else json.dumps(detail, sort_keys=True, default=str)
+    )
     print(
         json.dumps(
             {"status": status, "reason": reason, "detail": detail},
             indent=2,
             sort_keys=True,
+            default=str,
         )
     )
-    print(f"{status} ({reason}): {detail}", file=sys.stderr)
+    print(f"{status} ({reason}): {sentence}", file=sys.stderr)
     return exit_code
 
 
-def failed(exit_code: int, reason: str, detail: str) -> int:
+def failed(exit_code: int, reason: str, detail: Any) -> int:
     """One failing stage, published under the word its code owns."""
 
     return refused(
