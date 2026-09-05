@@ -4,8 +4,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Shared env-file quoting + atomic single-key writer for the JTS
-# reconcilers (jasper-aec-reconcile, jasper-audio-hardware-reconcile).
+# Shared env-file reader + quoting + atomic single-key writer for the JTS
+# reconcilers (jasper-aec-reconcile, jasper-audio-hardware-reconcile,
+# jasper-wifi-guardian).
 #
 # Why this exists — and why NOT `printf %q`: bash 5.2 (Trixie) quotes
 # values containing commas with backslash escaping, so
@@ -67,6 +68,44 @@ jasper_env_quote_value() {
             printf '%s' "$value"
             ;;
     esac
+}
+
+# jasper_env_file_get FILE KEY
+# Print the LAST `KEY=` line's value verbatim (one matched surrounding
+# quote pair stripped, nothing evaluated); return 1 with no output when
+# FILE or the key is absent. Parses byte-for-byte like read_stash in
+# jasper/wifi_guardian_persistence.py, which reads the same files.
+jasper_env_file_get() {
+    local file="$1" key="$2" value
+
+    [[ -r "$file" ]] || return 1
+    value="$(awk -v key="$key" '
+        BEGIN { sq = "\047"; dq = "\042" }
+        {
+            line = $0
+            sub(/^[ \t\r\v\f]+/, "", line)
+            sub(/[ \t\r\v\f]+$/, "", line)
+            if (line == "" || substr(line, 1, 1) == "#") next
+            eq = index(line, "=")
+            if (eq == 0) next
+            k = substr(line, 1, eq - 1)
+            sub(/^[ \t\r\v\f]+/, "", k)
+            sub(/[ \t\r\v\f]+$/, "", k)
+            if (k != key) next
+            found = 1
+            val = substr(line, eq + 1)
+        }
+        END {
+            if (!found) exit 1
+            n = length(val)
+            q = substr(val, 1, 1)
+            if (n >= 2 && q == substr(val, n, 1) && (q == sq || q == dq)) {
+                val = substr(val, 2, n - 2)
+            }
+            print val
+        }
+    ' "$file")" || return 1
+    printf '%s\n' "$value"
 }
 
 # jasper_env_file_set FILE KEY VALUE [FILE_MODE] [DIR_MODE]

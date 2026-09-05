@@ -27,8 +27,7 @@
 # after NetworkManager-wait-online). Pure bash, mirrors
 # jasper-aec-reconcile's shape and test seams.
 #
-# PSK redaction: $PSK never appears in any `log` / `emit` call. nmcli
-# stderr is captured and scrubbed of `password \S+` before re-emission.
+# PSK exposure: it sits on nmcli's argv for the 30 s connect window.
 
 set -uo pipefail
 
@@ -93,13 +92,8 @@ emit() {
 # before logging it on a recreate failure. Mirrors
 # jasper.web.wifi_setup._scrub_argv's intent for log lines.
 #
-# Two passes:
-#   1. Replace any literal occurrence of $PSK with `***` (defends
-#      against nmcli quoting the PSK as 'PSK' in echo-back errors).
-#   2. Replace `password <non-whitespace>` with `password ***`
-#      (defends against argv echo, --password variants).
-# We do (1) only when PSK is non-empty (open networks have no PSK to
-# scrub, and an empty-string s/// would replace every char boundary).
+# The literal-$PSK pass runs only when PSK is non-empty: open networks
+# have none, and an empty-string s/// replaces every char boundary.
 scrub_psk() {
     local sed_args=()
     if [[ -n "$PSK" ]]; then
@@ -116,24 +110,29 @@ scrub_psk() {
 }
 
 if [[ ! -f "$STASH_FILE" ]]; then
-    # No stash configured. Pre-PR-state of the world; we have nothing
-    # to recover from. This is the fresh-install case and the deliberately-
-    # disabled case (operator removed the file). Either way, no-op.
+    # Nothing to recover from: fresh install, or the operator deliberately
+    # removed the file. Either way, no-op.
     emit absent ""
     exit 0
 fi
 
-# Load the stash with `set -a` so the file's exports populate our env.
-# We never re-export to anything we spawn (the only spawn is nmcli, which
-# doesn't read JASPER_*).
-set -a
+# Verbatim `^KEY=` reads, never `source`: a WPA PSK is 8-63 printable
+# ASCII, so a space, `$`, `#` or backtick would be split, expanded or
+# executed as root. Sibling lib first keeps a repo run on the repo lib.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE_LIB="${SCRIPT_DIR}/../lib/jasper-env-file.sh"
+[[ -r "$ENV_FILE_LIB" ]] || ENV_FILE_LIB="/usr/local/lib/jasper/jasper-env-file.sh"
+if [[ ! -r "$ENV_FILE_LIB" ]]; then
+    emit lib_missing "path=$ENV_FILE_LIB"
+    exit 66
+fi
 # shellcheck disable=SC1090
-source "$STASH_FILE"
-set +a
+source "$ENV_FILE_LIB"
 
-SSID="${JASPER_WIFI_SSID:-}"
-PSK="${JASPER_WIFI_PSK:-}"
-KEY_MGMT="${JASPER_WIFI_KEY_MGMT:-none}"
+SSID="$(jasper_env_file_get "$STASH_FILE" JASPER_WIFI_SSID)" || SSID=""
+PSK="$(jasper_env_file_get "$STASH_FILE" JASPER_WIFI_PSK)" || PSK=""
+KEY_MGMT="$(jasper_env_file_get "$STASH_FILE" JASPER_WIFI_KEY_MGMT)" || KEY_MGMT=""
+[[ -n "$KEY_MGMT" ]] || KEY_MGMT="none"
 
 if [[ -z "$SSID" ]]; then
     emit absent "reason=stash_empty"

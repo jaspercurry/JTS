@@ -37,6 +37,8 @@ from pathlib import Path
 
 import pytest
 
+from jasper.wifi_guardian_persistence import write_stash
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deploy" / "bin" / "jasper-wifi-guardian"
@@ -505,6 +507,41 @@ def test_guardian_recreates_missing_profile(tmp_path):
     nm = _nmcli_log(log)
     assert "connection modify Home" in nm
     assert "connection.autoconnect-retries 0" in nm
+
+
+@pytest.mark.parametrize(
+    "psk",
+    [
+        "pass word",
+        "$(id > pwned.txt)",
+        "back`tick`",
+        "semi;colon",
+        "it's",
+        "hash#tag",
+    ],
+)
+def test_guardian_hands_nmcli_the_written_psk_verbatim(tmp_path, psk):
+    """Cross-language round trip: a WPA PSK is 8-63 printable ASCII, so
+    spaces and shell metacharacters are legal in one. What write_stash
+    puts in the file is what nmcli must receive, with nothing in it
+    evaluated by the guardian's shell (which runs as root)."""
+    written = tmp_path / "written.env"
+    write_stash(written, "Home", psk, "wpa-psk")
+    proc, log = _run_guardian(
+        tmp_path,
+        written.read_text(encoding="utf-8"),
+        nmcli_env={
+            "JASPER_NMCLI_ACTIVE": "",
+            "JASPER_NMCLI_ALL_PROFILES": "",
+        },
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "event=wifi_guardian.recreate_ok" in proc.stderr
+    assert f"device wifi connect Home password {psk}" in _nmcli_raw_log(log)
+    # The command-substitution PSK writes its side-effect file into the
+    # guardian's cwd, which _run_guardian sets to ROOT.
+    assert not (tmp_path / "pwned.txt").exists()
+    assert not (ROOT / "pwned.txt").exists()
 
 
 def test_guardian_recreates_open_network(tmp_path):

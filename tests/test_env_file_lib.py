@@ -253,6 +253,42 @@ def test_env_file_unset_noop_when_file_absent(tmp_path: Path) -> None:
     assert not env_file.exists()
 
 
+@pytest.mark.parametrize(
+    "body,expected",
+    [
+        ("WANT=plain\n", "plain"),
+        # Last assignment wins, matching read_stash's line loop.
+        ("WANT=first\nOTHER=x\nWANT=last\n", "last"),
+        ("WANT='pass word'\n", "pass word"),
+        ('WANT="pass word"\n', "pass word"),
+        # `#` is a legal PSK character, not a comment introducer mid-line.
+        ("WANT=hash#tag\n", "hash#tag"),
+        # Nothing is evaluated: shell metacharacters come back as bytes.
+        ("WANT=$(id)`x`;rm -rf /\n", "$(id)`x`;rm -rf /"),
+        ("# WANT=commented\nOTHER=x\n", None),
+        ("OTHER=x\n", None),
+    ],
+)
+def test_env_file_get(tmp_path: Path, body: str, expected: str | None) -> None:
+    """The reader half of the lib: verbatim value of the last `KEY=` line,
+    one matched quote pair stripped, rc 1 with no output when absent."""
+    env_file = tmp_path / "stash.env"
+    env_file.write_text(body)
+    result = _bash(f'jasper_env_file_get "{env_file}" WANT')
+    if expected is None:
+        assert result.returncode == 1
+        assert result.stdout == ""
+    else:
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == expected + "\n"
+
+
+def test_env_file_get_missing_file_returns_one(tmp_path: Path) -> None:
+    result = _bash(f'jasper_env_file_get "{tmp_path / "absent.env"}" WANT')
+    assert result.returncode == 1
+    assert result.stdout == ""
+
+
 def test_reconcilers_source_shared_lib_and_never_printf_q() -> None:
     """Drift guard: both reconcilers must load jasper-env-file.sh and
     must not regrow a local `printf %q` (the bash-5.2 comma bug) or a

@@ -100,9 +100,7 @@ def _parse_env_line(line: str) -> tuple[str, str] | None:
     key = key.strip()
     # Strip a single layer of matched quotes — nmcli output can wrap
     # PSKs containing spaces in quotes when migrated in via the
-    # install.sh helper. Don't strip whitespace from the value itself;
-    # WPA PSKs are 8-63 ASCII chars and trailing/leading spaces are
-    # technically legal even if uncommon.
+    # install.sh helper.
     if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
         value = value[1:-1]
     return key, value
