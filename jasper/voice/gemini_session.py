@@ -12,7 +12,7 @@ from typing import AsyncIterator, Callable
 from google import genai
 from google.genai import types
 
-from jasper.backoff import ReconnectNudge, reconnect_delay, sleep_or_nudge
+from jasper.backoff import ReconnectNudge
 from jasper.log_event import log_event
 
 from ..tools import ToolRegistry, dispatch_tool
@@ -20,7 +20,7 @@ from ._supervisor import (
     Deferred,
     OutageTracker,
     http_status,
-    is_transient,
+    run_supervisor_loop,
     survive_terminal_initial_connect,
 )
 from .session import (
@@ -543,6 +543,11 @@ class GeminiLiveConnection:
     daemon sends `activity_start` on wake and `activity_end` on idle.
     """
 
+    PROVIDER_NAME = "gemini"
+    # Prefix this module's own log lines already carry verbatim; the
+    # shared supervisor reads it from here.
+    _log_tag = "live connection:"
+
     INPUT_MIME = "audio/pcm;rate=16000"
 
     def __init__(
@@ -629,8 +634,8 @@ class GeminiLiveConnection:
         # Fires at `rotate_after_sec` into each session; re-armed on every
         # successful open and cancelled by `_teardown_session`.
         self._rotate_task: asyncio.Task | None = None
-        # Set only by the rotate watchdog: tells `_reconnect_with_backoff`
-        # this reconnect is ours, not a failure, so the first attempt
+        # Set only by the rotate watchdog: tells the shared reconnect
+        # run this reconnect is ours, not a failure, so the first attempt
         # skips the backoff wait.
         self._planned_rotate = False
         # Triggered by the receive loop when it hits a drop / GoAway /
@@ -706,7 +711,7 @@ class GeminiLiveConnection:
             instruction = system_instruction or ""
             self._system_instruction_provider = lambda: instruction
         await self._do_initial_connect()
-        self._supervisor_task = asyncio.create_task(self._supervisor_loop())
+        self._supervisor_task = asyncio.create_task(run_supervisor_loop(self))
 
     async def stop(self) -> None:
         if self._state is ConnectionState.CLOSED:
@@ -736,9 +741,9 @@ class GeminiLiveConnection:
 
     async def acquire_turn(self) -> LiveTurn:
         if self._state is ConnectionState.FAILED:
-            raise RuntimeError("live connection: in FAILED state; daemon paused")
+            raise RuntimeError(f"{self._log_tag} in FAILED state; daemon paused")
         if self._state is ConnectionState.CLOSED:
-            raise RuntimeError("live connection: closed")
+            raise RuntimeError(f"{self._log_tag} closed")
 
         # If we're mid-reconnect, wait for the connected event so the
         # turn doesn't open against a half-open WS. Bounded so we don't
@@ -758,7 +763,7 @@ class GeminiLiveConnection:
                 )
             except asyncio.TimeoutError:
                 raise RuntimeError(
-                    "live connection: not connected after backoff window"
+                    f"{self._log_tag} not connected after backoff window"
                 )
 
         # Idle-context-reset: if the connection is healthy but has been
@@ -768,7 +773,7 @@ class GeminiLiveConnection:
 
         async with self._turn_lock:
             if self._active_turn is not None:
-                raise RuntimeError("live connection: a turn is already active")
+                raise RuntimeError(f"{self._log_tag} a turn is already active")
             now_loop = asyncio.get_event_loop().time()
             # Snapshot the cumulative usage as this turn's baseline so it
             # reports only its own token delta (see GeminiLiveTurn).
@@ -862,7 +867,7 @@ class GeminiLiveConnection:
         dropped = before - len(self._unack_activity_end_times)
         if dropped > 0:
             logger.warning(
-                "live connection: aged out %d un-ack activity_end(s) "
+                f"{self._log_tag} aged out %d un-ack activity_end(s) "
                 "(server silent-failure on prior turn); unack now=%d",
                 dropped, len(self._unack_activity_end_times),
             )
@@ -886,20 +891,20 @@ class GeminiLiveConnection:
     async def _send_audio_blob(self, pcm: bytes) -> None:
         if self._session is None:
             logger.warning(
-                "live connection: _send_audio_blob called with self._session=None "
+                f"{self._log_tag} _send_audio_blob called with self._session=None "
                 "(state=%s, connected_event=%s, receive_task=%s)",
                 self._state.value,
                 self._connected_event.is_set(),
                 "running" if self._receive_task and not self._receive_task.done() else "done/none",
             )
-            raise RuntimeError("live connection: no active session")
+            raise RuntimeError(f"{self._log_tag} no active session")
         await self._session.send_realtime_input(
             audio=types.Blob(data=pcm, mime_type=self.INPUT_MIME)
         )
 
     async def _send_text_context(self, text: str) -> None:
         if self._session is None:
-            raise RuntimeError("live connection: no active session")
+            raise RuntimeError(f"{self._log_tag} no active session")
         await self._session.send_client_content(
             turns=types.Content(
                 role="user",
@@ -920,7 +925,7 @@ class GeminiLiveConnection:
         # or a planned rotation that came due while the user was talking.
         if self._deferred_reconnect.fire_if_pending(self._reconnect_event.set):
             logger.info(
-                "live connection: turn just ended, firing the deferred "
+                f"{self._log_tag} turn just ended, firing the deferred "
                 "reconnect (planned=%s)", self._planned_rotate,
             )
 
@@ -1104,7 +1109,7 @@ class GeminiLiveConnection:
         for attempt, delay in enumerate(schedule):
             if delay > 0:
                 logger.warning(
-                    "live connection: %s retry %d after %.1fs (last: %s: %s)",
+                    f"{self._log_tag} %s retry %d after %.1fs (last: %s: %s)",
                     phase, attempt, delay,
                     type(last_exc).__name__ if last_exc else "?",
                     self._outage.detail if last_exc else "?",
@@ -1114,7 +1119,7 @@ class GeminiLiveConnection:
                 await self._open_session()
                 if handle_dropped:
                     logger.info(
-                        "live connection: %s recovered after dropping stale "
+                        f"{self._log_tag} %s recovered after dropping stale "
                         "resumption handle on attempt %d",
                         phase, attempt + 1,
                     )
@@ -1134,7 +1139,7 @@ class GeminiLiveConnection:
                     else "<none>"
                 )
                 logger.warning(
-                    "live connection: %s 409 Conflict on attempt %d/%d "
+                    f"{self._log_tag} %s 409 Conflict on attempt %d/%d "
                     "(status=%s, exc=%s, handle=%s)",
                     phase, attempt + 1, len(schedule),
                     status, type(e).__name__, handle_short,
@@ -1148,14 +1153,14 @@ class GeminiLiveConnection:
                 # release lag passes).
                 if not handle_dropped and self._resumption_handle is not None:
                     logger.warning(
-                        "live connection: %s dropping cached resumption "
+                        f"{self._log_tag} %s dropping cached resumption "
                         "handle (handle=%s) and will retry as fresh session",
                         phase, handle_short,
                     )
                     self._resumption_handle = None
                     handle_dropped = True
         raise RuntimeError(
-            f"live connection: {phase} failed after {len(schedule)} retries; "
+            f"{self._log_tag} {phase} failed after {len(schedule)} retries; "
             f"last error: {last_exc}"
         )
 
@@ -1203,7 +1208,7 @@ class GeminiLiveConnection:
         connect_ms = (_time.monotonic() - t0) * 1000
         handle_short = (self._resumption_handle or "")[:8] or "<new>"
         logger.info(
-            "live connection: connect ok in %.0fms (resumption=%s)",
+            f"{self._log_tag} connect ok in %.0fms (resumption=%s)",
             connect_ms, handle_short,
         )
         self._receive_task = asyncio.create_task(self._receive_loop())
@@ -1302,19 +1307,19 @@ class GeminiLiveConnection:
                 # we (or anyone else) opens a new WS.
                 await asyncio.wait_for(self._session.close(), timeout=3.0)
             except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
-                logger.debug("live connection: session.close() error (ignored): %s", e)
+                logger.debug(f"{self._log_tag} session.close() error (ignored): %s", e)
         if self._session_cm is not None:
             try:
                 await asyncio.wait_for(
                     self._session_cm.__aexit__(None, None, None), timeout=3.0,
                 )
             except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
-                logger.debug("live connection: session __aexit__ error (ignored): %s", e)
+                logger.debug(f"{self._log_tag} session __aexit__ error (ignored): %s", e)
         self._session_cm = None
         self._session = None
         self._connected_event.clear()
         teardown_ms = (_time.monotonic() - t0) * 1000
-        logger.info("live connection: session torn down in %.0fms", teardown_ms)
+        logger.info(f"{self._log_tag} session torn down in %.0fms", teardown_ms)
 
     def _trigger_reconnect(self) -> None:
         """Wake the supervisor for an UNPLANNED reconnect.
@@ -1324,175 +1329,41 @@ class GeminiLiveConnection:
         self._planned_rotate = False
         self._reconnect_event.set()
 
-    async def _supervisor_loop(self) -> None:
-        """Run for the connection's lifetime. Wakes on `_reconnect_event`,
-        runs through the bounded backoff schedule, and surfaces FAILED
-        if exhausted. Triggered by the receive loop when it observes a
-        drop, GoAway, or unexpected exception."""
-        try:
-            while not self._stopping.is_set():
-                await self._reconnect_event.wait()
-                if self._stopping.is_set():
-                    return
-                # Cleared before the work so a signal during reopen survives. See #3915.
-                self._reconnect_event.clear()
-                log_event(
-                    logger,
-                    "voice.supervisor.wake",
-                    provider="gemini",
-                    state=self._state.value,
-                )
-                await self._reconnect_with_backoff()
-                log_event(
-                    logger,
-                    "voice.supervisor.wait",
-                    provider="gemini",
-                    state=self._state.value,
-                )
-        except asyncio.CancelledError:
-            raise
-
-    async def _reconnect_with_backoff(self) -> None:
-        # Read-and-clear: a planned rotation is not a failure, so its
-        # first attempt skips the backoff wait entirely. Everything after
-        # that first attempt is an ordinary failure and backs off.
-        planned = self._planned_rotate
-        self._planned_rotate = False
-        async with self._state_lock:
-            self._set_state(ConnectionState.RECONNECTING)
-        # Tear down the old session before opening a new one so we don't
-        # leak a half-open WS through the SDK.
-        await self._teardown_session()
-        # A reconnect is now underway — any GoAway-deferred reconnect is
-        # subsumed by this one; clear the flag so a later turn release
-        # doesn't fire a spurious second reconnect.
-        self._deferred_reconnect.clear()
-        # Mark the active turn (if any) as lost AND detach it. The
-        # daemon's idle watchdog will pick up `turn_lost()` and call
-        # `release()`, but in the meantime the connection's slot is free
-        # — clearing `_active_turn` lets a wake event after reconnect
-        # acquire a fresh turn rather than getting "a turn is already
-        # active" while the old one is still being torn down.
-        if self._active_turn is not None:
-            self._active_turn._on_connection_lost()
-            async with self._turn_lock:
-                self._active_turn = None
-
-        last_exc: Exception | None = None
-        handle_dropped = False
-        # Seeds the first delay; the previous failure's classification
-        # picks every one after that.
-        last_transient = True
-        self._nudge_event.clear()
-        attempt = 0
-        # Production: `self._backoff_schedule is None` → infinite loop.
-        # Tests pass a bounded tuple to make exhaustion observable.
-        bounded = self._backoff_schedule is not None
-        max_attempts = len(self._backoff_schedule) if bounded else None
-        while not self._stopping.is_set():
-            attempt += 1
-            if bounded and attempt > max_attempts:
-                break
-            delay = (
-                0.0
-                if planned and attempt == 1
-                else self._backoff_schedule[attempt - 1]
-                if bounded
-                else reconnect_delay(attempt, transient=last_transient)
+    def _on_reconnect_attempt_failed(
+        self, exc: Exception, attempt: int, transient: bool,
+    ) -> None:
+        is_409, status = _is_409_conflict(exc)
+        handle_short = (
+            (self._resumption_handle or "")[:8]
+            if self._resumption_handle
+            else "<none>"
+        )
+        if is_409:
+            logger.warning(
+                f"{self._log_tag} reconnect 409 Conflict on attempt "
+                "%d (status=%s, exc=%s, handle=%s)",
+                attempt, status, type(exc).__name__, handle_short,
             )
-            async with self._state_lock:
-                self._set_state(ConnectionState.PAUSED_FOR_BACKOFF)
-            logger.info(
-                "live connection: reconnect attempt %d after %.1fs backoff",
-                attempt, delay,
+        else:
+            logger.warning(
+                f"{self._log_tag} reconnect attempt %d failed "
+                "(%s: %s, handle=%s)",
+                attempt, type(exc).__name__,
+                self._outage.detail, handle_short,
             )
-            await self._backoff_sleep(delay)
-            if self._stopping.is_set():
-                return
-            # This attempt answers every nudge raised so far, including
-            # any raised during the previous attempt. Clearing here (not
-            # inside the wait) is what keeps those from being discarded.
-            self._nudge_event.clear()
-            try:
-                await self._open_session()
-                if handle_dropped:
-                    logger.info(
-                        "live connection: reconnect recovered on attempt %d "
-                        "after dropping stale resumption handle",
-                        attempt,
-                    )
-                return
-            except Exception as e:  # noqa: BLE001
-                last_exc = e
-                transient = is_transient(e)
-                is_409, status = _is_409_conflict(e)
-                handle_short = (
-                    (self._resumption_handle or "")[:8]
-                    if self._resumption_handle
-                    else "<none>"
-                )
-                if is_409:
-                    logger.warning(
-                        "live connection: reconnect 409 Conflict on attempt "
-                        "%d (status=%s, exc=%s, handle=%s)",
-                        attempt, status, type(e).__name__, handle_short,
-                    )
-                else:
-                    logger.warning(
-                        "live connection: reconnect attempt %d failed "
-                        "(%s: %s, handle=%s)",
-                        attempt, type(e).__name__,
-                        self._outage.detail, handle_short,
-                    )
-                if transient and not last_transient and not bounded:
-                    # The provider stopped rejecting us outright and is
-                    # only failing normally now, so it is recovering.
-                    # Restart the ramp at 1 s instead of resuming
-                    # wherever the slow poll left the counter. Bounded
-                    # (test) schedules index by `attempt`, so resetting
-                    # one would replay the schedule forever.
-                    attempt = 0
-                last_transient = transient
-                # Drop the cached resumption handle on the first failure
-                # of ANY kind. A server-invalidated handle that surfaces
-                # as anything other than a 409 (the killer: WebSocket
-                # close 1008 with reason "BidiGenerateContent session
-                # expired") used to lock the supervisor into an
-                # indefinite same-error retry loop because the drop was
-                # gated on 409 detection. The cost of dropping a handle
-                # we didn't strictly need to is one turn of context
-                # continuity; the cost of keeping a stale one is the
-                # entire session. The asymmetry justifies the broader
-                # drop.
-                if not handle_dropped and self._resumption_handle is not None:
-                    logger.warning(
-                        "live connection: reconnect dropping cached "
-                        "resumption handle (handle=%s) after first "
-                        "failure; next attempt will connect fresh",
-                        handle_short,
-                    )
-                    self._resumption_handle = None
-                    handle_dropped = True
-
-        # Only reached when (a) the test override exhausted its bounded
-        # schedule, or (b) the daemon is stopping. Production never
-        # reaches this — the loop iterates forever until success.
-        if bounded and not self._stopping.is_set():
-            async with self._state_lock:
-                self._set_state(ConnectionState.FAILED)
-            logger.error(
-                "live connection: bounded test schedule exhausted after %d "
-                "retries. Last error: %s", attempt - 1, last_exc,
+        # Drop the cached handle on the first failure of ANY kind, not
+        # just a 409: a server-invalidated handle also surfaces as
+        # WebSocket close 1008 "BidiGenerateContent session expired".
+        # Keeping a stale one costs the whole session; dropping a good
+        # one costs a turn of context. See ADR-0166.
+        if self._resumption_handle is not None:
+            logger.warning(
+                f"{self._log_tag} reconnect dropping cached "
+                "resumption handle (handle=%s) after first "
+                "failure; next attempt will connect fresh",
+                handle_short,
             )
-
-    async def _backoff_sleep(self, delay: float) -> None:
-        """Wait out the backoff, unless a caller asks to retry now.
-
-        A bare sleep here is uninterruptible, so the 15-minute terminal
-        poll would ignore `request_reconnect_now` for up to 15 minutes.
-        `stop()` cancels the supervisor task, which unwinds through here
-        and cancels both waiters."""
-        await sleep_or_nudge(delay, self._nudge_event, sleep=self._sleep)
+            self._resumption_handle = None
 
     async def _receive_loop(self) -> None:
         """Iterate the SDK's lower-level `session._receive()` and route
@@ -1523,7 +1394,7 @@ class GeminiLiveConnection:
         session = self._session
         if session is None:
             logger.warning(
-                "live connection: receive_loop started with self._session=None; "
+                f"{self._log_tag} receive_loop started with self._session=None; "
                 "exiting (likely a stale cancelled task post-teardown)"
             )
             return
@@ -1534,7 +1405,7 @@ class GeminiLiveConnection:
                     # Underlying connection closed cleanly — let the
                     # supervisor drive a reconnect.
                     logger.warning(
-                        "live connection: _receive returned None (clean close), reconnecting"
+                        f"{self._log_tag} _receive returned None (clean close), reconnecting"
                     )
                     self._trigger_reconnect()
                     return
@@ -1563,7 +1434,7 @@ class GeminiLiveConnection:
                         and secs >= GOAWAY_DEFER_MIN_TIME_LEFT_SEC
                     ):
                         logger.warning(
-                            "live connection: GoAway received mid-turn, "
+                            f"{self._log_tag} GoAway received mid-turn, "
                             "time_left=%s (%.0fs) ≥ %.0fs — deferring reconnect "
                             "until turn release",
                             time_left, secs, GOAWAY_DEFER_MIN_TIME_LEFT_SEC,
@@ -1571,7 +1442,7 @@ class GeminiLiveConnection:
                         self._deferred_reconnect.request()
                         continue
                     logger.warning(
-                        "live connection: GoAway received, time_left=%s, will reconnect",
+                        f"{self._log_tag} GoAway received, time_left=%s, will reconnect",
                         time_left,
                     )
                     self._trigger_reconnect()
@@ -1639,12 +1510,12 @@ class GeminiLiveConnection:
             close_code, close_reason = _close_code_and_reason(e)
             if close_code is not None:
                 logger.warning(
-                    "live connection: disconnected (code=%s reason=%r), reconnecting",
+                    f"{self._log_tag} disconnected (code=%s reason=%r), reconnecting",
                     close_code, close_reason,
                 )
             else:
                 logger.warning(
-                    "live connection: receive loop error (%s: %s), reconnecting",
+                    f"{self._log_tag} receive loop error (%s: %s), reconnecting",
                     type(e).__name__, e,
                 )
             self._trigger_reconnect()
@@ -1695,7 +1566,7 @@ class GeminiLiveConnection:
             # state instead of leaving the daemon stuck waiting on a
             # connect that nobody will retry.
             logger.error(
-                "live connection: context-reset reopen failed (%s: %s); "
+                f"{self._log_tag} context-reset reopen failed (%s: %s); "
                 "triggering supervisor reconnect",
                 type(e).__name__, e,
             )

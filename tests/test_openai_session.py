@@ -25,7 +25,10 @@ import logging
 import pytest
 
 from jasper.tools import ToolRegistry, tool
-from jasper.voice._supervisor import NEEDS_ATTENTION_CUE_SLUG
+from jasper.voice._supervisor import (
+    NEEDS_ATTENTION_CUE_SLUG,
+    run_reconnect_with_backoff,
+)
 from jasper.voice.openai_session import (
     ConnectionState,
     OpenAIRealtimeConnection,
@@ -2787,7 +2790,7 @@ async def _reconnect_delays(exc, count: int = 4):
     # The loop is unbounded and only exits because `_sleep` sets the
     # stopping flag; a change that stopped reaching that await would
     # otherwise spin to the 300 s global timeout.
-    await asyncio.wait_for(conn._reconnect_with_backoff(), timeout=10.0)
+    await asyncio.wait_for(run_reconnect_with_backoff(conn), timeout=10.0)
     return conn, delays
 
 
@@ -2921,7 +2924,7 @@ async def test_wake_during_a_connect_attempt_cuts_the_next_wait_short():
         connect_factory=lambda *, model: connect,
         sleep=_sleep,
     )
-    task = asyncio.ensure_future(conn._reconnect_with_backoff())
+    task = asyncio.ensure_future(run_reconnect_with_backoff(conn))
     try:
         await asyncio.wait_for(connecting.wait(), timeout=5.0)
         assert conn.is_paused()
@@ -2973,7 +2976,7 @@ async def test_cancelling_a_long_backoff_unwinds_at_once():
         sleep=_sleep,
     )
     holder["conn"] = conn
-    task = asyncio.ensure_future(conn._reconnect_with_backoff())
+    task = asyncio.ensure_future(run_reconnect_with_backoff(conn))
     await asyncio.wait_for(started.wait(), timeout=5.0)
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
