@@ -1352,7 +1352,7 @@ def test_outputd_state_socket_is_bound_before_thread_spawn():
         "fn period_duration(",
         1,
     )[0]
-    bind = spawn_state.index("StateServer::bind(path, state)")
+    bind = spawn_state.index("StateServer::bind(")
     spawn = spawn_state.index(".spawn(move ||")
 
     assert "StateServer::new" not in main_rs

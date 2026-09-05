@@ -1593,7 +1593,7 @@ fn spawn_state_server(
     state: Arc<OutputdState>,
     shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
-    let server = StateServer::bind(path, state)?;
+    let server = StateServer::bind(path, state, HOOKS)?;
     thread::Builder::new()
         .name("outputd-state".to_string())
         .stack_size(jasper_outputd::HELPER_STACK_BYTES)

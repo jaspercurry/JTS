@@ -27,10 +27,9 @@
 //!   permission-gate to the `pi` group, idiomatic for local-only
 //!   IPC. Matches `jasper-voice`'s control socket pattern.
 //!
-//! - **Single-shot connection.** Each connection serves one command
-//!   then closes. Keeps the implementation tiny (~80 LOC of socket
-//!   code) and avoids long-lived connections eating file descriptors
-//!   if a client misbehaves.
+//! - **Shared transport.** Bind, the readiness-driven accept loop, the bounded
+//!   single-command read and the reply write are `jasper_daemon::uds`; this
+//!   module owns only the command vocabulary and the STATUS shape.
 //!
 //! - **Hand-built fixed STATUS shape.** `snapshot_json` keeps the stable object
 //!   shape allocation-light while all variable string values go through the
@@ -45,20 +44,7 @@
 //!   (same as the writes in the work loop) — staleness across
 //!   threads is fine; the operator viewing `/state` doesn't care
 //!   about a few-millisecond skew.
-//!
-//! - **Best-effort cleanup.** On startup, we unlink any existing
-//!   socket file at the path (left behind by a crashed previous
-//!   instance). On shutdown, we don't bother — systemd's
-//!   `RuntimeDirectory=` cleans up the whole runtime dir on stop.
-//!
-//! - **Readiness-driven accept with bounded shutdown poll.** `poll(2)` wakes as
-//!   soon as a client connects while retaining a 500 ms timeout for checking the
-//!   shutdown flag. Do not replace this with a blind sleep: that added ~500 ms
-//!   to every other short-lived STATUS/SELECT connection in production.
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::fd::AsRawFd;
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -71,6 +57,7 @@ use jasper_daemon::json::{
     json_string, push_kv_bool, push_kv_f64, push_kv_f64_opt, push_kv_str, push_kv_u64,
     push_kv_u64_opt,
 };
+use jasper_daemon::uds::{CommandLimits, UdsCommandServer};
 
 use crate::impulse_tap::{TapConfig, TapState};
 use crate::lane_resampler::LaneResamplerObservability;
@@ -81,14 +68,15 @@ use crate::mixer::{
 use crate::tts::TtsMetrics;
 use crate::watchdog::Heartbeat;
 
-/// Read timeout on accepted connections. Defends against a client
-/// connecting then not sending anything (would otherwise pin the
-/// server thread).
-const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// Maximum `poll(2)` wait for the accept loop, bounding shutdown latency while
-/// socket readiness still wakes immediately.
-const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+/// What one control exchange may cost fan-in's single server thread. The cap is
+/// sized by the LONGEST command fan-in accepts — `TAP_ARM {json}`, whose body
+/// carries up to six knobs plus a `/run/jasper-fanin/` artifact path — with room
+/// to spare; the timeout defends against a client that connects and then never
+/// finishes a line.
+const COMMAND_LIMITS: CommandLimits = CommandLimits {
+    max_command_bytes: 1024,
+    read_timeout: Duration::from_secs(2),
+};
 
 /// Bound on how long a `TRIM` command waits for the mixer work loop to consume
 /// the armed `pending` flag and publish the dropped-frame delta. The work loop
@@ -103,28 +91,6 @@ const TRIM_WAIT_TIMEOUT: Duration = Duration::from_millis(200);
 /// enough to return promptly once the flag clears (a trim usually completes in
 /// one period), long enough that the poll loop is not a busy-spin.
 const TRIM_WAIT_POLL: Duration = Duration::from_millis(1);
-
-fn wait_for_listener(listener: &UnixListener, timeout: Duration) -> std::io::Result<bool> {
-    let mut descriptor = libc::pollfd {
-        fd: listener.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    let timeout_ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
-    loop {
-        // SAFETY: `descriptor` points to one initialized pollfd for the duration
-        // of the syscall; poll neither retains nor aliases the pointer.
-        let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
-        if ready >= 0 {
-            return Ok(ready > 0);
-        }
-        let error = std::io::Error::last_os_error();
-        if error.kind() == std::io::ErrorKind::Interrupted {
-            continue;
-        }
-        return Err(error);
-    }
-}
 
 pub struct StateServer {
     /// Process start instant — for uptime in the snapshot.
@@ -281,8 +247,9 @@ impl StateServer {
     /// Run the accept loop. Blocks until `shutdown` is set; intended
     /// to be run on a dedicated thread.
     pub fn run(&self, shutdown: &AtomicBool) -> Result<()> {
-        // Ensure parent dir exists. systemd's RuntimeDirectory=
-        // handles this in production; for local dev / tests we create.
+        // Ensure parent dir exists. systemd's RuntimeDirectory= handles this in
+        // production; for local dev / tests we create. A failure here is not
+        // fatal on its own — the bind below reports what actually went wrong.
         if let Some(parent) = self.socket_path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
                 warn!(
@@ -293,70 +260,14 @@ impl StateServer {
             }
         }
 
-        // Unlink any leftover socket from a crashed previous instance.
-        // bind() would otherwise return -EADDRINUSE.
-        let _ = std::fs::remove_file(&self.socket_path);
-
-        let listener = UnixListener::bind(&self.socket_path)
+        let server = UdsCommandServer::bind(self.socket_path.clone(), crate::HOOKS, COMMAND_LIMITS)
             .with_context(|| format!("binding UDS socket at {}", self.socket_path.display()))?;
-        listener
-            .set_nonblocking(true)
-            .context("set_nonblocking on listener")?;
-
-        info!(
-            "event=fanin.state_server.listening socket={}",
-            self.socket_path.display()
-        );
-
-        while !shutdown.load(Ordering::Relaxed) {
-            match wait_for_listener(&listener, ACCEPT_POLL_INTERVAL) {
-                Ok(false) => continue,
-                Ok(true) => self.drain_ready_connections(&listener, shutdown),
-                Err(e) => {
-                    warn!("event=fanin.state_server.poll_failed detail={}", e);
-                }
-            }
-        }
-
-        let _ = std::fs::remove_file(&self.socket_path);
-        info!("event=fanin.state_server.stopped");
+        server.serve(shutdown, |command| self.response_for_command(command));
         Ok(())
     }
 
-    fn drain_ready_connections(&self, listener: &UnixListener, shutdown: &AtomicBool) {
-        // Re-check shutdown between clients. A continuously replenished local
-        // accept queue must not trap the audio daemon here until systemd's
-        // SIGKILL deadline; one in-flight client remains bounded by the socket
-        // read timeout.
-        while !shutdown.load(Ordering::Relaxed) {
-            match listener.accept() {
-                Ok((stream, _)) => {
-                    if let Err(e) = self.handle_connection(stream) {
-                        warn!("event=fanin.state_server.handle_failed detail={:#}", e);
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(e) => {
-                    warn!("event=fanin.state_server.accept_failed detail={}", e);
-                    break;
-                }
-            }
-        }
-    }
-
-    fn handle_connection(&self, mut stream: UnixStream) -> Result<()> {
-        stream
-            .set_read_timeout(Some(CONNECTION_READ_TIMEOUT))
-            .context("set_read_timeout on connection")?;
-
-        let mut reader = BufReader::new(stream.try_clone()?);
-        let mut command = String::new();
-        reader
-            .read_line(&mut command)
-            .context("reading command from connection")?;
-
-        let command = command.trim();
-        let response = match command {
+    fn response_for_command(&self, command: &str) -> String {
+        match command {
             "STATUS" => self.snapshot_json(),
             "AUTO" => {
                 let previous = self.selected_input_index.swap(-1, Ordering::Relaxed);
@@ -403,13 +314,7 @@ impl StateServer {
                 r#"{{"error":"unknown command","received":{}}}"#,
                 json_string(other),
             ),
-        };
-
-        stream
-            .write_all(response.as_bytes())
-            .context("writing response")?;
-        stream.write_all(b"\n").ok();
-        Ok(())
+        }
     }
 
     fn select_input_json(&self, label: &str) -> String {
@@ -1342,56 +1247,32 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicI64;
 
-    #[test]
-    fn listener_poll_wakes_on_connection_before_shutdown_timeout() {
-        let unique = format!(
-            "jasper-fanin-poll-{}-{}.sock",
+    /// Drive one command through the SAME transport production uses, so these
+    /// pin the reply a client actually reads off the socket.
+    fn exchange(server: &StateServer, command: &[u8]) -> String {
+        use std::io::{Read, Write};
+        use std::net::Shutdown;
+        use std::os::unix::net::UnixStream;
+
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "jts-fanin-state-{}-{}.sock",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-        );
-        let path = std::env::temp_dir().join(unique);
-        let listener = UnixListener::bind(&path).unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let client_path = path.clone();
-        let connector = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(20));
-            UnixStream::connect(client_path).unwrap()
-        });
-        let started = Instant::now();
-        assert!(wait_for_listener(&listener, Duration::from_millis(500)).unwrap());
-        assert!(
-            started.elapsed() < Duration::from_millis(300),
-            "socket readiness must wake poll rather than pay the 500 ms timeout",
-        );
-        let _stream = connector.join().unwrap();
-        let _ = std::fs::remove_file(path);
-    }
+            NEXT_ID.fetch_add(1, Ordering::Relaxed),
+        ));
+        let transport = UdsCommandServer::bind(path.clone(), crate::HOOKS, COMMAND_LIMITS).unwrap();
+        std::fs::remove_file(path).unwrap();
 
-    #[test]
-    fn listener_backlog_drain_honors_shutdown_before_next_client() {
-        let unique = format!(
-            "jasper-fanin-shutdown-{}-{}.sock",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-        );
-        let path = std::env::temp_dir().join(unique);
-        let listener = UnixListener::bind(&path).unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let _pending_client = UnixStream::connect(&path).unwrap();
-        let shutdown = AtomicBool::new(true);
+        let (mut client, server_stream) = UnixStream::pair().unwrap();
+        client.write_all(command).unwrap();
+        client.shutdown(Shutdown::Write).unwrap();
+        transport
+            .handle_connection(server_stream, |cmd| server.response_for_command(cmd))
+            .unwrap();
 
-        make_test_server().drain_ready_connections(&listener, &shutdown);
-
-        // The pending connection remains untouched: shutdown won over draining
-        // the ready backlog, so the outer run loop can exit promptly.
-        assert!(listener.accept().is_ok());
-        let _ = std::fs::remove_file(path);
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        response
     }
 
     fn make_test_server() -> StateServer {
@@ -1949,21 +1830,12 @@ mod tests {
 
     #[test]
     fn none_command_updates_selection() {
-        use std::io::{Read, Write};
-        use std::net::Shutdown;
-        use std::os::unix::net::UnixStream;
-
         let server = make_test_server();
         server.selected_input_index.store(1, Ordering::Relaxed);
-        let (mut client, server_stream) = UnixStream::pair().unwrap();
 
-        client.write_all(b"NONE\n").unwrap();
-        client.shutdown(Shutdown::Write).unwrap();
-        server.handle_connection(server_stream).unwrap();
+        let response = exchange(&server, b"NONE\n");
 
         assert_eq!(server.selected_input_index.load(Ordering::Relaxed), -2,);
-        let mut response = String::new();
-        client.read_to_string(&mut response).unwrap();
         assert!(response.contains(r#""selection_mode":"none""#));
         assert!(response.contains(r#""selected_input":null"#));
     }
@@ -2033,19 +1905,11 @@ mod tests {
 
     #[test]
     fn mute_command_over_socket_flips_lane() {
-        use std::io::{Read, Write};
-        use std::net::Shutdown;
-        use std::os::unix::net::UnixStream;
-
         let server = make_test_server();
-        let (mut client, server_stream) = UnixStream::pair().unwrap();
-        client.write_all(b"MUTE usbsink\n").unwrap();
-        client.shutdown(Shutdown::Write).unwrap();
-        server.handle_connection(server_stream).unwrap();
+
+        let response = exchange(&server, b"MUTE usbsink\n");
 
         assert!(server.inputs[2].muted.load(Ordering::Relaxed));
-        let mut response = String::new();
-        client.read_to_string(&mut response).unwrap();
         assert!(response.contains(r#""label":"usbsink""#));
         assert!(response.contains(r#""muted":true"#));
     }
@@ -2307,18 +2171,9 @@ mod tests {
     fn trim_command_via_handle_connection_replies_plaintext() {
         // Exercise the full socket dispatch for `TRIM <label>`: the reply is the
         // plain-text OK/ERR line, not a JSON snapshot.
-        use std::io::{Read, Write};
-        use std::net::Shutdown;
-        use std::os::unix::net::UnixStream;
-
         let server = make_test_server();
-        let (mut client, server_stream) = UnixStream::pair().unwrap();
-        client.write_all(b"TRIM spotify\n").unwrap();
-        client.shutdown(Shutdown::Write).unwrap();
         // No work loop here, so spotify's flag never clears -> timeout ERR.
-        server.handle_connection(server_stream).unwrap();
-        let mut response = String::new();
-        client.read_to_string(&mut response).unwrap();
+        let response = exchange(&server, b"TRIM spotify\n");
         assert!(
             response.starts_with("ERR trim not serviced within"),
             "got: {response}"
@@ -2559,18 +2414,9 @@ mod tests {
 
     #[test]
     fn tap_verbs_via_handle_connection_reply_plaintext() {
-        use std::io::{Read, Write};
-        use std::net::Shutdown;
-        use std::os::unix::net::UnixStream;
-
         let server = make_test_server();
         // TAP_DISARM over the socket → plaintext OK line (not a JSON snapshot).
-        let (mut client, server_stream) = UnixStream::pair().unwrap();
-        client.write_all(b"TAP_DISARM\n").unwrap();
-        client.shutdown(Shutdown::Write).unwrap();
-        server.handle_connection(server_stream).unwrap();
-        let mut response = String::new();
-        client.read_to_string(&mut response).unwrap();
+        let response = exchange(&server, b"TAP_DISARM\n");
         assert!(response.starts_with("OK disarmed"), "got: {response}");
     }
 }
