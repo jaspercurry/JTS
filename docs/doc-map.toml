@@ -434,7 +434,6 @@ code = [
   "jasper/web/wifi_setup.py",
   "jasper/wifi_scan_repair.py",
   "jasper/wifi_guardian_persistence.py",
-  "jasper/control/wifi_guardian_state.py",
   "deploy/bin/jasper-wifi-guardian",
   "deploy/bin/jasper-wifi-recover",
   "deploy/systemd/jasper-wifi-guardian.service",
