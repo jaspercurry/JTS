@@ -100,7 +100,6 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.mic_capture_channels == 1
     assert cfg.aec_chip_aec_enabled is False
     assert cfg.tts_device == "jasper_out"
-    assert cfg.tts_transport == "outputd"
     assert cfg.tts_outputd_socket == FANIN_TTS_SOCKET
     assert cfg.tts_output_rate == 48000
     assert cfg.assistant_loudness_profile_path == (
@@ -371,8 +370,6 @@ def test_google_setup_url_defaults_to_hostname(monkeypatch):
         ("JASPER_GEMINI_CONTEXT_RESET_SEC", "-1", "JASPER_GEMINI_CONTEXT_RESET_SEC"),
         ("JASPER_GROK_CONTEXT_RESET_SEC", "-1", "JASPER_GROK_CONTEXT_RESET_SEC"),
         ("JASPER_DAILY_SPEND_CAP_USD", "-1", "JASPER_DAILY_SPEND_CAP_USD"),
-        ("JASPER_TTS_TRANSPORT", "pipewire", "JASPER_TTS_TRANSPORT"),
-        ("JASPER_TTS_TRANSPORT", "sounddevice", "pre-outputd revision"),
         ("JASPER_VOLUME_REGRESS_AFTER_SEC", "0", "JASPER_VOLUME_REGRESS_AFTER_SEC"),
         ("JASPER_VOLUME_REGRESS_SAFE_LOW_PCT", "150", "JASPER_VOLUME_REGRESS_SAFE_LOW_PCT"),
         ("JASPER_VOLUME_REGRESS_SAFE_HIGH_PCT", "-1", "JASPER_VOLUME_REGRESS_SAFE_HIGH_PCT"),
@@ -387,12 +384,10 @@ def test_invalid_env_values_raise(monkeypatch, name, value, expected):
         Config.from_env()
 
 
-def test_tts_outputd_transport_env(monkeypatch):
+def test_tts_outputd_socket_env(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "x")
-    monkeypatch.setenv("JASPER_TTS_TRANSPORT", "outputd")
     monkeypatch.setenv(VOICE_TTS_SOCKET_ENV, "/tmp/jasper-outputd.sock")
     cfg = Config.from_env()
-    assert cfg.tts_transport == "outputd"
     assert cfg.tts_outputd_socket == "/tmp/jasper-outputd.sock"
 
 

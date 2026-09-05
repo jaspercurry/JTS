@@ -400,7 +400,6 @@ def test_voice_tts_socket_resolves_fanin_solo_and_outputd_when_bonded(monkeypatc
 
     solo = _resolve_systemd_unit_env(unit, {})
     solo_cfg = _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaSyTest", **solo)
-    assert solo_cfg.tts_transport == "outputd"
     assert solo_cfg.tts_outputd_socket == FANIN_TTS_SOCKET
     assert solo_cfg.duck_transport == "fanin"
 

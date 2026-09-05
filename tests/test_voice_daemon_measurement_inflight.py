@@ -626,7 +626,7 @@ async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
     """A later AUDIO failure cannot erase an earlier command's audible tail."""
 
     import jasper.audio_io as audio_io_mod
-    from jasper.audio_io import OutputdTtsPlayout
+    from jasper.audio_io import TtsPlayout
 
     class _FailSecondWrite:
         def __init__(self) -> None:
@@ -675,7 +675,7 @@ async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
     )
     monkeypatch.setattr(audio_io_mod, "asyncio", fake_asyncio)
 
-    tts = OutputdTtsPlayout(
+    tts = TtsPlayout(
         socket_path=tts_socket,
         output_rate=48000,
         gain_db=-8.0,
@@ -724,7 +724,7 @@ async def test_cancelled_mute_write_waits_for_acceptance_and_physical_tail(
     tts_socket: str,
 ) -> None:
     """Cancellation cannot outrun an uncancellable socket-write worker."""
-    from jasper.audio_io import OutputdTtsPlayout
+    from jasper.audio_io import TtsPlayout
 
     write_started = threading.Event()
     release_write = threading.Event()
@@ -749,7 +749,7 @@ async def test_cancelled_mute_write_waits_for_acceptance_and_physical_tail(
         def resume_content_meter(self) -> None:
             return None
 
-    tts = OutputdTtsPlayout(
+    tts = TtsPlayout(
         socket_path=tts_socket,
         output_rate=48000,
         gain_db=-8.0,
@@ -814,7 +814,7 @@ async def test_cancelled_cue_tail_retains_output_episode(
     """Accepted cue PCM keeps admin/proactive ownership under cancellation."""
 
     import jasper.audio_io as audio_io_mod
-    from jasper.audio_io import OutputdTtsPlayout
+    from jasper.audio_io import TtsPlayout
 
     monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     drain_started = asyncio.Event()
@@ -830,7 +830,7 @@ async def test_cancelled_cue_tail_retains_output_episode(
         def write(self, _data: bytes) -> None:
             return None
 
-    tts = OutputdTtsPlayout(
+    tts = TtsPlayout(
         socket_path=tts_socket,
         output_rate=48000,
         gain_db=-8.0,
@@ -1856,7 +1856,7 @@ async def test_cancelled_admin_cue_keeps_duck_until_physical_tail(
     import wave
 
     import jasper.audio_io as audio_io_mod
-    from jasper.audio_io import OutputdTtsPlayout
+    from jasper.audio_io import TtsPlayout
     from jasper.cues import AudioCueManager
     from jasper.cues.registry import find
 
@@ -1892,7 +1892,7 @@ async def test_cancelled_admin_cue_keeps_duck_until_physical_tail(
             )
             restored.set()
 
-    tts = OutputdTtsPlayout(
+    tts = TtsPlayout(
         socket_path=tts_socket,
         output_rate=48000,
         gain_db=-8.0,
@@ -2254,14 +2254,14 @@ async def test_uds_poisoned_meter_fails_closed_then_reconnects_on_next_access(
     """MEASURE_PAUSE never reconnects; a later ordinary control does once."""
 
     import jasper.audio_io as audio_io_mod
-    from jasper.audio_io import OutputdTtsPlayout
+    from jasper.audio_io import TtsPlayout
     from jasper.voice.daemon_main import _start_control_socket
 
     parent, child = socket.socketpair()
     poisoned = audio_io_mod._OutputdStreamAdapter(parent)
     poisoned.close()
     child.close()
-    tts = OutputdTtsPlayout(socket_path="/tmp/outputd-test.sock")
+    tts = TtsPlayout(socket_path="/tmp/outputd-test.sock")
     tts._stream = poisoned  # type: ignore[assignment]
     connect_calls = 0
 

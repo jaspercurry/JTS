@@ -197,16 +197,6 @@ def _validate(cfg: "Config") -> "Config":
         raise RuntimeError("JASPER_WEATHER_LAT must be between -90 and 90")
     if cfg.weather_default_lon is not None and not -180 <= cfg.weather_default_lon <= 180:
         raise RuntimeError("JASPER_WEATHER_LON must be between -180 and 180")
-    if cfg.tts_transport == "sounddevice":
-        raise RuntimeError(
-            "JASPER_TTS_TRANSPORT=sounddevice is not supported in this "
-            "outputd-loudness tree. Use JASPER_TTS_TRANSPORT=outputd, or "
-            "deploy a pre-outputd revision for rollback."
-        )
-    if cfg.tts_transport != "outputd":
-        raise RuntimeError(
-            "JASPER_TTS_TRANSPORT must be outputd"
-        )
     if cfg.duck_transport not in {"camilla", "fanin"}:
         raise RuntimeError("JASPER_DUCK_TRANSPORT must be camilla or fanin")
     if cfg.tts_outputd_socket == FANIN_TTS_SOCKET and cfg.duck_transport != "fanin":
@@ -285,7 +275,6 @@ class Config:
     wake_events_dir: str
     wake_events_max_audio_bytes: int
     tts_device: str
-    tts_transport: str
     tts_outputd_socket: str
     tts_output_rate: int
     assistant_loudness_profile_path: str
@@ -654,11 +643,10 @@ class Config:
             # sounddevice transport and sends assistant audio over the
             # local TTS IPC socket below.
             tts_device=_env("JASPER_TTS_DEVICE", "jasper_out"),
-            # TTS IPC transport. The transport name stays `outputd` for
+            # TTS IPC socket. The transport name stays `outputd` for
             # Python API compatibility with the line protocol, but the
             # packaged socket is fan-in so TTS/cues enter before
             # CamillaDSP crossover/protection on every output profile.
-            tts_transport=_env("JASPER_TTS_TRANSPORT", "outputd"),
             tts_outputd_socket=_env(
                 VOICE_TTS_SOCKET_ENV, FANIN_TTS_SOCKET,
             ),

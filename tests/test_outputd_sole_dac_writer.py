@@ -148,9 +148,6 @@ def test_voice_routes_assistant_audio_through_a_socket_not_the_dac():
     fan-in/outputd sockets, not the DAC" half of the invariant.
     """
     non_comment = "\n".join(_non_comment_lines(_unit_text("jasper-voice.service")))
-    assert 'Environment="JASPER_TTS_TRANSPORT=outputd"' in non_comment, (
-        "voice must declare the socket TTS transport"
-    )
     # The socket endpoint lives under a daemon runtime dir, never a hw device.
     socket_line = next(
         (

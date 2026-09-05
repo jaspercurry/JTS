@@ -17,12 +17,10 @@ before the last sample exits the DAC. The orchestrator (idle watchdog
 + play-loop) anchors end-of-turn on this primitive, so its math has
 to track real ring contents through write/idle/flush/append cycles.
 
-``expected_drain_at`` / ``wait_drained`` live on the base class and are
-exercised directly against a bare ``TtsPlayout`` — no stream needed,
-the deadline is a plain field. The ring-population side — the write
-path that advances the deadline as audio is queued — is subclass-owned
-(``OutputdTtsPlayout`` is the only production transport), so those
-cases drive it with a capturing fake stream (``_CaptureOutputdStream``)
+``expected_drain_at`` / ``wait_drained`` are exercised directly against a
+bare ``TtsPlayout`` — no stream needed, the deadline is a plain field.
+The ring-population side — the write path that advances the deadline as
+audio is queued — needs a capturing fake stream (``_CaptureOutputdStream``)
 instead of opening a real socket.
 """
 from __future__ import annotations
@@ -40,7 +38,7 @@ import pytest
 
 import jasper.audio_io as audio_io_mod
 from jasper.assistant_loudness import AssistantLoudnessProfile, LoudnessMeasurement
-from jasper.audio_io import OutputdTtsPlayout, TtsPlayout, make_tts_playout
+from jasper.audio_io import TtsPlayout
 
 from ._async_wait import wait_signalled
 
@@ -121,10 +119,10 @@ class _CaptureOutputdStream:
         pass
 
 
-def _make_outputd(*, drain_tail_sec: float = 0.0) -> OutputdTtsPlayout:
-    """OutputdTtsPlayout wired to a capturing fake stream, bypassing
+def _make_outputd(*, drain_tail_sec: float = 0.0) -> TtsPlayout:
+    """TtsPlayout wired to a capturing fake stream, bypassing
     __aenter__ (no real socket)."""
-    p = OutputdTtsPlayout(
+    p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
         gain_db=-8.0,
@@ -238,8 +236,8 @@ def test_drain_deadline_includes_chunk_and_tail():
     in `expected_drain_at` gets removed, this test fails).
 
     The ring deadline itself is set directly here — populating it as
-    audio is written is the write path's job, which is subclass-owned
-    and pinned separately below against OutputdTtsPlayout."""
+    audio is written is the write path's job, pinned separately below
+    via ``_make_outputd``."""
     p = TtsPlayout(drain_tail_sec=0.05)
     ring_end = time.monotonic() + 0.4
     p._ring_end_monotonic = ring_end
@@ -293,9 +291,8 @@ async def test_wait_drained_requests_the_full_remaining_deadline(monkeypatch):
 
 
 # The ring-population side of the drain primitive (deadline chaining across
-# busy writes, resetting when stale, the empty-write guard) is subclass-owned
-# — OutputdTtsPlayout is the only production write path — so these drive it
-# directly instead of the base class, via _make_outputd.
+# busy writes, resetting when stale, the empty-write guard) is exercised via
+# _make_outputd, with a capturing fake stream attached.
 
 
 async def test_drain_appends_when_speaker_busy():
@@ -347,54 +344,21 @@ async def test_drain_unchanged_after_empty_write():
     assert p.expected_drain_at() == 0.0
 
 
-def test_make_tts_playout_rejects_sounddevice_runtime_transport():
-    with pytest.raises(RuntimeError, match="pre-outputd revision"):
-        make_tts_playout(
-            transport="sounddevice",
-            output_rate=48000,
-            gain_db=-8.0,
-            drain_tail_sec=0.0,
-        )
-
-
-def test_make_tts_playout_can_select_outputd_transport():
-    p = make_tts_playout(
-        transport="outputd",
-        output_rate=48000,
-        gain_db=-8.0,
-        drain_tail_sec=0.0,
-        outputd_socket="/tmp/outputd-test.sock",
-    )
-    assert isinstance(p, OutputdTtsPlayout)
-    assert p._socket_path == "/tmp/outputd-test.sock"
-    assert p.expected_drain_at() == 0.0
-
-
-def test_make_tts_playout_rejects_unknown_transport():
-    with pytest.raises(ValueError, match="unknown TTS transport"):
-        make_tts_playout(
-            transport="pipewire",
-            output_rate=48000,
-            gain_db=-8.0,
-            drain_tail_sec=0.0,
-        )
-
-
 async def test_outputd_transport_requires_48khz_output_rate():
     with pytest.raises(RuntimeError, match="requires 48 kHz"):
-        OutputdTtsPlayout(
+        TtsPlayout(
             socket_path="/tmp/outputd-test.sock",
-            output_rate=OutputdTtsPlayout.INPUT_RATE,
+            output_rate=TtsPlayout.INPUT_RATE,
             gain_db=-8.0,
         )
 
 
 async def test_outputd_transport_sends_gain_metadata_without_pregain(monkeypatch):
     monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
-    p = OutputdTtsPlayout(
+    p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
-        gain_db=OutputdTtsPlayout.MIN_TTS_GAIN_DB,
+        gain_db=TtsPlayout.MIN_TTS_GAIN_DB,
         drain_tail_sec=0.0,
         # STATED, not inherited. The byte-level expectations below are S16, and
         # what the box the suite runs on RESOLVES is not this test's subject —
@@ -409,7 +373,7 @@ async def test_outputd_transport_sends_gain_metadata_without_pregain(monkeypatch
     mono = np.array([10000, -10000], dtype=np.int16)
     await p.write(mono.tobytes())
 
-    assert stream.gains == [OutputdTtsPlayout.MIN_TTS_GAIN_DB]
+    assert stream.gains == [TtsPlayout.MIN_TTS_GAIN_DB]
     assert stream.segments_started == [("assistant", None, None)]
     assert stream.writes == [
         np.array([10000, 10000, -10000, -10000], dtype=np.int16).tobytes()
@@ -421,7 +385,7 @@ async def test_outputd_transport_chunks_long_payloads_on_frame_boundaries(monkey
 
     monkeypatch.setattr(audio_io_mod, "_OUTPUTD_MAX_AUDIO_CHUNK_BYTES", 8)
     monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
-    p = OutputdTtsPlayout(
+    p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
         gain_db=-8.0,
@@ -457,7 +421,7 @@ async def test_outputd_partial_write_keeps_accepted_prefix_in_drain_ledger(
 
     monkeypatch.setattr(audio_io_mod, "_OUTPUTD_MAX_AUDIO_CHUNK_BYTES", 8)
     monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
-    p = OutputdTtsPlayout(
+    p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
         gain_db=-8.0,
@@ -478,7 +442,7 @@ async def test_outputd_partial_write_keeps_accepted_prefix_in_drain_ledger(
 
 async def test_outputd_transport_sends_provider_segment_identity(monkeypatch):
     monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
-    p = OutputdTtsPlayout(
+    p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
         gain_db=-8.0,
@@ -519,7 +483,7 @@ async def test_outputd_transport_caches_loudness_profile_between_chunks(monkeypa
         return profile
 
     monkeypatch.setattr(audio_io_mod, "profile_for_outputd", fake_profile)
-    p = OutputdTtsPlayout(
+    p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
         gain_db=-8.0,
@@ -557,7 +521,7 @@ async def test_outputd_transport_uses_explicit_source_profile(monkeypatch):
         updated_at="static",
         method="synthetic_generated",
     )
-    p = OutputdTtsPlayout(
+    p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
         gain_db=-8.0,
@@ -582,7 +546,7 @@ async def test_outputd_transport_uses_explicit_source_profile(monkeypatch):
 
 async def test_outputd_flush_returns_ack_and_resets_drain_deadline(monkeypatch):
     monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
-    p = OutputdTtsPlayout(
+    p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
         gain_db=-8.0,
@@ -613,7 +577,7 @@ async def test_outputd_flush_silences_before_saving_profile(monkeypatch):
     async def fake_save_profile(meter) -> None:
         events.append("save")
 
-    p = OutputdTtsPlayout(
+    p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
         gain_db=-8.0,
@@ -643,7 +607,7 @@ async def test_outputd_end_segment_marks_ended_before_saving_profile(monkeypatch
     async def fake_save_profile(meter) -> None:
         events.append("save")
 
-    p = OutputdTtsPlayout(
+    p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
         gain_db=-8.0,
@@ -689,7 +653,7 @@ async def test_outputd_end_segment_does_not_block_on_slow_meter_finish(monkeypat
             time.sleep(0.3)
             return measurement
 
-    p = OutputdTtsPlayout(
+    p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
         gain_db=-8.0,
@@ -846,7 +810,7 @@ async def test_outputd_connect_timeout_closes_blocked_socket(
 
     fake_socket = _BlockingSocket()
     monkeypatch.setattr(audio_io_mod.socket, "socket", lambda *_a, **_k: fake_socket)
-    p = OutputdTtsPlayout(socket_path="/tmp/nonresponsive-outputd.sock")
+    p = TtsPlayout(socket_path="/tmp/nonresponsive-outputd.sock")
 
     with pytest.raises(TimeoutError, match="connect timed out"):
         await p._connect_stream_adapter()
@@ -862,7 +826,7 @@ async def test_meter_control_recovers_on_access_after_stuck_lock(
     monkeypatch.setattr(audio_io_mod, "_OUTPUTD_IPC_LOCK_TIMEOUT_SEC", 0.01)
     parent, child = socket.socketpair()
     adapter = audio_io_mod._OutputdStreamAdapter(parent)
-    p = OutputdTtsPlayout(socket_path="/tmp/outputd-test.sock")
+    p = TtsPlayout(socket_path="/tmp/outputd-test.sock")
     p._stream = adapter  # type: ignore[assignment]
     adapter._lock.acquire()
     try:
@@ -892,7 +856,7 @@ async def test_closed_outputd_adapter_reconnect_is_single_publisher(
     closed_stream = audio_io_mod._OutputdStreamAdapter(parent)
     closed_stream.close()
     child.close()
-    p = OutputdTtsPlayout(socket_path="/tmp/outputd-test.sock")
+    p = TtsPlayout(socket_path="/tmp/outputd-test.sock")
     p._stream = closed_stream  # type: ignore[assignment]
     connect_entered = asyncio.Event()
     release_connect = asyncio.Event()
@@ -942,7 +906,7 @@ async def test_measurement_meter_pause_has_250ms_cap_and_no_late_send() -> None:
     adapter = audio_io_mod._OutputdStreamAdapter(parent)
     lock = _RefusingLock()
     adapter._lock = lock  # type: ignore[assignment]
-    p = OutputdTtsPlayout(socket_path="/tmp/outputd-test.sock")
+    p = TtsPlayout(socket_path="/tmp/outputd-test.sock")
     p._stream = adapter  # type: ignore[assignment]
 
     with pytest.raises(TimeoutError, match="adapter lock timed out"):
@@ -972,7 +936,7 @@ async def test_cancelled_nonreading_audio_write_is_bounded_and_reconnects(
     parent.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
     child.settimeout(0.5)
     adapter = audio_io_mod._OutputdStreamAdapter(parent)
-    p = OutputdTtsPlayout(
+    p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
         gain_db=-8.0,
@@ -1074,7 +1038,7 @@ def test_outputd_stream_adapter_sends_loudness_control_protocol():
 
 async def test_outputd_transport_reconnects_after_closed_socket(monkeypatch):
     monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
-    p = OutputdTtsPlayout(
+    p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
         gain_db=-8.0,
@@ -1110,7 +1074,7 @@ async def test_outputd_transport_reconnects_and_retries_after_broken_pipe(
     monkeypatch,
 ):
     monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
-    p = OutputdTtsPlayout(
+    p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
         gain_db=-8.0,
@@ -1145,7 +1109,7 @@ async def test_outputd_transport_reconnects_and_retries_after_broken_pipe(
 async def test_outputd_prepare_reconnects_and_retries_after_broken_pipe(
     monkeypatch,
 ):
-    p = OutputdTtsPlayout(
+    p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
         gain_db=-8.0,
@@ -1178,7 +1142,7 @@ async def test_outputd_prepare_reconnects_and_retries_after_broken_pipe(
 
 
 async def test_outputd_prepare_preserves_snapshot_stamp() -> None:
-    p = OutputdTtsPlayout(
+    p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
         gain_db=-8.0,
@@ -1213,7 +1177,7 @@ async def test_outputd_prepare_preserves_snapshot_stamp() -> None:
 async def test_outputd_prepare_reconnect_failure_is_best_effort(
     monkeypatch,
 ):
-    p = OutputdTtsPlayout(
+    p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
         gain_db=-8.0,
@@ -1243,7 +1207,7 @@ async def test_outputd_prepare_reconnect_failure_is_best_effort(
 async def test_outputd_meter_control_reconnects_and_retries_after_broken_pipe(
     monkeypatch,
 ):
-    p = OutputdTtsPlayout(
+    p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
         gain_db=-8.0,
@@ -1271,7 +1235,7 @@ async def test_outputd_meter_control_reconnects_and_retries_after_broken_pipe(
 async def test_outputd_meter_control_reconnect_failure_is_best_effort(
     monkeypatch,
 ):
-    p = OutputdTtsPlayout(
+    p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
         gain_db=-8.0,

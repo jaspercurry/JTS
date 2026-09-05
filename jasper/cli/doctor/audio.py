@@ -522,7 +522,7 @@ def check_tts_open(cfg: Config) -> CheckResult:
     device races the running jasper-voice writer and yields false "can't open"
     errors while TTS works. `query_devices` confirms the device exists in
     PortAudio's enumeration with output channels available."""
-    if cfg.tts_transport == "outputd":
+    if True:
         socket_path = cfg.tts_outputd_socket
         sock: socket.socket | None = None
         try:

@@ -12,7 +12,6 @@ from jasper.tts_routing import (
     DUCK_TRANSPORT_ENV,
     FANIN_TTS_SOCKET,
     OUTPUTD_TTS_SOCKET_ENV,
-    TTS_TRANSPORT_ENV,
     VOICE_TTS_SOCKET_ENV,
 )
 from tests.install_surface import installer_text
@@ -182,7 +181,6 @@ def test_voice_unit_routes_tts_to_fanin_pre_dsp_on_mainline():
     assert "jasper-fanin.service" in _values_for(unit, "Wants")
     assert "jasper-outputd.service" in _values_for(unit, "Wants")
     assert "jasper-accessory-reconcile.service" in _values_for(unit, "Wants")
-    assert f'Environment="{TTS_TRANSPORT_ENV}=outputd"' in unit
     assert f'Environment="{VOICE_TTS_SOCKET_ENV}={FANIN_TTS_SOCKET}"' in unit
     assert f'Environment="{DUCK_TRANSPORT_ENV}=fanin"' in unit
     assert "EnvironmentFile=-/var/lib/jasper/tts.env" not in unit
