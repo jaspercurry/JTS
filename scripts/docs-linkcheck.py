@@ -7,7 +7,9 @@
 """Check local Markdown links and anchors in changed Markdown files.
 
 This is a PR-fast check. It intentionally ignores external URLs and only
-checks links in Markdown files touched by the diff unless --all is passed.
+checks links in Markdown files touched by the diff unless --all is passed,
+or the diff renames or deletes a file (an inbound link from an untouched
+file would otherwise go unchecked).
 """
 
 from __future__ import annotations
@@ -63,13 +65,19 @@ def repo_path(path: str) -> str:
     return path.strip().removeprefix("./")
 
 
-def changed_files_from_git(base: str | None, head: str | None) -> tuple[str, ...]:
+def changed_files_from_git(base: str | None, head: str | None) -> tuple[tuple[str, ...], bool]:
+    """Touched paths, and whether any change is a rename or delete.
+
+    A rename/delete has no post-diff content of its own to link-check, but it
+    can still break an inbound link from a file this diff never touches --
+    the caller falls back to --all rather than missing that.
+    """
     if base and head:
-        args = ["git", "diff", "--name-only", f"{base}...{head}"]
+        args = ["git", "diff", "--name-status", f"{base}...{head}"]
     elif base:
-        args = ["git", "diff", "--name-only", base]
+        args = ["git", "diff", "--name-status", base]
     else:
-        args = ["git", "diff", "--name-only", "HEAD"]
+        args = ["git", "diff", "--name-status", "HEAD"]
     result = subprocess.run(
         args,
         cwd=ROOT,
@@ -78,7 +86,16 @@ def changed_files_from_git(base: str | None, head: str | None) -> tuple[str, ...
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    return tuple(repo_path(line) for line in result.stdout.splitlines() if line.strip())
+    paths: list[str] = []
+    has_rename_or_delete = False
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        status, _, rest = line.partition("\t")
+        if status[:1] in "RD":
+            has_rename_or_delete = True
+        paths.extend(repo_path(path) for path in rest.split("\t") if path)
+    return tuple(paths), has_rename_or_delete
 
 
 def markdown_files(paths: tuple[str, ...], *, include_deleted: bool = False) -> tuple[Path, ...]:
@@ -292,9 +309,17 @@ def main(argv: list[str] | None = None) -> int:
             files = all_markdown_files()
         else:
             changed = tuple(repo_path(path) for path in args.changed_file)
-            if not changed:
-                changed = changed_files_from_git(args.base, args.head)
-            files = markdown_files(changed)
+            if changed:
+                files = markdown_files(changed)
+            else:
+                changed, has_rename_or_delete = changed_files_from_git(
+                    args.base, args.head
+                )
+                files = (
+                    all_markdown_files()
+                    if has_rename_or_delete
+                    else markdown_files(changed)
+                )
 
         if not files:
             print("docs-linkcheck: no changed Markdown files to check")

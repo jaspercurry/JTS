@@ -126,6 +126,9 @@ def test_lane_decision_table(
         ("X", ("README.md",), "full"),
         ("R100", ("deploy/old-index.html", "deploy/index.html"), "full"),
         ("R100", ("docs/HANDOFF-old.md", "docs/HANDOFF-new.md"), "docs"),
+        # A rename whose content also changed (similarity < 100%) is gated
+        # the same as a pure rename.
+        ("R087", ("docs/HANDOFF-old.md", "docs/HANDOFF-changed.md"), "docs"),
         ("R100", (_DOC, "jasper/control/server.py"), "full"),
         ("C100", ("deploy/source.html", "deploy/index.html"), "full"),
     ],

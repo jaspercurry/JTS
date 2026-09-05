@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -86,6 +87,44 @@ def test_missing_anchor_fails(tmp_path):
 
     assert len(issues) == 1
     assert issues[0].message == "markdown anchor missing"
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ).stdout.strip()
+
+
+def test_a_deleted_doc_falls_back_to_checking_the_whole_tree(tmp_path):
+    """A delete has no post-diff content of its own to check, but an
+    untouched file's now-broken inbound link must still be caught (#4036)."""
+    docs_linkcheck = load_docs_linkcheck()
+    docs_linkcheck.ROOT = tmp_path.resolve()
+
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.email", "tests@example.invalid")
+    _git(tmp_path, "config", "user.name", "JTS Tests")
+    _git(tmp_path, "config", "commit.gpgsign", "false")
+
+    (tmp_path / "a.md").write_text("# A\n", encoding="utf-8")
+    (tmp_path / "keep.md").write_text("[to a](a.md)\n", encoding="utf-8")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "base")
+    base = _git(tmp_path, "rev-parse", "HEAD")
+
+    (tmp_path / "a.md").unlink()
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "delete a.md")
+    head = _git(tmp_path, "rev-parse", "HEAD")
+
+    # keep.md is untouched by the diff, so a plain changed-files check would
+    # never look at its now-broken link to the deleted a.md.
+    assert docs_linkcheck.main(["--base", base, "--head", head]) == 1
 
 
 def test_external_links_are_ignored(tmp_path):

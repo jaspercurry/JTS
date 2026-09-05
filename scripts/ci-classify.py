@@ -74,6 +74,9 @@ DOCS_HAND_REGISTERED_READERS = {
     "tests/test_run_wake_training_phase0.py": (
         "CWD-relative README hashed by an importlib-loaded script"
     ),
+    "tests/test_tuning_tool_menu_generator.py": (
+        "RUNBOOK read via an attribute on an importlib-loaded script"
+    ),
 }
 # Registered tests that read documentation.  Keep sorted.  Over-registering is
 # safe (a few seconds of bundle runtime); under-registering would let a prose
@@ -94,6 +97,7 @@ DOCS_TEST_FILES = (
     "tests/test_prepare_wake_livekit_smoke.py",
     "tests/test_prepare_wake_training_workdir.py",
     "tests/test_run_wake_training_phase0.py",
+    "tests/test_tuning_tool_menu_generator.py",
     "tests/test_usb_turntable_experiment.py",
     "tests/test_voice_eval_registry.py",
     "tests/test_wake_review.py",
@@ -244,8 +248,7 @@ def classify(event_name: str, changes: Sequence[Change]) -> Decision:
     for change in frozen:
         if change.status in {"A", "M"}:
             continue
-        # A docs-only rename/delete used to fall through to `full` and skip
-        # docs-linkcheck, the required check that catches a broken link (#4036).
+        # See #4036.
         if (change.status.startswith("R") or change.status == "D") and all(
             is_docs_lane_path(path) for path in change.paths
         ):
