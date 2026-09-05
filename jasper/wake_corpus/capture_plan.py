@@ -970,6 +970,7 @@ def build_capture_plan(
     effective_include_usb_mic = include_usb_mic or (
         include_aec3_sweep and sweep_source == AEC3_SWEEP_SOURCE_USB
     )
+    supplied_snapshot = runtime_snapshot is not None
     if runtime_snapshot is None:
         try:
             runtime_snapshot = _capture_plan_runtime_snapshot()
@@ -1038,7 +1039,12 @@ def build_capture_plan(
             runtime_snapshot.get("runtime_audio_env")
             if isinstance(runtime_snapshot, Mapping) else None
         )
-        if active_audio_profile is None or runtime_audio_env is None:
+        # Only a caller-supplied snapshot can be missing the overlay while the
+        # hardware is still readable; the probe above has already answered for
+        # every other case, and re-running it just spawns systemctl twice.
+        if supplied_snapshot and (
+            active_audio_profile is None or runtime_audio_env is None
+        ):
             active_audio_profile, runtime_audio_env = _capture_plan_runtime_context()
     required_env = _bridge_env_overrides_for_request(
         system_env=system_env,

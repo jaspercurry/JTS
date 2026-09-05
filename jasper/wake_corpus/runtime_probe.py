@@ -51,6 +51,7 @@ from jasper.cli.aec_bridge_engines import (
 )
 from jasper.cli.aec_bridge_telemetry import BRIDGE_STATS_PATH_ENV
 from jasper.log_event import log_event
+from jasper.mics import xvf3800
 from jasper.mics.xvf3800 import (
     AEC_MIC_DEVICE_ENV,
     CORPUS_CHIP_AEC_ENABLED_ENV,
@@ -218,10 +219,6 @@ def chip_ref_pcm_for_env(env: Mapping[str, Any] | None = None) -> str:
                 card = aec_mic
     if card:
         return f"plughw:CARD={card},DEV=0"
-    try:
-        from jasper.mics import xvf3800
-    except Exception:  # noqa: BLE001 - constants should remain import-safe
-        return DEFAULT_CHIP_REF_PCM
     return f"plughw:CARD={xvf3800.detect_runtime_profile().alsa_card_name},DEV=0"
 
 BRIDGE_OUTPUT_LABELS = {
@@ -422,8 +419,6 @@ def mic_probe_and_identity() -> tuple[MicProbe, dict[str, Any]]:
     writes, just the XVF USB/card facts already used for profile truth.
     """
     try:
-        from jasper.mics import xvf3800
-
         runtime_profile = xvf3800.detect_runtime_profile()
         xvf_present = runtime_profile.present
         capture_channels = runtime_profile.capture_channels

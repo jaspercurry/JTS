@@ -56,6 +56,18 @@ from jasper.wake_conditions import (
 from jasper.wake_ports import build_ports
 
 from .bridge_session import (
+    _default_enabled_legs,
+    build_capture_health,
+    build_session_audio_context,
+    chip_aec_config_metadata,
+    exit_corpus_test_mode,
+)
+from .capture_plan import (
+    CAPTURE_PLAN_STATE_SESSION,
+    build_capture_plan,
+    validate_active_capture_plan,
+)
+from .runtime_probe import (
     CORPUS_PROFILES,
     DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE,
     DTLN_LEG,
@@ -64,18 +76,8 @@ from .bridge_session import (
     RAW0_LEG,
     USB_DTLN_LEG,
     XVF_RAW0_DTLN_LEG,
-    _default_enabled_legs,
-    _session_aec3_sweep_source,
-    build_capture_health,
-    build_session_audio_context,
-    chip_aec_config_metadata,
-    exit_corpus_test_mode,
     read_bridge_stats_snapshot,
-)
-from .capture_plan import (
-    CAPTURE_PLAN_STATE_SESSION,
-    build_capture_plan,
-    validate_active_capture_plan,
+    session_aec3_sweep_source,
 )
 from . import session_store
 
@@ -991,7 +993,7 @@ class RecordingBackend:
             sweep_source = AEC3_SWEEP_SOURCE_XVF
         else:
             sweep_source = (
-                _session_aec3_sweep_source(aec3_sweep_source)
+                session_aec3_sweep_source(aec3_sweep_source)
                 if include_aec3_sweep else AEC3_SWEEP_SOURCE_XVF
             )
         effective_include_usb_mic = include_usb_mic or (

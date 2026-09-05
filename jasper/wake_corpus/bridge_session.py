@@ -52,61 +52,59 @@ from jasper.web._common import (
     write_env_file,
 )
 from . import runtime_probe
-from .capture_plan import (
+# Both blocks carry names this module only re-exports: the thin
+# ``jasper.web.wake_corpus_setup`` HTTP adapter and ``session_store`` import
+# the recorder's whole public surface through here, so the statement-wide
+# noqa covers them alongside the names used below.
+from .capture_plan import (  # noqa: F401
+    CAPTURE_PLAN_SCHEMA_VERSION,
     CAPTURE_PLAN_STATE_SESSION,
     WakeCorpusCapturePlan,
     build_capture_plan,
+    validate_active_capture_plan,
 )
-from .runtime_probe import (
+from .runtime_probe import (  # noqa: F401
     AEC3_SWEEP_LEGS,
+    AEC_MODE_PATH,
+    AUDIO_VALIDATION_ARTIFACT_PATH,
     BASE_LEGS,
+    BRIDGE_CORPUS_ENV_PATH,
     BRIDGE_CORPUS_OUTPUT_VARS,
+    BRIDGE_OUTPUT_LABELS,
+    BRIDGE_STATS_PATH,
     BRIDGE_UNIT,
     CHIP_AEC_LEGS,
+    CHIP_AEC_PROFILE_BASE_LEGS,
     CORPUS_PROFILES,
     DEFAULT_CHIP_REF_BUFFER_FRAMES,
+    DEFAULT_CHIP_REF_PCM,
     DEFAULT_CHIP_REF_PERIOD_FRAMES,
     DEFAULT_CHIP_REF_SAMPLE_RATE,
+    DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE,
     DEFAULT_USB_MIC_DEVICE,
     DTLN_LEG,
+    LEG_LABELS,
     LEGACY_AEC3_SWEEP_LEGS,
     LEGS,
+    OUTPUTD_REF_UDP_PORT,
     OUTPUTD_REF_UDP_TARGET,
     PROFILE_CHIP_AEC_COMPARISON,
     PROFILE_STANDARD,
     RAW0_LEG,
+    SYSTEM_ENV_PATH,
     UNIT_STATE_TIMEOUT_SEC,
     USB_CORPUS_LEGS,
     USB_DTLN_LEG,
-    leg_detail,
-    legacy_aec3_sweep_source as _legacy_aec3_sweep_source,
-    missing_bridge_outputs_from_required,
-    required_bridge_outputs_for_request,
-    session_aec3_sweep_source as _session_aec3_sweep_source,
-    session_legs,
-)
-# Re-exports only: ``jasper.web.wake_corpus_setup`` imports the recorder's
-# whole public surface through this module.
-from .capture_plan import (  # noqa: F401
-    CAPTURE_PLAN_SCHEMA_VERSION,
-    validate_active_capture_plan,
-)
-from .runtime_probe import (  # noqa: F401
-    AEC_MODE_PATH,
-    AUDIO_VALIDATION_ARTIFACT_PATH,
-    BRIDGE_CORPUS_ENV_PATH,
-    BRIDGE_OUTPUT_LABELS,
-    BRIDGE_STATS_PATH,
-    CHIP_AEC_PROFILE_BASE_LEGS,
-    DEFAULT_CHIP_REF_PCM,
-    DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE,
-    LEG_LABELS,
-    OUTPUTD_REF_UDP_PORT,
-    SYSTEM_ENV_PATH,
     XVF_RAW0_DTLN_LEG,
     aec_bridge_active,
     bridge_output_status,
+    leg_detail,
+    legacy_aec3_sweep_source as _legacy_aec3_sweep_source,
+    missing_bridge_outputs_from_required,
     read_bridge_stats_snapshot,
+    required_bridge_outputs_for_request,
+    session_aec3_sweep_source as _session_aec3_sweep_source,
+    session_legs,
     validation_artifact_summary as _validation_artifact_summary,
 )
 

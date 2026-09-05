@@ -115,11 +115,9 @@ from jasper.wake_ports import (  # noqa: F401 - re-exported for tests/consumers
 )
 from jasper.audio_profile_state import MicProbe  # noqa: F401 - re-exported
 
-# Recording engine + bridge orchestration now live in the package.
-# `bridge_session` is imported as a module so the HTTP handler can call
-# the test-patchable systemctl/voice/bridge seams through it — a single
-# `monkeypatch.setattr(bridge_session, NAME, ...)` then covers both the
-# handler's call and any inter-function call inside the bridge layer.
+# `bridge_session` is imported as a module so the handler's voice/bridge
+# calls stay patchable on it; the env and hardware probe seams live in
+# `jasper.wake_corpus.runtime_probe` and are patched there instead.
 from jasper.wake_corpus import bridge_session
 from jasper.wake_corpus.bridge_session import (  # noqa: F401 - re-exported
     AEC3_SWEEP_LEGS,
