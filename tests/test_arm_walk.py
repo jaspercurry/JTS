@@ -1098,6 +1098,36 @@ def test_a_hold_that_cannot_be_parsed_is_never_moved_for(pending):
     assert aw.pending_from_capture({"position_pending": pending}) is None
 
 
+def _held(**extra):
+    return {"capture": {"status": "running", "position_pending": {
+        "index": 1, "attempt": 1, "degrees": 22, "role": "onax", **extra}}}
+
+
+def test_a_hold_a_person_will_release_is_never_the_arms_to_take():
+    """The arm's half of the check the browser already makes on this flag.
+
+    Nothing stops a `serve` running beside a browser-paced round: its pre-flight
+    asks only whether A walk is staged, never whose. Without this the turntable
+    turns, and releases the hold, while a household is standing at the
+    microphone. Run at the SHIPPED clocks, because the outcome has to be the
+    named refusal rather than the stuck alarm those defaults would reach first.
+    """
+    mover = FakeMover()
+    trail = _RecordingTrail()
+    walk = _walk(mover, FakeSession([aw.poll_from_status(_held(hand_released=True))]),
+                 trail=trail, idle_ceiling_s=aw.DEFAULT_IDLE_CEILING_S,
+                 stuck_alarm_s=aw.DEFAULT_STUCK_ALARM_S)
+
+    assert walk.run() == aw.EXIT_REFUSED
+    assert mover.moves == [0]  # the park, and no walk move
+    assert trail.one("hand_released")
+    # The arm's OWN holds are unaffected, whether or not they state the flag.
+    for capture in (_held(), _held(hand_released=False)):
+        poll = aw.poll_from_status(capture)
+        assert poll.pending == aw.Pending(1, 1, 22, "onax")
+        assert poll.hand_released is False
+
+
 def test_a_failed_capture_carries_its_own_error():
     poll = aw.poll_from_status({"capture": {"status": "failed", "error": "boom"}})
     assert poll.failed_error == "boom"
