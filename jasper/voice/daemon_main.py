@@ -629,11 +629,10 @@ async def _serve_while_connecting(
 
     Hearing must not wait on the WAN: mics, cues and ``READY=1`` are up
     before this is reached, so a boot with the link down answers a wake
-    with a cue instead of silence. A terminal first connect returns
-    normally and leaves the daemon serving
-    (``survive_terminal_initial_connect``); a transient budget
-    exhaustion raises so the process exits non-zero and systemd grants
-    another full budget — see deploy/systemd/jasper-voice.service.
+    with a cue instead of silence. A connect that raises (a config or
+    setup error the supervisor cannot retry past) ends the run; one that
+    returns leaves the daemon serving. Whichever finishes first, the
+    other is cancelled on the way out.
     """
     connect_task = asyncio.create_task(connect())
     serve_task = asyncio.create_task(serve())

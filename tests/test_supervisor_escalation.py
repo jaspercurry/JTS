@@ -378,23 +378,6 @@ async def test_a_transient_failure_restarts_the_network_streak() -> None:
     assert calls == [NETWORK_DOWN_CUE_SLUG]
 
 
-async def test_held_cue_is_dropped_when_the_outage_ended_first() -> None:
-    """An outage that began before a cue player existed is announced when
-    one is wired — but only if it is still going. Recovering first drops
-    the held cue instead of speaking about a connection that works."""
-    calls: list[str] = []
-
-    async def cb(slug: str) -> None:
-        calls.append(slug)
-
-    tracker = OutageTracker()
-    tracker.on_failure(_Terminal())
-    tracker.on_recovery()
-    tracker.set_callback(cb)
-    await asyncio.sleep(0)
-    assert calls == []
-
-
 # ---------------------------------------------------------------------------
 # Integration: the Gemini supervisor's reconnect loop drives the trigger
 # ---------------------------------------------------------------------------

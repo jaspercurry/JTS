@@ -1786,9 +1786,8 @@ async def test_terminal_initial_connect_stays_up_and_heals():
     """A terminal first connect (403, account blocked) must not kill the
     daemon — the reconnect path survives the same rejection, so start()
     must too. It returns with the supervisor running, the outage visible
-    on the fields `/state` reads, the escalation cue announced once (the
-    daemon wires the cue player only after start()), and self-healing
-    once the provider accepts."""
+    on the fields `/state` reads, the escalation cue announced once, and
+    self-healing once the provider accepts."""
     factory = _FakeConnectFactory()
 
     class _Blocked(Exception):
@@ -1806,6 +1805,9 @@ async def test_terminal_initial_connect_stays_up_and_heals():
         cue_calls.append(slug)
 
     registry = ToolRegistry()
+    # Wired before the connect, as the daemon does: cue playback is up
+    # before `start()` is called at all.
+    conn.set_failure_escalation_cb(cue_cb)
     await conn.start(registry, "")
     try:
         # No await between start() and these — the supervisor task is
@@ -1814,7 +1816,6 @@ async def test_terminal_initial_connect_stays_up_and_heals():
         assert conn.is_paused()
         assert isinstance(conn.last_failure_detail(), str)
 
-        conn.set_failure_escalation_cb(cue_cb)
         await _wait_until(lambda: cue_calls == [NEEDS_ATTENTION_CUE_SLUG])
         await _wait_until(
             lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0,
@@ -1849,13 +1850,13 @@ async def test_setup_rejection_on_initial_connect_stays_up(conn_cls):
     async def cue_cb(slug: str) -> None:
         cue_calls.append(slug)
 
+    conn.set_failure_escalation_cb(cue_cb)
     await conn.start(ToolRegistry(), "")
     try:
         assert conn._supervisor_task is not None
         assert conn.is_paused()
         assert isinstance(conn.last_failure_detail(), str)
 
-        conn.set_failure_escalation_cb(cue_cb)
         await _wait_until(lambda: cue_calls == [NEEDS_ATTENTION_CUE_SLUG])
     finally:
         await conn.stop()

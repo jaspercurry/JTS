@@ -124,12 +124,11 @@ def test_priced_research_model_does_not_warn(caplog) -> None:
 
 
 async def test_background_connect_failure_ends_the_run() -> None:
-    """A transient initial-connect budget exhaustion must still end `run()`
-    non-zero: a fresh process is what buys the next full budget (see
-    deploy/systemd/jasper-voice.service)."""
+    """Backgrounding the connect must not swallow it: a failure the
+    supervisor cannot retry past still ends `run()` non-zero."""
 
     async def _connect() -> None:
-        raise RuntimeError("initial connect budget exhausted")
+        raise RuntimeError("connect failed")
 
     async def _serve() -> None:
         await asyncio.sleep(3600)
@@ -138,9 +137,9 @@ async def test_background_connect_failure_ends_the_run() -> None:
         await _serve_while_connecting(_connect, _serve)
 
 
-async def test_terminal_connect_leaves_the_daemon_serving() -> None:
-    """A terminal rejection returns normally from `start()` — the speaker
-    keeps hearing and cues the outage instead of restart-looping."""
+async def test_a_connect_that_returns_leaves_the_daemon_serving() -> None:
+    """A connect handed over to the reconnect supervisor returns normally
+    — the speaker keeps hearing and cues the outage, it does not exit."""
     stop = asyncio.Event()
 
     async def _connect() -> None:

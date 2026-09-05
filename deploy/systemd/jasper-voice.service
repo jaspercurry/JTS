@@ -198,13 +198,11 @@ WorkingDirectory=/opt/jasper
 # non-zero from its initial-connect path was NOT restarted. That
 # directly caused the 2026-05-23 silent-dead outage where the
 # voice loop's OpenAI initial-connect retry budget exhausted
-# during a WiFi-recovery window. The initial-connect path uses a
-# 10-minute time budget (see jasper/voice/openai_session.py:
-# ``DEFAULT_INITIAL_CONNECT_BUDGET_SEC``) and runs in the
-# background AFTER `READY=1`, so the default 90 s start timeout
-# cannot cut the budget short; exhaustion exits non-zero so
-# systemd's outer loop (this `Restart=on-failure` + the
-# StartLimitBurst above) grants another full budget.
+# during a WiFi-recovery window. The initial-connect path now
+# uses a 10-minute time budget (see jasper/voice/openai_session.py:
+# ``DEFAULT_INITIAL_CONNECT_BUDGET_SEC``) and exits non-zero on
+# exhaustion so systemd's outer loop (this `Restart=on-failure` +
+# the StartLimitBurst above) grants another full budget.
 Restart=on-failure
 # Two exit codes mean "intentionally idle, not a crash" — park the unit
 # cleanly (treated as success, no auto-restart) so neither can consume the
