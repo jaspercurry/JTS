@@ -24,23 +24,27 @@
 # The first poll logs the current value as "initial"; subsequent
 # polls log only on change. Resets are also logged so the journal
 # shows what self-healing happened and when.
+#
+# WHICH attached cards are Apple is the classifier's answer, asked
+# through its env emitter (ADR-0235 R2). That emitter is a Python
+# spawn and the reconciler deliberately never re-execs this unit, so
+# the set is re-asked on a card change, not per poll (ADR-0226).
 
 set -uo pipefail
 
 CONFIGURED_CARD="${1:-auto}"
 CONTROL="${2:-Headphone}"
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-APPLE_DONGLE_LIB="${JASPER_APPLE_DONGLE_LIB:-}"
-if [[ -z "$APPLE_DONGLE_LIB" ]]; then
-    if [[ -r "${SCRIPT_DIR}/../lib/jasper-apple-dongle.sh" ]]; then
-        APPLE_DONGLE_LIB="${SCRIPT_DIR}/../lib/jasper-apple-dongle.sh"
-    else
-        APPLE_DONGLE_LIB="/usr/local/lib/jasper/jasper-apple-dongle.sh"
-    fi
+# The same board seams the classifier itself reads through.
+SYS_CLASS_SOUND="${JASPER_SYS_CLASS_SOUND:-/sys/class/sound}"
+PROC_ASOUND="${JASPER_PROC_ASOUND:-/proc/asound}"
+DEFAULT_PYTHON="python3"
+if [[ -x /opt/jasper/.venv/bin/python ]]; then
+    DEFAULT_PYTHON="/opt/jasper/.venv/bin/python"
 fi
-# shellcheck disable=SC1090  # runtime path is repo-sibling or installed fallback
-if [[ ! -r "$APPLE_DONGLE_LIB" ]] || ! source "$APPLE_DONGLE_LIB"; then
-    echo "event=apple_dongle.headphone_monitor.failed reason=common_lib_unavailable" >&2
+PYTHON="${JASPER_OUTPUT_HARDWARE_PYTHON:-$DEFAULT_PYTHON}"
+
+if [[ "$CONFIGURED_CARD" == "auto" ]] && ! command -v "$PYTHON" >/dev/null 2>&1; then
+    echo "event=apple_dongle.headphone_monitor.failed reason=python_unavailable" >&2
     exit 1
 fi
 
@@ -73,6 +77,48 @@ maybe_reset() {
     fi
 }
 
+# Re-ask the classifier only when the `cardN:id` population moved: both halves
+# are needed, because a re-enumeration reuses the index while the id moves (`A`
+# becomes `A_1`). Builtins only to there, so an unchanged poll forks nothing.
+APPLE_CARDS=()
+# Never equal to a population: a real one is empty or ends in a space.
+LAST_POPULATION="unprobed"
+refresh_apple_cards() {
+    local entry name id population="" payload
+    # An explicit card argument is an operator override and asks nothing.
+    if [[ "$CONFIGURED_CARD" != "auto" ]]; then
+        APPLE_CARDS=("$CONFIGURED_CARD")
+        return 0
+    fi
+    for entry in "$SYS_CLASS_SOUND"/card[0-9]*; do
+        [[ -e "$entry" ]] || continue
+        name="${entry##*/}"
+        id=""
+        [[ -r "$PROC_ASOUND/${name}/id" ]] && read -r id < "$PROC_ASOUND/${name}/id"
+        population+="${name}:${id} "
+    done
+    [[ "$population" != "$LAST_POPULATION" ]] || return 0
+    LAST_POPULATION="$population"
+    if ! payload="$("$PYTHON" -m jasper.cli.output_hardware --env)"; then
+        # Clear rather than leave stale ids, and force a real retry on the
+        # next poll regardless of whether the card population changes.
+        APPLE_CARDS=()
+        LAST_POPULATION="unprobed"
+        return 1
+    fi
+    # Every value is shlex-quoted by the emitter, so the payload evals as-is.
+    OBSERVED_OUTPUT_APPLE_CARD_IDS=""
+    if ! eval "$payload"; then
+        APPLE_CARDS=()
+        LAST_POPULATION="unprobed"
+        return 1
+    fi
+    APPLE_CARDS=()
+    [[ -n "$OBSERVED_OUTPUT_APPLE_CARD_IDS" ]] &&
+        read -r -a APPLE_CARDS <<<"$OBSERVED_OUTPUT_APPLE_CARD_IDS"
+    return 0
+}
+
 echo "event=apple_dongle.headphone_monitor.start configured_card=${CONFIGURED_CARD} control=${CONTROL}"
 
 # bash 3.2 (macOS, where this is tested) has neither `mapfile` nor
@@ -96,12 +142,21 @@ card_index() {
 }
 
 absent_logged=0
+probe_failed_logged=0
 while true; do
-    cards=()
-    while IFS= read -r line; do
-        cards+=("$line")
-    done < <(resolve_cards)
-    if [[ "${#cards[@]}" -eq 0 ]]; then
+    # Logged once per outage (like absent_logged below) and reset on the
+    # next successful probe; never an exit: an exit here would walk
+    # `Restart=always` into `StartLimitBurst` and park the unit with
+    # nothing left to revive it. A failed probe forces a real retry next
+    # poll (see refresh_apple_cards), so the outage self-heals.
+    if refresh_apple_cards; then
+        probe_failed_logged=0
+    elif [[ "$probe_failed_logged" != "1" ]]; then
+        echo "event=apple_dongle.headphone_monitor.probe_failed reason=emitter_nonzero" >&2
+        probe_failed_logged=1
+    fi
+
+    if [[ "${#APPLE_CARDS[@]}" -eq 0 ]]; then
         if [[ "$absent_logged" != "1" ]]; then
             echo "event=apple_dongle.headphone_monitor.absent configured_card=${CONFIGURED_CARD} control=${CONTROL}"
             absent_logged=1
@@ -114,7 +169,7 @@ while true; do
     fi
 
     absent_logged=0
-    for card in "${cards[@]}"; do
+    for card in "${APPLE_CARDS[@]}"; do
         [[ -n "$card" ]] || continue
         if ! idx=$(card_index "$card"); then
             echo "event=apple_dongle.headphone_monitor.detected card=${card} control=${CONTROL}"
