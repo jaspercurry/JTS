@@ -18,8 +18,6 @@ session_artifacts = [
   # (crossover-measurement-reproducibility-plan.md was archived 2026-07-22 —
   # historical decision archaeology, no longer a scan target; current truth
   # is tuning-operator-runbook.md.)
-  # (PLAN-usb-mic-export-latency-fix.md moved to docs/historical/ — its
-  # occupancy-targeted writer shipped in jasper/cli/usb_mic.py.)
   # Rescued verbatim from draft PR #1851's closed branch (2026-08-08); not an
   # active target for multiroom-grouping code-change routing until the plan
   # is re-verified and executed. Current operational truth remains
