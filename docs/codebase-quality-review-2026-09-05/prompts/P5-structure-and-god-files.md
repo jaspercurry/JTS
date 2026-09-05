@@ -52,7 +52,7 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
 ## Territory
 
 Other lanes own attached-hardware input (#4027: `jasper/audio_hardware/`, `output_hardware.py`,
-`usbsink/`, `accessories/`, udev), the web UI (#4031: `jasper/web/`, `deploy/assets/`, nginx
+`usbsink/`, `accessories/`, udev), the web UI (P11 #4212: `jasper/web/`, `deploy/assets/`, nginx
 confs), and **the voice loop (P9 #4208: `jasper/voice_daemon.py`, `jasper/voice/`, `jasper/cues/`,
 `jasper/tools/`, the top-level wake modules, `jasper-voice.service`, `tests/voice_eval/`)**. Stay
 out of their code unless the owner says otherwise; when your attribute needs a change there, write
@@ -76,9 +76,9 @@ PR #4138 (the wired capture kernel; green, waiting on the owner's hardware null 
 `cli/measure.py` and their tests alone until it merges; and #4031's Phase D is about to cut into
 `active_speaker/commissioning_*` — anything there is coordinated on #4031 before a branch exists.
 
-**Sibling lanes.** Eight sibling sessions run the other lanes (P1 #4193, P2 #4194, P3 #4195,
-P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202, and P9 #4208 the voice loop; the index and
-sequencing are in `docs/codebase-quality-review-2026-09-05/prompts/README.md`). Ordering that matters: **P6
+**Sibling lanes.** Ten sibling sessions run the other lanes (P1 #4193, P2 #4194, P3 #4195,
+P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202, P9 #4208 the voice loop, P11 #4212 the web UI,
+and the hardware-input lane on #4027; the index and sequencing are in `docs/codebase-quality-review-2026-09-05/prompts/README.md`). Ordering that matters: **P6
 (right-sizing)** deletes ~2,300 product LOC — do not `git mv` anything on P6's deletion list; post
 your move table on P6's issue in your first day so the lists are disjoint, and start moves only
 after P6's deletion PRs for the affected packages have merged (the cycle fix, the layers contract
@@ -176,7 +176,11 @@ Verified at HEAD by the review:
 
 Go deeper than the review did: it did not measure which of the 755 unexplained deferred imports are
 in library code vs entry points beyond a 120-site sample; it did not attempt the `runtime_contract`
-split (an owner-gated tuning row); it did not read `deploy/bin/` or the JS beyond two tiles. Keep
+split (an owner-gated tuning row); it did not read `deploy/bin/` or the JS beyond two tiles. The
+doctor stream (#4028) hands over one more SSOT twin, both halves in the tuning zone: the
+shield-through-cancel helper exists twice (`active_speaker/restore_wait.py` and
+`active_speaker/crossover_v2/session.py:70` `_shielded_cleanup`) — one owner-gated row, converge
+into whichever the owner names. Keep
 the web god files as written suggestions to #4031 and the tuning god files as owner-gated rows.
 Two tuning-zone facts from the steward's close-out belong in your plan under that heading:
 `jasper-measure`'s AST closure reaches 23 `jasper/web` modules because
@@ -244,6 +248,11 @@ handoff as a GitHub issue. No HANDOFF docs; decisions go to `docs/adr/` (one dec
   source-text pins: retarget or delete, never add.
 - Subscribe to every PR you open; unsubscribe on merge; remove worktrees after merge; delete any
   routines you create when you stand down.
+- On the **local plan** (the owner's laptop, shared with the ops lane): the GitHub API quota is
+  one per machine, so builder briefs forbid `gh` — the lane session alone polls CI, one slow
+  waiter at a time; `gh run rerun` re-runs the stale merge commit, so rebase and push instead;
+  head branches auto-delete on merge (never pass `--delete-branch`); run only the targeted tests
+  locally and leave the full suite to CI (the doctor stream's #4028 lessons).
 
 ## How to report
 
