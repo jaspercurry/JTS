@@ -518,11 +518,36 @@ async def test_repeated_failures_surface_failed_state():
 async def test_idle_context_reset_drops_resumption_handle_and_reopens():
     """Connection healthy, but idle longer than the configured threshold:
     the next acquire_turn should close + reopen with no resumption
-    handle so stale conversational context can't bleed in."""
+    handle so stale conversational context can't bleed in.
+
+    The handle is dropped at teardown rather than when the reset is
+    requested: the old session's receive loop runs until the supervisor
+    cancels it, so a `session_resumption_update` that lands in between
+    would otherwise resume exactly the context being discarded."""
     # Tiny threshold so the test can hit it.
     conn, factory = _make_conn(context_reset_sec=0.01)
     registry = ToolRegistry()
     await conn.start(registry, "system")
+    teardown = conn._teardown_session
+    late_updates = 0
+
+    async def _teardown_after_a_late_handle() -> None:
+        """The reset's teardown, with the race it must survive run first."""
+        nonlocal late_updates
+        session = conn._session
+        if session is not None and late_updates == 0:
+            late_updates += 1
+            session.feed(_Resp(
+                session_resumption_update=_ResumptionUpdate(
+                    new_handle="hndl-late",
+                ),
+            ))
+            await _wait_until(
+                lambda: conn._resumption_handle == "hndl-late", timeout=1.0,
+            )
+        await teardown()
+
+    conn._teardown_session = _teardown_after_a_late_handle
     try:
         # First turn establishes a resumption handle.
         sess1 = factory.sessions[0]
@@ -535,7 +560,9 @@ async def test_idle_context_reset_drops_resumption_handle_and_reopens():
         await asyncio.sleep(0.05)
 
         # Next acquire triggers context-reset before opening a turn.
-        turn2 = await conn.acquire_turn()
+        turn2 = await asyncio.wait_for(conn.acquire_turn(), timeout=5.0)
+        # The late update really did land on the old session.
+        assert late_updates == 1
         # New session was opened.
         assert len(factory.sessions) == 2
         # New session opened with NO resumption handle (fresh context) —

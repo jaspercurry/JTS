@@ -19,7 +19,9 @@ from ..tools import ToolRegistry, dispatch_tool
 from ._supervisor import (
     Deferred,
     OutageTracker,
+    await_connected,
     http_status,
+    request_planned_reopen,
     run_supervisor_loop,
     survive_terminal_initial_connect,
 )
@@ -54,12 +56,12 @@ SESSION_ROTATE_AFTER_SEC = 135.0
 # 30 s is a couple x the worst observed first-chunk latency.
 UNACK_AGE_OUT_SEC = 30.0
 
-# Connect retry schedule used for both the initial daemon-startup
-# connect AND the post-context-reset reopen. Total wall-time on
-# repeated failure is 15 s, which gives Google's session-release lag
-# a generous window after a systemd restart hits the previous
-# process's still-lingering WebSocket — empirically the prior 7 s
-# budget (0+1+2+4) was occasionally too tight on busy regions.
+# Connect retry schedule for the initial daemon-startup connect.
+# Total wall-time on repeated failure is 15 s, which gives Google's
+# session-release lag a generous window after a systemd restart hits
+# the previous process's still-lingering WebSocket — empirically the
+# prior 7 s budget (0+1+2+4) was occasionally too tight on busy
+# regions.
 INITIAL_CONNECT_BACKOFF_SCHEDULE = (0.0, 1.0, 2.0, 4.0, 8.0)
 
 # GoAway deferral threshold. When the server sends a GoAway mid-turn
@@ -605,6 +607,11 @@ class GeminiLiveConnection:
         # reconnect to resume the conversation. Cleared explicitly when
         # the idle-context-reset fires.
         self._resumption_handle: str | None = None
+        # One-shot: the idle context reset raises it so `_teardown_session`
+        # drops the handle once the old receive loop can no longer
+        # repopulate it. A planned rotation deliberately keeps its handle
+        # (ADR-0166), so nothing else may set this.
+        self._drop_resumption_on_teardown = False
         # Loop-time of the last completed turn (for idle-context-reset).
         self._last_turn_end_at: float = 0.0
 
@@ -739,38 +746,13 @@ class GeminiLiveConnection:
         async with self._state_lock:
             self._set_state(ConnectionState.CLOSED)
 
-    async def _await_connected(self) -> None:
-        """Wait for an open session so a turn never opens against a
-        half-open WS.
-
-        Bounded by one backoff window: the daemon's wake path checks
-        `is_paused()` before reaching here, so the bound is a backstop,
-        and raising on it is what puts a connection that never comes
-        back on the caller's failure-cue path instead of hanging the
-        wake."""
-        if self._connected_event.is_set():
-            return
-        timeout = (
-            sum(self._backoff_schedule) + 5.0
-            if self._backoff_schedule is not None
-            else 15.0  # production: long enough for one full backoff cycle
-        )
-        try:
-            await asyncio.wait_for(
-                self._connected_event.wait(), timeout=timeout,
-            )
-        except asyncio.TimeoutError:
-            raise RuntimeError(
-                f"{self._log_tag} not connected after backoff window"
-            )
-
     async def acquire_turn(self) -> LiveTurn:
         if self._state is ConnectionState.FAILED:
             raise RuntimeError(f"{self._log_tag} in FAILED state; daemon paused")
         if self._state is ConnectionState.CLOSED:
             raise RuntimeError(f"{self._log_tag} closed")
 
-        await self._await_connected()
+        await await_connected(self)
         await self._maybe_reset_context()
 
         async with self._turn_lock:
@@ -1060,18 +1042,13 @@ class GeminiLiveConnection:
         async with self._state_lock:
             self._set_state(ConnectionState.CONNECTING)
         try:
-            await self._open_session_with_409_retry(
-                INITIAL_CONNECT_BACKOFF_SCHEDULE,
-            )
+            await self._open_session_with_409_retry()
         except Exception as e:  # noqa: BLE001
             async with self._state_lock:
                 self._set_state(ConnectionState.FAILED)
             survive_terminal_initial_connect(e, self._trigger_reconnect)
 
-    async def _open_session_with_409_retry(
-        self,
-        schedule: tuple[float, ...],
-    ) -> None:
+    async def _open_session_with_409_retry(self) -> None:
         """Run ``_open_session`` with a 409-aware retry loop.
 
         Used by ``_do_initial_connect`` (daemon startup). The
@@ -1098,6 +1075,7 @@ class GeminiLiveConnection:
             config don't fix themselves with a wait).
           * After exhausting the schedule: raise ``RuntimeError``.
         """
+        schedule = INITIAL_CONNECT_BACKOFF_SCHEDULE
         last_exc: Exception | None = None
         handle_dropped = False
         for attempt, delay in enumerate(schedule):
@@ -1295,6 +1273,12 @@ class GeminiLiveConnection:
             except (asyncio.CancelledError, asyncio.TimeoutError, Exception):  # noqa: BLE001
                 pass
             self._receive_task = None
+        # Only now can the handle be dropped for good: until the receive
+        # task above was cancelled it could still land a late
+        # `session_resumption_update` and resurrect the old context.
+        if self._drop_resumption_on_teardown:
+            self._drop_resumption_on_teardown = False
+            self._resumption_handle = None
         if self._session is not None:
             try:
                 # Send close frame and wait for server ack so the
@@ -1523,9 +1507,9 @@ class GeminiLiveConnection:
         Disabled by default (`context_reset_sec=0`). Enable only if
         you actually observe stale-context glitches: each reset busts
         the resumption handle (so the next turn re-establishes session
-        state at full cost) and blocks the wake event for 1-6 s while
-        the reconnect happens. The terse-tool system prompt makes
-        stale-context bleed a mostly-hypothetical concern in practice."""
+        state at full cost) and blocks the wake event for the reopen.
+        The terse-tool system prompt makes stale-context bleed a
+        mostly-hypothetical concern in practice."""
         if self._context_reset_sec <= 0:
             return
         if self._last_turn_end_at <= 0.0:
@@ -1538,12 +1522,12 @@ class GeminiLiveConnection:
             "reopening with no resumption handle",
             idle_for, self._context_reset_sec,
         )
-        self._resumption_handle = None
-        # Reopen through the supervisor: one reopener per connection slot.
-        self._connected_event.clear()
-        self._planned_rotate = True
-        self._reconnect_event.set()
-        await self._await_connected()
+        # Dropped in `_teardown_session`, not here: the old session's
+        # receive loop runs until the supervisor cancels it and would
+        # otherwise re-cache a handle for the context being discarded.
+        self._drop_resumption_on_teardown = True
+        request_planned_reopen(self)
+        await await_connected(self)
         # Reset the idle marker so we don't immediately re-trigger.
         self._last_turn_end_at = asyncio.get_event_loop().time()
 

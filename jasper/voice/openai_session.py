@@ -45,9 +45,9 @@ Session lifecycle
   60-minute hard cap, no resumption mechanism (unlike Gemini). When the
   cap or any drop is hit, the supervisor reconnects the same way as for
   any other drop. Lost conversational context is acceptable — the
-  daemon already biases toward fresh sessions via the 5-minute idle
-  context-reset, which on OpenAI is just "tear down and reopen" since
-  there's no handle to drop.
+  daemon already biases toward fresh sessions via the opt-in idle
+  context-reset, which on OpenAI is just a reopen since there's no
+  handle to drop.
 """
 from __future__ import annotations
 
@@ -68,7 +68,9 @@ from ..tools import ToolRegistry, dispatch_tool
 from ._supervisor import (
     Deferred,
     OutageTracker,
+    await_connected,
     is_transient,
+    request_planned_reopen,
     run_supervisor_loop,
     survive_terminal_initial_connect,
 )
@@ -1015,36 +1017,13 @@ class OpenAIRealtimeConnection:
         async with self._state_lock:
             self._set_state(ConnectionState.CLOSED)
 
-    async def _await_connected(self) -> None:
-        """Wait for an open session, bounded by one backoff window.
-
-        The daemon's wake path checks `is_paused()` before reaching
-        here, so the bound is a backstop; raising on it is what puts a
-        connection that never comes back on the caller's failure-cue
-        path instead of hanging the wake."""
-        if self._connected_event.is_set():
-            return
-        timeout = (
-            sum(self._backoff_schedule) + 5.0
-            if self._backoff_schedule is not None
-            else 15.0
-        )
-        try:
-            await asyncio.wait_for(
-                self._connected_event.wait(), timeout=timeout,
-            )
-        except asyncio.TimeoutError:
-            raise RuntimeError(
-                f"{self._log_tag} not connected after backoff window"
-            )
-
     async def acquire_turn(self) -> LiveTurn:
         if self._state is ConnectionState.FAILED:
             raise RuntimeError(f"{self._log_tag} in FAILED state; daemon paused")
         if self._state is ConnectionState.CLOSED:
             raise RuntimeError(f"{self._log_tag} closed")
 
-        await self._await_connected()
+        await await_connected(self)
         await self._maybe_reset_context()
 
         async with self._turn_lock:
@@ -1888,11 +1867,8 @@ class OpenAIRealtimeConnection:
             "reopening for a fresh session",
             idle_for, self._context_reset_sec,
         )
-        # Reopen through the supervisor: one reopener per connection slot.
-        self._connected_event.clear()
-        self._planned_rotate = True
-        self._reconnect_event.set()
-        await self._await_connected()
+        request_planned_reopen(self)
+        await await_connected(self)
         self._last_turn_end_at = asyncio.get_event_loop().time()
 
     async def _handle_response_done(self, event, turn: "OpenAIRealtimeTurn | None") -> None:
