@@ -40,7 +40,12 @@ from jasper.active_speaker.crossover_v2.feature_classification import (
     UNCERTAINTY_SYSTEMATIC,
     UNCERTAINTY_UNSEPARATED,
 )
-from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
+from jasper.active_speaker.crossover_v2.journey import (
+    PHASE_CLOUD_MEASURE,
+    PHASE_CLOUD_VERIFY,
+    PHASE_LATERAL,
+    PHASE_MEASURE,
+)
 from jasper.active_speaker.crossover_v2.round_evidence import (
     ITERATION_PLATEAU_DB,
     MEASURED_BENEFIT_MARGIN_DB,
@@ -583,3 +588,89 @@ def test_an_unbanked_declaration_never_reads_the_machine_building_the_packet(
 
     assert block["status"] == "not_evaluated"
     assert block["reason"] == "source_absent"
+
+
+# --------------------------------------------------------------------------- #
+# findings — every phase, whether it ran, and the band that bounds the set
+# --------------------------------------------------------------------------- #
+
+
+def _bank_finding_set(round_dir: Path, phase: str, *, findings: list[Any]) -> None:
+    """One phase's banked set — the keys the packet reads out of one."""
+    (round_dir / f"findings_{phase}.json").write_text(json.dumps({
+        "produced_by": f"test.{phase}",
+        "findings": findings,
+        "field_descriptions": {"finding": {"mechanism": "prose"}},
+    }))
+
+
+def test_the_packet_reads_a_finding_set_from_every_phase_that_banks_one(tmp_path):
+    """Three phases bank findings; a reader of one alone loses the other two.
+
+    The M7 level-frame finding is banked under ``measure`` and the carve-out
+    sets under the two cloud closes, so a packet that opened only
+    ``cloud_verify`` could not see a level-frame disagreement at all.
+    """
+    session, _ = _bundle(tmp_path)
+    round_dir, _ = round_artifact_dir(session)
+    assert round_dir is not None
+    _bank_finding_set(round_dir, PHASE_MEASURE, findings=[{"mechanism": "M7"}])
+    _bank_finding_set(
+        round_dir, PHASE_CLOUD_MEASURE, findings=[{"mechanism": "M2"}],
+    )
+
+    block = build_crossover_evidence_packet(session)["findings"]
+
+    # Scalar-first: the summary lands before either per-phase list.
+    assert list(block) == ["summary", "phases", "field_descriptions"]
+    assert set(block["phases"]) == {
+        PHASE_MEASURE, PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY,
+    }
+    assert block["summary"]["finding_count"] == {
+        PHASE_MEASURE: 1, PHASE_CLOUD_MEASURE: 1, PHASE_CLOUD_VERIFY: 0,
+    }
+    assert block["phases"][PHASE_MEASURE]["findings"] == [{"mechanism": "M7"}]
+
+
+def test_a_finding_set_that_ran_and_found_nothing_is_not_one_that_never_ran(
+    tmp_path,
+):
+    """``present``/``produced_by`` per phase — the distinction ``produced_by``
+    exists for. The fixture banks an empty cloud-verify set and nothing else."""
+    session, _ = _bundle(tmp_path)
+    round_dir, _ = round_artifact_dir(session)
+    assert round_dir is not None
+
+    phases = build_crossover_evidence_packet(session)["findings"]["phases"]
+    assert phases[PHASE_CLOUD_VERIFY]["present"] is True
+    assert phases[PHASE_CLOUD_VERIFY]["produced_by"]
+    assert phases[PHASE_CLOUD_VERIFY]["reason"] == ""
+    assert phases[PHASE_MEASURE]["present"] is False
+    assert phases[PHASE_MEASURE]["produced_by"] is None
+    assert phases[PHASE_MEASURE]["reason"] == "source_absent"
+
+    (round_dir / f"findings_{PHASE_CLOUD_VERIFY}.json").unlink()
+    unbanked = build_crossover_evidence_packet(session)["findings"]
+    assert unbanked["summary"]["phases_present"] == []
+    assert unbanked["summary"]["finding_count"] == {
+        PHASE_MEASURE: None, PHASE_CLOUD_MEASURE: None, PHASE_CLOUD_VERIFY: None,
+    }
+
+    # The third absence: a set IS banked and this install cannot read it.
+    (round_dir / f"findings_{PHASE_CLOUD_MEASURE}.json").write_text("[]")
+    unreadable = build_crossover_evidence_packet(session)["findings"]["phases"]
+    assert unreadable[PHASE_CLOUD_MEASURE]["present"] is False
+    assert unreadable[PHASE_CLOUD_MEASURE]["reason"] != "source_absent"
+
+
+def test_the_findings_block_publishes_the_band_that_bounds_the_finding_set(
+    tmp_path,
+):
+    """Carve-out promotion reads the echo band only, so nothing below it can
+    ever be a finding in those two sets; the packet publishes the resolved band
+    and names which sets it bounds."""
+    session, _ = _bundle(tmp_path, cloud_over={"echo_band_hz": [4000.0, 16000.0]})
+    summary = build_crossover_evidence_packet(session)["findings"]["summary"]
+    assert summary["echo_band_hz"] == [4000.0, 16000.0]
+    # The level-frame set is not scanned FOR, so the band does not bound it.
+    assert summary["echo_band_bounds"] == [PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY]

@@ -39,7 +39,13 @@ from jasper.json_fields import finite_float
 from ..commissioning_evidence_store import EVIDENCE_ROOT
 from ..repeat_floor import REPEAT_FLOOR_KIND, load_repeat_floor, stopping_thresholds
 from .contracts import POSITION_EVIDENCE_KIND
-from .journey import PHASE_ENTRY_BASELINE, PHASE_LATERAL
+from .journey import (
+    PHASE_CLOUD_MEASURE,
+    PHASE_CLOUD_VERIFY,
+    PHASE_ENTRY_BASELINE,
+    PHASE_LATERAL,
+    PHASE_MEASURE,
+)
 from .record_index import Measurement, bundle_measurements
 # The MODULE, not the function: ``position_cycle`` owns the accept rule, and
 # resolving it through the module on every call is what keeps that ownership
@@ -180,6 +186,18 @@ CLASSIFICATION_ARTIFACT = "feature_classification.json"
 #: rather than in that module because it imports this one (for
 #: :data:`RING_SIDECAR_GLOB`): the packet owns the names of what it reads.
 HARMONICS_ARTIFACT = "harmonic_distortion.json"
+
+#: The three phases a finding set is banked under, each at its own
+#: ``findings_{phase}.json``
+#: (:func:`~jasper.attribution.storage.findings_relative_path`): the two
+#: cloud-group closes and the level-frame gate's own MEASURE-phase set.
+_FINDING_PHASES = (PHASE_MEASURE, PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY)
+
+#: The phases whose set comes from carve-out promotion, which reads only the
+#: cloud group's ``echo_band_hz``: a feature outside that band cannot become a
+#: finding in one, whatever the round measured. The MEASURE set is the
+#: level-frame gate's own and carries the band of the record it came from.
+_ECHO_BAND_PHASES = (PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY)
 
 #: Where a round banks one JSON record per accepted take, INSIDE the round
 #: directory :func:`round_artifact_dir` returns:
@@ -2515,6 +2533,56 @@ def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
     }
 
 
+def _findings_block(round_dir: Path, cloud: dict[str, Any]) -> dict[str, Any]:
+    """Every phase's banked finding set, keyed by phase, and the band bounding
+    the two that are scanned for.
+
+    ``present`` carries the distinction ``produced_by`` exists for: a banked
+    set with an empty ``findings`` list RAN and promoted nothing. What its
+    ABSENCE means is per phase — the cloud closes bank a set either way, while
+    the level-frame gate banks one only when it promotes — and ``reason``
+    separates a set banked here that this install could not read.
+
+    ``echo_band_hz`` is the round's resolved echo-detector window and
+    ``echo_band_bounds`` the phases it bounds (:data:`_ECHO_BAND_PHASES`), so
+    an empty set is not read as a clean bill outside that band.
+    """
+    phases: dict[str, Any] = {}
+    counts: dict[str, Any] = {}
+    field_descriptions: dict[str, Any] = {}
+    for phase in _FINDING_PHASES:
+        raw, reason = _read_json(round_dir / f"findings_{phase}.json")
+        document = _mapping(raw)
+        present = isinstance(raw, dict)
+        if raw is not None and not present:
+            reason = f"parsed as {type(raw).__name__}, not as a JSON object"
+        rows = document.get("findings")
+        rows = rows if isinstance(rows, list) else []
+        phases[phase] = {
+            "present": present,
+            "produced_by": document.get("produced_by"),
+            "reason": reason,
+            "findings": rows,
+        }
+        counts[phase] = len(rows) if present else None
+        # Per-SCHEMA and identical in every set, so one copy rather than three.
+        field_descriptions = field_descriptions or _mapping(
+            document.get("field_descriptions")
+        )
+    return {
+        "summary": {
+            "phases_present": [
+                phase for phase in _FINDING_PHASES if phases[phase]["present"]
+            ],
+            "finding_count": counts,
+            "echo_band_hz": cloud.get("echo_band_hz"),
+            "echo_band_bounds": list(_ECHO_BAND_PHASES),
+        },
+        "phases": phases,
+        "field_descriptions": field_descriptions,
+    }
+
+
 def _not_evaluated(
     *,
     receipt_reason: str,
@@ -2651,12 +2719,15 @@ def _not_evaluated(
                 "unknown rather than zero"
             ),
         })
-    if isinstance(findings.get("findings"), list) and not findings["findings"]:
+    summary = _mapping(findings.get("summary"))
+    if not any(_mapping(summary.get("finding_count")).values()):
         entries.append({
             "field": "findings",
             "reason": (
-                "the finding set was produced and is empty — no attributed "
-                "finding was promoted for this round"
+                "no attributed finding reaches this packet under any phase; "
+                "findings.phases says per phase whether a set was banked, "
+                "empty or unreadable, and findings.summary.echo_band_hz the "
+                "band the two scanned sets could have found anything in"
             ),
         })
     if no_crossover:
@@ -2679,8 +2750,8 @@ def build_crossover_evidence_packet(
 
     ``session_dir`` is a commissioning bundle: an ``info.json`` beside an
     ``evidence/v1/artifacts/crossover_v2/<capture-session-id>/`` directory
-    holding the round receipt, the cloud evidence, the finding set and the
-    per-position records.
+    holding the round receipt, the cloud evidence, each phase's finding set
+    and the per-position records.
 
     Every other path is OPTIONAL and INJECTED rather than resolved here — this
     packet is rebuilt by every reader, and a path resolved here would make a
@@ -2722,14 +2793,13 @@ def build_crossover_evidence_packet(
 
     receipt_raw, receipt_reason = _read_json(round_dir / "round_receipt.json")
     cloud_raw, cloud_reason = _read_json(round_dir / "cloud_verify.json")
-    findings_raw, _ = _read_json(round_dir / "findings_cloud_verify.json")
     classification_raw, classification_reason = _read_json(
         round_dir / CLASSIFICATION_ARTIFACT
     )
     harmonics_raw, harmonics_reason = _read_json(round_dir / HARMONICS_ARTIFACT)
     receipt = _mapping(receipt_raw)
     cloud = _mapping(cloud_raw)
-    findings = _mapping(findings_raw)
+    findings = _findings_block(round_dir, cloud)
 
     state_raw: Any = None
     state_reason = "no flow state file was supplied"
@@ -2872,10 +2942,7 @@ def build_crossover_evidence_packet(
                 "cutting an interference null"
             ),
         },
-        "findings": {
-            "findings": findings.get("findings") or [],
-            "field_descriptions": _mapping(findings.get("field_descriptions")),
-        },
+        "findings": findings,
         "verify": verify,
         # The round's reflection geometry as NUMBERS, and the one place the
         # per-capture gate numbers on the positions rows and inside
