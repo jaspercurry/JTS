@@ -630,8 +630,7 @@ async def _dsp_apply_lock(
             )
         raise
     finally:
-        # Release synchronously so cancellation cannot interrupt ownership
-        # cleanup. flock(LOCK_UN) and close are local, non-blocking operations.
+        # Release now if the acquire has settled; otherwise defer to its done-callback so a lock won after cancellation is never stranded.
         if acquire.done():
             held.close()
         else:
