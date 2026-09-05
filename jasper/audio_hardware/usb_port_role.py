@@ -13,7 +13,6 @@ can reconnect without operator intervention.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import shlex
@@ -874,7 +873,15 @@ def _flag(value: object) -> str:
     return "true" if value else "false"
 
 
-def _env_lines(fields: dict[str, Any], hat_collision: I2sHatCollision | None) -> str:
+def _env_lines(
+    state: UsbPortRoleState,
+    *,
+    boot_config_changed: bool,
+    hat_profile: str,
+    hat_changed: bool,
+    durability_failed: bool,
+    hat_collision: I2sHatCollision | None,
+) -> str:
     """The boot-config CLI's whole shell contract (ADR-0235 R2).
 
     Emitted whether or not ``--reconcile-boot`` ran, so a caller evaling this
@@ -882,18 +889,14 @@ def _env_lines(fields: dict[str, Any], hat_collision: I2sHatCollision | None) ->
     there was nothing to reconcile.
     """
     values = {
-        "JASPER_BOOT_BOARD_TOPOLOGY": str(fields["board_topology"]),
-        "JASPER_BOOT_USB_DESIRED_ROLE": str(fields["desired_role"]),
-        "JASPER_BOOT_USB_ACTIVE_ROLE": str(fields["active_role"]),
-        "JASPER_BOOT_REBOOT_REQUIRED": _flag(fields["reboot_required"]),
-        "JASPER_BOOT_CONFIG_CHANGED": _flag(fields["boot_config_changed"]),
-        "JASPER_BOOT_I2S_HAT_PROFILE": str(fields.get("i2s_hat_profile", "")),
-        "JASPER_BOOT_I2S_HAT_CHANGED": _flag(
-            fields.get("i2s_hat_boot_config_changed", False)
-        ),
-        "JASPER_BOOT_CONFIG_PUBLISHED_NOT_DURABLE": _flag(
-            fields.get("boot_config_published_not_durable", False)
-        ),
+        "JASPER_BOOT_BOARD_TOPOLOGY": state.board_topology,
+        "JASPER_BOOT_USB_DESIRED_ROLE": state.desired_role,
+        "JASPER_BOOT_USB_ACTIVE_ROLE": state.active_role,
+        "JASPER_BOOT_REBOOT_REQUIRED": _flag(state.reboot_required),
+        "JASPER_BOOT_CONFIG_CHANGED": _flag(boot_config_changed),
+        "JASPER_BOOT_I2S_HAT_PROFILE": hat_profile,
+        "JASPER_BOOT_I2S_HAT_CHANGED": _flag(hat_changed),
+        "JASPER_BOOT_CONFIG_PUBLISHED_NOT_DURABLE": _flag(durability_failed),
         "JASPER_BOOT_I2S_HAT_COLLISION_MANAGED_OVERLAY": (
             hat_collision.managed_overlay if hat_collision is not None else ""
         ),
@@ -927,7 +930,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--env",
         action="store_true",
-        help="print shell-safe environment assignments instead of JSON",
+        help="print the shell contract as shell-safe KEY=value assignments",
     )
     args = parser.parse_args(argv)
     hat_changed = False
@@ -966,18 +969,20 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 0 if state.management_transport_available else 1
-    fields = state.to_dict()
-    fields["boot_config_changed"] = changed
-    if args.reconcile_boot:
-        fields["i2s_hat_profile"] = desired_hat_profile or ""
-        fields["i2s_hat_boot_config_changed"] = hat_changed
-        fields["boot_config_published_not_durable"] = durability_failed
     if args.env:
-        print(_env_lines(fields, hat_collision), end="")
-    else:
-        print(json.dumps(fields, sort_keys=True))
-    # Every event= line goes to stderr (ADR-0235 R4): stdout is the payload a
-    # caller may still parse, stderr reaches the journal on every invocation.
+        print(
+            _env_lines(
+                state,
+                boot_config_changed=changed,
+                hat_profile=desired_hat_profile or "",
+                hat_changed=hat_changed,
+                durability_failed=durability_failed,
+                hat_collision=hat_collision,
+            ),
+            end="",
+        )
+    # Every event= line goes to stderr (ADR-0235 R4): stdout carries the
+    # `--env` payload, stderr reaches the journal on every invocation.
     print(
         "event=hardware.usb_role_resolved "
         f"topology={state.board_topology} desired={state.desired_role} "
@@ -995,10 +1000,12 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
     if args.reconcile_boot and hat_changed:
+        # No `reboot_required` here: whether the running kernel already
+        # carries this overlay is desired-vs-observed, which only the
+        # reconciler's I2S reboot marker can decide (ADR-0233 one owner).
         print(
             "event=hardware.i2s_hat_boot_config_changed "
-            f"managed_overlay={desired_hat_profile or 'none'} "
-            "reboot_required=1",
+            f"profile={desired_hat_profile or 'none'}",
             file=sys.stderr,
         )
     if hat_collision is not None:
