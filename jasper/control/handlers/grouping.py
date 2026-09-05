@@ -10,6 +10,15 @@ import asyncio
 from typing import Any
 
 from ...log_event import log_event
+from ...multiroom.config import (
+    BondMember,
+    format_roster,
+    load_config as load_grouping_config,
+    validate_grouping,
+    validate_roster,
+)
+from ...multiroom.runtime_balance import apply_local_trim as apply_live_grouping_trim
+from ...multiroom.state import grouping_response, read_grouping_state
 from .. import server as _server
 from ._base import ControlHandlerMixin, logger
 
@@ -31,7 +40,7 @@ class GroupingRoutes(ControlHandlerMixin):
         # and /healthz. Each block fails soft independently; the response
         # remains 200 so one broken read does not hide the other.
         try:
-            grouping = _server.read_grouping_state()
+            grouping = read_grouping_state()
         except (
             AttributeError,
             KeyError,
@@ -59,7 +68,7 @@ class GroupingRoutes(ControlHandlerMixin):
         # jasper/multiroom/state.py, so producer and consumers cannot
         # drift (the C4 regression).
         self._send_json(
-            _server.grouping_response(
+            grouping_response(
                 grouping,
                 readiness=readiness,
             )
@@ -97,7 +106,7 @@ class GroupingRoutes(ControlHandlerMixin):
         # serialized env string (for the writer). Omitted -> preserve;
         # an explicit [] serializes to "" which clears it (same contract
         # as peer_addr/peer_name).
-        roster_members: tuple[_server.BondMember, ...] = ()
+        roster_members: tuple[BondMember, ...] = ()
         roster_str: str | None = None
         if "roster" in body:
             raw_roster = body.get("roster")
@@ -108,7 +117,7 @@ class GroupingRoutes(ControlHandlerMixin):
                 )
                 return
             roster_members = tuple(
-                _server.BondMember(
+                BondMember(
                     addr=str((m or {}).get("addr") or ""),
                     name=str((m or {}).get("name") or ""),
                     channel=str((m or {}).get("channel") or ""),
@@ -116,14 +125,14 @@ class GroupingRoutes(ControlHandlerMixin):
                 for m in raw_roster
                 if isinstance(m, dict)
             )
-            roster_str = _server.format_roster(roster_members)
+            roster_str = format_roster(roster_members)
             # Validate the roster whenever it is present — INCLUDING a
             # disabled request, which skips validate_grouping below. The
             # persisted roster is the _unbond disable list, so a member with
             # an injected foreign addr or a malformed channel must never land
             # on disk (it would become an unbond disable target / orphan).
             # The enabled path re-checks via validate_grouping (idempotent).
-            roster_err = _server.validate_roster(roster_members)
+            roster_err = validate_roster(roster_members)
             if roster_err:
                 self._send_json({"error": roster_err}, status=400)
                 return
@@ -132,7 +141,7 @@ class GroupingRoutes(ControlHandlerMixin):
         # read) so we never persist a fail-loud config. A disabled
         # request needs no fields.
         if enabled:
-            err = _server.validate_grouping(
+            err = validate_grouping(
                 role=role,
                 channel=channel,
                 bond_id=bond_id,
@@ -167,7 +176,7 @@ class GroupingRoutes(ControlHandlerMixin):
                     status=409,
                 )
                 return
-        before_grouping = _server.load_grouping_config(_server.GROUPING_ENV_FILE)
+        before_grouping = load_grouping_config(_server.GROUPING_ENV_FILE)
         live_apply_payload: dict[str, Any] | None = None
         reconciler_kicked = False
         try:
@@ -185,7 +194,7 @@ class GroupingRoutes(ControlHandlerMixin):
                 peer_name=peer_name,
                 roster=roster_str,
             )
-            after_grouping = _server.load_grouping_config(_server.GROUPING_ENV_FILE)
+            after_grouping = load_grouping_config(_server.GROUPING_ENV_FILE)
             if enabled and trim_db is not None and before_grouping == after_grouping:
                 live_apply_payload = {
                     "applied": True,
@@ -196,7 +205,7 @@ class GroupingRoutes(ControlHandlerMixin):
                 before_grouping, after_grouping
             ):
                 live_apply = asyncio.run(
-                    _server.apply_live_grouping_trim(
+                    apply_live_grouping_trim(
                         after_grouping.trim_db,
                         cfg=after_grouping,
                     )

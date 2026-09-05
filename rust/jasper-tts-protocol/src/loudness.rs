@@ -11,6 +11,10 @@
 
 use std::collections::VecDeque;
 
+use jasper_daemon::json::{
+    push_key as push_json_key, push_kv_bool as push_json_bool, push_kv_u64 as push_json_u64,
+};
+
 use crate::{
     assistant_profile_confidence_in_range, assistant_profile_db_in_range, VolumeContext, CHANNELS,
 };
@@ -304,9 +308,9 @@ impl AssistantLoudness {
         if context.canonical_db.is_finite()
             && context.downstream_db.is_finite()
             && context.tts_envelope_lufs.is_finite()
-            && self.current_volume_context.map_or(true, |current| {
-                context.stamp_boot_ns >= current.stamp_boot_ns
-            })
+            && self
+                .current_volume_context
+                .is_none_or(|current| context.stamp_boot_ns >= current.stamp_boot_ns)
         {
             self.current_volume_context = Some(context);
             true
@@ -816,22 +820,6 @@ pub fn render_assistant_loudness(buf: &mut String, snapshot: &TtsLoudnessSnapsho
     buf.push(',');
     push_json_reference(buf, "held_assistant", snapshot.held_assistant);
     buf.push('}');
-}
-
-fn push_json_key(buf: &mut String, key: &str) {
-    buf.push('"');
-    buf.push_str(key);
-    buf.push_str("\":");
-}
-
-fn push_json_bool(buf: &mut String, key: &str, value: bool) {
-    push_json_key(buf, key);
-    buf.push_str(if value { "true" } else { "false" });
-}
-
-fn push_json_u64(buf: &mut String, key: &str, value: u64) {
-    push_json_key(buf, key);
-    buf.push_str(&value.to_string());
 }
 
 /// Serialization-boundary guarantee for every number this writer emits:

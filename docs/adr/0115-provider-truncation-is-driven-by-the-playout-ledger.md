@@ -45,7 +45,7 @@ and reports the DAC-clock-true number.
   reported DAC delay) stays a known follow-up; over-reading is safe until then.
 - Per-provider wiring status — which packs self-truncate as a no-op and what
   remains before default-on — belongs to
-  [HANDOFF-barge-in.md](../HANDOFF-barge-in.md), not to the output-side docs.
+  HANDOFF-barge-in.md (retired, see ADR-0199), not to the output-side docs.
 - A runtime guard hard-disables barge-in for a session whose active profile has
   no AEC reference, so a speaker with no echo cancellation cannot barge in on
   its own TTS bleed.

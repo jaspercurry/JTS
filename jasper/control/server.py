@@ -49,52 +49,20 @@ from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..http_security import management_read_allowed, mutating_request_allowed
 from .client import CONTROL_PORT
 from ..atomic_io import locked_update_env_file
-from ..audio_quality import (  # noqa: F401 - route-mixin dependency exports
-    apply_requested_converter as _apply_audio_quality,
-    normalize_converter as _normalize_audio_converter,
-)
-from ..fanin.latency_mode import (  # noqa: F401 - route-mixin dependency exports
-    LatencyApplyError as _UsbLatencyApplyError,
-    apply_requested_mode as _apply_usb_latency_mode,
-    normalize_mode as _normalize_usb_latency_mode,
+from ..fanin.latency_mode import (
     options as _usb_latency_options,
     read_state as _read_usb_latency_state,
 )
-from . import (  # noqa: F401 - route-mixin dependency exports
+from . import (
     debug_control,
     grouping_supervisor,
     shairport_supervisor,
     system_supervisor,
-    usb_gadget_forensics,
 )
-from ..multiroom.config import (  # noqa: F401 - route-mixin dependency exports
-    GROUPING_ENV_FILE,
-    BondMember,
-    GroupingConfig,
-    format_roster,
-    load_config as load_grouping_config,
-    validate_grouping,
-    validate_roster,
-)
-from ..multiroom.runtime_balance import (  # noqa: F401 - route-mixin dependency
-    apply_local_trim as apply_live_grouping_trim,
-)
-from ..multiroom.state import (  # noqa: F401 - route-mixin dependency exports
-    grouping_response,
-    read_grouping_state,
-)
+from ..multiroom.config import GROUPING_ENV_FILE, GroupingConfig
 from ..music_sources import MUSIC_SOURCE_SPECS
-from ..local_sources import (  # noqa: F401 - route-mixin dependency exports
-    local_source_audio_refresh_units,
-    local_source_park_units,
-)
+from ..local_sources import local_source_audio_refresh_units
 from ..transit.state import read_state as read_transit_state
-from ..usb_mic import (  # noqa: F401 - route-mixin dependency exports
-    read_usb_mic_leg,
-    usb_mic_leg_choices,
-    write_usb_mic_enabled,
-    write_usb_mic_leg,
-)
 from ..active_speaker.setup_status import read_active_speaker_setup_status
 from ..doctor_contract import (
     REASON_REFRESH_FAILED,
@@ -102,15 +70,11 @@ from ..doctor_contract import (
     check_row,
     summarize,
 )
-from ..audio_profile_state import (  # noqa: F401 - route-mixin dependency exports
-    normalize_audio_input_profile,
-)
-from ..install_profile import (  # noqa: F401 - route-mixin dependency exports
+from ..install_profile import (
     STREAMBOX_INSTALL_PROFILE,
     install_profile_allows_voice_brain,
     install_role_for_profile,
     read_install_profile,
-    system_capabilities_for_profile,
 )
 from . import aec_endpoints as _aec_endpoints
 from . import control_token
@@ -746,6 +710,7 @@ async def _get_state(
     camilla_port: int,
     voice_socket_path: str,
     ha_status_snapshot: Callable[[], dict[str, Any]] | None = None,
+    airplay_playing_snapshot: Callable[[], bool | None] | None = None,
     transport_park_snapshot: Callable[[], dict[str, Any]] | None = None,
     service_states_snapshot: (
         Callable[[], dict[str, dict[str, Any]]] | None
@@ -756,6 +721,7 @@ async def _get_state(
         extra["transport_park_snapshot"] = transport_park_snapshot
     return await _state_aggregate._get_state(
         service_states_snapshot=service_states_snapshot,
+        airplay_playing_snapshot=airplay_playing_snapshot,
         camilla_host=camilla_host,
         camilla_port=camilla_port,
         voice_socket_path=voice_socket_path,

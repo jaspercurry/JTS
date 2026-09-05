@@ -99,15 +99,13 @@ def _build_spotify_router_or_none():
     if not client_id:
         return None
     try:
-        from ..accounts import Registry, maybe_migrate_legacy
+        from ..accounts import DEFAULT_REGISTRY_PATH, LEGACY_CACHE_PATH, Registry, maybe_migrate_legacy
         from ..spotify_router import Router, build_clients
         accounts_path = os.environ.get(
             "JASPER_SPOTIFY_ACCOUNTS_PATH",
-            "/var/lib/jasper-intsecrets/spotify/accounts.json",
+            DEFAULT_REGISTRY_PATH,
         )
-        legacy_cache_path = os.environ.get(
-            "SPOTIFY_CACHE_PATH", "/var/lib/jasper-intsecrets/.spotify-cache",
-        )
+        legacy_cache_path = os.environ.get("SPOTIFY_CACHE_PATH", LEGACY_CACHE_PATH)
         redirect_uri = resolved_spotify_redirect_uri()
         registry = Registry.load(accounts_path)
         maybe_migrate_legacy(

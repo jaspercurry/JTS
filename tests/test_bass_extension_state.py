@@ -113,11 +113,7 @@ async def _state_snapshot(monkeypatch, tmp_path):
     async def no_status(*_args, **_kwargs):
         return None
 
-    async def no_mpris(*_args, **_kwargs):
-        return None
-
     monkeypatch.setattr(camilla_mod, "CamillaController", _FakeCamillaController)
-    monkeypatch.setattr(state_aggregate.mpris, "shairport_playing", no_mpris)
     monkeypatch.setattr(state_aggregate, "_audio_graph_state", lambda **_kwargs: None)
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "volume.json"))
     monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spotify.env"))

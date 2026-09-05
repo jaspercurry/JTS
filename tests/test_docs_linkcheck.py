@@ -100,9 +100,13 @@ def _git(repo: Path, *args: str) -> str:
     ).stdout.strip()
 
 
-def test_a_deleted_doc_falls_back_to_checking_the_whole_tree(tmp_path):
-    """A delete has no post-diff content of its own to check, but an
-    untouched file's now-broken inbound link must still be caught (#4036)."""
+@pytest.mark.parametrize("deleted_name", ["a.md", "a.rs"])
+def test_a_deleted_file_of_any_type_falls_back_to_the_whole_tree(tmp_path, deleted_name):
+    """A renamed or deleted file of any type can break an untouched file's
+    inbound link, so the whole tree is checked: a delete has no post-diff
+    content of its own to check, and a non-Markdown target (e.g. a deleted
+    .rs file cited by a doc link) is just as able to break an inbound
+    Markdown link as a deleted .md."""
     docs_linkcheck = load_docs_linkcheck()
     docs_linkcheck.ROOT = tmp_path.resolve()
 
@@ -111,19 +115,19 @@ def test_a_deleted_doc_falls_back_to_checking_the_whole_tree(tmp_path):
     _git(tmp_path, "config", "user.name", "JTS Tests")
     _git(tmp_path, "config", "commit.gpgsign", "false")
 
-    (tmp_path / "a.md").write_text("# A\n", encoding="utf-8")
-    (tmp_path / "keep.md").write_text("[to a](a.md)\n", encoding="utf-8")
+    (tmp_path / deleted_name).write_text("content\n", encoding="utf-8")
+    (tmp_path / "keep.md").write_text(f"[to it]({deleted_name})\n", encoding="utf-8")
     _git(tmp_path, "add", "-A")
     _git(tmp_path, "commit", "-q", "-m", "base")
     base = _git(tmp_path, "rev-parse", "HEAD")
 
-    (tmp_path / "a.md").unlink()
+    (tmp_path / deleted_name).unlink()
     _git(tmp_path, "add", "-A")
-    _git(tmp_path, "commit", "-q", "-m", "delete a.md")
+    _git(tmp_path, "commit", "-q", "-m", f"delete {deleted_name}")
     head = _git(tmp_path, "rev-parse", "HEAD")
 
     # keep.md is untouched by the diff, so a plain changed-files check would
-    # never look at its now-broken link to the deleted a.md.
+    # never look at its now-broken link to the deleted file on its own.
     assert docs_linkcheck.main(["--base", base, "--head", head]) == 1
 
 

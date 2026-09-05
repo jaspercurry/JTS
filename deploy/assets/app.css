@@ -208,8 +208,11 @@ svg { display: block; }
   text-overflow: ellipsis;
 }
 
-/* Icon helper — pages put `class="ico"` on an inline <svg><use/></svg>. */
-.ico { width: 16px; height: 16px; flex: 0 0 auto; }
+/* Icon helper — pages put `class="ico"` on an inline <svg><use/></svg>.
+   The sprite symbols carry geometry only, so the wrapper owns the stroke
+   weight: a `<use>` shadow tree inherits it, and a symbol-level
+   `stroke-width` attribute would be unoverridable from here. */
+.ico { width: 16px; height: 16px; flex: 0 0 auto; stroke-width: 2; }
 
 /* Segmented control (tabs, mode pickers, on/off triads). Generic name;
    matches the landing page's source-selector look via the same tokens. */
@@ -519,6 +522,93 @@ svg { display: block; }
 .badge--danger { --tone: var(--status-danger); }
 .badge--idle { --tone: var(--status-idle); }
 .badge-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+/* Settings list — the tap-through row group the landing page and the area
+   hubs are built from:
+     <h2 class="eyebrow group-title">Sound</h2>
+     <div class="settings-list">
+       <a class="setting-row"><span class="row-icon">…</span>
+          <span class="setting-copy"><span class="setting-title">…</span>
+          <span class="setting-status">…</span></span>
+          <svg class="chevron"><use href="#icon-chevron"></use></svg></a>
+   Rows are scoped to the list because `.setting-row` is also an unrelated
+   page-local class in deploy/assets/sound-profile/sound.css. */
+.group-title {
+  display: block;
+  padding: 0 0.25rem 0.75rem;
+}
+.settings-list {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: color-mix(in oklab, var(--secondary) 50%, transparent);
+}
+.settings-list .setting-row {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  color: inherit;
+  text-decoration: none;
+  border-top: 1px solid var(--border);
+  transition: background 150ms ease, color 150ms ease;
+}
+.settings-list .setting-row:first-child { border-top: 0; }
+.settings-list .setting-row:hover { background: var(--surface-hover); }
+.row-icon {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--background);
+  color: var(--primary);
+}
+.row-icon svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.9;
+}
+.setting-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.setting-title {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.2;
+}
+.setting-status {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chevron {
+  width: 16px;
+  height: 16px;
+  color: var(--muted-faint);
+  flex-shrink: 0;
+}
+.settings-list .setting-row:hover .row-icon {
+  border-color: var(--primary-040);
+  background: var(--accent-faint);
+}
+/* Not --danger: this exact tint is the shipped landing value and the page is
+   the protected reference implementation (docs/design-language.md §2). */
+.settings-list .setting-row.operator .row-icon {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-color: rgba(180, 35, 24, 0.24);
+}
 /* Step indicator: <ol class="wizard-steps"><li class="wizard-step">
    <span class="wizard-step__dot"></span><span class="wizard-step__label">
    …</span></li></ol>, numbered by CSS counter. Done reads .done; the

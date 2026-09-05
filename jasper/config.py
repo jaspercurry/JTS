@@ -10,6 +10,7 @@ from types import MappingProxyType
 
 from . import home_assistant as _ha_env
 from . import volume_persistence as _volume_persistence
+from .accounts import DEFAULT_REGISTRY_PATH, LEGACY_CACHE_PATH
 from .camilla_config_contract import DEFAULT_CAMILLA_PORT
 from .librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
 from .mics.xvf3800 import CHIP_AEC_ENABLED_ENV
@@ -786,9 +787,7 @@ class Config:
             # one-shot migration into the new multi-account layout
             # (see jasper.accounts.maybe_migrate_legacy); after the
             # migration runs once, this path is no longer touched.
-            spotify_cache_path=_env(
-                "SPOTIFY_CACHE_PATH", "/var/lib/jasper-intsecrets/.spotify-cache"
-            ),
+            spotify_cache_path=_env("SPOTIFY_CACHE_PATH", LEGACY_CACHE_PATH),
             # Substring (case-insensitive) matched against
             # `sp.devices()[].name` to find the Pi's librespot endpoint.
             # The /speaker/ wizard writes JASPER_SPEAKER_NAME, consumed
@@ -797,10 +796,7 @@ class Config:
             # Multi-account registry: one record per household member,
             # mapping AirPlay ClientName patterns to per-user OAuth
             # caches. See jasper.accounts module-doc for shape.
-            spotify_accounts_path=_env(
-                "JASPER_SPOTIFY_ACCOUNTS_PATH",
-                "/var/lib/jasper-intsecrets/spotify/accounts.json",
-            ),
+            spotify_accounts_path=_env("JASPER_SPOTIFY_ACCOUNTS_PATH", DEFAULT_REGISTRY_PATH),
             # Public URL household members visit to add their Spotify
             # account. Surfaced in error messages so the voice
             # assistant can tell unrecognized users where to go.

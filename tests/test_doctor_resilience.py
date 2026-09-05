@@ -63,9 +63,11 @@ def _unit_block(unit: str, active: str, sub: str, restarts: int = 0) -> str:
             "fail",
             resilience.REASON_UNITS_FAILED_OR_UNSTABLE,
         ),
+        # NRestarts is cumulative until reset-failed or a reboot, so a unit
+        # that is up now must not latch a warn for the rest of the boot.
         (
             [("jasper-voice.service", "active", "running", 2)],
-            "warn",
+            "ok",
             resilience.REASON_UNITS_RESTARTED,
         ),
         # A parked coupling oneshot leaves its evidence only in
@@ -120,6 +122,98 @@ def test_check_service_runtime_state_flags_a_non_oneshot_stuck_activating(
 
 def test_runtime_state_units_track_the_coupling_reconciler_oneshot():
     assert "jasper-fanin-coupling-auto.service" in _shared._RUNTIME_STATE_UNITS
+
+
+# --------------------------------------------------- check_voice_unit_running
+
+
+@pytest.mark.parametrize(
+    "profile, unit, marker, status, reason",
+    [
+        # The gap: `inactive` is neither failed nor unstable, so
+        # check_service_runtime_state sees nothing while no wake gets an
+        # answer.
+        (
+            "full", {"active_state": "inactive", "sub_state": "dead"}, False,
+            "fail", resilience.REASON_VOICE_UNIT_INACTIVE,
+        ),
+        # ConditionPathExists=!/var/lib/jasper/voice-input-absent parks the
+        # unit on a box with neither a local nor an accessory mic: hardware,
+        # not a fault.
+        (
+            "full", {"active_state": "inactive", "sub_state": "dead"}, True,
+            "skipped", resilience.REASON_VOICE_UNIT_PARKED_NO_INPUT,
+        ),
+        (
+            "full", {"active_state": "active", "sub_state": "running"}, False,
+            "ok", "",
+        ),
+        (
+            "streambox", {"active_state": "inactive", "sub_state": "dead"},
+            False, "skipped", resilience.REASON_VOICE_UNIT_NOT_FULL_PROFILE,
+        ),
+        # A unit systemd cannot load is not an inactive one.
+        (
+            "full",
+            {"active_state": "inactive", "load_state": "not-found"},
+            False, "skipped", resilience.REASON_VOICE_UNIT_UNOBSERVED,
+        ),
+    ],
+    ids=["full-inactive", "parked-no-mic", "active", "streambox", "not-found"],
+)
+def test_check_voice_unit_running_verdicts(
+    monkeypatch, tmp_path, profile, unit, marker, status, reason,
+):
+    monkeypatch.setattr(_shared, "read_install_profile", lambda: profile)
+    absent = tmp_path / "voice-input-absent"
+    if marker:
+        absent.write_text("")
+    monkeypatch.setenv("JASPER_VOICE_INPUT_ABSENT_MARKER", str(absent))
+    monkeypatch.setattr(
+        _evidence, "read_unit_states",
+        _make_unit_states_fake({"jasper-voice.service": unit}),
+    )
+
+    result = resilience.check_voice_unit_running()
+
+    assert (result.status, result.reason) == (status, reason)
+
+
+def test_an_inactive_voice_unit_does_not_claim_playback_silence(
+    monkeypatch, tmp_path,
+):
+    """`speaker_silent` means the speaker emits NOTHING. Music keeps playing
+    with the voice daemon down — what is silent is the assistant."""
+    monkeypatch.setattr(_shared, "read_install_profile", lambda: "full")
+    monkeypatch.setenv(
+        "JASPER_VOICE_INPUT_ABSENT_MARKER", str(tmp_path / "absent"),
+    )
+    monkeypatch.setattr(
+        _evidence, "read_unit_states",
+        _make_unit_states_fake(
+            {"jasper-voice.service": {"active_state": "inactive"}},
+        ),
+    )
+
+    result = resilience.check_voice_unit_running()
+
+    assert result.status == "fail"
+    assert result.speaker_silent is False
+
+
+def test_check_voice_unit_running_skips_without_systemctl(monkeypatch, tmp_path):
+    monkeypatch.setattr(_shared, "read_install_profile", lambda: "full")
+    monkeypatch.setenv(
+        "JASPER_VOICE_INPUT_ABSENT_MARKER", str(tmp_path / "absent"),
+    )
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", _make_unit_states_fake(unavailable=True),
+    )
+
+    result = resilience.check_voice_unit_running()
+
+    assert result.status == "skipped"
+    assert result.reason == resilience.REASON_VOICE_UNIT_UNOBSERVED
 
 
 # ------------------------------------------------------- supervisor reboot state
@@ -324,10 +418,11 @@ def test_supervisor_snapshots_check_skips_when_state_unavailable(monkeypatch):
             resilience.REASON_UNDERVOLTAGE_NOW,
         ),
         # Bit 0 of throttled_history only (raw bit 16): happened since boot,
-        # not now.
+        # not now. The firmware latches it until the next reboot and there is
+        # nothing left to act on, so it reports rather than warns.
         (
             {"throttled_now": 0x0, "throttled_history": 0x1},
-            "warn",
+            "ok",
             resilience.REASON_UNDERVOLTAGE_HISTORY,
         ),
         # Other throttled bits set (frequency cap, temp limit) but neither
@@ -351,6 +446,7 @@ def test_check_supply_voltage_verdicts(monkeypatch, current, status, reason):
         "check_bootloop_guard",
         "check_supervisor_runtime_snapshots",
         "check_supply_voltage",
+        "check_voice_unit_running",
     ],
 )
 def test_resilience_checks_are_registered(check_name):

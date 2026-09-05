@@ -57,6 +57,7 @@ REPO = Path(__file__).resolve().parents[1]
 RUNTIME_CRATES = (
     "jasper-fanin",
     "jasper-outputd",
+    "jasper-daemon",
     "jasper-tts-protocol",
     "jasper-ring",
     "jasper-resampler",

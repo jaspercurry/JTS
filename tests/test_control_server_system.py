@@ -553,6 +553,7 @@ def test_system_audio_quality_applies_and_try_restarts_renderers(
     server_with_coordinator,
 ):
     base, _ = server_with_coordinator
+    import jasper.control.handlers.system as system_mod
     import jasper.control.server as srv_mod
 
     applied: list[str] = []
@@ -568,7 +569,7 @@ def test_system_audio_quality_applies_and_try_restarts_renderers(
             "options": [],
         }
 
-    monkeypatch.setattr(srv_mod, "_apply_audio_quality", fake_apply)
+    monkeypatch.setattr(system_mod, "apply_requested_converter", fake_apply)
     monkeypatch.setattr(srv_mod.subprocess, "Popen", _recording_popen(popens))
 
     status, body = _post(
@@ -591,12 +592,12 @@ def test_system_audio_quality_rejects_unknown_converter(
     server_with_coordinator,
 ):
     base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.system as system_mod
 
     def fail_apply(_converter: str) -> dict:
         raise AssertionError("invalid converter should not apply")
 
-    monkeypatch.setattr(srv_mod, "_apply_audio_quality", fail_apply)
+    monkeypatch.setattr(system_mod, "apply_requested_converter", fail_apply)
 
     status, body = _post(
         f"{base}/system/audio-quality",
@@ -612,12 +613,12 @@ def test_system_audio_quality_rejects_missing_converter(
     server_with_coordinator,
 ):
     base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.system as system_mod
 
     def fail_apply(_converter: str) -> dict:
         raise AssertionError("missing converter should not apply")
 
-    monkeypatch.setattr(srv_mod, "_apply_audio_quality", fail_apply)
+    monkeypatch.setattr(system_mod, "apply_requested_converter", fail_apply)
 
     status, body = _post(f"{base}/system/audio-quality", {})
 
@@ -630,13 +631,14 @@ def test_system_usb_latency_applies_fixed_mode(
     server_with_coordinator,
 ):
     base, _ = server_with_coordinator
+    import jasper.control.handlers.system as system_mod
     import jasper.control.server as srv_mod
 
     applied: list[str] = []
     marked: list[str] = []
     monkeypatch.setattr(
-        srv_mod,
-        "_apply_usb_latency_mode",
+        system_mod,
+        "apply_requested_mode",
         lambda mode: applied.append(mode),
     )
     monkeypatch.setattr(
@@ -658,12 +660,12 @@ def test_system_usb_latency_surfaces_apply_failure(
     server_with_coordinator,
 ):
     base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.system as system_mod
 
     def fail(_mode: str) -> None:
-        raise srv_mod._UsbLatencyApplyError("fan-in restart failed")
+        raise system_mod.LatencyApplyError("fan-in restart failed")
 
-    monkeypatch.setattr(srv_mod, "_apply_usb_latency_mode", fail)
+    monkeypatch.setattr(system_mod, "apply_requested_mode", fail)
 
     status, body = _post(f"{base}/system/usb-latency", {"mode": "high"})
 
@@ -1806,11 +1808,7 @@ def test_state_camilla_probe_times_out_fail_soft(
         get_clipped_samples = _hang
         get_config_file_path = _hang
 
-    async def _no_airplay(**kwargs):
-        return None
-
     monkeypatch.setattr(camilla_mod, "CamillaController", HangingCamilla)
-    monkeypatch.setattr(sa.mpris, "shairport_playing", _no_airplay)
     monkeypatch.setattr(sa, "_CAMILLA_PROBE_TIMEOUT_SEC", 0.05)
     monkeypatch.delenv("JASPER_HA_URL", raising=False)
     monkeypatch.delenv("JASPER_HA_TOKEN", raising=False)
@@ -1857,11 +1855,7 @@ async def test_state_aggregate_budget_fails_loud_on_runaway_probe(
     def _fast_ha():
         return {"configured": False, "connected": False}
 
-    async def _no_airplay(**kwargs):
-        return None
-
     monkeypatch.setattr(camilla_mod, "CamillaController", HangingCamilla)
-    monkeypatch.setattr(sa.mpris, "shairport_playing", _no_airplay)
     # Camilla's own ceiling is high, so the OUTER aggregate budget is what
     # fires — that's the path under test.
     monkeypatch.setattr(sa, "_CAMILLA_PROBE_TIMEOUT_SEC", 30.0)
@@ -1882,18 +1876,36 @@ async def test_state_aggregate_budget_fails_loud_on_runaway_probe(
     ), "aggregate timeout must emit a greppable event= line"
 
 
-async def test_wifi_guardian_snapshot_runs_off_aggregate_event_loop(monkeypatch):
-    caller_thread = threading.get_ident()
-    seen: list[int] = []
+@pytest.mark.parametrize("playing", [True, False, None])
+async def test_state_airplay_row_and_active_source_come_from_the_injected_reader(
+    playing, monkeypatch, tmp_path,
+):
+    """`/state` serves the AirPlay health sampler's held PlaybackStatus and
+    derives `active_source` from the same value — no second reader."""
+    async def no_status(*_args, **_kwargs):
+        return None
 
-    def fake_snapshot():
-        seen.append(threading.get_ident())
-        return {"enabled": False}
+    monkeypatch.setattr(state_aggregate, "_audio_graph_state", lambda **_kw: None)
+    monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"))
+    monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.env"))
 
-    monkeypatch.setattr(state_aggregate.wifi_guardian_state, "snapshot", fake_snapshot)
+    body = await state_aggregate._get_state(
+        camilla_host="127.0.0.1",
+        camilla_port=1234,
+        voice_socket_path=str(tmp_path / "voice.sock"),
+        voice_socket_command=no_status,
+        mux_socket_command=no_status,
+        local_status_json=no_status,
+        aec_full_status=lambda: {},
+        read_transit_state_func=lambda: {"packs": []},
+        ha_status_snapshot=lambda: {"configured": False, "connected": False},
+        airplay_playing_snapshot=lambda: playing,
+    )
 
-    assert await state_aggregate._wifi_guardian_snapshot() == {"enabled": False}
-    assert seen and seen[0] != caller_thread
+    assert body["renderers"]["airplay"] == (
+        None if playing is None else {"playing": playing}
+    )
+    assert body["active_source"] == ("airplay" if playing else "idle")
 
 
 def test_state_home_assistant_unconfigured(server_with_coordinator, monkeypatch):

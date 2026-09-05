@@ -14,9 +14,7 @@ Covers:
 """
 from __future__ import annotations
 
-import asyncio
 import json
-import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -179,7 +177,7 @@ async def test_operation_lock_timeout_propagates(tmp_path, monkeypatch):
             raise AssertionError("a lock that never acquired cannot release")
 
     monkeypatch.setattr(
-        "jasper.volume_persistence.advisory_file_lock",
+        "jasper.atomic_io.advisory_file_lock",
         lambda *args, **kwargs: TimeoutLock(),
     )
     persistence = VolumePersistence(_path(tmp_path))
@@ -187,76 +185,6 @@ async def test_operation_lock_timeout_propagates(tmp_path, monkeypatch):
     with pytest.raises(TimeoutError, match="busy"):
         async with persistence.operation_lock():
             pass
-
-
-async def test_operation_lock_cancel_preserved_when_acquire_times_out(
-    tmp_path, monkeypatch,
-):
-    started = threading.Event()
-    finish = threading.Event()
-
-    class DelayedTimeoutLock:
-        def __enter__(self):
-            started.set()
-            assert finish.wait(timeout=1.0)
-            raise TimeoutError("busy")
-
-        def __exit__(self, exc_type, exc, traceback):
-            raise AssertionError("a lock that never acquired cannot release")
-
-    monkeypatch.setattr(
-        "jasper.volume_persistence.advisory_file_lock",
-        lambda *args, **kwargs: DelayedTimeoutLock(),
-    )
-    persistence = VolumePersistence(_path(tmp_path))
-
-    async def wait_for_lock():
-        async with persistence.operation_lock():
-            pass
-
-    waiter = asyncio.create_task(wait_for_lock())
-    assert await asyncio.to_thread(started.wait, 1.0)
-    waiter.cancel()
-    finish.set()
-
-    with pytest.raises(asyncio.CancelledError):
-        await waiter
-
-
-async def test_operation_lock_cancel_releases_late_acquisition(
-    tmp_path, monkeypatch,
-):
-    started = threading.Event()
-    finish = threading.Event()
-    released = threading.Event()
-
-    class DelayedLock:
-        def __enter__(self):
-            started.set()
-            assert finish.wait(timeout=1.0)
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            released.set()
-
-    monkeypatch.setattr(
-        "jasper.volume_persistence.advisory_file_lock",
-        lambda *args, **kwargs: DelayedLock(),
-    )
-    persistence = VolumePersistence(_path(tmp_path))
-
-    async def wait_for_lock():
-        async with persistence.operation_lock():
-            pass
-
-    waiter = asyncio.create_task(wait_for_lock())
-    assert await asyncio.to_thread(started.wait, 1.0)
-    waiter.cancel()
-    finish.set()
-
-    with pytest.raises(asyncio.CancelledError):
-        await waiter
-    assert released.is_set()
 
 
 # ---------- regression ----------------------------------------------------

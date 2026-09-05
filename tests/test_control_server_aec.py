@@ -115,6 +115,7 @@ def test_usb_mic_persists_intent_and_schedules_descriptor_recompose(
     server_with_coordinator,
 ):
     base, _ = server_with_coordinator
+    import jasper.control.handlers.aec as aec_mod
     import jasper.control.server as srv_mod
 
     statuses = iter([
@@ -124,7 +125,7 @@ def test_usb_mic_persists_intent_and_schedules_descriptor_recompose(
     writes: list[bool] = []
     recomposes: list[bool] = []
     monkeypatch.setattr(aec_endpoints, "_aec_full_status", lambda: next(statuses))
-    monkeypatch.setattr(srv_mod, "write_usb_mic_enabled", writes.append)
+    monkeypatch.setattr(aec_mod, "write_usb_mic_enabled", writes.append)
     monkeypatch.setattr(
         srv_mod,
         "_schedule_usb_gadget_recompose",
@@ -144,6 +145,7 @@ def test_usb_mic_schedule_failure_returns_structured_502(
     server_with_coordinator,
 ):
     base, _ = server_with_coordinator
+    import jasper.control.handlers.aec as aec_mod
     import jasper.control.server as srv_mod
 
     usb_mic = {
@@ -157,7 +159,7 @@ def test_usb_mic_schedule_failure_returns_structured_502(
         "_aec_full_status",
         lambda: {"usb_mic": usb_mic},
     )
-    monkeypatch.setattr(srv_mod, "write_usb_mic_enabled", writes.append)
+    monkeypatch.setattr(aec_mod, "write_usb_mic_enabled", writes.append)
     monkeypatch.setattr(
         srv_mod,
         "_schedule_usb_gadget_recompose",
@@ -185,6 +187,7 @@ def test_usb_mic_refuses_enable_when_status_gate_is_closed(
     server_with_coordinator,
 ):
     base, _ = server_with_coordinator
+    import jasper.control.handlers.aec as aec_mod
     import jasper.control.server as srv_mod
 
     monkeypatch.setattr(
@@ -199,7 +202,7 @@ def test_usb_mic_refuses_enable_when_status_gate_is_closed(
         },
     )
     monkeypatch.setattr(
-        srv_mod,
+        aec_mod,
         "write_usb_mic_enabled",
         lambda _enabled: pytest.fail("unavailable switch must not persist intent"),
     )
@@ -220,6 +223,7 @@ def test_raw_usb_mic_leg_persists_then_restarts_only_aec_bridge(
     server_with_coordinator,
 ):
     base, _ = server_with_coordinator
+    import jasper.control.handlers.aec as aec_mod
     import jasper.control.server as srv_mod
 
     events = []
@@ -240,7 +244,7 @@ def test_raw_usb_mic_leg_persists_then_restarts_only_aec_bridge(
         },
     }
     monkeypatch.setattr(
-        srv_mod,
+        aec_mod,
         "usb_mic_leg_choices",
         lambda env: choices if env == {"JASPER_AUDIO_INPUT_PROFILE": "fresh"}
         else pytest.fail(
@@ -252,9 +256,9 @@ def test_raw_usb_mic_leg_persists_then_restarts_only_aec_bridge(
         "_fresh_jasper_env",
         lambda: {"JASPER_AUDIO_INPUT_PROFILE": "fresh"},
     )
-    monkeypatch.setattr(srv_mod, "read_usb_mic_leg", lambda: "primary")
+    monkeypatch.setattr(aec_mod, "read_usb_mic_leg", lambda: "primary")
     monkeypatch.setattr(
-        srv_mod,
+        aec_mod,
         "write_usb_mic_leg",
         lambda leg: events.append(("write", leg)),
     )
@@ -313,13 +317,14 @@ def test_usb_mic_leg_rejects_choice_not_advertised_by_server(
     server_with_coordinator,
 ):
     base, _ = server_with_coordinator
+    import jasper.control.handlers.aec as aec_mod
     import jasper.control.server as srv_mod
 
     choices = [{"value": "primary", "label": "Same as JTS voice"}]
     monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
-    monkeypatch.setattr(srv_mod, "usb_mic_leg_choices", lambda _env: choices)
+    monkeypatch.setattr(aec_mod, "usb_mic_leg_choices", lambda _env: choices)
     monkeypatch.setattr(
-        srv_mod,
+        aec_mod,
         "write_usb_mic_leg",
         lambda _leg: pytest.fail("unavailable choice must not be persisted"),
     )
@@ -346,6 +351,7 @@ def test_usb_mic_leg_same_value_is_noop(
     server_with_coordinator,
 ):
     base, _ = server_with_coordinator
+    import jasper.control.handlers.aec as aec_mod
     import jasper.control.server as srv_mod
 
     final_status = {
@@ -358,13 +364,13 @@ def test_usb_mic_leg_same_value_is_noop(
     }
     monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
     monkeypatch.setattr(
-        srv_mod,
+        aec_mod,
         "usb_mic_leg_choices",
         lambda _env: [{"value": "primary", "label": "Same as JTS voice"}],
     )
-    monkeypatch.setattr(srv_mod, "read_usb_mic_leg", lambda: "primary")
+    monkeypatch.setattr(aec_mod, "read_usb_mic_leg", lambda: "primary")
     monkeypatch.setattr(
-        srv_mod,
+        aec_mod,
         "write_usb_mic_leg",
         lambda _leg: pytest.fail("same-value save must not write"),
     )
@@ -386,6 +392,7 @@ def test_usb_mic_leg_coalesces_pending_apply_then_retries_after_timeout(
     server_with_coordinator,
 ):
     base, _ = server_with_coordinator
+    import jasper.control.handlers.aec as aec_mod
     import jasper.control.server as srv_mod
 
     state = {"leg": "primary"}
@@ -406,10 +413,10 @@ def test_usb_mic_leg_coalesces_pending_apply_then_retries_after_timeout(
     monkeypatch.setattr(srv_mod, "_usb_mic_leg_apply_pending", None)
     monkeypatch.setattr(srv_mod.time, "monotonic", lambda: clock["now"])
     monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
-    monkeypatch.setattr(srv_mod, "usb_mic_leg_choices", lambda _env: choices)
-    monkeypatch.setattr(srv_mod, "read_usb_mic_leg", lambda: state["leg"])
+    monkeypatch.setattr(aec_mod, "usb_mic_leg_choices", lambda _env: choices)
+    monkeypatch.setattr(aec_mod, "read_usb_mic_leg", lambda: state["leg"])
     monkeypatch.setattr(
-        srv_mod,
+        aec_mod,
         "write_usb_mic_leg",
         lambda leg: state.__setitem__("leg", leg),
     )
@@ -453,6 +460,7 @@ def test_usb_mic_leg_failed_schedule_does_not_suppress_immediate_retry(
     server_with_coordinator,
 ):
     base, _ = server_with_coordinator
+    import jasper.control.handlers.aec as aec_mod
     import jasper.control.server as srv_mod
 
     state = {"leg": "primary"}
@@ -471,10 +479,10 @@ def test_usb_mic_leg_failed_schedule_does_not_suppress_immediate_retry(
     }
     monkeypatch.setattr(srv_mod, "_usb_mic_leg_apply_pending", None)
     monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
-    monkeypatch.setattr(srv_mod, "usb_mic_leg_choices", lambda _env: choices)
-    monkeypatch.setattr(srv_mod, "read_usb_mic_leg", lambda: state["leg"])
+    monkeypatch.setattr(aec_mod, "usb_mic_leg_choices", lambda _env: choices)
+    monkeypatch.setattr(aec_mod, "read_usb_mic_leg", lambda: state["leg"])
     monkeypatch.setattr(
-        srv_mod,
+        aec_mod,
         "write_usb_mic_leg",
         lambda leg: state.__setitem__("leg", leg),
     )
@@ -511,6 +519,7 @@ def test_usb_mic_leg_repeated_changes_reset_reboot_budget_before_restart(
     server_with_coordinator,
 ):
     base, _ = server_with_coordinator
+    import jasper.control.handlers.aec as aec_mod
     import jasper.control.server as srv_mod
 
     state = {"leg": "primary"}
@@ -520,10 +529,10 @@ def test_usb_mic_leg_repeated_changes_reset_reboot_budget_before_restart(
         {"value": "chip_aec_210", "label": "Rear hardware beam"},
     ]
     monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
-    monkeypatch.setattr(srv_mod, "usb_mic_leg_choices", lambda _env: choices)
-    monkeypatch.setattr(srv_mod, "read_usb_mic_leg", lambda: state["leg"])
+    monkeypatch.setattr(aec_mod, "usb_mic_leg_choices", lambda _env: choices)
+    monkeypatch.setattr(aec_mod, "read_usb_mic_leg", lambda: state["leg"])
     monkeypatch.setattr(
-        srv_mod,
+        aec_mod,
         "write_usb_mic_leg",
         lambda leg: state.__setitem__("leg", leg),
     )

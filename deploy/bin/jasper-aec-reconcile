@@ -8,7 +8,7 @@
 #
 # This is intentionally a small policy layer around /etc/jasper/jasper.env
 # and systemd. It keeps a stale JASPER_MIC_DEVICE=udp:PORT from stranding
-# jasper-voice when the XVF Array is unplugged, while leaving a narrow config
+# jasper-voice when the XVF is unplugged, while leaving a narrow config
 # hook for microphone variants via JASPER_MIC_DEVICE_CANDIDATES.
 
 set -euo pipefail
@@ -77,7 +77,6 @@ VOICE_RESTART_INTENT_MARKER="${JASPER_VOICE_RESTART_INTENT_MARKER:-/run/jasper-a
 AEC_BRIDGE_READY_MARKER="${JASPER_AEC_BRIDGE_READY_MARKER:-/run/jasper-aec-reconcile/aec-bridge-ready}"
 ASOUND_ROOT="${JASPER_ASOUND_ROOT:-/proc/asound}"
 SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
-DEFAULT_MIC_DEVICE_CANDIDATES="Array,L16K2Ch,L16K6Ch,C16K2Ch,C16K6Ch"
 DEFAULT_MIC_PROFILE_PYTHON="python3"
 if [[ -x /opt/jasper/.venv/bin/python ]]; then
     DEFAULT_MIC_PROFILE_PYTHON="/opt/jasper/.venv/bin/python"
@@ -237,6 +236,9 @@ elif [[ -e "$COMMISSION_MARKER" ]]; then
     rm -f "$COMMISSION_MARKER"
 fi
 
+# Detection only: the emitter's registry constants are deliberately NOT reset
+# here, so an interpreter-less pass keeps the pair write_mic_profile_env put in
+# $ENV_FILE and can still name a mic. Readers spell them `${...:-}`.
 clear_mic_profile_state() {
     JASPER_XVF_PRESENT=0
     JASPER_XVF_VARIANT=""
@@ -343,7 +345,7 @@ ensure_mode_file() {
 # shared lib (see load_env_file_lib above) so this script and
 # jasper-audio-hardware-reconcile cannot drift — bash %q quoting is NOT
 # usable here (bash 5.2 backslash-escapes commas, corrupting ALSA
-# specs like plughw:CARD=Array,DEV=0 and breaking read-back
+# specs like plughw:CARD=<card>,DEV=0 and breaking read-back
 # idempotence).
 set_env_var() {
     # /etc/jasper/jasper.env is non-secret runtime config. jasper-control
@@ -580,6 +582,9 @@ write_mic_profile_env() {
     set_env_var "$ENV_FILE" JASPER_XVF_CHIP_AEC_SUPPORTED "${JASPER_XVF_CHIP_AEC_SUPPORTED:-0}"
     set_env_var "$ENV_FILE" JASPER_XVF_RECOMMENDED_PROFILE "${JASPER_XVF_RECOMMENDED_PROFILE:-}"
     set_env_var "$ENV_FILE" JASPER_XVF_REASON "${JASPER_XVF_REASON:-}"
+    # The two an interpreter-less pass needs (clear_mic_profile_state says why).
+    set_env_var "$ENV_FILE" JASPER_XVF_SUPPORTED_ALSA_CARDS "${JASPER_XVF_SUPPORTED_ALSA_CARDS:-}"
+    set_env_var "$ENV_FILE" JASPER_XVF_RECOMMENDED_CHANNELS "${JASPER_XVF_RECOMMENDED_CHANNELS:-}"
 }
 
 # Publish THIS script's half of the voice-input question, for jasper-voice.
@@ -591,7 +596,7 @@ write_mic_profile_env() {
 # the daemon half of issue #2205.
 #
 # The daemon must NOT re-derive this from its own config. `Config.mic_device`
-# defaults to the literal "Array" when JASPER_MIC_DEVICE is unset, and the
+# defaults to a real card name when JASPER_MIC_DEVICE is unset, and the
 # no-mic branches below deliberately write FALLBACK_MIC to clear a stale
 # udp:PORT — so "empty or odd mic_device" is not evidence of absence on any
 # real box. One owner, one derivation, published once.
@@ -1165,12 +1170,12 @@ mic_present() {
 # that is actually present turns out to expose a USB id — a box with no USB
 # capture card never pays for the interpreter.
 #
-# Defense in depth, not the only defense: DEFAULT_MIC_DEVICE_CANDIDATES is a
-# closed allowlist no measurement mic appears in, so on a stock box this
-# excludes nothing. It is here for a box whose operator widened
-# JASPER_MIC_DEVICE_CANDIDATES, and it fails OPEN — a resolver that cannot
-# answer excludes nothing, because refusing to classify must never be able to
-# leave a speaker with no microphone at all.
+# Defense in depth, not the only defense: the default candidate list is the
+# XVF registry's own card names, a closed allowlist no measurement mic appears
+# in, so on a stock box this excludes nothing. It is here for a box whose
+# operator widened JASPER_MIC_DEVICE_CANDIDATES, and it fails OPEN — a resolver
+# that cannot answer excludes nothing, because refusing to classify must never
+# be able to leave a speaker with no microphone at all.
 MEASUREMENT_USB_IDS=""
 MEASUREMENT_USB_IDS_STATUS="unresolved"
 
@@ -1264,11 +1269,8 @@ mic_channels() {
         echo 0
         return
     fi
-    # /proc/asound/<card>/stream0 has separate Playback and Capture
-    # blocks, each with its own "Channels:" line. We need the Capture
-    # one — the XVF chip's Playback endpoint is 2-ch even when Capture
-    # is 6-ch on the 6-ch firmware. Pinning to ^Capture: prevents a
-    # silent fallback to direct-mic when AEC should be enabled.
+    # stream0 has a Playback block before the Capture one, each with its own
+    # "Channels:" line; reading the wrong one silently disables AEC.
     channels="$(awk '/^Capture:/{cap=1} cap && /Channels:[[:space:]]*[0-9]+/{print; exit}' "$stream" \
         | grep -oE "[0-9]+" \
         | head -1)"
@@ -1281,7 +1283,9 @@ aec_ready() {
     # card would pass the format check and put the software-AEC stack on an
     # instrument. Selection predicates exclude measurement mics everywhere,
     # including here.
-    [[ "$(mic_channels "$mic")" == "6" ]] && ! measurement_class_card "$mic"
+    # $mic may be any operator-configured card, so only the threshold is XVF.
+    [[ "$(mic_channels "$mic")" == "${JASPER_XVF_RECOMMENDED_CHANNELS:-}" ]] \
+        && ! measurement_class_card "$mic"
 }
 
 managed_xvf_card_present() {
@@ -1296,28 +1300,23 @@ managed_xvf_policy_applies() {
             || [[ "$MIC_PROFILE_RESOLUTION_STATUS" != "resolved" ]]; }
 }
 
-# When the chip is flashed from the 2-ch firmware to the 6-ch firmware
-# (the BRINGUP path), ALSA assigns mixer slots for the new ch2-5 with
-# default values of off / 0 dB. `alsactl restore` then persists that
-# state across reboot — silencing the raw mics in the kernel
-# independently of the chip's own configuration, with no surface that
-# would let the operator notice. Force the capture channels open
-# whenever we confirm the chip is on 6-ch firmware. Idempotent; safe
-# to run on every reconcile pass.
-#
-# Canonical reference for these mixer names + the rationale: the
-# `jasper.mics.xvf3800` Python profile. This reconciler is bash and
-# can't import Python; if the names or channel count change in the
-# profile, update them here too. The doctor's `check_xvf_mixer_state`
-# reads from the profile and flags drift if the two get out of sync.
+# Force every capture channel open once the mic is confirmed AEC-capable:
+# `alsactl restore` can otherwise persist ALSA's off / 0 dB defaults for the
+# slots a 2-ch-to-6-ch reflash creates (jasper/mics/xvf3800.py). Idempotent.
 ensure_capture_mixer_open() {
-    local spec="$1"
-    local card
+    local spec="$1" card switch="" volume="" i
+    # No control names this pass (they carry spaces, so write_mic_profile_env
+    # cannot persist them): skip the repair; the next good pass redoes it.
+    [[ -n "${JASPER_XVF_MIXER_CAPTURE_SWITCH:-}" ]] || return 0
     card="$(card_id_from_spec "$spec")"
-    amixer -c "$card" cset name='Headset Capture Switch' \
-        on,on,on,on,on,on >/dev/null 2>&1 || true
-    amixer -c "$card" cset name='Headset Capture Volume' \
-        60,60,60,60,60,60 >/dev/null 2>&1 || true
+    for ((i = 0; i < ${JASPER_XVF_RECOMMENDED_CHANNELS:-0}; i++)); do
+        switch+=",on"
+        volume+=",${JASPER_XVF_MIXER_VOLUME_MAX:-}"
+    done
+    amixer -c "$card" cset name="${JASPER_XVF_MIXER_CAPTURE_SWITCH:-}" \
+        "${switch#,}" >/dev/null 2>&1 || true
+    amixer -c "$card" cset name="${JASPER_XVF_MIXER_CAPTURE_VOLUME:-}" \
+        "${volume#,}" >/dev/null 2>&1 || true
     alsactl store >/dev/null 2>&1 || true
 }
 
@@ -1370,7 +1369,7 @@ derive_profile_managed_aec_mic_device() {
 }
 
 first_candidate() {
-    local candidate
+    local candidate cards="${JASPER_XVF_SUPPORTED_ALSA_CARDS:-}"
     if [[ ${#MIC_CANDIDATES[@]} -gt 0 ]]; then
         # Prefer a candidate that could actually carry voice. This value
         # becomes FALLBACK_MIC, which the no-mic branches write into
@@ -1390,7 +1389,7 @@ first_candidate() {
         # pairing, an operator reading jasper.env) must not be handed a
         # measurement card. The stock first candidate is a real card name on
         # every supported box and simply parks while absent.
-        echo "${DEFAULT_MIC_DEVICE_CANDIDATES%%,*}"
+        echo "${cards%%,*}"
     else
         echo "$AEC_MIC_DEVICE"
     fi
@@ -2076,9 +2075,9 @@ OUTPUTD_CHIP_REF_SAMPLE_RATE="${JASPER_XVF_CHIP_REF_RATE:-16000}"
 OUTPUTD_CHIP_REF_PERIOD_FRAMES="${JASPER_XVF_CHIP_REF_PERIOD:-128}"
 OUTPUTD_CHIP_REF_BUFFER_FRAMES="${JASPER_XVF_CHIP_REF_BUFFER:-256}"
 UDP_DEVICE="udp:${AEC_UDP_PORT}"
-MIC_DEVICE_CANDIDATES_DEFAULT="$DEFAULT_MIC_DEVICE_CANDIDATES"
+MIC_DEVICE_CANDIDATES_DEFAULT="${JASPER_XVF_SUPPORTED_ALSA_CARDS:-}"
 if [[ -n "${JASPER_XVF_ALSA_CARD:-}" ]]; then
-    MIC_DEVICE_CANDIDATES_DEFAULT="${JASPER_XVF_ALSA_CARD},${DEFAULT_MIC_DEVICE_CANDIDATES}"
+    MIC_DEVICE_CANDIDATES_DEFAULT="${JASPER_XVF_ALSA_CARD},${MIC_DEVICE_CANDIDATES_DEFAULT}"
 fi
 split_candidates "${JASPER_MIC_DEVICE_CANDIDATES:-${AEC_MIC_DEVICE:-$MIC_DEVICE_CANDIDATES_DEFAULT}}"
 prime_measurement_usb_ids

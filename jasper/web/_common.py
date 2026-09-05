@@ -179,43 +179,46 @@ def _asset_version() -> str:
     return sha if sha and sha != "unknown" else "dev"
 
 
-# Curated inline icon sprite for the redesigned pages. Symbols mirror the
-# landing page's set (lucide-style, 24×24, stroked). Reference one with
-# `<svg class="ico"><use href="#icon-NAME"></use></svg>`. Add a symbol
+# Curated inline icon sprite for the redesigned pages AND the static landing
+# page, which substitutes it at install time (jasper.web.landing). Reference
+# one with `<svg class="ico"><use href="#icon-NAME"></use></svg>`. Add a symbol
 # here when a page needs a new glyph — keep it a shared set, not per-page.
+# Symbols carry geometry only (lucide-style, 24×24, no `stroke-width`): the
+# wrapper owns the weight — `.ico` sets 2, a settings row's `.row-icon svg`
+# sets 1.9 — and a symbol-level attribute would outrank both.
 CANONICAL_ICON_SPRITE = """\
 <svg class="sr-only" aria-hidden="true" focusable="false">
   <symbol id="icon-back" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          stroke-linecap="round" stroke-linejoin="round">
     <path d="m15 18-6-6 6-6"></path>
   </symbol>
   <symbol id="icon-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          stroke-linecap="round" stroke-linejoin="round">
     <path d="m9 18 6-6-6-6"></path>
   </symbol>
   <symbol id="icon-sound" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          stroke-linecap="round" stroke-linejoin="round">
     <path d="M4 14h4l5 5V5L8 10H4z"></path>
     <path d="M17 9a5 5 0 0 1 0 6"></path>
     <path d="M19.5 6.5a8.5 8.5 0 0 1 0 11"></path>
   </symbol>
   <symbol id="icon-sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          stroke-linecap="round" stroke-linejoin="round">
     <path d="M4 6h16"></path><path d="M4 12h16"></path><path d="M4 18h16"></path>
     <circle cx="9" cy="6" r="2"></circle><circle cx="15" cy="12" r="2"></circle>
     <circle cx="11" cy="18" r="2"></circle>
   </symbol>
   <symbol id="icon-wave" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          stroke-linecap="round" stroke-linejoin="round">
     <path d="M3 12c2.2-4 4.5-4 6.8 0s4.5 4 6.7 0 3.7-4 4.5-2.2"></path>
     <path d="M3 17c2.2-4 4.5-4 6.8 0s4.5 4 6.7 0 3.7-4 4.5-2.2"></path>
   </symbol>
   <symbol id="icon-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          stroke-linecap="round" stroke-linejoin="round">
     <path d="M5 12h14"></path><path d="M12 5v14"></path>
   </symbol>
   <symbol id="icon-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          stroke-linecap="round" stroke-linejoin="round">
     <path d="M3 6h18"></path>
     <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path>
     <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -223,13 +226,119 @@ CANONICAL_ICON_SPRITE = """\
     <line x1="14" x2="14" y1="11" y2="17"></line>
   </symbol>
   <symbol id="icon-pencil" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          stroke-linecap="round" stroke-linejoin="round">
     <path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"></path>
     <path d="m15 5 4 4"></path>
   </symbol>
   <symbol id="icon-spark" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          stroke-linecap="round" stroke-linejoin="round">
     <path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.582a.5.5 0 0 1 0 .962L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"></path>
+  </symbol>
+  <symbol id="icon-shuffle" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round">
+    <path d="M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.7-1.1 2-1.7 3.3-1.7H22"></path>
+    <path d="m18 2 4 4-4 4"></path>
+    <path d="M2 6h1.9c1.5 0 2.9.9 3.6 2.2"></path>
+    <path d="M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8"></path>
+    <path d="m18 14 4 4-4 4"></path>
+  </symbol>
+  <symbol id="icon-airplay" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round">
+    <path d="M5 17H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-1"></path>
+    <path d="m12 15 5 6H7l5-6z"></path>
+  </symbol>
+  <symbol id="icon-bluetooth" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round">
+    <path d="m7 7 10 10-5 5V2l5 5L7 17"></path>
+  </symbol>
+  <symbol id="icon-music" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="8" cy="18" r="4"></circle><path d="M12 18V2l7 4"></path>
+  </symbol>
+  <symbol id="icon-usb" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="10" cy="7" r="1"></circle><circle cx="4" cy="20" r="1"></circle>
+    <path d="M4.7 19.3 19 5"></path><path d="m21 3-3 1 2 2 1-3Z"></path>
+    <path d="M9.26 7.68 5 12l2 5"></path><path d="m10 14 5 2 3.5-3.5"></path>
+    <path d="m18 12 1-1 1 1-1 1Z"></path>
+  </symbol>
+  <symbol id="icon-source" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 6h16"></path><path d="M4 12h16"></path><path d="M4 18h16"></path>
+    <path d="M8 6v12"></path><path d="M16 6v12"></path>
+  </symbol>
+  <symbol id="icon-voice" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"></path>
+    <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><path d="M12 19v3"></path>
+  </symbol>
+  <symbol id="icon-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 12a8 8 0 0 1-8 8H7l-4 3v-5.5A8 8 0 1 1 21 12z"></path>
+    <path d="M8 10h8"></path><path d="M8 14h5"></path>
+  </symbol>
+  <symbol id="icon-wake" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 12h2"></path><path d="M18 12h2"></path>
+    <path d="M7 7l1.4 1.4"></path><path d="M15.6 15.6 17 17"></path>
+    <path d="M17 7l-1.4 1.4"></path><path d="M8.4 15.6 7 17"></path>
+    <circle cx="12" cy="12" r="3"></circle>
+  </symbol>
+  <symbol id="icon-tools" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
+  </symbol>
+  <symbol id="icon-weather" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round">
+    <path d="M7 17h10a4 4 0 0 0 0-8 5.5 5.5 0 0 0-10.6 1.5A3.5 3.5 0 0 0 7 17z"></path>
+    <path d="M5 5l1.2 1.2"></path><path d="M12 3v2"></path><path d="M19 5l-1.2 1.2"></path>
+  </symbol>
+  <symbol id="icon-transit" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round">
+    <rect x="5" y="4" width="14" height="13" rx="2"></rect>
+    <path d="M8 8h8"></path><path d="M8 13h.01"></path><path d="M16 13h.01"></path>
+    <path d="M8 21l2-4"></path><path d="M16 21l-2-4"></path>
+  </symbol>
+  <symbol id="icon-calendar" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round">
+    <rect x="4" y="5" width="16" height="15" rx="2"></rect>
+    <path d="M8 3v4"></path><path d="M16 3v4"></path><path d="M4 10h16"></path>
+    <path d="M8 14h3"></path><path d="M13 14h3"></path><path d="M8 17h3"></path>
+  </symbol>
+  <symbol id="icon-home" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 11 12 4l9 7"></path><path d="M5 10v10h14V10"></path>
+    <path d="M10 20v-6h4v6"></path>
+  </symbol>
+  <symbol id="icon-wifi" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 20h.01"></path><path d="M2 8.82a15 15 0 0 1 20 0"></path>
+    <path d="M5 12.859a10 10 0 0 1 14 0"></path><path d="M8.5 16.429a5 5 0 0 1 7 0"></path>
+  </symbol>
+  <symbol id="icon-peers" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="7" cy="12" r="3"></circle><circle cx="17" cy="7" r="3"></circle>
+    <circle cx="17" cy="17" r="3"></circle><path d="M9.5 10.5 14.5 8.5"></path>
+    <path d="M9.5 13.5 14.5 15.5"></path>
+  </symbol>
+  <symbol id="icon-system" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round">
+    <rect x="4" y="5" width="16" height="11" rx="2"></rect>
+    <path d="M8 20h8"></path><path d="M12 16v4"></path>
+  </symbol>
+  <symbol id="icon-tag" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"></path>
+    <circle cx="7.5" cy="7.5" r=".5" fill="currentColor"></circle>
+  </symbol>
+  <symbol id="icon-software" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8 7h8"></path><path d="M8 12h8"></path><path d="M8 17h5"></path>
+    <rect x="5" y="3" width="14" height="18" rx="2"></rect>
+  </symbol>
+  <symbol id="icon-dev" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round">
+    <path d="m8 9-4 3 4 3"></path><path d="m16 9 4 3-4 3"></path><path d="m14 5-4 14"></path>
   </symbol>
 </svg>"""
 

@@ -29,8 +29,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use jasper_daemon::NotifyState;
 use log::{info, warn};
-use sd_notify::NotifyState;
 
 /// Maximum permitted age of the work loop's last progress bump before
 /// the heartbeat thread STOPS pinging systemd. systemd's WatchdogSec
@@ -126,7 +126,7 @@ impl Heartbeat {
     /// then lets dependent units race a daemon that cannot yet mix
     /// audio.
     pub fn notify_ready(&self) {
-        match sd_notify::notify(&[NotifyState::Ready]) {
+        match jasper_daemon::notify(NotifyState::Ready) {
             Ok(_) => info!("event=fanin.sd_notify_ready_sent"),
             Err(e) => warn!("event=fanin.sd_notify_ready_failed detail={}", e),
         }
@@ -140,7 +140,7 @@ impl Heartbeat {
             std::thread::sleep(HEARTBEAT_INTERVAL);
             let age_ms = self.last_progress_age_ms();
             if age_ms < STALE_THRESHOLD.as_millis() as u64 {
-                match sd_notify::notify(&[NotifyState::Watchdog]) {
+                match jasper_daemon::notify(NotifyState::Watchdog) {
                     Ok(_) => {
                         self.pings_sent.fetch_add(1, Ordering::Relaxed);
                     }
@@ -163,7 +163,7 @@ impl Heartbeat {
     /// distinguish "clean exit" from "crashed" for restart-policy
     /// accounting (StartLimitBurst).
     pub fn notify_stopping(&self) {
-        if let Err(e) = sd_notify::notify(&[NotifyState::Stopping]) {
+        if let Err(e) = jasper_daemon::notify(NotifyState::Stopping) {
             warn!("event=fanin.sd_notify_stopping_failed detail={}", e);
         }
     }

@@ -636,23 +636,26 @@ def test_only_the_armed_branch_touches_the_content_bridge_key():
     assert armed["JASPER_OUTPUTD_CONTENT_BRIDGE"] == ""
 
 
-def test_outputd_config_exit_code_contract():
-    """The Rust EXIT_CONFIG constant and the unit's
+@pytest.mark.parametrize("unit", ["jasper-fanin.service", "jasper-outputd.service"])
+def test_daemon_config_exit_code_contract(unit):
+    """The one shared Rust EXIT_CONFIG and each daemon unit's
     RestartPreventExitStatus must agree — together they make a
-    fail-closed config rejection PARK outputd (visible) instead of
+    fail-closed config rejection PARK the daemon (visible) instead of
     crash-looping into StartLimitAction=reboot (the jts3 incident's
     escalation path)."""
     import re
     from pathlib import Path
     root = Path(__file__).resolve().parents[1]
-    main_rs_path = root / "rust/jasper-outputd/src/main.rs"
-    unit_path = root / "deploy/systemd/jasper-outputd.service"
-    rust_exit = re.search(r"EXIT_CONFIG:\s*i32\s*=\s*(\d+);", main_rs_path.read_text())
+    daemon_rs_path = root / "rust/jasper-daemon/src/lib.rs"
+    unit_path = root / "deploy/systemd" / unit
+    rust_exit = re.search(
+        r"EXIT_CONFIG:\s*i32\s*=\s*(\d+);", daemon_rs_path.read_text()
+    )
     unit_exit = re.search(r"RestartPreventExitStatus=(\d+)", unit_path.read_text())
-    assert rust_exit, f"EXIT_CONFIG constant not found in {main_rs_path}"
+    assert rust_exit, f"EXIT_CONFIG constant not found in {daemon_rs_path}"
     assert unit_exit, f"RestartPreventExitStatus not declared in {unit_path}"
     assert rust_exit.group(1) == unit_exit.group(1), (
-        f"outputd's Rust EXIT_CONFIG ({rust_exit.group(1)}) and the unit's "
+        f"the shared Rust EXIT_CONFIG ({rust_exit.group(1)}) and {unit}'s "
         f"RestartPreventExitStatus ({unit_exit.group(1)}) have drifted — a "
         "config-rejection exit would crash-loop into StartLimitAction=reboot "
         "instead of parking"

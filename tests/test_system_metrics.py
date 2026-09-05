@@ -198,31 +198,31 @@ def test_read_disk_returns_pct_and_total() -> None:
 # ---------- vcgencmd readers (mock the subprocess) ----------------------
 
 
-def test_read_temp_c_parses_vcgencmd_output() -> None:
+def test_read_soc_temp_c_parses_vcgencmd_output() -> None:
     fake = type("R", (), {"stdout": "temp=47.7'C\n"})()
     with patch.object(system_metrics.subprocess, "run", return_value=fake):
-        assert SystemSampler._read_temp_c("/no/such/thermal-zone") == 47.7
+        assert system_metrics.read_soc_temp_c("/no/such/thermal-zone") == 47.7
 
 
-def test_read_temp_c_prefers_thermal_zone_sysfs(tmp_path) -> None:
+def test_read_soc_temp_c_prefers_thermal_zone_sysfs(tmp_path) -> None:
     thermal = tmp_path / "temp"
     thermal.write_text("45250\n")
     with patch.object(system_metrics.subprocess, "run") as run:
-        assert SystemSampler._read_temp_c(str(thermal)) == 45.25
+        assert system_metrics.read_soc_temp_c(str(thermal)) == 45.25
     run.assert_not_called()
 
 
-def test_read_temp_c_returns_none_on_missing_sources() -> None:
+def test_read_soc_temp_c_returns_none_on_missing_sources() -> None:
     with patch.object(
         system_metrics.subprocess, "run", side_effect=FileNotFoundError(),
     ):
-        assert SystemSampler._read_temp_c("/no/such/thermal-zone") is None
+        assert system_metrics.read_soc_temp_c("/no/such/thermal-zone") is None
 
 
-def test_read_temp_c_returns_none_on_unparseable() -> None:
+def test_read_soc_temp_c_returns_none_on_unparseable() -> None:
     fake = type("R", (), {"stdout": "garbage"})()
     with patch.object(system_metrics.subprocess, "run", return_value=fake):
-        assert SystemSampler._read_temp_c("/no/such/thermal-zone") is None
+        assert system_metrics.read_soc_temp_c("/no/such/thermal-zone") is None
 
 
 def test_read_throttled_splits_current_vs_history() -> None:
@@ -255,8 +255,8 @@ def test_vcgencmd_tick_records_temperature_history() -> None:
         history_points=12,
     )
     with patch.object(
-        SystemSampler,
-        "_read_temp_c",
+        system_metrics,
+        "read_soc_temp_c",
         side_effect=[41.0, 42.0, 43.0],
     ), patch.object(
         SystemSampler,
@@ -282,8 +282,8 @@ def test_vcgencmd_tick_reports_missing_temperature_as_null() -> None:
         history_points=12,
     )
     with patch.object(
-        SystemSampler,
-        "_read_temp_c",
+        system_metrics,
+        "read_soc_temp_c",
         return_value=None,
     ), patch.object(
         SystemSampler,

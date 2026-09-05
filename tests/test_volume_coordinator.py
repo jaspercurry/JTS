@@ -12,16 +12,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
 import pytest
 
 from tests._async_wait import wait_signalled
 
 from jasper import bluealsa_probe
+from jasper import spotify_router as spotify_router_mod
 from jasper import volume_coordinator as vc_mod
+from jasper.accounts import Account
 from jasper.camilla import CamillaUnavailable
+from jasper.spotify_router import AccountClient, Router
 from jasper.volume_coordinator import (
     BT_VOLUME_MAX,
     ECHO_WINDOW_SEC,
@@ -32,7 +37,12 @@ from jasper.volume_coordinator import (
     listening_level_to_spotify_percent,
     spotify_percent_to_listening_level,
 )
-from jasper.volume_diagnostics import read_diagnostics
+from jasper.volume_diagnostics import (
+    PUSH_NO_ACTIVE_DEVICE,
+    PUSH_OK,
+    PUSH_WRITE_FAILED,
+    read_diagnostics,
+)
 from jasper.volume_owner import ClaimKind
 from jasper.volume_persistence import VolumePersistence, percent_to_db
 
@@ -388,6 +398,83 @@ async def test_set_volume_spotify_failure_updates_camilla_guard(tmp_path):
     await coord.set_listening_level(25)
 
     assert cam.set_calls[-1] == pytest.approx(percent_to_db(25))
+
+
+# ---------- _set_spotify's own device walk (every other test above stubs it) --
+
+
+def _spotify_account(*, devices_fn, volume_fn=None) -> AccountClient:
+    sp = MagicMock()
+    sp.devices = devices_fn
+    if volume_fn is not None:
+        sp.volume = volume_fn
+    return AccountClient(account=Account(name="primary"), sp=sp)
+
+
+@pytest.mark.parametrize(
+    ("case", "expect_ok", "expect_reason"),
+    [
+        ("hung", False, PUSH_NO_ACTIVE_DEVICE),
+        ("no_match", False, PUSH_NO_ACTIVE_DEVICE),
+        ("write_raises", False, PUSH_WRITE_FAILED),
+        ("ok", True, PUSH_OK),
+    ],
+)
+async def test_set_spotify_pins_diagnostic_by_scenario(
+    tmp_path, monkeypatch, case, expect_ok, expect_reason,
+):
+    """`_set_spotify` walks Router.devices_named itself (unlike every other
+    test in this file, which stubs `_set_spotify` outright) — so this is the
+    only place its own diagnostic/stamp outcomes get pinned."""
+    diag_path = tmp_path / "volume_policy.json"
+    monkeypatch.setenv("JASPER_VOLUME_DIAGNOSTICS_PATH", str(diag_path))
+    monkeypatch.setattr(spotify_router_mod, "DEVICES_TIMEOUT_SEC", 0.05)
+    release = threading.Event()
+    volume_calls: list[int] = []
+
+    if case == "hung":
+        def _hang():
+            release.wait(timeout=10.0)
+            return {"devices": []}
+        ac = _spotify_account(devices_fn=_hang)
+    elif case == "no_match":
+        ac = _spotify_account(
+            devices_fn=lambda: {"devices": [{"name": "Phone", "id": "p1"}]},
+        )
+    elif case == "write_raises":
+        def _raise(pct, device_id):
+            volume_calls.append(pct)
+            raise RuntimeError("simulated write failure")
+        ac = _spotify_account(
+            devices_fn=lambda: {"devices": [{"name": "JTS", "id": "jts-1"}]},
+            volume_fn=_raise,
+        )
+    else:
+        def _ok(pct, device_id):
+            volume_calls.append(pct)
+        ac = _spotify_account(
+            devices_fn=lambda: {"devices": [{"name": "JTS", "id": "jts-1"}]},
+            volume_fn=_ok,
+        )
+
+    router = Router(clients={"primary": ac}, default_name="primary")
+    coord, _, _ = _real_coord(
+        tmp_path, active={}, spotify_router=router, spotify_device_name="JTS",
+    )
+    try:
+        result = await asyncio.wait_for(coord._set_spotify(55), timeout=5.0)
+    finally:
+        release.set()
+
+    assert result is expect_ok
+    push_result = read_diagnostics(str(diag_path))["last_source_push_result"]
+    assert push_result["ok"] is expect_ok
+    assert push_result["reason"] == expect_reason
+    if case == "ok":
+        assert coord._last_outbound[Source.SPOTIFY].level == 55
+        assert volume_calls == [listening_level_to_spotify_percent(55)]
+    else:
+        assert Source.SPOTIFY not in coord._last_outbound
 
 
 def _assert_push_failure_outcome(

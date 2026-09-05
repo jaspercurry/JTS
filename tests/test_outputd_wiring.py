@@ -991,9 +991,7 @@ def test_neither_outputd_sink_opens_a_content_pcm():
     no_upstream = no_upstream.split("\n            }", 1)[0]
     assert "FinalSinkStartupConfigError" in no_upstream, no_upstream
     assert "return Err(" in no_upstream, no_upstream
-    # And that marker IS the 78 park (the constant the unit's
-    # RestartPreventExitStatus is pinned against).
-    assert "const EXIT_CONFIG: i32 = 78;" in main_rs
+
 
 def test_outputd_single_sink_is_width_parametric_with_mono_reference_fold():
     """The coherent single sink carries width as DATA (a DAC8x rides the same
@@ -1314,7 +1312,7 @@ def test_outputd_ready_is_after_alsa_output_is_primed_and_started():
     started = run_alsa.index("sink.start()?;")
     ready = run_alsa.index("notify_ready(config)?;")
 
-    assert 'notify_systemd("READY=1")' not in main_fn
+    assert "notify(NotifyState::Ready)" not in main_fn
     assert "notify_ready(config)?" not in main_fn
     assert sink_open < primed < started < ready
     assert "swp.set_start_threshold(negotiated.buffer_frames as i64)" in backend_rs

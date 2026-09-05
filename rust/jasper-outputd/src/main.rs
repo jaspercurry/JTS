@@ -11,10 +11,7 @@
 //! and writing the DAC directly.
 
 use std::io::{self, Write};
-use std::mem;
 use std::net::{SocketAddr, UdpSocket};
-use std::os::fd::RawFd;
-use std::os::unix::net::UnixDatagram;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
@@ -24,6 +21,7 @@ use std::time::{Duration, Instant};
 
 use alsa::pcm::{State, PCM};
 use anyhow::{Context, Result};
+use jasper_daemon::{ConfigClassError, NotifyState, EXIT_CONFIG};
 use jasper_outputd::alsa_backend::{
     open_playback_pcm, prime_periods, AlsaBackend, FinalSinkStartupConfigError, IoCounters,
     NegotiatedPcm, PairedCompositeSink,
@@ -68,41 +66,6 @@ const CHIP_REF_WORKER_TIMING: ChipRefWorkerTiming = ChipRefWorkerTiming {
     degraded_log_interval: CHIP_REF_DEGRADED_LOG_INTERVAL,
 };
 
-/// Exit code for a CONFIG-validation failure (sysexits.h EX_CONFIG).
-/// The unit pairs it with `RestartPreventExitStatus=78`: a fail-closed
-/// config rejection PARKS the unit failed (visible on /state + doctor)
-/// instead of crash-looping — restarting cannot fix bad config, and on
-/// this unit the loop escalates to StartLimitAction=reboot. See ADR-0141.
-const EXIT_CONFIG: i32 = 78;
-
-/// Marker attached (via `anyhow::Context`) to a runtime error that is actually
-/// a CONFIG-class fault surfacing after `Config::from_env`. `main` downcasts for
-/// it and exits [`EXIT_CONFIG`] so the unit parks instead of reboot-looping.
-///
-/// ONE site attaches it — the SHM content ring's construction — and only to the
-/// config-class half of what that can return: a ring geometry/format/channel
-/// declaration this reader refuses (the `S24_3LE` wire the ring layout has no
-/// format for, refused before the filesystem is touched) or one the writer's
-/// existing ring disagrees with field-by-field, which is only visible once
-/// outputd attaches at DAC-loop setup. Both are `InvalidInput`/`InvalidData`,
-/// and restarting cannot repair either.
-///
-/// Everything ELSE attach can fail with — a missing ring directory, EACCES,
-/// ENOSPC, ENOMEM, a bare OS error — stays an ordinary error and takes
-/// `Restart=on-failure`, because those CAN clear without an operator editing
-/// env. `alsa_backend::FinalSinkStartupConfigError` is the same treatment for
-/// the DAC edge, and `main` maps both to [`EXIT_CONFIG`].
-#[derive(Debug)]
-struct ConfigClassError;
-
-impl std::fmt::Display for ConfigClassError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "config-class startup fault (park, do not restart-loop)")
-    }
-}
-
-impl std::error::Error for ConfigClassError {}
-
 fn main() -> Result<()> {
     let config = match Config::from_env() {
         Ok(config) => config,
@@ -141,7 +104,7 @@ fn main() -> Result<()> {
         BackendMode::Alsa => run_alsa(&config, &state, once, &shutdown),
     };
 
-    notify_systemd("STOPPING=1")?;
+    jasper_daemon::notify(NotifyState::Stopping)?;
     // A config-class fault surfacing after startup exits EX_CONFIG so the unit
     // parks (RestartPreventExitStatus=78) rather than reboot-looping. This
     // includes both late SHM geometry validation and initial final-sink
@@ -236,7 +199,7 @@ fn run_fake(
             return Ok(());
         }
         if last_watchdog.elapsed() >= watchdog_interval {
-            notify_systemd("WATCHDOG=1")?;
+            jasper_daemon::notify(NotifyState::Watchdog)?;
             state.mark_watchdog_ping();
             last_watchdog = Instant::now();
         }
@@ -743,7 +706,7 @@ fn run_alsa(
             return Ok(());
         }
         if last_watchdog.elapsed() >= watchdog_interval {
-            notify_systemd("WATCHDOG=1")?;
+            jasper_daemon::notify(NotifyState::Watchdog)?;
             state.mark_watchdog_ping();
             last_watchdog = Instant::now();
         }
@@ -880,7 +843,7 @@ fn apply_linear_gain(samples: &mut [ProgramSample], gain: f64) {
 }
 
 fn notify_ready(config: &Config) -> Result<()> {
-    notify_systemd("READY=1").context("notifying systemd READY=1")?;
+    jasper_daemon::notify(NotifyState::Ready).context("notifying systemd READY=1")?;
     eprintln!(
         "event=outputd.ready backend={} sink_mode={} period_frames={}",
         config.backend.as_str(),
@@ -1640,16 +1603,13 @@ fn spawn_state_server(
 }
 
 fn lock_memory() {
-    let rc = unsafe { libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) };
-    if rc == 0 {
-        eprintln!("event=outputd.mlockall_ok");
-    } else {
-        let err = io::Error::last_os_error();
-        eprintln!(
+    match jasper_daemon::lock_memory() {
+        Ok(()) => eprintln!("event=outputd.mlockall_ok"),
+        Err(err) => eprintln!(
             "event=outputd.mlockall_failed errno={} detail={}",
             err.raw_os_error().unwrap_or(0),
             err
-        );
+        ),
     }
 }
 
@@ -1668,98 +1628,6 @@ fn watchdog_interval() -> Duration {
         .max(Duration::from_secs(1))
 }
 
-fn notify_systemd(message: &str) -> io::Result<()> {
-    let Ok(socket_path) = std::env::var("NOTIFY_SOCKET") else {
-        return Ok(());
-    };
-    if socket_path.starts_with('@') {
-        return notify_systemd_abstract(&socket_path, message);
-    }
-
-    let sock = UnixDatagram::unbound()?;
-    sock.connect(socket_path)?;
-    sock.send(message.as_bytes())?;
-    Ok(())
-}
-
-fn notify_systemd_abstract(socket_path: &str, message: &str) -> io::Result<()> {
-    let name = socket_path
-        .strip_prefix('@')
-        // PANIC-AUDITED: the caller dispatches on the '@' prefix before calling this
-        .expect("abstract notify socket must start with @");
-    let name_bytes = name.as_bytes();
-    if name_bytes.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "empty abstract NOTIFY_SOCKET",
-        ));
-    }
-
-    // Linux abstract Unix sockets encode the leading "@" from
-    // NOTIFY_SOCKET as a NUL byte in sun_path. std::os::unix::net
-    // deliberately exposes only filesystem paths, so keep the libc
-    // bridge tiny and local to systemd notify.
-    let probe: libc::sockaddr_un = unsafe { mem::zeroed() };
-    let sun_path_len = probe.sun_path.len();
-    if name_bytes.len() + 1 > sun_path_len {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "abstract NOTIFY_SOCKET is too long",
-        ));
-    }
-
-    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let result = notify_systemd_abstract_fd(fd, name_bytes, message.as_bytes());
-    let close_result = unsafe { libc::close(fd) };
-    if result.is_ok() && close_result < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    result
-}
-
-fn notify_systemd_abstract_fd(fd: RawFd, name: &[u8], message: &[u8]) -> io::Result<()> {
-    let mut addr: libc::sockaddr_un = unsafe { mem::zeroed() };
-    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
-    addr.sun_path[0] = 0;
-    for (dst, src) in addr.sun_path[1..].iter_mut().zip(name.iter().copied()) {
-        *dst = src as libc::c_char;
-    }
-
-    let sockaddr_len = (mem::size_of_val(&addr.sun_family) + 1 + name.len()) as libc::socklen_t;
-    let rc = unsafe {
-        libc::connect(
-            fd,
-            (&addr as *const libc::sockaddr_un).cast::<libc::sockaddr>(),
-            sockaddr_len,
-        )
-    };
-    if rc < 0 {
-        return Err(io::Error::last_os_error());
-    }
-
-    let sent = unsafe {
-        libc::send(
-            fd,
-            message.as_ptr().cast(),
-            message.len(),
-            libc::MSG_NOSIGNAL,
-        )
-    };
-    if sent < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if sent as usize != message.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::WriteZero,
-            "short write to NOTIFY_SOCKET",
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1767,7 +1635,6 @@ mod tests {
     // staging moved into `ShmRingSource`; importing it at module scope would
     // be an unused import in a non-test build.
     use jasper_outputd::config::ContentBridgeMode;
-    use std::os::fd::FromRawFd;
     use std::sync::atomic::AtomicUsize;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2413,68 +2280,5 @@ mod tests {
         apply_linear_gain(&mut samples, 0.5);
         assert_eq!(samples[0], (ProgramSample::MAX as f64 * 0.5).round() as i32);
         assert_eq!(samples[1], (ProgramSample::MIN as f64 * 0.5).round() as i32);
-    }
-
-    #[test]
-    fn notify_systemd_supports_abstract_notify_socket() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let name = format!("jasper-outputd-notify-test-{}-{nonce}", std::process::id());
-        let listener = bind_abstract_datagram(name.as_bytes()).unwrap();
-        listener
-            .set_read_timeout(Some(Duration::from_secs(1)))
-            .unwrap();
-
-        notify_systemd_abstract(&format!("@{name}"), "READY=1").unwrap();
-
-        let mut buf = [0u8; 64];
-        let n = listener.recv(&mut buf).unwrap();
-        assert_eq!(&buf[..n], b"READY=1");
-    }
-
-    #[test]
-    fn notify_systemd_rejects_empty_abstract_socket_name() {
-        let err = notify_systemd_abstract("@", "READY=1").unwrap_err();
-
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-    }
-
-    fn bind_abstract_datagram(name: &[u8]) -> io::Result<UnixDatagram> {
-        let probe: libc::sockaddr_un = unsafe { mem::zeroed() };
-        if name.len() + 1 > probe.sun_path.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "abstract socket name is too long",
-            ));
-        }
-
-        let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        let mut addr: libc::sockaddr_un = unsafe { mem::zeroed() };
-        addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
-        addr.sun_path[0] = 0;
-        for (dst, src) in addr.sun_path[1..].iter_mut().zip(name.iter().copied()) {
-            *dst = src as libc::c_char;
-        }
-        let sockaddr_len = (mem::size_of_val(&addr.sun_family) + 1 + name.len()) as libc::socklen_t;
-        let rc = unsafe {
-            libc::bind(
-                fd,
-                (&addr as *const libc::sockaddr_un).cast::<libc::sockaddr>(),
-                sockaddr_len,
-            )
-        };
-        if rc < 0 {
-            let err = io::Error::last_os_error();
-            let _ = unsafe { libc::close(fd) };
-            return Err(err);
-        }
-
-        Ok(unsafe { UnixDatagram::from_raw_fd(fd) })
     }
 }

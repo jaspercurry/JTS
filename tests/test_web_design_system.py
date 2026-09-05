@@ -72,6 +72,7 @@ def test_app_css_carries_shared_primitives():
         '.segmented__btn[aria-current="page"]',
         ".app-header__tabs",
         "[hidden] { display: none !important; }",
+        ".settings-list .setting-row {",
     ):
         assert marker in css, f"app.css missing shared primitive: {marker}"
 
@@ -138,9 +139,14 @@ def test_spinner_primitive_is_shared_without_page_local_copies():
 # (a scoped override like `.wake-page .btn { … }` is unaffected — only a
 # bare `.toggle`/`.disclosure`/`.badge` compound at the start of a rule
 # is checked).
+#
+# `.setting-row` is deliberately absent: app.css owns it only inside
+# `.settings-list`, because sound-profile/sound.css has an unrelated
+# page-local block of the same name.
 OWNED_BARE_SELECTORS = (
     ".toggle", ".disclosure", ".badge",
     ".form-actions", ".status-line", ".wizard-steps",
+    ".settings-list", ".group-title", ".row-icon", ".chevron",
 )
 
 

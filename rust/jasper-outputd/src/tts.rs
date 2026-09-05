@@ -63,10 +63,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use crate::core::OutputCore;
-use crate::json::json_string;
 use crate::ledger::{PlayoutEvent, SegmentId};
 use crate::mixer::gain_db_to_linear;
 use crate::types::{SegmentKind, SAMPLE_RATE};
+use jasper_daemon::json::json_string;
 use jasper_tts_protocol::loudness::TtsLoudnessSnapshot;
 use jasper_tts_protocol::{command_name, read_command, TtsCommand};
 
