@@ -79,11 +79,10 @@ def test_atomic_no_partial_file(tmp_path):
 
 
 def test_save_writes_mode_0660(tmp_path):
-    """WS1 Phase 3b: speaker_volume.json is group-rw so the now-non-root
-    jasper-voice / jasper-mux (group `jasper`) and jasper-control all converge
-    on it. Group write — not just read — is required because all three rewrite
-    it. It carries no secret (just the listening level), so group access is not
-    a disclosure concern."""
+    """speaker_volume.json is group-rw so the non-root jasper-voice / jasper-mux (group
+    `jasper`) and jasper-control all converge on it. Group write — not just read — is
+    required because all three rewrite it. It carries no secret (just the listening level),
+    so group access is not a disclosure concern."""
     import os
     import stat
 

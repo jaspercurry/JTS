@@ -10,9 +10,8 @@ Mirrors `jasper.accounts` (Spotify multi-user registry) and
 construction). One file because Google's surface is smaller than
 Spotify's and a separate router buys nothing.
 
-State layout on disk (WS1 Phase 4a — moved out of the shared
-/var/lib/jasper StateDirectory into the group-`jasper-secrets` dir so
-only jasper-voice + jasper-web can read the refresh tokens):
+State layout on disk (outside the shared /var/lib/jasper StateDirectory, in the
+group-`jasper-secrets` dir so only jasper-voice + jasper-web can read the refresh tokens):
 
     /var/lib/jasper-secrets/google/
         accounts.json              — registry index
@@ -64,12 +63,11 @@ from .atomic_io import atomic_write_text
 logger = logging.getLogger(__name__)
 
 
-# WS1 Phase 4a — the Google token tree lives in the group-`jasper-secrets`
-# dir (readable only by jasper-voice + jasper-web), NOT under the shared
-# /var/lib/jasper StateDirectory. Overridable via JASPER_GOOGLE_ACCOUNTS_PATH
-# (config.google_accounts_path). The install-time migration moves an
-# existing tree here and rewrites the absolute token_path entries baked
-# into accounts.json.
+# The Google token tree lives in the group-`jasper-secrets` dir (readable only by
+# jasper-voice + jasper-web), NOT under the shared /var/lib/jasper StateDirectory.
+# Overridable via JASPER_GOOGLE_ACCOUNTS_PATH (config.google_accounts_path). No
+# legacy tree remains to migrate; reassert_secrets_compartment_perms only
+# re-narrows ownership/modes here on every deploy.
 DEFAULT_REGISTRY_PATH = "/var/lib/jasper-secrets/google/accounts.json"
 DEFAULT_TOKEN_DIR = "/var/lib/jasper-secrets/google/tokens"
 
@@ -152,13 +150,12 @@ class GoogleRegistry:
             "default": self.default_name,
             "accounts": [asdict(a) for a in self.accounts],
         }
-        # 0o640 group read — accounts.json holds the linked members' Gmail
-        # addresses (PII-adjacent). WS1 Phase 4a: the file lives in the
-        # setgid `jasper-secrets` dir, so the atomic tempfile inherits
-        # group `jasper-secrets`; 0o640 lets jasper-voice read a token
-        # jasper-web's OAuth flow wrote (and vice versa) while keeping it off
-        # the broad `jasper` group and away from every other daemon. No world
-        # read. Token files use the same mode (save_token below).
+        # 0o640 group read — accounts.json holds the linked members' Gmail addresses
+        # (PII-adjacent). The file lives in the setgid `jasper-secrets` dir, so the atomic
+        # tempfile inherits group `jasper-secrets`; 0o640 lets jasper-voice read a token
+        # jasper-web's OAuth flow wrote (and vice versa) while keeping it off the broad
+        # `jasper` group and away from every other daemon. No world read. Token files use the
+        # same mode (save_token below).
         atomic_write_text(
             self.path,
             json.dumps(payload, indent=2),
@@ -231,8 +228,8 @@ def save_token(token_path: str, *, refresh_token: str, scopes: list[str] | None 
     }
     os.makedirs(os.path.dirname(token_path), mode=0o750, exist_ok=True)
     tmp = token_path + ".tmp"
-    # 0o640 group read — the token dir is setgid `jasper-secrets` (WS1
-    # Phase 4a), so this tempfile inherits that group; group read lets
+    # 0o640 group read — the token dir is setgid `jasper-secrets`,
+    # so this tempfile inherits that group; group read lets
     # jasper-voice load a token jasper-web's OAuth wrote, with no access for
     # any other daemon. No world read. See GoogleRegistry.save.
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)

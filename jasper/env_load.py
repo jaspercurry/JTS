@@ -55,12 +55,11 @@ ENV_FILES = (
     "/var/lib/jasper/speaker_name.env",
     "/var/lib/jasper-intsecrets/spotify_credentials.env",
     "/var/lib/jasper/voice_provider.env",
-    # WS1 Phase 4 — high-value provider/Google secrets live in
-    # jasper-secrets (voice+web), while HA + Spotify integration secrets live
-    # in jasper-intsecrets (voice+control+mux+web). A non-member CLI/daemon
-    # that runs env_load simply reads {} for an unreadable compartment file
-    # (parse_env_file is fail-soft on EACCES); the root jasper-doctor reads
-    # them fine.
+    # High-value provider/Google secrets live in jasper-secrets (voice+web), while HA +
+    # Spotify integration secrets live in jasper-intsecrets (voice+control+mux+web). A
+    # non-member CLI/daemon that runs env_load simply reads {} for an unreadable
+    # compartment file (parse_env_file is fail-soft on EACCES); the root jasper-doctor
+    # reads them fine.
     "/var/lib/jasper-secrets/voice_keys.env",
     "/var/lib/jasper-secrets/google_credentials.env",
     "/var/lib/jasper-secrets/google_routes.env",

@@ -812,10 +812,9 @@ class Config:
             google_client_id=_env("GOOGLE_CLIENT_ID"),
             google_client_secret=_env("GOOGLE_CLIENT_SECRET"),
             google_redirect_uri=resolved_google_redirect_uri(),
-            # WS1 Phase 4a — the Google OAuth token tree (per-member refresh
-            # tokens + Gmail/Calendar identities) moved out of the shared
-            # /var/lib/jasper StateDirectory into the group-`jasper-secrets`
-            # dir, readable only by jasper-voice + jasper-web.
+            # The Google OAuth token tree (per-member refresh tokens + Gmail/Calendar
+            # identities) lives outside the shared /var/lib/jasper StateDirectory, in the
+            # group-`jasper-secrets` dir, readable only by jasper-voice + jasper-web.
             google_accounts_path=_env(
                 "JASPER_GOOGLE_ACCOUNTS_PATH",
                 "/var/lib/jasper-secrets/google/accounts.json",
