@@ -103,7 +103,7 @@ def _propose(bundle: Path, capsys, *extra):
 
 def _banked(answer) -> dict:
     """The artifact the answer on stdout points at: the grid lives there, and
-    the answer names its path (ADR-0235)."""
+    the answer names its path (ADR-0236)."""
     return json.loads(Path(answer["out"]).read_text())
 
 
