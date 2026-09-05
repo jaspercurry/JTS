@@ -355,47 +355,27 @@ def test_enumerate_live_routes_empty_visits_returns_empty_tuple():
     assert routes == ()
 
 
-def test_enumerate_live_routes_returns_empty_on_401():
-    """Bad key → quiet failure. The validate_credentials path is the
-    one that surfaces "key rejected" to the user; the route probe is
-    informational and should never break the wizard render."""
+# Bad key, server error, transport failure, and an unparseable success
+# body all take the same quiet-failure path: the validate_credentials
+# path is the one that surfaces "key rejected" to the user, so the route
+# probe itself must never break the wizard render.
+@pytest.mark.parametrize(
+    "response",
+    [
+        401,
+        503,
+        pytest.param(httpx.ConnectError("network down"), id="network_error"),
+        # SIRI returns JSON but the expected nested path is missing.
+        pytest.param({"unexpected": "shape"}, id="malformed_envelope"),
+    ],
+)
+def test_enumerate_live_routes_returns_empty_on(response):
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(401)
-
-    provider = _bus_with_handler(handler)
-    routes = provider.enumerate_live_routes(
-        "MTA_302680", credentials={"JASPER_MTA_BUSTIME_KEY": "bad"},
-    )
-    assert routes == ()
-
-
-def test_enumerate_live_routes_returns_empty_on_5xx():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(503)
-
-    provider = _bus_with_handler(handler)
-    routes = provider.enumerate_live_routes(
-        "MTA_302680", credentials={"JASPER_MTA_BUSTIME_KEY": "k"},
-    )
-    assert routes == ()
-
-
-def test_enumerate_live_routes_returns_empty_on_network_error():
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("network down")
-
-    provider = _bus_with_handler(handler)
-    routes = provider.enumerate_live_routes(
-        "MTA_302680", credentials={"JASPER_MTA_BUSTIME_KEY": "k"},
-    )
-    assert routes == ()
-
-
-def test_enumerate_live_routes_returns_empty_on_malformed_envelope():
-    """SIRI returns JSON but the expected nested path is missing —
-    don't crash, fall through to empty."""
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"unexpected": "shape"})
+        if isinstance(response, BaseException):
+            raise response
+        if isinstance(response, dict):
+            return httpx.Response(200, json=response)
+        return httpx.Response(response)
 
     provider = _bus_with_handler(handler)
     routes = provider.enumerate_live_routes(

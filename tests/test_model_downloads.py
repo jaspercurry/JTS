@@ -10,28 +10,7 @@ from pathlib import Path
 import pytest
 
 from jasper import model_downloads
-
-
-class _FakeResponse:
-    def __init__(self, payload: bytes, *, content_length: str | None = None):
-        self._payload = payload
-        self._offset = 0
-        self.headers = {}
-        if content_length is not None:
-            self.headers["Content-Length"] = content_length
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return None
-
-    def read(self, size: int) -> bytes:
-        if self._offset >= len(self._payload):
-            return b""
-        chunk = self._payload[self._offset : self._offset + size]
-        self._offset += len(chunk)
-        return chunk
+from tests.download_response_fixtures import FakeResponse
 
 
 def _sha(payload: bytes) -> str:
@@ -57,7 +36,7 @@ def test_download_model_file_writes_verified_file(monkeypatch, tmp_path: Path):
 
     def fake_urlopen(request, *, timeout):
         calls.append((request, timeout))
-        return _FakeResponse(payload, content_length=str(len(payload)))
+        return FakeResponse(payload, content_length=str(len(payload)))
 
     monkeypatch.setattr(model_downloads.urllib.request, "urlopen", fake_urlopen)
     dest = tmp_path / "model.onnx"
@@ -88,7 +67,7 @@ def test_download_model_file_retries_then_succeeds(monkeypatch, tmp_path: Path):
         calls["n"] += 1
         if calls["n"] == 1:
             raise TimeoutError("slow server")
-        return _FakeResponse(payload)
+        return FakeResponse(payload)
 
     monkeypatch.setattr(model_downloads.urllib.request, "urlopen", fake_urlopen)
     dest = tmp_path / "model.onnx"
@@ -109,7 +88,7 @@ def test_download_model_file_retries_then_succeeds(monkeypatch, tmp_path: Path):
 
 def test_download_model_file_rejects_hash_mismatch(monkeypatch, tmp_path: Path):
     def fake_urlopen(request, *, timeout):
-        return _FakeResponse(b"wrong")
+        return FakeResponse(b"wrong")
 
     monkeypatch.setattr(model_downloads.urllib.request, "urlopen", fake_urlopen)
     dest = tmp_path / "model.onnx"
@@ -133,7 +112,7 @@ def test_download_model_file_rejects_declared_oversize(
     tmp_path: Path,
 ):
     def fake_urlopen(request, *, timeout):
-        return _FakeResponse(b"", content_length="9")
+        return FakeResponse(b"", content_length="9")
 
     monkeypatch.setattr(model_downloads.urllib.request, "urlopen", fake_urlopen)
     dest = tmp_path / "model.onnx"
@@ -157,7 +136,7 @@ def test_download_model_file_rejects_streamed_oversize(
     tmp_path: Path,
 ):
     def fake_urlopen(request, *, timeout):
-        return _FakeResponse(b"abcdefghi")
+        return FakeResponse(b"abcdefghi")
 
     monkeypatch.setattr(model_downloads.urllib.request, "urlopen", fake_urlopen)
     dest = tmp_path / "model.onnx"

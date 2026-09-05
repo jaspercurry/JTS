@@ -22,6 +22,8 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from jasper.atomic_io import atomic_write_text
+
 from ..commissioning_evidence_store import EVIDENCE_ROOT
 from .contracts import BANKED_TAKE_GLOB, POSITION_EVIDENCE_KIND
 from .journey import PHASE_ENTRY_BASELINE, PHASE_LATERAL
@@ -487,10 +489,19 @@ def position_cycle_document(
             f"under {_BANKED_POSITIONS_GLOB} — this round's walk was refused at "
             f"take time, or its poses were never accepted"
         )
-    takes = sorted(
-        records,
-        key=lambda take: (int(take["index"] or 0), int(take["attempt"] or 0)),
-    )
+    try:
+        takes = sorted(
+            records,
+            key=lambda take: (int(take["index"] or 0), int(take["attempt"] or 0)),
+        )
+    except (TypeError, ValueError) as exc:
+        # Named, not coerced: this module's callers all handle its own error,
+        # and one that escaped as a bare ValueError would unwind whatever the
+        # caller was in the middle of (a bank, for one).
+        raise PositionCycleError(
+            f"{root}: a banked take carries a non-numeric index or attempt "
+            f"({exc}), so the walk order cannot be derived"
+        ) from exc
     stamp = derived_at or datetime.now(timezone.utc)
     return {
         "kind": POSITION_CYCLE_KIND,
@@ -501,6 +512,32 @@ def position_cycle_document(
         "sources": sources,
         "takes": takes,
     }
+
+
+def write_position_cycle(
+    round_dir: str | Path,
+) -> tuple[Path, dict[str, Any]]:
+    """Derive the index for a banked round and write it INTO that round.
+
+    The ONE writer of :data:`POSITION_CYCLE_FILENAME`, shared by the on-box
+    bank and the laptop transport, so a round carries the same index at the
+    same name however it was banked. Returns the path written and the document
+    written there, so a caller reporting on it never re-reads the file.
+
+    Written atomically, so a reader never finds a torn index at a path
+    ``provenance.json`` may be about to call absent.
+
+    Raises exactly two things, which is what lets both callers treat it as
+    best-effort with one handler: :class:`PositionCycleError` for a round with
+    nothing to index (the ordinary shape of a round that ran no lateral walk,
+    and of one whose records are corrupt) and :class:`OSError` for a
+    destination that would not take the file. A round that measured is not
+    un-measured by an index that could not be derived.
+    """
+    document = position_cycle_document(round_dir)
+    path = Path(round_dir) / POSITION_CYCLE_FILENAME
+    atomic_write_text(path, json.dumps(document, indent=2) + "\n")
+    return path, document
 
 
 def read_position_cycle(path: str | Path) -> dict[str, Any]:

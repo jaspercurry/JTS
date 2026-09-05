@@ -20,6 +20,11 @@ import pytest
 
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.crossover_v2.evidence_packet import round_artifact_dir
+from jasper.active_speaker.crossover_v2.position_cycle import (
+    POSITION_CYCLE_FILENAME,
+    read_position_cycle,
+    takes_by_position,
+)
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.crossover_v2.round_views import load_banked_round
 from jasper.active_speaker.round_bank import (
@@ -127,6 +132,44 @@ def test_banked_tree_is_the_one_round_views_reads(tmp_path, present, absent, mis
         "declared-geometry.json",
     ):
         assert (banked.path / name).is_file() is (name not in missing)
+
+
+def test_the_banked_round_carries_its_own_pose_index(tmp_path):
+    """The bank derives the index, so a reader of a banked round never needs a
+    second tool to say which take was measured at which pose."""
+    session_dir, state_path = _live_session(tmp_path)
+
+    banked = bank_round(
+        session_dir,
+        campaign_root=tmp_path / "campaigns",
+        state_path=state_path,
+        **_ssot(tmp_path, present=False),
+    )
+
+    document = read_position_cycle(banked.path / POSITION_CYCLE_FILENAME)
+    assert takes_by_position(document) == {(7, 0): ("lateral_03_a01",)}
+    assert POSITION_CYCLE_FILENAME not in banked.provenance["missing"]
+
+
+def test_a_round_with_no_walk_to_index_is_banked_without_one(tmp_path):
+    """Most rounds run no lateral walk, so having nothing to index is an
+    ordinary shape: the bank keeps everything it pulled and names the index
+    absent, rather than refusing the round or unwinding it."""
+    session_dir, state_path = _live_session(tmp_path)
+    for take in session_dir.rglob("positions/lateral_*.json"):
+        take.unlink()
+
+    banked = bank_round(
+        session_dir,
+        campaign_root=tmp_path / "campaigns",
+        state_path=state_path,
+        **_ssot(tmp_path, present=False),
+    )
+
+    assert POSITION_CYCLE_FILENAME in banked.provenance["missing"]
+    assert not (banked.path / POSITION_CYCLE_FILENAME).exists()
+    assert (banked.path / "provenance.json").is_file()
+    assert round_inputs(banked.path).session_dir.name == session_dir.name
 
 
 @pytest.mark.parametrize(

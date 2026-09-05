@@ -15,6 +15,7 @@ import pytest
 
 from jasper.cli import xvf_firmware_update
 from jasper.mics import xvf3800
+from tests.download_response_fixtures import FakeResponse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,28 +27,6 @@ def _unit_timeout_start_sec() -> float:
         if line.startswith("TimeoutStartSec="):
             return float(line.partition("=")[2])
     raise AssertionError(f"{UNIT_PATH} has no TimeoutStartSec")
-
-
-class _FakeResponse:
-    def __init__(self, payload: bytes, *, content_length: str | None = None) -> None:
-        self._payload = payload
-        self._offset = 0
-        self.headers = {}
-        if content_length is not None:
-            self.headers["Content-Length"] = content_length
-
-    def __enter__(self) -> "_FakeResponse":
-        return self
-
-    def __exit__(self, *args) -> None:
-        return None
-
-    def read(self, n: int = -1) -> bytes:
-        if n is None or n < 0:
-            n = len(self._payload) - self._offset
-        chunk = self._payload[self._offset:self._offset + n]
-        self._offset += len(chunk)
-        return chunk
 
 
 def _runtime_profile(
@@ -164,7 +143,7 @@ def test_unit_timeout_outlasts_the_firmware_operation_budget() -> None:
 def test_download_has_a_real_total_deadline(monkeypatch, tmp_path: Path) -> None:
     """A slow trickle cannot consume the unit clock and expose a mid-DFU kill."""
 
-    class _SlowResponse(_FakeResponse):
+    class _SlowResponse(FakeResponse):
         def read(self, n: int = -1) -> bytes:
             try:
                 time.sleep(1.0)
@@ -272,7 +251,7 @@ def test_download_and_verify_rejects_content_length_mismatch(
     monkeypatch.setattr(
         xvf_firmware_update.urllib.request,
         "urlopen",
-        lambda *a, **kw: _FakeResponse(payload, content_length=str(len(payload))),
+        lambda *a, **kw: FakeResponse(payload, content_length=str(len(payload))),
     )
 
     with pytest.raises(RuntimeError, match="size mismatch before read"):
@@ -287,7 +266,7 @@ def test_download_and_verify_rejects_stream_larger_than_manifest(
     monkeypatch.setattr(
         xvf_firmware_update.urllib.request,
         "urlopen",
-        lambda *a, **kw: _FakeResponse(payload),
+        lambda *a, **kw: FakeResponse(payload),
     )
 
     with pytest.raises(RuntimeError, match="exceeded expected size"):

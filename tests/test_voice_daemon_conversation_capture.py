@@ -16,14 +16,7 @@ from jasper.conversation_history import (
 )
 from jasper.research import DONE, ResearchJob
 from tests._live_turn_fake import FakeLiveTurn as _FakeTurn
-
-
-class _FakeUsageStore:
-    write_degraded = False
-
-    def close_session(self, session_id, _in_tokens, _out_tokens, usage=None):
-        assert session_id is not None
-        return 0.0
+from tests.usage_store_fixtures import FakeUsageStore
 
 
 class _MarkingScheduler:
@@ -55,7 +48,7 @@ def _put_in_session(wl, turn: _FakeTurn) -> None:
     wl._state = State.SESSION
     wl._turn = turn
     wl._session_id = 7
-    wl._usage_store = _FakeUsageStore()
+    wl._usage_store = FakeUsageStore()
     wl._user_speech_seen = True
     wl._server_vad_this_turn = False
     wl._input_ended = False

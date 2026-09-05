@@ -53,6 +53,7 @@ from jasper.audio_measurement.wired_capture import (
     select_capture_channel,
 )
 from jasper.mics.xvf3800 import USB_VID_PID as XVF_USB_VID_PID
+from tests.wired_capture_fixtures import FakePcm
 
 UMIK2_USB_ID = "2752:002b"
 
@@ -128,47 +129,6 @@ def test_non_usb_cards_are_skipped(tmp_path):
 
 RATE = 48_000
 CHANNELS = 2
-FRAME_BYTES = CHANNELS * 4
-
-
-def _frames_bytes(values):
-    """Interleaved S32_LE frames: ``values`` is [(ch0, ch1), ...]."""
-    return b"".join(struct.pack("<ii", a, b) for a, b in values)
-
-
-class FakePcm:
-    """Deterministic capture PCM: a scripted sequence of read results.
-
-    Each script step is ``(frames, values)`` for a good read, the string
-    ``"overrun"`` for a −EPIPE read, or ``"empty"`` — pyalsaaudio semantics.
-    After the script, reads block briefly and return silence so the reader
-    keeps running until stopped.
-    """
-
-    def __init__(self, script, *, idle_frames=64):
-        self._script = list(script)
-        self._idle_frames = idle_frames
-        self.closed = False
-
-    def read(self):
-        if self._script:
-            step = self._script.pop(0)
-            if step == "overrun":
-                return -32, b""
-            if step == "empty":
-                return 0, b""
-            frames, values = step
-            return frames, _frames_bytes(values)
-        # Idle: keep delivering silence at a real-ish cadence.
-        import time as _time
-
-        _time.sleep(0.001)
-        return self._idle_frames, _frames_bytes(
-            [(0, 0)] * self._idle_frames
-        )
-
-    def close(self):
-        self.closed = True
 
 
 class FakeClock:

@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 
 import httpx
+import pytest
 
 from jasper.home_assistant import (
     CONVERSATION_ID_TTL_SEC,
@@ -851,89 +852,69 @@ def test_build_ha_client_returns_client_when_enabled():
 # so the control daemon doesn't take a transitive dependency on the
 # web module.
 
-def test_read_ha_env_file_missing_file_returns_empty(tmp_path):
-    from jasper.home_assistant import read_ha_env_file
-    assert read_ha_env_file(str(tmp_path / "absent.env")) == {}
-
-
-def test_read_ha_env_file_parses_standard_lines(tmp_path):
-    from jasper.home_assistant import read_ha_env_file
-    p = tmp_path / "ha.env"
-    p.write_text(
-        "JASPER_HA_URL=http://homeassistant.local:8123\n"
-        "JASPER_HA_TOKEN=eyJ0eXAi.test-token\n"
-        "JASPER_HA_AGENT_ID=conversation.home_assistant\n"
-    )
-    out = read_ha_env_file(str(p))
-    assert out == {
-        "JASPER_HA_URL": "http://homeassistant.local:8123",
-        "JASPER_HA_TOKEN": "eyJ0eXAi.test-token",
-        "JASPER_HA_AGENT_ID": "conversation.home_assistant",
-    }
-
-
-def test_read_ha_env_file_skips_comments_and_blanks(tmp_path):
-    from jasper.home_assistant import read_ha_env_file
-    p = tmp_path / "ha.env"
-    p.write_text(
-        "# This is a comment\n"
-        "\n"
-        "JASPER_HA_URL=http://x:8123\n"
-        "   \n"
-        "  # indented comment\n"
-        "JASPER_HA_TOKEN=tok\n"
-    )
-    out = read_ha_env_file(str(p))
-    assert out == {"JASPER_HA_URL": "http://x:8123", "JASPER_HA_TOKEN": "tok"}
-
-
-def test_read_ha_env_file_strips_whitespace_around_value(tmp_path):
-    from jasper.home_assistant import read_ha_env_file
-    p = tmp_path / "ha.env"
-    p.write_text("JASPER_HA_URL=   http://x:8123   \n")
-    out = read_ha_env_file(str(p))
-    assert out == {"JASPER_HA_URL": "http://x:8123"}
-
-
-def test_read_ha_env_file_preserves_equals_in_value(tmp_path):
-    """JWT tokens are base64url which can include `=` padding. The
-    parser must split on the FIRST `=` only — anything after is part
-    of the value."""
-    from jasper.home_assistant import read_ha_env_file
-    p = tmp_path / "ha.env"
-    # Realistic JWT-shape with trailing `=` padding.
-    p.write_text("JASPER_HA_TOKEN=eyJ0eXAi.eyJpc3M9aWQ=.sig==\n")
-    out = read_ha_env_file(str(p))
-    assert out == {"JASPER_HA_TOKEN": "eyJ0eXAi.eyJpc3M9aWQ=.sig=="}
-
-
-def test_read_ha_env_file_uses_canonical_quoted_value_semantics(tmp_path):
-    from jasper.home_assistant import read_ha_env_file
-
-    p = tmp_path / "ha.env"
-    p.write_text(
-        'JASPER_HA_URL="http://homeassistant.local:8123"\n'
-        "JASPER_HA_TOKEN='quoted-token=='\n"
-    )
-
-    assert read_ha_env_file(str(p)) == {
-        "JASPER_HA_URL": "http://homeassistant.local:8123",
-        "JASPER_HA_TOKEN": "quoted-token==",
-    }
-
-
-def test_read_ha_env_file_skips_malformed_lines(tmp_path):
-    """Lines without `=` are skipped (not crash, not parsed weirdly).
-    A malformed env file shouldn't take down the daemon."""
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        pytest.param(None, {}, id="missing_file_returns_empty"),
+        pytest.param(
+            "JASPER_HA_URL=http://homeassistant.local:8123\n"
+            "JASPER_HA_TOKEN=eyJ0eXAi.test-token\n"
+            "JASPER_HA_AGENT_ID=conversation.home_assistant\n",
+            {
+                "JASPER_HA_URL": "http://homeassistant.local:8123",
+                "JASPER_HA_TOKEN": "eyJ0eXAi.test-token",
+                "JASPER_HA_AGENT_ID": "conversation.home_assistant",
+            },
+            id="parses_standard_lines",
+        ),
+        pytest.param(
+            "# This is a comment\n"
+            "\n"
+            "JASPER_HA_URL=http://x:8123\n"
+            "   \n"
+            "  # indented comment\n"
+            "JASPER_HA_TOKEN=tok\n",
+            {"JASPER_HA_URL": "http://x:8123", "JASPER_HA_TOKEN": "tok"},
+            id="skips_comments_and_blanks",
+        ),
+        pytest.param(
+            "JASPER_HA_URL=   http://x:8123   \n",
+            {"JASPER_HA_URL": "http://x:8123"},
+            id="strips_whitespace_around_value",
+        ),
+        # JWT tokens are base64url and can include `=` padding; the
+        # parser must split on the FIRST `=` only.
+        pytest.param(
+            "JASPER_HA_TOKEN=eyJ0eXAi.eyJpc3M9aWQ=.sig==\n",
+            {"JASPER_HA_TOKEN": "eyJ0eXAi.eyJpc3M9aWQ=.sig=="},
+            id="preserves_equals_in_value",
+        ),
+        pytest.param(
+            'JASPER_HA_URL="http://homeassistant.local:8123"\n'
+            "JASPER_HA_TOKEN='quoted-token=='\n",
+            {
+                "JASPER_HA_URL": "http://homeassistant.local:8123",
+                "JASPER_HA_TOKEN": "quoted-token==",
+            },
+            id="uses_canonical_quoted_value_semantics",
+        ),
+        # Lines without `=` are skipped (not crash, not parsed weirdly) —
+        # a malformed env file shouldn't take down the daemon.
+        pytest.param(
+            "JASPER_HA_URL=http://x:8123\n"
+            "not_a_valid_line_no_equals_sign\n"
+            "JASPER_HA_TOKEN=tok\n",
+            {"JASPER_HA_URL": "http://x:8123", "JASPER_HA_TOKEN": "tok"},
+            id="skips_malformed_lines",
+        ),
+    ],
+)
+def test_read_ha_env_file(tmp_path, content, expected):
     from jasper.home_assistant import read_ha_env_file
     p = tmp_path / "ha.env"
-    p.write_text(
-        "JASPER_HA_URL=http://x:8123\n"
-        "not_a_valid_line_no_equals_sign\n"
-        "JASPER_HA_TOKEN=tok\n"
-    )
-    out = read_ha_env_file(str(p))
-    assert out == {"JASPER_HA_URL": "http://x:8123", "JASPER_HA_TOKEN": "tok"}
+    if content is not None:
+        p.write_text(content)
+    assert read_ha_env_file(str(p)) == expected
 
 
 # ---- IPv6 bracketing -------------------------------------------------------

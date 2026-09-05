@@ -16,6 +16,7 @@ import pytest
 from jasper.active_speaker.crossover_v2 import position_cycle
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
 from jasper.active_speaker.crossover_v2.position_cycle import (
+    POSITION_CYCLE_FILENAME,
     POSITION_CYCLE_KIND,
     POSITION_EVIDENCE_KIND,
     SCHEMA_VERSION,
@@ -27,6 +28,7 @@ from jasper.active_speaker.crossover_v2.position_cycle import (
     read_position_cycle,
     staged_stops,
     takes_by_position,
+    write_position_cycle,
 )
 from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
 from jasper.active_speaker.crossover_v2.spatial import (
@@ -605,6 +607,25 @@ def test_the_refusal_names_where_it_looked(tmp_path):
 
     with pytest.raises(PositionCycleError, match=r"positions/\*\.json"):
         position_cycle_document(tmp_path)
+
+
+def test_a_non_numeric_ordinal_refuses_as_this_modules_error(tmp_path):
+    """A corrupt sidecar costs the round its index, never the caller's whole
+    operation: a bare ``ValueError`` out of the sort would unwind a bank."""
+    _bank(tmp_path, [dict(_record(1, 0), index="1a")])
+
+    with pytest.raises(PositionCycleError, match="non-numeric"):
+        position_cycle_document(tmp_path, derived_at=STAMP)
+
+
+def test_the_writer_puts_the_index_where_the_reader_looks(tmp_path):
+    """The one writer of the file, round-tripped through the one reader."""
+    _bank(tmp_path / "round", [_record(1, 0), _record(2, 7)])
+
+    path, document = write_position_cycle(tmp_path / "round")
+
+    assert path == tmp_path / "round" / POSITION_CYCLE_FILENAME
+    assert read_position_cycle(path) == document
 
 
 # --------------------------------------------------------------------------- #

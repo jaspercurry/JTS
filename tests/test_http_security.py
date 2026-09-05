@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from email.message import Message
 
+import pytest
+
 from jasper import http_security
 from jasper.usb_network import derive_plan
 
@@ -76,69 +78,57 @@ def test_management_read_rejects_cross_site_fetch_metadata():
     assert (ok, reason) == (False, "cross_site_request")
 
 
-def test_mutating_request_allows_missing_origin_for_non_browser_clients():
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        pytest.param(
+            _headers(Host="192.168.1.23:8780"), (True, "ok"),
+            id="allows_missing_origin_for_non_browser_clients",
+        ),
+        pytest.param(
+            _headers(Host="jts.local:8780", Origin="http://jts.local"), (True, "ok"),
+            id="allows_same_host_browser_origin",
+        ),
+        pytest.param(
+            _headers(Host="127.0.0.1:8780", Origin="http://localhost:8780"), (True, "ok"),
+            id="allows_loopback_name_ip_pair",
+        ),
+        pytest.param(
+            _headers(Host="192.168.1.23:8780", Origin="https://evil.example"),
+            (False, "origin_not_allowed"),
+            id="rejects_cross_site_origin",
+        ),
+        pytest.param(
+            _headers(Host="jts.local:8780", Origin="null"),
+            (False, "origin_not_allowed"),
+            id="rejects_null_origin",
+        ),
+        pytest.param(
+            _headers(Host="evil.example:8780", Origin="http://evil.example:8780"),
+            (False, "host_not_allowed"),
+            id="rejects_dns_rebinding_host_even_if_origin_matches",
+        ),
+        pytest.param(
+            {"Host": "192.168.1.23:8780", "Sec-Fetch-Site": "cross-site"},
+            (False, "cross_site_request"),
+            id="rejects_cross_site_fetch_metadata_without_origin",
+        ),
+        pytest.param(
+            _headers(Host="192.168.1.23:8780", Origin="http://jts.local"),
+            (False, "origin_host_mismatch"),
+            id="rejects_origin_host_mismatch_between_local_aliases",
+        ),
+    ],
+)
+def test_mutating_request(headers, expected):
+    assert http_security.mutating_request_allowed(headers) == expected
+
+
+def test_mutating_request_case_folds_header_keys():
     ok, reason = http_security.mutating_request_allowed(
-        _headers(Host="192.168.1.23:8780"),
-    )
-    assert (ok, reason) == (True, "ok")
-
-
-def test_mutating_request_allows_same_host_browser_origin():
-    ok, reason = http_security.mutating_request_allowed(
-        _headers(Host="jts.local:8780", Origin="http://jts.local"),
-    )
-    assert (ok, reason) == (True, "ok")
-
-
-def test_mutating_request_allows_loopback_name_ip_pair():
-    ok, reason = http_security.mutating_request_allowed(
-        _headers(Host="127.0.0.1:8780", Origin="http://localhost:8780"),
-    )
-    assert (ok, reason) == (True, "ok")
-
-
-def test_mutating_request_rejects_cross_site_origin():
-    ok, reason = http_security.mutating_request_allowed(
-        _headers(Host="192.168.1.23:8780", Origin="https://evil.example"),
-    )
-    assert (ok, reason) == (False, "origin_not_allowed")
-
-
-def test_mutating_request_rejects_null_origin():
-    ok, reason = http_security.mutating_request_allowed(
-        _headers(Host="jts.local:8780", Origin="null"),
-    )
-    assert (ok, reason) == (False, "origin_not_allowed")
-
-
-def test_mutating_request_rejects_dns_rebinding_host_even_if_origin_matches():
-    ok, reason = http_security.mutating_request_allowed(
-        _headers(Host="evil.example:8780", Origin="http://evil.example:8780"),
+        {"host": "evil.example:8780", "origin": "http://evil.example:8780"},
     )
     assert (ok, reason) == (False, "host_not_allowed")
-
-
-def test_mutating_request_rejects_lowercase_bad_host_header():
-    ok, reason = http_security.mutating_request_allowed({
-        "host": "evil.example:8780",
-        "origin": "http://evil.example:8780",
-    })
-    assert (ok, reason) == (False, "host_not_allowed")
-
-
-def test_mutating_request_rejects_cross_site_fetch_metadata_without_origin():
-    ok, reason = http_security.mutating_request_allowed({
-        "Host": "192.168.1.23:8780",
-        "Sec-Fetch-Site": "cross-site",
-    })
-    assert (ok, reason) == (False, "cross_site_request")
-
-
-def test_mutating_request_rejects_origin_host_mismatch_between_local_aliases():
-    ok, reason = http_security.mutating_request_allowed(
-        _headers(Host="192.168.1.23:8780", Origin="http://jts.local"),
-    )
-    assert (ok, reason) == (False, "origin_host_mismatch")
 
 
 def test_management_read_accepts_usb_gadget_and_link_local_host_headers():
