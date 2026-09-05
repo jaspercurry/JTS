@@ -2279,12 +2279,9 @@ mod tests {
                 .to_string(),
             active_lane: false,
             // ACTIVE_LANE's pair. False is the passive/stereo default a FLAT box
-            // runs. `dual_test_config` below overrides it rather than inheriting
-            // it: an earlier version of this comment said a composite sink "can
-            // never be an active-ring endpoint", which P8b item 1 made false and
-            // jts.local proved false in the fleet on 2026-08-15 by running armed
-            // on a composite ring. The fixture ENCODED the claim as well as
-            // stating it, so both moved.
+            // runs. `dual_test_config` below overrides ring_active_endpoint rather
+            // than inheriting it, because a composite sink CAN be an active-ring
+            // endpoint.
             ring_active_endpoint: false,
         }
     }
@@ -2384,17 +2381,12 @@ mod tests {
     // sosetopt(SO_RCVTIMEO) -- reached from read_bounded_command's
     // per-loop set_read_timeout call -- returns EINVAL. Every earlier
     // exchange in this test only closes the write half
-    // (`shutdown(Write)`) and passes; a future fixer restructuring this
-    // block should start there rather than re-deriving the mechanism.
-    // Re-verified against pristine origin/main sources in three
-    // wide-output-path PRs (#2224, #2230, #2236) and confirmed by #2230's
-    // adversarial panel (resilience lens, 2026-08-07). CI's `rust` job
-    // runs on ubuntu-latest and is the authority; the test runs there
-    // unaffected. jasper-outputd's hard `alsa` dependency also does not
-    // build on macOS at all via the usual Homebrew path (a separate,
-    // already-documented limitation in AGENTS.md); this `ignore`
-    // therefore only bites when ALSA is available locally *and* the run
-    // is lib-scoped (`cargo test --lib`) — a full `cargo test` on
+    // (`shutdown(Write)`) and passes.
+    // CI's `rust` job runs on ubuntu-latest and is the authority; the test
+    // runs there unaffected. jasper-outputd's hard `alsa` dependency also
+    // does not build on macOS at all via the usual Homebrew path; this
+    // `ignore` therefore only bites when ALSA is available locally *and*
+    // the run is lib-scoped (`cargo test --lib`) — a full `cargo test` on
     // macOS fails earlier compiling main.rs's test module
     // (`libc::SOCK_CLOEXEC` is Linux/BSD-only).
     #[test]

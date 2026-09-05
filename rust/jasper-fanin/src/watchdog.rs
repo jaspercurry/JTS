@@ -22,15 +22,8 @@
 //! masks the failure mode that matters most — a deadlocked work loop
 //! that's not making forward progress. The sentinel pattern makes
 //! the work-loop liveness visible to systemd, not just the heartbeat
-//! thread's liveness.
-//!
-//! 2026-05-11 reference: jasper-aec-bridge's earlier failure mode
-//! (PortAudio InputStream dead after USB underrun, main thread
-//! blocked in `out_stream.write()`, Python GIL held, SIGTERM
-//! ineffective). The Python heartbeat caught it because the work
-//! loop's progress-bump stopped firing even though the process was
-//! still "alive" from systemd's view. Same pattern, same rationale,
-//! Rust port.
+//! thread's liveness, and catches a wedge even when the work loop is
+//! stuck in a blocking call and cannot honor SIGTERM.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

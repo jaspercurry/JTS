@@ -72,10 +72,7 @@ const CHIP_REF_WORKER_TIMING: ChipRefWorkerTiming = ChipRefWorkerTiming {
 /// The unit pairs it with `RestartPreventExitStatus=78`: a fail-closed
 /// config rejection PARKS the unit failed (visible on /state + doctor)
 /// instead of crash-looping — restarting cannot fix bad config, and on
-/// this unit the loop escalates to StartLimitAction=reboot. Measured
-/// incident (jts3, 2026-06-11): a grouping env + lab retune layered into
-/// a guard-rejected combination; outputd crash-looped into THREE Pi
-/// reboots before the T5.1 boot-loop guard contained it.
+/// this unit the loop escalates to StartLimitAction=reboot. See ADR-0141.
 const EXIT_CONFIG: i32 = 78;
 
 /// Marker attached (via `anyhow::Context`) to a runtime error that is actually
