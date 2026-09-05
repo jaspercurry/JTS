@@ -166,9 +166,13 @@ def _fake_mixer_tools(tmp_path: Path) -> tuple[Path, Path]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "mixer.log"
+    # argv is logged PIPE-joined, never space-joined: the XVF capture mixer
+    # control names carry spaces, so a space-joined log cannot tell one
+    # argument from three and would read as covered over a quoting regression.
     script = (
         "#!/usr/bin/env bash\n"
-        "printf '%s %s\\n' \"${0##*/}\" \"$*\" >> \"$JASPER_MIXER_LOG\"\n"
+        "IFS='|'\n"
+        "printf '%s|%s\\n' \"${0##*/}\" \"$*\" >> \"$JASPER_MIXER_LOG\"\n"
         "exit 0\n"
     )
     for name in ("amixer", "alsactl"):
@@ -1038,11 +1042,11 @@ def test_reconcile_repairs_capture_mixer_before_arming_six_channel_aec(
 ) -> None:
     channels = xvf3800.RECOMMENDED_FIRMWARE.capture_channels
     expected = [
-        f"amixer -c Array cset name={xvf3800.MIXER_CAPTURE_SWITCH} "
+        f"amixer|-c|Array|cset|name={xvf3800.MIXER_CAPTURE_SWITCH}|"
         + ",".join(["on"] * channels),
-        f"amixer -c Array cset name={xvf3800.MIXER_CAPTURE_VOLUME} "
+        f"amixer|-c|Array|cset|name={xvf3800.MIXER_CAPTURE_VOLUME}|"
         + ",".join([str(xvf3800.MIXER_VOLUME_MAX)] * channels),
-        "alsactl store",
+        "alsactl|store",
     ]
     bin_dir, mixer_log = _fake_mixer_tools(tmp_path)
     _stage(tmp_path, "Array", mode="auto", channels=detected_channels)
