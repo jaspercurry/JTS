@@ -334,6 +334,10 @@ _RUNTIME_STATE_UNITS = (
     "jasper-voice.service",
     "jasper-aec-bridge.service",
     "jasper-control.service",
+    "jasper-input.service",
+    # A .path unit fails on a bad spec; resilience.check_required_units_active
+    # defers every non-`inactive` state to this row, so both must track it.
+    "jasper-accessory-reconcile.path",
     "jasper-mux.service",
     "nqptp.service",
     "shairport-sync.service",

@@ -32,10 +32,13 @@ from ._shared import (
 REASON_UNITS_FAILED_OR_UNSTABLE = "units_failed_or_unstable"
 REASON_UNITS_RESTARTED = "units_restarted"
 
+REASON_REQUIRED_UNIT_INACTIVE = "required_unit_inactive"
+
 REASON_VOICE_UNIT_NOT_FULL_PROFILE = "voice_unit_not_full_profile"
 REASON_VOICE_UNIT_UNOBSERVED = "voice_unit_unobserved"
 REASON_VOICE_UNIT_PARKED_NO_INPUT = "voice_unit_parked_no_voice_input"
 REASON_VOICE_UNIT_INACTIVE = "voice_unit_inactive"
+REASON_VOICE_UNIT_INACTIVE_PAIRED_REMOTE = "voice_unit_inactive_paired_remote"
 
 REASON_SUPERVISOR_ISSUES = "supervisor_issues"
 REASON_CONTROL_UNAVAILABLE = "supervisor_snapshots_control_unavailable"
@@ -62,7 +65,7 @@ REASON_BOOTLOOP_GUARD_RELOAD_FAILED = "bootloop_guard_reload_failed"
 REASON_BOOTLOOP_GUARD_ARMED = "bootloop_guard_armed"
 REASON_BOOTLOOP_GUARD_TRIPPED = "bootloop_guard_tripped"
 
-@doctor_check()
+@doctor_check(core=True)
 def check_service_runtime_state() -> CheckResult:
     """Judge the tracked units' runtime state: `failed`, or a non-oneshot
     stuck in `activating`/`deactivating`, fails the row. A non-zero
@@ -117,34 +120,95 @@ def check_service_runtime_state() -> CheckResult:
     )
 
 
+# Units both install profiles install and enable, whose cleanly `inactive`
+# state no other row reports. One down unit is one row, so a unit whose own
+# check already names it stays out: nginx and jasper-control belong to
+# `web.check_management_surface`, and the audio-path daemons to
+# `_service_state_failure`, `check_outputd_failure_reconcile_park`,
+# `renderers` and `check_voice_unit_running` below.
+_REQUIRED_ACTIVE_UNITS: tuple[str, ...] = (
+    "jasper-input.service",
+    # A `.path` unit reads `active` while it WAITS, so a stopped one is
+    # `inactive`, never `failed`.
+    "jasper-accessory-reconcile.path",
+)
+
+
+@doctor_check(core=True)
+def check_required_units_active() -> CheckResult:
+    """Every required unit is running.
+
+    The gap: ``check_service_runtime_state`` judges only ``failed`` and
+    stuck-mid-transition units, so a cleanly ``inactive`` one — stopped by
+    hand, never enabled, an install that did not finish — produced no row.
+    """
+    label = "required units active"
+    states = evidence.unit_states()
+    if states is None:
+        return CheckResult(
+            label, "skipped", "systemctl unavailable — skipped (not Linux?)",
+            reason=REASON_SYSTEMCTL_UNAVAILABLE,
+        )
+    down: list[str] = []
+    for unit in _REQUIRED_ACTIVE_UNITS:
+        state = states.get(unit) or {}
+        active = str(state.get("active_state") or "unknown")
+        if active != "inactive":
+            continue
+        load_state = str(state.get("load_state") or "unknown")
+        down.append(
+            f"{unit} is {active}"
+            + (f"/{load_state}" if load_state != "loaded" else "")
+        )
+    if down:
+        return CheckResult(
+            label, "fail",
+            ", ".join(down)
+            + " — required and stopped. Run `systemctl status <unit>`; a "
+            "not-found unit means the install did not finish, so re-run "
+            "install.sh.",
+            reason=REASON_REQUIRED_UNIT_INACTIVE,
+        )
+    return CheckResult(
+        label, "ok",
+        f"{len(_REQUIRED_ACTIVE_UNITS)} required units are active",
+    )
+
+
 _VOICE_UNIT = "jasper-voice.service"
 
 
-@doctor_check()
+@doctor_check(core=True)
 def check_voice_unit_running() -> CheckResult:
-    """jasper-voice is up on a tier whose speaker answers a wake word.
+    """jasper-voice is up on a box whose speaker should be able to answer.
 
-    The gap this closes: ``check_service_runtime_state`` counts only
-    ``failed`` and stuck-mid-transition units, so a cleanly ``inactive``
-    jasper-voice — stopped by hand, never enabled, or parked by
-    ``RestartPreventExitStatus=66 78`` (no provider configured, mic
-    unopenable) — produced no row at all while the speaker could not answer.
+    The gap: ``check_service_runtime_state`` counts only ``failed`` and
+    stuck-mid-transition units, so an ``inactive`` jasper-voice — including
+    one parked by ``RestartPreventExitStatus=66 78`` — produced no row.
 
     ``speaker_silent`` is deliberately NOT set. That flag means the speaker
     emits nothing; music still plays with the voice daemon down. What is
     silent here is the ASSISTANT.
 
-    Two states are not a fault and read ``skipped``: the streambox tier has
-    no always-on wake loop, and the unit's
+    Severity follows the tier. A full box runs an always-on wake loop, so
+    ``inactive`` fails. A streambox runs the assistant only while a
+    mic-bearing remote is paired (ADR-0217): with none paired the state is
+    correct and reads ``skipped``, and with one paired ``inactive`` warns —
+    the remote's talk button gets no answer, but the reconciler that owns
+    that lifecycle may still be mid-pass.
+
+    Two other states are not a fault either: the unit's
     ``ConditionPathExists=!/var/lib/jasper/voice-input-absent`` parks it
     ``inactive`` on a box the AEC reconciler found to have neither a local
-    nor an accessory mic.
+    nor an accessory mic, and a unit systemd cannot load was not observed.
     """
     label = "voice daemon running"
-    if install_profile_is_streambox():
+    streambox = install_profile_is_streambox()
+    if streambox and not evidence.mic_presence().accessory_present:
         return CheckResult(
             label, "skipped",
-            "streambox tier — no always-on wake loop to keep running",
+            "streambox tier with no mic-bearing remote paired — the "
+            "assistant runs only while one is",
             reason=REASON_VOICE_UNIT_NOT_FULL_PROFILE,
         )
     state = evidence.unit_state(_VOICE_UNIT)
@@ -168,6 +232,15 @@ def check_voice_unit_running() -> CheckResult:
             f"{_VOICE_UNIT} parked by its voice-input gate — the AEC "
             "reconciler found neither a local nor an accessory mic",
             reason=REASON_VOICE_UNIT_PARKED_NO_INPUT,
+        )
+    if streambox:
+        return CheckResult(
+            label, "warn",
+            f"{_VOICE_UNIT} is inactive while a mic-bearing remote is paired, "
+            "so the remote's talk button gets no answer. "
+            "`journalctl -u jasper-accessory-reconcile` names why the "
+            "reconciler that owns this unit's lifecycle did not start it.",
+            reason=REASON_VOICE_UNIT_INACTIVE_PAIRED_REMOTE,
         )
     return CheckResult(
         label, "fail",
@@ -422,7 +495,7 @@ def _parked_ago(parked_at: int | None, *, now: float | None = None) -> str:
     return f"{age:.0f}s ago"
 
 
-@doctor_check()
+@doctor_check(core=True)
 def check_outputd_failure_reconcile_park() -> CheckResult:
     """outputd is running, and carries no park record from its stop helper.
 
