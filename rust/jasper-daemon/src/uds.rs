@@ -8,12 +8,14 @@
 //! it renders belong to the daemon — this owns only the transport.
 
 use std::io::{self, Read, Write};
+use std::ops::ControlFlow;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::json::{push_kv_str, push_kv_u64};
 use crate::DaemonHooks;
 
 /// Maximum `poll(2)` wait for the accept loop. Socket readiness wakes it
@@ -31,7 +33,7 @@ pub struct CommandLimits {
     pub read_timeout: Duration,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 enum CommandReadError {
     TooLong,
     DeadlineExceeded,
@@ -40,15 +42,28 @@ enum CommandReadError {
 
 impl CommandReadError {
     fn response_json(self, max_command_bytes: usize) -> String {
+        let mut buf = String::from("{");
         match self {
-            Self::TooLong => format!(
-                r#"{{"error":"command too long","code":"command_too_long","max_bytes":{max_command_bytes}}}"#
-            ),
-            Self::DeadlineExceeded => r#"{"error":"command read deadline exceeded","code":"command_read_deadline_exceeded"}"#.to_string(),
+            Self::TooLong => {
+                push_kv_str(&mut buf, "error", "command too long");
+                buf.push(',');
+                push_kv_str(&mut buf, "code", "command_too_long");
+                buf.push(',');
+                push_kv_u64(&mut buf, "max_bytes", max_command_bytes as u64);
+            }
+            Self::DeadlineExceeded => {
+                push_kv_str(&mut buf, "error", "command read deadline exceeded");
+                buf.push(',');
+                push_kv_str(&mut buf, "code", "command_read_deadline_exceeded");
+            }
             Self::InvalidUtf8 => {
-                r#"{"error":"command must be UTF-8","code":"command_not_utf8"}"#.to_string()
+                push_kv_str(&mut buf, "error", "command must be UTF-8");
+                buf.push(',');
+                push_kv_str(&mut buf, "code", "command_not_utf8");
             }
         }
+        buf.push('}');
+        buf
     }
 }
 
@@ -92,10 +107,17 @@ impl UdsCommandServer {
         while !shutdown.load(Ordering::Relaxed) {
             match wait_for_listener(&self.listener, ACCEPT_POLL_INTERVAL) {
                 Ok(false) => continue,
-                Ok(true) => self.drain_ready_connections(shutdown, &dispatch),
-                Err(error) => (self.hooks.warn)(&format!(
-                    "event={prefix}.state_server.poll_failed detail={error}"
-                )),
+                Ok(true) => {
+                    if self.drain_ready_connections(shutdown, &dispatch).is_break() {
+                        back_off();
+                    }
+                }
+                Err(error) => {
+                    (self.hooks.warn)(&format!(
+                        "event={prefix}.state_server.poll_failed detail={error}"
+                    ));
+                    back_off();
+                }
             }
         }
 
@@ -103,7 +125,16 @@ impl UdsCommandServer {
         (self.hooks.info)(&format!("event={prefix}.state_server.stopped"));
     }
 
-    fn drain_ready_connections(&self, shutdown: &AtomicBool, dispatch: &impl Fn(&str) -> String) {
+    /// `Break` when a persistent accept failure is what ended the drain, so the
+    /// caller paces the next attempt: an fd- or buffer-exhaustion error
+    /// (EMFILE, ENOBUFS) leaves the connection pending, so poll reports ready
+    /// again immediately and an unpaced loop would spin at CPU rate emitting
+    /// one log line per iteration.
+    fn drain_ready_connections(
+        &self,
+        shutdown: &AtomicBool,
+        dispatch: &impl Fn(&str) -> String,
+    ) -> ControlFlow<()> {
         let prefix = self.hooks.event_prefix;
         // Re-check shutdown between clients. A continuously replenished local
         // accept queue must not trap the audio daemon here until systemd's
@@ -112,32 +143,43 @@ impl UdsCommandServer {
         while !shutdown.load(Ordering::Relaxed) {
             match self.listener.accept() {
                 Ok((stream, _)) => {
-                    if let Err(error) = self.handle_connection(stream, dispatch) {
+                    if let Err(error) = self.limits.handle_connection(stream, dispatch) {
                         (self.hooks.warn)(&format!(
                             "event={prefix}.state_server.handle_failed detail={error}"
                         ));
                     }
                 }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    return ControlFlow::Continue(())
+                }
                 Err(error) => {
                     (self.hooks.warn)(&format!(
                         "event={prefix}.state_server.accept_failed detail={error}"
                     ));
-                    break;
+                    return ControlFlow::Break(());
                 }
             }
         }
+        ControlFlow::Continue(())
     }
+}
 
-    /// Read one command, hand it to `dispatch`, write the reply and a newline.
-    /// A client that hangs up mid-exchange is ordinary local IPC churn, not a
-    /// daemon fault, so it returns `Ok`.
+/// Pace the accept loop after a failure that leaves the listener readable, so
+/// a persistent error cannot become a hot loop.
+fn back_off() {
+    std::thread::sleep(ACCEPT_POLL_INTERVAL);
+}
+
+impl CommandLimits {
+    /// Read one command under these limits, hand it to `dispatch`, write the
+    /// reply and a newline. A client that hangs up mid-exchange is ordinary
+    /// local IPC churn, not a daemon fault, so it returns `Ok`.
     pub fn handle_connection(
         &self,
         stream: UnixStream,
         dispatch: impl Fn(&str) -> String,
     ) -> io::Result<()> {
-        self.handle_connection_with_timeout(stream, self.limits.read_timeout, dispatch)
+        self.handle_connection_with_timeout(stream, self.read_timeout, dispatch)
     }
 
     fn handle_connection_with_timeout(
@@ -146,13 +188,13 @@ impl UdsCommandServer {
         timeout: Duration,
         dispatch: impl Fn(&str) -> String,
     ) -> io::Result<()> {
-        let mut response =
-            match read_bounded_command(&mut stream, timeout, self.limits.max_command_bytes) {
-                Ok(Ok(command)) => dispatch(command.trim()),
-                Ok(Err(error)) => error.response_json(self.limits.max_command_bytes),
-                Err(error) if is_client_disconnect(&error) => return Ok(()),
-                Err(error) => return Err(error),
-            };
+        let mut response = match read_bounded_command(&mut stream, timeout, self.max_command_bytes)
+        {
+            Ok(Ok(command)) => dispatch(command.trim()),
+            Ok(Err(error)) => error.response_json(self.max_command_bytes),
+            Err(error) if is_client_disconnect(&error) => return Ok(()),
+            Err(error) => return Err(error),
+        };
         response.push('\n');
         match stream.write_all(response.as_bytes()) {
             Err(error) if is_client_disconnect(&error) => Ok(()),
@@ -288,17 +330,7 @@ mod tests {
         std::env::temp_dir().join(format!("jts-uds-{kind}-{}-{id}.sock", std::process::id()))
     }
 
-    fn test_server(kind: &str) -> UdsCommandServer {
-        let path = test_socket_path(kind);
-        let server = UdsCommandServer::bind(path.clone(), HOOKS, LIMITS).expect("bind test server");
-        // The socket-backed tests drive `handle_connection` over a socketpair,
-        // so unlink the listener path immediately: a test panic then cannot
-        // leave filesystem residue. The bound listener stays valid until drop.
-        std::fs::remove_file(path).expect("unlink test socket");
-        server
-    }
-
-    fn exchange(server: &UdsCommandServer, command: &[u8]) -> String {
+    fn exchange(command: &[u8]) -> String {
         use std::net::Shutdown;
 
         let (mut client, server_stream) = UnixStream::pair().expect("socket pair");
@@ -306,13 +338,31 @@ mod tests {
         client
             .shutdown(Shutdown::Write)
             .expect("finish command write");
-        server
+        LIMITS
             .handle_connection(server_stream, echo)
             .expect("handle command");
 
         let mut response = String::new();
         client.read_to_string(&mut response).expect("read response");
         response
+    }
+
+    /// The three rejection envelopes are a pinned wire contract: outputd's
+    /// `max_bytes` reply and both `code` values are read by callers.
+    #[test]
+    fn rejection_envelopes_render_exact_bytes() {
+        assert_eq!(
+            CommandReadError::TooLong.response_json(256),
+            r#"{"error":"command too long","code":"command_too_long","max_bytes":256}"#
+        );
+        assert_eq!(
+            CommandReadError::DeadlineExceeded.response_json(256),
+            r#"{"error":"command read deadline exceeded","code":"command_read_deadline_exceeded"}"#
+        );
+        assert_eq!(
+            CommandReadError::InvalidUtf8.response_json(256),
+            r#"{"error":"command must be UTF-8","code":"command_not_utf8"}"#
+        );
     }
 
     #[test]
@@ -342,7 +392,9 @@ mod tests {
         let _pending_client = UnixStream::connect(&path).unwrap();
         let shutdown = AtomicBool::new(true);
 
-        server.drain_ready_connections(&shutdown, &echo);
+        assert!(server
+            .drain_ready_connections(&shutdown, &echo)
+            .is_continue());
 
         // The pending connection remains untouched: shutdown won over draining
         // the ready backlog, so the outer serve loop can exit promptly.
@@ -359,11 +411,9 @@ mod tests {
         ignore = "pre-existing AF_UNIX EINVAL on macOS (abandoned-client SO_RCVTIMEO); CI (Linux) is authoritative"
     )]
     fn command_cap_is_exact_and_errors_stay_bounded() {
-        let server = test_server("cap");
-
         let mut at_cap = vec![b'X'; LIMITS.max_command_bytes];
         at_cap.push(b'\n');
-        let accepted: serde_json::Value = serde_json::from_str(exchange(&server, &at_cap).trim())
+        let accepted: serde_json::Value = serde_json::from_str(exchange(&at_cap).trim())
             .expect("at-cap command must reach dispatch");
         assert_eq!(
             accepted["received"].as_str().map(str::len),
@@ -372,7 +422,7 @@ mod tests {
 
         let mut over_cap = vec![b'X'; LIMITS.max_command_bytes + 1];
         over_cap.push(b'\n');
-        let rejected_response = exchange(&server, &over_cap);
+        let rejected_response = exchange(&over_cap);
         let rejected: serde_json::Value = serde_json::from_str(rejected_response.trim())
             .expect("oversized command must return JSON");
         assert_eq!(rejected["code"].as_str(), Some("command_too_long"));
@@ -385,23 +435,21 @@ mod tests {
             "oversized input must not be echoed into an oversized response"
         );
 
-        let invalid_utf8: serde_json::Value =
-            serde_json::from_str(exchange(&server, &[0xff, b'\n']).trim())
-                .expect("invalid UTF-8 must return JSON");
+        let invalid_utf8: serde_json::Value = serde_json::from_str(exchange(&[0xff, b'\n']).trim())
+            .expect("invalid UTF-8 must return JSON");
         assert_eq!(invalid_utf8["code"].as_str(), Some("command_not_utf8"));
 
         // A client that disappears before sending a command is normal local
         // IPC churn, not a daemon fault that should emit handle_failed spam.
         let (abandoned, server_stream) = UnixStream::pair().expect("socket pair");
         drop(abandoned);
-        server
+        LIMITS
             .handle_connection(server_stream, echo)
             .expect("abandoned client is handled quietly");
     }
 
     #[test]
     fn total_deadline_rejects_a_slow_trickle() {
-        let server = test_server("deadline");
         let (mut client, server_stream) = UnixStream::pair().expect("socket pair");
 
         let writer = std::thread::spawn(move || {
@@ -422,7 +470,7 @@ mod tests {
         });
 
         let started = Instant::now();
-        server
+        LIMITS
             .handle_connection_with_timeout(server_stream, Duration::from_millis(50), echo)
             .expect("slow client receives a structured error");
         let elapsed = started.elapsed();

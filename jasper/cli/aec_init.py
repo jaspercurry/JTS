@@ -109,12 +109,13 @@ MAX_REFERENCE_PERIODS_IN_FLIGHT = 2
 # keys one entry carries.  outputd publishes raw observations; every acceptance
 # rule over them is here and in jasper/chip_aec/alignment.py.
 RECENT_WRITES_KEY = "recent_writes"
-# How long to wait between STATUS reads.  Polling harder buys nothing: outputd's
-# state server is one thread that sleeps 500 ms between accepts and answers one
-# command per connection, so a sequential reader gets about two reads a second
-# whatever it asks for (measured on jts3: 11 reads in 5.14 s).  What makes a
-# window reachable at that rate is the ring — each read carries every write
-# since the last one, rather than the single latest reading.
+# How long to wait between STATUS reads.  Polling harder buys little: outputd's
+# state server is one thread answering one command per connection, so a
+# sequential reader's rate is bounded by its own round trips (measured on jts3
+# at about two reads a second, when the accept still paid a blind 500 ms sleep;
+# it polls for readiness now).  What makes a window reachable at any of those
+# rates is the ring — each read carries every write since the last one, rather
+# than the single latest reading.
 QUEUE_POLL_INTERVAL_SEC = 0.25
 # How long the reference queue has to hold still, independent of how many
 # readings that takes.  Sample count alone bounds the median's precision but

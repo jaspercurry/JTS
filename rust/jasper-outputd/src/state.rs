@@ -2122,8 +2122,7 @@ mod tests {
         client
             .shutdown(Shutdown::Write)
             .expect("finish command write");
-        server
-            .transport
+        COMMAND_LIMITS
             .handle_connection(server_stream, |cmd| server.response_for_command(cmd))
             .expect("handle command");
 

@@ -18,13 +18,19 @@
 //!     (`frames_read` / `rms_dbfs`). mux's latest-source-wins arbitration
 //!     primitive for the USB lane — the only USB-silencing mechanism now that
 //!     fan-in owns the sole USB audio path and its mix-mute.
+//!   `TRIM [<label>]\n` → drop the queued excess on one lane (or every lane);
+//!     replies with a plaintext `OK`/`ERR` line, not a snapshot.
+//!   `DECAY_SNAP <label>\n` → collapse one lane's resampler decay to unity.
+//!   `TAP_ARM {json}\n` / `TAP_DISARM\n` → arm / disarm the DIRECT-capture
+//!     impulse tap; both reply with a plaintext line.
 //!
 //! Other input is rejected with `{"error": "unknown command"}`.
 //!
 //! ## Design choices
 //!
 //! - **UDS, not HTTP.** Lower overhead, no port conflict, easier to
-//!   permission-gate to the `pi` group, idiomatic for local-only
+//!   permission-gate to the `jasper` group (the unit's `Group=jasper` +
+//!   `UMask=0007` make the socket root:jasper 0770), idiomatic for local-only
 //!   IPC. Matches `jasper-voice`'s control socket pattern.
 //!
 //! - **Shared transport.** Bind, the readiness-driven accept loop, the bounded
@@ -1254,19 +1260,10 @@ mod tests {
         use std::net::Shutdown;
         use std::os::unix::net::UnixStream;
 
-        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "jts-fanin-state-{}-{}.sock",
-            std::process::id(),
-            NEXT_ID.fetch_add(1, Ordering::Relaxed),
-        ));
-        let transport = UdsCommandServer::bind(path.clone(), crate::HOOKS, COMMAND_LIMITS).unwrap();
-        std::fs::remove_file(path).unwrap();
-
         let (mut client, server_stream) = UnixStream::pair().unwrap();
         client.write_all(command).unwrap();
         client.shutdown(Shutdown::Write).unwrap();
-        transport
+        COMMAND_LIMITS
             .handle_connection(server_stream, |cmd| server.response_for_command(cmd))
             .unwrap();
 

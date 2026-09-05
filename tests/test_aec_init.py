@@ -1162,8 +1162,9 @@ def test_init_reports_missing_xvf_control_dependency(monkeypatch, caplog) -> Non
 # not, so commissioning AND every boot of jasper-aec-init parked the box.
 #
 # Neither can a poll assemble the window: outputd's state server is one thread
-# that sleeps 500 ms between accepts and answers one command per connection, so
-# a sequential reader gets ~2 reads/s (measured on jts3: 11 reads in 5.14 s).
+# answering one command per connection, so a sequential reader's rate is bounded
+# by its own round trips (measured on jts3 at ~2 reads/s, when the accept still
+# paid a blind 500 ms sleep; it polls for readiness now).
 # outputd therefore publishes the writer's own recent observations and this
 # collector folds them into a sliding window.  The fixtures below are built to
 # the spread, cadence, and geometry each box measured on 2026-08-08 — that shape
@@ -1201,14 +1202,15 @@ class _WriterStream:
     returns is the last `RING_CAPACITY` of them, which is the whole point: the
     reader's rate and the writer's rate are decoupled.
 
-    A read COSTS TIME, in the order outputd's state server really spends it:
-    that thread sleeps up to `ACCEPT_POLL_INTERVAL` before it accepts, THEN
-    takes the snapshot, THEN builds and writes the reply.  Modelling that order
-    is what makes the collector's `now`-sampling bias measurable at all — with
-    a read that advances the clock by zero, every placement is exact by
-    construction and the question cannot be asked.  Defaults reproduce jts3's
-    measured 11 reads in 5.14 s: a 0.25 s mean accept wait on a 500 ms poll
-    cycle plus the collector's own 0.25 s sleep is ~0.5 s a read.
+    A read COSTS TIME, in the order outputd's state server spends it: it waits
+    to accept, THEN takes the snapshot, THEN builds and writes the reply.
+    Modelling that order is what makes the collector's `now`-sampling bias
+    measurable at all — with a read that advances the clock by zero, every
+    placement is exact by construction and the question cannot be asked.  The
+    defaults reproduce jts3's measured 11 reads in 5.14 s, from when the accept
+    paid a blind 500 ms sleep; the accept polls for readiness now, so this
+    charges the collector MORE than production does, which is the safe
+    direction for a bias test.
     """
 
     def __init__(
@@ -1991,14 +1993,15 @@ class _LiveClock:
 
 
 class _ThrottledStatusServer:
-    """A real AF_UNIX STATUS server with outputd's own throughput ceiling.
+    """A real AF_UNIX STATUS server under a per-accept throughput ceiling.
 
-    outputd's state server is ONE thread doing a non-blocking accept and
-    sleeping `ACCEPT_POLL_INTERVAL` (500 ms) whenever nothing is pending, and it
-    answers one command per connection.  Every other test here substitutes
-    `read_status_socket` with a free fake, which is exactly how round one of
-    #2253 shipped a collector that needed 232 readings at 4 reads/s from a
-    socket that serves 2.  This one charges the real price.
+    outputd's state server is ONE thread answering one command per connection.
+    Every other test here substitutes `read_status_socket` with a free fake,
+    which is exactly how round one of #2253 shipped a collector that needed 232
+    readings at 4 reads/s from a socket that served 2.  This one charges a
+    price: the 500 ms ceiling below is the one outputd had when its accept slept
+    rather than polled, so the collector is still held to the slower socket it
+    was written against.
     """
 
     def __init__(self, path, stream, *, accept_interval: float = 0.5) -> None:
