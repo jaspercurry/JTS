@@ -42,7 +42,7 @@ DEFAULT_TIMEOUT_SEC = 60.0
 # 400-token cap even with `reasoning.effort=low`. 2500 leaves room for
 # low-effort reasoning plus the strict-schema JSON while still bounding
 # a runaway response to ~$0.025 at list rates. Shared by the paid
-# /correction/ endpoints and the live harness so the two cannot drift.
+# /sound/room/ endpoints and the live harness so the two cannot drift.
 TUNING_LLM_MAX_OUTPUT_TOKENS = 2500
 # Model-facing cap on a proposed correction filter set — the default
 # ("balanced") shipped strategy's max_filters, NOT the widest ("assertive"

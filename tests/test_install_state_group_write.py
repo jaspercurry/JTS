@@ -137,7 +137,7 @@ def test_heal_repairs_state_the_de_rooted_wizard_units_left_behind(tmp_path):
     roles = _mk(tmp_path / "bt_roles.json", 0o600)
     measurements = _mk(tmp_path / "active_speaker_measurements.json", 0o600)
     tuning_db = _mk(tmp_path / "usage-tuning.db", 0o600)
-    # A capture tree the root /correction/ arms made with a bare mkdir under
+    # A capture tree the root /sound/room/ arms made with a bare mkdir under
     # UMask=0077 — 0700, which the dropped writer cannot even traverse.
     captures = tmp_path / "active_speaker_captures"
     captures.mkdir(mode=0o700)

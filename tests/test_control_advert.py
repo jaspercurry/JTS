@@ -7,7 +7,7 @@
 This module renders the always-on ``_jasper-control._tcp`` mDNS advert
 from ``deploy/avahi/jasper-control.service.template``, substituting the
 speaker's friendly display name into a ``name=`` TXT record so the
-``/rooms/`` directory shows the same name peers see on Spotify / AirPlay
+``/sound/pair/`` directory shows the same name peers see on Spotify / AirPlay
 / Bluetooth / USB. The contract these tests pin:
 
   - The advert is ALWAYS on for room management and identity-aware LAN

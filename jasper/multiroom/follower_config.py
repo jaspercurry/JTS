@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 # The follower driver-domain config + its (throwaway) compile state. The
 # config name is registered in jasper.sound.camilla_yaml._JTS_GENERATED_RE so a
-# /sound or /correction read while bonded recognises it as JTS-generated
+# /sound or /sound/room/ read while bonded recognises it as JTS-generated
 # (never "custom"). The state path is DELIBERATELY follower-specific so the
 # driver-domain compile never clobbers the solo baseline profile state at
 # state_paths.DEFAULT_BASELINE_PROFILE_STATE_PATH — that record must survive

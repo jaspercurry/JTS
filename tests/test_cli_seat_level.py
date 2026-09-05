@@ -540,7 +540,7 @@ def test_seat_level_hands_the_ceiling_the_PAD_FOLDED_sensitivities(
 
     ``jasper/cli/seat_level.py`` was the only place in the tree that read a
     sensitivity mapping out of the draft and fed it to ceiling math with the
-    NAKED reader — ``/correction``'s crossover-v2 flow already reads the
+    NAKED reader — ``/sound/room/``'s crossover-v2 flow already reads the
     pad-folded sibling. An L-pad'd tweeter's acoustic output is quieter than
     its datasheet rating by exactly the pad, and the derived HF ceiling is a
     sensitivity DELTA, so the naked figure protects the driver as if it were

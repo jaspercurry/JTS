@@ -1002,14 +1002,14 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         next_action={
             "id": "crossover_v2_complete",
             "label": "Save this measurement",
-            "endpoint": "/correction/crossover/v2/complete",
+            "endpoint": "/sound/speaker/crossover/v2/complete",
             "body": {},
             "show_during_capture": True,
         } if ready else None,
         alternate_actions=[{
             "id": "crossover_v2_retake",
             "label": "Record the last spot again",
-            "endpoint": "/correction/crossover/v2/retake",
+            "endpoint": "/sound/speaker/crossover/v2/retake",
             "body": {},
             "show_during_capture": True,
         }] if ready else [],
@@ -1092,7 +1092,7 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         {
             "id": "review_remeasure",
             "label": "Measure again",
-            "endpoint": "/correction/crossover/v2/session",
+            "endpoint": "/sound/speaker/crossover/v2/session",
             "body": {},
             # An escape hatch: a `stopping` session would otherwise
             # blanket-hide every alternate, stranding the household.
@@ -1104,7 +1104,7 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             # #2641: a real action, not href-only — it still changes nothing
             # and does not delete the candidate, but records the DECISION
             # (so the round record can tell "declined" from "never looked").
-            "endpoint": "/correction/crossover/v2/decline",
+            "endpoint": "/sound/speaker/crossover/v2/decline",
             # The same guard ``review_apply`` carries: a decline recorded against
             # a candidate that has since been replaced would close a review the
             # household never saw.
@@ -1113,12 +1113,12 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             # household ends up after declining, for a client that cannot POST.
             # The client prefers ``endpoint`` when both are present.
             #
-            # The Active speaker ENTRY screen, not the generic /correction/ hub:
+            # The Active speaker ENTRY screen, not the generic /sound/ hub:
             # the hub is the Room-correction wizard, whose first act is a
             # browser-mic HTTPS interstitial — a different subsystem's permission
             # flow (#1985). Declining changes nothing, so the honest destination
             # is where the journey started.
-            "href": "/correction/crossover/",
+            "href": "/sound/speaker/crossover/",
             "show_during_capture": True,
         },
     ]
@@ -1136,7 +1136,7 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         next_action={
             "id": "review_apply",
             "label": apply_label,
-            "endpoint": "/correction/crossover/v2/apply",
+            "endpoint": "/sound/speaker/crossover/v2/apply",
             "body": {"expected_candidate_fingerprint": fingerprint},
             "enabled": apply_enabled,
         # The ``show_during_capture`` primary is what keeps Apply visible
@@ -1580,7 +1580,7 @@ def _ripple_reservation_lines(status: Mapping[str, Any]) -> list[str]:
 #: surface for registering a mic.
 MIC_CALIBRATION_RESERVATION_COPY = (
     "This measurement used no calibrated microphone, so the result may be "
-    "less accurate than usual. Register one under Microphone on /correction/."
+    "less accurate than usual. Register one under Microphone on /sound/room/."
 )
 
 
@@ -1887,7 +1887,7 @@ def _tier_action(
             f"{_TIER_CLAIMS[tier]}."
         ),
         "recommended": recommended,
-        "endpoint": "/correction/crossover/v2/session",
+        "endpoint": "/sound/speaker/crossover/v2/session",
         "body": {"tier": tier},
     }
     if staged_walk is not None:
@@ -2040,7 +2040,7 @@ def _way_back_action(status: Mapping[str, Any]) -> list[dict[str, Any]]:
     return [{
         "id": "republish_previous",
         "label": "Go back to the previous tuning",
-        "endpoint": "/correction/crossover/v2/republish",
+        "endpoint": "/sound/speaker/crossover/v2/republish",
         "body": {"fingerprint": fingerprint},
         "show_during_capture": True,
     }]
@@ -2247,7 +2247,7 @@ def _verify_fail_envelope(
     remeasure = {
         "id": "verify_remeasure",
         "label": "Re-measure",
-        "endpoint": "/correction/crossover/v2/session",
+        "endpoint": "/sound/speaker/crossover/v2/session",
         "body": {},
         "expert": True,
         "show_during_capture": True,
@@ -2265,7 +2265,7 @@ def _verify_fail_envelope(
         next_action={
             "id": "verify_retry",
             "label": "Try again",
-            "endpoint": "/correction/crossover/v2/verify",
+            "endpoint": "/sound/speaker/crossover/v2/verify",
             "body": {},
         } if retriable else {
             # Promoted, not duplicated — leaves the alternate list below.
@@ -2403,7 +2403,7 @@ def _failure_envelope(
             next_action={
                 "id": "restart_session",
                 "label": "Start over",
-                "endpoint": "/correction/crossover/v2/session",
+                "endpoint": "/sound/speaker/crossover/v2/session",
                 "body": {},
             },
             status=status,
@@ -2434,7 +2434,7 @@ def _failure_envelope(
         next_action={
             "id": "retry",
             "label": "Try again",
-            "endpoint": "/correction/crossover/v2/session",
+            "endpoint": "/sound/speaker/crossover/v2/session",
             "body": {},
         },
         status=status,
@@ -2460,7 +2460,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             "nudges": [],
             "capture": _mapping(status.get("capture")) or None,
             "next_action": {
-                "id": "room", "label": "Correct the room", "href": "/correction/room/",
+                "id": "room", "label": "Correct the room", "href": "/sound/room/",
             },
             "alternate_actions": [],
             "progress": {"position": 0, "total": len(_STEP_IDS)},
@@ -2490,7 +2490,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             next_action={
                 "id": "recover_volume",
                 "label": "Recover safe listening volume",
-                "endpoint": "/correction/crossover/recover-volume",
+                "endpoint": "/sound/speaker/crossover/recover-volume",
                 "body": {},
             },
             status=status,
@@ -2653,7 +2653,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             next_action={
                 "id": "verify_start",
                 "label": "Check the result",
-                "endpoint": "/correction/crossover/v2/verify",
+                "endpoint": "/sound/speaker/crossover/v2/verify",
                 "body": {"stage": "post_apply"},
             },
             status=status,
@@ -2816,7 +2816,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             {
                 "id": "room",
                 "label": "Continue to Room correction",
-                "href": "/correction/room/",
+                "href": "/sound/room/",
             },
         ]
         # The two iterating rows PROMISE another round; this carries it —
@@ -2826,14 +2826,14 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             alternate_actions.insert(0, {
                 "id": "round_remeasure",
                 "label": "Try again with what we learned",
-                "endpoint": "/correction/crossover/v2/session",
+                "endpoint": "/sound/speaker/crossover/v2/session",
                 "body": {},
             })
         if is_express:
             alternate_actions.append({
                 "id": "run_full_measurement",
                 "label": "Run a Full measurement",
-                "endpoint": "/correction/crossover/v2/session",
+                "endpoint": "/sound/speaker/crossover/v2/session",
                 "body": {"tier": TIER_FULL},
             })
         # Last: the way back is a safety net, not the recommended step.
@@ -3319,7 +3319,7 @@ def chart_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
     **What the key-level separation from ``compact_cloud_status`` does and
     does not buy (review S-1 correction, 2026-07-27).** Both projections ride
     the SAME returned dict (the adapter's) and therefore
-    the same HTTP response — ``/correction/crossover/status`` and this
+    the same HTTP response — ``/sound/speaker/crossover/status`` and this
     module's envelope both carry ``cloud`` AND ``cloud_chart`` together, so
     splitting the KEY does **not** shrink that response's byte count (an
     earlier version of this and two sibling comments overclaimed exactly

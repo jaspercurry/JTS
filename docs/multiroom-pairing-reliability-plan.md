@@ -744,7 +744,7 @@ Design decisions (settled — do not re-open):
 - **Deadline:** `BOND_CONVERGE_DEADLINE_SEC = 20.0`,
   `BOND_CONVERGE_POLL_INTERVAL_SEC = 1.0`,
   `BOND_CONVERGE_DEADLINE_CEILING_SEC = 45.0`. Add
-  `proxy_read_timeout 90s;` to the `location /rooms/` block in
+  `proxy_read_timeout 90s;` to the `location /sound/pair/` block in
   `deploy/nginx-jasper.conf` (it currently rides nginx's 60 s default while
   neighbouring blocks set explicit values).
 - **Three outcomes, not two** (this corrects v1's step 7):

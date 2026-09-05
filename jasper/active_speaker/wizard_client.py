@@ -25,14 +25,14 @@ from typing import Any, Callable, Mapping
 #: Page that mints the CSRF cookie + meta token pair, and this client's default. A
 #: caller POSTing to a DIFFERENT wizard daemon passes that daemon's own page as
 #: ``csrf_page_path``.
-CSRF_PAGE_PATH = "/sound/crossover/"
-STATUS_PATH = "/correction/crossover/status"
+CSRF_PAGE_PATH = "/sound/speaker/crossover/"
+STATUS_PATH = "/sound/speaker/crossover/status"
 
 #: The two stage-opening POSTs and the apply; pinned against ``correction_setup``'s
 #: ``_POST_ROUTES`` by ``tests/test_cli_round.py``.
-SESSION_PATH = "/correction/crossover/v2/session"
-VERIFY_PATH = "/correction/crossover/v2/verify"
-APPLY_PATH = "/correction/crossover/v2/apply"
+SESSION_PATH = "/sound/speaker/crossover/v2/session"
+VERIFY_PATH = "/sound/speaker/crossover/v2/verify"
+APPLY_PATH = "/sound/speaker/crossover/v2/apply"
 
 #: Verify open's discriminator, restated (not imported, to stay numpy-free on a 1 GB
 #: speaker) from ``correction_crossover_v2``; pinned by ``tests/test_cli_round.py``.

@@ -142,8 +142,9 @@ Management surfaces are stdlib HTTP wizards behind nginx, socket-activated
 so they cost nothing resident between admin sessions. `deploy/nginx-jasper.conf`
 is the authoritative route list; it covers setup (`/voice/`, `/tools/`,
 `/sources/`, `/wake/`, `/wifi/`, `/transit/`, `/ha/`, `/weather/`,
-`/speaker/`, `/rooms/`, `/spotify/`, `/bluetooth/`), sound (`/eq/`,
-`/sound/setup/`, `/sound/room/`, `/sound/crossover/`, `/sound/bass/`),
+`/speaker/`, `/spotify/`, `/bluetooth/`), sound (`/sound/eq/`,
+`/sound/setup/`, `/sound/pair/`, `/sound/room/`,
+`/sound/speaker/crossover/`, `/sound/bass/`),
 and read-only dashboards (`/system/`, `/chat/`).
 
 ---

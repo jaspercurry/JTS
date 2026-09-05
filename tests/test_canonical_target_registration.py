@@ -63,10 +63,10 @@ _REGISTRARS = {
 # Keys are the console-script / `python -m` targets in pyproject.toml and the
 # ExecStart lines under deploy/.
 _ENTRY_POINTS = {
-    # `python -m jasper.web` — hosts /eq/ and /sound/, which apply generated
+    # `python -m jasper.web` — hosts /sound/eq/ and /sound/, which apply generated
     # DSP configs (sound_setup's `apply_dsp_config` calls).
     "jasper/web/__main__.py": "main",
-    # `jasper-correction-web` — hosts /correction/ and the crossover-v2 flow.
+    # `jasper-correction-web` — hosts /sound/room/ and the crossover-v2 flow.
     "jasper/web/correction_setup.py": "main",
     # `jasper-control` — the live pair-balance trim patches the graph.
     "jasper/control/server.py": "main",

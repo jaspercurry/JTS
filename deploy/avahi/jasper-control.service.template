@@ -16,7 +16,7 @@
   (The placeholder token is intentionally not written in this comment:
   the renderer does a blind text replace, so a literal token here would
   be substituted too and the deployed comment would read oddly.)
-  The `name=` TXT record lets the /rooms/ directory show the same
+  The `name=` TXT record lets the /sound/pair/ directory show the same
   friendly name peers see on Spotify / AirPlay / Bluetooth. The
   rendered value is XML-escaped before substitution (a stray `&` or
   `<` would drop the whole service-group and break discovery).

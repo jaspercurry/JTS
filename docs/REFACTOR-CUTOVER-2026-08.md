@@ -833,7 +833,7 @@ The chain, end to end:
 
 | Layer | Where |
 |---|---|
-| nginx `location /correction/` | `deploy/nginx-jasper.conf:463` |
+| nginx `location /sound/room/` | `deploy/nginx-jasper.conf:463` |
 | one `ThreadingHTTPServer` | `web/correction_setup.py:61`, started per location by `web/__main__.py` |
 | `/crossover/*` funnel | `correction_setup.py:8014` → `_dispatch_crossover` `:7366`, a linear `if path == …` chain |
 | the loop bridge | `_ensure_loop` `:1275`, `_run_async` `:1292` |
@@ -869,7 +869,7 @@ Two entry points into the host, both `def`, both near-duplicate twins:
   `_release_pause_best_effort` (`:1309`), and `_set_capture_slot(None)`. (The
   fourth item this bullet once named, `release_session_measurement_graph`, is
   gone — deleted by #3240.)
-- **The human's entry point** is `GET /correction/crossover` →
+- **The human's entry point** is `GET /sound/speaker/crossover` →
   `correction_setup.py:7847` → `correction_crossover_flow.render_page`
   (`correction_crossover_flow.py:24`); the page is fed by
   `crossover_v2_status_block` (`web/…:1995`), embedded as

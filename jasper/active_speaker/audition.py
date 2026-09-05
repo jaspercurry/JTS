@@ -147,7 +147,7 @@ def _refuse_if_graph_is_claimed() -> None:
     ``live_measurement_session`` is the repo's ONE answer to "may an operator
     door act right now", and this consumes it rather than reading the volume
     statefile itself. That matters concretely, not just tidily: a
-    ``/correction/`` room sweep takes jasper-control's measurement hold and
+    ``/sound/room/`` room sweep takes jasper-control's measurement hold and
     never constructs a ``SessionVolumePlan``, so a statefile-only reading finds
     nothing and swaps the graph out from under a running capture.
     """

@@ -17,7 +17,7 @@ from .correction_hub import section_tabs
 # Page body (canonical design system).
 # ----------------------------------------------------------------------
 #
-# /correction/ is a restyle-in-place migration onto the canonical look:
+# /sound/room/ is a restyle-in-place migration onto the canonical look:
 # the document shell is canonical_page() (app.css + CSRF meta + icon
 # sprite); the chrome is canonical_header() + the shared .btn / card
 # vocabulary. The page's mechanism layer — getUserMedia mic capture, the
@@ -27,11 +27,11 @@ from .correction_hub import section_tabs
 # server-owned GET /envelope contract controls whole-page membership and
 # order; the browser has no parallel screen-to-section policy.
 #
-# getUserMedia requires a secure context; /correction/ itself is plain HTTP
+# getUserMedia requires a secure context; /sound/room/ itself is plain HTTP
 # and never redirects into the speaker's self-signed origin (issue #2632),
 # which is what the local-capture certificate warning is for. The back link
-# is an absolute http://<host>/ so the Home affordance lands on the plain-HTTP
-# dashboard even when this page was opened over HTTPS by hand. Page-specific
+# is an absolute http://<host>/sound/ so the affordance lands on the plain-HTTP
+# hub even when this page was opened over HTTPS by hand. Page-specific
 # styling lives in /assets/correction/correction.css.
 
 
@@ -278,7 +278,8 @@ def render_follower_page(
     )
     header = canonical_header(
         "Room correction",
-        back_href="http://{host}/".format(host=hostname),
+        back_href=f"http://{hostname}/sound/",
+        back_label="Sound",
     )
     body = f"""
 {header}
@@ -290,7 +291,7 @@ def render_follower_page(
     playback image, so run them from the leader while the pair is active.</p>
     <div class="form-actions">
       {leader_link}
-      <a class="btn" href="/rooms/">Manage pair</a>
+      <a class="btn" href="/sound/pair/">Manage pair</a>
     </div>
   </section>
 </main>
@@ -383,11 +384,12 @@ def render_page(
     household_mic_island = json_island(
         "household-mic-data", household_mic_prefill_payload
     )
-    # Absolute http:// back link: /correction/ is HTTPS but the dashboard at /
-    # is plain HTTP, so a relative "/" would try HTTPS on the root and fail.
+    # Absolute http:// back link: /sound/room/ is HTTPS but the hub at /sound/
+    # is plain HTTP, so a relative path would try HTTPS on it and fail.
     header = canonical_header(
         "Correction",
-        back_href="http://{host}/".format(host=hostname),
+        back_href=f"http://{hostname}/sound/",
+        back_label="Sound",
     )
     body = (
         _PAGE_BODY.replace("__HEADER__", header)

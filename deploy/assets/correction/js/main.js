@@ -289,43 +289,19 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     workletNode = null;
   }
 
-  function currentPathname() {
-    var loc = window.location || {};
-    if (typeof loc.pathname === 'string') return loc.pathname;
-    var href = String(loc.href || '');
-    var pathish = href.split('#')[0].split('?')[0];
-    var schemeIdx = pathish.indexOf('://');
-    if (schemeIdx !== -1) {
-      var slashIdx = pathish.indexOf('/', schemeIdx + 3);
-      return slashIdx === -1 ? '/' : pathish.slice(slashIdx);
-    }
-    return pathish || '';
-  }
-
-  function publicRoomUrl(value) {
-    var raw = String(value || '');
-    if (currentPathname().indexOf('/sound/room/') === 0 &&
-        raw.indexOf('/correction/room') === 0) {
-      return '/sound/room' + raw.slice('/correction/room'.length);
-    }
-    return raw;
-  }
-
+  // nginx mounts /sound/room/ on the measurement backend's ROOT, so a page
+  // route and its API routes share this one public prefix.
   function endpoint(path) {
-    path = String(path || '').replace(/^\/+/, '');
-    if (currentPathname().indexOf('/correction/') === 0) {
-      return '/correction/' + path;
-    }
-    return path;
+    return '/sound/room/' + String(path || '').replace(/^\/+/, '');
   }
 
   // The same page over HTTPS, where the browser will hand over the
   // microphone: install.sh provisions the speaker's own certificate for this
-  // host (provision_correction_tls) and nginx serves /correction/ on 443.
+  // host (provision_correction_tls) and nginx serves /sound/room/ on 443.
   // `hostname`, not `host`: nginx listens on the default port for each
   // scheme, so carrying this page's port across would name a closed one.
   function secureCorrectionUrl() {
-    return 'https://' + window.location.hostname + '/correction/';
+    return 'https://' + window.location.hostname + '/sound/room/';
   }
 
   // The speaker's private CA, served over plain HTTP because a browser that
@@ -960,7 +936,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         // Browsers withhold getUserMedia outside a secure context, so this is
         // a scheme dead end, not a denied permission. The speaker provisions
         // its own certificate for exactly this page (install.sh's
-        // provision_correction_tls) and nginx serves /correction/ on 443, so
+        // provision_correction_tls) and nginx serves /sound/room/ on 443, so
         // the fix is switching schemes. The CA download is the second half:
         // it is the answer when a browser refuses the certificate outright
         // instead of offering to continue past it.
@@ -1646,7 +1622,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     var action = blocker && blocker.recovery_action;
     if (action) {
       readinessBlockerAction.textContent = String(action.label);
-      readinessBlockerAction.href = publicRoomUrl(action.href);
+      readinessBlockerAction.href = String(action.href);
       readinessBlockerAction.classList.remove('hidden');
     } else {
       readinessBlockerAction.textContent = '';

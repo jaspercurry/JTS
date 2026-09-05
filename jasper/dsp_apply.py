@@ -801,7 +801,7 @@ async def apply_dsp_config(
     """Validate and load a generated CamillaDSP config.
 
     The lock is local-process/file-system coordination for JTS writers
-    (`/sound/`, `/correction/`, and future DSP surfaces). CamillaDSP is
+    (`/sound/`, `/sound/room/`, and future DSP surfaces). CamillaDSP is
     still the authority for whether the candidate can actually run.
 
     ``lock_timeout_s`` bounds only admission to the shared writer boundary.

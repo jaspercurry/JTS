@@ -980,7 +980,7 @@ def test_capture_precedence_grouped_sink_keeps_the_capture_half_only():
     """A grouped pipe SINK owns playback — and ONLY playback.
 
     Dropping the capture half too was a silent-bond hazard, not a no-op: this is
-    the path a bonded leader's /sound or /correction save re-emits camilla#1
+    the path a bonded leader's /sound or /sound/room/ save re-emits camilla#1
     through (graph_carrier -> apply_capture_precedence), and camilla#1 is the
     producer of the WHOLE bond's audio. Under an armed ring, keeping the
     emitter's `plug:jasper_capture` default there points the LIVE config at the

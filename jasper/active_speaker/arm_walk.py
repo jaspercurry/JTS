@@ -5,8 +5,8 @@
 """Drive the crossover-v2 position gate with the lab turntable arm.
 
 The session publishes ``capture.position_pending`` on ``GET
-/correction/crossover/status`` and holds every begin until something POSTs
-``/correction/crossover/v2/position-ready``; the turntable adapter moves the
+/sound/speaker/crossover/status`` and holds every begin until something POSTs
+``/sound/speaker/crossover/v2/position-ready``; the turntable adapter moves the
 microphone. This module is the loop that joins them, kept as a contract
 rather than a throwaway per-campaign script.
 
@@ -391,8 +391,8 @@ class TurntableMover:
 
 #: The position gate's two POSTs; transport and status read are
 #: :mod:`jasper.active_speaker.wizard_client`.
-POSITION_READY_PATH = "/correction/crossover/v2/position-ready"
-COMPLETE_PATH = "/correction/crossover/v2/complete"
+POSITION_READY_PATH = "/sound/speaker/crossover/v2/position-ready"
+COMPLETE_PATH = "/sound/speaker/crossover/v2/complete"
 
 
 
@@ -899,7 +899,7 @@ def pending_from_capture(capture: Mapping[str, Any]) -> Pending | None:
 
 
 def poll_from_status(status: Mapping[str, Any] | None) -> Poll:
-    """``GET /correction/crossover/status`` -> one :class:`Poll`.
+    """``GET /sound/speaker/crossover/status`` -> one :class:`Poll`.
 
     ``None`` is an UNREADABLE envelope: ``in_flight=True`` so a transient
     read failure is not mistaken for "session ended", ``readable=False`` so

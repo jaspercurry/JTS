@@ -2185,7 +2185,7 @@ def main(argv: list[str] | None = None) -> int:
     restart_broker_server = restart_broker.start_broker()
     # Multi-device peering daemon. No-op (no thread, no asyncio loop, no
     # zeroconf import) when /var/lib/jasper/peering.env has JASPER_PEERING=off
-    # — the default. The /rooms/ Speakers page writes that env file and
+    # — the default. The /sound/pair/ Speakers page writes that env file and
     # restarts jasper-control to pick up the new mode.
     start_peering_daemon_if_enabled()
     # Protocol-level liveness probe so a wedged shairport-sync AP2 control

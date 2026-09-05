@@ -6,7 +6,7 @@
 
 Four seams rebuild a roleful box's active graph from its immutable applied
 snapshot: the deploy/arm-ladder reconcile (``jasper-sound
-reconcile-current-dsp``), a ``/sound/`` or ``/eq/`` save, a bass-extension
+reconcile-current-dsp``), a ``/sound/`` or ``/sound/eq/`` save, a bass-extension
 apply, and the drift check that binds Layer A to the applied profile. The
 snapshot keeps naming whichever playback lane was resolved at Apply time, so a
 seam that lets that reach the emitter moves the speaker's transport without
@@ -306,7 +306,7 @@ async def test_a_declined_non_endpoint_device_is_visible_in_the_journal(
 
 
 # --------------------------------------------------------------------------
-# 2. #2339 / #2337 — the deploy reconcile and the /sound/ + /eq/ save.
+# 2. #2339 / #2337 — the deploy reconcile and the /sound/ + /sound/eq/ save.
 # --------------------------------------------------------------------------
 
 
@@ -364,7 +364,7 @@ async def test_a_sound_save_preserves_the_boxs_endpoint(
 ):
     """A household EQ save changes the EQ, never the transport (#2337).
 
-    ``/eq/`` and ``/sound/setup/`` both land on ``load_profile_config``; pre-fix
+    ``/sound/eq/`` and ``/sound/setup/`` both land on ``load_profile_config``; pre-fix
     a taste-EQ save disarmed the box and the reconcilers converged it to
     loopback."""
     from jasper.sound.runtime import load_profile_config
@@ -424,7 +424,7 @@ async def test_the_layer_a_binding_judges_crossover_never_the_transport(
 ):
     """Arming a box is not crossover drift and must not block room correction.
 
-    ``camilla_readback`` is what ``/correction/`` actually hands this check
+    ``camilla_readback`` is what ``/sound/room/`` actually hands this check
     (``get_active_config_raw()``: comments dropped, scalars re-rendered);
     ``crossover_drift`` moves a REFERENCED post-split filter, inside the
     projection the fingerprint binds, so the check is not merely inert.

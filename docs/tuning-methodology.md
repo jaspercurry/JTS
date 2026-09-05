@@ -217,7 +217,7 @@ jasper-round bank <session_dir, from wait>
 **Each receipt hands you the next command or the path it needs, so nothing here
 is composed by hand.** `stage` banks a named pose table for the next session and
 answers with the price and `handoff_url`, which is
-`http://<this speaker>/sound/crossover/` — this speaker's own hostname, never a
+`http://<this speaker>/sound/speaker/crossover/` — this speaker's own hostname, never a
 fixed name. Give the household that one URL: they read each pose in words on the
 page, tap ready once the microphone is there, retake a take that went wrong, and
 tap complete at the end. `open` posts the session the page drives and echoes the same
@@ -693,7 +693,7 @@ bounded history of realized − predicted per verify — how wrong the PREDICTIO
 was, pooled. For how much of what was COMMANDED actually arrived, **per band
 and across rounds**, read the controllability ledger
 (`jasper.active_speaker.controllability_ledger`), published in the crossover
-wizard's own status block at `GET /correction/crossover/status` and summarised
+wizard's own status block at `GET /sound/speaker/crossover/status` and summarised
 by `scripts/run-crossover-round.py` on a laptop-driven round; no on-box CLI
 prints it and it is not on `:8780/state`. It hands over the rows each round
 banked and pools nothing — a mean or a spread is yours to take, across the

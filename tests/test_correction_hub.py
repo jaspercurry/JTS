@@ -16,7 +16,7 @@ def test_section_tabs_marks_only_the_active_section() -> None:
     assert rendered.count('aria-current="page"') == 1
     # Label only (#1670 rename); canonical navigation lives under /sound/.
     assert (
-        'aria-current="page" href="/sound/crossover/">Active speaker</a>'
+        'aria-current="page" href="/sound/speaker/crossover/">Active speaker</a>'
         in rendered
     )
 
@@ -25,11 +25,11 @@ def test_section_tabs_escapes_registry_labels_and_links(monkeypatch) -> None:
     monkeypatch.setattr(
         correction_hub,
         "SECTIONS",
-        (("unsafe", 'Room <script>', '/correction/?next="x"&mode=<raw>'),),
+        (("unsafe", 'Room <script>', '/sound/room/?next="x"&mode=<raw>'),),
     )
 
     rendered = correction_hub.section_tabs("unsafe")
 
     assert "<script>" not in rendered
     assert "Room &lt;script&gt;" in rendered
-    assert 'href="/correction/?next=&quot;x&quot;&amp;mode=&lt;raw&gt;"' in rendered
+    assert 'href="/sound/room/?next=&quot;x&quot;&amp;mode=&lt;raw&gt;"' in rendered

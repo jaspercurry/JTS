@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Hardware-free tests for the /correction/ wizard (canonical design system).
+"""Hardware-free tests for the /sound/room/ wizard (canonical design system).
 
 The room-correction page is HARDWARE/BROWSER-CRITICAL — the real measurement
 flow (getUserMedia, the sweep, CamillaDSP apply) only runs on the Pi. These
@@ -152,7 +152,7 @@ def test_render_has_correction_measurement_tabs():
     html = _render()
     assert 'aria-label="Speaker correction"' in html
     assert 'href="/sound/room/"' in html
-    assert 'href="/sound/crossover/"' in html
+    assert 'href="/sound/speaker/crossover/"' in html
     assert 'href="/sound/bass/"' in html
     assert 'aria-current="page" href="/sound/room/"' in html
 
@@ -177,10 +177,10 @@ def test_render_carries_required_sample_rate_for_module():
 
 
 def test_render_back_link_is_absolute_http():
-    """/correction/ is HTTPS but the dashboard at / is plain HTTP, so the
-    Home affordance must be an absolute http:// link, not a relative '/'."""
+    """/sound/room/ is HTTPS but the /sound/ hub is plain HTTP, so the back
+    affordance must be an absolute http:// link, not a relative path."""
     html = _render()
-    assert 'href="http://jts.local/"' in html
+    assert 'href="http://jts.local/sound/"' in html
 
 
 def test_render_has_one_root_for_each_envelope_section():
@@ -348,13 +348,6 @@ def test_get_root_renders_html():
     assert b"200" in resp.split(b"\r\n", 1)[0]
     assert b"/assets/app.css" in resp
     assert b"/assets/correction/js/main.js" in resp
-
-
-def test_get_room_subpath_renders_room_html():
-    resp = _drive("/room/")
-    assert b"200" in resp.split(b"\r\n", 1)[0]
-    assert b"/assets/correction/js/main.js" in resp
-    assert b"/sound/crossover/" in resp
 
 
 def test_get_crossover_subpath_renders_secure_capture_ui():
@@ -1085,7 +1078,7 @@ def test_idle_shutdown_invokes_capture_entry_restore(monkeypatch):
 
     The common abandon is the user closing the tab mid-sequence:
     correction-web idles out minutes later, and (being socket-activated) will
-    not run again until someone revisits /correction/. Without this hook the
+    not run again until someone revisits /sound/room/. Without this hook the
     speaker would stay parked on the all-muted staged anchor until then.
     """
 

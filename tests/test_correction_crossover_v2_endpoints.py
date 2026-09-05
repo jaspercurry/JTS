@@ -2330,7 +2330,7 @@ def test_an_applied_measure_only_session_resolves_to_verify_not_review_or_done()
     })
     assert env["screen"] == "verify"
     # The stage-2 entry point, tier-matched by the durable state's own tier.
-    assert env["next_action"]["endpoint"] == "/correction/crossover/v2/verify"
+    assert env["next_action"]["endpoint"] == "/sound/speaker/crossover/v2/verify"
     assert env["next_action"]["body"] == {"stage": "post_apply"}
 
 
@@ -2946,7 +2946,7 @@ def test_the_failed_screens_re_verify_still_asks_for_the_recovery():
         },
     })
     retry = env["next_action"]
-    assert retry["endpoint"] == "/correction/crossover/v2/verify"
+    assert retry["endpoint"] == "/sound/speaker/crossover/v2/verify"
     assert "stage" not in (retry.get("body") or {})
 
 
@@ -4432,7 +4432,7 @@ def test_end_to_end_the_done_screen_offers_the_way_back_only_with_a_prior_candid
         a for a in with_prior["alternate_actions"]
         if a["id"] == "republish_previous"
     )
-    assert way_back["endpoint"] == "/correction/crossover/v2/republish"
+    assert way_back["endpoint"] == "/sound/speaker/crossover/v2/republish"
     assert way_back["body"] == {"fingerprint": "f" * 64}
 
 

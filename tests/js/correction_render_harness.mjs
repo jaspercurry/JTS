@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Render harness for /correction/ rendering (C4a-2 + P3a + P3b).
+// Render harness for /sound/room/ rendering (C4a-2 + P3a + P3b).
 //
 // Exercises renderCurrentCorrection with representative server presentation
 // blocks and asserts the tone, reset authority, timestamp substitution, and
@@ -374,7 +374,7 @@ const fakeDocument = {
 const fakeWindow = {
   addEventListener() {},
   removeEventListener() {},
-  location: { href: "http://jts.local/correction/" },
+  location: { href: "http://jts.local/sound/room/" },
   isSecureContext: true,
   navigator: {
     mediaDevices: {
@@ -1593,7 +1593,7 @@ await (async () => {
     retryable: false,
     recovery_action: {
       label: "Open speaker setup",
-      href: "/correction/crossover/",
+      href: "/sound/speaker/crossover/",
     },
   };
   renderEnvelope(makeEnvelope({
@@ -1612,7 +1612,7 @@ await (async () => {
   assert(getOrMake("readiness-blocker-action").textContent ===
       "Open speaker setup" &&
       getOrMake("readiness-blocker-action").href ===
-      "/correction/crossover/",
+      "/sound/speaker/crossover/",
     "blocked entry renders only the owner-supplied local recovery link");
   assert(wizVerdict().textContent.indexOf(rawActiveDetail) < 0 &&
       getOrMake("readiness-blocker-message").textContent.indexOf(rawActiveDetail) < 0,
@@ -1622,14 +1622,14 @@ await (async () => {
     code: "speaker_readiness_unavailable",
     text: "Speaker setup could not be checked. Try again.",
     retryable: true,
-    recovery_action: {label: "Check again", href: "/correction/room/"},
+    recovery_action: {label: "Check again", href: "/sound/room/"},
   };
   renderEnvelope(makeEnvelope({
     sections: ["current-correction", "readiness-blocker"],
     next_action: null,
     blocker: retryBlocker,
   }));
-  assert(getOrMake("readiness-blocker-action").href === "/correction/room/",
+  assert(getOrMake("readiness-blocker-action").href === "/sound/room/",
     "retryable readiness failure exposes one bounded reload action");
   renderEnvelope(makeEnvelope());
   assert(getOrMake("readiness-blocker-action").classList.contains("hidden") &&

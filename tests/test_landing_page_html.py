@@ -569,25 +569,21 @@ def test_no_household_journey_step_lands_on_the_self_signed_https_origin() -> No
         nginx = path.read_text(encoding="utf-8")
         http_nginx = nginx[: nginx.index("listen 443")]
         assert "correction-preflight.html" not in nginx
-        assert "/correction/proceed" not in nginx
+        assert "/sound/room/proceed" not in nginx
         assert "/sound/proceed" not in nginx
         # No plain-HTTP route may bounce a browser to https:// on this host.
         assert "return 302 https://$host" not in http_nginx
 
 
-def test_nginx_serves_correction_over_plain_http() -> None:
+def test_nginx_serves_the_room_wizard_over_plain_http() -> None:
     nginx = _NGINX_PATH.read_text(encoding="utf-8")
     http_nginx = nginx[:nginx.index("# HTTPS server block")]
     https_nginx = nginx[nginx.index("listen 443") :]
-    slash_block = _nginx_location_block(nginx, "location = /correction")
-    http_proxy_block = _nginx_location_block(http_nginx, "location /correction/")
-    https_block = _nginx_location_block(https_nginx, "location /correction/")
+    http_proxy_block = _nginx_location_block(http_nginx, "location /sound/room/")
+    https_block = _nginx_location_block(https_nginx, "location /sound/room/")
 
-    # Bare /correction normalizes to /correction/, which falls through to the
-    # plain-HTTP proxy — no static interception, no scheme change.
-    assert "return 302 /correction/;" in slash_block
-    _assert_strong_no_cache(slash_block)
-    assert "if ($request_method !~ ^(GET|HEAD)$) { return 405; }" in slash_block
+    # The views that do not capture audio stay reachable on plain HTTP — no
+    # static interception, no scheme change (issue #2632).
     assert "proxy_pass http://127.0.0.1:8770/;" in http_proxy_block
     assert "client_max_body_size 32m;" in http_proxy_block
     assert "proxy_pass http://127.0.0.1:8770/;" in https_block
@@ -599,15 +595,11 @@ def test_nginx_serves_correction_over_plain_http() -> None:
     assert "Strict-Transport-Security" not in nginx
 
 
-def test_streambox_nginx_matches_plain_http_correction_entry() -> None:
+def test_streambox_nginx_matches_plain_http_room_entry() -> None:
     nginx = _STREAMBOX_NGINX_PATH.read_text(encoding="utf-8")
-    slash_block = _nginx_location_block(nginx, "location = /correction")
     http_nginx = nginx[: nginx.index("listen 443")]
-    proxy_block = _nginx_location_block(http_nginx, "location /correction/")
+    proxy_block = _nginx_location_block(http_nginx, "location /sound/room/")
 
-    assert "return 302 /correction/;" in slash_block
-    _assert_strong_no_cache(slash_block)
-    assert "if ($request_method !~ ^(GET|HEAD)$) { return 405; }" in slash_block
     assert "proxy_pass http://127.0.0.1:8770/;" in proxy_block
     https_nginx = nginx[nginx.index("listen 443") :]
     catchall_block = _nginx_location_block(https_nginx, "location /")
@@ -616,11 +608,13 @@ def test_streambox_nginx_matches_plain_http_correction_entry() -> None:
 
 
 def test_both_nginx_profiles_have_canonical_sound_route_parity() -> None:
+    # Public prefix -> what nginx leaves of it for the measurement backend.
+    # Room's routes are unprefixed there, so it is mounted on the root.
     measurement_routes = {
-        "room": "room",
-        "crossover": "crossover",
-        "bass": "bass",
-        "measurements": "measurements",
+        "room/": "",
+        "speaker/crossover/": "crossover/",
+        "bass/": "bass/",
+        "measurements/": "measurements/",
     }
     for path in (_NGINX_PATH, _STREAMBOX_NGINX_PATH):
         nginx = path.read_text(encoding="utf-8")
@@ -633,7 +627,7 @@ def test_both_nginx_profiles_have_canonical_sound_route_parity() -> None:
         assert "if ($request_method !~ ^(GET|HEAD)$) { return 405; }" in https_catchall
         _assert_strong_no_cache(https_catchall)
 
-        eq = _nginx_location_block(http_nginx, "location /eq/")
+        eq = _nginx_location_block(http_nginx, "location /sound/eq/")
         setup = _nginx_location_block(http_nginx, "location /sound/setup/")
         compat = _nginx_location_block(http_nginx, "location /sound/")
         for block in (eq, setup, compat):
@@ -643,25 +637,20 @@ def test_both_nginx_profiles_have_canonical_sound_route_parity() -> None:
         assert "proxy_set_header X-JTS-Sound-Page setup;" in setup
         assert "return 302" not in compat
 
-        for public_slug, backend_slug in measurement_routes.items():
-            location = f"location /sound/{public_slug}/"
+        for public_prefix, backend_prefix in measurement_routes.items():
+            location = f"location /sound/{public_prefix}"
             for server_nginx in (http_nginx, https_nginx):
                 block = _nginx_location_block(server_nginx, location)
                 assert (
-                    f"proxy_pass http://127.0.0.1:8770/{backend_slug}/;"
+                    f"proxy_pass http://127.0.0.1:8770/{backend_prefix};"
                     in block
                 )
                 assert "client_max_body_size 32m;" in block
                 assert "proxy_read_timeout 600s;" in block
                 assert "127.0.0.1:8784" not in block
 
-        # Compatibility aliases remain direct on both schemes, with the same
-        # upload and long-running measurement bounds as canonical routes.
-        for server_nginx in (http_nginx, https_nginx):
-            alias = _nginx_location_block(server_nginx, "location /correction/")
-            assert "proxy_pass http://127.0.0.1:8770/;" in alias
-            assert "client_max_body_size 32m;" in alias
-            assert "proxy_read_timeout 600s;" in alias
+        # The alias namespace is deleted for good (audit §2, decision 4).
+        assert not re.search(r"location\s+=?\s*/correction", nginx)
 
 
 def test_both_nginx_profiles_allow_bounded_wifi_connect_rollback() -> None:
@@ -702,7 +691,7 @@ def test_nginx_serves_static_management_assets() -> None:
 
 
 def test_nginx_serves_assets_over_https_no_mixed_content() -> None:
-    # The /correction/ measurement UI is the one wizard served over HTTPS
+    # The /sound/room/ measurement UI is the one wizard served over HTTPS
     # (getUserMedia needs a secure context) and links /assets/app.css + its
     # ES module by absolute path. The 443 server block must serve /assets/
     # itself; otherwise those subresources fall through to the downgrade
@@ -787,7 +776,7 @@ def test_landing_page_stereo_pair_banner_wiring() -> None:
     assert '<section class="control-section pair-banner" id="pair-banner" hidden>' in html
     assert 'id="source-section"' in html
     assert 'id="volume-eyebrow"' in html
-    assert 'id="pair-manage-link" href="/rooms/" data-requires="pair_management" hidden' in html
+    assert 'id="pair-manage-link" href="/sound/pair/" data-requires="pair_management" hidden' in html
     assert "fetch('/grouping')" in js
     assert "'Pair volume'" in js
     assert 'from "/assets/shared/js/local-web-host.js"' in js

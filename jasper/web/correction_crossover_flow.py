@@ -21,7 +21,8 @@ logger = logging.getLogger(__name__)
 def render_page(hostname: str, csrf_token: str = "") -> bytes:
     header = canonical_header(
         "Correction",
-        back_href=f"http://{html.escape(hostname, quote=True)}/",
+        back_href=f"http://{html.escape(hostname, quote=True)}/sound/",
+        back_label="Sound",
     )
     body = f"""
 {header}

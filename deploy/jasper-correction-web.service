@@ -17,7 +17,7 @@ EnvironmentFile=/etc/jasper/jasper.env
 # with jasper-web (which serves the Spotify / voice settings pages
 # and shouldn't pay the import cost).
 # Socket activation pushes those imports off the always-on path
-# entirely — they only load when someone opens /correction/.
+# entirely — they only load when someone opens /sound/room/.
 ExecStart=/opt/jasper/.venv/bin/jasper-correction-web --host 127.0.0.1 --port 8770
 Restart=on-failure
 RestartSec=2
@@ -35,7 +35,7 @@ RestartSec=2
 #   * the /run marker directory below is also jasper-web's RuntimeDirectory=;
 #     systemd re-chowns an ExecDirectory to the starting unit's user, so a
 #     second uid would take the 0755 directory away from the other writer.
-#   * /correction/ and /sound/ write the same active-speaker state files.
+#   * /sound/room/ and /sound/ write the same active-speaker state files.
 # `audio` is /dev/snd for the correction-lane aplay children; `jts-ring` lets
 # those children create the lane's SHM ring while this box has the lane armed
 # (both already on the jasper-web account — named here for legibility, since

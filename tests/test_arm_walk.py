@@ -1298,8 +1298,8 @@ def test_the_endpoints_are_the_products_own():
     from jasper.web.correction_crossover_v2 import POSITION_READY_ENDPOINT
 
     assert aw.POSITION_READY_PATH == POSITION_READY_ENDPOINT
-    assert wc.STATUS_PATH == "/correction/crossover/status"
-    assert aw.COMPLETE_PATH == "/correction/crossover/v2/complete"
+    assert wc.STATUS_PATH == "/sound/speaker/crossover/status"
+    assert aw.COMPLETE_PATH == "/sound/speaker/crossover/v2/complete"
 
 
 def test_a_status_read_that_is_not_json_is_unreadable_not_finished():

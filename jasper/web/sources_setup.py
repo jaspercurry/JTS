@@ -610,7 +610,7 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
         'style="display:none" role="note">This speaker is part of a '
         "stereo pair — music plays through the pair leader, so local "
         "sources are parked. Unpair on "
-        '<a href="/rooms/">the Speakers page</a> to use them again.'
+        '<a href="/sound/pair/">the Speakers page</a> to use them again.'
         "</div>"
     )
     state_error = (
@@ -752,7 +752,7 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                     self._send_json(
                         {"error": "sources are managed by the stereo "
                                   "pair while this speaker is a "
-                                  "follower — unpair on /rooms/ to "
+                                  "follower — unpair on /sound/pair/ to "
                                   "change local sources"},
                         status=409,
                     )

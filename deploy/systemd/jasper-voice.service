@@ -164,7 +164,7 @@ EnvironmentFile=-/var/lib/jasper/tool_state.env
 # systemd/env-load parity and exposes non-default DB paths at startup.
 EnvironmentFile=-/var/lib/jasper/conversation_history.env
 # Multi-device wake arbitration (JASPER_PEERING) written by the Speakers page at
-# http://jts.local/rooms/. jasper-voice is a CLIENT of jasper-control's
+# http://jts.local/sound/pair/. jasper-voice is a CLIENT of jasper-control's
 # peering UDS: Config.peering_enabled reads JASPER_PEERING here to decide
 # whether WakeLoop arbitrates each wake with peers or behaves solo. Without
 # this line the daemon never saw JASPER_PEERING, so peering stayed off even

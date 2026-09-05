@@ -1158,7 +1158,7 @@ mic_present() {
 
 # --- measurement-class microphone exclusion ---------------------------------
 #
-# A calibrated measurement microphone (the /correction/ wizard's UMIK-2 and
+# A calibrated measurement microphone (the /sound/room/ wizard's UMIK-2 and
 # friends) enumerates as an ordinary capture card, and it must NEVER become the
 # voice/wake input: it carries no wake or AEC contract, so selecting one would
 # silently swap the household's room mic for an instrument.

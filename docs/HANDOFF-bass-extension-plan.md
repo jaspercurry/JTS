@@ -1322,7 +1322,7 @@ for every adapter and cannot strand a sealed block.
 
 - **Commissioning** attaches to the active-speaker setup flow (the
   profile is hardware-bound), as a post-baseline step: "Bass
-  extension (optional)". Served through the `/correction/` HTTPS
+  extension (optional)". Served through the `/sound/room/` HTTPS
   framework (phone mic requires it), new page module +
   `deploy/assets/correction/js/bassext/` ES modules per the canonical
   wizard conventions (`canonical_page()`, `json_island`, shared
@@ -1331,7 +1331,7 @@ for every adapter and cannot strand a sealed block.
   minimal routing seam — those god-files have a pending planned split
   (room-correction modernization R1–R5); keep every new surface in
   new modules so the split doesn't have to move us.
-- **The existing Bass Management page** (`/correction/bass/`,
+- **The existing Bass Management page** (`/sound/bass/`,
   `correction_bass_flow.py`) becomes the **low-frequency overview**,
   still read-only: static crossover corner + owner (existing), plus
   Bass Extension status — commissioned range ("31 Hz to level 50 →
@@ -1655,7 +1655,7 @@ and total refusal; a real target-specific `limiter_threshold_dbfs` remains
 accepted bundle replays deterministically. After those gates and a later
 contract revision, the remaining commissioning wave contains
 the web backend module (new file, thin
-routing seam into `/correction/`), relay `build_bass_nearfield_spec`,
+routing seam into `/sound/room/`), relay `build_bass_nearfield_spec`,
 per-rung retention store, integration of ramp/admission/
 measurement_window/repeat-admission, the sustain stress-test stage
 (§7.6) including a **sustained-stimulus admission kind** (explicit

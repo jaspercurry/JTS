@@ -38,7 +38,7 @@ def _staged_anchor_for(topology, staged_path):
     """A staged-anchor stub in the shape ``staging.py`` really writes.
 
     The `topology` and `hardware` blocks are NOT decoration: since #2285 both
-    /sound/ and /correction/ gate "already loaded" on
+    /sound/ and /sound/room/ gate "already loaded" on
     ``staged_topology_match_status``, which compares them against the box's
     saved topology, so a stub carrying only `status` + `config.path` describes
     a staged pair production never produces and makes the anchor look stale.
@@ -1099,7 +1099,7 @@ def test_capture_retry_reuses_staged_anchor_without_reanchoring(monkeypatch):
 
 
 def test_a_path_match_with_a_stale_topology_is_not_already_loaded(monkeypatch):
-    """#2285: /correction/ gates the anchor on TWO terms, like /sound/ does.
+    """#2285: /sound/room/ gates the anchor on TWO terms, like /sound/ does.
 
     The fast path used to short-circuit on the config-path term alone, so a box
     whose saved topology had moved since staging -- a DAC swap, a role edit --

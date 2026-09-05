@@ -33,7 +33,7 @@ One measurement stage, in order::
 
     stage the walk   ssh … jasper-angle-capture stage --mover arm   (--angles)
     launch the walk  ssh … jasper-angle-capture serve     (--attest-rig-clear)
-    open the session POST /correction/crossover/v2/{session,verify}
+    open the session POST /sound/speaker/crossover/v2/{session,verify}
     await the walk   the arm harness exits; its rc is the walk's verdict
     await the stage  poll the envelope until this session's phases are accepted
     bank             bash scripts/bank-crossover-round.sh <campaign>/<label>

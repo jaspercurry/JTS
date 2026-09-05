@@ -149,7 +149,7 @@ def test_links_inside_code_are_ignored(tmp_path):
     doc = tmp_path / "doc.md"
     doc.write_text(
         "```md\n[Missing](missing.md)\n```\n[External](https://example.com)\n"
-        'Call `canonical_header("x",\n  back_href="/rooms/")` or `<a href="/rooms/">`.\n',
+        'Call `canonical_header("x",\n  back_href="/sound/pair/")` or `<a href="/sound/pair/">`.\n',
         encoding="utf-8",
     )
 

@@ -171,7 +171,7 @@ def main(argv: "list[str] | None" = None) -> int:
         default=model_client.TUNING_LLM_MAX_OUTPUT_TOKENS,
         help=(
             "per-call output-token cap (default: the production cap the "
-            "/correction/ endpoints use, so the live check validates the "
+            "/sound/room/ endpoints use, so the live check validates the "
             "deployed budget)"
         ),
     )

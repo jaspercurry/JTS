@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared backend for preference EQ at /eq/ and hardware setup at /sound/setup/.
+"""Shared backend for preference EQ at /sound/eq/ and hardware setup at /sound/setup/.
 
 Both public prefixes are stripped by nginx, so the routes this server answers
 are the bare paths listed in ``do_GET``/``do_POST`` below.
@@ -87,7 +87,7 @@ from jasper.active_speaker.commission_wiring import (
 )
 
 # The commission-tone helpers, timing constants and blocker vocabulary below
-# are the active-speaker domain's objects, shared with /correction/; the only
+# are the active-speaker domain's objects, shared with /sound/room/; the only
 # local piece is _stop_commission_tone_locked, bound to this module's
 # _COMMISSION_TONE_SESSION/_COMMISSION_TONE_LOCK.
 #
@@ -1511,7 +1511,7 @@ def _follower_sound_html(csrf_token: str = "", *, page_mode: str) -> bytes:
     active-speaker commissioning/crossover endpoints are allowed.
     """
     page_mode = page_mode if page_mode in {"eq", "setup"} else "eq"
-    leader_path = "/eq/" if page_mode == "eq" else "/sound/setup/"
+    leader_path = "/sound/eq/" if page_mode == "eq" else "/sound/setup/"
     leader_sound_url = bonded_follower_leader_web_url(leader_path)
     leader_link = (
         '<a class="btn btn--primary" href="'
@@ -1534,7 +1534,7 @@ def _follower_sound_html(csrf_token: str = "", *, page_mode: str) -> bytes:
         if page_mode == "eq"
         else ""
     )
-    header = canonical_header(title, back_id="back")
+    header = canonical_header(title, back_href="/sound/", back_label="Sound", back_id="back")
     body = f"""
 {header}
 <main class="page">
@@ -1547,7 +1547,7 @@ def _follower_sound_html(csrf_token: str = "", *, page_mode: str) -> bytes:
     <div class="form-actions">
       {leader_link}
       {local_setup_link}
-      <a class="btn" href="/rooms/">Manage pair</a>
+      <a class="btn" href="/sound/pair/">Manage pair</a>
     </div>
   </section>
   {local_setup}
@@ -1575,7 +1575,10 @@ def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
         '</div></div>'
     )
     editor_chrome = (
-        canonical_header(title, back_id="back", tabs_html=eq_tabs_html)
+        canonical_header(
+            title, back_href="/sound/", back_label="Sound", back_id="back",
+            tabs_html=eq_tabs_html,
+        )
         + """
 <main class="page">
   <section class="now-playing">
@@ -1594,7 +1597,7 @@ def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
 </main>
 """
         if page_mode == "eq"
-        else canonical_header(title, back_id="back")
+        else canonical_header(title, back_href="/sound/", back_label="Sound", back_id="back")
         + """
 <main class="page">
   <div id="view-body"></div>

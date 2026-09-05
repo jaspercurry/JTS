@@ -14,7 +14,7 @@ SECTIONS = (
     # what is still, internally, the crossover wizard: slug and internal
     # identifiers stay "crossover" (docs/active-speaker-tuning-
     # layers-design.md decision 1, "the surface gets a more honest name").
-    ("crossover", "Active speaker", "/sound/crossover/"),
+    ("crossover", "Active speaker", "/sound/speaker/crossover/"),
     ("bass", "Bass", "/sound/bass/"),
     ("measurements", "Measurements", "/sound/measurements/"),
 )

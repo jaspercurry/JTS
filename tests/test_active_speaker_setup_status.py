@@ -729,7 +729,7 @@ def test_manual_room_authority_explicitly_scopes_out_distributed_active(
     assert acoustic["status"] == "incomplete"
     assert acoustic["allowed"] is False
     assert acoustic["reason"] == "active_grouped_room_correction_not_supported"
-    assert acoustic["setup_href"] == "/rooms/"
+    assert acoustic["setup_href"] == "/sound/pair/"
     assert "Turn grouping off" in acoustic["detail"]
     assert status["protected_profile"]["layer_a_binding"] == {
         "status": "distributed_active_unsupported",
@@ -1344,7 +1344,7 @@ def test_manual_applied_snapshot_allows_room_without_summed_acoustic_evidence(
     assert status["acoustic_commissioning"]["reason"] is None
     assert status["acoustic_commissioning"]["summed"]["usable"] == 0
     assert status["acoustic_commissioning"]["setup_href"] == (
-        "/correction/crossover/"
+        "/sound/speaker/crossover/"
     )
 
 

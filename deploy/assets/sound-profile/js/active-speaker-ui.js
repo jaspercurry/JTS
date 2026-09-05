@@ -552,18 +552,16 @@ export function commissionGateReason(gateId) {
 // OPTIONAL — confirming each driver by ear is enough to finish HERE. This page
 // cannot record: /sound/ is plain HTTP, so `getUserMedia` is unavailable and no
 // recorder exists in this bundle. The measurement lives on the HTTPS
-// /correction/ hub's "Active speaker" tab (correction_hub.SECTIONS — the
-// household-facing label for the still-internally-"crossover" slug), so this
-// copy is only a pointer to it. Name the TAB, not just the host: typing
-// jts.local/correction lands on the sibling Room tab, and "room correction" is
-// already this copy's name for the later stage you may skip to.
+// /sound/speaker/crossover/ page, so this copy is only a pointer to it. BOTH
+// halves are load-bearing: the full path (the host alone lands nowhere useful)
+// and the destination's own label, which correction_hub.SECTIONS owns.
 // Placement geometry is OWNED by jasper/active_speaker/capture_geometry.py and
 // rendered by the measurement page for the capture kind in play. Do NOT
 // restate a distance or an aim instruction here.
 export const NEARFIELD_LEVEL_MATCH_GUIDANCE =
   'Automatic tuning option: confirming each driver by ear here is enough to ' +
   'finish. The automatic crossover measures the drivers for you — open ' +
-  'jts.local/correction and choose the Active speaker tab. A safe applied ' +
+  'jts.local/sound/speaker/crossover, the Active speaker page. A safe applied ' +
   'manual crossover can proceed to room correction without that step. ' +
   'Measured values replace manual pins only when you explicitly apply the ' +
   'automatic crossover.';

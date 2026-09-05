@@ -653,7 +653,7 @@ def _make_handler(*, idle_hold=_systemd.no_hold) -> type[BaseHTTPRequestHandler]
                 self._send_json(
                     {"error": "Bluetooth is managed by the stereo pair "
                               "while this speaker is a follower — unpair "
-                              "on /rooms/ to change it"},
+                              "on /sound/pair/ to change it"},
                     status=HTTPStatus.CONFLICT,
                 )
                 return

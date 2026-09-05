@@ -351,7 +351,7 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
             "intentionally omits the local\nvoice and microphone brain",
             result.stdout,
         )
-        for page in ("sources", "spotify", "sound", "rooms", "system"):
+        for page in ("sources", "spotify", "sound", "sound/pair", "system"):
             self.assertIn(f"http://jts4.local/{page}/", result.stdout)
         self.assertNotIn("http://jts4.local/voice/", result.stdout)
         self.assertNotIn("http://jts4.local/transit/", result.stdout)
@@ -404,7 +404,7 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
             "sources",
             "spotify",
             "sound",
-            "rooms",
+            "sound/pair",
             "voice",
             "transit",
         ):

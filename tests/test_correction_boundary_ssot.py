@@ -333,7 +333,7 @@ def test_crossover_v2_imports_no_web_front_end():
     `jasper/active_speaker/crossover_v2`, and "truth layer" means the front ends
     import it and it imports no front end. The test above pins that direction
     for the first package; this pins it for the second, whose front end is the
-    `/correction/` wizard under `jasper/web`.
+    `/sound/room/` wizard under `jasper/web`.
 
     It is also the property the analyze registry's home rests on: the one
     decoder + calibration + mic-tier + capture-report assembly lives in

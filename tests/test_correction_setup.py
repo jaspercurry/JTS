@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the room-correction wizard at /correction/.
+"""Tests for the room-correction wizard at /sound/room/.
 
 The page started as the Phase 0 mic-permission skeleton and has grown
 into the full correction wizard, so this file pins both browser-facing
@@ -70,7 +70,7 @@ def _stable_no_bass_graph_authority(monkeypatch):
     )
 
 # The page's behaviour was relocated VERBATIM into a static ES module when
-# /correction/ migrated to the canonical design system (chrome-only restyle).
+# /sound/room/ migrated to the canonical design system (chrome-only restyle).
 # Render-surface assertions that used to look for inline JS now read the
 # module; the intent (the behaviour ships to the browser) is unchanged.
 _CORRECTION_MODULE = (
@@ -640,16 +640,13 @@ def test_render_page_removes_certificate_install_guide():
     assert "browser will warn about the speaker's local certificate" in body
 
 
-def test_render_page_home_link_returns_to_plain_http():
+def test_render_page_back_link_returns_to_plain_http():
     """The correction app itself runs under HTTPS, but the rest of the
-    JTS wizard surface is deliberately plain HTTP. Its Home affordance
+    JTS wizard surface is deliberately plain HTTP. Its back affordance
     must use an absolute HTTP URL so it does not inherit the HTTPS
     origin and hit nginx's 443 catch-all."""
     body = correction_setup._render_page("jts.local").decode()
-    # Migrated to the canonical sticky header: the back affordance is the
-    # round .icon-button. It must still point at the absolute plain-HTTP root
-    # so it does not inherit the HTTPS origin and hit nginx's 443 catch-all.
-    assert 'class="icon-button" href="http://jts.local/"' in body
+    assert 'class="icon-button" href="http://jts.local/sound/"' in body
     assert 'href="/"' not in body
 
 
@@ -1737,7 +1734,7 @@ def test_e2e_tuning_provider_error_returns_closed_400(
 
 def test_e2e_healthz_returns_plain_ok():
     """systemd's `Type=notify` could replace this later, but for now a
-    simple HTTP-200 / "ok" body is what makes `curl jts.local/correction/healthz`
+    simple HTTP-200 / "ok" body is what makes `curl jts.local/sound/room/healthz`
     a valid liveness probe — and also lets jasper-doctor add a
     correction-subsystem check without parsing JSON."""
     server, base = _start_server()
@@ -2599,7 +2596,7 @@ def test_sync_analyze_rejects_oversized_capture_before_body_read():
 
 
 def test_e2e_trailing_slash_index_serves_same_html():
-    """Defensive: nginx strips its /correction/ prefix and forwards as
+    """Defensive: nginx strips its /sound/room/ prefix and forwards as
     GET / — but a future client (curl, jasper-doctor, integration test)
     might hit GET // or GET /. Both should serve the page."""
     server, base = _start_server()
@@ -3280,7 +3277,7 @@ def test_room_authority_guard_returns_exact_canonical_bass_summary(
                 "layer_a_identity": "layer-a-current",
                 "allowed": True,
                 "status": "ready",
-                "setup_href": "/correction/crossover/",
+                "setup_href": "/sound/speaker/crossover/",
             },
         },
     )
@@ -3325,7 +3322,7 @@ def test_unreadable_receipt_mid_run_preserves_a_completed_measurement(
                 "status": "incomplete",
                 "reason": ROOM_AUTHORITY_RECEIPT_UNREADABLE,
                 "detail": "the record could not be opened",
-                "setup_href": "/correction/crossover/",
+                "setup_href": "/sound/speaker/crossover/",
             },
         }
         return raw, GraphSafety(
@@ -3390,7 +3387,7 @@ def test_unreadable_fail_open_at_writer_boundary_is_disclosed(
                 "status": "incomplete",
                 "reason": ROOM_AUTHORITY_RECEIPT_UNREADABLE,
                 "detail": "the record could not be opened",
-                "setup_href": "/correction/crossover/",
+                "setup_href": "/sound/speaker/crossover/",
             },
         }
         return raw, GraphSafety(
@@ -3448,7 +3445,7 @@ def test_apply_rejects_layer_a_change_inside_writer_boundary(monkeypatch):
                 "layer_a_identity": "layer-a-before-apply",
                 "allowed": True,
                 "status": "ready",
-                "setup_href": "/correction/crossover/",
+                "setup_href": "/sound/speaker/crossover/",
             },
         }
 

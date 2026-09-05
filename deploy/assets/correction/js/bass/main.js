@@ -191,8 +191,7 @@ async function load() {
   extEls.message.textContent = 'Loading…';
   let state;
   try {
-    // Page-relative so both the canonical /sound/bass/ ingress and the
-    // indefinitely supported /correction/bass/ alias reach backend /bass/status.
+    // Page-relative: nginx strips /sound/bass/ down to the backend's /bass/.
     state = await getJSON('status');
   } catch (err) {
     // Never block — a read failure just shows a plain message. Unlike the

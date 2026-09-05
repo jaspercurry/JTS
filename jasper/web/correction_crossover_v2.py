@@ -4,7 +4,7 @@
 
 """The v2 crossover conductor's web host (Wave 5a endpoint binding).
 
-Owns everything between the ``/correction/crossover/v2/*`` POST routes (thin
+Owns everything between the ``/sound/speaker/crossover/v2/*`` POST routes (thin
 dispatch branches in :mod:`jasper.web.correction_setup`) and the pure conductor
 (:mod:`jasper.active_speaker.crossover_v2_flow`):
 
@@ -2382,7 +2382,7 @@ def default_setup_calibration_for_v2() -> Any | None:
 
     Every v2 capture logged ``crossover_v2_uncalibrated_capture`` even when
     the household had a resolvable stored mic (a UMIK-2 by serial, ingested
-    via ``/correction/calibration/fetch``). Root cause:
+    via ``/sound/room/calibration/fetch``). Root cause:
     ``resolve_setup_calibration`` is only as good as the reference the capture
     carries in ``setup.calibration``, and a v2 session has no
     calibration-picker screen of its own (design: CHECK's own pilot pairs
@@ -4179,7 +4179,7 @@ POSITION_GATE_TERMINAL_CODES = frozenset(
 
 #: The endpoint whoever moved the microphone POSTs to report it in place — the
 #: arm's driver, or the person on a hand-released round (#2879). One for both.
-POSITION_READY_ENDPOINT = "/correction/crossover/v2/position-ready"
+POSITION_READY_ENDPOINT = "/sound/speaker/crossover/v2/position-ready"
 
 
 class PositionGate:

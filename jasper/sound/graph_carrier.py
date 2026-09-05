@@ -88,7 +88,7 @@ class ReemitResult:
     ``yaml`` is always the emitted config text (the durable path also writes
     it to ``out_path``); ``room_peq_count`` is how many room-correction PEQs
     the carrier emitted. For ``/sound`` this is the preserved count; for
-    ``/correction`` it is the explicitly replaced count.
+    ``/sound/room/`` it is the explicitly replaced count.
     """
 
     yaml: str
@@ -521,7 +521,7 @@ def _recompose_active_baseline_with_eq(
     coupling rung (issue #2339, observed on jts3 2026-08-11 —
     ``captures/r7b-jts3-arm3-20260811T162742Z`` files 14-16: fan-in and outputd
     on the ring, CamillaDSP re-pointed back to the aloop pair, silence with every
-    daemon healthy and ``writer_alive=False``), and a ``/sound/`` or ``/eq/``
+    daemon healthy and ``writer_alive=False``), and a ``/sound/`` or ``/sound/eq/``
     save (issue #2337). :func:`~jasper.active_speaker.playback_route.
     resolve_live_active_endpoint` is the one derivation of where the box
     actually is; ``None`` from it falls through to the snapshot default inside
@@ -559,7 +559,7 @@ def _recompose_active_baseline_with_eq(
     # ActiveSpeakerConfigError (a ValueError) rather than returning an issue
     # list: an unprotected tweeter, or a crossover below that tweeter's own
     # declared protection floor. Convert to CarrierCannotHostEq so a refusal
-    # travels this module's typed contract — the /eq/ and /sound/ handlers
+    # travels this module's typed contract — the /sound/eq/ and /sound/ handlers
     # branch on reason_code and render `message`; an escaping ValueError falls
     # to their generic branch instead and surfaces as a 502 with a raw
     # exception string. Mirrors the ActiveLeaderError / ActiveFollowerError
@@ -709,7 +709,7 @@ def recompose_active_baseline_for_bass_extension(
     # function already leaves by the typed door. LATENT TODAY — this seam has
     # no production caller yet — but converting it now is cheaper than the
     # incident it becomes the day bass extension is wired, which would be the
-    # /eq/ defect above repeated verbatim. Uses THIS function's own reason code
+    # /sound/eq/ defect above repeated verbatim. Uses THIS function's own reason code
     # (its siblings all raise bass_extension_recompose_unavailable), not the
     # preference-EQ one, so a caller branching on reason_code still learns
     # which seam refused.

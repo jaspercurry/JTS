@@ -64,7 +64,7 @@ from ._refusal import EXIT_OK as EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, answere
 #: /sound/setup/`` proxies to jasper-web on ``127.0.0.1:8784/`` with the prefix
 #: stripped (deploy/nginx-jasper.conf), which is why the backend's own
 #: ``/active-speaker/...`` routes are reached with this prefix and not without
-#: it. The ``/sound/crossover/`` pages next door belong to a DIFFERENT daemon
+#: it. The ``/sound/speaker/crossover/`` pages next door belong to a DIFFERENT daemon
 #: (jasper-correction-web, :8770).
 REVIEW_PATH = "/sound/setup/active-speaker/baseline-profile"
 SAVE_AND_APPLY_PATH = REVIEW_PATH + "/save-and-apply"

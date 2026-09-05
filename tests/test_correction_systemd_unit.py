@@ -40,16 +40,16 @@ def test_correction_web_explicit_write_paths_cover_state_dirs():
 def test_correction_location_allows_large_capture_upload():
     """A capture WAV (~1-2 MB) exceeds nginx's 1 MB default, so without a
     raised client_max_body_size the upload 413s before reaching the backend
-    (real hardware bug 2026-06-04). Guard that the /correction/ location keeps a
+    (real hardware bug 2026-06-04). Guard that the /sound/room/ location keeps a
     limit >= the backend's own MAX_WAV_BODY_BYTES, so the app — not a raw nginx
     413 — enforces the real cap with a clean error.
     """
     conf = NGINX_CONF.read_text()
-    start = conf.index("location /correction/")
+    start = conf.index("location /sound/room/")
     end = conf.index("location ", start + 1)  # next location block
     block = conf[start:end]
     m = re.search(r"client_max_body_size\s+(\d+)m\s*;", block)
-    assert m, "/correction/ location must set client_max_body_size (Nm)"
+    assert m, "/sound/room/ location must set client_max_body_size (Nm)"
     nginx_bytes = int(m.group(1)) * 1024 * 1024
 
     from jasper.web.correction_setup import MAX_WAV_BODY_BYTES
@@ -68,7 +68,7 @@ def test_install_sh_creates_correction_state_dirs():
         "/var/lib/jasper/correction/sessions",
         "/var/lib/jasper/correction/calibration_mics",
         "/var/lib/jasper/correction/tones",
-        # The active_speaker* trees /sound/ and /correction/ share; must be
+        # The active_speaker* trees /sound/ and /sound/room/ share; must be
         # created at install time too, or the first root-lane writer mints
         # them root:root 0700 and locks jasper-web out until the next
         # deploy's heal_shared_state_modes runs.

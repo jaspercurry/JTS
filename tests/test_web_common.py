@@ -875,7 +875,7 @@ def test_pair_banner_html_renders_only_when_bonded(monkeypatch):
     assert common.pair_banner_html() == ""
     monkeypatch.setattr(common, "bonded_follower_active", lambda: True)
     html = common.pair_banner_html()
-    assert "stereo pair" in html and "/rooms/" in html
+    assert "stereo pair" in html and "/sound/pair/" in html
 
 
 def test_bonded_follower_park_reason_bounds_to_two_values(monkeypatch):

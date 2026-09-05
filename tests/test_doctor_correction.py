@@ -159,7 +159,7 @@ def test_latest_deferred_hold_keeps_the_newest_line():
     assert correction._latest_deferred_hold("nothing to see\n") is None
 
 
-# ---------- /correction/ HTTPS assets
+# ---------- /sound/room/ HTTPS assets
 
 
 def _web_root_with_app_css(tmp_path: Path) -> Path:
@@ -1091,7 +1091,7 @@ def test_seat_level_reference_unparseable_timestamp_still_reports_the_value(tmp_
     assert result.reason == correction.REASON_SEAT_LEVEL_TIMESTAMP_UNREADABLE
 
 
-# ---------- /correction/ TLS cert
+# ---------- /sound/room/ TLS cert
 #
 # check_correction_cert_hostname compares the cert's SAN against the name the
 # speaker actually advertises, so a collision-renamed box stops serving a cert

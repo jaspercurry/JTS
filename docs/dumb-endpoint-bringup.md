@@ -555,10 +555,10 @@ a place the work will otherwise drift or wedge:
   shared landing page and the combined `jasper-web` bundle filtered by
   install role:
   `/spotify/`, `/airplay/`, `/sources/`, `/sound/`, `/speaker/`, `/wifi/`,
-  and `/rooms/` are live; voice/wake/assistant-only cards are
+  and `/sound/pair/` are live; voice/wake/assistant-only cards are
   hidden by the shared `system_capabilities` payload and their nginx
   routes are absent. Pair-management is also capability-gated: streambox
-  keeps `/rooms/`, while satellite-only hides the card and omits the route.
+  keeps `/sound/pair/`, while satellite-only hides the card and omits the route.
   `/sources` remains a capability surface: source rows
   whose renderer units are absent from the install profile stay disabled
   and say why. A satellite with `active_crossover` topology may later

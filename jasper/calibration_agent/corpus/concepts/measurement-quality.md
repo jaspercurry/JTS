@@ -28,7 +28,7 @@ designing filters from ambiguous data.
 - Build and persist a browser-audio preflight report from
   `getUserMedia()` metadata: sample rate, channel count, processing
   flags, granted-device identity, and calibrated-mic presence. The
-  report is shown in `/correction/`, saved in `info.json` /
+  report is shown in `/sound/room/`, saved in `info.json` /
   `result.json`, and folded into confidence gating.
 - Assess capture quality before deconvolution, including clipping,
   low level, short captures, sample-rate mismatch, uncalibrated mic
@@ -51,7 +51,7 @@ designing filters from ambiguous data.
 - Annotate designed filters with local spatial confidence when
   multiple listening positions are available.
 - Display the most important measurement-confidence facts in
-  `/correction/`: response curves, target/predicted traces,
+  `/sound/room/`: response curves, target/predicted traces,
   confidence findings, strategy gates, and browser audio-path state.
 
 ## Quality Flags To Add

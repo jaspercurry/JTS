@@ -620,7 +620,7 @@ Next steps (visit from any device on the LAN):
   http://${URL_HOST}/sources/    choose and enable music sources
   http://${URL_HOST}/spotify/    connect a Spotify account (optional)
   http://${URL_HOST}/sound/      configure sound and output hardware
-  http://${URL_HOST}/rooms/      group speakers
+  http://${URL_HOST}/sound/pair/  group speakers
   http://${URL_HOST}/system/     dashboard and status
 EOF
         ;;

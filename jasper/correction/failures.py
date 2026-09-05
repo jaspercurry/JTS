@@ -123,7 +123,7 @@ FAILURE_CODES = frozenset(_FAILURE_COPY)
 
 ROOM_RETRY_ACTION = {
     "label": "Check again",
-    "href": "/correction/room/",
+    "href": "/sound/room/",
 }
 
 

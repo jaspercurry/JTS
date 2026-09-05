@@ -145,7 +145,7 @@ heal_shared_state_modes() {
         "f:0660:${STATE_DIR}/.active_speaker_commissioning_run.json.live-execution.lock"
         "f:0640:${STATE_DIR}/active_speaker_commissioning_run.json"
         "f:0640:${STATE_DIR}/.active_speaker_commissioning_run.json.live-mutation.json"
-        # The capture/sweep/tone trees the /correction/ and /sound/ commissioning
+        # The capture/sweep/tone trees the /sound/room/ and /sound/ commissioning
         # arms share. install.sh's install_camilladsp() now creates these at
         # install time (2770 group `jasper`, matching their
         # /var/lib/jasper/correction siblings); this heal stays for boxes

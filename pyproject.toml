@@ -263,7 +263,7 @@ include = ["jasper", "jasper.*"]
 "jasper.active_speaker" = ["presets/*.json"]
 # Runtime product data, not documentation: jasper/calibration_agent/tools.py
 # rglobs this corpus and injects it into an LLM prompt on the live
-# /correction/ wizard.
+# /sound/room/ wizard.
 "jasper.calibration_agent" = ["corpus/*.md", "corpus/**/*.md"]
 
 [tool.pytest.ini_options]

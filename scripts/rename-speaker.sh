@@ -8,7 +8,7 @@
 #
 # A speaker's name fans out into the OS hostname, Avahi's mDNS
 # advertisement, JASPER_HOSTNAME (management allowlist, spoken URLs,
-# OAuth bounce), and the /correction/ TLS cert SAN. Renaming by hand
+# OAuth bounce), and the /sound/room/ TLS cert SAN. Renaming by hand
 # (`hostnamectl` alone) converges only the first two and leaves the
 # rest drifted. This script converges all of them in one deliberate
 # operation:

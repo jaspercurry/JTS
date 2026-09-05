@@ -663,8 +663,8 @@ def emit_sound_config(
     yaml = f"""---
 # Auto-generated JTS DSP config{header_id}.
 # Source: jasper.sound.camilla_yaml.emit_sound_config
-# DO NOT HAND-EDIT — update http://jts.local/correction/ or
-# http://jts.local/eq/ instead.
+# DO NOT HAND-EDIT — update http://jts.local/sound/room/ or
+# http://jts.local/sound/eq/ instead.
 #
 # Structure mirrors deploy/camilladsp/outputd-cutover.yml.
 # Room-correction PEQs, when present, run before sound-curve /

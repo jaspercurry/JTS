@@ -5,13 +5,13 @@
 """The single speaker-identity reader.
 
 One place that assembles "who is this speaker" — display name, room,
-mDNS hostname, and stable peer_id — so consumers (`/rooms/`,
+mDNS hostname, and stable peer_id — so consumers (`/sound/pair/`,
 `control_advert`, future bond/grouping code) stop reconstructing identity
 ad-hoc and drifting from each other.
 
 Room precedence is the point: the room now lives in the *identity home*
 (`jasper.speaker_name`), so that wins. A legacy fallback to peering's own
-`JASPER_PEER_ROOM` / `peering.config.default_room()` keeps `/rooms/`
+`JASPER_PEER_ROOM` / `peering.config.default_room()` keeps `/sound/pair/`
 consistent on installs that still carry a pre-identity peering room but
 haven't moved it into the identity home yet.
 
@@ -140,7 +140,7 @@ def resolve_hostname() -> str:
 
 
 #: Where a human goes to run or apply a crossover round.
-CROSSOVER_PAGE_PATH = "/sound/crossover/"
+CROSSOVER_PAGE_PATH = "/sound/speaker/crossover/"
 
 #: Where a human DECLARES the speaker — drivers, their safety profile, the
 #: corner. A second page rather than a second spelling of the first: the

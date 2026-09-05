@@ -1130,7 +1130,7 @@ def test_room_readiness_rejects_unversioned_active_snapshot_authority(monkeypatc
                 "status": "ready",
                 "reason": None,
                 "detail": "historical B2b evidence says ready",
-                "setup_href": "/correction/crossover/",
+                "setup_href": "/sound/speaker/crossover/",
             },
         },
     )
@@ -1144,7 +1144,7 @@ def test_room_readiness_rejects_unversioned_active_snapshot_authority(monkeypatc
         "retryable": True,
         "recovery_action": {
             "label": "Check again",
-            "href": "/correction/room/",
+            "href": "/sound/room/",
         },
     }
     assert "historical B2b" not in str(readiness.blocker)
@@ -1165,7 +1165,7 @@ def test_room_readiness_accepts_versioned_manual_active_authority(monkeypatch):
                 "layer_a_identity": "layer-a-manual",
                 "allowed": True,
                 "status": "ready",
-                "setup_href": "/correction/crossover/",
+                "setup_href": "/sound/speaker/crossover/",
             },
         },
     )
@@ -1198,7 +1198,7 @@ def test_room_readiness_consumes_active_owned_grouped_scope(monkeypatch):
                 "status": "incomplete",
                 "reason": "active_grouped_room_correction_not_supported",
                 "detail": "Active owns this unsupported scope decision.",
-                "setup_href": "/rooms/",
+                "setup_href": "/sound/pair/",
             },
         },
     )
@@ -1210,7 +1210,7 @@ def test_room_readiness_consumes_active_owned_grouped_scope(monkeypatch):
     assert readiness.blocker["code"] == "speaker_setup_incomplete"
     assert readiness.blocker["recovery_action"] == {
         "label": "Open speaker setup",
-        "href": "/rooms/",
+        "href": "/sound/pair/",
     }
     assert "unsupported scope" not in str(readiness.blocker)
 
@@ -1232,7 +1232,7 @@ def test_room_readiness_accepts_only_explicit_automatic_receipt_authority(
                 "layer_a_identity": "layer-a-automatic",
                 "allowed": True,
                 "status": "ready",
-                "setup_href": "/correction/crossover/",
+                "setup_href": "/sound/speaker/crossover/",
             },
         },
     )
@@ -1289,7 +1289,7 @@ def test_room_readiness_malformed_shapes_fail_closed_with_retry(
     assert readiness.blocker["code"] == "speaker_readiness_unavailable"
     assert readiness.blocker["recovery_action"] == {
         "label": "Check again",
-        "href": "/correction/room/",
+        "href": "/sound/room/",
     }
 
 
@@ -1312,7 +1312,7 @@ def test_room_readiness_unknown_authority_is_retryable_unavailable(monkeypatch):
                 "status": "unknown",
                 "reason": "output_topology_unreadable",
                 "detail": "raw topology diagnostic",
-                "setup_href": "/correction/crossover/",
+                "setup_href": "/sound/speaker/crossover/",
             },
         },
     )
@@ -1324,7 +1324,7 @@ def test_room_readiness_unknown_authority_is_retryable_unavailable(monkeypatch):
     assert readiness.blocker["retryable"] is True
     assert readiness.blocker["recovery_action"] == {
         "label": "Open speaker setup",
-        "href": "/correction/crossover/",
+        "href": "/sound/speaker/crossover/",
     }
     assert "raw topology diagnostic" not in str(readiness.blocker)
 
@@ -1342,7 +1342,7 @@ def test_room_readiness_read_failure_has_bounded_retry(monkeypatch):
     assert readiness.blocker["code"] == "speaker_readiness_unavailable"
     assert readiness.blocker["recovery_action"] == {
         "label": "Check again",
-        "href": "/correction/room/",
+        "href": "/sound/room/",
     }
     assert "secret filesystem detail" not in str(readiness.blocker)
 
@@ -1352,8 +1352,8 @@ def test_room_readiness_read_failure_has_bounded_retry(monkeypatch):
     [
         "https://example.com/setup",
         "//example.com/setup",
-        "/correction/\\evil",
-        "/correction/crossover/\nnext",
+        "/sound/room/\\evil",
+        "/sound/speaker/crossover/\nnext",
     ],
 )
 def test_room_readiness_rejects_unsafe_owner_recovery_links(monkeypatch, href):
@@ -1383,7 +1383,7 @@ def test_room_readiness_rejects_unsafe_owner_recovery_links(monkeypatch, href):
     assert readiness.blocker["code"] == "speaker_setup_incomplete"
     assert readiness.blocker["recovery_action"] == {
         "label": "Check again",
-        "href": "/correction/room/",
+        "href": "/sound/room/",
     }
     assert "raw Active detail" not in str(readiness.blocker)
 
@@ -1653,7 +1653,7 @@ async def test_measurement_baseline_rejects_layer_a_change_inside_prepare(
                 "layer_a_identity": "layer-a-after-reservation",
                 "allowed": True,
                 "status": "ready",
-                "setup_href": "/correction/crossover/",
+                "setup_href": "/sound/speaker/crossover/",
             },
         }
 
@@ -2104,7 +2104,7 @@ def test_start_handler_rejects_reserved_start_before_state_transition(monkeypatc
                         "Finish the acoustic combined-crossover check before "
                         "room correction."
                     ),
-                    "setup_href": "/correction/crossover/",
+                    "setup_href": "/sound/speaker/crossover/",
                 },
             },
             "active_commissioning_receipt_absent",
@@ -2536,7 +2536,7 @@ def test_render_page_includes_current_correction_banner():
     from jasper.web import correction_setup
     body = correction_setup._render_page("jts.local").decode()
     # Banner markup + the auto-reset hint stay in the page; the render/refresh
-    # logic moved into the relocated static ES module when /correction/ adopted
+    # logic moved into the relocated static ES module when /sound/room/ adopted
     # the canonical design system (chrome-only restyle).
     assert 'id="current-correction"' in body
     assert 'id="current-correction-label"' in body

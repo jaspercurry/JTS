@@ -304,7 +304,7 @@ async def precheck_active_leader(
 
     # 2. camilla#1 program bake (Layer B/C + headroom, File -> SNAPFIFO,
     #    enable_rate_adjust=False). The initial bond bake is emitted and re-proved
-    #    here. Once this graph is loaded, /sound and /correction may re-emit its
+    #    here. Once this graph is loaded, /sound and /sound/room/ may re-emit its
     #    program domain through the graph carrier, but only while grouping state
     #    still resolves to the same pipe sink; roleful active graphs keep the
     #    eq_on_active_bonded_member fence.

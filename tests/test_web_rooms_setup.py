@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the /rooms/ wizard — the multi-room directory.
+"""Tests for the /sound/pair/ wizard — the multi-room directory.
 
-/rooms/ renders client-side: the GET / body is a static canonical
+/sound/pair/ renders client-side: the GET / body is a static canonical
 shell (an `#app` mount point + a `type="module"` loader) and ALL discovered,
 untrusted data is delivered separately over GET /rooms.json (an
 `application/json` document, not HTML) for the ES module to build via DOM/text
@@ -213,7 +213,7 @@ def test_get_root_renders_canonical_document(monkeypatch):
 
 def test_get_root_has_shared_app_header(monkeypatch):
     # The combined directory + wake-response surface is titled "Speakers"
-    # ("my other speakers" is one household concern) — /rooms/ is canonical.
+    # ("my other speakers" is one household concern) — /sound/pair/ is canonical.
     _patch_discovery(monkeypatch, speakers=[])
     out = _get("/").wfile.getvalue().decode()
     assert 'class="app-header"' in out
@@ -1154,7 +1154,7 @@ def test_socket_unit_has_rooms_listenstream():
 
 def test_nginx_proxies_rooms_to_8785():
     nginx_text = (_REPO / "deploy" / "nginx-jasper.conf").read_text()
-    assert "location /rooms/ {" in nginx_text
+    assert "location /sound/pair/ {" in nginx_text
     assert "proxy_pass http://127.0.0.1:8785/;" in nginx_text
 
 
@@ -1306,7 +1306,7 @@ def _post_bond(body, *, csrf_ok=True, monkeypatch, member_results=None):
 
 
 def test_bond_forwards_browser_control_token_to_members(monkeypatch):
-    """The /rooms/ grouping fan-out runs SERVER-side, so the leader must
+    """The /sound/pair/ grouping fan-out runs SERVER-side, so the leader must
     forward the browser-supplied X-JTS-Token to each member's /grouping/set
     for the control-token gate. Captures the token each member call received."""
     seen_tokens: list[str | None] = []

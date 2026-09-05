@@ -8,7 +8,7 @@ Avahi (the system mDNS-SD daemon installed on Pi OS by default) is the
 only mDNS responder on the host. This module renders the always-on
 `_jasper-control._tcp` advert from a template, substituting the
 speaker's user-facing display name (jasper/speaker_name.py) into a
-`name=` TXT record so the /rooms/ directory shows the same friendly
+`name=` TXT record so the /sound/pair/ directory shows the same friendly
 name peers see on Spotify / AirPlay / Bluetooth / USB.
 
 The render+guard+atomic-write body is the shared implementation in

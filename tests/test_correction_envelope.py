@@ -612,7 +612,7 @@ def test_idle_envelope_without_explicit_readiness_fails_closed():
     assert env["blocker"]["code"] == "speaker_readiness_unavailable"
     assert env["blocker"]["recovery_action"] == {
         "label": "Check again",
-        "href": "/correction/room/",
+        "href": "/sound/room/",
     }
 
 
@@ -623,7 +623,7 @@ def test_blocked_idle_keeps_reports_but_withholds_defaults_and_start():
         failures.SPEAKER_SETUP_INCOMPLETE,
         recovery_action={
             "label": "Open speaker setup",
-            "href": "/correction/crossover/",
+            "href": "/sound/speaker/crossover/",
         },
     )
     env = envelope.build_envelope(
@@ -862,8 +862,8 @@ def test_session_diagnostics_map_to_truthful_closed_failures(diagnostic, code):
     [
         {"label": "Open", "href": "https://example.com"},
         {"label": "Open", "href": "//example.com"},
-        {"label": "Open", "href": "/correction/\\bad"},
-        {"label": "Open", "href": "/correction/\nnext"},
+        {"label": "Open", "href": "/sound/room/\\bad"},
+        {"label": "Open", "href": "/sound/room/\nnext"},
     ],
 )
 def test_public_failure_rejects_unsafe_recovery_actions(action):

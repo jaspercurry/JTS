@@ -22,7 +22,7 @@ const terminalEnvelope = {
   next_action: {
     id: "retry",
     label: "Try again",
-    endpoint: "/correction/crossover/capture-capture",
+    endpoint: "/sound/speaker/crossover/capture-capture",
     body: {},
     enabled: true,
   },
@@ -92,7 +92,7 @@ assert.equal(
 );
 
 const actionPromise = runAction(
-  { endpoint: "/correction/crossover/v2/session", body: {} },
+  { endpoint: "/sound/speaker/crossover/v2/session", body: {} },
   element("restart-session-button"),
 );
 // A poll re-render arrives while the unrelated action's POST is still in
@@ -145,14 +145,14 @@ nextEnvelope = {
   next_action: {
     id: "restart_session",
     label: "Restart driver and alignment measurements",
-    endpoint: "/correction/crossover/v2/session",
+    endpoint: "/sound/speaker/crossover/v2/session",
     body: {},
   },
 };
 postResponse = { status: "candidate_refused" };
 await runAction(
   {
-    endpoint: "/correction/crossover/candidate",
+    endpoint: "/sound/speaker/crossover/candidate",
     body: {},
   },
   element("prepare-candidate"),
@@ -172,7 +172,7 @@ nextEnvelope = {
   next_action: {
     id: "retry_measured_candidate_apply",
     label: "Retry reviewed crossover",
-    endpoint: "/correction/crossover/apply",
+    endpoint: "/sound/speaker/crossover/apply",
     body: {},
   },
 };
@@ -181,7 +181,7 @@ postError = Object.assign(
   { status: 409, body: { status: "rolled_back" } },
 );
 await runAction(
-  { endpoint: "/correction/crossover/apply", body: {} },
+  { endpoint: "/sound/speaker/crossover/apply", body: {} },
   element("apply-candidate"),
 );
 assert.equal(
@@ -203,7 +203,7 @@ nextEnvelope = {
   next_action: {
     id: "finish_measured_candidate_apply",
     label: "Finish apply",
-    endpoint: "/correction/crossover/apply",
+    endpoint: "/sound/speaker/crossover/apply",
     body: {},
   },
 };
@@ -212,7 +212,7 @@ postError = Object.assign(
   { status: 500, body: { code: "candidate_apply_finalization_required" } },
 );
 await runAction(
-  { endpoint: "/correction/crossover/apply", body: {} },
+  { endpoint: "/sound/speaker/crossover/apply", body: {} },
   element("finish-candidate"),
 );
 assert.equal(
