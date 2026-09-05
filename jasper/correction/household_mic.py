@@ -32,7 +32,7 @@ The record reaches a measurement two ways, and both start here:
   missing from disk still ships the other hint fields without the marker;
 * the capture's own ``setup.calibration`` REFERENCE, which the measurement
   source mints from that hint
-  (``correction_crossover_v2_wired._wired_setup_reference``) and
+  (``wired_capture.mint_wired_answer``) and
   :func:`resolve_setup_calibration` materializes back into a
   ``CalibrationRecord`` for the analysis.
 
@@ -341,7 +341,7 @@ def resolve_setup_calibration(
     """Materialize a capture's ``setup.calibration`` reference as a record.
 
     The reference is minted from this module's own record
-    (``correction_crossover_v2_wired._wired_setup_reference``) and carries
+    (``wired_capture.mint_wired_answer``) and carries
     ``{"mode": "stored", "calibration_id", "model"}``; resolution turns it
     back into the stored ``CalibrationRecord`` the analysis applies. No
     reference, or one declaring no calibration, answers ``None`` — the

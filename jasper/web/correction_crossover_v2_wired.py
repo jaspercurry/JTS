@@ -13,10 +13,8 @@ the only one: the Pi plays AND records on one host. What that buys:
 * **Mic resolution** (:func:`resolve_v2_wired_mic`): wired is THE
   acoustic-measurement path (ADR-0188), found from a registry-anchored usbid
   match (probe-at-use —
-  :func:`jasper.audio_measurement.wired_capture.resolve_wired_mic`).
-  Disclose-and-recommend, never nanny: no mic is a named disclosure carrying
-  its remedy (:class:`WiredMicMissing`), never a session measuring on
-  something nobody chose.
+  :func:`jasper.audio_measurement.wired_capture.require_wired_mic`, which
+  also owns the shared no-mic disclosure); this adds the selection event.
 * **The session identity** (:func:`open_wired_capture`): the provider mints
   ``wired-<token>`` and the host keys durable state, evidence publishers and
   phase artifacts by it, per the seam's ownership rule (the bundle id stays
@@ -29,17 +27,11 @@ the only one: the Pi plays AND records on one host. What that buys:
   the same :class:`PositionGate`; the held-set completion signal (work order
   D1) is a local ``threading.Event`` the host's ``request_complete`` seam
   sets.
-* **The answer**: a :class:`WiredCaptureAnswer` carrying exactly the seam's
-  four fields. Integrity counters come from the capture engine's own ALSA
-  accounting plus the re-homed zero-run scan
-  (:mod:`jasper.audio_measurement.wired_capture`), in the frame ledger's wire
-  spelling — so ``reconcile_capture_frames`` and the analyzer's
-  frame-accounting checks grade the take with the counters always REPORTED
-  (a wired capture never passes on "not evaluated"). Calibration identity
-  rides the existing household-mic stored-reference shape (``{"calibration": {"mode": "stored", ...}}``), so
-  the session's UNCHANGED resolver — including the wrong-mic mismatch guard —
-  turns it into a record; capture banks RAW audio + identity, analysis
-  applies the curve.
+* **The answer**: minted by the ONE kernel
+  (:func:`jasper.audio_measurement.wired_capture.mint_wired_answer`), which
+  every wired take in the product shares. This module supplies only what is
+  host vocabulary: the calibration hint it passes as ``host``, and the bundle
+  the bytes land in.
 
 What is NOT here, on purpose: durable-state writes, the persisted failure
 codes, the session-volume policy, admission, and the position gate are the
@@ -83,14 +75,14 @@ from jasper.active_speaker.crossover_v2.program_transaction import (
     StimulusCaptureError,
 )
 from jasper.audio_measurement.wired_capture import (
+    WIRED_POST_ROLL_S,
+    WIRED_PRE_PLAY_ALLOWANCE_S,
+    WiredCaptureAnswer,
     WiredCaptureError,
     WiredMicDevice,
-    WiredRecorder,
-    build_capture_integrity_report,
-    encode_wav_s32,
-    resolve_wired_mic,
-    scan_zero_runs,
-    select_capture_channel,
+    make_wired_recorder,
+    mint_wired_answer,
+    require_wired_mic,
 )
 from jasper.log_event import log_event
 
@@ -98,12 +90,6 @@ if TYPE_CHECKING:
     from jasper.web.correction_crossover_v2 import PositionGate, V2VolumeHooks
 
 logger = logging.getLogger(__name__)
-
-#: The structured code :class:`WiredMicMissing` carries to the journal and the
-#: refused tap. Deliberately NOT a ``REASON_REGISTRY`` entry: that registry
-#: holds PERSISTED terminal failures the envelope renders, and this refusal
-#: fires before any durable state exists.
-CODE_WIRED_MIC_MISSING = "wired_mic_missing"
 
 #: How often a held begin retries the position gate. The phone re-posts its
 #: deferred ``begin_capture`` every 1.5 s (capture-page wait screen); the
@@ -117,25 +103,6 @@ WIRED_HOLD_POLL_S = 1.5
 #: countdown giving the room a beat between takes; a budget allowance, not a
 #: measurement.
 WIRED_RETRY_SETTLE_S = 3.0
-
-#: Post-roll recorded after the play call returns. Derivation, evidence
-#: named: the composed programs already END with 0.5 s of in-program tail
-#: (``program.DEFAULT_MEASURE_TAIL_S`` / ``DEFAULT_VERIFY_TAIL_S``), and the
-#: play call's return leads the acoustic end by the playback chain's
-#: buffered depth — the same tens-to-hundreds-of-ms, device-dependent lead
-#: ``PHASE_LADDER_START_SKEW_S`` (0.35 s) documents at the start edge. 1.0 s
-#: covers that lead plus decay margin beyond the composed tail. A budget
-#: allowance, not a measurement — the hardware smoke is where the real
-#: play-return-to-silence interval gets measured.
-WIRED_POST_ROLL_S = 1.0
-
-#: Capture-budget allowance for everything BEFORE the program's first sample:
-#: re-admission, the DSP writer lock, and the program-graph load all run
-#: inside ``on_armed`` while the recorder is already rolling. The play seam's
-#: own transport budget (``correction_setup._run_async``'s 60 s default)
-#: bounds setup + program + restore together, so 20 s of setup allowance is
-#: safely above the observed graph-load cost and safely inside that bound.
-WIRED_PRE_PLAY_ALLOWANCE_S = 20.0
 
 #: Program-duration stand-in when a plan carries no entry table (an older
 #: single-capture shape): the analyzer's own "legitimate capture" ceiling
@@ -156,39 +123,17 @@ class _RetakeRequested(Exception):
     """
 
 
-class WiredMicMissing(WiredCaptureError):
-    """A session asked to measure and no mic answered.
-
-    The disclosure as a TYPE, so the host and the suite name one thing rather
-    than matching a sentence. Its message carries the way forward (plug a
-    measurement mic in), because the owner ruling is disclose-and-recommend:
-    this refuses to measure without a microphone, never to let the household
-    measure.
-    """
-
-    code = CODE_WIRED_MIC_MISSING
-
-
 def resolve_v2_wired_mic(
     *,
     proc_asound: str | os.PathLike[str] = "/proc/asound",
 ) -> WiredMicDevice:
     """The measurement mic this session records on, resolved at prepare.
 
-    Wired is THE acoustic-measurement path (see
-    ``docs/adr/0188-wired-first-measurement-relay-parked.md``). Probe-at-use:
-    presence is read fresh from ``/proc/asound`` every time — the mic is
-    plugged in for a measurement, so there is no steady state for a
-    reconciler to own. No mic present raises :class:`WiredMicMissing` rather
-    than measuring on something nobody chose.
+    ``require_wired_mic`` owns the probe and the disclosure
+    (:class:`~jasper.audio_measurement.wired_capture.WiredMicMissing`); this
+    adds the flow's own selection event.
     """
-    device = resolve_wired_mic(proc_asound=proc_asound)
-    if device is None:
-        raise WiredMicMissing(
-            "no measurement microphone is plugged into the speaker — connect "
-            "a registered measurement mic (e.g. miniDSP UMIK-2) and start "
-            "again"
-        )
+    device = require_wired_mic(proc_asound=proc_asound)
     log_event(
         logger,
         "correction.crossover_v2_wired_selected",
@@ -242,129 +187,6 @@ def open_wired_capture(spec: Any, *, device: WiredMicDevice) -> WiredOpened:
         model=device.model_key,
     )
     return WiredOpened(pi_session=session)
-
-
-@dataclass(frozen=True)
-class WiredCaptureAnswer:
-    """The seam's :class:`CaptureAnswer`, minted by the wired source —
-    exactly the contract's four fields, nothing more."""
-
-    wav: bytes
-    device: Mapping[str, Any] | None = None
-    setup: Mapping[str, Any] | None = None
-    capture_integrity: Mapping[str, Any] | None = None
-
-
-def _wired_setup_reference(host: Any) -> Mapping[str, Any] | None:
-    """The mic/cal identity REFERENCE the answer carries (seam contract).
-
-    The wired analog of the phone's one-tap confirm: the household's
-    remembered mic hint (``default_setup_calibration_for_v2`` — the same
-    resolver that feeds the phone's prefill) becomes
-    ``{"calibration": {"mode": "stored", calibration_id, model}}``, which the
-    session's UNCHANGED resolver materializes — including the
-    wrong-mic mismatch guard against this capture's reported device. No
-    resolvable household record ⇒ ``None`` ⇒ the existing
-    annotated-uncalibrated path (WARN, analysis still runs). Cal identity
-    comes from the household record, never from USB serial — a real UMIK-2
-    reports the generic "00000".
-    """
-    try:
-        hint = host.default_setup_calibration_for_v2()
-    except (OSError, RuntimeError, ValueError):
-        log_event(
-            logger,
-            "correction.crossover_v2_wired_setup_hint_failed",
-            level=logging.WARNING,
-        )
-        return None
-    if hint is None or not getattr(hint, "resolvable", False):
-        return None
-    return {
-        "calibration": {
-            "mode": "stored",
-            "calibration_id": str(hint.calibration_id),
-            "model": str(hint.model),
-        }
-    }
-
-
-def _json_safe_dbfs(values: tuple[float, ...]) -> list[float | None]:
-    """Per-channel RMS for the device metadata: rounded, ``None`` for a
-    silent channel (−inf is not JSON)."""
-    import math
-
-    return [
-        round(value, 1) if math.isfinite(value) else None for value in values
-    ]
-
-
-def mint_wired_answer(
-    recording: Any, *, device: WiredMicDevice, host: Any,
-) -> WiredCaptureAnswer:
-    """One recording as the seam's full answer — the ONE minter.
-
-    Channel selection, the zero-run scan, the 32-bit encode, the integrity
-    report in the frame ledger's wire spelling, the device identity, and the
-    household's stored calibration reference. Two callers — the plan walk's
-    consume path and the play seam's capture half — and the fields must agree
-    byte-for-byte between them, because the analyzer grades whichever path
-    delivered the take.
-
-    ``host`` is the late-bound host module (#2662): the calibration hint is
-    host policy, and resolving it at call time keeps a test double patched
-    there honored from this side of the seam.
-    """
-    channel, mono, rms_dbfs = select_capture_channel(recording)
-    zero_count, zero_runs = scan_zero_runs(mono)
-    wav, encoded_frames = encode_wav_s32(
-        mono, sample_rate_hz=recording.sample_rate_hz
-    )
-    report = build_capture_integrity_report(
-        recording,
-        encoded_frames=encoded_frames,
-        zero_run_count=zero_count,
-        zero_runs=zero_runs,
-    )
-    device_meta = {
-        "label": f"{device.model_label} ({device.card_id})",
-        "wired": True,
-        "card": device.card_id,
-        "usb_id": device.usb_id,
-        "model_key": device.model_key,
-        "pcm": device.pcm,
-        "channel_selected": channel,
-        "channel_rms_dbfs": _json_safe_dbfs(rms_dbfs),
-    }
-    return WiredCaptureAnswer(
-        wav=wav,
-        device=device_meta,
-        setup=_wired_setup_reference(host),
-        capture_integrity=report,
-    )
-
-
-def make_wired_recorder(
-    device: WiredMicDevice, *, sample_rate_hz: int, max_capture_s: float,
-) -> WiredRecorder:
-    """One recorder for this microphone, at the rate the program declares.
-
-    The channel count is the mic model's own (``SUPPORTED_MODELS``), which is
-    the one fact about a capture card that is neither on the device record nor
-    derivable from the PCM name. Two callers now — the plan walk and the play
-    seam's capture half — so it is named once rather than opened twice.
-    """
-    from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
-
-    channels = int(
-        SUPPORTED_MODELS.get(device.model_key, {}).get("capture_channels", 2)
-    )
-    return WiredRecorder(
-        device.pcm,
-        sample_rate_hz=sample_rate_hz,
-        channels=channels,
-        max_capture_s=max_capture_s,
-    )
 
 
 @dataclass(frozen=True)
