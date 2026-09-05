@@ -63,7 +63,7 @@ resilience rows and P5's move table); the wake-corpus tooling (`jasper/wake_corp
 Rust daemons (`rust/` — P3/P5/P6: hand `tts.rs`'s duplicate `GainRamp` and the outputd TTS-server
 findings over as suggestions); `jasper/control/` (P3/P4); `jasper/peering/` (P6 deletes its
 mDNS/STATUS/PING half — your `peering_client` extraction stays inside voice files); attached-hardware
-input (#4027); the web UI (#4031). Other stewards merge to `main` concurrently: rebase before every
+input (#4027); the web UI (P11 #4212). Other stewards merge to `main` concurrently: rebase before every
 push, judge every PR by `git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
 
 **The tuning zone is parked, not open.** Its steward stood down with wave 9 on main (close-out: the
@@ -74,7 +74,9 @@ your plan and waits for the owner's tick.
 
 **Sibling lanes.** Eight attribute lanes run over the rest of the tree (P1 #4193 secrets, P2 #4194
 deploy integrity, P3 #4195 resilience, P4 #4197 observability, P5 #4199 structure and god files,
-P6 #4200 right-sizing, P7 #4201 tests, P8 #4202 docs; the index and sequencing are in
+P6 #4200 right-sizing, P7 #4201 tests, P8 #4202 docs), plus two concern lanes beside you (P11
+#4212 the web UI — its Assistant pages sit over your daemon; the hardware-input lane on #4027 —
+its #4205 lands the mic-loss cue in your files); the index and sequencing are in
 `docs/codebase-quality-review-2026-09-05/prompts/README.md`). The rule between a concern lane and
 an attribute lane: the attribute lane owns the convention or guard and may land one repo-wide
 mechanical sweep across your files after telling you on this issue; anything behavioral in your
@@ -146,6 +148,10 @@ Owner decisions 1–6 in the brief's §6 are still open. They are the questions 
 them in front of the owner with the brief's recommendations, and do not act on 2.2, 2.3's
 `for_tests` move, 5.3 or any Wave 6 row before the answer.
 
+Four of the six voice PRs are on `main` (#4186, #4191, #4192, #4206); #4198 (the turn timeline)
+and #4203 (the silent-turn cue) are open and rebase after them. Your Wave 0/1 rows are done when
+those two merge; do not re-open what they carry.
+
 Hardware gates are the owner's: row 0.2 (ten spoken turns, numbers into the ledger) and row 1.4
 (WAN-unplugged boot). Nothing in Wave 3 or Wave 6 starts before 0.2 has numbers. The
 idle-efficiency review (#4139) is the lane with hands on the boxes: its measured baseline is voice
@@ -215,6 +221,11 @@ the brief, and a durable handoff as a GitHub issue. No HANDOFF docs; decisions g
   last time).
 - Subscribe to every PR you open; unsubscribe on merge; remove worktrees after merge; delete any
   routines you create when you stand down.
+- On the **local plan** (the owner's laptop, shared with the ops lane): the GitHub API quota is
+  one per machine, so builder briefs forbid `gh` — the lane session alone polls CI, one slow
+  waiter at a time; `gh run rerun` re-runs the stale merge commit, so rebase and push instead;
+  head branches auto-delete on merge (never pass `--delete-branch`); run only the targeted tests
+  locally and leave the full suite to CI (the doctor stream's #4028 lessons).
 
 ## How to report
 

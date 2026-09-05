@@ -44,6 +44,10 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
 - Issue #3769, last comment — the tuning steward's close-out: what wave 9 landed, what it
   deferred, the wave-10 candidates. The zone is parked (see Territory); this tells you what not to
   re-find.
+- Issue #4028 — the doctor/state stream's brief; its §2.3 is the map of the self-preservation
+  fabric (systemd first responder, `jasper-camilla-recover`, `transport_park`, the outputd
+  failure-reconcile park with no reader, `SystemSupervisor`, the timers, the OOM story). Re-derive
+  at HEAD; it is the closest thing to a resilience inventory the repo has.
 - Issue #4139 and its comment — the idle-efficiency review: the only lane with hands on all three
   boxes (jts.local, jts3, jts4). Its measured numbers, the nine PRs it merged, the tickets it filed
   (#4121–#4124, #4190) and its "leave-alone (measured)" list are facts at HEAD; do not re-propose
@@ -52,7 +56,7 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
 ## Territory
 
 Other lanes own attached-hardware input (#4027: `jasper/audio_hardware/`, `output_hardware.py`,
-`usbsink/`, `accessories/`, udev), the web UI (#4031: `jasper/web/`, `deploy/assets/`, nginx
+`usbsink/`, `accessories/`, udev), the web UI (P11 #4212: `jasper/web/`, `deploy/assets/`, nginx
 confs), and **the voice loop (P9 #4208: `jasper/voice_daemon.py`, `jasper/voice/`, `jasper/cues/`,
 `jasper/tools/`, the top-level wake modules, `jasper-voice.service`, `tests/voice_eval/`)**. Stay
 out of their code unless the owner says otherwise; when your attribute needs a change there, write
@@ -76,9 +80,9 @@ PR #4138 (the wired capture kernel; green, waiting on the owner's hardware null 
 `cli/measure.py` and their tests alone until it merges; and #4031's Phase D is about to cut into
 `active_speaker/commissioning_*` — anything there is coordinated on #4031 before a branch exists.
 
-**Sibling lanes.** Eight sibling sessions run the other lanes (P1 #4193, P2 #4194, P3 #4195,
-P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202, and P9 #4208 the voice loop; the index and
-sequencing are in `docs/codebase-quality-review-2026-09-05/prompts/README.md`). You share `jasper/control/` with
+**Sibling lanes.** Ten sibling sessions run the other lanes (P1 #4193, P2 #4194, P3 #4195,
+P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202, P9 #4208 the voice loop, P11 #4212 the web UI,
+and the hardware-input lane on #4027; the index and sequencing are in `docs/codebase-quality-review-2026-09-05/prompts/README.md`). You share `jasper/control/` with
 **P4 (observability)**: you own `restart_broker.py`, `handlers/system.py`, `deploy/polkit/`, unit
 `Restart=`/`StartLimitAction=` policy, `peering/state.py`, and the clamp paths in
 `volume_coordinator.py`/`camilla.py`; P4 owns the `/state` payload, freshness, `jasper/cli/doctor/`
@@ -161,6 +165,13 @@ Verified at HEAD by the review:
   restart set and noted the restart list duplicates `jasper/local_sources/registry.py` — the same
   derived-set fix as R-003's broker allowlist; do it once. Its measured leave-alone list (warm
   Gemini session, zram at 0.5×, interpreter merges, the always-pacing zero-fill chain) is settled.
+- From the doctor stream (#4028): fan-in's STATUS exposes only cumulative TTS drop counters
+  (`rust/jasper-fanin/src/tts.rs:83-85` `dropped_commands`, `dropped_audio_frames`,
+  `stale_commands_dropped`), so the doctor's `check_fanin_tts_drops` latches — add a `last_drop_ms`
+  age beside them (one Rust PR, P4 consumes it); `jasper-outputd-failure-reconcile` parks outputd
+  with `EX_CONFIG=78` and nothing reads that park — one reader in `jasper/` per ADR-0233, consumed
+  by `/state` and the doctor (P4 lands the rows; you land the writer side if the stamp format
+  changes).
 - Correction bundles have no retention while the sibling subsystem prunes (`cli/doctor/memory.py:
   571-600` warns and says pruning belongs to correction) — an owner-gated tuning-zone row.
 - `active_speaker/staging.py`: a failed metadata write logs and still reports the bundle as staged
@@ -226,6 +237,11 @@ handoff as a GitHub issue. No HANDOFF docs; decisions go to `docs/adr/` (one dec
   source-text pins: retarget or delete, never add.
 - Subscribe to every PR you open; unsubscribe on merge; remove worktrees after merge; delete any
   routines you create when you stand down.
+- On the **local plan** (the owner's laptop, shared with the ops lane): the GitHub API quota is
+  one per machine, so builder briefs forbid `gh` — the lane session alone polls CI, one slow
+  waiter at a time; `gh run rerun` re-runs the stale merge commit, so rebase and push instead;
+  head branches auto-delete on merge (never pass `--delete-branch`); run only the targeted tests
+  locally and leave the full suite to CI (the doctor stream's #4028 lessons).
 
 ## How to report
 

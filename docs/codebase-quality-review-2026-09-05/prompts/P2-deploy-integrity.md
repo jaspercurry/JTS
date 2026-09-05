@@ -52,7 +52,7 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
 ## Territory
 
 Other lanes own attached-hardware input (#4027: `jasper/audio_hardware/`, `output_hardware.py`,
-`usbsink/`, `accessories/`, udev), the web UI (#4031: `jasper/web/`, `deploy/assets/`, nginx
+`usbsink/`, `accessories/`, udev), the web UI (P11 #4212: `jasper/web/`, `deploy/assets/`, nginx
 confs), and **the voice loop (P9 #4208: `jasper/voice_daemon.py`, `jasper/voice/`, `jasper/cues/`,
 `jasper/tools/`, the top-level wake modules, `jasper-voice.service`, `tests/voice_eval/`)**. Stay
 out of their code unless the owner says otherwise; when your attribute needs a change there, write
@@ -76,9 +76,9 @@ PR #4138 (the wired capture kernel; green, waiting on the owner's hardware null 
 `cli/measure.py` and their tests alone until it merges; and #4031's Phase D is about to cut into
 `active_speaker/commissioning_*` — anything there is coordinated on #4031 before a branch exists.
 
-**Sibling lanes.** Eight sibling sessions run the other lanes (P1 #4193, P2 #4194, P3 #4195,
-P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202, and P9 #4208 the voice loop; the index and
-sequencing are in `docs/codebase-quality-review-2026-09-05/prompts/README.md`). You own `scripts/deploy-to-pi.sh`,
+**Sibling lanes.** Ten sibling sessions run the other lanes (P1 #4193, P2 #4194, P3 #4195,
+P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202, P9 #4208 the voice loop, P11 #4212 the web UI,
+and the hardware-input lane on #4027; the index and sequencing are in `docs/codebase-quality-review-2026-09-05/prompts/README.md`). You own `scripts/deploy-to-pi.sh`,
 `deploy/install.sh`, `deploy/lib/install/`, `jasper-deploy-health`, and the CI/branch-protection
 surface; nobody else edits them. Asks land on your issue from **P5** (the `install.sh` STEPS
 table), **P6** (the Pi-side install-lib copies stop shipping; the prebuilt ARM64 bundle; the
@@ -163,7 +163,12 @@ Verified at HEAD by the review (two of them by execution under a stubbed `ssh`/`
   then one PR switches `install.sh` and `deploy-to-pi.sh` to `--core` and deletes
   `deploy/bin/jasper-deploy-health` with its 1,642-line test (non-negotiable tier: adversarial
   review, owner's word). If `--core` becomes a oneshot unit, size it `MemoryMax=96M`,
-  `TimeoutStartSec=60`.
+  `TimeoutStartSec=60`. The stream's first hand-off (#4028) adds the fact that makes the switch
+  non-trivial: the full-profile installer never starts `jasper-control` until the first reboot (at
+  HEAD the only explicit `systemctl restart jasper-control.service` is the low-memory path,
+  `deploy/lib/install/systemd-units.sh:1257`), so the post-install doctor run reads a daemon that is
+  not up — either the installer starts it in both profiles (the same-boot rule the low-memory
+  path already states) or the gate tolerates a `skipped` control row; verify on a spare Pi.
 - From the idle-efficiency review (#4139): **#4190** — `install.sh` runs as a child of the SSH
   session, so the installer's wlan0 `device-reapply` can drop the session and kill the install
   half-applied (seen on jts4; the fix is run-detached-and-poll); **#4123** — install-time reconcile
@@ -232,6 +237,11 @@ handoff as a GitHub issue. No HANDOFF docs; decisions go to `docs/adr/` (one dec
   source-text pins: retarget or delete, never add.
 - Subscribe to every PR you open; unsubscribe on merge; remove worktrees after merge; delete any
   routines you create when you stand down.
+- On the **local plan** (the owner's laptop, shared with the ops lane): the GitHub API quota is
+  one per machine, so builder briefs forbid `gh` — the lane session alone polls CI, one slow
+  waiter at a time; `gh run rerun` re-runs the stale merge commit, so rebase and push instead;
+  head branches auto-delete on merge (never pass `--delete-branch`); run only the targeted tests
+  locally and leave the full suite to CI (the doctor stream's #4028 lessons).
 
 ## How to report
 

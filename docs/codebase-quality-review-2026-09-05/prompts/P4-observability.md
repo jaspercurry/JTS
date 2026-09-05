@@ -44,6 +44,9 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
 - Issue #3769, last comment — the tuning steward's close-out: what wave 9 landed, what it
   deferred, the wave-10 candidates. The zone is parked (see Territory); this tells you what not to
   re-find.
+- Issue #4028 — the doctor/state stream's own brief (ADR-0233's five rules, the three surfaces
+  and their boundaries, the self-preservation fabric map, its open list). It is the best map of
+  `jasper/cli/doctor/`, `/state` and `/system/snapshot` in the repo; re-derive its counts at HEAD.
 - Issue #4139 and its comment — the idle-efficiency review: the only lane with hands on all three
   boxes (jts.local, jts3, jts4). Its measured numbers, the nine PRs it merged, the tickets it filed
   (#4121–#4124, #4190) and its "leave-alone (measured)" list are facts at HEAD; do not re-propose
@@ -52,7 +55,7 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
 ## Territory
 
 Other lanes own attached-hardware input (#4027: `jasper/audio_hardware/`, `output_hardware.py`,
-`usbsink/`, `accessories/`, udev), the web UI (#4031: `jasper/web/`, `deploy/assets/`, nginx
+`usbsink/`, `accessories/`, udev), the web UI (P11 #4212: `jasper/web/`, `deploy/assets/`, nginx
 confs), and **the voice loop (P9 #4208: `jasper/voice_daemon.py`, `jasper/voice/`, `jasper/cues/`,
 `jasper/tools/`, the top-level wake modules, `jasper-voice.service`, `tests/voice_eval/`)**. Stay
 out of their code unless the owner says otherwise; when your attribute needs a change there, write
@@ -76,9 +79,9 @@ PR #4138 (the wired capture kernel; green, waiting on the owner's hardware null 
 `cli/measure.py` and their tests alone until it merges; and #4031's Phase D is about to cut into
 `active_speaker/commissioning_*` — anything there is coordinated on #4031 before a branch exists.
 
-**Sibling lanes.** Eight sibling sessions run the other lanes (P1 #4193, P2 #4194, P3 #4195,
-P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202, and P9 #4208 the voice loop; the index and
-sequencing are in `docs/codebase-quality-review-2026-09-05/prompts/README.md`). You share `jasper/control/` with
+**Sibling lanes.** Ten sibling sessions run the other lanes (P1 #4193, P2 #4194, P3 #4195,
+P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202, P9 #4208 the voice loop, P11 #4212 the web UI,
+and the hardware-input lane on #4027; the index and sequencing are in `docs/codebase-quality-review-2026-09-05/prompts/README.md`). You share `jasper/control/` with
 **P3 (resilience)**: you own the `/state` payload and freshness, `jasper/cli/doctor/`, the
 `log_event`/`EVENTS` conventions, cue-manager instrumentation and the wake-recency detector; P3
 owns `restart_broker.py`, `handlers/system.py`, polkit and unit restart policy. **P1 (secrets)**
@@ -162,9 +165,10 @@ Verified at HEAD by the review:
   `jasper-bluetooth-agent` where the unit is `bt-agent.service`; an undeclared systemd drop-in sat
   on jts.local for ~10 weeks undetected — the drift check should enumerate on-box `*.d/` files the
   repo does not own (agree the deploy half with P2).
-- **Landed by the doctor/state stream since the review** (re-verify each; its last message reads
-  as a hand-off): `/state` carries `STATE_SCHEMA_VERSION = 1` (#4166, "state-contract" — check
-  whether the top-level key-set test came with it), the wifi-guardian key is gone from `/state`
+- **Landed by the doctor/state stream since the review** (re-verify each; its brief is #4028 and
+  its last message reads as a hand-off): `/state` carries `STATE_SCHEMA_VERSION = 1` (#4166,
+  "state-contract", which the stream says pinned the top-level key set and the no-forks rule —
+  find the test before you write another), the wifi-guardian key is gone from `/state`
   (so the per-build `nmcli`/`journalctl` forks row may be closed), `jasper-doctor --core` exists
   (#4177: 12 rows, 4.9 s / 31.8 MB peak on jts4), one ring-stall check (#4167), one meminfo parser
   (#4175), mux rows skipped without systemctl (#4185), the grouping evidence memoized (#4204,
@@ -174,6 +178,23 @@ Verified at HEAD by the review:
   config-error row — `--core` must run config-free. Also measured there: the full doctor (11 s,
   9.6 s CPU) pushes the Zero 2 W into swap, and jts4 reports one non-critical warning the stream
   could not isolate in three passes.
+- **The doctor stream's unfinished queue (#4028, its first hand-off message) — yours now:** the
+  warn→`skipped`/`ok`-with-reason sweep across the informational rows (its count: ~60 rows; land
+  it one module per PR; the status contract and the harness reason codes are
+  `jasper/doctor_contract.py`, the AST pin is `tests/test_doctor_registry.py`); the two non-`/state`
+  functions still inside `control/state_aggregate.py` (`_safe_audio_quality_state:164`,
+  `_augment_source_payload:777`) move beside their handlers in `control/handlers/`; the latching
+  `check_fanin_tts_drops` row reads fan-in's cumulative `dropped_*` counters (`rust/jasper-fanin/
+  src/tts.rs:83-85`), so a drop hours ago warns forever — the fix is a `last_drop_ms` age in fan-in's
+  STATUS, which is P3's Rust row (ask on its issue; you consume it); `jasper-outputd-failure-
+  reconcile`'s park (`EX_CONFIG=78`) still has no reader and no `/state` field; no memory-pressure
+  row though the sampler has `oom_kill` and `mem_psi_some_avg60`; the zram threshold is 50 % in
+  install and 60 % in the doctor. And one deploy fact for the `--core` gate: the stream reports
+  the full-profile installer never starts `jasper-control` until the first reboot (at HEAD the only
+  explicit `systemctl restart jasper-control.service` is the low-memory path,
+  `deploy/lib/install/systemd-units.sh:1257`), so a post-install `--core` run reads a control
+  daemon that is not there — P2 owns the installer fix, your `--core` must say `skipped`, not
+  `fail`, for that case.
 - Doctor rows handed over by the general steward (#4085, round 2, items 2 and 9): #4169 —
   `cli/doctor/audio.py:1418-1424` `check_sound_profile` warns `REASON_SOUND_PROFILE_NOT_ACTIVE`
   while active-leader-bonded because the bake names are absent from `sound/camilla_yaml.py:68-74`
@@ -244,6 +265,11 @@ handoff as a GitHub issue. No HANDOFF docs; decisions go to `docs/adr/` (one dec
   source-text pins: retarget or delete, never add.
 - Subscribe to every PR you open; unsubscribe on merge; remove worktrees after merge; delete any
   routines you create when you stand down.
+- On the **local plan** (the owner's laptop, shared with the ops lane): the GitHub API quota is
+  one per machine, so builder briefs forbid `gh` — the lane session alone polls CI, one slow
+  waiter at a time; `gh run rerun` re-runs the stale merge commit, so rebase and push instead;
+  head branches auto-delete on merge (never pass `--delete-branch`); run only the targeted tests
+  locally and leave the full suite to CI (the doctor stream's #4028 lessons).
 
 ## How to report
 
