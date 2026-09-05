@@ -194,6 +194,8 @@ The audio path spans four of these: `deploy/` (ALSA + units), `rust/` and
 - [docs/audio-paths.md](docs/audio-paths.md) — understand the live audio path.
 - [docs/design-language.md](docs/design-language.md) — use the shared public
   interface language.
+- [docs/web-ia.md](docs/web-ia.md) — place a management page and reuse its
+  shared primitives.
 - [docs/README.md](docs/README.md) — find current references, decisions, plans,
   research, and historical records.
 - [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) — change the

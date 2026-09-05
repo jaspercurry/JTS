@@ -1053,7 +1053,7 @@ id = "web-design-system"
 title = "Management UI design system + static asset delivery"
 safety = "safe-ci"
 code = [
-  "jasper/web/_common.py",
+  "jasper/web/*.py",
   "deploy/index.html",
   "deploy/assets/app.css",
   "deploy/assets/*/*.css",
@@ -1062,10 +1062,12 @@ code = [
 ]
 docs = [
   "docs/design-language.md",
+  "docs/web-ia.md",
 ]
 requires_docs_when = [
   "The shared page shell (canonical_page), the design tokens or shared components in app.css, the static ES-module delivery convention, or the /assets static-asset routing changes.",
   "A craft rule changes — the type ladder, the text ramp, depth, radii, touch targets, or motion — or a rule gains/loses a known offender.",
+  "A page's URL, its landing/hub row label, its parent, or a single-owner shared primitive changes.",
 ]
 verification = [
   "pytest tests/test_web_common.py tests/test_web_design_system.py tests/test_web_wizard_conventions.py",
