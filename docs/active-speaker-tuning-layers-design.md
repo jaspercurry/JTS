@@ -112,12 +112,14 @@ visibly.
     become a model's judgement call. The prescription *policy* is a
     pluggable seam — see
     ["The prescriber seam"](#the-prescriber-seam).
-12. **Sequencing precondition for any prescriber policy (satisfied):**
-    upstream truth (decisions 8–9, so the fit band and the protection
-    posture derive from one honest number), then the blend-region contract
-    (decision 10), then hardware proof that a blend-region dip is
-    correctable at all. Prescriber policy is only worth deciding once all
-    three hold.
+12. **Sequencing precondition for any prescriber policy:** upstream truth
+    (decisions 8–9, so the fit band and the protection posture derive from
+    one honest number), then the blend-region contract (decision 10), then
+    hardware proof that a blend-region dip is correctable at all.
+    Prescriber policy is only worth deciding once all three hold — **the
+    third has been exercised and did not resolve the way it was written
+    to: the blend region did not measure correctable through that stage as
+    it stands** (see "The prescriber seam").
 13. **Two capture sources, both first-class.** The commissioning flow
     supports a microphone plugged directly into the Pi — the Pi plays and
     records on one clock, which removes the relay/upload/cross-device-desync
@@ -284,9 +286,11 @@ runs AFTER the flattening peaking loop:
   the fit band reaches the ceiling region (`fit_hi ≥ knee`) — woofers/mids
   fall out with no per-role branch.
 - **Repeat-agreement gate (objective, replaces judgment).** Per-bin spread
-  across the capture's repeats must stay under a tier tolerance, else the
-  stage is suppressed (`repeat_disagreement`); fewer than 2 repeats →
-  `insufficient_repeats`.
+  across the capture's repeats must stay under 1.0 dB below 10 kHz / 2.0 dB
+  at or above 10 kHz (`HF_AGREEMENT_LIMIT_LOW_DB` / `_HIGH_DB`, split at
+  `_HF_AGREEMENT_TIER_SPLIT_HZ` — a *frequency* tier, distinct from the
+  mic-trust tier above), else the stage is suppressed
+  (`repeat_disagreement`); fewer than 2 repeats → `insufficient_repeats`.
 - **Class-blind sizing (measured inverse).** C(f) = max(0, target − working)
   over [onset, ceiling], rescaled to `spend = min(measured deficit, remaining
   budget)`. Identical for two hold-class drivers on the same curve — the
@@ -300,9 +304,10 @@ runs AFTER the flattening peaking loop:
   level the branches back, raising the top octave RELATIVELY — the acoustic
   lift with cut-only (hardware-safe) filters. A fit-quality gate suppresses a
   mis-shaped correction. The shelf's own gain is CLAMPED at the 12 dB
-  per-filter cut cap (decision 4) — a hard per-filter invariant that the
-  larger total budget below may exceed; when spend is deeper, the peaking
-  residual absorbs the remainder.
+  per-filter CUT cap (`PER_FILTER_CUT_CAP_DB`, "cuts are generous" above,
+  distinct from decision 4's boost cap) — a hard per-filter invariant that
+  the larger total budget below may exceed; when spend is deeper, the
+  peaking residual absorbs the remainder.
 - **Plateau vs taper by declared type — the class's ONLY authority.** Above
   the ceiling nothing is measurable, so correction must not RISE.
   `HF_CONTINUATION_POLICY`: **hold** (compression horn, soft/beryllium/diamond
@@ -348,11 +353,11 @@ runs AFTER the flattening peaking loop:
 - **Guard.** The wild-trim guard in `crossover_v2.intervention.decide_trim`
   ([crossover_v2_flow.py](../jasper/active_speaker/crossover_v2_flow.py))
   measures the ripple scan's drift from the give-back anchor and falls back
-  to the anchored pair — never raw + emitted filters — beyond that drift
-  bound. The anchor is measured give-back, not a prediction, so only the
-  scan can drift. Magnitude protection lives in the fit engine's structural
-  caps (per-filter 12 dB, total budget, realization tolerance) plus the
-  VERIFY gate.
+  to the anchored pair — never raw + emitted filters — beyond ±6 dB
+  (`LINEARIZATION_TRIM_SANITY_MARGIN_DB`). The anchor is measured give-back,
+  not a prediction, so only the scan can drift. Magnitude protection lives
+  in the fit engine's structural caps (per-filter 12 dB, total budget,
+  realization tolerance) plus the VERIFY gate.
 
 Disclosure: octave centers above the ceiling report
 `envelope_beyond_measurement_confidence`; beyond the ceiling the lift is
@@ -417,9 +422,11 @@ The contract above is deliberately defined without saying who prescribes.
   [`tuning-master-plan.md`](tuning-master-plan.md) is the planning authority
   for the LLM-prescriber shape.
 
-The open question is not *who prescribes* — both exist — but *what the
-prescriber is allowed to shape* and *when it may act at all*, which is
-stage **P3** of
+Both were run against the blend region on hardware; what that series did
+*not* produce is decision 12's third precondition — **the blend region did
+not measure correctable through that stage as it stands**. So the open
+question is not *who prescribes* — both exist — but *what the prescriber is
+allowed to shape* and *when it may act at all*, which is stage **P3** of
 [the linearization pipeline](#the-linearization-pipeline--seed--crossover-science--eq).
 
 ## Measurement Program v2 — the capture schema
@@ -682,12 +689,14 @@ to compensate.
    capture carrying a phase error twice the whole budget passes the gate
    clean. The fix-shape is a sharper slip estimator on the existing capture
    path, explicitly **not** a new capture mode and **not** branch muting.
-2. **Vertical polar capability — MISSING.** The crossover's primary artifact
-   is **vertical** lobing, and this rig measures horizontal angles only — the
-   measurement program samples zero vertical offsets, the household
-   string-and-protractor method does not generalize to elevation, and the lab
-   arm's elevation capability is undetermined. P2 is the consumer that turns
-   that gap from tidy-later into blocking.
+2. **Vertical polar capability for the P2 search — MISSING.** The
+   crossover's primary artifact is **vertical** lobing. The shipped
+   `baseline` program's vertical poses (master-plan's "Measurement program
+   constants") feed driver linearization, not a crossover-tuning search;
+   P2's own angle-capture route has no dedicated vertical-angle walk, the
+   household string-and-protractor method does not generalize to elevation,
+   and the lab arm's elevation capability is undetermined. P2 is the
+   consumer that turns that gap from tidy-later into blocking.
 3. **The forward model — EXISTS** (`crossover_v2/forward_model.py`:
    `SummationCandidate` / `BranchPair` / `predict_sum`) as offline
    **simulated evaluation**: corners declared by the operator, and the
@@ -695,15 +704,19 @@ to compensate.
    cost. It has no ranking/optimization search over it — it needs an
    objective in the grade's own currency and a delay axis graded against
    measurement, neither of which exist.
-4. **A Stage-0 timing acceptance test — MISSING.** Pass bar: relative-phase
-   alignment residual ≤ 20 µs (3σ) — the ~15° at 2 kHz that a ±0.5 dB
-   summation prediction near Fc can absorb. No implementation of that test
-   exists in the tree, and the bar sits at the same order as the per-role
-   integer-sample alignment quantization on a 48 kHz chain (±20.833 µs) — a
-   quantization floor this close to the acceptance bar can consume the whole
-   budget before the timing pilot's own estimator contributes anything.
-   Nothing downstream should be built until the test passes on a
-   de-quantized measurement.
+4. **A Stage-0 timing acceptance test — MISSING, and the bar is not
+   currently cleared.** Pass bar: relative-phase alignment residual ≤ 20 µs
+   (3σ) — the ~15° at 2 kHz that a ±0.5 dB summation prediction near Fc can
+   absorb. No implementation of that test exists in the tree. Measured
+   cross-capture stability came in at sd 7.33 µs (worst 14.51 µs across 24
+   same-angle pairs): 3×7.33 = 22.0 µs, above the 20 µs bar before the
+   timing pilot's own estimator has contributed anything — though that
+   7.33 µs sits at the integer-sample quantization floor
+   (±20.833 µs on a 48 kHz chain), so it measures the quantization as much
+   as the chain, and the chain's true variance is unresolved until the
+   quantization is removed. That is why nothing downstream should be built
+   until the test passes on a de-quantized measurement — the bar is not
+   demonstrably clear today.
 
 ### Stage P3 — EQ the minimum-phase residue
 
@@ -712,11 +725,10 @@ decisions — the fitting engine, the safety clamps and their bounds, the pooled
 grading views, the predict-apply-remeasure-rollback protocol, and both
 prescribers, all of which have run on hardware. What does not ship is the part
 that decides: taking **"is there code in the tree that makes this rule's
-decision?"** as the test, **two of the six rules below fail it outright and
-three more pass only on the prescribed path** (rule 6 is a review discipline
-rather than code at all), and the stage's *scope* is narrower than this ruling
-requires. The per-rule table at the end of this stage makes that count
-reconstructable. Read "partially" strictly.
+decision?"** as the test, most of the six rules below fail it outright or
+pass only on the prescribed path — each rule's own **Status** line says
+which — and the stage's *scope* is narrower than this ruling requires. Read
+"partially" strictly.
 
 **When it runs.** Only after P2 freezes the crossover — not before, not
 alongside.
@@ -761,11 +773,15 @@ and it is unbuilt.
 2. **Match filter width to feature width.** A filter's Q should follow a
    feature's own measured width, not a fixed clamp — a filter much wider
    than its feature under-corrects the centre while damaging already-good
-   neighbours. **Status: not built.** The prescriber's width bound is a
-   single scalar, `BLEND_FILTER_Q = 2.0` in
-   [`blend_correction.py`](../jasper/active_speaker/crossover_v2/blend_correction.py),
-   applied to every feature regardless of its measured width; a banked
-   feature's `measured_q` is reported to a prescriber in the packet's
+   neighbours. **Status: not built, from a feature's width.** The bound the
+   prescribers actually apply is sign-split, not width-matched:
+   `blend_prescription.max_q_for_gain` and
+   `driver_prescription.driver_max_q_for_gain` give a BOOST a policy ceiling
+   (`BLEND_FILTER_Q` = 2.0 for the blend class, `DRIVER_MAX_BOOST_Q` = 8.0
+   for per-driver) and give a CUT only the instrument-fidelity ceiling
+   `EVALUABLE_Q_MAX` — no real width policy at all. `blend_correction.py:95`'s
+   `BLEND_FILTER_Q = 2.0` is one input to that split, not the bound itself. A
+   banked feature's `measured_q` is reported to a prescriber in the packet's
    classification block, but nothing in the tree chooses a Q from it.
 3. **Correct in the branch that owns the defect.** A per-driver defect gets
    a per-driver filter in that branch — Layer 1a's existing per-role stage

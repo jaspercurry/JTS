@@ -106,7 +106,7 @@ method, if adopted, is another program regime.
 | Measurement programs | named, versioned pose lists as data (`baseline`, `tournament`, `verify`, `spot`) | LLM selects a program + bounded params via a staged request (generalizing the `angle_capture` request spool); it never invents free-form geometry. Arm and guided human are interchangeable providers behind `capture_source` |
 | Retention | the bank | mic WAV + stimulus are **evidence**, both flows (room's `sweep_meta` regenerates its stimulus deterministically — equivalent). IR and complex TF are **derivable caches**, prunable. Ring eviction never crosses an active round's boundary; budgets stated per store |
 | Analysis kernel | `jasper/audio_measurement/` | owns the math and the policies (smoothing widths, arrival window, σ definitions — one owner per policy). Imports neither flow |
-| Evidence | `evidence_packet.build_crossover_evidence_packet` | a **computed view** over the bank, schema-versioned; consumers rebuild it, nothing reads a stale packet file. The classification block carries both the 7-key `FeatureVerdict` gate-facing view and the classifier artifact's full `lab_rows`, side by side. Every published uncertainty field labels itself **random or systematic** — the two must never pool. Where the evidence cannot separate them, the field says so under `unseparated` and names what would, never being filed as a kind it does not have |
+| Evidence | `evidence_packet.build_crossover_evidence_packet` | a **computed view** over the bank, schema-versioned; consumers rebuild it, nothing reads a stale packet file. The classification block carries both the 7-key `FeatureVerdict` gate-facing view and the classifier artifact's full `lab_rows`, side by side (`_classification_block`'s returned dict carries both `"verdicts"` and `"lab_rows"` keys). Every published uncertainty field labels itself **random or systematic** — the two must never pool. Where the evidence cannot separate them, the field says so under `unseparated` and names what would, never being filed as a kind it does not have |
 | Mechanism vocabulary | one taxonomy, joined in the per-feature record (not yet built) | `jasper/attribution`'s mechanism ids + fix classes are meant to become the registered vocabulary of the per-feature evidence record, joined with the classifier's classifications and the envelope's depth reasons. Detectors beyond the two shipped discriminators (min-phase/gate ladder, position-invariance) are **not built** — mechanism inference over the record is the LLM's job |
 | Prescription doors + spool | `driver_prescription` / `blend_prescription` / `alignment_prescription` / `topology_prescription` + `prescription_spool` | all four envelopes versioned; refusal vocabularies converge to the hard-stop list; spool stays single-slot last-wins (logged) |
 | Activation / apply | `program_playback.play_program` / `handle_v2_apply` | invariant 5 |
@@ -121,14 +121,14 @@ renumber.
 | # | Ruling | Disposition notes |
 |---|---|---|
 | R1 | Delete the hunt: `crossover_v2/{search,objective,candidate_space}.py`, `fc_sweep`'s sweep half, `fc_selector` + its live recommendation surface. Keep `forward_model` (simulated evaluation). | All deleted; `resolve_fc_search_band` (a carve-out of the same hunt) is deleted too. `forward_model.py` survives as offline simulated evaluation with no ranking/optimization search over it. |
-| R2 | Filter vocabulary: entry-time validation now; **Butterworth support is funded work in this plan**, scoped to its true blast radius. | Blast radius: `branch_chain.CrossoverSection` gains a family tag and `crossover_response_db` / `crossover_response_complex` become family-aware (the headroom ledger bottoms out there); `camilla_emit.emit_linkwitz_riley` (the emitter itself); `branch_peak._MODELLED_COMBO_TYPES` (closed allowlist on the headroom path); `graph_safety.output_highpass_protected` plus its sibling predicates (`protection_requirement_present`, `tweeter_guard_present`, `sub_guard_present`, `sub_audible_guard_present`, `mains_highpass_present`) that match the `LinkwitzRiley*` literals; `runtime_contract`'s four literal sites and its `SUPPORTED_LR_ORDERS` reads; `profile.SUPPORTED_CROSSOVER_TYPES`/`SUPPORTED_LR_ORDERS`; `staging._normalise_filter_type`/`_slope_to_lr_order`; `crossover_declaration` comparison. Not yet built. |
+| R2 | Filter vocabulary: entry-time validation now; **Butterworth support is funded work in this plan**, scoped to its true blast radius. | Blast radius (indicative, not exhaustive — verify against the tree before scoping the work): `branch_chain.CrossoverSection` gains a family tag and `crossover_response_db` / `crossover_response_complex` become family-aware (the headroom ledger bottoms out there); `camilla_emit.emit_linkwitz_riley` (the emitter itself); `branch_peak._MODELLED_COMBO_TYPES` (closed allowlist on the headroom path); `graph_safety.output_highpass_protected` plus its sibling predicates (`protection_requirement_present`, `tweeter_guard_present`, `sub_guard_present`, `sub_audible_guard_present`, `mains_highpass_present`) that match the `LinkwitzRiley*` literals; `runtime_contract`'s four literal sites and its `SUPPORTED_LR_ORDERS` reads; `profile.SUPPORTED_CROSSOVER_TYPES`/`SUPPORTED_LR_ORDERS`; `staging._normalise_filter_type`/`_slope_to_lr_order`; `crossover_declaration` comparison. Not yet built. |
 | R3 | One consolidated free-text notes field (driver notes fold in; guided placeholder bullets). Quantitative fields must compile or gate safety; fields with neither sink are deleted. | Prose is quarantined per invariant 8. The research intake's validated JSON output (safety facts, prefills) is data, not prose — it persists in the draft and rides in the packet's declarations. |
 | R4 | LLM operator v1 = cloud agent over SSH. No embedded-advisor UX. Room's embedded tuning-LLM gets no new investment until Loop C re-enters. | The commissioning copy-paste research flow stays as-is. |
 | R5 | Division of labor per invariants 3–4. | A predicted-vs-predicted veto (correction that measurement predicts is not an improvement) is not yet built. |
 | R6 | Program menu + bounded LLM selection; provider orthogonality. | No identity-schema change needed (see substrate table). |
 | R7 | Tournament mechanics: harden `play_program` (prove-at-quiet-floor, read-back proof, shielded restore), compose-without-apply, expected-delta banking, candidate cycle per pose, N-candidate comparator. | **Same-corner contract:** candidates in a round hold the declared corner (Fc, family, slope, topology) fixed and may vary linearization EQ, trim, delay, polarity. This preserves the excitation-safety premise (permitted bands are derived from the graph's crossover high-passes) and matches `candidate_bank`'s republish gate. A future corner-varying candidate type must re-derive the permitted band per candidate. `play_program`'s prove-at-quiet-floor/read-back/shielded-restore hardening is not yet built. |
 | R8 | Boost caps widen: per-filter **12 dB** and composed **12 dB**, with `MAX_SPL_SPEND_BOUND_DB` re-proved at **13 dB** (composed cap + `branch_chain.HEADROOM_MARGIN_DB` = 1.0). | This overturns the prior `driver_prescription` ruling ("a prescription has no such prediction") on its own terms: the pre-registered expected delta supplies exactly that closed-loop prediction. The composed number is policy — the fit engine has no composed cap to inherit (`PER_FILTER_BOOST_CAP_DB` is a realization bound; total boost is deliberately unbounded there). The binding protections are unchanged: envelope per-bin depth (zero in measured nulls), realized-peak headroom charging, limiters, excitation safety plan, and the live adoption guard — a boosted intervention fails closed when the evidence is untrusted (`ADOPTION_UNPROVEN_BOOST`). Blend's `BOOST_ROUTE_UNAVAILABLE` stays for its two recorded reasons (blend is not a headroom term; a summed capture cannot attribute a deficit to a driver). |
-| R9 | Retention per the substrate table. | The banked-solo complex-TF loader feeding `forward_model`, plus cache policy + budgets, is the genuinely new work. A lateral pose banks its own magnitude AND phase (`spatial.pose_curve_record`), so the loader reads the bank instead of re-deriving from WAV + stimulus; `round_views.verify_pose_curve` reads the round's banked VERIFY curve directly. |
+| R9 | Retention per the substrate table. | The banked-solo complex-TF loader feeding `forward_model` (`load_branch_pair`), plus cache policy + budgets, was the genuinely new work — it EXISTS. A lateral pose banks its own magnitude AND phase (`spatial.pose_curve_record`), so the loader reads the bank instead of re-deriving from WAV + stimulus; `round_views.verify_pose_curve` reads the round's banked VERIFY curve directly. |
 | R10 | Evidence enrichment + the classifier/envelope/attribution join in one per-feature record; the classifier stays decoupled from the fit engine. | The packet's own `not_evaluated` rows (angle, `first_reflection_ms`, harmonics) are the spec. The join adopts one mechanism vocabulary (substrate table); not yet built. |
 | R11 | Sequencing = artifact-dependency refusals, not a workflow engine. Runbook + one orientation verb. | The orientation verb reads the **same builders the doors read** — never a second tree-walker. |
 | R12 | Legibility pass ("solo engineer" test): dead code out, enumerations honest, one artifact-kind vocabulary, one vocabulary per question. | Kind namespacing applies to new writes with a tolerant reader — no bundle migration. |
@@ -151,20 +151,27 @@ each round, per the "code computes, the LLM judges" division of labor
   port, when vented). Repeats: ×4 at the 0° anchor pose, ×1 at every other
   pose, ×8–16 for the nearfield captures
   (`_BASELINE_FULL_POSES`, `ANCHOR_REPEATS` in `measurement_programs.py`).
-  `jasper-angle-capture stage --program baseline` stages them.
+  **The vertical poses are live**, and `jasper-angle-capture stage --program
+  baseline` stages them.
 - **Drive level is anchor-relative, never an absolute program constant.**
   The baseline level is the ratified measurement anchor — 75–80 dB SPL at
   the microphone, seeded from the seat-level reference
   (`DEFAULT_TARGET_DB_SPL` = 77.5 dB SPL) — expressed as `level_re_anchor =
   0`. The research memo's 86 dB industry convention is noted and **rejected
   as an absolute**: it exceeds the declared `max_commissioning_level_db_spl`
-  ceiling (85 on every shipped preset, which is also the schema cap), which
-  sits on the doctrine's closed hard-stop list. Absolute SPL anchoring uses
-  the mic's parsed sensitivity (`calibration.parse_calibration_sensitivity`).
+  ceiling (85 on every shipped preset, which is also the schema's top —
+  the schema validates both `initial_sweep_level_db_spl` and
+  `max_commissioning_level_db_spl` into 45–85 dB SPL), which sits on the
+  doctrine's closed hard-stop list. Absolute SPL anchoring uses the mic's
+  parsed sensitivity (`calibration.parse_calibration_sensitivity`).
 - **Escalation [heuristic]** (the second level, on anomaly): anchor + 10 dB
   where the preset's declared ceiling permits, otherwise the largest
   separation the ceiling allows, with the shrunken separation disclosed in
-  the evidence. `SafetyEnvelope.escalation_step_db` is a *different*,
+  the evidence. Both shipped presets declare 85 — the schema's own top — so
+  for them raising the ceiling is already spent as a lever, and a shrunken
+  separation is disclosed rather than bought with a higher stop; a
+  household preset declaring less than 85 keeps that lever within the same
+  45–85 range. `SafetyEnvelope.escalation_step_db` is a *different*,
   unrelated schema field (a preview-preset construction knob) — do not read
   it as this rule's implementation. `delta_probe`'s commanded-amount
   regression remains the primary compression detector and needs no second
@@ -312,9 +319,11 @@ are gone, so the file map carries no rows for them to amend.
   thresholds from measured reality. Two additional customers: the
   round-evidence constants `MEASURED_BENEFIT_MARGIN_DB` (0.5) and
   `ITERATION_PLATEAU_DB` (0.25), both self-described assumptions awaiting
-  exactly this study, reconcile against E2's numbers. Its durable home is
-  the banked repeat floor: `jasper-round-views repeat-floor <repeat rounds>
-  --out PATH` writes the record; place that file on the speaker at
+  exactly this study, reconcile against E2's numbers. **Has run** on at
+  least one rig, in-band σ_repeat 0.03–0.17 dB at a fixed pose — well under
+  both constants above. Its durable home is the banked repeat floor:
+  `jasper-round-views repeat-floor <repeat rounds> --out PATH` writes the
+  record; place that file on the speaker at
   `/var/lib/jasper/active_speaker_repeat_floor.json`, from which
   `bank-crossover-round.sh` pulls it beside every later round as
   `repeat-floor.json`. The packet's `in_capture_repeat_floor` reads it and
