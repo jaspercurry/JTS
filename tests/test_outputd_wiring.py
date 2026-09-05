@@ -231,7 +231,7 @@ def _amixer_double(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def _start_monitor(
-    tmp_path: Path, bin_dir: Path, board: dict[str, str]
+    tmp_path: Path, bin_dir: Path, board: dict[str, str], *, card: str = "auto"
 ) -> tuple[subprocess.Popen[bytes], Path]:
     """The drift monitor plus its journal, reading `board` through the
     classifier's own seams."""
@@ -241,7 +241,7 @@ def _start_monitor(
             [
                 "/bin/bash",
                 str(REPO / "deploy" / "bin" / "jasper-headphone-monitor"),
-                "auto", "Headphone",
+                card, "Headphone",
             ],
             cwd=REPO,
             env={
@@ -312,6 +312,30 @@ def test_the_drift_monitor_pins_every_apple_card_the_classifier_names(tmp_path):
     monitor, _ = _start_monitor(tmp_path, bin_dir, _dual_apple_cards(tmp_path))
     try:
         _await(monitor, log, _BOTH_APPLE_PINS)
+    finally:
+        monitor.kill()
+        monitor.wait()
+
+
+def test_the_drift_monitor_trusts_an_explicit_configured_card(tmp_path):
+    """A non-`auto` argument is an operator override (ADR-0235 R2 carries this
+    branch forward from the deleted `resolve_cards`): the monitor pins that
+    card directly and never asks the classifier, so no Python is needed."""
+    bin_dir, log = _amixer_double(tmp_path)
+    empty = tmp_path / "sys" / "class" / "sound"
+    empty.mkdir(parents=True)
+    (tmp_path / "proc" / "asound").mkdir(parents=True)
+    monitor, _ = _start_monitor(
+        tmp_path,
+        bin_dir,
+        {
+            "JASPER_SYS_CLASS_SOUND": str(empty),
+            "JASPER_PROC_ASOUND": str(tmp_path / "proc" / "asound"),
+        },
+        card="Dongle_1",
+    )
+    try:
+        _await(monitor, log, ("-c Dongle_1 sset Headphone 100% unmute",))
     finally:
         monitor.kill()
         monitor.wait()
