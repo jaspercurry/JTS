@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ._logging import configure_verbose_logging
-from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE
+from ._refusal import EXIT_OK as EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, answered, failed
 
 #: Where this door banks one JSON row per played coordinate, beside the
 #: bundle it measured. ``jasper-round-views delay-confirm`` grades what lands
@@ -53,6 +53,15 @@ REFUSE_CAPTURE_FAILED = "null_confirm_capture_failed"
 REFUSE_GRAPH_LOST = "null_confirm_graph_lost"
 REFUSE_ISOLATION_LOST = "null_confirm_isolation_lost"
 REFUSE_VOLUME_LOST = "null_confirm_volume_lost"
+
+#: One slug for every ``CrossoverV2Refused``: the applied profile could not
+#: answer an input, and its own sentence rides in ``detail``.
+REFUSE_BOX_NOT_READY = "null_confirm_box_not_ready"
+#: The two UNREADABLE inputs, which are faults rather than refusals: a
+#: coordinate off the grid the proposal was computed on, and an unreadable
+#: state file.
+REFUSE_DELAY_OFF_GRID = "null_confirm_delay_off_grid"
+REFUSE_STATE_UNREADABLE = "null_confirm_state_unreadable"
 
 POLARITY_BOTH = "both"
 POLARITY_KEEP = "keep"
@@ -587,8 +596,7 @@ async def _run(args: argparse.Namespace) -> int:
     work_dir = Path(args.bundle_dir) if args.bundle_dir else Path.cwd()
     rows_dir = work_dir / NULL_RUNS_DIR
 
-    written: list[dict[str, Any]] = []
-    banked: list[str] = []
+    written: list[tuple[str, dict[str, Any]]] = []
     mid_run = _mid_run_failures()
 
     def _bank(candidate: Any, inverted: bool, fingerprint: str, **outcome) -> None:
@@ -609,9 +617,33 @@ async def _run(args: argparse.Namespace) -> int:
             graph_fingerprint=fingerprint,
             **outcome,
         )
-        banked.append(_write_row(rows_dir, row).name)
-        written.append(row)
+        written.append((_write_row(rows_dir, row).name, row))
         print(_line(row), file=sys.stderr)
+
+    def _answer() -> dict[str, Any]:
+        """The ask and one depth per coordinate, however the run ended.
+
+        The banked rows under ``out`` are the depth on demand: repeating one
+        here would put a whole grid's shoulders and trims on stdout.
+        """
+        return {
+            "fc_hz": fc_hz,
+            "position_deg": args.position,
+            "delays_us": list(delays_us),
+            "out": str(rows_dir),
+            "rows": [
+                {
+                    "row": name,
+                    "delay_us": row["delay_us"],
+                    "polarity": row["polarity"],
+                    "status": row["status"],
+                    "depth_db": row["depth_db"],
+                    **({"reason": row["reason"]}
+                       if row["status"] == "refused" else {}),
+                }
+                for name, row in written
+            ],
+        }
 
     try:
         program, plan, gain_db = _compose(context, fc_hz)
@@ -623,9 +655,7 @@ async def _run(args: argparse.Namespace) -> int:
             spec.dsp_candidate(0.0), False, "",
             refusal=NullDoorRefused(exc.reason, str(exc)),
         )
-        print(json.dumps({"status": "refused", "rows": written}, indent=2,
-                         sort_keys=True))
-        return EXIT_REFUSED
+        return failed(EXIT_REFUSED, exc.reason, _answer())
 
     coordinates = _coordinates(spec, args, delays_us)
     print(
@@ -699,16 +729,28 @@ async def _run(args: argparse.Namespace) -> int:
                 # already on disk; a traceback would exit with no JSON while
                 # those rows sit in null_runs/ unnamed (#3393 B4).
                 raise NullRunInterrupted(
-                    _mid_run_reason(mid_run, exc), str(exc), banked,
+                    _mid_run_reason(mid_run, exc), str(exc),
+                    [name for name, _row in written],
                 ) from exc
     except SessionGraphError as exc:
         # `_give_back` can raise this OUTSIDE the loop's own catch: a clean
-        # walk whose door exit failed to put the entry graph back. `banked`
+        # walk whose door exit failed to put the entry graph back. `written`
         # already holds every row this walk earned.
-        raise NullRunInterrupted(REFUSE_GRAPH_LOST, str(exc), banked) from exc
+        raise NullRunInterrupted(
+            REFUSE_GRAPH_LOST, str(exc), [name for name, _row in written],
+        ) from exc
 
-    print(json.dumps({"status": "banked", "rows": written}, indent=2, sort_keys=True))
-    return EXIT_OK if all(r["status"] == "measured" for r in written) else EXIT_REFUSED
+    unmeasured = [row for _name, row in written if row["status"] != "measured"]
+    if unmeasured:
+        # The row's OWN reason: the coordinate that could not be read decided
+        # it, and a slug spelled here would be a second opinion about which.
+        return failed(EXIT_REFUSED, unmeasured[0]["reason"], _answer())
+    return answered({
+        **_answer(),
+        "next": (
+            f"jasper-round-views delay-confirm {work_dir} --fc-hz {fc_hz:g}"
+        ),
+    })
 
 
 def _protection_sections(context: Any) -> Mapping[str, Any] | None:
@@ -789,10 +831,9 @@ def build_parser() -> argparse.ArgumentParser:
             "  stdout first, then a one-line human gloss on stderr; a\n"
             "  refusal is never silent on either channel.\n"
             "  0  EXIT_OK -- every coordinate played and banked\n"
-            "  1  EXIT_REFUSED -- interrupted mid-walk (JSON status\n"
-            "     \"partial\", with however many rows it banked before\n"
-            "     stopping), the measurement door refused, or the\n"
-            "     capture/mic failed\n"
+            "  1  EXIT_REFUSED -- a coordinate could not be read, the walk\n"
+            "     was interrupted (the rows it banked ride in detail), the\n"
+            "     measurement door refused, or the capture/mic failed\n"
             "  2  EXIT_UNREADABLE -- a --delays coordinate off the proposed\n"
             "     grid, or the state file could not be read"
         ),
@@ -800,6 +841,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
         "--bundle-dir",
+        metavar="<round-dir>",
         help="a commissioning bundle directory; rows land in <bundle>/null_runs/ "
              "and the default --delays are read from its banked curves",
     )
@@ -863,6 +905,7 @@ def _delay_list(value: str) -> list[float]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     from jasper.active_speaker.crossover_v2.door import MeasurementDoorRefused
+    from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
     from jasper.audio_measurement.null_walk import NullWalkError
     from jasper.audio_measurement.wired_capture import WiredCaptureError
 
@@ -881,44 +924,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     except NullRunInterrupted as exc:
         # k rows are on disk and named, so the operator gets both halves: why
         # the run stopped, and which coordinates it did bank.
-        print(json.dumps({
-            "status": "partial",
+        return failed(EXIT_REFUSED, "interrupted", {
             "reason": exc.reason,
             "detail": exc.detail,
             "banked_row_ids": exc.banked,
-        }, indent=2, sort_keys=True))
-        print(
-            f"interrupted ({exc.reason}) with {len(exc.banked)} row(s) banked: "
-            f"{exc.detail}",
-            file=sys.stderr,
-        )
-        return EXIT_REFUSED
+        })
     except MeasurementDoorRefused as exc:
-        print(json.dumps({
-            "status": "refused",
-            "reason": getattr(exc, "reason", "measurement_door_refused"),
-            "detail": getattr(exc, "detail", str(exc)),
-        }, indent=2, sort_keys=True))
-        print(f"refused: {exc}", file=sys.stderr)
-        return EXIT_REFUSED
+        return failed(EXIT_REFUSED, exc.reason, exc.detail)
+    except CrossoverV2Refused as exc:
+        # The applied profile could not answer an input, which lands before
+        # anything is composed or held.
+        return failed(EXIT_REFUSED, REFUSE_BOX_NOT_READY, str(exc))
     except WiredCaptureError as exc:
         # The mic half, landing BEFORE the door — no rows exist, so this is a
-        # refusal rather than a partial. Every exit from this door speaks JSON.
-        print(json.dumps({
-            "status": "refused",
-            "reason": REFUSE_CAPTURE_FAILED,
-            "detail": str(exc),
-        }, indent=2, sort_keys=True))
-        print(f"refused ({REFUSE_CAPTURE_FAILED}): {exc}", file=sys.stderr)
-        return EXIT_REFUSED
+        # refusal rather than an interrupted walk.
+        return failed(EXIT_REFUSED, REFUSE_CAPTURE_FAILED, str(exc))
     except NullWalkError as exc:
         # A coordinate off the shared walk's grid, which is the grid the
         # proposal was computed on: an input fault, not a refusal.
-        print(f"unusable delay coordinate: {exc}", file=sys.stderr)
-        return EXIT_UNREADABLE
+        return failed(EXIT_UNREADABLE, REFUSE_DELAY_OFF_GRID, str(exc))
     except OSError as exc:
-        print(f"unreadable state: {exc}", file=sys.stderr)
-        return EXIT_UNREADABLE
+        return failed(EXIT_UNREADABLE, REFUSE_STATE_UNREADABLE, str(exc))
 
 
 if __name__ == "__main__":  # pragma: no cover

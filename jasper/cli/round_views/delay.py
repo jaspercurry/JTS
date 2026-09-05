@@ -5,10 +5,10 @@
 """The inter-driver reverse-null delay: compute the landscape, then grade it.
 
 * ``delay-landscape <bundle-dir> --fc-hz N`` — read a banked round's
-  per-driver curves, complex-sum them across the whole delay grid, and print
-  the landscape plus the two or three coordinates worth playing. No audio
+  per-driver curves, complex-sum them across the whole delay grid, and name
+  the optimum plus the two or three coordinates worth playing. No audio
   plays and no device is opened; an existing MEASURE bank answers this today.
-  Writes ``delay_landscape.json``.
+  The grid itself stays in ``delay_landscape.json``, which it writes.
 * ``delay-confirm <bundle-dir> --fc-hz N`` — recompute that same landscape
   and grade it against the rows ``jasper-null`` banked under
   ``<bundle>/null_runs/``, so the model's optimum is answered by the room
@@ -28,8 +28,6 @@ this tool's job — the prescription door owns that, with its own lobe gate.
 from __future__ import annotations
 
 import argparse
-import json
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -47,13 +45,15 @@ from jasper.active_speaker.crossover_v2.delay_landscape import (
 )
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL, PHASE_MEASURE
 from jasper.active_speaker.delay_sweep import sweep_spec
-from jasper.cli._refusal import EXIT_OK, EXIT_UNREADABLE, StageFailed, stage
+from jasper.cli._refusal import EXIT_UNREADABLE, StageFailed, stage
 
 from ..null_door import NULL_RUNS_DIR
 from ._common import (
     ARTIFACT_BY_VIEW,
+    _BUNDLE_DIR_METAVAR,
     _ROUND_TOOL_ERRORS,
     _write,
+    answer,
     refused_by_name,
     resolved_out,
 )
@@ -91,8 +91,8 @@ def _landscape_from_bank(args: argparse.Namespace) -> BankedLandscape:
 
 
 def _bank(payload: Any, args: argparse.Namespace) -> Path | None:
-    """``--out`` names a FILE here, never ``-``: both verbs print their own
-    document on stdout. Where the default lands is :func:`resolved_out`'s.
+    """``--out`` names a FILE here, never ``-``: the delay grid is what the
+    artifact is for. Where the default lands is :func:`resolved_out`'s.
     """
 
     beside = resolved_out(
@@ -120,10 +120,14 @@ def _cmd_delay_landscape(args: argparse.Namespace) -> int:
             inverted_role=args.inverted_role,
         ),
     }
-    out = _bank(payload, args)
-    print(json.dumps({**payload, "out": str(out)}, indent=2, sort_keys=True))
-    print(optimum_line(landscape), file=sys.stderr)
-    return EXIT_OK
+    return answer(
+        args.command, out=_bank(payload, args), take_path=take_path,
+        phase=args.phase, phase_composition=composition,
+        best_coordinate_us=landscape.best_coordinate_us,
+        confirmation_coordinates_us=list(landscape.confirmation_coordinates_us),
+        next=payload["confirm_with"],
+        line=optimum_line(landscape),
+    )
 
 
 def _cmd_delay_confirm(args: argparse.Namespace) -> int:
@@ -158,26 +162,22 @@ def _cmd_delay_confirm(args: argparse.Namespace) -> int:
         "null_runs_dir": str(rows_dir),
         "graded_rows": graded,
     }
-    out = _bank(payload, args)
-    print(json.dumps({
-        "status": "confirmed",
-        "verdict": verdict["verdict"],
-        "computed_optimum_us": verdict["computed_optimum_us"],
-        "measured_null_depth_db": verdict["measured_null_depth_db"],
-        "measured_minus_predicted_db": verdict["measured_minus_predicted_db"],
-        "prescribable_delay_us": verdict["prescribable_delay_us"],
-        "graded_rows": len(graded),
-        "out": str(out),
-    }, indent=2, sort_keys=True))
-    print(verdict_line(verdict, depths), file=sys.stderr)
-    return EXIT_OK
+    return answer(
+        args.command, out=_bank(payload, args), verdict=verdict["verdict"],
+        computed_optimum_us=verdict["computed_optimum_us"],
+        measured_null_depth_db=verdict["measured_null_depth_db"],
+        measured_minus_predicted_db=verdict["measured_minus_predicted_db"],
+        prescribable_delay_us=verdict["prescribable_delay_us"],
+        graded_rows=len(graded),
+        line=verdict_line(verdict, depths),
+    )
 
 
 def _add_landscape_arguments(child: argparse.ArgumentParser, *, out_name: str) -> None:
     """The bundle, the corner and the pose — the landscape both verbs compute."""
 
     child.add_argument(
-        "bundle_dir",
+        "bundle_dir", metavar=_BUNDLE_DIR_METAVAR,
         help="a commissioning bundle directory (the one holding info.json "
              "beside evidence/v1/artifacts/crossover_v2/<capture-session-id>/)",
     )

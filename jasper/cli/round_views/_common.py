@@ -3,13 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """What every view here shares: the artifact table, the round reader, the
-publisher, and the flags more than one subcommand takes.
+publisher, the answer printer, and the flags more than one subcommand takes.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -17,6 +18,7 @@ from typing import Any, NamedTuple
 from jasper.active_speaker.crossover_v2.evidence_packet import CLASSIFICATION_ARTIFACT
 from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS
 from jasper.active_speaker.crossover_v2.harmonic_evidence import HARMONICS_ARTIFACT
+from jasper.active_speaker.crossover_v2.position_cycle import POSITION_CYCLE_FILENAME
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, round_inputs
 from jasper.active_speaker.crossover_v2.round_views import (
     BankedRound,
@@ -24,6 +26,8 @@ from jasper.active_speaker.crossover_v2.round_views import (
     load_banked_round,
 )
 from jasper.cli._refusal import (
+    EXIT_OK,
+    answered,
     EXIT_REFUSED,
     EXIT_UNREADABLE,
     EXIT_WRITE_FAILED,
@@ -40,6 +44,11 @@ AUTHORITY_TIER = "advisory (classify-features projects a ring into the bundle)"
 #: in the order an operator meets them: the live one is what a round leaves on
 #: the speaker, the banked one is what ``bank-crossover-round.sh`` made of it.
 _ROUND_DIR_HELP = "a banked round directory, or a live session bundle"
+
+#: What the usage line calls a directory positional, so ``--help`` reads as
+#: the shape to type rather than as this module's own parameter names.
+_ROUND_DIR_METAVAR = "<round-dir>"
+_BUNDLE_DIR_METAVAR = "<bundle-dir>"
 
 PROG = "jasper-round-views"
 
@@ -60,22 +69,25 @@ TAKES_BUNDLE_AND_FC = "<this-round's bundle> --fc-hz <applied-corner>"
 
 
 class ViewArtifact(NamedTuple):
-    """One view's artifact, what its subcommand takes, and where it lands.
+    """One artifact, the command that makes it, and where it lands.
 
     ``in_artifact_dir`` marks the views the evidence PACKET reads: those file
     into the round's own artifact directory, the only path that reader looks
     at, rather than beside the round where an operator reads the rest.
+    ``producer`` names the command for an artifact this tool does NOT write;
+    ``None`` means the key is the subcommand that writes it.
     """
 
     artifact: str
     takes: str = TAKES_THIS_ROUND
     in_artifact_dir: bool = False
+    producer: str | None = None
 
-#: The artifact each view writes beside the round, declared once: the
-#: subcommands take their default output path from this table and
-#: ``inventory`` names each missing artifact's producer from the same one, so
-#: there is no second list to drift. ``repeat-floor`` is absent because it
-#: publishes to ``--install`` or ``--out`` instead of beside the round.
+#: The artifacts a round carries, declared once: the subcommands take their
+#: default output path from this table and ``inventory`` names each one's
+#: producer from the same one, so there is no second list to drift.
+#: ``repeat-floor`` is absent because it publishes to ``--install`` or
+#: ``--out`` instead of beside the round.
 ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "entry": ViewArtifact("entry_state_grade.json"),
     "frozen": ViewArtifact("frozen_reference.json", TAKES_AFTER_ANOTHER),
@@ -99,6 +111,12 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     ),
     "classify-features": ViewArtifact(
         CLASSIFICATION_ARTIFACT, TAKES_THIS_BUNDLE, in_artifact_dir=True
+    ),
+    # No view writes this one: the banker does, as it files the session. It is
+    # inventoried anyway because "does this round carry its pose index" is the
+    # same question as the rest, asked of the same directory.
+    "position-cycle": ViewArtifact(
+        POSITION_CYCLE_FILENAME, TAKES_THIS_BUNDLE, producer="jasper-round bank",
     ),
 }
 
@@ -166,6 +184,30 @@ def _write(
     )
 
 
+#: :func:`answer`'s ``out`` for a verb that writes no artifact at all, told
+#: apart from ``None`` — which is ``--out -``, where the artifact ITSELF is the
+#: document on stdout and no answer may be printed over it.
+_NO_ARTIFACT: Any = object()
+
+
+def answer(
+    view: str, *, out: Path | None = _NO_ARTIFACT, line: str, **fields: Any,
+) -> int:
+    """This view's ANSWER on stdout, its one human line on stderr (ADR-0237).
+
+    The answer is what the human line says, as fields: scalars and
+    run-bounded records, never a curve or a grid — those stay in the artifact
+    at ``out``, whose path and size ride along so the next command can name it.
+    """
+    if out is None:
+        print(line, file=sys.stderr)
+        return EXIT_OK
+    if out is not _NO_ARTIFACT:
+        fields["out"] = str(out)
+        fields["bytes"] = out.stat().st_size
+    return answered({"view": view, **fields}, line)
+
+
 def refused_by_name(
     reason: str, detail: Mapping[str, Any] | str, *, code: int = EXIT_REFUSED
 ) -> int:
@@ -176,20 +218,39 @@ def refused_by_name(
     return failed(code, reason, detail)
 
 
+def banked_round_of(session_dir: Path) -> Path | None:
+    """The banked round tree this session bundle was copied into, if any.
+
+    Asked of the resolver rather than by re-spelling its layout: a directory
+    two levels up that resolves to THIS session bundle is the round holding it.
+    """
+    candidate = session_dir.parent.parent
+    try:
+        return candidate if round_inputs(candidate).session_dir == session_dir else None
+    except RoundViewsError:
+        return None
+
+
 def default_out(inputs: RoundInputs, round_dir: Path, name: str) -> Path:
     """Where a view lands when the operator named no ``--out``.
 
     A BANKED round tree is the operator's own directory, so its views stay
-    beside the evidence they were computed from. A LIVE session bundle is the
-    daemon's (``/var/lib/jasper/active_speaker/sessions/<id>``, written by the
-    web host as its own user): defaulting inside it made the ordinary
-    invocation — grade the round I just ran — raise ``PermissionError`` for
-    the operator this door was added for (#3498). So a live round's view lands
-    beside the caller instead, named by the session it came from so two
-    sessions graded in one directory do not overwrite each other.
+    beside the evidence they were computed from — including a view pointed at
+    the bundle INSIDE that tree, which is the only way the bundle-taking verbs
+    can be called: filing beside the caller there would leave every artifact
+    somewhere ``inventory`` never looks. A LIVE session bundle is the daemon's
+    (``/var/lib/jasper/active_speaker/sessions/<id>``, written by the web host
+    as its own user): defaulting inside it made the ordinary invocation —
+    grade the round I just ran — raise ``PermissionError`` for the operator
+    this door was added for (#3498). So a live round's view lands beside the
+    caller instead, named by the session it came from so two sessions graded
+    in one directory do not overwrite each other.
     """
     if inputs.banked:
         return round_dir / name
+    banked_round = banked_round_of(inputs.session_dir)
+    if banked_round is not None:
+        return banked_round / name
     return Path.cwd() / f"{inputs.session_dir.name}-{name}"
 
 

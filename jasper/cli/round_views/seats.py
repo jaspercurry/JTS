@@ -23,7 +23,6 @@ audibility co-metrics, and how the cloud departs from on-axis.
 from __future__ import annotations
 
 import argparse
-import sys
 
 from jasper.active_speaker.crossover_v2.round_views import (
     AGREEMENT_TESTIFY_MIN,
@@ -34,14 +33,15 @@ from jasper.active_speaker.crossover_v2.round_views import (
     per_seat_curves,
     verify_pose_curve,
 )
-from jasper.cli._refusal import EXIT_OK
 
 from ._common import (
     _ROUND_DIR_HELP,
+    _ROUND_DIR_METAVAR,
     _add_norm_band_args,
     _load_round,
     _view_out,
     _write,
+    answer,
 )
 
 def _cmd_agreement(args: argparse.Namespace) -> int:
@@ -74,13 +74,15 @@ def _cmd_agreement(args: argparse.Namespace) -> int:
     # counted alongside `False` (evaluated and failed the bar).
     n_common = sum(1 for f in features if f.common_mode is True)
     n_not_evaluable = sum(1 for f in features if f.common_mode is None)
-    print(
-        f"agreement: {len(features)} feature(s), {n_common} common-mode, "
-        f"{n_not_evaluable} not-evaluable (< {AGREEMENT_TESTIFY_MIN} seats)"
-        f"{f' -> {written}' if written else ''}",
-        file=sys.stderr,
+    return answer(
+        args.command, out=written, features=len(features), common_mode=n_common,
+        not_evaluable=n_not_evaluable, testify_min_seats=AGREEMENT_TESTIFY_MIN,
+        line=(
+            f"agreement: {len(features)} feature(s), {n_common} common-mode, "
+            f"{n_not_evaluable} not-evaluable (< {AGREEMENT_TESTIFY_MIN} seats)"
+            f"{f' -> {written}' if written else ''}"
+        ),
     )
-    return EXIT_OK
 
 
 def _cmd_co_metrics(args: argparse.Namespace) -> int:
@@ -97,13 +99,25 @@ def _cmd_co_metrics(args: argparse.Namespace) -> int:
         if result.pooled_window is not None
         else f"NOT AVAILABLE ({result.pooled_window_reason})"
     )
-    print(
-        f"co-metrics [informational only, never a grade input]: "
-        f"on-axis {on_axis}; pooled-window {pooled}"
-        f"{f' -> {written}' if written else ''}",
-        file=sys.stderr,
+    return answer(
+        args.command, out=written,
+        on_axis_nbd_db=None if result.on_axis is None else result.on_axis.nbd_db,
+        on_axis_sm_r2=None if result.on_axis is None else result.on_axis.sm_r2,
+        on_axis_reason=result.on_axis_reason,
+        pooled_nbd_db=(
+            None if result.pooled_window is None else result.pooled_window.nbd_db
+        ),
+        pooled_sm_r2=(
+            None if result.pooled_window is None else result.pooled_window.sm_r2
+        ),
+        pooled_bearings_deg=list(result.pooled_window_bearings_deg),
+        pooled_reason=result.pooled_window_reason,
+        line=(
+            f"co-metrics [informational only, never a grade input]: "
+            f"on-axis {on_axis}; pooled-window {pooled}"
+            f"{f' -> {written}' if written else ''}"
+        ),
     )
-    return EXIT_OK
 
 
 def _cmd_directivity(args: argparse.Namespace) -> int:
@@ -115,9 +129,10 @@ def _cmd_directivity(args: argparse.Namespace) -> int:
         "directivity": table.to_dict(),
     }
     written = _write(payload, args.out, _view_out(args, banked))
-    # Both clauses only inside the evaluable arm: an absent reference forces
-    # `angles_recorded` false whatever the round banked, so reading it out
-    # there would tell an operator their bearings are missing when they are not.
+    # Both clauses — and the two answer fields below — only inside the
+    # evaluable arm: an absent reference forces `angles_recorded` false and
+    # the reference empty whatever the round banked, so reading either out
+    # there would tell a caller their bearings are missing when they are not.
     if table.evaluable:
         n_not_evaluable = sum(1 for row in table.rows if not row.evaluable)
         summary = (
@@ -130,17 +145,28 @@ def _cmd_directivity(args: argparse.Namespace) -> int:
         )
     else:
         summary = f"NOT AVAILABLE ({table.not_evaluated_reason})"
-    print(
-        f"directivity [observed only, no grade moves]: {summary}"
-        f"{f' -> {written}' if written else ''}",
-        file=sys.stderr,
+    return answer(
+        args.command, out=written, evaluable=table.evaluable,
+        seats=len(table.rows),
+        not_evaluable=sum(1 for row in table.rows if not row.evaluable),
+        reference_seats=(
+            len(table.reference_position_ids) if table.evaluable else None
+        ),
+        reference_role=table.reference_role,
+        angles_recorded=table.angles_recorded if table.evaluable else None,
+        not_evaluated_reason=table.not_evaluated_reason,
+        line=(
+            f"directivity [observed only, no grade moves]: {summary}"
+            f"{f' -> {written}' if written else ''}"
+        ),
     )
-    return EXIT_OK
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
     agreement = sub.add_parser("agreement", help="per-seat sign/magnitude testimony for every feature")
-    agreement.add_argument("round_dir", help=_ROUND_DIR_HELP)
+    agreement.add_argument(
+        "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP
+    )
     _add_norm_band_args(agreement)
     agreement.add_argument(
         "--lo", type=float, default=None,
@@ -155,7 +181,9 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     co_metrics = sub.add_parser(
         "co-metrics", help="NBD + SM (Olive 2004) on the on-axis and pooled-window curves — informational only",
     )
-    co_metrics.add_argument("round_dir", help=_ROUND_DIR_HELP)
+    co_metrics.add_argument(
+        "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP
+    )
     co_metrics.add_argument("--out", default=None, help="write the result here (- for stdout)")
     co_metrics.set_defaults(func=_cmd_co_metrics)
 
@@ -163,6 +191,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "directivity",
         help="every cloud seat's departure from on-axis, split per band into level and shape — observed only",
     )
-    directivity.add_argument("round_dir", help=_ROUND_DIR_HELP)
+    directivity.add_argument(
+        "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP
+    )
     directivity.add_argument("--out", default=None, help="write the result here (- for stdout)")
     directivity.set_defaults(func=_cmd_directivity)

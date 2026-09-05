@@ -71,6 +71,7 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     wall_clock_ceiling_s,
 )
 from jasper.cli import angle_capture as cli
+from jasper.cli._refusal import STATUS_BY_CODE
 from jasper.identity import CROSSOVER_PAGE_PATH
 
 CAMPAIGN_ANGLES = [0, 7, -7, 22, -22]
@@ -315,7 +316,7 @@ def test_plan_echoes_the_delay_coordinate_when_stated(capsys):
         ["plan", "--angles", "0", "--delayed-role", "tweeter", "--delay-us", "128.588"]
     )
     assert cli._cmd_plan(args) == cli.EXIT_OK
-    human = capsys.readouterr().out
+    human = capsys.readouterr().err
     assert "tweeter" in human
     assert "128.588" in human
 
@@ -328,7 +329,7 @@ def test_plan_echoes_the_delay_coordinate_when_stated(capsys):
     # already keeps.
     plain = parser.parse_args(["plan", "--angles", "0"])
     assert cli._cmd_plan(plain) == cli.EXIT_OK
-    assert "delay:" not in capsys.readouterr().out
+    assert "delay:" not in capsys.readouterr().err
 
 
 def test_the_preview_says_who_arms_the_gate_for_both_movers(capsys):
@@ -345,7 +346,7 @@ def test_the_preview_says_who_arms_the_gate_for_both_movers(capsys):
     assert cli._cmd_plan(
         parser.parse_args(["plan", "--angles", "0,-7", "--mover", "human"])
     ) == cli.EXIT_OK
-    human = capsys.readouterr().out
+    human = capsys.readouterr().err
     assert "the SESSION decides the gate" in human
     assert "wired round holds every begin" in human
     # The per-stop target column stays EMPTY for a person, and that is the
@@ -357,7 +358,7 @@ def test_the_preview_says_who_arms_the_gate_for_both_movers(capsys):
     assert cli._cmd_plan(
         parser.parse_args(["plan", "--angles", "0,-7", "--mover", "arm"])
     ) == cli.EXIT_OK
-    arm = capsys.readouterr().out
+    arm = capsys.readouterr().err
     assert "position gate armed" in arm
     assert "gate -7 deg" in arm
 
@@ -800,14 +801,12 @@ def test_the_cli_stage_surfaces_the_busy_refusal(slot, capsys):
     _, volume_state = slot
     _write_volume_state(volume_state, status="active", opened_at=time.time())
 
-    args = cli.build_parser().parse_args(
-        ["stage", "--angles", "0,7,-7,22,-22", "--json"]
-    )
+    args = cli.build_parser().parse_args(["stage", "--angles", "0,7,-7,22,-22"])
     assert cli._cmd_stage(args) == cli.EXIT_REFUSED
     out = capsys.readouterr()
     body = json.loads(out.out)
     assert body == {
-        "ok": False,
+        "status": STATUS_BY_CODE[cli.EXIT_REFUSED],
         "reason": spool.SESSION_ALREADY_LIVE,
         "detail": body["detail"],
     }
@@ -819,13 +818,14 @@ def test_the_cli_stage_banks_the_walk_when_the_speaker_is_idle(slot, capsys):
     path, _ = slot
     args = cli.build_parser().parse_args(
         ["stage", "--angles", "0,7,-7,22,-22", "--regime", "per_driver",
-         "--mover", "human", "--json"]
+         "--mover", "human"]
     )
     assert cli._cmd_stage(args) == cli.EXIT_OK
     body = json.loads(capsys.readouterr().out)
-    assert body["ok"] is True
-    assert body["staged_at_path"] == str(path)
-    assert [s["angle_deg"] for s in body["stops"]] == CAMPAIGN_ANGLES
+    assert body["out"] == str(path)
+    assert body["bytes"] == path.stat().st_size
+    assert body["stops"] == len(CAMPAIGN_ANGLES)
+    assert body["mover"] == MOVER_HUMAN
 
     assert spool.take_staged_angle_request() == per_driver_at(
         CAMPAIGN_ANGLES, mover=MOVER_HUMAN
@@ -858,18 +858,22 @@ def test_withdraw_honors_the_same_exit_code_contract(slot, monkeypatch, capsys):
         raise PermissionError(13, "Permission denied")
 
     monkeypatch.setattr(type(path), "unlink", _deny)
-    args = cli.build_parser().parse_args(["withdraw", "--json"])
+    args = cli.build_parser().parse_args(["withdraw"])
     assert cli._cmd_withdraw(args) == cli.EXIT_WRITE_FAILED
     out = capsys.readouterr()
-    assert json.loads(out.out)["reason"] == "stage_failed"
+    body = json.loads(out.out)
+    assert body["reason"] == cli.STAGE_FAILED
+    assert body["status"] == STATUS_BY_CODE[cli.EXIT_WRITE_FAILED]
     assert "Permission denied" in out.err
 
 
 def test_withdraw_is_quiet_and_zero_when_nothing_is_staged(slot, capsys):
     """The control for the arm above: an empty slot is not a failure."""
-    args = cli.build_parser().parse_args(["withdraw", "--json"])
+    args = cli.build_parser().parse_args(["withdraw"])
     assert cli._cmd_withdraw(args) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out) == {"ok": True, "withdrawn": False}
+    assert json.loads(capsys.readouterr().out) == {
+        "staged": False, "withdrawn": False
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -887,13 +891,14 @@ def test_stage_banks_a_named_program_with_its_receipt(slot, capsys):
     """
     express = mp.program("baseline", "express")
     args = cli.build_parser().parse_args(
-        ["stage", "--program", "baseline", "--size", "express", "--json"]
+        ["stage", "--program", "baseline", "--size", "express"]
     )
     assert cli._cmd_stage(args) == cli.EXIT_OK
     body = json.loads(capsys.readouterr().out)
 
-    assert body["program"] == "baseline/express"
-    assert len(body["stops"]) == express.capture_count == 8
+    assert (body["program"], body["size"]) == ("baseline", "express")
+    assert body["stops"] == express.capture_count == 8
+    assert body["next"] == "jasper-round open --tier express"
     assert body["price"] == {
         "mic_moves": express.mic_move_count,
         "captures": express.capture_count,
@@ -914,7 +919,7 @@ def test_the_receipt_states_the_absolute_level_the_walk_drives_at(slot, capsys):
     has to guess whether it was measured or defaulted.
     """
     args = cli.build_parser().parse_args(
-        ["stage", "--program", "baseline", "--size", "express", "--json"]
+        ["stage", "--program", "baseline", "--size", "express"]
     )
     assert cli._cmd_stage(args) == cli.EXIT_OK
 
@@ -937,19 +942,19 @@ def test_stage_refuses_by_name_when_no_anchor_is_banked(
         "JASPER_ACTIVE_SPEAKER_SEAT_LEVEL_REFERENCE_STATE", str(tmp_path / "gone.json")
     )
     args = cli.build_parser().parse_args(
-        ["stage", "--program", "baseline", "--size", "express", "--json"]
+        ["stage", "--program", "baseline", "--size", "express"]
     )
 
     assert cli._cmd_stage(args) == cli.EXIT_REFUSED
     body = json.loads(capsys.readouterr().out)
 
-    assert body["ok"] is False
+    assert body["status"] == STATUS_BY_CODE[cli.EXIT_REFUSED]
     assert body["reason"] == slr.ANCHOR_UNUSABLE
     assert not spool.staged_angle_request_pending()
 
     # ``plan`` is the dry run that SHOWS what is missing rather than refusing.
     plan = cli.build_parser().parse_args(
-        ["plan", "--program", "baseline", "--size", "express", "--json"]
+        ["plan", "--program", "baseline", "--size", "express"]
     )
     assert cli._cmd_plan(plan) == cli.EXIT_OK
     unresolved = json.loads(capsys.readouterr().out)["level"]
@@ -962,14 +967,15 @@ def test_stage_refuses_by_name_when_no_anchor_is_banked(
 
 def test_a_spot_stages_one_raised_pose(slot, capsys):
     args = cli.build_parser().parse_args(
-        ["stage", "--program", "spot", "--azimuth", "22", "--elevation", "10",
-         "--json"]
+        ["stage", "--program", "spot", "--azimuth", "22", "--elevation", "10"]
     )
     assert cli._cmd_stage(args) == cli.EXIT_OK
     body = json.loads(capsys.readouterr().out)
 
-    assert body["program"] == "spot"
-    assert [(s["angle_deg"], s["elevation_deg"]) for s in body["stops"]] == [(22, 10)]
+    assert (body["program"], body["size"], body["stops"]) == ("spot", "", 1)
+    # A spot names no tier of its own, so the round it hands off to is the
+    # quick one rather than an unstated default.
+    assert body["next"] == "jasper-round open --tier express"
     assert spool.take_staged_angle_request().stops == (
         AngleStop(22, REGIME_PER_DRIVER, 10),
     )
@@ -977,11 +983,11 @@ def test_a_spot_stages_one_raised_pose(slot, capsys):
 
 def test_a_free_form_walk_is_unnamed_and_priced_by_the_same_rule(slot, capsys):
     """One receipt shape, whichever door the walk came through."""
-    args = cli.build_parser().parse_args(["stage", "--angles", "0,7", "--json"])
+    args = cli.build_parser().parse_args(["stage", "--angles", "0,7"])
     assert cli._cmd_stage(args) == cli.EXIT_OK
     body = json.loads(capsys.readouterr().out)
 
-    assert body["program"] == ""
+    assert (body["program"], body["size"]) == ("", "")
     assert body["price"] == {
         "mic_moves": 2,
         "captures": 2,
@@ -1040,12 +1046,51 @@ def test_an_unknown_program_refuses_rather_than_walking_a_size_nobody_offers(
     ``tests/test_measurement_programs.py``); this door only has to reach it.
     """
     args = cli.build_parser().parse_args(
-        ["plan", "--program", "baseline", "--size", "huge", "--json"]
+        ["plan", "--program", "baseline", "--size", "huge"]
     )
     assert cli._cmd_plan(args) == cli.EXIT_REFUSED
     body = json.loads(capsys.readouterr().out)
 
-    assert (body["ok"], body["reason"]) == (False, cli.UNKNOWN_PROGRAM)
+    assert body["status"] == STATUS_BY_CODE[cli.EXIT_REFUSED]
+    assert body["reason"] == cli.UNKNOWN_PROGRAM
+
+
+def test_show_says_nothing_is_staged_rather_than_refusing(slot, capsys):
+    """An empty slot is an ANSWER: ``serve`` and ``stage`` both ask this first."""
+    assert cli.main(["show"]) == cli.EXIT_OK
+    assert json.loads(capsys.readouterr().out) == {"staged": False}
+
+
+def test_show_reads_back_the_staged_walk_without_consuming_it(slot, capsys):
+    """The verb the epilog sends a reader to, and the peek it is built on."""
+    path, _ = slot
+    assert cli.main(
+        ["stage", "--program", "baseline", "--size", "full", "--mover", MOVER_HUMAN]
+    ) == cli.EXIT_OK
+    capsys.readouterr()
+
+    assert cli.main(["show"]) == cli.EXIT_OK
+    body = json.loads(capsys.readouterr().out)
+    assert body["staged"] is True
+    assert (body["program"], body["size"]) == ("baseline", "full")
+    assert body["mover"] == MOVER_HUMAN
+    assert body["stops"] == mp.program("baseline", "full").capture_count
+    assert body["out"] == str(path)
+    assert body["next"] == "jasper-round open --tier full"
+
+    # A peek, not a take: the session that opens next still gets the walk.
+    assert spool.take_staged_angle_request() is not None
+
+
+def test_plan_answers_with_the_stage_line_that_would_bank_it(slot, capsys):
+    """``plan`` is the dry run of ``stage``, so its ``next`` IS that stage."""
+    argv = ["plan", "--program", "baseline", "--size", "express", "--mover", "human"]
+
+    assert cli.main(argv) == cli.EXIT_OK
+
+    body = json.loads(capsys.readouterr().out)
+    assert body["next"] == "jasper-angle-capture stage " + " ".join(argv[1:])
+    assert not spool.staged_angle_request_pending()
 
 
 # --------------------------------------------------------------------------- #
@@ -1142,19 +1187,20 @@ def test_the_staged_event_reaches_stderr_from_the_real_entrypoint(tmp_path):
 
 
 def test_the_staged_event_goes_to_stderr_and_never_to_stdout(tmp_path):
-    """stdout is the machine channel; a log line there would corrupt ``--json``."""
+    """stdout carries the ANSWER alone; a log line there would corrupt it."""
     result = _stage_in_a_real_process(tmp_path)
 
     assert "event=angle_capture.request_staged" not in result.stdout
-    assert "staged at" in result.stdout
+    assert json.loads(result.stdout)["stops"] == 5
+    assert "staged at" in result.stderr
 
 
 def test_configuring_logging_does_not_silence_the_human_summary(tmp_path):
-    """The control: the walk an operator reads still prints, on stdout."""
+    """The control: the walk an operator reads still prints, on stderr."""
     result = _stage_in_a_real_process(tmp_path)
 
-    assert "5 stops, moved by human" in result.stdout
-    assert "+22 deg" in result.stdout
+    assert "5 stops, moved by human" in result.stderr
+    assert "+22 deg" in result.stderr
 
 
 # --------------------------------------------------------------------------- #

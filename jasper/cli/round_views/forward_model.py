@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import argparse
-import sys
 
 from jasper.active_speaker.crossover_v2.contracts import DESIGN_AXIS_DEG
 from jasper.active_speaker.crossover_v2.forward_model import candidate_from_json
@@ -26,14 +25,16 @@ from jasper.active_speaker.crossover_v2.round_views import (
     RoundViewsError,
     forward_model_verify_delta,
 )
-from jasper.cli._refusal import EXIT_OK, EXIT_UNREADABLE, stage
+from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
 from ._common import (
     _ROUND_DIR_HELP,
+    _ROUND_DIR_METAVAR,
     _ROUND_TOOL_ERRORS,
     _load_round,
     _view_out,
     _write,
+    answer,
 )
 
 #: The two runs that must pass before a prediction triages a candidate, as
@@ -85,14 +86,20 @@ def _cmd_forward_model(args: argparse.Namespace) -> int:
         f"{result.delta['max_abs_db']:.2f} dB, RMS {result.delta['rms_db']:.2f} dB"
         if result.delta is not None else f"NOT JUDGED ({result.reason})"
     )
-    print(
-        f"forward-model [predicted, plays nothing]: {predicted.freqs_hz.size} "
-        f"bin(s) over {predicted.sum_band_hz[0]:g}-{predicted.sum_band_hz[1]:g} "
-        f"Hz from {predicted.take_path}; {judged}"
-        f"{f' -> {written}' if written else ''}",
-        file=sys.stderr,
+    return answer(
+        args.command, out=written, bins=int(predicted.freqs_hz.size),
+        sum_band_hz=list(predicted.sum_band_hz), take_path=predicted.take_path,
+        measured_round_dir=result.measured_round_dir,
+        max_abs_db=None if result.delta is None else result.delta["max_abs_db"],
+        rms_db=None if result.delta is None else result.delta["rms_db"],
+        reason=result.reason,
+        line=(
+            f"forward-model [predicted, plays nothing]: {predicted.freqs_hz.size} "
+            f"bin(s) over {predicted.sum_band_hz[0]:g}-{predicted.sum_band_hz[1]:g} "
+            f"Hz from {predicted.take_path}; {judged}"
+            f"{f' -> {written}' if written else ''}"
+        ),
     )
-    return EXIT_OK
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
@@ -103,7 +110,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     forward.add_argument(
-        "round_dir",
+        "round_dir", metavar=_ROUND_DIR_METAVAR,
         help=f"{_ROUND_DIR_HELP} whose per-driver solos are the PREDICTION BASIS",
     )
     forward.add_argument(

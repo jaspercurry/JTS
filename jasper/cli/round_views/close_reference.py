@@ -28,7 +28,6 @@ graph.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -48,10 +47,16 @@ from jasper.audio_measurement.measurement_geometry import (
     METERS_PER_INCH,
     DeclaredGeometry,
 )
-from jasper.cli._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE
+from jasper.cli._refusal import EXIT_REFUSED, EXIT_UNREADABLE
 from jasper.cli._unit_pair import MILLIMETRES, add_unit_pair, unit_pair_meters
 
-from ._common import ARTIFACT_BY_VIEW, _write, refused_by_name, resolved_out
+from ._common import (
+    ARTIFACT_BY_VIEW,
+    _write,
+    answer,
+    refused_by_name,
+    resolved_out,
+)
 
 
 def _refused(reason: str, detail: Mapping[str, Any]) -> int:
@@ -73,23 +78,24 @@ def _geometry(path: str) -> DeclaredGeometry | None:
     return DeclaredGeometry.load(path) if Path(path).is_file() else None
 
 
-def _recommend_distance(diameter_m: float, fc_hz: float) -> int:
-    record = recommended_distance(diameter_m, fc_hz)
-    print(json.dumps({"status": "recommended", "distance": record},
-                     indent=2, sort_keys=True))
-    print(
-        f"stand the mic {record['distance_in']:.1f} in "
-        f"({record['distance_m'] * 100:.1f} cm) from the woofer: "
-        f"{record['far_field_term_m'] / METERS_PER_INCH:.2f} in far-field at "
-        f"{record['band_top_hz']:.0f} Hz + "
-        f"{record['margin_term_m'] / METERS_PER_INCH:.2f} in margin "
-        f"({record['k_margin']:g} diameters); "
-        f"+/-0.5 in costs {record['placement_tolerance_db']:.2f} dB, "
-        f"+/-{record['aim_tolerance_deg']:.0f} deg of aim costs nothing; "
-        f"far field holds to {record['far_field_ceiling_hz']:.0f} Hz",
-        file=sys.stderr,
+def _recommend_distance(args: argparse.Namespace, diameter_m: float) -> int:
+    """Where to stand the mic. It writes no artifact, so the fields ARE the
+    answer — the derivation's own record, published whole."""
+    record = recommended_distance(diameter_m, args.fc_hz)
+    return answer(
+        args.command, **record,
+        line=(
+            f"stand the mic {record['distance_in']:.1f} in "
+            f"({record['distance_m'] * 100:.1f} cm) from the woofer: "
+            f"{record['far_field_term_m'] / METERS_PER_INCH:.2f} in far-field at "
+            f"{record['band_top_hz']:.0f} Hz + "
+            f"{record['margin_term_m'] / METERS_PER_INCH:.2f} in margin "
+            f"({record['k_margin']:g} diameters); "
+            f"+/-0.5 in costs {record['placement_tolerance_db']:.2f} dB, "
+            f"+/-{record['aim_tolerance_deg']:.0f} deg of aim costs nothing; "
+            f"far field holds to {record['far_field_ceiling_hz']:.0f} Hz"
+        ),
     )
-    return EXIT_OK
 
 
 def _compare(args: argparse.Namespace, diameter_m: float | None) -> int:
@@ -122,9 +128,25 @@ def _compare(args: argparse.Namespace, diameter_m: float | None) -> int:
         args.out,
         resolved_out(far_dir, ARTIFACT_BY_VIEW[args.command].artifact),
     )
-    if written:
-        print(f"close-reference -> {written}", file=sys.stderr)
-    return EXIT_OK
+    alignment = report["alignment"]
+    return answer(
+        args.command, out=written,
+        comparison_band_hz=report["validity"]["comparison_band_hz"],
+        residual_lag_us=alignment["residual_lag_us"],
+        alignment_confidence=alignment["confidence"],
+        alignment_trusted=alignment["trusted"],
+        bands=[
+            {
+                "window": window["name"],
+                "graded_band_hz": row["graded_band_hz"],
+                "verdict": row["verdict"],
+                "rms_delta_db": row["rms_delta_db"],
+                "residual_rel_direct_db": row["residual_rel_direct_db"],
+            }
+            for window in report["windows"] for row in window["bands"]
+        ],
+        line=f"close-reference -> {written or 'stdout'}",
+    )
 
 
 def _cmd_close_reference(args: argparse.Namespace) -> int:
@@ -151,7 +173,7 @@ def _cmd_close_reference(args: argparse.Namespace) -> int:
         ]
         if comparing:
             parser.error(f"--distance takes none of {', '.join(comparing)}")
-        return _recommend_distance(diameter_m, args.fc_hz)
+        return _recommend_distance(args, diameter_m)
     if args.far_round is None or args.close_round is None or args.close_m is None:
         parser.error(
             "a comparison needs --far-round, --close-round and --close-m; "
