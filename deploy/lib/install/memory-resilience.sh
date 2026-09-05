@@ -169,10 +169,16 @@ _apply_jts_mglru() {
 # once at early boot and sizes the zram device. Per swap.conf(5):
 # "After modifying any swap configuration, you must reboot the
 # system for changes to take effect."
+# Must equal jasper.memory_policy.ZRAM_TARGET_PERCENT (and
+# deploy/rpi-swap/50-jts.conf's RamMultiplier), which jasper-doctor's
+# check_zram_size_ratio derives its warn bound from. Shell cannot import the
+# Python owner, so tests/test_memory_policy.py pins this literal to it.
+_ZRAM_TARGET_PERCENT=50
+
 _compute_target_zram_bytes() {
     local memtotal_kb="$1"
     if [[ "${memtotal_kb}" =~ ^[0-9]+$ && "${memtotal_kb}" -gt 0 ]]; then
-        echo $((memtotal_kb * 1024 / 2))
+        echo $((memtotal_kb * 1024 * _ZRAM_TARGET_PERCENT / 100))
         return 0
     fi
     # Fallback for unreadable /proc/meminfo: the original 1 GB Pi target.
@@ -208,7 +214,7 @@ _apply_jts_zram_dropin() {
     # Within ±60 MB of target counts as "already correct."
     if [[ ${zram_diff#-} -lt 62914560 ]]; then
         _mem_log "zram.already_sized" \
-            "zram drop-in installed; live size already ~50% RAM"
+            "zram drop-in installed; live size already ~${_ZRAM_TARGET_PERCENT}% RAM"
     else
         local reason="zram drop-in installed; resize pending (current: $((cur_zram_bytes / 1024 / 1024)) MB → target: ~${target_zram_mb} MB)"
         _mem_log "zram.reboot_required" "${reason}"
