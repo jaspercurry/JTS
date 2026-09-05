@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.wake_corpus import bridge_session, capture_plan
+from jasper.wake_corpus import capture_plan, runtime_probe
 from jasper.wake_ports import build_ports
 
 
@@ -21,6 +21,7 @@ def test_capture_plan_describes_chip_profile_layers() -> None:
         include_usb_mic=False,
         include_usb_dtln=False,
         include_bridge_readiness=False,
+        runtime_snapshot={},
     )
 
     assert plan["schema_version"] == capture_plan.CAPTURE_PLAN_SCHEMA_VERSION
@@ -66,7 +67,7 @@ def test_capture_plan_chip_profile_is_canonical_bridge_contract() -> None:
     assert env["JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED"] == "1"
     assert env["JASPER_AEC_REF_SOURCE"] == "outputd_udp"
     assert env["JASPER_OUTPUTD_REFERENCE_UDP_TARGET"] == (
-        bridge_session.OUTPUTD_REF_UDP_TARGET
+        runtime_probe.OUTPUTD_REF_UDP_TARGET
     )
     assert plan["fingerprints"] == {"mic": "mic-a", "dac_reference": "dac-a"}
 
@@ -262,6 +263,7 @@ def test_capture_plan_describes_on_leg_runtime_overlay(
             "state": "active",
         },
         runtime_audio_env={"chip_primary_leg": "chip_aec_210"},
+        runtime_snapshot={},
     )
 
     by_token = {leg["token"]: leg for leg in plan["legs"]}
@@ -281,6 +283,7 @@ def test_capture_plan_warns_for_heavy_two_mic_dtln() -> None:
         include_usb_dtln=True,
         include_xvf_raw0_dtln=True,
         include_bridge_readiness=False,
+        runtime_snapshot={},
     )
 
     assert plan["recipe"] == "chip_aec_comparison_extended"

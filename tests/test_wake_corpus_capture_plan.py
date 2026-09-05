@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 
 from jasper.chip_aec.policy import ChipAecGate
-from jasper.wake_corpus import bridge_session
+from jasper.wake_corpus import bridge_session, capture_plan, runtime_probe
 from jasper.web import wake_corpus_setup
 
 from tests.wake_corpus_setup_fixtures import (
@@ -426,11 +426,11 @@ def _gate(**overrides: object) -> dict[str, object]:
 
 
 def _dac_reference_digest(gate: dict[str, object]) -> str:
-    return bridge_session.fingerprint_mapping({
+    return capture_plan.fingerprint_mapping({
         "audio_dac_id": "hifiberry_dac8x",
         "dac": {"pcm": "outputd_dac", "backend": "alsa"},
         "reference": {"source": "outputd_udp"},
-        "chip_gate": bridge_session.chip_gate_identity(gate),
+        "chip_gate": capture_plan.chip_gate_identity(gate),
     })
 
 
@@ -736,7 +736,7 @@ def test_set_bridge_outputs_enables_chip_profile_stack(
 
 
 def test_chip_ref_pcm_prefers_resolved_xvf_card() -> None:
-    assert bridge_session.chip_ref_pcm_for_env(
+    assert runtime_probe.chip_ref_pcm_for_env(
         {
             "JASPER_XVF_ALSA_CARD": "L16K6Ch",
             "JASPER_AEC_MIC_DEVICE": "Array",

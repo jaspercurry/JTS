@@ -30,12 +30,6 @@ from jasper.aec_sweep import (
     load_aec3_sweep_config,
 )
 from jasper import wake_legs
-from jasper.wake_corpus.capture_plan import (
-    DAC_FINGERPRINT_ENV,
-    EXPECTED_LEGS_ENV,
-    MIC_FINGERPRINT_ENV,
-    PLAN_ID_ENV,
-)
 from jasper.log_event import log_event
 from jasper.cli.aec_bridge_telemetry import (
     BRIDGE_STATS_PATH,
@@ -77,6 +71,19 @@ REF_SOURCE = "outputd_udp"
 OUTPUTD_REF_UDP_HOST_ENV = "JASPER_AEC_OUTPUTD_REF_UDP_HOST"
 OUTPUTD_REF_UDP_PORT_ENV = "JASPER_AEC_OUTPUTD_REF_UDP_PORT"
 REF_SOURCE_ENV = "JASPER_AEC_REF_SOURCE"
+# The recorder-owned plan identity the bridge echoes back into its stats
+# file, so a corpus session can prove the running bridge is the plan it
+# stored.
+PLAN_ID_ENV = "JASPER_WAKE_CORPUS_PLAN_ID"
+EXPECTED_LEGS_ENV = "JASPER_WAKE_CORPUS_EXPECTED_LEGS"
+MIC_FINGERPRINT_ENV = "JASPER_WAKE_CORPUS_MIC_FINGERPRINT"
+DAC_FINGERPRINT_ENV = "JASPER_WAKE_CORPUS_DAC_FINGERPRINT"
+PLAN_ENV_VARS = (
+    PLAN_ID_ENV,
+    EXPECTED_LEGS_ENV,
+    MIC_FINGERPRINT_ENV,
+    DAC_FINGERPRINT_ENV,
+)
 # Retired reference source: the summed snd-aloop tap, whose path and tap are
 # both deleted. A box whose /etc/jasper/jasper.env still carries this value
 # converges on the next `jasper-aec-reconcile` run, so the bridge warns and
