@@ -788,10 +788,11 @@ def test_published_not_durable_boot_change_still_sets_marker(tmp_path: Path):
     fake_python.write_text(
         "#!/bin/sh\n"
         "case \"$*\" in\n"
-        "*usb_port_role*) echo '{\"board_topology\": \"separate_host_ports\", "
-        "\"i2s_hat_profile\": \"innomaker_hifi_amp_pro\", "
-        "\"i2s_hat_boot_config_changed\": true, "
-        "\"boot_config_published_not_durable\": true}'; exit 74;;\n"
+        "*usb_port_role*) printf '%s\\n' "
+        "'JASPER_BOOT_BOARD_TOPOLOGY=separate_host_ports' "
+        "'JASPER_BOOT_I2S_HAT_PROFILE=innomaker_hifi_amp_pro' "
+        "'JASPER_BOOT_I2S_HAT_CHANGED=true' "
+        "'JASPER_BOOT_CONFIG_PUBLISHED_NOT_DURABLE=true'; exit 74;;\n"
         "*jasper.cli.output_hardware*) echo \"OBSERVED_OUTPUT_PROFILE_ID=unknown\"; "
         "echo \"OBSERVED_OUTPUT_PROFILE_STATUS=unavailable\"; exit 0;;\n"
         f'esac\nexec "{sys.executable}" "$@"\n',
@@ -820,10 +821,11 @@ def test_record_change_with_i2s_apply_error_restarts_dac_init_before_exit(
     fake_python.write_text(
         "#!/bin/sh\n"
         "case \"$*\" in\n"
-        "*usb_port_role*) echo '{\"board_topology\": \"separate_host_ports\", "
-        "\"i2s_hat_profile\": \"innomaker_hifi_amp_pro\", "
-        "\"i2s_hat_boot_config_changed\": true, "
-        "\"boot_config_published_not_durable\": true}'; exit 74;;\n"
+        "*usb_port_role*) printf '%s\\n' "
+        "'JASPER_BOOT_BOARD_TOPOLOGY=separate_host_ports' "
+        "'JASPER_BOOT_I2S_HAT_PROFILE=innomaker_hifi_amp_pro' "
+        "'JASPER_BOOT_I2S_HAT_CHANGED=true' "
+        "'JASPER_BOOT_CONFIG_PUBLISHED_NOT_DURABLE=true'; exit 74;;\n"
         f'esac\nexec "{sys.executable}" "$@"\n',
         encoding="utf-8",
     )
