@@ -922,6 +922,23 @@ def _parse_state(raw: Any) -> dict[str, Any]:
     return result
 
 
+@contextmanager
+def _locked_file(
+    path: Path, *, timeout_sec: float, on_timeout: CommissioningRunError, on_error: str
+) -> Iterator[None]:
+    """Hold ``path``'s lock. Only the ACQUIRE is translated: a lock somebody
+    else holds is the caller's own typed refusal, an I/O fault never is."""
+
+    with ExitStack() as held:
+        try:
+            held.enter_context(advisory_file_lock(path, timeout_sec=timeout_sec))
+        except TimeoutError as exc:
+            raise on_timeout from exc
+        except OSError as exc:
+            raise CommissioningRunError(on_error) from exc
+        yield
+
+
 class CommissioningRunStore:
     """One durable current commissioning run with exact callback correlation."""
 
@@ -973,21 +990,14 @@ class CommissioningRunStore:
                 "another live mutation caller owns execution"
             )
         try:
-            with ExitStack() as held:
-                try:
-                    held.enter_context(
-                        advisory_file_lock(
-                            self.live_execution_lock_path, timeout_sec=0.0
-                        )
-                    )
-                except TimeoutError as exc:
-                    raise CommissioningRunConflict(
-                        "another live mutation caller owns execution"
-                    ) from exc
-                except OSError as exc:
-                    raise CommissioningRunError(
-                        "live mutation execution lock failed"
-                    ) from exc
+            with _locked_file(
+                self.live_execution_lock_path,
+                timeout_sec=0.0,
+                on_timeout=CommissioningRunConflict(
+                    "another live mutation caller owns execution"
+                ),
+                on_error="live mutation execution lock failed",
+            ):
                 with self._locked():
                     current = self._read()["current"]
                     if not isinstance(current, Mapping) or not self._matches_handle(
@@ -1024,19 +1034,14 @@ class CommissioningRunStore:
                 raise CommissioningRunLockTimeout(
                     "timed out waiting for the commissioning run file lock"
                 )
-            with ExitStack() as held:
-                try:
-                    held.enter_context(
-                        advisory_file_lock(self.lock_path, timeout_sec=file_budget)
-                    )
-                except TimeoutError as exc:
-                    raise CommissioningRunLockTimeout(
-                        "timed out waiting for the commissioning run file lock"
-                    ) from exc
-                except OSError as exc:
-                    raise CommissioningRunError(
-                        "commissioning run file lock failed"
-                    ) from exc
+            with _locked_file(
+                self.lock_path,
+                timeout_sec=file_budget,
+                on_timeout=CommissioningRunLockTimeout(
+                    "timed out waiting for the commissioning run file lock"
+                ),
+                on_error="commissioning run file lock failed",
+            ):
                 yield
         finally:
             _THREAD_LOCK.release()

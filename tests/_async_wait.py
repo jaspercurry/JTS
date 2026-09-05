@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
+from typing import Any
 
 #: Generous by design — every coordination point these tests use settles
 #: in milliseconds when it settles at all, so anything near this bound
@@ -112,3 +113,33 @@ def wait_until_sync(
             return
         time.sleep(interval)
     raise AssertionError(f"condition not met within {timeout}s")
+
+
+async def wait_writer_lock_waiting(
+    caplog: Any,
+    source: str,
+    *,
+    timeout: float = DEFAULT_SIGNAL_TIMEOUT_S,
+) -> None:
+    """Wait until `source` announces it is blocked on the DSP writer lock.
+
+    The lock is taken on a worker thread the test cannot reach into, so this
+    structured log line — not a patched internal — is what tells a race test
+    that its contender arrived at the lock and is waiting on it. Needs
+    `caplog.set_level("INFO")`.
+    """
+
+    def announced() -> bool:
+        return any(
+            "event=dsp.writer_lock" in record.message
+            and "result=waiting" in record.message
+            and f"source={source}" in record.message
+            for record in caplog.records
+        )
+
+    try:
+        await wait_until(announced, timeout=timeout)
+    except AssertionError:
+        raise AssertionError(
+            f"{source} never announced a wait on the DSP writer lock"
+        ) from None
