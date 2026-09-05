@@ -4,12 +4,14 @@
 
 //! The daemon skeleton `jasper-fanin` and `jasper-outputd` share: the
 //! hand-built JSON emitter their observability payloads are written with
-//! ([`json`]), the [`DaemonHooks`] each daemon speaks through, the systemd
-//! notify seam, the config-class park contract, and the helper-thread stack
-//! budget. Audio-free and ALSA-free.
+//! ([`json`]), the [`DaemonHooks`] each daemon speaks through, the local
+//! control socket they answer on ([`uds`]), the systemd notify seam, the
+//! config-class park contract, and the helper-thread stack budget. Audio-free
+//! and ALSA-free.
 
 pub mod hooks;
 pub mod json;
+pub mod uds;
 
 pub use hooks::DaemonHooks;
 pub use sd_notify::NotifyState;
