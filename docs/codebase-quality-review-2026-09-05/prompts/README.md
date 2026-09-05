@@ -18,8 +18,10 @@ at a plan gate the owner triages before code is written.
 | `P8-docs.md` | #4202 | Docs and prose | B |
 
 Hardware/audio safety is already A− and needs only R-016's belt-and-braces row (in P4's doctor work
-and P3's clamp event). The tuning zone is another agent's; every prompt hands tuning-zone items over
-as suggestions.
+and P3's clamp event). The tuning zone is parked: its steward stood down with wave 9 on main
+(close-out on #3769; PR #4138 open, owner-gated). Every prompt keeps the zone read-only and files
+the tuning-zone rows its attribute needs under an owner-gated heading in its plan, so the owner
+ticks them at the plan gate instead of a lane widening into a 263k-line domain unasked.
 
 ## Sequencing
 
@@ -42,5 +44,7 @@ landing on `main`:
 
 Four sessions at a time is a comfortable ceiling: every lane rebases before each push, and more
 than that makes `main` thrash. The general steward (#4085) and the doctor/state steward overlap
-P3–P6; point them at these issues or pause them while the lanes run. The Wave-6 systems rows in
-the review stay with the doctor/state steward.
+P3–P6; stand them down (merge what is green, close what is not, one close-out comment each) before
+batch 1, or point them at these issues. The Wave-6 systems rows in the review go to P4 once the
+doctor/state steward has stood down. #4031's Phase D and #4027 keep running; the prompts already
+treat their files as theirs.

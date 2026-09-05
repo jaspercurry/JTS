@@ -39,17 +39,32 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
   starting evidence.
 - Issue #4085 — the general steward's queue and its "came back clean" list; do not re-scout what
   it cleared unless your own evidence contradicts it.
+- Issue #3769, last comment — the tuning steward's close-out: what wave 9 landed, what it
+  deferred, the wave-10 candidates. The zone is parked (see Territory); this tells you what not to
+  re-find.
 
 ## Territory
 
-Other agents own: the tuning/measurement zone (`jasper/active_speaker/`, `jasper/audio_measurement/`,
-`jasper/correction/`, `jasper/bass_extension/`, anything `crossover_v2`, `jasper/web/correction_*.py`,
-the `jasper-round-*` CLIs), attached-hardware input (#4027: `jasper/audio_hardware/`,
-`output_hardware.py`, `usbsink/`, `accessories/`, udev), and the web UI (#4031: `jasper/web/`,
-`deploy/assets/`, nginx confs). Stay out of their code unless the owner says otherwise; when your
-attribute needs a change there, write it up as a suggestion (file:line, what, why) for that agent,
-or ask the owner for a one-off. Other stewards merge to `main` concurrently: rebase before every
-push, judge every PR by `git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
+Other agents own attached-hardware input (#4027: `jasper/audio_hardware/`, `output_hardware.py`,
+`usbsink/`, `accessories/`, udev) and the web UI (#4031: `jasper/web/`, `deploy/assets/`, nginx
+confs). Stay out of their code unless the owner says otherwise; when your attribute needs a change
+there, write it up as a suggestion (file:line, what, why) for that agent, or ask the owner for a
+one-off. Other stewards merge to `main` concurrently: rebase before every push, judge every PR by
+`git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
+
+**The tuning zone is parked, not open.** Its steward stood down with wave 9 on main (close-out:
+the last comment on #3769; `TARGET.md`, `WAVE-LOG.md` and `SURVEY-VISION.md` §7 live on branch
+`claude/tuning-rightsize/recon-reports` — fetch it, never merge it). Nobody owns
+`jasper/active_speaker/`, `jasper/audio_measurement/`, `jasper/correction/`, `jasper/bass_extension/`,
+anything `crossover_v2`, `jasper/web/correction_*.py` or the tuning CLIs (`jasper-round-*`,
+`measure`, `null`, `seat-level`, the prescriber and its views) until a wave-10 steward starts. Do
+not edit them on your own initiative: every tuning-zone item your attribute needs goes under its own
+**"Tuning zone — owner-gated"** heading in your plan, one row each with file:line and the proof,
+and you act on a row only after the owner ticks it at the plan gate. Two live constraints there:
+PR #4138 (the wired capture kernel; green, waiting on the owner's hardware null run) — leave
+`audio_measurement/wired_capture.py`, `web/correction_crossover_v2_wired.py`, `cli/null_door.py`,
+`cli/measure.py` and their tests alone until it merges; and #4031's Phase D is about to cut into
+`active_speaker/commissioning_*` — anything there is coordinated on #4031 before a branch exists.
 
 **Sibling lanes.** Seven sibling sessions run the other attributes of the same review (P1 #4193, P2 #4194,
 P3 #4195, P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202; the index and sequencing are in
@@ -104,7 +119,7 @@ Verified at HEAD by the review:
   private-attribute reaches instead of its UDS protocol; `test_volume_coordinator.py` asserts on
   operator warning prose; `test_fanin_coupling_reconcile.py:430,457,921-950,1447` asserts prose;
   `test_wire_contracts.py:513` asserts a literal line of `mux.py`; `test_correction_setup.py:419`
-  asserts on `inspect.getsource` (forced by the closure — tuning/web territory).
+  asserts on `inspect.getsource` (forced by the closure — an owner-gated row, coordinated on #4031).
 - 209 files read repo source as text; the nine opened were legitimate structured contracts. Keep
   that class, list it once, and stop adding to it.
 - Guards measuring the wrong thing: `test_env_vars_codified.py` (69-entry allowlist, passes on a
@@ -122,9 +137,13 @@ Verified at HEAD by the review:
   full lane which skips the required docs link check; the 8-crate roster is spelled in `tests.yml`,
   `check-rust.sh`, `dependabot.yml` with no agreement test.
 - Consolidation candidates (~1,140 LOC): `test_baseline_reemit_*` ×17, `test_detect_echo_*` ×12
-  (tuning — suggest), the 13 tests of `_request_restart_retrying_transient_failures` (a test-only
+  (tuning — owner-gated), the 13 tests of `_request_restart_retrying_transient_failures` (a test-only
   helper), single-use `tests/_*.py` helpers, wizard boilerplate across 10 files, the 93 test-only
-  barrel exports (tuning), the 962 redundant asyncio markers if still present.
+  barrel exports (tuning — owner-gated), the 962 redundant asyncio markers if still present.
+- The tuning zone's own test rows never started: #3769 row 1.4 (160 non-clamp source-text pins, 80
+  sibling clusters of 507 tests, 805 prose `match=` pins; the 15 non-negotiable files stay heavy)
+  and 1.5 (~310 pseudo-public names). That is the largest block under your owner-gated heading —
+  price it as one row with the counts re-measured at HEAD, and do not start it unasked.
 
 Go deeper than the review did: `tests/` was never tiled — 1,014 files were swept mechanically with
 ~15 read in full, and `pytest --collect-only` was blocked by the sandbox proxy (see #4085 for the

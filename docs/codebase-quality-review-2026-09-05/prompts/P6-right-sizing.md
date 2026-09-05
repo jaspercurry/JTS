@@ -39,17 +39,32 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
   starting evidence.
 - Issue #4085 — the general steward's queue and its "came back clean" list; do not re-scout what
   it cleared unless your own evidence contradicts it.
+- Issue #3769, last comment — the tuning steward's close-out: what wave 9 landed, what it
+  deferred, the wave-10 candidates. The zone is parked (see Territory); this tells you what not to
+  re-find.
 
 ## Territory
 
-Other agents own: the tuning/measurement zone (`jasper/active_speaker/`, `jasper/audio_measurement/`,
-`jasper/correction/`, `jasper/bass_extension/`, anything `crossover_v2`, `jasper/web/correction_*.py`,
-the `jasper-round-*` CLIs), attached-hardware input (#4027: `jasper/audio_hardware/`,
-`output_hardware.py`, `usbsink/`, `accessories/`, udev), and the web UI (#4031: `jasper/web/`,
-`deploy/assets/`, nginx confs). Stay out of their code unless the owner says otherwise; when your
-attribute needs a change there, write it up as a suggestion (file:line, what, why) for that agent,
-or ask the owner for a one-off. Other stewards merge to `main` concurrently: rebase before every
-push, judge every PR by `git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
+Other agents own attached-hardware input (#4027: `jasper/audio_hardware/`, `output_hardware.py`,
+`usbsink/`, `accessories/`, udev) and the web UI (#4031: `jasper/web/`, `deploy/assets/`, nginx
+confs). Stay out of their code unless the owner says otherwise; when your attribute needs a change
+there, write it up as a suggestion (file:line, what, why) for that agent, or ask the owner for a
+one-off. Other stewards merge to `main` concurrently: rebase before every push, judge every PR by
+`git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
+
+**The tuning zone is parked, not open.** Its steward stood down with wave 9 on main (close-out:
+the last comment on #3769; `TARGET.md`, `WAVE-LOG.md` and `SURVEY-VISION.md` §7 live on branch
+`claude/tuning-rightsize/recon-reports` — fetch it, never merge it). Nobody owns
+`jasper/active_speaker/`, `jasper/audio_measurement/`, `jasper/correction/`, `jasper/bass_extension/`,
+anything `crossover_v2`, `jasper/web/correction_*.py` or the tuning CLIs (`jasper-round-*`,
+`measure`, `null`, `seat-level`, the prescriber and its views) until a wave-10 steward starts. Do
+not edit them on your own initiative: every tuning-zone item your attribute needs goes under its own
+**"Tuning zone — owner-gated"** heading in your plan, one row each with file:line and the proof,
+and you act on a row only after the owner ticks it at the plan gate. Two live constraints there:
+PR #4138 (the wired capture kernel; green, waiting on the owner's hardware null run) — leave
+`audio_measurement/wired_capture.py`, `web/correction_crossover_v2_wired.py`, `cli/null_door.py`,
+`cli/measure.py` and their tests alone until it merges; and #4031's Phase D is about to cut into
+`active_speaker/commissioning_*` — anything there is coordinated on #4031 before a branch exists.
 
 **Sibling lanes.** Seven sibling sessions run the other attributes of the same review (P1 #4193, P2 #4194,
 P3 #4195, P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202; the index and sequencing are in
@@ -83,21 +98,30 @@ scan of public defs with no consumer outside their file is a visibility list, no
 
 ## The evidence you start from
 
-Review §3.4 (knobs, the verified table and the replacement contract), §3.5 (the verified dead list —
-tuning territory: suggest, do not touch), §7 Wave 2 (the confirmed list **and the refuted list**),
+Review §3.4 (knobs, the verified table and the replacement contract), §3.5 (the verified dead list in
+the tuning zone — owner-gated rows), §7 Wave 2 (the confirmed list **and the refuted list**),
 §8 owner decisions; reports `p3-deletions.md` (the authority — 20 claims, totals, 15 refutations),
 `p0-orphans.md`, `p0-config.md`, `p2-L4-secrets-config.md` §5–6, `p2-L5-pi-performance.md` §E,
 `p1-T21.md` (workspace), `p1-T15.md` (bass_extension boundary — owner decision).
 
 Verified at HEAD by the deletion skeptic (product LOC): peering's mDNS/STATUS/PING half 373 (+485
 test); nine wizard `main()`s + `jasper-web`/`jasper-sound-web` console scripts 334; `active_speaker/
-__init__` lazy doors 143 (tuning — suggest); `audio_hardware/__init__` 80 (hardware territory —
-suggest); audio-lab tone backend 330 (tuning); session-level level-match methods + refusal copy 288
-(tuning); `bluetooth/roles.py` + test-only volume/mux paths that leave fan-in's `AUTO` verb with no
+__init__` lazy doors 143 (tuning — owner-gated); `audio_hardware/__init__` 80 (hardware territory —
+suggest); audio-lab tone backend 330 (tuning — owner-gated); session-level level-match methods +
+refusal copy 288 (tuning — owner-gated; wave 9 batch 2a deleted the level-match trio, so re-verify
+what survives); `bluetooth/roles.py` + test-only volume/mux paths that leave fan-in's `AUTO` verb with no
 producer 131 (+~15 Rust); `CLEAR_CONFIGURATION` 1; dead ring/resampler/host-clock symbols 233;
-crossover_v2 barrels + dead fields 67 (tuning); `HAClient.list_agents` + dead CSRF helper 54;
-`quality_model`/`calibration`/`null_walk` 36 (tuning); `Ducker` + `JASPER_DUCK_TRANSPORT` 87 (+387
-test); the Pi-side install-lib glob (one line).
+crossover_v2 barrels + dead fields 67 (tuning — owner-gated); `HAClient.list_agents` + dead CSRF
+helper 54; `quality_model`/`calibration`/`null_walk` 36 (tuning — owner-gated); `Ducker` +
+`JASPER_DUCK_TRANSPORT` 87 (+387 test); the Pi-side install-lib glob (one line).
+
+The tuning steward's close-out (#3769, last comment) adds to the owner-gated heading: `correction/
+session.py:2244` `MeasurementSession.run_level_match` with zero callers; `active_speaker/
+web_commissioning.py:1575` `play_driver_capture_sweep` dead; a fourth `resolve_wired_mic` copy at
+`cli/seat_level.py:506` (converge on `audio_measurement/wired_capture.py` only after #4138 merges);
+the `program_analysis` facade repoint and the `_LAZY_ATTRS` table, deferred there as one mechanical
+PR each (`SURVEY-VISION.md` §7). Its plan-of-record rows never started (#3769 §5: 1.4, 1.5, Phases
+2–5) are not yours to run; price only what your attribute needs.
 
 **Refuted — do not re-file:** `level_match.py` itself (live via the crossover backend);
 `bass_extension/__init__.py`'s constants (six importers); `HAClient.healthcheck`/`.config`;
@@ -117,9 +141,12 @@ tests, seven `*_WEB_HOST`.
 
 Owner decisions you must price and put in front of the owner, not act on: the `bass_extension` park
 (~4,000 + ~3,900 test; ADR-0018 forbids deletion on orphan grounds); the v1 commissioning chain
-(21,667 LOC, `KNOWN DEFECT #2202`, ADR-0228 row 9, PR #3836); `jasper-deploy-health` (read it first
-— nobody has); `s0-sync-*` vs `multiroom-spike-*` (2,150 LOC, both self-declared throwaway);
-`REFACTOR-CUTOVER-2026-08.md` and `multiroom-pairing-reliability-plan.md` into ADRs.
+(21,667 LOC, `KNOWN DEFECT #2202`, ADR-0228 row 9, PR #3836; the tuning close-out puts this decision
+first among its wave-10 candidates, and #3769 D13 holds it for the owner's word — if approved, the
+cut is coordinated on #4031 before any branch, because Phase D is about to touch
+`active_speaker/commissioning_*`); `jasper-deploy-health` (read it first — nobody has); `s0-sync-*`
+vs `multiroom-spike-*` (2,150 LOC, both self-declared throwaway); `REFACTOR-CUTOVER-2026-08.md` and
+`multiroom-pairing-reliability-plan.md` into ADRs (P8 makes the docs change).
 
 Go deeper than the review did: run a real dead-symbol scan (`vulture` if installable, else the
 review's AST script in `reports/p0-orphans.md`'s method) over the packages the duplicate lens

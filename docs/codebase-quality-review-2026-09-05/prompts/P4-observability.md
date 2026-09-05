@@ -39,17 +39,32 @@ the codebase bigger, more abstract, or more prose-heavy than it is today.
   starting evidence.
 - Issue #4085 — the general steward's queue and its "came back clean" list; do not re-scout what
   it cleared unless your own evidence contradicts it.
+- Issue #3769, last comment — the tuning steward's close-out: what wave 9 landed, what it
+  deferred, the wave-10 candidates. The zone is parked (see Territory); this tells you what not to
+  re-find.
 
 ## Territory
 
-Other agents own: the tuning/measurement zone (`jasper/active_speaker/`, `jasper/audio_measurement/`,
-`jasper/correction/`, `jasper/bass_extension/`, anything `crossover_v2`, `jasper/web/correction_*.py`,
-the `jasper-round-*` CLIs), attached-hardware input (#4027: `jasper/audio_hardware/`,
-`output_hardware.py`, `usbsink/`, `accessories/`, udev), and the web UI (#4031: `jasper/web/`,
-`deploy/assets/`, nginx confs). Stay out of their code unless the owner says otherwise; when your
-attribute needs a change there, write it up as a suggestion (file:line, what, why) for that agent,
-or ask the owner for a one-off. Other stewards merge to `main` concurrently: rebase before every
-push, judge every PR by `git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
+Other agents own attached-hardware input (#4027: `jasper/audio_hardware/`, `output_hardware.py`,
+`usbsink/`, `accessories/`, udev) and the web UI (#4031: `jasper/web/`, `deploy/assets/`, nginx
+confs). Stay out of their code unless the owner says otherwise; when your attribute needs a change
+there, write it up as a suggestion (file:line, what, why) for that agent, or ask the owner for a
+one-off. Other stewards merge to `main` concurrently: rebase before every push, judge every PR by
+`git diff $(git merge-base origin/main HEAD)`, and tell reviewers so.
+
+**The tuning zone is parked, not open.** Its steward stood down with wave 9 on main (close-out:
+the last comment on #3769; `TARGET.md`, `WAVE-LOG.md` and `SURVEY-VISION.md` §7 live on branch
+`claude/tuning-rightsize/recon-reports` — fetch it, never merge it). Nobody owns
+`jasper/active_speaker/`, `jasper/audio_measurement/`, `jasper/correction/`, `jasper/bass_extension/`,
+anything `crossover_v2`, `jasper/web/correction_*.py` or the tuning CLIs (`jasper-round-*`,
+`measure`, `null`, `seat-level`, the prescriber and its views) until a wave-10 steward starts. Do
+not edit them on your own initiative: every tuning-zone item your attribute needs goes under its own
+**"Tuning zone — owner-gated"** heading in your plan, one row each with file:line and the proof,
+and you act on a row only after the owner ticks it at the plan gate. Two live constraints there:
+PR #4138 (the wired capture kernel; green, waiting on the owner's hardware null run) — leave
+`audio_measurement/wired_capture.py`, `web/correction_crossover_v2_wired.py`, `cli/null_door.py`,
+`cli/measure.py` and their tests alone until it merges; and #4031's Phase D is about to cut into
+`active_speaker/commissioning_*` — anything there is coordinated on #4031 before a branch exists.
 
 **Sibling lanes.** Seven sibling sessions run the other attributes of the same review (P1 #4193, P2 #4194,
 P3 #4195, P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202; the index and sequencing are in
@@ -59,7 +74,7 @@ P3 #4195, P4 #4197, P5 #4199, P6 #4200, P7 #4201, P8 #4202; the index and sequen
 owns `restart_broker.py`, `handlers/system.py`, polkit and unit restart policy. **P1 (secrets)**
 may edit a doctor/`/state` leak site directly and will tell you on this issue; keep its redaction
 in place. The Wave-6 systems rows in the review (`VolumeObserver` gate, `MemoryMax`, the
-per-request `asyncio.run`) stay with the doctor/state steward unless the owner hands them to you.
+per-request `asyncio.run`) are the doctor/state steward's while it runs and yours once it stands down.
 
 ## What "A" means here
 
@@ -105,8 +120,8 @@ Verified at HEAD by the review:
   conventions test cannot see; 45 flat names in `correction/`.
 - Transitions with no event: the hardware classifier (`output_hardware.py` has one `log_event`;
   `reconcile.degraded` is write-only); outputd DAC loss (`alsa_backend.rs:1638` — bare `Error:`;
-  `main.rs:144` masks the exit code); the new tuning engine (zero events — tuning territory, suggest
-  only); the live autolevel ramp (printf; the dead ramp has structured events); voice/mux/control
+  `main.rs:144` masks the exit code); the new tuning engine (zero events — an owner-gated
+  tuning-zone row); the live autolevel ramp (printf; the dead ramp has structured events); voice/mux/control
   start/stop; the NN-1 fader clamp (`camilla.py:158` prose); the watchdog stall; the deep-quiet
   volume reconcile refusal (`volume_coordinator.py:1838,1874` silent).
 - `AudioCueManager.play` (`cues/manager.py:255-326`): one `log_event` across six branches, no
@@ -126,8 +141,11 @@ Verified at HEAD by the review:
 
 Go deeper than the review did: it did not read the 21k-line doctor test suite or `audio_health.py`/
 `airplay_health.py` bodies; it measured `/state` size only at the null floor; it did not open
-`jasper-deploy-health` in full. Coordinate with the doctor/state/resilience territory agent — this
-prompt is that territory's observability half; agree the split with the owner in your first exchange.
+`jasper-deploy-health` in full. If the doctor/state steward is still running, this prompt is that
+territory's observability half and you agree the split with the owner in your first exchange; if it
+has stood down, its doctor rows and the review's Wave-6 systems rows (`VolumeObserver` gate,
+`MemoryMax` + a positive `OOMScoreAdjust` per wizard unit, the per-request `asyncio.run`) are yours
+to plan.
 
 ## The plan, before any code
 
