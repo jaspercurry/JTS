@@ -2013,7 +2013,7 @@ def test_a_view_answers_on_stdout_and_leaves_the_curves_in_its_artifact(
 def _bank_lateral_pose(
     session_dir: Path, *, take_id: str, position_deg: int,
     curves: list[dict[str, Any]], vertical_deg: int = 0,
-    capture: str = "wired-TEST",
+    capture: str = "wired-TEST", candidate_id: str = "",
 ) -> None:
     """Directly write a banked ``positions/<take_id>.json`` lateral-pose
     take — the exact shape :func:`~jasper.active_speaker.crossover_v2.record_index.bundle_measurements`
@@ -2031,6 +2031,7 @@ def _bank_lateral_pose(
         "phase": PHASE_LATERAL,
         "position_deg": position_deg,
         "vertical_deg": vertical_deg,
+        "candidate_id": candidate_id,
         "curves": curves,
     }))
 
@@ -2914,3 +2915,115 @@ def test_every_import_in_the_round_views_package_resolves():
             ]
 
     assert unresolved == []
+
+
+# --------------------------------------------------------------------------- #
+# candidates -- the config ladder at one held pose
+# --------------------------------------------------------------------------- #
+
+
+def test_candidates_pairs_the_configs_one_pose_played_and_locates_the_gap(
+    tmp_path, capsys
+):
+    """Two configs at one bearing, differing at exactly ONE bin.
+
+    Both curves are flat but for a single +2 dB bin on B, so the median level
+    each is normalised against is the same and the whole difference is shape:
+    the pair's delta is 2 dB, at that bin's own frequency, and nowhere else.
+    B is additionally banked with a superseded earlier attempt at a wild level,
+    so no arithmetic that pooled retakes instead of superseding them could
+    land on these numbers.
+    """
+    from jasper.cli import round_views as cli
+
+    round_dir = tmp_path / "r1"
+    session_dir = round_dir / "bundle" / "sess1"
+    grid = np.array([500.0, 1000.0, 2000.0, 4000.0, 8000.0])
+    a_db = np.zeros_like(grid)
+    b_db = a_db.copy()
+    b_db[3] += 2.0
+    _bank_lateral_pose(
+        session_dir, take_id="lateral_00_a01", position_deg=7,
+        candidate_id="cfg-a", curves=[_summed_curve(grid, a_db)],
+    )
+    _bank_lateral_pose(
+        session_dir, take_id="lateral_01_a01", position_deg=7,
+        candidate_id="cfg-b", curves=[_summed_curve(grid, np.full_like(grid, 40.0))],
+    )
+    _bank_lateral_pose(
+        session_dir, take_id="lateral_01_a02", position_deg=7,
+        candidate_id="cfg-b", curves=[_summed_curve(grid, b_db)],
+    )
+
+    assert cli.main(["candidates", str(round_dir)]) == cli.EXIT_OK
+
+    answer = json.loads(capsys.readouterr().out)
+    assert answer["candidates"] == ["cfg-a", "cfg-b"]
+    assert (answer["poses"], answer["pairs"]) == (1, 1)
+    assert answer["max_abs_delta_between"] == ["cfg-a", "cfg-b"]
+    assert answer["max_abs_delta_db"] == pytest.approx(2.0)
+    assert answer["max_abs_delta_hz"] == pytest.approx(4000.0)
+    role, = json.loads(Path(answer["out"]).read_text())["tables"][0]["roles"]
+    delta, = role["deltas"]
+    assert delta["level_offset_db"] == pytest.approx(0.0)
+    assert delta["mean_abs_db"] == pytest.approx(2.0 / grid.size)
+    assert [row["candidate_id"] for row in role["candidates"]] == ["cfg-a", "cfg-b"]
+
+
+def test_candidates_compares_only_the_span_both_configs_actually_measured(
+    tmp_path, capsys
+):
+    """A config swept over less than its neighbour is compared over the OVERLAP.
+
+    Resampling one curve onto another's grid past its own last bin holds that
+    bin's value, so a band taken from the DECLARED sweep rather than from the
+    bins banked would publish that endpoint's difference as a disagreement at
+    frequencies the shorter config never measured.
+    """
+    from jasper.cli import round_views as cli
+
+    round_dir = tmp_path / "r1"
+    session_dir = round_dir / "bundle" / "sess1"
+    wide = np.array([200.0, 1000.0, 4000.0, 12000.0])
+    short = np.array([200.0, 1000.0])
+    _bank_lateral_pose(
+        session_dir, take_id="lateral_00_a01", position_deg=0,
+        candidate_id="cfg-a", curves=[_summed_curve(wide, np.zeros_like(wide))],
+    )
+    _bank_lateral_pose(
+        session_dir, take_id="lateral_01_a01", position_deg=0,
+        candidate_id="cfg-b", curves=[_summed_curve(short, np.array([0.0, 12.0]))],
+    )
+
+    assert cli.main(["candidates", str(round_dir)]) == cli.EXIT_OK
+
+    answer = json.loads(capsys.readouterr().out)
+    role, = json.loads(Path(answer["out"]).read_text())["tables"][0]["roles"]
+    assert role["band_hz"] == [200.0, 1000.0]
+    delta, = role["deltas"]
+    assert delta["bins"] == 2
+    # Both bins land 6 dB from the 6 dB median offset the pair was levelled by.
+    assert answer["max_abs_delta_db"] == pytest.approx(6.0)
+
+
+def test_candidates_refuses_a_round_no_pose_of_which_played_two_configs(
+    tmp_path, capsys
+):
+    """One config at a pose is a REPEAT, and ``repeat`` is what measures those.
+
+    The refusal counts what it did see, so a round that walked no ladder is
+    told apart from one whose takes named no config at all.
+    """
+    from jasper.cli import round_views as cli
+    from jasper.cli.round_views.candidates import REFUSE_NO_LADDER
+
+    round_dir = bank_measure_round(tmp_path)
+
+    assert cli.main(["candidates", str(round_dir)]) == cli.EXIT_REFUSED
+
+    record = json.loads(capsys.readouterr().out)
+    assert record["reason"] == REFUSE_NO_LADDER
+    # A named refusal publishes its fields as sorted JSON, never as a mapping.
+    detail = json.loads(record["detail"])
+    assert detail["candidates_named"] == []
+    assert detail["takes_naming_no_candidate"] == 1

@@ -26,7 +26,7 @@ bundle under a new capture session id"*. So one ``bank-crossover-round.sh`` run
 banks ONE stage, and:
 
 * :func:`bank_measure_round` — stage 1. CHECK, the design-axis MEASURE take
-  carrying both per-driver solos, one lateral walk pose, and the ENTRY
+  carrying both per-driver solos, the lateral walk pose(s), and the ENTRY
   BASELINE. No cloud group (``capture_plan.STAGE1_INCLUDES_CLOUD_MEASURE`` is
   ``False``), therefore no ``cloud_verify.json``, therefore no cloud positions
   and no graded ``spec`` block. Its flow state banks no VERIFY curve, because
@@ -159,6 +159,30 @@ def _solo_curves(mode: str) -> list[dict[str, Any]]:
     return [spatial.pose_curve_record(curve) for curve in _pose_curves(mode)]
 
 
+def _tilted(
+    curves: tuple[spatial.LateralPoseCurve, ...], db_per_octave: float,
+) -> tuple[spatial.LateralPoseCurve, ...]:
+    """The same solos through a per-octave tilt — one LADDER rung's shape.
+
+    A tilt rather than a gain: two candidates that differ only in level are
+    indistinguishable to any reader that normalises level away, so a fixture
+    built from those would pass a comparison that computed nothing.
+    """
+    if not db_per_octave:
+        return curves
+    return tuple(
+        spatial.LateralPoseCurve(
+            role=curve.role, freqs_hz=curve.freqs_hz,
+            complex_tf=curve.complex_tf * 10.0 ** (
+                db_per_octave
+                * np.log2(curve.freqs_hz / curve.band_hz[0]) / 20.0
+            ),
+            band_hz=curve.band_hz,
+        )
+        for curve in curves
+    )
+
+
 def _open_round(
     root: Path, name: str, mode: str,
 ) -> tuple[Path, BankedRecordStore, str]:
@@ -230,18 +254,25 @@ def bank_measure_round(
     entry_excluded: Sequence[bool] | None = None,
     round_ordinal: int = 1,
     mode: str = MODE_TWO_WAY,
+    candidates: Sequence[str] = (),
 ) -> Path:
     """One STAGE-1 round directory, as the flow banks it.
 
-    CHECK, the design-axis MEASURE take carrying both per-driver solos, one
-    lateral walk pose, and the entry baseline — plus the round receipt and the
-    flow state. No cloud group and therefore no graded ``spec``: this is the
+    CHECK, the design-axis MEASURE take carrying both per-driver solos, the
+    lateral walk pose(s), and the entry baseline — plus the round receipt and
+    the flow state. No cloud group and therefore no graded ``spec``: this is the
     only round shape that produces an entry baseline, and it is the shape the
     forward model's own worked example points at.
 
     ``entry_baseline_db`` defaults to a flat -20 dB curve on
     :data:`ENTRY_GRID_HZ`. ``mode`` picks the SHAPE: :data:`MODE_TWO_WAY` walks
     both solos, :data:`MODE_WAY1` the one a subless passive main has.
+
+    ``candidates`` makes the walk a LADDER: one lateral pose per named
+    candidate at the SAME bearing, each a rung further tilted, which is the
+    shape the candidate cycle banks — one pose held while the graph swaps
+    under it. Empty walks the single unattributed pose a round with no ladder
+    banks.
     """
     round_dir, store, session_id = _open_round(root, name, mode)
     magnitude_db = (
@@ -258,6 +289,18 @@ def bank_measure_round(
         "captured_at": "2026-08-31T22:00:00Z",
         "wav_sha256": "a" * 64,
     }
+    poses = [
+        spatial.lateral_pose_record(
+            spatial.LateralPose(
+                pose_id=f"lateral_{3 + rung:02d}", index=3 + rung, attempt=1,
+                prompt="", role="", offset_cm=0.0, at_mark=True,
+                curves=_tilted(_pose_curves(mode), float(rung)),
+            ),
+            position_deg=7, lateral_consumer=LATERAL_CONSUMER_FC_SELECTOR,
+            claim=spatial.TakeClaim(candidate_id=candidate_id), **stamp,
+        )
+        for rung, candidate_id in enumerate(candidates or ("",))
+    ]
     _bank(
         store,
         # CHECK computes no transfer function, so it banks an empty curve list
@@ -269,19 +312,12 @@ def bank_measure_round(
             phase=PHASE_MEASURE, index=2, attempt=1, curves=_solo_curves(mode),
             **stamp,
         ),
-        # One lateral pose, so a reader selecting the MEASURE take has a
-        # sibling take of another phase to pass over rather than a clear field.
-        spatial.lateral_pose_record(
-            spatial.LateralPose(
-                pose_id="lateral_03", index=3, attempt=1, prompt="", role="",
-                offset_cm=0.0, at_mark=True,
-                curves=_pose_curves(mode),
-            ),
-            position_deg=7, lateral_consumer=LATERAL_CONSUMER_FC_SELECTOR,
-            **stamp,
-        ),
+        # At least one lateral pose, so a reader selecting the MEASURE take
+        # has a sibling take of another phase to pass over rather than a clear
+        # field.
+        *poses,
         spatial.entry_baseline_record(
-            index=4, attempt=1,
+            index=3 + len(poses), attempt=1,
             program_id="prog-entry", reference_mark=REFERENCE_MARK_DESIGN_AXIS,
             freqs_hz=ENTRY_GRID_HZ, magnitude_db=magnitude_db, excluded=excluded,
             # Capture SCALARS the record carries and every reader in these

@@ -93,6 +93,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "frozen": ViewArtifact("frozen_reference.json", TAKES_AFTER_ANOTHER),
     "per-seat": ViewArtifact("per_seat.json"),
     "repeat": ViewArtifact("repeatability.json", TAKES_BEFORE_ANOTHER),
+    "candidates": ViewArtifact("candidates.json"),
     "agreement": ViewArtifact("agreement.json"),
     "co-metrics": ViewArtifact("audibility_co_metrics.json"),
     "directivity": ViewArtifact("directivity.json"),
