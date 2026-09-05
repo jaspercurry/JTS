@@ -447,7 +447,7 @@ declare -F preflight_deploy_direction >/dev/null || { echo "harness: extraction 
 # Stub the two external seams only: the ssh manifest read and the fetch.
 ensure_origin_fetched() { :; }
 run_remote_sudo() { printf '%s\n' "$MANIFEST"; }
-SUDO_INTERACTIVE=0; DIRTY=""; BRANCH=main
+SUDO_INTERACTIVE=@SUDO@; DIRTY=""; BRANCH=main
 PI_HOST="@HOST@"; SHA_FULL="@LOCAL@"; SHA="${SHA_FULL:0:8}"
 MANIFEST="JASPER_GIT_SHA_FULL=@INSTALLED@
 JASPER_GIT_BRANCH=main
@@ -456,7 +456,7 @@ preflight_deploy_direction
 """
 
 
-def _run_preflight(repo, *, installed, local, host="bench-pi.local"):
+def _run_preflight(repo, *, installed, local, sudo, host="bench-pi.local"):
     """Run the real preflight against a stubbed manifest; return the proc.
 
     stdout/stderr are captured separately so a test can assert which
@@ -471,6 +471,7 @@ def _run_preflight(repo, *, installed, local, host="bench-pi.local"):
         .replace("@HOST@", host)
         .replace("@LOCAL@", local)
         .replace("@INSTALLED@", installed)
+        .replace("@SUDO@", str(sudo))
     )
     return subprocess.run(
         ["bash", "-c", script],
@@ -478,10 +479,11 @@ def _run_preflight(repo, *, installed, local, host="bench-pi.local"):
     )
 
 
-def test_preflight_warns_on_stderr_when_pi_is_behind(deploy_history):
+@pytest.mark.parametrize("sudo", [0, 1])
+def test_preflight_warns_on_stderr_when_pi_is_behind(deploy_history, sudo):
     # origin/main = C; the Pi runs A (behind). Local checkout is current.
     repo, sha_a, sha_c = deploy_history
-    proc = _run_preflight(repo, installed=sha_a, local=sha_c)
+    proc = _run_preflight(repo, installed=sha_a, local=sha_c, sudo=sudo)
     assert proc.returncode == 0, proc.stderr        # advisory never blocks
     assert "is behind origin/main" in proc.stderr
     assert "bench-pi.local" in proc.stderr
@@ -490,21 +492,23 @@ def test_preflight_warns_on_stderr_when_pi_is_behind(deploy_history):
     assert "is behind origin/main" not in proc.stdout
 
 
-def test_preflight_quiet_when_pi_is_current(deploy_history):
+@pytest.mark.parametrize("sudo", [0, 1])
+def test_preflight_quiet_when_pi_is_current(deploy_history, sudo):
     # installed == origin/main tip → no advisory on either stream.
     repo, _sha_a, sha_c = deploy_history
-    proc = _run_preflight(repo, installed=sha_c, local=sha_c)
+    proc = _run_preflight(repo, installed=sha_c, local=sha_c, sudo=sudo)
     assert proc.returncode == 0
     assert "behind origin/main" not in proc.stdout
     assert "behind origin/main" not in proc.stderr
 
 
-def test_preflight_skips_gracefully_when_origin_main_absent(deploy_history):
+@pytest.mark.parametrize("sudo", [0, 1])
+def test_preflight_skips_gracefully_when_origin_main_absent(deploy_history, sudo):
     # No origin/main (offline / never fetched) → a stdout skip note, no
     # warning, deploy still proceeds.
     repo, sha_a, sha_c = deploy_history
     _git(repo, "update-ref", "-d", "refs/remotes/origin/main")
-    proc = _run_preflight(repo, installed=sha_a, local=sha_c)
+    proc = _run_preflight(repo, installed=sha_a, local=sha_c, sudo=sudo)
     assert proc.returncode == 0
     assert "skipped (origin/main unavailable" in proc.stdout
     assert "is behind origin/main" not in proc.stderr
@@ -528,7 +532,7 @@ declare -F preflight_deploy_direction >/dev/null || { echo "harness: preflight e
 declare -F verify_manifest_advanced >/dev/null || { echo "harness: verify extraction failed" >&2; exit 99; }
 ensure_origin_fetched() { :; }
 run_remote_sudo() { printf '%s\n' "$MANIFEST"; }
-SUDO_INTERACTIVE=0; DIRTY=""; BRANCH=main
+SUDO_INTERACTIVE=@SUDO@; DIRTY=""; BRANCH=main
 PI_HOST="@HOST@"; SHA_FULL="@LOCAL@"; SHA="${SHA_FULL:0:8}"
 MANIFEST="JASPER_GIT_SHA_FULL=@INSTALLED@
 JASPER_GIT_BRANCH=main
@@ -542,7 +546,7 @@ verify_manifest_advanced
 """
 
 
-def _run_verify_same_sha(repo, *, installed, local, host="bench-pi.local"):
+def _run_verify_same_sha(repo, *, installed, local, sudo, host="bench-pi.local"):
     script = (
         _VERIFY_SAME_SHA_HARNESS
         .replace("@LIB@", str(LIB))
@@ -550,6 +554,7 @@ def _run_verify_same_sha(repo, *, installed, local, host="bench-pi.local"):
         .replace("@HOST@", host)
         .replace("@LOCAL@", local)
         .replace("@INSTALLED@", installed)
+        .replace("@SUDO@", str(sudo))
     )
     return subprocess.run(
         ["bash", "-c", script],
@@ -557,21 +562,23 @@ def _run_verify_same_sha(repo, *, installed, local, host="bench-pi.local"):
     )
 
 
-def test_verify_flags_same_sha_redeploy_distinctly(deploy_history):
+@pytest.mark.parametrize("sudo", [0, 1])
+def test_verify_flags_same_sha_redeploy_distinctly(deploy_history, sudo):
     # installed == local: redeploying the exact commit already on the Pi.
     repo, _sha_a, sha_c = deploy_history
-    proc = _run_verify_same_sha(repo, installed=sha_c, local=sha_c)
+    proc = _run_verify_same_sha(repo, installed=sha_c, local=sha_c, sudo=sudo)
     assert proc.returncode == 0, proc.stderr
     assert "✓ build manifest advanced" in proc.stdout
     assert "same-SHA redeploy" in proc.stdout
     assert "no new commit landed" in proc.stdout
 
 
-def test_verify_stays_quiet_on_same_sha_line_for_a_real_change(deploy_history):
+@pytest.mark.parametrize("sudo", [0, 1])
+def test_verify_stays_quiet_on_same_sha_line_for_a_real_change(deploy_history, sudo):
     # installed == A, local == C: a genuine forward deploy — the same-SHA
     # callout must not fire for it.
     repo, sha_a, sha_c = deploy_history
-    proc = _run_verify_same_sha(repo, installed=sha_a, local=sha_c)
+    proc = _run_verify_same_sha(repo, installed=sha_a, local=sha_c, sudo=sudo)
     assert proc.returncode == 0, proc.stderr
     assert "✓ build manifest advanced" in proc.stdout
     assert "same-SHA redeploy" not in proc.stdout

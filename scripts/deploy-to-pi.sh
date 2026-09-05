@@ -231,14 +231,6 @@ ensure_origin_fetched() {
 preflight_deploy_direction() {
     local remote_manifest installed_sha installed_branch installed_at
     local direction installed_short local_date installed_date
-    # Same interactive-sudo capture hazard as the identity guard above:
-    # `ssh -tt` merges the password prompt into captured stdout, so the
-    # manifest would parse as garbage (and report a misleading "no
-    # build manifest — first deploy?"). Skip explicitly instead.
-    if [[ "$SUDO_INTERACTIVE" == "1" ]]; then
-        echo "    deploy direction: skipped (interactive sudo cannot capture the build manifest cleanly)"
-        return 0
-    fi
     remote_manifest="$(run_remote_sudo 'cat /var/lib/jasper/build.txt 2>/dev/null' 2>/dev/null || true)"
     installed_sha="$(build_manifest_value "$remote_manifest" JASPER_GIT_SHA_FULL)"
     installed_branch="$(build_manifest_value "$remote_manifest" JASPER_GIT_BRANCH)"
@@ -454,8 +446,6 @@ finish_airplay_health_maintenance() {
 # bound the kernel-log scan to the Pi-clock epoch captured at
 # install start, parse it with the pure _lib helpers, print what died, and
 # set OOM_PRODUCTION_HIT when a live production daemon was the victim.
-# Reading the kernel journal needs root, and `ssh -tt` (interactive sudo)
-# corrupts captured output, so the caller gates this on passwordless sudo.
 report_oom_collateral() {
     local since_epoch="$1"
     local journal units comms entry
@@ -499,7 +489,6 @@ report_oom_collateral() {
 # ran to completion — and a MISMATCH means it didn't, even if the ssh
 # command happened to return 0. This is the deploy-side guard for problem
 # #4 (on jts2 the manifest was written early and lied after an OOM abort).
-# Caller gates on passwordless sudo (clean manifest capture).
 verify_manifest_advanced() {
     local manifest installed_full installed_status expected
     manifest="$(run_remote_sudo 'cat /var/lib/jasper/build.txt 2>/dev/null' 2>/dev/null || true)"
@@ -604,75 +593,63 @@ if [[ "${SKIP_INSTALL:-}" != "1" ]]; then
     # since it only needs PI_HOST resolution. See warn_if_pi_host_on_gadget_network
     # above for the "why" (issue #2340).
     warn_if_pi_host_on_gadget_network
-
-    preflight_sudo
-
-    # Identity guard: never deploy to the WRONG Pi. mDNS names are
-    # transport, not identity — after an Avahi collision rename or a
-    # re-image, PI_HOST can resolve to a different speaker than this
-    # checkout means. TOFU: the first deploy records the target's
-    # stable peer_id (/var/lib/jasper/peer_id) into .env.local; later
-    # deploys abort BEFORE rsync on a mismatch. After a deliberate
-    # re-image, accept the new identity with JTS_ACCEPT_NEW_IDENTITY=1.
-    #
-    # Gated on passwordless sudo: under the interactive fallback,
-    # `ssh -tt` merges sudo's password prompt into the captured stdout,
-    # so the "identity" read here would be prompt text glued to the
-    # UUID — recording garbage on first contact and then spuriously
-    # aborting every later passwordless deploy. Attended deploys skip
-    # verification rather than mis-verify; passwordless sudo (BRINGUP
-    # Phase 2.5) is the posture that gets identity-verified deploys.
-    if [[ "$SUDO_INTERACTIVE" == "1" ]]; then
-        echo "    speaker identity: skipped (interactive sudo cannot capture"
-        echo "      the peer_id cleanly — enable passwordless sudo for"
-        echo "      identity-verified deploys, see BRINGUP Phase 2.5)"
-    else
-        # The recorded peer_id describes the host .env.local names, so it
-        # is only comparable when THIS deploy is aimed there — naming that
-        # same host yourself still verifies and records. A caller naming a
-        # DIFFERENT host is a redirect the record says nothing about:
-        # give the guard no state file, or recording the redirect's
-        # peer_id makes the checkout's next plain deploy abort against its
-        # own Pi. See _lib.sh's targeting contract.
-        identity_env_file="${REPO_ROOT}/.env.local"
-        if [[ "${JTS_TARGET_FROM:-}" == "caller" \
-            && "$PI_HOST" != "${JTS_TARGET_FILE_HOST:-}" ]]; then
-            identity_env_file=""
-        fi
-        remote_peer_id="$(run_remote_sudo 'cat /var/lib/jasper/peer_id 2>/dev/null' 2>/dev/null || true)"
-        identity_outcome="$(verify_or_record_peer_id \
-            "$remote_peer_id" "$identity_env_file" \
-            "${JTS_ACCEPT_NEW_IDENTITY:-}")" || {
-            echo "─────────────────────────────────────────────────────────────" >&2
-            echo " DEPLOY ABORTED: ${PI_HOST} is not the speaker this checkout" >&2
-            echo " last deployed to (${identity_outcome})."                      >&2
-            echo " Likely causes:"                                               >&2
-            echo "   - an mDNS collision rename made this name resolve to a"     >&2
-            echo "     DIFFERENT speaker (check both Pis' /system/ pages)"       >&2
-            echo "   - the Pi was re-imaged (new peer_id)"                       >&2
-            echo " If this target is intentional:"                               >&2
-            echo "   JTS_ACCEPT_NEW_IDENTITY=1 bash scripts/deploy-to-pi.sh"     >&2
-            echo " If you meant a different speaker:"                            >&2
-            echo "   bash scripts/use <correct-hostname>"                        >&2
-            echo "─────────────────────────────────────────────────────────────" >&2
-            exit 1
-        }
-        case "$identity_outcome" in
-            recorded)   echo "    speaker identity: recorded peer_id (first contact)" ;;
-            rerecorded) echo "    speaker identity: re-recorded peer_id (accepted new)" ;;
-            match)      echo "    speaker identity: verified" ;;
-            no_state_file)
-                if [[ -z "$identity_env_file" && -f "${REPO_ROOT}/.env.local" ]]; then
-                    echo "    speaker identity: skipped (you named this target;"
-                    echo "      the recorded identity describes .env.local's speaker)"
-                fi
-                ;;
-            *)          : ;;  # unavailable — the Pi has no peer_id to compare
-        esac
-    fi
-
-    preflight_deploy_direction
 fi
+
+preflight_sudo
+
+# Identity guard: never deploy to the WRONG Pi. mDNS names are
+# transport, not identity — after an Avahi collision rename or a
+# re-image, PI_HOST can resolve to a different speaker than this
+# checkout means. TOFU: the first deploy records the target's
+# stable peer_id (/var/lib/jasper/peer_id) into .env.local; later
+# deploys abort BEFORE rsync on a mismatch. After a deliberate
+# re-image, accept the new identity with JTS_ACCEPT_NEW_IDENTITY=1.
+#
+# The recorded peer_id describes the host .env.local names, so it is only
+# comparable when THIS deploy is aimed there — naming that same host
+# yourself still verifies and records. A caller naming a DIFFERENT host is
+# a redirect the record says nothing about: give the guard no state file,
+# or recording the redirect's peer_id makes the checkout's next plain
+# deploy abort against its own Pi. See _lib.sh's targeting contract.
+identity_env_file="${REPO_ROOT}/.env.local"
+if [[ "${JTS_TARGET_FROM:-}" == "caller" \
+    && "$PI_HOST" != "${JTS_TARGET_FILE_HOST:-}" ]]; then
+    identity_env_file=""
+fi
+# tail -n1: `ssh -tt` (interactive sudo) prefixes the payload with sudo's
+# one-line password prompt, which would otherwise glue onto the UUID.
+remote_peer_id="$(run_remote_sudo 'cat /var/lib/jasper/peer_id 2>/dev/null' 2>/dev/null | tail -n1 || true)"
+identity_outcome="$(verify_or_record_peer_id \
+    "$remote_peer_id" "$identity_env_file" \
+    "${JTS_ACCEPT_NEW_IDENTITY:-}")" || {
+    echo "─────────────────────────────────────────────────────────────" >&2
+    echo " DEPLOY ABORTED: ${PI_HOST} is not the speaker this checkout" >&2
+    echo " last deployed to (${identity_outcome})."                      >&2
+    echo " Likely causes:"                                               >&2
+    echo "   - an mDNS collision rename made this name resolve to a"     >&2
+    echo "     DIFFERENT speaker (check both Pis' /system/ pages)"       >&2
+    echo "   - the Pi was re-imaged (new peer_id)"                       >&2
+    echo " If this target is intentional:"                               >&2
+    echo "   JTS_ACCEPT_NEW_IDENTITY=1 bash scripts/deploy-to-pi.sh"     >&2
+    echo " If you meant a different speaker:"                            >&2
+    echo "   bash scripts/use <correct-hostname>"                        >&2
+    echo "─────────────────────────────────────────────────────────────" >&2
+    exit 1
+}
+echo "    DEPLOY_IDENTITY=${identity_outcome}"
+case "$identity_outcome" in
+    recorded)   echo "    speaker identity: recorded peer_id (first contact)" ;;
+    rerecorded) echo "    speaker identity: re-recorded peer_id (accepted new)" ;;
+    match)      echo "    speaker identity: verified" ;;
+    no_state_file)
+        if [[ -z "$identity_env_file" && -f "${REPO_ROOT}/.env.local" ]]; then
+            echo "    speaker identity: skipped (you named this target;"
+            echo "      the recorded identity describes .env.local's speaker)"
+        fi
+        ;;
+esac
+
+preflight_deploy_direction
 
 # Rsync — same exclude set documented in CLAUDE.md.
 # macOS ships BSD rsync 2.6.9 (no --info= flag); use --stats which
@@ -760,7 +737,7 @@ DEPLOY_START_EPOCH="$(ssh_remote 'date +%s' 2>/dev/null | tr -dc '0-9')" || true
 install_rc=0
 run_remote_sudo "${install_env} bash $(shell_quote "${REMOTE_REPO_DIR}/deploy/install.sh")" || install_rc=$?
 
-if [[ "$SUDO_INTERACTIVE" != "1" && "$DEPLOY_START_EPOCH" != "0" ]]; then
+if [[ "$DEPLOY_START_EPOCH" != "0" ]]; then
     report_oom_collateral "$DEPLOY_START_EPOCH"
 fi
 
@@ -860,28 +837,24 @@ echo "==> Installed profile: ${REMOTE_INSTALL_PROFILE}"
 #     No restart needed for Python code changes.
 if [[ "${SKIP_RESTART:-}" == "1" ]]; then
     echo "==> SKIP_RESTART=1 — leaving daemons on prior code"
-    finish_airplay_health_maintenance
-    trap - EXIT
-    echo "==> Done."
-    exit 0
-fi
-
-echo "==> Restarting code daemon: jasper-control.service"
-run_remote_sudo "systemctl restart jasper-control.service" || \
-    echo "  (jasper-control restart returned non-zero — see scripts/fetch-pi-logs.sh)"
-
-echo "==> Restarting web setup service: jasper-web.service"
-run_remote_sudo "systemctl restart jasper-web.service jasper-web.socket" || \
-    echo "  (jasper-web restart returned non-zero — see scripts/fetch-pi-logs.sh)"
-
-if [[ "$REMOTE_INSTALL_PROFILE" == "streambox" ]]; then
-    echo "==> Reconciling grouping state"
-    run_remote_sudo "systemctl restart jasper-grouping-reconcile.service" || \
-        echo "  (jasper-grouping-reconcile returned non-zero — see scripts/fetch-pi-logs.sh)"
 else
-    echo "==> Reconciling mic/AEC/voice state"
-    run_remote_sudo "systemctl start jasper-aec-reconcile.service" || \
-        echo "  (jasper-aec-reconcile returned non-zero — see scripts/fetch-pi-logs.sh)"
+    echo "==> Restarting code daemon: jasper-control.service"
+    run_remote_sudo "systemctl restart jasper-control.service" || \
+        echo "  (jasper-control restart returned non-zero — see scripts/fetch-pi-logs.sh)"
+
+    echo "==> Restarting web setup service: jasper-web.service"
+    run_remote_sudo "systemctl restart jasper-web.service jasper-web.socket" || \
+        echo "  (jasper-web restart returned non-zero — see scripts/fetch-pi-logs.sh)"
+
+    if [[ "$REMOTE_INSTALL_PROFILE" == "streambox" ]]; then
+        echo "==> Reconciling grouping state"
+        run_remote_sudo "systemctl restart jasper-grouping-reconcile.service" || \
+            echo "  (jasper-grouping-reconcile returned non-zero — see scripts/fetch-pi-logs.sh)"
+    else
+        echo "==> Reconciling mic/AEC/voice state"
+        run_remote_sudo "systemctl start jasper-aec-reconcile.service" || \
+            echo "  (jasper-aec-reconcile returned non-zero — see scripts/fetch-pi-logs.sh)"
+    fi
 fi
 
 # Post-deploy verification: the management surface must answer through
@@ -976,37 +949,25 @@ else
     exit 1
 fi
 
-# Verified-install gate + broadened health surfacing. Both read the Pi
-# over ssh and so need a clean capture: under interactive sudo, `ssh -tt`
-# merges the password prompt into stdout and corrupts the manifest read
-# and the doctor output. Skip with a notice, mirroring the identity and
-# deploy-direction guards above; passwordless sudo (BRINGUP Phase 2.5) is
-# the posture that gets fully-verified deploys.
-if [[ "$SUDO_INTERACTIVE" == "1" ]]; then
-    echo "==> Post-deploy verification: manifest + health checks skipped"
-    echo "    (interactive sudo cannot capture them cleanly — enable"
-    echo "     passwordless sudo for full verification, BRINGUP Phase 2.5)"
-else
-    verify_manifest_advanced
-    HEALTH_START_EPOCH="$(ssh_remote 'date +%s' 2>/dev/null | tr -dc '0-9')" || true
-    [[ -z "${HEALTH_START_EPOCH:-}" ]] && HEALTH_START_EPOCH=0
-    surface_system_health
-    if [[ "${HEALTH_START_EPOCH}" != "0" ]]; then
-        report_oom_collateral "$HEALTH_START_EPOCH"
-    fi
-    if [[ "$OOM_PRODUCTION_HIT" == "1" ]]; then
-        finish_airplay_health_maintenance
-        trap - EXIT
-        echo "─────────────────────────────────────────────────────────────" >&2
-        echo " DEPLOY VERIFICATION FAILED: a live production daemon was" >&2
-        echo " OOM-killed during this deploy. The Pi may have recovered," >&2
-        echo " but this is not clean enough to merge." >&2
-        echo " Diagnose on the Pi:" >&2
-        echo "   sudo /opt/jasper/.venv/bin/jasper-doctor" >&2
-        echo "   journalctl -k --since @${DEPLOY_START_EPOCH} --no-pager | grep -Ei 'oom|killed process'" >&2
-        echo "─────────────────────────────────────────────────────────────" >&2
-        exit 1
-    fi
+verify_manifest_advanced
+HEALTH_START_EPOCH="$(ssh_remote 'date +%s' 2>/dev/null | tr -dc '0-9')" || true
+[[ -z "${HEALTH_START_EPOCH:-}" ]] && HEALTH_START_EPOCH=0
+surface_system_health
+if [[ "${HEALTH_START_EPOCH}" != "0" ]]; then
+    report_oom_collateral "$HEALTH_START_EPOCH"
+fi
+if [[ "$OOM_PRODUCTION_HIT" == "1" ]]; then
+    finish_airplay_health_maintenance
+    trap - EXIT
+    echo "─────────────────────────────────────────────────────────────" >&2
+    echo " DEPLOY VERIFICATION FAILED: a live production daemon was" >&2
+    echo " OOM-killed during this deploy. The Pi may have recovered," >&2
+    echo " but this is not clean enough to merge." >&2
+    echo " Diagnose on the Pi:" >&2
+    echo "   sudo /opt/jasper/.venv/bin/jasper-doctor" >&2
+    echo "   journalctl -k --since @${DEPLOY_START_EPOCH} --no-pager | grep -Ei 'oom|killed process'" >&2
+    echo "─────────────────────────────────────────────────────────────" >&2
+    exit 1
 fi
 
 finish_airplay_health_maintenance

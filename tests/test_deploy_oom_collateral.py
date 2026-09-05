@@ -162,7 +162,6 @@ declare -F report_oom_collateral >/dev/null || { echo "harness: extraction faile
 # (passed via the environment so journal text with slashes/commas/parens
 # needs no shell quoting).
 run_remote_sudo() { printf '%s\n' "$JOURNAL"; }
-SUDO_INTERACTIVE=0
 OOM_PRODUCTION_HIT=0
 report_oom_collateral 1700000000
 echo "OOM_PRODUCTION_HIT=${OOM_PRODUCTION_HIT}"

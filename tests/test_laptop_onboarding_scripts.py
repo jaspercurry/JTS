@@ -74,11 +74,8 @@ case "$cmd" in
       case "$a" in *@*) printf 'peer-%s\n' "${a#*@}"; break ;; esac
     done
     ;;
-  sudo\ -n\ cat\ /var/lib/jasper/build.txt*)
-    printf 'fake-build\n'
-    ;;
-  sudo\ cat\ /var/lib/jasper/build.txt*)
-    printf 'fake-build\n'
+  sudo*cat\ /var/lib/jasper/build.txt*)
+    cat "${FAKE_MANIFEST:-}" 2>/dev/null || true
     ;;
   sudo\ -n\ cat\ /var/lib/jasper/install_profile*)
     printf '%s\n' "${FAKE_INSTALL_PROFILE:-full}"
@@ -104,7 +101,14 @@ case "$cmd" in
     printf '%s\n' "${FAKE_OUTPUT_STATUS:-ready}"
     ;;
   *\/deploy\/install.sh*)
-    exit "${FAKE_INSTALL_SSH_RC:-0}"
+    rc="${FAKE_INSTALL_SSH_RC:-0}"
+    if [[ "$rc" == "0" && -n "${FAKE_MANIFEST:-}" ]]; then
+      # install.sh writes the build manifest ONLY as its final step.
+      sha="${cmd#*JASPER_DEPLOY_SHA_FULL=}"
+      printf 'JASPER_GIT_SHA_FULL=%s\nJASPER_INSTALL_STATUS=ok\n' \
+        "${sha%% *}" > "$FAKE_MANIFEST"
+    fi
+    exit "$rc"
     ;;
   sudo\ -n*)
     exit 0
@@ -212,7 +216,7 @@ class FakeRemote:
             {
                 "PATH": f"{self.bin}{os.pathsep}{env['PATH']}",
                 "FAKE_LOG": str(self.log),
-                "SKIP_RESTART": "1",
+                "FAKE_MANIFEST": str(self.tmp / "build.txt"),
                 "SKIP_AIRPLAY_HEALTH_SUPPRESS": "1",
             }
         )
@@ -482,6 +486,78 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertNotIn("RSYNC", calls)
         self.assertNotIn("deploy/install.sh", calls)
 
+    def test_identity_mismatch_aborts_before_rsync_on_every_sudo_and_flag_path(self):
+        """No path reaches `rsync --delete` with the identity guard unrun.
+
+        .env.local records another speaker's peer_id, so every combination
+        of sudo channel and SKIP_INSTALL must abort before rsync and leave
+        the recorded identity alone.
+
+        Removal condition: delete when the identity and direction guards
+        move out of scripts/deploy-to-pi.sh.
+        """
+        env_local = textwrap.dedent(
+            """\
+            PI_HOST=jts3.local
+            PI_USER=pi
+            JASPER_HOSTNAME=jts3.local
+            PI_PEER_ID=peer-another-speaker
+            """
+        )
+        for use_pty in (False, True):
+            for skip_install in ({}, {"SKIP_INSTALL": "1"}):
+                with self.subTest(use_pty=use_pty, **skip_install):
+                    fake = FakeRemote(self)
+                    # Attended sudo is reachable only from a tty: sudo -n
+                    # fails and stdin is the pty.
+                    env = fake.env(
+                        FAKE_SUDO_N_RC="1" if use_pty else "0", **skip_install
+                    )
+                    with isolated_checkout(env_local) as checkout:
+                        cmd = ["bash", str(checkout / "scripts" / "deploy-to-pi.sh")]
+                        if use_pty:
+                            result = run_with_pty(cmd, cwd=checkout, env=env)
+                        else:
+                            result = subprocess.run(
+                                cmd,
+                                cwd=checkout,
+                                env=env,
+                                capture_output=True,
+                                text=True,
+                                timeout=10,
+                            )
+                        recorded = (checkout / ".env.local").read_text(
+                            encoding="utf-8"
+                        )
+
+                    self.assertNotEqual(
+                        result.returncode, 0, result.stdout + result.stderr
+                    )
+                    self.assertNotIn("RSYNC", fake.calls())
+                    self.assertIn("PI_PEER_ID=peer-another-speaker", recorded)
+
+    def test_skip_restart_skips_the_restarts_and_still_runs_the_gates(self):
+        """SKIP_RESTART=1 leaves the daemons on prior code — it is not a
+        verification switch, so the post-deploy probes still run.
+
+        Removal condition: delete with the SKIP_RESTART flag.
+        """
+        fake = FakeRemote(self)
+        result = self.run_deploy(
+            fake,
+            env_local=None,
+            PI_HOST="jts3.local",
+            PI_USER="pi",
+            JASPER_HOSTNAME="jts3.local",
+            SKIP_RESTART="1",
+        )
+
+        calls = fake.calls()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("systemctl\\ restart", calls)
+        self.assertIn("/system/data.json", calls)
+        self.assertIn("/assets/app.css", calls)
+
     def test_changed_host_key_names_the_manual_remedy_and_removes_nothing(self):
         # A re-imaged Pi answers on the same hostname with a new host key,
         # which accept-new refuses (issue #2114). Both operator scripts
@@ -663,6 +739,9 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         calls = fake.calls()
         combined = result.stdout + result.stderr + calls
         self.assertEqual(result.returncode, 0, combined)
+        # The attended channel still runs the identity guard, and reports
+        # its outcome on the branch that has nothing to compare against.
+        self.assertIn("DEPLOY_IDENTITY=no_state_file", result.stdout)
         self.assertIn("SSH -tt", calls)
         self.assertIn("sudo\\ -v", calls)
         self.assertIn("sudo\\ JASPER_DEPLOY_SHA=", calls)
