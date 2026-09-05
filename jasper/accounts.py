@@ -71,6 +71,17 @@ DEFAULT_CACHE_DIR = "/var/lib/jasper-intsecrets/spotify/caches"
 # into the registry as the default account on first startup if found.
 LEGACY_CACHE_PATH = "/var/lib/jasper-intsecrets/.spotify-cache"
 
+
+def registry_path() -> str:
+    """JASPER_SPOTIFY_ACCOUNTS_PATH override, or DEFAULT_REGISTRY_PATH."""
+    return os.environ.get("JASPER_SPOTIFY_ACCOUNTS_PATH", DEFAULT_REGISTRY_PATH)
+
+
+def legacy_cache_path() -> str:
+    """SPOTIFY_CACHE_PATH override, or LEGACY_CACHE_PATH."""
+    return os.environ.get("SPOTIFY_CACHE_PATH", LEGACY_CACHE_PATH)
+
+
 # WS1 Phase 4b: the OAuth token cache jasper-voice persists must be READABLE by
 # the now-non-root jasper-control (the /transport title-match Spotify router),
 # jasper-mux, and jasper-web (the /spotify wizard status), which share the
