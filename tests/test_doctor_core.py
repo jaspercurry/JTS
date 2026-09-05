@@ -20,7 +20,7 @@ import pytest
 from jasper.cli import doctor
 # `main` and `run_async` resolve these names in their own module's
 # namespace, so a patch aimed at the package would not apply.
-from jasper.cli.doctor import _cli, _harness
+from jasper.cli.doctor import _cli, _harness, _shared
 from jasper.cli.doctor import CheckResult, render_json, renderers
 from jasper.cli.doctor._registry import RegisteredCheck
 from jasper.config import Config
@@ -107,7 +107,7 @@ def test_doctor_check_exception_becomes_fail_result():
     def explode():
         raise RuntimeError("synthetic check failure")
 
-    result = doctor._run_doctor_check(("explosive check", explode))
+    result = _shared._run_doctor_check(("explosive check", explode))
 
     assert result.name == "explosive check"
     assert result.status == "fail"
@@ -122,7 +122,7 @@ def test_doctor_check_exception_redacts_secret_like_values():
             "sk-super-secret-openai-key"
         )
 
-    result = doctor._run_doctor_check(("sensitive check", explode))
+    result = _shared._run_doctor_check(("sensitive check", explode))
 
     assert "super-secret-refresh" not in result.detail
     assert "super-secret-access-token" not in result.detail
@@ -137,7 +137,7 @@ def test_async_doctor_check_exception_becomes_fail_result():
         raise RuntimeError("synthetic async failure")
 
     result = asyncio.run(
-        doctor._run_async_doctor_check("async check", explode),
+        _shared._run_async_doctor_check("async check", explode),
     )
 
     assert result.name == "async check"
@@ -190,7 +190,7 @@ def test_streambox_doctor_config_does_not_require_voice_provider(monkeypatch):
     monkeypatch.setenv("JASPER_HOSTNAME", "jts4.local")
     monkeypatch.setenv("JASPER_SPEAKER_NAME", "JTS4")
 
-    cfg = doctor._doctor_config_from_env("streambox")
+    cfg = _cli._doctor_config_from_env("streambox")
 
     assert cfg.usage_db
     assert cfg.camilla_host == "127.0.0.1"
@@ -204,28 +204,28 @@ def test_streambox_doctor_skips_voice_brain_but_keeps_local_audio_checks():
     by_name = {entry.func.__name__: entry for entry in doctor.registered_checks()}
 
     assert (
-        doctor._doctor_skip_detail(by_name["check_provider_key"], "streambox")
+        _harness._doctor_skip_detail(by_name["check_provider_key"], "streambox")
         == "not installed (streambox profile)"
     )
-    assert doctor._doctor_skip_detail(
+    assert _harness._doctor_skip_detail(
         by_name["check_openwakeword_model"],
         "streambox",
     )
-    assert doctor._doctor_skip_detail(
+    assert _harness._doctor_skip_detail(
         by_name["check_aec_bridge_running"],
         "streambox",
     )
-    assert doctor._doctor_skip_detail(by_name["check_mic_capture"], "streambox")
-    assert doctor._doctor_skip_detail(by_name["check_tts_open"], "streambox")
-    assert not doctor._doctor_skip_detail(
+    assert _harness._doctor_skip_detail(by_name["check_mic_capture"], "streambox")
+    assert _harness._doctor_skip_detail(by_name["check_tts_open"], "streambox")
+    assert not _harness._doctor_skip_detail(
         by_name["check_camilla_websocket"],
         "streambox",
     )
-    assert not doctor._doctor_skip_detail(
+    assert not _harness._doctor_skip_detail(
         by_name["check_librespot_running"],
         "streambox",
     )
-    assert not doctor._doctor_skip_detail(
+    assert not _harness._doctor_skip_detail(
         by_name["check_correction_web_service"],
         "streambox",
     )
@@ -615,7 +615,7 @@ def _cfg_attrs_read_by(func) -> set[str]:
     [
         entry
         for entry in doctor.registered_checks()
-        if entry.needs_cfg and not doctor._doctor_skip_detail(entry, "streambox")
+        if entry.needs_cfg and not _harness._doctor_skip_detail(entry, "streambox")
     ],
     ids=lambda entry: entry.func.__name__,
 )
@@ -623,7 +623,7 @@ def test_streambox_cfg_carries_every_attribute_its_checks_read(entry):
     """The streambox cfg stub is a contract, not a convenience: a check that
     survives the profile filter must find every attribute it reads, or it
     crashes and the dashboard shows a red row on a healthy box."""
-    cfg = doctor._doctor_config_from_env("streambox")
+    cfg = _cli._doctor_config_from_env("streambox")
     missing = {
         attr for attr in _cfg_attrs_read_by(entry.func) if not hasattr(cfg, attr)
     }
@@ -639,7 +639,7 @@ def test_librespot_check_reports_ok_on_streambox_cfg(monkeypatch):
     )
 
     result = renderers.check_librespot_running(
-        doctor._doctor_config_from_env("streambox")
+        _cli._doctor_config_from_env("streambox")
     )
 
     assert result.status == "ok"

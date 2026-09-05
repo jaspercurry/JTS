@@ -28,7 +28,7 @@ from pathlib import Path
 import pytest
 
 from jasper.cli import doctor
-from jasper.cli.doctor import CheckResult, _registry, _shared
+from jasper.cli.doctor import CheckResult, _cli, _harness, _registry, _shared
 from jasper.cli.doctor._registry import (
     MODULE_ROSTER,
     STREAMBOX_OMITTED_DOCTOR_CHECKS,
@@ -110,11 +110,10 @@ def test_every_built_check_is_named_by_one_rule(install_profile):
     streambox makes two rows out of one check for anything reading the report."""
     from types import SimpleNamespace
 
-    from jasper.cli.doctor import _build_doctor_checks, _check_name
-
-    built = _build_doctor_checks(SimpleNamespace(), install_profile)
+    built = _harness._build_doctor_checks(SimpleNamespace(), install_profile)
     assert [c.name for c in built] == [
-        entry.label or _check_name(entry.func) for entry in registered_checks()
+        entry.label or _shared._check_name(entry.func)
+        for entry in registered_checks()
     ]
 
 
@@ -316,8 +315,8 @@ def _timed_out_row() -> CheckResult:
         await asyncio.sleep(30)
         return CheckResult("slow check", "ok")
 
-    runnable = doctor._RunnableDoctorCheck("slow check", slow, is_async=True)
-    return asyncio.run(doctor._run_runnable_with_timeout(runnable, 0.01))
+    runnable = _harness._RunnableDoctorCheck("slow check", slow, is_async=True)
+    return asyncio.run(_harness._run_runnable_with_timeout(runnable, 0.01))
 
 
 def test_a_check_that_overruns_its_timeout_becomes_a_reasoned_fail():
@@ -337,17 +336,17 @@ def test_harness_rows_carry_a_harness_reason():
     rows = [
         _shared._crashed_check_result("boom", RuntimeError("synthetic")),
         _timed_out_row(),
-        doctor._profile_skip_result(
+        _harness._profile_skip_result(
             registered_checks()[0], detail="not installed (streambox profile)",
         ),
     ]
-    error_row = doctor._error_payload(
+    error_row = _cli._error_payload(
         "config: synthetic",
         detail="synthetic",
         reason=_shared.REASON_CONFIG_ERROR,
     )["results"][0]
 
-    assert [r["reason"] for r in doctor._json_payload(rows)["results"]] == [
+    assert [r["reason"] for r in _cli._json_payload(rows)["results"]] == [
         _shared.REASON_CHECK_CRASHED,
         _shared.REASON_CHECK_TIMED_OUT,
         _shared.REASON_NOT_INSTALLED,

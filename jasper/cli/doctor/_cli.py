@@ -32,8 +32,7 @@ from ...env_load import (
 )
 from ...identity import resolve_hostname
 from ...install_profile import (
-    STREAMBOX_INSTALL_PROFILE,
-    install_role_for_profile,
+    is_streambox_install_profile,
     read_install_profile,
 )
 from ...speaker_name import runtime_name as _speaker_runtime_name
@@ -209,7 +208,7 @@ def _local_audio_config_from_env() -> SimpleNamespace:
     )
 
 def _doctor_config_from_env(install_profile: str) -> Config | SimpleNamespace:
-    if install_role_for_profile(install_profile) == STREAMBOX_INSTALL_PROFILE:
+    if is_streambox_install_profile(install_profile):
         return _local_audio_config_from_env()
     return Config.from_env()
 

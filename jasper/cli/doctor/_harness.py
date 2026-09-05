@@ -12,13 +12,13 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from functools import partial
 from types import SimpleNamespace
 from typing import Awaitable, Callable
 
 from ...config import Config
 from ...install_profile import (
-    STREAMBOX_INSTALL_PROFILE,
-    install_role_for_profile,
+    is_streambox_install_profile,
     read_install_profile,
 )
 
@@ -59,8 +59,7 @@ def _profile_skip_result(entry, *, detail: str) -> CheckResult:
 
 
 def _doctor_skip_detail(entry, install_profile: str) -> str:
-    role = install_role_for_profile(install_profile)
-    if role == STREAMBOX_INSTALL_PROFILE and (
+    if is_streambox_install_profile(install_profile) and (
         entry.module in STREAMBOX_OMITTED_DOCTOR_MODULES
         or entry.func.__name__ in STREAMBOX_OMITTED_DOCTOR_CHECKS
     ):
@@ -76,6 +75,10 @@ class _RunnableDoctorCheck:
     exclusive_group: str = ""
 
 
+def _already_decided(result: CheckResult) -> CheckResult:
+    return result
+
+
 def _build_doctor_checks(
     cfg: Config | SimpleNamespace,
     install_profile: str,
@@ -88,20 +91,15 @@ def _build_doctor_checks(
             skipped = _profile_skip_result(entry, detail=skip_detail)
             checks.append(
                 _RunnableDoctorCheck(
-                    name, (name, lambda skipped=skipped: skipped)
+                    name, (name, partial(_already_decided, skipped))
                 )
             )
             continue
-        fn = entry.func
-        call = (
-            (lambda fn=fn, cfg=cfg: fn(cfg))
-            if entry.needs_cfg
-            else (lambda fn=fn: fn())
-        )
+        call = partial(entry.func, cfg) if entry.needs_cfg else entry.func
         checks.append(
             _RunnableDoctorCheck(
                 name,
-                call if entry.is_async else (name, call),
+                call if entry.is_async else (name, call),  # type: ignore[arg-type]
                 is_async=entry.is_async,
                 exclusive_group=entry.exclusive_group,
             )
