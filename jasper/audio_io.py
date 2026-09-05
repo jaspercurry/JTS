@@ -1072,14 +1072,13 @@ class TtsPlayout:
     """Assistant-audio playout: gain validation, drain-deadline timing, and
     the fan-in TTS IPC client.
 
-    The transport name is historical; the packaged socket is fan-in so
-    TTS/cues enter before CamillaDSP. Provider PCM enters as 24 kHz mono,
-    write() resamples to 48 kHz, duplicates mono to stereo, updates the
-    drain deadline, and writes bytes to this class's socket adapter. Gain
-    travels as metadata so the active TTS IPC owner can apply the final
-    clamp at its mix boundary. `output_rate` is pinned to 48 kHz, the only
-    rate this transport's socket protocol speaks, so the write path's
-    24 kHz -> 48 kHz polyphase upsample is always exactly 2x.
+    The name and "transport" language are historical; the packaged socket
+    is fan-in so TTS/cues enter before CamillaDSP. Provider PCM enters as
+    24 kHz mono; write() polyphase-upsamples it 2x to the fan-in socket's
+    fixed 48 kHz, duplicates mono to stereo, updates the drain deadline,
+    and writes bytes to this class's socket adapter. Gain travels as
+    metadata so the active TTS IPC owner can apply the final clamp at its
+    mix boundary.
     """
 
     INPUT_RATE = 24000
@@ -1092,7 +1091,6 @@ class TtsPlayout:
     def __init__(
         self,
         socket_path: str = FANIN_TTS_SOCKET,
-        output_rate: int = _OUTPUTD_SAMPLE_RATE,
         gain_db: float = 0.0,
         *,
         drain_tail_sec: float = 0.085,  # production wires from cfg.tts_drain_tail_sec
@@ -1102,13 +1100,6 @@ class TtsPlayout:
         profile_path: str = ASSISTANT_LOUDNESS_PROFILE_PATH,
         wire_wide: bool | None = None,
     ) -> None:
-        if output_rate != _OUTPUTD_SAMPLE_RATE:
-            raise RuntimeError(
-                "fan-in TTS IPC transport requires 48 kHz stereo IPC; "
-                f"got output_rate={output_rate}"
-            )
-        self._output_rate = output_rate
-        self._upsample = output_rate // self.INPUT_RATE
         # Initial value is the floor (effectively silent) so the daemon
         # cannot accidentally play TTS loud during the brief window
         # between construction and the first configured gain. Until
@@ -1580,14 +1571,13 @@ class TtsPlayout:
             if self._assistant_meter is None:
                 self._assistant_meter = AssistantSourceMeter()
             self._assistant_meter.observe_pcm_24k(pcm)
-        if self._upsample > 1:
-            # __init__ pins output_rate to 48 kHz on this transport, so the
-            # only ratio that reaches here is 2.
-            arr = upsample_2x(arr).astype(np.float32, copy=False)
+        # The wire is fixed at 48 kHz; provider/cue PCM is always 24 kHz, so
+        # this upsample ratio is always exactly 2.
+        arr = upsample_2x(arr).astype(np.float32, copy=False)
         mono = _quantize_to_wire(arr, wide=self._wire_wide)
         stereo = np.repeat(mono, 2)
 
-        chunk_duration_sec = len(mono) / self._output_rate
+        chunk_duration_sec = len(mono) / _OUTPUTD_SAMPLE_RATE
         write_start = time.monotonic()
         for attempt in range(2):
             try:
@@ -1654,7 +1644,7 @@ class TtsPlayout:
             committed_end = self._ring_end_monotonic
             if committed_end is None or committed_end < sent_at:
                 committed_end = sent_at
-            committed_end += len(chunk) / (self._output_rate * self._frame_bytes)
+            committed_end += len(chunk) / (_OUTPUTD_SAMPLE_RATE * self._frame_bytes)
             self._ring_end_monotonic = committed_end
             if cancelled:
                 raise asyncio.CancelledError
@@ -1667,7 +1657,7 @@ class TtsPlayout:
             logger.warning(
                 "fan-in TTS IPC write slow: %.0fms for %.0fms of audio "
                 "(%d frames @ %d Hz)",
-                write_ms, chunk_ms, len(mono), self._output_rate,
+                write_ms, chunk_ms, len(mono), _OUTPUTD_SAMPLE_RATE,
             )
 
     def _profile_for_segment(self, segment_kind: str, *, source_profile=None):

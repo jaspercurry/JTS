@@ -1320,6 +1320,11 @@ class WakeLoop:
             async def pause_content_meter(self) -> None:
                 return None
 
+            async def pause_content_meter_for_measurement(
+                self, deadline_monotonic: float,
+            ) -> None:
+                return None
+
             async def prepare_assistant_context(self, **_kwargs) -> None:
                 return None
 
@@ -2702,23 +2707,13 @@ class WakeLoop:
                     deadline_monotonic=setup_deadline,
                     phase="volume_guard",
                 )
-                pause_meter_for_measurement = getattr(
-                    self._tts,
-                    "pause_content_meter_for_measurement",
-                    None,
+                await self._await_measurement_pause_step(
+                    self._tts.pause_content_meter_for_measurement(
+                        setup_deadline,
+                    ),
+                    deadline_monotonic=setup_deadline,
+                    phase="content_meter",
                 )
-                if callable(pause_meter_for_measurement):
-                    await self._await_measurement_pause_step(
-                        pause_meter_for_measurement(setup_deadline),
-                        deadline_monotonic=setup_deadline,
-                        phase="content_meter",
-                    )
-                else:
-                    await self._await_measurement_pause_step(
-                        self._tts.pause_content_meter(),
-                        deadline_monotonic=setup_deadline,
-                        phase="content_meter",
-                    )
                 meter_paused = True
 
                 drained = not opening or await self._drain_inflight_output(

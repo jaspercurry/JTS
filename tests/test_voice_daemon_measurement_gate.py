@@ -210,10 +210,14 @@ async def test_measurement_pause_blocks_mute_click_admission() -> None:
 
 
 class _RecordingTts(TtsPlayout):
-    """The production emission seam over a recording transport."""
+    """The production emission seam (write_segment/set_emission_admission)
+    over a recording transport — never opens the fan-in socket or wire-width
+    resolver, so it skips TtsPlayout.__init__ and sets only the two
+    attributes that seam reads."""
 
     def __init__(self) -> None:
-        super().__init__()
+        self._emission_admission = None
+        self._emission_refusal_logged = False
         self.segments: list[bytes] = []
 
     async def _write_segment(self, pcm: bytes, **_kwargs) -> None:

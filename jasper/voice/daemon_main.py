@@ -253,8 +253,9 @@ def _wake_ready_detail(cfg: Config, planned_wake_legs: list) -> str:
 
 
 def _tts_ready_detail(cfg: Config) -> str:
-    """Return the startup-log fields for the TTS transport."""
-    return f"tts_transport=outputd tts_owner=fanin tts_socket={cfg.tts_outputd_socket}"
+    """The startup line's ``tts_socket=`` field: where assistant audio
+    enters (fan-in solo, outputd when a bonded member overrides it)."""
+    return f"tts_socket={cfg.tts_outputd_socket}"
 
 
 def build_ducker(
@@ -1151,9 +1152,9 @@ async def run() -> None:
             )
             tts = await stack.enter_async_context(TtsPlayout(
                 socket_path=cfg.tts_outputd_socket,
-                output_rate=cfg.tts_output_rate,
-                # outputd owns the final gain decision. This fallback is
-                # used only by chirps/legacy sounddevice paths.
+                # outputd owns the final gain decision; this initial value
+                # only matters for chirps that play before the first real
+                # gain update lands.
                 gain_db=0.0,
                 drain_tail_sec=cfg.tts_drain_tail_sec,
                 provider=cfg.voice_provider,

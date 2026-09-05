@@ -50,7 +50,7 @@ def test_defaults_with_only_gemini_key(monkeypatch):
         "JASPER_DUCK_DB", "JASPER_DUCK_TRANSPORT",
         "JASPER_RESPONSE_STALL_TIMEOUT_SEC",
         "JASPER_DAILY_SPEND_CAP_USD",
-        "JASPER_MIC_DEVICE", "JASPER_MANUAL_MIC_SOURCES", "JASPER_TTS_DEVICE",
+        "JASPER_MIC_DEVICE", "JASPER_MANUAL_MIC_SOURCES",
         "JASPER_SPEAKER_NAME",
         "JASPER_DEFAULT_LOCATION", "JASPER_WEATHER_LAT",
         "JASPER_WEATHER_LON", "JASPER_WEATHER_DISPLAY_NAME",
@@ -99,9 +99,7 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.mic_capture_rate == 16000
     assert cfg.mic_capture_channels == 1
     assert cfg.aec_chip_aec_enabled is False
-    assert cfg.tts_device == "jasper_out"
     assert cfg.tts_outputd_socket == FANIN_TTS_SOCKET
-    assert cfg.tts_output_rate == 48000
     assert cfg.assistant_loudness_profile_path == (
         "/var/lib/jasper/assistant_loudness_profiles.json"
     )

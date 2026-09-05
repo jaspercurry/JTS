@@ -45,7 +45,7 @@ from ._async_wait import wait_signalled
 
 def _make() -> TtsPlayout:
     """Construct without entering the async context (no ALSA open)."""
-    return TtsPlayout(output_rate=48000, gain_db=-8.0)
+    return TtsPlayout(gain_db=-8.0)
 
 
 class _CaptureOutputdStream:
@@ -124,7 +124,6 @@ def _make_outputd(*, drain_tail_sec: float = 0.0) -> TtsPlayout:
     __aenter__ (no real socket)."""
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
-        output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=drain_tail_sec,
     )
@@ -143,7 +142,7 @@ def _silence_pcm(*, sec: float, rate: int = TtsPlayout.INPUT_RATE) -> bytes:
 def test_constructor_clamps_through_set_gain_db():
     """Whatever the env passes, the constructor routes it through the
     same clamp/validate path as runtime updates."""
-    p = TtsPlayout(output_rate=48000, gain_db=-8.0)
+    p = TtsPlayout(gain_db=-8.0)
     assert p.gain_db == -8.0
 
 
@@ -344,20 +343,10 @@ async def test_drain_unchanged_after_empty_write():
     assert p.expected_drain_at() == 0.0
 
 
-async def test_outputd_transport_requires_48khz_output_rate():
-    with pytest.raises(RuntimeError, match="requires 48 kHz"):
-        TtsPlayout(
-            socket_path="/tmp/outputd-test.sock",
-            output_rate=TtsPlayout.INPUT_RATE,
-            gain_db=-8.0,
-        )
-
-
 async def test_outputd_transport_sends_gain_metadata_without_pregain(monkeypatch):
     monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
-        output_rate=48000,
         gain_db=TtsPlayout.MIN_TTS_GAIN_DB,
         drain_tail_sec=0.0,
         # STATED, not inherited. The byte-level expectations below are S16, and
@@ -387,7 +376,6 @@ async def test_outputd_transport_chunks_long_payloads_on_frame_boundaries(monkey
     monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
-        output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=0.0,
         # S16 frame bytes are what the chunk boundaries below are counted in.
@@ -423,7 +411,6 @@ async def test_outputd_partial_write_keeps_accepted_prefix_in_drain_ledger(
     monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
-        output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=1.0,
     )
@@ -444,7 +431,6 @@ async def test_outputd_transport_sends_provider_segment_identity(monkeypatch):
     monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
-        output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=0.0,
     )
@@ -485,7 +471,6 @@ async def test_outputd_transport_caches_loudness_profile_between_chunks(monkeypa
     monkeypatch.setattr(audio_io_mod, "profile_for_outputd", fake_profile)
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
-        output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=0.0,
         provider="openai",
@@ -523,7 +508,6 @@ async def test_outputd_transport_uses_explicit_source_profile(monkeypatch):
     )
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
-        output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=0.0,
         provider="openai",
@@ -548,7 +532,6 @@ async def test_outputd_flush_returns_ack_and_resets_drain_deadline(monkeypatch):
     monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
-        output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=0.0,
     )
@@ -579,7 +562,6 @@ async def test_outputd_flush_silences_before_saving_profile(monkeypatch):
 
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
-        output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=0.0,
     )
@@ -609,7 +591,6 @@ async def test_outputd_end_segment_marks_ended_before_saving_profile(monkeypatch
 
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
-        output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=0.0,
     )
@@ -655,7 +636,6 @@ async def test_outputd_end_segment_does_not_block_on_slow_meter_finish(monkeypat
 
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
-        output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=0.0,
     )
@@ -938,7 +918,6 @@ async def test_cancelled_nonreading_audio_write_is_bounded_and_reconnects(
     adapter = audio_io_mod._OutputdStreamAdapter(parent)
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
-        output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=0.0,
     )
@@ -1040,7 +1019,6 @@ async def test_outputd_transport_reconnects_after_closed_socket(monkeypatch):
     monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
-        output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=0.0,
     )
@@ -1076,7 +1054,6 @@ async def test_outputd_transport_reconnects_and_retries_after_broken_pipe(
     monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
-        output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=0.0,
     )
@@ -1111,7 +1088,6 @@ async def test_outputd_prepare_reconnects_and_retries_after_broken_pipe(
 ):
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
-        output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=0.0,
     )
@@ -1144,7 +1120,6 @@ async def test_outputd_prepare_reconnects_and_retries_after_broken_pipe(
 async def test_outputd_prepare_preserves_snapshot_stamp() -> None:
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
-        output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=0.0,
     )
@@ -1179,7 +1154,6 @@ async def test_outputd_prepare_reconnect_failure_is_best_effort(
 ):
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
-        output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=0.0,
     )
@@ -1209,7 +1183,6 @@ async def test_outputd_meter_control_reconnects_and_retries_after_broken_pipe(
 ):
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
-        output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=0.0,
     )
@@ -1237,7 +1210,6 @@ async def test_outputd_meter_control_reconnect_failure_is_best_effort(
 ):
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
-        output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=0.0,
     )
