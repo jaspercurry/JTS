@@ -21,6 +21,7 @@ from scripts import _pi_target
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_NAMES = (
     "switch-gemini-model.sh",
+    "switch-voice-provider.sh",
     "switch-wake-word.sh",
     "tail-pi-logs.sh",
     "verify-ref-no-silence-bug.sh",
@@ -52,7 +53,7 @@ def script_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
     repo = tmp_path / "repo"
     scripts = repo / "scripts"
     scripts.mkdir(parents=True)
-    for name in (*SCRIPT_NAMES, "switch-voice-provider.sh", "_lib.sh", "_wake_audio_metrics.py"):
+    for name in (*SCRIPT_NAMES, "_lib.sh", "_wake_audio_metrics.py"):
         shutil.copy2(ROOT / "scripts" / name, scripts / name)
     (scripts / "_offline_wake_count.py").write_text("# test stub\n", encoding="utf-8")
 
@@ -374,32 +375,29 @@ def test_wake_word_current_and_usage_path_is_safe_with_stubbed_ssh(
     assert calls.count("operator@explicit.invalid") == 2
 
 
-def test_wake_word_switch_runs_the_shared_restart_and_verify_chain(
+@pytest.mark.parametrize(
+    ("name", "switch_marker"),
+    (
+        ("switch-wake-word.sh", "wake_model.env"),
+        ("switch-voice-provider.sh", "sh -s --"),
+    ),
+)
+def test_switch_runs_the_shared_restart_and_verify_chain_in_one_session(
     script_repo: tuple[Path, Path, Path],
+    name: str,
+    switch_marker: str,
 ) -> None:
     result, calls = _run_script(
         script_repo,
-        "switch-wake-word.sh",
+        name,
         env_local=None,
         inherited={"PI_HOST": "explicit.invalid", "PI_USER": "operator"},
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "systemctl is-active jasper-voice" in calls
-
-
-def test_voice_provider_switch_runs_the_shared_restart_and_verify_chain(
-    script_repo: tuple[Path, Path, Path],
-) -> None:
-    result, calls = _run_script(
-        script_repo,
-        "switch-voice-provider.sh",
-        env_local=None,
-        inherited={"PI_HOST": "explicit.invalid", "PI_USER": "operator"},
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "systemctl is-active jasper-voice" in calls
+    switch_calls = [line for line in calls.splitlines() if switch_marker in line]
+    assert len(switch_calls) == 1, calls
+    assert "systemctl is-active jasper-voice" in switch_calls[0]
 
 
 @pytest.mark.parametrize("name", SCRIPT_NAMES)

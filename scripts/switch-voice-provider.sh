@@ -96,7 +96,7 @@ if [[ -z "$KEY_LINE" || "$KEY_LINE" == "${KEY_VAR}=" ]]; then
 fi
 
 echo "Switching ${PI_HOST}:JASPER_VOICE_PROVIDER → ${PROVIDER}"
-"${SSH[@]}" "sudo sh -s -- ${PROVIDER} && $(restart_and_verify_cmd jasper-voice)" <<'REMOTE'
+"${SSH[@]}" "sudo sh -s -- ${PROVIDER} && $(restart_voice_and_verify_cmd)" <<'REMOTE'
 set -eu
 provider="$1"
 env="/var/lib/jasper/voice_provider.env"

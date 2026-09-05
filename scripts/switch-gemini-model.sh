@@ -141,7 +141,8 @@ set -eu
 model="$1"
 operator_env="$2"
 provider_env="$3"
-proc_root="${4:-/proc}"; filter="$5"
+proc_root="${4:-/proc}"
+filter="$5"
 expected="JASPER_GEMINI_MODEL=${model}"
 
 # The wizard-owned provider file is sourced after jasper.env, so it is the
