@@ -198,6 +198,31 @@ def test_check_zram_size_ratio_skips_without_a_zram_device():
         assert r.reason == doctor_memory.REASON_ZRAM_ABSENT
 
 
+def test_memory_module_run_reads_proc_meminfo_once(monkeypatch):
+    """ADR-0233 rule 1/4: check_ram, check_memory_headroom, and
+    check_zram_size_ratio all need /proc/meminfo; routed through
+    evidence.meminfo() a full run of the memory module's checks must open
+    it exactly once, no matter how many of them ask."""
+    real_open = open
+    opens: list[str] = []
+
+    def counting_open(path, *args, **kwargs):
+        if str(path) == memory_policy.PROC_MEMINFO:
+            opens.append(str(path))
+            return _mock_meminfo({"MemTotal": 1014768, "MemAvailable": 300000})
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", counting_open)
+
+    for check in doctor.registered_checks(only="memory"):
+        try:
+            check.func()
+        except Exception:  # noqa: BLE001 — only /proc/meminfo opens are pinned
+            pass
+
+    assert opens == [memory_policy.PROC_MEMINFO]
+
+
 # ------------------------------------------------------ audio-slice protection
 
 

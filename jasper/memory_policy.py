@@ -146,8 +146,7 @@ def _psi_some_avg60(path: str) -> float | None:
 def _proc_value(path: str, key: str) -> int | None:
     """The integer on ``key``'s line in a ``/proc`` file, or ``None``.
 
-    Covers both shapes this module reads: ``/proc/vmstat``'s ``oom_kill 3``
-    and ``/proc/meminfo``'s ``MemTotal:  1014768 kB``. An absent file and an
+    Covers ``/proc/vmstat``'s ``oom_kill 3`` shape. An absent file and an
     absent counter are the same fact here — no reading.
     """
     try:
@@ -161,9 +160,40 @@ def _proc_value(path: str, key: str) -> int | None:
     return None
 
 
+def meminfo_fields(*names: str, path: str = PROC_MEMINFO) -> dict[str, int]:
+    """Every named ``/proc/meminfo`` field (e.g. ``MemTotal``), in KiB, in
+    ONE pass over the file (ADR-0233 rule 1 — the one parser for this shape;
+    jasper-doctor's ``Evidence.meminfo`` and ``system_metrics._read_meminfo``
+    both read through it).
+
+    A field absent from the file, or any read failure, simply leaves that
+    key out of the returned dict — callers use ``.get(name, default)``.
+    """
+    wanted = set(names)
+    out: dict[str, int] = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                fields = line.split()
+                if len(fields) < 2:
+                    continue
+                key = fields[0].rstrip(":")
+                if key not in wanted:
+                    continue
+                try:
+                    out[key] = int(fields[1])
+                except ValueError:
+                    continue
+                if len(out) == len(wanted):
+                    break
+    except OSError:
+        return {}
+    return out
+
+
 def meminfo_kb(field: str, *, path: str = PROC_MEMINFO) -> int | None:
     """One ``/proc/meminfo`` field (e.g. ``MemAvailable``), in KiB."""
-    return _proc_value(path, field)
+    return meminfo_fields(field, path=path).get(field)
 
 
 class ZramUsage(NamedTuple):
@@ -185,17 +215,24 @@ def zram_usage(
     *,
     disksize_path: str = ZRAM_DISKSIZE_PATH,
     meminfo_path: str = PROC_MEMINFO,
+    total_kb: int | None = None,
 ) -> ZramUsage | None:
     """Return zram sizing, or ``None`` where there is no zram0 device at all.
 
     Fail-soft like :func:`disk_usage`: an older RPi OS on dphys-swapfile and a
     dev laptop both simply have no such device, which is not a fault.
+
+    ``total_kb`` lets a caller that already read ``/proc/meminfo`` this run
+    (jasper-doctor, via its per-run evidence memo) pass ``MemTotal`` straight
+    in instead of causing a second read; omitted, this reads it itself.
     """
     try:
         disksize = int(Path(disksize_path).read_text().strip())
     except (OSError, ValueError):
         return None
-    total = (_proc_value(meminfo_path, "MemTotal") or 0) * 1024
+    if total_kb is None:
+        total_kb = meminfo_kb("MemTotal", path=meminfo_path) or 0
+    total = total_kb * 1024
     if disksize <= 0 or total <= 0:
         return ZramUsage(max(disksize, 0), total, 0)
     return ZramUsage(disksize, total, disksize * 100 // total)

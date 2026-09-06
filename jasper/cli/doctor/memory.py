@@ -26,7 +26,6 @@ from ...memory_policy import (
     ZRAM_TARGET_PERCENT,
     ZRAM_WARN_PERCENT,
     disk_usage,
-    meminfo_kb,
     memory_headroom_thresholds,
     memory_pressure,
     zram_usage,
@@ -83,7 +82,7 @@ REASON_JOURNALD_CAP_REGRESSED = "journald_retention_cap_regressed"
 
 @doctor_check()
 def check_ram() -> CheckResult:
-    kb = meminfo_kb("MemTotal")
+    kb = evidence.meminfo().get("MemTotal")
     if kb is None:
         return CheckResult(
             "RAM", "skipped", "couldn't read /proc/meminfo",
@@ -136,8 +135,9 @@ def check_memory_headroom() -> CheckResult:
     ~250 MB to single-digit MB over ~10 s as a PIO compile ramped
     up; this check catches that BEFORE the wedge if the operator
     runs the doctor first."""
-    total_kb = meminfo_kb("MemTotal") or 0
-    avail_kb = meminfo_kb("MemAvailable")
+    fields = evidence.meminfo()
+    total_kb = fields.get("MemTotal") or 0
+    avail_kb = fields.get("MemAvailable")
     if avail_kb is None or total_kb == 0:
         return CheckResult(
             "memory headroom", "skipped", "couldn't read /proc/meminfo",
@@ -214,7 +214,8 @@ def check_zram_size_ratio() -> CheckResult:
     ``jasper.memory_policy.ZRAM_TARGET_PERCENT`` is the one number the
     installer sizes to, and ``ZRAM_WARN_PERCENT`` beside it is the band
     this check reads that live sizing against."""
-    usage = zram_usage()
+    total_kb = evidence.meminfo().get("MemTotal", 0)
+    usage = zram_usage(total_kb=total_kb)
     if usage is None:
         return CheckResult(
             "zram size", "skipped", "no zram0 device (rpi-swap not active)",

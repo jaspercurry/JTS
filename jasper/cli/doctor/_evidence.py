@@ -231,6 +231,19 @@ class Evidence:
 
     # -- files and readers shared by several checks ----------------------
 
+    def meminfo(self) -> dict[str, int]:
+        """This run's ``/proc/meminfo`` fields the doctor's memory checks
+        need (``MemTotal``, ``MemAvailable``), read once regardless of how
+        many of ``check_ram``, ``check_memory_headroom``, and
+        ``check_zram_size_ratio`` run (ADR-0233 rule 1/4). A field absent
+        from the file, or an unreadable file, is simply absent from the
+        dict — callers use ``.get(name, default)``."""
+        from ...memory_policy import meminfo_fields
+
+        return self.get(
+            "meminfo", lambda: meminfo_fields("MemTotal", "MemAvailable"),
+        )
+
     def loopback_substreams(self) -> dict[int, str]:
         return self.get("loopback_substreams", _loopback_substreams)
 

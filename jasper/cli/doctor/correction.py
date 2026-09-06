@@ -193,8 +193,7 @@ def check_correction_idle_exit_holds() -> CheckResult:
     issues #1854/#1856/#1860.
     """
     label = "correction idle-exit holds"
-    active = _run(["systemctl", "is-active", _CORRECTION_WEB_UNIT]).stdout.strip()
-    if active != "active":
+    if evidence.unit_active(_CORRECTION_WEB_UNIT) is not True:
         return CheckResult(
             label, "skipped", f"{_CORRECTION_WEB_UNIT} not running",
             reason=REASON_IDLE_HOLDS_SERVICE_INACTIVE,

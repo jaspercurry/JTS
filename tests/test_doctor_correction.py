@@ -83,9 +83,11 @@ _LEAKED_HOLD_LINE = (
 
 
 def _idle_exit_journal(monkeypatch, *, journal, active="active"):
+    _stub_unit_active_states(
+        monkeypatch, {correction._CORRECTION_WEB_UNIT: active},
+    )
+
     def fake_run(cmd, timeout=5.0):
-        if cmd[0] == "systemctl":
-            return subprocess.CompletedProcess(cmd, 0, stdout=f"{active}\n", stderr="")
         assert cmd[0] == "journalctl"
         assert "warning" in cmd  # -p warning: only escalated lines are fetched
         if isinstance(journal, Exception):

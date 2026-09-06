@@ -49,6 +49,9 @@ class CheckResult:
     #     streambox with no mic, no USB gadget): `skipped`;
     #   - the evidence source is unreachable, so nothing was observed at all
     #     (no systemd, an unreadable statefile): `skipped`.
+    # A `warn`/`fail` requires something to have been observed, even if bad;
+    # an evidentiary gap — the probe could not run, the source is absent, or
+    # it timed out with no partial reading — is `skipped`.
     # `skipped` counts toward neither fails nor warns and renders dim.
     status: str
     detail: str = ""

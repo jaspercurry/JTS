@@ -455,7 +455,7 @@ def test_check_aec_output_health_warns_when_journal_unreadable_after_stats_ok(
 
     def fake_run(command, **_kwargs):
         if command[:3] == ["journalctl", "-u", "jasper-aec-bridge.service"]:
-            return SimpleNamespace(returncode=1, stdout="", stderr="journalctl: failed")
+            return _fake_journalctl_failure()
         raise AssertionError(f"unexpected command: {command!r}")
 
     monkeypatch.setattr(aec, "_run", fake_run)
@@ -476,16 +476,18 @@ def test_check_aec_output_health_skips_when_journal_unreadable_and_no_stats(
     _stub_unit_active_states(monkeypatch, {"jasper-aec-bridge.service": "active"})
     monkeypatch.setattr(aec, "_read_bridge_stats_snapshot", lambda: None)
     monkeypatch.setattr(
-        aec, "_run",
-        lambda *a, **k: SimpleNamespace(  # noqa: ARG005
-            stdout="", stderr="journalctl: failed", returncode=1,
-        ),
+        aec, "_run", lambda *a, **k: _fake_journalctl_failure(),  # noqa: ARG005
     )
 
     result = aec.check_aec_bridge_output_health()
 
     assert result.status == "skipped"
     assert result.reason == aec.REASON_BRIDGE_OUTPUT_JOURNAL_UNREADABLE
+
+
+def _fake_journalctl_failure() -> SimpleNamespace:
+    """A failed ``journalctl`` invocation: non-zero exit, no stdout."""
+    return SimpleNamespace(returncode=1, stdout="", stderr="journalctl: failed")
 
 
 def _stage_bridge_journal(monkeypatch, journal: str) -> None:
@@ -1495,10 +1497,7 @@ def test_check_dtln_skips_when_journal_unreadable(monkeypatch, tmp_path: Path):
     _stub_unit_active_states(monkeypatch, {"jasper-aec-bridge.service": "active"})
     monkeypatch.setattr(aec, "_read_bridge_stats_snapshot", lambda: None)
     monkeypatch.setattr(
-        aec, "_run",
-        lambda *a, **k: SimpleNamespace(  # noqa: ARG005
-            stdout="", stderr="journalctl: failed", returncode=1,
-        ),
+        aec, "_run", lambda *a, **k: _fake_journalctl_failure(),  # noqa: ARG005
     )
 
     r = aec.check_aec_bridge_dtln_engine()
