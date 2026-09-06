@@ -284,16 +284,9 @@ journalctl -b 0 -k -p warning..alert --no-pager --output=short-iso 2>/dev/null
 true
 REMOTE
 
-# Configs and runtime state — secrets redacted before write.
-remote "sudo sh -c 'for f in \
-        /etc/jasper/jasper.env \
-        /var/lib/jasper/voice_provider.env \
-        /var/lib/jasper-secrets/voice_keys.env \
-        /var/lib/jasper-secrets/google_credentials.env \
-        /var/lib/jasper-intsecrets/spotify_credentials.env \
-        /var/lib/jasper-intsecrets/home_assistant.env \
-        /var/lib/jasper/transit.env \
-        /var/lib/jasper/wifi_guardian.env; do \
+# Configs and runtime state — secrets redacted before write. The file
+# list is the shared JASPER_SECRET_ENV_FILES array (_diagnostic_redaction.sh).
+remote "sudo sh -c 'for f in ${JASPER_SECRET_ENV_FILES[*]}; do \
             [ -r \"\$f\" ] || continue; \
             echo \"== \$f ==\"; \
             cat \"\$f\"; \
