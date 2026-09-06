@@ -48,13 +48,9 @@ AIRPLAY_HEALTH_SUPPRESS_PATH="/run/jasper-airplay-health-suppress-until"
 AIRPLAY_HEALTH_DEPLOY_SUPPRESS_SEC="${AIRPLAY_HEALTH_DEPLOY_SUPPRESS_SEC:-2700}"
 AIRPLAY_HEALTH_POST_DEPLOY_SUPPRESS_SEC="${AIRPLAY_HEALTH_POST_DEPLOY_SUPPRESS_SEC:-120}"
 SSH_TARGET="${PI_USER}@${PI_HOST}"
-# ServerAlive keepalives bound a severed transport (e.g. install.sh's
-# mid-install USB gadget rebuild tearing down ncm.usb0 under a deploy
-# riding that link, issue #2340) to a ~60s ssh error instead of an
-# unbounded hang. Transport-level only: the encrypted probe gets a reply
-# as long as sshd is alive, so a live-but-quiet install phase (a long,
-# silent Rust build) is never touched — only a genuinely dead connection
-# is (verified against `man ssh_config`; see PR body).
+# ServerAlive keepalives bound a severed transport (issue #2340) to a
+# ~60s ssh error instead of an unbounded hang, so a poll that lost its
+# link fails fast enough to be retried on the next tick.
 SSH_BATCH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
 SUDO_INTERACTIVE=0
 HOSTNAME_FOR_INSTALL=""
@@ -66,6 +62,9 @@ DEPLOY_START_EPOCH=0
 # Set to 1 by report_oom_collateral when a live production daemon was
 # OOM-killed during the install window. See ADR-0174.
 OOM_PRODUCTION_HIT=0
+# What run_install_detached learned: exited (install_rc is install.sh's
+# own status), running (still going on the Pi) or unknown.
+INSTALL_OUTCOME=exited
 # Set by preflight_deploy_direction (same/forward/downgrade/diverged/
 # unknown_installed) so the post-install verification can call out a
 # same-SHA (no-op) redeploy distinctly (#2447) without a second
@@ -91,6 +90,16 @@ run_remote_sudo() {
     fi
 }
 
+# One remote shell body plus its arguments, quoted for whatever login
+# shell sshd starts. The body must contain NO newline: printf %q renders
+# one as bash-only $'\n', which a /bin/sh login shell cannot parse — so
+# build bodies with `printf -v body '%s; '`, never '%s\n'.
+remote_sh() {
+    local name="$1" body="$2"
+    shift 2
+    printf 'sh -c %s %s' "$(shell_quote "$body")" "$(quote_args "$name" "$@")"
+}
+
 # Root-owned Pi facts under attended sudo.
 #
 # sudo's timestamp is per-tty, so every `ssh -tt` session prompts again,
@@ -103,7 +112,8 @@ run_remote_sudo() {
 # before. No-op on that channel; every caller is unconditional.
 REMOTE_FACTS_DIR=""
 publish_root_facts() {
-    local stage="$1" since_epoch="${2:-0}" body args
+    local stage="$1" since_epoch="${2:-0}" body
+    local -a args
     [[ "$SUDO_INTERACTIVE" == "1" ]] || return 0
     if [[ -z "$REMOTE_FACTS_DIR" ]]; then
         # mktemp -d: an unpredictable name, created 0700, and nothing is
@@ -117,27 +127,23 @@ publish_root_facts() {
         trap 'cleanup_remote_facts' EXIT
     fi
     if [[ "$stage" == "journal" ]]; then
-        args="$since_epoch"
-        printf -v body '%s\n' \
+        args=("$since_epoch")
+        printf -v body '%s; ' \
             'dir="$1"; owner="$2"; since="$3"' \
             'journalctl -k --since "$(date -d @"${since}" "+%Y-%m-%d %H:%M:%S")" --no-pager > "${dir}/journal" 2>/dev/null || true' \
             'chown "${owner}" "${dir}/journal"' \
             'chmod 0600 "${dir}/journal"'
     else
         case "$stage" in
-            pre)  args="peer_id build.txt" ;;
-            post) args="build.txt install_profile" ;;
+            pre)  args=(peer_id build.txt) ;;
+            post) args=(build.txt install_profile) ;;
         esac
-        printf -v body '%s\n' \
+        printf -v body '%s; ' \
             'dir="$1"; owner="$2"; shift 2' \
-            'for f in "$@"; do' \
-            '    [ -r "/var/lib/jasper/${f}" ] || continue' \
-            '    install -m 0600 -o "${owner}" "/var/lib/jasper/${f}" "${dir}/${f}" || exit 1' \
-            'done'
+            'for f in "$@"; do [ -r "/var/lib/jasper/${f}" ] || continue; install -m 0600 -o "${owner}" "/var/lib/jasper/${f}" "${dir}/${f}" || exit 1; done'
     fi
     echo "==> Staging privileged reads on ${PI_HOST} (${stage}); sudo may prompt"
-    # shellcheck disable=SC2086
-    if run_remote_sudo "sh -c $(shell_quote "$body") jts-deploy-facts $(shell_quote "$REMOTE_FACTS_DIR") $(shell_quote "$PI_USER") ${args}"; then
+    if run_remote_sudo "$(remote_sh jts-deploy-facts "$body" "$REMOTE_FACTS_DIR" "$PI_USER" "${args[@]}")"; then
         return 0
     fi
     # The journal slice is advisory (its caller decides); the guards that
@@ -513,6 +519,7 @@ mark_airplay_health_maintenance() {
 }
 
 finish_airplay_health_maintenance() {
+    [[ "$INSTALL_OUTCOME" == "running" ]] && return 0
     mark_airplay_health_maintenance "${AIRPLAY_HEALTH_POST_DEPLOY_SUPPRESS_SEC}"
 }
 
@@ -649,66 +656,99 @@ surface_system_health() {
         2>/dev/null || echo "    (post-deploy health probe unavailable — skipped)"
 }
 
-# The install must survive a severed transport (#4190): a WiFi reapply
-# or a client timeout used to SIGHUP a half-applied install, because
-# install.sh was a child of the ssh session. It now runs in its own
-# session on the Pi, writing its transcript and its own exit status to
-# the deploy user's home, and this streams and polls those files over
-# the plain BatchMode channel — so install_rc is install.sh's own $?,
-# never ssh's transport status.
-INSTALL_POLL_INTERVAL_SEC=5
+# The install must outlive this ssh session (#4190): it runs as a
+# transient unit on the Pi and the wrapper only observes it. The fixed
+# unit name is also the single-instance guard.
+INSTALL_UNIT=jts-install
+INSTALL_POLL_INTERVAL_SEC=10
 # A Zero 2 W cold Rust build is the slowest supported install.
 INSTALL_POLL_CEILING_SEC=7200
 run_install_detached() {
-    local log rc_file body poll_body chunk line deadline seen=0 done_rc=""
-    if ! log="$(ssh_remote "sh -c $(shell_quote 'l="$HOME/.jts-install.log"; r="${l%.log}.rc"; rm -f "$l" "$r"; : >"$l"; : >"$r"; chmod 0644 "$l" "$r"; printf "%s\n" "$l"') jts-install-prepare")"; then
-        echo "deploy-to-pi: could not prepare the install transcript on ${SSH_TARGET}" >&2
-        exit 1
-    fi
-    log="${log%%$'\n'*}"
-    rc_file="${log%.log}.rc"
+    local body launch_rc=0 chunk status transcript
+    local load active sub result main size ended offset=1 deadline down_since=0
+    local log="~${PI_USER}/.jts-install.log"
+    install_rc=1
+    INSTALL_OUTCOME=unknown
 
-    # setsid detaches from the session sshd is about to tear down; the
-    # redirections release the ssh channel so this call returns at once.
-    body="${install_env} bash $(shell_quote "${REMOTE_REPO_DIR}/deploy/install.sh"); echo \$? >>$(shell_quote "$rc_file")"
+    # The unit is left loaded so its exit status survives it, so a
+    # finished one must be cleared before the next launch — but never a
+    # live one: that is the single-instance guard (exit 3).
+    printf -v body '%s; ' \
+        'case "$(systemctl show -p SubState --value -- "$1" 2>/dev/null)" in running|start|start-pre|start-post|reload) exit 3 ;; esac' \
+        'systemctl stop -- "$1" >/dev/null 2>&1 || true' \
+        'systemctl reset-failed -- "$1" >/dev/null 2>&1 || true' \
+        'l=$(getent passwd "$3" | cut -d: -f6)/.jts-install.log' \
+        ': > "$l"; chown "$3" "$l" 2>/dev/null || true; chmod 0600 "$l"' \
+        'exec systemd-run --quiet --unit="$1" -p RemainAfterExit=yes -p StandardOutput=append:"$l" -p StandardError=inherit /bin/sh -c "$2"'
     echo "    transcript on the Pi: ${log}"
-    if ! run_remote_sudo "setsid --fork nohup sh -c $(shell_quote "$body") </dev/null >>$(shell_quote "$log") 2>&1"; then
-        echo "deploy-to-pi: could not launch install.sh on ${SSH_TARGET}" >&2
-        exit 1
+    run_remote_sudo "$(remote_sh jts-install-launch "$body" "$INSTALL_UNIT" \
+        "${install_env} bash $(shell_quote "${REMOTE_REPO_DIR}/deploy/install.sh")" "$PI_USER")" \
+        || launch_rc=$?
+    if [[ "$launch_rc" != "0" ]]; then
+        if [[ "$launch_rc" == "3" ]]; then
+            echo "deploy-to-pi: event=deploy.install_busy host=${PI_HOST} unit=${INSTALL_UNIT} transcript=${log}" >&2
+            INSTALL_OUTCOME=running
+        else
+            echo "deploy-to-pi: event=deploy.install_launch_failed host=${PI_HOST} rc=${launch_rc}" >&2
+        fi
+        return 0
     fi
 
-    # Sample the status file BEFORE the transcript, so a completion
-    # between the two reads costs one more poll instead of lost lines.
-    printf -v poll_body '%s\n' \
-        'rc=""' \
-        '[ -s "$2" ] && rc="$(cat "$2")"' \
-        'tail -n +"$(($3 + 1))" "$1" 2>/dev/null' \
-        '[ -n "$rc" ] && printf "JTS_INSTALL_RC=%s\n" "$rc"' \
-        ':'
+    # The transcript is read by BYTE offset, and the remote reports the
+    # size it served, so a partial line is never dropped, duplicated or
+    # fused with the status block that precedes it.
+    printf -v body '%s; ' \
+        'l="$HOME/.jts-install.log"; size=$(wc -c < "$l" 2>/dev/null | tr -dc "0-9")' \
+        '[ -n "$size" ] || size=0' \
+        'printf "JTS_STATUS=%s\nJTS_LOG_SIZE=%s\nJTS_LOG\n" "$(systemctl show --value -p LoadState -p ActiveState -p SubState -p Result -p ExecMainStatus -- "$1" 2>/dev/null | sed "s/^\$/-/" | tr "\n" " ")" "$size"' \
+        'if [ "$size" -ge "$2" ]; then tail -c +"$2" -- "$l" 2>/dev/null | head -c "$((size - $2 + 1))"; fi' \
+        'printf .'
     deadline=$(( $(date +%s) + INSTALL_POLL_CEILING_SEC ))
     while :; do
-        # A dropped poll is one reconnect on the next tick, not a failed
-        # deploy: the install is no longer a child of this ssh session.
-        chunk="$(ssh_remote "sh -c $(shell_quote "$poll_body") jts-install-poll $(shell_quote "$log") $(shell_quote "$rc_file") ${seen}" 2>/dev/null)" || chunk=""
-        if [[ -n "$chunk" ]]; then
-            while IFS= read -r line; do
-                case "$line" in
-                    JTS_INSTALL_RC=*) done_rc="${line#JTS_INSTALL_RC=}" ;;
-                    *) printf '%s\n' "$line"; seen=$((seen + 1)) ;;
-                esac
-            done <<< "$chunk"
+        chunk="$(ssh_remote "$(remote_sh jts-install-poll "$body" "$INSTALL_UNIT" "$offset")" 2>/dev/null)" || chunk=""
+        if [[ "$chunk" != *"JTS_LOG"$'\n'* ]]; then
+            # A dropped poll is a reconnect on the next tick, not a failed
+            # deploy: the install no longer belongs to this ssh session.
+            [[ "$down_since" != "0" ]] || {
+                down_since="$(date +%s)"
+                echo "deploy-to-pi: event=deploy.install_poll_reconnect host=${PI_HOST} since=${down_since}" >&2
+            }
+        else
+            [[ "$down_since" == "0" ]] || {
+                echo "deploy-to-pi: event=deploy.install_poll_reconnected host=${PI_HOST} down_sec=$(( $(date +%s) - down_since ))" >&2
+                down_since=0
+            }
+            status="${chunk%%JTS_LOG$'\n'*}"
+            transcript="${chunk#*JTS_LOG$'\n'}"
+            printf '%s' "${transcript%.}"
+            read -r load active sub result main <<< "${status#*JTS_STATUS=}"
+            size="$(build_manifest_value "$status" JTS_LOG_SIZE)"
+            [[ -n "$size" ]] && offset=$(( size + 1 ))
+            ended=""
+            [[ "$active" == "failed" || "$active" == "inactive" || "$sub" == "exited" ]] && ended=1
+            # A vanished unit (the Pi rebooted mid-install) reports every
+            # other field as a default, so this is read first.
+            if [[ "$load" == "not-found" || ( -n "$ended" && ! "$main" =~ ^[0-9]+$ ) ]]; then
+                echo "deploy-to-pi: event=deploy.install_lost host=${PI_HOST} unit=${INSTALL_UNIT} transcript=${log}" >&2
+                return 0
+            fi
+            if [[ -n "$ended" ]]; then
+                INSTALL_OUTCOME=exited
+                install_rc="$main"
+                [[ "$result" == "signal" ]] && {
+                    echo "deploy-to-pi: event=deploy.install_signal host=${PI_HOST} signal=${main}" >&2
+                    install_rc=$(( 128 + main ))
+                }
+                return 0
+            fi
         fi
-        [[ -n "$done_rc" ]] && break
         if (( $(date +%s) >= deadline )); then
             echo "deploy-to-pi: event=deploy.install_timeout host=${PI_HOST} ceiling_sec=${INSTALL_POLL_CEILING_SEC} transcript=${log}" >&2
-            echo " install.sh is still running detached on the Pi; follow the" >&2
-            echo " transcript there before deciding whether to re-deploy."     >&2
-            exit 1
+            INSTALL_OUTCOME=running
+            return 0
         fi
         sleep "$INSTALL_POLL_INTERVAL_SEC"
     done
-    install_rc="${done_rc//[^0-9]/}"
-    [[ -n "$install_rc" ]] || install_rc=1
 }
 
 # Capture git info BEFORE rsync (which excludes .git/).
@@ -816,18 +856,11 @@ if [[ "${SKIP_INSTALL:-}" == "1" ]]; then
     exit 0
 fi
 
-# Run install.sh under sudo, passing the captured git info as env
-# vars. sudo strips most env by default; explicitly preserve ours
-# with `sudo VAR=value VAR=value command`. install.sh's build-manifest
-# block reads these and prefers them over its REPO_DIR/.git fallback.
-#
-# JASPER_HOSTNAME is also forwarded so install.sh's TLS-cert block
-# generates a server cert with the right CN/SAN for non-default
-# speaker hostnames (jts2.local, jts-kitchen.local, etc.). Without
-# this, every redeploy to a non-default Pi clobbers a previously
-# correct cert with one for "jts.local". PI_HOST is only the SSH target:
-# when it is an IP, HOSTNAME_FOR_INSTALL is resolved from JASPER_HOSTNAME
-# or from the Pi's own hostname, never from the IP address.
+# The captured git info reaches install.sh as env vars because the rsync
+# excludes .git/. JASPER_HOSTNAME rides along so install.sh's TLS-cert
+# block gets the right CN/SAN: without it every redeploy to a non-default
+# Pi clobbers a correct cert with one for "jts.local". PI_HOST is only the
+# SSH target — HOSTNAME_FOR_INSTALL is never derived from an IP.
 echo "==> Running install.sh on ${PI_HOST}..."
 
 # A deploy intentionally restarts shairport-sync, jasper-fanin, and
@@ -878,10 +911,9 @@ done
 DEPLOY_START_EPOCH="$(ssh_remote 'date +%s' 2>/dev/null | tr -dc '0-9')" || true
 [[ -z "$DEPLOY_START_EPOCH" ]] && DEPLOY_START_EPOCH=0
 
-# Keep the install's exit code instead of letting set -e abort on it, so
-# the OOM scan below runs even when the build failed. (See ADR-0174: a
-# failed build that OOM-killed live daemons must not exit silently.)
-install_rc=0
+# The install's status is reported, not raised, so the OOM scan below runs
+# even when the build failed. (See ADR-0174: a failed build that OOM-killed
+# live daemons must not exit silently.)
 run_install_detached
 
 if [[ "$DEPLOY_START_EPOCH" != "0" ]]; then
@@ -892,7 +924,12 @@ if [[ "$install_rc" -ne 0 ]]; then
     finish_airplay_health_maintenance
     trap 'cleanup_remote_facts' EXIT
     echo "─────────────────────────────────────────────────────────────" >&2
-    echo " DEPLOY FAILED: install.sh exited ${install_rc} on ${PI_HOST}." >&2
+    if [[ "$INSTALL_OUTCOME" == "exited" ]]; then
+        echo " DEPLOY FAILED: install.sh exited ${install_rc} on ${PI_HOST}." >&2
+    else
+        echo " DEPLOY FAILED: no exit status from install.sh on ${PI_HOST} — see" >&2
+        echo " the event= line above; the install may still be running there." >&2
+    fi
     if [[ "$OOM_PRODUCTION_HIT" == "1" ]]; then
         echo " A live production daemon was OOM-killed during the build"   >&2
         echo " (see above) — the build is unbounded for this box's RAM."   >&2

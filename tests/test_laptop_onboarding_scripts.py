@@ -143,36 +143,40 @@ case "$cmd" in
     [[ "${FAKE_METADATA_PROBES_FAIL:-0}" == "1" ]] && exit 1
     printf '%s\n' "${FAKE_OUTPUT_STATUS:-ready}"
     ;;
-  *jts-install-prepare*)
-    rm -f "$FAKE_INSTALL_LOG" "$FAKE_INSTALL_RC_FILE" "$FAKE_INSTALL_POLLS"
-    : > "$FAKE_INSTALL_LOG"
-    : > "$FAKE_INSTALL_RC_FILE"
-    printf '%s\n' "$FAKE_INSTALL_LOG"
-    ;;
-  *jts-install-poll*)
-    # The wrapper passes the count of transcript lines it has printed last.
-    seen="${cmd##* }"
-    polls=$(( $(cat "$FAKE_INSTALL_POLLS" 2>/dev/null || printf 0) + 1 ))
-    printf '%s\n' "$polls" > "$FAKE_INSTALL_POLLS"
-    # A severed transport during the poll, not during the install.
-    [[ "$polls" == "${FAKE_POLL_DROP_AT:-}" ]] && exit 255
-    tail -n +"$((seen + 1))" "$FAKE_INSTALL_LOG"
-    if (( polls > ${FAKE_INSTALL_POLLS_UNTIL_DONE:-0} )); then
-      printf 'JTS_INSTALL_RC=%s\n' "$(cat "$FAKE_INSTALL_RC_FILE")"
-    fi
-    ;;
-  *\/deploy\/install.sh*)
-    # Detached: the launch returns 0 immediately and the install's own
-    # status lands in the marker file the poll arm serves.
-    rc="${FAKE_INSTALL_RC:-0}"
-    printf 'fake install.sh transcript\n' >> "$FAKE_INSTALL_LOG"
-    printf '%s\n' "$rc" >> "$FAKE_INSTALL_RC_FILE"
-    if [[ "$rc" == "0" && -n "${FAKE_MANIFEST:-}" ]]; then
+  *jts-install-launch*)
+    # systemd-run returns as soon as the unit is queued; FAKE_LAUNCH_RC=3
+    # is the pre-check refusing to displace a live install.
+    rm -f "$FAKE_INSTALL_POLLS"
+    [[ -n "${FAKE_LAUNCH_RC:-}" ]] && exit "$FAKE_LAUNCH_RC"
+    printf 'fake install.sh transcript\n' > "$FAKE_INSTALL_LOG"
+    if [[ "${FAKE_INSTALL_RC:-0}" == "0" && -n "${FAKE_MANIFEST:-}" ]]; then
       # install.sh writes the build manifest ONLY as its final step.
       sha="${cmd#*JASPER_DEPLOY_SHA_FULL=}"
       printf 'JASPER_GIT_SHA_FULL=%s\nJASPER_INSTALL_STATUS=ok\n' \
         "${sha%%[\\ ]*}" > "$FAKE_MANIFEST"
     fi
+    ;;
+  *jts-install-poll*)
+    # The wrapper passes the byte offset it has already printed.
+    offset="${cmd##* }"
+    polls=$(( $(cat "$FAKE_INSTALL_POLLS" 2>/dev/null || printf 0) + 1 ))
+    printf '%s\n' "$polls" > "$FAKE_INSTALL_POLLS"
+    # A severed transport during a poll, not during the install.
+    [[ "$polls" == "${FAKE_POLL_DROP_AT:-}" ]] && exit 255
+    rc="${FAKE_INSTALL_RC:-0}"
+    if [[ "$rc" == "0" ]]; then result=success; else result=exit-code; fi
+    if (( polls > ${FAKE_INSTALL_POLLS_UNTIL_DONE:-0} )); then
+      status="${FAKE_UNIT_END_STATUS:-loaded active exited $result $rc}"
+    else
+      status="loaded active running - 0"
+    fi
+    size="$(wc -c < "$FAKE_INSTALL_LOG" 2>/dev/null | tr -dc '0-9')"
+    [[ -n "$size" ]] || size=0
+    printf 'JTS_STATUS=%s\nJTS_LOG_SIZE=%s\nJTS_LOG\n' "$status" "$size"
+    if [[ "$size" -ge "$offset" ]]; then
+      tail -c +"$offset" "$FAKE_INSTALL_LOG" | head -c "$((size - offset + 1))"
+    fi
+    printf .
     ;;
   sudo\ -n*)
     exit 0
@@ -292,7 +296,6 @@ class FakeRemote:
                 # Named like the real one: the fake's arms key off it.
                 "FAKE_FACTS_DIR": str(self.tmp / ".jts-deploy-facts.fake"),
                 "FAKE_INSTALL_LOG": str(self.tmp / ".jts-install.log"),
-                "FAKE_INSTALL_RC_FILE": str(self.tmp / ".jts-install.rc"),
                 "FAKE_INSTALL_POLLS": str(self.tmp / "install-polls"),
                 "SKIP_AIRPLAY_HEALTH_SUPPRESS": "1",
             }
@@ -738,17 +741,58 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertIn("status=fail reason=host_key_changed", onboard.stdout)
         self.assertNotIn("SSH-KEYGEN", onboard_fake.calls())
 
-    def test_install_is_detached_and_the_deploy_exits_on_its_polled_status(
-        self,
-    ):
-        """install.sh is launched into its own session and its own exit
-        status is read back from the Pi, so a severed transport can no
-        longer decide the deploy's outcome (#4190). The fake's launch
-        call always returns 0, so any non-zero exit here came from the
-        polled marker file; a poll that dies with ssh's 255 is one
-        reconnect, never the deploy's status.
+    @staticmethod
+    def _launch_line(fake: FakeRemote) -> str:
+        """The recorded launch call, with the log's %q escaping removed."""
+        return next(
+            c
+            for c in fake.calls().replace("\\", "").splitlines()
+            if "jts-install-launch" in c
+        )
 
-        Removal condition: delete with the detached install launch.
+    def test_the_install_is_launched_as_a_transient_unit(self):
+        """install.sh runs as jts-install.service, not as a child of this
+        ssh session, so a severed transport cannot kill a half-applied
+        install (#4190). The unit name is also the single-instance guard,
+        and the unit is left loaded so its exit status outlives it.
+
+        Removal condition: delete with the transient-unit install launch.
+        """
+        fake = FakeRemote(self)
+        result = self.run_deploy(
+            fake,
+            env_local=None,
+            PI_HOST="jts3.local",
+            PI_USER="pi",
+            JASPER_HOSTNAME="jts3.local",
+        )
+
+        launch = self._launch_line(fake)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("systemd-run", launch)
+        # The unit name rides as the body's $1, and it is the same name on
+        # every deploy: that is what makes a second launch refuse.
+        self.assertIn('--unit="$1"', launch)
+        self.assertIn("jts-install-launch jts-install ", launch)
+        self.assertIn("-p RemainAfterExit=yes", launch)
+        self.assertIn("-p StandardOutput=append:", launch)
+        self.assertIn("/bin/sh -c", launch)
+        self.assertIn("/deploy/install.sh", launch)
+        # A finished unit is cleared before the next launch; a live one is
+        # not, which is what makes the launch refuse to displace it.
+        self.assertLess(
+            launch.index("reset-failed"), launch.index("systemd-run")
+        )
+        # No remote body may carry a newline: printf %q renders one as
+        # bash-only $'…', which a /bin/sh login shell cannot parse.
+        self.assertNotIn("$'", fake.calls())
+
+    def test_deploy_exits_on_the_status_the_unit_reports(self):
+        """The deploy's exit code is the unit's ExecMainStatus, polled back
+        over a channel that may drop: the launch call itself always returns
+        0, so a non-zero exit here can only have come from the poll.
+
+        Removal condition: delete with the transient-unit install launch.
         """
         for install_rc, drop_at, expect_done in (
             ("0", "", True),
@@ -769,33 +813,91 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
                 )
 
                 combined = result.stdout + result.stderr
-                # The call log %q-quotes each argument; the shape, not the
-                # quoting, is what this pins.
                 calls = fake.calls().replace("\\", "").splitlines()
-                launch = next(c for c in calls if "/deploy/install.sh" in c)
                 polls = [c for c in calls if "jts-install-poll" in c]
 
                 self.assertEqual(
                     result.returncode, int(install_rc), combined
                 )
-                self.assertIn("setsid --fork nohup sh -c", launch)
-                self.assertIn("</dev/null", launch)
-                self.assertIn(".jts-install.log 2>&1", launch)
-                self.assertIn("echo $? >>", launch)
-                # The status can only have come from a poll: the fake's
-                # launch arm exits 0 and withholds the rc for one tick.
                 self.assertGreaterEqual(len(polls), 2)
-                self.assertLess(calls.index(launch), calls.index(polls[0]))
-                # The install transcript reaches the operator live.
                 self.assertIn("fake install.sh transcript", result.stdout)
+                self.assertEqual("==> Done." in combined, expect_done)
+                if drop_at:
+                    self.assertIn(
+                        "event=deploy.install_poll_reconnect ", result.stderr
+                    )
+                    self.assertIn(
+                        "event=deploy.install_poll_reconnected", result.stderr
+                    )
+                else:
+                    self.assertNotIn("install_poll_reconnect", result.stderr)
                 # The OOM window opens before the install it bounds, and a
-                # failed install still gets its collateral scanned.
+                # failed install still has its collateral scanned.
                 clock = next(c for c in calls if c.endswith("date +%s"))
+                launch = self._launch_line(fake)
                 self.assertLess(calls.index(clock), calls.index(launch))
                 self.assertTrue(
                     any("journalctl -k" in c for c in calls), combined
                 )
-                self.assertEqual("==> Done." in combined, expect_done)
+
+    def test_a_running_install_is_never_displaced_by_a_second_deploy(self):
+        """A deploy that finds jts-install.service already running refuses
+        rather than interleaving two installs, and leaves the long AirPlay
+        maintenance window in place because the install is still going.
+
+        Removal condition: delete with the transient-unit install launch.
+        """
+        fake = FakeRemote(self)
+        result = self.run_deploy(
+            fake,
+            env_local=None,
+            PI_HOST="jts3.local",
+            PI_USER="pi",
+            JASPER_HOSTNAME="jts3.local",
+            FAKE_LAUNCH_RC="3",
+            SKIP_AIRPLAY_HEALTH_SUPPRESS="",
+        )
+
+        combined = result.stdout + result.stderr
+        calls = fake.calls().replace("\\", "").splitlines()
+        windows = [
+            c for c in calls if "jasper-airplay-health-suppress-until" in c
+        ]
+        self.assertNotEqual(result.returncode, 0, combined)
+        self.assertIn("event=deploy.install_busy", result.stderr)
+        self.assertEqual(len([c for c in calls if "jts-install-launch" in c]), 1)
+        self.assertEqual([c for c in calls if "jts-install-poll" in c], [])
+        self.assertNotIn("==> Done.", combined)
+        # Only the deploy-length window was marked: shortening it would
+        # blame the running install's restarts on AirPlay reliability.
+        self.assertEqual(len(windows), 1)
+        self.assertIn("+ 2700", windows[0])
+
+    def test_a_vanished_unit_is_reported_lost_without_waiting_out_the_ceiling(
+        self,
+    ):
+        """A Pi that reboots mid-install loses the unit; systemd then
+        reports every other field as a default, so an unloaded unit must
+        fail the deploy rather than read as a clean exit 0.
+
+        Removal condition: delete with the transient-unit install launch.
+        """
+        fake = FakeRemote(self)
+        result = self.run_deploy(
+            fake,
+            env_local=None,
+            PI_HOST="jts3.local",
+            PI_USER="pi",
+            JASPER_HOSTNAME="jts3.local",
+            FAKE_UNIT_END_STATUS="not-found inactive dead success 0",
+        )
+
+        combined = result.stdout + result.stderr
+        polls = [c for c in fake.calls().splitlines() if "jts-install-poll" in c]
+        self.assertNotEqual(result.returncode, 0, combined)
+        self.assertIn("event=deploy.install_lost", result.stderr)
+        self.assertLessEqual(len(polls), 2)
+        self.assertNotIn("==> Done.", combined)
 
     def test_passwordless_sudo_uses_noninteractive_sudo_and_remote_home(self):
         fake = FakeRemote(self)
@@ -819,7 +921,7 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         )
         self.assertNotIn("-dirty", result.stdout)
         self.assertIn("alice@jts3.local:/home/alice/jts/", calls)
-        self.assertIn("sudo\\ -n\\ setsid", calls)
+        self.assertIn("sudo -n sh -c", self._launch_line(fake))
         self.assertIn("/home/alice/jts/deploy/install.sh", calls)
         self.assertNotIn("SSH -tt", calls)
 
@@ -908,7 +1010,10 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertIn("DEPLOY_IDENTITY=no_state_file", result.stdout)
         self.assertIn("SSH -tt", calls)
         self.assertIn("sudo\\ -v", calls)
-        self.assertIn("sudo\\ setsid", calls)
+        # The privileged install launch rides the pty channel too.
+        launch = self._launch_line(fake)
+        self.assertTrue(launch.startswith("SSH -tt "), launch)
+        self.assertIn("sudo sh -c", launch)
         for forbidden in (
             "sudo -S",
             "sudo\\ -S",
