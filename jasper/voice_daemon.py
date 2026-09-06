@@ -2036,7 +2036,7 @@ class WakeLoop:
         self._conversation_turn_seq = (
             (self._conversation_turn_seq % 999) + 1
         )
-        session_id = getattr(self, "_session_id", None)
+        session_id = self._session_id
         turn = ConversationTurn(
             id=make_turn_id(ts_utc, self._conversation_turn_seq),
             ts_utc=ts_utc,
@@ -3064,7 +3064,7 @@ class WakeLoop:
                     trigger_kind=trigger_kind,
                     threshold=firing_threshold,
                     wake_model=self._cfg.wake_model,
-                    voice_provider=getattr(self._cfg, "voice_provider", None),
+                    voice_provider=self._cfg.voice_provider,
                     bridge_config=bridge_config,
                     music_active=music_active_proxy,
                     music_volume_db=music_volume_db,
