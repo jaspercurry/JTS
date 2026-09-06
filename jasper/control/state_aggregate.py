@@ -498,13 +498,9 @@ def _combo_state(*, fanin_text: str) -> dict[str, Any]:
     eligibility; capture self-heal telemetry cannot change this state.
     """
     try:
-        from ..env_file import read_value
-        from ..fanin.coupling_auto import (
-            USB_COMBO_ENABLED_VALUE,
-            USB_DIRECT_ENV_VAR,
-        )
+        from ..fanin.coupling_auto import combo_armed_from_env
 
-        armed = read_value(fanin_text, USB_DIRECT_ENV_VAR) == USB_COMBO_ENABLED_VALUE
+        armed = combo_armed_from_env(fanin_text)
         return {"state": "armed" if armed else "disarmed"}
     except (ImportError, OSError, ValueError, TypeError) as e:
         logger.debug("combo state read failed: %s", e)
@@ -512,47 +508,30 @@ def _combo_state(*, fanin_text: str) -> dict[str, Any]:
 
 
 def _conversation_history_state() -> dict[str, Any] | None:
-    """Read /state.chat fresh from the conversation-history SSOT + store."""
-    from datetime import datetime, timezone
+    """Project conversation_history.health() onto /state.chat's wire shape.
 
-    from ..conversation_history import ConversationStore, read_settings
+    ``None`` when capture is on but the store could not be read at all —
+    the household expects data and none can be shown, distinct from the
+    zeroed dict below for capture never having been turned on.
+    """
+    from ..conversation_history import health
 
-    settings = read_settings()
-    store = ConversationStore(
-        settings.db_path,
-        read_only=True,
-        warn_unavailable=False,
-    )
-    try:
-        stats = store.stats()
-        if stats is None:
-            if settings.capture_enabled:
-                return None
-            return {
-                "capture_enabled": False,
-                "turn_count": None,
-                "last_write_age_seconds": None,
-                "retention": settings.retention,
-            }
-        age_seconds = None
-        if stats.last_write_ts_utc:
-            raw = stats.last_write_ts_utc.strip()
-            parse_value = f"{raw[:-1]}+00:00" if raw.endswith("Z") else raw
-            try:
-                ts = datetime.fromisoformat(parse_value)
-                if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=timezone.utc)
-                age_seconds = max(0.0, round(time.time() - ts.timestamp(), 1))
-            except ValueError:
-                age_seconds = None
+    info = health()
+    if info["available"] and info["turn_count"] is not None:
         return {
-            "capture_enabled": settings.capture_enabled,
-            "turn_count": stats.turn_count,
-            "last_write_age_seconds": age_seconds,
-            "retention": settings.retention,
+            "capture_enabled": info["capture_enabled"],
+            "turn_count": info["turn_count"],
+            "last_write_age_seconds": info["last_write_age_seconds"],
+            "retention": info["retention"],
         }
-    finally:
-        store.close()
+    if info["capture_enabled"]:
+        return None
+    return {
+        "capture_enabled": False,
+        "turn_count": None,
+        "last_write_age_seconds": None,
+        "retention": info["retention"],
+    }
 
 
 def _research_state(

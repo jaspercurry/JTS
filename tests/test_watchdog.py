@@ -27,6 +27,7 @@ makes this file slower, never red (#2658).
 """
 from __future__ import annotations
 
+import logging
 import sys
 import threading
 import types
@@ -35,6 +36,8 @@ from collections import Counter
 import pytest
 
 from jasper.watchdog import Heartbeat
+
+from ._log_events import event_field_maps
 
 #: Hang backstop, never a timing assertion — same bound and the same
 #: reasoning as tests/_async_wait.DEFAULT_SIGNAL_TIMEOUT_S.
@@ -187,6 +190,29 @@ def test_pat_resumes_after_progress_recovers(transitions, build):
     # Recovered: one bump re-freshens the sentinel and pats resume.
     hb.bump()
     transitions.await_count("WATCHDOG=1", 3)
+
+
+def test_suppression_speaks_once_per_wedge_not_once_per_tick(
+    transitions, build, caplog,
+):
+    """A wedge holds until systemd kills the unit, so the suppression is one
+    line per episode, not one per `interval_sec`. Delete with the events.
+    """
+    caplog.set_level(logging.INFO, logger="jasper.watchdog")
+    clock = FakeClock(transitions)
+    hb = build(clock, stale_threshold_sec=0.1)
+    clock.now = 10.0
+    hb.start()
+
+    transitions.await_count(TICK, transitions.count(TICK) + 3)
+    hb.bump()
+    transitions.await_count("WATCHDOG=1", 1)
+    hb.stop()
+
+    (suppressed,) = event_field_maps(caplog, "watchdog.heartbeat_suppressed")
+    assert float(suppressed["stalled_for_s"]) >= 0.1
+    (resumed,) = event_field_maps(caplog, "watchdog.heartbeat_resumed")
+    assert int(resumed["suppressed_ticks"]) >= 3
 
 
 def test_stop_is_idempotent(transitions):

@@ -378,7 +378,7 @@ def check_fanin_service() -> CheckResult:
         "jasper-fanin.service",
         missing=REASON_FANIN_UNIT_MISSING,
         not_enabled=REASON_FANIN_UNIT_NOT_ENABLED,
-        inactive=REASON_FANIN_INACTIVE,
+        inactive=REASON_FANIN_INACTIVE, speaker_silent=True,
     )
     if service_failure is not None:
         return service_failure
@@ -392,7 +392,7 @@ def check_fanin_service() -> CheckResult:
             f"Fan-in is mandatory; without STATUS doctor cannot verify "
             f"the live graph, buffers, or watchdog progress. "
             f"check: journalctl -u jasper-fanin | tail",
-            reason=REASON_FANIN_STATUS_UNREACHABLE,
+            reason=REASON_FANIN_STATUS_UNREACHABLE, speaker_silent=True,
         )
     data = status.payload
     if data is None:
@@ -409,7 +409,7 @@ def check_fanin_service() -> CheckResult:
             "jasper-fanin service",
             "fail",
             "active but STATUS response missing output{}",
-            reason=REASON_FANIN_STATUS_MISSING_OUTPUT,
+            reason=REASON_FANIN_STATUS_MISSING_OUTPUT, speaker_silent=True,
         )
     # The ring is the only transport a running fan-in can be on (ADR-0100), so
     # the expectation is a constant, NOT a mapping from the persisted file:
@@ -425,7 +425,7 @@ def check_fanin_service() -> CheckResult:
             "expected 'shm_ring' — the SHM ring is fan-in's only transport "
             "toward CamillaDSP. Check journalctl -u jasper-fanin for the "
             "transport it actually opened.",
-            reason=REASON_FANIN_TRANSPORT_NOT_RING,
+            reason=REASON_FANIN_TRANSPORT_NOT_RING, speaker_silent=True,
         )
     ring = output.get("ring")
     if not isinstance(ring, dict):
@@ -435,7 +435,7 @@ def check_fanin_service() -> CheckResult:
             "active but STATUS is missing output.ring metrics — "
             "fan-in is not actually writing Ring A. Check "
             "journalctl -u jasper-fanin for event=fanin.ring.opened.",
-            reason=REASON_FANIN_STATUS_MISSING_RING,
+            reason=REASON_FANIN_STATUS_MISSING_RING, speaker_silent=True,
         )
 
     inputs = data.get("inputs")
