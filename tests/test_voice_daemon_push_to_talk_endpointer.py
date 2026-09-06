@@ -824,6 +824,9 @@ class _TeardownTurn:
     def usage_tokens(self) -> dict[str, int]:
         return {"input_tokens": 0, "output_tokens": 0}
 
+    def usage_breakdown(self) -> dict | None:
+        return None
+
     async def end_input(self) -> None:
         self.end_input_calls += 1
 

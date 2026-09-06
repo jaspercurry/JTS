@@ -78,9 +78,9 @@ is where conversation capture hooks — **one write path for all three
 providers.**
 
 What differs per provider is only *how the turn object exposes its text*.
-Add small optional capture capabilities beside `LiveTurn`
-(`ConversationTranscriptTurn` and `ConversationMetadataTurn` in
-`jasper/voice/session.py`), with WakeLoop probing the methods via `getattr`:
+The per-provider optional fields are read through the untyped
+`_optional_turn_text` / `_optional_turn_data_json` helpers in
+`jasper/voice_daemon.py`, which `getattr`-probe the turn for:
 
 ```
 user_transcript() -> str | None        # the perceived command (ASR)
