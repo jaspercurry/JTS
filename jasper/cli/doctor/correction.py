@@ -677,7 +677,7 @@ def check_crossover_v2_cloud_pipeline() -> CheckResult:
     from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_VERIFY
 
     label = "crossover v2 cloud pipeline"
-    block = evidence.crossover_v2_status_block()
+    block = evidence.get("crossover_v2_status", _crossover_v2_status_block)
     cloud = (block or {}).get("cloud")
     if not isinstance(cloud, dict) or not cloud:
         return CheckResult(
@@ -754,7 +754,7 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
         GRADE_SPATIAL_UNMEASURABLE,
     )
     label = "crossover v2 applied profile graded"
-    block = evidence.crossover_v2_status_block() or {}
+    block = evidence.get("crossover_v2_status", _crossover_v2_status_block) or {}
     grade = block.get("post_apply_grade")
     grade = grade if isinstance(grade, dict) else {}
     # `.get` with a default rather than a lookup: a durable state written by a

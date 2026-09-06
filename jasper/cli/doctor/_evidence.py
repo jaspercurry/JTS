@@ -249,12 +249,6 @@ class Evidence:
 
         return self.get("saved_topology_for_wire", load_topology_for_wire)
 
-    def crossover_v2_status_block(self) -> dict[str, Any] | None:
-        """~15 imports behind the reader (#4127) — worth memoizing."""
-        from .correction import _crossover_v2_status_block
-
-        return self.get("crossover_v2_status", _crossover_v2_status_block)
-
     def camilla_config_path(self) -> str | None:
         """The config path CamillaDSP's statefile names, read once; None when
         the statefile is unreadable or names nothing."""

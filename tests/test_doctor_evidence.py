@@ -57,8 +57,8 @@ def test_grouping_config_and_crossover_status_are_read_once_per_registry_run(
     checks consumes the household's grouping config or the crossover-v2
     status block, each is read AT MOST ONCE per run — the whole point of
     routing every consumer through ``evidence.grouping_config()`` /
-    ``evidence.crossover_v2_status_block()`` instead of calling the readers
-    directly.
+    ``evidence.get("crossover_v2_status", ...)`` instead of calling the
+    readers directly.
 
     ``build_audio_runtime_plan_from_system`` is faked out: it re-reads the
     same grouping.env for an unrelated fact (the audio-runtime route mode)
