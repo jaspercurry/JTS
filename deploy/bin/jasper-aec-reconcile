@@ -297,46 +297,49 @@ load_env_file() {
     fi
 }
 
+# jasper-control writes this file too (aec_endpoints._write_aec_leg), under the
+# same advisory lock, so every seed below is a locked test-then-write: an
+# unlocked grep+append reverts an operator toggle taken between the two.
 ensure_mode_file() {
-    local inferred_profile
+    local inferred_profile pair mode_file_dir tmp
     if [[ -f "$MODE_FILE" ]]; then
-        # File exists. Seed any missing keys so an older deploy's
-        # mode file picks up the new leg defaults on next reconcile.
-        # Existing values for already-present keys are left alone.
-        if ! grep -q '^JASPER_WAKE_LEG_RAW=' "$MODE_FILE"; then
-            printf 'JASPER_WAKE_LEG_RAW=1\n' >> "$MODE_FILE"
+        # The build's defaults for the keys an older deploy's file omits.
+        for pair in \
+            JASPER_WAKE_LEG_RAW=1 \
+            JASPER_WAKE_LEG_DTLN=0 \
+            JASPER_WAKE_LEG_CHIP_AEC=0 \
+            JASPER_WAKE_LEG_CHIP_AEC_150=0 \
+            JASPER_WAKE_LEG_CHIP_AEC_210=0 \
+            JASPER_AEC_CHIP_REF_OBSERVE=0; do
+            # A refused lock (logged event=env_file.lock_failed) leaves the key
+            # to the next pass; every reader carries the same default.
+            jasper_env_file_set_if_absent \
+                "$MODE_FILE" "${pair%%=*}" "${pair#*=}" 0644 0755 || true
+        done
+        # The grep only keeps the resolver subshell off the common path; the
+        # seed itself re-tests presence under the lock.
+        if ! grep -q '^JASPER_AUDIO_INPUT_PROFILE=' "$MODE_FILE" \
+            && inferred_profile="$(infer_audio_input_profile_from_mode_file)"; then
+            jasper_env_file_set_if_absent "$MODE_FILE" \
+                JASPER_AUDIO_INPUT_PROFILE "$inferred_profile" 0644 0755 || true
         fi
-        if ! grep -q '^JASPER_WAKE_LEG_DTLN=' "$MODE_FILE"; then
-            printf 'JASPER_WAKE_LEG_DTLN=0\n' >> "$MODE_FILE"
-        fi
-        if ! grep -q '^JASPER_WAKE_LEG_CHIP_AEC=' "$MODE_FILE"; then
-            printf 'JASPER_WAKE_LEG_CHIP_AEC=0\n' >> "$MODE_FILE"
-        fi
-        if ! grep -q '^JASPER_WAKE_LEG_CHIP_AEC_150=' "$MODE_FILE"; then
-            printf 'JASPER_WAKE_LEG_CHIP_AEC_150=0\n' >> "$MODE_FILE"
-        fi
-        if ! grep -q '^JASPER_WAKE_LEG_CHIP_AEC_210=' "$MODE_FILE"; then
-            printf 'JASPER_WAKE_LEG_CHIP_AEC_210=0\n' >> "$MODE_FILE"
-        fi
-        if ! grep -q '^JASPER_AEC_CHIP_REF_OBSERVE=' "$MODE_FILE"; then
-            printf 'JASPER_AEC_CHIP_REF_OBSERVE=0\n' >> "$MODE_FILE"
-        fi
-        if ! grep -q '^JASPER_AUDIO_INPUT_PROFILE=' "$MODE_FILE"; then
-            if inferred_profile="$(infer_audio_input_profile_from_mode_file)"; then
-                printf 'JASPER_AUDIO_INPUT_PROFILE=%s\n' \
-                    "$inferred_profile" >> "$MODE_FILE"
-            fi
-        fi
-        return
+        return 0
     fi
     # Only create an absent dir; never re-mode /var/lib/jasper (0770 root:jasper)
     # on a boot/udev reconcile — re-moding it to 0755 strips the group-write bit
     # the non-root daemons need (same trap as #827).
-    local mode_file_dir
     mode_file_dir="$(dirname "$MODE_FILE")"
     [[ -d "$mode_file_dir" ]] || install -d -m 0755 "$mode_file_dir"
-    printf 'JASPER_AUDIO_INPUT_PROFILE=auto\nJASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\nJASPER_WAKE_LEG_CHIP_AEC_150=0\nJASPER_WAKE_LEG_CHIP_AEC_210=0\nJASPER_AEC_CHIP_REF_OBSERVE=0\n' > "$MODE_FILE"
-    chmod 0644 "$MODE_FILE"
+    jasper_env_file_hold "$MODE_FILE" || return 0
+    # Re-tested under the lock: a truncating create over a file jasper-control
+    # published since the test above would discard that whole write.
+    if [[ ! -f "$MODE_FILE" ]]; then
+        tmp="$(mktemp "${mode_file_dir}/.${MODE_FILE##*/}.seed.XXXXXX")"
+        printf 'JASPER_AUDIO_INPUT_PROFILE=auto\nJASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\nJASPER_WAKE_LEG_CHIP_AEC_150=0\nJASPER_WAKE_LEG_CHIP_AEC_210=0\nJASPER_AEC_CHIP_REF_OBSERVE=0\n' > "$tmp"
+        chmod 0644 "$tmp"
+        mv "$tmp" "$MODE_FILE"
+    fi
+    jasper_env_file_drop
 }
 
 # Atomic single-key env upsert. Quoting + write semantics live in the

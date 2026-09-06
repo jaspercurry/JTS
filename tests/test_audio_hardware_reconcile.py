@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -1360,6 +1361,63 @@ def test_reconcile_removes_a_stale_content_pcm_line(tmp_path: Path, stale: str):
 
     assert result.returncode == 0, result.stderr
     assert "JASPER_OUTPUTD_CONTENT_PCM" not in _outputd_env(tmp_path)
+
+
+def test_outputd_env_stage_waits_out_a_concurrent_whole_file_writer(
+    tmp_path: Path,
+) -> None:
+    """The stage→validate→rename sequence must be serialized, not just atomic.
+
+    outputd.env has a second writer: jasper/fanin/coupling_reconcile.py reads
+    it, edits, and renames the whole file back through jasper/atomic_io.py.
+    This script publishes it the same way, from a `cp -p` snapshot taken pages
+    earlier — so whichever renames second discards the other's file entirely,
+    however atomic each rename is. A stage that waits for the holder snapshots
+    the holder's file, so both writers' keys reach the committed one. Removal
+    condition: a single Python owner writes every env file.
+    """
+    outputd_env = tmp_path / "outputd.env"
+    outputd_env.write_text(
+        "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture\n", encoding="utf-8"
+    )
+    holding = tmp_path / "holding"
+    holder = subprocess.Popen(
+        [
+            "bash",
+            "-c",
+            f'exec 9>>"{tmp_path / ".outputd.env.lock"}"\n'
+            "flock 9\n"
+            f'snapshot="$(cat "{outputd_env}")"\n'
+            f': > "{holding}"\n'
+            # Longer than a whole unblocked pass, so the reconciler is provably
+            # still at its first stage when this write-back lands.
+            "sleep 4\n"
+            'printf "%s\\nJASPER_OUTPUTD_HOLDER=1\\n" '
+            f'"$snapshot" > "{outputd_env}"\n',
+        ],
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not holding.exists():
+            assert time.monotonic() < deadline, "holder never took the lock"
+            time.sleep(0.01)
+        result = _run_reconcile(tmp_path, APPLE_LISTING, "--reason", "test")
+    finally:
+        holder.wait(timeout=60)
+
+    assert result.returncode == 0, result.stderr
+    committed = _outputd_env(tmp_path)
+    assert _outputd_env_key_present(committed, "JASPER_OUTPUTD_HOLDER")
+    assert _outputd_env_key_present(committed, "JASPER_OUTPUTD_BACKEND")
+    # Staged from the holder's file, not from the pre-holder snapshot.
+    assert not _outputd_env_key_present(committed, "JASPER_OUTPUTD_CONTENT_PCM")
+    # Each pass mktemps a new candidate name, and the single-key writer locks
+    # beside it: an unswept sibling per changing pass would accumulate forever.
+    assert [
+        name
+        for name in os.listdir(tmp_path)
+        if name.lstrip(".").startswith("outputd.env.candidate.")
+    ] == []
 
 
 @pytest.mark.parametrize(

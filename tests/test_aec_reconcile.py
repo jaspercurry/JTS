@@ -9,6 +9,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -2037,6 +2038,67 @@ def test_ensure_mode_file_appends_missing_keys_and_keeps_the_rest(
 
     actual = _env_assignments(tmp_path / "aec_mode.env")
     assert {key: actual.get(key) for key in expected} == expected
+
+
+def test_ensure_mode_file_backfills_around_a_concurrent_leg_write(
+    tmp_path: Path,
+) -> None:
+    """jasper-control and this backfill write aec_mode.env at the same time.
+
+    The holder is aec_endpoints._write_aec_leg's shape: take the advisory lock,
+    read, write the whole file back. An unlocked `grep -q || printf >>` backfill
+    reads absence before that write-back and appends after it, so its defaults
+    are either discarded (the whole file is republished from the older snapshot)
+    or land as a SECOND line for a key the operator just set — and every reader
+    of this file takes the last line. Removal condition: a single Python owner
+    writes every env file.
+    """
+    mode_file = tmp_path / "aec_mode.env"
+    mode_file.write_text("JASPER_AEC_MODE=auto\n", encoding="utf-8")
+    _write_env(tmp_path, "Array")
+    holding = tmp_path / "holding"
+    holder = subprocess.Popen(
+        [
+            "bash",
+            "-c",
+            f'exec 9>>"{tmp_path / ".aec_mode.env.lock"}"\n'
+            "flock 9\n"
+            f'snapshot="$(cat "{mode_file}")"\n'
+            f': > "{holding}"\n'
+            "sleep 1\n"
+            "printf '%s\\nJASPER_WAKE_LEG_CHIP_AEC=1\\n"
+            "JASPER_AUDIO_INPUT_PROFILE=custom\\n' "
+            f'"$snapshot" > "{mode_file}"\n',
+        ],
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not holding.exists():
+            assert time.monotonic() < deadline, "holder never took the lock"
+            time.sleep(0.01)
+        result = _run_reconcile(tmp_path, "--reason", "test")
+    finally:
+        holder.wait(timeout=60)
+
+    assert result.returncode == 0, result.stderr
+    actual = _env_assignments(mode_file)
+    assert actual == {
+        "JASPER_AEC_MODE": "auto",
+        # The concurrent writer's intent, not the build's default.
+        "JASPER_WAKE_LEG_CHIP_AEC": "1",
+        "JASPER_AUDIO_INPUT_PROFILE": "custom",
+        "JASPER_WAKE_LEG_RAW": "1",
+        "JASPER_WAKE_LEG_DTLN": "0",
+        "JASPER_WAKE_LEG_CHIP_AEC_150": "0",
+        "JASPER_WAKE_LEG_CHIP_AEC_210": "0",
+        "JASPER_AEC_CHIP_REF_OBSERVE": "0",
+    }
+    keys = [
+        line.split("=", 1)[0]
+        for line in mode_file.read_text(encoding="utf-8").splitlines()
+        if "=" in line
+    ]
+    assert sorted(keys) == sorted(set(keys)), keys
 
 
 def test_fresh_auto_profile_uses_chip_aec_on_supported_6ch_xvf(tmp_path: Path) -> None:

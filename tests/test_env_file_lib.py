@@ -134,6 +134,89 @@ def test_env_file_set_waits_out_a_concurrent_holder(tmp_path: Path) -> None:
     assert env_file.read_text(encoding="utf-8") == "SEED=1\nHOLDER=1\nWRITER=2\n"
 
 
+def test_env_file_set_if_absent_keeps_a_concurrent_holders_value(
+    tmp_path: Path,
+) -> None:
+    """A seed must test presence INSIDE the lock, not before it.
+
+    The reconcilers back-fill build defaults into files jasper-control also
+    writes. A `grep -q KEY= || append` reads absence, waits for nothing, and
+    appends the default AFTER the holder published the operator's value — and
+    every reader of these files takes the LAST line, so the toggle silently
+    reverts. Removal condition: a single Python owner writes every env file.
+    """
+    env_file = tmp_path / "aec_mode.env"
+    env_file.write_text("SEED=1\n", encoding="utf-8")
+    lock = tmp_path / f".{env_file.name}.lock"
+    holding = tmp_path / "holding"
+    holder = subprocess.Popen(
+        [
+            "bash",
+            "-c",
+            f'exec 9>>"{lock}"\n'
+            "flock 9\n"
+            f'snapshot="$(cat "{env_file}")"\n'
+            f': > "{holding}"\n'
+            "sleep 0.5\n"
+            f'printf "%s\\nKEY=1\\n" "$snapshot" > "{env_file}"\n',
+        ],
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not holding.exists():
+            assert time.monotonic() < deadline, "holder never took the lock"
+            time.sleep(0.01)
+        result = _bash(f'jasper_env_file_set_if_absent "{env_file}" KEY 0')
+    finally:
+        holder.wait(timeout=30)
+
+    assert result.returncode == 0, result.stderr
+    assert env_file.read_text(encoding="utf-8") == "SEED=1\nKEY=1\n"
+
+
+def test_env_file_set_if_absent_seeds_a_key_the_file_omits(tmp_path: Path) -> None:
+    env_file = tmp_path / "aec_mode.env"
+    env_file.write_text("KEEP=1\n", encoding="utf-8")
+    result = _bash(f'jasper_env_file_set_if_absent "{env_file}" KEY 0 0644 0755')
+    assert result.returncode == 0, result.stderr
+    assert env_file.read_text(encoding="utf-8") == "KEEP=1\nKEY=0\n"
+    assert (env_file.stat().st_mode & 0o777) == 0o644
+
+
+def test_env_file_hold_excludes_another_writer_until_dropped(
+    tmp_path: Path,
+) -> None:
+    """The hold must span a sequence, and release on drop.
+
+    jasper-audio-hardware-reconcile publishes outputd.env by copying the live
+    file to a candidate, writing keys into the candidate, then renaming — so
+    the exclusion has to outlive the individual writes to a DIFFERENT file.
+    Removal condition: no reconciler stages a whole env file.
+    """
+    env_file = tmp_path / "outputd.env"
+    env_file.write_text("SEED=1\n", encoding="utf-8")
+    lock = tmp_path / f".{env_file.name}.lock"
+    contend = (
+        f'if bash -c \'exec 9>>"{lock}"; flock -n 9\' 2>/dev/null; '
+        'then printf "free\\n"; else printf "excluded\\n"; fi\n'
+    )
+
+    result = _bash(
+        f'jasper_env_file_hold "{env_file}"\n'
+        # A single-key write to the CANDIDATE takes its own lock on its own
+        # descriptor; sharing one would end the hold here.
+        f'jasper_env_file_set "{tmp_path}/candidate" K V\n'
+        + contend
+        + "jasper_env_file_drop\n"
+        + contend
+        # Idempotent: an exit trap may drop a hold a commit path already did.
+        + "jasper_env_file_drop\n"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["excluded", "free"]
+
+
 @pytest.mark.parametrize(
     "plant", ["live_symlink", "dangling_symlink", "device_symlink", "fifo"]
 )
