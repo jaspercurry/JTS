@@ -4033,43 +4033,23 @@ def test_system_snapshot_shares_normalized_and_legacy_health() -> None:
         thread.join(timeout=2)
 
 
-def test_state_keeps_working_when_audio_health_snapshot_raises(monkeypatch) -> None:
-    import jasper.control.server as control_server
+async def test_state_keeps_working_when_audio_health_snapshot_raises(
+    monkeypatch, tmp_path,
+) -> None:
+    """A raising sampler costs the audio_health section only — null there,
+    the rest of the payload intact. Retire with /state's fail-soft rule."""
+    from tests.test_wire_contracts import _state_payload
 
-    class RaisingAudioHealth:
-        def snapshot(self) -> dict:
-            raise RuntimeError("audio monitor failed")
+    def raising() -> dict:
+        raise RuntimeError("audio monitor failed")
 
-        def airplay_playing(self) -> bool | None:
-            return None
-
-    async def fake_state(**_kwargs) -> dict:
-        return {"ts": 1000.0, "audio": {}}
-
-    monkeypatch.setattr(control_server, "_get_state", fake_state)
-    handler = _make_handler(
-        "127.0.0.1",
-        1234,
-        "/nonexistent.sock",
-        sampler=None,
-        audio_health_sampler=RaisingAudioHealth(),
-        ha_status_cache=_FakeHaStatus(),
+    payload = await _state_payload(
+        monkeypatch, tmp_path, audio_health_snapshot=raising,
     )
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        with urllib.request.urlopen(
-            f"http://127.0.0.1:{server.server_port}/state",
-            timeout=2,
-        ) as response:
-            payload = json.loads(response.read())
-        assert payload["ts"] == 1000.0
-        assert payload["audio_health"] is None
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+
+    assert payload["audio_health"] is None
+    assert payload["active_source"] == "idle"
+    assert "ts" in payload
 
 
 # --------------------------------------------------------------------------- #

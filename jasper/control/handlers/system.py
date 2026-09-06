@@ -91,12 +91,9 @@ class SystemRoutes(ControlHandlerMixin):
         self._send_json(debug_control.snapshot())
 
     def _get_state(self) -> None:
-        # Cross-daemon snapshot — voice / audio / renderers.
-        # Polled by the management UI for live
-        # status, used by jasper-doctor for one-shot health,
-        # and consumable from `curl jts.local:8780/state | jq`
-        # for ad-hoc debugging. ~200 ms typical (mostly the
-        # parallel busctl + camilla WS probes).
+        # Cross-daemon snapshot for jasper-doctor and ad-hoc `curl | jq`; the
+        # dashboard reads /system/snapshot instead. The aggregate builds every
+        # key on the wire — nothing is attached here (ADR-0233 rule 2).
         try:
             state = self._state_response_cache.get_or_compute(
                 lambda: asyncio.run(
@@ -112,12 +109,18 @@ class SystemRoutes(ControlHandlerMixin):
                             None if self._audio_health_sampler is None
                             else self._audio_health_sampler.airplay_playing
                         ),
+                        # The same sampler's normalized health contract, and
+                        # the payload's `active_source` (ADR-0233 rule 2).
+                        audio_health_snapshot=(
+                            None if self._audio_health_sampler is None
+                            else self._audio_health_sampler.snapshot
+                        ),
                         # One tick's transport-park verdict for the whole
                         # payload: `resilience.transport_park` and the
-                        # `audio_health` rows attached below are then the same
-                        # observation, not two reads minutes apart. Resolved by
-                        # the shared reader, so /system/snapshot cannot end up
-                        # on a different fallback rule.
+                        # `audio_health` rows are then the same observation,
+                        # not two reads minutes apart. Resolved by the shared
+                        # reader, so /system/snapshot cannot end up on a
+                        # different fallback rule.
                         transport_park_snapshot=self._transport_park_reader(),
                         # The 30 s systemd snapshot this daemon already
                         # samples for /system — reused so audio_graph can
@@ -129,26 +132,6 @@ class SystemRoutes(ControlHandlerMixin):
                     )
                 ),
             )
-            # The audio-health sampler is the single normalized health
-            # contract shared by /state and /system/snapshot. Copy the
-            # cached aggregate before attaching it so the cross-request
-            # state cache never retains a stale health object.
-            if self._audio_health_sampler is not None:
-                state = dict(state)
-                try:
-                    state["audio_health"] = self._audio_health_sampler.snapshot()
-                except (
-                    AttributeError,
-                    KeyError,
-                    OSError,
-                    RuntimeError,
-                    TypeError,
-                    ValueError,
-                ):
-                    logger.exception("/state audio health snapshot failed")
-                    state["audio_health"] = None
-            state = dict(state)
-            state["usb_gadget_forensics"] = usb_gadget_forensics.snapshot()
         except Exception as e:  # noqa: BLE001
             logger.exception("/state aggregation failed")
             self._send_json({"error": str(e)}, status=502)
