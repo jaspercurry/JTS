@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the weekly journal-health digest
+
+[Timer]
+OnCalendar=weekly
+# Catches up a missed week (box off at the scheduled time) instead of
+# silently skipping it.
+Persistent=true
+Unit=jasper-journal-review.service
+
+[Install]
+WantedBy=timers.target

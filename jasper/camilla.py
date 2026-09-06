@@ -155,9 +155,12 @@ def _coerce_main_volume_db(db: float) -> float:
         raise ValueError(f"main_volume_db must be finite, got {db!r}")
     clamped = max(MIN_MAIN_VOLUME_DB, min(MAX_MAIN_VOLUME_DB, value))
     if clamped != value:
-        logger.warning(
-            "camilla main_volume clamped: requested %.1f dB -> %.1f dB",
-            value, clamped,
+        log_event(
+            logger,
+            "camilla.main_volume_clamped",
+            level=logging.WARNING,
+            requested_db=value,
+            clamped_db=clamped,
         )
     return clamped
 

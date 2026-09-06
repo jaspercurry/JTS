@@ -70,6 +70,7 @@ DOCTOR_EXTRA_UNITS = (
     "jasper-web.socket",
     "jasper-system-web.socket",
     "jasper-wifi-recover.timer",
+    "jasper-journal-review.timer",
     "jasper-accessory-reconcile.path",
 )
 

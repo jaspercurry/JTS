@@ -431,6 +431,8 @@ validate_streambox_systemd_units() {
             "${SYSTEMD_DIR}/jasper-bootloop-guard.service"
             "${SYSTEMD_DIR}/jasper-identity-reconcile.service"
             "${SYSTEMD_DIR}/jasper-identity-reconcile.timer"
+            "${SYSTEMD_DIR}/jasper-journal-review.service"
+            "${SYSTEMD_DIR}/jasper-journal-review.timer"
             "${SYSTEMD_DIR}/jasper-accessory-reconcile.path"
             "${SYSTEMD_DIR}/jasper-voice.service"
             "${SYSTEMD_DIR}/jasper-input.service"
@@ -483,6 +485,15 @@ install_resilience_identity_unit_files() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-bootloop-guard" \
         /usr/local/sbin/jasper-bootloop-guard
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-journal-review.service" \
+        "${SYSTEMD_DIR}/jasper-journal-review.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-journal-review.timer" \
+        "${SYSTEMD_DIR}/jasper-journal-review.timer"
+    install -m 0755 \
+        "${REPO_DIR}/scripts/journal-review.sh" \
+        /usr/local/sbin/jasper-journal-review
 }
 
 install_usbsink_unit_files() {
@@ -1344,6 +1355,8 @@ start_streambox_runtime_units() {
     systemctl enable --now jasper-identity-reconcile.timer
     systemctl start jasper-identity-reconcile.service || \
         echo "  (identity reconcile failed — non-fatal; doctor will flag)"
+    systemctl enable --now jasper-journal-review.timer || \
+        echo "  (journal-review timer not enabled — non-fatal)"
     # StartLimitAction=reboot: a spent burst would reboot the Pi mid-install.
     systemctl reset-failed jasper-control.service 2>/dev/null || true
     systemctl restart jasper-control.service || \
@@ -1722,6 +1735,7 @@ install_systemd_units() {
     systemctl enable --now jasper-identity-reconcile.timer
     systemctl start jasper-identity-reconcile.service || \
         echo "  (identity reconcile failed — non-fatal; doctor will flag)"
+    systemctl enable --now jasper-journal-review.timer
     echo
     echo "Units enabled. Start with: systemctl start jasper-fanin jasper-camilla jasper-outputd jasper-voice"
 }
