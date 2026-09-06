@@ -461,7 +461,7 @@ def check_bluetooth_pairing_policy() -> CheckResult:
     if isinstance(bt_or_exc, FileNotFoundError):
         return CheckResult(
             "Bluetooth pairing policy",
-            "warn",
+            "skipped",
             "agent OK, but bluetoothctl unavailable — adapter gate not checked",
             reason=REASON_BT_PAIRING_BLUETOOTHCTL_UNAVAILABLE,
         )

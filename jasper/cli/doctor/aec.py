@@ -422,7 +422,7 @@ def check_enhanced_aec() -> CheckResult:
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         return CheckResult(
             "Enhanced AEC",
-            "warn",
+            "skipped",
             "requested optional enhancement status could not be inspected "
             f"({type(exc).__name__}); standard echo cancellation remains "
             "available — retry from /system/",
@@ -1282,8 +1282,15 @@ def check_aec_bridge_output_health() -> CheckResult:
         timeout=8.0,
     )
     if proc.returncode != 0:
+        if stats_assessment is not None:
+            return CheckResult(
+                "AEC bridge output", "warn",
+                f"could not read journal for content assessment: "
+                f"{proc.stderr.strip() or 'unknown error'}; {stats_result.detail}",
+                reason=REASON_BRIDGE_OUTPUT_JOURNAL_UNREADABLE,
+            )
         return CheckResult(
-            "AEC bridge output", "warn",
+            "AEC bridge output", "skipped",
             f"could not read journal: {proc.stderr.strip() or 'unknown error'}",
             reason=REASON_BRIDGE_OUTPUT_JOURNAL_UNREADABLE,
         )
@@ -1675,7 +1682,7 @@ def check_aec_bridge_dtln_engine() -> CheckResult:
     )
     if proc.returncode != 0:
         return CheckResult(
-            "DTLN-aec engine", "warn",
+            "DTLN-aec engine", "skipped",
             f"could not read journal: {proc.stderr.strip() or 'unknown error'}",
             reason=REASON_DTLN_JOURNAL_UNREADABLE,
         )
