@@ -20,7 +20,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from tests._async_wait import wait_signalled
-from tests._log_events import event_field_maps
+from tests._log_events import event_field_maps, event_records
 
 from jasper import bluealsa_probe
 from jasper import spotify_router as spotify_router_mod
@@ -2673,11 +2673,50 @@ async def test_deep_quiet_refusal_speaks_once_per_episode(tmp_path, caplog):
     await coord.maybe_reconcile_camilla()
     cam._db = expected_db - 25.0  # and a second episode opens
     await coord.maybe_reconcile_camilla()
+    # A tick that returns before the drift comparison ends the episode too,
+    # so the duck still standing when the session hands camilla back is news.
+    coord.note_voice_session(True)
+    await coord.maybe_reconcile_camilla()
+    coord.note_voice_session(False)
+    await coord.maybe_reconcile_camilla()
 
     skips = event_field_maps(
         caplog, "volume.reconcile_skipped", reason="deep_quiet_unowned",
     )
-    assert [fields["drift_db"] for fields in skips] == ["+25.00", "+25.00"]
+    assert [fields["drift_db"] for fields in skips] == ["+25.00"] * 3
+
+
+async def test_a_refused_write_speaks_once_and_says_when_it_lands(
+    tmp_path, caplog,
+):
+    """A camilla that refuses writes refuses them at the observer's 1 Hz, so
+    the retries are not news: one line opens the fault, one closes it, and
+    `volume.reconciled` claims only a write that landed. Delete with the
+    events.
+    """
+    caplog.set_level(logging.INFO, logger=vc_mod.__name__)
+    coord, _, _ = _real_coord(
+        tmp_path, active={}, db=-18.0, level=76, mark_user_change=True,
+    )
+    writes = 0
+
+    async def refusing_write(db: float, *, context: str) -> bool:
+        nonlocal writes
+        writes += 1
+        if writes <= 3:
+            raise CamillaUnavailable("camilla restarting")
+        return True
+
+    coord._write_camilla_db_with_mute = refusing_write
+
+    for _ in range(4):
+        await coord.maybe_reconcile_camilla()
+
+    (failed,) = event_field_maps(caplog, "volume.reconcile_write_failed")
+    assert failed["error"] == "CamillaUnavailable: camilla restarting"
+    (recovered,) = event_field_maps(caplog, "volume.reconcile_write_recovered")
+    assert recovered["consecutive_failures"] == "3"
+    assert len(event_records(caplog, "volume.reconciled")) == 1
 
 
 # ---------- graph-swap duck composed with CueDuck ---------------------------

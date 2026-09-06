@@ -330,8 +330,11 @@ class VolumeCoordinator:
         # emergency user mute. It prevents the observed writer from replacing
         # a ramp value with persisted listening_level mid-measurement.
         self._measurement_active: bool = False
-        # Last reconcile verdict on an unowned deep duck (edge reporting).
+        # Edge state for the three faults this reconciler re-evaluates every
+        # tick; each is reported once per episode, never at 1 Hz.
         self._deep_quiet_skipped: bool = False
+        self._write_failures: int = 0
+        self._graph_probe_failures: int = 0
         # Serializes the final reconciler write with MEASURE_PAUSE acquisition.
         # Pause does not acknowledge until an already-started write has landed;
         # after the flag flips, no new reconcile write may enter this lock.
@@ -1782,9 +1785,13 @@ class VolumeCoordinator:
            writer that left camilla far above the canonical level is unsafe,
            not a duck (`_deep_quiet_skip`).
 
-        Write failures are logged at WARN and non-fatal — the observer
-        keeps ticking.
+        A write failure is non-fatal: WARN on the episode's first, then the
+        observer keeps ticking (`volume.reconcile_write_failed`).
         """
+        # A deep-quiet episode spans consecutive evaluations of the drift, so
+        # a tick that returns before reaching one ends it and the next unowned
+        # duck opens a new episode.
+        reported, self._deep_quiet_skipped = self._deep_quiet_skipped, False
         if self._voice_session_active or self._measurement_active:
             return
         try:
@@ -1815,11 +1822,10 @@ class VolumeCoordinator:
             and current_mute != expected_mute
         )
         if abs(drift) <= RECONCILE_DRIFT_DB and not mute_drift:
-            self._deep_quiet_skipped = False
             return
         if self._graph_mutation_in_progress():
             return
-        if self._deep_quiet_skip(drift, mute_drift):
+        if self._deep_quiet_skip(drift, mute_drift, reported):
             return
         # The preflight above avoids taking the cross-daemon lease on every
         # healthy 1 Hz tick; a candidate write then joins the same ordered
@@ -1858,8 +1864,30 @@ class VolumeCoordinator:
                     return
                 if self._graph_mutation_in_progress():
                     return
-                if self._deep_quiet_skip(drift, mute_drift):
+                if self._deep_quiet_skip(drift, mute_drift, reported):
                     return
+                try:
+                    ok = await self._write_camilla_db_with_mute(
+                        expected_db,
+                        context="reconcile",
+                    )
+                    failure: str | None = None if ok else "rejected"
+                except Exception as e:  # noqa: BLE001
+                    failure = f"{type(e).__name__}: {e}"
+                if failure is not None:
+                    # A camilla that refuses writes refuses them at 1 Hz, so
+                    # the retry itself is not news; the episode's open and
+                    # close are.
+                    self._write_failures += 1
+                    if self._write_failures == 1:
+                        log_event(logger, "volume.reconcile_write_failed",
+                                  level=logging.WARNING, error=failure)
+                    return
+                self._persistence.save_now(expected_db)
+                if self._write_failures:
+                    log_event(logger, "volume.reconcile_write_recovered",
+                              consecutive_failures=self._write_failures)
+                    self._write_failures = 0
                 log_event(
                     logger,
                     "volume.reconciled",
@@ -1878,15 +1906,6 @@ class VolumeCoordinator:
                         "expected_mute": str(expected_mute).lower(),
                     },
                 )
-                try:
-                    ok = await self._write_camilla_db_with_mute(
-                        expected_db,
-                        context="reconcile",
-                    )
-                    if ok:
-                        self._persistence.save_now(expected_db)
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("reconcile write failed (will retry): %s", e)
 
     def _graph_mutation_in_progress(self) -> bool:
         """Stand this tick down while a DSP writer owns CamillaDSP's graph.
@@ -1903,23 +1922,31 @@ class VolumeCoordinator:
         try:
             held = self._camilla.graph_mutation_in_progress()
         except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "graph_mutation_in_progress raised %s; treating as unknown", e,
-            )
+            self._graph_probe_failures += 1
+            if self._graph_probe_failures == 1:
+                log_event(logger, "volume.graph_probe_failed",
+                          level=logging.WARNING,
+                          error=f"{type(e).__name__}: {e}")
             return False
+        if self._graph_probe_failures:
+            log_event(logger, "volume.graph_probe_recovered",
+                      consecutive_failures=self._graph_probe_failures)
+            self._graph_probe_failures = 0
         if held is not True:
             return False
         log_event(logger, "volume.reconcile_deferred", reason="dsp_writer_lock")
         return True
 
-    def _deep_quiet_skip(self, drift_db: float, mute_drift: bool) -> bool:
+    def _deep_quiet_skip(
+        self, drift_db: float, mute_drift: bool, reported: bool,
+    ) -> bool:
         """True when camilla sits far below its slider under a duck we do not
         own. Edge-reported, not per tick: the stranded audition that motivates
         the threshold holds as long as its owner lives. Delete with
         `RECONCILE_DUCK_SKIP_DB` (#3038).
         """
         skipping = drift_db >= RECONCILE_DUCK_SKIP_DB and not mute_drift
-        if skipping and not self._deep_quiet_skipped:
+        if skipping and not reported:
             log_event(logger, "volume.reconcile_skipped",
                       reason="deep_quiet_unowned", drift_db=f"{drift_db:+.2f}")
         self._deep_quiet_skipped = skipping
