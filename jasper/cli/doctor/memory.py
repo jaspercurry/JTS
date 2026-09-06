@@ -145,7 +145,7 @@ def check_memory_headroom() -> CheckResult:
         )
     avail_mb = avail_kb // 1024
     total_mb = total_kb // 1024
-    pct = (avail_kb * 100) // total_kb if total_kb else 0
+    pct = (avail_kb * 100) // total_kb
     warn_mb, fail_mb = memory_headroom_thresholds(total_mb)
     if avail_mb < fail_mb:
         return CheckResult(
@@ -226,12 +226,10 @@ def check_zram_size_ratio() -> CheckResult:
             reason=REASON_ZRAM_UNSIZED,
         )
     if usage.total_bytes == 0:
-        # zram0 is sized (disksize_bytes already ruled out 0 above), so this
-        # is exactly ZramUsage's other zero case: MemTotal could not be read
-        # (jasper.memory_policy.ZramUsage docstring) — the same evidence-read
-        # failure check_ram/check_memory_headroom report as skipped.
+        # See ZramUsage's docstring: this zero means MemTotal, not disksize.
         return CheckResult(
-            "zram size", "skipped", "couldn't compute ratio",
+            "zram size", "skipped",
+            "couldn't read MemTotal from /proc/meminfo",
             reason=REASON_ZRAM_RATIO_UNREADABLE,
         )
     pct = usage.percent_of_ram

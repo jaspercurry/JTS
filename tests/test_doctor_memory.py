@@ -11,7 +11,6 @@ mocked; each must skip gracefully on a dev host where the paths do not exist.
 """
 from __future__ import annotations
 
-import contextlib
 import io
 from pathlib import Path
 from types import SimpleNamespace
@@ -126,44 +125,34 @@ def _zram_mocks(
     return fake_read, fake_exists
 
 
-@contextlib.contextmanager
-def _zram_sized_but_meminfo_unreadable():
-    """zram0 IS sized (its own read succeeds); ``/proc/meminfo`` is not — the
-    ``ZramUsage.total_bytes == 0`` case that means "MemTotal could not be
-    read" (see the docstring), not "nothing sized"."""
-    fake_read, _ = _zram_mocks(1014767616)
-    with patch("pathlib.Path.read_text", fake_read), patch(
-        "builtins.open", side_effect=OSError("permission denied")
-    ):
-        yield
-
-
 @pytest.mark.parametrize(
-    "check_fn, setup, reason",
+    "check_fn, reason",
     [
-        (
-            doctor_memory.check_ram,
-            lambda: patch("builtins.open", side_effect=OSError("permission denied")),
-            doctor_memory.REASON_RAM_UNREADABLE,
-        ),
+        (doctor_memory.check_ram, doctor_memory.REASON_RAM_UNREADABLE),
         (
             doctor_memory.check_memory_headroom,
-            lambda: patch("builtins.open", side_effect=OSError("permission denied")),
             doctor_memory.REASON_MEMORY_HEADROOM_UNREADABLE,
         ),
         (
             doctor_memory.check_zram_size_ratio,
-            _zram_sized_but_meminfo_unreadable,
             doctor_memory.REASON_ZRAM_RATIO_UNREADABLE,
         ),
     ],
     ids=["check_ram", "check_memory_headroom", "check_zram_size_ratio"],
 )
-def test_meminfo_read_failure_is_skipped_not_warned(check_fn, setup, reason):
+def test_meminfo_read_failure_is_skipped_not_warned(check_fn, reason):
     """``/proc/meminfo`` unreadable is the doctor's own evidence channel
     failing, not a finding about the subject — every check that depends on
-    it reports `skipped`, never `warn` (ADR-0233 rule 3)."""
-    with setup():
+    it reports `skipped`, never `warn` (ADR-0233 rule 3).
+
+    One shared setup serves all three rows: neither check_ram nor
+    check_memory_headroom touches Path.read_text, and check_zram_size_ratio
+    needs zram0 sized (via the read_text fake) to reach its own MemTotal
+    branch rather than the "unsized" one."""
+    fake_read, _ = _zram_mocks(1014767616)
+    with patch("builtins.open", side_effect=OSError("permission denied")), patch(
+        "pathlib.Path.read_text", fake_read
+    ):
         r = check_fn()
     assert r.status == "skipped"
     assert r.reason == reason
@@ -215,7 +204,7 @@ def test_check_zram_size_ratio_skips_without_a_zram_device():
 @pytest.mark.parametrize(
     "controllers, cgroup_present, status, reason",
     [
-        ("cpu io memory pids\n", True, "ok", None),
+        ("cpu io memory pids\n", True, "ok", ""),
         # Without the memory controller the slices' MemorySwapMax=0 is a no-op,
         # so the audio protection is simply gone: fail, not warn.
         ("cpu io pids\n", True, "fail", doctor_memory.REASON_CGROUP_MEMORY_DISABLED),
@@ -240,8 +229,7 @@ def test_check_cgroup_memory_enabled_verdicts(
 
     r = doctor_memory.check_cgroup_memory_enabled()
     assert r.status == status
-    if reason is not None:
-        assert r.reason == reason
+    assert r.reason == reason
 
 
 def test_audio_path_units_cover_every_protected_slice_unit():
