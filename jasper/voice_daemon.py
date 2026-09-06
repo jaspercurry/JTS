@@ -1180,7 +1180,14 @@ class WakeLoop:
 
     @classmethod
     def for_tests(
-        cls, *, legs=_UNSET, manual_mics=None, tts=None, vad=_UNSET, **overrides,
+        cls,
+        *,
+        legs=_UNSET,
+        manual_mics=None,
+        tts=None,
+        vad=_UNSET,
+        conversation_store: ConversationStore | None = None,
+        **overrides,
     ):
         """Build a fully-shaped WakeLoop without opening hardware.
 
@@ -1190,13 +1197,14 @@ class WakeLoop:
 
         ``**overrides`` are applied by ``setattr`` AFTER construction, so
         they cannot reach a decision ``__init__`` makes from its
-        arguments. ``legs``, ``manual_mics``, ``tts`` and ``vad`` are
-        constructor-time knobs, so a test can build the shape a
-        push-to-talk-only speaker actually has — no wake legs plus a
-        manual mic source — and exercise the real derivation rather than a
-        value poked in afterwards. Pass ``legs=[]`` to mean "none";
-        omitting it keeps the default primary leg. Pass ``vad=None`` to
-        let ``__init__`` make its own VAD decision.
+        arguments. ``legs``, ``manual_mics``, ``tts``, ``vad`` and
+        ``conversation_store`` are constructor-time knobs, so a test can
+        build the shape a push-to-talk-only speaker actually has — no
+        wake legs plus a manual mic source — and exercise the real
+        derivation rather than a value poked in afterwards. Pass
+        ``legs=[]`` to mean "none"; omitting it keeps the default primary
+        leg. Pass ``vad=None`` to let ``__init__`` make its own VAD
+        decision.
         """
 
         class _TestMic:
@@ -1352,16 +1360,12 @@ class WakeLoop:
             ] if legs is _UNSET else legs,
             manual_mics=manual_mics,
             vad=_TestVad() if vad is _UNSET else vad,
+            conversation_store=conversation_store,
             initial_mic_muted=False,
             barge_in_reconcile=InterruptReconcile.NEEDS_CLIENT_TRUNCATE,
         )
         for key, value in overrides.items():
             setattr(self, key if key.startswith("_") else f"_{key}", value)
-        if "conversation_store" in overrides:
-            self._conversation_capture = ConversationCapture(
-                store=overrides["conversation_store"],
-                voice_provider=self._cfg.voice_provider,
-            )
         return self
 
     def _create_fire_and_forget_task(
