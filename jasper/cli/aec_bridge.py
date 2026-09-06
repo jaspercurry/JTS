@@ -770,7 +770,7 @@ def _aec_loop(  # noqa: PLR0915
                         drops, window_sec = outcome
                         log_event(
                             logger,
-                            "chip_aec_primary_missing",
+                            "aec_bridge.chip_primary_missing",
                             leg=chip_aec_primary_leg,
                             action="skip_frame",
                             frames=drops,

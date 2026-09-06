@@ -20,6 +20,7 @@ from jasper.weather import (
     _next_rain_window,
     _will_rain,
 )
+from tests._log_events import event_fields
 from tests.fake_clock_fixtures import FakeClock
 
 
@@ -775,8 +776,7 @@ async def test_get_weather_bad_json_returns_spoken_error(caplog):
         result = await weather.get_weather()
         assert result["error"].startswith("weather lookup failed: JSONDecodeError")
         assert result["spoken_error"] == USER_FACING_WEATHER_UNAVAILABLE
-        assert "event=weather_response_error" in caplog.text
-        assert "endpoint=forecast" in caplog.text
+        assert event_fields(caplog, "weather.response_error")["endpoint"] == "forecast"
     finally:
         await http.aclose()
 

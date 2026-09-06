@@ -1459,7 +1459,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 seed_error = _redact_provider_error(e, new)
                 log_event(
                     logger,
-                    "voice_loudness_seed",
+                    "voice.loudness_seed",
                     provider=active,
                     result="error",
                     error=e.__class__.__name__,
@@ -1469,7 +1469,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 if profile is not None:
                     log_event(
                         logger,
-                        "voice_loudness_seed",
+                        "voice.loudness_seed",
                         provider=active,
                         result="ok",
                         source_lufs=f"{profile.source_lufs:.1f}",
@@ -1479,7 +1479,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     seed_error = "provider key, model, or voice is incomplete."
                     log_event(
                         logger,
-                        "voice_loudness_seed",
+                        "voice.loudness_seed",
                         provider=active,
                         result="skipped",
                         level=logging.WARNING,
@@ -1572,7 +1572,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             except (ModelDiscoveryError, OSError) as e:
                 log_event(
                     logger,
-                    "voice_model_discovery",
+                    "voice.model_discovery",
                     provider=provider.id,
                     result="error",
                     error=repr(str(e)),
@@ -1586,7 +1586,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             log_event(
                 logger,
-                "voice_model_discovery",
+                "voice.model_discovery",
                 provider=provider.id,
                 result="ok",
                 count=len(snapshot.models),
