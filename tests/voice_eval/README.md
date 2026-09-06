@@ -237,10 +237,12 @@ VoiceEvalHarness                Subway Now (independent path)
 Production code paths are not touched by the harness itself. The
 `jasper.voice.trace` module's `emit()` is called from production code
 (`jasper/voice/openai_session.py`'s `_dispatch_event`, inherited by the
-Grok adapter) on every transcript-delta event, but its helpers (`emit`,
-`traced_registry`) are no-ops when no trace is active — a trace is only
-set active during voice-eval harness runs, never in live sessions. Zero
-production overhead.
+Grok adapter) on every transcript-delta event, and no-ops when no trace
+is active — a trace is only set active during voice-eval harness runs,
+never in live sessions. Zero production overhead. `traced_registry()`
+lives alongside the harness in `tests/voice_eval/trace_registry.py`,
+not in `jasper.voice.trace` — it wraps tool executors to emit
+`tool_call` / `tool_return` events and is eval-harness-only.
 
 ---
 
