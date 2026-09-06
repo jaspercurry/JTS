@@ -1159,6 +1159,36 @@ reapply_source_intent() {
     # manual/stale lock holder or child regression cannot pin deploy forever.
     # The reconciler is the single authority for the source allowlist and
     # runtime ordering. A failed apply WARNs; boot or the next toggle retries.
+    # A short-lived pre-merge build used JASPER_SOURCE_INTENT_BLUETOOTH. That
+    # name lives inside an older release's strict owned namespace, so leaving it
+    # behind would make a rollback reject the whole intent file. Migrate it to
+    # the deliberately rollback-ignorable key before either reconciler reads.
+    # Delete once grep JASPER_SOURCE_INTENT_BLUETOOTH /var/lib/jasper/source_intent.env is empty on every box, spares included.
+    if [[ -e "${STATE_DIR}/source_intent.env" || -L "${STATE_DIR}/source_intent.env" ]]; then
+        /opt/jasper/.venv/bin/python - "${STATE_DIR}/source_intent.env" <<'PY'
+import sys
+
+from jasper.atomic_io import locked_transform_env_file
+
+path = sys.argv[1]
+legacy_key = "JASPER_SOURCE_INTENT_BLUETOOTH"
+canonical_key = "JASPER_BLUETOOTH_SOURCE_INTENT"
+
+def migrate(state: dict[str, str]) -> dict[str, str]:
+    legacy_value = state.pop(legacy_key, None)
+    if legacy_value is not None and canonical_key not in state:
+        state[canonical_key] = legacy_value
+    return state
+
+locked_transform_env_file(
+    path,
+    migrate,
+    mode=0o660,
+    max_bytes=64 * 1024,
+    lock_timeout_sec=2.0,
+)
+PY
+    fi
     # Remove the old acknowledgement immediately, then again under the
     # coordinator lock. The long lock wait drains any legitimate in-flight
     # pass (bounded by the unit's 2693 s ceiling); a failed/timeout path removes
