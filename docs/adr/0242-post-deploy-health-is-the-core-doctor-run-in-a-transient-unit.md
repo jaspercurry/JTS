@@ -1,4 +1,4 @@
-# ADR-0240: Post-deploy health is the core doctor, run in a transient unit
+# ADR-0242: Post-deploy health is the core doctor, run in a transient unit
 
 - **Date:** 2026-09-06
 - **Status:** Accepted

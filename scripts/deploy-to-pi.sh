@@ -612,7 +612,7 @@ EOF
     exit 1
 }
 
-# Same bound as install.sh's run_doctor_summary. See ADR-0240.
+# Same bound as install.sh's run_doctor_summary. See ADR-0242.
 gate_core_health() {
     echo "==> Post-deploy core health (jasper-doctor --core; advisory)"
     local rc=0
@@ -1010,7 +1010,7 @@ fi
 verify_manifest_advanced
 HEALTH_START_EPOCH="$(ssh_remote 'date +%s' 2>/dev/null | tr -dc '0-9')" || true
 [[ -z "${HEALTH_START_EPOCH:-}" ]] && HEALTH_START_EPOCH=0
-gate_core_health || true  # advisory; removal condition in ADR-0240
+gate_core_health || true  # advisory; removal condition in ADR-0242
 if [[ "${HEALTH_START_EPOCH}" != "0" ]]; then
     report_oom_collateral "$HEALTH_START_EPOCH"
 fi

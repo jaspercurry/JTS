@@ -2044,7 +2044,7 @@ install_camillagui() {
     echo "  (backend exits 10 min after last access; ~50 MB Pss reclaimed)"
 }
 
-# See ADR-0240 for both properties. RAISE CONDITION for MemoryMax=96M: an
+# See ADR-0242 for both properties. RAISE CONDITION for MemoryMax=96M: an
 # OOM kill of this transient run-u*.service unit in the journal (the deploy
 # wrapper's report_oom_collateral lists it).
 run_doctor_summary() {
@@ -2145,7 +2145,7 @@ main() {
         # state change so a failure anywhere above leaves the prior good
         # manifest. See ADR-0172.
         write_build_manifest
-        run_doctor_summary || true  # advisory; removal condition in ADR-0240
+        run_doctor_summary || true  # advisory; removal condition in ADR-0242
         return 0
     fi
     require_root
@@ -2196,7 +2196,7 @@ main() {
     # change so a failure anywhere above leaves the prior good manifest.
     # See ADR-0172.
     write_build_manifest
-    run_doctor_summary || true  # advisory; removal condition in ADR-0240
+    run_doctor_summary || true  # advisory; removal condition in ADR-0242
 }
 
 # Only run main when invoked directly. When sourced (e.g. by tests

@@ -2320,13 +2320,13 @@ def test_run_doctor_summary_bounds_the_core_doctor_and_returns_its_code(tmp_path
     assert "/opt/jasper/.venv/bin/jasper-doctor" in argv
     assert "--core" in argv
     assert "MemoryMax=96M" in argv
-    assert "RuntimeMaxSec=60" in argv  # not TimeoutStartSec; See ADR-0240.
+    assert "RuntimeMaxSec=60" in argv  # not TimeoutStartSec; See ADR-0242.
 
 
 @pytest.mark.parametrize("profile", ["streambox", "full"])
 def test_a_failed_core_doctor_does_not_abort_either_install_profile(tmp_path, profile):
     """Removal condition: expect a non-zero rc here once the swallow at both
-    run_doctor_summary call sites goes (ADR-0240)."""
+    run_doctor_summary call sites goes (ADR-0242)."""
     env, _ = _systemd_run_stub(tmp_path, 1)
     # Neuter every install step so only main()'s control flow, the profile
     # branch and run_doctor_summary run for real.

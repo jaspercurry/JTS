@@ -751,7 +751,7 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         """The post-deploy `jasper-doctor --core` gate is advisory.
 
         Removal condition: flip the expected rc to 1 when the swallow at
-        the gate_core_health call site goes (ADR-0240).
+        the gate_core_health call site goes (ADR-0242).
         """
         fake = FakeRemote(self)
         result = self.run_deploy(
@@ -766,7 +766,7 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         calls = fake.calls()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("jasper-doctor\\ --core", calls)
-        # The remote run carries install.sh's bound. See ADR-0240.
+        # The remote run carries install.sh's bound. See ADR-0242.
         self.assertIn("systemd-run", calls)
         self.assertIn("MemoryMax=96M", calls)
         self.assertIn("RuntimeMaxSec=60", calls)
