@@ -60,8 +60,11 @@ jasper_env_quote_value() {
 # symlink to a DEVICE is opened and followed, and the descriptor is re-checked
 # before anything touches it. An existing lock opens READ-ONLY, because `>>`
 # would follow a raced symlink and CREATE its target while flock(2) ignores
-# the open mode. A pre-planted FIFO is refused without opening; one raced in
-# after the check blocks either open, which bash cannot make non-blocking.
+# the open mode. A raced symlink is still opened before it is rejected, and
+# closed without a chmod, chgrp, write or create; the one Pi device where a
+# bare open has a side effect, /dev/watchdog0, is single-open and held by PID
+# 1, so that open gets EBUSY. A pre-planted FIFO is refused without opening;
+# one raced in blocks either open, which bash cannot make non-blocking.
 _jasper_env_lock_acquire() {
     local dir="$1" file="$2" lock="${1}/.${2##*/}.lock" rc=0
     local -n fd_ref="$3"
@@ -86,7 +89,7 @@ _jasper_env_lock_acquire() {
         fi
     fi
     if [[ -z "${fd_ref:-}" ]] || [[ ! -f "/dev/fd/${fd_ref}" ]]; then
-        echo "event=env_file.lock_failed file=${lock} reason=not_regular" >&2
+        echo "event=env_file.lock_failed file=${lock} reason=not_regular rc=1" >&2
         if [[ -n "${fd_ref:-}" ]]; then
             exec {fd_ref}>&-
         fi
@@ -153,18 +156,17 @@ jasper_env_file_set() {
     return "$rc"
 }
 
-# jasper_env_file_repair_permissions FILE [FILE_MODE] [DIR_MODE]
+# jasper_env_file_repair_permissions FILE [FILE_MODE]
 # Repair mode + parent group on an existing generated env file without touching
 # its contents: a content-current but root:root file is unreadable to the
 # non-root status daemons and /state then drifts from root doctor.
 jasper_env_file_repair_permissions() {
     local file="$1"
-    local file_mode="${2:-0600}" dir_mode="${3:-0750}"
+    local file_mode="${2:-0600}"
     local dir
 
-    dir="$(dirname "$file")"
-    [[ -d "$dir" ]] || install -d -m "$dir_mode" "$dir"
     [[ -f "$file" ]] || return 0
+    dir="$(dirname "$file")"
     chgrp --reference="$dir" "$file" 2>/dev/null || true
     chmod "$file_mode" "$file"
 }

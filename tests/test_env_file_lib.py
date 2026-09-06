@@ -296,7 +296,7 @@ def test_env_file_repair_permissions_uses_parent_group(tmp_path: Path) -> None:
     result = _bash(
         f'PATH="{fake_bin}:$PATH" '
         f'JTS_CHGRP_LOG="{chgrp_log}" '
-        f'jasper_env_file_repair_permissions "{env_file}" 0640 0750'
+        f'jasper_env_file_repair_permissions "{env_file}" 0640'
     )
 
     assert result.returncode == 0, result.stderr

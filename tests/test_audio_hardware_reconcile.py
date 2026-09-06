@@ -569,8 +569,8 @@ _SCRIPT_STATES = (
     # for fresh /state), and must repair generated /var/lib/jasper env-file
     # permissions on no-op runs.
     'jasper_env_file_set "$file" "$key" "$value" 0640 0750',
-    'jasper_env_file_repair_permissions "$OUTPUTD_ENV_FILE" 0640 0750',
-    'jasper_env_file_repair_permissions "$FANIN_ENV_FILE" 0640 0750',
+    'jasper_env_file_repair_permissions "$OUTPUTD_ENV_FILE" 0640',
+    'jasper_env_file_repair_permissions "$FANIN_ENV_FILE" 0640',
     # The latency floor and the endpoint contract are the runtime plan's
     # answers, fetched over the CLI with the fan-in env and BOTH camilla
     # statefiles — never a second copy of the registry in bash.
@@ -992,14 +992,33 @@ def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
     assert "--no-block restart jasper-aec-reconcile.service" in commands
 
 
-def test_a_refused_env_lock_fails_the_pass_without_restarting(tmp_path: Path):
-    """A refused lock returns 1 from jasper_env_file_set WITHOUT writing. The
-    `set_env_*_if_changed … && changed=1` idiom would otherwise read that as
+@pytest.mark.parametrize(
+    "locked_env,initial_fanin_env",
+    [
+        ("jasper.env", None),
+        # The route actions are all `unset` on fanin.env, so seeding one of
+        # their keys reaches apply_route_env's drop branch. That function runs
+        # in an `if` CONDITION, which disables set -e for its whole body — a
+        # refused lock there was discarded and the caller restarted anyway.
+        ("fanin.env", "JASPER_FANIN_INPUT_RESAMPLER=1\n"),
+    ],
+)
+def test_a_refused_env_lock_fails_the_pass_without_restarting(
+    tmp_path: Path, locked_env: str, initial_fanin_env: str | None
+):
+    """A refused lock returns 1 from the shared writer WITHOUT writing. The
+    `… && changed=1` / `file_changed=1` idioms would otherwise read that as
     "changed" and restart jasper-outputd onto the OLD lane/PCM/format while
     the unit exited 0. Removal condition: the bash env writers are gone."""
-    os.mkfifo(tmp_path / ".jasper.env.lock")
+    os.mkfifo(tmp_path / f".{locked_env}.lock")
 
-    result = _run_reconcile(tmp_path, APPLE_LISTING, "--reason", "test")
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_fanin_env=initial_fanin_env,
+    )
 
     assert result.returncode != 0
     assert "restart" not in _systemctl_log(tmp_path)
