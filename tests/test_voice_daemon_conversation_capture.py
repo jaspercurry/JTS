@@ -60,7 +60,7 @@ def _put_in_session(wl, turn: _FakeTurn) -> None:
 
     wl._telemetry_stage = _noop
     wl._telemetry_outcome = _noop
-    wl._notify_peering_session_ended = _noop
+    wl._peering.session_ended = _noop
     wl._play_listening_chirp = _noop_chirp
 
 

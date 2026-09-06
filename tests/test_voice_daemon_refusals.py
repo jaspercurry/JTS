@@ -285,7 +285,7 @@ async def _trigger_spend_cap(_monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """(a) The spend cap is reached: refused before any turn opens."""
     wl = WakeLoop.for_tests()
     played, rec = _cue_recorder()
-    wl._peer_arbitrate = _win
+    wl._peering.arbitrate = _win
     wl._play_cue = rec
     try:
         await wl._arbitrate_acquire_drain(
@@ -301,7 +301,7 @@ async def _trigger_connection_paused(_monkeypatch: pytest.MonkeyPatch) -> list[s
     """(b) The live connection is still paused after the bounded wait."""
     wl = WakeLoop.for_tests()
     played, rec = _cue_recorder()
-    wl._peer_arbitrate = _win
+    wl._peering.arbitrate = _win
     wl._play_cue = rec
     wl._await_connection = _never_recovers
     try:
@@ -327,7 +327,7 @@ async def _trigger_idle_init_connection(
     wl = WakeLoop.for_tests()
     played, rec = _cue_recorder()
     wl._connection = connection
-    wl._peer_arbitrate = _win
+    wl._peering.arbitrate = _win
     wl._play_cue = rec
     wl._await_connection = _never_recovers
     try:
@@ -562,7 +562,7 @@ async def test_refusal_is_a_structured_event(
 
 
 class _ParkedPeeringNotify:
-    """`_notify_peering_session_ended` as a real teardown finds it: a write
+    """`PeeringClient.session_ended` as a real teardown finds it: a write
     to the peering daemon that can park on its socket. It sits between the
     teardown's episode capture and every output action guarded on
     ownership — the END_SEGMENT, the chirp, the drain wait, the duck
@@ -594,7 +594,7 @@ async def _surrender_inside_end_turn_inner() -> tuple[WakeLoop, list[str]]:
 
     wl._tts.end_segment = _end_segment
     notify = _ParkedPeeringNotify(timeline)
-    wl._notify_peering_session_ended = notify
+    wl._peering.session_ended = notify
 
     _prepare_teardown(
         wl, bytes_sent=4096, chunks_received=1,

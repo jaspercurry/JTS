@@ -17,10 +17,11 @@ def test_peering_env_file_is_sourced_by_voice_and_control_units():
     `/sound/pair/` writes to `/var/lib/jasper/peering.env`. jasper-control
     runs the peering daemon; jasper-voice is its UDS client and short-circuits
     every wake-arbitration call when `peering_enabled` is False
-    (`_peering_send` in `jasper/voice_daemon.py`). If either unit fails to
-    source the file, that daemon never sees the wizard's `JASPER_PEERING=on`
-    and peering silently stays off even after the household enabled it — the
-    exact regression this guards (jasper-voice was missing the line). Mirrors
+    (`PeeringClient._send` in `jasper/voice/peering_client.py`). If either
+    unit fails to source the file, that daemon never sees the wizard's
+    `JASPER_PEERING=on` and peering silently stays off even after the
+    household enabled it — the exact regression this guards (jasper-voice
+    was missing the line). Mirrors
     `test_weather_plumbing.py`'s env-file plumbing assertion.
     """
     voice_unit = (

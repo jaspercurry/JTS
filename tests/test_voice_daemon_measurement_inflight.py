@@ -1528,7 +1528,7 @@ async def test_cancelled_listening_feedback_prepare_owns_cleanup(
             return "WIN"
 
         wl._wake_late_cancelled = lambda *_args: False
-        wl._peer_arbitrate = win_arbitration
+        wl._peering.arbitrate = win_arbitration
         wl._acquiring = True
         beginning = asyncio.create_task(
             wl._arbitrate_acquire_drain(
