@@ -261,19 +261,10 @@ class GeminiLiveTurn(BaseLiveTurn):
             metadata["tools"] = list(self._tool_call_names)
         return metadata
 
-    # ---- Barge-in capability seam (Gemini pack — final no-op) ----
-    #
-    # Reconciliation kind for Gemini is `server_self_truncates` (catalog):
-    # START_OF_ACTIVITY_INTERRUPTS would drop the unspoken tail server-side,
-    # and Gemini has no OpenAI-style per-response audio item id to truncate
-    # against. Both methods are therefore genuine no-ops for Gemini, not
-    # just deferred wiring (robust-barge-in PR-5 finalises them as no-ops) —
-    # they exist so the daemon's barge-in path stays one code path across
-    # providers. Note JTS runs Gemini with manual VAD + NO_INTERRUPTION (see
-    # _build_config's barge-in resolution), so the server does not even
-    # self-interrupt / self-truncate in normal operation: the daemon's local
-    # gate (request_local_interrupt, below) is the sole interruption
-    # authority and the local TTS flush happens at the daemon layer.
+    # ---- Barge-in capability seam (Gemini pack) ----
+    # Both methods are no-ops: Gemini has no client cancel call and no
+    # per-response audio item id to truncate against. See ADR-0115 and
+    # ``session.py``'s ``cancel_response``/``truncate_assistant_audio``.
 
     async def cancel_response(self, reason: str) -> None:
         # No-op: Gemini interruption is provider-side generation state;
@@ -495,9 +486,7 @@ class GeminiLiveConnection(BaseLiveConnection):
             except BaseException:  # noqa: BLE001
                 # The turn never started — roll the slot back, or every
                 # later acquire_turn() gets "a turn is already active"
-                # until a reconnect happens to clear it (observed on the
-                # 2026-06-11 eval runs: one ConnectionClosed here wedged
-                # the whole suite).
+                # until a reconnect happens to clear it.
                 self._active_turn = None
                 raise
             async with self._state_lock:
@@ -975,8 +964,7 @@ class GeminiLiveConnection(BaseLiveConnection):
         Failure paths log `timed out` or `raised:` with the same elapsed.
 
         ``turn`` is the active turn whose idle anchor we reset between
-        tool dispatches. Optional for back-compat — the
-        caller in ``GeminiLiveTurn._on_response`` always passes it.
+        tool dispatches.
         """
         assert self._registry is not None
         responses = []
