@@ -9,7 +9,6 @@ import asyncio
 import logging
 import math
 import os
-import threading
 import time
 from pathlib import Path
 from collections.abc import Mapping
@@ -17,14 +16,7 @@ from typing import Any, Callable, NamedTuple, Sequence, TypeVar
 
 from .. import identity_state
 from ..accessories import status as accessory_status
-from ..audio_quality import (
-    DEFAULT_CONVERTER as _default_audio_converter,
-    converter_options as _audio_converter_options,
-    read_active_converter as _read_active_audio_converter,
-    read_state as _read_audio_quality_state,
-)
 from ..memory_policy import disk_usage
-from ..music_sources import MUSIC_SOURCE_SPECS
 from ..fanin.status import (
     FANIN_INPUT_SOURCE_DIRECT,
     fanin_usbsink_input,
@@ -79,9 +71,6 @@ from .uds import _local_status_json, _mux_socket_command, _voice_socket_command
 logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
-SOURCE_AVAILABILITY_TTL_SEC = 10.0
-_source_availability_cache: tuple[float, dict[str, Any]] | None = None
-_source_availability_lock = threading.Lock()
 OUTPUTD_BASE_CAMILLA_CONFIG = "/etc/camilladsp/outputd-cutover.yml"
 
 # Per-probe ceiling for the CamillaDSP /state probe: a wedged-but-listening
@@ -161,30 +150,6 @@ def _default_ha_status_snapshot() -> dict[str, Any]:
 
         _default_ha_status_cache = HomeAssistantStatusCache()
     return _default_ha_status_cache.snapshot()
-
-
-def _safe_audio_quality_state() -> dict[str, Any]:
-    try:
-        return _read_audio_quality_state()
-    except Exception as e:  # noqa: BLE001
-        logger.exception("audio quality state read failed")
-        converter = _default_audio_converter
-        options = _audio_converter_options()
-        meta = next(
-            option for option in options if option["converter"] == converter
-        )
-        try:
-            active = _read_active_audio_converter()
-        except Exception:  # noqa: BLE001
-            active = None
-        return {
-            "converter": converter,
-            "active_converter": active,
-            "label": meta["label"],
-            "summary": meta["summary"],
-            "options": options,
-            "error": str(e),
-        }
 
 
 def _build_usbsink_renderer_state(
@@ -753,47 +718,6 @@ async def _outputd_status(
     jasper-doctor owns the actionable cutover failure.
     """
     return await local_status_json(OUTPUTD_STATUS_SOCKET)
-
-
-def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Add on/off wizard availability to mux source status.
-
-    Mux knows audio policy; `/sources/` knows whether each renderer is
-    enabled/available. The landing selector needs both, but keeping the
-    merge here avoids teaching mux about systemd/DBus source toggles.
-    """
-    sources = payload.get("sources")
-    if not isinstance(sources, dict):
-        return payload
-    global _source_availability_cache
-    now = time.monotonic()
-    with _source_availability_lock:
-        cached = _source_availability_cache
-        if cached is not None and now - cached[0] < SOURCE_AVAILABILITY_TTL_SEC:
-            wizard_state = cached[1]
-        else:
-            wizard_state = None
-    if wizard_state is None:
-        try:
-            from ..web.sources_setup import _gather_state as _sources_state
-            fresh_state = _sources_state()
-        except Exception as e:  # noqa: BLE001
-            logger.debug("source availability read failed: %s", e)
-            return payload
-        with _source_availability_lock:
-            _source_availability_cache = (now, fresh_state)
-        wizard_state = fresh_state
-    for spec in MUSIC_SOURCE_SPECS:
-        wizard_key = spec.wizard_key
-        mux_key = spec.id.value
-        state = wizard_state.get(wizard_key)
-        if not isinstance(state, dict):
-            continue
-        slot = sources.setdefault(mux_key, {})
-        if isinstance(slot, dict):
-            slot["available"] = bool(state.get("available", True))
-            slot["enabled"] = bool(state.get("enabled", False))
-    return payload
 
 
 def _soft_read(

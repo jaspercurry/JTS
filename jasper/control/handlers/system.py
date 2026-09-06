@@ -10,7 +10,14 @@ import asyncio
 import subprocess
 from typing import Any, Callable
 
-from ...audio_quality import apply_requested_converter, normalize_converter
+from ...audio_quality import (
+    DEFAULT_CONVERTER as _default_audio_converter,
+    apply_requested_converter,
+    converter_options as _audio_converter_options,
+    normalize_converter,
+    read_active_converter as _read_active_audio_converter,
+    read_state as _read_audio_quality_state,
+)
 from ...doctor_contract import (
     REASON_SNAPSHOT_PENDING,
     REASON_SNAPSHOT_UNAVAILABLE,
@@ -28,6 +35,30 @@ from .. import server as _server
 from .. import state_aggregate
 from .. import usb_gadget_forensics
 from ._base import ControlHandlerMixin, logger
+
+
+def _safe_audio_quality_state() -> dict[str, Any]:
+    try:
+        return _read_audio_quality_state()
+    except Exception as e:  # noqa: BLE001
+        logger.exception("audio quality state read failed")
+        converter = _default_audio_converter
+        options = _audio_converter_options()
+        meta = next(
+            option for option in options if option["converter"] == converter
+        )
+        try:
+            active = _read_active_audio_converter()
+        except Exception:  # noqa: BLE001
+            active = None
+        return {
+            "converter": converter,
+            "active_converter": active,
+            "label": meta["label"],
+            "summary": meta["summary"],
+            "options": options,
+            "error": str(e),
+        }
 
 
 class SystemRoutes(ControlHandlerMixin):
@@ -209,7 +240,7 @@ class SystemRoutes(ControlHandlerMixin):
                 _server._active_speaker_output_safety_snapshot(airplay_health)
             ),
             "outputd": outputd_status,
-            "audio_quality": _server._safe_audio_quality_state(),
+            "audio_quality": _safe_audio_quality_state(),
             "usb_latency": _server._safe_usb_latency_state(airplay_health),
             "voice_provider": read_active_provider(),
             "speaker_name": _read_speaker_name_state().__dict__,
