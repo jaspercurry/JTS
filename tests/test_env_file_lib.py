@@ -18,11 +18,11 @@ from __future__ import annotations
 import os
 import stat
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
 
+from tests._lock_holder import spawn_lock_holder
 from tests.install_surface import installer_text
 
 
@@ -102,41 +102,131 @@ def test_round_trip_through_source(tmp_path: Path) -> None:
 def test_env_file_set_waits_out_a_concurrent_holder(tmp_path: Path) -> None:
     """A second writer must wait, not clobber.
 
-    The holder here does what jasper/atomic_io.py's locked_update_env_file
-    does — take the advisory lock at `<dir>/.<basename>.lock`, read, then
-    write the whole file back — so an unlocked bash upsert landing inside
-    that window would be lost. Removal condition: a single Python owner
-    writes every env file.
+    An unlocked bash upsert landing inside the holder's read→write-back window
+    is lost. Removal condition: a single Python owner writes every env file.
     """
     env_file = tmp_path / "jasper.env"
     env_file.write_text("SEED=1\n", encoding="utf-8")
-    lock = tmp_path / f".{env_file.name}.lock"
-    holding = tmp_path / "holding"
-    hold_seconds = 0.5
-    holder = subprocess.Popen(
-        [
-            "bash",
-            "-c",
-            f'exec 9>>"{lock}"\n'
-            "flock 9\n"
-            f'snapshot="$(cat "{env_file}")"\n'
-            f': > "{holding}"\n'
-            f"sleep {hold_seconds}\n"
-            f'printf "%s\\nHOLDER=1\\n" "$snapshot" > "{env_file}"\n',
-        ],
-    )
-    try:
-        deadline = time.monotonic() + 10
-        while not holding.exists():
-            assert time.monotonic() < deadline, "holder never took the lock"
-            time.sleep(0.01)
+
+    with spawn_lock_holder(env_file, hold_seconds=0.5, write_back="HOLDER=1\n"):
         result = _bash(f'jasper_env_file_set "{env_file}" WRITER 2')
-    finally:
-        holder.wait(timeout=30)
 
     assert result.returncode == 0, result.stderr
-    # An unlocked upsert lands inside the hold and the write-back drops it.
     assert env_file.read_text(encoding="utf-8") == "SEED=1\nHOLDER=1\nWRITER=2\n"
+
+
+def test_env_file_seed_absent_keeps_a_concurrent_holders_value(
+    tmp_path: Path,
+) -> None:
+    """A seed must test presence INSIDE the lock, not before it.
+
+    The reconcilers back-fill build defaults into files jasper-control also
+    writes. A `grep -q KEY= || append` reads absence, waits for nothing, and
+    appends the default AFTER the holder published the operator's value — and
+    every reader of these files takes the LAST line, so the toggle silently
+    reverts. Removal condition: a single Python owner writes every env file.
+    """
+    env_file = tmp_path / "aec_mode.env"
+    env_file.write_text("SEED=1\n", encoding="utf-8")
+
+    with spawn_lock_holder(env_file, hold_seconds=0.5, write_back="KEY=1\n"):
+        result = _bash(f'jasper_env_file_seed_absent "{env_file}" 0644 0755 KEY=0')
+
+    assert result.returncode == 0, result.stderr
+    assert env_file.read_text(encoding="utf-8") == "SEED=1\nKEY=1\n"
+
+
+def test_env_file_seed_absent_appends_only_the_keys_the_file_omits(
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / "aec_mode.env"
+    env_file.write_text("KEEP=1\nSTATED=operator\n", encoding="utf-8")
+    result = _bash(
+        f'jasper_env_file_seed_absent "{env_file}" 0644 0755 '
+        "STATED=build A=0 B=1"
+    )
+    assert result.returncode == 0, result.stderr
+    assert env_file.read_text(encoding="utf-8") == (
+        "KEEP=1\nSTATED=operator\nA=0\nB=1\n"
+    )
+    assert (env_file.stat().st_mode & 0o777) == 0o644
+
+
+def test_env_file_seed_absent_reports_a_refused_lock_apart_from_a_failed_write(
+    tmp_path: Path,
+) -> None:
+    """A refused lock is EX_TEMPFAIL, not a write failure.
+
+    jasper-aec-reconcile tolerates only the refusal: every reader of
+    aec_mode.env carries the same build defaults, so a pass that could not take
+    the lock loses nothing, while a pass that could not WRITE has to fail.
+    One code for both would make that distinction unexpressible. Removal
+    condition: a single Python owner writes every env file.
+    """
+    env_file = tmp_path / "aec_mode.env"
+    env_file.write_text("KEEP=1\n", encoding="utf-8")
+    os.mkfifo(tmp_path / f".{env_file.name}.lock")
+
+    result = _bash(f'jasper_env_file_seed_absent "{env_file}" 0644 0755 KEY=0')
+
+    assert result.returncode == 75
+    assert env_file.read_text(encoding="utf-8") == "KEEP=1\n"
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="root bypasses the mode bits this asserts"
+)
+def test_env_file_seed_absent_reports_a_failed_write_apart_from_a_refusal(
+    tmp_path: Path,
+) -> None:
+    """The other half: the lock is taken, the write cannot land."""
+    env_dir = tmp_path / "state"
+    env_dir.mkdir()
+    env_file = env_dir / "aec_mode.env"
+    env_file.write_text("KEEP=1\n", encoding="utf-8")
+    (env_dir / f".{env_file.name}.lock").touch()
+    env_dir.chmod(0o500)
+    try:
+        result = _bash(f'jasper_env_file_seed_absent "{env_file}" 0644 0755 KEY=0')
+    finally:
+        env_dir.chmod(0o700)
+
+    assert result.returncode == 1
+    assert env_file.read_text(encoding="utf-8") == "KEEP=1\n"
+
+
+def test_env_file_hold_excludes_another_writer_until_dropped(
+    tmp_path: Path,
+) -> None:
+    """The hold must span a sequence, and release on drop.
+
+    jasper-audio-hardware-reconcile publishes outputd.env by copying the live
+    file to a candidate, writing keys into the candidate, then renaming — so
+    the exclusion has to outlive the individual writes to a DIFFERENT file.
+    Removal condition: stage_outputd_env no longer stages a whole env file.
+    """
+    env_file = tmp_path / "outputd.env"
+    env_file.write_text("SEED=1\n", encoding="utf-8")
+    lock = tmp_path / f".{env_file.name}.lock"
+    contend = (
+        f'if bash -c \'exec 9>>"{lock}"; flock -n 9\' 2>/dev/null; '
+        'then printf "free\\n"; else printf "excluded\\n"; fi\n'
+    )
+
+    result = _bash(
+        f'jasper_env_file_hold "{env_file}"\n'
+        # A single-key write to the CANDIDATE takes its own lock on its own
+        # descriptor; sharing one would end the hold here.
+        f'jasper_env_file_set "{tmp_path}/candidate" K V\n'
+        + contend
+        + "jasper_env_file_drop\n"
+        + contend
+        # Idempotent: an exit trap may drop a hold a commit path already did.
+        + "jasper_env_file_drop\n"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["excluded", "free"]
 
 
 @pytest.mark.parametrize(
@@ -477,6 +567,9 @@ def test_env_file_export_fails_when_the_parser_cannot_run(tmp_path: Path) -> Non
         # the lib would make the child find its guard already set and
         # define nothing.
         ("_JASPER_ENV_FILE_LIB_LOADED", "1", "JASPER_OK", "1"),
+        # The hold's descriptor number: an exported one would point
+        # jasper_env_file_drop's close at an unrelated descriptor.
+        ("_JASPER_ENV_HOLD_FD", "2", "JASPER_OK", "1"),
     ],
 )
 def test_env_file_export_skips_jasper_prefixed_keys(
@@ -486,9 +579,10 @@ def test_env_file_export_skips_jasper_prefixed_keys(
     plain_key: str,
     plain_value: str,
 ) -> None:
-    """_JASPER_-prefixed keys are this lib's own state (include guard,
-    parser). jasper_env_file_export must never re-export one: every other
-    key still reaches a child's environment, and the pass still succeeds."""
+    """_JASPER_-prefixed keys are this lib's own state (include guard, parser,
+    hold descriptor). jasper_env_file_export must never re-export one: every
+    other key still reaches a child's environment, and the pass still
+    succeeds."""
     env_file = tmp_path / "jasper.env"
     env_file.write_text(f"{guard_key}={guard_value}\n{plain_key}={plain_value}\n")
 
