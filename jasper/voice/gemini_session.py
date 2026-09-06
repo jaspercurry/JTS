@@ -423,6 +423,7 @@ class GeminiLiveConnection(BaseLiveConnection):
             backoff_schedule=backoff_schedule,
             sleep=sleep,
         )
+        self._api_key = api_key
         self._client = genai.Client(api_key=api_key) if connect_factory is None else None
         self._connect_factory = connect_factory
         self._rotate_after_sec = rotate_after_sec
@@ -454,6 +455,15 @@ class GeminiLiveConnection(BaseLiveConnection):
         # yet been matched by a server-side `turn_complete`. See the
         # docstring on _prune_unack_activity_ends for the design.
         self._unack_activity_end_times: list[float] = []
+
+    def _secret_literals(self) -> tuple[str, ...]:
+        """The API key, so a rejection body that echoes it still redacts.
+
+        `_KEY_PREFIX_RE` in `secret_redaction.py` knows the `AIza`
+        shape; a prefix-less or rotated key can miss it, and this is
+        the fallback (ADR-0243).
+        """
+        return (self._api_key,) if self._api_key else ()
 
     # ------------------------------------------------------------------
     # LiveConnection protocol
