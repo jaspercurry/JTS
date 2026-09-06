@@ -76,13 +76,14 @@ if [[ "$tty" == "1" && "$cmd" == sudo* ]]; then
 fi
 
 case "$cmd" in
-  *.jts-deploy-facts.*mkdir*)
+  mktemp*jts-deploy-facts*)
     rm -rf "$FAKE_FACTS_DIR"
-    mkdir -p "$FAKE_FACTS_DIR"
+    mkdir -m 0700 -p "$FAKE_FACTS_DIR"
     printf '%s\n' "$FAKE_FACTS_DIR"
     ;;
   sudo*jts-deploy-facts*)
     # publish_root_facts: root stages what this run will read back.
+    if [[ "${FAKE_PUBLISH_RC:-0}" != "0" ]]; then exit "$FAKE_PUBLISH_RC"; fi
     mkdir -p "$FAKE_FACTS_DIR"
     id="$(fake_peer_id "$@")"
     if [[ -n "$id" ]]; then printf '%s\n' "$id" > "$FAKE_FACTS_DIR/peer_id"; fi
@@ -613,6 +614,33 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
                 self.assertIn("DEPLOY_IDENTITY=unavailable", result.stdout)
                 self.assertNotIn("PI_PEER_ID", recorded)
                 self.assertIn("RSYNC", fake.calls())
+
+    def test_a_fact_that_cannot_be_staged_stops_the_deploy_before_rsync(self):
+        """A root fact the Pi has but will not hand over must abort the
+        deploy, not read back as absent — an unstaged peer_id that reported
+        `unavailable` would skip the identity guard silently.
+
+        Removal condition: delete when the guards stop reading staged facts.
+        """
+        fake = FakeRemote(self)
+        env = fake.env(
+            PI_HOST="jts3.local",
+            PI_USER="pi",
+            JASPER_HOSTNAME="jts3.local",
+            FAKE_SUDO_N_RC="1",
+            FAKE_PUBLISH_RC="1",
+        )
+        with isolated_checkout(None) as checkout:
+            result = run_with_pty(
+                ["bash", str(checkout / "scripts" / "deploy-to-pi.sh")],
+                cwd=checkout,
+                env=env,
+            )
+
+        self.assertNotEqual(
+            result.returncode, 0, result.stdout + result.stderr
+        )
+        self.assertNotIn("RSYNC", fake.calls())
 
     def test_skip_restart_skips_the_restarts_and_still_runs_the_gates(self):
         """SKIP_RESTART=1 leaves the daemons on prior code — it is not a

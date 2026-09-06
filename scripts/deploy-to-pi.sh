@@ -106,9 +106,10 @@ publish_root_facts() {
     local stage="$1" since_epoch="${2:-0}" body args
     [[ "$SUDO_INTERACTIVE" == "1" ]] || return 0
     if [[ -z "$REMOTE_FACTS_DIR" ]]; then
-        # Named for this run alone: a concurrent deploy from another
-        # checkout must never sweep facts this one is still reading.
-        REMOTE_FACTS_DIR="$(ssh_remote 'd="$HOME/.jts-deploy-facts.'"$$"'"; rm -rf "$d" && mkdir -m 0700 "$d" && printf "%s\n" "$d"')" || {
+        # mktemp -d: an unpredictable name, created 0700, and nothing is
+        # ever removed by name — a concurrent deploy from another checkout
+        # must never blank facts this one is still reading.
+        REMOTE_FACTS_DIR="$(ssh_remote 'mktemp -d "$HOME/.jts-deploy-facts.XXXXXXXX"')" || {
             echo "deploy-to-pi: could not stage privileged reads on ${SSH_TARGET}" >&2
             exit 1
         }
@@ -131,12 +132,22 @@ publish_root_facts() {
             'dir="$1"; owner="$2"; shift 2' \
             'for f in "$@"; do' \
             '    [ -r "/var/lib/jasper/${f}" ] || continue' \
-            '    install -m 0600 -o "${owner}" "/var/lib/jasper/${f}" "${dir}/${f}"' \
+            '    install -m 0600 -o "${owner}" "/var/lib/jasper/${f}" "${dir}/${f}" || exit 1' \
             'done'
     fi
     echo "==> Staging privileged reads on ${PI_HOST} (${stage}); sudo may prompt"
     # shellcheck disable=SC2086
-    run_remote_sudo "sh -c $(shell_quote "$body") jts-deploy-facts $(shell_quote "$REMOTE_FACTS_DIR") $(shell_quote "$PI_USER") ${args}"
+    if run_remote_sudo "sh -c $(shell_quote "$body") jts-deploy-facts $(shell_quote "$REMOTE_FACTS_DIR") $(shell_quote "$PI_USER") ${args}"; then
+        return 0
+    fi
+    # The journal slice is advisory (its caller decides); the guards that
+    # read the other stages are not, so an unstaged fact fails the deploy
+    # rather than reading as absent.
+    if [[ "$stage" == "journal" ]]; then
+        return 1
+    fi
+    echo "deploy-to-pi: could not stage the ${stage} root facts on ${SSH_TARGET}" >&2
+    exit 1
 }
 
 cleanup_remote_facts() {
@@ -583,7 +594,7 @@ verify_manifest_advanced() {
         return 0
     fi
     finish_airplay_health_maintenance
-    trap - EXIT
+    trap 'cleanup_remote_facts' EXIT
     cat <<EOF >&2
 ─────────────────────────────────────────────────────────────
  DEPLOY VERIFICATION FAILED: the build manifest did not advance
@@ -818,7 +829,7 @@ fi
 
 if [[ "$install_rc" -ne 0 ]]; then
     finish_airplay_health_maintenance
-    trap - EXIT
+    trap 'cleanup_remote_facts' EXIT
     echo "─────────────────────────────────────────────────────────────" >&2
     if [[ "$install_rc" == "255" ]]; then
         echo " DEPLOY OUTCOME UNKNOWN: ssh exited 255 while install.sh was" >&2
@@ -875,7 +886,7 @@ if ! REMOTE_INSTALL_PROFILE="$(
     read_pi_file install_profile 2>/dev/null | tail -n1 | tr -d '[:space:]'
 )"; then
     finish_airplay_health_maintenance
-    trap - EXIT
+    trap 'cleanup_remote_facts' EXIT
     echo "deploy-to-pi: could not read /var/lib/jasper/install_profile after install" >&2
     echo "The deploy cannot choose the correct post-install verification path." >&2
     exit 1
@@ -885,13 +896,13 @@ case "$REMOTE_INSTALL_PROFILE" in
         ;;
     "")
         finish_airplay_health_maintenance
-        trap - EXIT
+        trap 'cleanup_remote_facts' EXIT
         echo "deploy-to-pi: /var/lib/jasper/install_profile is empty after install" >&2
         exit 1
         ;;
     *)
         finish_airplay_health_maintenance
-        trap - EXIT
+        trap 'cleanup_remote_facts' EXIT
         echo "deploy-to-pi: invalid installed profile '${REMOTE_INSTALL_PROFILE}'" >&2
         echo "Expected 'full' or 'streambox' in /var/lib/jasper/install_profile." >&2
         exit 1
@@ -972,7 +983,7 @@ echo \"streambox probes failed: control=\$control root=\$root system=\$system so
         echo "  ✓ /, /system/data.json, /sources/state, /sound/setup/, /spotify/, and :8780/healthz answer"
     else
         finish_airplay_health_maintenance
-        trap - EXIT
+        trap 'cleanup_remote_facts' EXIT
         echo "─────────────────────────────────────────────────────────────" >&2
         echo " DEPLOY VERIFICATION FAILED: streambox management is not"   >&2
         echo " answering at http://${HOSTNAME_FOR_INSTALL}/."             >&2
@@ -995,7 +1006,7 @@ echo \"management-surface probe failed: last HTTP status \$code\" >&2; exit 1"
         echo "  ✓ /system/data.json answers 200 via nginx as ${HOSTNAME_FOR_INSTALL}"
     else
         finish_airplay_health_maintenance
-        trap - EXIT
+        trap 'cleanup_remote_facts' EXIT
         echo "─────────────────────────────────────────────────────────────" >&2
         echo " DEPLOY VERIFICATION FAILED: the management surface is not"   >&2
         echo " answering at http://${HOSTNAME_FOR_INSTALL}/system/."        >&2
@@ -1019,7 +1030,7 @@ if ssh_remote "$asset_probe"; then
     echo "  ✓ /system/ advertises current design assets"
 else
     finish_airplay_health_maintenance
-    trap - EXIT
+    trap 'cleanup_remote_facts' EXIT
     echo "DEPLOY VERIFICATION FAILED: /system/ is serving a stale asset version." >&2
     echo "Expected /assets/app.css?v=${SHA}${DIRTY}" >&2
     exit 1
@@ -1034,7 +1045,7 @@ if [[ "${HEALTH_START_EPOCH}" != "0" ]]; then
 fi
 if [[ "$OOM_PRODUCTION_HIT" == "1" ]]; then
     finish_airplay_health_maintenance
-    trap - EXIT
+    trap 'cleanup_remote_facts' EXIT
     echo "─────────────────────────────────────────────────────────────" >&2
     echo " DEPLOY VERIFICATION FAILED: a live production daemon was" >&2
     echo " OOM-killed during this deploy. The Pi may have recovered," >&2

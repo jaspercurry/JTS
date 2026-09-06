@@ -42,6 +42,7 @@ declare -F verify_manifest_advanced >/dev/null || { echo "harness: extraction fa
 # maintenance finalizer is a no-op (it would otherwise try to ssh).
 read_pi_file() { printf '%s\n' "$MANIFEST"; }
 finish_airplay_health_maintenance() { :; }
+cleanup_remote_facts() { :; }
 trap - EXIT
 SHA_FULL="@FULL@"; DIRTY=""; SHA="${SHA_FULL:0:8}"; PI_HOST="bench-pi.local"
 verify_manifest_advanced
