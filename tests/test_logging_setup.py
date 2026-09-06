@@ -71,6 +71,29 @@ def test_a_traceback_is_redacted_too(capsys):
     assert "<redacted>" in err
 
 
+def test_a_scrub_failure_fails_closed_for_the_traceback_too(monkeypatch, capsys):
+    """Clearing ``exc_text`` alone is not fail-closed: ``Formatter.format``
+    re-derives it from an untouched ``exc_info``, so the placeholder path
+    must clear ``exc_info`` too or the exception's own text — exactly where
+    a provider's rejected credential lands — reaches the stream raw."""
+    monkeypatch.setattr(
+        logging_setup,
+        "redact_secrets",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("redactor blew up")),
+    )
+    with bare_root_logger():
+        configure_logging()
+        try:
+            raise RuntimeError("upstream rejected token=abc123secretvalue")
+        except RuntimeError:
+            logging.getLogger("jasper.x").exception("provider call failed")
+
+    err = capsys.readouterr().err
+    assert "could not be scrubbed" in err
+    assert "abc123secretvalue" not in err
+    assert "Traceback" not in err
+
+
 def test_a_logger_outside_jasper_is_redacted_too(capsys):
     """The filter is on the handler, not on the ``jasper`` logger.
 
@@ -138,24 +161,42 @@ _BOOTSTRAP_CALLS = frozenset({"basicConfig", "dictConfig", "fileConfig"})
 
 
 def _names_the_root_logger(node: ast.expr) -> bool:
-    """``logging.root`` or a bare ``logging.getLogger()``: an ``addHandler``
-    on either sits under every jasper logger, unfiltered."""
+    """``logging.root``, a bare ``logging.getLogger()``, or
+    ``logging.getLogger("")``: an ``addHandler`` on any of these sits under
+    every jasper logger, unfiltered."""
     if isinstance(node, ast.Attribute) and node.attr == "root":
         return True
-    return (
+    if not (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "getLogger"
-        and not node.args
         and not node.keywords
+    ):
+        return False
+    if not node.args:
+        return True
+    return (
+        len(node.args) == 1
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == ""
     )
 
 
 def _installs_its_own_handler(tree: ast.AST) -> bool:
     """One walk: attribute calls are matched by name (so ``import logging as
     L`` is covered), bare calls against what a ``from logging`` import bound
-    (so an alias is covered too)."""
+    (so an alias is covered too), and an ``addHandler`` on a name bound
+    earlier in the module to the root logger (so ``root =
+    logging.getLogger(); root.addHandler(...)`` is covered like the inline
+    spelling).
+
+    Out of scope: a dynamic lookup (``getattr(logging, "basicConfig")()``)
+    and a root logger reached through something other than a direct name
+    binding — a function's return value, an attribute, a container element —
+    which no shape-based scan resolves.
+    """
     bootstrap_names: set[str] = set()
+    root_names: set[str] = set()
     called_names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
@@ -165,13 +206,24 @@ def _installs_its_own_handler(tree: ast.AST) -> bool:
                     for alias in node.names
                     if alias.name in _BOOTSTRAP_CALLS
                 }
+        elif isinstance(node, ast.Assign) and _names_the_root_logger(node.value):
+            root_names |= {t.id for t in node.targets if isinstance(t, ast.Name)}
         elif isinstance(node, ast.Call):
             func = node.func
             if isinstance(func, ast.Name):
                 called_names.add(func.id)
             elif isinstance(func, ast.Attribute) and (
                 func.attr in _BOOTSTRAP_CALLS
-                or (func.attr == "addHandler" and _names_the_root_logger(func.value))
+                or (
+                    func.attr == "addHandler"
+                    and (
+                        _names_the_root_logger(func.value)
+                        or (
+                            isinstance(func.value, ast.Name)
+                            and func.value.id in root_names
+                        )
+                    )
+                )
             ):
                 return True
     return bool(bootstrap_names & called_names)
@@ -182,9 +234,9 @@ def test_configure_logging_is_the_only_logging_bootstrap():
 
     Covers the four ways a module installs a handler for itself:
     ``basicConfig``, ``logging.config.dictConfig``/``fileConfig``, and an
-    ``addHandler`` on the root logger. Out of scope: a dynamic lookup
-    (``getattr(logging, "basicConfig")()``), which no shape-based scan
-    resolves.
+    ``addHandler`` on the root logger, including one reached through a local
+    name bound earlier in the module. See ``_installs_its_own_handler`` for
+    what is still out of scope.
 
     Exact-match, so the allowlist cannot go stale either: a parked file that
     adopts must leave the set in the same commit. Remove this ratchet when

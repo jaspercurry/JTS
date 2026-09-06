@@ -60,7 +60,11 @@ class RedactingFilter(logging.Filter):
                 f"({type(exc).__name__})>"
             )
             record.args = ()
-            record.exc_text = record.stack_info = None
+            # Formatter.format re-derives exc_text from exc_info when the
+            # former is empty, so clearing exc_text alone still lets the
+            # untouched traceback (or an overridden formatException) reach
+            # the stream raw. exc_info must go too.
+            record.exc_info = record.exc_text = record.stack_info = None
         return True
 
     @staticmethod
@@ -70,6 +74,13 @@ class RedactingFilter(logging.Filter):
         except Exception as exc:  # noqa: BLE001
             # A %-format mismatch is reported by Handler.handleError today
             # and must not become an exception raised at the log call site.
+            # The sentinel — never record.msg itself — is what the flight
+            # recorder's auto-flush floor keys on: record.msg's own __str__
+            # may be what raised, so calling it again outside this try would
+            # crash at the log call site.
+            setattr(
+                record, TEMPLATE_ATTR, f"<unformattable {type(record.msg).__name__}>"
+            )
             flattened = (
                 f"{record.msg!r} % {record.args!r} "
                 f"(unformattable: {type(exc).__name__})"

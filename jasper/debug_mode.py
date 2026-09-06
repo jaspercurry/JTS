@@ -84,9 +84,9 @@ class Subsystem:
 
 # The subsystems the Debug card exposes. Extensible: add a row here, wire
 # apply_for() into that daemon's startup, and it appears on /system.
-# (mux uses a --log-level CLI arg and shairport uses its own config-file
-# log_verbosity — both a different mechanism than configure_logging,
-# deferred.)
+# (mux takes its level from a --log-level CLI arg and shairport from its own
+# config-file log_verbosity — both read their level from somewhere other than
+# the Debug card, deferred.)
 SUBSYSTEMS: dict[str, Subsystem] = {
     "voice": Subsystem(
         "voice", "jasper-voice.service", "Voice", ("jasper",),

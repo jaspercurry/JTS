@@ -586,4 +586,3 @@ def logging_sandbox(monkeypatch):
         root.setLevel(logging.INFO)
         monkeypatch.setattr(fr, "_ring", None, raising=False)
         yield console
-        fr._ring = None
