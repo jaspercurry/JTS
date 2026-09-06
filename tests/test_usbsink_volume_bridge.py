@@ -73,7 +73,7 @@ class _FakeMixer:
     than coincidentally matching the capture value (#4209).
     """
 
-    def __init__(self, raw: int = 41, *, playback: int | None = 80) -> None:
+    def __init__(self, raw: int = 41, *, playback: int = 80) -> None:
         self._read_fd, self._write_fd = os.pipe()
         self.raw = raw
         self.playback = playback
@@ -97,7 +97,7 @@ class _FakeMixer:
             raise self.fail
         # Mirrors pyalsaaudio: unqualified getvolume() resolves to the
         # PLAYBACK half whenever the element has one.
-        if pcmtype is None and self.playback is not None:
+        if pcmtype is None:
             return [self.playback]
         return [self.raw]
 
@@ -121,7 +121,6 @@ def _fake_alsaaudio(*mixers: _FakeMixer) -> ModuleType:
     module = ModuleType("alsaaudio")
     module.VOLUME_UNITS_RAW = 1  # type: ignore[attr-defined]
     # Matches real pyalsaaudio 0.11 (SND_PCM_STREAM_{PLAYBACK,CAPTURE}).
-    module.PCM_PLAYBACK = 0  # type: ignore[attr-defined]
     module.PCM_CAPTURE = 1  # type: ignore[attr-defined]
     module.cards = lambda: ["UMIK2", "UAC2Gadget"]  # type: ignore[attr-defined]
     module.card_indexes = lambda: [0, 4]  # type: ignore[attr-defined]
@@ -640,12 +639,8 @@ async def test_repeated_identical_observation_is_deduplicated(monkeypatch):
 async def test_observe_reads_capture_volume_not_merged_playback_default(
     monkeypatch, raw,
 ):
-    """The merged "PCM" simple element gets a playback half whenever the USB
-    mic export is on, and pyalsaaudio's getvolume() defaults to PLAYBACK when
-    the call omits `pcmtype` (#4209). The fake's playback value (80) sits
-    above the whole capture span (0..50), so reading playback here would
-    always clamp to 100% regardless of the capture step index — _observe()
-    must publish the capture-derived percent instead."""
+    """_observe() must read the capture half, not the merged element's
+    playback default modeled by _FakeMixer.playback (#4209)."""
     mixer = _FakeMixer(raw=raw)
     bridge = _ready_bridge(mixer)
     bridge._mixer = mixer
