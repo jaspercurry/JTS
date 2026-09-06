@@ -2,14 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Resolve the Pi USB data-port role and reconcile it into config.txt.
+"""Resolve the USB data-port role and reconcile it via
+``reconcile_boot_config`` (ADR-0235).
 
 The resolver is pure once its observed inputs are supplied.  It deliberately
 does not infer an I2S output from a missing USB device: on a Zero-class board,
 the shared OTG port stays in host mode through transient DAC removal so the DAC
-can reconnect without operator intervention. The role block's own render/parse
-lives in ``config_txt.py`` (ADR-0235 PR 6); the CLI lives in
-``jasper.cli.usb_port_role``.
+can reconnect without operator intervention.
 """
 
 from __future__ import annotations
@@ -342,11 +341,9 @@ def reconcile_boot_config(
     i2s_hat_intent_path: str | Path | None = None,
     hat_dir: str | Path = DEFAULT_HAT_DIR,
 ) -> tuple[UsbPortRoleState, bool, bool, str | None, bool, I2sHatCollision | None]:
-    # Resolution order (ADR-0234): a HAT that names itself in its ID EEPROM is
-    # applied with no operator step; the intent file is the toggle for the HATs
-    # that carry no EEPROM to read. With neither -- and the intent FILE must
-    # exist, not just the path argument -- NOTHING is touched, managed block
-    # included (see the jts3 incident this guards).
+    # ADR-0234: with neither a detected HAT nor a declared intent file (the
+    # intent FILE must exist, not just the path argument), NOTHING is
+    # touched, managed block included (see the jts3 incident this guards).
     detected = detected_i2s_hat_profile(hat_dir)
     detected_id = detected.id if detected is not None else None
     intent_declared = i2s_hat_intent_path is not None and Path(

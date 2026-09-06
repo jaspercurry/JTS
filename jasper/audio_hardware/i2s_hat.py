@@ -2,14 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The I2S audio-HAT decision: intent file, detection, and the managed block.
+"""The I2S audio-HAT decision: intent file, detection, and the managed block
+(ADR-0235).
 
-Pulled out of ``usb_port_role.py`` (ADR-0235 PR 6): a fitted HAT that names
-itself in its ID EEPROM is applied with no operator step; the intent file is
-the toggle for the HATs that carry no EEPROM to read (ADR-0234). This module
-owns both sources plus the boot-config block that records the choice;
-``usb_port_role.py`` calls in for the resolved overlay when it decides the
-USB data-port role.
+A fitted HAT that names itself in its ID EEPROM is applied with no operator
+step; the intent file is the toggle for the HATs that carry no EEPROM to read
+(ADR-0234).
 """
 
 from __future__ import annotations

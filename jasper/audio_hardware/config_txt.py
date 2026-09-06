@@ -2,15 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""``config.txt`` parse/render primitives, and the USB data-role's managed block.
-
-Pulled out of ``usb_port_role.py`` (ADR-0235 PR 6): the section-scoping and
-``[all]``-header healing rules apply equally to the USB data-role's managed
-block and the I2S HAT's managed block, so both import from here rather than
-duplicating the parser. The USB data-role block's own render/parse (this
-module) stays alongside those shared primitives; ``usb_port_role.py`` keeps
-only the role *decision* (board topology, desired vs. active role) and the
-CLI that reconciles it.
+"""``config.txt`` parse/render primitives shared by the USB data-role and I2S
+HAT managed blocks (ADR-0235).
 """
 
 from __future__ import annotations

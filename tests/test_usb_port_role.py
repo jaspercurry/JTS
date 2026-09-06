@@ -21,44 +21,13 @@ from jasper.audio_hardware.usb_port_role import (
 )
 from jasper.cli.usb_port_role import main
 
+from ._boot_paths import HAND_WRITTEN_BASE, PERIPHERAL, PI5, boot_paths
 from ._hat_eeprom import write_hat_eeprom
-from ._log_events import parse_event
-
-
-def _stderr_events(stderr: str, name: str) -> list[dict[str, str]]:
-    """Field maps of every ``event=<name>`` line in a captured stderr stream."""
-    return [
-        parsed[1]
-        for parsed in (parse_event(line) for line in stderr.splitlines())
-        if parsed is not None and parsed[0] == name
-    ]
-
-
-def _stderr_event(stderr: str, name: str) -> dict[str, str]:
-    """The ONE ``event=<name>`` line's fields."""
-    matched = _stderr_events(stderr, name)
-    assert len(matched) == 1, matched
-    return matched[0]
-
+from ._log_events import stderr_event, stderr_events
 
 ZERO = "Raspberry Pi Zero 2 W Rev 1.0"
-PI5 = "Raspberry Pi 5 Model B Rev 1.0"
 I2S = "[all]\ndtoverlay=hifiberry-dac8x\n"
-PERIPHERAL = "[all]\ndtoverlay=dwc2,dr_mode=peripheral\n"
-HAND_WRITTEN_BASE = "[all]\ndtoverlay=hifiberry-dac8x\ndtparam=audio=on\n"
 HOST = "[all]\ndtoverlay=dwc2,dr_mode=host\n"
-
-def _boot_paths(
-    tmp_path: Path, *, model_text: str = PI5, boot_config: str = PERIPHERAL
-):
-    model, config, intent, hat, udc = (
-        tmp_path / name
-        for name in ("model", "config.txt", "i2s_hat.env", "hat", "udc")
-    )
-    model.write_text(model_text, encoding="utf-8")
-    config.write_text(boot_config, encoding="utf-8")
-    udc.mkdir()
-    return model, config, intent, hat, udc
 
 
 def _serialized_role(**overrides) -> dict[str, object]:
@@ -164,7 +133,7 @@ def test_unknown_board_is_fail_closed_and_never_requests_mutation() -> None:
 def test_reconcile_refuses_a_hand_written_overlay_collision(
     tmp_path: Path, capsys
 ) -> None:
-    model, config, intent, hat, udc = _boot_paths(tmp_path)
+    model, config, intent, hat, udc = boot_paths(tmp_path)
     config.write_text(
         "[all]\ndtoverlay=merus-amp\ndtoverlay=dwc2,dr_mode=peripheral\n",
         encoding="utf-8",
@@ -210,19 +179,19 @@ def test_reconcile_refuses_a_hand_written_overlay_collision(
     )
     captured = capsys.readouterr()
     assert result == 0
-    assert _stderr_event(captured.err, "hardware.i2s_hat_boot_config_conflict") == {
+    assert stderr_event(captured.err, "hardware.i2s_hat_boot_config_conflict") == {
         "managed_overlay": "merus-amp",
         "colliding_overlays": "merus-amp",
     }
     # A refusal wrote nothing, so the conflict stands alone: no change event.
-    assert _stderr_events(captured.err, "hardware.i2s_hat_boot_config_changed") == []
+    assert stderr_events(captured.err, "hardware.i2s_hat_boot_config_changed") == []
     assert "event=" not in captured.out
 
 
 def test_hat_changed_and_durability_are_reported(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    model, config, intent, hat, udc = _boot_paths(tmp_path)
+    model, config, intent, hat, udc = boot_paths(tmp_path)
     config.write_text(PERIPHERAL, encoding="utf-8")
     write_i2s_hat_intent("innomaker_hifi_amp_pro", intent)
     (udc / "3f980000.usb").mkdir(parents=True)
@@ -299,7 +268,7 @@ def test_hat_changed_and_durability_are_reported(
 
 def test_unsupported_board_never_mutates_hat_boot_setting(tmp_path: Path) -> None:
     original = "[all]\ndtparam=audio=on\n"
-    model, config, intent, hat, udc = _boot_paths(
+    model, config, intent, hat, udc = boot_paths(
         tmp_path, model_text="Acme SBC", boot_config=original
     )
     write_i2s_hat_intent("innomaker_hifi_amp_pro", intent)
@@ -379,7 +348,7 @@ def test_i2s_hat_desired_profile_resolution_order(
 ) -> None:
     """EEPROM first, then the saved intent, then nothing at all (ADR-0234)."""
 
-    model, config, intent, hat, udc = _boot_paths(tmp_path, boot_config=boot_config)
+    model, config, intent, hat, udc = boot_paths(tmp_path, boot_config=boot_config)
     if hat_product is not None:
         write_hat_eeprom(hat, product=hat_product)
     if intent_profile is not None:
@@ -415,7 +384,7 @@ def test_absent_intent_file_leaves_an_existing_managed_block_alone(
     config.txt -- only a present-and-empty intent file
     (write_i2s_hat_intent(None)) removes it (#i2s-hat-intent).
     """
-    model, config, intent, hat, udc = _boot_paths(tmp_path)
+    model, config, intent, hat, udc = boot_paths(tmp_path)
     config.write_text(PERIPHERAL, encoding="utf-8")
     write_i2s_hat_intent("innomaker_hifi_amp_pro", intent)
     (udc / "3f980000.usb").mkdir(parents=True)

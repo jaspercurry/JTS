@@ -13,9 +13,9 @@ import pytest
 from jasper.audio_hardware.i2s_hat import I2S_HAT_BLOCK_BEGIN, write_i2s_hat_intent
 from jasper.cli.usb_port_role import main
 
+from ._boot_paths import HAND_WRITTEN_BASE, PERIPHERAL, PI5, boot_paths
 from ._hat_eeprom import write_hat_eeprom
-from ._log_events import parse_event
-
+from ._log_events import stderr_event, stderr_events
 
 # The `--env` contract (ADR-0235 R2) -- the CLI's whole record, which
 # `deploy/bin/jasper-audio-hardware-reconcile` evals. A rename that lands on
@@ -33,40 +33,6 @@ _ENV_CONTRACT_KEYS = {
     "JASPER_BOOT_I2S_HAT_COLLISION_MANAGED_OVERLAY",
     "JASPER_BOOT_I2S_HAT_COLLISION_COLLIDING_OVERLAYS",
 }
-
-
-def _stderr_events(stderr: str, name: str) -> list[dict[str, str]]:
-    """Field maps of every ``event=<name>`` line in a captured stderr stream."""
-    return [
-        parsed[1]
-        for parsed in (parse_event(line) for line in stderr.splitlines())
-        if parsed is not None and parsed[0] == name
-    ]
-
-
-def _stderr_event(stderr: str, name: str) -> dict[str, str]:
-    """The ONE ``event=<name>`` line's fields."""
-    matched = _stderr_events(stderr, name)
-    assert len(matched) == 1, matched
-    return matched[0]
-
-
-PI5 = "Raspberry Pi 5 Model B Rev 1.0"
-PERIPHERAL = "[all]\ndtoverlay=dwc2,dr_mode=peripheral\n"
-HAND_WRITTEN_BASE = "[all]\ndtoverlay=hifiberry-dac8x\ndtparam=audio=on\n"
-
-
-def _boot_paths(
-    tmp_path: Path, *, model_text: str = PI5, boot_config: str = PERIPHERAL
-):
-    model, config, intent, hat, udc = (
-        tmp_path / name
-        for name in ("model", "config.txt", "i2s_hat.env", "hat", "udc")
-    )
-    model.write_text(model_text, encoding="utf-8")
-    config.write_text(boot_config, encoding="utf-8")
-    udc.mkdir()
-    return model, config, intent, hat, udc
 
 
 def test_cli_config_normalization_does_not_claim_same_role_needs_reboot(
@@ -95,7 +61,7 @@ def test_cli_config_normalization_does_not_claim_same_role_needs_reboot(
     ) == 0
 
     captured = capsys.readouterr()
-    assert _stderr_event(captured.err, "hardware.boot_config_changed") == {
+    assert stderr_event(captured.err, "hardware.boot_config_changed") == {
         "reboot_required": "0",
     }
     assert "event=" not in captured.out
@@ -156,7 +122,7 @@ def test_env_emitter_hands_bash_the_whole_contract_and_nothing_it_must_parse(
     an empty string, so completeness is asserted through a real eval
     (ADR-0235 R2) rather than by re-reading the quoting rule.
     """
-    model, config, intent, hat, udc = _boot_paths(tmp_path, boot_config=boot_config)
+    model, config, intent, hat, udc = boot_paths(tmp_path, boot_config=boot_config)
     if hat_product is not None:
         write_hat_eeprom(hat, product=hat_product)
     (udc / "3f980000.usb").mkdir(parents=True)
@@ -206,7 +172,7 @@ def test_i2s_hat_self_heal_after_hand_deleted_managed_block_logs_changed_event(
     """A managed block removed by hand (not via intent) is rewritten today
     (G6, ADR-0235 R3): the rewrite itself must not be silent (G4)."""
 
-    model, config, intent, hat, udc = _boot_paths(tmp_path)
+    model, config, intent, hat, udc = boot_paths(tmp_path)
     config.write_text(PERIPHERAL, encoding="utf-8")
     write_i2s_hat_intent("innomaker_hifi_amp_pro", intent)
     (udc / "3f980000.usb").mkdir(parents=True)
@@ -234,7 +200,7 @@ def test_i2s_hat_self_heal_after_hand_deleted_managed_block_logs_changed_event(
 
     assert main(cli_args) == 0
     captured = capsys.readouterr()
-    assert _stderr_event(captured.err, "hardware.i2s_hat_boot_config_changed") == {
+    assert stderr_event(captured.err, "hardware.i2s_hat_boot_config_changed") == {
         "profile": "innomaker_hifi_amp_pro",
     }
     assert I2S_HAT_BLOCK_BEGIN in config.read_text(encoding="utf-8")
@@ -243,7 +209,7 @@ def test_i2s_hat_self_heal_after_hand_deleted_managed_block_logs_changed_event(
     # not the desired state.
     assert main(cli_args) == 0
     assert (
-        _stderr_events(
+        stderr_events(
             capsys.readouterr().err, "hardware.i2s_hat_boot_config_changed"
         )
         == []

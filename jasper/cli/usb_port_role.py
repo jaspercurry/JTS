@@ -2,14 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Resolve/reconcile the USB data-port role and emit its shell contract.
-
-Pulled out of ``jasper.audio_hardware.usb_port_role`` (ADR-0235 PR 6): the
-resolver and boot-config renderer stay import-light for library callers
-(``jasper.output_hardware``, the wizards); this module is the
-``argparse``-owning entry point ``deploy/bin/jasper-audio-hardware-reconcile``
-and friends invoke via ``python -m jasper.audio_hardware.usb_port_role``
-(a shim there imports and calls ``main`` here unchanged).
+"""The CLI the shell evals: resolve/reconcile the USB data-port role and emit
+its ``--env`` contract (ADR-0235).
 """
 
 from __future__ import annotations
