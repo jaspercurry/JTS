@@ -16,7 +16,7 @@ import pytest
 from jasper.audio_hardware.dac import final_edge_format_for
 from jasper.fanin_coupling import RING_SLOT_FRAMES
 from tests._lock_holder import spawn_lock_holder
-from tests._log_events import stderr_events
+from tests._log_events import parse_event, stderr_event, stderr_events
 from tests.reconcile_fixtures import (
     fake_systemctl as _fake_systemctl,
     systemctl_log as _systemctl_log,
@@ -828,14 +828,8 @@ def test_published_not_durable_boot_change_still_sets_marker(tmp_path: Path):
     assert "error=boot_config_published_not_durable" in result.stderr
 
 
-def test_boot_config_payload_missing_a_key_refuses_instead_of_proceeding(
-    tmp_path: Path,
-):
-    """A key the emitter stopped writing reaches this reconciler's own refusal.
-
-    66 and not a `set -u` abort (1) partway through the function: the boot
-    config is preserved either way, but only 66 says so in the journal.
-    """
+def _boot_payload_missing_a_key_python(tmp_path: Path) -> Path:
+    """A boot-config emitter that stopped writing one key, so the pass refuses."""
     fake_python = tmp_path / "python"
     fake_python.write_text(
         "#!/bin/sh\n"
@@ -846,9 +840,25 @@ def test_boot_config_payload_missing_a_key_refuses_instead_of_proceeding(
         encoding="utf-8",
     )
     fake_python.chmod(0o755)
+    return fake_python
 
+
+def test_boot_config_payload_missing_a_key_refuses_instead_of_proceeding(
+    tmp_path: Path,
+):
+    """A key the emitter stopped writing reaches this reconciler's own refusal.
+
+    66 and not a `set -u` abort (1) partway through the function: the boot
+    config is preserved either way, but only 66 says so in the journal.
+    """
     result = _run_reconcile(
-        tmp_path, "", extra_env={"JASPER_OUTPUT_HARDWARE_PYTHON": str(fake_python)}
+        tmp_path,
+        "",
+        extra_env={
+            "JASPER_OUTPUT_HARDWARE_PYTHON": str(
+                _boot_payload_missing_a_key_python(tmp_path)
+            )
+        },
     )
 
     assert result.returncode == 66, result.stderr
@@ -1446,7 +1456,7 @@ def test_outputd_env_stage_refused_hold_leaves_a_foreign_candidate_in_place(
 def test_outputd_env_stage_sweeps_debris_from_an_earlier_pass(
     tmp_path: Path,
 ) -> None:
-    """A pass killed between the mktemp and its trap must not leave a candidate."""
+    """A pass SIGKILLed mid-stage leaves debris no trap could have swept."""
     stale_candidate = tmp_path / ".outputd.env.candidate.aaaaaa"
     stale_lock = tmp_path / "..outputd.env.candidate.aaaaaa.lock"
     stale_candidate.write_text("JASPER_OUTPUTD_BACKEND=stale\n", encoding="utf-8")
@@ -1455,6 +1465,59 @@ def test_outputd_env_stage_sweeps_debris_from_an_earlier_pass(
     result = _run_reconcile(tmp_path, APPLE_LISTING, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
+    assert _stage_candidate_debris(tmp_path) == []
+
+
+def _event_names(stderr: str) -> list[str]:
+    """Event names in emission order, so the terminal one is the last."""
+    parsed = (parse_event(line) for line in stderr.splitlines())
+    return [found[0] for found in parsed if found is not None]
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_rc"),
+    [("success", 0), ("early_refusal", 66), ("mid_stage_abort", 1)],
+)
+def test_every_pass_ends_with_one_exit_event_carrying_its_own_status(
+    tmp_path: Path, mode: str, expected_rc: int
+) -> None:
+    """`set -euo pipefail` used to end a failed pass with no terminal line, so
+    the journal showed a pass that started and never finished. bash holds ONE
+    EXIT trap, so that terminal line and the outputd.env stage cleanup share
+    it — and it must not move the code systemd sees."""
+    extra: dict[str, str] = {}
+    read_only = tmp_path / "read-only"
+    if mode == "early_refusal":
+        extra["JASPER_OUTPUT_HARDWARE_PYTHON"] = str(
+            _boot_payload_missing_a_key_python(tmp_path)
+        )
+    elif mode == "mid_stage_abort":
+        # A jasper.env this pass cannot lock aborts it between
+        # stage_outputd_env and the commit — the one window in which the
+        # trap's cleanup arm, not finish_outputd_env_stage, ends the stage.
+        read_only.mkdir()
+        (read_only / "jasper.env").write_text(
+            "JASPER_AUDIO_DAC_ID=stale\n", encoding="utf-8"
+        )
+        read_only.chmod(0o555)
+        extra["JASPER_ENV_FILE"] = str(read_only / "jasper.env")
+    try:
+        result = _run_reconcile(
+            tmp_path, APPLE_LISTING, "--reason", "test", extra_env=extra
+        )
+    finally:
+        if read_only.is_dir():
+            read_only.chmod(0o755)
+
+    assert result.returncode == expected_rc, result.stderr
+    names = _event_names(result.stderr)
+    assert names[-1] == "audio_hardware_reconcile.exit", result.stderr
+    assert stderr_event(result.stderr, "audio_hardware_reconcile.exit")["status"] == (
+        str(expected_rc)
+    )
+    # The nine result fields exist only where the pass got that far, so
+    # `complete` stays the success-only line the terminal one closes over.
+    assert ("audio_hardware_reconcile.complete" in names) == (mode == "success")
     assert _stage_candidate_debris(tmp_path) == []
 
 

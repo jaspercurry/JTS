@@ -16,11 +16,13 @@ import argparse
 import json
 import os
 import shlex
+import sys
 from dataclasses import replace
 
 from jasper.audio_hardware.dac import kind_for, percent_pinned_control_for
 from jasper.audio_hardware.hat_eeprom import read_hat_eeprom
 from jasper.audio_hardware.usb_port_role import resolve_system_usb_port_role
+from jasper.log_event import render_logfmt
 from jasper.output_hardware import (
     OutputCardFact,
     OutputHardwareState,
@@ -40,6 +42,15 @@ def _flag(value: bool) -> str:
     # `true`/`false`, the spelling `publish_management_transport_marker`
     # compares against.
     return "true" if value else "false"
+
+
+def _blocker_codes(state: OutputHardwareState) -> str:
+    """The observed record's blocker codes, comma-joined."""
+    return ",".join(
+        str(issue.get("code") or "unnamed")
+        for issue in state.issues
+        if issue.get("severity") == "blocker"
+    )
 
 
 def env_lines(
@@ -72,11 +83,7 @@ def env_lines(
             child.device_id for child in state.child_devices
         ),
         "OBSERVED_OUTPUT_APPLE_CARD_IDS": " ".join(apple_output_card_ids(cards)),
-        "OBSERVED_OUTPUT_BLOCKER_CODES": ",".join(
-            str(issue.get("code") or "unnamed")
-            for issue in state.issues
-            if issue.get("severity") == "blocker"
-        ),
+        "OBSERVED_OUTPUT_BLOCKER_CODES": _blocker_codes(state),
         "OBSERVED_OUTPUT_RECORD_CHANGED": "1" if record_changed else "0",
         # The rest of the port-role record is not re-emitted here: the
         # boot-config CLI owns it and reports it on stderr as
@@ -144,6 +151,19 @@ def main(argv: list[str] | None = None) -> int:
         print(env_lines(state, cards, record_changed=record_changed), end="")
     else:
         print(json.dumps(state.to_dict(), sort_keys=True))
+    # stdout carries the payload the reconciler evals, so the pass's own
+    # verdict rides stderr (ADR-0235 R4).
+    print(
+        render_logfmt(
+            "output_hardware.classified",
+            {
+                "profile": state.profile_id,
+                "status": state.status,
+                "blockers": _blocker_codes(state) or "-",
+            },
+        ),
+        file=sys.stderr,
+    )
     return 0
 
 

@@ -284,6 +284,19 @@ log_event() {
     echo "event=audio_hardware_reconcile.${name} pass_reason=${REASON} $*" >&2
 }
 
+# bash holds ONE EXIT trap, so the stage cleanup and the terminal line share
+# this one: an open stage is recognized by its candidate path, not by a second
+# arm/disarm flag. `$?` is captured before anything else runs and never
+# re-assigned, so the code systemd sees is the code the pass produced.
+on_exit() {
+    local status=$?
+    if [[ -n "${OUTPUTD_ENV_STAGE_FILE:-}" ]]; then
+        cleanup_outputd_env_stage || true
+    fi
+    log_event "exit" "status=${status}"
+}
+trap on_exit EXIT
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --reason)
@@ -573,9 +586,9 @@ stage_outputd_env() {
     [[ -d "$dir" ]] || install -d -m 0750 "$dir"
     # See ADR-0235 G8.
     if jasper_env_file_hold "$OUTPUTD_ENV_FILE"; then
-        # Debris an earlier pass could not clean (a kill between mktemp and the
-        # trap). Swept before this pass names its own candidate, so the glob
-        # can never reach it. Gated on the hold: a refused hold means a live
+        # Debris an earlier pass could not clean (a SIGKILL mid-stage, which
+        # no trap catches). Swept before this pass names its own candidate, so
+        # the glob can never reach it. Gated on the hold: a refused hold means a live
         # holder mid-stage, whose in-flight candidate this must not delete.
         for stale in "${dir}"/.outputd.env.candidate.*; do
             if [[ -e "$stale" ]]; then
@@ -595,7 +608,6 @@ stage_outputd_env() {
         chmod 0640 "$OUTPUTD_ENV_STAGE_FILE"
     fi
     OUTPUTD_ENV_TARGET_FILE="$OUTPUTD_ENV_STAGE_FILE"
-    trap cleanup_outputd_env_stage EXIT
 }
 
 validate_outputd_env_stage() {
@@ -810,7 +822,6 @@ finish_outputd_env_stage() {
     cleanup_outputd_env_stage
     OUTPUTD_ENV_STAGE_FILE=""
     OUTPUTD_ENV_TARGET_FILE="$OUTPUTD_ENV_FILE"
-    trap - EXIT
 }
 
 commit_outputd_env_stage() {

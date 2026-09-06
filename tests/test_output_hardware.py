@@ -34,6 +34,7 @@ from jasper.output_hardware import (
     probe_system_cards,
     topology_hardware_from_state,
 )
+from tests._log_events import stderr_events
 
 
 def test_detected_hardware_identity_ignores_timestamp_and_card_number() -> None:
@@ -324,6 +325,71 @@ def test_hat_eeprom_routes_the_shared_studio_name_into_the_record(
         "uuid": "be3b8164-dd7b-48fc-ab27-79dd7c641980",
     }
     assert OutputHardwareState.from_mapping(published).hat_eeprom == _STUDIO_HAT
+
+
+@pytest.mark.parametrize(
+    ("cards", "profile", "status", "blockers"),
+    [
+        pytest.param(
+            (
+                OutputCardFact(
+                    card_id="A",
+                    device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                    serial="one",
+                ),
+            ),
+            APPLE_USB_C_DONGLE_DEVICE_ID,
+            "ready",
+            "-",
+            id="no-blockers",
+        ),
+        pytest.param(
+            (
+                OutputCardFact(
+                    card_id="A",
+                    device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                    serial="one",
+                    busnum="1",
+                    controller="xhci-hcd.0",
+                ),
+                OutputCardFact(
+                    card_id="A_1",
+                    device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                    serial="two",
+                    busnum="3",
+                    controller="xhci-hcd.1",
+                ),
+            ),
+            DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
+            "partial",
+            "dual_apple_usb_topology_mismatch",
+            id="blocked",
+        ),
+    ],
+)
+def test_the_cli_reports_its_classification_on_stderr(
+    cards: tuple[OutputCardFact, ...],
+    profile: str,
+    status: str,
+    blockers: str,
+    monkeypatch,
+    capsys,
+) -> None:
+    """The classifier was the one silent step of an otherwise logged pass.
+
+    stdout is the shell contract the reconciler evals, so the verdict — and the
+    blocker codes that explain a park — ride stderr (ADR-0235 R4).
+    """
+    monkeypatch.setattr(output_hardware_cli, "read_hat_eeprom", lambda: None)
+    monkeypatch.setattr(output_hardware_cli, "probe_system_cards", lambda **_: cards)
+
+    assert output_hardware_cli.main(["--env"]) == 0
+
+    captured = capsys.readouterr()
+    assert stderr_events(captured.err, "output_hardware.classified") == [
+        {"profile": profile, "status": status, "blockers": blockers}
+    ]
+    assert "event=" not in captured.out
 
 
 def test_the_shared_studio_name_parks_and_publishes_a_null_hat_eeprom(
