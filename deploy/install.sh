@@ -1302,10 +1302,6 @@ install_alsa() {
     fi
     install -d -m 0755 "${ENV_DIR}"
     ensure_state_dir
-    install -d -m 0755 /usr/local/lib/jasper
-    install -m 0644 \
-        "${REPO_DIR}/deploy/lib/jasper-asound-render.sh" \
-        /usr/local/lib/jasper/jasper-asound-render.sh
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-render-asound-conf" \
         /usr/local/sbin/jasper-render-asound-conf

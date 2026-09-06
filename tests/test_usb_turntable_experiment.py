@@ -1760,8 +1760,8 @@ def test_hotplug_stop_udev_systemd_and_install_wiring() -> None:
     assert '"${REPO_DIR}/experiments/usb-turntable"' in runtime_install
 
     streambox_units = units_install.split(
-        "install_streambox_systemd_units() {", 1
-    )[1].split("\n}\n\ninstall_systemd_units()", 1)[0]
+        "_stage_streambox_unit_files() {", 1
+    )[1].split("\n}\n", 1)[0]
     assert "turntable-autostop" not in streambox_units
 
     full_runtime = runtime_install.split("install_jasper() {", 1)[1].split(
