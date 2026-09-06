@@ -1578,6 +1578,9 @@ def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(tmp_path: Path)
     assert "JASPER_AUDIO_DAC_ID=dual_apple_usb_c_dac_4ch" in _jasper_env(tmp_path)
     outputd_env = _outputd_env(tmp_path)
     assert "JASPER_OUTPUTD_SINK=dual_apple" in outputd_env
+    # The armed composite names ITSELF on the DAC_PCM key — outputd reads it
+    # back as the composite's label, not as a PCM to open.
+    assert "JASPER_OUTPUTD_DAC_PCM=dual_apple_usb_c_dac_4ch" in outputd_env
     assert "JASPER_OUTPUTD_DUAL_DAC_A_PCM=hw:CARD=A,DEV=0" in outputd_env
     assert "JASPER_OUTPUTD_DUAL_DAC_B_PCM=hw:CARD=B,DEV=0" in outputd_env
     # The COMPOSITE's own declaration reaches outputd, not its children's.

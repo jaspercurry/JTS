@@ -812,6 +812,8 @@ OUTPUT_HARDWARE_RECORD_CHANGED=0
 clear_observed_output_state() {
     OBSERVED_OUTPUT_PROFILE_ID=""
     OBSERVED_OUTPUT_PROFILE_STATUS=""
+    OBSERVED_OUTPUT_PROFILE_KIND=""
+    OBSERVED_OUTPUT_HEADPHONE_CONTROL=""
     OBSERVED_OUTPUT_SELECTED_CARD_ID=""
     OBSERVED_OUTPUT_CHILD_DEVICE_IDS=""
     OBSERVED_OUTPUT_APPLE_CARD_IDS=""
@@ -850,25 +852,22 @@ apply_observed_single_policy() {
 }
 
 apply_observed_composite_policy() {
-    if [[ "$OBSERVED_OUTPUT_PROFILE_ID" != "dual_apple_usb_c_dac_4ch" ]]; then
+    if [[ "$OBSERVED_OUTPUT_PROFILE_KIND" != "composite" ]]; then
         return
     fi
+    # The parked shape, up front: a composite is NAMED whatever its status, so
+    # every branch below leaves these exactly here except the one that arms.
+    OUTPUT_DAC_ID="$OBSERVED_OUTPUT_PROFILE_ID"
+    OUTPUT_DAC_CARD=""
+    OUTPUT_DAC_RECOGNIZED=0
+    APPLE_DONGLE_PRESENT=1
+    APPLE_DONGLE_SERVICE_CARD="auto"
     if [[ "$OBSERVED_OUTPUT_PROFILE_STATUS" != "ready" ]]; then
-        OUTPUT_DAC_ID="dual_apple_usb_c_dac_4ch"
-        OUTPUT_DAC_CARD=""
-        OUTPUT_DAC_RECOGNIZED=0
-        APPLE_DONGLE_PRESENT=1
-        APPLE_DONGLE_SERVICE_CARD="auto"
         log_event "dual_apple_detected" \
             "status=${OBSERVED_OUTPUT_PROFILE_STATUS:-unknown} action=park_until_ready"
         return
     fi
     if [[ "$OBSERVED_OUTPUT_DUAL_MAPPING_OK" != "1" ]]; then
-        OUTPUT_DAC_ID="dual_apple_usb_c_dac_4ch"
-        OUTPUT_DAC_CARD=""
-        OUTPUT_DAC_RECOGNIZED=0
-        APPLE_DONGLE_PRESENT=1
-        APPLE_DONGLE_SERVICE_CARD="auto"
         log_event "dual_apple_detected" \
             "status=ready action=park_unstable_child_order topology_path=${OUTPUT_TOPOLOGY_PATH} reason=${OBSERVED_OUTPUT_DUAL_MAPPING_REASON:-unknown}"
         return
@@ -886,11 +885,6 @@ apply_observed_composite_policy() {
     # preflights admit — the marker `active_ring_endpoint_proof` demands is
     # derived from exactly this device.
     if ! graph_status="$(active_graph_status 4)"; then
-        OUTPUT_DAC_ID="dual_apple_usb_c_dac_4ch"
-        OUTPUT_DAC_CARD=""
-        OUTPUT_DAC_RECOGNIZED=0
-        APPLE_DONGLE_PRESENT=1
-        APPLE_DONGLE_SERVICE_CARD="auto"
         DUAL_APPLE_DAC_A_PCM=""
         DUAL_APPLE_DAC_B_PCM=""
         DUAL_APPLE_ACTIVE_ENDPOINT_DEVICE=""
@@ -903,11 +897,8 @@ apply_observed_composite_policy() {
             "status=ready action=park_until_active_graph reason=${graph_status:-active_graph_probe_no_output}"
         return
     fi
-    OUTPUT_DAC_ID="dual_apple_usb_c_dac_4ch"
     OUTPUT_DAC_CARD="$DONGLE_CARD"
     OUTPUT_DAC_RECOGNIZED=1
-    APPLE_DONGLE_PRESENT=1
-    APPLE_DONGLE_SERVICE_CARD="auto"
     # Second field of the accepted payload ("<width> <endpoint_device>"), parsed
     # exactly as the single-DAC branch parses it: a payload with no space at all
     # has no device field, so treat it as ABSENT rather than as a device named
@@ -1557,7 +1548,10 @@ restart_dac_init_for_record_change() {
 
 gate_role_services() {
     local apple_output=0
-    if [[ ( "$OUTPUT_DAC_ID" == "apple_usb_c_dongle" || "$OUTPUT_DAC_ID" == "dual_apple_usb_c_dac_4ch" ) && "$APPLE_DONGLE_PRESENT" == "1" ]]; then
+    # The monitor exists to re-pin ONE mixer control, so the DAC the box drives
+    # declaring that control is the whole condition for running it — the
+    # emitter answers it off the registry (ADR-0235 R2).
+    if [[ -n "$OBSERVED_OUTPUT_HEADPHONE_CONTROL" && "$APPLE_DONGLE_PRESENT" == "1" ]]; then
         apple_output=1
     fi
     # The mixer pin is enabled on every box: which controls a DAC pins is the
@@ -1793,11 +1787,11 @@ apply_audio_runtime_env() {
         log_event "content_format_skip" \
             "reason=coupling_probe_unavailable outputd_env=${OUTPUTD_ENV_FILE}"
     fi
-    if [[ "$OUTPUT_DAC_ID" == "dual_apple_usb_c_dac_4ch" && "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
+    if [[ "$OBSERVED_OUTPUT_PROFILE_KIND" == "composite" && "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
         OUTPUTD_ACTIVE_MODE=0
         OUTPUTD_ACTIVE_CHANNELS=""
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_BACKEND" "alsa" && changed=1
-        set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DAC_PCM" "dual_apple_usb_c_dac_4ch" && changed=1
+        set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DAC_PCM" "$OUTPUT_DAC_ID" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DUAL_DAC_A_PCM" "$DUAL_APPLE_DAC_A_PCM" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DUAL_DAC_B_PCM" "$DUAL_APPLE_DAC_B_PCM" && changed=1
         # Two LIVE outputd keys (DAC_FORMAT, SINK) from one registry probe; a
