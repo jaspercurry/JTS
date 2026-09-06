@@ -829,22 +829,12 @@ def test_migrate_wake_events_cap_seed(
         assert expected_line in lines
 
 
-def test_mic_device_candidates_is_never_seeded_on_a_fresh_install():
-    """A seeded value outranks the mic registry on every installed box, so the
-    key ships commented out and the installer only ever deletes it."""
+def test_mic_device_candidates_is_never_seeded_in_env_example():
+    """A seeded value outranks the mic registry on every installed box, so
+    the key ships commented out; the installer's migration behavior is
+    pinned by test_migrate_mic_device_candidates_seed below."""
     env_example = _ENV_EXAMPLE.read_text(encoding="utf-8")
     assert env_example.count("\nJASPER_MIC_DEVICE_CANDIDATES=") == 0
-
-    python_runtime = _INSTALL_LIB_DIR.joinpath("python-runtime.sh").read_text(
-        encoding="utf-8"
-    )
-    assert [
-        match
-        for match in re.findall(
-            r"JASPER_MIC_DEVICE_CANDIDATES=[^\s']*", python_runtime
-        )
-        if not match.endswith("$/d")
-    ] == []
 
 
 @pytest.mark.parametrize(

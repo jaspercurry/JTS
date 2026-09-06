@@ -119,7 +119,9 @@ migrate_wake_events_cap_seed() {
         '/^JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=1073741824$/d'
 }
 
-# A seeded value outranks the mic registry; only the two shapes .env.example shipped are removed.
+# A seeded value outranks the mic registry; only the two shapes
+# .env.example shipped are removed — an operator's own bare `=Array`
+# is indistinguishable from the seed and goes too.
 migrate_mic_device_candidates_seed() {
     sed_inplace "${ENV_DIR}/jasper.env" \
         -e '/^JASPER_MIC_DEVICE_CANDIDATES=Array$/d' \
