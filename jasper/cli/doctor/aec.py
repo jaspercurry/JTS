@@ -15,6 +15,7 @@ from typing import NamedTuple
 from ... import enhanced_aec
 from ...aec_ready import aec_bridge_ready_marker_path, read_aec_bridge_ready
 from ...audio_profile_state import (
+    AEC_MODE_AUTO,
     AEC_MODE_ENV,
     AecIntent,
     DEFAULT_AEC_MODE_PATH,
@@ -25,6 +26,7 @@ from ...audio_profile_state import (
     RuntimeAecEnv,
     audio_profile_status,
     infer_audio_input_profile,
+    normalize_aec_mode,
     normalize_audio_input_profile,
     parse_env_bool,
     probe_xvf_mic,
@@ -589,8 +591,9 @@ def check_aec_bridge_running() -> CheckResult:
     chip_present = capture_ch is not None
     is_6ch = capture_ch == xvf3800.RECOMMENDED_CAPTURE_CHANNELS
 
-    if aec_mode != "auto":
-        # Explicit operator opt-out is fine.
+    if normalize_aec_mode(aec_mode) != AEC_MODE_AUTO:
+        # Explicit operator opt-out is fine; the message names the raw
+        # spelling the operator will find in the file.
         return CheckResult(
             "AEC bridge service", "ok",
             f"disabled (JASPER_AEC_MODE={aec_mode})",

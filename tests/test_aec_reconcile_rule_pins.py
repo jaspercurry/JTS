@@ -4,7 +4,7 @@
 
 """Pin that deploy/bin/jasper-aec-reconcile's bash re-implementations agree
 with the Python rules they exist to mirror when the interpreter is
-unavailable (see the script's own ADR-0101 comments on normalize_bool,
+unavailable (see the script's own ADR-0101 comments on
 normalize_output_dac_id and carry_chip_aec_dac_gate).
 
 Each bash function is sourced verbatim out of the real script (never
@@ -20,7 +20,6 @@ from pathlib import Path
 
 import pytest
 
-from jasper.audio_profile_state import parse_env_bool
 from jasper.chip_aec.policy import normalize_dac_id, permits_selection
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,22 +54,6 @@ def _run_bash(snippet: str, *args: str) -> subprocess.CompletedProcess[str]:
     )
     assert result.returncode in (0, 1), result.stderr
     return result
-
-
-def _bash_normalize_bool(value: str) -> bool:
-    """Invoke the real script's normalize_bool() in isolation."""
-    body = _shell_function_body(_SOURCE, "normalize_bool")
-    snippet = (
-        "set -euo pipefail\n"
-        "log() { :; }\n"
-        f"normalize_bool() {{\n{body}}}\n"
-        'normalize_bool "$1"\n'
-    )
-    result = _run_bash(snippet, value)
-    assert result.returncode == 0, result.stderr
-    # Trim only the trailing newline `echo` adds — the value under test may
-    # itself carry leading/trailing whitespace that must NOT be discarded.
-    return result.stdout.rstrip("\n") == "1"
 
 
 def _bash_normalize_output_dac_id(value: str) -> str:
@@ -133,32 +116,6 @@ def _bash_carry_chip_aec_dac_gate(
         line.split("=", 1) for line in result.stdout.strip().splitlines()
     )
     return int(fields["rc"]), fields["ok"]
-
-
-# The wizard only ever writes "1"/"0" (see normalize_bool's own comment), but
-# an operator hand-editing aec_mode.env may use any of these. normalize_bool()
-# trims surrounding whitespace before matching, same as parse_env_bool()'s
-# leading .strip(), so a padded value normalizes the same in both.
-_BOOL_VECTORS = [
-    "yes",
-    "no",
-    "on",
-    "off",
-    "true",
-    "false",
-    "1",
-    "0",
-    "enabled",
-    "disabled",
-    "",
-    "garbage",
-    " YES ",
-]
-
-
-@pytest.mark.parametrize("value", _BOOL_VECTORS)
-def test_normalize_bool_matches_parse_env_bool(value: str) -> None:
-    assert _bash_normalize_bool(value) == parse_env_bool(value, default=False)
 
 
 # Mixed case, quoting, dashes, empty and whitespace padding all normalize
