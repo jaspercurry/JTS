@@ -44,7 +44,7 @@ from jasper.usb_mic import (
 )
 from jasper.voice.catalog import VALID_PROVIDER_IDS, provider_ids_manifest_text
 from tests._lock_holder import spawn_lock_holder
-from tests._log_events import stderr_events
+from tests._log_events import stderr_event, stderr_events
 from tests.reconcile_fixtures import (
     fake_systemctl as _fake_systemctl,
     systemctl_log as _systemctl_log,
@@ -432,15 +432,20 @@ def _python_double(
     *,
     failing_module: str,
     stderr_message: str = "",
+    stdout_message: str = "",
+    exit_code: int = 1,
     passthrough: bool = True,
 ) -> Path:
     """An interpreter that fails one of the script's Python bridges.
 
     ``passthrough`` serves every other bridge from the real interpreter; the
     partial-/opt/jasper-deploy shape sets it False so nothing else answers
-    either.
+    either. ``stdout_message`` with ``exit_code=0`` is the other failure a
+    bridge can have: a clean exit whose stdout is not the payload contract.
     """
     echo = f"  echo '{stderr_message}' >&2\n" if stderr_message else ""
+    if stdout_message:
+        echo += f"  echo '{stdout_message}'\n"
     tail = (
         f'exec "{sys.executable}" "$@"\n' if passthrough else "exit 0\n"
     )
@@ -449,7 +454,7 @@ def _python_double(
         "#!/usr/bin/env bash\n"
         f"if [[ \"$*\" == *'{failing_module}'* ]]; then\n"
         f"{echo}"
-        "  exit 1\n"
+        f"  exit {exit_code}\n"
         "fi\n"
         f"{tail}",
         encoding="utf-8",
@@ -4290,6 +4295,43 @@ def test_measurement_registry_probe_failure_excludes_nothing(
 
     assert result.returncode == 0, result.stderr
     assert "JASPER_MIC_DEVICE=UMIK2" in (tmp_path / "jasper.env").read_text()
+
+
+def test_measurement_registry_noisy_payload_excludes_nothing(
+    tmp_path: Path,
+) -> None:
+    """The other way the bridge breaks: exit 0, but stdout is not the one
+    assignment the contract promises (a warning, a traceback printed before a
+    clean exit). Under `set -e` an eval of that kills the pass where it
+    stands — before the env write, the park and its cue — so it must read as
+    "could not classify" and exclude nothing, exactly like a non-zero exit."""
+    noisy = _python_double(
+        tmp_path,
+        "noisy-measurement-python",
+        failing_module="jasper.cli.capture_card",
+        stdout_message="Traceback (most recent call last):",
+        exit_code=0,
+    )
+    _stage(
+        tmp_path,
+        "udp:9876",
+        extra="JASPER_MIC_DEVICE_CANDIDATES=UMIK2\n",
+        mode="auto",
+    )
+    _write_usb_card(tmp_path, "UMIK2", UMIK2_USB_ID, channels=1)
+
+    result = _run_reconcile(
+        tmp_path,
+        "--reason",
+        "systemd",
+        extra_env={"JASPER_MIC_PROFILE_PYTHON": str(noisy)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "JASPER_MIC_DEVICE=UMIK2" in (tmp_path / "jasper.env").read_text()
+    fields = stderr_event(result.stderr, "aec_reconcile.measurement_registry")
+    assert fields["status"] == "failed"
+    assert fields["python"] == str(noisy)
 
 
 def test_measurement_exclusion_costs_no_interpreter_without_a_usb_card(

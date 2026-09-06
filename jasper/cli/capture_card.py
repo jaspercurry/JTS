@@ -9,9 +9,10 @@ select a calibrated measurement microphone (a UMIK-2 and friends) as the
 voice/wake input: those mics carry no wake or AEC contract, so selecting one
 would silently replace the household's room microphone with an instrument.
 
-Both halves of that decision live here (ADR-0235 D1) — the registry vocabulary
-and the ``/proc/asound/<card>/usbid`` read that answers it — so bash keeps only
-the membership test. Identity is the USB ``vid:pid``, never the serial: a
+Both halves of that decision live in ``jasper.audio_measurement.mic_identity``
+(ADR-0235 D1) — the registry vocabulary and the ``/proc/asound/<card>/usbid``
+read that answers it — so this module is just the shell payload and bash keeps
+only the membership test. Identity is the USB ``vid:pid``, never the serial: a
 UMIK-2's USB serial descriptor is the literal "00000" on every unit.
 
 Import ``jasper.audio_measurement.mic_identity``, never ``calibration``: the
@@ -38,24 +39,13 @@ import sys
 from collections.abc import Iterable
 from pathlib import Path
 
-from jasper.audio_measurement.mic_identity import measurement_mic_usb_ids
+from jasper.audio_measurement.mic_identity import (
+    measurement_mic_usb_ids,
+    read_card_usb_id,
+)
 
 
 ENV_KEY = "JASPER_CAPTURE_MEASUREMENT_CARDS"
-
-
-def card_usb_id(card: str, *, asound_root: Path) -> str:
-    """The card's lower-cased USB ``vid:pid``, or "" when it exposes none.
-
-    An absent, I2S or virtual capture device has no ``usbid`` file and so can
-    never be a registered USB measurement mic. The kernel writes ``%04x:%04x``,
-    so the normalisation only tidies a hand-made test fixture.
-    """
-    try:
-        raw = (asound_root / card / "usbid").read_text()
-    except OSError:
-        return ""
-    return "".join(raw.split()).lower()
 
 
 def measurement_class_cards(
@@ -67,7 +57,7 @@ def measurement_class_cards(
     registered = set(measurement_mic_usb_ids())
     matched: list[str] = []
     for card in dict.fromkeys(cards):
-        usb_id = card_usb_id(card, asound_root=asound_root)
+        usb_id = read_card_usb_id(asound_root / card)
         if usb_id and usb_id in registered:
             matched.append(card)
     return tuple(matched)

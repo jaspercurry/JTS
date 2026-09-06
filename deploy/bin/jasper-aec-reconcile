@@ -1125,7 +1125,7 @@ mic_present() {
 #
 # Identity is the USB vid:pid, never the serial — a UMIK-2's USB serial
 # descriptor is the literal "00000" on every unit. Both the registry
-# vocabulary and the usbid read that answers it live in
+# vocabulary and the usbid read that answers it are owned by
 # `python -m jasper.cli.capture_card` (ADR-0235 D1), the same bridge shape
 # observe_mic_profile_state uses for the mic profile; this side keeps only the
 # membership test. Resolved AT MOST ONCE per pass, and only once a card that is
@@ -1143,9 +1143,22 @@ MEASUREMENT_CARDS_STATUS="unresolved"
 any_capture_usbid() {
     local card
     for card in "$@"; do
-        [[ -r "${ASOUND_ROOT}/${card}/usbid" ]] && return 0
+        [[ -s "${ASOUND_ROOT}/${card}/usbid" ]] && return 0
     done
     return 1
+}
+
+# jasper.cli.capture_card prints exactly ONE shlex-quoted assignment. Anything
+# else on stdout — a warning, a traceback a partial deploy printed before
+# exiting 0 — is a broken bridge, not a payload: `eval` of it under `set -e`
+# kills the pass where it stands, before any env write, cue or park. Rejected
+# into the fail-open branch instead, the way _apply_alignment_payload guards
+# the alignment bridge.
+_apply_measurement_payload() {
+    local payload="$1"
+    [[ "$payload" == "JASPER_CAPTURE_MEASUREMENT_CARDS="* ]] || return 1
+    [[ "$payload" != *$'\n'* ]] || return 1
+    eval "$payload"
 }
 
 # The single resolve point, and it must run in the PARENT shell: every caller
@@ -1153,11 +1166,15 @@ any_capture_usbid() {
 # eval in a subshell dies with it — the registry would be re-resolved, and the
 # interpreter re-spawned, once per candidate probe.
 #
-# The spec set is every value a selection predicate can later be asked about:
-# the candidate list, the resolver's own card (which
+# CONSTRAINT: this spec set must cover every card measurement_class_card is
+# later asked about. That test is a membership lookup into the set resolved
+# here, so a card missing from it reads as "not measurement-class" and stays
+# eligible for the voice path. The four sources that can reach a selection
+# predicate: the candidate list, the resolver's own card (which
 # derive_profile_managed_aec_mic_device prepends after this point), the
 # configured AEC mic, and first_candidate's all-measurement fallback.
 resolve_measurement_cards() {
+    [[ "$MEASUREMENT_CARDS_STATUS" == "unresolved" ]] || return 0
     local payload spec card
     local supported="${JASPER_XVF_SUPPORTED_ALSA_CARDS:-}"
     local specs=() card_ids=()
@@ -1178,9 +1195,8 @@ resolve_measurement_cards() {
     # stderr is deliberately NOT redirected: a traceback from a partial deploy
     # is the whole diagnostic, same as probe_accessory_mics.
     if payload="$("$MIC_PROFILE_PYTHON" -m jasper.cli.capture_card \
-        --asound-root "$ASOUND_ROOT" -- "${card_ids[@]}")"; then
-        # Output is produced by jasper.cli.capture_card with shlex.quote.
-        eval "$payload"
+        --asound-root "$ASOUND_ROOT" -- "${card_ids[@]}")" \
+        && _apply_measurement_payload "$payload"; then
         MEASUREMENT_CARDS_STATUS="resolved"
     else
         MEASUREMENT_CARDS_STATUS="failed"

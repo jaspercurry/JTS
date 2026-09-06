@@ -9,12 +9,14 @@ Split out of :mod:`jasper.audio_measurement.calibration` (which re-exports
 everything here) with one hard constraint: **this module imports nothing
 beyond the stdlib**. It backs ``python -m jasper.cli.capture_card``, which
 ``deploy/bin/jasper-aec-reconcile`` spawns from the hotplug path on every
-pass that sees a USB capture card; pulling numpy in here re-inflates that spawn to a 190-module
-interpreter (~85 ms measured on the dev host). Keep it pure data plus dict
-lookups.
+pass that sees a USB capture card; pulling numpy in here re-inflates that
+spawn to a 190-module interpreter (~85 ms measured on the dev host). Keep it
+stdlib-only.
 """
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Any
 
 # Single source of truth for supported measurement mics. Adding a mic here
@@ -105,8 +107,9 @@ def measurement_mic_usb_ids() -> tuple[str, ...]:
     ``jasper.cli.capture_card`` classifies local capture cards against this
     list so ``deploy/bin/jasper-aec-reconcile`` can keep a calibrated
     measurement mic out of the voice-input candidate set — a measurement mic
-    has no wake/AEC contract. Lower-cased and de-duplicated, matching how the kernel writes
-    ``/proc/asound/<card>/usbid`` (``%04x:%04x``); order follows the registry.
+    has no wake/AEC contract. Lower-cased and de-duplicated, matching how the
+    kernel writes ``/proc/asound/<card>/usbid`` (``%04x:%04x``); order follows
+    the registry.
     """
     ids: list[str] = []
     for spec in SUPPORTED_MODELS.values():
@@ -115,6 +118,27 @@ def measurement_mic_usb_ids() -> tuple[str, ...]:
             if normalized and normalized not in ids:
                 ids.append(normalized)
     return tuple(ids)
+
+
+def read_card_usb_id(card_dir: str | os.PathLike[str]) -> str:
+    """The lower-cased USB ``vid:pid`` of one ``/proc/asound`` card, or "".
+
+    Empty means "this card declares no USB id I can read": an absent, I2S or
+    virtual capture device exposes no ``usbid`` file at all, and a proc read
+    can fail or return bytes that are not UTF-8. It is never "no measurement
+    mic is present" — one card's unreadable id must not decide anything about
+    another's, and it must never be able to leave a speaker with no
+    microphone.
+
+    The kernel writes ``%04x:%04x``, so the normalisation only tidies a
+    hand-made fixture (and a future kernel). Sole reader of that file, so
+    :func:`measurement_mic_usb_ids` and ``jasper.cli.capture_card`` compare
+    against one spelling.
+    """
+    try:
+        return (Path(card_dir) / "usbid").read_text().strip().lower()
+    except (OSError, ValueError):
+        return ""
 
 
 def mic_tier_for_model(model_key: str | None) -> str:
