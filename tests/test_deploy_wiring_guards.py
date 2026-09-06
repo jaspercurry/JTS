@@ -412,31 +412,6 @@ def test_nginx_recovery_dropin_installed_on_both_profiles():
 # test_lib_deploy_direction.py.
 
 
-def test_deploy_captures_install_rc_so_collateral_is_always_surfaced():
-    """install.sh must run with its exit code captured (not under bare
-    set -e), so report_oom_collateral runs even when the build failed —
-    otherwise an OOM-killed build would abort the deploy before surfacing
-    the collateral (See ADR-0174)."""
-    text = _DEPLOY_TO_PI.read_text()
-    assert re.search(
-        r'run_remote_sudo "\$\{install_env\} bash[^\n]*"\s*\|\|\s*install_rc=\$\?',
-        text,
-    ), "install.sh invocation must capture its exit code with || install_rc=$?"
-    assert "report_oom_collateral" in text
-
-
-def test_deploy_captures_pi_clock_for_oom_window():
-    """The OOM scan bounds its kernel-log window to the Pi's clock at
-    install start — captured before the install run."""
-    text = _DEPLOY_TO_PI.read_text()
-    assert "DEPLOY_START_EPOCH=" in text
-    assert "date +%s" in text
-    # The capture must precede the install invocation it bounds.
-    assert text.index("DEPLOY_START_EPOCH=\"$(ssh_remote") < text.index(
-        "|| install_rc=$?"
-    )
-
-
 def test_deploy_production_oom_is_gated_after_end_state_evidence():
     """A production-daemon OOM during deploy is SURFACED loudly and then
     fails verification after the end-state gates have run. That keeps the

@@ -98,6 +98,9 @@ case "$cmd" in
   'printf "%s\n" "$HOME"')
     printf '%s\n' "${FAKE_HOME:-/home/pi}"
     ;;
+  'date +%s')
+    printf '%s\n' "${FAKE_PI_EPOCH:-1750000000}"
+    ;;
   'hostname -s 2>/dev/null || hostname')
     printf '%s\n' "${FAKE_HOSTNAME:-jts3}"
     ;;
@@ -140,15 +143,36 @@ case "$cmd" in
     [[ "${FAKE_METADATA_PROBES_FAIL:-0}" == "1" ]] && exit 1
     printf '%s\n' "${FAKE_OUTPUT_STATUS:-ready}"
     ;;
+  *jts-install-prepare*)
+    rm -f "$FAKE_INSTALL_LOG" "$FAKE_INSTALL_RC_FILE" "$FAKE_INSTALL_POLLS"
+    : > "$FAKE_INSTALL_LOG"
+    : > "$FAKE_INSTALL_RC_FILE"
+    printf '%s\n' "$FAKE_INSTALL_LOG"
+    ;;
+  *jts-install-poll*)
+    # The wrapper passes the count of transcript lines it has printed last.
+    seen="${cmd##* }"
+    polls=$(( $(cat "$FAKE_INSTALL_POLLS" 2>/dev/null || printf 0) + 1 ))
+    printf '%s\n' "$polls" > "$FAKE_INSTALL_POLLS"
+    # A severed transport during the poll, not during the install.
+    [[ "$polls" == "${FAKE_POLL_DROP_AT:-}" ]] && exit 255
+    tail -n +"$((seen + 1))" "$FAKE_INSTALL_LOG"
+    if (( polls > ${FAKE_INSTALL_POLLS_UNTIL_DONE:-0} )); then
+      printf 'JTS_INSTALL_RC=%s\n' "$(cat "$FAKE_INSTALL_RC_FILE")"
+    fi
+    ;;
   *\/deploy\/install.sh*)
-    rc="${FAKE_INSTALL_SSH_RC:-0}"
+    # Detached: the launch returns 0 immediately and the install's own
+    # status lands in the marker file the poll arm serves.
+    rc="${FAKE_INSTALL_RC:-0}"
+    printf 'fake install.sh transcript\n' >> "$FAKE_INSTALL_LOG"
+    printf '%s\n' "$rc" >> "$FAKE_INSTALL_RC_FILE"
     if [[ "$rc" == "0" && -n "${FAKE_MANIFEST:-}" ]]; then
       # install.sh writes the build manifest ONLY as its final step.
       sha="${cmd#*JASPER_DEPLOY_SHA_FULL=}"
       printf 'JASPER_GIT_SHA_FULL=%s\nJASPER_INSTALL_STATUS=ok\n' \
-        "${sha%% *}" > "$FAKE_MANIFEST"
+        "${sha%%[\\ ]*}" > "$FAKE_MANIFEST"
     fi
-    exit "$rc"
     ;;
   sudo\ -n*)
     exit 0
@@ -172,6 +196,13 @@ printf '\n' >> "$FAKE_LOG"
 
 
 FAKE_PING = r"""#!/usr/bin/env bash
+exit 0
+"""
+
+
+# The install poll waits INSTALL_POLL_INTERVAL_SEC between ticks; the fake
+# remote decides when the install is done, so the wait is dead time here.
+FAKE_SLEEP = r"""#!/usr/bin/env bash
 exit 0
 """
 
@@ -238,6 +269,7 @@ class FakeRemote:
         self._write_executable(self.bin / "ssh", FAKE_SSH)
         self._write_executable(self.bin / "rsync", FAKE_RSYNC)
         self._write_executable(self.bin / "ping", FAKE_PING)
+        self._write_executable(self.bin / "sleep", FAKE_SLEEP)
         self._write_executable(self.bin / "ssh-keygen", FAKE_SSH_KEYGEN)
         test_case.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
 
@@ -259,6 +291,9 @@ class FakeRemote:
                 "FAKE_MANIFEST": str(self.tmp / "build.txt"),
                 # Named like the real one: the fake's arms key off it.
                 "FAKE_FACTS_DIR": str(self.tmp / ".jts-deploy-facts.fake"),
+                "FAKE_INSTALL_LOG": str(self.tmp / ".jts-install.log"),
+                "FAKE_INSTALL_RC_FILE": str(self.tmp / ".jts-install.rc"),
+                "FAKE_INSTALL_POLLS": str(self.tmp / "install-polls"),
                 "SKIP_AIRPLAY_HEALTH_SUPPRESS": "1",
             }
         )
@@ -703,46 +738,64 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertIn("status=fail reason=host_key_changed", onboard.stdout)
         self.assertNotIn("SSH-KEYGEN", onboard_fake.calls())
 
-    def test_deploy_preserves_ssh_status_255_and_reports_unknown_outcome(self):
-        fake = FakeRemote(self)
-        result = self.run_deploy(
-            fake,
-            env_local=None,
-            PI_HOST="jts3.local",
-            PI_USER="pi",
-            JASPER_HOSTNAME="jts3.local",
-            FAKE_INSTALL_SSH_RC="255",
-        )
+    def test_install_is_detached_and_the_deploy_exits_on_its_polled_status(
+        self,
+    ):
+        """install.sh is launched into its own session and its own exit
+        status is read back from the Pi, so a severed transport can no
+        longer decide the deploy's outcome (#4190). The fake's launch
+        call always returns 0, so any non-zero exit here came from the
+        polled marker file; a poll that dies with ssh's 255 is one
+        reconnect, never the deploy's status.
 
-        combined = result.stdout + result.stderr
-        self.assertEqual(result.returncode, 255, combined)
-        self.assertIn("DEPLOY OUTCOME UNKNOWN", result.stderr)
-        self.assertIn("ssh exited 255 while install.sh was", result.stderr)
-        self.assertIn("no trustworthy remote completion", result.stderr)
-        self.assertIn("build manifest was not verified", result.stderr)
-        self.assertNotIn("build manifest was NOT advanced", result.stderr)
-        self.assertNotIn("==> Done.", combined)
+        Removal condition: delete with the detached install launch.
+        """
+        for install_rc, drop_at, expect_done in (
+            ("0", "", True),
+            ("3", "", False),
+            ("0", "2", True),
+        ):
+            with self.subTest(install_rc=install_rc, drop_at=drop_at):
+                fake = FakeRemote(self)
+                result = self.run_deploy(
+                    fake,
+                    env_local=None,
+                    PI_HOST="jts3.local",
+                    PI_USER="pi",
+                    JASPER_HOSTNAME="jts3.local",
+                    FAKE_INSTALL_RC=install_rc,
+                    FAKE_INSTALL_POLLS_UNTIL_DONE="1",
+                    FAKE_POLL_DROP_AT=drop_at,
+                )
 
-    def test_deploy_preserves_ordinary_install_failure(self):
-        fake = FakeRemote(self)
-        result = self.run_deploy(
-            fake,
-            env_local=None,
-            PI_HOST="jts3.local",
-            PI_USER="pi",
-            JASPER_HOSTNAME="jts3.local",
-            FAKE_INSTALL_SSH_RC="42",
-        )
+                combined = result.stdout + result.stderr
+                # The call log %q-quotes each argument; the shape, not the
+                # quoting, is what this pins.
+                calls = fake.calls().replace("\\", "").splitlines()
+                launch = next(c for c in calls if "/deploy/install.sh" in c)
+                polls = [c for c in calls if "jts-install-poll" in c]
 
-        combined = result.stdout + result.stderr
-        self.assertEqual(result.returncode, 42, combined)
-        self.assertIn(
-            "DEPLOY FAILED: install.sh exited 42 on jts3.local.",
-            result.stderr,
-        )
-        self.assertIn("build manifest was NOT advanced", result.stderr)
-        self.assertNotIn("DEPLOY OUTCOME UNKNOWN", result.stderr)
-        self.assertNotIn("==> Done.", combined)
+                self.assertEqual(
+                    result.returncode, int(install_rc), combined
+                )
+                self.assertIn("setsid --fork nohup sh -c", launch)
+                self.assertIn("</dev/null", launch)
+                self.assertIn(".jts-install.log 2>&1", launch)
+                self.assertIn("echo $? >>", launch)
+                # The status can only have come from a poll: the fake's
+                # launch arm exits 0 and withholds the rc for one tick.
+                self.assertGreaterEqual(len(polls), 2)
+                self.assertLess(calls.index(launch), calls.index(polls[0]))
+                # The install transcript reaches the operator live.
+                self.assertIn("fake install.sh transcript", result.stdout)
+                # The OOM window opens before the install it bounds, and a
+                # failed install still gets its collateral scanned.
+                clock = next(c for c in calls if c.endswith("date +%s"))
+                self.assertLess(calls.index(clock), calls.index(launch))
+                self.assertTrue(
+                    any("journalctl -k" in c for c in calls), combined
+                )
+                self.assertEqual("==> Done." in combined, expect_done)
 
     def test_passwordless_sudo_uses_noninteractive_sudo_and_remote_home(self):
         fake = FakeRemote(self)
@@ -766,7 +819,7 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         )
         self.assertNotIn("-dirty", result.stdout)
         self.assertIn("alice@jts3.local:/home/alice/jts/", calls)
-        self.assertIn("sudo\\ -n\\ JASPER_DEPLOY_SHA=", calls)
+        self.assertIn("sudo\\ -n\\ setsid", calls)
         self.assertIn("/home/alice/jts/deploy/install.sh", calls)
         self.assertNotIn("SSH -tt", calls)
 
@@ -855,7 +908,7 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertIn("DEPLOY_IDENTITY=no_state_file", result.stdout)
         self.assertIn("SSH -tt", calls)
         self.assertIn("sudo\\ -v", calls)
-        self.assertIn("sudo\\ JASPER_DEPLOY_SHA=", calls)
+        self.assertIn("sudo\\ setsid", calls)
         for forbidden in (
             "sudo -S",
             "sudo\\ -S",

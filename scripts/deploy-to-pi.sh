@@ -649,6 +649,68 @@ surface_system_health() {
         2>/dev/null || echo "    (post-deploy health probe unavailable — skipped)"
 }
 
+# The install must survive a severed transport (#4190): a WiFi reapply
+# or a client timeout used to SIGHUP a half-applied install, because
+# install.sh was a child of the ssh session. It now runs in its own
+# session on the Pi, writing its transcript and its own exit status to
+# the deploy user's home, and this streams and polls those files over
+# the plain BatchMode channel — so install_rc is install.sh's own $?,
+# never ssh's transport status.
+INSTALL_POLL_INTERVAL_SEC=5
+# A Zero 2 W cold Rust build is the slowest supported install.
+INSTALL_POLL_CEILING_SEC=7200
+run_install_detached() {
+    local log rc_file body poll_body chunk line deadline seen=0 done_rc=""
+    if ! log="$(ssh_remote "sh -c $(shell_quote 'l="$HOME/.jts-install.log"; r="${l%.log}.rc"; rm -f "$l" "$r"; : >"$l"; : >"$r"; chmod 0644 "$l" "$r"; printf "%s\n" "$l"') jts-install-prepare")"; then
+        echo "deploy-to-pi: could not prepare the install transcript on ${SSH_TARGET}" >&2
+        exit 1
+    fi
+    log="${log%%$'\n'*}"
+    rc_file="${log%.log}.rc"
+
+    # setsid detaches from the session sshd is about to tear down; the
+    # redirections release the ssh channel so this call returns at once.
+    body="${install_env} bash $(shell_quote "${REMOTE_REPO_DIR}/deploy/install.sh"); echo \$? >>$(shell_quote "$rc_file")"
+    echo "    transcript on the Pi: ${log}"
+    if ! run_remote_sudo "setsid --fork nohup sh -c $(shell_quote "$body") </dev/null >>$(shell_quote "$log") 2>&1"; then
+        echo "deploy-to-pi: could not launch install.sh on ${SSH_TARGET}" >&2
+        exit 1
+    fi
+
+    # Sample the status file BEFORE the transcript, so a completion
+    # between the two reads costs one more poll instead of lost lines.
+    printf -v poll_body '%s\n' \
+        'rc=""' \
+        '[ -s "$2" ] && rc="$(cat "$2")"' \
+        'tail -n +"$(($3 + 1))" "$1" 2>/dev/null' \
+        '[ -n "$rc" ] && printf "JTS_INSTALL_RC=%s\n" "$rc"' \
+        ':'
+    deadline=$(( $(date +%s) + INSTALL_POLL_CEILING_SEC ))
+    while :; do
+        # A dropped poll is one reconnect on the next tick, not a failed
+        # deploy: the install is no longer a child of this ssh session.
+        chunk="$(ssh_remote "sh -c $(shell_quote "$poll_body") jts-install-poll $(shell_quote "$log") $(shell_quote "$rc_file") ${seen}" 2>/dev/null)" || chunk=""
+        if [[ -n "$chunk" ]]; then
+            while IFS= read -r line; do
+                case "$line" in
+                    JTS_INSTALL_RC=*) done_rc="${line#JTS_INSTALL_RC=}" ;;
+                    *) printf '%s\n' "$line"; seen=$((seen + 1)) ;;
+                esac
+            done <<< "$chunk"
+        fi
+        [[ -n "$done_rc" ]] && break
+        if (( $(date +%s) >= deadline )); then
+            echo "deploy-to-pi: event=deploy.install_timeout host=${PI_HOST} ceiling_sec=${INSTALL_POLL_CEILING_SEC} transcript=${log}" >&2
+            echo " install.sh is still running detached on the Pi; follow the" >&2
+            echo " transcript there before deciding whether to re-deploy."     >&2
+            exit 1
+        fi
+        sleep "$INSTALL_POLL_INTERVAL_SEC"
+    done
+    install_rc="${done_rc//[^0-9]/}"
+    [[ -n "$install_rc" ]] || install_rc=1
+}
+
 # Capture git info BEFORE rsync (which excludes .git/).
 if ! git rev-parse --git-dir >/dev/null 2>&1; then
     echo "deploy-to-pi: $REPO_ROOT is not a git checkout" >&2
@@ -816,12 +878,11 @@ done
 DEPLOY_START_EPOCH="$(ssh_remote 'date +%s' 2>/dev/null | tr -dc '0-9')" || true
 [[ -z "$DEPLOY_START_EPOCH" ]] && DEPLOY_START_EPOCH=0
 
-# Run install.sh but DON'T let set -e abort before we surface collateral:
-# capture the exit code, always scan for OOM kills in the install window,
-# then decide. (See ADR-0174: a failed build that OOM-killed live daemons
-# must not exit silently.)
+# Keep the install's exit code instead of letting set -e abort on it, so
+# the OOM scan below runs even when the build failed. (See ADR-0174: a
+# failed build that OOM-killed live daemons must not exit silently.)
 install_rc=0
-run_remote_sudo "${install_env} bash $(shell_quote "${REMOTE_REPO_DIR}/deploy/install.sh")" || install_rc=$?
+run_install_detached
 
 if [[ "$DEPLOY_START_EPOCH" != "0" ]]; then
     report_oom_collateral "$DEPLOY_START_EPOCH"
@@ -831,25 +892,15 @@ if [[ "$install_rc" -ne 0 ]]; then
     finish_airplay_health_maintenance
     trap 'cleanup_remote_facts' EXIT
     echo "─────────────────────────────────────────────────────────────" >&2
-    if [[ "$install_rc" == "255" ]]; then
-        echo " DEPLOY OUTCOME UNKNOWN: ssh exited 255 while install.sh was" >&2
-        echo " running on ${PI_HOST}. That status can signal an SSH"         >&2
-        echo " transport failure, so no trustworthy remote completion"     >&2
-        echo " status was received. install.sh may still be running, or"    >&2
-        echo " may complete after this SSH session ended."                  >&2
-        echo " The build manifest was not verified. Reconnect to the Pi"    >&2
-        echo " before deciding whether to re-deploy."                       >&2
-    else
-        echo " DEPLOY FAILED: install.sh exited ${install_rc} on ${PI_HOST}." >&2
-        if [[ "$OOM_PRODUCTION_HIT" == "1" ]]; then
-            echo " A live production daemon was OOM-killed during the build"   >&2
-            echo " (see above) — the build is unbounded for this box's RAM."   >&2
-            echo " Workstream A bounds it; for now free RAM and re-deploy."     >&2
-        fi
-        echo " The build manifest was NOT advanced, so the Pi still"           >&2
-        echo " advertises its prior good build to the next deploy (no"         >&2
-        echo " half-updated lie). Diagnose on the Pi:"                         >&2
+    echo " DEPLOY FAILED: install.sh exited ${install_rc} on ${PI_HOST}." >&2
+    if [[ "$OOM_PRODUCTION_HIT" == "1" ]]; then
+        echo " A live production daemon was OOM-killed during the build"   >&2
+        echo " (see above) — the build is unbounded for this box's RAM."   >&2
+        echo " Workstream A bounds it; for now free RAM and re-deploy."     >&2
     fi
+    echo " The build manifest was NOT advanced, so the Pi still"           >&2
+    echo " advertises its prior good build to the next deploy (no"         >&2
+    echo " half-updated lie). Diagnose on the Pi:"                         >&2
     echo "   sudo /opt/jasper/.venv/bin/jasper-doctor"                     >&2
     echo "   journalctl -u jasper-control -n 120 --no-pager"               >&2
     echo "─────────────────────────────────────────────────────────────" >&2
