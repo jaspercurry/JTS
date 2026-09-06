@@ -82,7 +82,6 @@ REASON_CERT_NOT_INSTALLED = "cert_not_installed"
 REASON_CERT_IDENTITY_ABSENT = "cert_identity_absent"
 REASON_CERT_HOSTNAME_UNKNOWN = "cert_hostname_unknown"
 REASON_CERT_SAN_UNREADABLE = "cert_san_unreadable"
-REASON_CERT_SAN_UNPARSEABLE = "cert_san_unparseable"
 REASON_CERT_SAN_MISMATCH = "cert_san_mismatch"
 
 REASON_CLOUD_NOT_RUN = "cloud_pipeline_not_run"
@@ -128,13 +127,9 @@ def check_correction_web_service() -> CheckResult:
     socket_raw = evidence.unit_state("jasper-correction-web.socket")
     service_raw = evidence.unit_state("jasper-correction-web.service")
     if socket_raw is None or service_raw is None:
-        # `unit_state()` returns None for UNKNOWN (systemctl unavailable, or
-        # a reply with no record under this name) — a one-sided None means
-        # that unit was never observed, so this must not fall through to a
-        # verdict about it being "inactive".
         return _systemctl_unavailable_result("correction web")
-    socket_state = str((socket_raw or {}).get("active_state") or "")
-    service_state = str((service_raw or {}).get("active_state") or "")
+    socket_state = socket_raw.get("active_state") or ""
+    service_state = service_raw.get("active_state") or ""
     if socket_state == "active":
         return CheckResult(
             "correction web", "ok",
@@ -436,9 +431,8 @@ def check_correction_uploaded_calibration_sign() -> CheckResult:
 # config to read. Homed here, beside the reader, and imported by every doctor
 # module that calls it (ADR-0233 rule 1).
 # STATEFILE_UNREADABLE stays `warn`: `read_camilla_statefile_config_path`
-# returns None both for an unreadable statefile (unobserved) and a readable
-# one with no `config_path:` line (observed-malformed) — splitting these
-# needs the reader to return a tri-state, not just this callsite (handoff).
+# returns the same None for an unreadable statefile and for a readable one
+# missing its `config_path:` line.
 REASON_CAMILLA_STATEFILE_UNREADABLE = "camilla_statefile_unreadable"
 REASON_CAMILLA_CONFIG_MISSING = "camilla_config_missing"
 REASON_CAMILLA_CONFIG_UNREADABLE = "camilla_config_unreadable"
@@ -647,13 +641,10 @@ def check_correction_cert_hostname() -> CheckResult:
             reason=REASON_CERT_SAN_UNREADABLE,
         )
     if proc.returncode != 0:
-        # openssl launched and read the file — a non-zero exit means it
-        # rejected the bytes (truncated/wrong-PEM), not that nothing was
-        # observed: nginx would refuse this cert too.
         return CheckResult(
             label, "warn",
             f"openssl exited {proc.returncode} reading {cert_path}",
-            reason=REASON_CERT_SAN_UNPARSEABLE,
+            reason=REASON_CERT_SAN_UNREADABLE,
         )
     san = proc.stdout.lower()
     if effective.lower() in san:

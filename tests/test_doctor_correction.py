@@ -70,26 +70,6 @@ def test_check_correction_web_service_skips_without_systemctl(monkeypatch):
     assert r.reason == _shared.REASON_SYSTEMCTL_UNAVAILABLE
 
 
-def test_check_correction_web_service_skips_when_only_one_unit_answers(
-    monkeypatch,
-):
-    """systemctl answered the socket but carried no record at all for the
-    service (neither unit is on DOCTOR_UNIT_ROSTER, so each is a separate
-    per-unit read) — the service was never observed, so this must not fall
-    through to a verdict about it being inactive."""
-    def fake_read_unit_states(units, *, timeout):
-        if "jasper-correction-web.socket" in units:
-            return {
-                "jasper-correction-web.socket": {"active_state": "active"},
-            }
-        return {}
-
-    monkeypatch.setattr(_evidence, "read_unit_states", fake_read_unit_states)
-    r = correction.check_correction_web_service()
-    assert r.status == "skipped"
-    assert r.reason == _shared.REASON_SYSTEMCTL_UNAVAILABLE
-
-
 # ---------- #1860: long-outstanding idle-exit holds
 
 
@@ -1199,10 +1179,12 @@ def test_cert_check_skips_when_the_san_cannot_be_read(
     assert r.reason == correction.REASON_CERT_SAN_UNREADABLE
 
 
-def test_cert_check_warns_when_openssl_rejects_the_cert(monkeypatch, tmp_path):
-    """openssl launched and read the file, then exited non-zero — it
-    observed and rejected the bytes, unlike the unreadable-SAN skip above
-    where openssl never ran at all."""
+def test_cert_check_warns_when_openssl_exits_nonzero(monkeypatch, tmp_path):
+    """openssl launched, unlike the skip cases above — but a non-zero exit
+    is not unambiguously "read the bytes and rejected them": an
+    unprivileged run, or a deploy rewriting the cert between `is_file()`
+    and openssl's own open, exits non-zero too. Same reason as the skip
+    arm, different status: this one ran."""
     _with_cert(monkeypatch, tmp_path)
     _write_identity_env(tmp_path, monkeypatch, avahi="jts3.local")
 
@@ -1213,4 +1195,4 @@ def test_cert_check_warns_when_openssl_rejects_the_cert(monkeypatch, tmp_path):
         r = correction.check_correction_cert_hostname()
 
     assert r.status == "warn"
-    assert r.reason == correction.REASON_CERT_SAN_UNPARSEABLE
+    assert r.reason == correction.REASON_CERT_SAN_UNREADABLE

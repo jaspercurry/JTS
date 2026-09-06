@@ -853,7 +853,7 @@ def check_grouping_tts_lane() -> CheckResult:
     # unresolvable authority must never render as a clean verdict (#2387).
     if voice_runtime_env is None:
         return CheckResult(
-            label, "skipped",
+            label, "warn",
             "could not resolve jasper-voice's env from its unit directives "
             f"or {VOICE_GROUPING_ENV_FILE} ({voice_runtime_error}) — the "
             "grouped-voice guards cannot run",
