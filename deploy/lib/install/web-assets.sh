@@ -32,10 +32,9 @@
 #   an empty dir can't leave a literal *.css/*.js to fail `install`
 #   and abort the deploy under `set -euo pipefail`.
 #   `shared` carries the cross-page ES modules — same copy shape as a
-#   page, no .css. Deliberately not enumerated here: this comment listed
-#   four of them and had silently fallen behind to eight. The directory
-#   listing of deploy/assets/shared/js/ is the answer, and the loop below
-#   already copies whatever is in it.
+#   page, no .css. Not enumerated here: the directory listing of
+#   deploy/assets/shared/js/ is the answer, and the loop below already
+#   copies whatever is in it.
 #
 # Page dirs are discovered dynamically: every directory under
 # deploy/assets/ (each canonical page's slug, plus `shared`) is
@@ -68,8 +67,9 @@ install_web_assets() {
     # Installs one asset at its manifest-relative path and records it, so
     # an installed file is manifested by construction.
     _ship() {
-        install -d -m 0755 "$(dirname "${assets_root}/${2}")"
-        install -m 0644 "${1}" "${assets_root}/${2}"
+        local dest="${assets_root}/${2}"
+        [[ -d "${dest%/*}" ]] || install -d -m 0755 "${dest%/*}"
+        install -m 0644 "${1}" "${dest}"
         echo "${2}" >> "${manifest_tmp}"
     }
 
@@ -97,11 +97,13 @@ install_web_assets() {
     chmod 0644 "${manifest_tmp}"
     mv -f "${manifest_tmp}" "${manifest}"
 
-    # Read back from disk so the prune cannot disagree with what the doctor verifies.
-    comm -23 <(find "${assets_root}" ! -type d | while IFS= read -r f; do
+    # Read back from disk so the prune cannot disagree with what the doctor
+    # verifies. LC_ALL=C on comm itself: an ssh session forwards the
+    # laptop's LANG, and comm collates in that ambient locale by default
+    # even though both streams below are C-sorted, desyncing the merge.
+    LC_ALL=C comm -23 <(find "${assets_root}" ! -type d ! -path "${manifest}" | while IFS= read -r f; do
         printf '%s\n' "${f#"${assets_root}"/}"; done | LC_ALL=C sort) "${manifest}" |
     while IFS= read -r rel; do
-        [[ "${rel}" == "${manifest##*/}" ]] && continue
         rm -f -- "${assets_root}/${rel}"
         echo "  pruned stale web asset: ${rel}"
     done

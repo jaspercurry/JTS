@@ -674,13 +674,22 @@ def parse_aplay_listing(
     return tuple(cards)
 
 
+# aplay -L enumerates in tens of ms; 2 s is far past a hung USB stack, well
+# under the unit's 50 s TimeoutStartSec.
+_APLAY_LISTING_TIMEOUT_SEC = 2.0
+
+
 def probe_aplay_listing(aplay: str = "aplay") -> str:
-    proc = subprocess.run(
-        [aplay, "-L"],
-        check=False,
-        text=True,
-        capture_output=True,
-    )
+    try:
+        proc = subprocess.run(
+            [aplay, "-L"],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=_APLAY_LISTING_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        return ""
     return proc.stdout if proc.returncode == 0 else ""
 
 

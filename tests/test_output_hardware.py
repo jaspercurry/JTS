@@ -8,6 +8,7 @@ import dataclasses
 import json
 import shlex
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,7 @@ from jasper.output_hardware import (
     detected_hardware_adoption_precondition,
     detected_hardware_identity,
     parse_aplay_listing,
+    probe_aplay_listing,
     probe_system_cards,
     topology_hardware_from_state,
 )
@@ -158,6 +160,24 @@ hw:CARD=DAC8XStudio,DEV=0
     assert [card.card_id for card in cards] == ["A", "DAC8XStudio"]
     assert cards[0].device_id == APPLE_USB_C_DONGLE_DEVICE_ID
     assert cards[1].device_id == HIFIBERRY_DAC8X_STUDIO_DEVICE_ID
+
+
+def test_probe_aplay_listing_bounds_a_hung_aplay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The only caller runs on the DAC-vanished path under a unit with a 50 s
+    TimeoutStartSec; a wedged USB stack must not block it indefinitely."""
+    monkeypatch.setattr(output_hardware, "_APLAY_LISTING_TIMEOUT_SEC", 0.2)
+    stub = tmp_path / "aplay"
+    stub.write_text("#!/bin/sh\nsleep 5\n", encoding="utf-8")
+    stub.chmod(0o755)
+
+    started = time.monotonic()
+    result = probe_aplay_listing(aplay=str(stub))
+    elapsed = time.monotonic() - started
+
+    assert result == ""
+    assert elapsed < 2.0
 
 
 def test_probe_system_cards_uses_usb_device_path_as_stable_path(

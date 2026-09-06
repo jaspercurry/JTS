@@ -52,7 +52,7 @@ MAX_NUMPY_POLYPHASE_BRANCHES = 8
 # PortAudio enumerates ALSA cards by card description, not `hw:CARD=` syntax.
 # The default matches "Array: USB Audio (hw:N,0)" on the legacy square
 # firmware and "L16K6Ch: USB Audio (hw:N,0)" on the Flex linear firmware.
-MIC_CHANNELS = _mic_profile.RECOMMENDED_FIRMWARE.capture_channels
+MIC_CHANNELS = _mic_profile.RECOMMENDED_CAPTURE_CHANNELS
 MIC_CHANNEL_INDEX = _mic_profile.MIC_CHANNEL_INDEX
 
 
