@@ -164,6 +164,24 @@ CUES: tuple[CueDef, ...] = (
         ),
     ),
     CueDef(
+        slug="voice_not_set_up",
+        template=(
+            "I'm not set up to listen yet. Visit {hostname} to pick a "
+            "voice service."
+        ),
+        description=(
+            "Played once by jasper/voice/daemon_main.py:main() just before the "
+            "daemon parks on VOICE_PROVIDER_NOT_CONFIGURED_EXIT: no voice "
+            "provider is configured, so a wake would never be answered, and "
+            "RestartPreventExitStatus keeps the unit down until someone acts. "
+            "Wired via VOICE_NOT_SET_UP_CUE_SLUG. Names the remedy, not the "
+            "cause: the household can act on 'pick a voice service', not on "
+            "'JASPER_VOICE_PROVIDER unset'. A box that was NEVER configured "
+            "has no baked WAV for this cue — nothing has run `jasper-cues "
+            "regenerate` with a key yet — so its first park stays silent."
+        ),
+    ),
+    CueDef(
         slug="audition_reduced_graph",
         template=(
             "Heads up — I'm playing the crossover-only tuning for a listen. "

@@ -31,80 +31,24 @@ from __future__ import annotations
 
 import argparse
 import sys
-import urllib.parse
 
-from ..config import Config
-from ..env_load import load_env_files
-from .factory import build_cue_tts_backend
-from .manager import AudioCueManager
+from .factory import build_env_cue_manager
 from .registry import find as find_cue
 from ..logging_setup import configure_logging
 
 
-def _hostname_from_url(url: str) -> str:
-    parsed = urllib.parse.urlparse(url)
-    return parsed.hostname or ""
-
-
-def _make_manager(*, tts_playout=None) -> AudioCueManager:
-    """Build a manager from environment variables. Uses the same
-    Config + factory the daemon uses, so the CLI's cue regen and
-    the daemon's runtime synthesis agree on which file is canonical
-    for a given (provider, voice, model, text).
-
-    `tts_playout` is optional — `list` and `regenerate` don't need
-    audio output, so they pass None. `play` doesn't call this factory
-    at all: it routes through jasper-control's /cue/play HTTP endpoint
-    instead of building a local TtsPlayout (see `_cmd_play`).
-
-    Config.from_env() requires the active provider's API key; if
-    it's missing we still want `list` (which only reads disk) to
-    work, so we degrade to a key-less manager rather than raising.
-
-    Auto-loads /etc/jasper/jasper.env and /var/lib/jasper/voice_provider.env
-    so install.sh's `jasper-cues regenerate` invocation sees the same
-    provider/voice the daemon does — including web-wizard overrides.
-    """
-    load_env_files()
-    try:
-        cfg = Config.from_env()
-        backend, voice = build_cue_tts_backend(cfg)
-        sounds_dir = cfg.sounds_dir
-        management_url = cfg.management_url
-    except RuntimeError as e:
-        # Missing active-provider key — list still needs to work,
-        # regen will exit cleanly with "no TTS backend" later.
-        print(f"warning: TTS backend disabled ({e})", file=sys.stderr)
-        import os as _os
-        backend = None
-        voice = ""
-        sounds_dir = _os.environ.get(
-            "JASPER_SOUNDS_DIR", "/var/lib/jasper/sounds",
-        )
-        management_url = _os.environ.get(
-            "JASPER_MANAGEMENT_URL", "https://jts.local",
-        )
-    if backend is None:
-        print(
-            "warning: no TTS backend; regen will fail (playback "
-            "still works off cached files)",
-            file=sys.stderr,
-        )
-    hostname = _hostname_from_url(management_url) or "this speaker"
-    return AudioCueManager(
-        sounds_dir=sounds_dir,
-        hostname=hostname,
-        voice=voice,
-        backend=backend,
-        tts_playout=tts_playout,
-    )
+def _warn(message: str) -> None:
+    """The CLI's own `warn` sink for the cue factory: operator prose on
+    stderr, where `jasper-cues` output has always gone. The factory's default
+    emits a structured event instead, for the daemon that has no console."""
+    print(f"warning: {message}", file=sys.stderr)
 
 
 # --- subcommands ---
 
 
 def _cmd_list(_args) -> int:
-    mgr = _make_manager(tts_playout=None)
+    mgr = build_env_cue_manager(tts_playout=None, warn=_warn)
     rows = mgr.status()
     if not rows:
         print("no cues registered")
@@ -129,7 +73,7 @@ def _cmd_list(_args) -> int:
 
 
 def _cmd_regenerate(args) -> int:
-    mgr = _make_manager(tts_playout=None)
+    mgr = build_env_cue_manager(tts_playout=None, warn=_warn)
     try:
         written = mgr.regenerate(slug=args.cue, force=args.force)
     except ValueError as e:

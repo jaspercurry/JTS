@@ -334,6 +334,11 @@ PTT_KEEPALIVE_INTERVAL_SEC = 2.0
 # the guard test cannot drift from the registry entry.
 NO_ROOM_MIC_CUE_SLUG = "no_room_microphone"
 
+# Cue for "no voice service is configured, so I will never answer a wake."
+# Played by daemon_main.main() before it parks on
+# VOICE_PROVIDER_NOT_CONFIGURED_EXIT; named here for the same reason.
+VOICE_NOT_SET_UP_CUE_SLUG = "voice_not_set_up"
+
 # `_end_turn` reasons the household or the daemon itself chose: whoever
 # muted, shut down or spoke over the turn already knows why it went quiet,
 # so no failure cue is owed however little the model said.
