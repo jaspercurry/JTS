@@ -46,6 +46,7 @@ _STEP_TO_PLAN_MARKER = {
     "create_jasper_service_users": "non-root service users",
     "install_deps": "apt-get update",
     "persist_install_profile": "Persist the install profile tier",
+    "mark_install_in_progress": "Mark the install in progress",
     "install_streambox_deps": "renderer/DSP stack",
     "install_streambox_jasper": "Python runtime dependencies from pyproject.toml [streambox]",
     "reassert_secrets_compartment_perms": "/var/lib/jasper-secrets compartment holding",

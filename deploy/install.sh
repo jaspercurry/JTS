@@ -383,6 +383,9 @@ Run for real from a Pi-local checkout:
      JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 is set deliberately.
    - A legacy persisted endpoint/satellite marker normalizes to
      streambox, so the box auto-migrates to the streambox install path.
+   - Mark the install in progress (/run/jasper-install/in_progress) so
+     udev- and timer-started reconcilers skip the half-synced tree; the
+     accessory-reconcile path watcher is stopped and re-armed with it.
 
 Hardware tier (detected on this host): $(detect_hardware_tier)
   - Informational; orthogonal to the profile. The real install fails
@@ -541,6 +544,9 @@ Profile guard:
   - Persist the install profile tier in ${INSTALL_PROFILE_MARKER}.
   - Refuse later full/streambox tier changes unless
     JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 is set deliberately.
+  - Mark the install in progress (/run/jasper-install/in_progress) so
+    udev- and timer-started reconcilers skip the half-synced tree; the
+    accessory-reconcile path watcher is stopped and re-armed with it.
 
 Hardware tier (detected on this host): $(detect_hardware_tier)
   - Informational; orthogonal to the profile. Build strategy keys off
@@ -2204,10 +2210,11 @@ main() {
     hardware_tier_preflight  # log tier; fail fast on unsupported arch (before any mutation)
     if [[ "${install_profile}" == "streambox" ]]; then
         require_root
+        trap install_exit_cleanup EXIT
+        mark_install_in_progress
         persist_install_profile "${install_profile}"
         require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
         setup_build_swap_if_needed
-        trap install_exit_cleanup EXIT
         create_jasper_service_users  # before unit install + state-dir creation
         park_low_memory_build_units
         install_streambox_deps
@@ -2252,10 +2259,11 @@ main() {
         return 0
     fi
     require_root
+    trap install_exit_cleanup EXIT
+    mark_install_in_progress
     persist_install_profile "${install_profile}"
     require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
     setup_build_swap_if_needed
-    trap install_exit_cleanup EXIT
     create_jasper_service_users  # before unit install + state-dir creation
     park_low_memory_build_units
     install_deps
