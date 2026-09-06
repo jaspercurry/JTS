@@ -1728,8 +1728,8 @@ park_to_reference_leg() {
     # this is reached from a bridge restart that just failed for real, so
     # Restart=on-failure is re-arming every 2 s and the ~6-8 s those steps take
     # is enough standing marker to spend the rest of StartLimitBurst.
-    # park_managed_xvf withdraws again; the call is idempotent.
-    revoke_aec_bridge_ready
+    # park_managed_xvf's revoke below owns the bridge_ready-revoked event.
+    rm -f "$AEC_BRIDGE_READY_MARKER" 2>/dev/null || true
     publish_alignment_record "$disposition" || true
     write_leg_env "reference" "0" "0" "1" "0" "0"
     restart_outputd_if_needed
