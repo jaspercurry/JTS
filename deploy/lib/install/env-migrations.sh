@@ -665,7 +665,11 @@ widen_control_secret_env_modes() {
     # Those compartment migrations own their perms now. voice_provider.env stays
     # here (now keyless; control reads the provider name for /system/).
     # Lock entries: chmod, never unlink — a live holder may hold the flock.
-    # Drop this loop's chgrp — the 0640 file-class entries and the 0660 lock entries alike — once every box's JASPER_INSTALL_AT in /var/lib/jasper/build.txt is past 2026-09-05, the atomic_io group-publishing commits; the chmod halves stay, healing an older 0600 class.
+    # Drop this loop's chgrp — the 0640 file-class entries and the 0660 lock
+    # entries alike — once every box's JASPER_INSTALL_AT in
+    # /var/lib/jasper/build.txt is past 2026-09-05, the atomic_io
+    # group-publishing commits; the chmod halves stay, healing an older 0600
+    # class.
     local entry f m path
     for entry in voice_provider.env:0640 control_token:0640 \
                  household_secret:0640 sound_profile.json:0640 \
