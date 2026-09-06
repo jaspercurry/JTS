@@ -9,8 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from jasper.cli.doctor import _shared, env, grouping
+from jasper.cli.doctor import env, grouping
 from jasper.cli.doctor.env import _classify_state_group_write
+from jasper.env_load import parse_env_file
 
 from .doctor_test_support import _fresh_cfg, _pretend_group_is_jasper, _registered_check_names
 
@@ -29,7 +30,7 @@ def test_parse_env_file_basic(tmp_path: Path):
         "EMPTY=\n"
         "  WHITESPACE_KEY  =  trimmed  \n"
     )
-    out = _shared._parse_env_file(str(p))
+    out = parse_env_file(str(p))
     assert out["GEMINI_API_KEY"] == "AIzaSyABC"
     assert out["JASPER_VOICE_PROVIDER"] == "openai"
     assert out["OPENAI_API_KEY"] == "sk-quoted"
@@ -38,7 +39,7 @@ def test_parse_env_file_basic(tmp_path: Path):
 
 
 def test_parse_env_file_missing_returns_empty(tmp_path: Path):
-    out = _shared._parse_env_file(str(tmp_path / "does-not-exist"))
+    out = parse_env_file(str(tmp_path / "does-not-exist"))
     assert out == {}
 
 

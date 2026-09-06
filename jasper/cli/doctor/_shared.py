@@ -40,7 +40,6 @@ from ...doctor_contract import (  # noqa: F401 — re-exported for the domain mo
     check_row,
     summarize,
 )
-from ...env_load import parse_env_file as _shared_parse_env_file
 from ...install_profile import is_streambox_install_profile, read_install_profile
 from ...secret_redaction import redact_secrets
 
@@ -134,12 +133,6 @@ REASON_TOPOLOGY_UNREADABLE = "output_topology_unreadable"
 
 def _run(cmd: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-
-def _parse_env_file(path: str) -> dict[str, str]:
-    """Back-compat wrapper for tests and external doctor consumers."""
-
-    return _shared_parse_env_file(path)
-
 
 def _parse_systemd_environment(text: str) -> dict[str, str]:
     """Parse ``systemctl show -p Environment`` output into key/value pairs."""
@@ -253,12 +246,13 @@ def _parked_as_bonded_follower() -> bool:
     intended state. Fail-open to NOT-parked: a broken read must never mask a
     real failure on a solo speaker."""
     try:
-        from ...multiroom.config import load_config
         from ...multiroom.effective_role import (
             effective_local_sources_park_reason,
         )
+        from ._evidence import evidence
 
-        return effective_local_sources_park_reason(load_config()) is not None
+        cfg = evidence.grouping_config()
+        return effective_local_sources_park_reason(cfg) is not None
     except Exception:  # noqa: BLE001 — fail-open
         return False
 
@@ -319,7 +313,9 @@ def _parked_follower_result(label: str) -> CheckResult | None:
     bonded follower, or None so the caller falls through to its real probe.
     The parked state is intended and was observed, so `ok` with a reason
     rather than a warn or a skip."""
-    if not _parked_as_bonded_follower():
+    from ._evidence import evidence
+
+    if not evidence.parked_bonded_follower():
         return None
     return CheckResult(
         label, "ok",
