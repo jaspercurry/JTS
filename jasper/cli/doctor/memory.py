@@ -113,7 +113,7 @@ def check_ram() -> CheckResult:
     except Exception:  # noqa: BLE001
         pass
     return CheckResult(
-        "RAM", "warn", "couldn't read /proc/meminfo", reason=REASON_RAM_UNREADABLE,
+        "RAM", "skipped", "couldn't read /proc/meminfo", reason=REASON_RAM_UNREADABLE,
     )
 
 # "memory-sample" keeps this off the wire while another check is holding a
@@ -145,7 +145,7 @@ def check_memory_headroom() -> CheckResult:
     avail_kb = meminfo_kb("MemAvailable")
     if avail_kb is None or total_kb == 0:
         return CheckResult(
-            "memory headroom", "warn", "couldn't read /proc/meminfo",
+            "memory headroom", "skipped", "couldn't read /proc/meminfo",
             reason=REASON_MEMORY_HEADROOM_UNREADABLE,
         )
     avail_mb = avail_kb // 1024
@@ -290,7 +290,7 @@ def check_cgroup_memory_enabled() -> CheckResult:
         controllers = p.read_text().strip().split()
     except OSError:
         return CheckResult(
-            "cgroup memory", "warn", "couldn't read cgroup.controllers",
+            "cgroup memory", "skipped", "couldn't read cgroup.controllers",
             reason=REASON_CGROUP_UNREADABLE,
         )
     if "memory" not in controllers:
@@ -437,7 +437,7 @@ def check_disk_space() -> CheckResult:
         usage = disk_usage(path)
     except OSError as e:
         return CheckResult(
-            "disk space", "warn",
+            "disk space", "skipped",
             f"couldn't statvfs {path}: {e.__class__.__name__}",
             reason=REASON_DISK_STATVFS_FAILED,
         )

@@ -103,11 +103,23 @@ def test_memory_headroom_thresholds_scale_with_total_ram(
         assert doctor_memory.check_memory_headroom().status == status
 
 
-def test_memory_headroom_warns_when_meminfo_is_unreadable():
+def test_memory_headroom_skips_when_meminfo_is_unreadable():
+    """The doctor's own evidence read failed (no /proc/meminfo access) — no
+    headroom finding was observed at all, so this is `skipped`, not `warn`
+    (ADR-0233 rule 3)."""
     with patch("builtins.open", side_effect=OSError("permission denied")):
         r = doctor_memory.check_memory_headroom()
-        assert r.status == "warn"
+        assert r.status == "skipped"
         assert r.reason == doctor_memory.REASON_MEMORY_HEADROOM_UNREADABLE
+
+
+def test_check_ram_skips_when_meminfo_is_unreadable():
+    """Same evidence-channel-failed posture as check_memory_headroom above:
+    /proc/meminfo unreadable means nothing about RAM sizing was observed."""
+    with patch("builtins.open", side_effect=OSError("permission denied")):
+        r = doctor_memory.check_ram()
+        assert r.status == "skipped"
+        assert r.reason == doctor_memory.REASON_RAM_UNREADABLE
 
 
 # ------------------------------------------------------- check_zram_size_ratio
@@ -176,24 +188,35 @@ def test_check_zram_size_ratio_skips_without_a_zram_device():
 
 
 @pytest.mark.parametrize(
-    "controllers, cgroup_present, status",
+    "controllers, cgroup_present, status, reason",
     [
-        ("cpu io memory pids\n", True, "ok"),
+        ("cpu io memory pids\n", True, "ok", None),
         # Without the memory controller the slices' MemorySwapMax=0 is a no-op,
         # so the audio protection is simply gone: fail, not warn.
-        ("cpu io pids\n", True, "fail"),
-        (None, False, "skipped"),  # no /sys/fs/cgroup — not Linux
+        ("cpu io pids\n", True, "fail", doctor_memory.REASON_CGROUP_MEMORY_DISABLED),
+        (None, False, "skipped", doctor_memory.REASON_CGROUP_NOT_LINUX),
+        # cgroup.controllers is present but this process's own read of it
+        # raised — the doctor's evidence channel failed, so nothing about the
+        # controller was observed: `skipped`, not `warn` (ADR-0233 rule 3).
+        (OSError("denied"), True, "skipped", doctor_memory.REASON_CGROUP_UNREADABLE),
     ],
-    ids=["enabled", "disabled", "dev-host"],
+    ids=["enabled", "disabled", "dev-host", "unreadable"],
 )
 def test_check_cgroup_memory_enabled_verdicts(
-    monkeypatch, controllers, cgroup_present, status
+    monkeypatch, controllers, cgroup_present, status, reason
 ):
     monkeypatch.setattr(Path, "exists", lambda self: cgroup_present)
-    if controllers is not None:
+    if isinstance(controllers, Exception):
+        def raise_it(self, **kw):
+            raise controllers
+        monkeypatch.setattr(Path, "read_text", raise_it)
+    elif controllers is not None:
         monkeypatch.setattr(Path, "read_text", lambda self, **kw: controllers)
 
-    assert doctor_memory.check_cgroup_memory_enabled().status == status
+    r = doctor_memory.check_cgroup_memory_enabled()
+    assert r.status == status
+    if reason is not None:
+        assert r.reason == reason
 
 
 def test_audio_path_units_cover_every_protected_slice_unit():
@@ -389,13 +412,16 @@ def test_check_disk_space_skips_on_a_non_posix_host():
         assert r.reason == doctor_memory.REASON_DISK_NOT_POSIX
 
 
-def test_check_disk_space_warns_on_statvfs_oserror():
+def test_check_disk_space_skips_on_statvfs_oserror():
+    """statvfs itself raised — the doctor's own evidence read failed, so
+    nothing about disk fullness was observed: `skipped`, not `warn`
+    (ADR-0233 rule 3)."""
     def boom(path):
         raise OSError("nope")
 
     with patch.object(memory_policy.os, "statvfs", boom):
         r = doctor_memory.check_disk_space()
-        assert r.status == "warn"
+        assert r.status == "skipped"
         assert r.reason == doctor_memory.REASON_DISK_STATVFS_FAILED
 
 
