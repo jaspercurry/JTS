@@ -334,39 +334,6 @@ class LiveTurn(Protocol):
         ...
 
 
-@runtime_checkable
-class ConversationTranscriptTurn(Protocol):
-    """Optional text-capture capability for conversation history.
-
-    Providers that already receive native in-band transcripts can expose
-    these methods on their `LiveTurn`. WakeLoop probes them with `getattr`
-    at turn teardown; providers without native transcript support may omit
-    the capability and still satisfy `LiveTurn`.
-    """
-
-    def user_transcript(self) -> str | None:
-        """Return the provider's ASR text for the user's utterance."""
-        ...
-
-    def assistant_transcript(self) -> str | None:
-        """Return the text the provider emitted for assistant speech."""
-        ...
-
-
-@runtime_checkable
-class ConversationMetadataTurn(Protocol):
-    """Optional metadata-only capture capability for conversation history.
-
-    Some providers do not expose stable in-band transcript text for a live
-    turn. They may still expose bounded, privacy-safe metadata so the local
-    history can show that a turn happened instead of silently omitting it.
-    """
-
-    def conversation_metadata(self) -> dict[str, Any] | None:
-        """Return bounded metadata for a captured turn."""
-        ...
-
-
 # ``WakeLoop.play_supervisor_cue`` in production: takes a cue slug.
 CuePlayer = Callable[[str], Coroutine[Any, Any, object]]
 

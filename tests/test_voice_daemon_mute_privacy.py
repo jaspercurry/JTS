@@ -188,7 +188,12 @@ async def test_dynamic_text_prepares_loudness_context_before_duck_and_speak() ->
             self._ducked = False
 
     class _Cues:
-        async def speak_text(self, text: str) -> bool:
+        async def prerender_text(self, _text: str) -> bool:
+            return True
+
+        async def speak_text_guarded(self, text: str, should_play) -> bool:
+            if not should_play():
+                return False
             events.append(("speak", text))
             return True
 

@@ -2075,15 +2075,13 @@ class WakeLoop:
         if refusal is not None:
             log_event(logger, "dynamic_text.skipped", reason=refusal)
             return False
-        prerender_text = getattr(self._cues, "prerender_text", None)
-        if callable(prerender_text):
-            try:
-                if not await prerender_text(text):
-                    logger.warning("dynamic text play failed: prerender failed")
-                    return False
-            except Exception as e:  # noqa: BLE001
-                logger.warning("dynamic text play failed: prerender failed: %s", e)
+        try:
+            if not await self._cues.prerender_text(text):
+                logger.warning("dynamic text play failed: prerender failed")
                 return False
+        except Exception as e:  # noqa: BLE001
+            logger.warning("dynamic text play failed: prerender failed: %s", e)
+            return False
         episode = await self._output_gate.begin_if_idle("proactive")
         if episode is None:
             log_event(
@@ -2098,13 +2096,7 @@ class WakeLoop:
             return self._output_gate.is_current(episode)
 
         async def _speak() -> bool:
-            speak_guarded = getattr(self._cues, "speak_text_guarded", None)
-            if callable(speak_guarded):
-                return bool(await speak_guarded(text, _episode_current))
-            if not _episode_current():
-                return False
-            await self._cues.speak_text(text)
-            return True
+            return bool(await self._cues.speak_text_guarded(text, _episode_current))
 
         restore: Callable[[], Awaitable[None]] | None = None
         try:
@@ -3627,12 +3619,9 @@ class WakeLoop:
             # where a real-time provider may resume) — see _barge_in_reconcile.
             reconcile=self._barge_in_reconcile.value,
         )
-        # Set the turn's interrupt event (provider-agnostic; getattr so an
-        # adapter without the capability degrades to no local flush rather
-        # than crashing). _play_responses is awaiting wait_for_interrupt.
-        trigger = getattr(self._turn, "request_local_interrupt", None)
-        if callable(trigger):
-            trigger()
+        # Set the turn's interrupt event. _play_responses is awaiting
+        # wait_for_interrupt.
+        self._turn.request_local_interrupt()
 
     async def _send_session_audio(self, frame) -> None:
         """Forward one frame to the live turn; end the turn if it refuses.
@@ -4538,10 +4527,7 @@ class WakeLoop:
         t_after_acquire = time.monotonic()
 
         if text_context:
-            send_text_context = getattr(self._turn, "send_text_context", None)
-            if not callable(send_text_context):
-                raise RuntimeError("live turn cannot accept text context")
-            await send_text_context(text_context)
+            await self._turn.send_text_context(text_context)
             if self._turn.turn_lost():
                 raise RuntimeError("live turn lost while sending text context")
 
@@ -4868,10 +4854,7 @@ class WakeLoop:
             # Modality breakdown when the provider exposes one: OpenAI
             # Realtime does; Gemini Live returns None and the store falls back
             # to scalar all-audio pricing.
-            breakdown = None
-            getter = getattr(self._turn, "usage_breakdown", None)
-            if callable(getter):
-                breakdown = getter()
+            breakdown = self._turn.usage_breakdown()
             assert self._session_id is not None
             cost = self._usage_store.close_session(
                 self._session_id,
