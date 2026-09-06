@@ -347,16 +347,17 @@ async def test_tap_failure_emits_canonical_event(caplog):
     )
 
 
-def _install_fake_evdev(monkeypatch, *, input_device) -> None:
+def _install_fake_evdev(monkeypatch, *, input_device, devices: tuple = ()) -> None:
     """Inject a minimal fake `evdev` module so _read_device imports
     cleanly on dev hosts that lack the Linux-only package.
 
-    `input_device` is the callable bound to `evdev.InputDevice`; the
-    rest of the surface (`ecodes`) is stubbed only as far as
-    _read_device touches it.
+    `input_device` is the callable bound to `evdev.InputDevice`, `devices`
+    the node list `list_devices()` reports; the rest of the surface
+    (`ecodes`) is stubbed only as far as _read_device touches it.
     """
     fake = types.ModuleType("evdev")
     fake.InputDevice = input_device
+    fake.list_devices = lambda: list(devices)
     ecodes = types.SimpleNamespace(EV_KEY=1, keys={})
     fake.ecodes = ecodes
     monkeypatch.setitem(sys.modules, "evdev", fake)
@@ -1007,7 +1008,7 @@ def _healthy_bridge(started: asyncio.Event):
 
 
 async def _supervise_until(
-    bridges, predicate, *, backoff_sec: float, status_path,
+    bridges, predicate, *, backoff_sec: float, status_path, details=None,
 ) -> bool:
     """Run the supervisor until `predicate` holds; report whether it survived.
 
@@ -1015,7 +1016,12 @@ async def _supervise_until(
     fact, so it is asserted on every poll rather than only at the end.
     """
     task = asyncio.create_task(
-        supervise(bridges, backoff_sec=backoff_sec, status_path=status_path),
+        supervise(
+            bridges,
+            backoff_sec=backoff_sec,
+            status_path=status_path,
+            details=details,
+        ),
     )
     loop = asyncio.get_running_loop()
     deadline = loop.time() + 5.0
@@ -1118,6 +1124,99 @@ def test_a_missing_status_file_reads_as_unpublished(tmp_path):
     }
 
 
+def _install_fake_pyudev(monkeypatch) -> None:
+    """Inject a minimal fake `pyudev` so the HID bridge's discovery and
+    hot-plug loop run on dev hosts. The monitor never fires: the startup
+    scan is what drives the reader lifecycle here."""
+    fake = types.ModuleType("pyudev")
+    fake.Context = lambda: None
+    fake.Monitor = types.SimpleNamespace(
+        from_netlink=lambda _ctx: types.SimpleNamespace(filter_by=lambda _kind: None),
+    )
+
+    class _Observer:
+        def __init__(self, monitor, callback) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    fake.MonitorObserver = _Observer
+    monkeypatch.setitem(sys.modules, "pyudev", fake)
+
+
+@pytest.mark.parametrize(
+    "rearm_sec,starts,state,last_error,restarts",
+    [(3600.0, 1, "died", "RuntimeError", 0), (0.0, 2, "open", None, 1)],
+)
+async def test_a_dead_reader_is_reported_and_re_armed(
+    monkeypatch, tmp_path,
+    rearm_sec: float, starts: int, state: str,
+    last_error: Optional[str], restarts: int,
+):
+    """A reader that ends on anything but OSError (an evdev lookup, a
+    ControlError escaping the tap path) leaves the knob dead while the
+    bridge coroutine is still healthy — so the per-device entry, not the
+    bridge's own, is what says so. The same fault seen twice: parked in its
+    re-arm backoff, and re-armed once the backoff is gone."""
+    node = "/dev/input/event9"
+    device = _profile(keymap={})
+    attempts: List[str] = []
+
+    async def fake_read_device(path, entry, post) -> None:
+        attempts.append(path)
+        if len(attempts) == 1:
+            raise RuntimeError("simulated: evdev lookup blew up")
+        await asyncio.Event().wait()
+
+    class _FakeDev:
+        def __init__(self, path):
+            self.info = types.SimpleNamespace(
+                bustype=3, vendor=0x2717, product=0x32B9,
+            )
+            self.name = "WiiM Remote 2"
+
+        def close(self):
+            pass
+
+    _install_fake_evdev(monkeypatch, input_device=_FakeDev, devices=(node,))
+    _install_fake_pyudev(monkeypatch)
+    monkeypatch.setattr(bridge_mod, "lookup", lambda _vid, _pid: device)
+    monkeypatch.setattr(bridge_mod, "_read_device", fake_read_device)
+    monkeypatch.setattr(bridge_mod, "READER_REARM_SEC", rearm_sec)
+
+    readers = bridge_mod._ReaderHealth()
+    status_path = tmp_path / "status.json"
+
+    def readers_seen() -> dict:
+        return snapshot(status_path)["bridges"].get("hid", {}).get("readers", {})
+
+    still_running = await _supervise_until(
+        {"hid": lambda: bridge_mod._run_hid_bridge("http://127.0.0.1:8780", readers)},
+        lambda: (
+            len(attempts) >= starts
+            and readers_seen().get(node, {}).get("state") == state
+        ),
+        backoff_sec=3600.0,
+        status_path=status_path,
+        details={"hid": readers.register},
+    )
+
+    assert still_running
+    assert attempts == [node] * starts
+    assert readers_seen() == {
+        node: {
+            "profile": device.id,
+            "state": state,
+            "restarts": restarts,
+            "last_error": last_error,
+        },
+    }
+
+
 def test_every_declared_adapter_mic_has_an_in_process_adapter():
     """The registry's adapter profiles and this process's adapters are one
     fact: a profile whose published source id nothing here produces would
@@ -1188,7 +1287,9 @@ async def test_a_termination_signal_runs_every_bridge_teardown_to_completion(
     monkeypatch.setattr(
         loop, "add_signal_handler", lambda sig, cb: handlers.__setitem__(sig, cb),
     )
-    monkeypatch.setattr(bridge_mod, "_run_hid_bridge", lambda _url: bridge("hid")())
+    monkeypatch.setattr(
+        bridge_mod, "_run_hid_bridge", lambda _url, _readers: bridge("hid")(),
+    )
     monkeypatch.setattr(
         bridge_mod, "_published_mic_adapters", lambda: {"mic": bridge("mic")},
     )

@@ -39,6 +39,11 @@ _publish_failure_warned = False
 
 Bridge = Callable[[], Awaitable[None]]
 Publish = Callable[[], None]
+# A bridge that supervises sub-tasks of its own reports them through this: the
+# supervisor calls it once with its publish hook and merges the live mapping it
+# gets back into that bridge's status entry, so every publish carries the
+# sub-task health next to the supervisor's own restarts/last_error.
+Detail = Callable[[Publish], Mapping[str, Any]]
 
 
 def _publish(health: Mapping[str, Any], status_path: str | os.PathLike) -> None:
@@ -102,6 +107,7 @@ async def supervise(
     *,
     backoff_sec: float = RESTART_BACKOFF_SEC,
     status_path: str | os.PathLike = STATUS_PATH,
+    details: Mapping[str, Detail] | None = None,
 ) -> None:
     """Run every bridge until cancelled, restarting each one independently."""
 
@@ -112,6 +118,8 @@ async def supervise(
     def publish() -> None:
         _publish(health, status_path)
 
+    for name, detail in (details or {}).items():
+        health[name].update(detail(publish))
     publish()
     tasks = [
         asyncio.create_task(

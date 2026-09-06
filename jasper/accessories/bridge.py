@@ -20,9 +20,10 @@ held remote button doesn't hammer the daemon while still moving
 promptly during the gesture.
 
 Hot-plug: a pyudev monitor catches "add" events on /dev/input/* and
-opens a reader for matched devices. "remove" is handled passively —
-the reader's `async_read_loop` raises OSError when the device
-disappears and the task exits cleanly.
+opens a reader for matched devices; "remove" cancels that device's
+reader. Each reader runs under a per-device supervisor task that
+re-arms it on a bounded backoff when it ends, and reports its state
+in the status file so a dead reader is visible in ``/state``.
 
 The bridge is the translation boundary for supported HID devices that
 surface as kernel input nodes.
@@ -34,7 +35,7 @@ import asyncio
 import contextlib
 import logging
 import signal
-from typing import Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from jasper.control.client import (
     CONTROL_PORT, AsyncControlClient, ControlError, ControlResponse,
@@ -59,7 +60,7 @@ from .registry import (
     lookup_by_name,
 )
 from .status import STATUS_PATH
-from .supervisor import Bridge, supervise
+from .supervisor import Bridge, Publish, supervise
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,19 @@ COALESCE_WINDOW_SEC = 0.08
 HOLD_REPEAT_INITIAL_DELAY_SEC = 0.30
 HOLD_REPEAT_INTERVAL_SEC = 0.16
 HOLD_START_RETRY_SEC = 0.20
+
+# Re-arm delay for a reader that ended, doubling to the ceiling so a device
+# that dies at every open costs one wakeup per 30 s on the Pi Zero 2 W's
+# single core rather than a spin. Reset once a reader outlives the ceiling.
+# Remove when the reader can prove its own liveness to the supervisor (a
+# heartbeat) — until then this is the only re-arm.
+READER_REARM_SEC = 1.0
+READER_REARM_MAX_SEC = 30.0
+# udev fires "add" before the kernel finishes wiring up /dev/input/event*;
+# the node is retried on this ladder (0.1, 0.2, 0.4, 0.8, 1.6 s) before the
+# bridge gives up on it and waits for the next hot-plug.
+UDEV_SETTLE_SEC = 0.1
+UDEV_SETTLE_ATTEMPTS = 5
 
 
 # Async poster signature: (method, path, body-dict-or-None) -> ControlResponse.
@@ -663,10 +677,54 @@ async def _read_device(
             pass
 
 
-async def _run_hid_bridge(control_url: str) -> None:
+class _ReaderHealth:
+    """Per-device reader liveness, published inside the HID bridge's status
+    entry (``readers``).
+
+    The supervisor's own ``restarts``/``last_error`` describe the bridge
+    coroutine, which stays healthy while every reader under it is dead —
+    this is what tells the two apart in ``/state.accessory_bridges``.
+    """
+
+    def __init__(self) -> None:
+        self.devices: dict[str, dict[str, Any]] = {}
+        self._publish: Publish = lambda: None
+
+    def register(self, publish: Publish) -> dict[str, Any]:
+        self._publish = publish
+        return {"readers": self.devices}
+
+    def opened(self, path: str, profile: str) -> None:
+        entry = self.devices.get(path)
+        if entry is None:
+            self.devices[path] = {
+                "profile": profile,
+                "state": "open",
+                "restarts": 0,
+                "last_error": None,
+            }
+        else:
+            entry.update(
+                profile=profile,
+                state="open",
+                last_error=None,
+                restarts=entry["restarts"] + 1,
+            )
+        self._publish()
+
+    def ended(self, path: str, state: str, error: str | None = None) -> None:
+        entry = self.devices.get(path)
+        if entry is None:
+            return
+        entry.update(state=state, last_error=error)
+        self._publish()
+
+
+async def _run_hid_bridge(control_url: str, readers: _ReaderHealth) -> None:
     """Discover known HID accessories at startup, then watch udev for
-    hot-plug. One reader task per attached device; tasks exit on
-    unplug and are recreated on replug."""
+    hot-plug. One supervisor task per attached device: it runs the reader,
+    re-arms it after a bounded backoff when it ends, and is cancelled when
+    udev removes the node."""
     import pyudev  # Linux-only — lazy-imported so the module loads on dev hosts.
     from evdev import InputDevice, list_devices  # type: ignore
 
@@ -677,11 +735,44 @@ async def _run_hid_bridge(control_url: str) -> None:
     active: dict[str, asyncio.Task] = {}
     post = AsyncControlClient(control_url).request
 
-    def _maybe_start(path: str) -> None:
+    async def _supervise_reader(path: str, entry: RemoteProfile) -> None:
+        delay = READER_REARM_SEC
+        loop = asyncio.get_running_loop()
+        while True:
+            readers.opened(path, entry.id)
+            started = loop.time()
+            try:
+                await _read_device(path, entry, post)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — a dead reader is a dead knob
+                err: str | None = type(exc).__name__
+                log_event(
+                    logger,
+                    "knob.reader_died",
+                    level=logging.WARNING,
+                    device=entry.name,
+                    profile=entry.id,
+                    path=path,
+                    error=err,
+                    err=str(exc),
+                )
+            else:
+                err = None
+            readers.ended(path, "died", err)
+            if loop.time() - started >= READER_REARM_MAX_SEC:
+                delay = READER_REARM_SEC
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, READER_REARM_MAX_SEC)
+
+    def _maybe_start(path: str) -> bool:
+        """False only when the node could not be opened at all — a settle
+        race worth retrying. A node that is not a known accessory is True:
+        nothing to wait for."""
         try:
             dev = InputDevice(path)
         except OSError:
-            return
+            return False
         vid, pid = dev.info.vendor, dev.info.product
         name = dev.name or ""
         try:
@@ -694,12 +785,27 @@ async def _run_hid_bridge(control_url: str) -> None:
         # Mouse IDs 05AC:022C when paired over BT).
         entry = lookup(vid, pid) or lookup_by_name(name)
         if entry is None:
-            return
+            return True
         existing = active.get(path)
         if existing is not None and not existing.done():
-            return
-        task = asyncio.create_task(_read_device(path, entry, post))
-        active[path] = task
+            return True
+        active[path] = asyncio.create_task(_supervise_reader(path, entry))
+        return True
+
+    async def _start_when_settled(path: str) -> None:
+        delay = UDEV_SETTLE_SEC
+        for _ in range(UDEV_SETTLE_ATTEMPTS):
+            await asyncio.sleep(delay)
+            if _maybe_start(path):
+                return
+            delay *= 2
+        log_event(
+            logger,
+            "knob.open.failed",
+            level=logging.WARNING,
+            path=path,
+            err="node never became openable",
+        )
 
     for path in list_devices():
         _maybe_start(path)
@@ -725,17 +831,15 @@ async def _run_hid_bridge(control_url: str) -> None:
 
     try:
         while True:
-            # Reap completed reader tasks.
-            for p in list(active.keys()):
-                if active[p].done():
-                    del active[p]
             action, node = await events.get()
             if action == "add":
-                # udev fires before the kernel finishes wiring up
-                # /dev/input/event* sometimes — a short sleep
-                # avoids racing the device-open.
-                await asyncio.sleep(0.1)
-                _maybe_start(node)
+                await _start_when_settled(node)
+            elif action == "remove":
+                task = active.pop(node, None)
+                if task is not None:
+                    task.cancel()
+                    readers.ended(node, "removed")
+                    log_event(logger, "knob.removed", path=node)
     finally:
         observer.stop()
         for task in active.values():
@@ -782,8 +886,9 @@ def _published_mic_adapters() -> dict[str, Bridge]:
 
 
 async def _run_bridges(control_url: str, status_path: str = STATUS_PATH) -> None:
+    readers = _ReaderHealth()
     bridges: dict[str, Bridge] = {
-        "hid": lambda: _run_hid_bridge(control_url),
+        "hid": lambda: _run_hid_bridge(control_url, readers),
         **_published_mic_adapters(),
     }
     # Cancel on the signal rather than letting the default disposition kill the
@@ -799,7 +904,9 @@ async def _run_bridges(control_url: str, status_path: str = STATUS_PATH) -> None
                 loop.add_signal_handler(sig, current.cancel)
     log_event(logger, "accessory.bridges_started", bridges=",".join(bridges))
     try:
-        await supervise(bridges, status_path=status_path)
+        await supervise(
+            bridges, status_path=status_path, details={"hid": readers.register},
+        )
     except asyncio.CancelledError:
         log_event(logger, "accessory.bridges_stopped")
 
