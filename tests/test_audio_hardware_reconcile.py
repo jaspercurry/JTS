@@ -931,6 +931,53 @@ def test_the_emitter_is_pinned_to_the_checkout_the_script_ran_from(tmp_path: Pat
     assert "OUTPUT_DAC_ID=hifiberry_dac8x" in result.stdout
 
 
+def _pythonpath_recording_python_for_usb_port_role(tmp_path: Path) -> Path:
+    """The real interpreter, with the PYTHONPATH of the usb_port_role spawn
+    logged. A sibling of `_pythonpath_recording_python` for the boot-config
+    probe `reconcile_i2s_hat_boot` calls on every full (non-`--print-env`)
+    pass, proving the checkout pin is not the emitter's alone."""
+    fake = tmp_path / "recording-python-usb-port-role"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "${2:-}" == "jasper.audio_hardware.usb_port_role" ]]; then\n'
+        '  printf \'%s\\n\' "${PYTHONPATH:-}" >> "$JASPER_FAKE_PYTHONPATH_LOG"\n'
+        "fi\n"
+        'exec "$JASPER_FAKE_PYTHON_REAL" "$@"\n',
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    return fake
+
+
+def test_the_usb_port_role_probe_is_pinned_to_the_checkout_the_script_ran_from(
+    tmp_path: Path,
+):
+    """The checkout pin above is not the emitter's alone -- every spawn of
+    `$OUTPUT_HARDWARE_PYTHON` this script makes must resolve `jasper` from the
+    same tree during install's `--print-env` window and after. usb_port_role
+    is `reconcile_i2s_hat_boot`'s probe, which runs on every full pass."""
+    log = tmp_path / "pythonpath.log"
+    inherited = str(tmp_path / "inherited-site")
+    result = _run_reconcile(
+        tmp_path,
+        "",
+        "--reason", "test",
+        extra_env={
+            "JASPER_OUTPUT_HARDWARE_PYTHON": str(
+                _pythonpath_recording_python_for_usb_port_role(tmp_path)
+            ),
+            "JASPER_FAKE_PYTHON_REAL": sys.executable,
+            "JASPER_FAKE_PYTHONPATH_LOG": str(log),
+            "PYTHONPATH": inherited,
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    recorded = log.read_text(encoding="utf-8").splitlines()
+    assert recorded, "the usb_port_role probe never ran"
+    assert recorded == [os.pathsep.join((str(ROOT), inherited))] * len(recorded)
+
+
 def test_no_interpreter_leaves_every_observed_fact_at_its_absent_value(
     tmp_path: Path,
 ):

@@ -33,12 +33,19 @@ OUTPUT_HARDWARE_PYTHON="${JASPER_OUTPUT_HARDWARE_PYTHON:-$DEFAULT_OUTPUT_HARDWAR
 # --print-env) BEFORE install_jasper refreshes /opt/jasper/.venv, so the venv
 # interpreter would answer a new shell with the PREVIOUS build's emitter --
 # missing keys read as empty and the pass mis-classifies. A checkout that
-# carries the package pins the emitter to its own tree; the installed copy
-# (/usr/local/sbin) has no such sibling and keeps the venv's own package.
-# Same script/library lockstep as load_env_file_lib below.
+# carries the package pins EVERY "$OUTPUT_HARDWARE_PYTHON" spawn below (the
+# emitter, usb_port_role, the audio_config subcommands, the inline `- <<'PY'`
+# probes) to its own tree; the installed copy (/usr/local/sbin) has no such
+# sibling and keeps the venv's own package. Exported once, here, rather than
+# per spawn: every one of those spawns is this script's own child, so a single
+# top-level export reaches all of them. Same script/library lockstep as
+# load_env_file_lib below.
 OUTPUT_HARDWARE_PYTHONPATH=""
 if [[ -f "${SCRIPT_DIR}/../../jasper/cli/output_hardware.py" ]]; then
     OUTPUT_HARDWARE_PYTHONPATH="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+if [[ -n "$OUTPUT_HARDWARE_PYTHONPATH" ]]; then
+    export PYTHONPATH="${OUTPUT_HARDWARE_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}"
 fi
 DEFAULT_OUTPUTD_PLAYBACK_DEVICE="outputd_content_playback"
 # The ACTIVE RING's playback PCM — the ONE legal active endpoint. This shell
@@ -377,9 +384,6 @@ observe_output_hardware_state() {
         return 0
     fi
     if ! payload="$(
-        if [[ -n "$OUTPUT_HARDWARE_PYTHONPATH" ]]; then
-            export PYTHONPATH="${OUTPUT_HARDWARE_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}"
-        fi
         JASPER_APLAY="$APLAY" \
         JASPER_OUTPUT_HARDWARE_STATE_PATH="$OUTPUT_HARDWARE_STATE_PATH" \
         JASPER_OUTPUT_TOPOLOGY_PATH="$OUTPUT_TOPOLOGY_PATH" \
