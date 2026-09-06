@@ -19,7 +19,14 @@ from collections.abc import Iterator
 
 import pytest
 
-__all__ = ["event_field_maps", "event_fields", "event_records", "parse_event"]
+__all__ = [
+    "event_field_maps",
+    "event_fields",
+    "event_records",
+    "parse_event",
+    "stderr_event",
+    "stderr_events",
+]
 
 _ESCAPES = {"n": "\n", "r": "\r", "t": "\t"}
 
@@ -84,6 +91,22 @@ def parse_event(message: str) -> tuple[str, dict[str, str]] | None:
             continue
         fields[key] = raw
     return None if name is None else (name, fields)
+
+
+def stderr_events(stderr: str, name: str) -> list[dict[str, str]]:
+    """Field maps of every ``event=<name>`` line in a captured stderr stream."""
+    return [
+        parsed[1]
+        for parsed in (parse_event(line) for line in stderr.splitlines())
+        if parsed is not None and parsed[0] == name
+    ]
+
+
+def stderr_event(stderr: str, name: str) -> dict[str, str]:
+    """The ONE ``event=<name>`` line's fields."""
+    matched = stderr_events(stderr, name)
+    assert len(matched) == 1, matched
+    return matched[0]
 
 
 def event_records(

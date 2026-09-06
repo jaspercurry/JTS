@@ -74,10 +74,10 @@ def main() -> None:
     cfg = Config.from_env()
     if not cfg.google_enabled:
         print(
-            "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set (in "
-            "/etc/jasper/jasper.env or /var/lib/jasper-secrets/google_credentials.env)"
-            " before running this command. Use the web wizard at "
-            f"{cfg.google_setup_url} to paste them, or set them by hand.",
+            "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set in "
+            "/var/lib/jasper-secrets/google_credentials.env before running "
+            f"this command. Use the web wizard at {cfg.google_setup_url} to "
+            "paste them — it is the only writer of that file.",
             file=sys.stderr,
         )
         sys.exit(2)

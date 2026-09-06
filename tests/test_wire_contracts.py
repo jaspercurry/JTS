@@ -680,6 +680,15 @@ _STATE_KEY_SETS: dict[tuple[str, ...], set[str]] = {
         "transit", "debug", "tools", "chat", "research", "measurement",
         "usb_network",
     },
+    # jasper.mic_presence.MicPresence.as_dict. `reason` is the closed
+    # MIC_ABSENT_REASONS code a client may switch on; `detail` is the prose
+    # beside it, which is displayed and never matched.
+    ("microphone",): {
+        "present", "parked", "reason", "detail", "accessory_sources",
+        "accessory_present", "is_xvf", "alsa_card", "variant", "display_name",
+        "capture_channels", "recommended_profile", "chip_aec_supported",
+        "summary",
+    },
     ("fanin",): set(_FAKE_FANIN_STATUS),
     ("outputd",): set(_FAKE_OUTPUTD_STATUS),
     ("aec",): set(_FAKE_AEC_STATUS),

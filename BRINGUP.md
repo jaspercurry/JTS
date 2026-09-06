@@ -202,7 +202,7 @@ systemctl status jasper-camilla jasper-voice jasper-mux \
 deploy path (`bash scripts/deploy-to-pi.sh`) and every AI-agent or
 scripted session run *unattended*: they SSH in and run `sudo bash
 install.sh` with nobody at the keyboard. They preflight `sudo -n true`
-(non-interactive sudo) and **refuse to proceed without it** — the project
+(non-interactive sudo) and **refuse to proceed unattended without it** — the project
 will not store or hand-roll your sudo password. Two things make
 unattended deploys work; set up both early so you never hit a wall
 mid-session:
@@ -222,7 +222,7 @@ mid-session:
 | Option | What every deploy looks like | Pick this if |
 |---|---|---|
 | **Passwordless sudo** (recommended) | `deploy-to-pi.sh` runs fully unattended; AI agents can deploy across sessions with you out of the loop. | A home-LAN appliance you own — the normal case. |
-| **Keep a sudo password** | You must run *every* deploy yourself from an interactive terminal so it can prompt. Unattended and agent-driven deploys are impossible. | You specifically want sudo to require a password. |
+| **Keep a sudo password** | You must run *every* deploy yourself from an interactive terminal and type the password at each privileged step — about ten prompts, because sudo's timestamp is per-terminal and every SSH session is a new one. Every guard and post-deploy gate still runs. Unattended and agent-driven deploys are impossible. | You specifically want sudo to require a password. |
 
 For the JTS appliance, **passwordless sudo is the right posture.** It is a
 trusted-LAN device you own, its deploys already require root to install and

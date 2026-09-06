@@ -64,6 +64,7 @@ the reconciler reads.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 # Keep in lockstep with deploy/bin/jasper-aec-reconcile's
 # VOICE_INPUT_ABSENT_MARKER default and jasper-voice.service's
@@ -78,6 +79,20 @@ def voice_input_absent_marker_path() -> str:
         "JASPER_VOICE_INPUT_ABSENT_MARKER",
         DEFAULT_VOICE_INPUT_ABSENT_MARKER,
     )
+
+
+def voice_input_absent_marker_lines() -> list[str]:
+    """Marker body lines; ``[]`` when it is missing or unreadable.
+
+    The single read of the file. What the body *means* — the ``reason=`` code
+    vocabulary, its ``detail=`` prose, and which codes are transient parks —
+    belongs to ``jasper.mic_presence``, which cannot be imported from here
+    (it imports this module).
+    """
+    try:
+        return Path(voice_input_absent_marker_path()).read_text().splitlines()
+    except OSError:
+        return []
 
 
 def voice_parked_no_mic() -> bool:

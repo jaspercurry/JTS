@@ -42,6 +42,7 @@ from ..install_profile import (
     install_profile_supports_wake_detection,
     read_install_profile,
 )
+from ..mic_presence import voice_park_is_transient
 from ..renderer import RendererClient
 from ..research import ResearchScheduler, active_research_provider
 from ..spotify_router import Router, build_router
@@ -61,6 +62,7 @@ from ..voice.input_policy import (
     EffectiveSpeechInputPolicy,
     build_effective_speech_input_policy,
 )
+from ..voice.input_presence import voice_parked_no_mic
 from ..voice.prompt import _build_system_instruction
 from ..voice.session import LiveConnection
 from ..volume_coordinator import VolumeCoordinator
@@ -73,6 +75,7 @@ from ..watchdog import Heartbeat
 from ..weather import WeatherClient
 from ..voice_daemon import (
     CAPTURE_RING_FRAMES,
+    NO_ROOM_MIC_CUE_SLUG,
     VOICE_MIC_UNAVAILABLE_EXIT,
     VOICE_PROVIDER_NOT_CONFIGURED_EXIT,
     VOICE_STARTUP_CONFIG_ERROR_EXIT,
@@ -208,6 +211,38 @@ def _require_usable_input(
         ",".join(declared_manual_devices) or "<none>",
         RuntimeError("no usable mic source: no wake leg, no manual mic"),
     )
+
+
+# Floor for jasper-voice.service TimeoutStopSec: the 4.65 s cue plus drain
+# and two 1 s-timeout duck legs is 8.7 s worst case, then the untimed
+# teardown. See ADR-0239.
+MIC_LOSS_CUE_STOP_FLOOR_SEC = 14.0
+
+
+async def _announce_mic_loss_at_shutdown(wake_loop: WakeLoop) -> str:
+    """Say out loud that this speaker just lost its microphone. See ADR-0239.
+
+    Returns the result code it logged — ``not_parked``, ``transient_park``,
+    ``ok`` or ``play_error``. Never raises.
+    """
+    if not voice_parked_no_mic():
+        return "not_parked"
+    if voice_park_is_transient():
+        result = "transient_park"
+    else:
+        try:
+            result = await wake_loop.play_cue(NO_ROOM_MIC_CUE_SLUG)
+        except Exception:  # noqa: BLE001
+            logger.exception("mic-loss cue play failed")
+            result = "play_error"
+    log_event(
+        logger,
+        "voice.mic_loss_cue",
+        slug=NO_ROOM_MIC_CUE_SLUG,
+        result=result,
+        level=logging.INFO if result in ("ok", "transient_park") else logging.WARNING,
+    )
+    return result
 
 
 def _wake_detection_supported() -> bool:
@@ -1253,6 +1288,10 @@ async def run() -> None:
                 await _serve_while_connecting(
                     connect_live_session, wake_loop.run,
                 )
+                # Still inside the exit stack, so the cue manager and its
+                # TtsPlayout are open and the fan-in socket is live. Only on
+                # the clean stop: a crash is not a park.
+                await _announce_mic_loss_at_shutdown(wake_loop)
             finally:
                 registry.set_dispatch_observer(None)
                 heartbeat.stop()

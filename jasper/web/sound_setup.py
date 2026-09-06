@@ -45,9 +45,9 @@ from jasper.audio_measurement.correction_lane import (
     correction_play_device,
     popen_correction_play,
 )
+from jasper.audio_hardware.config_txt import DEFAULT_BOOT_CONFIG_PATH
 from jasper.audio_hardware.hat_eeprom import DEFAULT_HAT_DIR
-from jasper.audio_hardware.usb_port_role import (
-    DEFAULT_BOOT_CONFIG_PATH,
+from jasper.audio_hardware.i2s_hat import (
     DEFAULT_I2S_HAT_INTENT_PATH,
     detected_i2s_hat_profile,
     read_i2s_hat_intent,

@@ -37,6 +37,8 @@ from pathlib import Path
 
 import pytest
 
+from jasper.wifi_guardian_persistence import write_stash
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deploy" / "bin" / "jasper-wifi-guardian"
@@ -336,6 +338,28 @@ def test_guardian_empty_stash_is_noop(tmp_path):
     assert "stash_empty" in proc.stderr
 
 
+def test_guardian_fails_loudly_when_env_file_lib_is_unusable(tmp_path):
+    """A lib file that is readable but defines nothing — the same
+    zero-length ext4 journal-recovery loss this guardian exists to repair —
+    must not degrade into the operator-cleared-the-stash no-op. Reading a
+    real stash as empty and exiting 0 would make the recover timer report
+    the recovery path healthy while the Pi stays off the LAN."""
+    empty_lib = tmp_path / "jasper-env-file.sh"
+    empty_lib.write_text("")
+    proc, log = _run_guardian(
+        tmp_path,
+        _stash(ssid="Home", psk="myhomepsk", key_mgmt="wpa-psk"),
+        nmcli_env={"JASPER_ENV_FILE_LIB": str(empty_lib)},
+    )
+    assert proc.returncode == 66
+    assert "event=wifi_guardian.lib_missing" in proc.stderr
+    # Structured field, not prose: distinguishes this present-but-unusable
+    # case from the lib-file-absent case, which shares the same event name.
+    assert "reason=unusable" in proc.stderr
+    assert "event=wifi_guardian.absent" not in proc.stderr
+    assert _nmcli_log(log) == ""
+
+
 # ----- Case 1: steady state -----
 
 
@@ -507,6 +531,42 @@ def test_guardian_recreates_missing_profile(tmp_path):
     assert "connection.autoconnect-retries 0" in nm
 
 
+@pytest.mark.parametrize(
+    "psk",
+    [
+        "pass word",
+        # `<TMP>` is substituted below: the redirect must be ABSOLUTE, or a
+        # regression would drop its canary in the guardian's cwd (ROOT) and
+        # this test would look for it in the wrong place.
+        "$(id > <TMP>/pwned.txt)",
+        "back`tick`",
+        "semi;colon",
+        "it's",
+        "hash#tag",
+    ],
+)
+def test_guardian_hands_nmcli_the_written_psk_verbatim(tmp_path, psk):
+    """Cross-language round trip: a WPA PSK is 8-63 printable ASCII, so
+    spaces and shell metacharacters are legal in one. What write_stash
+    puts in the file is what nmcli must receive, with nothing in it
+    evaluated by the guardian's shell (which runs as root)."""
+    psk = psk.replace("<TMP>", str(tmp_path))
+    written = tmp_path / "written.env"
+    write_stash(written, "Home", psk, "wpa-psk")
+    proc, log = _run_guardian(
+        tmp_path,
+        written.read_text(encoding="utf-8"),
+        nmcli_env={
+            "JASPER_NMCLI_ACTIVE": "",
+            "JASPER_NMCLI_ALL_PROFILES": "",
+        },
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "event=wifi_guardian.recreate_ok" in proc.stderr
+    assert f"device wifi connect Home password {psk}" in _nmcli_raw_log(log)
+    assert not (tmp_path / "pwned.txt").exists()
+
+
 def test_guardian_recreates_open_network(tmp_path):
     """Open networks (key_mgmt=none, empty PSK): connect without
     `password ARG`. Passing an empty password to nmcli would itself
@@ -576,10 +636,23 @@ def test_guardian_skips_enterprise(tmp_path):
 # ----- PSK redaction -----
 
 
-def test_guardian_logs_redact_psk(tmp_path):
+@pytest.mark.parametrize(
+    "secret_psk",
+    [
+        "highly-confidential-psk-do-not-leak",
+        # A PSK is 8-63 printable ASCII: it can carry regex metacharacters
+        # and whatever separator a sed splice would pick.
+        r"pass\word",
+        "my:pass word",
+        "a.c d",
+        "has[brack et",
+        "*star*",
+        "p/slash q",
+    ],
+)
+def test_guardian_logs_redact_psk(tmp_path, secret_psk):
     """The PSK must never appear in the structured log output —
     operators tail journals, screenshot pages, paste into bug reports."""
-    secret_psk = "highly-confidential-psk-do-not-leak"
     proc, log = _run_guardian(
         tmp_path,
         _stash(ssid="Home", psk=secret_psk, key_mgmt="wpa-psk"),

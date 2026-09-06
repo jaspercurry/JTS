@@ -4,6 +4,8 @@ Documentation=file:/opt/jasper/experiments/usb-turntable/README.md
 BindsTo=dev-%i.device
 After=dev-%i.device
 ConditionPathExists=/dev/%I
+# See #4123.
+ConditionPathExists=!/run/jasper-install/in_progress
 
 [Service]
 Type=oneshot

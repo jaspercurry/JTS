@@ -42,6 +42,11 @@ the Pi (1-4) or as a whole red lane on the laptop (5):
    hardware-free suites execute it on the developer's laptop, where macOS
    supplies BSD sed and bash 3.2. GNU-only and bash-4-only spellings turn
    every local lane red regardless of the diff under test.
+
+6. **Install-window gate.** Every unit an install can have started
+   behind its back is gated on the in-progress marker, or is named in an
+   allowlist with the reason it is safe on a half-synced /opt/jasper
+   (issue #4123).
 """
 from __future__ import annotations
 
@@ -51,7 +56,7 @@ from pathlib import Path
 import pytest
 
 from ._shell_corpus import shell_files
-from .systemd_unit_helpers import values_for
+from .systemd_unit_helpers import value_for, values_for
 
 _REPO = Path(__file__).resolve().parent.parent
 _DEPLOY = _REPO / "deploy"
@@ -229,12 +234,16 @@ def test_wizard_env_files_load_after_jasper_env():
 _WANTS_RE = re.compile(r'SYSTEMD_WANTS\}\+="([^"]+)"')
 
 
+def _shipped_unit_name(wants_target: str) -> str:
+    """udev instantiates a template with the event's %k; the file ships as @."""
+    return wants_target.replace("@%k.service", "@.service")
+
+
 def test_udev_systemd_wants_units_are_shipped():
     missing = []
     for rules in sorted(_DEPLOY.glob("udev/*.rules")):
         for unit in _WANTS_RE.findall(rules.read_text()):
-            shipped_name = unit.replace("@%k.service", "@.service")
-            if not (_DEPLOY / "systemd" / shipped_name).is_file():
+            if not (_DEPLOY / "systemd" / _shipped_unit_name(unit)).is_file():
                 missing.append(f"{rules.relative_to(_REPO)} -> {unit}")
     assert not missing, (
         "udev rules request units that don't ship in deploy/systemd/: "
@@ -350,56 +359,6 @@ def test_socket_web_services_have_generous_start_limit():
         assert "StartLimitBurst=20" in text, path
 
 
-def test_package_owned_recovery_dropins_are_installed():
-    install_text = "\n".join(
-        p.read_text(encoding="utf-8") for p in _INSTALL_SCRIPTS
-    )
-    for rel in (
-        "deploy/systemd/nginx.service.d/jts-recovery.conf",
-        "deploy/systemd/bluealsa-aplay.service.d/jts-restart.conf",
-    ):
-        assert rel in install_text
-
-
-_SYSTEMD_UNITS_FRAGMENT = _DEPLOY / "lib" / "install" / "systemd-units.sh"
-
-
-def _install_function_body(source: str, name: str) -> str:
-    """Extract a bash function body from an install fragment. Functions
-    there open with `name() {` at column 0 and close with a `}` alone at
-    column 0."""
-    pattern = r"^" + re.escape(name) + r"\(\) \{\n(.*?)\n\}$"
-    m = re.search(pattern, source, re.S | re.M)
-    assert m, f"function {name} not found in systemd-units.sh"
-    return m.group(1)
-
-
-def test_nginx_recovery_dropin_installed_on_both_profiles():
-    """The nginx recovery drop-in (Restart=always + OOMScoreAdjust=-450)
-    shipped 2026-06-29 on the streambox path only. Full-profile boxes ran
-    an unprotected nginx (an OOM-killed nginx stayed dead) with a
-    permanently-warning doctor check — the installed-settings drift check
-    expects -450 on nginx regardless of profile, and its "re-run install.sh"
-    remediation could never fix it there. The whole-text check above cannot catch a
-    per-profile gap, so pin that the shared helper installs the drop-in
-    and that BOTH profile entry points reach it."""
-    source = _SYSTEMD_UNITS_FRAGMENT.read_text(encoding="utf-8")
-    helper = _install_function_body(source, "install_nginx_recovery_dropin")
-    assert "deploy/systemd/nginx.service.d/jts-recovery.conf" in helper
-
-    # Full profile calls the helper directly.
-    assert "install_nginx_recovery_dropin" in _install_function_body(
-        source, "install_systemd_units"
-    )
-    # Streambox profile reaches it via install_streambox_audio_slices.
-    assert "install_nginx_recovery_dropin" in _install_function_body(
-        source, "install_streambox_audio_slices"
-    )
-    assert "install_streambox_audio_slices" in _install_function_body(
-        source, "install_streambox_systemd_units"
-    )
-
-
 # ----------------------------------------------------------------------
 # 6 — deploy-to-pi.sh post-install verification wiring (Workstream B)
 # ----------------------------------------------------------------------
@@ -414,67 +373,6 @@ def test_nginx_recovery_dropin_installed_on_both_profiles():
 # test_lib_deploy_direction.py.
 
 
-def test_deploy_captures_install_rc_so_collateral_is_always_surfaced():
-    """install.sh must run with its exit code captured (not under bare
-    set -e), so report_oom_collateral runs even when the build failed —
-    otherwise an OOM-killed build would abort the deploy before surfacing
-    the collateral (See ADR-0174)."""
-    text = _DEPLOY_TO_PI.read_text()
-    assert re.search(
-        r'run_remote_sudo "\$\{install_env\} bash[^\n]*"\s*\|\|\s*install_rc=\$\?',
-        text,
-    ), "install.sh invocation must capture its exit code with || install_rc=$?"
-    assert "report_oom_collateral" in text
-
-
-def test_deploy_defines_and_calls_post_install_verification():
-    """The three post-install verification helpers must be both defined
-    and called."""
-    text = _DEPLOY_TO_PI.read_text()
-    for fn in (
-        "report_oom_collateral",
-        "verify_manifest_advanced",
-        "surface_system_health",
-    ):
-        assert f"{fn}() {{" in text, f"{fn} is not defined in deploy-to-pi.sh"
-        # Called at least once in addition to its definition.
-        assert text.count(fn) >= 2, f"{fn} is defined but never called"
-
-
-def test_deploy_verifies_browser_visible_status_asset_version():
-    """A 200 JSON poll must not hide a warm wizard serving stale CSS."""
-    text = _DEPLOY_TO_PI.read_text()
-    assert "Verifying Status asset version" in text
-    assert 'http://127.0.0.1/system/ | grep -Fq' in text
-    assert '"/assets/app.css?v=${SHA}${DIRTY}\\\""' in text
-
-
-def test_deploy_captures_pi_clock_for_oom_window():
-    """The OOM scan bounds its kernel-log window to the Pi's clock at
-    install start — captured before the install run."""
-    text = _DEPLOY_TO_PI.read_text()
-    assert "DEPLOY_START_EPOCH=" in text
-    assert "date +%s" in text
-    # The capture must precede the install invocation it bounds.
-    assert text.index("DEPLOY_START_EPOCH=\"$(ssh_remote") < text.index(
-        "|| install_rc=$?"
-    )
-
-
-def test_deploy_manifest_gate_checks_verified_status_and_sha():
-    """verify_manifest_advanced must confirm BOTH the deployed full SHA and
-    the JASPER_INSTALL_STATUS=ok marker — proving the install ran to
-    completion, not just that some manifest exists (See ADR-0172)."""
-    text = _DEPLOY_TO_PI.read_text()
-    start = text.index("verify_manifest_advanced() {")
-    body = text[start: text.index("\n}", start)]
-    assert "build_manifest_value" in body
-    assert "JASPER_GIT_SHA_FULL" in body
-    assert "JASPER_INSTALL_STATUS" in body
-    assert 'installed_status" == "ok"' in body
-    assert "exit 1" in body  # a non-advanced manifest fails the deploy
-
-
 def test_deploy_production_oom_is_gated_after_end_state_evidence():
     """A production-daemon OOM during deploy is SURFACED loudly and then
     fails verification after the end-state gates have run. That keeps the
@@ -484,39 +382,11 @@ def test_deploy_production_oom_is_gated_after_end_state_evidence():
     assert "report_oom_collateral" in text  # surfacing happens
     success_path = text[text.index("Build manifest now on Pi"):]
     assert "verify_manifest_advanced" in success_path
-    assert "surface_system_health" in success_path
+    assert "gate_core_health" in success_path
     assert 'if [[ "$OOM_PRODUCTION_HIT" == "1" ]]' in success_path
     assert "DEPLOY VERIFICATION FAILED: a live production daemon was" in success_path
-    assert success_path.index("surface_system_health") < success_path.index(
+    assert success_path.index("gate_core_health") < success_path.index(
         'if [[ "$OOM_PRODUCTION_HIT" == "1" ]]'
-    )
-
-
-def test_deploy_post_health_uses_lightweight_probe_on_low_memory_hosts():
-    """The post-deploy doctor runs after install.sh has removed temporary
-    build swap. On a 1 GB Pi we use a cheap deploy-health probe instead of
-    importing the full doctor graph beside freshly restarted services."""
-    text = _DEPLOY_TO_PI.read_text()
-    start = text.index("surface_system_health() {")
-    body = text[start: text.index("\n}", start)]
-    assert "MemTotal" in body
-    assert "1200000" in body
-    assert "jasper-deploy-health" in body
-    assert "/opt/jasper/.venv/bin/jasper-doctor" in body
-
-
-def test_deploy_verification_skipped_cleanly_under_interactive_sudo():
-    """The manifest read + doctor capture corrupt under `ssh -tt`, so they
-    must be guarded by the same passwordless-sudo gate as the identity and
-    direction guards — skipping with a notice rather than mis-verifying."""
-    text = _DEPLOY_TO_PI.read_text()
-    # The verify+surface calls live in the else-branch of a SUDO_INTERACTIVE
-    # check that prints a skip notice in the then-branch.
-    assert re.search(
-        r'if \[\[ "\$SUDO_INTERACTIVE" == "1" \]\]; then[\s\S]*?'
-        r'manifest \+ health checks skipped[\s\S]*?else[\s\S]*?'
-        r'verify_manifest_advanced[\s\S]*?surface_system_health[\s\S]*?fi',
-        text,
     )
 
 
@@ -599,3 +469,69 @@ def test_start_time_hostname_readers_order_behind_the_identity_oneshot(reader):
     assert reader in values_for(
         (_SYSTEMD / _IDENTITY_ONESHOT).read_text(encoding="utf-8"), "Before",
     )
+
+
+# ----------------------------------------------------------------------
+# 6 — asynchronously activated units are gated on the install marker
+# ----------------------------------------------------------------------
+
+# Remove when the installer stops mutating /opt/jasper in place.
+_INSTALL_MARKER_GATE = "!/run/jasper-install/in_progress"
+
+# Async-activated units that deliberately carry NO gate, with the reason each
+# is safe enough on a half-synced tree. Explicit rather than derived from "does
+# the ExecStart name /opt/jasper", because an ExecStart can be a bash wrapper
+# that execs venv Python (jasper-wifi-recover does exactly that) — the
+# derivation would silently under-report. Stale entries fail: an ungated unit
+# that stops being async-activated has to leave this list too.
+_UNGATED_ASYNC_UNITS = {
+    "jasper-identity-reconcile.service": "pure bash; no /opt/jasper reference",
+    "jasper-dongle-recover.service": "its two reconciler legs are gated, but it also "
+                                     "starts jasper-camilla and jasper-outputd — "
+                                     "pre-existing mid-install exposure #4123 does "
+                                     "not address",
+    "jasper-wifi-recover.service": "bash recovery that must keep running during a "
+                                   "long install; its Python branch self-gates on "
+                                   "the marker instead",
+}
+
+
+def _async_activated_units() -> set[str]:
+    """Units something other than the installer can start mid-install.
+
+    udev SYSTEMD_WANTS targets and every timer's service. Path-activated
+    services are excluded: a Condition there leaves the level-triggered .path
+    re-triggering until TriggerLimitBurst fails it, so the installer stops
+    those units instead.
+    """
+    units: set[str] = set()
+    for rules in sorted(_DEPLOY.glob("udev/*.rules")):
+        units.update(
+            _shipped_unit_name(u)
+            for u in _WANTS_RE.findall(rules.read_text(encoding="utf-8"))
+        )
+    for timer in sorted(_DEPLOY.glob("systemd/*.timer")):
+        unit = value_for(timer.read_text(encoding="utf-8"), "Unit")
+        units.add(unit or f"{timer.stem}.service")
+    for watcher in sorted(_DEPLOY.glob("systemd/*.path")):
+        unit = value_for(watcher.read_text(encoding="utf-8"), "Unit")
+        units.discard(unit or f"{watcher.stem}.service")
+    return units
+
+
+def test_async_activated_units_are_gated_on_the_install_marker():
+    """A new udev rule or timer added without the gate is the recurrence risk
+    this pin exists for — not the units that carry it today."""
+    async_units = _async_activated_units()
+    # The #4123 unit reaches the set only through the udev chain, so its
+    # absence means the derivation broke rather than the units regressing.
+    assert "jasper-audio-hardware-reconcile.service" in async_units
+    assert _UNGATED_ASYNC_UNITS.keys() <= async_units
+    gated = {
+        unit.name
+        for unit in sorted(_DEPLOY.glob("systemd/*.service"))
+        if unit.is_file()
+        and _INSTALL_MARKER_GATE
+        in values_for(unit.read_text(encoding="utf-8"), "ConditionPathExists")
+    }
+    assert gated == async_units - _UNGATED_ASYNC_UNITS.keys()

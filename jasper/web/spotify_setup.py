@@ -102,6 +102,7 @@ from ..spotify_oauth import (
 )
 from ..spotify_uri import parse_playlist_uri, playlist_id_from_uri
 from ..log_event import log_event
+from ..secret_redaction import redact_secrets
 from ._common import (
     SECRET_ENV_MODE,
     begin_request,
@@ -110,6 +111,7 @@ from ._common import (
     canonical_page,
     csrf_field_html,
     delete_env_file,
+    flash_error,
     guard_mutating_request,
     guard_read_request,
     read_env_file,
@@ -1083,7 +1085,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 _write_creds_file(client_id, mode)
             except OSError as e:
                 logger.exception("could not write credentials file")
-                self._redirect(f"./?msg=Could+not+save+credentials:+{urllib.parse.quote(str(e))}")
+                flash_error(self, "Could not save credentials", e)
                 return
             cfg["client_id"] = client_id
             cfg["mode"] = mode
@@ -1215,10 +1217,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             try:
                 self._exchange_code(account_name, code, verifier, challenge)
             except Exception as e:  # noqa: BLE001
-                logger.exception("oauth exchange failed")
-                self._redirect(
-                    f"./?msg=Auth+exchange+failed:+{urllib.parse.quote(str(e))}"
+                logger.warning(
+                    "oauth exchange failed: %s", redact_secrets(str(e))
                 )
+                flash_error(self, "Auth exchange failed", e)
                 return
             _invalidate_health_cache()
             _restart_spotify_consumers()

@@ -421,8 +421,7 @@ def _spotify_handler_cls():
 
 def _google_handler_cls():
     return google_setup._make_handler({
-        "client_id": "",
-        "client_secret": "",
+        "creds_path": "/tmp/jts-test-google-credentials.env",
         "redirect_uri": (
             "https://jaspercurry.github.io/google-oauth-callback/?host=jts.local"
         ),

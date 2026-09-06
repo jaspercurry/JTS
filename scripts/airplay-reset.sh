@@ -36,7 +36,8 @@ ssh "${PI_USER}@${PI_HOST}" 'sudo systemctl restart shairport-sync nqptp
 sleep 1
 echo "shairport-sync: $(systemctl is-active shairport-sync)"
 echo "nqptp:          $(systemctl is-active nqptp)"
-speaker_name="$(. /etc/jasper/jasper.env 2>/dev/null; printf "%s" "${JASPER_SPEAKER_NAME:-JTS}")"
+speaker_name="$(. /usr/local/lib/jasper/jasper-env-file.sh 2>/dev/null && jasper_env_file_get /etc/jasper/jasper.env JASPER_SPEAKER_NAME)"
+[ -n "$speaker_name" ] || speaker_name=JTS
 airplay_count="$(timeout 2 avahi-browse -rt _airplay._tcp 2>/dev/null | grep -F -c "${speaker_name}" || true)"
 raop_count="$(timeout 2 avahi-browse -rt _raop._tcp 2>/dev/null | grep -F -c "${speaker_name}" || true)"
 echo "${speaker_name} _airplay._tcp: ${airplay_count} services"
