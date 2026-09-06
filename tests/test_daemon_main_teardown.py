@@ -83,20 +83,21 @@ async def _traced_cm(trace: _Trace, name: str, **attrs):
 
 
 class _FakeControlSocket:
-    """`asyncio.AbstractServer`'s async-context surface, traced.
+    """`asyncio.AbstractServer`'s close surface, traced.
 
-    Real dunders, not attributes on a namespace: `run()` hands the server
-    itself to the stack, which is what closes it and waits for it.
+    Real `close()`/`wait_closed()`, not attributes on a namespace: `run()`
+    calls these directly on the server it gets back from
+    `_start_control_socket`, bounded by `asyncio.wait_for`.
     """
 
     def __init__(self, trace: _Trace) -> None:
         self._trace = trace
-
-    async def __aenter__(self) -> _FakeControlSocket:
         self._trace.append(("control_socket", "enter"))
-        return self
 
-    async def __aexit__(self, *_exc) -> None:
+    def close(self) -> None:
+        pass
+
+    async def wait_closed(self) -> None:
         self._trace.append(("control_socket", "exit"))
 
 

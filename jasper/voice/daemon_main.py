@@ -730,6 +730,20 @@ async def _start_control_socket(
     return server
 
 
+# Bounds Server.wait_closed() in the unwind: unbounded, a handler mid-command
+# at SIGTERM keeps it pending behind jasper-voice.service's
+# TimeoutStopSec=14s (MIC_LOSS_CUE_STOP_FLOOR_SEC), stalling every later
+# teardown callback.
+CONTROL_SOCKET_CLOSE_TIMEOUT_SEC = 2.0
+
+
+async def _close_control_socket(server: asyncio.AbstractServer) -> None:
+    """Bounded counterpart to `Server.__aexit__`, which awaits
+    `wait_closed()` unbounded."""
+    server.close()
+    await asyncio.wait_for(server.wait_closed(), CONTROL_SOCKET_CLOSE_TIMEOUT_SEC)
+
+
 async def _serve_while_connecting(
     connect: Callable[[], Awaitable[None]],
     serve: Callable[[], Awaitable[None]],
@@ -1089,9 +1103,9 @@ async def run() -> None:
 
         # Cue manager — built early so timer tools can pre-render their
         # fire announcements at set_timer time. The TtsPlayout isn't open
-        # yet (that lives inside the async with block below); the manager
-        # is constructed without it and `attach_tts` wires playback once
-        # the playout is up. Pre-render and regen don't need playback.
+        # yet; the manager is constructed without it and `attach_tts` wires
+        # playback once the playout is up. Pre-render and regen don't need
+        # playback.
         cues_manager = _build_cues_manager(cfg, tts=None)
 
         # Wake-event telemetry store.
@@ -1470,7 +1484,7 @@ async def run() -> None:
 
         # Registered last, so it unwinds first: the socket dispatches into
         # the wake loop and must not take a command after that teardown began.
-        await _aenter(stack, "control_socket", control_socket)
+        _arelease(stack, "control_socket", _close_control_socket, control_socket)
         await _serve_while_connecting(
             connect_live_session, wake_loop.run,
         )
