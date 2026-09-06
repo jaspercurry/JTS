@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import time
 import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -352,6 +353,58 @@ def read_settings(
         ),
         settings_path=settings_path,
     )
+
+
+def health(*, warn_unavailable: bool = False) -> dict[str, Any]:
+    """One fresh read of capture settings plus the store's own status.
+
+    The sole computation of availability, turn count, and write age for both
+    ``jasper-doctor`` and ``/state.chat`` (ADR-0233 rule 1) — each caller
+    applies only its own verdict/wire shape on top. ``warn_unavailable``
+    controls whether an unavailable store logs (the doctor wants the signal;
+    a frequently-polled ``/state`` read does not).
+    """
+    settings = read_settings()
+    if not settings.capture_enabled:
+        # Capture off is the shipped default: open nothing, log nothing.
+        return {
+            "capture_enabled": False,
+            "available": False,
+            "turn_count": None,
+            "last_write_age_seconds": None,
+            "retention": settings.retention,
+        }
+    store = ConversationStore(
+        settings.db_path, read_only=True, warn_unavailable=warn_unavailable,
+    )
+    try:
+        stats = store.stats()
+        return {
+            "capture_enabled": True,
+            "available": store.available,
+            "turn_count": stats.turn_count if stats is not None else None,
+            "last_write_age_seconds": (
+                _last_write_age_seconds(stats.last_write_ts_utc)
+                if stats is not None else None
+            ),
+            "retention": settings.retention,
+        }
+    finally:
+        store.close()
+
+
+def _last_write_age_seconds(ts_utc: str | None) -> float | None:
+    if not ts_utc:
+        return None
+    raw = ts_utc.strip()
+    parse_value = f"{raw[:-1]}+00:00" if raw.endswith("Z") else raw
+    try:
+        ts = datetime.fromisoformat(parse_value)
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return max(0.0, round(time.time() - ts.timestamp(), 1))
 
 
 def write_settings(

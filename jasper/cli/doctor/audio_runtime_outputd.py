@@ -236,7 +236,7 @@ def _outputd_status_payload() -> dict[str, object] | CheckResult:
             f"active but STATUS probe at {OUTPUTD_STATUS_SOCKET} failed: "
             f"{status.error}. Without STATUS doctor cannot verify DAC "
             "ownership, buffers, xruns, or work-loop progress.",
-            reason=REASON_OUTPUTD_STATUS_UNREACHABLE,
+            reason=REASON_OUTPUTD_STATUS_UNREACHABLE, speaker_silent=True,
         )
     if status.payload is None:
         return CheckResult(
@@ -665,7 +665,7 @@ def check_outputd_service() -> CheckResult:
         "jasper-outputd.service",
         missing=REASON_OUTPUTD_UNIT_MISSING,
         not_enabled=REASON_OUTPUTD_UNIT_NOT_ENABLED,
-        inactive=REASON_OUTPUTD_INACTIVE,
+        inactive=REASON_OUTPUTD_INACTIVE, speaker_silent=True,
     )
     if service_failure is not None:
         return service_failure
@@ -679,7 +679,7 @@ def check_outputd_service() -> CheckResult:
             "jasper-outputd",
             "fail",
             f"active but backend={data.get('backend')!r}; expected 'alsa'",
-            reason=REASON_OUTPUTD_BACKEND_NOT_ALSA,
+            reason=REASON_OUTPUTD_BACKEND_NOT_ALSA, speaker_silent=True,
         )
     sink_mode = data.get("sink_mode") or "single_alsa"
     outputd_env = _outputd_reconciled_env()
