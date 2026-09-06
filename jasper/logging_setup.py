@@ -9,8 +9,9 @@ Every long-lived daemon, wizard and CLI under ``jasper/`` calls
 journal handler always carries :class:`RedactingFilter` and a credential
 that reaches a log call is replaced before the record is formatted
 (non-negotiable 3; ADR-0240 owns what "credential-shaped" means).
-``tests/test_logging_setup.py`` pins that this module holds the only
-``logging.basicConfig`` call in the tree.
+``tests/test_logging_setup.py`` holds the exhaustive list of the callers
+that still bootstrap for themselves — the parked tuning-zone CLIs — and
+fails on any addition to it.
 """
 from __future__ import annotations
 

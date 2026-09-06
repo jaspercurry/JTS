@@ -75,7 +75,6 @@ from ._common import (
     send_html_response,
     send_json_response,
 )
-from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -5066,7 +5065,10 @@ def main(argv: list[str] | None = None) -> int:
         help="speaker hostname used in the cert-download fallback link",
     )
     args = parser.parse_args(argv)
-    configure_logging()
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
     # Correction and crossover applies swap the live graph from this process,
     # so their swap duck needs a canonical target to release to.

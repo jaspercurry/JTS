@@ -4,13 +4,13 @@
 
 """The journal is redacted by construction.
 
-``configure_logging`` is the one bootstrap every process under ``jasper/``
-calls, and the filter it attaches is what keeps a credential out of the
-journal (non-negotiable 3). These tests drive real records through the real
-root handler rather than through caplog, whose own handler is not the one
-under test — and whose presence on the root logger would make
-``basicConfig`` a no-op, so each test takes the root logger away from
-pytest for the duration and restores it afterwards.
+``configure_logging`` is the bootstrap every process under ``jasper/``
+calls bar the parked tuning zone listed below, and the filter it attaches is
+what keeps a credential out of the journal (non-negotiable 3). These tests
+drive real records through the real root handler rather than through caplog,
+whose own handler is not the one under test — and whose presence on the root
+logger would make ``basicConfig`` a no-op, so each test takes the root logger
+away from pytest for the duration and restores it afterwards.
 """
 from __future__ import annotations
 
@@ -132,10 +132,22 @@ def test_a_record_is_redacted_once(capsys, monkeypatch):
 
 # ------------------------------------------------------------------- ratchet
 
-# A module named here bootstraps logging without the filter and publishes
-# its journal unredacted, so an entry is a reviewed decision, not a
-# convenience. Empty is the intended steady state.
-_ALLOWLIST: frozenset[str] = frozenset()
+# The parked tuning zone (#4193 lane brief): these keep their own
+# `basicConfig` because no file in the measurement/tuning program is edited
+# without an owner-ticked row, and `cli/measure.py` is frozen until #4138
+# merges. Their journals are NOT redacted yet — a listed file is a known
+# gap, not an endorsement.
+# Removal condition: adopt each of these when the tuning zone reopens
+# (#3769 wave 10) and #4138 has merged, emptying this set.
+_ALLOWLIST = frozenset({
+    "jasper/cli/active_speaker_emit_bench.py",
+    "jasper/cli/angle_capture.py",
+    "jasper/cli/audition.py",
+    "jasper/cli/crossover_prescriber.py",
+    "jasper/cli/measure.py",
+    "jasper/cli/seat_level.py",
+    "jasper/web/correction_setup.py",
+})
 
 
 def _calls_basic_config(tree: ast.AST) -> bool:
@@ -150,9 +162,11 @@ def _calls_basic_config(tree: ast.AST) -> bool:
 def test_configure_logging_is_the_only_logging_bootstrap():
     """No process may reach the journal around the redacting filter.
 
-    Remove this ratchet when ``logging.basicConfig`` stops being how the
-    tree installs its journal handler (a systemd ``JournalHandler``, say):
-    the scanned shape would no longer be the bypass.
+    Exact-match, so the allowlist cannot go stale either: a parked file that
+    adopts must leave the set in the same commit. Remove this ratchet when
+    ``logging.basicConfig`` stops being how the tree installs its journal
+    handler (a systemd ``JournalHandler``, say): the scanned shape would no
+    longer be the bypass.
     """
     offenders = {
         path.relative_to(_REPO).as_posix()
@@ -160,9 +174,12 @@ def test_configure_logging_is_the_only_logging_bootstrap():
         if path.name != "logging_setup.py"
         and _calls_basic_config(ast.parse(path.read_text()))
     }
-    assert not offenders - _ALLOWLIST, (
-        "logging.basicConfig outside jasper/logging_setup.py:\n  "
-        + "\n  ".join(sorted(offenders - _ALLOWLIST))
-        + "\nCall jasper.logging_setup.configure_logging instead — it is what "
-        "attaches the redacting filter to the journal handler."
+    assert offenders == _ALLOWLIST, (
+        "logging.basicConfig outside jasper/logging_setup.py must match the "
+        "parked tuning zone exactly.\n"
+        f"  new bypass(es): {sorted(offenders - _ALLOWLIST) or 'none'}\n"
+        f"  stale entr(ies): {sorted(_ALLOWLIST - offenders) or 'none'}\n"
+        "Call jasper.logging_setup.configure_logging instead — it is what "
+        "attaches the redacting filter to the journal handler — and drop the "
+        "file from _ALLOWLIST in the same commit."
     )

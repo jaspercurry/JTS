@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Any, Sequence
@@ -62,7 +63,6 @@ from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeake
 from jasper.active_speaker.tone_plan import load_active_speaker_preset
 from jasper.audio_measurement.sweep import synchronized_sweep_metadata
 from jasper.bass_extension.bench.render import RenderError, resolve_render_binary
-from jasper.logging_setup import configure_logging
 
 
 def _load_linearization(path: Path) -> dict[str, list[dict[str, Any]]]:
@@ -211,7 +211,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
-    configure_logging(fmt="%(asctime)s emit-bench %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s emit-bench %(levelname)s %(message)s",
+    )
 
     try:
         preset = load_active_speaker_preset(args.preset)

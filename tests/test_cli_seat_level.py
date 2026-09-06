@@ -1136,7 +1136,7 @@ def test_verbose_lowers_the_log_floor_without_losing_the_receipt(
 
     The series is a DEBUG line, so without a way to turn DEBUG on it is a write
     with no reader. And the floor without the flag stays INFO rather than
-    ``configure_verbose_logging``'s WARNING, which is the level that
+    ``_logging.configure_verbose_logging``'s WARNING, which is the level that
     would discard ``event=active_speaker.unsegmented_ceiling_bound``.
     """
     import logging

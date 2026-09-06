@@ -51,9 +51,9 @@ from jasper.active_speaker.audition import (
     start_audition,
     stop_audition,
 )
+from jasper.logging_setup import LOG_FORMAT
 from jasper.cli._refusal import EXIT_OK as EXIT_OK, EXIT_REFUSED, answered, failed
 from jasper.log_event import log_event
-from jasper.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -264,7 +264,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     # INFO floor, not configure_verbose_logging's WARNING one: the audition's
     # own event= lines are the record of which graph the speaker was on.
-    configure_logging()
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
     from jasper.env_load import load_env_files
     from jasper.volume_coordinator import install_env_canonical_target_provider
 
