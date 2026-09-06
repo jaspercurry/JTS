@@ -13,7 +13,9 @@ StartLimitAction=reboot:
 2. The marker path agrees across the unit, the bash reconciler default,
    and the Python reader — a drift here silently breaks the gate.
 3. The daemon exits VOICE_MIC_UNAVAILABLE_EXIT on a primary mic-open
-   failure, and the doctor reports the parked state as expected-idle.
+   failure — and VOICE_PROVIDER_NOT_CONFIGURED_EXIT with no provider —
+   announcing each park with a cue first; the doctor reports the parked
+   state as expected-idle.
 4. The gate is an OR over a local mic and a paired accessory mic
    (issue #2205): the accessory env path agrees across its owner, the unit,
    and env_load, and the bash reconciler carries no copy of it because it
@@ -36,6 +38,7 @@ import pytest
 
 from jasper.accessories.mic_env import DEFAULT_ACCESSORY_MIC_ENV_FILE
 from jasper.audio_io import InputDeviceUnavailable
+from jasper.config import VoiceProviderNotConfigured
 from jasper.env_load import ENV_FILES
 from jasper.mic_presence import (
     MIC_ABSENT_CHIP_AEC_VALIDATING,
@@ -49,6 +52,8 @@ from jasper.voice.input_presence import (
 from jasper.voice_daemon import (
     NO_ROOM_MIC_CUE_SLUG,
     VOICE_MIC_UNAVAILABLE_EXIT,
+    VOICE_NOT_SET_UP_CUE_SLUG,
+    VOICE_PROVIDER_NOT_CONFIGURED_EXIT,
     WakeLoop,
 )
 from tests._log_events import event_fields, event_records
@@ -297,19 +302,96 @@ def test_input_device_unavailable_carries_device() -> None:
     assert "No input device matching" in str(exc)
 
 
-def test_main_exits_mic_unavailable_code(monkeypatch) -> None:
-    """main() must translate a primary mic-open failure into a clean
-    VOICE_MIC_UNAVAILABLE_EXIT, not let it crash with a traceback (exit 1
-    → systemd Restart=on-failure → crash-loop)."""
+class _ParkPlayout:
+    """Stands in for TtsPlayout in the boot-park cue: an async context
+    manager that either opens, or fails its connect the way a dead fan-in
+    socket does. Callable, so it also stands in for the class itself."""
+
+    def __init__(self, *, connects: bool = True) -> None:
+        self.connects = connects
+
+    def __call__(self, **_kwargs) -> "_ParkPlayout":
+        return self
+
+    async def __aenter__(self) -> "_ParkPlayout":
+        if not self.connects:
+            raise OSError("no output path")
+        return self
+
+    async def __aexit__(self, *_exc) -> bool:
+        return False
+
+
+def _parking_daemon(exc: Exception, monkeypatch, *, connects: bool = True):
+    """main() whose run() raises `exc` and whose cue path is spied on."""
     from jasper.voice import daemon_main
+    from tests.test_voice_daemon_manual_start_guard import _SpyCues
 
     async def _boom() -> None:
-        raise InputDeviceUnavailable("Array", ValueError("absent"))
+        raise exc
 
+    spy = _SpyCues()
     monkeypatch.setattr(daemon_main, "run", _boom)
-    with pytest.raises(SystemExit) as exc:
+    monkeypatch.setattr(daemon_main, "TtsPlayout", _ParkPlayout(connects=connects))
+    monkeypatch.setattr(daemon_main, "build_env_cue_manager", lambda **_kw: spy)
+    return daemon_main, spy
+
+
+@pytest.mark.parametrize(
+    ("exc", "code", "slug"),
+    [
+        (
+            InputDeviceUnavailable("Array", ValueError("absent")),
+            VOICE_MIC_UNAVAILABLE_EXIT,
+            NO_ROOM_MIC_CUE_SLUG,
+        ),
+        (
+            VoiceProviderNotConfigured("no voice provider configured"),
+            VOICE_PROVIDER_NOT_CONFIGURED_EXIT,
+            VOICE_NOT_SET_UP_CUE_SLUG,
+        ),
+    ],
+    ids=("mic-unavailable", "not-set-up"),
+)
+def test_a_boot_park_is_announced_before_main_exits(
+    exc: Exception, code: int, slug: str, monkeypatch,
+) -> None:
+    """Both park codes must reach systemd unchanged — a park that crashed
+    with a traceback would be exit 1 → Restart=on-failure → crash-loop — and
+    both must have said so out loud first. Every check that raises these runs
+    before the daemon's own cue manager exists, so this is the largest window
+    in which the speaker goes deaf with nothing spoken (non-negotiable 6).
+    The mic path reuses the cue ADR-0239 speaks for the same fact at
+    shutdown; only the unconfigured path needs its own."""
+    daemon_main, spy = _parking_daemon(exc, monkeypatch)
+
+    with pytest.raises(SystemExit) as raised:
         daemon_main.main()
-    assert exc.value.code == VOICE_MIC_UNAVAILABLE_EXIT
+
+    assert raised.value.code == code
+    # Recorded at all means recorded before the exit: nothing plays after it.
+    assert spy.played == [slug]
+
+
+def test_a_park_cue_that_cannot_play_still_parks_with_the_same_code(
+    monkeypatch, caplog,
+) -> None:
+    """A dead output path must not take the park with it: the cue never
+    changes the exit code, and the failure is named on the wire so a support
+    read can tell "nobody heard it" from "nobody was there"."""
+    daemon_main, spy = _parking_daemon(
+        InputDeviceUnavailable("Array", ValueError("absent")),
+        monkeypatch,
+        connects=False,
+    )
+
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        with pytest.raises(SystemExit) as raised:
+            daemon_main.main()
+
+    assert raised.value.code == VOICE_MIC_UNAVAILABLE_EXIT
+    assert spy.played == []
+    assert event_fields(caplog, "voice.park_cue")["result"] == "play_error"
 
 
 def test_check_mic_capture_reports_expected_idle_when_marked(

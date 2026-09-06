@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from jasper.cues import cli
+from jasper.cues import cli, factory
 from jasper.cues.generator import TTSResult
 
 
@@ -32,11 +32,11 @@ def cli_env(tmp_path, monkeypatch):
     monkeypatch.setenv("JASPER_GEMINI_VOICE", "Aoede")
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key-for-tests")
     fake = _FakeBackend()
-    # The CLI builds its backend via `build_cue_tts_backend(cfg)` —
-    # patch that to return our deterministic fake regardless of
-    # provider so tests don't hit any provider's network.
+    # The CLI builds its backend via the shared env manager's
+    # `build_cue_tts_backend(cfg)` — patch that to return our deterministic
+    # fake regardless of provider so tests don't hit any provider's network.
     monkeypatch.setattr(
-        cli, "build_cue_tts_backend", lambda cfg: (fake, "Aoede"),
+        factory, "build_cue_tts_backend", lambda cfg: (fake, "Aoede"),
     )
     return tmp_path, fake
 
@@ -124,7 +124,7 @@ def test_regenerate_without_api_key_reports_runtime_error(tmp_path, monkeypatch,
     # Also keep the file-loader from picking up real /etc/jasper
     # creds on a developer machine that has them.
     monkeypatch.setattr(
-        "jasper.cues.cli.load_env_files", lambda *_: None,
+        "jasper.cues.factory.load_env_files", lambda *_: None,
     )
     code = cli.main(["regenerate"])
     assert code == 3  # RuntimeError mapped to exit 3

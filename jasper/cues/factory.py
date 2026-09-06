@@ -20,8 +20,13 @@ warning so the operator notices.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+import os
+import sys
+import urllib.parse
+from typing import Any
 
+from ..config import Config
+from ..env_load import load_env_files
 from .generator import (
     GEMINI_TTS_MODEL,
     TTS_MAX_ATTEMPTS,
@@ -31,9 +36,7 @@ from .generator import (
     OpenAITTSGenerator,
     TTSBackend,
 )
-
-if TYPE_CHECKING:
-    from ..config import Config
+from .manager import AudioCueManager
 
 logger = logging.getLogger(__name__)
 
@@ -138,3 +141,54 @@ def build_cue_tts_backend(
         "(playback still works off cached files)",
     )
     return None, ""
+
+
+def build_env_cue_manager(*, tts_playout: Any | None = None) -> AudioCueManager:
+    """Build a cue manager from the environment, with no usable Config needed.
+
+    Shared by `jasper-cues` and the voice daemon's boot-park cue
+    (`daemon_main._announce_park_at_boot`). Both run where
+    `Config.from_env()` can raise — a missing provider key, or no provider at
+    all (`VoiceProviderNotConfigured` is a RuntimeError) — and both still
+    need playback off whatever WAVs are already cached, so that raise
+    degrades to a key-less manager instead of propagating.
+
+    Auto-loads /etc/jasper/jasper.env and /var/lib/jasper/voice_provider.env
+    so install.sh's `jasper-cues regenerate` invocation sees the same
+    provider/voice the daemon does — including web-wizard overrides.
+
+    `tts_playout` is None for callers that only touch disk (`list`,
+    `regenerate`).
+    """
+    load_env_files()
+    try:
+        cfg = Config.from_env()
+        backend, voice = build_cue_tts_backend(cfg)
+        sounds_dir = cfg.sounds_dir
+        management_url = cfg.management_url
+    except RuntimeError as e:
+        # Missing active-provider key — list still needs to work,
+        # regen will exit cleanly with "no TTS backend" later.
+        print(f"warning: TTS backend disabled ({e})", file=sys.stderr)
+        backend = None
+        voice = ""
+        sounds_dir = os.environ.get(
+            "JASPER_SOUNDS_DIR", "/var/lib/jasper/sounds",
+        )
+        management_url = os.environ.get(
+            "JASPER_MANAGEMENT_URL", "https://jts.local",
+        )
+    if backend is None:
+        print(
+            "warning: no TTS backend; regen will fail (playback "
+            "still works off cached files)",
+            file=sys.stderr,
+        )
+    hostname = urllib.parse.urlparse(management_url).hostname or "this speaker"
+    return AudioCueManager(
+        sounds_dir=sounds_dir,
+        hostname=hostname,
+        voice=voice,
+        backend=backend,
+        tts_playout=tts_playout,
+    )

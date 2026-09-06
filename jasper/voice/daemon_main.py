@@ -34,7 +34,11 @@ from ..conversation_history import (
     ConversationStore,
     read_settings as read_conversation_settings,
 )
-from ..cues import AudioCueManager, build_cue_tts_backend
+from ..cues import (
+    AudioCueManager,
+    build_cue_tts_backend,
+    build_env_cue_manager,
+)
 from ..google_creds import GoogleClients, build_google_clients
 from ..google_routes import build_google_routes_client
 from ..home_assistant import HAClient, build_ha_client
@@ -47,6 +51,7 @@ from ..renderer import RendererClient
 from ..research import ResearchScheduler, active_research_provider
 from ..spotify_router import Router, build_router
 from ..timers import Timer, TimerScheduler, announcement_text
+from ..tts_routing import FANIN_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
 from ..tools import ToolRegistry, UntrustedContentMonitor
 from ..tools.packs import ToolDeps, outcomes_to_state, register_packs
 from ..usage import (
@@ -77,6 +82,7 @@ from ..voice_daemon import (
     CAPTURE_RING_FRAMES,
     NO_ROOM_MIC_CUE_SLUG,
     VOICE_MIC_UNAVAILABLE_EXIT,
+    VOICE_NOT_SET_UP_CUE_SLUG,
     VOICE_PROVIDER_NOT_CONFIGURED_EXIT,
     VOICE_STARTUP_CONFIG_ERROR_EXIT,
     ContentActivityTracker,
@@ -241,6 +247,50 @@ async def _announce_mic_loss_at_shutdown(wake_loop: WakeLoop) -> str:
         slug=NO_ROOM_MIC_CUE_SLUG,
         result=result,
         level=logging.INFO if result in ("ok", "transient_park") else logging.WARNING,
+    )
+    return result
+
+
+# Bound on the boot-park cue: the same cue + drain the floor above budgets,
+# plus TtsPlayout's own 1.0 s connect timeout. Past this the daemon is holding
+# systemd's start timeout (READY=1 was never sent) for a cue nobody will hear.
+PARK_CUE_TIMEOUT_SEC = 12.0
+
+
+def _announce_park_at_boot(slug: str) -> str:
+    """Say out loud why this daemon is parking, then let the caller exit.
+
+    The boot checks that raise 66/78 all run before the daemon's own cue
+    manager and TtsPlayout exist, so the largest deaf window on the box is a
+    park nobody hears (AGENTS.md non-negotiable 6). This rebuilds the minimum
+    to speak: a Config-less manager from the environment — `Config.from_env()`
+    is exactly what raised on the 78 path — over a TtsPlayout on the same
+    socket `main()`'s Config would have resolved.
+
+    Called from `main()` after `asyncio.run(run())` has returned, so no loop
+    is running and this owns its own. Returns the result code it logged:
+    ``ok``, ``no_asset``, ``play_error`` or ``timeout``. Never raises, and
+    never changes the exit code.
+    """
+    async def _play() -> str:
+        socket_path = os.environ.get(VOICE_TTS_SOCKET_ENV, FANIN_TTS_SOCKET)
+        async with TtsPlayout(socket_path=socket_path) as tts:
+            manager = build_env_cue_manager(tts_playout=tts)
+            return "ok" if await manager.play(slug) else "no_asset"
+
+    try:
+        result = asyncio.run(asyncio.wait_for(_play(), PARK_CUE_TIMEOUT_SEC))
+    except TimeoutError:
+        result = "timeout"
+    except Exception:  # noqa: BLE001
+        logger.exception("park cue play failed")
+        result = "play_error"
+    log_event(
+        logger,
+        "voice.park_cue",
+        slug=slug,
+        result=result,
+        level=logging.INFO if result == "ok" else logging.WARNING,
     )
     return result
 
@@ -1355,6 +1405,7 @@ def main() -> None:
             level=logging.WARNING,
         )
         print(str(e), file=sys.stderr)
+        _announce_park_at_boot(NO_ROOM_MIC_CUE_SLUG)
         sys.exit(VOICE_MIC_UNAVAILABLE_EXIT)
     except VoiceProviderNotConfigured as e:
         configure_logging()
@@ -1365,6 +1416,7 @@ def main() -> None:
             level=logging.WARNING,
         )
         print(str(e), file=sys.stderr)
+        _announce_park_at_boot(VOICE_NOT_SET_UP_CUE_SLUG)
         sys.exit(VOICE_PROVIDER_NOT_CONFIGURED_EXIT)
     except SpeechVADSetupError as e:
         configure_logging()
