@@ -27,7 +27,15 @@
   saying which shapes sit inside the bash redactor's mandate. A caller that
   does hold the literal secret runs a value pass **in addition to** the
   redactor, never instead of it: a key in an unrecognised shape is removable
-  only by its literal.
+  only by its literal — it hands the value to `redact_secrets(text,
+  literals)`, which replaces it before the patterns run, rather than growing
+  a scrubber of its own. "One per language" counts *shape*-based redactors:
+  a value pass is a different mechanism, since it removes what no pattern
+  can describe. The one deviation is `deploy/bin/jasper-wifi-guardian`,
+  which keeps its own sed scrub — the PSK it just used, by value, plus one
+  `password <arg>` expression — and its own placeholder `***`, because it
+  runs on the Wi-Fi recovery path, where the checkout holding `scripts/` is
+  not deployed and the venv may be the broken thing.
 - **Consequences:** One vocabulary on every surface, so a shape learned from
   an incident is added once and both languages get it, and a rule the two
   languages disagree about cannot merge. Over-redaction is the accepted

@@ -323,7 +323,17 @@ def test_nmcli_secret_argv_never_logs_the_psk(monkeypatch, caplog, psk):
 
     proc = wifi_setup._run_nmcli_secret(cmd, timeout=1)
 
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == wifi_setup.logger.name and record.levelno == logging.WARNING
+    ]
+
     assert proc.returncode == 124
+    # Without a record to look at, the absence pin below is satisfied by an
+    # empty log.
+    assert len(warnings) == 1
+    assert "password <redacted>" in warnings[0].getMessage()
     assert psk not in caplog.text
 
 

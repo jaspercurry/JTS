@@ -252,11 +252,8 @@ def _redact_provider_error(exc: Exception, state: dict[str, str]) -> str:
     recognised prefix is removable only by the literal the caller holds.
     """
     msg = str(exc) or exc.__class__.__name__
-    for key_env in _SECRET_KEY_ENVS:
-        secret = _value_for(state, key_env)
-        if secret:
-            msg = msg.replace(secret, "<redacted>")
-    msg = " ".join(redact_secrets(msg).split())
+    literals = [_value_for(state, key_env) for key_env in _SECRET_KEY_ENVS]
+    msg = " ".join(redact_secrets(msg, literals).split())
     if len(msg) > 220:
         msg = msg[:217] + "..."
     return msg

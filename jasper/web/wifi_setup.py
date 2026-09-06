@@ -806,16 +806,6 @@ def _connect_wifi_command(
     return cmd
 
 
-def _scrub_psk(text: str, password: str | None) -> str:
-    """Scrub the household PSK out of nmcli output before it is logged or
-    returned to the browser. Two passes: the literal PSK (nmcli quotes it
-    back verbatim in echo-back errors), then the shared redactor for the
-    `password <arg>` echo we hold no literal for."""
-    if password:
-        text = text.replace(password, "<redacted>")
-    return redact_secrets(text)
-
-
 def _readable_nmcli_error(
     proc: subprocess.CompletedProcess[str], password: str | None = None,
 ) -> str:
@@ -823,7 +813,9 @@ def _readable_nmcli_error(
     # Scrub any echoed PSK BEFORE trimming/returning — nmcli can echo the
     # submitted password back in error text (argv, "password 'PSK'"), and
     # this string is both logged and shipped to the browser as the error.
-    err = _scrub_psk(err, password)
+    # The literal covers an echo the shapes cannot see; the shapes cover the
+    # echo we hold no literal for (`password: str | None`).
+    err = redact_secrets(err, (password or "",))
     # Trim nmcli's "Error: " prefix and the verbose "Connection activation
     # failed: (NN) " wrapper so the message that lands in the UI is
     # actually readable.

@@ -151,9 +151,30 @@ CASES: tuple[tuple[str, str, str, bool], ...] = (
      "nmcli dev wifi connect Home password <redacted>", False),
     ("nmcli_argv_quoted_psk", "nmcli device wifi connect 'My Net' password 'my long psk'",
      "nmcli device wifi connect 'My Net' password <redacted>", False),
+    # NetworkManager echoes the submitted PSK back on the property whose
+    # value it rejected, spaced and terse. Python-only: bash knows env-name
+    # shapes, not keywords, and leaves all three of these alone.
+    ("nm_psk_echo_spaced", "802-11-wireless-security.psk: hunter2xylophone",
+     "802-11-wireless-security.psk: <redacted>", False),
+    ("nm_psk_echo_terse", "802-11-wireless-security.psk:hunter2xylophone",
+     "802-11-wireless-security.psk:<redacted>", False),
+    # Shell escaping puts the quote characters *inside* the token
+    # (`don't` joins as `'don'\''t'`), so a run scoped to one quote stops
+    # mid-credential.
+    ("password_shell_escaped_quote", "nmcli: password 'don'\\''t' rejected",
+     "nmcli: password <redacted> rejected", False),
+    # 7 characters: under the bare run's WPA floor, which quoting replaces.
+    ("password_short_quoted", "nmcli: password 'sw0rd' rejected",
+     "nmcli: password <redacted> rejected", False),
+    # A colon-introduced passphrase is words, not one token, so the value
+    # runs to end of line. Python-only for the same reason as the NM rows.
+    ("passphrase_colon_words", "Passphrase: correct horse battery",
+     "Passphrase: <redacted>", False),
+    ("password_colon_words", "password: two words", "password: <redacted>", False),
+    ("psk_colon_words", "psk: three word psk", "psk: <redacted>", False),
     # Over-redaction, kept deliberately: narrowing the `password <arg>` rule
     # enough to spare this prose also spares an all-lowercase PSK echoed
-    # back by nmcli, which `_scrub_psk` has no literal for.
+    # back by nmcli, which the wizard holds no literal for.
     ("password_prose_over_redacted", "wifi password validation failed",
      "wifi password <redacted> failed", False),
     # Negatives: ordinary text neither redactor may touch.
@@ -185,6 +206,16 @@ CASES: tuple[tuple[str, str, str, bool], ...] = (
     (f"public_{name.lower()}", f"{name}=pub1ic-1dent1f1er",
      f"{name}=pub1ic-1dent1f1er", True)
     for name in PUBLIC_ENV_NAMES
+) + tuple(
+    # WPA passphrases are 8-63 printable ASCII: every one of these is legal
+    # in a PSK and ends the keyword rule's value class, so the assignment
+    # rule has to take the run to the next whitespace like bash does.
+    (f"env_inline_psk_with_{name}", f"started JASPER_WIFI_PSK=ab{ch}cd1234 ok",
+     "started JASPER_WIFI_PSK=<redacted> ok", True)
+    for name, ch in (
+        ("ampersand", "&"), ("paren", ")"), ("comma", ","),
+        ("semicolon", ";"), ("brace", "}"),
+    )
 )
 
 _BASH_CASES = tuple((cid, text, expected) for cid, text, expected, m in CASES if m)
@@ -239,6 +270,16 @@ def test_secret_env_name_pattern_covers_every_real_key(name: str) -> None:
 @pytest.mark.parametrize("name", PUBLIC_ENV_NAMES)
 def test_secret_env_name_pattern_leaves_public_names_alone(name: str) -> None:
     assert re.fullmatch(SECRET_ENV_NAME_RE, name) is None
+
+
+@pytest.mark.parametrize("literal", ["k(e)y+1*2", "two word secret"])
+def test_a_caller_held_literal_is_replaced_whatever_shape_it_has(literal: str) -> None:
+    """A pasted key in no recognised shape is removable only by its value,
+    and `str.replace` is literal — regex metacharacters and spaces alike."""
+    assert (
+        redact_secrets(f"rejected {literal} upstream", [literal])
+        == "rejected <redacted> upstream"
+    )
 
 
 @pytest.mark.parametrize("name", SECRET_ENV_NAMES)
