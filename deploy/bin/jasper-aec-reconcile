@@ -1124,13 +1124,13 @@ mic_present() {
 # silently swap the household's room mic for an instrument.
 #
 # Identity is the USB vid:pid, never the serial — a UMIK-2's USB serial
-# descriptor is the literal "00000" on every unit. The ids are owned by
-# jasper.audio_measurement.calibration and reach bash through
-# `python -m jasper.cli.measurement_mic`, the same bridge shape
-# observe_mic_profile_state uses for the mic profile, so no second copy of the
-# vocabulary lives here. Resolved AT MOST ONCE per pass, and only once a card
-# that is actually present turns out to expose a USB id — a box with no USB
-# capture card never pays for the interpreter.
+# descriptor is the literal "00000" on every unit. Both the registry
+# vocabulary and the usbid read that answers it are owned by
+# `python -m jasper.cli.capture_card` (ADR-0235 D1), the same bridge shape
+# observe_mic_profile_state uses for the mic profile; this side keeps only the
+# membership test. Resolved AT MOST ONCE per pass, and only once a card that is
+# actually present turns out to expose a USB id — a box with no USB capture
+# card never pays for the interpreter.
 #
 # Defense in depth, not the only defense: the default candidate list is the
 # XVF registry's own card names, a closed allowlist no measurement mic appears
@@ -1138,68 +1138,81 @@ mic_present() {
 # operator widened JASPER_MIC_DEVICE_CANDIDATES, and it fails OPEN — a resolver
 # that cannot answer excludes nothing, because refusing to classify must never
 # be able to leave a speaker with no microphone at all.
-MEASUREMENT_USB_IDS=""
-MEASUREMENT_USB_IDS_STATUS="unresolved"
+MEASUREMENT_CARDS_STATUS="unresolved"
 
-card_usbid() {
-    local card path
-    card="$(card_id_from_spec "$1")"
-    path="${ASOUND_ROOT}/${card}/usbid"
-    if [[ -r "$path" ]]; then
-        # The kernel writes %04x:%04x, so this only normalises a hand-made
-        # test fixture and strips the trailing newline.
-        tr '[:upper:]' '[:lower:]' < "$path" | tr -d '[:space:]' || true
-    fi
+any_capture_usbid() {
+    local card
+    for card in "$@"; do
+        [[ -s "${ASOUND_ROOT}/${card}/usbid" ]] && return 0
+    done
+    return 1
 }
 
-resolve_measurement_usb_ids() {
-    local payload
-    [[ "$MEASUREMENT_USB_IDS_STATUS" == "unresolved" ]] || return 0
+# jasper.cli.capture_card prints exactly ONE shlex-quoted assignment. Anything
+# else on stdout — a warning, a traceback a partial deploy printed before
+# exiting 0 — is a broken bridge, not a payload: `eval` of it under `set -e`
+# kills the pass where it stands, before any env write, cue or park. Rejected
+# into the fail-open branch instead, the way _apply_alignment_payload guards
+# the alignment bridge.
+_apply_measurement_payload() {
+    local payload="$1"
+    [[ "$payload" == "JASPER_CAPTURE_MEASUREMENT_CARDS="* ]] || return 1
+    [[ "$payload" != *$'\n'* ]] || return 1
+    eval "$payload"
+}
+
+# The single resolve point, and it must run in the PARENT shell: every caller
+# of measurement_class_card below sits inside a command substitution, and an
+# eval in a subshell dies with it — the registry would be re-resolved, and the
+# interpreter re-spawned, once per candidate probe.
+#
+# CONSTRAINT: this spec set must cover every card measurement_class_card is
+# later asked about. That test is a membership lookup into the set resolved
+# here, so a card missing from it reads as "not measurement-class" and stays
+# eligible for the voice path. The four sources that can reach a selection
+# predicate: the candidate list, the resolver's own card (which
+# derive_profile_managed_aec_mic_device prepends after this point), the
+# configured AEC mic, and first_candidate's all-measurement fallback.
+resolve_measurement_cards() {
+    [[ "$MEASUREMENT_CARDS_STATUS" == "unresolved" ]] || return 0
+    local payload spec card
+    local supported="${JASPER_XVF_SUPPORTED_ALSA_CARDS:-}"
+    local specs=() card_ids=()
+    [[ ${#MIC_CANDIDATES[@]} -eq 0 ]] || specs=("${MIC_CANDIDATES[@]}")
+    specs+=("${JASPER_XVF_ALSA_CARD:-}" "${AEC_MIC_DEVICE:-}" "${supported%%,*}")
+    for spec in "${specs[@]}"; do
+        [[ -n "$spec" ]] || continue
+        card="$(card_id_from_spec "$spec")"
+        card_ids+=("$card")
+    done
+    [[ ${#card_ids[@]} -gt 0 ]] || return 0
+    any_capture_usbid "${card_ids[@]}" || return 0
     if ! command -v "$MIC_PROFILE_PYTHON" >/dev/null 2>&1; then
-        MEASUREMENT_USB_IDS_STATUS="unavailable"
+        MEASUREMENT_CARDS_STATUS="unavailable"
         log "event=aec_reconcile.measurement_registry status=unavailable python=${MIC_PROFILE_PYTHON}"
         return 0
     fi
     # stderr is deliberately NOT redirected: a traceback from a partial deploy
     # is the whole diagnostic, same as probe_accessory_mics.
-    if payload="$("$MIC_PROFILE_PYTHON" -m jasper.cli.measurement_mic)"; then
-        MEASUREMENT_USB_IDS="$(printf '%s' "$payload" | tr '\n' ' ')"
-        MEASUREMENT_USB_IDS_STATUS="resolved"
+    if payload="$("$MIC_PROFILE_PYTHON" -m jasper.cli.capture_card \
+        --asound-root "$ASOUND_ROOT" -- "${card_ids[@]}")" \
+        && _apply_measurement_payload "$payload"; then
+        MEASUREMENT_CARDS_STATUS="resolved"
     else
-        MEASUREMENT_USB_IDS_STATUS="failed"
+        MEASUREMENT_CARDS_STATUS="failed"
         log "event=aec_reconcile.measurement_registry status=failed python=${MIC_PROFILE_PYTHON}"
     fi
     return 0
 }
 
-# The single resolve point, and it must run in the PARENT shell: every caller
-# of measurement_class_card below sits inside a command substitution, and a
-# memo set in a subshell dies with it — the registry would be re-resolved,
-# and the interpreter re-spawned, once per candidate probe.
-#
-# Skipped outright when no candidate exposes a USB id, so a box with no USB
-# capture card never pays for the interpreter at all.
-prime_measurement_usb_ids() {
-    local candidate
-    for candidate in "${MIC_CANDIDATES[@]}"; do
-        if [[ -n "$(card_usbid "$candidate")" ]]; then
-            resolve_measurement_usb_ids
-            return 0
-        fi
-    done
-}
-
 measurement_class_card() {
-    local usbid
-    # Unresolved means priming found nothing to classify, or the resolver
-    # could not answer: either way, exclude nothing (fail open).
-    [[ "$MEASUREMENT_USB_IDS_STATUS" == "resolved" ]] || return 1
-    usbid="$(card_usbid "$1")"
-    # No USB id: an absent card, or an I2S/virtual capture device. Cannot be a
-    # registered USB measurement mic.
-    [[ -n "$usbid" ]] || return 1
-    case " ${MEASUREMENT_USB_IDS} " in
-        *" ${usbid} "*)
+    local card
+    # Anything but resolved means the pass found nothing to classify, or the
+    # resolver could not answer: either way, exclude nothing (fail open).
+    [[ "$MEASUREMENT_CARDS_STATUS" == "resolved" ]] || return 1
+    card="$(card_id_from_spec "$1")"
+    case " ${JASPER_CAPTURE_MEASUREMENT_CARDS:-} " in
+        *" ${card} "*)
             return 0
             ;;
     esac
@@ -2071,7 +2084,7 @@ UDP_DEVICE="udp:${AEC_UDP_PORT}"
 # Detected, then configured, then the registry — the override REPLACES;
 # anything else only reorders (ADR-0235 G10).
 split_candidates "${JASPER_MIC_DEVICE_CANDIDATES:-${JASPER_XVF_ALSA_CARD:-},${AEC_MIC_DEVICE},${JASPER_XVF_SUPPORTED_ALSA_CARDS:-}}"
-prime_measurement_usb_ids
+resolve_measurement_cards
 derive_profile_managed_aec_mic_device
 if [[ -z "$AEC_MIC_DEVICE" ]]; then
     if AEC_MIC_DEVICE="$(first_present_candidate)"; then
