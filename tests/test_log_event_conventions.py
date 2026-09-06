@@ -35,14 +35,10 @@ event=`` examples, ``# event=...`` comments, ``log_event(logger,
 the emitter's own ``logger.log(level, message)`` (a *variable* message) are all
 correctly ignored.
 
-The same walk collects the **vocabulary** — every event name the tree emits, by
-any of the five forms :func:`_scan` documents — and three checks hold it
-together: a name is ``domain.action`` (``FLAT_EVENT_NAMES`` is the frozen
-exception), a top-level prefix does not spread to more packages than
-``PREFIX_OWNERS`` records, and a name some reader greps for is still emitted by
-someone. The vocabulary stays test-only: ``log_event`` does no membership check
-at runtime, so no daemon pays for a ~1,100-name table on a 415 MB Pi (ADR-0226)
-and no logging call can raise on a wake-blocking path.
+The same walk collects the **vocabulary** the three name checks below hold. It
+stays test-only: ``log_event`` does no membership check at runtime, so no daemon
+pays for a ~1,150-name table on a 415 MB Pi (ADR-0226) and no logging call can
+raise on a wake-blocking path.
 """
 from __future__ import annotations
 
@@ -155,6 +151,7 @@ class _Scan(NamedTuple):
     violations: tuple[tuple[int, str], ...]
     events: tuple[_Event, ...]
     emit_linenos: frozenset[int]
+    lines: tuple[str, ...]
 
 
 def _literal_head(arg: ast.expr) -> tuple[str, bool] | None:
@@ -206,12 +203,6 @@ def _rel(path: Path) -> str:
         return path.name
 
 
-def _package(rel_path: str) -> str:
-    """Owner of a file: ``jasper/<pkg>/…`` → ``<pkg>``; a top-level module → ``jasper``."""
-    parts = rel_path.split("/")
-    return parts[1] if len(parts) > 2 else "jasper"
-
-
 def _named_event(arg: ast.expr, rel_path: str) -> list[_Event]:
     """The event an argument that IS the name carries (log_event's name, `event=`)."""
     head = _literal_head(arg)
@@ -245,9 +236,13 @@ def _scan(path: Path) -> _Scan:
     that emit on their caller's behalf); ``print("event=…")``;
     ``<stream>.write("… event=… ")`` (the flight recorder's dumps); and the
     hand-written ``logger.<level>("event=…")`` lines the allowlist still defers.
+    A name passed as a Name or attribute instead of a literal (a module constant
+    such as ``EVENT_FIT_FAILED_JOURNAL_DROPPED``) is not collected: the
+    vocabulary is the set of *literal* names.
     """
     rel_path = _rel(path)
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(path))
     violations: list[tuple[int, str]] = []
     events: list[_Event] = []
     emit_linenos: set[int] = set()
@@ -279,7 +274,8 @@ def _scan(path: Path) -> _Scan:
             if head is not None and "event=" in head[0]:
                 emit_linenos.update({node.lineno, node.args[0].lineno})
                 events += _rendered_events(node.args[0], rel_path)
-    return _Scan(tuple(violations), tuple(events), frozenset(emit_linenos))
+    lines = tuple(source.splitlines())
+    return _Scan(tuple(violations), tuple(events), frozenset(emit_linenos), lines)
 
 
 @functools.lru_cache(maxsize=1)
@@ -290,7 +286,8 @@ def _tree_scan() -> dict[str, _Scan]:
 
 def _violations_in(path: Path) -> list[tuple[int, str]]:
     """(lineno, event_name) for each hand-written event= logger call in path."""
-    return list(_scan(path).violations)
+    scan = _tree_scan().get(_rel(path)) or _scan(path)
+    return list(scan.violations)
 
 
 def _all_violations() -> dict[str, list[tuple[int, str]]]:
@@ -315,9 +312,13 @@ def _consumed() -> dict[str, tuple[str, ...]]:
             rel_path = _rel(file)
             scan = _tree_scan().get(rel_path)
             emitted_at = scan.emit_linenos if scan else frozenset()
-            for lineno, line in enumerate(
-                file.read_text(encoding="utf-8").splitlines(), 1
-            ):
+            # The .sh readers are the only ones the tree scan has not read.
+            lines = (
+                scan.lines
+                if scan
+                else tuple(file.read_text(encoding="utf-8").splitlines())
+            )
+            for lineno, line in enumerate(lines, 1):
                 if lineno in emitted_at:
                     continue
                 for match in _EVENT_IN_TEXT.finditer(line):
@@ -447,7 +448,11 @@ def test_event_prefixes_stay_within_their_recorded_packages():
     owners: dict[str, set[str]] = defaultdict(set)
     for event in _events():
         if "." in event.name or event.partial:
-            owners[event.name.split(".")[0]].add(_package(event.path))
+            # jasper/<pkg>/… is owned by <pkg>; a top-level module by `jasper`.
+            parts = event.path.split("/")
+            owners[event.name.split(".")[0]].add(
+                parts[1] if len(parts) > 2 else "jasper"
+            )
     widened = sorted(
         f"{prefix}: now {sorted(packages)}, "
         f"recorded {list(PREFIX_OWNERS.get(prefix, ()))}"
