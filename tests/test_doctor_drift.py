@@ -10,6 +10,7 @@ deploy/install.sh installed against what the running kernel and systemd report.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -246,14 +247,14 @@ def test_bootloop_guard_tripped_units_are_not_reported_as_drift(
         "jasper-outputd", "jasper-aec-bridge", "jasper-voice", "jasper-control",
     )
     healthy_checked = _systemd_drift()[1]
-    _bootloop_marker(monkeypatch, tmp_path, {
+    _bootloop_marker(monkeypatch, tmp_path, json.dumps({
         "tripped": True,
         "boots_in_window": 3,
         "threshold": 3,
         "window_sec": 3600,
         "checked_at": 1000,
         "units": [f"{u}.service" for u in guarded],
-    })
+    }))
 
     items, checked, _ = _systemd_drift(actions={u: "none" for u in guarded})
 

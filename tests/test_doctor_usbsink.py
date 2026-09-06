@@ -25,8 +25,12 @@ from jasper.audio_hardware.usb_port_role import UsbPortRoleState
 from jasper.cli.doctor import _evidence, _shared, usbsink
 from jasper.cli.doctor._evidence import evidence
 from jasper.fanin import coupling_auto as _ca
-from .doctor_test_support import _fake_unit_states
+from .doctor_test_support import _make_unit_states_fake
 from .fanin_env_fixtures import declare_fanin_env
+
+
+def _unit_state_fake(unit: str, state: str):
+    return _make_unit_states_fake({unit: {"active_state": state}}, default_active_state="inactive")
 
 # ----------------------------------------------------------------------
 # shared USB data role
@@ -116,7 +120,7 @@ def _state_env(
     monkeypatch.setattr(
         _evidence,
         "read_unit_states",
-        _fake_unit_states({usbsink.USBSINK_UNIT: "active" if active else "inactive"}),
+        _unit_state_fake(usbsink.USBSINK_UNIT, "active" if active else "inactive"),
     )
     monkeypatch.setattr(usbsink, "_module_loaded", lambda name: libcomposite)
     evidence.seed("parked_bonded_follower", parked)
@@ -253,7 +257,7 @@ def test_check_usbsink_card_verdicts(
     monkeypatch.setattr(
         _evidence,
         "read_unit_states",
-        _fake_unit_states({usbsink.USBSINK_UNIT: "active" if active else "inactive"}),
+        _unit_state_fake(usbsink.USBSINK_UNIT, "active" if active else "inactive"),
     )
     card = tmp_path / "UAC2Gadget"
     if card_present:
@@ -400,7 +404,7 @@ def test_check_usbsink_active_libcomposite_verdicts(
     monkeypatch.setattr(
         _evidence,
         "read_unit_states",
-        _fake_unit_states({usbsink.USBSINK_UNIT: "active" if active else "inactive"}),
+        _unit_state_fake(usbsink.USBSINK_UNIT, "active" if active else "inactive"),
     )
     monkeypatch.setattr(usbsink, "_module_loaded", lambda name: libcomposite)
 
@@ -587,7 +591,7 @@ def _name_env(monkeypatch, *, active: bool, speaker: str = "Kitchen"):
     monkeypatch.setattr(
         _evidence,
         "read_unit_states",
-        _fake_unit_states({usbsink.USBSINK_UNIT: "active" if active else "inactive"}),
+        _unit_state_fake(usbsink.USBSINK_UNIT, "active" if active else "inactive"),
     )
     monkeypatch.setattr(
         os, "uname", lambda: type("U", (), {"release": _KVER})()
@@ -1142,7 +1146,7 @@ def _relay_mic_env(monkeypatch, tmp_path, payload: dict):
     monkeypatch.setattr(
         _evidence,
         "read_unit_states",
-        _fake_unit_states({usbsink.USBMIC_UNIT: "active"}),
+        _unit_state_fake(usbsink.USBMIC_UNIT, "active"),
     )
 
 
@@ -1261,7 +1265,7 @@ def _setup_combo(
     monkeypatch.setattr(
         _evidence,
         "read_unit_states",
-        _fake_unit_states({usbsink.USBSINK_UNIT: "failed" if failed else "inactive"}),
+        _unit_state_fake(usbsink.USBSINK_UNIT, "failed" if failed else "inactive"),
     )
     monkeypatch.setattr(_ca, "read_usb_gadget_available", lambda *a, **k: gadget)
     monkeypatch.setattr(

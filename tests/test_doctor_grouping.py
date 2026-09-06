@@ -19,8 +19,8 @@ from jasper.tts_routing import (
 )
 
 from .doctor_test_support import (
-    _fake_unit_states,
     _grouping_cfg,
+    _make_unit_states_fake,
     _registered_check_names,
 )
 
@@ -41,9 +41,11 @@ def _patch_grouping(monkeypatch, cfg, *, unit_states=None):
     lines are brittle against the unit list growing."""
     import jasper.multiroom.config as mr_config
 
+    overrides = {u: {"active_state": s} for u, s in (unit_states or {}).items()}
     monkeypatch.setattr(mr_config, "load_config", lambda *a, **k: cfg)
     monkeypatch.setattr(
-        _evidence, "read_unit_states", _fake_unit_states(unit_states)
+        _evidence, "read_unit_states",
+        _make_unit_states_fake(overrides, default_active_state="inactive"),
     )
     # No producer-feed stubbing: check_grouping injects leader_tap_path=""
     # unconditionally (no music producer exists yet), so a bonded leader
@@ -297,12 +299,13 @@ def test_check_crossover_unit_active_leader_verdicts(
     monkeypatch.setattr(
         _evidence,
         "read_unit_states",
-        _fake_unit_states(
-            load={
-                "jasper-camilla-crossover.service": (
-                    "loaded" if returncode == 0 else "not-found"
-                ),
+        _make_unit_states_fake(
+            {
+                "jasper-camilla-crossover.service": {
+                    "load_state": "loaded" if returncode == 0 else "not-found",
+                },
             },
+            default_active_state="inactive",
         ),
     )
     monkeypatch.setattr(
