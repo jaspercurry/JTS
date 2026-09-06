@@ -641,8 +641,13 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
 
 4. Config and migrations
    - Seed /etc/jasper/jasper.env on fresh installs.
-   - Sweep an operator-seeded LLM API key or Google Routes key out of
-     /etc/jasper/jasper.env into the jasper-secrets compartment.
+   - Create, then re-assert ownership and modes on, the
+     /var/lib/jasper-secrets compartment holding the assistant provider
+     API keys jasper-voice reads, relocating any operator-seeded LLM API
+     key or Google Routes key out of the broad /etc/jasper/jasper.env.
+   - Re-assert ownership and modes on the /var/lib/jasper-intsecrets
+     integration-secret compartment holding the HA token and Spotify
+     credentials/caches.
    - Seed defaults for speaker name, AirPlay mode, ALSA quality,
      wake model, AEC mode, peer_id, journald persistence, memory
      resilience, WiFi guardian recovery, and correction TLS CA/cert files.

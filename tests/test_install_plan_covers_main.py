@@ -191,7 +191,6 @@ def _executed_steps(profile: str) -> list[str]:
         ]
     )
     env = os.environ.copy()
-    env.pop("JASPER_INSTALL_PROFILE", None)
     env.pop("JASPER_INSTALL_DRY_RUN", None)
     result = subprocess.run(
         ["bash", "-c", script],
@@ -209,32 +208,41 @@ def _executed_steps(profile: str) -> list[str]:
 
 
 @pytest.mark.parametrize(
-    ("profile", "unit_step"),
+    ("profile", "runtime_step", "unit_step"),
     [
-        ("full", "install_systemd_units"),
-        ("streambox", "install_streambox_systemd_units"),
+        ("full", "install_jasper", "install_systemd_units"),
+        ("streambox", "install_streambox_jasper", "install_streambox_systemd_units"),
     ],
 )
-def test_secret_compartments_and_wifi_guardian_run_on_both_profiles(profile, unit_step):
-    """Both profiles re-narrow the two secret compartments before the unit
-    install that starts the daemons reading them, and both seed the WiFi
-    guardian stash. These were streambox-only main() rows while the full
-    profile buried them inside install_jasper, where no per-profile check
-    could see them.
+def test_secret_compartments_and_wifi_guardian_run_on_both_profiles(
+    profile, runtime_step, unit_step
+):
+    """Both profiles seed the WiFi guardian stash, and re-narrow the two secret
+    compartments inside the window where the re-narrow does anything.
+
+    The window is bounded on both sides. Below: each re-assert opens with
+    `getent group jasper-{,int}secrets || return 0` and those groups are
+    created by create_jasper_service_users, and migrate_voice_keys_split reads
+    the jasper.env the profile's python-runtime step seeds -- moved above
+    either, both steps become silent no-ops on a first install. Above: the
+    unit install starts the daemons that read the compartments. These were
+    streambox-only main() rows while the full profile buried them inside
+    install_jasper, where no per-profile check could see them.
 
     Remove when main() becomes a declarative STEPS table: the table's own
     pin supersedes this one.
     """
     steps = _executed_steps(profile)
-    hoisted = (
+    reasserts = (
         "reassert_secrets_compartment_perms",
         "reassert_intsecrets_compartment_perms",
-        "migrate_wifi_guardian",
     )
+    hoisted = (*reasserts, "migrate_wifi_guardian")
     assert set(hoisted) <= set(steps), f"{profile}: missing {sorted(set(hoisted) - set(steps))}"
-    assert unit_step in steps
-    assert steps.index("reassert_secrets_compartment_perms") < steps.index(unit_step)
-    assert steps.index("reassert_intsecrets_compartment_perms") < steps.index(unit_step)
+    for reassert in reasserts:
+        assert steps.index("create_jasper_service_users") < steps.index(reassert)
+        assert steps.index(runtime_step) < steps.index(reassert)
+        assert steps.index(reassert) < steps.index(unit_step)
 
 
 def test_main_steps_were_parsed():

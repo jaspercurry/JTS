@@ -1873,8 +1873,8 @@ install_systemd_units() {
     # WiFi profile guardian: oneshot at boot, gated by
     # ConditionPathExists= on the wizard's stash file. Enabling is safe
     # on fresh installs because the unit silently no-ops until the
-    # wizard saves once. See migrate_wifi_guardian (called from
-    # ensure_env_file above) for the SSH-driven-setup seed path.
+    # wizard saves once. main()'s migrate_wifi_guardian step, which runs
+    # after this function returns, seeds that stash for SSH-driven setup.
     systemctl enable jasper-wifi-guardian.service
     # WiFi recover timer: no resident RAM. Every few minutes it runs a tiny
     # oneshot that exits after one NM active-connection read when WiFi is
