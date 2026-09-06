@@ -13,7 +13,7 @@ aloud.
 
 Errors are returned as structured `{ok: false, error: ...}` dicts so
 the model speaks the reason verbatim — no silent failures. Rules in
-SYSTEM_INSTRUCTION tell the model when to ask for
+jasper.voice.prompt.SYSTEM_INSTRUCTION tell the model when to ask for
 disambiguation vs. just speak the result.
 """
 from __future__ import annotations
