@@ -49,6 +49,12 @@ from typing import Literal
 #: The operator-owned base layer every daemon unit loads first.
 BASE_ENV_PATH = "/etc/jasper/jasper.env"
 
+
+def env_file_path() -> str:
+    """``BASE_ENV_PATH``, overridable via ``JASPER_ENV_FILE`` (test/probe seam)."""
+    return os.environ.get("JASPER_ENV_FILE", BASE_ENV_PATH)
+
+
 ENV_FILES = (
     "/etc/jasper/jasper.env",
     # jasper-voice.service order (the most config-consuming daemon):

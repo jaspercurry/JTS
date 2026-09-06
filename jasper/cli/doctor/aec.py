@@ -40,6 +40,7 @@ from ...chip_aec.policy import (
     effective_chip_aec_dac_gate,
     resolve_chip_aec_dac_gate,
 )
+from ...env_load import env_file_path
 from ...env_load import parse_env_file as _shared_parse_env_file
 from ..aec_bridge_config import (
     OUTPUTD_REF_UDP_HOST_ENV,
@@ -183,9 +184,7 @@ def _doctor_env_file() -> dict[str, str]:
     trusting whatever the calling shell inherited.
     """
 
-    return _shared_parse_env_file(
-        os.environ.get("JASPER_ENV_FILE", "/etc/jasper/jasper.env"),
-    )
+    return _shared_parse_env_file(env_file_path())
 
 
 def _doctor_aec_intent() -> AecIntent:

@@ -13,6 +13,7 @@ from jasper.cli.doctor import _shared, env, grouping
 from jasper.cli.doctor.env import _classify_state_group_write
 
 from .doctor_test_support import _fresh_cfg, _pretend_group_is_jasper, _registered_check_names
+from .test_secret_redaction import SECRET_ENV_NAMES
 
 
 # ---------------------------------------------------------------- env loading
@@ -145,22 +146,12 @@ def os_environ_get(name: str) -> str | None:
 # -------------------------------------------------- env-file secret posture
 
 
-_SECRET_ENV_KEYS = (
-    "GEMINI_API_KEY",
-    "OPENAI_API_KEY",
-    "XAI_API_KEY",
-    "GOOGLE_ROUTES_API_KEY",
-    "JASPER_WIFI_PSK",
-    "GOOGLE_CLIENT_SECRET",
-)
-
-
 @pytest.mark.parametrize(
     "key, value, status",
-    [(k, "notasecretvalue", "fail") for k in _SECRET_ENV_KEYS]
-    + [(k, "", "ok") for k in _SECRET_ENV_KEYS],
-    ids=[f"{k}-nonempty" for k in _SECRET_ENV_KEYS]
-    + [f"{k}-empty" for k in _SECRET_ENV_KEYS],
+    [(k, "notasecretvalue", "fail") for k in SECRET_ENV_NAMES]
+    + [(k, "", "ok") for k in SECRET_ENV_NAMES],
+    ids=[f"{k}-nonempty" for k in SECRET_ENV_NAMES]
+    + [f"{k}-empty" for k in SECRET_ENV_NAMES],
 )
 def test_check_env_file_secrets_verdict_by_key_and_value(
     monkeypatch, tmp_path, key, value, status
@@ -193,6 +184,20 @@ def test_check_env_file_secrets_skipped_when_file_absent(monkeypatch, tmp_path):
     r = env.check_env_file_secrets()
 
     assert r.status == "skipped"
+
+
+def test_check_env_file_secrets_skipped_when_file_unreadable(monkeypatch, tmp_path):
+    # Root bypasses chmod, so simulate "can't read" with a directory in
+    # place of the file — Path.read_text() raises IsADirectoryError there,
+    # same OSError family env_load.read_env_file_state maps to "unreadable".
+    p = tmp_path / "jasper.env"
+    p.mkdir()
+    monkeypatch.setenv("JASPER_ENV_FILE", str(p))
+
+    r = env.check_env_file_secrets()
+
+    assert r.status == "skipped"
+    assert r.reason == env.REASON_ENV_FILE_UNREADABLE
 
 
 def test_check_env_file_secrets_is_registered():

@@ -5,12 +5,10 @@
 """jasper-doctor checks — env domain."""
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 from ...config import Config
-from ...env_load import BASE_ENV_PATH
-from ...env_load import parse_env_file as _shared_parse_env_file
+from ...env_load import env_file_path, read_env_file_state
 from ...secret_redaction import SECRET_ENV_NAME_RE
 from ._registry import doctor_check
 from ._shared import CheckResult, _group_writable_dir
@@ -18,6 +16,7 @@ from ._shared import CheckResult, _group_writable_dir
 # Machine-stable codes naming which branch of an env check produced a result
 # (AGENTS.md: tests pin status + reason, never detail prose).
 REASON_ENV_FILE_MISSING = "env_file_missing"
+REASON_ENV_FILE_UNREADABLE = "env_file_unreadable"
 REASON_SPEAKER_NAME_UNPARSEABLE = "speaker_name_unparseable"
 REASON_STATE_DIR_MISSING = "state_dir_missing"
 REASON_STATE_DIR_STAT_FAILED = "state_dir_stat_failed"
@@ -25,13 +24,13 @@ REASON_STATE_DIR_NOT_WRITABLE = "state_dir_not_writable"
 REASON_STATE_GROUP_WRITE_VIOLATION = "state_group_write_violation"
 REASON_SECRET_IN_ENV_FILE = "secret_in_env_file"
 
-# Anchored so a key only ever fullmatches (an unanchored search would also
-# flag e.g. "GEMINI_API_KEYWORD").
+# `fullmatch` at the call site anchors the match to the whole key (an
+# unanchored search would also flag e.g. "GEMINI_API_KEYWORD").
 _SECRET_KEY_RE = re.compile(SECRET_ENV_NAME_RE)
 
 @doctor_check()
 def check_env_file() -> CheckResult:
-    p = Path("/etc/jasper/jasper.env")
+    p = Path(env_file_path())
     if not p.exists():
         return CheckResult(
             "env file", "fail", f"{p} missing — re-run install.sh",
@@ -49,14 +48,20 @@ def check_env_file_secrets() -> CheckResult:
     the only legal home for a secret value; a non-empty secret-shaped key
     left here defeats that compartment split regardless of how it got
     there (hand edit, restore, a pre-migration seed)."""
-    path = os.environ.get("JASPER_ENV_FILE", BASE_ENV_PATH)
-    if not Path(path).exists():
+    path = env_file_path()
+    state = read_env_file_state(path)
+    if state.status == "missing":
         return CheckResult(
             "env file secrets", "skipped", f"{path} missing",
             reason=REASON_ENV_FILE_MISSING,
         )
+    if state.status == "unreadable":
+        return CheckResult(
+            "env file secrets", "skipped", f"can't read {path}: {state.error}",
+            reason=REASON_ENV_FILE_UNREADABLE,
+        )
     offenders = sorted(
-        key for key, value in _shared_parse_env_file(path).items()
+        key for key, value in state.values.items()
         if value and _SECRET_KEY_RE.fullmatch(key)
     )
     if offenders:
