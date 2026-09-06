@@ -511,11 +511,19 @@ env_file_value_from() {
 # idiom would read that as "changed" and restart jasper-outputd onto the old
 # lane/PCM/format. A write that did not happen fails the pass instead.
 set_env_file_var() {
+    try_set_env_file_var "$@" || exit 1
+}
+
+# The same write, reported rather than fatal: park_preserved_env_if_clockless
+# has to tell its caller the park did not land so the journal does not claim
+# one that did.
+try_set_env_file_var() {
     local file="$1" key="$2" value="$3"
-    if ! jasper_env_file_set "$file" "$key" "$value" 0640 0750; then
-        log_event "env_write_failed" "file=${file} key=${key}"
-        exit 1
+    if jasper_env_file_set "$file" "$key" "$value" 0640 0750; then
+        return 0
     fi
+    log_event "env_write_failed" "file=${file} key=${key}"
+    return 1
 }
 
 unset_env_file_var() {
@@ -554,26 +562,40 @@ cleanup_outputd_env_stage() {
         # jasper_env_file_set leaves an advisory lock beside every file it
         # writes, and the candidate carries a fresh mktemp name each pass —
         # unswept, that is one dead sibling per changing pass, forever.
+        # Exempt from "never unlink a live lock", which is about SHARED locks:
+        # this name is a per-pass private mktemp only this process ever locks.
         rm -f "$stage" "$(dirname "$stage")/.${stage##*/}.lock"
     fi
     jasper_env_file_drop
 }
 
 stage_outputd_env() {
-    local dir
+    local dir stale
     dir="$(dirname "$OUTPUTD_ENV_FILE")"
     [[ -d "$dir" ]] || install -d -m 0750 "$dir"
-    # Held from here to the publishing `mv` in commit_outputd_env_stage, so the
-    # snapshot this stage copies cannot be republished under it by
-    # jasper/atomic_io.py's whole-file writers (jasper/fanin/
-    # coupling_reconcile.py) — whichever renamed second would win the whole
-    # file. Never held across the graph convergence between the two passes.
-    # A stage that could not take it would be exactly that unguarded window,
-    # so a refused lock fails the pass rather than racing.
+    # Held from here to the publishing `mv` in commit_outputd_env_stage, so a
+    # second bash pass cannot rename its own candidate over the snapshot this
+    # one copied — whichever renamed second would win the whole file. Never
+    # held across the graph convergence between the two passes. Bash-vs-bash
+    # only: jasper/fanin/coupling_reconcile.py, the other writer of this file,
+    # publishes it unlocked (ADR-0235 G8, open until the Python side joins this
+    # path). Contention here therefore needs a stale or planted lock file —
+    # systemd serializes this oneshot and install.sh's direct run is fenced —
+    # so a hold refused after `flock -w 10` proceeds unlocked and says so
+    # rather than failing a pass nothing is actually racing.
     if ! jasper_env_file_hold "$OUTPUTD_ENV_FILE"; then
-        log_event "env_write_failed" "file=${OUTPUTD_ENV_FILE} reason=stage_lock"
-        exit 1
+        log_event "outputd_env_stage_unlocked" \
+            "outputd_env=${OUTPUTD_ENV_FILE} reason=stage_lock_unheld"
     fi
+    # Debris an earlier pass could not clean (a kill between mktemp and the
+    # trap). Swept before this pass names its own candidate, so the glob can
+    # never reach it.
+    for stale in "${dir}"/.outputd.env.candidate.* \
+                 "${dir}"/..outputd.env.candidate.*.lock; do
+        if [[ -e "$stale" ]]; then
+            rm -f "$stale"
+        fi
+    done
     OUTPUTD_ENV_STAGE_FILE="$(mktemp "${dir}/.outputd.env.candidate.XXXXXX")"
     if [[ -f "$OUTPUTD_ENV_FILE" ]]; then
         cp -p "$OUTPUTD_ENV_FILE" "$OUTPUTD_ENV_STAGE_FILE"
@@ -769,10 +791,10 @@ park_preserved_env_if_clockless() {
     fi
     # The one write this script makes to the LIVE file, and its single caller
     # runs before the first stage_outputd_env — so it takes the file's lock for
-    # itself. Moved after a stage, it would block on the hold that stage takes
-    # (flock(2) is per open file description) until `flock -w 10` gives up and
-    # the write is refused: event=env_file.lock_failed, then exit 1.
-    set_env_file_var "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_BACKEND" "fake"
+    # itself. A write that did not land is NOT a park: report it, so the caller
+    # logs action=preserve_runtime_env and its exit 66 stays honest.
+    try_set_env_file_var "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_BACKEND" "fake" \
+        || return 1
     log_event "outputd_env_clockless_park" \
         "outputd_env=${OUTPUTD_ENV_FILE} backend=alsa->fake dac_pcm=outputd_dac" \
         "asound_template=$(jasper_asound_log_token "$ASOUND_TEMPLATE")" \
@@ -794,6 +816,15 @@ outputd_endpoint_contract_failed_exit() {
     exit 66
 }
 
+# The trailer every path that ends a stage runs: release the candidate and the
+# hold, then point the writers back at the live file.
+finish_outputd_env_stage() {
+    cleanup_outputd_env_stage
+    OUTPUTD_ENV_STAGE_FILE=""
+    OUTPUTD_ENV_TARGET_FILE="$OUTPUTD_ENV_FILE"
+    trap - EXIT
+}
+
 commit_outputd_env_stage() {
     local dir
     if [[ -z "${OUTPUTD_ENV_STAGE_FILE:-}" ]]; then
@@ -801,17 +832,11 @@ commit_outputd_env_stage() {
     fi
     if ! validate_outputd_env_stage; then
         OUTPUTD_ENV_STAGE_REJECTED=1
-        cleanup_outputd_env_stage
-        OUTPUTD_ENV_STAGE_FILE=""
-        OUTPUTD_ENV_TARGET_FILE="$OUTPUTD_ENV_FILE"
-        trap - EXIT
+        finish_outputd_env_stage
         return 1
     fi
     if [[ -f "$OUTPUTD_ENV_FILE" ]] && cmp -s "$OUTPUTD_ENV_STAGE_FILE" "$OUTPUTD_ENV_FILE"; then
-        cleanup_outputd_env_stage
-        OUTPUTD_ENV_STAGE_FILE=""
-        OUTPUTD_ENV_TARGET_FILE="$OUTPUTD_ENV_FILE"
-        trap - EXIT
+        finish_outputd_env_stage
         return 1
     fi
     dir="$(dirname "$OUTPUTD_ENV_FILE")"
@@ -822,10 +847,7 @@ commit_outputd_env_stage() {
     fi
     chmod 0640 "$OUTPUTD_ENV_STAGE_FILE"
     mv "$OUTPUTD_ENV_STAGE_FILE" "$OUTPUTD_ENV_FILE"
-    cleanup_outputd_env_stage
-    OUTPUTD_ENV_STAGE_FILE=""
-    OUTPUTD_ENV_TARGET_FILE="$OUTPUTD_ENV_FILE"
-    trap - EXIT
+    finish_outputd_env_stage
     return 0
 }
 
@@ -2040,10 +2062,7 @@ if [[ "$outputd_env_changed" == "1" ]]; then
         outputd_committed=1
     fi
 else
-    cleanup_outputd_env_stage
-    OUTPUTD_ENV_STAGE_FILE=""
-    OUTPUTD_ENV_TARGET_FILE="$OUTPUTD_ENV_FILE"
-    trap - EXIT
+    finish_outputd_env_stage
 fi
 if [[ "$OUTPUTD_ENV_STAGE_REJECTED" == "1" ]]; then
     # A REFUSED reconcile leaves the box running exactly as it was found.

@@ -9,7 +9,6 @@ import re
 import shlex
 import subprocess
 import sys
-import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -44,6 +43,7 @@ from jasper.usb_mic import (
     write_usb_mic_leg,
 )
 from jasper.voice.catalog import VALID_PROVIDER_IDS, provider_ids_manifest_text
+from tests._lock_holder import spawn_lock_holder
 from tests.reconcile_fixtures import (
     fake_systemctl as _fake_systemctl,
     systemctl_log as _systemctl_log,
@@ -2056,29 +2056,15 @@ def test_ensure_mode_file_backfills_around_a_concurrent_leg_write(
     mode_file = tmp_path / "aec_mode.env"
     mode_file.write_text("JASPER_AEC_MODE=auto\n", encoding="utf-8")
     _write_env(tmp_path, "Array")
-    holding = tmp_path / "holding"
-    holder = subprocess.Popen(
-        [
-            "bash",
-            "-c",
-            f'exec 9>>"{tmp_path / ".aec_mode.env.lock"}"\n'
-            "flock 9\n"
-            f'snapshot="$(cat "{mode_file}")"\n'
-            f': > "{holding}"\n'
-            "sleep 1\n"
-            "printf '%s\\nJASPER_WAKE_LEG_CHIP_AEC=1\\n"
-            "JASPER_AUDIO_INPUT_PROFILE=custom\\n' "
-            f'"$snapshot" > "{mode_file}"\n',
-        ],
-    )
-    try:
-        deadline = time.monotonic() + 10
-        while not holding.exists():
-            assert time.monotonic() < deadline, "holder never took the lock"
-            time.sleep(0.01)
+
+    with spawn_lock_holder(
+        mode_file,
+        hold_seconds=1,
+        write_back=(
+            "JASPER_WAKE_LEG_CHIP_AEC=1\nJASPER_AUDIO_INPUT_PROFILE=custom\n"
+        ),
+    ):
         result = _run_reconcile(tmp_path, "--reason", "test")
-    finally:
-        holder.wait(timeout=60)
 
     assert result.returncode == 0, result.stderr
     actual = _env_assignments(mode_file)

@@ -301,45 +301,31 @@ load_env_file() {
 # same advisory lock, so every seed below is a locked test-then-write: an
 # unlocked grep+append reverts an operator toggle taken between the two.
 ensure_mode_file() {
-    local inferred_profile pair mode_file_dir tmp
+    local inferred_profile rc=0
+    # The build's defaults for the keys an older deploy's file omits.
+    local seeds=(
+        JASPER_WAKE_LEG_RAW=1
+        JASPER_WAKE_LEG_DTLN=0
+        JASPER_WAKE_LEG_CHIP_AEC=0
+        JASPER_WAKE_LEG_CHIP_AEC_150=0
+        JASPER_WAKE_LEG_CHIP_AEC_210=0
+        JASPER_AEC_CHIP_REF_OBSERVE=0
+    )
     if [[ -f "$MODE_FILE" ]]; then
-        # The build's defaults for the keys an older deploy's file omits.
-        for pair in \
-            JASPER_WAKE_LEG_RAW=1 \
-            JASPER_WAKE_LEG_DTLN=0 \
-            JASPER_WAKE_LEG_CHIP_AEC=0 \
-            JASPER_WAKE_LEG_CHIP_AEC_150=0 \
-            JASPER_WAKE_LEG_CHIP_AEC_210=0 \
-            JASPER_AEC_CHIP_REF_OBSERVE=0; do
-            # A refused lock (logged event=env_file.lock_failed) leaves the key
-            # to the next pass; every reader carries the same default.
-            jasper_env_file_set_if_absent \
-                "$MODE_FILE" "${pair%%=*}" "${pair#*=}" 0644 0755 || true
-        done
         # The grep only keeps the resolver subshell off the common path; the
         # seed itself re-tests presence under the lock.
         if ! grep -q '^JASPER_AUDIO_INPUT_PROFILE=' "$MODE_FILE" \
             && inferred_profile="$(infer_audio_input_profile_from_mode_file)"; then
-            jasper_env_file_set_if_absent "$MODE_FILE" \
-                JASPER_AUDIO_INPUT_PROFILE "$inferred_profile" 0644 0755 || true
+            seeds+=("JASPER_AUDIO_INPUT_PROFILE=${inferred_profile}")
         fi
-        return 0
+    else
+        seeds+=(JASPER_AEC_MODE=auto JASPER_AUDIO_INPUT_PROFILE=auto)
     fi
-    # Only create an absent dir; never re-mode /var/lib/jasper (0770 root:jasper)
-    # on a boot/udev reconcile — re-moding it to 0755 strips the group-write bit
-    # the non-root daemons need (same trap as #827).
-    mode_file_dir="$(dirname "$MODE_FILE")"
-    [[ -d "$mode_file_dir" ]] || install -d -m 0755 "$mode_file_dir"
-    jasper_env_file_hold "$MODE_FILE" || return 0
-    # Re-tested under the lock: a truncating create over a file jasper-control
-    # published since the test above would discard that whole write.
-    if [[ ! -f "$MODE_FILE" ]]; then
-        tmp="$(mktemp "${mode_file_dir}/.${MODE_FILE##*/}.seed.XXXXXX")"
-        printf 'JASPER_AUDIO_INPUT_PROFILE=auto\nJASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\nJASPER_WAKE_LEG_CHIP_AEC_150=0\nJASPER_WAKE_LEG_CHIP_AEC_210=0\nJASPER_AEC_CHIP_REF_OBSERVE=0\n' > "$tmp"
-        chmod 0644 "$tmp"
-        mv "$tmp" "$MODE_FILE"
-    fi
-    jasper_env_file_drop
+    jasper_env_file_seed_absent "$MODE_FILE" 0644 0755 "${seeds[@]}" || rc=$?
+    # Only the refusal (75) is tolerated: every reader carries the same
+    # defaults, and on a first boot a refused seed leaves no file at all, so
+    # the profile reads `custom` for that pass.
+    [[ $rc -eq 0 || $rc -eq 75 ]] || return $rc
 }
 
 # Atomic single-key env upsert. Quoting + write semantics live in the

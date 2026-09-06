@@ -9,13 +9,14 @@ import os
 import re
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
 
 from jasper.audio_hardware.dac import final_edge_format_for
 from jasper.fanin_coupling import RING_SLOT_FRAMES
+from tests._lock_holder import spawn_lock_holder
+from tests._log_events import stderr_events
 from tests.reconcile_fixtures import (
     fake_systemctl as _fake_systemctl,
     systemctl_log as _systemctl_log,
@@ -1363,47 +1364,39 @@ def test_reconcile_removes_a_stale_content_pcm_line(tmp_path: Path, stale: str):
     assert "JASPER_OUTPUTD_CONTENT_PCM" not in _outputd_env(tmp_path)
 
 
+def _stage_candidate_debris(tmp_path: Path) -> list[str]:
+    return sorted(
+        name
+        for name in os.listdir(tmp_path)
+        if name.lstrip(".").startswith("outputd.env.candidate.")
+    )
+
+
 def test_outputd_env_stage_waits_out_a_concurrent_whole_file_writer(
     tmp_path: Path,
 ) -> None:
     """The stage→validate→rename sequence must be serialized, not just atomic.
 
-    outputd.env has a second writer: jasper/fanin/coupling_reconcile.py reads
-    it, edits, and renames the whole file back through jasper/atomic_io.py.
-    This script publishes it the same way, from a `cp -p` snapshot taken pages
-    earlier — so whichever renames second discards the other's file entirely,
-    however atomic each rename is. A stage that waits for the holder snapshots
-    the holder's file, so both writers' keys reach the committed one. Removal
-    condition: a single Python owner writes every env file.
+    Two passes of this script both publish outputd.env from a `cp -p` snapshot
+    taken pages earlier, so whichever renames second discards the other's file
+    entirely, however atomic each rename is. A stage that waits for the holder
+    snapshots the holder's file, so both writers' keys reach the committed one.
+    Bash-vs-bash: the other writer of this file, jasper/fanin/
+    coupling_reconcile.py, still publishes unlocked (ADR-0235 G8) and this lock
+    does not reach it. Removal condition: a single Python owner writes every
+    env file.
     """
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text(
         "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture\n", encoding="utf-8"
     )
-    holding = tmp_path / "holding"
-    holder = subprocess.Popen(
-        [
-            "bash",
-            "-c",
-            f'exec 9>>"{tmp_path / ".outputd.env.lock"}"\n'
-            "flock 9\n"
-            f'snapshot="$(cat "{outputd_env}")"\n'
-            f': > "{holding}"\n'
-            # Longer than a whole unblocked pass, so the reconciler is provably
-            # still at its first stage when this write-back lands.
-            "sleep 4\n"
-            'printf "%s\\nJASPER_OUTPUTD_HOLDER=1\\n" '
-            f'"$snapshot" > "{outputd_env}"\n',
-        ],
-    )
-    try:
-        deadline = time.monotonic() + 10
-        while not holding.exists():
-            assert time.monotonic() < deadline, "holder never took the lock"
-            time.sleep(0.01)
+
+    # Longer than a whole unblocked pass, so the reconciler is provably still
+    # at its first stage when the write-back lands.
+    with spawn_lock_holder(
+        outputd_env, hold_seconds=4, write_back="JASPER_OUTPUTD_HOLDER=1\n"
+    ):
         result = _run_reconcile(tmp_path, APPLE_LISTING, "--reason", "test")
-    finally:
-        holder.wait(timeout=60)
 
     assert result.returncode == 0, result.stderr
     committed = _outputd_env(tmp_path)
@@ -1413,11 +1406,53 @@ def test_outputd_env_stage_waits_out_a_concurrent_whole_file_writer(
     assert not _outputd_env_key_present(committed, "JASPER_OUTPUTD_CONTENT_PCM")
     # Each pass mktemps a new candidate name, and the single-key writer locks
     # beside it: an unswept sibling per changing pass would accumulate forever.
-    assert [
-        name
-        for name in os.listdir(tmp_path)
-        if name.lstrip(".").startswith("outputd.env.candidate.")
-    ] == []
+    assert _stage_candidate_debris(tmp_path) == []
+
+
+def test_outputd_env_stage_publishes_when_the_hold_is_refused(
+    tmp_path: Path,
+) -> None:
+    """A hold nobody will hand over must not fail the pass.
+
+    Contention on this lock is bash-vs-bash and needs a stale or planted lock
+    file: systemd serializes the oneshot and install.sh's direct run is fenced.
+    Declining to reconcile the box's audio because a lock file outlived its
+    holder trades a real outage for a race that is not running, so the stage
+    proceeds unlocked and names itself in the journal instead.
+    """
+    outputd_env = tmp_path / "outputd.env"
+    outputd_env.write_text("JASPER_OUTPUTD_CONTENT_PCM=stale\n", encoding="utf-8")
+
+    # Outlasts the lib's own bounded `flock -w 10` by enough that a loaded box
+    # still reaches the first stage inside the hold, so the stage provably runs
+    # after the give-up rather than after a handover.
+    with spawn_lock_holder(outputd_env, hold_seconds=16):
+        result = _run_reconcile(tmp_path, APPLE_LISTING, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    unheld = stderr_events(
+        result.stderr, "audio_hardware_reconcile.outputd_env_stage_unlocked"
+    )
+    assert unheld, result.stderr
+    assert {fields["reason"] for fields in unheld} == {"stage_lock_unheld"}
+    assert _outputd_env_key_present(_outputd_env(tmp_path), "JASPER_OUTPUTD_BACKEND")
+
+
+def test_outputd_env_stage_sweeps_debris_from_an_earlier_pass(
+    tmp_path: Path,
+) -> None:
+    """A pass killed between the mktemp and its trap leaves a candidate and the
+    advisory lock the single-key writer put beside it. Nothing else ever
+    revisits those per-pass names, so the next stage owns the sweep."""
+    stale_candidate = tmp_path / ".outputd.env.candidate.aaaaaa"
+    stale_lock = tmp_path / "..outputd.env.candidate.aaaaaa.lock"
+    stale_candidate.write_text("JASPER_OUTPUTD_BACKEND=stale\n", encoding="utf-8")
+    stale_lock.write_text("", encoding="utf-8")
+
+    result = _run_reconcile(tmp_path, APPLE_LISTING, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert _stage_candidate_debris(tmp_path) == []
 
 
 @pytest.mark.parametrize(
