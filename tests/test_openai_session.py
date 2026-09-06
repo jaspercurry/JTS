@@ -25,6 +25,7 @@ import logging
 import pytest
 
 from jasper.tools import ToolRegistry, tool
+from jasper.voice._base import BaseLiveConnection
 from jasper.voice._supervisor import (
     CANT_CONNECT_CUE_SLUG,
     NEEDS_ATTENTION_CUE_SLUG,
@@ -200,6 +201,16 @@ def test_invalid_noise_reduction_rejected_at_construction():
         _make_conn(noise_reduction="potato")
 
 
+def test_secret_literals_reports_the_api_key():
+    """A rejection body echoing the key in a shape `redact_secrets`'s
+    prefix patterns don't know still redacts, because the connection
+    hands its own key back as a literal (ADR-0243). The base class
+    returns none — it holds no secret of its own."""
+    conn = OpenAIRealtimeConnection(api_key="plainvalue123")
+    assert conn._secret_literals() == ("plainvalue123",)
+    assert BaseLiveConnection._secret_literals(conn) == ()
+
+
 # ---------------------------------------------------------------------------
 # Tests against a live (faked) connection.
 # ---------------------------------------------------------------------------
@@ -280,6 +291,35 @@ async def test_session_update_sent_on_connect_with_manual_vad():
         )
     finally:
         await conn.stop()
+
+
+async def test_session_update_failure_redacts_the_connections_own_key(caplog):
+    """The retry-triggering warning logged when session.update fails must
+    not leak a prefix-less key even when the rejection echoes it back
+    verbatim — the connection hands its own key to `failure_detail` as a
+    literal (ADR-0243), same as every other failure on this connection."""
+
+    class _FailSessionUpdateConn(_FakeConn):
+        async def send(self, event: dict) -> None:
+            if event.get("type") == "session.update":
+                raise RuntimeError('rejected: {"key":"plainvalue123"}')
+            await super().send(event)
+
+    def _connect_factory(*, model: str) -> _FakeAsyncCM:
+        return _FakeAsyncCM(_FailSessionUpdateConn())
+
+    conn = OpenAIRealtimeConnection(
+        api_key="plainvalue123",
+        backoff_schedule=(0.0, 0.0),
+        connect_factory=_connect_factory,
+    )
+    with caplog.at_level(logging.WARNING, logger="jasper.voice.openai_session"):
+        with pytest.raises(RuntimeError):
+            await conn._open_session_attempt()
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]
+    assert "plainvalue123" not in warnings[0].args[1]
 
 
 async def test_reasoning_effort_skipped_for_non_dash2_models():
@@ -629,6 +669,41 @@ async def test_truncate_noop_when_no_item_id():
         assert _find_event(
             sess.sent[baseline:], "conversation.item.truncate",
         ) is None
+    finally:
+        await conn.stop()
+
+
+async def test_truncate_failure_redacts_the_connections_own_key(caplog):
+    """`barge.truncate_failed`'s `detail` field must not leak a
+    prefix-less key even when the rejection body echoes it back
+    verbatim — the connection hands its own key to `failure_detail` as
+    a literal (ADR-0243)."""
+    from tests._log_events import event_fields
+
+    factory = _FakeConnectFactory()
+    conn = OpenAIRealtimeConnection(
+        api_key="plainvalue123", backoff_schedule=(0.0, 0.0),
+        connect_factory=factory,
+    )
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        turn._last_assistant_item_id = "item_present"
+
+        async def _raise(event: dict) -> None:
+            raise RuntimeError('rejected: {"key":"plainvalue123"}')
+
+        sess.send = _raise
+
+        with caplog.at_level(
+            logging.WARNING, logger="jasper.voice.openai_session",
+        ):
+            await turn.truncate_assistant_audio(None, 1000)
+
+        fields = event_fields(caplog, "barge.truncate_failed")
+        assert "plainvalue123" not in fields["detail"]
     finally:
         await conn.stop()
 

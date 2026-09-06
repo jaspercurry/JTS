@@ -506,7 +506,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
             log_event(
                 logger, "barge.truncate_failed",
                 item_id=item_id, error=type(e).__name__,
-                detail=failure_detail(e),
+                detail=failure_detail(e, literals=self._conn._secret_literals()),
                 level=logging.WARNING,
             )
 
@@ -753,6 +753,17 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         self._billable_activity_interval_open: bool = False
 
         self._server_vad_active: bool = False
+
+    def _secret_literals(self) -> tuple[str, ...]:
+        """The API key, so a rejection body that echoes it still redacts.
+
+        `_KEY_PREFIX_RE` in `secret_redaction.py` only knows the `sk-`
+        shape; a rotated or legacy OpenAI key can miss it, and this is
+        the fallback. `GrokRealtimeConnection` inherits this unchanged —
+        its `xai-` keys are already prefix-covered, but the exact value
+        still redacts either way.
+        """
+        return (self._api_key,) if self._api_key else ()
 
     # ------------------------------------------------------------------
     # Public LiveConnection protocol
@@ -1114,7 +1125,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             logger.warning(
                 f"{self._log_tag} session.update failed (%s: %s); "
                 "closing and re-raising for supervisor retry",
-                type(e).__name__, failure_detail(e),
+                type(e).__name__, failure_detail(e, literals=self._secret_literals()),
             )
             with contextlib.suppress(Exception):
                 await cm.__aexit__(None, None, None)

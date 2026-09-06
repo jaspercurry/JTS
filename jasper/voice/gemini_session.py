@@ -193,7 +193,7 @@ class GeminiLiveTurn(BaseLiveTurn):
         except Exception as e:  # noqa: BLE001
             logger.debug(
                 "live turn: end_input ignored (%s: %s)",
-                type(e).__name__, failure_detail(e),
+                type(e).__name__, failure_detail(e, literals=self._conn._secret_literals()),
             )
             self._turn_lost = True
             await self._audio_q.put(None)
