@@ -2179,6 +2179,43 @@ async def test_proactive_watchdog_defers_when_turn_active():
         await conn.stop()
 
 
+async def test_unplanned_drop_does_not_inherit_the_rotation_zero_backoff():
+    """Twin of the Gemini pin: a queued planned reopen must not hand its
+    skip-the-backoff ticket to a real failure that lands first.
+
+    This adapter's watchdog is a cap pre-empt, so the flag is raised
+    here the way the idle context reset raises it.
+    """
+    delays: list[float] = []
+
+    async def _sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    factory = _FakeConnectFactory()
+    conn = OpenAIRealtimeConnection(
+        api_key="fake",
+        backoff_schedule=None,
+        connect_factory=factory,
+        sleep=_sleep,
+    )
+    await conn.start(ToolRegistry(), "system")
+    try:
+        conn._planned_rotate = True
+
+        class _Drop(Exception):
+            class _Rcvd:
+                code = 1006
+                reason = "abnormal closure"
+            rcvd = _Rcvd()
+
+        # The server drops us before the queued rotation fires.
+        factory.conns[0].feed_error(_Drop())
+        await _wait_until(lambda: len(factory.conns) >= 2, timeout=3.0)
+        assert delays and delays[0] > 0.0, delays
+    finally:
+        await conn.stop()
+
+
 async def test_proactive_watchdog_cancelled_on_teardown():
     """Stopping the connection mid-wait must cancel the watchdog cleanly.
     Without this, the task would either fire against a stopped

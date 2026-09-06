@@ -50,6 +50,13 @@ logger = logging.getLogger(__name__)
 # cancellation cannot hang the daemon's teardown.
 TASK_CANCEL_TIMEOUT_SEC = 3.0
 
+# Ceiling on one close handshake. Long enough for the server to finish
+# tearing the session down before the next connect opens a socket
+# against it (suspected in Gemini's 409s), short enough that a
+# misbehaving close cannot hang the daemon. The whole teardown is
+# bounded in turn by the unit's TimeoutStopSec.
+SESSION_CLOSE_TIMEOUT_SEC = 3.0
+
 # A watchdog that fires in one of these has nothing left to do: a
 # reconnect is already under way, or the connection is going down.
 _WATCHDOG_MOOT_STATES = frozenset({
@@ -304,9 +311,7 @@ class BaseLiveConnection:
             if task is not None:
                 task.cancel()
         for task in tasks:
-            if task is not None:
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await task
+            await self._cancel_task(task)
         self._supervisor_task = None
         self._proactive_watchdog_task = None
         self._receive_task = None
@@ -349,8 +354,7 @@ class BaseLiveConnection:
     def _set_state(self, new_state: ConnectionState) -> None:
         """Update the state field and log the transition — nothing else.
 
-        An earlier refactor re-initialised the whole connection from
-        here, dropping the live session and wedging the daemon.
+        The connection is never re-initialised from here.
         """
         old = self._state
         if old is new_state:
@@ -514,6 +518,14 @@ class BaseLiveConnection:
             )
         request_unplanned_reopen(self)
 
+    async def _mark_connected(self, receive_task: asyncio.Task) -> None:
+        """Publish the session the caller just opened as the live one."""
+        self._receive_task = receive_task
+        async with self._state_lock:
+            self._set_state(ConnectionState.CONNECTED)
+        self._connected_event.set()
+        self._start_proactive_watchdog()
+
     @staticmethod
     async def _cancel_task(task: asyncio.Task | None) -> None:
         """Cancel one background task and wait out its unwind."""
@@ -525,21 +537,49 @@ class BaseLiveConnection:
         except (asyncio.CancelledError, asyncio.TimeoutError, Exception):  # noqa: BLE001
             pass
 
+    async def _close_with_timeout(self, obj: Any) -> None:
+        """Send the close frame and wait out the server's ack."""
+        if obj is None:
+            return
+        try:
+            await asyncio.wait_for(obj.close(), timeout=SESSION_CLOSE_TIMEOUT_SEC)
+        except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
+            self._logger.debug("%s close error (ignored): %s", self._log_tag, e)
+
+    async def _close_cm_with_timeout(self, cm: Any) -> None:
+        """Unwind the SDK's connect context manager, bounded."""
+        if cm is None:
+            return
+        try:
+            await asyncio.wait_for(
+                cm.__aexit__(None, None, None), timeout=SESSION_CLOSE_TIMEOUT_SEC,
+            )
+        except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
+            self._logger.debug("%s __aexit__ error (ignored): %s", self._log_tag, e)
+
+    def _log_teardown(self, elapsed_sec: float) -> None:
+        self._logger.info(
+            "%s session torn down in %.0fms", self._log_tag, elapsed_sec * 1000,
+        )
+
     # ------------------------------------------------------------------
     # Provider hooks
     # ------------------------------------------------------------------
 
     async def _open_session_attempt(self) -> None:
-        """Open one fresh provider session and start its receive loop."""
+        """See `_supervisor.SupervisedConnection._open_session`."""
         raise NotImplementedError
 
     async def _teardown_session(self) -> None:
-        """Close whatever is currently open, leaving the supervisor be."""
+        """See `_supervisor.SupervisedConnection`."""
         raise NotImplementedError
 
     def _on_reconnect_attempt_failed(
         self, exc: Exception, attempt: int, transient: bool,
     ) -> None:
-        """One failed reopen: log the provider's own diagnosis, and drop
-        whatever session state the failure may have invalidated."""
-        raise NotImplementedError
+        """See `_supervisor.SupervisedConnection`."""
+        self._logger.warning(
+            "%s reconnect attempt %d failed (%s: %s, transient=%s)",
+            self._log_tag, attempt, type(exc).__name__,
+            self._outage.detail, transient,
+        )

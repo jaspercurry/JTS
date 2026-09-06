@@ -13,7 +13,12 @@ from google.genai import types
 
 from ..tools import dispatch_tool
 from ._base import BaseLiveConnection, BaseLiveTurn
-from ._supervisor import await_connected, http_status, request_unplanned_reopen
+from ._supervisor import (
+    await_connected,
+    failure_detail,
+    http_status,
+    request_unplanned_reopen,
+)
 from .session import (
     AudioOutChunk,
     ConnectionState,
@@ -186,7 +191,10 @@ class GeminiLiveTurn(BaseLiveTurn):
         try:
             await self._conn._send_activity_end()
         except Exception as e:  # noqa: BLE001
-            logger.debug("live turn: end_input ignored (%s: %s)", type(e).__name__, e)
+            logger.debug(
+                "live turn: end_input ignored (%s: %s)",
+                type(e).__name__, failure_detail(e),
+            )
             self._turn_lost = True
             await self._audio_q.put(None)
 
@@ -743,11 +751,7 @@ class GeminiLiveConnection(BaseLiveConnection):
             f"{self._log_tag} connect ok in %.0fms (resumption=%s)",
             connect_ms, handle_short,
         )
-        self._receive_task = asyncio.create_task(self._receive_loop())
-        async with self._state_lock:
-            self._set_state(ConnectionState.CONNECTED)
-        self._connected_event.set()
-        self._start_proactive_watchdog()
+        await self._mark_connected(asyncio.create_task(self._receive_loop()))
 
     def _watchdog_delay_sec(self) -> float:
         """How long a session runs before the planned rotation rolls it.
@@ -758,18 +762,7 @@ class GeminiLiveConnection(BaseLiveConnection):
         return self._rotate_after_sec
 
     async def _teardown_session(self) -> None:
-        """Tear down whatever's currently open — session + receive task —
-        without affecting the supervisor. Used both on normal close and
-        as a step in reconnect.
-
-        Bounded awaits everywhere: we WANT to give the WS close
-        handshake time to complete server-side (so the next connect
-        doesn't conflict with a session that's still cleaning up —
-        this is suspected to contribute to 409s in Cloud Logging),
-        but we don't want a misbehaving close to hang the daemon.
-        Each step gets a 3 s ceiling, with the entire teardown
-        bounded by the daemon's systemd TimeoutStopSec (90 s default)
-        on shutdown."""
+        """See `_supervisor.SupervisedConnection`."""
         t0 = _time.monotonic()
         # Cancel the rotation watchdog first — it only makes sense against
         # a live session, and we are about to drop this one.
@@ -783,30 +776,17 @@ class GeminiLiveConnection(BaseLiveConnection):
         if self._drop_resumption_on_teardown:
             self._drop_resumption_on_teardown = False
             self._resumption_handle = None
-        if self._session is not None:
-            try:
-                # Send close frame and wait for server ack so the
-                # server-side session is actually torn down before
-                # we (or anyone else) opens a new WS.
-                await asyncio.wait_for(self._session.close(), timeout=3.0)
-            except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
-                logger.debug(f"{self._log_tag} session.close() error (ignored): %s", e)
-        if self._session_cm is not None:
-            try:
-                await asyncio.wait_for(
-                    self._session_cm.__aexit__(None, None, None), timeout=3.0,
-                )
-            except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
-                logger.debug(f"{self._log_tag} session __aexit__ error (ignored): %s", e)
+        await self._close_with_timeout(self._session)
+        await self._close_cm_with_timeout(self._session_cm)
         self._session_cm = None
         self._session = None
         self._connected_event.clear()
-        teardown_ms = (_time.monotonic() - t0) * 1000
-        logger.info(f"{self._log_tag} session torn down in %.0fms", teardown_ms)
+        self._log_teardown(_time.monotonic() - t0)
 
     def _on_reconnect_attempt_failed(
         self, exc: Exception, attempt: int, transient: bool,
     ) -> None:
+        super()._on_reconnect_attempt_failed(exc, attempt, transient)
         is_409, status = _is_409_conflict(exc)
         handle_short = (
             (self._resumption_handle or "")[:8]
@@ -818,13 +798,6 @@ class GeminiLiveConnection(BaseLiveConnection):
                 f"{self._log_tag} reconnect 409 Conflict on attempt "
                 "%d (status=%s, exc=%s, handle=%s)",
                 attempt, status, type(exc).__name__, handle_short,
-            )
-        else:
-            logger.warning(
-                f"{self._log_tag} reconnect attempt %d failed "
-                "(%s: %s, handle=%s)",
-                attempt, type(exc).__name__,
-                self._outage.detail, handle_short,
             )
         # Drop the cached handle on the first failure of ANY kind, not
         # just a 409: a server-invalidated handle also surfaces as

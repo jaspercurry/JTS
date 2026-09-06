@@ -511,7 +511,8 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         except Exception as e:  # noqa: BLE001
             log_event(
                 logger, "barge.truncate_failed",
-                item_id=item_id, error=type(e).__name__, detail=str(e),
+                item_id=item_id, error=type(e).__name__,
+                detail=failure_detail(e),
                 level=logging.WARNING,
             )
 
@@ -1132,13 +1133,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             self._conn_cm = None
             raise
         self._deferred_reconnect.clear()
-        self._receive_task = asyncio.create_task(self._receive_loop(conn))
-        async with self._state_lock:
-            self._set_state(ConnectionState.CONNECTED)
-        self._connected_event.set()
-        # Kick off the proactive pre-cap watchdog. No-op when either
-        # `session_max_sec` or `proactive_buffer_sec` is 0 (disabled).
-        self._start_proactive_watchdog()
+        await self._mark_connected(asyncio.create_task(self._receive_loop(conn)))
 
     async def _teardown_session(self) -> None:
         t0 = _time.monotonic()
@@ -1149,26 +1144,15 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         self._deferred_reconnect.clear()
         await self._cancel_task(self._receive_task)
         self._receive_task = None
-        if self._conn is not None:
-            try:
-                await asyncio.wait_for(self._conn.close(), timeout=3.0)
-            except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
-                logger.debug(f"{self._log_tag} close error (ignored): %s", e)
-        if self._conn_cm is not None:
-            try:
-                await asyncio.wait_for(
-                    self._conn_cm.__aexit__(None, None, None), timeout=3.0,
-                )
-            except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
-                logger.debug(f"{self._log_tag} __aexit__ error (ignored): %s", e)
+        await self._close_with_timeout(self._conn)
+        await self._close_cm_with_timeout(self._conn_cm)
         self._conn_cm = None
         self._conn = None
         self._connected_event.clear()
         # Close any in-flight billable-activity interval (time-billed
         # providers). Idle WebSocket lifetime is not counted.
         self._mark_billable_activity_ended()
-        teardown_ms = (_time.monotonic() - t0) * 1000
-        logger.info(f"{self._log_tag} session torn down in %.0fms", teardown_ms)
+        self._log_teardown(_time.monotonic() - t0)
 
     def _watchdog_delay_sec(self) -> float:
         """How long into a session to pre-empt OpenAI's hard cap.
@@ -1195,15 +1179,6 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             )
             return 0.0
         return delay
-
-    def _on_reconnect_attempt_failed(
-        self, exc: Exception, attempt: int, transient: bool,
-    ) -> None:
-        logger.warning(
-            f"{self._log_tag} reconnect attempt %d failed "
-            "(%s: %s, transient=%s)",
-            attempt, type(exc).__name__, self._outage.detail, transient,
-        )
 
     async def _receive_loop(self, conn) -> None:
         """Iterate the SDK connection's event stream and route events.
