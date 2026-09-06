@@ -928,9 +928,9 @@ def check_fanin_coupling() -> CheckResult:
             "ok",
             f"capture={RING_CAPTURE_DEVICE}, playback={endpoint}",
         )
-    # Severity stays WARN: under the arm ladder the graph moves first and the
-    # marker is re-derived second, so a box observed between those steps is
-    # exactly this state and is not broken.
+    # Roleful means the ACTIVE-ring ladder is moving: the graph moves first
+    # and the marker second, so a box caught between those steps is ok, not
+    # broken. Off the ladder (not roleful) the mismatch stays warn.
     if roleful:
         # The first two steps are the SAME ladder the transport-park check
         # records, composed from its constant rather than respelled.
@@ -949,7 +949,7 @@ def check_fanin_coupling() -> CheckResult:
         )
     return CheckResult(
         label,
-        "warn",
+        "ok" if roleful else "warn",
         "the loaded graph is not this box's ring config: "
         f"{'; '.join(ring_mismatches)}; a stale baseline artifact re-seeded on a "
         f"camilla restart is the usual cause; {recovery}",

@@ -285,13 +285,14 @@ def test_check_wifi_guardian_ok_ethernet_only(monkeypatch, tmp_path):
     assert r.reason == doctor_network.REASON_GUARDIAN_NOT_APPLICABLE
 
 
-def test_check_wifi_guardian_warns_when_stash_missing_but_active(
+def test_check_wifi_guardian_ok_when_stash_missing_but_active(
     monkeypatch,
     tmp_path,
 ):
     """WiFi works but the stash hasn't been seeded — operator brought
     up wifi via raspi-config or installed before our migration shipped.
-    Warn so the dashboard / system check surfaces the recovery gap."""
+    Correct-by-intent (nothing to recover from yet): ok with the reason
+    so the recovery gap still surfaces in detail (ADR-0233)."""
     monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(tmp_path / "missing.env"))
     _patch_doctor_nmcli(
         monkeypatch,
@@ -301,7 +302,7 @@ def test_check_wifi_guardian_warns_when_stash_missing_but_active(
         ],
     )
     r = doctor_network.check_wifi_guardian()
-    assert r.status == "warn"
+    assert r.status == "ok"
     assert r.reason == doctor_network.REASON_GUARDIAN_STASH_MISSING
 
 
@@ -806,14 +807,14 @@ def test_usbnet_address_plan_projection_drift_fails(monkeypatch, tmp_path):
     assert result.reason == doctor_network.REASON_USBNET_PLAN_PROJECTION_DRIFT
 
 
-def test_usbnet_address_plan_pending_migration_is_visible_warn(monkeypatch, tmp_path):
+def test_usbnet_address_plan_pending_migration_is_ok(monkeypatch, tmp_path):
     pending = tmp_path / "pending"
     pending.write_text("pending\n")
     monkeypatch.setattr(doctor_network, "DEFAULT_PENDING_PATH", pending)
 
     result = doctor_network.check_usbnet_address_plan()
 
-    assert result.status == "warn"
+    assert result.status == "ok"
     assert result.reason == doctor_network.REASON_USBNET_PLAN_PENDING
 
 
@@ -914,7 +915,7 @@ def test_usbnet_interface_intentional_host_role_is_ok(monkeypatch, tmp_path):
     assert result.reason == doctor_network.REASON_USBNET_NOT_APPLICABLE
 
 
-def test_usbnet_interface_role_change_pending_is_warn(monkeypatch, tmp_path):
+def test_usbnet_interface_role_change_pending_is_ok(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_USB_NETWORK", "enabled")
     monkeypatch.setattr(
         doctor_network, "USBNET_SYS_CLASS_NET", tmp_path / "sys-class-net"
@@ -931,8 +932,58 @@ def test_usbnet_interface_role_change_pending_is_warn(monkeypatch, tmp_path):
     )
 
     r = doctor_network.check_usbnet_interface()
-    assert r.status == "warn"
+    assert r.status == "ok"
     assert r.reason == doctor_network.REASON_USBNET_ROLE_CHANGE_PENDING
+
+
+@pytest.mark.parametrize(
+    "ip_stdout,pending_exists,role_reboot_required,expected_reason",
+    [
+        pytest.param(
+            "3: usb0    <no address>\n", True, False,
+            "REASON_USBNET_ADDR_PENDING", id="addr_pending",
+        ),
+        pytest.param(
+            f"3: usb0    inet {PLAN.device_cidr} brd {PLAN.broadcast_address} "
+            "scope global usb0\n",
+            False, True,
+            "REASON_USBNET_ROLE_CHANGE_PENDING", id="role_change_pending",
+        ),
+    ],
+)
+def test_usbnet_interface_pending_rows_are_ok(
+    monkeypatch, tmp_path, ip_stdout, pending_exists, role_reboot_required,
+    expected_reason,
+):
+    """Both are boot-order artifacts of a change already applied — the
+    preserved legacy generation or an addressed usb0 awaiting a host-role
+    reboot — not faults (ADR-0233)."""
+    monkeypatch.setenv("JASPER_USB_NETWORK", "enabled")
+    net_root = tmp_path / "sys-class-net"
+    (net_root / "usb0").mkdir(parents=True)
+    monkeypatch.setattr(doctor_network, "USBNET_SYS_CLASS_NET", net_root)
+    _stub_run(monkeypatch, {
+        ("ip", "-4", "-o", "addr", "show", "dev", "usb0"):
+            subprocess.CompletedProcess([], 0, stdout=ip_stdout, stderr=""),
+    })
+    pending = tmp_path / ("pending" if pending_exists else "no-such-pending")
+    if pending_exists:
+        pending.write_text("pending\n")
+    monkeypatch.setattr(doctor_network, "DEFAULT_PENDING_PATH", pending)
+    monkeypatch.setattr(
+        doctor_network,
+        "current_usb_data_role",
+        lambda: SimpleNamespace(
+            gadget_available=True,
+            management_transport_available=True,
+            reboot_required=role_reboot_required,
+            reason="role_change_pending_reboot" if role_reboot_required else "available",
+        ),
+    )
+
+    r = doctor_network.check_usbnet_interface()
+    assert r.status == "ok"
+    assert r.reason == getattr(doctor_network, expected_reason)
 
 
 def test_usbnet_interface_present_with_address_is_ok(monkeypatch, tmp_path):

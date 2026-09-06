@@ -314,7 +314,7 @@ def check_wifi_guardian() -> CheckResult:
 
     if stash is None and active_ssid is not None:
         return CheckResult(
-            label, "warn",
+            label, "ok",
             f"WiFi is up on {active_ssid!r} but no recovery stash exists. "
             f"Open http://jts.local/wifi/ and Connect once to seed "
             f"{stash_path} — until then, a dirty-shutdown filesystem loss "
@@ -758,7 +758,7 @@ def check_usbnet_address_plan() -> CheckResult:
     if pending:
         return CheckResult(
             label,
-            "warn",
+            "ok",
             f"version={plan.version} fingerprint={plan.identity_fingerprint} "
             f"desired={plan.device_cidr}; legacy live generation is preserved "
             "until next boot",
@@ -849,7 +849,7 @@ def check_usbnet_interface() -> CheckResult:
         )
         if usb_role.reboot_required:
             return CheckResult(
-                label, "warn", detail,
+                label, "ok", detail,
                 reason=REASON_USBNET_ROLE_CHANGE_PENDING,
             )
         return CheckResult(
@@ -896,7 +896,7 @@ def check_usbnet_interface() -> CheckResult:
         if pending:
             return CheckResult(
                 label,
-                "warn",
+                "ok",
                 f"{USBNET_IFACE} still has the preserved legacy generation; "
                 f"desired={plan.device_cidr}, observed: "
                 f"{addr_proc.stdout.strip() or '(no address)'}. Next boot "
@@ -921,7 +921,7 @@ def check_usbnet_interface() -> CheckResult:
     )
     if usb_role.reboot_required:
         return CheckResult(
-            label, "warn",
+            label, "ok",
             detail + "; retained only until the pending host-role reboot",
             reason=REASON_USBNET_ROLE_CHANGE_PENDING,
         )

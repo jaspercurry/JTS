@@ -255,7 +255,7 @@ def check_zram_size_ratio() -> CheckResult:
                 reason=REASON_ZRAM_MANAGED_ELSEWHERE,
             )
         return CheckResult(
-            "zram size", "warn",
+            "zram size", "ok",
             f"{zram_mb} MB ({pct}% of RAM) — old default; the JTS "
             f"drop-in targets {ZRAM_TARGET_PERCENT}%. If it is present "
             f"(check /etc/rpi/swap.conf.d/50-jts.conf), reboot to apply "

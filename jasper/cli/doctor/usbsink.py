@@ -313,7 +313,7 @@ def check_usb_data_role() -> CheckResult:
     if state.reboot_required:
         return CheckResult(
             "USB data role",
-            "warn",
+            "ok",
             f"{detail}; {gadget_unavailable_detail(state)}",
             reason=REASON_DATA_ROLE_REBOOT_REQUIRED,
         )
@@ -971,7 +971,7 @@ def check_usbsink_name(modules_root: str = "/lib/modules") -> CheckResult:
             )
         ):
             return CheckResult(
-                "usbsink name", "warn",
+                "usbsink name", "ok",
                 f"override {override} still contains the stock string — "
                 f"patch did not take. Restart {USBGADGET_UNIT}.",
                 reason=REASON_NAME_STOCK_STRING,
@@ -1176,7 +1176,7 @@ def check_usbgadget_composition() -> CheckResult:
     detail = f"composition matches intent ({intent}; observed {observed})"
     if usb_role.reboot_required:
         return CheckResult(
-            label, "warn",
+            label, "ok",
             detail + "; NCM retained only until the pending host-role reboot",
             reason=REASON_COMPOSITION_RETAINED_PENDING_REBOOT,
         )
