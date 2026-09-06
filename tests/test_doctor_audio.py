@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import types
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -371,8 +372,24 @@ def test_output_hardware_reconcile_not_degraded_carries_no_degraded_reason():
     assert result.reason != audio.REASON_OUTPUT_HARDWARE_DEGRADED
 
 
-def test_output_hardware_stray_apple_dongle_ok_without_one():
-    evidence.seed("output_hardware_state", _I2S_STATE)
+@pytest.mark.parametrize(
+    "case",
+    ["no_dongle", "state_unavailable", "blocked_state", "active_apple_profile"],
+)
+def test_output_hardware_stray_apple_dongle_ok_cases(case):
+    # _I2S_STATE is defined later in this module; build states lazily so the
+    # decorator (evaluated at collection time) never forward-references it.
+    states = {
+        "no_dongle": _I2S_STATE,
+        "state_unavailable": None,
+        "blocked_state": replace(
+            _I2S_STATE, status="partial", profile_id="unknown", apple_dac_count=3
+        ),
+        "active_apple_profile": replace(
+            _I2S_STATE, profile_id=APPLE_USB_C_DONGLE_DEVICE_ID, apple_dac_count=1
+        ),
+    }
+    evidence.seed("output_hardware_state", states[case])
 
     result = audio.check_output_hardware_stray_apple_dongle()
 
@@ -385,21 +402,7 @@ def test_output_hardware_stray_apple_dongle_warns_beside_a_registered_dac():
     no issue (a product call, pinned by
     test_classify_registered_single_dac_uses_profile_contract) — this check
     surfaces the already-published ``apple_dac_count`` instead."""
-    state = OutputHardwareState(
-        profile_id="hifiberry_dac8x",
-        profile_label="HiFiBerry DAC8x",
-        status="ready",
-        physical_output_count=8,
-        apple_dac_count=1,
-        child_devices=(
-            OutputCardFact(
-                card_id="DAC8x",
-                device_id="hifiberry_dac8x",
-                has_playback=True,
-            ),
-        ),
-    )
-    evidence.seed("output_hardware_state", state)
+    evidence.seed("output_hardware_state", replace(_I2S_STATE, apple_dac_count=1))
 
     result = audio.check_output_hardware_stray_apple_dongle()
 

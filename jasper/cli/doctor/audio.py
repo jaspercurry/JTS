@@ -570,17 +570,27 @@ def check_output_hardware_stray_apple_dongle() -> CheckResult:
     here instead of reopening that classifier decision."""
 
     state = evidence.output_hardware_state()
-    if state is None or state.apple_dac_count == 0:
+    if state is None:
+        return CheckResult(
+            "Output hardware Apple dongle", "ok",
+            "output hardware state unavailable — the output hardware row reports it",
+        )
+    if state.apple_dac_count == 0:
         return CheckResult("Output hardware Apple dongle", "ok", "no Apple dongle present")
     if _apple_output_profile_active(state.profile_id):
         return CheckResult(
             "Output hardware Apple dongle", "ok",
             f"active profile {state.profile_id} is the Apple device",
         )
+    if state.status != "ready":
+        return CheckResult(
+            "Output hardware Apple dongle", "ok",
+            "not ready — the output hardware row owns that state",
+        )
     return CheckResult(
         "Output hardware Apple dongle", "warn",
-        f"{state.apple_dac_count} Apple dongle(s) present alongside the "
-        f"registered {state.profile_id} DAC — unplug it, or select it in /sound/",
+        f"{state.apple_dac_count} Apple dongle(s) present beside the registered "
+        f"{state.profile_id} DAC — unplug the dongle, or select it under /sound/setup/",
         reason=REASON_OUTPUT_HARDWARE_STRAY_APPLE_DONGLE,
     )
 
