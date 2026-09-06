@@ -62,6 +62,10 @@ ReadWritePaths=/var/lib/jasper
 MemoryHigh=100M
 MemoryMax=160M
 
+# Wizard: recoverable dashboard, idle-exits already — make it one of
+# OOM's first picks (jasper/_oom_adj.py wizard tier).
+OOMScoreAdjust=200
+
 [Install]
 # Enabling the .socket pulls in the service on demand. Use:
 #   systemctl enable jasper-bluetooth-web.socket

@@ -42,6 +42,12 @@ EXPECTED: dict[str, int] = {
     "jasper-snapserver": -300,  # grouping reconcile can restart
     "ssh": -250,                # recovery path; moderately protected
     "jasper-usbsink-volume": 100,  # optional observer; prefer killing first
+    # Wizard tier: socket-activated management UIs that already idle-exit;
+    # 200 makes OOM pick them ahead of every audio/control daemon above.
+    "jasper-chat-web": 200,
+    "jasper-system-web": 200,
+    "jasper-bluetooth-web": 200,
+    "jasper-web": 200,
     "jasper-enhanced-aec-install": 900,  # optional compiler; kill before live audio
 }
 

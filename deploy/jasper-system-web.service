@@ -51,5 +51,9 @@ SystemCallArchitectures=native
 MemoryHigh=60M
 MemoryMax=90M
 
+# Wizard: recoverable dashboard, idle-exits already — make it one of
+# OOM's first picks (jasper/_oom_adj.py wizard tier).
+OOMScoreAdjust=200
+
 [Install]
 # Enable the .socket, not the .service.

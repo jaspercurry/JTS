@@ -13,6 +13,9 @@ from jasper import _oom_adj
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEMD = ROOT / "deploy/systemd"
 SLICE = SYSTEMD / "jts-audio.slice"
+# Wizard units live at the top of deploy/, not deploy/systemd/, but still
+# carry OOMScoreAdjust= and so belong in the explicit-adjustment scan below.
+DEPLOY = ROOT / "deploy"
 
 EXPECTED = {
     "bluealsa-aplay",
@@ -51,7 +54,10 @@ def _named_audio_units(text: str) -> set[str]:
 
 def _explicit_oom_adjustments() -> dict[str, int]:
     adjustments: dict[str, int] = {}
-    paths = [*SYSTEMD.glob("*.service"), *SYSTEMD.glob("*.service.d/*.conf")]
+    paths = [
+        *SYSTEMD.glob("*.service"), *SYSTEMD.glob("*.service.d/*.conf"),
+        *DEPLOY.glob("*.service"),
+    ]
     for path in paths:
         name = (
             path.parent.name.removesuffix(".service.d")
