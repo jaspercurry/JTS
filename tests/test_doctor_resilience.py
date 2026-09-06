@@ -29,6 +29,7 @@ from jasper.cli.doctor.resilience import (
 )
 
 from .doctor_test_support import (
+    _bootloop_marker,
     _make_unit_states_fake,
     _registered_check_names,
 )
@@ -429,13 +430,6 @@ def test_classify_reboot_state_verdicts(
 
 
 # ---------------------------------------------------------- boot-loop guard
-
-
-def _bootloop_marker(monkeypatch, tmp_path, payload) -> None:
-    p = tmp_path / "bootloop-state.json"
-    monkeypatch.setenv("JASPER_BOOTLOOP_MARKER_FILE", str(p))
-    if payload is not None:
-        p.write_text(payload, encoding="utf-8")
 
 
 _ARMED = {

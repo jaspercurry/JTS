@@ -1001,7 +1001,7 @@ def test_production_chip_profile_defers_when_outputd_predates_its_declaration(
     # Chip left bypassed, no profile armed, and STATUS never consulted.
     assert _write_map(dev) == {"SHF_BYPASS": [1]}
     assert reads == []
-    fields = event_fields(caplog, "chip_aec_init")
+    fields = event_fields(caplog, "chip_aec_init.result")
     # `deferred`, not `parked`: the remedy names the outputd unit to wait on
     # rather than sending a household at the commissioner.
     assert fields["outcome"] == "deferred"
@@ -1149,7 +1149,7 @@ def test_init_reports_missing_xvf_control_dependency(monkeypatch, caplog) -> Non
 
     assert aec_init.main() == 1
 
-    assert event_fields(caplog, "chip_aec_init")["outcome"] == "failed"
+    assert event_fields(caplog, "chip_aec_init.result")["outcome"] == "failed"
 
 
 # ---------------------------------------------------------------------------

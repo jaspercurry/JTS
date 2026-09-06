@@ -18,7 +18,11 @@ from jasper.tts_routing import (
     VOICE_TTS_SOCKET_ENV,
 )
 
-from .doctor_test_support import _grouping_cfg, _registered_check_names
+from .doctor_test_support import (
+    _grouping_cfg,
+    _make_unit_states_fake,
+    _registered_check_names,
+)
 
 _LEADER = dict(enabled=True, role="leader", channel="left", bond_id="x")
 _FOLLOWER = dict(
@@ -28,40 +32,6 @@ _FOLLOWER = dict(
     bond_id="living-room",
     leader_addr="192.168.1.50",
 )
-def _fake_unit_states(
-    active: dict[str, str] | None = None,
-    *,
-    load: dict[str, str] | None = None,
-    default_active="inactive",
-    default_load="loaded",
-):
-    """A ``_evidence.read_unit_states`` stand-in: ``active``/``load`` map a
-    unit name to its ActiveState/LoadState word; any unit not named gets the
-    matching default. Both the batched roster read and a per-unit fallback
-    read route through this one fake, so it must answer for any units list."""
-    active = active or {}
-    load = load or {}
-
-    def fake(units, *, timeout=2.0):
-        return {
-            u: {
-                "unit": u,
-                "load_state": load.get(u, default_load),
-                "active_state": active.get(u, default_active),
-                "sub_state": None,
-                "unit_file_state": None,
-                "result": None,
-                "n_restarts": 0,
-                "main_pid": 0,
-                "tasks_current": None,
-                "memory_current_bytes": None,
-                "cpu_usage_nsec": None,
-                "control_group": "",
-            }
-            for u in units
-        }
-
-    return fake
 
 
 def _patch_grouping(monkeypatch, cfg, *, unit_states=None):
@@ -71,9 +41,11 @@ def _patch_grouping(monkeypatch, cfg, *, unit_states=None):
     lines are brittle against the unit list growing."""
     import jasper.multiroom.config as mr_config
 
+    overrides = {u: {"active_state": s} for u, s in (unit_states or {}).items()}
     monkeypatch.setattr(mr_config, "load_config", lambda *a, **k: cfg)
     monkeypatch.setattr(
-        _evidence, "read_unit_states", _fake_unit_states(unit_states)
+        _evidence, "read_unit_states",
+        _make_unit_states_fake(overrides, default_active_state="inactive"),
     )
     # No producer-feed stubbing: check_grouping injects leader_tap_path=""
     # unconditionally (no music producer exists yet), so a bonded leader
@@ -327,12 +299,13 @@ def test_check_crossover_unit_active_leader_verdicts(
     monkeypatch.setattr(
         _evidence,
         "read_unit_states",
-        _fake_unit_states(
-            load={
-                "jasper-camilla-crossover.service": (
-                    "loaded" if returncode == 0 else "not-found"
-                ),
+        _make_unit_states_fake(
+            {
+                "jasper-camilla-crossover.service": {
+                    "load_state": "loaded" if returncode == 0 else "not-found",
+                },
             },
+            default_active_state="inactive",
         ),
     )
     monkeypatch.setattr(

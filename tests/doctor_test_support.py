@@ -4,26 +4,31 @@
 
 """Narrow shared helpers for the jasper-doctor domain test modules."""
 
+import grp
 import os
 
 from jasper.cli import doctor
+from jasper.cli.doctor import _evidence
 from jasper.config import Config
 from jasper.output_hardware import OutputCardFact, OutputHardwareState, write_state
 
 
 def _make_unit_states_fake(
-    overrides: dict[str, dict[str, object]] | None = None, *, unavailable: bool = False,
+    overrides: dict[str, dict[str, object]] | None = None, *,
+    unavailable: bool = False,
+    default_active_state: str = "active",
+    default_load_state: str = "loaded",
 ):
     """Table-driven double for ``_evidence.read_unit_states`` (also
     ``jasper.service_units.read_unit_states``, the same function).
 
     ``overrides`` maps a FULL unit name (e.g. ``"jasper-camilla.service"``)
-    to a partial state dict merged over a healthy default (loaded / active /
-    running, MainPID 0). A unit requested but absent from ``overrides`` gets
-    the healthy default — pass e.g. ``{"load_state": "not-found"}`` to model
-    a unit this profile does not install. ``unavailable=True`` models
-    systemctl itself being absent: every call returns None, as the real
-    reader does on a dev host.
+    to a partial state dict merged over a default of
+    ``default_active_state``/``default_load_state`` (running, MainPID 0). A
+    unit requested but absent from ``overrides`` gets that default — pass
+    e.g. ``{"load_state": "not-found"}`` to model a unit this profile does
+    not install. ``unavailable=True`` models systemctl itself being absent:
+    every call returns None, as the real reader does on a dev host.
     """
     overrides = overrides or {}
 
@@ -34,8 +39,8 @@ def _make_unit_states_fake(
         for unit in units:
             base = {
                 "unit": unit,
-                "load_state": "loaded",
-                "active_state": "active",
+                "load_state": default_load_state,
+                "active_state": default_active_state,
                 "sub_state": "running",
                 "unit_file_state": "enabled",
                 "result": "success",
@@ -53,9 +58,32 @@ def _make_unit_states_fake(
     return fake
 
 
+def _stub_unit_active_states(monkeypatch, active: dict[str, str]) -> None:
+    """`_evidence.read_unit_states` stand-in: units in `active` report that
+    ActiveState; every other rostered unit reads inactive."""
+    monkeypatch.setattr(
+        _evidence, "read_unit_states",
+        _make_unit_states_fake(
+            {u: {"active_state": s} for u, s in active.items()},
+            default_active_state="inactive",
+        ),
+    )
+
+
+def _bootloop_marker(monkeypatch, tmp_path, payload: str | None) -> None:
+    p = tmp_path / "bootloop-state.json"
+    monkeypatch.setenv("JASPER_BOOTLOOP_MARKER_FILE", str(p))
+    if payload is not None:
+        p.write_text(payload, encoding="utf-8")
+
+
 def _registered_check_names() -> set[str]:
     """Return function names of every check registered via ``run_async``."""
     return {check.func.__name__ for check in doctor.registered_checks()}
+
+
+def _own_group() -> str:
+    return grp.getgrgid(os.getgid()).gr_name
 
 
 def _pretend_group_is_jasper(monkeypatch):

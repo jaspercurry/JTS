@@ -25,24 +25,10 @@ from jasper.secret_redaction import (
     redact_secrets,
 )
 
+from .secret_env_fixtures import PUBLIC_ENV_NAMES, SECRET_ENV_NAMES
+
 ROOT = Path(__file__).resolve().parents[1]
 _BASH_REDACTOR = ROOT / "scripts" / "_diagnostic_redaction.sh"
-
-# Every secret-bearing env name the project defines or reads.
-SECRET_ENV_NAMES = (
-    "OPENAI_API_KEY",
-    "GEMINI_API_KEY",
-    "XAI_API_KEY",
-    "GOOGLE_CLIENT_SECRET",
-    "GOOGLE_ROUTES_API_KEY",
-    "JASPER_HA_TOKEN",
-    "JASPER_MTA_BUSTIME_KEY",
-    "JASPER_WIFI_PSK",
-    "JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN",
-)
-
-# Public identifiers that ride the same env files and must survive both.
-PUBLIC_ENV_NAMES = ("GOOGLE_CLIENT_ID", "SPOTIFY_CLIENT_ID", "JASPER_WIFI_KEY_MGMT")
 
 _HTTPX_REPR = (
     "HTTPStatusError(\"Server error '500' for url "

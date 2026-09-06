@@ -19,17 +19,14 @@ disambiguation vs. just speak the result.
 from __future__ import annotations
 
 import asyncio
-import logging
 from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 
 from . import fence_untrusted, tool
-from .google_errors import no_account_error, no_credentials_error
+from .google_errors import api_error, no_account_error, no_credentials_error
 
 if TYPE_CHECKING:
     from ..google_creds import GoogleClients
-
-logger = logging.getLogger(__name__)
 
 
 # Cap on items per response. Voice output is slow (~3 words/second) and
@@ -104,19 +101,6 @@ def _serialise_event(item: dict) -> dict:
     return out
 
 
-def _api_error(account_name: str, exc: Exception) -> dict:
-    """Generic fallback for a googleapiclient HttpError or transport
-    failure. Logged with the full traceback for debugging; the model
-    speaks the short version."""
-    logger.warning(
-        "calendar API error for %s: %s", account_name, exc, exc_info=True,
-    )
-    return {
-        "ok": False,
-        "error": "Couldn't reach Google Calendar just now. Try again in a moment.",
-    }
-
-
 def _list_events_sync(service, *, time_min: datetime, time_max: datetime) -> list[dict]:
     """Blocking call into the discovery client. Run in a thread via
     asyncio.to_thread so the voice loop's event loop isn't blocked."""
@@ -131,11 +115,17 @@ def _list_events_sync(service, *, time_min: datetime, time_max: datetime) -> lis
     return list(resp.get("items") or [])
 
 
-def make_calendar_tools(clients: "GoogleClients | None", *, monitor=None):
+def make_calendar_tools(
+    clients: "GoogleClients | None", setup_url: str = "", *, monitor=None,
+):
     """Build the calendar voice tools. Returns an empty list if the
     daemon doesn't have Google clients configured (no CLIENT_ID/SECRET
     or no accounts) — caller `_build_registry` checks this so the
     tools never appear to the model when they couldn't function.
+
+    `setup_url` is surfaced (as the `setup_url` field, and named in the
+    `error` sentence) when no account is linked or credentials need a
+    re-link.
 
     Invite titles/locations are attacker-controllable third-party text
     (someone else's calendar invite), so each event's summary + location is
@@ -158,8 +148,8 @@ def make_calendar_tools(clients: "GoogleClients | None", *, monitor=None):
         Use this for "what's on my calendar today", "what's Brittany
         doing today", "do I have anything this afternoon".
 
-        `account` is the member's name as configured at
-        jts.local/google (e.g. 'jasper', 'brittany'); empty string
+        `account` is the member's name as configured on the Google
+        setup page (e.g. 'jasper', 'brittany'); empty string
         uses the default account. When the user names a household
         member ("Brittany's calendar"), pass that name; otherwise
         omit and the default is used.
@@ -177,10 +167,10 @@ def make_calendar_tools(clients: "GoogleClients | None", *, monitor=None):
         """
         canonical = clients.resolve_account(account)
         if canonical is None:
-            return no_account_error(clients, account)
+            return no_account_error(clients, account, setup_url)
         service = clients.build_calendar(canonical)
         if service is None:
-            return no_credentials_error(canonical)
+            return no_credentials_error(canonical, setup_url)
         now = datetime.now().astimezone()
         # End-of-day in local time so events that started yesterday
         # but extend into today still surface (Google's timeMin filter
@@ -195,7 +185,7 @@ def make_calendar_tools(clients: "GoogleClients | None", *, monitor=None):
                 service, time_min=now, time_max=end_of_day,
             )
         except Exception as e:  # noqa: BLE001
-            return _api_error(canonical, e)
+            return api_error("calendar", canonical, e)
         events = [_serialise_event(it) for it in items]
         if events and monitor is not None:
             monitor.mark()
@@ -234,7 +224,7 @@ def make_calendar_tools(clients: "GoogleClients | None", *, monitor=None):
         """
         canonical = clients.resolve_account(account)
         if canonical is None:
-            return no_account_error(clients, account)
+            return no_account_error(clients, account, setup_url)
         try:
             window_hours = int(hours)
         except (TypeError, ValueError):
@@ -247,7 +237,7 @@ def make_calendar_tools(clients: "GoogleClients | None", *, monitor=None):
         window_hours = min(window_hours, 24 * 30)
         service = clients.build_calendar(canonical)
         if service is None:
-            return no_credentials_error(canonical)
+            return no_credentials_error(canonical, setup_url)
         now = datetime.now().astimezone()
         cutoff = now + timedelta(hours=window_hours)
         try:
@@ -256,7 +246,7 @@ def make_calendar_tools(clients: "GoogleClients | None", *, monitor=None):
                 service, time_min=now, time_max=cutoff,
             )
         except Exception as e:  # noqa: BLE001
-            return _api_error(canonical, e)
+            return api_error("calendar", canonical, e)
         events = [_serialise_event(it) for it in items]
         if events and monitor is not None:
             monitor.mark()

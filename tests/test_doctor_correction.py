@@ -8,7 +8,6 @@ Every assertion pins ``status`` and ``reason`` — never ``detail`` prose
 (ADR-0233 rule 3). ``correction.REASON_*`` is the closed vocabulary.
 """
 
-import grp
 import json
 import os
 import subprocess
@@ -18,33 +17,17 @@ from unittest.mock import patch
 
 import pytest
 
-from jasper.cli.doctor import _evidence, correction
+from jasper.cli.doctor import correction
 from jasper.correction import bundles
 
 from .correction_bundle_fixtures import write_golden_correction_bundle
 
-from .doctor_test_support import _pretend_group_is_jasper, _write_identity_env
-
-
-def _stub_unit_active_states(monkeypatch, active: dict[str, str]) -> None:
-    """`_evidence.read_unit_states` stand-in: units in `active` report that
-    ActiveState; every other rostered unit reads inactive."""
-
-    def fake(units, *, timeout):
-        return {
-            unit: {
-                "unit": unit,
-                "load_state": "loaded",
-                "active_state": active.get(unit, "inactive"),
-                "sub_state": "running" if active.get(unit) == "active" else "dead",
-                "unit_file_state": "enabled",
-                "n_restarts": 0,
-                "main_pid": 0,
-            }
-            for unit in units
-        }
-
-    monkeypatch.setattr(_evidence, "read_unit_states", fake)
+from .doctor_test_support import (
+    _own_group,
+    _pretend_group_is_jasper,
+    _stub_unit_active_states,
+    _write_identity_env,
+)
 
 
 def test_check_correction_web_service_ok_when_socket_active(monkeypatch):
@@ -226,10 +209,6 @@ def test_check_correction_https_assets_skips_when_443_unreachable(
 #
 # os.access(W_OK) always reports root's own access, not the dropped jasper-web
 # writer's — a root:root 0700 dir read as "ok" while jasper-web was locked out.
-
-
-def _own_group() -> str:
-    return grp.getgrgid(os.getgid()).gr_name
 
 
 @pytest.mark.parametrize(

@@ -90,35 +90,46 @@ def _summary_from_description(text: str, *, max_chars: int = 180) -> str:
     return (clipped or compact[:max_chars]).rstrip() + "..."
 
 
-def _full_catalog_registry(
-    *, packs: Iterable[CapabilityPack] | None = None,
-) -> ToolRegistry:
-    """EVERY tool's schema, built with gate-satisfying sentinels.
-    Mirrors tests/test_tool_manifest.py::_full_registry. Imports the
-    transit factories directly so needs_setup transit tools enumerate
-    even when no city is configured."""
+def _sentinel_transit_tools() -> list[Any]:
+    """The 3 shipped transit tools, built hardware-free with lazy stubs.
+    Shared with tests/_tool_pack_contract.py::transit_tool_stubs so the
+    two sentinel-registry builders can't drift apart."""
     from .bus import make_bus_tools
     from .citibike import make_citibike_tools
     from .subway import make_subway_tools
-    transit = []
+    transit: list[Any] = []
     transit += list(make_subway_tools(object()))
     transit += list(make_bus_tools(types.SimpleNamespace(enabled=True)))
     transit += list(make_citibike_tools(types.SimpleNamespace(enabled=True)))
-    deps = ToolDeps(
+    return transit
+
+
+def _sentinel_tool_deps() -> ToolDeps:
+    """Gate-satisfying sentinel deps for the complete shipped registry.
+    Shared with tests/_tool_pack_contract.py::full_tool_deps so the two
+    sentinel-registry builders can't drift apart."""
+    return ToolDeps(
         volume_coordinator=None, renderer=None, router=None, weather=None,
         spotify_device_name="JTS", spotify_setup_url="",
-        transit_tools=transit, google_routes=object(),
+        google_setup_url="http://sentinel.invalid/google",
+        transit_tools=_sentinel_transit_tools(), google_routes=object(),
         ha=object(), timer_scheduler=object(),
         research_scheduler=object(),
         google_clients=types.SimpleNamespace(list_account_names=lambda: ["seed"]),
         wake_event_store=object(),
     )
+
+
+def _full_catalog_registry(
+    *, packs: Iterable[CapabilityPack] | None = None,
+) -> ToolRegistry:
+    """EVERY tool's schema, built with gate-satisfying sentinels."""
     reg = ToolRegistry()
     # Pass explicit empty disabled state so the FULL catalog ignores staged
     # user choices; status is computed separately by build_catalog().
     register_packs(
         reg,
-        deps,
+        _sentinel_tool_deps(),
         disabled=frozenset(),
         disabled_packs=frozenset(),
         packs=packs,
@@ -175,17 +186,19 @@ def build_catalog(
             status = "off"
         else:
             status = "active"
-        description = t.model_facing_description()
-        default_description = t.default_model_facing_description()
+        # The manifest entry already builds description/labels/providers/
+        # parameters/timeout/risk_flags straight from the ToolDefinition —
+        # reuse it instead of re-deriving those fields by hand here.
+        manifest = t.to_manifest_entry()
         requires_setup = status == "needs_setup" and setup_url is not None
         tools.append({
-            "name": t.name,
-            "summary": _summary_from_description(description),
-            "description": description,
-            "default_description": default_description,
+            "name": manifest["name"],
+            "summary": _summary_from_description(manifest["description"]),
+            "description": manifest["description"],
+            "default_description": t.default_model_facing_description(),
             "details": t.description,
-            "labels": list(t.labels),
-            "providers": sorted(t.providers) if t.providers else None,
+            "labels": manifest["labels"],
+            "providers": manifest["compatibility"]["providers"],
             "category": pack.category if pack else "Utilities",
             "pack": _catalog_pack_payload(pack.catalog_pack if pack else None),
             "disabled_by_pack": disabled_by_pack,
@@ -193,10 +206,10 @@ def build_catalog(
             "status": status,
             "setup_url": setup_url,
             "requires_setup": requires_setup,
-            "parameters": t.parameters,
-            "timeout": t.timeout,
-            "untrusted_output": t.untrusted_output,
-            "consequential": t.consequential,
+            "parameters": manifest["input_schema"],
+            "timeout": manifest["timeout"],
+            "untrusted_output": manifest["risk_flags"]["untrusted_output"],
+            "consequential": manifest["risk_flags"]["consequential"],
         })
     return {
         "schema_version": CATALOG_SCHEMA_VERSION,

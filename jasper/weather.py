@@ -713,7 +713,7 @@ class WeatherClient:
                 except ValueError as e:
                     log_event(
                         logger,
-                        "weather_response_error",
+                        "weather.response_error",
                         endpoint=label,
                         error=_exception_summary(e),
                         level=logging.WARNING,
@@ -727,7 +727,7 @@ class WeatherClient:
                 )
                 log_event(
                     logger,
-                    "weather_http_error",
+                    "weather.http_error",
                     endpoint=label,
                     attempt=f"{attempt}/{HTTP_ATTEMPTS}",
                     retrying=retrying,
@@ -765,7 +765,7 @@ class WeatherClient:
         if not scored:
             log_event(
                 logger,
-                "weather_geocode",
+                "weather.geocode",
                 query=repr(parsed.raw),
                 base=repr(parsed.base),
                 admin1=repr(parsed.admin1),
@@ -793,7 +793,7 @@ class WeatherClient:
         self._geocode_cache[key] = loc
         log_event(
             logger,
-            "weather_geocode",
+            "weather.geocode",
             query=repr(parsed.raw),
             base=repr(parsed.base),
             admin1=repr(parsed.admin1),

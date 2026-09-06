@@ -8,7 +8,6 @@ Every assertion pins ``status`` and ``reason`` — never ``detail`` prose
 (ADR-0233 rule 3). ``audio.REASON_*`` is the closed vocabulary.
 """
 
-import grp
 import os
 import shutil
 import subprocess
@@ -34,7 +33,7 @@ from jasper.output_hardware import (
 
 
 from ._sounddevice_stub import stub_sounddevice
-from .doctor_test_support import _fresh_cfg, record_active_dac
+from .doctor_test_support import _fresh_cfg, _own_group, record_active_dac
 
 
 def _lsusb_only(stdout: str):
@@ -843,10 +842,6 @@ def test_every_soften_call_site_keeps_the_probe_reason(
 # root-only (setgid kept, group-write stripped — mode 2755), so the non-root
 # jasper-web user could not atomically write the staged active-speaker config
 # and staging failed with PermissionError.
-
-
-def _own_group() -> str:
-    return grp.getgrgid(os.getgid()).gr_name
 
 
 @pytest.mark.parametrize(

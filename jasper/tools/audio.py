@@ -22,26 +22,10 @@ from typing import TYPE_CHECKING
 
 from . import tool
 from ..control.client import AsyncControlClient, ControlError
-from ..volume_curve import (
-    DEFAULT_VOLUME_FLOOR_DB,
-    VOLUME_CEILING_DB,
-    db_to_percent,
-    percent_to_db,
-)
 
 if TYPE_CHECKING:
     from ..volume_coordinator import VolumeCoordinator
 
-
-# Re-exported for tests + legacy callers. The effective floor can be
-# calibrated in /sound/; these constants are the shipped default.
-VOLUME_MIN_DB = DEFAULT_VOLUME_FLOOR_DB
-VOLUME_MAX_DB = VOLUME_CEILING_DB
-
-# Step used in the system instruction's "volume up / down" guidance.
-# 10 listening-level points is about 5 dB on the default curve; a calibrated
-# floor intentionally changes the dB-per-step so the useful range fills 1..100.
-DEFAULT_STEP_PERCENT = 10
 
 logger = logging.getLogger(__name__)
 
@@ -71,14 +55,6 @@ def _pair_follower_active() -> bool:
     from ..multiroom.effective_role import effective_follower_leader_addr
 
     return effective_follower_leader_addr(load_config()) is not None
-
-
-def _percent_to_db(percent: int) -> float:
-    return percent_to_db(percent)
-
-
-def _db_to_percent(db: float) -> int:
-    return db_to_percent(db)
 
 
 def make_audio_tools(coordinator: "VolumeCoordinator"):

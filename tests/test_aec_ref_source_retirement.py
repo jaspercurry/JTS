@@ -30,6 +30,7 @@ from jasper.cli import (
     aec_bridge_reference,
 )
 from jasper.cli.aec_bridge_reference import REF_CHANNELS, REF_RATE
+from tests._log_events import event_fields
 from tests._sounddevice_stub import stub_sounddevice
 
 REPO = Path(__file__).resolve().parents[1]
@@ -182,8 +183,8 @@ def test_the_retired_source_warns_and_falls_back_to_outputd_udp(caplog):
         resolved = aec_bridge.resolved_reference_source(_config(RETIRED))
 
     assert resolved.ref_source == aec_bridge.REF_SOURCE
-    assert "event=aec_ref_source_retired" in caplog.text
-    assert "jasper-aec-reconcile" in caplog.text, (
+    fields = event_fields(caplog, "aec.ref_source_retired")
+    assert "jasper-aec-reconcile" in fields["detail"], (
         "the warning must name the command that converges the env file"
     )
 

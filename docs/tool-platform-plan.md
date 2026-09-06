@@ -315,8 +315,7 @@ grows.
    optional `gate(deps)`, and pack build is fault-isolated behind
    try/except. The before/after registry-equality assertion pins
    byte-identical tool names, schemas, descriptions, providers, timeouts,
-   and order. `ToolPack` remains a compatibility alias for older in-repo
-   references.
+   and order.
 2. **Model-facing description seam.** `llm_description` lets a tool send a
    shorter model prompt while keeping the full human docstring. The first
    representative Phase 1.6 pass (2026-06-18) covered time, weather, NYC

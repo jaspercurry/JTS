@@ -88,10 +88,11 @@ async def test_today_summary_no_accounts_message_points_to_wizard(monkeypatch):
         client_id="x", client_secret="y",
         service_factory=lambda *a: pytest.fail("should not be called"),
     )
-    [today, _upcoming] = make_calendar_tools(clients)
+    setup_url = "http://jts3.local/google"
+    [today, _upcoming] = make_calendar_tools(clients, setup_url)
     out = await today()
     assert out["ok"] is False
-    assert "jts.local/google" in out["error"]
+    assert out["setup_url"] == setup_url
 
 
 async def test_today_summary_unknown_account_lists_available(monkeypatch):
