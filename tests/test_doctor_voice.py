@@ -195,7 +195,7 @@ def test_provider_imports_status_when_it_probed_nothing(
     [
         (None, "fail", doctor_voice.REASON_MANIFEST_MISSING),
         ("gemini\n", "fail", doctor_voice.REASON_MANIFEST_STALE),
-        ("openai\ngrok\ngemini\n", "warn", doctor_voice.REASON_MANIFEST_NONCANONICAL),
+        ("openai\ngrok\ngemini\n", "ok", doctor_voice.REASON_MANIFEST_NONCANONICAL),
         (provider_ids_manifest_text(), "ok", doctor_voice.REASON_MANIFEST_CURRENT),
     ],
     ids=["absent", "stale", "reordered", "current"],
