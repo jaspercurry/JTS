@@ -228,13 +228,17 @@ def test_camillagui_loopback_degrades_when_ss_unusable(monkeypatch, failure):
 
     monkeypatch.setattr(doctor_web, "_run", raises)
 
-    assert doctor_web.check_camillagui_loopback().status == "warn"
+    result = doctor_web.check_camillagui_loopback()
+    assert result.status == "skipped"
+    assert result.reason == doctor_web.REASON_CAMILLAGUI_PROBE_FAILED
 
 
-def test_camillagui_loopback_warns_when_ss_exits_nonzero(monkeypatch):
+def test_camillagui_loopback_skips_when_ss_exits_nonzero(monkeypatch):
     monkeypatch.setattr(doctor_web, "_run", _fake_ss(returncode=1))
 
-    assert doctor_web.check_camillagui_loopback().status == "warn"
+    result = doctor_web.check_camillagui_loopback()
+    assert result.status == "skipped"
+    assert result.reason == doctor_web.REASON_CAMILLAGUI_PROBE_FAILED
 
 
 # --------------------------------------------------------- control token
@@ -427,6 +431,27 @@ def test_conversation_history_warns_when_enabled_db_missing(monkeypatch, tmp_pat
 
     assert r.status == "warn"
     assert r.reason == doctor_web.REASON_HISTORY_STORE_UNAVAILABLE
+
+
+def test_conversation_history_skips_when_stats_cannot_be_read(monkeypatch):
+    """The store opened (``available`` True) but the stats query itself
+    raised — nothing about turn count or last-write age was observed, so
+    this must not read as a live finding about the data (ADR-0233 rule 3)."""
+    monkeypatch.setattr(
+        "jasper.conversation_history.health",
+        lambda **_kwargs: {
+            "capture_enabled": True,
+            "available": True,
+            "turn_count": None,
+            "last_write_age_seconds": None,
+            "retention": {"days": None, "max_rows": None},
+        },
+    )
+
+    r = doctor_web.check_conversation_history()
+
+    assert r.status == "skipped"
+    assert r.reason == doctor_web.REASON_HISTORY_STATS_UNREADABLE
 
 
 def test_conversation_history_ok_with_existing_db(monkeypatch, tmp_path):

@@ -663,15 +663,15 @@ def test_a_missing_confd_fails_before_probing(monkeypatch, tmp_path):
     assert result.reason == doctor_grouping.REASON_RING_CONFD_MISSING
 
 
-def test_an_unrunnable_probe_warns_rather_than_accusing_the_pcm(
+def test_an_unrunnable_probe_skips_rather_than_accusing_the_pcm(
     monkeypatch, _installed_confd
 ):
     """No libasound on this host is a fact about the host, not a verdict about
-    the device."""
+    the device — the probe never ran, so nothing was observed."""
     from jasper.cli.doctor import grouping as doctor_grouping
 
     result = _check(monkeypatch, None, "libasound.so.2 unavailable", bonded=True)
-    assert result.status == "warn"
+    assert result.status == "skipped"
     assert result.reason == doctor_grouping.REASON_RING_PROBE_UNAVAILABLE
 
 

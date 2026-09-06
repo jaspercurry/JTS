@@ -276,7 +276,7 @@ def check_conversation_history() -> CheckResult:
     if info["turn_count"] is None:
         return CheckResult(
             label,
-            "warn",
+            "skipped",
             "capture enabled but the store could not be read",
             reason=REASON_HISTORY_STATS_UNREADABLE,
         )
@@ -305,7 +305,7 @@ def _camillagui_listen_addresses() -> list[str] | None:
     None when the `ss` probe itself fails, so the caller reports "can't
     verify" rather than reading a failed probe as "nothing listening";
     `OSError` is caught, not just `FileNotFoundError`, so a non-executable
-    `ss` or a fork failure under memory pressure degrades to a warn too.
+    `ss` or a fork failure under memory pressure degrades to a skip too.
     ``[]`` when the probe ran cleanly and found no LISTEN socket — "never
     installed" and "administratively stopped" alike, neither a live
     exposure."""
@@ -347,7 +347,7 @@ def check_camillagui_loopback() -> CheckResult:
     addresses = _camillagui_listen_addresses()
     if addresses is None:
         return CheckResult(
-            label, "warn", "`ss` probe failed — can't verify bind posture",
+            label, "skipped", "`ss` probe failed — can't verify bind posture",
             reason=REASON_CAMILLAGUI_PROBE_FAILED,
         )
     if not addresses:

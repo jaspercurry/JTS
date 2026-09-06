@@ -16,7 +16,12 @@ from datetime import datetime as _datetime, timezone
 from pathlib import Path
 from ._evidence import evidence
 from ._registry import doctor_check
-from ._shared import CheckResult, _group_writable_dir, _run
+from ._shared import (
+    REASON_SYSTEMCTL_UNAVAILABLE,
+    CheckResult,
+    _group_writable_dir,
+    _run,
+)
 from ...active_speaker.environment import (
     camilla_statefile_path,
     read_camilla_statefile_config_path,
@@ -119,6 +124,15 @@ def check_correction_web_service() -> CheckResult:
     timeout; the socket must remain active so nginx can spawn the
     wizard on demand.
     """
+    if (
+        evidence.unit_state("jasper-correction-web.socket") is None
+        and evidence.unit_state("jasper-correction-web.service") is None
+    ):
+        return CheckResult(
+            "correction web", "skipped",
+            "systemctl unavailable — skipped (not Linux?)",
+            reason=REASON_SYSTEMCTL_UNAVAILABLE,
+        )
     socket_state = str(
         (evidence.unit_state("jasper-correction-web.socket") or {}).get(
             "active_state",
@@ -452,7 +466,7 @@ def check_correction_current_config() -> CheckResult:
     statefile, config_path = evidence.get("camilla_config", _active_camilla_config_path)
     if config_path is None:
         return CheckResult(
-            "current correction", "warn",
+            "current correction", "skipped",
             f"could not read config_path from {statefile}",
             reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
         )
@@ -633,12 +647,12 @@ def check_correction_cert_hostname() -> CheckResult:
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         return CheckResult(
-            label, "warn", f"could not read cert SAN: {e}",
+            label, "skipped", f"could not read cert SAN: {e}",
             reason=REASON_CERT_SAN_UNREADABLE,
         )
     if proc.returncode != 0:
         return CheckResult(
-            label, "warn",
+            label, "skipped",
             f"openssl exited {proc.returncode} reading {cert_path}",
             reason=REASON_CERT_SAN_UNREADABLE,
         )
@@ -952,7 +966,7 @@ def check_measurement_hold() -> CheckResult:
         held_for_s = float(held_for)
     except (TypeError, ValueError):
         return CheckResult(
-            label, "warn",
+            label, "skipped",
             f"held by {owner} (mode={mode}) but held_for_s is unreadable "
             f"({held_for!r}) — a stuck hold could not be ruled out",
             reason=REASON_MEASUREMENT_HOLD_AGE_UNREADABLE,

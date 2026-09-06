@@ -269,7 +269,7 @@ def _probe_grouping_pcm(pcm: str) -> tuple[int | None, str]:
 
     Returns ``(rc, "")`` with alsa-lib's own return code, or ``(None, reason)``
     when the probe could not be run at all (no interpreter, no libasound, an
-    unparseable answer) — which is a warn, not a verdict about the PCM.
+    unparseable answer) — which is skipped, not a verdict about the PCM.
     """
     try:
         proc = _run(
@@ -319,11 +319,12 @@ def check_grouping_ring_device() -> CheckResult:
     outcomes are name-resolves, name-does-not-resolve, and probe-could-not-run.
 
     Statuses:
-      - ok   — the name resolved and the ioplug loaded.
-      - warn — the probe could not be run (no libasound on this host), or the
-               name did not resolve on a box that is not bonded.
-      - fail — the conf.d block is missing, or the name did not resolve on a
-               bonded box.
+      - ok      — the name resolved and the ioplug loaded.
+      - skipped — the probe could not be run at all (no libasound on this
+                  host) — nothing about the name was observed.
+      - warn    — the name did not resolve on a box that is not bonded.
+      - fail    — the conf.d block is missing, or the name did not resolve on
+                  a bonded box.
     """
     from ...multiroom.grouping_ring import GROUPING_RING_CONF_D, GROUPING_RING_PCM
     from ...ring_assets import RING_ALSA_PLUGIN_DIR, RING_IOPLUG_SO
@@ -340,7 +341,7 @@ def check_grouping_ring_device() -> CheckResult:
     rc, probe_detail = _probe_grouping_pcm(GROUPING_RING_PCM)
     if rc is None:
         return CheckResult(
-            label, "warn", probe_detail, reason=REASON_RING_PROBE_UNAVAILABLE
+            label, "skipped", probe_detail, reason=REASON_RING_PROBE_UNAVAILABLE
         )
     if rc == 0:
         return CheckResult(
@@ -537,7 +538,7 @@ def check_grouping_rate_adjust() -> CheckResult:
     config_path = evidence.camilla_config_path()
     if config_path is None:
         return CheckResult(
-            label, "warn",
+            label, "skipped",
             f"could not read config_path from {camilla_statefile_path()}",
             reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
         )
@@ -549,7 +550,7 @@ def check_grouping_rate_adjust() -> CheckResult:
     text = evidence.camilla_config_text()
     if text is None:
         return CheckResult(
-            label, "warn", f"could not read {config_path}",
+            label, "skipped", f"could not read {config_path}",
             reason=REASON_CAMILLA_CONFIG_UNREADABLE,
         )
     rate_adjust = _devices_rate_adjust_from_text(text)
@@ -606,7 +607,7 @@ def check_grouping_leader_pipe() -> CheckResult:
     config_path = evidence.camilla_config_path()
     if config_path is None:
         return CheckResult(
-            label, "warn",
+            label, "skipped",
             f"could not read config_path from {camilla_statefile_path()}",
             reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
         )
@@ -618,7 +619,7 @@ def check_grouping_leader_pipe() -> CheckResult:
     text = evidence.camilla_config_text()
     if text is None:
         return CheckResult(
-            label, "warn", f"could not read {config_path}",
+            label, "skipped", f"could not read {config_path}",
             reason=REASON_CAMILLA_CONFIG_UNREADABLE,
         )
     if not playback_is_pipe(text, SNAPFIFO):
@@ -746,7 +747,7 @@ def check_grouping_channel_pick() -> CheckResult:
         env = _parse_env_file(path.read_text())
     except OSError as e:
         return CheckResult(
-            label, "warn", f"could not read {path}: {e}",
+            label, "skipped", f"could not read {path}: {e}",
             reason=REASON_CHANNEL_PICK_ENV_UNREADABLE,
         )
 
@@ -853,7 +854,7 @@ def check_grouping_tts_lane() -> CheckResult:
     # unresolvable authority must never render as a clean verdict (#2387).
     if voice_runtime_env is None:
         return CheckResult(
-            label, "warn",
+            label, "skipped",
             "could not resolve jasper-voice's env from its unit directives "
             f"or {VOICE_GROUPING_ENV_FILE} ({voice_runtime_error}) — the "
             "grouped-voice guards cannot run",
@@ -895,7 +896,7 @@ def check_grouping_tts_lane() -> CheckResult:
             outputd_env = _parse_env_file(outputd_path.read_text())
         except OSError as e:
             return CheckResult(
-                label, "warn", f"could not read {outputd_path}: {e}",
+                label, "skipped", f"could not read {outputd_path}: {e}",
                 reason=REASON_TTS_OUTPUTD_ENV_UNREADABLE,
             )
     outputd_socket = outputd_env.get(OUTPUTD_TTS_SOCKET_ENV, "")

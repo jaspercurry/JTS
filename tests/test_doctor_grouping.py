@@ -472,19 +472,20 @@ def test_check_grouping_tts_lane_reads_the_environmentfile_authority(
     assert r.reason == reason
 
 
-def test_check_grouping_tts_lane_warns_when_the_authority_is_unreadable(
+def test_check_grouping_tts_lane_skips_when_the_authority_is_unreadable(
     monkeypatch, tmp_path
 ):
     """An unreadable grouping-voice.env must not fail soft into the inline env:
     that reprints the #2387 false green. A path that raises OSError on read
     stands in for the deployed case (mode 600 root, doctor as jasper-control)
-    without depending on the test user's privileges."""
+    without depending on the test user's privileges. Nothing about the
+    grouped-voice guards was observed, so this is a skip, not a verdict."""
     unreadable = tmp_path / "grouping-voice.env"
     unreadable.mkdir()
 
     r = _solo_tts_lane(monkeypatch, unreadable)
 
-    assert r.status == "warn"
+    assert r.status == "skipped"
     assert r.reason == grouping.REASON_TTS_VOICE_ENV_UNRESOLVED
 
 

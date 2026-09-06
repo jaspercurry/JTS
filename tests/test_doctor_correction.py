@@ -17,12 +17,13 @@ from unittest.mock import patch
 
 import pytest
 
-from jasper.cli.doctor import correction
+from jasper.cli.doctor import _evidence, _shared, correction
 from jasper.correction import bundles
 
 from .correction_bundle_fixtures import write_golden_correction_bundle
 
 from .doctor_test_support import (
+    _make_unit_states_fake,
     _own_group,
     _pretend_group_is_jasper,
     _stub_unit_active_states,
@@ -56,6 +57,17 @@ def test_check_correction_web_service_warns_without_the_socket(
     r = correction.check_correction_web_service()
     assert r.status == "warn"
     assert r.reason == reason
+
+
+def test_check_correction_web_service_skips_without_systemctl(monkeypatch):
+    """Neither unit answered at all — nothing about the socket/service pair
+    was observed, so this must not read as the socket genuinely being down."""
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", _make_unit_states_fake(unavailable=True),
+    )
+    r = correction.check_correction_web_service()
+    assert r.status == "skipped"
+    assert r.reason == _shared.REASON_SYSTEMCTL_UNAVAILABLE
 
 
 # ---------- #1860: long-outstanding idle-exit holds
@@ -398,12 +410,12 @@ def test_check_correction_current_config_verdicts(
     assert r.reason == reason
 
 
-def test_check_correction_current_config_warns_on_an_unreadable_statefile(
+def test_check_correction_current_config_skips_on_an_unreadable_statefile(
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
     r = correction.check_correction_current_config()
-    assert r.status == "warn"
+    assert r.status == "skipped"
     assert r.reason == correction.REASON_CAMILLA_STATEFILE_UNREADABLE
 
 
@@ -924,9 +936,10 @@ def _hold(**overrides):
             _hold(owner="correction-measurement", held_for_s="over-ceiling"),
             "warn", correction.REASON_MEASUREMENT_HOLD_STUCK,
         ),
-        # A hold whose age cannot be read must not read as healthy.
+        # A hold whose age cannot be read must not read as healthy — nor as
+        # a confirmed stuck hold, since nothing about its age was observed.
         (
-            _hold(held_for_s=None), "warn",
+            _hold(held_for_s=None), "skipped",
             correction.REASON_MEASUREMENT_HOLD_AGE_UNREADABLE,
         ),
     ],
@@ -1142,12 +1155,12 @@ def test_cert_check_compares_the_san_to_the_advertised_name(
     assert r.reason == reason
 
 
-def test_cert_check_warns_when_the_san_cannot_be_read(monkeypatch, tmp_path):
+def test_cert_check_skips_when_the_san_cannot_be_read(monkeypatch, tmp_path):
     _with_cert(monkeypatch, tmp_path)
     _write_identity_env(tmp_path, monkeypatch, avahi="jts3.local")
 
     with patch("subprocess.run", side_effect=FileNotFoundError("openssl")):
         r = correction.check_correction_cert_hostname()
 
-    assert r.status == "warn"
+    assert r.status == "skipped"
     assert r.reason == correction.REASON_CERT_SAN_UNREADABLE
