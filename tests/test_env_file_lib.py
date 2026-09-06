@@ -134,21 +134,30 @@ def test_env_file_set_waits_out_a_concurrent_holder(tmp_path: Path) -> None:
     assert env_file.read_text(encoding="utf-8") == "SEED=1\nHOLDER=1\nWRITER=2\n"
 
 
-@pytest.mark.parametrize("plant", ["live_symlink", "dangling_symlink", "fifo"])
+@pytest.mark.parametrize(
+    "plant", ["live_symlink", "dangling_symlink", "device_symlink", "fifo"]
+)
 def test_env_file_set_refuses_a_planted_lock(tmp_path: Path, plant: str) -> None:
     """/var/lib/jasper is group-writable, so a jasper-group process can plant
     anything at the lock path, and bash has no O_NOFOLLOW. Nothing may be
-    created or re-moded BY NAME: a live symlink must not carry the lock's
-    0660 onto its target (transit.env, control_token live in that directory)
-    and a dangling one must not make root create the target. Removal
-    condition: only jasper/atomic_io.py, which opens O_NOFOLLOW, writes these.
+    created or re-moded BY NAME: a live symlink must not carry the lock's 0660
+    onto its target (transit.env, control_token live in that directory), a
+    dangling one must not make root create the target, and a device must not be
+    re-moded — bash adds O_EXCL under noclobber only when its pre-open stat
+    FAILS, so a device is opened and followed where a regular file is refused.
+    Removal condition: only jasper/atomic_io.py, which opens O_NOFOLLOW, writes
+    these files.
     """
     env_file = tmp_path / "jasper.env"
     env_file.write_text("A=1\n", encoding="utf-8")
     victim = tmp_path / "victim"
+    device = Path("/dev/null")
+    device_mode = stat.S_IMODE(device.stat().st_mode)
     lock = tmp_path / f".{env_file.name}.lock"
     if plant == "fifo":
         os.mkfifo(lock)
+    elif plant == "device_symlink":
+        lock.symlink_to(device)
     else:
         if plant == "live_symlink":
             victim.write_text("secret\n", encoding="utf-8")
@@ -158,12 +167,14 @@ def test_env_file_set_refuses_a_planted_lock(tmp_path: Path, plant: str) -> None
     result = _bash(f'jasper_env_file_set "{env_file}" A 2')
 
     assert result.returncode == 1
-    assert "event=env_file.lock_failed" in result.stderr
+    assert "reason=not_regular" in result.stderr
     assert env_file.read_text(encoding="utf-8") == "A=1\n"
     if plant == "live_symlink":
         assert victim.read_text(encoding="utf-8") == "secret\n"
         assert stat.S_IMODE(victim.stat().st_mode) == 0o600
-    else:
+    elif plant == "device_symlink":
+        assert stat.S_IMODE(device.stat().st_mode) == device_mode
+    elif plant == "dangling_symlink":
         assert not victim.exists(), "root created the symlink's dangling target"
 
 

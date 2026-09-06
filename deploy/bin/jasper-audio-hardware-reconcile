@@ -1281,7 +1281,7 @@ apply_route_env() {
                 ;;
             unset)
                 if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$file" 2>/dev/null; then
-                    jasper_env_file_unset "$file" "$key" 0640 0750
+                    jasper_env_file_unset "$file" "$key" 0640
                     file_changed=1
                 fi
                 ;;
@@ -1327,7 +1327,7 @@ apply_latency_floor_env() {
                 ;;
             unset)
                 if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$OUTPUTD_ENV_TARGET_FILE" 2>/dev/null; then
-                    jasper_env_file_unset "$OUTPUTD_ENV_TARGET_FILE" "$key" 0640 0750
+                    jasper_env_file_unset "$OUTPUTD_ENV_TARGET_FILE" "$key" 0640
                     LATENCY_FLOOR_CHANGED=1
                 fi
                 ;;
@@ -1792,7 +1792,7 @@ set_outputd_active_lane_pair() {
 drop_retired_content_pcm() {
     env_file_states_key "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" || return 1
     jasper_env_file_unset \
-        "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" 0640 0750
+        "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" 0640
 }
 
 apply_audio_runtime_env() {

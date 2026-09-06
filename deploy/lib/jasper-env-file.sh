@@ -54,38 +54,43 @@ jasper_env_quote_value() {
 #
 # NOTHING acts on the lock by name: a jasper-group process can swap a symlink
 # into that 0770 directory between two lookups, and a by-name `touch`/`chmod`
-# lands on its target (transit.env, control_token). So the create is
-# O_CREAT|O_EXCL under noclobber, which refuses a symlink raced into the path
-# instead of following it; mode and group are published on the descriptor that
-# create returned; and an existing lock opens READ-ONLY, because `>>` would
-# follow a raced symlink and CREATE its target while flock(2) ignores the open
-# mode. Anything that is not a regular file is refused before the open, so a
-# planted FIFO cannot block one.
+# lands on its target (transit.env, control_token). So mode and group are only
+# ever published on a descriptor, and only on one this call created: bash adds
+# O_EXCL under noclobber solely when its pre-open stat FAILS, so a raced
+# symlink to a DEVICE is opened and followed, and the descriptor is re-checked
+# before anything touches it. An existing lock opens READ-ONLY, because `>>`
+# would follow a raced symlink and CREATE its target while flock(2) ignores
+# the open mode. A pre-planted FIFO is refused without opening; one raced in
+# after the check blocks either open, which bash cannot make non-blocking.
 _jasper_env_lock_acquire() {
     local dir="$1" file="$2" lock="${1}/.${2##*/}.lock" rc=0
     local -n fd_ref="$3"
     if [[ ! -e "$lock" && ! -L "$lock" ]]; then
         set -C
         if { exec {fd_ref}>"$lock"; } 2>/dev/null; then
-            chmod 0660 "/dev/fd/${fd_ref}" 2>/dev/null || true
-            chgrp --reference="$dir" "/dev/fd/${fd_ref}" 2>/dev/null || true
+            if [[ -f "/dev/fd/${fd_ref}" ]]; then
+                chmod 0660 "/dev/fd/${fd_ref}" 2>/dev/null || true
+                chgrp --reference="$dir" "/dev/fd/${fd_ref}" 2>/dev/null || true
+            else
+                exec {fd_ref}>&-
+                fd_ref=''
+            fi
         fi
         set +C
     fi
-    if [[ -z "${fd_ref:-}" ]]; then
-        if [[ -L "$lock" || ! -f "$lock" ]]; then
-            echo "event=env_file.lock_failed file=${lock} reason=not_regular rc=1" >&2
+    if [[ -z "${fd_ref:-}" && ! -L "$lock" && -f "$lock" ]]; then
+        { exec {fd_ref}<"$lock"; } 2>/dev/null || rc=$?
+        if (( rc != 0 )); then
+            echo "event=env_file.lock_failed file=${lock} reason=open rc=${rc}" >&2
             return 1
         fi
-        if ! { exec {fd_ref}<"$lock"; } 2>/dev/null; then
-            echo "event=env_file.lock_failed file=${lock} reason=open rc=1" >&2
-            return 1
-        fi
-        if [[ ! -f "/dev/fd/${fd_ref}" ]]; then
-            echo "event=env_file.lock_failed file=${lock} reason=not_regular rc=1" >&2
+    fi
+    if [[ -z "${fd_ref:-}" ]] || [[ ! -f "/dev/fd/${fd_ref}" ]]; then
+        echo "event=env_file.lock_failed file=${lock} reason=not_regular" >&2
+        if [[ -n "${fd_ref:-}" ]]; then
             exec {fd_ref}>&-
-            return 1
         fi
+        return 1
     fi
     flock -w 10 "$fd_ref" || rc=$?
     if (( rc != 0 )); then
@@ -164,17 +169,16 @@ jasper_env_file_repair_permissions() {
     chmod "$file_mode" "$file"
 }
 
-# jasper_env_file_unset FILE KEY [FILE_MODE] [DIR_MODE]
+# jasper_env_file_unset FILE KEY [FILE_MODE]
 # Atomically REMOVE every KEY= line from FILE under its advisory lock (no-op
 # when FILE or the key is absent; 1 without writing if the lock is refused).
 # Distinct from `jasper_env_file_set FILE KEY ""`: an explicit empty `KEY=` in
 # a file systemd loads via EnvironmentFile= AFTER another OVERRIDES the earlier
 # value rather than deferring, so an operator's jasper.env key only wins if the
-# reconciler-owned outputd.env DROPS its own. DIR_MODE is accepted for
-# symmetry and unused (FILE's directory exists or the guard already returned).
+# reconciler-owned outputd.env DROPS its own.
 jasper_env_file_unset() {
     local file="$1" key="$2"
-    local file_mode="${3:-0600}" dir_mode="${4:-0750}"
+    local file_mode="${3:-0600}"
     local dir tmp rc=0 lock_fd=''
 
     [[ -f "$file" ]] || return 0
